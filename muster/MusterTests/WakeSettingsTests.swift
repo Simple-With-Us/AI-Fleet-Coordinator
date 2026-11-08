@@ -166,16 +166,13 @@ final class WakeSettingsTests: XCTestCase {
             .deletingLastPathComponent()
         let partition = ListenerPartition.load(from: root.appendingPathComponent(ListenerPartition.relativePath))
         XCTAssertNil(partition.problem)
-        for seat in ["CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "OPERATOR"] {
+        for seat in ["CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "OPERATOR", "OPENCODE", "ZC", "KIMI", "AMP"] {
             XCTAssertEqual(partition.host(of: seat), .mac, seat)
         }
-        for seat in ["MA", "ECHO", "WISE", "GROK-WEB", "JET", "GB-FIXER", "BF-DIRECTOR"] {
+        for seat in ["MA", "ECHO", "WISE", "GROK-WEB", "JET", "GB-FIXER", "BF-DIRECTOR", "BF-COMPILER", "BF-ENGINEER", "BF-TRADER"] {
             XCTAssertEqual(partition.host(of: seat), .server, seat)
         }
         XCTAssertEqual(partition.host(of: "BF-BUILDER"), .noListener)
-        for seat in ["GROK-BOT", "KIMI", "OPENCODE", "ZC"] {
-            XCTAssertEqual(partition.host(of: seat), .unlisted, seat)
-        }
     }
 
     /// A tag is one the eavesdropper accepts,  or it never reaches a `[seat.X]` header.
@@ -946,7 +943,9 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertTrue(store.messageIsFailure)
         XCTAssertEqual(store.message, "Nothing was lifted for MM.\u{00A0} No pause names this seat.")
 
-        listener.status = #"{"running": true, "status": {"seats": {}, "pause": {"*": {"wakes_only": true}}}}"#
+        // A current status, so it decides the pause:  with no pause file and an old status, the
+        // panel would read the missing file as no pause.
+        listener.status = #"{"running": true, "status": {"updated": \#(Date().timeIntervalSince1970), "seats": {}, "pause": {"*": {"wakes_only": true}}}}"#
         await store.refresh()
         XCTAssertEqual(store.model.seats.first(where: { $0.seat == "MM" })?.pauseScope, "*")
         await store.resume(seat: "MM")
@@ -961,7 +960,8 @@ final class WakeSettingsTests: XCTestCase {
     func test_a_resume_under_a_pause_on_every_seat_says_so() async throws {
         let space = try makeWorkspace()
         let listener = FakeListener()
-        listener.status = #"{"running": true, "status": {"seats": {}, "pause": {"MM": {}, "*": {}}}}"#
+        // A current status, so it decides the pause there is no pause file for.
+        listener.status = #"{"running": true, "status": {"updated": \#(Date().timeIntervalSince1970), "seats": {}, "pause": {"MM": {}, "*": {}}}}"#
         let store = await makeStore(listener, space: space)
         await store.resume(seat: "MM")
         XCTAssertEqual(listener.actions, ["resume"])

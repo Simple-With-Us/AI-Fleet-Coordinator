@@ -9,7 +9,7 @@ Standard library only, Python 3.11+.
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -75,4 +75,23 @@ CREATE TABLE IF NOT EXISTS export_outbox (
     created_at TEXT NOT NULL,
     exported_at TEXT
 );
+
+-- The export fence (OPS-1037):  one row per export attempt, recorded by the store side
+-- at the exporter's request.  An outbox row counts as exported only when an attempt row
+-- with outcome 'exported' or 'already_present' exists for the same
+-- (outbox_id, destination, tab, kind);  'failed' and 'ambiguous' attempts keep the row
+-- pending and say why.  The fence lives here, not in any runner, so every exporter
+-- (standing drain, manual backfill, a future in-app loop) answers to the same record.
+CREATE TABLE IF NOT EXISTS export_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    outbox_id TEXT NOT NULL REFERENCES export_outbox(outbox_id),
+    destination TEXT NOT NULL,
+    tab TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('exported', 'already_present', 'failed', 'ambiguous')),
+    detail TEXT NOT NULL DEFAULT '',
+    attempted_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_export_attempts_outbox
+    ON export_attempts (outbox_id, destination, tab, kind);
 """

@@ -206,6 +206,7 @@ const SPECS = {
   wf_run_cancel: ['Cancel a workflow run.', obj(['repo', 'run_id'], { repo: REPO, run_id: INT })],
   wf_run_approve: ['Approve a pending workflow run.', obj(['repo', 'run_id'], { repo: REPO, run_id: INT })],
   wf_file_put: ['Write one file to a branch.', obj(['repo', 'path', 'branch', 'message', 'content_b64'], { repo: REPO, path: PATH, branch: REF, message: STR, content_b64: FILE_CONTENT, prior_sha: SHA })],
+  wf_file_patch: ['Patch one existing nondefault-branch file using server-verified same-path base provenance. UTF-8 byte offsets, sorted nonoverlapping edits; residual unchanged generic assignments permitted, dedicated/loaded credentials always refused. No raw output bypass.', obj(['repo','branch','path','message','expected_head_sha','base_blob_sha','edits'], {repo:REPO,branch:REF,path:PATH,message:STR,expected_head_sha:SHA,base_blob_sha:SHA,edits:{type:'array',minItems:1,maxItems:32,items:obj(['start','end','text'],{start:{type:'integer',minimum:0,maximum:2097152},end:{type:'integer',minimum:0,maximum:2097152},text:{type:'string',maxLength:32768}})}})],
   wf_files_put: ['Write up to 20 files in one commit, fenced on the branch head.', obj(['repo', 'branch', 'message', 'expected_head_sha', 'files'], {
     repo: REPO, branch: REF, message: STR, expected_head_sha: SHA,
     files: { type: 'array', minItems: 1, maxItems: 20, items: obj(['path'], { path: PATH, content_b64: FILE_CONTENT, delete: { type: 'boolean' } }) } })],
@@ -230,25 +231,41 @@ function validWfV1Args2(schema, args) {
   if (!schema.required.every(k => Object.hasOwn(args,k))) return false;
   return Object.keys(args).every(k => Object.hasOwn(schema.properties,k) && typeOk(schema.properties[k], args[k]));
 }
-// Iterative guard runs before recursive schema code or JSON serialization.
+/** The UTF-8 length of `text`, without encoding it:  the same count `new TextEncoder().encode(text).length`
+ * gives, including 3 bytes for a lone surrogate (the encoder writes U+FFFD).  AFC-617:  the encoder
+ * allocated a buffer per string, and this ran per string of every request and response. */
+export function utf8Bytes(text) {
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const unit = text.charCodeAt(i);
+    if (unit < 0x80) bytes += 1;
+    else if (unit < 0x800) bytes += 2;
+    else if (unit >= 0xd800 && unit <= 0xdbff && i + 1 < text.length && (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) { bytes += 4; i++; }
+    else bytes += 3;
+  }
+  return bytes;
+}
+// Iterative guard runs before recursive schema code or JSON serialization.  The stack holds values and
+// depths in two arrays, not one tuple per node.
 export function boundedWorkflowInput(args, {maxDepth=6,maxNodes=500,maxBytes=65536,maxString=65536,maxKeys=100}={}) {
-  const stack=[[args,0]], seen=new Set(); let nodes=0, bytes=0;
-  while(stack.length) {
-    const [value,depth]=stack.pop();
+  const values=[args], depths=[0], seen=new Set(); let nodes=0, bytes=0;
+  while(values.length) {
+    const value=values.pop(), depth=depths.pop();
     if(++nodes>maxNodes || depth>maxDepth) return false;
     if(typeof value==='string') {
       if(value.length>maxString) return false;
-      bytes+=new TextEncoder().encode(value).length;
+      bytes+=utf8Bytes(value);
     } else if(value && typeof value==='object') {
       if(seen.has(value)) return false; seen.add(value);
-      if(Object.getPrototypeOf(value)!==Object.prototype && !Array.isArray(value) && Object.getPrototypeOf(value)!==null) return false;
+      const prototype=Object.getPrototypeOf(value);
+      if(prototype!==Object.prototype && !Array.isArray(value) && prototype!==null) return false;
       const keys=Object.keys(value); if(keys.length>maxKeys) return false;
       for(const key of keys) {
         const d=Object.getOwnPropertyDescriptor(value,key);
         if(!d || !Object.hasOwn(d,'value')) return false;
-        bytes+=key.length; stack.push([d.value,depth+1]);
+        bytes+=key.length; values.push(d.value); depths.push(depth+1);
       }
-    } else if(!['number','boolean'].includes(typeof value) && value!==null) return false;
+    } else if(typeof value!=='number' && typeof value!=='boolean' && value!==null) return false;
     if(bytes>maxBytes) return false;
   }
   return true;
@@ -314,7 +331,7 @@ export function parseWfV1Args(action,args){
  if(typeof action!=='string'||!WF_V1_ACTIONS.includes(action))return null;
  if(!boundedWorkflowInput(args,{maxBytes:workflowInputLimit(action),maxString:workflowInputLimit(action)}))return null;
  const parsed=argSchemas[action].safeParse(args);
- if(!parsed.success||!parsedArgsOk(action,parsed.data)||!fileContentBudget(action,parsed.data)||!readExpansionArgsOk(action,parsed.data)||new TextEncoder().encode(JSON.stringify(parsed.data)).length>workflowInputLimit(action))return null;
+ if(!parsed.success||!parsedArgsOk(action,parsed.data)||!fileContentBudget(action,parsed.data)||!readExpansionArgsOk(action,parsed.data)||utf8Bytes(JSON.stringify(parsed.data))>workflowInputLimit(action))return null;
  if(['wf_review_submit','wf_review_inline'].includes(action)&&!reviewBodyOk(parsed.data))return null;
  return parsed.data;
 }
@@ -406,14 +423,39 @@ const RESPONSE_KEYS = {
   wf_run_jobs: ['jobs','complete'], wf_checks: ['checks','complete'],
   wf_update_branch: ['accepted','message'], wf_run_rerun: ['requested','run_id'],
   wf_run_cancel: ['requested','run_id'], wf_run_approve: ['requested','run_id'],
-  wf_file_put: ['path','branch','commit'], wf_files_put: ['branch','commit','files'],
+  wf_file_patch: ['path','branch','commit'], wf_file_put: ['path','branch','commit'], wf_files_put: ['branch','commit','files'],
   wf_merge_guarded: ['merged','sha'],
   wf_pr_create: ['pull'], wf_pr_edit: ['pull'], wf_pr_close: ['pull'],
 };
 const credentialPattern=/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/;
 const shaValue=z.string().regex(/^[0-9a-f]{40}$/),positive=z.number().int().positive();
-let jsonValueUnion=null;
-const jsonValue=z.lazy(()=>jsonValueUnion??=z.union([z.string(),z.number().finite(),z.boolean(),z.null(),z.array(jsonValue),z.record(z.string(),jsonValue)]));
+// A JSON value:  a string, a finite number, a boolean, null, or an array or plain object of JSON values.
+// A walk, not the recursive zod union this replaced, which cost most of a response's validation CPU
+// (AFC-617);  it accepts exactly the same values.  validWfV1Response already bounds the whole body to
+// depth 12, 50000 nodes and 1 MiB before any schema runs, and the walk keeps the first two as its own
+// limits (the byte cap belongs to that caller), so it is bounded wherever it is used.
+export function isJsonValue(value,{maxDepth=12,maxNodes=50000}={}){
+  const values=[value], depths=[0]; let nodes=0;
+  while(values.length) {
+    const v=values.pop(), depth=depths.pop(), kind=typeof v;
+    if(++nodes>maxNodes || depth>maxDepth) return false;
+    if(kind==='string' || kind==='boolean' || v===null) continue;
+    if(kind==='number') { if(!Number.isFinite(v)) return false; continue; }
+    if(Array.isArray(v)) { for(let i=0;i<v.length;i++) { values.push(v[i]); depths.push(depth+1); } continue; }
+    if(kind==='object') {
+      const prototype=Object.getPrototypeOf(v);
+      if(prototype!==Object.prototype && prototype!==null) return false;
+      for(const key of Object.keys(v)) { values.push(v[key]); depths.push(depth+1); }
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+const jsonValue=z.custom(isJsonValue);
+// Schemas that depend only on the action are built once per isolate, on first use, not on every call.
+const memoizedSchemas=new Map();
+const memo=(key,make)=>{let schema=memoizedSchemas.get(key);if(schema===undefined){schema=make();memoizedSchemas.set(key,schema);}return schema;};
 const objectWith=shape=>z.object(shape).catchall(jsonValue);
 const commitObject=objectWith({sha:shaValue,commit:objectWith({message:z.string()}),parents:z.array(objectWith({sha:shaValue}))});
 const branchObject=objectWith({name:z.string().min(1),commit:objectWith({sha:shaValue})});
@@ -517,8 +559,10 @@ const contextCommentsPage=z.object({sha:shaValue,comments:z.array(contextComment
 const contextCommentGet=z.object({comment:contextComment}).strict();
 const requestedReviewers=z.object({number:z.number().int().positive(),head_sha:shaValue,users:z.array(contextAuthor).max(100),teams:z.array(z.object({id:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),slug:z.string().regex(/^[A-Za-z0-9_-]{1,100}$/).refine(v=>!metadataCredential.test(v))}).strict()).max(100),snapshot:z.literal(false)}).strict();
 export function validWfV1Response(action, body, args) {
+
  if(typeof action!=='string')return false;
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
+ if(action==='wf_file_patch')return z.object({branch:z.string().min(1),path:z.string().min(1),commit:shaValue}).strict().safeParse(body).success && (!args || body.branch===args.branch && body.path===args.path);
  if(action.startsWith('wf_repo_variable')){
   const name=z.string().regex(/^[A-Z_][A-Z0-9_]{0,99}$/), variable=z.object({name,value:z.string().refine(v=>new TextEncoder().encode(v).length<=8192),created_at:z.string().max(100),updated_at:z.string().max(100)}).strict();
   const ok=(action==='wf_repo_variables'?z.object({variables:z.array(variable).max(50),total_count:z.number().int().nonnegative(),page:z.number().int().min(1).max(1000)}).strict():action==='wf_repo_variable_get'?z.object({variable}).strict():z.object({completed:z.literal(true),name}).strict()).safeParse(body).success;
@@ -530,6 +574,7 @@ export function validWfV1Response(action, body, args) {
 
  const inventoryActions=['wf_workflow_get','wf_artifact_get','wf_artifacts_page','wf_caches_page','wf_cache_usage','wf_run_attempt_get','wf_run_attempt_jobs','wf_run_pending_deployments'];
  if(inventoryActions.includes(action)){
+  const schemas=memo('inventory',()=>{
   const uint=z.number().int().min(0).max(Number.MAX_SAFE_INTEGER), id=uint.min(1);
   const artifact=z.object({id,name:metadataText(255),size_in_bytes:uint,expired:z.boolean(),run_id:id.nullable(),head_sha:shaValue.nullable()}).strict().refine(v=>(v.run_id===null)===(v.head_sha===null));
   const cache=z.object({id,key:metadataText(512),ref:metadataText(1024),size_in_bytes:uint}).strict();
@@ -537,7 +582,8 @@ export function validWfV1Response(action, body, args) {
   const pageFields={total:uint,page:uint.min(1).max(1000),has_more:z.boolean(),snapshot:z.literal(false)};
   const identity={run_id:id,head_sha:shaValue,run_attempt:uint.min(1).max(1000000)};
   const env=z.object({id,name:metadataText(100),wait_timer:uint,current_user_can_approve:z.boolean()}).strict();
-  const schemas={wf_workflow_get:z.object({workflow:z.object({id,path:metadataText(1024),state:z.enum(['active','deleted','disabled_fork','disabled_inactivity','disabled_manually'])}).strict()}).strict(),wf_artifact_get:z.object({artifact}).strict(),wf_artifacts_page:z.object({artifacts:z.array(artifact).max(50),...pageFields}).strict(),wf_caches_page:z.object({caches:z.array(cache).max(50),...pageFields}).strict(),wf_cache_usage:z.object({repo:z.string(),active_caches_size_in_bytes:uint,active_caches_count:uint}).strict(),wf_run_attempt_get:z.object({run:state}).strict(),wf_run_attempt_jobs:z.object({jobs:z.array(state).max(50),...pageFields,...identity}).strict(),wf_run_pending_deployments:z.object({environments:z.array(env).max(100),...identity,snapshot:z.literal(false)}).strict()};
+  return {wf_workflow_get:z.object({workflow:z.object({id,path:metadataText(1024),state:z.enum(['active','deleted','disabled_fork','disabled_inactivity','disabled_manually'])}).strict()}).strict(),wf_artifact_get:z.object({artifact}).strict(),wf_artifacts_page:z.object({artifacts:z.array(artifact).max(50),...pageFields}).strict(),wf_caches_page:z.object({caches:z.array(cache).max(50),...pageFields}).strict(),wf_cache_usage:z.object({repo:z.string(),active_caches_size_in_bytes:uint,active_caches_count:uint}).strict(),wf_run_attempt_get:z.object({run:state}).strict(),wf_run_attempt_jobs:z.object({jobs:z.array(state).max(50),...pageFields,...identity}).strict(),wf_run_pending_deployments:z.object({environments:z.array(env).max(100),...identity,snapshot:z.literal(false)}).strict()};
+  });
   if(!schemas[action].safeParse(body).success||new TextEncoder().encode(JSON.stringify(body)).length>262144)return false;
   const list=body.artifacts??body.caches??body.jobs??body.environments;
   if(list&&new Set(list.map(v=>v.id)).size!==list.length)return false;
@@ -618,13 +664,17 @@ export function validWfV1Response(action, body, args) {
   return schema.safeParse(body).success&&(!args||body.pull.number===args.number&&body.pull.head_sha===args.expected_head_sha&&body.pull.base_ref===args.expected_base_ref);
  }
  if(action==='wf_checks'){
-  const censusRow=z.object({id:positive,name:z.string().min(1).max(255),status:z.enum(['queued','in_progress','completed','waiting','requested','pending']),conclusion:z.enum(['action_required','cancelled','failure','neutral','success','skipped','stale','timed_out','startup_failure']).nullable(),completed_at:z.string().max(100).nullable(),head_sha:shaValue,app_id:positive,app_slug:z.string().min(1).max(100)}).strict().refine(v=>(v.status==='completed')===(v.conclusion!==null));
-  const censusSchema=z.object({checks:z.array(censusRow).max(500),complete:z.union([z.boolean(),z.literal('unknown')])}).strict();
+  const censusSchema=memo('wf_checks',()=>{
+   const censusRow=z.object({id:positive,name:z.string().min(1).max(255),status:z.enum(['queued','in_progress','completed','waiting','requested','pending']),conclusion:z.enum(['action_required','cancelled','failure','neutral','success','skipped','stale','timed_out','startup_failure']).nullable(),completed_at:z.string().max(100).nullable(),head_sha:shaValue,app_id:positive,app_slug:z.string().min(1).max(100)}).strict().refine(v=>(v.status==='completed')===(v.conclusion!==null));
+   return z.object({checks:z.array(censusRow).max(500),complete:z.union([z.boolean(),z.literal('unknown')])}).strict();
+  });
   return censusSchema.safeParse(body).success&&new Set(body.checks.map(x=>x.id)).size===body.checks.length&&(!args||body.checks.every(x=>x.head_sha===args.ref));
  }
  if(action==='wf_pr_list'){
-  const inventoryRow=z.object({number:positive,title:z.string().max(1024),draft:z.boolean(),head_ref:prListObservedRef,head_sha:shaValue,base_ref:prListObservedRef,base_sha:shaValue,author:z.string().max(100).nullable(),author_type:z.string().max(50).nullable(),created_at:z.string().max(100),updated_at:z.string().max(100),merged_at:z.string().max(100).nullable(),auto_merge:z.boolean()}).strict();
-  const inventorySchema=z.object({pulls:z.array(inventoryRow).max(500),complete:z.boolean()}).strict();
+  const inventorySchema=memo('wf_pr_list',()=>{
+   const inventoryRow=z.object({number:positive,title:z.string().max(1024),draft:z.boolean(),head_ref:prListObservedRef,head_sha:shaValue,base_ref:prListObservedRef,base_sha:shaValue,author:z.string().max(100).nullable(),author_type:z.string().max(50).nullable(),created_at:z.string().max(100),updated_at:z.string().max(100),merged_at:z.string().max(100).nullable(),auto_merge:z.boolean()}).strict();
+   return z.object({pulls:z.array(inventoryRow).max(500),complete:z.boolean()}).strict();
+  });
   return inventorySchema.safeParse(body).success&&new Set(body.pulls.map(x=>x.number)).size===body.pulls.length;
  }
  if(discussionPages[action]){if(!discussionPages[action].safeParse(body).success||new TextEncoder().encode(JSON.stringify(body)).length>262144)return false;const rows=body.reviews??body.comments;return new Set(rows.map(x=>x.id)).size===rows.length&&rows.reduce((n,x)=>n+new TextEncoder().encode(x.body).length,0)<=262144&&(!args||body.number===args.number&&body.head_sha===args.expected_head_sha&&body.page===(args.page??1)&&rows.length<=(args.per_page??30)&&body.has_more===(rows.length===(args.per_page??30)));}
@@ -683,9 +733,11 @@ export function validWfV1Response(action, body, args) {
   if (action === 'wf_release_list' && (!Array.isArray(body?.releases) || body.releases.length > 50 || !body.releases.every(x => x && Number.isInteger(x.id) && x.id > 0 && typeof x.draft === 'boolean' && typeof x.prerelease === 'boolean' && Object.keys(x).every(k => ['id','tag_name','name','html_url','created_at','published_at','draft','prerelease'].includes(k)) && ['tag_name','name','html_url','created_at','published_at'].every(k => x[k] === null || typeof x[k] === 'string' && new TextEncoder().encode(x[k]).length <= 2048)))) return false;
  const keysBeforeParse=RESPONSE_KEYS[action];
  if(!keysBeforeParse)return false;
- const shape=Object.fromEntries(keysBeforeParse.map(k=>[k,jsonValue]));
- if(action==='wf_file_put'||action==='wf_files_put'){shape.branch=z.string().min(1);shape.commit=shaValue;if(action==='wf_file_put')shape.path=z.string().min(1);else shape.files=z.number().int().min(1).max(20);}
- const parsed=z.object(shape).strict().safeParse(body);
+ const parsed=memo(`keys:${action}`,()=>{
+  const shape=Object.fromEntries(keysBeforeParse.map(k=>[k,jsonValue]));
+  if(action==='wf_file_patch'||action==='wf_file_put'||action==='wf_files_put'){shape.branch=z.string().min(1);shape.commit=shaValue;if(action==='wf_file_patch'||action==='wf_file_put')shape.path=z.string().min(1);else shape.files=z.number().int().min(1).max(20);}
+  return z.object(shape).strict();
+ }).safeParse(body);
  if(!parsed.success)return false;
  body=parsed.data;
  const key={wf_workflow_enable:'workflow_id',wf_workflow_disable:'workflow_id',wf_run_delete:'run_id',wf_artifact_delete:'artifact_id'}[action];
@@ -730,7 +782,7 @@ export function validWfV1Response(action, body, args) {
   if (action.startsWith('wf_assignees_') && (!Number.isInteger(body.result?.number) || !Array.isArray(body.result?.assignees) || !body.result.assignees.every(x => typeof x?.login === 'string'))) return false;
   if (action === 'wf_label_create' && (typeof body.result?.name !== 'string' || !/^[0-9a-fA-F]{6}$/.test(body.result?.color))) return false;
   for (const k of ['pull','commit','comparison','branch','repository','workflows','run','artifacts']) {
-    if ((action === 'wf_file_put' || action === 'wf_files_put' || action === 'wf_file_delete') && (k === 'branch' || k === 'commit')) { if (typeof body[k] !== 'string' || body[k].length === 0) return false; continue; }
+    if ((action === 'wf_file_patch' || action === 'wf_file_put' || action === 'wf_files_put' || action === 'wf_file_delete') && (k === 'branch' || k === 'commit')) { if (typeof body[k] !== 'string' || body[k].length === 0) return false; continue; }
     if (k in body && (!body[k] || typeof body[k] !== 'object' || Array.isArray(body[k]))) return false;
   }
   if ('completed' in body && body.completed !== true) return false;

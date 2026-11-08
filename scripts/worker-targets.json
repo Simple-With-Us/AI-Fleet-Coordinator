@@ -43,20 +43,5 @@
     ],
     "health": "https://alert-ingress.jays-services.workers.dev/health",
     "ok": true
-  },
-  "pr-conflict-watch": {
-    "deployer": "alert-workers-deploy",
-    "root": "workers/pr-conflict-watch/zulip-cutover/",
-    "config": "workers/pr-conflict-watch/zulip-cutover/wrangler.toml",
-    "paths": [
-      "workers/pr-conflict-watch/zulip-cutover/**",
-      "docs/releases/pr-conflict-zulip-verified.json"
-    ],
-    "ignore": [
-      "*.test.*",
-      "*.md"
-    ],
-    "health": "https://pr-conflict-watch.jays-services.workers.dev/health",
-    "text": "ok"
   }
 }

@@ -56,7 +56,8 @@ final class OpsCommandBuilderTests: XCTestCase {
     func test_a_server_run_waits_minutes_and_a_dead_link_is_noticed() throws {
         XCTAssertTrue(OpsControlRoute.sshOptions.contains("ServerAliveInterval=15"))
         XCTAssertTrue(OpsControlRoute.sshOptions.contains("ServerAliveCountMax=3"))
-        for tag in OpsActionCase.allCases where tag != .resourceStatus {
+        // The two status reads are `--plan` only,  so they have no run to time.
+        for tag in OpsActionCase.allCases where tag != .resourceStatus && tag != .eavesdropperStatus {
             let action = tag.sample
             let run = try exampleBuilder().invocation(for: action, mode: .yes)
             XCTAssertEqual(run.timeout, action.runsOnServer ? 180 : 900, "\(tag)")
@@ -389,6 +390,26 @@ final class OpsResultParserTests: XCTestCase {
         XCTAssertEqual(outcome.detail, "sshd.service is not in the allowlist.")
     }
 
+    /// A read verb that could not read answers `unavailable` (session BB's helper, for example
+    /// `server eavesdropper-status` with the eavesdropper's status missing).  It is its own kind:
+    /// not a failure, not a refusal, never a success, and it changed nothing.
+    func test_an_unavailable_read_is_its_own_kind_and_changed_nothing() {
+        let outcome = OpsResultParser.parse(
+            result(#"{"ok":false,"result":"unavailable","errorCode":"docker_unavailable"}"#, exit: 1),
+            mode: .plan, action: unit, timeout: 90
+        )
+        XCTAssertEqual(outcome.kind, .unavailable)
+        XCTAssertFalse(outcome.isSuccess(for: .plan))
+        XCTAssertFalse(outcome.runNotKnown)
+        XCTAssertEqual(outcome.errorCode, "docker_unavailable")
+        XCTAssertEqual(outcome.detail, "The helper could not read what this reads, and changed nothing.")
+        XCTAssertEqual(outcome.commandsHeading, "What Was Read")
+        let title = outcome.resultTitle(for: unit)
+        XCTAssertTrue(title.contains("could not read it"), title)
+        XCTAssertTrue(title.hasSuffix("Nothing was changed."), title)
+        XCTAssertEqual(OpsResultKind(rawValue: "unavailable"), .unavailable)
+    }
+
     func test_an_ok_answer_with_a_failing_exit_is_not_a_success() throws {
         let outcome = OpsResultParser.parse(
             result(try fixture("ops_result_done", "json"), exit: 1), mode: .yes, action: unit, timeout: 900
@@ -516,7 +537,11 @@ final class OpsResultParserTests: XCTestCase {
 
     func test_only_a_read_changes_nothing() {
         for tag in OpsActionCase.allCases {
-            XCTAssertEqual(tag.sample.changesNothing, tag == .logs || tag == .resourceStatus, "\(tag)")
+            XCTAssertEqual(
+                tag.sample.changesNothing,
+                tag == .logs || tag == .resourceStatus || tag == .eavesdropperStatus,
+                "\(tag)"
+            )
         }
     }
 
@@ -761,6 +786,7 @@ final class OpsWireContractTests: XCTestCase {
         case "serverUpdate": return .serverUpdate(name: target)
         case "coolifyRedeploy": return .coolifyRedeploy(uuid: target, name: "example-app")
         case "resourceStatus": return .resourceStatus
+        case "eavesdropperStatus": return .eavesdropperStatus
         default: return nil
         }
     }

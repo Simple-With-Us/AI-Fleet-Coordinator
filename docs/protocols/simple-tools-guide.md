@@ -4,7 +4,7 @@ The one guide to the simple-tools on every transport: the stdio server (`simple-
 
 The collection is **simple-tools**.  The hosted server is **ST-MCP** and its admin is **ST-MCP + GR-MCP Admin**.  Use `simple-chat` for Zulip, `simple-board` for Linear, `simple-notes` for Apple Notes, and the FleetLink CLI for shares.  Fleet coordination is in **#Work-In-Progress**.  Use these component names in instructions and tool descriptions.
 
-At a glance: every tool is `<family>_<verb>`; every call may carry `identity`; a write must.  The stdio server serves 273 tools and the hosted server 280 (counted from the release source, which adds the seven `gr_*` tools and the hosted-only `catalog`; the deployed server lists 272 until that release ships): `eavesdropper_ack` is stdio only, and the hosted-only `whatsapp_read` is listed only to JET-CHAT, the full Jet login, while the WhatsApp bridge is on (it is default-off), which makes JET-CHAT's hosted list 281 (Tools by Family).
+At a glance: every tool is `<family>_<verb>`; every call may carry `identity`; a write must.  The stdio server serves 274 tools and the hosted server 281 (counted from the release source, which adds the seven `gr_*` tools and the hosted-only `catalog`; the deployed server lists 272 until that release ships): `eavesdropper_ack` is stdio only, and the hosted-only `whatsapp_read` is listed only to JET-CHAT, the full Jet login, while the WhatsApp bridge is on (it is default-off), which makes JET-CHAT's hosted list 282 (Tools by Family).
 
 ## How to Pass Identity
 
@@ -57,7 +57,7 @@ Name = `<family>_<verb>`.  R = read, W = write (writes need `identity`).  Wher
 |---|---|---|---|
 | (none) `whoami`, `identities`, `guide`, `catalog` | 3 stdio, 4 hosted | both | Identity, this guide and the paged tool catalog (above; `catalog` is hosted only) |
 | `zulip_*` | 42 | both | Read and post on the fleet's Zulip as a bot |
-| `eavesdropper_*` | 6 stdio, 5 hosted | both | This seat's eavesdropper records |
+| `eavesdropper_*` | 7 stdio, 6 hosted | both | This seat's eavesdropper records |
 | `notes_*` | 8 | both | Apple Notes in the owner's Coding folder |
 | `recall_*` | 3 | both | The fleet's shared knowledge corpus |
 | `linear_*` | 196 | both | The Linear board as the identity's own app |
@@ -122,6 +122,7 @@ The local eavesdropper's records for the identity.  Stdio reads them from this 
 |---|---|---|---|
 | `eavesdropper_status` | R | both | Counts: seat inbox, owner queue, wakes, held back, leases, nudges, pause |
 | `eavesdropper_inbox` | R | both | The seat inbox after the acknowledged cursor (`since_seq`); never moves the cursor |
+| `operator_inbox_pending` | R | both | Wake-worthy pending seat-inbox items after a caller-held `after_seq`: `mode` check counts them (with `latest_seq`), pull returns them; never moves any cursor |
 | `eavesdropper_owner_queue` | R | both | Notes queued for the owner, after the surfaced mark (`all` for every one) |
 | `eavesdropper_wakes` | R | both | The wake ledger, filtered by `since_hours` and `state` |
 | `eavesdropper_held_back` | R | both | Wakes held back for the budget, with reason and link |
@@ -153,7 +154,7 @@ Search before re-deriving a lesson.  Hits are fenced between `BEGIN_UNTRUSTED_R
 
 ### linear
 
-The identity's own Linear app, never the owner's account.  Output is fenced between `BEGIN_UNTRUSTED_LINEAR` and `END_UNTRUSTED_LINEAR`.  Stdio runs `simple-board` as the identity its bearer proves (`SIMPLE_BOARD_BEARER_LOCATOR`), so board's per-seat app, viewer check and label protection apply; hosted calls Linear from the Worker, and its writes need the server's `LINEAR_TOOLS_WRITES` switch.  Writes take an idempotency key where the tool lists one: a retry with the same key returns the first result.
+The identity's own Linear app, never the owner's account.  Output is fenced between `BEGIN_UNTRUSTED_LINEAR` and `END_UNTRUSTED_LINEAR`.  Stdio runs `simple-board` as the identity its bearer proves (`SIMPLE_BOARD_BEARER_FILE`), so board's per-seat app, viewer check and label protection apply; hosted calls Linear from the Worker, and its writes need the server's `LINEAR_TOOLS_WRITES` switch.  Writes take an idempotency key where the tool lists one: a retry with the same key returns the first result.
 
 The ten core tools:
 
@@ -226,7 +227,7 @@ A seat reaches these tools with its own bearer token.  ST-MCP shares the same b
 
 PR-write authoring runs under the owner's scoped PR-only token on purpose: a pull request is authored as the owner, so the review bots read it the way they expect.  Everything else runs under the seat's own GitHub App token, which the relay mints and refreshes itself.  git-relay is the only path in the fleet that mints per-bot GitHub App tokens, so the GR-MCP tool surface never hands a seat an App id, a private key or a token with an expiry to manage.  What a minted token can do is the seat's own policy: the mint is capped at that seat's allowed repos and at its mint-permission ceiling (`contents`, `pull_requests`, `issues`, `actions` or `metadata`, each read or write as the policy says), so a seat pushes only where its own policy gives that ceiling `contents: write`.
 
-Per-seat policy is an allowlist layer over that credential: allowed actions, allowed repos, a mint-permission ceiling and an hourly call cap.  It can only narrow what the credential allows, never exceed it.  Every call, allowed or denied, is written to the audit log, and a non-idempotent write is gated by an outcome record, so a replay never lands twice.
+Per-seat policy is an allowlist layer over that credential: allowed actions, allowed repos, a mint-permission ceiling and an hourly call cap.  It can only narrow what the credential allows, never exceed it.  Every denial, failure and write is written to the audit log (a successful read is not), and a non-idempotent write is gated by an outcome record, so a replay never lands twice.
 
 **Status.** git-relay and GR-MCP are implemented, policy-checked and tested, but **not deployed**: no seat is pointed at it and no running service has been verified.  The owner has chosen the host and the rollout is staged; until the owner decides the cutover, the relay is not an available route: do not plan work that assumes it is live, and do not assume any other GitHub path or credential is available to a seat either.  What a seat may use today is whatever its own environment and owner have set up and verified.
 
@@ -353,6 +354,53 @@ Tool errors come back with `isError: true` and an object `{code, message, retrya
 | `forbidden` | The Operator does not let this host act for that seat (its `[notes_queue]` seat lists) |
 | `claim_held` | Linear: another seat holds the claim |
 | `zulip_error`, `unavailable`, `internal` | Upstream failure.  `unavailable` may be retryable (check `retryable`) |
+| `relay_refused` | The hosted `gr_*` tools: git-relay refused the call (definite, nothing written).  The answer carries a `reason` when the cause is known; see "Why a `gr_*` Call Was Refused" below.  No `reason` means the relay's verdict was not one it recognises: read `message` |
 | `relay` (HTTP status) | git-relay and GR-MCP do not use the codes above: a refusal arrives as a tool error carrying the relay's own HTTP status.  See the GitHub section |
 
+### Why a `gr_*` Call Was Refused
+
+A hosted `gr_*` refusal (`code: "relay_refused"`) names its cause in a `reason` field.  The reason comes from a closed list, mapped from the relay's own fixed refusal strings and its numeric GitHub status, so it is never the relay's or GitHub's prose.  A refusal the list does not cover keeps the plain answer with no `reason`.
+
+| `reason` | What it means and what to do |
+|---|---|
+| `seat_policy` | The relay's allowlist for this seat does not permit the action or repository (or the seat's App ceiling is too low).  Retrying will not help; the seat's relay policy has to change |
+| `seat_rate_limit` | The seat used its hourly call or write quota.  Wait, then retry |
+| `github_refused` | GitHub itself refused it. `github_status` is the numeric status: 403 is permission or a branch rule, 405 is a merge block, 422 is a rejected change.  Fix the cause on GitHub; the seat policy is not the problem |
+| `fence_mismatch` | The head, base, ref or state the call expected is no longer what the relay read just before the write.  Read the current state and send the call again with the fresh value |
+| `credential_scan` | The content looked like a credential.  The code is `refused_secret` instead; nothing was written |
+| `unauthenticated` | The relay did not accept the seat's credential |
+| `bad_request_<id>` | A fixed relay verdict on the request itself: `bad_request_pr_not_issue_target` (a pull request sent to an issue tool), `bad_request_default_branch_protected`, `bad_request_pr_not_open`, `bad_request_pr_merged`, `bad_request_workflow_path_permission`, `bad_request_review_not_pending`, `bad_request_nothing_to_change`, `bad_request_invalid_files`, `bad_request_invalid_arguments`, `bad_request_unsupported_action`, `bad_request_invalid_repository`, `bad_request_content_too_large` |
+
+A `seat_policy` or `bad_request_*` reason is a refusal by the relay itself, so no GitHub call was made.  Only `github_refused` means GitHub was asked and said no.
+
 Exit codes of the `simple-chat` CLI: 0 ok, 2 usage, 3 credentials, realm or identity refused, 4 wait timeout, 5 Zulip API error, 6 network error, 7 `verify-owner-msg` did not verify.  `simple-board` exits 1 error, 2 usage, 3 claim held, 4 no credentials, 5 rate limit, and 6 when no seat is verified or an authentication check failed.  Exit 7 is retired: it was the writes-off switch, and the bearer-verified seat is the only write gate now.
+
+
+### One read-only PR report
+
+`simple-git readiness OWNER/REPO NUMBER [--expected-head FULL_SHA]` combines the
+existing approved PR, exact-head check-run, commit-status, paginated review-record,
+and actual review-thread reads. It prints JSON. Exit 0 means
+`observed_checks_passed`, not permission to merge; exit 1 means blocked or unknown.
+It never merges, resolves a conversation, changes a rule, or creates an auto-merge request.
+
+The report counts unresolved review **threads**, including outdated unresolved
+threads. Issue comments are never a substitute. It follows thread cursors and
+review pages to a bounded end, rejects duplicate/missing pagination and incomplete
+check censuses, and reads head/base/lifecycle again at the end. A changed head or
+base requires a new report. The same overall CLI time budget covers every read.
+
+Missing tools, refused reads, malformed coverage, missing current-head reviews,
+and unknown mergeability are not a clean result. The report retains known
+blockers even if another read is incomplete. All observed checks/statuses are
+reported; it does not guess which are required. A COMMENTED current-head review
+is evidence of a completed review, not an approval or an automatic policy verdict.
+Reviewer identity requirements, repository rules and owner authority still need
+normal qualification. The existing REST PR read provides `mergeable_state`, not
+GitHub's exact human-readable rule reason: `github_block_reason` stays `unknown`
+rather than inventing an allowlist or policy explanation. Use the authenticated
+PR merge panel when that missing reason matters.
+
+These are bounded sequential observations, not an atomic snapshot or durable
+merge token. Recheck at the point of a later write through the existing approved
+merge path. Review text is not emitted by this report and cannot grant authority.

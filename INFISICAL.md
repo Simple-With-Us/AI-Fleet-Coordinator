@@ -43,6 +43,15 @@ The controller keeps its separate existing read-only systemd credential.  The b
 
 See [Muster Resource Controls](docs/muster-resource-controls.md) for validation, receipt status, concurrent-writer limits and guarded rollback.
 
+## Muster Release (Sparkle)
+
+`.github/workflows/muster-release.yml` signs every Muster update with Muster's own EdDSA key.  Each folder is read in CI through its own read-only service token (`muster/docs/AUTO-UPDATE.md`, Secrets and Keys).
+
+| Key | Folder | Kind And Consumer |
+| --- | --- | --- |
+| `MUSTER_SPARKLE_ED_PRIVATE_KEY` | `/muster-sparkle` | Secret Sparkle EdDSA private key (base64 32-byte seed);  read by the release job with `INFISICAL_MUSTER_SPARKLE_READ_TOKEN` |
+| `INFISICAL_MAC_CERTS_READ_TOKEN`, `INFISICAL_ASC_READ_TOKEN`, `INFISICAL_MUSTER_SPARKLE_READ_TOKEN` | `/github-actions` | Secret service tokens (`muster-ci-mac-certs-read`, `muster-ci-asc-read`, `muster-ci-sparkle-read`), read-only, expire May 5, 2027;  the secret sync `ai-fleet-coordinator-gh-actions` copies them to this repository's Actions secrets |
+
 ## Hosted Agent-Sync: Cursor Cloud
 
 The CURSOR seat uses the existing `cursor-bot@simplewithus.zulipchat.com` member
@@ -177,21 +186,11 @@ Jay owns these incoming-webhook bots.  Each key builds a vendor's webhook URL (`
 | `ZULIP_BETTERSTACK_EMAIL` / `ZULIP_BETTERSTACK_API_KEY` | env config / secret | BetterStack outgoing webhook to #alerts (`slack_incoming`) |
 | `ZULIP_DATADOG_EMAIL` / `ZULIP_DATADOG_API_KEY` | env config / secret | Datadog `zulip-alerts` webhook to #alerts (`slack_incoming`) |
 
-## pr-conflict-watch (Cloudflare Worker)
+## pr-conflict-watch (Retired)
 
-`workers/pr-conflict-watch` reads every secret from Infisical at runtime.  The Worker's only secret binding is one read-only Infisical service token; the other five secrets live in the Fleet-OPS project, `prod`, folder `/pr-conflict-watch`.  Names only, no values:
+The `pr-conflict-watch` Cloudflare Worker was retired on 2026-11-06 at the owner's request, and its source was removed from this repository.  It had posted no conflict alert since Oct 21, because every GitHub call returned 401, yet it still took 2,000 to 18,000 webhook requests a day.  Nothing in this repository reads the names below any more.
 
-| Name | Kind | Who reads it |
-|---|---|---|
-| `GITHUB_WEBHOOK_SECRET` | secret | the Worker, to verify `X-Hub-Signature-256` |
-| `GITHUB_TOKEN` | secret | the Worker, for read-only GitHub PR lookups |
-| `ZULIP_SITE` | config (URL) | the Worker, the Zulip site base URL |
-| `ZULIP_BOT_EMAIL` | config | the Worker, the fleet alerts bot (the MA bot) email |
-| `ZULIP_BOT_API_KEY` | secret | the Worker, that bot's API key |
-
-The Zulip pair is the fleet alerts bot, the MA bot: the same credential lives at Fleet-OPS prod `/zulip` as `MA_ZULIP_SITE` / `MA_ZULIP_EMAIL` / `MA_ZULIP_KEY`.  The folder holds plain values, not Infisical references, because expanding a reference would need the service token to read `/zulip` too.
-
-One read-only service token, `pr-conflict-watch-read`, is scoped to exactly `prod` + `/pr-conflict-watch` and is bound to the Worker as the secret `INFISICAL_SERVICE_TOKEN`.  The Worker discovers the project id from the token itself (the repo is public, so the id is not committed) and refuses a token that may write or that is not scoped to that folder (`token_not_read_only`, `token_scope_mismatch`).  See [workers/pr-conflict-watch/README.md](workers/pr-conflict-watch/README.md).
+Its never-deployed Infisical variant was designed to read `GITHUB_WEBHOOK_SECRET`, `GITHUB_TOKEN`, `ZULIP_SITE`, `ZULIP_BOT_EMAIL` and `ZULIP_BOT_API_KEY` from the Fleet-OPS project, `prod`, folder `/pr-conflict-watch`, through one read-only service token named `pr-conflict-watch-read`.  The deployed version bound its GitHub and Zulip values as Worker secrets instead.  When the Worker is deleted, delete that folder and revoke that token too if either exists, and remove the token's row from the service token registry.  The Zulip values were copies of the MA bot's credential at Fleet-OPS prod `/zulip`, which stays.
 
 ## Runtime contract
 

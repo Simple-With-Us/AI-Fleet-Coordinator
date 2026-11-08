@@ -254,6 +254,12 @@
     // never committed.  Until it is set, the fallback reads answer
     // not_configured and the rest works (fail closed).
     "INFISICAL_MODE": "fallback",
+    // How long an isolate keeps a successful Infisical read or folder listing (src/infisical.js,
+    // AFC-617).  Each refresh is about 5 subrequests and 8 ms of Worker CPU per isolate, so 60
+    // seconds put it on every active isolate every minute.  300 means a rotation reaches an
+    // isolate within 5 minutes;  remove the var to return to 60 seconds.  Failed listings and the
+    // mint-capable isolated reads stay at 60 seconds either way.
+    "INFISICAL_CACHE_TTL_S": "300",
     // Kill switch step 4:  "1" makes /mcp answer 503.
     "MCP_DISABLED": "0"
   }

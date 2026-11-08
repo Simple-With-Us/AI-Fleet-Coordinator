@@ -86,7 +86,13 @@ def install(source_directory):
     with contextlib.ExitStack() as stack:
         source = os.open(source_directory, DIRECTORY_FLAGS)
         stack.callback(os.close, source)
-        for name in ('fleet-ops-control.py', 'fleet-ops-control.json', 'fleet_resource_control.py'):
+        for name in (
+            'fleet-ops-control.py',
+            'fleet-ops-control.json',
+            'fleet_resource_control.py',
+            'fleet_seat_inventory.py',
+            'reduced_status.py',
+        ):
             payload[name] = read_source(source, name)
         config = json.loads(payload['fleet-ops-control.json'])
         if not isinstance(config, dict) or config.get('schemaVersion') != 1:

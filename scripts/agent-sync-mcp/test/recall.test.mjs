@@ -139,7 +139,7 @@ test("the hosted list is the ten original Zulip tools, then recall, then the Lin
   const full = TOOLS.tools.slice(12).map((t) => t.name);  // after whoami, identities, guide and the original nine (AFC-331)
   assert.deepEqual(
     HOSTED_TOOL_LIST.map((t) => t.name),
-    ["whoami", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "recall_correct", "recall_retract", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name), ...FLEETLINK_TOOLS.map((t) => t.name), ...full, "eavesdropper_status", "eavesdropper_inbox", "eavesdropper_owner_queue", "eavesdropper_wakes", "eavesdropper_held_back", ...NOTES_TOOLS.map((t) => t.name), "whatsapp_read", "whatsapp_reply", "whatsapp_send_status", ...GR_TOOLS.map((t) => t.name), ...TYPED_V1_TOOLS.map((t) => t.name), ...WF_V1_TOOLS.map((t) => t.name)],
+    ["whoami", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "recall_correct", "recall_retract", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name), ...FLEETLINK_TOOLS.map((t) => t.name), ...full, "eavesdropper_status", "eavesdropper_inbox", "operator_inbox_pending", "eavesdropper_owner_queue", "eavesdropper_wakes", "eavesdropper_held_back", ...NOTES_TOOLS.map((t) => t.name), "whatsapp_read", "whatsapp_reply", "whatsapp_send_status", ...GR_TOOLS.map((t) => t.name), ...TYPED_V1_TOOLS.map((t) => t.name), ...WF_V1_TOOLS.map((t) => t.name)],
   );
   // tools.json, the stdio contract, is untouched:  the Linear tools are hosted-only,
   // the way recall and dm are, because the Python stdio server cannot run them.
@@ -588,17 +588,17 @@ test("paused seats get paused from recall too", async () => {
   assert.equal(upstream.requests.length, 0);
 });
 
-test("audit:  one row per call, no query text, contribute keeps only its length and idem ref", async () => {
+test("audit:  a row per write and per error (a successful read writes none), no query text, contribute keeps only its length and idem ref", async () => {
   const { tools, gate, logs } = harness();
   await tools.call("recall_search", { query: "very private question" });
   await tools.call("recall_contribute", { text: LESSON, category: "lesson" });
   await tools.call("recall_search", { query: "y", limit: 99 });
   const rows = (await gate.callTail(10)).reverse();
-  assert.deepEqual(rows.map((r) => [r.tool, r.outcome]), [["recall_search", "ok"], ["recall_contribute", "ok"], ["recall_search", "error"]]);
-  assert.equal(rows[2].error_code, "invalid_argument");
-  assert.equal(rows[1].body_len, [...LESSON].length);
-  assert.match(rows[1].idem_ref, /^[0-9a-f]{12}$/);
-  assert.equal(rows[1].seat, "GROK-WEB");
+  assert.deepEqual(rows.map((r) => [r.tool, r.outcome]), [["recall_contribute", "ok"], ["recall_search", "error"]]);
+  assert.equal(rows[1].error_code, "invalid_argument");
+  assert.equal(rows[0].body_len, [...LESSON].length);
+  assert.match(rows[0].idem_ref, /^[0-9a-f]{12}$/);
+  assert.equal(rows[0].seat, "GROK-WEB");
   const everything = JSON.stringify(rows) + logs.join("\n");
   assert.ok(!everything.includes("very private question"));
   assert.ok(!everything.includes("Grok on the web caches"));

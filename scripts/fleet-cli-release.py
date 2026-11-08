@@ -23,7 +23,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024
-# The reviewed allowlisted runtime contains 153 files.  Keep the exact minimum
+# The reviewed allowlisted runtime contains 154 files.  Keep the exact minimum
 # ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
@@ -39,7 +39,11 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # (the operator-registry CLI, the platform-letter registry side) use to reach that API.
 # The 153rd is agent_sync/operator_sheets_google.mjs, the Google Sheets operator adapter shipped beside the
 # AFC-412 PR2 exporter as a data file (AFC-412 PR3, this PR).
-MAX_FILES = 153
+# The 154th is agent_sync/operator_sheets_drain.mjs, the OPS-1037 production drain runner shipped beside the
+# exporter it calls (its systemd units stay repo-only under agent_sync/server/).
+# The 155th is agent_sync/muster_service.py (AFC-654), the read-only Operator service `simple-chat`
+# dispatches for Muster's Seats panel.
+MAX_FILES = 155
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,
@@ -117,6 +121,8 @@ EXACT = frozenset(
         # AFC-412 PR2:  the operator registry outbox exporter, shipped as a data file beside the Python modules.
         "scripts/agent_sync/operator_sheets_export.mjs",
         "scripts/agent_sync/operator_sheets_google.mjs",
+        # OPS-1037:  the production drain runner, shipped beside the exporter and adapter it wires.
+        "scripts/agent_sync/operator_sheets_drain.mjs",
         # AFC-564:  the OpenCode letter plugin, a data file beside the Python modules (OpenCode loads it from the path
         # `platform-letter install --platform opencode` writes).  Its node test lives under tests/ and is not shipped.
         "scripts/agent_sync/opencode_letter_plugin/index.js",
@@ -469,9 +475,16 @@ HELPER_COMMANDS = {
     "scripts/simple-chat": "simple-chat",
     "scripts/simple-board": "simple-board",
     "scripts/recall": "recall",
-    # NOT scripts/simple-git:  each Git CLI user supplies their OWN bearer (env or the hidden prompt)
-    # and the server decides identity and permissions from it, so its wrapper never reads or runs the
-    # host seat helper on any path.  The helper stays wired for the commands above.
+    # simple-git: a process that DECLARES a seat (AGENT_SEAT, AGENT_TAG or the launcher seat) gets that
+    # seat's OWN bearer from the host helper, the same as the commands above.  A process that declares
+    # no seat gets nothing from the helper and supplies its own bearer (env or the hidden prompt), and
+    # the server still decides identity and permissions from the bearer it receives.  The helper refuses
+    # an inherited bearer that is not the declared seat's own, and conflicting declarations, and the
+    # implementation then checks the declared seat against the seat the server reports.  The helper
+    # must carry the simple-git entry (scripts/git-tools/testdata/seat-remote-defaults.capture.py);  a
+    # helper without it refuses the command, so a host whose helper is older keeps its existing plain
+    # wrapper until the helper is updated and the wrapper is installed again.
+    "scripts/simple-git": "simple-git",
 }
 HELPER_PATH = ".config/fleet-cli/seat-remote-defaults.py"
 

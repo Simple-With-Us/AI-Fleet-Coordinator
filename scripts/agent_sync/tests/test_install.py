@@ -60,7 +60,7 @@ class InstallTests(unittest.TestCase):
         self.assertNotIn('DEFAULT_CHECKOUT="/Users/jay/Code', text)
 
     def test_the_runtime_sync_script_is_executable_and_parses(self) -> None:
-        script = Path(__file__).resolve().parents[2] / "agent-sync-runtime-sync.sh"
+        script = Path(__file__).resolve().parents[2] / "simple-tools-runtime-sync.sh"
         self.assertTrue(os.access(script, os.X_OK))
         result = subprocess.run(
             ["bash", "-n", str(script)], capture_output=True, text=True, timeout=30

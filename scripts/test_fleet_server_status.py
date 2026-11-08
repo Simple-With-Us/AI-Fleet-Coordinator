@@ -13,7 +13,9 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import stat
+import subprocess
 import tempfile
 import time
 import types
@@ -2708,6 +2710,35 @@ class StrongerWriteTests(unittest.TestCase):
                 collector.write_report(link / "report.json", {})
             self.assertEqual(list(real.iterdir()), [])
 
+    def test_a_folder_swapped_for_a_link_after_the_check_is_refused(self):
+        # Kody, PR 1477:  the folder is opened with O_NOFOLLOW and used through that descriptor,
+        # so passing the early check is not enough to write through a link.
+        with tempfile.TemporaryDirectory() as tmp:
+            real = Path(tmp) / "real"
+            real.mkdir()
+            link = Path(tmp) / "link"
+            link.symlink_to(real)
+            with mock.patch.object(collector.Path, "is_symlink", return_value=False):
+                with self.assertRaises(OSError):
+                    collector.write_report(link / "report.json", {})
+            self.assertEqual(list(real.iterdir()), [])
+
+    def test_the_folder_is_fsynced_after_the_rename(self):
+        # BACKEND-36:  the rename only survives a power cut once the folder itself is synced.
+        synced = []
+        real_fsync = os.fsync
+
+        def record(fd):
+            synced.append(os.fstat(fd).st_ino)
+            return real_fsync(fd)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "state" / "server-status.json"
+            with mock.patch.object(collector.os, "fsync", side_effect=record):
+                collector.write_report(target, {"schemaVersion": 1})
+            self.assertIn(target.parent.stat().st_ino, synced)
+            self.assertIn(target.stat().st_ino, synced)
+
 
 class WholeRunTests(unittest.TestCase):
     """Whole runs of `main`, each reading the report the one before it wrote."""
@@ -3058,6 +3089,511 @@ class FixtureScriptTests(unittest.TestCase):
                 self.assertEqual(self.module().main([str(source), str(target)]), 1)
             self.assertIn("newSection", errors.getvalue())
             self.assertFalse(target.exists())
+
+
+def git(repo, *arguments):
+    """Run git in a test checkout,  away from this machine's own git settings."""
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    environment.update({"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"})
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "init.defaultBranch=main",
+            *arguments,
+        ],
+        check=True,
+        capture_output=True,
+        env=environment,
+    )
+
+
+@unittest.skipUnless(shutil.which("git"), "git is not installed")
+class IntentTests(unittest.TestCase):
+    """Each file is compared with its checkout's own `origin/main`,  and never guessed clean."""
+
+    def checkout(self, root):
+        repo = root / "Example"
+        repo.mkdir(parents=True)
+        git(repo, "init", "-q")
+        (repo / "AGENTS.md").write_text("one\n")
+        (repo / "CLAUDE.md").write_text("same\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "one")
+        git(repo, "update-ref", collector.INTENT_REF, "HEAD")
+        return repo
+
+    def intents(self, root, git_command=None):
+        rows, _total = collector.collect_files(root, {}, git=git_command)
+        return {Path(row["path"]).name: (row["intent"], row.get("intentReason")) for row in rows}
+
+    def test_a_file_that_matches_origin_main_is_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Code"
+            self.checkout(root)
+            self.assertEqual(
+                self.intents(root),
+                {"AGENTS.md": ("clean", None), "CLAUDE.md": ("clean", None)},
+            )
+
+    def test_an_uncommitted_edit_and_an_untracked_file_are_local_edits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Code"
+            repo = self.checkout(root)
+            (repo / "AGENTS.md").write_text("edited here\n")
+            (repo / "INFISICAL.md").write_text("only here\n")
+            intents = self.intents(root)
+            self.assertEqual(intents["AGENTS.md"], ("localEdit", None))
+            self.assertEqual(intents["INFISICAL.md"], ("localEdit", None))
+            self.assertEqual(intents["CLAUDE.md"], ("clean", None))
+
+    def test_a_local_commit_that_is_not_on_main_is_a_local_edit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Code"
+            repo = self.checkout(root)
+            (repo / "AGENTS.md").write_text("committed here only\n")
+            git(repo, "commit", "-q", "-am", "local")
+            self.assertEqual(self.intents(root)["AGENTS.md"], ("localEdit", None))
+
+    def test_a_checkout_that_has_not_caught_up_is_behind(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Code"
+            repo = self.checkout(root)
+            (repo / "AGENTS.md").write_text("two\n")
+            git(repo, "commit", "-q", "-am", "two")
+            git(repo, "update-ref", collector.INTENT_REF, "HEAD")
+            git(repo, "reset", "-q", "--hard", "HEAD~1")
+            intents = self.intents(root)
+            self.assertEqual(intents["AGENTS.md"], ("behind", None))
+            self.assertEqual(intents["CLAUDE.md"], ("clean", None))
+
+    def test_no_origin_main_is_unknown_and_never_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Code"
+            repo = self.checkout(root)
+            git(repo, "update-ref", "-d", collector.INTENT_REF)
+            self.assertEqual(
+                self.intents(root),
+                {
+                    "AGENTS.md": ("unknown", "no_origin_main"),
+                    "CLAUDE.md": ("unknown", "no_origin_main"),
+                },
+            )
+
+    def test_a_folder_that_is_not_a_checkout_is_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Code"
+            (root / "Plain").mkdir(parents=True)
+            (root / "Plain" / "AGENTS.md").write_text("x\n")
+            self.assertEqual(self.intents(root), {"AGENTS.md": ("unknown", "not_a_checkout")})
+
+    def test_git_that_cannot_answer_is_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Code"
+            self.checkout(root)
+            intents = self.intents(root, git_command=lambda repo, arguments, timeout=10: None)
+            self.assertEqual(set(intents.values()), {("unknown", "git_failed")})
+
+    def test_a_spent_budget_is_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Code"
+            repo = self.checkout(root)
+            contents = {str(repo / "AGENTS.md"): collector.blob_ids(b"one\n")}
+            intents = collector.file_intents(root, contents, budget=-1)
+            self.assertEqual(list(intents.values()), [("unknown", "git_budget")])
+
+    def test_git_is_only_asked_read_only_questions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Code"
+            repo = self.checkout(root)
+            (repo / "AGENTS.md").write_text("two\n")
+            git(repo, "commit", "-q", "-am", "two")
+            git(repo, "update-ref", collector.INTENT_REF, "HEAD")
+            git(repo, "reset", "-q", "--hard", "HEAD~1")
+            asked = []
+
+            def recording(repo, arguments, timeout=10):
+                asked.append(arguments[0])
+                return collector.git_output(repo, arguments, timeout)
+
+            self.intents(root, git_command=recording)
+            self.assertLessEqual(set(asked), {"rev-parse", "ls-tree", "merge-base"})
+
+
+class ChangedAtTests(unittest.TestCase):
+    """`changedAt` is when the content last changed,  carried across reports."""
+
+    def rows(self, root, previous, now):
+        rows, _total = collector.collect_files(root, previous, now=now)
+        return {row["path"]: row for row in rows}
+
+    def test_it_is_kept_across_runs_and_moves_only_when_the_content_does(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Code"
+            repo = root / "Example"
+            repo.mkdir(parents=True)
+            path = repo / "AGENTS.md"
+            path.write_text("one\n")
+            os.utime(path, (NOW - DAY, NOW - DAY))
+            first = self.rows(root, {}, NOW)
+            self.assertEqual(first[str(path)]["changedAt"], collector.iso_from_timestamp(NOW - DAY))
+
+            # Touched,  and the content is the same:  it does not move.
+            os.utime(path, (NOW - 60, NOW - 60))
+            second = self.rows(root, first, NOW + 900)
+            self.assertEqual(second[str(path)]["changedAt"], first[str(path)]["changedAt"])
+            self.assertEqual(
+                second[str(path)]["modifiedAt"], collector.iso_from_timestamp(NOW - 60)
+            )
+
+            # The content changes:  it moves to when the new content was written.
+            path.write_text("two\n")
+            os.utime(path, (NOW + 1000, NOW + 1000))
+            third = self.rows(root, second, NOW + 1800)
+            self.assertEqual(
+                third[str(path)]["changedAt"], collector.iso_from_timestamp(NOW + 1000)
+            )
+            fourth = self.rows(root, third, NOW + 2700)
+            self.assertEqual(fourth[str(path)]["changedAt"], third[str(path)]["changedAt"])
+
+    def test_a_time_from_the_future_is_never_later_than_now(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Code"
+            repo = root / "Example"
+            repo.mkdir(parents=True)
+            path = repo / "AGENTS.md"
+            path.write_text("one\n")
+            os.utime(path, (NOW + DAY, NOW + DAY))
+            rows = self.rows(root, {}, NOW)
+            self.assertEqual(rows[str(path)]["changedAt"], collector.iso_from_timestamp(NOW))
+
+    def test_an_older_report_without_it_starts_from_the_modification_time(self):
+        before = {"sha256": "aaaa", "drift": "unchanged"}
+        self.assertEqual(
+            collector.changed_at(before, "aaaa", NOW - 5, NOW),
+            collector.iso_from_timestamp(NOW - 5),
+        )
+
+
+def unit_file_block(unit, load="loaded", fragment="", drop_ins="", triggers=""):
+    return "\n".join(
+        [
+            "Id=" + unit,
+            "LoadState=" + load,
+            "FragmentPath=" + fragment,
+            "DropInPaths=" + drop_ins,
+            "Triggers=" + triggers,
+        ]
+    )
+
+
+class HostConfigTests(unittest.TestCase):
+    """The host's own config surface,  by digest and never by content."""
+
+    SECRET = "CONTENT-THAT-MUST-NOT-LEAK"
+
+    def layout(self, tmp):
+        tmp = Path(tmp)
+        source = tmp / "source"
+        (source / "scripts" / "systemd").mkdir(parents=True)
+        timer_text = "[Timer]\nOnCalendar=daily\n"
+        (source / "scripts" / "systemd" / "example.timer").write_text(timer_text)
+        (source / "scripts" / "fleet_resource_control.py").write_text("print('%s')\n" % self.SECRET)
+        (source / "scripts" / "fleet-ops-control.json").write_text('{"schemaVersion": 1}\n')
+        etc = tmp / "etc"
+        (etc / "example.timer.d").mkdir(parents=True)
+        (etc / "example.timer").write_text(timer_text)
+        (etc / "example.timer.d" / "override.conf").write_text("Environment=X=%s\n" % self.SECRET)
+        broker = tmp / "broker"
+        (broker / "fleet_secrets").mkdir(parents=True)
+        (broker / "fleet_secrets" / "core.py").write_text(self.SECRET)
+        (broker / "fleet_resource_control.py").write_text("print('%s')\n" % self.SECRET)
+        (broker / "fleet-ops-control.json").write_text('{"word": "%s"}\n' % self.SECRET)
+        control = source / "scripts" / "fleet-ops-control.json"
+        control.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "server": {"watch": [{"unit": "gone.service", "scope": "system"}]},
+                }
+            )
+        )
+        return source, etc, broker, control
+
+    def systemd(self, etc):
+        asked = []
+
+        def answer(command, timeout=30):
+            asked.append(command)
+            if "show" not in command:
+                return None
+            names = [part for part in command[1:] if not part.startswith("-") and part != "show"]
+            blocks = []
+            for name in names:
+                if "--user" in command or name == "gone.service":
+                    blocks.append(unit_file_block(name, load="not-found"))
+                elif name == "example.timer":
+                    blocks.append(
+                        unit_file_block(
+                            name,
+                            fragment=str(etc / "example.timer"),
+                            drop_ins=str(etc / "example.timer.d" / "override.conf"),
+                            triggers="example.service",
+                        )
+                    )
+                elif name == "example.service":
+                    blocks.append(unit_file_block(name, fragment=str(etc / "example.service")))
+                else:
+                    blocks.append(unit_file_block(name, load="not-found"))
+            return "\n\n".join(blocks) + "\n"
+
+        return answer, asked
+
+    def collect(self, tmp, previous=None, now=NOW, platform="linux"):
+        source, etc, broker, control = self.layout(tmp) if previous is None else self.paths(tmp)
+        answer, _asked = self.systemd(etc)
+        return collector.collect_host_config(
+            control,
+            previous or {},
+            answer,
+            source_root=source,
+            broker_dir=broker,
+            now=now,
+            platform=platform,
+        )
+
+    def paths(self, tmp):
+        tmp = Path(tmp)
+        source = tmp / "source"
+        return source, tmp / "etc", tmp / "broker", source / "scripts" / "fleet-ops-control.json"
+
+    def test_a_unit_file_that_resolves_into_a_credential_path_is_never_hashed(self):
+        # Kody, PR 1487:  the path systemd names looks harmless, but its target does not.
+        with tempfile.TemporaryDirectory() as tmp:
+            source, etc, broker, control = self.layout(tmp)
+            hidden = Path(tmp) / "vault" / "secrets"
+            hidden.mkdir(parents=True)
+            (hidden / "example.service").write_text("[Service]\nEnvironment=K=%s\n" % self.SECRET)
+            (etc / "example.service").symlink_to(hidden / "example.service")
+            answer, _asked = self.systemd(etc)
+            rows = collector.collect_host_config(
+                control,
+                {},
+                answer,
+                source_root=source,
+                broker_dir=broker,
+                now=NOW,
+                platform="linux",
+            )
+            self.assertNotIn(str(etc / "example.service"), {row["path"] for row in rows})
+            self.assertIn(str(etc / "example.timer"), {row["path"] for row in rows})
+            self.assertNotIn("vault", json.dumps(rows))
+
+    def test_one_pass_digests_match_the_bounded_read(self):
+        # Kody, PR 1487:  each watched file is hashed once, streamed, with the same answers.
+        with tempfile.TemporaryDirectory() as tmp:
+            for size in (0, 5, 65536, 65536 * 3 + 7):
+                path = Path(tmp) / ("f%d" % size)
+                path.write_bytes(bytes(range(256)) * (size // 256) + b"x" * (size % 256))
+                data = collector.read_bounded(path)
+                self.assertEqual(
+                    collector.file_digests(path),
+                    (collector.short_digest(data), collector.blob_ids(data)),
+                )
+            link = Path(tmp) / "link"
+            link.symlink_to(Path(tmp) / "f5")
+            self.assertIsNone(collector.file_digests(link))
+            self.assertIsNone(collector.file_digests(Path(tmp)))
+            big = Path(tmp) / "big"
+            big.write_bytes(b"x" * 11)
+            self.assertIsNone(collector.file_digests(big, limit=10))
+
+    def test_digests_are_reported_and_contents_never_are(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = self.collect(tmp)
+            text = json.dumps(rows)
+            self.assertNotIn(self.SECRET, text)
+            self.assertNotIn("OnCalendar", text)
+            self.assertNotIn("fleet_secrets", text)
+            etc = Path(tmp) / "etc"
+            by_path = {row["path"]: row for row in rows}
+
+            timer = by_path[str(etc / "example.timer")]
+            self.assertEqual(
+                (timer["kind"], timer["unit"], timer["scope"], timer["state"]),
+                ("unit", "example.timer", "system", "present"),
+            )
+            self.assertEqual(timer["sha256"], collector.digest_of(etc / "example.timer"))
+            self.assertEqual(timer["source"], "scripts/systemd/example.timer")
+            self.assertIs(timer["matchesSource"], True)
+
+            drop_in = by_path[str(etc / "example.timer.d" / "override.conf")]
+            self.assertEqual((drop_in["kind"], drop_in["state"]), ("dropIn", "present"))
+            self.assertRegex(drop_in["sha256"], r"\A[0-9a-f]{16}\Z")
+            self.assertNotIn("source", drop_in)
+
+            # The service the timer starts is looked up too,  and its file is not there.
+            self.assertEqual(by_path[str(etc / "example.service")]["state"], "missing")
+            self.assertFalse(any(row.get("unit") == "gone.service" for row in rows))
+
+            broker = Path(tmp) / "broker"
+            allowlist = by_path[str(broker / "fleet-ops-control.json")]
+            self.assertEqual(allowlist["kind"], "allowlist")
+            self.assertIs(allowlist["matchesSource"], False)
+            code = by_path[str(broker / "fleet_resource_control.py")]
+            self.assertEqual((code["kind"], code["state"]), ("broker", "present"))
+            self.assertIs(code["matchesSource"], True)
+            self.assertEqual(by_path[str(broker / "fleet-ops-control.py")]["state"], "missing")
+
+    def test_changed_at_is_sticky_for_host_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = self.collect(tmp)
+            installed = Path(tmp) / "etc" / "example.timer"
+            previous = {row["path"]: row for row in first}
+            os.utime(installed, (NOW + 60, NOW + 60))
+            second = self.collect(tmp, previous=previous, now=NOW + 900)
+            again = {row["path"]: row for row in second}
+            self.assertEqual(
+                again[str(installed)]["changedAt"], previous[str(installed)]["changedAt"]
+            )
+            installed.write_text("[Timer]\nOnCalendar=weekly\n")
+            os.utime(installed, (NOW + 1000, NOW + 1000))
+            third = {row["path"]: row for row in self.collect(tmp, previous=again, now=NOW + 1800)}
+            self.assertEqual(
+                third[str(installed)]["changedAt"], collector.iso_from_timestamp(NOW + 1000)
+            )
+            self.assertIs(third[str(installed)]["matchesSource"], False)
+
+    def test_a_broker_that_is_not_installed_is_one_absent_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = collector.broker_rows(Path(tmp) / "nothing", {}, NOW)
+            self.assertEqual(
+                rows, [{"kind": "broker", "path": str(Path(tmp) / "nothing"), "state": "absent"}]
+            )
+
+    def test_a_mac_has_no_broker_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = self.collect(tmp, platform="darwin")
+            self.assertFalse(any(row["kind"] in ("broker", "allowlist") for row in rows))
+
+    def test_a_separate_allowlist_is_compared_with_the_repo_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, etc, broker, _control = self.layout(tmp)
+            other = Path(tmp) / "installed-control.json"
+            other.write_text('{"schemaVersion": 1}\n')
+            answer, _asked = self.systemd(etc)
+            rows = collector.collect_host_config(
+                other, {}, answer, source_root=source, broker_dir=broker, now=NOW, platform="linux"
+            )
+            row = [row for row in rows if row["path"] == str(other)][0]
+            self.assertEqual(row["kind"], "allowlist")
+            self.assertEqual(row["source"], "scripts/fleet-ops-control.json")
+            self.assertIn("matchesSource", row)
+
+    def test_the_whole_run_carries_both_times_from_report_to_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code = root / "Code"
+            (code / "Kept").mkdir(parents=True)
+            (code / "Kept" / "AGENTS.md").write_text("x\n")
+            os.utime(code / "Kept" / "AGENTS.md", (NOW, NOW))
+            control = root / "control.json"
+            control.write_text(json.dumps({"schemaVersion": 1, "server": {}}))
+            broker = root / "broker"
+            broker.mkdir()
+            (broker / "fleet_resource_control.py").write_text("x = 1\n")
+            target = root / "state" / "server-status.json"
+            argv = [
+                "--output",
+                str(target),
+                "--code-root",
+                str(code),
+                "--control",
+                str(control),
+                "--broker-dir",
+                str(broker),
+                "--process-limit",
+                "1",
+                "--cpu-interval",
+                "0",
+            ]
+
+            def run_once():
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(collector.main(argv, run_command=FakeDocker()), 0)
+                return json.loads(target.read_text())
+
+            with mock.patch.object(collector.sys, "platform", "linux"):
+                first = run_once()
+                os.utime(code / "Kept" / "AGENTS.md", (NOW + 60, NOW + 60))
+                os.utime(broker / "fleet_resource_control.py", (NOW + 60, NOW + 60))
+                second = run_once()
+            self.assertEqual(first["files"][0]["intent"], "unknown")
+            self.assertEqual(first["files"][0]["changedAt"], second["files"][0]["changedAt"])
+            self.assertEqual(first["files"][0]["drift"], "new")
+            self.assertEqual(second["files"][0]["drift"], "unchanged")
+            path = str(broker / "fleet_resource_control.py")
+            before = [row for row in first["hostConfig"] if row["path"] == path][0]
+            after = [row for row in second["hostConfig"] if row["path"] == path][0]
+            self.assertEqual(before["changedAt"], after["changedAt"])
+            self.assertNotEqual(before["modifiedAt"], after["modifiedAt"])
+
+
+class FixtureNewFieldTests(unittest.TestCase):
+    """The fixture script knows the new fields,  and scrubs the names in `hostConfig`."""
+
+    def test_new_fields_pass_and_host_names_are_replaced(self):
+        spec = importlib.util.spec_from_file_location(
+            "make_server_status_fixture", HERE / "make-server-status-fixture.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        report = {
+            "schemaVersion": 1,
+            "tool": "fleet-server-status",
+            "host": "secret-host",
+            "coolify": [],
+            "processes": [],
+            "files": [
+                {
+                    "path": "/secret/Code/SecretRepo/AGENTS.md",
+                    "sha256": "secretdigest",
+                    "drift": "unchanged",
+                    "changedAt": "2026-11-04T19:26:46Z",
+                    "intent": "unknown",
+                    "intentReason": "no_origin_main",
+                }
+            ],
+            "hostConfig": [
+                {
+                    "kind": "unit",
+                    "path": "/home/secret/.config/systemd/user/secret.timer",
+                    "unit": "secret.timer",
+                    "scope": "user",
+                    "state": "present",
+                    "sha256": "secretdigest",
+                    "changedAt": "2026-11-04T19:26:46Z",
+                    "source": "scripts/systemd/secret.timer",
+                    "matchesSource": True,
+                }
+            ],
+        }
+        module.validate_report(report)
+        result = module.sanitize_report(report)
+        self.assertNotIn("secret", json.dumps(result).lower())
+        row = result["hostConfig"][0]
+        self.assertTrue(row["path"].endswith(".timer"))
+        self.assertTrue(row["unit"].endswith(".timer"))
+        self.assertIs(row["matchesSource"], True)
+        self.assertEqual(result["files"][0]["intentReason"], "no_origin_main")
 
 
 if __name__ == "__main__":

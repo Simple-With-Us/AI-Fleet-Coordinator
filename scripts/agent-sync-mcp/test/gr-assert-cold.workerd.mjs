@@ -166,10 +166,10 @@ try {
   await mf.dispose();
 }
 
-// The Git bearer verify cache through the real route.  The default, with
-// GATE_IDENTITY_CACHE_MS at its compiled hour, verifies live;  only
-// GR_VERIFY_CACHE_MS turns the window on, even with the identity cache off.
-for (const [overrides, cached] of [[{}, false], [{ GR_VERIFY_CACHE_MS: "60000", GATE_IDENTITY_CACHE_MS: "0" }, true]]) {
+// The Git bearer verify cache through the real route.  The default holds a
+// positive answer for its compiled hour (owner 2026-11-06), even with the
+// identity cache off;  only GR_VERIFY_CACHE_MS=0 makes every call verify live.
+for (const [overrides, cached] of [[{}, true], [{ GATE_IDENTITY_CACHE_MS: "0" }, true], [{ GR_VERIFY_CACHE_MS: "0" }, false]]) {
   mf = start(overrides);
   try {
     const hash = await sha256HexText("fixture-bearer");
@@ -190,9 +190,9 @@ for (const [overrides, cached] of [[{}, false], [{ GR_VERIFY_CACHE_MS: "60000", 
     await gate.setPaused({ paused: true, by: "fixture" });
     const paused = await verify();
     if (cached) assert.equal(paused.ok, true, "the window holds the positive answer");
-    else assert.deepEqual(paused, { ok: false, reason: "paused" }, "off by default:  a pause bites on the next call");
+    else assert.deepEqual(paused, { ok: false, reason: "paused" }, "with the window at 0 a pause bites on the next call");
   } finally {
     await mf.dispose();
   }
 }
-console.log("Git bearer verify: live by default, cached only by GR_VERIFY_CACHE_MS.");
+console.log("Git bearer verify: cached for the hour by default, live only with GR_VERIFY_CACHE_MS=0.");

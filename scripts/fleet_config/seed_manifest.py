@@ -715,6 +715,20 @@ def _permissions_mode_rule(seat: str, platform: str, target: str) -> dict[str, o
 # --------------------------------------------------------------------------- the seats
 
 
+def _file_guard_hook(platform: str, hook_id: str, timeout: int) -> tuple[str, int]:
+    """The (hook id, timeout) the file-guard rule of a platform expects.
+
+    Most platforms police files, if at all, with the same hook as the shell.  Claude Code has a file
+    guard of its own, in its own PreToolUse group of the same settings file (the installer's
+    CLAUDE_FILE_HOOK_NAME, matcher CLAUDE_FILE_MATCHER), so its file rule names that hook and its
+    timeout, read from the installer.
+    """
+    if platform == "claude":
+        install_tools = _install_tools()
+        return install_tools.CLAUDE_FILE_HOOK_NAME, install_tools.CLAUDE_FILE_HOOK_TIMEOUT_S
+    return hook_id, timeout
+
+
 def _hook_target(platform: str) -> tuple[str, str, int, str]:
     """The (target, event, timeout, hook id) of a platform's guard hook.
 
@@ -886,7 +900,8 @@ def _harness_seat(
                 "and the timeout is the one the installer writes.",
             )
         )
-        rules.append(_file_guard_rule(seat, platform, target, event, [hook_id], timeout))
+        file_hook, file_timeout = _file_guard_hook(platform, hook_id, timeout)
+        rules.append(_file_guard_rule(seat, platform, target, event, [file_hook], file_timeout))
     else:
         rules.append(_no_hooks_rule(seat, platform, hook_absent_target, hook_absent_description))
     if skip_mcp_reason is None:
@@ -1122,8 +1137,8 @@ def _build_seats() -> dict[str, dict[str, object]]:
     )
     seats["GROK-BOT"] = _hosted_seat(
         "GROK-BOT",
-        "The Grok Bot personas run as Cursor cloud agents",
-        "Grok Bot has no Zulip credential of its own:  its GB-<ROLE> personas are "
+        "Grok Bot runs as Cursor cloud agents",
+        "Grok Bot has no Zulip credential of its own:  its GB-<ROLE> bots are "
         "owner-managed and hold no zuliprc.",
     )
     seats["ECHO"] = _hosted_seat(

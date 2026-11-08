@@ -247,3 +247,28 @@ test("cachedGrantExists:  one listing per window, no negative caching, and an ad
   await offCheck();
   assert.equal(offListings, 2, "GATE_IDENTITY_CACHE_MS=0 turns it off");
 });
+
+test("cachedGrantExists:  an hour window that never outlives the grant's own expiry", async () => {
+  let now = 10_000_000;
+  const cache = new IdentityCache({ now: () => now });
+  let listings = 0;
+  let expiresAt;
+  const check = () => cachedGrantExists(cache, { seat: "CODEX", grantRef: "g", ttlMs: 3_600_000, lookup: async () => { listings += 1; return { expiresAt }; } });
+  // A grant ten minutes from expiry (seconds):  cached for ten minutes, not the hour.
+  expiresAt = Math.floor(now / 1000) + 600;
+  assert.equal(await check(), true);
+  assert.equal(cache.get("grant:CODEX:g").expiresAt - now, 600_000);
+  now += 600_000;
+  assert.equal(await check(), true);
+  assert.equal(listings, 2, "past the grant's expiry the entry is gone and the listing runs again");
+  // A grant with no expiry gets the full hour.
+  cache.evictSeat("CODEX");
+  expiresAt = undefined;
+  await check();
+  assert.equal(cache.get("grant:CODEX:g").expiresAt - now, 3_600_000);
+  // An already-expired grant answers true from the listing but is not stored.
+  cache.evictSeat("CODEX");
+  expiresAt = Math.floor(now / 1000) - 1;
+  await check();
+  assert.equal(cache.get("grant:CODEX:g"), null);
+});

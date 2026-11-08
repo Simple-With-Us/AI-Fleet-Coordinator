@@ -52,7 +52,7 @@ The older rollout docs say `jays-services`.  That slug returns 404 now.  Use `si
 ### Other services
 
 - **Pushover and Twilio** page the owner directly from host scripts, CT, ST and UM.  With PagerDuty and email that is four paging channels.
-- **Code still posting to Slack:** `workers/pr-conflict-watch` (AFC), UM `ALERT_SLACK_WEBHOOK_URL`, Mac `cloud-runner-director --notify` and `provider-knob-sync`, CT/UM/CTS `scripts/codex-coordination.sh`, Autorotate `_ref/slack-sync.sh`.
+- **Code still posting to Slack:** `workers/pr-conflict-watch` (AFC, retired on 2026-11-06), UM `ALERT_SLACK_WEBHOOK_URL`, Mac `cloud-runner-director --notify` and `provider-knob-sync`, CT/UM/CTS `scripts/codex-coordination.sh`, Autorotate `_ref/slack-sync.sh`.
 - **`fleet-sentry-monitor` is not running** (no pm2 job, no process-list row) and its endpoint list is stale.  `botfleet-mcp` is in a pm2 crash loop (1,744 restarts) that nothing reports.
 - **No alert wiring found** for Cloudflare, Vercel, Backblaze, Infisical, Coolify, Turso, Stripe, Resend, PostHog.
 - **AI-agent path:** the only automated signal-to-agent route is BotFleet's webhook ingress.  Its hostname routing is unverified: `agents.jays.services` is documented as seat-mcp on `:8793`, while `botfleet-wake.jays.services` forwards to the ingress on `:8800`.
@@ -135,7 +135,7 @@ Rules the shape depends on:
 
 ### Code clean-up (parallel, any seat)
 
-- Move `workers/pr-conflict-watch` from Slack to Zulip.
+- Move `workers/pr-conflict-watch` from Slack to Zulip.  (Retired on 2026-11-06 instead, at the owner's request: it had posted no alert since Oct 21, and its source was removed.)
 - Remove UM `ALERT_SLACK_WEBHOOK_URL` delivery and the Slack and UptimeRobot platform probes (UM-1327).
 - Move `cloud-runner-director --notify` and `provider-knob-sync` to `simple-chat post`.
 - Delete the stale `codex-coordination.sh` and `slack-sync.sh` copies (ST is ST-4531).

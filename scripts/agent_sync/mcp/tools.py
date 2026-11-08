@@ -157,6 +157,7 @@ READ_TOOLS = (
             "zulip_drafts_list",
             "eavesdropper_status",
             "eavesdropper_inbox",
+            "operator_inbox_pending",
             "eavesdropper_owner_queue",
             "eavesdropper_wakes",
             "eavesdropper_held_back",
@@ -221,6 +222,7 @@ CLI_VERBS: dict[str, tuple[str, ...]] = {
     "zulip_typing": ("typing",),
     "eavesdropper_status": ("listener status",),
     "eavesdropper_inbox": ("listener inbox",),
+    "operator_inbox_pending": ("listener pending-inbox",),
     "eavesdropper_owner_queue": ("listener owner-queue",),
     "eavesdropper_wakes": ("listener wakes",),
     "eavesdropper_held_back": ("listener held-back",),
@@ -685,7 +687,7 @@ class Tools:
         owner_user_id: int = 0,
         operator_user_id: int = 0,
         owner_clients: Iterable[str] = (),
-        seat_bearer_locators: Mapping[str, str] | None = None,
+        seat_bearer_files: Mapping[str, str] | None = None,
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
         log: Callable[[str], None] = lambda text: None,
@@ -709,9 +711,9 @@ class Tools:
         # inside one;  a host that does not pin it gets a refusal that names the variable.
         self.operator_user_id = operator_user_id
         self.owner_clients = set(owner_clients)
-        # The seat's own bearer locator, a FOLDER:KEY_NAME location and never a value, so a Linear write
-        # can be signed:  board proves the seat from it and never reads AGENT_SEAT.
-        self.seat_bearer_locators = dict(seat_bearer_locators or {})
+        # The seat's own bearer file (an absolute path to its private bearer file, never a value), so a
+        # Linear write can be signed:  board proves the seat from it and never reads AGENT_SEAT.
+        self.seat_bearer_files = dict(seat_bearer_files or {})
         # The notes host (the Mac's script, or the Operator client) is made on first use:  most sessions never call a
         # Notes tool, and off a Mac it reads a fleet knob.
         self._notes_host_cache: NOTES_CLIENT.Host | None = None
@@ -2817,15 +2819,15 @@ class Tools:
         """Run board and map its failures to tool errors.  LinearOutcomeUnknown (a timeout on a write) is its own
         exception here so a caller can keep an idempotency row for it."""
         session_env = self._own_session_env()
-        # board proves its seat from the bearer at SIMPLE_BOARD_BEARER_LOCATOR and never reads AGENT_SEAT, so
-        # the acting seat's own locator is handed to the child.  A write with no locator is refused here,
-        # before board runs, and names the seat and the config that would give it one.
-        locator = self.seat_bearer_locators.get(self.seat)
-        if spec.kind != "read" and not locator:
+        # board proves its seat from the bearer at SIMPLE_BOARD_BEARER_FILE and never reads AGENT_SEAT, so
+        # the acting seat's own file is handed to the child.  A write with no file is refused here, before
+        # board runs, and names the seat and the config that would give it one.
+        bearer_file = self.seat_bearer_files.get(self.seat)
+        if spec.kind != "read" and not bearer_file:
             raise ToolError(
                 "not_authorized",
-                "no bearer locator is configured for seat %s, so this write cannot be signed:  add "
-                "[seat.%s] bearer_locator to the listener config and restart the server"
+                "no bearer file is configured for seat %s, so this write cannot be signed:  add "
+                "[seat.%s] bearer_file to the listener config and restart the server"
                 % (self.seat, self.seat),
             )
         if spec.tool["name"] in LINEAR.SESSION_TOOLS:
@@ -2853,7 +2855,7 @@ class Tools:
                 env=self.agent.rt.env,
                 uid=uid,
                 session_env=session_env,
-                locator=locator,
+                bearer_file=bearer_file,
             )
         except LINEAR.LinearInvalid as exc:
             raise ToolError("invalid_argument", str(exc)) from None
@@ -2974,6 +2976,36 @@ class Tools:
                 "next_seq": view["next_seq"],
             },
         )
+
+    def _tool_operator_inbox_pending(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        mode = args.get("mode", "check")
+        after_seq = args.get("after_seq", 0)
+        view = self._listener(
+            "pending-inbox",
+            {
+                "after_seq": after_seq,
+                "limit": 0 if mode == "check" else args.get("limit", 20),
+            },
+        )
+        structured = {
+            "mode": mode,
+            "count": view["count"],
+            "latest_seq": view["latest_seq"],
+            "after_seq": view["after_seq"],
+        }
+        if mode == "check":
+            return self.ok(
+                json.dumps(dict(view, seat=self.seat, items=[]), ensure_ascii=False), structured
+            )
+        items = self._eavesdropper_items(view["items"])
+        structured["seqs"] = [i["seq"] for i in items]
+        structured["ids"] = [i["id"] for i in items if _int(i.get("id")) is not None]
+        summary = "%s pending after seq %d, latest_seq %d" % (
+            self._plural(view["count"], "pending item"),
+            view["after_seq"],
+            view["latest_seq"],
+        )
+        return self._list_result("operator_inbox_pending", [], summary, items, structured)
 
     def _tool_eavesdropper_owner_queue(self, args: Mapping[str, Any]) -> dict[str, Any]:
         view = self._listener("owner-queue", args)

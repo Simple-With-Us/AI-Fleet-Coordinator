@@ -2,21 +2,23 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { SHARED_CHATGPT_SEATS, loadConfig, PUBLIC_HOST, ISSUER, RESOURCE, REFRESH_TOKEN_TTL_S, ACCESS_TOKEN_TTL_S, GATE_LOG_NAME, KNOWN_SEATS, SEAT_SECRETS, PROPS_PHASE, PINNED_OPERATOR_USER_ID } from "../src/config.js";
+import { SHARED_CHATGPT_SEATS, loadConfig, PUBLIC_HOST, ISSUER, RESOURCE, REFRESH_TOKEN_TTL_S, ACCESS_TOKEN_TTL_S, GATE_LOG_NAME, KNOWN_SEATS, SEAT_SECRETS, PROPS_PHASE, PINNED_OPERATOR_USER_ID, GR_VERIFY_CACHE_MAX_MS } from "../src/config.js";
 import { REALM } from "../src/zulip.js";
 import { ROOT, wranglerConfig, testEnv, CHATGPT_REDIRECT } from "./helpers.mjs";
 
-test("GR_VERIFY_CACHE_MS:  the Git bearer verify cache is off by default, on by its own var alone, and capped at the relay's 60 seconds", () => {
-  assert.equal(loadConfig(testEnv()).grVerifyCacheMs, 0);
-  assert.equal(loadConfig(wranglerConfig().vars).grVerifyCacheMs, 0, "production ships it off");
-  assert.equal(loadConfig(testEnv({ GR_VERIFY_CACHE_MS: "" })).grVerifyCacheMs, 0);
+test("GR_VERIFY_CACHE_MS:  the Git bearer verify cache is an hour by default (owner 2026-11-06), set by its own var alone, and capped at the relay's hour", () => {
+  assert.equal(GR_VERIFY_CACHE_MAX_MS, 3_600_000);
+  assert.equal(loadConfig(testEnv()).grVerifyCacheMs, 3_600_000);
+  assert.equal(loadConfig(wranglerConfig().vars).grVerifyCacheMs, 3_600_000, "production ships the hour");
+  assert.equal(loadConfig(testEnv({ GR_VERIFY_CACHE_MS: "" })).grVerifyCacheMs, 3_600_000);
+  assert.equal(loadConfig(testEnv({ GR_VERIFY_CACHE_MS: "0" })).grVerifyCacheMs, 0, "0 still turns it off");
   assert.equal(loadConfig(testEnv({ GR_VERIFY_CACHE_MS: "60000" })).grVerifyCacheMs, 60_000);
   // Neither setting moves the other.
-  const identityOn = loadConfig(testEnv({ GATE_IDENTITY_CACHE_MS: "3600000" }));
-  assert.deepEqual([identityOn.gateIdentityCacheMs, identityOn.grVerifyCacheMs], [3_600_000, 0]);
-  const gitOn = loadConfig(testEnv({ GATE_IDENTITY_CACHE_MS: "0", GR_VERIFY_CACHE_MS: "30000" }));
-  assert.deepEqual([gitOn.gateIdentityCacheMs, gitOn.grVerifyCacheMs], [0, 30_000]);
-  for (const bad of ["60001", "-1", "1.5", "soon"]) {
+  const identityOff = loadConfig(testEnv({ GATE_IDENTITY_CACHE_MS: "0" }));
+  assert.deepEqual([identityOff.gateIdentityCacheMs, identityOff.grVerifyCacheMs], [0, 3_600_000]);
+  const gitOff = loadConfig(testEnv({ GR_VERIFY_CACHE_MS: "0" }));
+  assert.deepEqual([gitOff.gateIdentityCacheMs, gitOff.grVerifyCacheMs], [3_600_000, 0]);
+  for (const bad of ["3600001", "-1", "1.5", "soon"]) {
     assert.throws(() => loadConfig(testEnv({ GR_VERIFY_CACHE_MS: bad })), /GR_VERIFY_CACHE_MS/, bad);
   }
 });

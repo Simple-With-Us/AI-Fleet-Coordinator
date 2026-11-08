@@ -1070,11 +1070,11 @@ class PartitionTests(ServerHarness):
 
     def test_a_bf_seat_is_held_by_no_listener(self) -> None:
         self.write_config(
-            seats='[seat.CLAUDE]\nbot = "Claude"\n\n[seat.BF-PLUMBER]\nbot = "BF-Plumber"\n'
+            seats='[seat.CLAUDE]\nbot = "Claude"\n\n[seat.BF-BUILDER]\nbot = "BF-Builder"\n'
         )
         err = self.refused(self.env())
         self.assertIn(
-            "seat BF-PLUMBER is configured here (the 'mac' listener), but no listener instance holds it",
+            "seat BF-BUILDER is configured here (the 'mac' listener), but no listener instance holds it",
             err,
         )
 
@@ -1113,11 +1113,11 @@ class PartitionTests(ServerHarness):
         err = self.refused(self.server_env())
         self.assertIn("seat GB-NEWBIE is configured here (the 'server' listener), but", err)
         self.assertIn("does not list it", err)
-        # A seat the partition marks none (BotFleet handles BF bots natively) is refused too.
-        self.write_server_config(seats='[seat.BF-FIXER]\ncreds = "env"\n')
+        # A seat the partition marks none (the retired BF-BUILDER) is refused too.
+        self.write_server_config(seats='[seat.BF-BUILDER]\ncreds = "env"\n')
         err = self.refused(self.server_env())
         self.assertIn(
-            "seat BF-FIXER is configured here (the 'server' listener), but no listener instance holds it",
+            "seat BF-BUILDER is configured here (the 'server' listener), but no listener instance holds it",
             err,
         )
 
@@ -1230,13 +1230,14 @@ class PartitionTests(ServerHarness):
         self.assertEqual({partition[s] for s in gb}, {"server"})
         bf = {s: v for s, v in partition.items() if s.startswith("BF-")}
         bf_names = set(bf)
-        self.assertEqual(len(bf), 11)
+        self.assertEqual(len(bf), 13)
         self.assertEqual(
             {s for s, v in bf.items() if v == "server"},
-            {"BF-DIRECTOR"},
-            "the server holds only BF-DIRECTOR of the BotFleet seats (owner, Mon, Oct 13)",
+            bf_names - {"BF-BUILDER"},
+            "the server holds every live BotFleet seat (owner, Fri, Nov 6:  every seat "
+            "working, all through the Operator); BF-BUILDER is retired and held by none",
         )
-        self.assertEqual({s for s, v in bf.items() if v == "none"}, bf_names - {"BF-DIRECTOR"})
+        self.assertEqual({s for s, v in bf.items() if v == "none"}, {"BF-BUILDER"})
         self.assertEqual(
             {s for s, v in partition.items() if v == "mac"} - S.SERVICE_SEATS,
             set(launchd.READER_SEATS),
@@ -1255,27 +1256,43 @@ class PartitionTests(ServerHarness):
         self.assertEqual(C.partition_errors(mac, partition, env_instance="mac"), [])
         self.assertEqual(sorted(mac.seats), ["CLAUDE"])
         self.assertTrue(
-            bf_names <= mac.outgoing_webhook_seats,
-            "a fresh Mac sample accepts migrated BF senders without holding their queues",
+            (bf_names - {"BF-BUILDER"}) <= mac.outgoing_webhook_seats,
+            "a fresh Mac sample accepts migrated BF senders without holding their queues "
+            "(the retired BF-BUILDER is not a sender any more)",
         )
         server = C.from_dict(tomllib.loads((SERVER_DIR / "listener.toml").read_text()))
         self.assertEqual(server.errors, [])
         self.assertEqual(server.instance, "server")
-        self.assertTrue(bf_names <= server.outgoing_webhook_seats)
-        self.assertFalse(
-            bf_names & set(server.seats), "BF sender eligibility must not create server consumers"
+        self.assertTrue((bf_names - {"BF-BUILDER"}) <= server.outgoing_webhook_seats)
+        self.assertTrue(
+            (bf_names - {"BF-BUILDER"}) <= set(server.seats),
+            "every live BF sender now holds a server queue too (owner, Fri, Nov 6)",
         )
+        self.assertNotIn("BF-BUILDER", set(server.seats) | set(server.disabled))
         self.assertEqual(C.partition_errors(server, partition, env_instance="server"), [])
         self.assertEqual(
             sorted(server.disabled),
-            ["BF-DIRECTOR"],
-            "the only disabled persona is BF-DIRECTOR, whose routine key is not inventoried yet",
+            [],
+            "no server seat is disabled:  every seat works through the Operator (owner, Fri, Nov 6)",
         )
         self.assertEqual(
             sorted(server.seats),
-            sorted(list(gb) + list(CLOUD_SEATS)),
-            "the enabled seats are every GB persona and the five cloud seats",
+            sorted(list(gb) + list(CLOUD_SEATS) + [s for s, v in bf.items() if v == "server"]),
+            "the enabled seats are every GB persona, the five cloud seats and every live BF seat",
         )
+        for seat in [s for s, v in bf.items() if v == "server"]:
+            seat_cfg = server.seats[seat]
+            code = C.env_code(seat)
+            self.assertEqual(
+                (seat_cfg.wake, seat_cfg.creds, seat_cfg.instance, seat_cfg.routine),
+                ("inbox", "env", "server", None),
+                "%s has capture only, no wake adapter (BotFleet has no routine endpoint)" % seat,
+            )
+            self.assertEqual(
+                (seat_cfg.email_env, seat_cfg.key_env, seat_cfg.site_env),
+                ("ZULIP_%s_EMAIL" % code, "ZULIP_%s_API_KEY" % code, "ZULIP_SITE"),
+                seat,
+            )
         for seat in CLOUD_SEATS:
             seat_cfg = server.seats[seat]
             code = C.env_code(seat)

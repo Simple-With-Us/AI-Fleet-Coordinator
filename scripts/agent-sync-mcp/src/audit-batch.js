@@ -1,6 +1,8 @@
 // The worker isolate's per-call audit buffer (R2, DO burn reduction).
 //
-// HostedTools writes one audit row per tool call (spec 3.9), and the row is
+// HostedTools writes one audit row per write and per failed call (spec 3.9;
+// a successful read writes none and never reaches append(), owner ruling
+// 2026-11-06), so a buffered successful row is always a write's.  The row is
 // observability, not a security control:  no call is authorized by the audit
 // path, and HostedTools already treats a failed audit write as non-fatal
 // (its safely() wrapper).  Writing each row as its own Durable Object RPC

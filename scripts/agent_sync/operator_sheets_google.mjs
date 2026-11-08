@@ -90,6 +90,45 @@ const TABLES = Object.freeze({
   events: Object.freeze({ title: 'Operator Events', headers: EVENT_HEADERS }),
 });
 
+// A workbook profile: tab titles and headers are configuration, not constants
+// (OPS-1037). The default profile above is the original workbook; the SWU Operator
+// workbook's tabs are titled 'Sessions' / 'Events' and carry the full 16-column
+// session layout and the 9-column event layout. A profile never renames anything in
+// the workbook - it only tells the transport what is actually there.
+function normalizeTables(tables) {
+  if (tables === null || tables === undefined) return TABLES;
+  if (typeof tables !== 'object') fail('invalid_config');
+  const out = {};
+  const titles = new Set();
+  for (const table of Object.keys(TABLES)) {
+    const def = tables[table];
+    if (!def || typeof def.title !== 'string' || !def.title || def.title.length > 256 ||
+        /[\r\n]/.test(def.title) || titles.has(def.title)) fail('invalid_config');
+    if (!Array.isArray(def.headers) || def.headers.length < 1 ||
+        def.headers.length > MAX_COLUMNS ||
+        def.headers.some(h => typeof h !== 'string' || !h)) fail('invalid_config');
+    titles.add(def.title);
+    out[table] = Object.freeze({ title: def.title, headers: Object.freeze([...def.headers]) });
+  }
+  return Object.freeze(out);
+}
+
+// Parse a write confirmation range ('Title'!A2:J2 or Title!A2:J2) against the
+// configured tab title. Returns { row, endColumn, endRow } or null.
+function parseUpdatedRange(range, title) {
+  if (typeof range !== 'string') return null;
+  const bang = range.lastIndexOf('!');
+  if (bang < 1) return null;
+  let sheet = range.slice(0, bang);
+  if (sheet.length >= 2 && sheet.startsWith("'") && sheet.endsWith("'")) {
+    sheet = sheet.slice(1, -1).replace(/''/g, "'");
+  }
+  if (sheet !== title) return null;
+  const m = range.slice(bang + 1).match(/^A([0-9]+):([A-Z]+)([0-9]+)$/);
+  if (!m) return null;
+  return { row: Number(m[1]), endColumn: m[2], endRow: Number(m[3]) };
+}
+
 /** Safe to log: no upstream bodies, cell contents, credentials or exception causes. */
 export class OperatorSheetsError extends Error {
   constructor(code, { status = null, uncertain = false, retryAfterSeconds = null } = {}) {
@@ -114,12 +153,8 @@ function columnName(value) {
   }
   return result;
 }
-function tableDefinition(table) {
+function assertKnownTable(table) {
   if (!Object.hasOwn(TABLES, table)) fail('invalid_table');
-  return TABLES[table];
-}
-function rangeFor(table, coordinates) {
-  return `'${tableDefinition(table).title}'!${coordinates}`;
 }
 function retryAfter(response) {
   const value = response.headers.get('retry-after');
@@ -140,7 +175,10 @@ async function requestJSON(fetchImpl, url, init, timeoutMs, mutation = false, va
     if (!response.ok) {
       // A non-success response body can contain echoed data.  Never include it.
       await response.body?.cancel();
-      const rejected = [400, 401, 403, 404, 409, 412, 413, 422].includes(response.status);
+      // 429 is a quota refusal:  Google rejects the request before applying it, so the
+      // outcome is certain (nothing was written), never an uncertain write.  The caller
+      // owns the back-off and retry (OPERATOR-SHEETS-ADAPTER.md, Errors And Retries).
+      const rejected = [400, 401, 403, 404, 409, 412, 413, 422, 429].includes(response.status);
       fail('http_error', {
         status: response.status, uncertain: mutation && !rejected,
         retryAfterSeconds: retryAfter(response),
@@ -243,15 +281,17 @@ export function createServiceAccountTokenProvider({
 export class OperatorSheetsGoogle {
   #spreadsheetId;
   #sheetIds;
+  #tables;
   #token;
   #fetch;
   #timeoutMs;
 
   constructor({ spreadsheetId, sheetIds, token, fetch: fetchImpl = globalThis.fetch,
-    timeoutMs = 15_000 } = {}) {
+    timeoutMs = 15_000, tables = null } = {}) {
     if (typeof spreadsheetId !== 'string' || !/^[A-Za-z0-9_-]+$/.test(spreadsheetId) ||
         typeof token !== 'function' || typeof fetchImpl !== 'function') fail('invalid_config');
     integer(timeoutMs, 1, 60_000, 'invalid_timeout');
+    this.#tables = normalizeTables(tables);
     this.#sheetIds = Object.freeze(Object.fromEntries(Object.keys(TABLES).map(table => [
       table, integer(sheetIds?.[table], 0, 2_147_483_647, 'invalid_sheet_id'),
     ])));
@@ -260,6 +300,15 @@ export class OperatorSheetsGoogle {
     this.#token = token;
     this.#fetch = fetchImpl;
     this.#timeoutMs = timeoutMs;
+  }
+
+  #definition(table) {
+    assertKnownTable(table);
+    return this.#tables[table];
+  }
+
+  #rangeFor(table, coordinates) {
+    return `'${this.#definition(table).title}'!${coordinates}`;
   }
 
   async #request(path, { method = 'GET', body, schema = null } = {}) {
@@ -281,7 +330,7 @@ export class OperatorSheetsGoogle {
   }
 
   async #values(table, coordinates) {
-    return this.#request(`/values/${encodeURIComponent(rangeFor(table, coordinates))}` +
+    return this.#request(`/values/${encodeURIComponent(this.#rangeFor(table, coordinates))}` +
       '?majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE', { schema: VALUES_RESPONSE });
   }
 
@@ -296,7 +345,7 @@ export class OperatorSheetsGoogle {
     const metadata = await this.#request('?fields=sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))', { schema: METADATA_RESPONSE });
     if (!Array.isArray(metadata.sheets)) fail('invalid_metadata');
     const bounds = {};
-    for (const [table, definition] of Object.entries(TABLES)) {
+    for (const [table, definition] of Object.entries(this.#tables)) {
       const matches = metadata.sheets.filter(sheet => sheet?.properties?.sheetId === this.#sheetIds[table]);
       if (matches.length !== 1 || matches[0].properties.title !== definition.title) {
         fail('sheet_identity_mismatch');
@@ -319,7 +368,7 @@ export class OperatorSheetsGoogle {
 
   /** Row numbers are physical, one-based Sheet rows; the first data row is 2. */
   async readRows(table, { startRow = 2, limit = MAX_ROWS, rowCount = null } = {}) {
-    const definition = tableDefinition(table);
+    const definition = this.#definition(table);
     integer(startRow, 2, MAX_ROW_NUMBER, 'invalid_start_row');
     integer(limit, 1, MAX_ROWS, 'invalid_read_limit');
     if (rowCount !== null) integer(rowCount, 1, MAX_ROW_NUMBER, 'invalid_row_count');
@@ -341,7 +390,7 @@ export class OperatorSheetsGoogle {
   }
 
   #row(table, row) {
-    const definition = tableDefinition(table);
+    const definition = this.#definition(table);
     if (!Array.isArray(row) || row.length !== definition.headers.length ||
         Array.from(row).some(cell => typeof cell !== 'string' || cell.length > 50_000) ||
         !row[0]) fail('invalid_row');
@@ -365,21 +414,19 @@ export class OperatorSheetsGoogle {
     // Revalidate each mutation unless the caller already validated this batch (drainOutbox
     // inspects once per drain); never create, clear or repair a tab automatically.
     if (validate) await this.validateHeaders();
-    const range = rangeFor(table, append ? `A1:${endColumn}` : `A${rowNumber}:${endColumn}${rowNumber}`);
+    const range = this.#rangeFor(table, append ? `A1:${endColumn}` : `A${rowNumber}:${endColumn}${rowNumber}`);
     const result = await this.#request(`/values/${encodeURIComponent(range)}${append ? ':append' : ''}` +
       `?valueInputOption=RAW${append ? '&insertDataOption=INSERT_ROWS' : ''}&includeValuesInResponse=false`, {
       method: append ? 'POST' : 'PUT', body: { majorDimension: 'ROWS', values: [values] },
       schema: WRITE_RESPONSE,
     });
     const updates = append ? result.updates : result;
-    const match = typeof updates?.updatedRange === 'string' && updates.updatedRange.match(
-      /^'?Operator (Sessions|Events)'?!A([0-9]+):([A-Z]+)([0-9]+)$/);
-    const confirmedRow = match ? Number(match[2]) : 0;
-    if (result.spreadsheetId !== this.#spreadsheetId || !match ||
-        `Operator ${match[1]}` !== tableDefinition(table).title ||
+    const parsed = parseUpdatedRange(updates?.updatedRange, this.#definition(table).title);
+    const confirmedRow = parsed ? parsed.row : 0;
+    if (result.spreadsheetId !== this.#spreadsheetId || !parsed ||
         confirmedRow < 2 || !Number.isSafeInteger(confirmedRow) ||
-        confirmedRow > MAX_ROW_NUMBER || match[3] !== endColumn ||
-        Number(match[4]) !== confirmedRow || (!append && confirmedRow !== rowNumber) ||
+        confirmedRow > MAX_ROW_NUMBER || parsed.endColumn !== endColumn ||
+        parsed.endRow !== confirmedRow || (!append && confirmedRow !== rowNumber) ||
         updates.updatedRows !== 1 || updates.updatedColumns !== values.length ||
         updates.updatedCells !== values.length) fail('write_confirmation_mismatch', { uncertain: true });
     return { rowNumber: confirmedRow };

@@ -174,7 +174,9 @@ test("call and error audit arrays stay within independent UTF-8 storage byte cap
   }
 
   const day = new Date(now).toISOString().slice(0, 10);
-  let calls = await store.get(`calls:${day}`);
+  // Chunked layout:  the day's stored rows, oldest first, across every chunk key.
+  const dayRows = async () => (await state.callTail(store, 100000)).filter((r) => new Date(r.ts).toISOString().slice(0, 10) === day).reverse();
+  let calls = await dayRows();
   let errors = await store.get("errors");
   const bytes = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
   assert.ok(bytes(calls) <= state.CALLS_STORAGE_MAX_BYTES);
@@ -189,7 +191,7 @@ test("call and error audit arrays stay within independent UTF-8 storage byte cap
       seat: unicode, client_id: unicode, tool: "topics", topic: unicode, outcome: "ok", message_id: i,
     }, now + i);
   }
-  calls = await store.get(`calls:${day}`);
+  calls = await dayRows();
   errors = await store.get("errors");
   assert.ok(bytes(calls) <= state.CALLS_STORAGE_MAX_BYTES);
   assert.ok(bytes(errors) <= state.ERRORS_STORAGE_MAX_BYTES);

@@ -29,8 +29,9 @@ const PROGRAM = [
   "from agent_sync.secretscan import scan",
   "from agent_sync.tests import test_secretscan_fleet as t",
   "samples = [[kind, text, scan(text)] for kind, text in t.samples()]",
-  "clean = [[text, scan(text)] for text in t.clean_texts()]",
-  "print(json.dumps({'samples': samples, 'clean': clean}))",
+  "clean = [[text, scan(text)] for text in t.clean_texts() if text not in t.source_expressions()]",
+  "source = t.source_expressions()",
+  "print(json.dumps({'samples': samples, 'clean': clean, 'source': source}))",
 ].join("\n");
 const dump = spawnSync("python3", ["-c", PROGRAM], {
   cwd: SCRIPTS,
@@ -116,4 +117,12 @@ test("long adversarial inputs do not blow up", () => {
   const start = performance.now();
   for (const text of nasty) scanForCredential(text);
   assert.ok(performance.now() - start < 5000, "under five seconds for all of them");
+});
+
+// Alert redaction is deliberately stricter than source-publication precision:
+// preserve masking of environment references in alerts, rather than weakening it
+// merely to make a source-code corpus pass this unrelated redaction consumer.
+test("source assignment expressions stay conservatively masked in alert ingress", { skip }, () => {
+  assert.ok(tables.source.length >= 3);
+  for (const text of tables.source) assert.ok(scanForCredential(text));
 });

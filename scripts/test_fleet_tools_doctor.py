@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import importlib.util
 import io
 import json
@@ -287,9 +288,236 @@ class SeatAndMcpTests(unittest.TestCase):
                 "fleet tools doctor",
             ],
         )
-        self.assertIn("seat:CLAUDE: missing fleetlink token", calls[0][6])
+        self.assertEqual(calls[0][6], "--json")
+        self.assertIn("seat:CLAUDE: missing fleetlink token", calls[0][-1])
         self.assertTrue(doctor.post_changes(doctor.Report(), runner))
-        self.assertIn("every check passes again", calls[1][6])
+        self.assertIn("every check passes again", calls[1][-1])
+
+    # AFC-461:  the owner asked (Oct 22) that an unchanged recurring status post be edited, not reposted.
+    @staticmethod
+    def chat_runner(calls, posted_ids=None, edit_code=0, edit_err="Invalid message(s)"):
+        ids = iter(posted_ids or [])
+
+        def runner(argv, **kw):
+            calls.append(argv)
+            if argv[1] == "post":
+                out = json.dumps({"id": next(ids), "channel": "x", "topic": "y"}) + "\n"
+                return subprocess.CompletedProcess(argv, 0, out, "")
+            if argv[1] == "edit":
+                return subprocess.CompletedProcess(
+                    argv, edit_code, "", "" if edit_code == 0 else edit_err
+                )
+            raise AssertionError(argv)
+
+        return runner
+
+    @staticmethod
+    def failing_report(*rows):
+        report = doctor.Report()
+        for check, detail in rows:
+            report.add(check, "FAIL", detail)
+        return report
+
+    def state(self):
+        return json.loads((self.home / "state.json").read_text())
+
+    def test_first_post_stores_the_message_id(self):
+        calls = []
+        runner = self.chat_runner(calls, [4101])
+        report = self.failing_report(("tool:gitleaks", "not installed"))
+        self.assertTrue(doctor.post_changes(report, runner))
+        self.assertEqual(calls[0][1], "post")
+        self.assertIn("--json", calls[0])
+        self.assertEqual(self.state()["message_id"], 4101)
+        self.assertEqual(self.state()["checks"], ["tool:gitleaks"])
+
+    def test_same_checks_with_changed_text_edit_the_stored_message(self):
+        calls = []
+        runner = self.chat_runner(calls, [4101])
+        self.assertTrue(
+            doctor.post_changes(self.failing_report(("tool:gh", "2.60.0, latest 2.61.0")), runner)
+        )
+        self.assertTrue(
+            doctor.post_changes(self.failing_report(("tool:gh", "2.60.0, latest 2.62.0")), runner)
+        )
+        self.assertEqual([c[1] for c in calls], ["post", "edit"])
+        self.assertEqual(calls[1][2:4], ["--id", "4101"])
+        self.assertIn("tool:gh: 2.60.0, latest 2.62.0", calls[1][-1])
+        self.assertEqual(self.state()["message_id"], 4101)
+        self.assertEqual(self.state()["failing"], ["tool:gh: 2.60.0, latest 2.62.0"])
+        # Nothing changed at all:  no edit and no post.
+        self.assertFalse(
+            doctor.post_changes(self.failing_report(("tool:gh", "2.60.0, latest 2.62.0")), runner)
+        )
+        self.assertEqual(len(calls), 2)
+
+    def test_a_changed_set_of_checks_posts_a_new_message(self):
+        calls = []
+        runner = self.chat_runner(calls, [4101, 4102, 4103])
+        doctor.post_changes(self.failing_report(("tool:gh", "behind")), runner)
+        added = self.failing_report(("tool:gh", "behind"), ("tool:gitleaks", "not installed"))
+        self.assertTrue(doctor.post_changes(added, runner))
+        self.assertEqual([c[1] for c in calls], ["post", "post"])
+        self.assertEqual(self.state()["message_id"], 4102)
+        cleared = self.failing_report(("tool:gitleaks", "not installed"))
+        self.assertTrue(doctor.post_changes(cleared, runner))
+        self.assertEqual([c[1] for c in calls], ["post", "post", "post"])
+        self.assertEqual(self.state()["message_id"], 4103)
+
+    def test_a_failed_edit_falls_back_to_a_new_post(self):
+        # Exit 5 is Zulip answering with an error (here the message is gone):  the edit was not applied.
+        calls = []
+        runner = self.chat_runner(calls, [4101, 4102], edit_code=5)
+        doctor.post_changes(self.failing_report(("tool:gh", "behind by 1")), runner)
+        self.assertTrue(
+            doctor.post_changes(self.failing_report(("tool:gh", "behind by 2")), runner)
+        )
+        self.assertEqual([c[1] for c in calls], ["post", "edit", "post"])
+        self.assertEqual(self.state()["message_id"], 4102)
+        self.assertEqual(self.state()["failing"], ["tool:gh: behind by 2"])
+
+    def test_an_edit_with_simple_chat_missing_falls_back_to_a_new_post(self):
+        calls = []
+        ids = iter([4102])
+
+        def runner(argv, **kw):
+            calls.append(argv)
+            if argv[1] == "edit":
+                raise FileNotFoundError(argv[0])
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"id": next(ids)}), "")
+
+        (self.home / "state.json").write_text(
+            json.dumps({"failing": ["tool:gh: a"], "checks": ["tool:gh"], "message_id": 4101})
+        )
+        self.assertTrue(doctor.post_changes(self.failing_report(("tool:gh", "b")), runner))
+        self.assertEqual([c[1] for c in calls], ["edit", "post"])
+        self.assertEqual(self.state()["message_id"], 4102)
+
+    def test_an_edit_that_may_have_landed_posts_nothing_and_retries_next_run(self):
+        # A timeout, a network error (exit 6), an internal error (exit 1) or a gateway status may
+        # each have applied the edit, so a new post would repeat the same text in the topic.
+        old = {"failing": ["tool:gh: a"], "checks": ["tool:gh"], "message_id": 4101}
+
+        def timing_out(argv, **kw):
+            raise subprocess.TimeoutExpired(argv, 60)
+
+        cases = [
+            ("timeout", timing_out),
+            ("network", self.chat_runner([], [9999], edit_code=6, edit_err="timed out")),
+            ("internal", self.chat_runner([], [9999], edit_code=1, edit_err="internal error")),
+            ("gateway", self.chat_runner([], [9999], edit_code=5, edit_err="HTTP 504")),
+        ]
+        for name, inner in cases:
+            with self.subTest(name):
+                calls = []
+
+                def runner(argv, inner=inner, calls=calls, **kw):
+                    calls.append(argv)
+                    return inner(argv, **kw)
+
+                (self.home / "state.json").write_text(json.dumps(old))
+                self.assertFalse(doctor.post_changes(self.failing_report(("tool:gh", "b")), runner))
+                self.assertEqual([c[1] for c in calls], ["edit"])
+                self.assertEqual(self.state(), old)
+                # The next run edits the same message again.
+                retry = []
+                self.assertTrue(
+                    doctor.post_changes(
+                        self.failing_report(("tool:gh", "b")), self.chat_runner(retry, [])
+                    )
+                )
+                self.assertEqual([c[1] for c in retry], ["edit"])
+                self.assertEqual(retry[0][2:4], ["--id", "4101"])
+                self.assertEqual(self.state()["message_id"], 4101)
+
+    def test_an_old_state_without_an_id_posts_as_before(self):
+        calls = []
+        runner = self.chat_runner(calls, [4101])
+        (self.home / "state.json").write_text(json.dumps({"failing": ["tool:gh: behind by 1"]}))
+        self.assertTrue(
+            doctor.post_changes(self.failing_report(("tool:gh", "behind by 2")), runner)
+        )
+        self.assertEqual([c[1] for c in calls], ["post"])
+        self.assertEqual(self.state()["message_id"], 4101)
+        # An unchanged set against the old state is still silent.
+        (self.home / "state.json").write_text(json.dumps({"failing": ["tool:gh: behind by 2"]}))
+        self.assertFalse(
+            doctor.post_changes(self.failing_report(("tool:gh", "behind by 2")), runner)
+        )
+        self.assertEqual(len(calls), 1)
+
+    def test_a_post_without_json_output_keeps_no_id(self):
+        calls = []
+
+        def runner(argv, **kw):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, "posted id 9 to #x\n", "")
+
+        doctor.post_changes(self.failing_report(("tool:gh", "behind by 1")), runner)
+        self.assertNotIn("message_id", self.state())
+        doctor.post_changes(self.failing_report(("tool:gh", "behind by 2")), runner)
+        self.assertEqual([c[1] for c in calls], ["post", "post"])
+
+    def test_a_post_that_may_have_landed_is_not_posted_again(self):
+        # Kody on PR 1467:  a post that timed out, or failed with a network or internal error, may
+        # already be on Zulip.  Its set is remembered without an id, so the next run posts nothing.
+        def timing_out(argv, **kw):
+            raise subprocess.TimeoutExpired(argv, 60)
+
+        def exiting(code, err):
+            return lambda argv, **kw: subprocess.CompletedProcess(argv, code, "", err)
+
+        for name, runner in [
+            ("timeout", timing_out),
+            ("network", exiting(6, "timed out")),
+            ("internal", exiting(1, "internal error")),
+            ("gateway", exiting(5, "HTTP 502")),
+        ]:
+            with self.subTest(name):
+                (self.home / "state.json").unlink(missing_ok=True)
+                report = self.failing_report(("tool:gh", "behind by 1"))
+                self.assertFalse(doctor.post_changes(report, runner))
+                self.assertEqual(
+                    self.state(), {"failing": ["tool:gh: behind by 1"], "checks": ["tool:gh"]}
+                )
+                calls = []
+                self.assertFalse(doctor.post_changes(report, self.chat_runner(calls, [4101])))
+                self.assertEqual(calls, [])
+                # A later text change posts a new message, because there is no id to edit.
+                self.assertTrue(
+                    doctor.post_changes(
+                        self.failing_report(("tool:gh", "behind by 2")),
+                        self.chat_runner(calls, [4101]),
+                    )
+                )
+                self.assertEqual([c[1] for c in calls], ["post"])
+
+    def test_a_refused_or_impossible_post_is_tried_again_next_run(self):
+        # Zulip refused it (exit 3), or simple-chat is missing:  nothing was posted, so nothing is
+        # remembered and the next run posts.
+        def missing(argv, **kw):
+            raise FileNotFoundError(argv[0])
+
+        refused = lambda argv, **kw: subprocess.CompletedProcess(argv, 3, "", "refused")
+        for name, runner in [("refused", refused), ("missing", missing)]:
+            with self.subTest(name):
+                (self.home / "state.json").unlink(missing_ok=True)
+                report = self.failing_report(("tool:gh", "behind by 1"))
+                self.assertFalse(doctor.post_changes(report, runner))
+                self.assertFalse((self.home / "state.json").exists())
+                calls = []
+                self.assertTrue(doctor.post_changes(report, self.chat_runner(calls, [4101])))
+                self.assertEqual([c[1] for c in calls], ["post"])
+
+    def test_posted_message_id_reads_only_a_positive_integer_id(self):
+        self.assertEqual(doctor.posted_message_id('{"id": 7, "channel": "c"}\n'), 7)
+        self.assertEqual(doctor.posted_message_id('noise\n{"id": 8}\n'), 8)
+        # Kody on PR 1467:  a pretty-printed object over several lines.
+        self.assertEqual(doctor.posted_message_id('{\n  "id": 9,\n  "channel": "c"\n}\n'), 9)
+        self.assertIsNone(doctor.posted_message_id('{"id": "7"}'))
+        self.assertIsNone(doctor.posted_message_id('{"id": true}'))
+        self.assertIsNone(doctor.posted_message_id("posted id 7"))
+        self.assertIsNone(doctor.posted_message_id(None))
 
     def test_runtime_reads_the_live_release_not_the_stale_receipt(self):
         self.touch("rt/status.json", json.dumps({"source_commit": "b" * 40, "status": "activated"}))
@@ -691,7 +919,7 @@ class HomeCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name)
-        self.rt_dir = self.home / "apps/lanes/_managed/fleet/agent-sync-runtime"
+        self.rt_dir = self.home / "apps/lanes/_managed/fleet/simple-tools-runtime"
         self.patch = mock.patch.multiple(
             doctor,
             HOME=self.home,
@@ -1034,16 +1262,16 @@ class MacRuntimeTests(HomeCase):
         self.assertEqual((row["state"], row["status"]), ("unknown", "WARN"))
 
     def test_reasons(self):
-        self.touch(".agent-sync/runtime-sync.pause", "")
+        self.touch(".simple-tools/runtime-sync.pause", "")
         _, row = self.runtime(updater=dict(self.HEALTHY, paused=True))
         self.assertEqual(row["status"], "FAIL")
         self.assertIn("paused", row["reason"])
-        (self.home / ".agent-sync/runtime-sync.pause").unlink()
-        self.touch(".agent-sync/runtime-sync.bad-sha", TIP + "\n")
+        (self.home / ".simple-tools/runtime-sync.pause").unlink()
+        self.touch(".simple-tools/runtime-sync.bad-sha", TIP + "\n")
         _, row = self.runtime(updater=dict(self.HEALTHY, advanced=None))
         self.assertEqual(row["status"], "WARN")  # amber:  the updater waits for main to move
         self.assertIn("smoke test", row["reason"])
-        (self.home / ".agent-sync/runtime-sync.bad-sha").unlink()
+        (self.home / ".simple-tools/runtime-sync.bad-sha").unlink()
         _, row = self.runtime(tracked=" M scripts/simple-chat\n")
         self.assertEqual(row["status"], "FAIL")
         self.assertIn("tracked changes", row["reason"])
@@ -1079,7 +1307,7 @@ class MacRuntimeTests(HomeCase):
 
 
 class MacUpdaterTests(HomeCase):
-    PRINT = "gui/501/com.jay.agent-sync-runtime-sync = {\n\tactive count = 0\n\tstate = not running\n\truns = 413\n\tlast exit code = 0\n\tevent triggers = {\n\t\tstate = active\n\t}\n}\n"
+    PRINT = "gui/501/com.jay.simple-tools-runtime-sync = {\n\tactive count = 0\n\tstate = not running\n\truns = 413\n\tlast exit code = 0\n\tevent triggers = {\n\t\tstate = active\n\t}\n}\n"
 
     def previous(self, runs, minutes_ago):
         return {
@@ -1093,7 +1321,7 @@ class MacUpdaterTests(HomeCase):
         report = doctor.Report()
         runner = fake_runner([(("launchctl", "print"), answer or (0, self.PRINT))])
         info = doctor.check_mac_updater(report, runner, previous)
-        return info, report.row("updater:com.jay.agent-sync-runtime-sync")
+        return info, report.row("updater:com.jay.simple-tools-runtime-sync")
 
     def test_counter(self):
         info, row = self.updater(self.previous(400, 15))
@@ -1214,7 +1442,7 @@ class LaneTests(HomeCase):
     def setUp(self):
         super().setUp()
         self.touch(
-            "apps/lanes/_managed/fleet/agent-sync-runtime/scripts/fleet_lanes/install_tools.py"
+            "apps/lanes/_managed/fleet/simple-tools-runtime/scripts/fleet_lanes/install_tools.py"
         )
         self.touch("apps/lane-tools/VERSION", f"sha={OLD}\npackage=0.1.0\n")
 
@@ -1466,7 +1694,7 @@ class ReportAndRunTests(HomeCase):
     def test_no_network_never_calls_a_fleet_tool_current(self):
         (self.rt_dir).mkdir(parents=True)
         (self.rt_dir / ".git").write_text("gitdir: x\n")
-        self.touch("apps/lanes/_managed/fleet/agent-sync-runtime/scripts/simple-chat", "x")
+        self.touch("apps/lanes/_managed/fleet/simple-tools-runtime/scripts/simple-chat", "x")
         (self.home / ".local/bin").mkdir(parents=True)
         (self.home / ".local/bin/simple-chat").symlink_to(self.rt_dir / "scripts/simple-chat")
         rules = [
@@ -1504,7 +1732,10 @@ class ReportAndRunTests(HomeCase):
         self.assertEqual(len(text.strip().splitlines()), 1)
         self.assertIn("server unreachable:", text)
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-        self.assertEqual(sorted(p.name for p in path.parent.iterdir()), ["report.json"])
+        # AFC-576:  the app-process report is written beside it.
+        self.assertEqual(
+            sorted(p.name for p in path.parent.iterdir()), ["app-processes.json", "report.json"]
+        )
         report = json.loads(path.read_text())
         self.assertEqual((report["schemaVersion"], report["tool"]), (1, "fleet-tools-doctor"))
         self.assertEqual([h["host"] for h in report["hosts"]], ["mac", "server"])
@@ -1524,6 +1755,57 @@ class ReportAndRunTests(HomeCase):
         with self.assertRaises(ValueError):
             doctor.write_report(self.home / "state/fleet-tools/report.json", {"schemaVersion": 1})
         self.assertEqual(list(real.iterdir()), [])
+
+    def test_a_folder_swapped_for_a_symlink_after_the_check_is_refused(self):
+        # Kody, PR 1477:  the folder is opened with O_NOFOLLOW and used through that descriptor,
+        # so passing the early check is not enough to write through a link.
+        real = self.home / "elsewhere"
+        real.mkdir()
+        (self.home / "state").mkdir()
+        (self.home / "state/fleet-tools").symlink_to(real)
+        with mock.patch.object(doctor.Path, "is_symlink", return_value=False):
+            with self.assertRaises(ValueError):
+                doctor.write_report(
+                    self.home / "state/fleet-tools/report.json", {"schemaVersion": 1}
+                )
+        self.assertEqual(list(real.iterdir()), [])
+
+    def test_the_report_folder_is_fsynced_after_the_rename(self):
+        # BACKEND-36:  the rename only survives a power cut once the folder itself is synced.
+        synced = []
+        real_fsync = os.fsync
+
+        def record(fd):
+            synced.append(os.fstat(fd).st_ino)
+            return real_fsync(fd)
+
+        target = self.home / "state/fleet-tools/report.json"
+        with mock.patch.object(doctor.os, "fsync", side_effect=record):
+            doctor.write_report(target, {"schemaVersion": 1})
+        self.assertIn(target.parent.stat().st_ino, synced)
+        self.assertIn(target.stat().st_ino, synced)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+
+    def test_a_folder_fsync_failure_is_raised_unless_the_file_system_lacks_it(self):
+        # A file system without folder fsync says EINVAL, and the report it already renamed stands.
+        # Any other failure is a real one, and the write says so.
+        target = self.home / "state/fleet-tools/report.json"
+        real_fsync = os.fsync
+
+        def folder_fails(code):
+            def fsync(fd):
+                if stat.S_ISDIR(os.fstat(fd).st_mode):
+                    raise OSError(code, os.strerror(code))
+                return real_fsync(fd)
+
+            return fsync
+
+        with mock.patch.object(doctor.os, "fsync", side_effect=folder_fails(errno.EINVAL)):
+            doctor.write_report(target, {"schemaVersion": 1})
+        self.assertEqual(json.loads(target.read_text()), {"schemaVersion": 1})
+        with mock.patch.object(doctor.os, "fsync", side_effect=folder_fails(errno.EIO)):
+            with self.assertRaises(OSError):
+                doctor.write_report(target, {"schemaVersion": 2})
 
     def test_no_registry_skips_the_version_probes(self):
         text, _ = self.run_doctor(["--json", "--no-network", "--no-registry"])
@@ -1634,9 +1916,10 @@ class ServerStatusTests(HomeCase):
         path = self.status_path()
         self.assertEqual(json.loads(path.read_text()), self.status())
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-        # Atomic:  no temporary file is left beside the two reports.
+        # Atomic:  no temporary file is left beside the reports (AFC-576 adds the app-process one).
         self.assertEqual(
-            sorted(p.name for p in path.parent.iterdir()), ["report.json", "server-status.json"]
+            sorted(p.name for p in path.parent.iterdir()),
+            ["app-processes.json", "report.json", "server-status.json"],
         )
 
     def test_the_mac_drops_an_invalid_status_and_keeps_the_previous_file(self):

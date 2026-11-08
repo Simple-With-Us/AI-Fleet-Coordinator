@@ -24,14 +24,14 @@ final class MusterNavigationTests: XCTestCase {
 
     // MARK: Destinations
 
-    /// Every panel is named once:  the overview and fifteen panels, each under exactly one
+    /// Every panel is named once:  the overview and sixteen panels, each under exactly one
     /// section, with Operations split into three.
     func test_sidebar_names_every_place_once() {
         let named = [MusterDestination.overview]
             + MusterDestination.sidebarPlaces.flatMap { MusterDestination.listed(under: $0) }
-        XCTAssertEqual(named.count, 16)
+        XCTAssertEqual(named.count, 17)
         XCTAssertEqual(Set(named), Set(MusterDestination.allCases))
-        XCTAssertEqual(MusterDestination.allCases.count, 16)
+        XCTAssertEqual(MusterDestination.allCases.count, 17)
     }
 
     /// The rule, stated per panel:  where each panel's data and actions live.  The sidebar
@@ -52,6 +52,7 @@ final class MusterNavigationTests: XCTestCase {
             .seats: .acrossFleet,
             .controls: .acrossFleet,
             .hosts: .acrossFleet,
+            .appProcesses: .acrossFleet,
             .virtualMachines: .acrossFleet,
             .actionHistory: .acrossFleet,
         ]
@@ -70,7 +71,7 @@ final class MusterNavigationTests: XCTestCase {
         XCTAssertEqual(MusterDestination.listed(under: .machine(.server)),
                        [.serverStatus, .serverResourceLimits, .serverUpdates])
         XCTAssertEqual(MusterDestination.listed(under: .acrossFleet),
-                       [.appsAndWork, .seats, .controls, .hosts, .virtualMachines, .actionHistory])
+                       [.appsAndWork, .seats, .controls, .hosts, .appProcesses, .virtualMachines, .actionHistory])
     }
 
     /// One name per panel:  no two panels share a title.
@@ -81,7 +82,7 @@ final class MusterNavigationTests: XCTestCase {
         XCTAssertEqual(MusterDestination.serverUpdates.title, "Server Updates")
         XCTAssertEqual(MusterDestination.actionHistory.title, "Action History")
         XCTAssertEqual(MusterDestination.hosts.title, "Tools And Worker Health")
-        XCTAssertEqual(MusterDestination.seatDetail.title, "MiniMax On The Mac")
+        XCTAssertEqual(MusterDestination.seatDetail.title, "Seat Setup")
     }
 
     /// The window's subtitle is the badge's own words, so the two cannot disagree.
@@ -126,6 +127,7 @@ final class MusterNavigationTests: XCTestCase {
         XCTAssertEqual(MusterDestination.serverStatus.rawValue, "serverStatus")
         XCTAssertEqual(MusterDestination.hosts.rawValue, "hosts")
         XCTAssertEqual(MusterDestination.virtualMachines.rawValue, "virtualMachines")
+        XCTAssertEqual(MusterDestination.appProcesses.rawValue, "appProcesses")
         XCTAssertEqual(MusterDestination.macAgents.rawValue, "macAgents")
         XCTAssertEqual(MusterDestination.serverUpdates.rawValue, "serverUpdates")
         XCTAssertEqual(MusterDestination.actionHistory.rawValue, "actionHistory")
@@ -251,6 +253,19 @@ final class MusterNavigationTests: XCTestCase {
         let allRead = Dictionary(uniqueKeysWithValues: FleetServiceRegistry.all.map { ($0.id, ManagedServiceState.running) })
         let clean = FleetServices(serverState: .running, states: allRead)
         XCTAssertNil(SidebarBadges.services(clean.entries, pm2Answered: clean.pm2Answered, readAt: now, now: now))
+    }
+
+    /// The Services badge is never a bare digit:  it has words that say what it counts.
+    func test_services_badge_has_words() {
+        XCTAssertEqual(SidebarBadges.servicesWords("1", readIsCurrent: true),
+                       "1 service needs attention (failed, could not be read, or started and given up on).")
+        XCTAssertEqual(SidebarBadges.servicesWords("3+", readIsCurrent: true),
+                       "3 services need attention (failed, could not be read, or started and given up on), and some could not be read.")
+        XCTAssertTrue(SidebarBadges.servicesWords("?", readIsCurrent: false).contains("not been read recently"))
+        XCTAssertTrue(SidebarBadges.servicesWords("?", readIsCurrent: true).contains("pm2 on the Mac did not answer"))
+        XCTAssertTrue(SidebarBadges.readIsCurrent(readAt: now, now: now))
+        XCTAssertFalse(SidebarBadges.readIsCurrent(readAt: nil, now: now))
+        XCTAssertFalse(SidebarBadges.readIsCurrent(readAt: now.addingTimeInterval(-(MachineMenuCopy.macReadWindow + 1)), now: now))
     }
 
     /// When pm2 does not answer, its rows are not known and are not counted, as the menu
