@@ -61,6 +61,10 @@ _PATH = re.compile(r"[A-Za-z0-9._/+@~-]{1,1024}")
 _REPO = re.compile(r"[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}")
 MAX_FILE_RAW = 2 * 1024 * 1024
 MAX_FILE_B64 = 4 * ((MAX_FILE_RAW + 2) // 3)
+# A referenced blob is read back through GitHubClient._call, which rejects any
+# response body over 1 MiB (github_client.MAX_BODY).  700 KiB raw is ~934 KB of
+# base64 plus 60-column line wraps and JSON, which still fits under that cap.
+MAX_REF_BLOB_RAW = 700 * 1024
 MAX_PAGE = 50
 MAX_PROJECT = 100
 MAX_WORKFLOW_TEXT = 40000
@@ -4268,7 +4272,11 @@ class WorkflowVerbs:
         page = _int(args, "page", 1, 1000) if "page" in args else 1
         head = _ref(args, "head") if "head" in args else None
         base = _ref(args, "base") if "base" in args else None
-        q = f"state={state}&per_page={limit}&page={page}&sort=created&direction=asc"
+        # Newest first, like gh pr list: a caller paging to a cap (lane retire reads at most
+        # 1000 rows) needs the recent window, not the oldest one (Seer finding on PR #1515).
+        # The bounded-inventory verb below keeps created-ascending on purpose; its contract
+        # says so and its consumers reconcile against live state.
+        q = f"state={state}&per_page={limit}&page={page}&sort=created&direction=desc"
         if head is not None:
             q += "&head=" + quote(repo.split("/")[0] + ":" + head, safe="")
         if base is not None:
@@ -4290,7 +4298,15 @@ class WorkflowVerbs:
                 and row["state"] != state
             ):
                 raise RelayGitHubError(502, "PR list row unverifiable")
-            item = {"number": row["number"], "state": row["state"], "draft": row["draft"]}
+            merged_at = row.get("merged_at")
+            if merged_at is not None and not isinstance(merged_at, str):
+                raise RelayGitHubError(502, "PR list row unverifiable")
+            item = {
+                "number": row["number"],
+                "state": row["state"],
+                "draft": row["draft"],
+                "merged_at": merged_at,
+            }
             for key in ("head", "base"):
                 part = row.get(key)
                 if (
@@ -5451,6 +5467,7 @@ class WorkflowVerbs:
         if not isinstance(files, list) or not 1 <= len(files) <= 20:
             raise Refused("invalid files")
         entries, seen, total, referenced_total = [], set(), 0, 0
+        validated_blobs = {}
         for value in files:
             if not isinstance(value, dict):
                 raise Refused("invalid file")
@@ -5475,37 +5492,55 @@ class WorkflowVerbs:
                 # the raw work budget (MAX_FILES_RAW), not the transport cap.
                 if not isinstance(sha, str) or not _SHA.fullmatch(sha):
                     raise Refused("invalid file content or path")
-                # The pre-read runs before any dispatch:  a transient upstream
-                # failure here means NO write was attempted, so it releases the
-                # idempotency key as retryable instead of locking it unknown.
-                try:
-                    blob = _obj(self._get(f"/repos/{repo}/git/blobs/{sha}"))
-                except RelayGitHubError as exc:
-                    if exc.code == "response_too_large":
-                        raise Refused("referenced blob exceeds supported response size") from None
-                    if exc.status in (0, 408) or exc.status >= 500:
-                        raise PreReadUnavailable(
-                            "blob pre-read unavailable; no write attempted"
-                        ) from None
-                    raise
-                raw = blob.get("content")
-                if (
-                    blob.get("encoding") != "base64"
-                    or not isinstance(blob.get("size"), int)
-                    or not isinstance(raw, str)
-                ):
-                    raise Refused("referenced blob unavailable or unsupported")
-                try:
-                    # GitHub wraps blob content base64 at 60 columns; strip the
-                    # whitespace before validating, as the other blob reads do.
-                    decoded_raw = base64.b64decode("".join(raw.split()), validate=True)
-                except (binascii.Error, ValueError):
-                    raise Refused("referenced blob unavailable or unsupported") from None
-                # Budgets measure the decoded bytes, never the receipt's declared
-                # size:  a receipt that understates blob["size"] cannot smuggle
-                # content past the raw work budget.
-                if len(decoded_raw) > MAX_FILE_RAW:
-                    raise Refused("referenced blob exceeds the per-file raw budget")
+                if sha not in validated_blobs:
+                    # The pre-read runs before any dispatch:  a transient upstream
+                    # failure here means NO write was attempted, so it releases the
+                    # idempotency key as retryable instead of locking it unknown.
+                    try:
+                        blob = _obj(self._get(f"/repos/{repo}/git/blobs/{sha}"))
+                    except RelayGitHubError as exc:
+                        if exc.code == "response_too_large":
+                            raise Refused(
+                                "referenced blob exceeds supported response size"
+                            ) from None
+                        if exc.status in (0, 408) or exc.status >= 500:
+                            raise PreReadUnavailable(
+                                "blob pre-read unavailable; no write attempted"
+                            ) from None
+                        raise
+                    raw = blob.get("content")
+                    if (
+                        blob.get("sha") != sha
+                        or blob.get("encoding") != "base64"
+                        or type(blob.get("size")) is not int
+                        or not 0 <= blob["size"] <= MAX_REF_BLOB_RAW
+                        or not isinstance(raw, str)
+                        or len(raw) > ((MAX_REF_BLOB_RAW + 2) // 3) * 4 + MAX_REF_BLOB_RAW // 30
+                    ):
+                        raise Refused("referenced blob unavailable or unsupported")
+                    try:
+                        # GitHub wraps blob content base64 at 60 columns; strip the
+                        # whitespace before validating, as the other blob reads do.
+                        decoded_raw = base64.b64decode("".join(raw.split()), validate=True)
+                    except (binascii.Error, ValueError):
+                        raise Refused("referenced blob unavailable or unsupported") from None
+                    # Budgets measure the decoded bytes, never the receipt's declared
+                    # size:  a receipt that understates blob["size"] cannot smuggle
+                    # content past the raw work budget.
+                    if len(decoded_raw) > MAX_REF_BLOB_RAW:
+                        raise Refused("referenced blob exceeds the per-file raw budget")
+                    if (
+                        len(decoded_raw) != blob["size"]
+                        or hashlib.sha1(
+                            b"blob " + str(len(decoded_raw)).encode() + b"\0" + decoded_raw,
+                            usedforsecurity=False,
+                        ).hexdigest()
+                        != sha
+                    ):
+                        raise Refused("unverifiable blob reference")
+                    validated_blobs[sha] = decoded_raw
+                decoded_raw = validated_blobs[sha]
+                # Cache verified bytes only, not path-dependent scan approvals.
                 if unreviewed_file_secret(repo, path, decoded_raw):
                     raise Refused("credential-shaped content refused")
                 try:

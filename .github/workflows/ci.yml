@@ -164,6 +164,13 @@ jobs:
     - name: systemd unit template tests
       timeout-minutes: 10
       run: python3 -m unittest discover -s scripts/systemd -t scripts/systemd -v
+    # The Muster route's approvals (scripts/muster_approval.py, AFC-654) verify ECDSA P-256
+    # signatures with the cryptography package, pinned to the version the server runs.  Without
+    # it the route's tests and the installer's payload test skip, and say so, so this step is
+    # what makes them real.  It must come before the steps that import the route.
+    - name: Install cryptography for the Muster route tests
+      timeout-minutes: 10
+      run: pip install "cryptography==46.0.5"
     - name: Coding CPU And Memory Controller Tests
       timeout-minutes: 10
       run: |
@@ -197,6 +204,15 @@ jobs:
         python3 scripts/test_fleet_seat_inventory.py
         python3 scripts/test_fleet_ops_control.py
         python3 scripts/test_fleet_resource_control.py
+        python3 scripts/test_muster_approval.py
+    # The Muster route's vectors (AFC-654):  the checker re-derives every vector printed in
+    # section 16 of the route spec from its text alone, and the generator's `--check` proves the
+    # fixture the Swift side reads is what the module and helper produce.  Test keys only.
+    - name: Muster route vectors
+      timeout-minutes: 10
+      run: |
+        (cd docs/muster-ios && python3 -I check_vectors_v5.py)
+        python3 scripts/make_muster_vectors.py --check
     # The Lark bridge: the eyes marker, the Operator's signal path and the
     # durable write of a record.  No job ran this file, so every assertion in
     # it was decoration: the write could lose a record on a crash and CI would

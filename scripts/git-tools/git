@@ -333,25 +333,42 @@ def _remote_post(url: str, headers: dict, body: bytes, timeout: float) -> tuple[
                 expected = None
             if getattr(r, "chunked", False) or r.headers.get("Transfer-Encoding"):
                 expected = None
-            sock = getattr(getattr(getattr(r, "fp", None), "raw", None), "_sock", None)
-            if sock is None:
-                # Without the socket the remaining budget cannot be applied to each read, so a stalled body could
-                # outlast the deadline:  fail closed rather than read unbounded.
-                raise _TransportError(True, "transport")
+            raw_fp = getattr(getattr(r, "fp", None), "raw", None)
+            sock = None
+            # Try every place a response keeps its socket, and accept only an object that can
+            # really set a timeout.
+            for candidate in (
+                getattr(raw_fp, "_sock", None),
+                getattr(getattr(r, "connection", None), "sock", None),
+                raw_fp,
+            ):
+                if callable(getattr(candidate, "settimeout", None)):
+                    sock = candidate
+                    break
+            # The socket is only a way to tighten the per-read timeout to the remaining
+            # budget.  Some responses that have genuinely arrived do not expose it
+            # (wrapped / buffered transports, proxies, test doubles):  requiring it
+            # discarded a complete answer as a transport failure (AFC-638).  When it
+            # is absent, read anyway:  the opener's own timeout (the full budget
+            # passed to op.open) still bounds any single blocking read, and the
+            # deadline is re-checked before and after every chunk below, so a
+            # slow-drip body is cut off at the first chunk after the deadline, at most one
+            # per-read timeout late.
             while True:
                 if expected is not None and total >= expected:
                     break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise _TransportError(True, "deadline")
-                try:
-                    sock.settimeout(remaining)
-                except OSError:
-                    if expected is None and total > 0:
-                        break
-                    if expected is not None and total > 0:
-                        raise _TransportError(True, "truncated response") from None
-                    raise _TransportError(True, "transport") from None
+                if sock is not None:
+                    try:
+                        sock.settimeout(remaining)
+                    except OSError:
+                        if expected is None and total > 0:
+                            break
+                        if expected is not None and total > 0:
+                            raise _TransportError(True, "truncated response") from None
+                        raise _TransportError(True, "transport") from None
                 read_size = 65536
                 if expected is not None:
                     read_size = min(read_size, expected - total)
@@ -592,13 +609,21 @@ def _failure(exc: "_TransportError", write: bool) -> str:
             + (_REMOTE_UNKNOWN if write and exc.sent else "")
             + " (no direct fallback)"
         )
-    if write and exc.sent:
-        return (
-            "the hosted endpoint did not answer"
-            + _REMOTE_UNKNOWN
-            + " (no direct fallback)"
-        )
-    return "the hosted endpoint could not be reached (no direct fallback)"
+    if not exc.sent:
+        # Provably never left this host (DNS, refused connection, certificate
+        # check):  the endpoint really could not be reached.
+        return "the hosted endpoint could not be reached (no direct fallback)"
+    # The request may have been sent:  `sent` is only False for failures that provably never
+    # left, so a timeout wrapped in URLError (a connect timeout cannot be told from a send
+    # timeout, and a write must be treated as possibly sent) lands here too.  So this does not
+    # assert that the endpoint was reachable, only that no answer arrived (deadline, closed SSL
+    # socket, transport error).  Saying "could not be reached" for the common case sent seats
+    # chasing a phantom outage and falling back to gh (AFC-638).
+    return (
+        "the hosted endpoint's answer was lost or never arrived"
+        + (_REMOTE_UNKNOWN if write else "")
+        + " (no direct fallback)"
+    )
 
 
 def _status_message(status: int, write: bool) -> str:

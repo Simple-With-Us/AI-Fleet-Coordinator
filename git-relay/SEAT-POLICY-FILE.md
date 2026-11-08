@@ -64,3 +64,17 @@ This loader is only one prerequisite, not that recovery transaction. Never
 activate it until private backup custody, supervised rollback, crash/reboot
 fault tests and paired Worker activation/reconciliation have also been reviewed
 and qualified. No runtime effect is authorized by this document.
+
+### Adding one seat to a credential-backed unit
+
+`seat_policy.py install-seat` also works on a unit that already reads its policy
+through this credential input. It finds the one `LoadCredential=seat-policy:<file>`
+backing file, refuses a credential setting next to the file or inline inputs, and
+replaces the backing file under the same transaction as the file input: the lock,
+the full-digest check, the additive-only result, the signed proof receipt against the
+relay's own audit row, a backup, a health check and a restore on failure. The backing
+file must be a private regular file (0400 or 0600, one link, no symlink, in a
+directory nobody else can write). The restart makes systemd hand the new copy to the
+service. This does not migrate a unit onto the credential input. That migration, its
+journal and its rollback stay the separately reviewed step above, and no runtime effect
+is authorized by this document.
