@@ -66,9 +66,24 @@ class ParseTest(unittest.TestCase):
         )
 
     def test_missing_keys_rejected(self):
+        # review_by is optional (no expiry by default);  every other key is still required.
         for key in GOOD:
+            if key == "review_by":
+                continue
             broken = {k: v for k, v in GOOD.items() if k != key}
             self.assertIsNone(parse_declaration(broken), key)
+
+    def test_review_by_is_optional_and_means_no_expiry(self):
+        absent = {k: v for k, v in GOOD.items() if k != "review_by"}
+        for raw in (absent, {**GOOD, "review_by": None}):
+            decl = parse_declaration(raw)
+            self.assertIsInstance(decl, BackupDeclaration)
+            self.assertIsNone(decl.review_by)
+
+    def test_a_bad_explicit_review_by_still_fails_closed(self):
+        # A given-but-wrong date must never silently become "no expiry".
+        for bad in ("soon", True, False, [], {}, float("nan"), float("inf"), GOOD["declared_at"], GOOD["declared_at"] - 1):
+            self.assertIsNone(parse_declaration({**GOOD, "review_by": bad}), repr(bad))
 
     def test_the_retired_minimax_runtime_is_rejected(self):
         self.assertIsNone(parse_declaration({**GOOD, "runtime": "minimax"}))
@@ -139,6 +154,23 @@ class SelectTest(unittest.TestCase):
         self.assertEqual(runtime, HOLD)
         self.assertIsNotNone(decl)
         self.assertEqual(hold, REVIEW_DUE)
+
+    def test_no_review_by_never_expires(self):
+        absent = {k: v for k, v in GOOD.items() if k != "review_by"}
+        for raw in (absent, {**GOOD, "review_by": None}):
+            for moment in (NOW, NOW + 10 * 365 * 86400, 4_000_000_000.0):
+                runtime, decl, hold = select_consult_runtime(raw, now=moment)
+                self.assertEqual(runtime, OPENROUTER)
+                self.assertIsNotNone(decl)
+                self.assertIsNone(decl.review_by)
+                self.assertIsNone(hold)
+
+    def test_explicit_review_by_still_holds_at_the_boundary(self):
+        explicit = {**GOOD, "review_by": NOW + 10}
+        self.assertEqual(select_consult_runtime(explicit, now=NOW + 9)[0], OPENROUTER)
+        runtime, decl, hold = select_consult_runtime(explicit, now=NOW + 10)
+        self.assertEqual((runtime, hold), (HOLD, REVIEW_DUE))
+        self.assertEqual(decl.review_by, NOW + 10)
 
     def test_real_clock_default(self):
         runtime, _, hold = select_consult_runtime(

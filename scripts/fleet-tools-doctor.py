@@ -212,6 +212,8 @@ SHIPPED_EXACT = frozenset(
         "scripts/fleet_lanes/layout.py",
         "scripts/fleet_lanes/placement.py",
         "scripts/fleet_lanes/placement-exceptions.json",
+        # AFC-618:  guard.py imports temp_build, so it ships beside it (mirrors the release EXACT entry).
+        "scripts/fleet_lanes/temp_build.py",
         "scripts/fleet_knobs/__init__.py",
         "scripts/fleet_knobs/knobs.py",
         "scripts/fleet_knobs/lkg.py",

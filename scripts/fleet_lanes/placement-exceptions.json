@@ -570,6 +570,34 @@
         "mac",
         "server"
       ]
+    },
+    {
+      "id": "temp-build-homebrew-source",
+      "pattern": "**/tmp/*-20??????-*",
+      "class": "temp-build",
+      "creator": "homebrew",
+      "reason": "Homebrew builds a formula from source in a temp folder named for the formula and the date, and removes it when the install ends.",
+      "decided_by": "CLAUDE, seeded with the temp-build rule (AFC-618); the owner reviews at expiry",
+      "decided_on": "2026-11-07",
+      "expires": "2027-05-07",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "temp-build-cargo-install",
+      "pattern": "**/cargo-install*",
+      "class": "temp-build",
+      "creator": "cargo",
+      "reason": "`cargo install` builds in a temp target folder of its own and removes it when the install ends.",
+      "decided_by": "CLAUDE, seeded with the temp-build rule (AFC-618); the owner reviews at expiry",
+      "decided_on": "2026-11-07",
+      "expires": "2027-05-21",
+      "hosts": [
+        "mac",
+        "server"
+      ]
     }
   ]
 }

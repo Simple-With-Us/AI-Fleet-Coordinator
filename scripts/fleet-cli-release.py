@@ -43,7 +43,8 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # exporter it calls (its systemd units stay repo-only under simple_tools/server/).
 # The 155th is simple_tools/muster_service.py (AFC-654), the read-only Operator service `simple-chat`
 # dispatches for Muster's Seats panel.
-MAX_FILES = 155
+# The 156th is fleet_lanes/temp_build.py (AFC-618), the build-argv reader `lane`'s guard.py imports.
+MAX_FILES = 156
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,
@@ -75,7 +76,7 @@ RECALL_MODULES = (
 KNOB_MODULES = ("__init__", "knobs", "lkg", "registry", "source", "values")
 SCOPED_READER_MODULES = ("__init__", "core")
 # `lane` runs from these fleet_lanes modules plus its bash shim (fleet-apps.json is already shipped).
-LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout", "placement")
+LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout", "placement", "temp_build")
 AFC331_FILES = (
     "scripts/simple_tools/mcp/notes-tools.json",
     "scripts/simple_tools/mcp/recall-tools.json",
