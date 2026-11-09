@@ -515,25 +515,42 @@ export function annotateExternalGroups(validBuild, groups) {
   return { groups: out, reason: parts.length ? parts.join(";  ") : null };
 }
 
-async function loadExternalBetaGroups(ctx, appleId, platform) {
-  const list = await ctx.asc(
-    `/v1/apps/${appleId}/betaGroups?filter[isInternalGroup]=false&limit=200` +
-      "&fields[betaGroups]=name,isInternalGroup,publicLinkEnabled",
+const ASC_BUILD_LIST_FIELDS =
+  "&fields[builds]=version,uploadedDate,processingState,expired" +
+  "&include=preReleaseVersion&fields[preReleaseVersions]=version,platform";
+
+/** App Store Connect list path for beta groups (no filter[isInternalGroup] on this relationship). */
+export function externalBetaGroupsListPath(appleId) {
+  return (
+    `/v1/apps/${appleId}/betaGroups?limit=200` +
+    "&fields[betaGroups]=name,isInternalGroup,publicLinkEnabled"
   );
+}
+
+/** Newest build assigned to a beta group; prefers /v1/builds?filter[betaGroups]= for sort support. */
+async function newestBuildInBetaGroup(ctx, groupId, platform) {
+  const byFilter = await ctx.asc(
+    `/v1/builds?filter[betaGroups]=${encodeURIComponent(groupId)}&sort=-uploadedDate&limit=10${ASC_BUILD_LIST_FIELDS}`,
+  );
+  let normalized = normalizeBuilds(byFilter, platform);
+  if (!normalized.length) normalized = normalizeBuilds(byFilter, null);
+  if (normalized.length) return normalized[0];
+  const byRel = await ctx.asc(`/v1/betaGroups/${groupId}/builds?limit=10${ASC_BUILD_LIST_FIELDS}`);
+  normalized = normalizeBuilds(byRel, platform);
+  if (!normalized.length) normalized = normalizeBuilds(byRel, null);
+  return normalized[0] || null;
+}
+
+async function loadExternalBetaGroups(ctx, appleId, platform) {
+  const list = await ctx.asc(externalBetaGroupsListPath(appleId));
   const rows = [];
   for (const g of list.data || []) {
     const attrs = g.attributes || {};
     if (attrs.isInternalGroup) continue;
-    const [buildsJson, testersJson] = await Promise.all([
-      ctx.asc(
-        `/v1/betaGroups/${g.id}/builds?sort=-uploadedDate&limit=10` +
-          "&fields[builds]=version,uploadedDate,processingState,expired" +
-          "&include=preReleaseVersion&fields[preReleaseVersions]=version,platform",
-      ),
+    const [newest, testersJson] = await Promise.all([
+      newestBuildInBetaGroup(ctx, g.id, platform),
       ctx.asc(`/v1/betaGroups/${g.id}/betaTesters?limit=1`),
     ]);
-    const builds = normalizeBuilds(buildsJson, platform);
-    const newest = builds[0] || null;
     rows.push({
       name: attrs.name || g.id,
       id: g.id,
@@ -803,8 +820,13 @@ export async function evaluateApp(ctx, key, app, now) {
       }
     }
 
-    const externalRows = await loadExternalBetaGroups(ctx, app.appleId, app.platform);
-    applyExternalGroupStaleness(r, valid, externalRows);
+    try {
+      const externalRows = await loadExternalBetaGroups(ctx, app.appleId, app.platform);
+      applyExternalGroupStaleness(r, valid, externalRows);
+    } catch (err) {
+      r.externalGroups = [];
+      r.externalGroupsWarning = String(err.message || err).slice(0, 300);
+    }
   } catch (err) {
     r.status = "error";
     r.reason = String(err.message || err).slice(0, 300);

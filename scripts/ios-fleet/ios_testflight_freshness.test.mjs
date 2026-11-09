@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   EXIT_BEHIND, EXIT_CURRENT, EXIT_FAILED, SENTENCE_GAP,
-  acquireLockDir, annotateExternalGroups, betaTesterCountFromJson, buildCutTime, oldestRun, correlateRun, dispatchCommand, evaluateApp, exitCodeFor, loadRegistry,
+  acquireLockDir, annotateExternalGroups, betaTesterCountFromJson, buildCutTime, externalBetaGroupsListPath, oldestRun, correlateRun, dispatchCommand, evaluateApp, exitCodeFor, loadRegistry,
   ascFailureText, ascRequest, main, makeAscGuard, makeContext, makeGate, matchCheckName, ownerTime, parseArgs, planAlerts, runRemedies, sentences,
 } from "./ios_testflight_freshness.mjs";
 
@@ -95,6 +95,18 @@ function fakeDeps({ repos = {}, builds = {}, betaGroups = {}, window = "normal",
         }));
         return { data: groups };
       }
+      const buildsForGroup = /filter\[betaGroups\]=([^&]+)/.exec(p);
+      if (buildsForGroup) {
+        const gid = decodeURIComponent(buildsForGroup[1]);
+        for (const list of Object.values(betaGroups)) {
+          const g = list.find((x) => x.id === gid);
+          if (g) {
+            const b = g.builds || [];
+            return { data: b.map((x) => x.data), included: b.map((x) => x.inc) };
+          }
+        }
+        return { data: [], included: [] };
+      }
       const groupBuilds = /^\/v1\/betaGroups\/([^/]+)\/builds/.exec(p);
       if (groupBuilds) {
         for (const list of Object.values(betaGroups)) {
@@ -117,9 +129,12 @@ function fakeDeps({ repos = {}, builds = {}, betaGroups = {}, window = "normal",
         }
         return { data: [], meta: { paging: { total: 0, limit: 1 } } };
       }
-      const id = /filter\[app\]=(\d+)/.exec(p)[1];
-      const list = builds[id] || [];
-      return { data: list.map((b) => b.data), included: list.map((b) => b.inc) };
+      const appFilter = /filter\[app\]=(\d+)/.exec(p);
+      if (appFilter) {
+        const list = builds[appFilter[1]] || [];
+        return { data: list.map((b) => b.data), included: list.map((b) => b.inc) };
+      }
+      throw new Error(`unrouted asc path ${p}`);
     },
     async buildWindow() { return window; },
     readLastShip: (k) => lastShip[k] || null,
@@ -271,6 +286,31 @@ test("external beta groups: clean group matches the valid build", async () => {
   assert.equal(r.externalGroups[0].findings, undefined);
   assert.equal(r.externalGroups[0].testerCount, 4);
   assert.equal(r.externalGroups[0].publicLinkEnabled, true);
+});
+
+test("external beta groups list path has no filter[isInternalGroup]", () => {
+  const path = externalBetaGroupsListPath("123456789");
+  assert.doesNotMatch(path, /filter\[isInternalGroup\]/);
+  assert.match(path, /\/v1\/apps\/123456789\/betaGroups/);
+  assert.match(path, /fields\[betaGroups\]=name,isInternalGroup,publicLinkEnabled/);
+});
+
+test("external beta groups ASC failure is a warning, not an app error", async () => {
+  const reg = registry({ demo: app() });
+  const { deps, calls } = fakeDeps({
+    repos: { Demo: botfleetLike() },
+    builds: BOTFLEET_BUILDS,
+  });
+  const orig = deps.asc;
+  deps.asc = async (p) => {
+    if (p.includes("/betaGroups")) throw new Error("App Store Connect /v1/apps/111/betaGroups: HTTP 400 PARAMETER_ERROR.ILLEGAL");
+    return orig(p);
+  };
+  const r = await evaluateApp(makeContext(deps, reg), "demo", reg.apps.demo, NOW);
+  assert.equal(r.status, "current", r.reason);
+  assert.equal(r.externalGroupsWarning, "App Store Connect /v1/apps/111/betaGroups: HTTP 400 PARAMETER_ERROR.ILLEGAL");
+  assert.deepEqual(r.externalGroups, []);
+  assert.ok(calls.gh.length > 0, "build-level check still ran");
 });
 
 test("betaTesterCountFromJson and annotateExternalGroups", () => {

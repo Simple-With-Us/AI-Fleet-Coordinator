@@ -77,9 +77,12 @@ shipped sha means current.  The table's SHIPPED column says which source was use
 
 The build-level check alone cannot see what testers install from a public link or an external
 group.  For each app the check also reads App Store Connect **external** beta groups
-(`GET /v1/apps/{id}/betaGroups` with `filter[isInternalGroup]=false`), then for each group the
-newest assigned build, the tester count, and whether the public link is enabled.  Read-only:  it
-never changes groups, builds in a group, or testers.
+(`GET /v1/apps/{id}/betaGroups`, then skips rows with `isInternalGroup` on the client — the
+relationship endpoint rejects `filter[isInternalGroup]`), then for each group the newest assigned
+build (`GET /v1/builds?filter[betaGroups]={id}&sort=-uploadedDate`, with a relationship fallback),
+the tester count, and whether the public link is enabled.  Read-only:  it never changes groups,
+builds in a group, or testers.  If this extra lookup fails for one app, the build-level result is
+kept and `externalGroupsWarning` names the error.
 
 Each app row in `--json` carries an **`externalGroups`** array (empty when there are no external
 groups).  Each element has `name`, `id`, `newestBuild` (same shape as `testflight`), `testerCount`,
