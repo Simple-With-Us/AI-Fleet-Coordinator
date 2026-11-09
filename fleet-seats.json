@@ -709,6 +709,10 @@
           "source": "",
           "ttlSeconds": 900
         }
+      ],
+      "runsOn": [
+        "mac",
+        "server"
       ]
     },
     "CLUTCH": {
@@ -1911,7 +1915,10 @@
         }
       ],
       "platforms": [],
-      "rules": []
+      "rules": [],
+      "runsOn": [
+        "cloud"
+      ]
     },
     "GROK-WEB": {
       "notApplicable": [
@@ -2310,6 +2317,9 @@
           "source": "",
           "ttlSeconds": 900
         }
+      ],
+      "runsOn": [
+        "vm"
       ]
     },
     "MC": {
@@ -3161,6 +3171,10 @@
           "source": "",
           "ttlSeconds": 900
         }
+      ],
+      "runsOn": [
+        "mac",
+        "server"
       ]
     }
   }

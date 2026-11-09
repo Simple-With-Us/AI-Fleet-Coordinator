@@ -579,6 +579,8 @@ class TestMcpWrapper(unittest.TestCase):
         self.assertEqual(reply["result"]["serverInfo"]["name"], "GR-MCP")
         reply = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = [t["name"] for t in reply["result"]["tools"]]
+        # The original seven come first and unchanged;  the wf verbs follow (AFC-664 item 6,
+        # tested in test_mcp_wf_verbs).  mint_token stays HTTP-only: raw App tokens never cross stdio.
         self.assertEqual(
             names[:7],
             [
@@ -592,6 +594,9 @@ class TestMcpWrapper(unittest.TestCase):
             ],
         )
         # mint_token stays HTTP-only: raw App tokens never cross stdio
+        from git_relay.mcp_server import WF_ACTIONS
+
+        self.assertEqual(set(names[7:]), set(WF_ACTIONS) | {"stage_chunk", "stage_abort"})
         self.assertNotIn("mint_token", names)
 
     def test_tools_call_forwards_to_relay_with_seat_token(self):
@@ -2916,7 +2921,7 @@ class TestVerifiedSecret(unittest.TestCase):
         self.assertEqual(child["INFISICAL_FLEET_OPS_PROJECT_ID"], "project-uuid")
         self.assertNotIn("ENVIRONMENT", child)
         self.assertNotIn("INFISICAL_PROJECT_ID", child)
-        self.assertNotIn("HOME", child)  # no incidental ~/.agent-sync resolution
+        self.assertNotIn("HOME", child)  # no incidental ~/.simple-tools resolution
         self.assertNotIn("GIT_RELAY_SEATS_JSON", child)
 
     def test_unreadable_credential_file_fails_closed(self):
@@ -3073,7 +3078,7 @@ class TestProductionCredentialBinding(unittest.TestCase):
 
 class TestScopedChildProjectBinding(unittest.TestCase):
     """The scoped CLI child must carry the SUPPORTED fleet-secrets variable
-    names and cannot fall through to ~/.agent-sync file resolution."""
+    names and cannot fall through to ~/.simple-tools file resolution."""
 
     def _creds(self):
         directory = pathlib.Path(tempfile.mkdtemp())

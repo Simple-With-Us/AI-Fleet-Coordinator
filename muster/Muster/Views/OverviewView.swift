@@ -24,10 +24,16 @@ struct OverviewView: View {
         _gridRequest = gridRequest
     }
 
-    /// True unless the last seat check is older than its window,  as after a long sleep.  An
-    /// old check's counts are not current,  so they read as not known until a new one lands.
+    /// True unless the last trusted seat check is older than its window,  as after a long
+    /// sleep.  An old check's counts are not current,  so they read as not known until a new
+    /// one lands.
+    ///
+    /// It is measured from `DriftMonitor.lastTrustedRunAt` (GRID-33):  the counts and the
+    /// verdict on screen are only ever a trusted run's,  and a run that could not be trusted
+    /// clears them,  so its landing time says nothing about how old they are.  The "Last
+    /// checked" line beside the verdict still says when any check last landed.
     private var seatCheckIsCurrent: Bool {
-        monitor.lastRunAt.map { SeatCheckFreshness.isCurrent(checkedAt: $0, now: watch.now) } ?? true
+        monitor.lastTrustedRunAt.map { SeatCheckFreshness.isCurrent(checkedAt: $0, now: watch.now) } ?? true
     }
 
     /// The counts,  kept while a run checks again:  the store keeps the last answer on
@@ -178,19 +184,23 @@ struct OverviewView: View {
         }
     }
 
-    /// What the watcher is set to watch,  always shown:  a watcher that is off or watching
-    /// nothing is a warning,  never a hidden line.
+    /// What the watcher actually holds,  always shown:  a watcher that is off,  watching
+    /// nothing,  or missing a stream that failed to start is a warning,  never a hidden line
+    /// (GRID-37).  The paths no started watch covers are folded under it.
     private var watchLine: some View {
         let line = GridPresentation.WatchLine.make(
             isWatching: monitor.isWatching,
-            pathCount: monitor.watchedPathCount,
+            coverage: monitor.watchCoverage,
             seatCount: monitor.watchedSeats.count,
             recheckSeconds: DriftMonitor.safetyNetInterval
         )
-        return Label(line.text, systemImage: line.tone == .watching ? "eye" : "eye.slash")
-            .font(.callout)
-            .foregroundStyle(line.tone == .watching ? Color.secondary : Color.orange)
-            .fixedSize(horizontal: false, vertical: true)
+        return VStack(alignment: .leading, spacing: 4) {
+            Label(line.text, systemImage: line.tone == .watching ? "eye" : "eye.slash")
+                .font(.callout)
+                .foregroundStyle(line.tone == .watching ? Color.secondary : Color.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            UnwatchedPathsDisclosure(coverage: monitor.watchCoverage)
+        }
     }
 
     /// One count,  opening the grid on the seats it counts.  A nil count reads unknown,

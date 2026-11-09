@@ -14,8 +14,8 @@ The older rollout docs say `jays-services`.  That slug returns 404 now.  Use `si
 
 - 13 projects.  Integrations: PagerDuty, Datadog (us5), GitHub (two), Vercel, Cursor, Copilot; app installs Linear, linear-sentry-agent, botfleet-incident-monitor.  No Slack integration is installed.
 - 26 workflows.  **Four still target Slack**, which has no integration, so they deliver nowhere:
-  - `3930668` — org-wide production high-priority issues, Seer RCA and PR-ready notices, metric monitors `9700541`–`9700546` → Slack `#agent-sync`.
-  - `3932162` — `scheduler-tick` and `usage-monitor-scheduler` cron failures → Slack `#agent-sync`.
+  - `3930668` — org-wide production high-priority issues, Seer RCA and PR-ready notices, metric monitors `9700541`–`9700546` → Slack `#Work-In-Progress`.
+  - `3932162` — `scheduler-tick` and `usage-monitor-scheduler` cron failures → Slack `#Work-In-Progress`.
   - `3645269` → Slack `#agentic-trading-app`.
   - `3645774` → Slack `#congress-trade`.
 - `3930764` routes ST, UM, fleet-infra and BF issues plus four uptime monitors to PagerDuty.  This one works.
@@ -26,7 +26,7 @@ The older rollout docs say `jays-services`.  That slug returns 404 now.  Use `si
 ### BetterStack
 
 - Uptime: 10 monitors (free-tier cap reached), 4 heartbeats (`id-renewal-watch`, `usage-monitor-env-sync`, `video-conversion-stall-watch`, `morning-pr-merge-list`).
-- Notifications: email only, plus a Slack integration aimed at retired `#agent-sync`.  No escalation policy, no phone or SMS.
+- Notifications: email only, plus a Slack integration aimed at the retired Slack coordination channel.  No escalation policy, no phone or SMS.
 - Status page `status.simplewithus.com` reports `aggregate_state: downtime` while every monitored resource is operational.  The retired Fleet Board resource (`not_monitored`, downtime 10-13 to 10-15) is the likely cause.  The Simple-With-Us homepage reads that aggregate, so the public site probably says there is a disruption.
 - Telemetry: only the sample "Onboarding" source.  Nothing ships logs.
 - Overlap: congress.trade, socratictrade.com, contactlogo.com and usage.jays.services are probed by both BetterStack and Sentry Uptime.
@@ -40,11 +40,11 @@ The older rollout docs say `jays-services`.  That slug returns 404 now.  Use `si
 ### Datadog
 
 - Free plan, keys valid (the MCP failure is the plugin's `not-setup` host, not the keys).
-- 10 monitors, all default templates, notifying `@slack-agent-sync` or placeholder handles.  Two are in Alert (disk, load).
+- 10 monitors, all default templates, notifying `@slack-simple-tools` or placeholder handles.  Two are in Alert (disk, load).
 
 ### Zulip
 
-- Streams: agent-sync, alerts, builds, general, ideas, incident-response, issues, sandbox, trading.
+- Streams: simple-tools, alerts, builds, general, ideas, incident-response, issues, sandbox, trading.
 - Incoming-webhook bots exist for Sentry, PagerDuty and Linear, but nothing is wired to them: no Sentry workflow targets the Sentry bot, PagerDuty has no extension, and Linear has no Zulip webhook.
 - The only confirmed producer for `#alerts` is `heldalert.py`.  `#builds` and `#incident-response` have no producer.
 - Integration bots never wake a seat (`docs/protocols/zulip-fleet-guide.md`).  `#alerts` reaches the owner, not agents.
@@ -72,7 +72,7 @@ One owner per signal class, one place each class lands.
 | Deploys and builds | GitHub, Vercel, Coolify | Zulip `#builds` | No |
 | Edge, DNS, Access | Cloudflare notifications | Zulip `#alerts` | No |
 | Tracked work | Linear | Zulip `#issues` | No |
-| Agent telemetry | Sentry agent-telemetry workflows | Zulip `#agent-sync` | No |
+| Agent telemetry | Sentry agent-telemetry workflows | Zulip `#Work-In-Progress` | No |
 
 Rules the shape depends on:
 
@@ -85,12 +85,12 @@ Rules the shape depends on:
 
 | Pairing | Method | Notes |
 |---|---|---|
-| Sentry → Zulip | Zulip Sentry integration via Sentry Internal Integrations, each enabled as an alert-rule action | The webhook URL fixes the stream, so create one Internal Integration per destination: `#alerts`, `#trading`, `#agent-sync`.  The Sentry bot already exists.  Whether Seer RCA payloads render is unconfirmed; test one. |
+| Sentry → Zulip | Zulip Sentry integration via Sentry Internal Integrations, each enabled as an alert-rule action | The webhook URL fixes the stream, so create one Internal Integration per destination: `#alerts`, `#trading`, `#Work-In-Progress`.  The Sentry bot already exists.  Whether Seer RCA payloads render is unconfirmed; test one. |
 | BetterStack → Zulip | BetterStack outgoing webhook with a `{"text": …}` template to Zulip `slack_incoming` | Untested.  Replace the dead Slack integration with it. |
 | BetterStack ↔ Sentry | No native incident pairing either way | Split ownership instead of bridging (table above).  Optional: BetterStack incoming webhook can open incidents from a Sentry Internal Integration. |
 | BetterStack → PagerDuty | Outgoing webhook to PagerDuty Events API v2 | Only if BetterStack keeps prod URLs and PagerDuty stays the pager.  The reverse (PagerDuty → BetterStack) is native but not needed. |
 | PagerDuty → Zulip | Zulip PagerDuty integration via a Generic Webhooks v3 subscription | Bot already exists.  Target `#incident-response`. |
-| Datadog → Zulip | Datadog webhook integration to Zulip (or `slack_incoming`) | Replace `@slack-agent-sync` in the provisioning scripts in Fleet-OPS. |
+| Datadog → Zulip | Datadog webhook integration to Zulip (or `slack_incoming`) | Replace `@slack-simple-tools` in the provisioning scripts in Fleet-OPS. |
 | GitHub → Zulip | Zulip GitHub and GitHub Actions integrations | `deployment_status`, `check_run`, failed workflow runs → `#builds`.  Filter with `only_events` to avoid noise. |
 | Linear → Zulip | Zulip Linear integration | Bot already exists.  Target `#issues`. |
 | Vercel → Zulip | No native integration; GitHub `deployment_status` covers it | Account webhooks need Pro; prefer the GitHub path. |
@@ -103,10 +103,10 @@ Rules the shape depends on:
 
 ### Phase 0 — restore lost alerts (live config, owner OK needed)
 
-1. Create three Sentry Internal Integrations for Zulip, one per stream (`#alerts`, `#trading`, `#agent-sync`), because each webhook URL is bound to one stream.  Re-point `3930668` and `3932162` to the `#alerts` one and `3645269` and `3645774` to the `#trading` one.
+1. Create three Sentry Internal Integrations for Zulip, one per stream (`#alerts`, `#trading`, `#Work-In-Progress`), because each webhook URL is bound to one stream.  Re-point `3930668` and `3932162` to the `#alerts` one and `3645269` and `3645774` to the `#trading` one.
 2. Attach the five unwatched Sentry uptime monitors to a workflow that posts to `#alerts`.  This includes `contactlogo.com`, which BetterStack also probes; it stays watched until Phase 2 decides whether its Sentry monitor is removed.
 3. Add one low-priority workflow for the 68 unwatched crons → `#alerts`, no paging.
-4. Route the four agent-telemetry workflows to the `#agent-sync` integration in addition to email.
+4. Route the four agent-telemetry workflows to the `#Work-In-Progress` integration in addition to email.
 5. Replace BetterStack's Slack integration with the Zulip webhook.
 6. Remove the retired Fleet Board resource from `status.simplewithus.com` and delete or archive its monitor, then confirm the aggregate returns to operational.
 7. Wire PagerDuty → Zulip `#incident-response` and Linear → Zulip `#issues` using the existing bots.

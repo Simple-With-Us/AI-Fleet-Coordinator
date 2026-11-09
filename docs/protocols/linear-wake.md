@@ -6,8 +6,8 @@ when a bot posts on both sides, are fine.
 
 Owner ruling:  Jay, Oct 27, 2026, rule 3.
 
-Implementation: `scripts/agent-sync-mcp/src/linear-wake.js`, wired in `scripts/agent-sync-mcp/src/index.js`.
-Tests: `scripts/agent-sync-mcp/test/linear-wake.test.mjs`.
+Implementation: `scripts/simple-tools-mcp/src/linear-wake.js`, wired in `scripts/simple-tools-mcp/src/index.js`.
+Tests: `scripts/simple-tools-mcp/test/linear-wake.test.mjs`.
 
 ## The Door
 
@@ -60,7 +60,7 @@ update that changed nothing about the assignment wakes nobody.
 of these is true:
 
 - it carries a line that is exactly `<!-- zulip-relay -->`, the AFC relay's marker
-  (`scripts/agent_sync/linear_relay.py`, `MARKER`);
+  (`scripts/simple_tools/linear_relay.py`, `MARKER`);
 - it carries a Zulip narrow link, `simplewithus.zulipchat.com/#narrow/` (a channel/topic narrow or a
   `near/<id>` one);
 - it carries the relay's `**Zulip discussion:**` line;

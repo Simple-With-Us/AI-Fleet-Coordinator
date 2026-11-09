@@ -83,9 +83,9 @@ class Remote(unittest.TestCase):
         self.assertIn("seat: CODEX", out)
         self.assertNotIn(BEARER, out + err + json.dumps(msg))
 
-    LIST_TEXT = "agent-sync linear_list\nAFC-12 | Fix the thing | In Progress | P1\nAFC-13 | Other | Todo | P2"
+    LIST_TEXT = "simple-tools linear_list\nAFC-12 | Fix the thing | In Progress | P1\nAFC-13 | Other | Todo | P2"
     SHOW_TEXT = (
-        "agent-sync linear_show: AFC-12\ndescription: the full body\nlabels: Kind/bug\n"
+        "simple-tools linear_show: AFC-12\ndescription: the full body\nlabels: Kind/bug\n"
         "comment by CODEX: the comment body\nduplicate_of: AFC-9"
     )
 

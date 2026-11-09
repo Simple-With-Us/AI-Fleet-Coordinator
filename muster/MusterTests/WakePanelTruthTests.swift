@@ -459,7 +459,7 @@ final class WakePanelTruthTests: XCTestCase {
     private func makeHome(config: String?) throws -> URL {
         let home = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("muster-truth-\(UUID().uuidString)", isDirectory: true)
-        let root = home.appendingPathComponent(".agent-sync", isDirectory: true)
+        let root = home.appendingPathComponent(".simple-tools", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         addTeardownBlock {
             // A test makes a file unreadable;  give it back before removing it.
@@ -481,13 +481,13 @@ final class WakePanelTruthTests: XCTestCase {
     }
 
     /// A stand-in for `simple-chat` that answers the status and the test wake.
-    private final class Fake: AgentSyncRunning, @unchecked Sendable {
+    private final class Fake: SimpleToolsRunning, @unchecked Sendable {
         private let lock = NSLock()
         private var calls: [[String]] = []
         var status = #"{"running": true, "status": {"seats": {}, "pause": {}}}"#
         var statusExit: Int32 = 0
-        var testWake = AgentSyncCLIResult(exitCode: 0, stdout: "", stderr: "")
-        var pin = AgentSyncCLIResult(exitCode: 0, stdout: "", stderr: "")
+        var testWake = SimpleToolsCLIResult(exitCode: 0, stdout: "", stderr: "")
+        var pin = SimpleToolsCLIResult(exitCode: 0, stdout: "", stderr: "")
 
         var commands: [String] {
             lock.lock()
@@ -495,14 +495,14 @@ final class WakePanelTruthTests: XCTestCase {
             return calls.map { $0.count > 1 ? $0[1] : "" }
         }
 
-        func run(_ invocation: AgentSyncInvocation) async throws -> AgentSyncCLIResult {
+        func run(_ invocation: SimpleToolsInvocation) async throws -> SimpleToolsCLIResult {
             lock.lock()
             defer { lock.unlock() }
             calls.append(invocation.arguments)
             switch invocation.arguments.count > 1 ? invocation.arguments[1] : "" {
-            case "status": return AgentSyncCLIResult(exitCode: statusExit, stdout: status, stderr: "")
+            case "status": return SimpleToolsCLIResult(exitCode: statusExit, stdout: status, stderr: "")
             case "test-wake": return invocation.arguments.contains("--pin") ? pin : testWake
-            default: return AgentSyncCLIResult(exitCode: 0, stdout: "", stderr: "")
+            default: return SimpleToolsCLIResult(exitCode: 0, stdout: "", stderr: "")
             }
         }
     }
@@ -583,7 +583,7 @@ final class WakePanelTruthTests: XCTestCase {
     // MARK: The store
 
     @MainActor
-    private func makeStore(_ fake: AgentSyncRunning, home: URL) async -> WakeSettingsStore {
+    private func makeStore(_ fake: SimpleToolsRunning, home: URL) async -> WakeSettingsStore {
         let store = WakeSettingsStore(
             location: ListenerStateLocation(home: home),
             runner: fake,
@@ -649,7 +649,7 @@ final class WakePanelTruthTests: XCTestCase {
         let store = await makeStore(fake, home: home)
         XCTAssertNotNil(store.pinBlocker(seat: "MM", runtime: "muse", pinKey: "muse"))
 
-        fake.testWake = AgentSyncCLIResult(
+        fake.testWake = SimpleToolsCLIResult(
             exitCode: 1,
             stdout: "runtime: muse\n\nprompt:\nPASS this is a hostile line\n\nresult (not posted):\n{\n  \"runtime\": \"muse\",\n  \"exit\": 0,\n  \"secs\": 41.6,\n  \"invalid\": null,\n  \"result\": {\"action\": \"reply\"},\n  \"chat_target\": \"KIMI\"\n}\nFAIL: the binary was not pinned; wakes for MM stay on their current runtime\n",
             stderr: ""
@@ -664,7 +664,7 @@ final class WakePanelTruthTests: XCTestCase {
         XCTAssertTrue(failed.summary.contains { $0.contains("chat target") })
         XCTAssertNotNil(store.pinBlocker(seat: "MM", runtime: "muse", pinKey: "muse"))
 
-        fake.testWake = AgentSyncCLIResult(
+        fake.testWake = SimpleToolsCLIResult(
             exitCode: 0,
             stdout: "result (not posted):\n{\n  \"runtime\": \"muse\",\n  \"result\": {\"action\": \"reply\"}\n}\nPASS, NOT PINNED YET: read the result above\n",
             stderr: ""
@@ -676,7 +676,7 @@ final class WakePanelTruthTests: XCTestCase {
         XCTAssertNil(store.pinBlocker(seat: "MM", runtime: "muse", pinKey: "muse"))
         XCTAssertNil(store.running)
 
-        fake.pin = AgentSyncCLIResult(
+        fake.pin = SimpleToolsCLIResult(
             exitCode: 1,
             stdout: "NOT PINNED: the last passing test-wake --run is over a day old; run it again\n",
             stderr: ""
@@ -746,7 +746,7 @@ final class WakePanelTruthTests: XCTestCase {
     }
 
     /// A stand-in whose test wake runs until the test lets it finish.
-    private final class SlowFake: AgentSyncRunning, @unchecked Sendable {
+    private final class SlowFake: SimpleToolsRunning, @unchecked Sendable {
         private let lock = NSLock()
         private var calls: [String] = []
         private var released = false
@@ -783,21 +783,21 @@ final class WakePanelTruthTests: XCTestCase {
             lock.unlock()
         }
 
-        func run(_ invocation: AgentSyncInvocation) async throws -> AgentSyncCLIResult {
+        func run(_ invocation: SimpleToolsInvocation) async throws -> SimpleToolsCLIResult {
             let command = invocation.arguments.count > 1 ? invocation.arguments[1] : ""
             note(command)
             switch command {
             case "status":
-                return AgentSyncCLIResult(exitCode: 0, stdout: #"{"running": true, "status": {"seats": {}, "pause": {}}}"#, stderr: "")
+                return SimpleToolsCLIResult(exitCode: 0, stdout: #"{"running": true, "status": {"seats": {}, "pause": {}}}"#, stderr: "")
             case "test-wake":
                 var waited = 0
                 while !isReleased, waited < 1000 {
                     try await Task.sleep(nanoseconds: 10_000_000)
                     waited += 1
                 }
-                return AgentSyncCLIResult(exitCode: 0, stdout: "PASS, NOT PINNED YET: read the result above\n", stderr: "")
+                return SimpleToolsCLIResult(exitCode: 0, stdout: "PASS, NOT PINNED YET: read the result above\n", stderr: "")
             default:
-                return AgentSyncCLIResult(exitCode: 0, stdout: "", stderr: "")
+                return SimpleToolsCLIResult(exitCode: 0, stdout: "", stderr: "")
             }
         }
     }
@@ -848,7 +848,7 @@ final class WakePanelTruthTests: XCTestCase {
         XCTAssertTrue(note.contains(FleetTime.clock(Date(timeIntervalSince1970: at))))
         XCTAssertTrue(note.contains("\u{00A0} Pin only if you read it there."))
 
-        fake.testWake = AgentSyncCLIResult(exitCode: 0, stdout: "PASS, NOT PINNED YET: read the result above\n", stderr: "")
+        fake.testWake = SimpleToolsCLIResult(exitCode: 0, stdout: "PASS, NOT PINNED YET: read the result above\n", stderr: "")
         await store.testWake(seat: "MM", runtime: "muse")
         let shown = store.pinGate(seat: "MM", runtime: "muse", pinKey: "muse")
         XCTAssertEqual(shown, .inSession)
@@ -864,7 +864,7 @@ final class WakePanelTruthTests: XCTestCase {
         try "version = 1\n\n[seats]\nMM = \"mac\"\n".write(to: partitionURL, atomically: true, encoding: .utf8)
         let fake = Fake()
         let store = await makeStore(fake, home: home)
-        fake.testWake = AgentSyncCLIResult(exitCode: 0, stdout: "PASS, NOT PINNED YET: read the result above\n", stderr: "")
+        fake.testWake = SimpleToolsCLIResult(exitCode: 0, stdout: "PASS, NOT PINNED YET: read the result above\n", stderr: "")
         await store.testWake(seat: "MM", runtime: "muse")
         let now = Date()
         XCTAssertEqual(store.pinGate(seat: "MM", runtime: "muse", pinKey: "muse", now: now), .inSession)
@@ -874,7 +874,7 @@ final class WakePanelTruthTests: XCTestCase {
         XCTAssertNotNil(old.blocker)
         XCTAssertNotEqual(old, .inSession)
 
-        fake.pin = AgentSyncCLIResult(exitCode: 0, stdout: "pinned muse /bin/muse\n", stderr: "")
+        fake.pin = SimpleToolsCLIResult(exitCode: 0, stdout: "pinned muse /bin/muse\n", stderr: "")
         await store.pin(seat: "MM", runtime: "muse")
         XCTAssertFalse(store.messageIsFailure)
         XCTAssertNil(store.testReport(seat: "MM", runtime: "muse"))
@@ -979,9 +979,9 @@ final class WakePanelTruthTests: XCTestCase {
         let home = try makeHome(config: mmConfig)
         let fake = Fake()
         let store = await makeStore(fake, home: home)
-        fake.testWake = AgentSyncCLIResult(exitCode: 0, stdout: "PASS, NOT PINNED YET: read the result above\n", stderr: "")
+        fake.testWake = SimpleToolsCLIResult(exitCode: 0, stdout: "PASS, NOT PINNED YET: read the result above\n", stderr: "")
         await store.testWake(seat: "MM", runtime: "muse")
-        fake.testWake = AgentSyncCLIResult(exitCode: 1, stdout: "FAIL: the fallback answered badly\n", stderr: "")
+        fake.testWake = SimpleToolsCLIResult(exitCode: 1, stdout: "FAIL: the fallback answered badly\n", stderr: "")
         await store.testWake(seat: "MM", runtime: "fallback")
         XCTAssertEqual(store.pinGate(seat: "MM", runtime: "muse", pinKey: "muse"), .inSession)
         XCTAssertNotNil(store.pinGate(seat: "MM", runtime: "fallback", pinKey: "mcode").blocker)
@@ -1055,9 +1055,9 @@ final class WakePanelTruthTests: XCTestCase {
 
     /// A run that failed with nothing on stderr shows the end of stdout instead of nothing.
     func test_a_failure_with_an_empty_stderr_shows_stdout() {
-        let result = AgentSyncCLIResult(exitCode: 1, stdout: "line one\nNOT PINNED: why\n", stderr: "")
+        let result = SimpleToolsCLIResult(exitCode: 1, stdout: "line one\nNOT PINNED: why\n", stderr: "")
         XCTAssertEqual(result.failureTail, "line one\nNOT PINNED: why")
-        let both = AgentSyncCLIResult(exitCode: 1, stdout: "out", stderr: "err")
+        let both = SimpleToolsCLIResult(exitCode: 1, stdout: "out", stderr: "err")
         XCTAssertEqual(both.failureTail, "err")
     }
 

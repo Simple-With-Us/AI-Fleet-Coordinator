@@ -59,6 +59,7 @@ WF_V1_READ_ACTIONS = [
     "wf_release_list",
     "wf_release_get",
     "wf_tag_get",
+    "wf_review_thread_comments",
     "wf_review_threads",
     "wf_issue_list",
     "wf_issue_get",

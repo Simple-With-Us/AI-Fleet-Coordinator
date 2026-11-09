@@ -26,7 +26,9 @@ What it reads,  and what it refuses to read:
     itself accepts the allowlist and that entry:  the helper refuses the whole file for
     one bad entry,  and then no unit is controllable.  A missing or malformed allowlist
     means no units,  never a crash.  `server.watch` names more units to read and grants
-    nothing:  a watched row has no actions.  `actions` on a row is what the helper would
+    nothing:  a watched row has no actions (the helper reads the list too, for its read-only
+    `server unit-status`, and refuses the whole file for a row it cannot read, where this
+    collector skips the row).  `actions` on a row is what the helper would
     really do for it.  A timer also says when it last ran,  how its job ended and when it
     runs next.
   * `failedUnits` is what `systemctl --failed` says in both scopes,  so a failed unit
@@ -218,7 +220,7 @@ UNIT_SOURCE_FOLDERS = (
     "scripts/systemd",
     "scripts/host",
     "scripts/hetzner",
-    "scripts/agent_sync/server",
+    "scripts/simple_tools/server",
 )
 # The properties read to find a unit's installed files,  and nothing else.
 UNIT_FILE_PROPERTIES = ("Id", "LoadState", "FragmentPath", "DropInPaths", "Triggers")
@@ -1169,8 +1171,9 @@ def redeploy_allowed(path, controller=DEFAULT_CONTROLLER):
 def watched_units(path):
     """The units `server.watch` names,  as (unit, scope):  read,  and granted nothing.
 
-    An entry with a bad unit name or scope is skipped.  The helper never reads this key,
-    so naming a unit here can never make it controllable.
+    An entry with a bad unit name or scope is skipped.  The helper reads this key only for its
+    read-only `server unit-status`, and refuses the whole file for a malformed row where this
+    skips it.  A unit named here is never controllable, because no other verb looks at the key.
     """
     server = control_server_section(path)
     entries = server.get("watch") if server else None

@@ -224,9 +224,9 @@ enum OperatorReadRefusal {
         case "pins-missing":
             return "this Mac has not pinned the Operator.  The service needs the Operator bot's user id and "
                 + "address and the owner's user id:  operator_user_id,  operator_email and owner_user_id under "
-                + "[daemon] in ~/.agent-sync/listener.toml (or OPERATOR_ZULIP_USER_ID and OPERATOR_ZULIP_EMAIL)."
+                + "[daemon] in ~/.simple-tools/listener.toml (or OPERATOR_ZULIP_USER_ID and OPERATOR_ZULIP_EMAIL)."
         case "pins-unreadable":
-            return "the Operator pins in ~/.agent-sync/listener.toml could not be read or are not valid."
+            return "the Operator pins in ~/.simple-tools/listener.toml could not be read or are not valid."
         case "credential-unreadable":
             return "the Operator's credential could not be read from Fleet-OPS /zulip_operator on this Mac."
         case "realm-mismatch", "realm-invalid":
@@ -335,7 +335,7 @@ enum ChatLocator {
         candidates.append(home.appendingPathComponent(".local/bin/simple-chat"))
         candidates.append(
             home.appendingPathComponent(
-                "apps/lanes/_managed/fleet/agent-sync-runtime/scripts/simple-chat"
+                "apps/lanes/_managed/fleet/simple-tools-runtime/scripts/simple-chat"
             )
         )
         if let engine = EngineLocator.locate(environment: environment, home: home) {

@@ -1,5 +1,6 @@
 """Offline installer checks; root ownership and the root filesystem are simulated."""
 
+import importlib.util
 import json
 import os
 import stat
@@ -52,6 +53,8 @@ class InstallerTests(unittest.TestCase):
             "fleet-ops-control.json",
             "fleet_resource_control.py",
             "fleet_seat_inventory.py",
+            "muster_approval.py",
+            "muster_trust_files.py",
             "reduced_status.py",
             "hetzner/__init__.py",
             "hetzner/fleet_coding_memory.py",
@@ -78,13 +81,29 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(path.stat().st_uid, os.getuid())
         self.assertEqual(credential.read_text(), "untouched-test-credential")
         self.assertEqual(state.read_text(), '{"untouched":true}')
+        # The `--from-muster` modules are installed byte for byte, so that the shared /etc/muster
+        # reader is the same file wherever it is installed.
+        self.assertEqual(
+            (self.destination / "muster_approval.py").read_bytes(),
+            (SCRIPTS / "muster_approval.py").read_bytes(),
+        )
+        # The reader has one source file, in muster_agent/, and is installed flat beside the helper.
+        self.assertEqual(
+            (self.destination / "muster_trust_files.py").read_bytes(),
+            (SCRIPTS / "muster_agent" / "muster_trust_files.py").read_bytes(),
+        )
         trap = self.root / "untrusted-cwd"
         trap.mkdir()
         (trap / "fleet_resource_control.py").write_text("raise RuntimeError('untrusted import')")
+        # The two `--from-muster` modules import `cryptography` (the system package on the server);
+        # a machine without it still checks every other import, then reports the test skipped.
+        has_cryptography = importlib.util.find_spec("cryptography") is not None
+        muster_imports = ",muster_approval,muster_trust_files" if has_cryptography else ""
         code = (
             "import sys,runpy;sys.path.insert(0,sys.argv[1]);"
-            "import fleet_resource_control,fleet_seat_inventory,reduced_status,fleet_secrets.core,hetzner.fleet_coding_memory;"
-            "runpy.run_path(sys.argv[1]+'/fleet-ops-control.py');print('imports-ok')"
+            "import fleet_resource_control,fleet_seat_inventory,reduced_status,fleet_secrets.core,hetzner.fleet_coding_memory"
+            + muster_imports
+            + ";runpy.run_path(sys.argv[1]+'/fleet-ops-control.py');print('imports-ok')"
         )
         result = subprocess.run(
             [sys.executable, "-I", "-c", code, str(self.destination)],
@@ -98,6 +117,11 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(result.stdout.strip(), "imports-ok")
         self.install()  # Existing protected installation can be refreshed without state changes.
         self.assertEqual(credential.read_text(), "untouched-test-credential")
+        if not has_cryptography:
+            self.skipTest(
+                "cryptography is not installed: muster_approval and muster_trust_files were not "
+                "imported (everything else in this test ran)"
+            )
 
     def test_symlink_destination_directory_refused(self):
         lib = self.root / "usr/local/lib"
@@ -133,8 +157,11 @@ class InstallerTests(unittest.TestCase):
             "fleet_resource_control.py",
             "fleet_seat_inventory.py",
             "reduced_status.py",
+            "muster_approval.py",
         ):
             (source / name).write_text("pass\n")
+        (source / "muster_agent").mkdir()
+        (source / "muster_agent" / "muster_trust_files.py").write_text("pass\n")
         (source / "fleet-ops-control.json").write_text(json.dumps({"schemaVersion": 1}))
         (source / "fleet_secrets").symlink_to(SCRIPTS / "fleet_secrets", target_is_directory=True)
         with self.assertRaises(OSError):
@@ -148,8 +175,11 @@ class InstallerTests(unittest.TestCase):
             "fleet-ops-control.py",
             "fleet_resource_control.py",
             "fleet_seat_inventory.py",
+            "muster_approval.py",
         ):
             (source / name).write_text("pass\n")
+        (source / "muster_agent").mkdir()
+        (source / "muster_agent" / "muster_trust_files.py").write_text("pass\n")
         (source / "fleet-ops-control.json").write_text(json.dumps({"schemaVersion": 1}))
         for package, names in (
             ("fleet_secrets", ("__init__.py", "core.py")),
@@ -173,7 +203,110 @@ class InstallerTests(unittest.TestCase):
     def test_the_reducer_sits_beside_the_helper_in_the_scripts_folder(self):
         self.assertTrue((SCRIPTS / "reduced_status.py").is_file())
         self.assertTrue((SCRIPTS / "fleet-ops-control.py").is_file())
-        self.assertFalse((SCRIPTS / "agent_sync" / "reduced_status.py").exists())
+        self.assertFalse((SCRIPTS / "simple_tools" / "reduced_status.py").exists())
+
+    def minimal_source(self, trust_text="pass\n"):
+        """A small valid source tree.  `trust_text` None leaves out the `muster_agent` folder."""
+        source = self.root / "source"
+        source.mkdir()
+        for name in (
+            "fleet-ops-control.py",
+            "fleet_resource_control.py",
+            "fleet_seat_inventory.py",
+            "reduced_status.py",
+            "muster_approval.py",
+        ):
+            (source / name).write_text("pass\n")
+        (source / "fleet-ops-control.json").write_text(json.dumps({"schemaVersion": 1}))
+        if trust_text is not None:
+            (source / "muster_agent").mkdir()
+            (source / "muster_agent" / "muster_trust_files.py").write_text(trust_text)
+        for package, names in (
+            ("fleet_secrets", ("__init__.py", "core.py")),
+            ("hetzner", ("fleet_coding_memory.py", "coding_resources.py")),
+        ):
+            (source / package).mkdir()
+            for name in names:
+                (source / package / name).write_text("pass\n")
+        return source
+
+    def test_the_trust_files_reader_comes_from_muster_agent_only_and_is_installed_flat(self):
+        source = self.minimal_source("REAL = 1\n")
+        # A flat file of the same name in the source folder is never the one that is installed.
+        (source / "muster_trust_files.py").write_text("DECOY = 1\n")
+        self.install(source)
+        self.assertEqual((self.destination / "muster_trust_files.py").read_text(), "REAL = 1\n")
+        self.assertFalse((self.destination / "muster_agent").exists())
+
+    def test_a_source_without_muster_agent_or_with_a_linked_one_is_refused(self):
+        source = self.minimal_source(None)
+        (source / "muster_trust_files.py").write_text("DECOY = 1\n")
+        with self.assertRaises(OSError):
+            self.install(source)
+        self.assertFalse(self.destination.exists())
+        real = self.root / "elsewhere"
+        real.mkdir()
+        (real / "muster_trust_files.py").write_text("pass\n")
+        (source / "muster_agent").symlink_to(real, target_is_directory=True)
+        with self.assertRaises(OSError):
+            self.install(source)
+        self.assertFalse(self.destination.exists())
+
+    def test_the_other_installed_copy_must_be_the_same_bytes_when_it_is_present(self):
+        source = self.minimal_source("SAME = 1\n")
+        self.install(source)  # no muster-agent copy exists: nothing to compare
+        other = self.root / "usr/local/lib/muster-agent"
+        other.mkdir()
+        (other / "muster_trust_files.py").write_text("SAME = 1\n")
+        self.install(source)  # the same bytes: fine
+        (other / "muster_trust_files.py").write_text("OTHER = 1\n")
+        with self.assertRaises(RuntimeError):
+            self.install(source)
+        (other / "muster_trust_files.py").unlink()
+        (other / "muster_trust_files.py").symlink_to(self.root / "elsewhere")
+        with self.assertRaises(OSError):
+            self.install(source)
+
+    def test_a_linked_muster_agent_installation_folder_is_never_followed(self):
+        # The link leads to a folder with the very same bytes, so that a link that is followed
+        # would pass the comparison: only the refusal to follow it stops the install.
+        source = self.minimal_source("SAME = 1\n")
+        real = self.root / "elsewhere-agent"
+        real.mkdir()
+        (real / "muster_trust_files.py").write_text("SAME = 1\n")
+        lib = self.root / "usr/local/lib"
+        lib.mkdir(parents=True)
+        for folder in (self.root / "usr", self.root / "usr/local", lib):
+            folder.chmod(0o755)  # whatever the umask:  the installer refuses a group-writable one
+        (lib / "muster-agent").symlink_to(real, target_is_directory=True)
+        with self.assertRaises(OSError):
+            self.install(source)
+        # The same folder as a real one, with the same bytes, is compared and passes.
+        (lib / "muster-agent").unlink()
+        (lib / "muster-agent").mkdir()
+        (lib / "muster-agent" / "muster_trust_files.py").write_text("SAME = 1\n")
+        self.install(source)
+
+    def test_the_repository_has_exactly_one_source_of_the_trust_files_reader(self):
+        listed = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=SCRIPTS.parent,
+            capture_output=True,
+            check=False,
+        )
+        if listed.returncode != 0:
+            self.skipTest("not a git checkout")
+        names = [
+            path.decode()
+            for path in listed.stdout.split(b"\0")
+            if path.endswith(b"muster_trust_files.py")
+        ]
+        self.assertEqual(names, ["scripts/muster_agent/muster_trust_files.py"])
+        text = (HERE / "install-resource-control.sh").read_text()
+        # The installer names that one source path, and no other place the file could come from.
+        self.assertIn("os.open('muster_agent', DIRECTORY_FLAGS, dir_fd=source)", text)
+        self.assertIn("read_source(agent, 'muster_trust_files.py')", text)
+        self.assertEqual(text.count("read_source(source, 'muster_trust_files.py')"), 0)
 
     def test_nonroot_or_nonlinux_refused_before_any_destination_write(self):
         for uid, platform in ((1, "linux"), (0, "darwin")):

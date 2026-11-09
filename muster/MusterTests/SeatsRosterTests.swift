@@ -29,7 +29,7 @@ final class SeatsRosterTests: XCTestCase {
     }
     """
 
-    /// The seat partition,  in the shape of `docs/protocols/agent-sync-partition.toml`.
+    /// The seat partition,  in the shape of `docs/protocols/simple-tools-partition.toml`.
     private let partitionTOML = """
     version = 1
 
@@ -74,7 +74,7 @@ final class SeatsRosterTests: XCTestCase {
     }
 
     private func partition() -> ListenerPartition {
-        ListenerPartition.parse(partitionTOML, path: "/fixture/agent-sync-partition.toml")
+        ListenerPartition.parse(partitionTOML, path: "/fixture/simple-tools-partition.toml")
     }
 
     private func model() throws -> SeatActivityModel {

@@ -61,8 +61,8 @@ PROTOCOL = (
     + r"""
 import io
 sys.path.insert(0, sys.argv[1])
-from agent_sync.mcp.stdio import Server
-from agent_sync.mcp.tools import load_served_tools
+from simple_tools.mcp.stdio import Server
+from simple_tools.mcp.tools import load_served_tools
 class CatalogueOnly:
     seat = "CODEX"
     spec = load_served_tools()
@@ -152,7 +152,7 @@ class ActualRuntime(unittest.TestCase):
         cls.receiver = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.receiver)
         candidates = set(cls.receiver.EXACT)
-        for directory in ("scripts/agent_sync", "scripts/agent_sync/mcp"):
+        for directory in ("scripts/simple_tools", "scripts/simple_tools/mcp"):
             candidates.update(
                 path.relative_to(ROOT).as_posix() for path in (ROOT / directory).glob("*.py")
             )
@@ -242,7 +242,7 @@ class ActualRuntime(unittest.TestCase):
         )
 
     def test_notes_reader_import_is_in_installed_runtime(self):
-        path = "scripts/agent_sync/notes_service_reader.py"
+        path = "scripts/simple_tools/notes_service_reader.py"
         self.assertIn(path, self.bundle["files"])
         self.assertIn(path, self.receiver.TOOL_REQUIRED)
         self.assertNotIn(path, self.receiver.BASE_REQUIRED)
@@ -252,7 +252,7 @@ class ActualRuntime(unittest.TestCase):
             "-B",
             "-c",
             AUDIT + "\nimport sys; sys.path.insert(0, sys.argv[1]); "
-            "from agent_sync import notes_client, notes_service_reader; "
+            "from simple_tools import notes_client, notes_service_reader; "
             "assert notes_client.SR is notes_service_reader; "
             "assert notes_service_reader.load() is None",
             str(self.release / "scripts"),
@@ -272,11 +272,11 @@ class ActualRuntime(unittest.TestCase):
         sender = importlib.util.module_from_spec(sender_spec)
         sender_spec.loader.exec_module(sender)
         self.assertEqual(sender.MAX_FILES, self.receiver.MAX_FILES)
-        self.assertEqual(self.receiver.MAX_FILES, 159)
+        self.assertEqual(self.receiver.MAX_FILES, 162)
         self.assertIn("scripts/fleet_rag/recall_presentation.py", self.bundle["files"])
-        self.assertIn("scripts/agent_sync/mcp/bearer_gate.py", self.bundle["files"])
-        self.assertIn("scripts/agent_sync/listener_registry.py", self.bundle["files"])
-        self.assertIn("scripts/agent_sync/registry_api.py", self.bundle["files"])
+        self.assertIn("scripts/simple_tools/mcp/bearer_gate.py", self.bundle["files"])
+        self.assertIn("scripts/simple_tools/listener_registry.py", self.bundle["files"])
+        self.assertIn("scripts/simple_tools/registry_api.py", self.bundle["files"])
         # The git tools CLI ships in the bundle:  required of new bundles, never of rollback targets.
         for path in ("scripts/simple-git", "scripts/git-tools/git"):
             self.assertIn(path, self.bundle["files"])
@@ -497,7 +497,7 @@ print(json.dumps(result))
         # recall-tools.json (AFC-331), then the linear_* tools built from the board catalogs, then
         # fleetlink-tools.json.  Every file must ship, or `simple-chat mcp` fails at startup on the server (it
         # did, 2026-10-16).
-        mcp = self.release / "scripts/agent_sync/mcp"
+        mcp = self.release / "scripts/simple_tools/mcp"
         served = []
         for name in (
             "tools.json",
