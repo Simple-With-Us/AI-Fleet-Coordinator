@@ -1294,7 +1294,25 @@ class WorkflowVerbs:
     def wf_issue_get(self, repo, args):
         _only(args, ("repo", "number"))
         number = _int(args, "number")
-        return {"issue": self._issue_summary(self._get(f"/repos/{repo}/issues/{number}"))}
+        data = self._get(f"/repos/{repo}/issues/{number}")
+        issue = self._issue_summary(data)
+        body = data.get("body")
+        if body is None:
+            body = ""
+        if not isinstance(body, str) or "\x00" in body:
+            raise RelayGitHubError(502, "issue body unverifiable")
+        if len(body.encode("utf-8")) > 65536:
+            raise Refused("issue body exceeds supported text size")
+        withheld = bool(
+            find_secret(body)
+            or re.search(
+                PROVIDER_PATTERN + "|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
+                body,
+            )
+        )
+        issue["body"] = "<withheld: credential-shaped text>" if withheld else body
+        issue["body_withheld"] = withheld
+        return {"issue": issue}
 
     def wf_issue_create(self, repo, args):
         _only(args, ("repo", "title", "body"))

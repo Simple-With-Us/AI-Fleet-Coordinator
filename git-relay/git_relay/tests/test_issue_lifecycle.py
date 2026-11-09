@@ -32,12 +32,20 @@ class IssueTests(unittest.TestCase):
     def test_list_labels_refuses_blank_long_or_control(self):
         for bad in ["", "ok,,x", "bad\nlabel", "x" * 101]:
             client = Client(ISSUE)
-            h = WorkflowVerbs(
-                client, Policy(), "swu-wise", "opaque", "swu-wise", "wf_issue_list", REPO
-            )
+            h = WorkflowVerbs(client, Policy(), "swu-wise", "opaque", "swu-wise", "wf_issue_list", REPO)
             with self.assertRaises(Refused):
                 h.run("wf_issue_list", {"repo": REPO, "labels": bad})
             self.assertEqual(len(client.calls), 0)
+
+    def test_get_returns_body_and_withholds_credential_shaped(self):
+        out, c = self.run_action("wf_issue_get", {"number": 2}, {**ISSUE, "body": "details"})
+        self.assertEqual(out["issue"]["body"], "details")
+        self.assertFalse(out["issue"]["body_withheld"])
+        out, c = self.run_action(
+            "wf_issue_get", {"number": 2}, {**ISSUE, "body": "key AKIA" + "0" * 16}
+        )
+        self.assertEqual(out["issue"]["body"], "<withheld: credential-shaped text>")
+        self.assertTrue(out["issue"]["body_withheld"])
 
     def test_create_uses_own_app_fixed_endpoint(self):
         out, c = self.run_action("wf_issue_create", {"title": "fix", "body": "details"}, ISSUE)

@@ -133,7 +133,7 @@ const SPECS = {
 
 
   wf_issue_list: ['List issues (not pull requests); optional labels is a comma-separated list of up to 10 exact label names.', obj(['repo'], {repo:REPO,state:{type:'string',enum:['open','closed','all']},per_page:PER_PAGE,labels:{type:'string',maxLength:512}})],
-  wf_issue_get: ['Read issue summary.', obj(['repo','number'], {repo:REPO,number:INT})],
+  wf_issue_get: ['Read one issue with body (untrusted text; credential-shaped bodies withheld).', obj(['repo','number'], {repo:REPO,number:INT})],
   wf_issue_create: ['Create an issue as your own GitHub App.', obj(['repo','title','body'], {repo:REPO,title:CONTENT,body:CONTENT})],
   wf_issue_update: ['Update issue text or open/closed state.', obj(['repo','number'], {repo:REPO,number:INT,title:CONTENT,body:CONTENT,state:{type:'string',enum:['open','closed']}})],
   wf_issue_comment: ['Comment on an issue as your own GitHub App.', obj(['repo','number','body'], {repo:REPO,number:INT,body:CONTENT})],
