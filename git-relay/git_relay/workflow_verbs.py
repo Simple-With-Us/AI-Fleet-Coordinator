@@ -220,6 +220,9 @@ SPECS = {
     "wf_branch_get": ({"contents": "read"}, False),
     "wf_repo_get": ({"metadata": "read"}, False),
     "wf_installation_metadata": ({"metadata": "read"}, False),
+    "wf_repo_hooks": ({"repository_hooks": "read"}, False),
+    "wf_deploy_keys": ({"administration": "read"}, False),
+    "wf_org_installations": ({"organization_administration": "read"}, False),
     "wf_labels": ({"issues": "read"}, False),
     "wf_workflows": ({"actions": "read"}, False),
     "wf_run_get": ({"actions": "read"}, False),
@@ -488,6 +491,9 @@ _NEW_READS = frozenset(
         "wf_workflows",
         "wf_run_get",
         "wf_run_artifacts",
+        "wf_repo_hooks",
+        "wf_deploy_keys",
+        "wf_org_installations",
     }
 )
 
@@ -574,6 +580,48 @@ def _validate_read(action, result):
             "complete": boolean,
         },
         "wf_pr_comments": {"comments": lambda v: seq(v, comment), "complete": boolean},
+        "wf_repo_hooks": {
+            "hooks": lambda v: seq(
+                v,
+                lambda x: fields(
+                    x,
+                    {
+                        "id": positive,
+                        "name": text,
+                        "active": boolean,
+                        "events": lambda e: seq(e, text),
+                        "url": text,
+                        "url_withheld": boolean,
+                    },
+                ),
+            ),
+            "page": positive,
+            "has_more": boolean,
+        },
+        "wf_deploy_keys": {
+            "deploy_keys": lambda v: seq(
+                v,
+                lambda x: fields(
+                    x,
+                    {
+                        "id": positive,
+                        "title": text,
+                        "verified": boolean,
+                        "read_only": boolean,
+                        "key": text,
+                    },
+                ),
+            ),
+            "page": positive,
+            "has_more": boolean,
+        },
+        "wf_org_installations": {
+            "installations": lambda v: seq(
+                v,
+                lambda x: fields(x, {"id": positive, "app_slug": text, "account": text}),
+            ),
+            "total_count": nonnegative,
+        },
         "wf_issue_comments": {
             "comments": lambda v: seq(v, comment),
             "complete": boolean,
@@ -1261,6 +1309,110 @@ class WorkflowVerbs:
         if find_secret(value) or cls._provider_token_text(value):
             raise Refused("credential-shaped outbound text")
         return value
+
+    def wf_repo_hooks(self, repo, args):
+        _only(args, ("repo", "per_page", "page"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        data = self._get(f"/repos/{repo}/hooks?per_page={limit}&page={page}")
+        if not isinstance(data, list) or len(data) > limit:
+            raise RelayGitHubError(502, "hook page unverifiable")
+        hooks = []
+        for item in data:
+            config = item.get("config") if isinstance(item, dict) else None
+            url = config.get("url") if isinstance(config, dict) else None
+            events = item.get("events") if isinstance(item, dict) else None
+            if (
+                not isinstance(item, dict)
+                or type(item.get("id")) is not int
+                or item["id"] <= 0
+                or not isinstance(item.get("name"), str)
+                or not 1 <= len(item["name"]) <= 100
+                or type(item.get("active")) is not bool
+                or not isinstance(events, list)
+                or len(events) > 50
+                or not all(isinstance(e, str) and 1 <= len(e) <= 100 for e in events)
+                or not isinstance(url, str)
+                or len(url) > 2000
+            ):
+                raise RelayGitHubError(502, "hook metadata unverifiable")
+            withheld = bool(find_secret(url) or self._provider_token_text(url))
+            hooks.append(
+                {
+                    "id": item["id"],
+                    "name": item["name"],
+                    "active": item["active"],
+                    "events": events,
+                    "url": "<withheld: credential-shaped text>" if withheld else url,
+                    "url_withheld": withheld,
+                }
+            )
+        return {"hooks": hooks, "page": page, "has_more": len(hooks) == limit}
+
+    def wf_deploy_keys(self, repo, args):
+        _only(args, ("repo", "per_page", "page"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        data = self._get(f"/repos/{repo}/keys?per_page={limit}&page={page}")
+        if not isinstance(data, list) or len(data) > limit:
+            raise RelayGitHubError(502, "deploy key page unverifiable")
+        keys = []
+        for item in data:
+            if (
+                not isinstance(item, dict)
+                or type(item.get("id")) is not int
+                or item["id"] <= 0
+                or not isinstance(item.get("title"), str)
+                or len(item["title"]) > 200
+                or not isinstance(item.get("key"), str)
+                or not re.fullmatch(
+                    r"ssh-(rsa|ed25519|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]{1,800}", item["key"]
+                )
+                or type(item.get("verified")) is not bool
+                or type(item.get("read_only")) is not bool
+            ):
+                raise RelayGitHubError(502, "deploy key metadata unverifiable")
+            keys.append(
+                {
+                    "id": item["id"],
+                    "title": item["title"],
+                    "verified": item["verified"],
+                    "read_only": item["read_only"],
+                    "key": item["key"],
+                }
+            )
+        return {"deploy_keys": keys, "page": page, "has_more": len(keys) == limit}
+
+    def wf_org_installations(self, repo, args):
+        _only(args, ("repo",))
+        owner = repo.split("/")[0]
+        data = self._get(f"/orgs/{owner}/installations?per_page={MAX_PAGE}")
+        if (
+            not isinstance(data, dict)
+            or type(data.get("total_count")) is not int
+            or data["total_count"] < 0
+            or not isinstance(data.get("installations"), list)
+            or len(data["installations"]) > MAX_PAGE
+        ):
+            raise RelayGitHubError(502, "organization installations unverifiable")
+        installs = []
+        for item in data["installations"]:
+            account = item.get("account") if isinstance(item, dict) else None
+            if (
+                not isinstance(item, dict)
+                or type(item.get("id")) is not int
+                or item["id"] <= 0
+                or not isinstance(item.get("app_slug"), str)
+                or not re.fullmatch(r"[a-z0-9-]{1,100}", item["app_slug"])
+                or not isinstance(account, dict)
+                or not isinstance(account.get("login"), str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}(?:\[bot\])?", account["login"])
+            ):
+                raise RelayGitHubError(502, "organization installation unverifiable")
+            installs.append(
+                {"id": item["id"], "app_slug": item["app_slug"], "account": account["login"]}
+            )
+        return {"installations": installs, "total_count": data["total_count"]}
 
     def wf_issue_list(self, repo, args):
         _only(args, ("repo", "state", "per_page"))
