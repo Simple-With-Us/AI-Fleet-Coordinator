@@ -3,11 +3,11 @@
 import unittest
 
 try:
-    from .test_workflow_verbs import CEILING, REPO, SHA, Client, Minter, Policy
+    from .test_workflow_verbs import CEILING, REPO, Client, Minter, Policy
 except ImportError:
-    from test_workflow_verbs import CEILING, REPO, SHA, Client, Minter, Policy
+    from test_workflow_verbs import CEILING, REPO, Client, Minter, Policy
 
-from git_relay.workflow_verbs import RelayGitHubError, Refused, WorkflowVerbs
+from git_relay.workflow_verbs import Refused, RelayGitHubError, WorkflowVerbs
 
 REPO_ITEM = {
     "id": 11,
@@ -51,9 +51,7 @@ class RepoAdminReadTests(unittest.TestCase):
 
     def test_repo_list_allows_empty_default_branch(self):
         item = dict(REPO_ITEM, default_branch="")
-        out, _ = self.run_action(
-            "wf_repo_list", {}, {"total_count": 1, "repositories": [item]}
-        )
+        out, _ = self.run_action("wf_repo_list", {}, {"total_count": 1, "repositories": [item]})
         self.assertEqual(out["repositories"][0]["default_branch"], "")
 
     def test_repo_list_refuses_bad_full_name(self):
