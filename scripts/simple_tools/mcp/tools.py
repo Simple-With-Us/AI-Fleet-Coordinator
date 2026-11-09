@@ -1813,7 +1813,11 @@ class Tools:
         # 2026).  The edit replaces the whole text, so name again any peer the message should keep.
         mentions, labels = self._resolve_to(list(args.get("to") or []))
         self._use_tag(self._call_tag or Z.session_tag(args.get("session")), args.get("session"))
-        body = CLI._compose(self.agent, text, labels=labels, mentions=mentions, no_tag=False)
+        # AFC-666:  the post path's rule, so an already-tagged replacement keeps its
+        # single intro instead of gaining a second seat tag.
+        body = CLI._compose(
+            self.agent, text, labels=labels, mentions=mentions, no_tag=False, preserve_compact=True
+        )
         return self._write_result(
             self._write(lambda: OPS.edit_message(self.agent, int(args["message_id"]), body))
         )
