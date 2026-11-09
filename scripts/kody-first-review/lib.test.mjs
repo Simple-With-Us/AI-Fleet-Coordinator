@@ -181,3 +181,72 @@ test('sweepPrompts: non-prompt verdicts never POST; successes count', async () =
     { prompted: 1, failed: 0, blocked: 0, unprocessed: 0 },
   );
 });
+
+test('sweepPrompts: terminal GET failure stops further reads and counts unprocessed', async () => {
+  let reads = 0;
+  let posts = 0;
+  const res = await sweepPrompts([numberedPr(1), numberedPr(2), numberedPr(3), numberedPr(4)], {
+    concurrency: 1,
+    verdictFor: async () => {
+      reads += 1;
+      const error = new Error('GET -> status=403 class=rate-limited');
+      error.classification = 'rate-limited';
+      throw error;
+    },
+    postTrigger: async () => {
+      posts += 1;
+    },
+  });
+  assert.equal(reads, 1);
+  assert.equal(posts, 0);
+  assert.equal(res.failed, 1);
+  assert.equal(res.unprocessed, 3);
+  assert.equal(res.terminalClassification, 'rate-limited');
+});
+
+test('sweepPrompts: concurrent GET terminal failure bounds in-flight reads and blocks later POSTs', async () => {
+  let reads = 0;
+  let posts = 0;
+  const res = await sweepPrompts([numberedPr(1), numberedPr(2), numberedPr(3), numberedPr(4), numberedPr(5), numberedPr(6)], {
+    concurrency: 2,
+    verdictFor: async (p) => {
+      reads += 1;
+      if (p.number === 1) {
+        const error = new Error('GET -> status=403 class=forbidden');
+        error.classification = 'forbidden';
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return 'prompt';
+    },
+    postTrigger: async () => {
+      posts += 1;
+    },
+  });
+  assert.equal(reads, 2);
+  assert.equal(res.terminalClassification, 'forbidden');
+  assert.equal(res.unprocessed, 4);
+  assert.equal(res.blocked + res.prompted, 1);
+  assert.equal(posts, res.prompted);
+});
+
+test('sweepPrompts: unknown GET failure degrades gracefully and the sweep continues', async () => {
+  let reads = 0;
+  const res = await sweepPrompts([numberedPr(1), numberedPr(2), numberedPr(3)], {
+    concurrency: 1,
+    verdictFor: async (p) => {
+      reads += 1;
+      if (p.number === 2) {
+        const error = new Error('GET -> status=500 class=unknown');
+        error.classification = 'unknown';
+        throw error;
+      }
+      return 'kody-answered';
+    },
+    postTrigger: async () => {},
+  });
+  assert.equal(reads, 3);
+  assert.equal(res.failed, 1);
+  assert.equal(res.unprocessed, 0);
+  assert.equal(res.terminalClassification, null);
+});

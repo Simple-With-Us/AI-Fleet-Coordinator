@@ -108,7 +108,7 @@ export function safeErrorDetails(status, headers = {}) {
 
 // The prompt sweep. verdictFor(pr) returns the decide() verdict (and logs it);
 // postTrigger(pr) posts the trigger comment. A post failure classified
-// 'forbidden' or 'rate-limited' is terminal for the run: workers stop picking up
+// 'forbidden' or 'rate-limited' (on a verdictFor read or a POST) is terminal for the run: workers stop picking up
 // new PRs (no further reads), and prompt POSTs are serialized through a shared
 // chain that re-checks the terminal flag under the lock, so at most one refused
 // write fires. Blocked prompts and unprocessed PRs are counted separately so the
@@ -121,6 +121,13 @@ export async function sweepPrompts(prs, { verdictFor, postTrigger, concurrency =
   let terminalClassification = null;
   let next = 0;
   let postChain = Promise.resolve();
+  // Any classified forbidden or rate-limited failure, read or write, is terminal.
+  const markTerminal = (error) => {
+    if (!terminalClassification && (error.classification === 'forbidden' || error.classification === 'rate-limited')) {
+      terminalClassification = error.classification;
+      logError(`terminal ${error.classification} failure classified; further reads and prompt POSTs are blocked this run`);
+    }
+  };
   const postSerialized = (pr) => {
     const run = postChain.then(async () => {
       if (terminalClassification) {
@@ -134,10 +141,7 @@ export async function sweepPrompts(prs, { verdictFor, postTrigger, concurrency =
       } catch (error) {
         failed += 1;
         logError(`#${pr.number} error: ${error.message}`);
-        if (!terminalClassification && (error.classification === 'forbidden' || error.classification === 'rate-limited')) {
-          terminalClassification = error.classification;
-          logError(`terminal ${error.classification} failure classified; further prompt POSTs are blocked this run`);
-        }
+        markTerminal(error);
       }
     });
     postChain = run.catch(() => {});
@@ -155,6 +159,7 @@ export async function sweepPrompts(prs, { verdictFor, postTrigger, concurrency =
         failed += 1;
         processed += 1;
         logError(`#${pr.number} error: ${error.message}`);
+        markTerminal(error);
         continue;
       }
       processed += 1;
