@@ -1929,8 +1929,67 @@ class LinearSourceTests(unittest.TestCase):
                 sources._linear_query("query { x }")
         msg = str(ctx.exception)
         self.assertIn("no Linear app identity", msg)
-        self.assertIn("SIMPLE_BOARD_BEARER_FILE", msg)
+        self.assertIn("LINEAR_BF_ORACLE_CLIENT_ID", msg)
         self.assertNotIn("secret-ish-tail", msg)
+
+    def test_linear_reads_as_bf_oracle_then_falls_back_to_gb_oracle(self) -> None:
+        env = {
+            "LINEAR_BF_ORACLE_CLIENT_ID": "bf-id", "LINEAR_BF_ORACLE_CLIENT_SECRET": "bf-sec",
+            "LINEAR_GB_ORACLE_CLIENT_ID": "gb-id", "LINEAR_GB_ORACLE_CLIENT_SECRET": "gb-sec",
+        }
+        calls = []
+
+        def fake(argv, **k):
+            calls.append(k["env"]["LINEAR_CLIENT_ID"])
+            if k["env"]["LINEAR_CLIENT_ID"] == "bf-id" and bf_fails:
+                return subprocess.CompletedProcess(argv, 1, stdout="", stderr="invalid_client")
+            return subprocess.CompletedProcess(argv, 0, stdout='{"viewer": {}}', stderr="")
+
+        for bf_fails, want in ((False, ["bf-id"]), (True, ["bf-id", "gb-id"])):
+            calls.clear()
+            with mock.patch.dict(os.environ, env, clear=False), \
+                    mock.patch.object(sources.subprocess, "run", side_effect=fake):
+                os.environ.pop("LINEAR_CLIENT_ID", None)
+                os.environ.pop("LINEAR_CLIENT_SECRET", None)
+                os.environ.pop(sources.LINEAR_SEATS_ENV, None)
+                sources.reset_linear_seat_state()
+                self.assertEqual(sources._linear_query("query { x }"), {"viewer": {}})
+                self.assertEqual(calls, want)
+                if bf_fails:  # sticky:  the next read goes straight to GB-ORACLE
+                    calls.clear()
+                    sources._linear_query("query { y }")
+                    self.assertEqual(calls, ["gb-id"])
+        sources.take_warnings()
+
+    def test_linear_non_auth_errors_never_fall_back(self) -> None:
+        def proc(rc, err):
+            return subprocess.CompletedProcess([], rc, stdout="", stderr=err)
+
+        self.assertFalse(sources._linear_is_auth_failure(proc(1, "fetched 401 issues, then timeout")))
+        self.assertFalse(sources._linear_is_auth_failure(proc(2, "GraphQL error: field 4013")))
+        self.assertTrue(sources._linear_is_auth_failure(proc(1, "HTTP 401 from token endpoint")))
+        self.assertTrue(sources._linear_is_auth_failure(proc(1, "403 Forbidden")))
+        self.assertTrue(sources._linear_is_auth_failure(proc(4, "anything")))
+
+    def test_linear_seat_list_is_validated_deduped_capped_and_env_minimal(self) -> None:
+        env = {
+            sources.LINEAR_SEATS_ENV: "gb-oracle, BAD\nSEAT, GB-ORACLE, BF-ORACLE, CLAUDE",
+            "LINEAR_GB_ORACLE_CLIENT_ID": "gb-id", "LINEAR_GB_ORACLE_CLIENT_SECRET": "gb-sec",
+            "LINEAR_BF_ORACLE_CLIENT_ID": "bf-id", "LINEAR_BF_ORACLE_CLIENT_SECRET": "bf-sec",
+            "LINEAR_CLAUDE_CLIENT_ID": "c-id", "LINEAR_CLAUDE_CLIENT_SECRET": "c-sec",
+        }
+        with mock.patch.dict(os.environ, env, clear=False):
+            os.environ.pop("LINEAR_CLIENT_ID", None)
+            os.environ.pop("LINEAR_CLIENT_SECRET", None)
+            got = sources._linear_seat_envs()
+        warnings = sources.take_warnings()
+        self.assertEqual([s for s, _ in got], ["GB-ORACLE", "BF-ORACLE"])
+        gb_env = got[0][1]
+        self.assertEqual(gb_env["LINEAR_CLIENT_ID"], "gb-id")
+        self.assertNotIn("LINEAR_BF_ORACLE_CLIENT_SECRET", gb_env)
+        self.assertNotIn("LINEAR_CLAUDE_CLIENT_SECRET", gb_env)
+        self.assertTrue(any("invalid seat name" in w for w in warnings))
+        self.assertFalse(any("\n" in w for w in warnings))
 
     def test_doc_walk_finds_the_renamed_socratic_trade_checkout(self) -> None:
         self.assertIn("Socratic-Trade", sources.DOC_APP_REPOS)
