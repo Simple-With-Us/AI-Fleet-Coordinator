@@ -908,7 +908,6 @@ def _run_locked(
     return report
 
 
-
 # Prune safety (AFC-677).  On 2026-11-09 a real `--all --prune` run with a failed linear
 # source still pruned 1,650 doc documents, 1,644 of them live files in a checkout the walk
 # had stopped finding (DOC_APP_REPOS named Socratic.Trade;  the checkout is Socratic-Trade).
@@ -1007,6 +1006,7 @@ def _run_pending_prunes(
             report["ok"] = False
             log(f"[{name}] ERROR {msg}")
             telemetry.capture_exception(e, operation="ingest-prune", source=name)
+
 
 def _write_sentinel_safely(cfg: dict | None, qd: Qdrant | None, report: dict, log) -> None:
     """Upsert the ingest sentinel with the run outcome (ok=false on a failed run too)."""
