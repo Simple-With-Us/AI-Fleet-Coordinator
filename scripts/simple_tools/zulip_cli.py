@@ -528,8 +528,15 @@ def cmd_edit(agent: Any, args: argparse.Namespace) -> int:
     mentions, labels = cli._resolve_targets(agent, getattr(args, "to", []) or [], to_owner)
     #  --no-tag still wins for the bracket, exactly as `_compose` gives post.  The mentions
     #  above stay, so a seat or the owner named by the edit is still woken.
+    #  AFC-666:  preserve a compact intro as post does, so an already-tagged
+    #  replacement keeps its single intro instead of gaining a second seat tag.
     body = cli._compose(
-        agent, text, labels=labels, mentions=mentions, no_tag=bool(getattr(args, "no_tag", False))
+        agent,
+        text,
+        labels=labels,
+        mentions=mentions,
+        no_tag=bool(getattr(args, "no_tag", False)),
+        preserve_compact=True,
     )
     result = OPS.edit_message(agent, args.id, body, checked=original)
     return _result(agent, result, "edited id %d" % args.id)

@@ -1123,10 +1123,56 @@ def _bounded(value, max_bytes: int) -> bool:
     return total <= max_bytes
 
 
+#: JSON-schema annotation keywords:  they describe a leaf and constrain nothing.
+_ANNOTATION_KEYS = frozenset(
+    ("description", "title", "default", "examples", "$comment", "deprecated", "readOnly", "writeOnly")
+)
+
+
 def _type_ok(schema: dict, value, pattern_checks=None) -> bool:
     """The Worker's typeOk:  one JSON-schema leaf check (type, pattern, enum, lengths, numeric bounds,
     items).  `pattern` is NOT searched here:  with a collector, the (pattern, value) pair is deferred
     to the isolated deadline-bounded child (_patterns_match) and this leaf is tentatively True."""
+    any_of = schema.get("anyOf")
+    if any_of is not None:
+        # A declared union (workflow_dispatch inputs values):  one variant must match, sibling
+        # constraints still apply to the matched value (they intersect, never replace), and a
+        # malformed union (non-list, empty, or a non-dict variant) refuses - a recognized keyword
+        # never falls through to a looser reading.  A variant's deferred pattern checks count only
+        # when the whole leaf passes.
+        if not isinstance(any_of, list) or not any_of:
+            return False
+        if not all(isinstance(variant, dict) for variant in any_of):
+            return False
+        # Every variant is tried:  a variant that matches outright settles the union, so a first
+        # variant whose deferred pattern would later fail can never hide a later variant that matches.
+        # Only when every matching variant still waits on a deferred pattern is one of them chosen;
+        # two or more such variants refuse (fail closed), since their patterns are only searched
+        # later, together, where an either-or cannot be expressed.
+        union_checks = [] if pattern_checks is not None else None
+        deferred = []
+        definite = False
+        for variant in any_of:
+            pending = [] if pattern_checks is not None else None
+            if _type_ok(variant, value, pending):
+                if not pending:
+                    definite = True
+                    break
+                deferred.append(pending)
+        if not definite:
+            if len(deferred) != 1:
+                return False
+            union_checks.extend(deferred[0])
+        # Annotation keywords constrain nothing:  a sibling of only those adds no check (a typeless
+        # leaf would otherwise read as a string and refuse every number or boolean).
+        sibling = {
+            k: v for k, v in schema.items() if k != "anyOf" and k not in _ANNOTATION_KEYS
+        }
+        if sibling and not _type_ok(sibling, value, pattern_checks):
+            return False
+        if pattern_checks is not None:
+            pattern_checks.extend(union_checks)
+        return True
     kind = schema.get("type")
     if kind == "integer":
         if isinstance(value, bool) or not isinstance(value, int):
@@ -1139,6 +1185,8 @@ def _type_ok(schema: dict, value, pattern_checks=None) -> bool:
         if hi is not None and (not _is_number(hi) or value > hi):
             return False
         return True
+    if kind == "number":
+        return _is_number(value) and not isinstance(value, bool)
     if kind == "boolean":
         return isinstance(value, bool)
     if kind == "array":
@@ -1189,17 +1237,27 @@ def _type_ok(schema: dict, value, pattern_checks=None) -> bool:
 
 def _object_ok(schema: dict, value, tolerate_identity: bool = False, pattern_checks=None) -> bool:
     """validWfV1Args2:  every required key present, every present key known, each value type-ok.
-    tolerate_identity lets a write's `identity` be absent here because this client fills it itself."""
+    tolerate_identity lets a write's `identity` be absent here because this client fills it itself.
+    A key outside `properties` is known only when the schema declares an additionalProperties leaf
+    (gr_workflow_dispatch's flat scalar `inputs`);  absent or false keeps the strict refusal."""
     if not isinstance(value, dict):
         return False
     props = schema.get("properties") or {}
+    additional = schema.get("additionalProperties")
+    max_props = schema.get("maxProperties")
+    if max_props is not None and (not _is_nonneg_int(max_props) or len(value) > max_props):
+        return False
     for key in schema.get("required") or ():
         if key not in value and not (tolerate_identity and key == "identity"):
             return False
     for key, item in value.items():
-        if key not in props:
+        if key in props:
+            leaf = props[key]
+        elif isinstance(additional, dict):
+            leaf = additional
+        else:
             return False
-        if isinstance(props[key], dict) and not _type_ok(props[key], item, pattern_checks):
+        if isinstance(leaf, dict) and not _type_ok(leaf, item, pattern_checks):
             return False
     return True
 
