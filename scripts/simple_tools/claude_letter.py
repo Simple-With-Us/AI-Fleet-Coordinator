@@ -1029,7 +1029,16 @@ class Chat:
             if (registry_api.base_url(self.env) or dest)
             else PL.with_registry_env(self.env)
         )
-        if registry_api.base_url(env):
+        # A register with no parent named, from a host that has the Mac's ssh destination, still hops:  the
+        # parent of a sub-thread is found in the desktop app's record of the chat (`_api_parent`), and that
+        # record lives on the Mac, so an in-process lookup on this host would find none and the chat would
+        # lose its after-parent placement.  The Mac's own registry side then makes the API call.
+        needs_mac_lineage = (
+            bool(dest)
+            and argv[:1] == ["register"]
+            and not any(a == "--parent-session-id" or a.startswith("--parent-session-id=") for a in argv)
+        )
+        if registry_api.base_url(env) and not needs_mac_lineage:
             # The registry API is the cutover (registry_api):  a chat on a host off the Mac calls the
             # Operator's API itself, through its own in-process registry side, and never hops over ssh
             # to a host whose own call would land back on the API — the platform-letter library's rule,

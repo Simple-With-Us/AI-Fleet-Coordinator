@@ -85,9 +85,10 @@ def _read_json(path: str) -> dict[str, Any] | None:
     return doc if isinstance(doc, dict) else None
 
 
-def _timestamp(meta: Mapping[str, Any]) -> float:
+def _timestamp(meta: Mapping[str, Any]) -> float | None:
     """The session's last activity as a POSIX time, from the first of its timestamp fields that parses
-    (a number is taken as seconds, or milliseconds when it is plainly one; a string as ISO 8601)."""
+    (a number is taken as seconds, or milliseconds when it is plainly one; a string as ISO 8601), or None
+    when none parses.  An unknown time is never read as the epoch:  that would call a live session stale."""
     for name in ("updated_at", "last_active_at", "created_at"):
         value = meta.get(name)
         if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
@@ -97,7 +98,7 @@ def _timestamp(meta: Mapping[str, Any]) -> float:
                 return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
             except ValueError:
                 continue
-    return 0.0
+    return None
 
 
 def store_sessions(env: Mapping[str, str]) -> list[dict[str, Any]]:
@@ -144,13 +145,23 @@ def store_sessions(env: Mapping[str, str]) -> list[dict[str, Any]]:
     return out
 
 
+def _has_session(env: Mapping[str, str], sid: str) -> bool:
+    """True when the store holds a readable record for this one id, read directly rather than by loading
+    the whole store."""
+    try:
+        SI.check(sid, "the session id")
+    except ValueError:
+        return False
+    if os.path.basename(sid) != sid:
+        return False
+    return _read_json(os.path.join(sessions_dir(env), sid, "session.json")) is not None
+
+
 def fx_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
     """A payload this adapter is handed (there are no fx hooks, so this is the sync's own shape) is a chat
     when it names a session of the store, and headless otherwise."""
     sid = _text(payload.get("session_id"))
-    return (
-        "chat" if sid and any(s["session_id"] == sid for s in store_sessions(env)) else "headless"
-    )
+    return "chat" if sid and _has_session(env, sid) else "headless"
 
 
 SPEC = PL.PlatformSpec(
@@ -210,6 +221,38 @@ def _registry(
     return code, answer
 
 
+#: The ids this sync has registered, kept beside the seat's other platform-letter state, so a session that
+#: has left the store entirely (deleted, or its record unreadable) is still closed:  the store alone cannot
+#: name an id it no longer holds.
+LEDGER_NAME = "platform-letter-fx.json"
+
+
+def _ledger_path(env: Mapping[str, str]) -> str:
+    return os.path.join(PL.L.state_root(env), LEDGER_NAME)
+
+
+def _read_ledger(env: Mapping[str, str]) -> list[str]:
+    doc = _read_json(_ledger_path(env)) or {}
+    ids = doc.get("registered")
+    return [i for i in ids if isinstance(i, str) and i] if isinstance(ids, list) else []
+
+
+def _write_ledger(env: Mapping[str, str], ids: list[str]) -> None:
+    path = _ledger_path(env)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump({"registered": sorted(set(ids))}, fh)
+    os.replace(tmp, path)
+
+
+def _owned(answer: Mapping[str, Any]) -> bool:
+    """A `show` answer this sync may close:  found, and not held under another seat.  The API's answer
+    names no seat;  there the identity itself (platform fx, this session id) is the ownership check."""
+    seat = _text(answer.get("seat"))
+    return bool(answer.get("found")) and (not seat or seat.upper() == SEAT)
+
+
 def sync_main(
     argv: list[str], env: Mapping[str, str], stdout: TextIO, *, now: float | None = None
 ) -> int:
@@ -226,7 +269,9 @@ def sync_main(
     args = parser.parse_args(argv)
     moment = time.time() if now is None else now
     sessions = store_sessions(env)
-    live = [s for s in sessions if moment - s["updated"] <= PL.STALE_SECONDS] if sessions else []
+    # A session with no readable time is neither registered nor closed:  nothing says whether it is live.
+    timed = [s for s in sessions if s["updated"] is not None]
+    live = [s for s in timed if moment - s["updated"] <= PL.STALE_SECONDS]
     registered: list[dict[str, Any]] = []
     failed: list[str] = []
     closed: list[str] = []
@@ -249,19 +294,36 @@ def sync_main(
             }
         )
     if args.apply:
-        # Close the registrations of sessions the store still names but that have fallen outside the
-        # window: each is read back first (`show`), and only one the registry holds is closed.  Only ids
-        # this sync can name from the store are candidates, so another seat's rows are never touched.
+        # Close the registrations this sync no longer has a live session for:  ids the store still names
+        # but that have fallen outside the window, and ids this sync registered earlier that the store no
+        # longer holds at all.  Each is read back first (`show`), and only a registration found and not
+        # held under another seat is closed.  A show or close that fails is counted under `failed`.
         live_ids = {s["session_id"] for s in live}
-        for session in sessions:
-            sid = session["session_id"]
-            if sid in live_ids:
-                continue
+        store_ids = {s["session_id"] for s in sessions}
+        untimed = {s["session_id"] for s in sessions if s["updated"] is None}
+        ledger = _read_ledger(env)
+        candidates = [s["session_id"] for s in timed if s["session_id"] not in live_ids]
+        candidates += [sid for sid in ledger if sid not in store_ids]
+        kept = [sid for sid in ledger if sid in untimed]
+        for sid in dict.fromkeys(candidates):
             code, answer = _registry(env, "show", sid, location=args.location)
-            if code == 0 and answer.get("found"):
-                close_code, close_answer = _registry(env, "close", sid, location=args.location)
-                if close_code == 0 and close_answer.get("closed"):
-                    closed.append(sid)
+            if answer.get("error") == PL.NO_REGISTRATION:
+                continue
+            if code != 0 or "error" in answer:
+                failed.append(sid)
+                kept.append(sid)
+                continue
+            if not _owned(answer):
+                continue
+            close_code, close_answer = _registry(env, "close", sid, location=args.location)
+            if close_code == 0 and close_answer.get("closed"):
+                closed.append(sid)
+            elif close_code == 0 and close_answer.get("retired"):
+                continue  # already closed:  nothing left to do
+            else:
+                failed.append(sid)
+                kept.append(sid)
+        _write_ledger(env, [r["session_id"] for r in registered] + kept)
     answer_doc: dict[str, Any] = {
         "platform": PLATFORM,
         "found": len(sessions),

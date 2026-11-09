@@ -114,6 +114,61 @@ class FxTests(Base):
         self.assertEqual(answer["closed"], [sid])
         self.assertEqual(self.lookup(sid)["state"], "closed")
 
+    def test_a_session_deleted_from_the_store_is_closed_by_the_next_sync(self) -> None:
+        sid = conv(25)
+        self.add_session(sid, title="Gone soon")
+        self.sync("--apply")
+        self.assertEqual(self.lookup(sid)["state"], "active")
+        import shutil
+
+        shutil.rmtree(os.path.join(self.sessions, sid))
+        with open(os.path.join(self.sessions, "index.json"), "w") as fh:
+            json.dump({"sessions": []}, fh)
+        answer = self.sync("--apply")
+        self.assertEqual(answer["closed"], [sid])
+        self.assertEqual(self.lookup(sid)["state"], "closed")
+
+    def test_a_session_with_no_readable_time_is_neither_registered_nor_closed(self) -> None:
+        sid = conv(26)
+        self.add_session(sid, title="Live")
+        self.sync("--apply")
+        with open(os.path.join(self.sessions, sid, "session.json"), "w") as fh:
+            json.dump({"title": "Live"}, fh)
+        answer = self.sync("--apply", now=time.time() + PL.STALE_SECONDS + 60)
+        self.assertEqual(answer["closed"], [])
+        self.assertEqual(self.lookup(sid)["state"], "active")
+        fresh = conv(27)
+        folder = os.path.join(self.sessions, fresh)
+        os.makedirs(folder)
+        with open(os.path.join(folder, "session.json"), "w") as fh:
+            json.dump({"title": "No time"}, fh)
+        with open(os.path.join(self.sessions, "index.json")) as fh:
+            index = json.load(fh)
+        index["sessions"].append({"id": fresh})
+        with open(os.path.join(self.sessions, "index.json"), "w") as fh:
+            json.dump(index, fh)
+        answer = self.sync("--apply")
+        self.assertNotIn(fresh, [r["session_id"] for r in answer["registered"]])
+        self.assertIsNone(self.lookup(fresh))
+
+    def test_a_registration_held_under_another_seat_is_never_closed(self) -> None:
+        sid = conv(28)
+        self.add_session(sid, title="Operator's", updated=time.time() - 1000)
+        out = io.StringIO()
+        argv = ["register", "--platform", "fx", "--location", "mac", "--session-id", sid]
+        code = PL.registry_main(argv + ["--seat", "OPERATOR", "--source", "test"], env=self.env(), stdout=out)
+        self.assertEqual(code, 0, out.getvalue())
+        answer = self.sync("--apply", now=time.time() + PL.STALE_SECONDS + 60)
+        self.assertEqual(answer["closed"], [])
+        self.assertEqual(self.lookup(sid)["state"], "active")
+
+    def test_fx_kind_reads_the_one_session_named(self) -> None:
+        sid = conv(29)
+        self.add_session(sid, title="Kind")
+        self.assertEqual(FX.fx_kind({"session_id": sid}, self.env()), "chat")
+        self.assertEqual(FX.fx_kind({"session_id": conv(30)}, self.env()), "headless")
+        self.assertEqual(FX.fx_kind({"session_id": "../" + sid}, self.env()), "headless")
+
 
 class FxApiTests(Base):
     def test_sync_registers_through_the_registry_api(self) -> None:

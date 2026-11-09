@@ -12,6 +12,7 @@ import io
 import json
 import os
 import secrets
+import subprocess
 import tempfile
 import time
 import unittest
@@ -132,6 +133,23 @@ class ApiSide(unittest.TestCase):
         record = OR.SessionRegistry(self.db).lookup("claude", "server", "default", SID)
         self.assertIsNotNone(record)
         self.assertEqual(record["label"], answer["label"])
+
+    def test_a_server_register_with_the_mac_remote_hops_for_the_parent_lookup(self) -> None:
+        calls: list = []
+
+        def runner(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout='{"label": "AB", "outcome": "registered"}\n')
+
+        env = dict(self.api_env, CLAUDE_LETTER_REMOTE="mac-host")
+        chat = CL.Chat(env, "CLAUDE", "server", SID, runner=runner, now=time.time())
+        answer = chat.registry("register")
+        self.assertEqual(answer.get("label"), "AB")
+        self.assertEqual(len(calls), 1)
+        self.assertIn("mac-host", calls[0])
+        # Every other op needs no lineage, so it calls the API in process.
+        in_process = CL.Chat(env, "CLAUDE", "server", SID, runner=no_runner, now=time.time())
+        self.assertEqual(in_process.registry("touch").get("error"), "this chat has no registration")
 
 
 if __name__ == "__main__":
