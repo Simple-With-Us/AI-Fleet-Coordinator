@@ -1024,7 +1024,11 @@ class Chat:
             registry_main(argv, env=self.env, stdout=out)
             return _answer(_last_json(out.getvalue()))
         dest = str(self.env.get(ENV_REMOTE) or "").strip()
-        env = self.env if (registry_api.base_url(self.env) or dest) else PL.with_registry_env(self.env)
+        env = (
+            self.env
+            if (registry_api.base_url(self.env) or dest)
+            else PL.with_registry_env(self.env)
+        )
         if registry_api.base_url(env):
             # The registry API is the cutover (registry_api):  a chat on a host off the Mac calls the
             # Operator's API itself, through its own in-process registry side, and never hops over ssh

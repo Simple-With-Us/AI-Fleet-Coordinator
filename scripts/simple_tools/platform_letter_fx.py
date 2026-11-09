@@ -148,7 +148,9 @@ def fx_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
     """A payload this adapter is handed (there are no fx hooks, so this is the sync's own shape) is a chat
     when it names a session of the store, and headless otherwise."""
     sid = _text(payload.get("session_id"))
-    return "chat" if sid and any(s["session_id"] == sid for s in store_sessions(env)) else "headless"
+    return (
+        "chat" if sid and any(s["session_id"] == sid for s in store_sessions(env)) else "headless"
+    )
 
 
 SPEC = PL.PlatformSpec(
@@ -233,12 +235,18 @@ def sync_main(
         if not args.apply:
             registered.append({"session_id": sid, "would_register": True})
             continue
-        code, answer = _registry(env, "register", sid, location=args.location, title=session["title"])
+        code, answer = _registry(
+            env, "register", sid, location=args.location, title=session["title"]
+        )
         if code != 0 or "error" in answer:
             failed.append(sid)
             continue
         registered.append(
-            {"session_id": sid, "label": answer.get("label", ""), "outcome": answer.get("outcome", "")}
+            {
+                "session_id": sid,
+                "label": answer.get("label", ""),
+                "outcome": answer.get("outcome", ""),
+            }
         )
     if args.apply:
         # Close the registrations of sessions the store still names but that have fallen outside the
