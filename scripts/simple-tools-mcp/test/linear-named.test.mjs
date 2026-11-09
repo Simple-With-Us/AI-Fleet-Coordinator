@@ -60,6 +60,19 @@ test('a document past the old 64,000 ceiling reads back in full, whole and slice
   assert.ok(!sliceText.includes(content.slice(0, 50000) + content.slice(50000, 100000).slice(0, 10)) || sliceText.length < wholeText.length);
 });
 
+test('a sliced document read scans the whole document, so a secret across a slice boundary stays redacted', async () => {
+  const { tools, linear } = fixture();
+  const token = 'ghp_' + 'A1b2C3d4E5'.repeat(4);
+  const content = 'x'.repeat(999) + ' ' + token + ' ' + 'y'.repeat(1000);
+  linear.result = { document: { id: 'doc-secret', title: 'S', content, url: 'https://linear.app/doc-secret' } };
+  const { callNamedLinear } = await import('../src/linear-named.js');
+  for (const [offset, length] of [[0, 1010], [1010, 2000]]) {
+    const res = await callNamedLinear(tools, 'linear_get_document', { id: 'doc-secret', content_offset: offset, content_length: length });
+    const text = res.content.map((c) => c.text ?? '').join('');
+    assert.ok(!text.includes(token.slice(0, 10)) && !text.includes(token.slice(10)), `slice ${offset} leaks part of the token`);
+  }
+});
+
 test('named tool catalog is unique, discoverable, closed and bound to the seat', () => {
   assert.ok(LINEAR_NAMED_TOOLS.length >= 140);
   assert.equal(new Set(LINEAR_NAMED_TOOLS.map((t) => t.name)).size, LINEAR_NAMED_TOOLS.length);

@@ -1,7 +1,8 @@
 import { assertPublicInputs } from "./linear-public-inputs.js";
 import { parse, Kind } from 'graphql';
-import { ToolError } from './contract.js';
+import { ToolError, scanSecret } from './contract.js';
 import { apiQuery, apiMutation } from './linear-api.js';
+import { linearClean } from './linear.js';
 import { LINEAR_NAMED_BY_NAME } from './linear-named-specs.js';
 
 function selectedFields(value) {
@@ -53,7 +54,8 @@ export const NAMED_DEFAULT_MAX_CHARS = Object.freeze({ linear_get_document: 1000
 // Slice a document read's content before the response budgets see it, so a
 // document past the 1,000,000 ceiling still reads in full across calls:
 // the caller walks content_offset by the returned slice length until it
-// reaches content_total.  Only the linearCall result is rewritten;  every
+// reaches content_total.  The offsets and total count the cleaned text.
+// Only the linearCall result is rewritten;  every
 // other tools method binds through to the real object unchanged.
 function sliceDocumentContent(tools, offset, length) {
   return new Proxy(tools, {
@@ -63,8 +65,14 @@ function sliceDocumentContent(tools, offset, length) {
           const data = await target.linearCall(fn, opts);
           const doc = data?.document;
           if (doc && typeof doc.content === "string") {
-            const total = doc.content.length;
-            const slice = length === undefined ? doc.content.slice(offset) : doc.content.slice(offset, offset + length);
+            // Clean the whole document before slicing, the same way the
+            // response pass cleans an unsliced read:  a secret that straddles
+            // a slice boundary would otherwise pass the scan in both halves,
+            // and the offsets would drift once a slice was rewritten.
+            const scrubbed = target.scrub(doc.content);
+            const full = scanSecret(scrubbed, target.known) ? "[redacted secret]" : linearClean(scrubbed)[0];
+            const total = full.length;
+            const slice = length === undefined ? full.slice(offset) : full.slice(offset, offset + length);
             return { ...data, document: { ...doc, content: slice, content_total: total, content_offset: offset } };
           }
           return data;
