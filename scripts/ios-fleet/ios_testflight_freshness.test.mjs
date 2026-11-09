@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   EXIT_BEHIND, EXIT_CURRENT, EXIT_FAILED, SENTENCE_GAP,
-  acquireLockDir, annotateExternalGroups, betaTesterCountFromJson, buildCutTime, externalBetaGroupsListPath, oldestRun, correlateRun, dispatchCommand, evaluateApp, exitCodeFor, loadRegistry,
+  acquireLockDir, annotateExternalGroups, betaTesterCountFromJson, buildCutTime, buildsFilterForBetaGroupPath, buildsRelationshipForBetaGroupPath, externalBetaGroupsListPath, oldestRun, correlateRun, dispatchCommand, evaluateApp, exitCodeFor, loadRegistry,
   ascFailureText, ascRequest, main, makeAscGuard, makeContext, makeGate, matchCheckName, ownerTime, parseArgs, planAlerts, runRemedies, sentences,
 } from "./ios_testflight_freshness.mjs";
 
@@ -46,7 +46,7 @@ function ascBuild(id, build, marketing, uploaded, state = "VALID", expired = fal
  * betaGroups: { appleId: [{ id, name, builds: [...ascBuild], testerTotal, publicLinkEnabled }] }
  */
 function fakeDeps({ repos = {}, builds = {}, betaGroups = {}, window = "normal", lastShip = {}, state = null, failPost = false } = {}) {
-  const calls = { gh: [], dispatch: [], posts: [], states: [] };
+  const calls = { gh: [], asc: [], dispatch: [], posts: [], states: [] };
   const deps = {
     now: () => NOW,
     async gh(p) {
@@ -85,6 +85,7 @@ function fakeDeps({ repos = {}, builds = {}, betaGroups = {}, window = "normal",
     },
     async ghDispatch(repoFull, workflow, ref, inputs) { calls.dispatch.push({ repoFull, workflow, ref, inputs }); },
     async asc(p) {
+      calls.asc.push(p);
       if (p.startsWith("/v1/apps?")) return { data: [] };
       const groupList = /^\/v1\/apps\/(\d+)\/betaGroups/.exec(p);
       if (groupList) {
@@ -109,6 +110,9 @@ function fakeDeps({ repos = {}, builds = {}, betaGroups = {}, window = "normal",
       }
       const groupBuilds = /^\/v1\/betaGroups\/([^/]+)\/builds/.exec(p);
       if (groupBuilds) {
+        if (/[?&]include=|[?&]sort=/.test(p)) {
+          throw new Error(`App Store Connect /v1/betaGroups/${groupBuilds[1]}/builds: HTTP 400 PARAMETER_ERROR.ILLEGAL`);
+        }
         for (const list of Object.values(betaGroups)) {
           const g = list.find((x) => x.id === groupBuilds[1]);
           if (g) {
@@ -264,11 +268,82 @@ test("external beta groups: empty group (no builds, no testers)", async () => {
       publicLinkEnabled: false,
     }],
   };
-  const { r } = await evalOne(botfleetLike(), BOTFLEET_BUILDS, {}, { betaGroups: beta });
+  const { r, calls } = await evalOne(botfleetLike(), BOTFLEET_BUILDS, {}, { betaGroups: beta });
   assert.equal(r.status, "behind");
   assert.match(r.reason, /has no builds/);
   assert.match(r.reason, /zero testers/);
   assert.deepEqual(r.externalGroups[0].findings.sort(), ["noBuilds", "noTesters"]);
+  assert.ok(
+    calls.asc.some((p) => p.startsWith(buildsFilterForBetaGroupPath("bg-invited").split("?")[0])),
+    "uses filter[betaGroups] first",
+  );
+  assert.ok(
+    !calls.asc.some((p) => /\/v1\/betaGroups\/bg-invited\/builds/.test(p)),
+    "does not call the relationship when filter returns an empty list",
+  );
+});
+
+test("betaGroups relationship path rejects include and sort like ASC", () => {
+  assert.doesNotMatch(buildsRelationshipForBetaGroupPath("g1"), /include=|sort=/);
+  assert.match(buildsFilterForBetaGroupPath("g1"), /filter\[betaGroups\]=g1/);
+  assert.match(buildsFilterForBetaGroupPath("g1"), /include=preReleaseVersion/);
+});
+
+test("mixed external groups: empty filter skips relationship; sibling with builds still reports", async () => {
+  const beta = {
+    111: [
+      {
+        id: "bg-invited",
+        name: "Invited Testers",
+        builds: [],
+        testerTotal: 0,
+        publicLinkEnabled: false,
+      },
+      {
+        id: "bg-public",
+        name: "Public Beta",
+        builds: [STALE_GROUP_BUILD],
+        testerTotal: 3,
+        publicLinkEnabled: true,
+      },
+    ],
+  };
+  const { r, calls } = await evalOne(botfleetLike(), BOTFLEET_BUILDS, {}, { betaGroups: beta });
+  assert.equal(r.externalGroups.length, 2);
+  assert.equal(r.status, "behind");
+  const invited = r.externalGroups.find((g) => g.id === "bg-invited");
+  const pub = r.externalGroups.find((g) => g.id === "bg-public");
+  assert.deepEqual(invited.findings.sort(), ["noBuilds", "noTesters"]);
+  assert.deepEqual(pub.findings, ["staleBuild"]);
+  assert.equal(r.externalGroupsWarning, undefined);
+  assert.ok(!calls.asc.some((p) => /\/betaGroups\/bg-invited\/builds/.test(p)));
+  assert.ok(calls.asc.some((p) => p.includes("filter%5BbetaGroups%5D=bg-public") || p.includes("filter[betaGroups]=bg-public")));
+});
+
+test("per-group lookupWarning when builds fail but testers succeed", async () => {
+  const beta = {
+    111: [{
+      id: "bg-bad",
+      name: "Broken",
+      builds: [FRESH_GROUP_BUILD],
+      testerTotal: 2,
+      publicLinkEnabled: true,
+    }],
+  };
+  const { deps } = fakeDeps({ repos: { Demo: botfleetLike() }, builds: BOTFLEET_BUILDS, betaGroups: beta });
+  const orig = deps.asc;
+  deps.asc = async (p) => {
+    if (p.includes("bg-bad") && (p.includes("filter") || /\/betaGroups\/bg-bad\/builds/.test(p))) {
+      throw new Error("App Store Connect /v1/builds: HTTP 503");
+    }
+    return orig(p);
+  };
+  const reg = registry({ demo: app() });
+  const r = await evaluateApp(makeContext(deps, reg), "demo", reg.apps.demo, NOW);
+  assert.equal(r.status, "behind", r.reason);
+  assert.equal(r.externalGroups[0].testerCount, 2);
+  assert.match(r.externalGroups[0].lookupWarning, /HTTP 503/);
+  assert.match(r.reason, /Broken.*has no builds/);
 });
 
 test("external beta groups: clean group matches the valid build", async () => {

@@ -515,9 +515,12 @@ export function annotateExternalGroups(validBuild, groups) {
   return { groups: out, reason: parts.length ? parts.join(";  ") : null };
 }
 
-const ASC_BUILD_LIST_FIELDS =
+const ASC_BUILD_FILTER_FIELDS =
   "&fields[builds]=version,uploadedDate,processingState,expired" +
   "&include=preReleaseVersion&fields[preReleaseVersions]=version,platform";
+
+/** Relationship list:  no include or sort (ASC returns PARAMETER_ERROR.ILLEGAL). */
+const ASC_BUILD_RELATIONSHIP_FIELDS = "&fields[builds]=version,uploadedDate,processingState,expired";
 
 /** App Store Connect list path for beta groups (no filter[isInternalGroup] on this relationship). */
 export function externalBetaGroupsListPath(appleId) {
@@ -527,17 +530,54 @@ export function externalBetaGroupsListPath(appleId) {
   );
 }
 
+export function buildsFilterForBetaGroupPath(groupId) {
+  return (
+    `/v1/builds?filter[betaGroups]=${encodeURIComponent(groupId)}&sort=-uploadedDate&limit=10${ASC_BUILD_FILTER_FIELDS}`
+  );
+}
+
+export function buildsRelationshipForBetaGroupPath(groupId) {
+  return `/v1/betaGroups/${groupId}/builds?limit=200${ASC_BUILD_RELATIONSHIP_FIELDS}`;
+}
+
+/** Fill `included` preReleaseVersions when a relationship response omits include=. */
+async function attachPreReleaseVersions(ctx, json) {
+  const included = [...(json.included || [])];
+  const have = new Set(included.filter((x) => x.type === "preReleaseVersions").map((x) => x.id));
+  for (const b of json.data || []) {
+    const prId = b.relationships?.preReleaseVersion?.data?.id;
+    if (!prId || have.has(prId)) continue;
+    try {
+      const pr = await ctx.asc(`/v1/preReleaseVersions/${prId}?fields[preReleaseVersions]=version,platform`);
+      if (pr.data) {
+        included.push(pr.data);
+        have.add(prId);
+      }
+    } catch {
+      /* marketing version stays unknown for this build */
+    }
+  }
+  return { ...json, included };
+}
+
 /** Newest build assigned to a beta group; prefers /v1/builds?filter[betaGroups]= for sort support. */
 async function newestBuildInBetaGroup(ctx, groupId, platform) {
-  const byFilter = await ctx.asc(
-    `/v1/builds?filter[betaGroups]=${encodeURIComponent(groupId)}&sort=-uploadedDate&limit=10${ASC_BUILD_LIST_FIELDS}`,
-  );
-  let normalized = normalizeBuilds(byFilter, platform);
-  if (!normalized.length) normalized = normalizeBuilds(byFilter, null);
-  if (normalized.length) return normalized[0];
-  const byRel = await ctx.asc(`/v1/betaGroups/${groupId}/builds?limit=10${ASC_BUILD_LIST_FIELDS}`);
-  normalized = normalizeBuilds(byRel, platform);
-  if (!normalized.length) normalized = normalizeBuilds(byRel, null);
+  let filterOk = false;
+  try {
+    const byFilter = await ctx.asc(buildsFilterForBetaGroupPath(groupId));
+    filterOk = true;
+    if (!(byFilter.data || []).length) return null;
+    let normalized = normalizeBuilds(byFilter, platform);
+    if (!normalized.length) normalized = normalizeBuilds(byFilter, null);
+    if (normalized.length) return normalized[0];
+  } catch {
+    /* fall through to the relationship list */
+  }
+  if (filterOk) return null;
+  const byRel = await ctx.asc(buildsRelationshipForBetaGroupPath(groupId));
+  const enriched = await attachPreReleaseVersions(ctx, byRel);
+  let normalized = normalizeBuilds(enriched, platform);
+  if (!normalized.length) normalized = normalizeBuilds(enriched, null);
   return normalized[0] || null;
 }
 
@@ -547,17 +587,28 @@ async function loadExternalBetaGroups(ctx, appleId, platform) {
   for (const g of list.data || []) {
     const attrs = g.attributes || {};
     if (attrs.isInternalGroup) continue;
-    const [newest, testersJson] = await Promise.all([
-      newestBuildInBetaGroup(ctx, g.id, platform),
-      ctx.asc(`/v1/betaGroups/${g.id}/betaTesters?limit=1`),
-    ]);
-    rows.push({
+    const base = {
       name: attrs.name || g.id,
       id: g.id,
-      newestBuild: buildView(newest),
-      testerCount: betaTesterCountFromJson(testersJson),
+      newestBuild: null,
+      testerCount: 0,
       publicLinkEnabled: Boolean(attrs.publicLinkEnabled),
-    });
+    };
+    const warnings = [];
+    try {
+      const newest = await newestBuildInBetaGroup(ctx, g.id, platform);
+      base.newestBuild = buildView(newest);
+    } catch (err) {
+      warnings.push(String(err.message || err).slice(0, 200));
+    }
+    try {
+      const testersJson = await ctx.asc(`/v1/betaGroups/${g.id}/betaTesters?limit=1`);
+      base.testerCount = betaTesterCountFromJson(testersJson);
+    } catch (err) {
+      warnings.push(String(err.message || err).slice(0, 200));
+    }
+    if (warnings.length) base.lookupWarning = warnings.join(";  ");
+    rows.push(base);
   }
   return rows;
 }

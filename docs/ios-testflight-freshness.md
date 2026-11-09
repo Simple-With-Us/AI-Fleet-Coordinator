@@ -79,7 +79,8 @@ The build-level check alone cannot see what testers install from a public link o
 group.  For each app the check also reads App Store Connect **external** beta groups
 (`GET /v1/apps/{id}/betaGroups`, then skips rows with `isInternalGroup` on the client — the
 relationship endpoint rejects `filter[isInternalGroup]`), then for each group the newest assigned
-build (`GET /v1/builds?filter[betaGroups]={id}&sort=-uploadedDate`, with a relationship fallback),
+build (`GET /v1/builds?filter[betaGroups]={id}&sort=-uploadedDate`; an empty result means no builds
+and skips the relationship), with a fields-only relationship fallback when the filter call fails),
 the tester count, and whether the public link is enabled.  Read-only:  it never changes groups,
 builds in a group, or testers.  If this extra lookup fails for one app, the build-level result is
 kept and `externalGroupsWarning` names the error.
@@ -87,7 +88,8 @@ kept and `externalGroupsWarning` names the error.
 Each app row in `--json` carries an **`externalGroups`** array (empty when there are no external
 groups).  Each element has `name`, `id`, `newestBuild` (same shape as `testflight`), `testerCount`,
 and `publicLinkEnabled`.  When a group is wrong, `findings` lists `staleBuild`, `noBuilds`, and/or
-`noTesters`.
+`noTesters`.  A failed lookup for one group sets that row's `lookupWarning` without clearing the
+rest.
 
 The app is **`behind`** (same exit class as code staleness) when any external group's newest build
 is older than the app's newest **VALID** processed build, when a group has **no builds**, or when a
