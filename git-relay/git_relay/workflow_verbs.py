@@ -1386,36 +1386,46 @@ class WorkflowVerbs:
     def wf_org_installations(self, repo, args):
         _only(args, ("repo",))
         owner = repo.split("/")[0]
-        data = self._get(f"/orgs/{owner}/installations?per_page={MAX_PAGE}")
-        if (
-            not isinstance(data, dict)
-            or type(data.get("total_count")) is not int
-            or data["total_count"] < 0
-            or not isinstance(data.get("installations"), list)
-            or len(data["installations"]) > MAX_PAGE
-        ):
-            raise RelayGitHubError(502, "organization installations unverifiable")
+        expected = self.policy.app_identity(self.seat)[0]
+        # The own-App filter must cover the WHOLE organization list, not the
+        # first page: scan bounded upstream pages and refuse when the list is
+        # too large to filter completely, so a filtered count can never hide
+        # an own-App installation on a later page.
         installs = []
-        for item in data["installations"]:
-            account = item.get("account") if isinstance(item, dict) else None
+        page = 0
+        exhausted = False
+        while not exhausted and page < 10:
+            page += 1
+            data = self._get(f"/orgs/{owner}/installations?per_page={MAX_PAGE}&page={page}")
             if (
-                not isinstance(item, dict)
-                or type(item.get("id")) is not int
-                or item["id"] <= 0
-                or not isinstance(item.get("app_slug"), str)
-                or not re.fullmatch(r"[a-z0-9-]{1,100}", item["app_slug"])
-                or not isinstance(account, dict)
-                or not isinstance(account.get("login"), str)
-                or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}(?:\[bot\])?", account["login"])
+                not isinstance(data, dict)
+                or type(data.get("total_count")) is not int
+                or data["total_count"] < 0
+                or not isinstance(data.get("installations"), list)
+                or len(data["installations"]) > MAX_PAGE
             ):
-                raise RelayGitHubError(502, "organization installation unverifiable")
-            if item["app_slug"] != self.policy.app_identity(self.seat)[0]:
-                # Org-wide read filtered to the seat's own App: other apps'
-                # installations in the organization are not the seat's to see.
-                continue
-            installs.append(
-                {"id": item["id"], "app_slug": item["app_slug"], "account": account["login"]}
-            )
+                raise RelayGitHubError(502, "organization installations unverifiable")
+            for item in data["installations"]:
+                account = item.get("account") if isinstance(item, dict) else None
+                if (
+                    not isinstance(item, dict)
+                    or type(item.get("id")) is not int
+                    or item["id"] <= 0
+                    or not isinstance(item.get("app_slug"), str)
+                    or not re.fullmatch(r"[a-z0-9-]{1,100}", item["app_slug"])
+                    or not isinstance(account, dict)
+                    or not isinstance(account.get("login"), str)
+                    or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}(?:\[bot\])?", account["login"])
+                ):
+                    raise RelayGitHubError(502, "organization installation unverifiable")
+                if item["app_slug"] != expected:
+                    continue
+                installs.append(
+                    {"id": item["id"], "app_slug": item["app_slug"], "account": account["login"]}
+                )
+            exhausted = page * MAX_PAGE >= data["total_count"]
+        if not exhausted:
+            raise Refused("organization installation list too large to filter safely")
         return {"installations": installs, "total_count": len(installs)}
 
     def wf_issue_list(self, repo, args):

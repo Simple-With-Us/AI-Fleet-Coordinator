@@ -108,7 +108,9 @@ class AdminScopeReadTests(unittest.TestCase):
         out, client = self.run_action(
             "wf_org_installations", {}, {"total_count": 1, "installations": [INSTALL]}
         )
-        self.assertEqual(client.calls[0][1], "/orgs/Simple-With-Us/installations?per_page=50")
+        self.assertEqual(
+            client.calls[0][1], "/orgs/Simple-With-Us/installations?per_page=50&page=1"
+        )
         self.assertEqual(out["installations"][0]["app_slug"], "swu-wise")
 
     def test_org_installations_refuses_bad_slug(self):
@@ -134,6 +136,25 @@ class AdminScopeReadTests(unittest.TestCase):
         )
         self.assertEqual([i["app_slug"] for i in out["installations"]], ["swu-wise"])
         self.assertEqual(out["total_count"], 1)
+
+    def test_org_installations_finds_own_app_on_a_later_page(self):
+        page1 = {"total_count": 51, "installations": [OTHER_INSTALL] * 50}
+        page2 = {"total_count": 51, "installations": [INSTALL]}
+        out, client = self.run_action("wf_org_installations", {}, page1, page2)
+        self.assertEqual(
+            [c[1] for c in client.calls],
+            [
+                "/orgs/Simple-With-Us/installations?per_page=50&page=1",
+                "/orgs/Simple-With-Us/installations?per_page=50&page=2",
+            ],
+        )
+        self.assertEqual([i["app_slug"] for i in out["installations"]], ["swu-wise"])
+        self.assertEqual(out["total_count"], 1)
+
+    def test_org_installations_refuses_when_too_large_to_filter(self):
+        page = {"total_count": 9999, "installations": [OTHER_INSTALL] * 50}
+        with self.assertRaises(Refused):
+            self.run_action("wf_org_installations", {}, *([page] * 10))
 
 
 if __name__ == "__main__":
