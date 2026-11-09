@@ -1303,48 +1303,78 @@ class WorkflowVerbs:
             raise Refused("credential-shaped outbound text")
         return value
 
+    def _search_scope(self, owner):
+        # Scope an org-wide search to the seat's own allowlist: an Org/* pattern
+        # licenses org:, otherwise bounded repo: qualifiers, so a seat can never
+        # pull results from repositories it may not name.
+        wildcard = False
+        exact = []
+        for pattern in self.policy.repo_patterns(self.seat):
+            if pattern.endswith("/*") and pattern[:-1] == owner + "/":
+                wildcard = True
+            elif pattern.startswith(owner + "/"):
+                exact.append(pattern)
+        if wildcard:
+            return f"org:{owner}"
+        if not exact or len(exact) > 20:
+            raise Refused("seat repository scope cannot be expressed as a bounded search")
+        return " ".join(f"repo:{name}" for name in sorted(exact))
+
     def wf_repo_list(self, repo, args):
         _only(args, ("repo", "per_page", "page"))
         limit = _page(args)
         page = _int(args, "page", 1, 1000) if "page" in args else 1
-        data = self._get(f"/installation/repositories?per_page={limit}&page={page}")
-        if (
-            not isinstance(data, dict)
-            or type(data.get("total_count")) is not int
-            or data["total_count"] < 0
-            or not isinstance(data.get("repositories"), list)
-            or len(data["repositories"]) > limit
-        ):
-            raise RelayGitHubError(502, "repository page unverifiable")
-        repos = []
-        for item in data["repositories"]:
-            branch = item.get("default_branch") if isinstance(item, dict) else None
-            if branch is None:
-                branch = ""
+        # Org-wide read, but the seat sees only repositories its allowlist
+        # names: scan the installation's pages (bounded) and paginate over the
+        # filtered stream, so an installation covering other repositories
+        # discloses nothing about them.
+        allowed = []
+        upstream_page = 0
+        exhausted = False
+        while not exhausted and upstream_page < 10:
+            upstream_page += 1
+            data = self._get(f"/installation/repositories?per_page={MAX_PAGE}&page={upstream_page}")
             if (
-                not isinstance(item, dict)
-                or type(item.get("id")) is not int
-                or item["id"] <= 0
-                or not isinstance(item.get("full_name"), str)
-                or not _REPO.fullmatch(item["full_name"])
-                or type(item.get("private")) is not bool
-                or not isinstance(branch, str)
-                or (branch != "" and not _REF.fullmatch(branch))
+                not isinstance(data, dict)
+                or type(data.get("total_count")) is not int
+                or data["total_count"] < 0
+                or not isinstance(data.get("repositories"), list)
+                or len(data["repositories"]) > MAX_PAGE
             ):
-                raise RelayGitHubError(502, "repository metadata unverifiable")
-            repos.append(
-                {
-                    "id": item["id"],
-                    "full_name": item["full_name"],
-                    "private": item["private"],
-                    "default_branch": branch,
-                }
-            )
+                raise RelayGitHubError(502, "repository page unverifiable")
+            for item in data["repositories"]:
+                branch = item.get("default_branch") if isinstance(item, dict) else None
+                if branch is None:
+                    branch = ""
+                if (
+                    not isinstance(item, dict)
+                    or type(item.get("id")) is not int
+                    or item["id"] <= 0
+                    or not isinstance(item.get("full_name"), str)
+                    or not _REPO.fullmatch(item["full_name"])
+                    or type(item.get("private")) is not bool
+                    or not isinstance(branch, str)
+                    or (branch != "" and not _REF.fullmatch(branch))
+                ):
+                    raise RelayGitHubError(502, "repository metadata unverifiable")
+                if self.policy.repo_allowed(self.seat, item["full_name"]):
+                    allowed.append(
+                        {
+                            "id": item["id"],
+                            "full_name": item["full_name"],
+                            "private": item["private"],
+                            "default_branch": branch,
+                        }
+                    )
+            exhausted = upstream_page * MAX_PAGE >= data["total_count"]
+        if not exhausted:
+            raise Refused("installation too large to filter to the seat's repositories")
+        items = allowed[(page - 1) * limit : page * limit]
         return {
-            "repositories": repos,
-            "total_count": data["total_count"],
+            "repositories": items,
+            "total_count": len(allowed),
             "page": page,
-            "has_more": page * limit < data["total_count"],
+            "has_more": page * limit < len(allowed),
         }
 
     def wf_pr_search(self, repo, args):
@@ -1353,7 +1383,8 @@ class WorkflowVerbs:
         state = _enum(args, "state", ("open", "closed", "all"), "open")
         limit = _page(args)
         page = _int(args, "page", 1, 20) if "page" in args else 1
-        q = f"org:{owner} type:pr" + ("" if state == "all" else f" state:{state}")
+        scope = self._search_scope(owner)
+        q = f"{scope} type:pr" + ("" if state == "all" else f" state:{state}")
         data = self._get(f"/search/issues?q={quote(q, safe='')}&per_page={limit}&page={page}")
         if (
             not isinstance(data, dict)
@@ -1385,6 +1416,8 @@ class WorkflowVerbs:
                 or not _REPO.fullmatch(full)
             ):
                 raise RelayGitHubError(502, "pull request search item unverifiable")
+            if not self.policy.repo_allowed(self.seat, full):
+                raise RelayGitHubError(502, "pull request search escaped seat scope")
             prs.append(
                 {
                     "number": item["number"],

@@ -33,11 +33,11 @@ ITEM = {
 
 
 class RepoAdminReadTests(unittest.TestCase):
-    def run_action(self, action, args, *replies):
+    def run_action(self, action, args, *replies, repos=(REPO,)):
         client = Client(*replies)
         ceiling = {**CEILING, "metadata": "read", "pull_requests": "read"}
         handle = WorkflowVerbs.for_action(
-            client, Policy(ceiling), Minter(), "swu-wise", action, REPO
+            client, Policy(ceiling, repos=repos), Minter(), "swu-wise", action, REPO
         )
         return handle.run(action, {"repo": REPO, **args}), client
 
@@ -45,7 +45,7 @@ class RepoAdminReadTests(unittest.TestCase):
         out, client = self.run_action(
             "wf_repo_list", {}, {"total_count": 1, "repositories": [REPO_ITEM]}
         )
-        self.assertEqual(client.calls[0][1], "/installation/repositories?per_page=30&page=1")
+        self.assertEqual(client.calls[0][1], "/installation/repositories?per_page=50&page=1")
         self.assertEqual(out["repositories"][0]["default_branch"], "main")
         self.assertFalse(out["has_more"])
 
@@ -65,7 +65,10 @@ class RepoAdminReadTests(unittest.TestCase):
             {},
             {"total_count": 1, "incomplete_results": False, "items": [ITEM]},
         )
-        self.assertIn("org%3ASimple-With-Us%20type%3Apr%20state%3Aopen", client.calls[0][1])
+        self.assertIn(
+            "repo%3ASimple-With-Us%2FAI-Fleet-Coordinator%20type%3Apr%20state%3Aopen",
+            client.calls[0][1],
+        )
         self.assertEqual(out["pull_requests"][0]["number"], 31)
         self.assertTrue(out["complete"])
 
@@ -100,6 +103,47 @@ class RepoAdminReadTests(unittest.TestCase):
                 "wf_pr_search",
                 {"page": 21},
                 {"total_count": 0, "incomplete_results": False, "items": []},
+            )
+
+    def test_repo_list_filters_to_seat_allowlist(self):
+        foreign = dict(REPO_ITEM, id=12, full_name="Simple-With-Us/Other-Repo")
+        out, _ = self.run_action(
+            "wf_repo_list", {}, {"total_count": 2, "repositories": [REPO_ITEM, foreign]}
+        )
+        self.assertEqual([r["full_name"] for r in out["repositories"]], [REPO])
+        self.assertEqual(out["total_count"], 1)
+
+    def test_repo_list_wildcard_seat_keeps_org_repos(self):
+        foreign = dict(REPO_ITEM, id=12, full_name="Simple-With-Us/Other-Repo")
+        out, _ = self.run_action(
+            "wf_repo_list",
+            {},
+            {"total_count": 2, "repositories": [REPO_ITEM, foreign]},
+            repos=("Simple-With-Us/*",),
+        )
+        self.assertEqual(len(out["repositories"]), 2)
+        self.assertEqual(out["total_count"], 2)
+
+    def test_pr_search_wildcard_seat_uses_org_scope(self):
+        _, client = self.run_action(
+            "wf_pr_search",
+            {},
+            {"total_count": 0, "incomplete_results": False, "items": []},
+            repos=("Simple-With-Us/*",),
+        )
+        self.assertIn("org%3ASimple-With-Us%20type%3Apr", client.calls[0][1])
+
+    def test_pr_search_refuses_item_outside_seat_scope(self):
+        foreign = dict(
+            ITEM,
+            html_url="https://github.com/Simple-With-Us/Other-Repo/pull/31",
+            repository_url="https://api.github.com/repos/Simple-With-Us/Other-Repo",
+        )
+        with self.assertRaises(RelayGitHubError):
+            self.run_action(
+                "wf_pr_search",
+                {},
+                {"total_count": 1, "incomplete_results": False, "items": [foreign]},
             )
 
 

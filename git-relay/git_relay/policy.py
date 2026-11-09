@@ -488,6 +488,14 @@ class SeatPolicy:
                 return True
         return False
 
+    def repo_allowed(self, seat: str, repo: str) -> bool:
+        """Public read of the seat allowlist: org-wide verbs filter results to it."""
+        return self._repo_allowed(seat, repo)
+
+    def repo_patterns(self, seat: str) -> tuple:
+        """The seat's repository allowlist patterns (read-only copy)."""
+        return tuple(self._seats[seat]["repos"])
+
     @classmethod
     def is_write(cls, action: str) -> bool:
         """Whether an authorized dispatch of this action can change something upstream.
