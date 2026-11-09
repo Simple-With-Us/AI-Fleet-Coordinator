@@ -29,6 +29,7 @@ import io
 import json
 import lzma
 import re
+import time
 import zipfile
 import zlib
 from urllib.parse import quote, urlsplit
@@ -721,6 +722,16 @@ def _validate_read(action, result):
     return result
 
 
+# Short-lived per-installation snapshot of the App installation's repository
+# list: wf_repo_list otherwise pays up to ten sequential upstream page fetches
+# on every call. Keyed by a digest of the installation bearer, never the
+# bearer itself; entries outlive _INSTALLATION_REPOS_TTL_S seconds never. The
+# seat policy filter still runs on every call, so a stale snapshot can never
+# widen what a seat may name.
+_INSTALLATION_REPOS_TTL_S = 60.0
+_INSTALLATION_REPOS_CACHE = {}
+
+
 class WorkflowVerbs:
     def __init__(self, client, policy, seat, bearer, app_slug, action, repo):
         expected, _ = policy.app_identity(seat)
@@ -1320,15 +1331,16 @@ class WorkflowVerbs:
             raise Refused("seat repository scope cannot be expressed as a bounded search")
         return " ".join(f"repo:{name}" for name in sorted(exact))
 
-    def wf_repo_list(self, repo, args):
-        _only(args, ("repo", "per_page", "page"))
-        limit = _page(args)
-        page = _int(args, "page", 1, 1000) if "page" in args else 1
-        # Org-wide read, but the seat sees only repositories its allowlist
-        # names: scan the installation's pages (bounded) and paginate over the
-        # filtered stream, so an installation covering other repositories
-        # discloses nothing about them.
-        allowed = []
+    def _installation_repositories(self):
+        # One bounded scan of the installation's pages, cached briefly per
+        # installation (see _INSTALLATION_REPOS_CACHE). Validation is unchanged
+        # and still fails closed; the seat filter runs per call in wf_repo_list.
+        now = time.monotonic()
+        key = hashlib.sha256(self.bearer.encode("utf-8")).hexdigest()
+        entry = _INSTALLATION_REPOS_CACHE.get(key)
+        if entry is not None and now - entry[0] < _INSTALLATION_REPOS_TTL_S:
+            return entry[1]
+        rows = []
         upstream_page = 0
         exhausted = False
         while not exhausted and upstream_page < 10:
@@ -1357,18 +1369,35 @@ class WorkflowVerbs:
                     or (branch != "" and not _REF.fullmatch(branch))
                 ):
                     raise RelayGitHubError(502, "repository metadata unverifiable")
-                if self.policy.repo_allowed(self.seat, item["full_name"]):
-                    allowed.append(
-                        {
-                            "id": item["id"],
-                            "full_name": item["full_name"],
-                            "private": item["private"],
-                            "default_branch": branch,
-                        }
-                    )
+                rows.append(
+                    {
+                        "id": item["id"],
+                        "full_name": item["full_name"],
+                        "private": item["private"],
+                        "default_branch": branch,
+                    }
+                )
             exhausted = upstream_page * MAX_PAGE >= data["total_count"]
         if not exhausted:
             raise Refused("installation too large to filter to the seat's repositories")
+        stale = [k for k, (at, _) in _INSTALLATION_REPOS_CACHE.items() if now - at >= _INSTALLATION_REPOS_TTL_S]
+        for k in stale:
+            del _INSTALLATION_REPOS_CACHE[k]
+        _INSTALLATION_REPOS_CACHE[key] = (now, rows)
+        return rows
+
+    def wf_repo_list(self, repo, args):
+        _only(args, ("repo", "per_page", "page"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        # Org-wide read, but the seat sees only repositories its allowlist
+        # names: paginate over the policy-filtered stream, so an installation
+        # covering other repositories discloses nothing about them.
+        allowed = [
+            item
+            for item in self._installation_repositories()
+            if self.policy.repo_allowed(self.seat, item["full_name"])
+        ]
         items = allowed[(page - 1) * limit : page * limit]
         return {
             "repositories": items,
@@ -1376,6 +1405,7 @@ class WorkflowVerbs:
             "page": page,
             "has_more": page * limit < len(allowed),
         }
+
 
     def wf_pr_search(self, repo, args):
         _only(args, ("repo", "state", "per_page", "page"))

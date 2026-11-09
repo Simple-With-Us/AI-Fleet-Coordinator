@@ -7,6 +7,7 @@ try:
 except ImportError:
     from test_workflow_verbs import CEILING, REPO, Client, Minter, Policy
 
+from git_relay import workflow_verbs
 from git_relay.workflow_verbs import Refused, RelayGitHubError, WorkflowVerbs
 
 REPO_ITEM = {
@@ -33,6 +34,9 @@ ITEM = {
 
 
 class RepoAdminReadTests(unittest.TestCase):
+    def setUp(self):
+        workflow_verbs._INSTALLATION_REPOS_CACHE.clear()
+
     def run_action(self, action, args, *replies, repos=(REPO,)):
         client = Client(*replies)
         ceiling = {**CEILING, "metadata": "read", "pull_requests": "read"}
@@ -146,6 +150,39 @@ class RepoAdminReadTests(unittest.TestCase):
                 {"total_count": 1, "incomplete_results": False, "items": [foreign]},
             )
 
+
+    def run_action_shared(self, client, action, args, repos=(REPO,)):
+        ceiling = {**CEILING, "metadata": "read", "pull_requests": "read"}
+        handle = WorkflowVerbs.for_action(
+            client, Policy(ceiling, repos=repos), Minter(), "swu-wise", action, REPO
+        )
+        return handle.run(action, {"repo": REPO, **args})
+
+    def test_repo_list_caches_installation_scan(self):
+        client = Client({"total_count": 1, "repositories": [REPO_ITEM]})
+        first = self.run_action_shared(client, "wf_repo_list", {})
+        second = self.run_action_shared(client, "wf_repo_list", {})
+        scans = [c for c in client.calls if c[1].startswith("/installation/repositories")]
+        self.assertEqual(len(scans), 1)
+        self.assertEqual(second, first)
+
+    def test_repo_list_cache_expires(self):
+        reply = {"total_count": 1, "repositories": [REPO_ITEM]}
+        client = Client(reply, dict(reply))
+        self.run_action_shared(client, "wf_repo_list", {})
+        for key, (_, rows) in list(workflow_verbs._INSTALLATION_REPOS_CACHE.items()):
+            workflow_verbs._INSTALLATION_REPOS_CACHE[key] = (0.0, rows)
+        self.run_action_shared(client, "wf_repo_list", {})
+        scans = [c for c in client.calls if c[1].startswith("/installation/repositories")]
+        self.assertEqual(len(scans), 2)
+
+    def test_repo_list_policy_filter_runs_per_call(self):
+        other = dict(REPO_ITEM, id=12, full_name="Simple-With-Us/other-repo")
+        client = Client({"total_count": 2, "repositories": [REPO_ITEM, other]})
+        out = self.run_action_shared(client, "wf_repo_list", {})
+        self.assertEqual([r["full_name"] for r in out["repositories"]], [REPO])
+        out2 = self.run_action_shared(client, "wf_repo_list", {})
+        self.assertEqual([r["full_name"] for r in out2["repositories"]], [REPO])
 
 if __name__ == "__main__":
     unittest.main()
