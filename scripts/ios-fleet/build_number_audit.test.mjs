@@ -6,6 +6,7 @@ import {
   BUILD_NUMBER_RE,
   EXIT_OK,
   EXIT_STRICT,
+  FLEET_TIMESTAMP_SCHEME_START_MS,
   auditAppBuilds,
   auditBuildFormat,
   auditIosMacPair,
@@ -22,6 +23,7 @@ import {
   productGroupKey,
   renderAuditTable,
   runAudit,
+  scopeBuildsForAudit,
 } from "./build_number_audit.mjs";
 
 import { loadRegistry } from "./ios_testflight_freshness.mjs";
@@ -41,9 +43,10 @@ function buildRow(build, marketing, uploaded, platform = "IOS") {
 }
 
 test("parseAuditArgs", () => {
-  const o = parseAuditArgs(["--json", "--strict", "--app", "a,b", "--limit", "5"]);
+  const o = parseAuditArgs(["--json", "--strict", "--all-history", "--app", "a,b", "--limit", "5"]);
   assert.equal(o.json, true);
   assert.equal(o.strict, true);
+  assert.equal(o.allHistory, true);
   assert.deepEqual(o.apps, ["a", "b"]);
   assert.equal(o.limit, 5);
 });
@@ -121,6 +124,43 @@ test("clean app: no findings", () => {
   ];
   const findings = auditAppBuilds({ appKey: "botfleet", platform: "IOS", builds, approvedStoreVersion: null });
   assert.deepEqual(findings, []);
+});
+
+test("current-only scope ignores pre-scheme and stale trains", () => {
+  const builds = [
+    buildRow(VALID, "0.1.0", "2026-11-09T22:00:00Z"),
+    buildRow("235", "1.0.50", "2026-10-28T18:00:00Z"),
+    buildRow("99", "0.0.9", "2026-09-01T12:00:00Z"),
+  ];
+  const scoped = scopeBuildsForAudit(builds, { allHistory: false });
+  assert.equal(scoped.scope, "current");
+  assert.equal(scoped.formatBuilds.length, 1);
+  assert.equal(scoped.formatBuilds[0].build, VALID);
+  assert.equal(scoped.monotonicBuilds.length, 1);
+
+  const current = auditAppBuilds({
+    appKey: "codecaps-mac",
+    platform: "MAC_OS",
+    builds,
+    approvedStoreVersion: null,
+    allHistory: false,
+  });
+  assert.deepEqual(current, []);
+
+  const historical = auditAppBuilds({
+    appKey: "codecaps-mac",
+    platform: "MAC_OS",
+    builds,
+    approvedStoreVersion: null,
+    allHistory: true,
+  });
+  assert.ok(historical.length > 0);
+  assert.ok(historical.some((f) => f.type === "invalid_build_number"));
+  assert.ok(historical.some((f) => f.type === "marketing_version_drift"));
+});
+
+test("scheme start constant is 2026-10-29 CT midnight", () => {
+  assert.equal(FLEET_TIMESTAMP_SCHEME_START_MS, Date.parse("2026-10-29T05:00:00.000Z"));
 });
 
 test("exitCodeForReport strict flag", () => {

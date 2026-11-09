@@ -12,6 +12,7 @@
  *   node build_number_audit.mjs --json       machine-readable report
  *   node build_number_audit.mjs --strict     exit 1 when findings exist
  *   node build_number_audit.mjs --app contactlogo,contactlogo-mac
+ *   node build_number_audit.mjs --all-history   # every train (noisy)
  *
  * Exit 0 unless --strict and the report has findings.  No App Store Connect writes.
  *
@@ -42,6 +43,9 @@ export const APPROVED_STORE_STATES = new Set([
   "PROCESSING_FOR_APP_STORE",
 ]);
 
+/** First moment of 2026-10-29 on the owner's clock (America/Chicago, CDT → UTC). */
+export const FLEET_TIMESTAMP_SCHEME_START_MS = Date.parse("2026-10-29T05:00:00.000Z");
+
 const FINDING = {
   INVALID_BUILD_NUMBER: "invalid_build_number",
   NON_MONOTONIC: "non_monotonic_upload",
@@ -54,7 +58,15 @@ const FINDING = {
 // ---------------------------------------------------------------------------
 
 export function parseAuditArgs(argv) {
-  const opts = { apps: null, json: false, strict: false, registry: null, limit: 30, help: false };
+  const opts = {
+    apps: null,
+    json: false,
+    strict: false,
+    allHistory: false,
+    registry: null,
+    limit: 30,
+    help: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const val = () => {
@@ -64,12 +76,49 @@ export function parseAuditArgs(argv) {
     if (a === "--app") opts.apps = val().split(",").map((s) => s.trim()).filter(Boolean);
     else if (a === "--json") opts.json = true;
     else if (a === "--strict") opts.strict = true;
+    else if (a === "--all-history") opts.allHistory = true;
     else if (a === "--registry") opts.registry = val();
     else if (a === "--limit") opts.limit = Math.max(1, parseInt(val(), 10) || 30);
     else if (a === "-h" || a === "--help") opts.help = true;
     else throw new Error(`unknown argument: ${a}`);
   }
   return opts;
+}
+
+/**
+ * Default audit scope: newest build head, monotonicity on the current marketing train
+ * since the timestamp scheme start, or the full history when allHistory is set.
+ */
+export function scopeBuildsForAudit(builds, { allHistory = false, schemeStartMs = FLEET_TIMESTAMP_SCHEME_START_MS } = {}) {
+  const sorted = [...(builds || [])].sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0));
+  if (allHistory || !sorted.length) {
+    return {
+      scope: "all",
+      newest: sorted[0] || null,
+      currentMarketingVersion: sorted[0]?.marketingVersion ?? null,
+      formatBuilds: sorted,
+      marketingBuilds: sorted,
+      monotonicBuilds: sorted,
+      pairBuildsByPlatform: null,
+    };
+  }
+
+  const newest = sorted[0];
+  const currentMarketingVersion = newest.marketingVersion ?? null;
+  const train = currentMarketingVersion
+    ? sorted.filter((b) => b.marketingVersion === currentMarketingVersion)
+    : sorted;
+  const monotonicBuilds = train.filter((b) => b.uploadedAt != null && b.uploadedAt >= schemeStartMs);
+
+  return {
+    scope: "current",
+    newest,
+    currentMarketingVersion,
+    formatBuilds: newest ? [newest] : [],
+    marketingBuilds: newest ? [newest] : [],
+    monotonicBuilds,
+    pairBuildsByPlatform: "current_train",
+  };
 }
 
 /** Product group for iOS/Mac pairing (`contactlogo-mac` → `contactlogo`). */
@@ -223,53 +272,98 @@ export function auditMarketing(builds, appKey, platform, approvedStoreVersion) {
   return findings;
 }
 
+function newestOnTrain(rows, marketingVersion) {
+  const train = (rows || []).filter((b) => b.marketingVersion === marketingVersion);
+  train.sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0));
+  return train[0] || null;
+}
+
 /**
- * For one product group, compare iOS vs Mac build numbers per marketing version
- * on the newest build row for each platform.
+ * For one product group, compare iOS vs Mac build numbers.  With allHistory, every
+ * marketing train is checked;  otherwise only the group's current marketing train.
  */
-export function auditIosMacPair(groupKey, platformBuilds) {
+export function auditIosMacPair(
+  groupKey,
+  platformBuilds,
+  { allHistory = false, schemeStartMs = FLEET_TIMESTAMP_SCHEME_START_MS } = {},
+) {
   const findings = [];
   const ios = platformBuilds.IOS || [];
   const mac = platformBuilds.MAC_OS || [];
   if (!ios.length || !mac.length) return findings;
 
-  const byMarketing = new Map();
-  for (const platform of ["IOS", "MAC_OS"]) {
-    for (const b of platformBuilds[platform] || []) {
-      const mv = b.marketingVersion || "(unknown)";
-      if (!byMarketing.has(mv)) byMarketing.set(mv, {});
-      const slot = byMarketing.get(mv);
-      if (!slot[platform] || (b.uploadedAt || 0) > (slot[platform].uploadedAt || 0)) {
-        slot[platform] = b;
+  if (allHistory) {
+    const byMarketing = new Map();
+    for (const platform of ["IOS", "MAC_OS"]) {
+      for (const b of platformBuilds[platform] || []) {
+        const mv = b.marketingVersion || "(unknown)";
+        if (!byMarketing.has(mv)) byMarketing.set(mv, {});
+        const slot = byMarketing.get(mv);
+        if (!slot[platform] || (b.uploadedAt || 0) > (slot[platform].uploadedAt || 0)) {
+          slot[platform] = b;
+        }
       }
     }
+    for (const [mv, slot] of byMarketing) {
+      const i = slot.IOS;
+      const m = slot.MAC_OS;
+      if (!i || !m) continue;
+      if (String(i.build) !== String(m.build)) {
+        findings.push({
+          type: FINDING.IOS_MAC_MISMATCH,
+          groupKey,
+          marketingVersion: mv,
+          iosBuild: i.build,
+          macBuild: m.build,
+          iosUploadedAt: i.uploadedAt,
+          macUploadedAt: m.uploadedAt,
+          detail: `iOS build ${i.build} and Mac build ${m.build} differ for marketing ${mv}`,
+        });
+      }
+    }
+    return findings;
   }
 
-  for (const [mv, slot] of byMarketing) {
-    const i = slot.IOS;
-    const m = slot.MAC_OS;
-    if (!i || !m) continue;
-    if (String(i.build) !== String(m.build)) {
-      findings.push({
-        type: FINDING.IOS_MAC_MISMATCH,
-        groupKey,
-        marketingVersion: mv,
-        iosBuild: i.build,
-        macBuild: m.build,
-        iosUploadedAt: i.uploadedAt,
-        macUploadedAt: m.uploadedAt,
-        detail: `iOS build ${i.build} and Mac build ${m.build} differ for marketing ${mv}`,
-      });
-    }
+  const combined = [...ios, ...mac].sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0));
+  const currentMv = combined[0]?.marketingVersion;
+  if (!currentMv) return findings;
+
+  const i = newestOnTrain(ios, currentMv);
+  const m = newestOnTrain(mac, currentMv);
+  if (!i || !m) return findings;
+  const inStampEra =
+    (i.uploadedAt != null && i.uploadedAt >= schemeStartMs) ||
+    (m.uploadedAt != null && m.uploadedAt >= schemeStartMs);
+  if (!inStampEra) return findings;
+
+  if (String(i.build) !== String(m.build)) {
+    findings.push({
+      type: FINDING.IOS_MAC_MISMATCH,
+      groupKey,
+      marketingVersion: currentMv,
+      iosBuild: i.build,
+      macBuild: m.build,
+      iosUploadedAt: i.uploadedAt,
+      macUploadedAt: m.uploadedAt,
+      detail: `iOS build ${i.build} and Mac build ${m.build} differ for marketing ${currentMv}`,
+    });
   }
   return findings;
 }
 
-export function auditAppBuilds({ appKey, platform, builds, approvedStoreVersion }) {
+export function auditAppBuilds({
+  appKey,
+  platform,
+  builds,
+  approvedStoreVersion,
+  allHistory = false,
+  schemeStartMs = FLEET_TIMESTAMP_SCHEME_START_MS,
+}) {
+  const scoped = scopeBuildsForAudit(builds, { allHistory, schemeStartMs });
   return [
-    ...auditBuildFormat(builds, appKey, platform),
-    ...auditMonotonic(builds, appKey, platform),
-    ...auditMarketing(builds, appKey, platform, approvedStoreVersion),
+    ...auditBuildFormat(scoped.formatBuilds, appKey, platform),
+    ...auditMonotonic(scoped.monotonicBuilds, appKey, platform),
+    ...auditMarketing(scoped.marketingBuilds, appKey, platform, approvedStoreVersion),
   ];
 }
 
@@ -282,7 +376,8 @@ export function exitCodeForReport(report, { strict = false } = {}) {
 export function renderAuditTable(report) {
   const lines = [];
   lines.push(`Fleet build-number audit  (generated ${report.generatedAt})`);
-  lines.push(`Apps checked: ${report.appsChecked};  findings: ${report.findings.length}`);
+  const scope = report.mode?.allHistory ? "all-history" : "current-only";
+  lines.push(`Scope: ${scope};  apps checked: ${report.appsChecked};  findings: ${report.findings.length}`);
   if (!report.findings.length) {
     lines.push("No findings.");
   } else {
@@ -359,7 +454,15 @@ export async function runAudit(opts, deps, registry) {
       ]);
       row.builds = builds;
       row.approvedStoreVersion = approved;
-      findings.push(...auditAppBuilds({ appKey: key, platform: row.platform, builds, approvedStoreVersion: approved }));
+      findings.push(
+        ...auditAppBuilds({
+          appKey: key,
+          platform: row.platform,
+          builds,
+          approvedStoreVersion: approved,
+          allHistory: opts.allHistory,
+        }),
+      );
 
       const g = productGroupKey(key);
       if (!groupBuilds.has(g)) groupBuilds.set(g, { IOS: [], MAC_OS: [] });
@@ -373,7 +476,7 @@ export async function runAudit(opts, deps, registry) {
   }
 
   for (const [groupKey, platformBuilds] of groupBuilds) {
-    findings.push(...auditIosMacPair(groupKey, platformBuilds));
+    findings.push(...auditIosMacPair(groupKey, platformBuilds, { allHistory: opts.allHistory }));
   }
 
   findings.sort((a, b) => `${a.type}:${a.appKey || a.groupKey}`.localeCompare(`${b.type}:${b.appKey || b.groupKey}`));
@@ -381,6 +484,7 @@ export async function runAudit(opts, deps, registry) {
   return {
     schemaVersion: 1,
     generatedAt: now.toISOString(),
+    mode: { allHistory: Boolean(opts.allHistory) },
     appsChecked: perApp.filter((a) => !a.error).length,
     apps: perApp,
     findings,
@@ -398,7 +502,7 @@ export async function main(argv = process.argv.slice(2), deps = makeDeps(), out 
   }
   if (opts.help) {
     out.write(
-      "Usage: node build_number_audit.mjs [--json] [--strict] [--app keys] [--registry path] [--limit N]\n",
+      "Usage: node build_number_audit.mjs [--json] [--strict] [--all-history] [--app keys] [--registry path] [--limit N]\n",
     );
     return EXIT_OK;
   }
