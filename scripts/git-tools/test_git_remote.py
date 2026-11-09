@@ -19,6 +19,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -1160,6 +1161,65 @@ class TestOutcomes(unittest.TestCase):
         parsed = json.loads(out)
         self.assertIn("structured", parsed)
         self.assertIn("text", parsed)
+
+    def test_pinned_read_set_matches_worker_read_actions(self):
+        # Drift guard:  the pinned reviewed read set must equal the Worker's WF_V1_READ_ACTIONS
+        # (gr-workflow-v1.js).  1629 and 1638 shipped read verbs this set did not name, and the
+        # mismatch was only caught by hand.
+        src = (IMPL.parent.parent / "simple-tools-mcp" / "src" / "gr-workflow-v1.js").read_text()
+        m = re.search(r"WF_V1_READ_ACTIONS\s*=\s*Object\.freeze\(\[([^\]]*)\]\)", src)
+        self.assertIsNotNone(m, "gr-workflow-v1.js WF_V1_READ_ACTIONS export not found")
+        worker = set(re.findall(r"'([a-z0-9_]+)'", m.group(1)))
+        self.assertTrue(worker)
+        self.assertEqual(
+            set(git.WF_V1_READ_ACTIONS),
+            worker,
+            "client pinned read set drifted from gr-workflow-v1.js WF_V1_READ_ACTIONS",
+        )
+
+    def test_new_read_verbs_classify_as_reads(self):
+        for name in (
+            "gr_wf_repo_list",
+            "gr_wf_pr_search",
+            "gr_wf_repo_hooks",
+            "gr_wf_deploy_keys",
+            "gr_wf_org_installations",
+        ):
+            self.assertIn(name, git.READ_TOOLS, name)
+
+    def test_read_verb_near_misses_stay_writes(self):
+        # Boundary:  look-alike names that are not the reviewed verbs must not classify as reads.
+        for name in (
+            "gr_wf_repo_hook",  # singular of a pinned verb
+            "gr_wf_repo_hooks_write",  # pinned name as a prefix
+            "gr_wf_repo_hooks_page",
+            "gr_wf_deploy_key",
+            "gr_wf_org_installation",
+            "gr_wf_pr_search_page",
+            "gr_wf_repo_lists",
+        ):
+            self.assertNotIn(name, git.READ_TOOLS, name)
+
+    def test_pinned_read_verb_failure_has_no_write_uncertainty(self):
+        # gr_wf_repo_hooks IS in the reviewed read set:  its failures are plain read failures,
+        # never write-uncertainty wording.
+        t = FakeTransport(
+            pages=[[make_tool("gr_wf_repo_hooks", None, "list repository webhooks")]],
+            call_results={
+                "gr_wf_repo_hooks": {
+                    "isError": True,
+                    "structuredContent": {"code": "outcome_unknown"},
+                    "content": [{"type": "text", "text": "lost"}],
+                }
+            },
+        )
+        code, out, err = run_cli(
+            ["call", "gr_wf_repo_hooks", "--args-json", "{}"],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=t,
+        )
+        self.assertEqual(code, 1)
+        self.assertNotIn("may or may not have been applied", err)
 
 
 class TestNoCallerEcho(unittest.TestCase):
