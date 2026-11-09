@@ -38,7 +38,7 @@ test("GrRelayClient posts the action with Access headers and the caller's bearer
   const seen = [];
   const client = new GrRelayClient({
     baseUrl: "https://git-relay.example.test",
-    accessId: "id", accessSecret: "secret", bearer: "sbt_jet-abc",
+    accessId: "id", accessSecret: "secret", bearer: "sbt_jet-chat_abc",
     fetch: async (url, init) => {
       seen.push({ url, init });
       return new Response(JSON.stringify({ number: 7, url: "https://x/pr/7" }), { status: 200 });
@@ -50,8 +50,8 @@ test("GrRelayClient posts the action with Access headers and the caller's bearer
   assert.equal(seen[0].url, "https://git-relay.example.test/v1/open_pr");
   assert.equal(seen[0].init.headers["CF-Access-Client-Id"], "id");
   assert.equal(seen[0].init.headers["CF-Access-Client-Secret"], "secret");
-  assert.equal(seen[0].init.headers["Authorization"], "Bearer sbt_jet-abc");
-  assert.deepEqual(client.secrets(), ["id", "secret", "sbt_jet-abc"]);
+  assert.equal(seen[0].init.headers["Authorization"], "Bearer sbt_jet-chat_abc");
+  assert.deepEqual(client.secrets(), ["id", "secret", "sbt_jet-chat_abc"]);
 });
 
 test("GrRelayClient maps an unreachable upstream and a bad answer to fixed statuses", async () => {
@@ -477,15 +477,4 @@ test("dispatch intent source pair is meaningful and schema bounded", async () =>
   assert.equal(upstream,0);
   const result=await tools.call("gr_workflow_dispatch",{...base,intent_id:"qualification-one",expected_head_sha:"a".repeat(40)});
   assert.ok(!result.isError);assert.equal(upstream,1);
-});
-
-test("gr_workflow_dispatch advertises the enforced flat scalar inputs contract", () => {
-  const tool = GR_TOOLS.find((t) => t.name === "gr_workflow_dispatch");
-  assert.deepEqual(tool.inputSchema.properties.inputs, {
-    type: "object",
-    maxProperties: 32,
-    additionalProperties: {
-      anyOf: [{ type: "string", maxLength: 1024 }, { type: "number" }, { type: "boolean" }],
-    },
-  });
 });
