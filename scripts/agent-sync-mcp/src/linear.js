@@ -846,7 +846,7 @@ export const LINEAR_TOOLS = Object.freeze([
     inputSchema: { type: "object", additionalProperties: false, required: ["query"], properties: {
       query: { type: "string", minLength: 1, maxLength: 24000 },
       variables: { type: "object", default: {} },
-      max_chars: { type: "integer", minimum: 1000, maximum: 64000, default: 24000 },
+      max_chars: { type: "integer", minimum: 1000, maximum: 1000000, default: 24000 },
     } },
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
@@ -858,7 +858,7 @@ export const LINEAR_TOOLS = Object.freeze([
       variables: { type: "object", default: {} },
       idempotency_key: { type: "string", minLength: 1, maxLength: 100, pattern: "^[A-Za-z0-9_.:-]+$" },
       session: SESSION,
-      max_chars: { type: "integer", minimum: 1000, maximum: 64000, default: 24000 },
+      max_chars: { type: "integer", minimum: 1000, maximum: 1000000, default: 24000 },
     } },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
   },
