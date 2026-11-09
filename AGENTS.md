@@ -38,7 +38,7 @@ The same text is in `TEMPLATE-AGENTS.md`, which the other fleet repos copy.
 
 Kodus runs in manual mode, so a push does not start a review.  Source: Zulip #Policy, topic "Kody reviews: manual when ready".
 
-- **Request it.**  When a PR's changes are ready, whoever owns the PR comments `@kody start-review` on it, at the start of a line in a top-level comment.  Every PR gets at least one Kody review.
+- **Request it.**  When a PR's changes are ready, whoever owns the PR posts a top-level comment that starts with `@kody start-review`:  the command must be the very first text of the comment, with any note after it, because Kody starts no review when anything comes before it, even with the command on a line of its own.  Every PR gets at least one Kody review.
 - **Review again when it is warranted.**  Bigger or riskier changes get 2 or 3 reviews, or more, after fixes land.  Use your judgment.
 - **Review the code that will merge.**  Final-code review and evidence for each finding still apply, and a request is neither a waiver nor merge clearance.
 - **One request per ready head.**  Read the PR's comments first and coordinate with its owner and reviewers, so no head gets a duplicate request.  Never bulk-retrigger every PR.  Through `gr_comment_pr`, the same seat repeating identical text within 24 hours gets the existing comment back and nothing posts, so a real repeat needs different text.  That guard does not cover another seat or an older request, so the comment read is what prevents a duplicate.
