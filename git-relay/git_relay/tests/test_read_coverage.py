@@ -13,7 +13,13 @@ CASES = [
     ("wf_pr_get", {"number": 4}, "/pulls/4", PULL, "pull"),
     ("wf_pr_reviews", {"number": 4}, "/pulls/4/reviews?per_page=30", [], "reviews"),
     ("wf_pr_comments", {"number": 4}, "/pulls/4/comments?per_page=30", [], "comments"),
-    ("wf_pr_comments", {"number": 4, "page": 2}, "/pulls/4/comments?per_page=30&page=2", [], "comments"),
+    (
+        "wf_pr_comments",
+        {"number": 4, "page": 2},
+        "/pulls/4/comments?per_page=30&page=2",
+        [],
+        "comments",
+    ),
     ("wf_issue_comments", {"number": 4}, "/issues/4/comments?per_page=30", [], "comments"),
     ("wf_commit_get", {"sha": SHA}, "/commits/" + SHA, COMMIT, "commit"),
     (

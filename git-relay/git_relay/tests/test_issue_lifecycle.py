@@ -32,7 +32,9 @@ class IssueTests(unittest.TestCase):
     def test_list_labels_refuses_blank_long_or_control(self):
         for bad in ["", "ok,,x", "bad\nlabel", "x" * 101]:
             client = Client(ISSUE)
-            h = WorkflowVerbs(client, Policy(), "swu-wise", "opaque", "swu-wise", "wf_issue_list", REPO)
+            h = WorkflowVerbs(
+                client, Policy(), "swu-wise", "opaque", "swu-wise", "wf_issue_list", REPO
+            )
             with self.assertRaises(Refused):
                 h.run("wf_issue_list", {"repo": REPO, "labels": bad})
             self.assertEqual(len(client.calls), 0)
