@@ -4798,8 +4798,7 @@ class WorkflowVerbs:
             raise RelayGitHubError(502, "branch page unverifiable")
         return {
             "branches": [
-                {"name": b.get("name"), "sha": (b.get("commit") or {}).get("sha")}
-                for b in data
+                {"name": b.get("name"), "sha": (b.get("commit") or {}).get("sha")} for b in data
             ],
             "page": page,
             "has_more": len(data) == limit,

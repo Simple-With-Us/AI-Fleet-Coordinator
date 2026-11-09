@@ -212,7 +212,11 @@ def stage_messages(name: str, args: dict, chunk_chars: int = MAX_CHUNK_CHARS):
         params = {"stage_id": stage_id, "seq": seq, "total": len(chunks), "data": data}
         if seq == 0:
             params["name"] = name
-        yield {"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "stage_chunk", "arguments": params}}
+        yield {
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {"name": "stage_chunk", "arguments": params},
+        }
 
 
 def _wf_actions() -> dict[str, bool]:

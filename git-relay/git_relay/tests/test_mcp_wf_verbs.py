@@ -23,7 +23,6 @@ from git_relay.mcp_server import (
 )
 from git_relay.workflow_verbs import SPECS
 
-
 FAKE_TOKEN = "seat-token-value"
 
 
@@ -214,7 +213,9 @@ class WfStaging(unittest.TestCase):
             "message": "add a",
             "content_b64": "QUJD" * 30000,  # 120,000 chars, over one small line
         }
-        reply, messages = self._run_staged(self._server(opener), "wf_file_put", args, chunk_chars=256)
+        reply, messages = self._run_staged(
+            self._server(opener), "wf_file_put", args, chunk_chars=256
+        )
         self.assertGreater(len(messages), 400)
         self.assertEqual(seen["url"], "http://127.0.0.1:8471/v1/wf_file_put")
         self.assertEqual(seen["body"], args)
@@ -228,14 +229,18 @@ class WfStaging(unittest.TestCase):
             return FakeResponse(b"{}")
 
         server = self._server(opener)
-        messages = list(stage_messages("wf_git_blob_create", {"repo": "o/r", "text": "x" * 500}, chunk_chars=64))
+        messages = list(
+            stage_messages("wf_git_blob_create", {"repo": "o/r", "text": "x" * 500}, chunk_chars=64)
+        )
         first = server.handle({**messages[0], "id": 1})
         self.assertEqual(calls, [])
         self.assertFalse(json.loads(first["result"]["content"][0]["text"])["complete"])
 
     def test_out_of_order_chunk_drops_the_stage(self):
         server = self._server(None)
-        messages = list(stage_messages("wf_git_blob_create", {"repo": "o/r", "text": "x" * 500}, chunk_chars=64))
+        messages = list(
+            stage_messages("wf_git_blob_create", {"repo": "o/r", "text": "x" * 500}, chunk_chars=64)
+        )
         server.handle({**messages[0], "id": 1})
         reply = server.handle({**messages[2], "id": 2})
         self.assertEqual(reply["error"]["code"], -32602)
@@ -257,7 +262,9 @@ class WfStaging(unittest.TestCase):
             return FakeResponse(b"{}")
 
         server = self._server(opener)
-        messages = list(stage_messages("wf_git_tree_create", {"repo": "o/r", "files": []}, chunk_chars=16))
+        messages = list(
+            stage_messages("wf_git_tree_create", {"repo": "o/r", "files": []}, chunk_chars=16)
+        )
         server.handle({**messages[0], "id": 1})
         stage_id = messages[0]["params"]["arguments"]["stage_id"]
         reply = server.handle(
