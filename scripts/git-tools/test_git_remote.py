@@ -2607,6 +2607,49 @@ def dispatch_entry():
 DISPATCH_BASE = {"repo": "o/r", "workflow": "w.yml", "ref": "main", "identity": "ECHO"}
 
 
+class TestLeafAnyOf(unittest.TestCase):
+    """Fail-closed leaf-union semantics in _type_ok:  a recognized anyOf never falls through to a
+    looser reading, a malformed union (non-list, empty, non-dict variant) refuses, and sibling
+    constraints still apply to a matched variant - they intersect, never replace."""
+
+    def test_empty_any_of_refuses(self):
+        self.assertFalse(git._type_ok({"anyOf": []}, "x"))
+
+    def test_non_list_any_of_refuses(self):
+        self.assertFalse(git._type_ok({"anyOf": "string"}, "x"))
+
+    def test_non_dict_variant_refuses(self):
+        self.assertFalse(git._type_ok({"anyOf": [{"type": "string"}, 42]}, "x"))
+
+    def test_no_matching_variant_refuses(self):
+        self.assertFalse(git._type_ok({"anyOf": [{"type": "string"}]}, 5))
+
+    def test_bool_is_not_a_number_variant(self):
+        self.assertFalse(git._type_ok({"anyOf": [{"type": "number"}]}, True))
+
+    def test_sibling_type_still_applies(self):
+        self.assertFalse(git._type_ok({"type": "number", "anyOf": [{"type": "string"}]}, "abc"))
+        self.assertTrue(git._type_ok({"type": "string", "anyOf": [{"type": "string"}]}, "abc"))
+
+    def test_sibling_scalar_constraints_still_apply(self):
+        schema = {"anyOf": [{"type": "string"}], "maxLength": 3}
+        self.assertFalse(git._type_ok(schema, "abcd"))
+        self.assertTrue(git._type_ok(schema, "abc"))
+
+    def test_union_without_siblings_still_accepts(self):
+        schema = {
+            "anyOf": [
+                {"type": "string", "maxLength": 1024},
+                {"type": "number"},
+                {"type": "boolean"},
+            ]
+        }
+        self.assertTrue(git._type_ok(schema, "v"))
+        self.assertTrue(git._type_ok(schema, 1.5))
+        self.assertTrue(git._type_ok(schema, False))
+        self.assertFalse(git._type_ok(schema, None))
+
+
 class TestDispatchInputs(unittest.TestCase):
     """gr_workflow_dispatch advertises flat scalar `inputs` (additionalProperties + maxProperties):  the
     client validates representative values pre-network instead of refusing every non-empty object, and

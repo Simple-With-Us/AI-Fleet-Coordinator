@@ -1128,18 +1128,33 @@ def _type_ok(schema: dict, value, pattern_checks=None) -> bool:
     items).  `pattern` is NOT searched here:  with a collector, the (pattern, value) pair is deferred
     to the isolated deadline-bounded child (_patterns_match) and this leaf is tentatively True."""
     any_of = schema.get("anyOf")
-    if isinstance(any_of, list) and any_of:
-        # A declared scalar union (workflow_dispatch inputs values):  one variant must match, and a
-        # variant's deferred pattern checks count only when that variant is the match.
+    if any_of is not None:
+        # A declared union (workflow_dispatch inputs values):  one variant must match, sibling
+        # constraints still apply to the matched value (they intersect, never replace), and a
+        # malformed union (non-list, empty, or a non-dict variant) refuses - a recognized keyword
+        # never falls through to a looser reading.  A variant's deferred pattern checks count only
+        # when the whole leaf passes.
+        if not isinstance(any_of, list) or not any_of:
+            return False
+        if not all(isinstance(variant, dict) for variant in any_of):
+            return False
+        union_checks = [] if pattern_checks is not None else None
+        matched = False
         for variant in any_of:
-            if not isinstance(variant, dict):
-                continue
             pending = [] if pattern_checks is not None else None
             if _type_ok(variant, value, pending):
-                if pattern_checks is not None:
-                    pattern_checks.extend(pending)
-                return True
-        return False
+                if union_checks is not None:
+                    union_checks.extend(pending)
+                matched = True
+                break
+        if not matched:
+            return False
+        sibling = {k: v for k, v in schema.items() if k != "anyOf"}
+        if sibling and not _type_ok(sibling, value, pattern_checks):
+            return False
+        if pattern_checks is not None:
+            pattern_checks.extend(union_checks)
+        return True
     kind = schema.get("type")
     if kind == "integer":
         if isinstance(value, bool) or not isinstance(value, int):
