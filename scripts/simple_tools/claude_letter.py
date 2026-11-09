@@ -1036,7 +1036,9 @@ class Chat:
         needs_mac_lineage = (
             bool(dest)
             and argv[:1] == ["register"]
-            and not any(a == "--parent-session-id" or a.startswith("--parent-session-id=") for a in argv)
+            and not any(
+                a == "--parent-session-id" or a.startswith("--parent-session-id=") for a in argv
+            )
         )
         if registry_api.base_url(env) and not needs_mac_lineage:
             # The registry API is the cutover (registry_api):  a chat on a host off the Mac calls the
