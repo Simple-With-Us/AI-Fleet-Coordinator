@@ -1580,16 +1580,12 @@ class MmRegistryLetterResolveTest(unittest.TestCase):
     def test_registry_letter_from_rows_skips_empty_labels(self):
         rows = [{"verified_host": "mac-1", "profile_scope": "default", "label": ""}]
         self.assertEqual(
-            M._registry_letter_from_rows(
-                rows, verified_host="mac-1", profile_scope="default"
-            ),
+            M._registry_letter_from_rows(rows, verified_host="mac-1", profile_scope="default"),
             "",
         )
         rows = [{"verified_host": "mac-1", "profile_scope": "default", "label": "AA"}]
         self.assertEqual(
-            M._registry_letter_from_rows(
-                rows, verified_host="mac-1", profile_scope="default"
-            ),
+            M._registry_letter_from_rows(rows, verified_host="mac-1", profile_scope="default"),
             "AA",
         )
 

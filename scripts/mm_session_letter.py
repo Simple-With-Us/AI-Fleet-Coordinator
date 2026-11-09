@@ -799,10 +799,7 @@ def _registry_letter_from_rows(
 ) -> str:
     """Pick the live letter for this location from registration rows, skipping empty labels."""
     for row in rows:
-        if (
-            row.get("verified_host") == verified_host
-            and row.get("profile_scope") == profile_scope
-        ):
+        if row.get("verified_host") == verified_host and row.get("profile_scope") == profile_scope:
             label = str(row.get("label") or "")
             if label:
                 return label
