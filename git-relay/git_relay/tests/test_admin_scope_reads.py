@@ -100,6 +100,11 @@ class AdminScopeReadTests(unittest.TestCase):
         self.assertEqual(client.calls[0][1], "/repos/" + REPO + "/keys?per_page=30&page=1")
         self.assertEqual(out["deploy_keys"][0]["id"], 7)
 
+    def test_deploy_keys_accepts_trailing_openssh_comment(self):
+        commented = dict(KEY, key=KEY["key"] + " ci@host")
+        out, client = self.run_action("wf_deploy_keys", {}, [commented])
+        self.assertEqual(out["deploy_keys"][0]["id"], 7)
+
     def test_deploy_keys_refuses_bad_material(self):
         with self.assertRaises(RelayGitHubError):
             self.run_action("wf_deploy_keys", {}, [dict(KEY, key="not-a-key")])
