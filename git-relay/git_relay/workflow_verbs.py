@@ -220,6 +220,8 @@ SPECS = {
     "wf_branch_get": ({"contents": "read"}, False),
     "wf_repo_get": ({"metadata": "read"}, False),
     "wf_installation_metadata": ({"metadata": "read"}, False),
+    "wf_repo_list": ({"metadata": "read"}, False),
+    "wf_pr_search": ({"pull_requests": "read"}, False),
     "wf_labels": ({"issues": "read"}, False),
     "wf_workflows": ({"actions": "read"}, False),
     "wf_run_get": ({"actions": "read"}, False),
@@ -488,6 +490,8 @@ _NEW_READS = frozenset(
         "wf_workflows",
         "wf_run_get",
         "wf_run_artifacts",
+        "wf_repo_list",
+        "wf_pr_search",
     }
 )
 
@@ -574,6 +578,43 @@ def _validate_read(action, result):
             "complete": boolean,
         },
         "wf_pr_comments": {"comments": lambda v: seq(v, comment), "complete": boolean},
+        "wf_repo_list": {
+            "repositories": lambda v: seq(
+                v,
+                lambda x: fields(
+                    x,
+                    {
+                        "id": positive,
+                        "full_name": text,
+                        "private": boolean,
+                        "default_branch": text,
+                    },
+                ),
+            ),
+            "total_count": nonnegative,
+            "page": positive,
+            "has_more": boolean,
+        },
+        "wf_pr_search": {
+            "pull_requests": lambda v: seq(
+                v,
+                lambda x: fields(
+                    x,
+                    {
+                        "number": positive,
+                        "repo": text,
+                        "title": text,
+                        "state": text,
+                        "draft": boolean,
+                        "updated_at": text,
+                        "html_url": text,
+                    },
+                ),
+            ),
+            "total_count": nonnegative,
+            "complete": boolean,
+            "page": positive,
+        },
         "wf_issue_comments": {
             "comments": lambda v: seq(v, comment),
             "complete": boolean,
@@ -1261,6 +1302,106 @@ class WorkflowVerbs:
         if find_secret(value) or cls._provider_token_text(value):
             raise Refused("credential-shaped outbound text")
         return value
+
+    def wf_repo_list(self, repo, args):
+        _only(args, ("repo", "per_page", "page"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        data = self._get(f"/installation/repositories?per_page={limit}&page={page}")
+        if (
+            not isinstance(data, dict)
+            or type(data.get("total_count")) is not int
+            or data["total_count"] < 0
+            or not isinstance(data.get("repositories"), list)
+            or len(data["repositories"]) > limit
+        ):
+            raise RelayGitHubError(502, "repository page unverifiable")
+        repos = []
+        for item in data["repositories"]:
+            branch = item.get("default_branch") if isinstance(item, dict) else None
+            if branch is None:
+                branch = ""
+            if (
+                not isinstance(item, dict)
+                or type(item.get("id")) is not int
+                or item["id"] <= 0
+                or not isinstance(item.get("full_name"), str)
+                or not _REPO.fullmatch(item["full_name"])
+                or type(item.get("private")) is not bool
+                or not isinstance(branch, str)
+                or (branch != "" and not _REF.fullmatch(branch))
+            ):
+                raise RelayGitHubError(502, "repository metadata unverifiable")
+            repos.append(
+                {
+                    "id": item["id"],
+                    "full_name": item["full_name"],
+                    "private": item["private"],
+                    "default_branch": branch,
+                }
+            )
+        return {
+            "repositories": repos,
+            "total_count": data["total_count"],
+            "page": page,
+            "has_more": page * limit < data["total_count"],
+        }
+
+    def wf_pr_search(self, repo, args):
+        _only(args, ("repo", "state", "per_page", "page"))
+        owner = repo.split("/")[0]
+        state = _enum(args, "state", ("open", "closed", "all"), "open")
+        limit = _page(args)
+        page = _int(args, "page", 1, 20) if "page" in args else 1
+        q = f"org:{owner} type:pr" + ("" if state == "all" else f" state:{state}")
+        data = self._get(f"/search/issues?q={quote(q, safe='')}&per_page={limit}&page={page}")
+        if (
+            not isinstance(data, dict)
+            or type(data.get("total_count")) is not int
+            or data["total_count"] < 0
+            or type(data.get("incomplete_results")) is not bool
+            or not isinstance(data.get("items"), list)
+            or len(data["items"]) > limit
+        ):
+            raise RelayGitHubError(502, "pull request search unverifiable")
+        prs = []
+        for item in data["items"]:
+            repo_url = item.get("repository_url") if isinstance(item, dict) else None
+            full = repo_url.rsplit("/repos/", 1)[-1] if isinstance(repo_url, str) else None
+            if (
+                not isinstance(item, dict)
+                or "pull_request" not in item
+                or type(item.get("number")) is not int
+                or item["number"] <= 0
+                or not isinstance(item.get("title"), str)
+                or len(item["title"]) > 512
+                or item.get("state") not in ("open", "closed")
+                or type(item.get("draft")) is not bool
+                or not isinstance(item.get("updated_at"), str)
+                or len(item["updated_at"]) > 40
+                or not isinstance(item.get("html_url"), str)
+                or len(item["html_url"]) > 2000
+                or not full
+                or not _REPO.fullmatch(full)
+            ):
+                raise RelayGitHubError(502, "pull request search item unverifiable")
+            prs.append(
+                {
+                    "number": item["number"],
+                    "repo": full,
+                    "title": item["title"],
+                    "state": item["state"],
+                    "draft": item["draft"],
+                    "updated_at": item["updated_at"],
+                    "html_url": item["html_url"],
+                }
+            )
+        return {
+            "pull_requests": prs,
+            "total_count": data["total_count"],
+            "complete": not data["incomplete_results"],
+            "page": page,
+        }
 
     def wf_issue_list(self, repo, args):
         _only(args, ("repo", "state", "per_page", "labels"))
