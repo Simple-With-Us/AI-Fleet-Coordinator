@@ -5041,14 +5041,28 @@ class WorkflowVerbs:
         }
 
     def wf_branches(self, repo, args):
-        _only(args, ("repo", "per_page"))
-        data = _arr(self._get(f"/repos/{repo}/branches?per_page={_page(args)}"))
+        """One page of branches, pageable past the per-page cap.
+
+        Until 2026-11-08 this verb had no page argument, so enumeration
+        stopped at MAX_PAGE (50) rows and repos with more branches could
+        not be listed through the relay at all (the fleet-wide PR sweep
+        found six repos truncated at exactly 50).  Page like
+        wf_pr_list_page:  page + per_page, has_more on a full page, and
+        complete only when page 1 comes back short — the whole inventory
+        in that one page."""
+        _only(args, ("repo", "per_page", "page"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        data = _arr(self._get(f"/repos/{repo}/branches?per_page={limit}&page={page}"))
+        if len(data) > limit or not all(isinstance(b, dict) for b in data):
+            raise RelayGitHubError(502, "branch page unverifiable")
         return {
             "branches": [
-                {"name": b.get("name"), "sha": (b.get("commit") or {}).get("sha")}
-                for b in data[:MAX_PROJECT]
+                {"name": b.get("name"), "sha": (b.get("commit") or {}).get("sha")} for b in data
             ],
-            "complete": False,
+            "page": page,
+            "has_more": len(data) == limit,
+            "complete": page == 1 and len(data) < limit,
         }
 
     def wf_file_history(self, repo, args):

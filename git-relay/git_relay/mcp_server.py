@@ -168,20 +168,55 @@ MAX_DISPATCH_INPUT_VALUE = 1024
 # caller.  Locally the wrapper only checks the envelope (a repo string and a
 # bounded argument object) before forwarding.
 #
-# Five verbs are deliberately not exposed:  their request bodies can exceed
-# this stdio transport's MAX_LINE, so a call could never be carried whole
-# (wf_file_put, wf_files_put, wf_git_blob_create, wf_git_tree_create and the
-# binary asset upload).  Seats use the hosted front for those.
-WF_EXCLUDED = frozenset(
-    {
-        "wf_file_put",
-        "wf_files_put",
-        "wf_git_blob_create",
-        "wf_git_tree_create",
-        "wf_release_asset_upload_binary",
-    }
-)
+# No verb is excluded (owner ruling, 2026-11-08:  "Nothing should stay
+# hosted-only by design, or else what is point of the relay?").  The five
+# verbs whose bodies can exceed this stdio transport's MAX_LINE
+# (wf_file_put, wf_files_put, wf_git_blob_create, wf_git_tree_create and
+# wf_release_asset_upload_binary — the relay itself caps those requests at
+# 256 KiB to 6 MiB) are carried by the chunked staging transport below:
+# the caller splits the JSON-encoded arguments into stage_chunk messages,
+# each comfortably under MAX_LINE, and GR-MCP reassembles them in memory
+# and forwards the whole call to the relay over HTTP, where check_shape,
+# the seat policy, rate caps and the audit log apply unchanged.  A call
+# that fits one line needs no staging;  staging is only the large-body
+# carriage, never a second policy path.
 MAX_WF_ARGS = 64
+
+# ---------------------------------------------------------------- staging
+# Chunked large-body transport for wf calls.  A stage is held only in this
+# process's memory, is keyed by a caller-chosen stage_id, accepts chunks
+# strictly in order, and is dropped on commit, abort, or any protocol
+# error.  Bounds keep a stage under the relay's own largest request cap
+# (6 MiB for the file verbs) plus JSON envelope room.
+MAX_STAGE_CHUNKS = 1024
+MAX_CHUNK_CHARS = 512 * 1024
+MAX_STAGED_CHARS = 8 * 1024 * 1024
+MAX_STAGES = 4
+_STAGE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{3,63}")
+
+
+def stage_messages(name: str, args: dict, chunk_chars: int = MAX_CHUNK_CHARS):
+    """Yield the stage_chunk JSON-RPC messages carrying one wf call.
+
+    Client-side helper for seats whose MCP transport caps a line below the
+    call's size:  send each yielded message in order;  the reply to the
+    final chunk is the wrapped call's own result."""
+    if not 1 <= chunk_chars <= MAX_CHUNK_CHARS:
+        raise ValueError("chunk_chars out of bounds")
+    payload = json.dumps(args)
+    chunks = [payload[i : i + chunk_chars] for i in range(0, len(payload), chunk_chars)] or [""]
+    if len(chunks) > MAX_STAGE_CHUNKS:
+        raise ValueError("call too large to stage")
+    stage_id = f"stage-{os.urandom(6).hex()}"
+    for seq, data in enumerate(chunks):
+        params = {"stage_id": stage_id, "seq": seq, "total": len(chunks), "data": data}
+        if seq == 0:
+            params["name"] = name
+        yield {
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {"name": "stage_chunk", "arguments": params},
+        }
 
 
 def _wf_actions() -> dict[str, bool]:
@@ -193,15 +228,43 @@ def _wf_actions() -> dict[str, bool]:
         from .workflow_verbs import SPECS
     except Exception:
         return {}
-    return {
-        action: bool(writes)
-        for action, (_perms, writes) in SPECS.items()
-        if action not in WF_EXCLUDED
-    }
+    return {action: bool(writes) for action, (_perms, writes) in SPECS.items()}
 
 
 WF_ACTIONS = _wf_actions()
 WF_WRITES = frozenset(action for action, writes in WF_ACTIONS.items() if writes)
+
+TOOLS += [
+    {
+        "name": "stage_chunk",
+        "description": (
+            "Carry one chunk of a large wf call's JSON-encoded arguments (see "
+            "stage_messages in git_relay.mcp_server).  Chunks arrive in order; "
+            "the final chunk performs the wrapped call and returns its result. "
+            "Local transport only:  nothing is forwarded until the call is whole."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "stage_id": {"type": "string"},
+                "name": {"type": "string", "description": "the wf verb, on seq 0 only"},
+                "seq": {"type": "integer"},
+                "total": {"type": "integer"},
+                "data": {"type": "string"},
+            },
+            "required": ["stage_id", "seq", "total", "data"],
+        },
+    },
+    {
+        "name": "stage_abort",
+        "description": "Drop an unfinished staged call without forwarding anything.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"stage_id": {"type": "string"}},
+            "required": ["stage_id"],
+        },
+    },
+]
 
 TOOLS += [
     {
@@ -287,6 +350,7 @@ class RelayMcp:
         self._url = relay_url.rstrip("/")
         self._token = seat_token
         self._opener = opener or urllib.request.urlopen
+        self._stages: dict[str, dict] = {}
 
     def handle(self, message: dict) -> dict | None:
         method = message.get("method")
@@ -311,6 +375,14 @@ class RelayMcp:
             args = params.get("arguments")
             if not isinstance(args, dict):
                 return _error(message, -32602, "arguments must be an object")
+            if name == "stage_chunk":
+                return self._stage_chunk(message, args)
+            if name == "stage_abort":
+                stage_id = args.get("stage_id")
+                if not isinstance(stage_id, str) or not _STAGE_ID.fullmatch(stage_id):
+                    return _error(message, -32602, "invalid stage_id")
+                self._stages.pop(stage_id, None)
+                return _result(message, {"content": [{"type": "text", "text": "stage dropped"}]})
             invalid = _validate_args(name, args)
             if invalid:
                 return _error(message, -32602, invalid)
@@ -318,6 +390,75 @@ class RelayMcp:
         if method == "ping":
             return _result(message, {})
         return _error(message, -32601, f"unknown method {method!r}")
+
+    def _stage_chunk(self, message: dict, args: dict) -> dict:
+        """Accumulate one chunk;  on the final chunk, run the wrapped call.
+
+        Any protocol error drops the stage:  a half-carried write must never
+        be completable by a later, unrelated chunk stream."""
+        stage_id, seq, total, data = (
+            args.get("stage_id"),
+            args.get("seq"),
+            args.get("total"),
+            args.get("data"),
+        )
+        if not isinstance(stage_id, str) or not _STAGE_ID.fullmatch(stage_id):
+            return _error(message, -32602, "invalid stage_id")
+        if (
+            isinstance(seq, bool)
+            or not isinstance(seq, int)
+            or isinstance(total, bool)
+            or not isinstance(total, int)
+            or not 1 <= total <= MAX_STAGE_CHUNKS
+            or not 0 <= seq < total
+            or not isinstance(data, str)
+            or len(data) > MAX_CHUNK_CHARS
+        ):
+            self._stages.pop(stage_id, None)
+            return _error(message, -32602, "invalid chunk")
+        stage = self._stages.get(stage_id)
+        if stage is None:
+            if seq != 0:
+                return _error(message, -32602, "first chunk must have seq 0")
+            name = args.get("name")
+            if name not in WF_ACTIONS:
+                return _error(message, -32602, "only wf verbs can be staged")
+            if len(self._stages) >= MAX_STAGES:
+                return _error(message, -32602, "too many open stages")
+            stage = {"name": name, "total": total, "parts": []}
+            self._stages[stage_id] = stage
+        if seq != len(stage["parts"]) or total != stage["total"] or (seq > 0 and "name" in args):
+            self._stages.pop(stage_id, None)
+            return _error(message, -32602, "chunk out of order or stage mismatch")
+        stage["parts"].append(data)
+        if sum(len(part) for part in stage["parts"]) > MAX_STAGED_CHARS:
+            self._stages.pop(stage_id, None)
+            return _error(message, -32602, "staged call too large")
+        if seq < total - 1:
+            return _result(
+                message,
+                {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                {"staged": seq + 1, "total": total, "complete": False}
+                            ),
+                        }
+                    ]
+                },
+            )
+        self._stages.pop(stage_id, None)
+        try:
+            wrapped = json.loads("".join(stage["parts"]))
+        except ValueError:
+            return _error(message, -32602, "staged arguments are not valid JSON")
+        if not isinstance(wrapped, dict):
+            return _error(message, -32602, "staged arguments must be an object")
+        invalid = _validate_args(stage["name"], wrapped)
+        if invalid:
+            return _error(message, -32602, invalid)
+        return self._call_tool(message, stage["name"], wrapped)
 
     def _call_tool(self, message: dict, name: str, args: dict) -> dict:
         if name == "open_pr" and "draft" in args:
