@@ -1861,70 +1861,100 @@ class LinearSourceError(FleetRagError):
 # in the environment still wins and is used alone.
 LINEAR_SEATS_ENV = "FLEET_RAG_LINEAR_SEATS"
 LINEAR_DEFAULT_SEATS = ("BF-ORACLE", "GB-ORACLE")
-_LINEAR_AUTH_MARKERS = (
-    "no Linear app credentials",
-    "invalid_client",
-    "unauthorized",
-    "authentication",
-    "401",
-    "403",
-    "could not mint",
+LINEAR_MAX_SEATS = 2  # the preferred seat and one fallback;  more would only multiply failing calls
+_LINEAR_SEAT_RE = re.compile(r"[A-Z0-9-]{1,40}")
+# Only these count as "this seat's credentials do not work":  simple-board's missing-identity exit 4,
+# an OAuth invalid_client, or an HTTP 401/403 named as a status (word-bounded, so an id or count
+# that merely contains 401 never triggers a fallback).
+_LINEAR_AUTH_RE = re.compile(
+    r"no Linear app credentials|invalid_client|\b(?:HTTP|status)[ :]*(?:401|403)\b|\b(?:401|403) (?:Unauthorized|Forbidden)\b",
+    re.IGNORECASE,
 )
-_linear_seat_index = 0  # sticky:  once a seat fails auth, later calls skip it
+_linear_failed_seats: set[str] = set()  # seats whose credentials failed in THIS run (by name)
 LINEAR_SEAT_USED: str | None = None
 
 
-def _linear_seat_envs() -> list[tuple[str, dict]]:
-    """(seat, subprocess env) for each configured seat whose pair is present, in order."""
-    if (
-        os.environ.get("LINEAR_CLIENT_ID", "").strip()
-        and os.environ.get("LINEAR_CLIENT_SECRET", "").strip()
-    ):
-        return [("LINEAR_CLIENT_ID", dict(os.environ))]
+def reset_linear_seat_state() -> None:
+    """Forget the previous run's seat outcome:  each run re-evaluates from the preferred seat."""
+    global LINEAR_SEAT_USED
+    _linear_failed_seats.clear()
+    LINEAR_SEAT_USED = None
+
+
+def _linear_seat_names() -> list[str]:
     raw = os.environ.get(LINEAR_SEATS_ENV, "").strip()
-    seats = (
-        [x.strip().upper() for x in raw.split(",") if x.strip()] if raw else LINEAR_DEFAULT_SEATS
-    )
-    out: list[tuple[str, dict]] = []
+    if not raw:
+        return list(LINEAR_DEFAULT_SEATS)
+    seats: list[str] = []
+    invalid = 0
+    for part in raw.split(","):
+        seat = part.strip().upper()
+        if not seat:
+            continue
+        if not _LINEAR_SEAT_RE.fullmatch(seat):
+            invalid += 1
+            continue
+        if seat not in seats:
+            seats.append(seat)
+    if invalid:
+        warn(f"linear: ignored {invalid} invalid seat name(s) in {LINEAR_SEATS_ENV}")
+    if len(seats) > LINEAR_MAX_SEATS:
+        warn(f"linear: {LINEAR_SEATS_ENV} names {len(seats)} seats;  using the first {LINEAR_MAX_SEATS}")
+    return seats[:LINEAR_MAX_SEATS]
+
+
+def _linear_seat_envs() -> list[tuple[str, dict]]:
+    """(seat, subprocess env) for each configured seat whose pair is present, in order.  One base
+    snapshot of the environment is taken, with every seat pair removed, and each seat's env adds
+    only its own pair as LINEAR_CLIENT_ID / LINEAR_CLIENT_SECRET."""
+    if os.environ.get("LINEAR_CLIENT_ID", "").strip() and os.environ.get(
+        "LINEAR_CLIENT_SECRET", ""
+    ).strip():
+        return [("LINEAR_CLIENT_ID", dict(os.environ))]
+    seats = _linear_seat_names()
+    pairs: list[tuple[str, str, str]] = []
     for seat in seats:
         k = seat.replace("-", "_")
         cid = os.environ.get(f"LINEAR_{k}_CLIENT_ID", "").strip()
         sec = os.environ.get(f"LINEAR_{k}_CLIENT_SECRET", "").strip()
         if cid and sec:
-            env = dict(os.environ)
-            env["LINEAR_CLIENT_ID"], env["LINEAR_CLIENT_SECRET"] = cid, sec
-            out.append((seat, env))
-    return out
+            pairs.append((seat, cid, sec))
+    if not pairs:
+        return []
+    base = {
+        key: val
+        for key, val in os.environ.items()
+        if not (key.startswith("LINEAR_") and key.endswith(("_CLIENT_ID", "_CLIENT_SECRET")))
+    }
+    return [(seat, {**base, "LINEAR_CLIENT_ID": cid, "LINEAR_CLIENT_SECRET": sec}) for seat, cid, sec in pairs]
 
 
 def _linear_is_auth_failure(proc: subprocess.CompletedProcess) -> bool:
     if proc.returncode == 0:
         return False
-    text = (proc.stderr or "").lower()
-    return proc.returncode == 4 or any(m.lower() in text for m in _LINEAR_AUTH_MARKERS)
+    return proc.returncode == 4 or bool(_LINEAR_AUTH_RE.search(proc.stderr or ""))
 
 
 def _linear_run(query: str, timeout_s: int) -> subprocess.CompletedProcess:
-    """Run one simple-board read, falling back seat by seat on a credential failure."""
-    global _linear_seat_index, LINEAR_SEAT_USED
+    """Run one simple-board read as the first configured seat whose credentials have not failed
+    this run, falling back seat by seat on a credential failure (and only on one)."""
+    global LINEAR_SEAT_USED
     argv = [SIMPLE_BOARD_CLI, "api", "query", "--max-chars", str(LINEAR_MAX_CHARS), query]
     candidates = _linear_seat_envs()
     if not candidates:
         return subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s)
+    live = [c for c in candidates if c[0] not in _linear_failed_seats] or candidates[-1:]
     proc = None
-    start = min(_linear_seat_index, len(candidates) - 1)
-    for i in range(start, len(candidates)):
-        seat, env = candidates[i]
+    for n, (seat, env) in enumerate(live):
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s, env=env)
         if not _linear_is_auth_failure(proc):
             if LINEAR_SEAT_USED != seat:
                 LINEAR_SEAT_USED = seat
                 warn(f"linear: reading Linear as {seat}")
-            _linear_seat_index = i
             return proc
-        if i + 1 < len(candidates):
+        _linear_failed_seats.add(seat)
+        if n + 1 < len(live):
             warn(f"linear: {seat} credentials failed (exit {proc.returncode});  falling back")
-    _linear_seat_index = len(candidates) - 1
     return proc
 
 
@@ -2417,6 +2447,7 @@ def iter_linear(
     exclude issues. FULL forces every scanned issue to be fetched. A receipt describes
     source reads, not permission to delete or proof of a committed corpus replacement.
     """
+    reset_linear_seat_state()
     light_scan = light_scan or _linear_light_scan
     fetch_full = fetch_full or _linear_fetch_full
     scan = light_scan()
