@@ -2,7 +2,9 @@
 
 Checks (each a violation with evidence; `--since` limits the event checks to the sweep window):
   V1  a head_ref_force_pushed event                      (rule 5 and 8: never force-push)
-  V2  a review dismissal of anyone's review but kody-ai[bot]'s, or by an actor not on the allowed list (rule 7)
+  V2  a review dismissal of anyone's review but kody-ai[bot]'s, or by an actor not on the allowed list (rule 7):  the
+      owner, or a seat's own GitHub App (the relay runs rule 7 dismissals as the seat's App, so GraphQL shows a Bot
+      actor whose login is the App slug, such as swu-claude)
   V3  a resolved thread with no reply from anyone but its first author and no PR commit after its first comment
       (rule 6: a real reply before resolving).  GitHub keeps who resolved a thread but not when, so "later commit"
       is any commit on the PR after the thread opened; this errs toward NOT flagging.
@@ -19,14 +21,39 @@ What it cannot judge (a fix that is wrong, a reply that does not hold up) stays 
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import re
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 from .gh import Gh, GhError
 from .status import is_bot, parse_time, split_key
 
+# The reviewed seat registry:  every seat's GitHub App slug is its `app_slug`.
+SEAT_POLICY = Path(__file__).resolve().parents[2] / "git-relay" / "deploy" / "seat-policy.json"
+
+
+def seat_app_slugs(path: Path = SEAT_POLICY) -> tuple[str, ...]:
+    """The seats' GitHub App slugs from the seat registry, or none when it cannot be read (then only the owner is
+    allowed, which flags more, never less)."""
+    try:
+        seats = json.loads(path.read_text(encoding="utf-8")).get("seats") or []
+    except (OSError, ValueError, AttributeError):
+        return ()
+    slugs = {
+        str(s.get("app_slug")).strip().lower()
+        for s in seats
+        if isinstance(s, dict) and isinstance(s.get("app_slug"), str) and s["app_slug"].strip()
+    }
+    return tuple(sorted(slugs))
+
+
 DEFAULT_ALLOWED_DISMISSERS = ("jaywedgeworth22",)
+# Seat Apps allowed to dismiss a stale Kody review.  Only a Bot actor matches one:  GraphQL gives an App's login as the
+# bare slug (swu-claude) and REST adds "[bot]", so both spellings are accepted, but a person who held the bare slug as
+# a username would be a User actor and is not.
+DEFAULT_ALLOWED_APP_DISMISSERS = seat_app_slugs()
 KODY = ("kody-ai", "kody-ai[bot]")
 _MARKER = re.compile(r"^\+(?:<<<<<<< |>>>>>>> |<<<<<<<$|>>>>>>>$|=======$)")
 _BASELINE = re.compile(r"(?i)(baseline|\.oxlint|eslint-baseline|lint-baseline|\.snap$)")
@@ -47,7 +74,7 @@ query($owner: String!, $repo: String!, $n: Int!) { repository(owner: $owner, nam
   timelineItems(first: 100, itemTypes: [HEAD_REF_FORCE_PUSHED_EVENT, REVIEW_DISMISSED_EVENT, MERGED_EVENT]) {
     nodes { __typename
       ... on HeadRefForcePushedEvent { createdAt actor { login } beforeCommit { oid } afterCommit { oid } }
-      ... on ReviewDismissedEvent { createdAt actor { login } dismissalMessage previousReviewState
+      ... on ReviewDismissedEvent { createdAt actor { __typename login } dismissalMessage previousReviewState
                                      review { author { login } state } }
       ... on MergedEvent { createdAt actor { login } } } }
   comments(last: 100) { nodes { author { login } createdAt body url } }
@@ -72,11 +99,21 @@ def check_pr(
     *,
     since: _dt.datetime | None = None,
     allowed_dismissers: Sequence[str] = DEFAULT_ALLOWED_DISMISSERS,
+    allowed_apps: Sequence[str] = DEFAULT_ALLOWED_APP_DISMISSERS,
 ) -> dict[str, list[dict[str, str]]]:
     """Pure: the violations and warnings for one PR node (AUDIT_QUERY's pullRequest) and its merge-commit files."""
     v: list[dict[str, str]] = []
     w: list[dict[str, str]] = []
     allowed = {a.lower() for a in allowed_dismissers}
+    apps = {a.lower().removesuffix("[bot]") for a in allowed_apps}
+
+    def may_dismiss(actor_node: Any) -> bool:
+        login = _login(actor_node).lower()
+        if login in allowed:
+            return True
+        kind = (actor_node or {}).get("__typename") if isinstance(actor_node, dict) else None
+        return kind == "Bot" and login.removesuffix("[bot]") in apps
+
     for ev in (pr.get("timelineItems") or {}).get("nodes") or []:
         kind = ev.get("__typename")
         if not _after(ev.get("createdAt"), since):
@@ -102,12 +139,12 @@ def check_pr(
                         "(kody-ai or kody-ai[bot]) may be dismissed",
                     }
                 )
-            elif actor.lower() not in allowed:
+            elif not may_dismiss(ev.get("actor")):
                 v.append(
                     {
                         "rule": "V2",
                         "evidence": f"kody-ai review dismissed by {actor or '?'}, not on the allowed list "
-                        f"({', '.join(sorted(allowed))}) at {ev.get('createdAt')}",
+                        f"({', '.join(sorted(allowed))}, or a seat's own GitHub App) at {ev.get('createdAt')}",
                     }
                 )
     commit_times = [
@@ -209,6 +246,7 @@ def audit(
     *,
     since: _dt.datetime | None = None,
     allowed_dismissers: Sequence[str] = DEFAULT_ALLOWED_DISMISSERS,
+    allowed_apps: Sequence[str] = DEFAULT_ALLOWED_APP_DISMISSERS,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for k in keys:
@@ -223,7 +261,13 @@ def audit(
             oid = (pr.get("mergeCommit") or {}).get("oid")
             if pr.get("state") == "MERGED" and oid:
                 files = (gh.rest(f"repos/{owner}/{repo}/commits/{oid}") or {}).get("files") or []
-            res = check_pr(pr, files, since=since, allowed_dismissers=allowed_dismissers)
+            res = check_pr(
+                pr,
+                files,
+                since=since,
+                allowed_dismissers=allowed_dismissers,
+                allowed_apps=allowed_apps,
+            )
             out.append(
                 {"pr": f"{full}#{n}", "state": pr.get("state"), "ok": not res["violations"], **res}
             )
