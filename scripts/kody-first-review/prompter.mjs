@@ -6,7 +6,7 @@
 //   GITHUB_TOKEN  required, provided by the workflow (permissions: issues: write)
 //   GITHUB_REPOSITORY  owner/name, set by Actions
 //   DRY_RUN  'true' to list decisions without commenting
-import { decide, TRIGGER_TEXT } from './lib.mjs';
+import { decide, describeApiError, TRIGGER_TEXT } from './lib.mjs';
 
 const API = 'https://api.github.com';
 const token = process.env.GITHUB_TOKEN;
@@ -29,7 +29,10 @@ async function api(path, options = {}) {
     },
   });
   if (!res.ok) {
-    throw new Error(`${options.method || 'GET'} ${path} -> ${res.status}`);
+    const bodyText = await res.text().catch(() => '');
+    throw new Error(
+      describeApiError({ method: options.method || 'GET', path, status: res.status, headers: res.headers, bodyText }),
+    );
   }
   return res.status === 204 ? null : res.json();
 }

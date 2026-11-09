@@ -69,3 +69,42 @@ export function decide(pr, context = {}) {
   if (hasPendingTrigger(context.issueComments)) return 'trigger-pending';
   return 'prompt';
 }
+
+// A bounded, non-secret reason for a failed GitHub API call. The log used to carry
+// only the status, so a 403 could not be told apart (permission, ruleset, rate limit).
+// Only GitHub's own short message, its public documentation_url and a fixed set of
+// non-credential headers are kept. Anything token-shaped is redacted, and the whole
+// text is length-capped.
+const DIAGNOSTIC_HEADERS = [
+  'x-accepted-github-permissions',
+  'x-github-request-id',
+  'x-ratelimit-remaining',
+  'x-ratelimit-resource',
+  'retry-after',
+];
+const TOKEN_SHAPED = /(gh[pousr]_[A-Za-z0-9_]{10,}|github_pat_[A-Za-z0-9_]{10,}|bearer\s+[A-Za-z0-9._~+/=-]{10,})/gi;
+const clean = (value, max) =>
+  String(value ?? '')
+    .replace(TOKEN_SHAPED, '[redacted]')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .slice(0, max);
+
+export function describeApiError({ method = 'GET', path = '', status, headers, bodyText = '' } = {}) {
+  const parts = [`${method} ${path} -> ${status}`];
+  let message = '';
+  let docs = '';
+  try {
+    const parsed = JSON.parse(bodyText);
+    if (typeof parsed?.message === 'string') message = parsed.message;
+    if (typeof parsed?.documentation_url === 'string') docs = parsed.documentation_url;
+  } catch {
+    // Non-JSON body: report nothing from it rather than echo arbitrary content.
+  }
+  if (message) parts.push(`message=${JSON.stringify(clean(message, 200))}`);
+  if (docs.startsWith('https://docs.github.com/')) parts.push(`docs=${clean(docs, 200)}`);
+  for (const name of DIAGNOSTIC_HEADERS) {
+    const value = headers?.get ? headers.get(name) : headers?.[name];
+    if (value) parts.push(`${name}=${clean(value, 120)}`);
+  }
+  return parts.join(' ');
+}

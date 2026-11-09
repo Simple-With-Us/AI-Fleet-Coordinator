@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   decide,
+  describeApiError,
   hasPendingTrigger,
   isTriggerComment,
   kodyHasAnswered,
@@ -60,4 +61,39 @@ test('decide prompts only a quiet old same-repo open PR', () => {
     'trigger-pending',
   );
   assert.equal(hasPendingTrigger([{ body: 'unrelated' }]), false);
+});
+
+// Built at runtime so no token-shaped literal sits in the source.
+const FAKE_PREFIX = ['g', 'h', 's', '_'].join('');
+
+test('describeApiError keeps a bounded GitHub reason and drops credentials', () => {
+  const headers = new Map([
+    ['x-accepted-github-permissions', 'issues=write'],
+    ['x-github-request-id', 'ABCD:1234'],
+    ['authorization', `Bearer ${FAKE_PREFIX}SHOULDNEVERAPPEAR1234567890`],
+  ]);
+  const text = describeApiError({
+    method: 'POST',
+    path: '/repos/o/r/issues/1/comments',
+    status: 403,
+    headers,
+    bodyText: JSON.stringify({
+      message: `Resource not accessible by integration ${FAKE_PREFIX}ABCDEFGHIJKLMNOP1234`,
+      documentation_url: 'https://docs.github.com/rest/issues/comments',
+    }),
+  });
+  assert.match(text, /^POST \/repos\/o\/r\/issues\/1\/comments -> 403 /);
+  assert.match(text, /Resource not accessible by integration \[redacted\]/);
+  assert.match(text, /x-accepted-github-permissions=issues=write/);
+  assert.match(text, /x-github-request-id=ABCD:1234/);
+  assert.doesNotMatch(text, /SHOULDNEVERAPPEAR|ABCDEFGHIJKLMNOP|authorization/i);
+});
+
+test('describeApiError ignores non-JSON bodies and caps the message', () => {
+  assert.equal(
+    describeApiError({ method: 'GET', path: '/x', status: 502, bodyText: '<html>secret page</html>' }),
+    'GET /x -> 502',
+  );
+  const long = describeApiError({ status: 403, bodyText: JSON.stringify({ message: 'a'.repeat(5000) }) });
+  assert.ok(long.length < 400);
 });
