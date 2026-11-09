@@ -581,7 +581,9 @@ class MmSessionLetterTest(unittest.TestCase):
                 mock.patch.object(M, "set_title", return_value=True),
                 mock.patch.object(M, "update_title", return_value={"outcome": "updated"}),
                 mock.patch.object(M, "session_row", return_value={}),
-                mock.patch.object(M, "register", side_effect=AssertionError("register must not run")),
+                mock.patch.object(
+                    M, "register", side_effect=AssertionError("register must not run")
+                ),
                 contextlib.redirect_stdout(out),
             ):
                 code = M.main(

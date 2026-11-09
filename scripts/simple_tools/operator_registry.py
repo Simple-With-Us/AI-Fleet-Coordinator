@@ -1346,7 +1346,10 @@ def _session_row_for_update(
             % (native, namespace, verified_host, profile_scope)
         )
     for candidate in rows:
-        if candidate["verified_host"] == verified_host and candidate["profile_scope"] == profile_scope:
+        if (
+            candidate["verified_host"] == verified_host
+            and candidate["profile_scope"] == profile_scope
+        ):
             return candidate
     if len(rows) == 1:
         return rows[0]
