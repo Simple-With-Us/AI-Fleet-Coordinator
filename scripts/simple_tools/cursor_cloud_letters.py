@@ -378,14 +378,23 @@ def sweep(
                 row["steer"] = "deferred"  # the next run sends it
                 rows.append(row)
                 continue
-            outcome = steer(sid, rename_prompt(wanted_title(label, current), agent.get("state") == "busy"))
+            outcome = steer(
+                sid, rename_prompt(wanted_title(label, current), agent.get("state") == "busy")
+            )
             row["steer"] = outcome
             # A sent steer is done for this pass, and so is one whose outcome is unknown: it may have reached the
             # agent.  A refusal is not asked again.  A steer that sent nothing is retried next run, so it is not
             # recorded.
             if outcome in STEER_DONE or outcome in STEER_STOP:
                 told = _remember(
-                    state, sid, told, bot=bot, label=label, generation=generation, now=now, steer=outcome
+                    state,
+                    sid,
+                    told,
+                    bot=bot,
+                    label=label,
+                    generation=generation,
+                    now=now,
+                    steer=outcome,
                 )
                 just_steered = True
             else:
@@ -407,7 +416,9 @@ def sweep(
                 row["dm"] = dm
                 if dm in ("sent", "unknown"):
                     record = dict(state.get(sid) or {})
-                    record.update(bot=bot, label=label, generation=generation, dm=dm, outcome=dm, at=now)
+                    record.update(
+                        bot=bot, label=label, generation=generation, dm=dm, outcome=dm, at=now
+                    )
                     state[sid] = record
         rows.append(row)
     if not dry_run:
@@ -431,7 +442,9 @@ def sweep(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="cursor_cloud_letters")
     sub = parser.add_subparsers(dest="command", required=True)
-    s = sub.add_parser("sweep", help="give open Cursor Cloud agents letters and put the letter in each title")
+    s = sub.add_parser(
+        "sweep", help="give open Cursor Cloud agents letters and put the letter in each title"
+    )
     s.add_argument(
         "--dry-run", action="store_true", help="read the agents and print what it would do"
     )
