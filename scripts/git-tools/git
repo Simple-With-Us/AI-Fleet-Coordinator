@@ -1123,6 +1123,12 @@ def _bounded(value, max_bytes: int) -> bool:
     return total <= max_bytes
 
 
+#: JSON-schema annotation keywords:  they describe a leaf and constrain nothing.
+_ANNOTATION_KEYS = frozenset(
+    ("description", "title", "default", "examples", "$comment", "deprecated", "readOnly", "writeOnly")
+)
+
+
 def _type_ok(schema: dict, value, pattern_checks=None) -> bool:
     """The Worker's typeOk:  one JSON-schema leaf check (type, pattern, enum, lengths, numeric bounds,
     items).  `pattern` is NOT searched here:  with a collector, the (pattern, value) pair is deferred
@@ -1138,18 +1144,30 @@ def _type_ok(schema: dict, value, pattern_checks=None) -> bool:
             return False
         if not all(isinstance(variant, dict) for variant in any_of):
             return False
+        # Every variant is tried:  a variant that matches outright settles the union, so a first
+        # variant whose deferred pattern would later fail can never hide a later variant that matches.
+        # Only when every matching variant still waits on a deferred pattern is one of them chosen;
+        # two or more such variants refuse (fail closed), since their patterns are only searched
+        # later, together, where an either-or cannot be expressed.
         union_checks = [] if pattern_checks is not None else None
-        matched = False
+        deferred = []
+        definite = False
         for variant in any_of:
             pending = [] if pattern_checks is not None else None
             if _type_ok(variant, value, pending):
-                if union_checks is not None:
-                    union_checks.extend(pending)
-                matched = True
-                break
-        if not matched:
-            return False
-        sibling = {k: v for k, v in schema.items() if k != "anyOf"}
+                if not pending:
+                    definite = True
+                    break
+                deferred.append(pending)
+        if not definite:
+            if len(deferred) != 1:
+                return False
+            union_checks.extend(deferred[0])
+        # Annotation keywords constrain nothing:  a sibling of only those adds no check (a typeless
+        # leaf would otherwise read as a string and refuse every number or boolean).
+        sibling = {
+            k: v for k, v in schema.items() if k != "anyOf" and k not in _ANNOTATION_KEYS
+        }
         if sibling and not _type_ok(sibling, value, pattern_checks):
             return False
         if pattern_checks is not None:
