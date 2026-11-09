@@ -24,6 +24,19 @@ class IssueTests(unittest.TestCase):
         self.assertFalse(out["complete"])
         self.assertIn("state=open&per_page=30", c.calls[0][1])
 
+    def test_list_labels_filter_exact_names(self):
+        out, c = self.run_action("wf_issue_list", {"labels": "fleet, gr_wf relay"}, [ISSUE])
+        self.assertEqual(len(out["issues"]), 1)
+        self.assertIn("labels=fleet,gr_wf%20relay", c.calls[0][1])
+
+    def test_list_labels_refuses_blank_long_or_control(self):
+        for bad in ["", "ok,,x", "bad\nlabel", "x" * 101]:
+            client = Client(ISSUE)
+            h = WorkflowVerbs(client, Policy(), "swu-wise", "opaque", "swu-wise", "wf_issue_list", REPO)
+            with self.assertRaises(Refused):
+                h.run("wf_issue_list", {"repo": REPO, "labels": bad})
+            self.assertEqual(len(client.calls), 0)
+
     def test_create_uses_own_app_fixed_endpoint(self):
         out, c = self.run_action("wf_issue_create", {"title": "fix", "body": "details"}, ISSUE)
         self.assertEqual(out["issue"]["number"], 2)

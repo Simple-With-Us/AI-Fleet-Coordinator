@@ -1263,9 +1263,25 @@ class WorkflowVerbs:
         return value
 
     def wf_issue_list(self, repo, args):
-        _only(args, ("repo", "state", "per_page"))
+        _only(args, ("repo", "state", "per_page", "labels"))
         state = _enum(args, "state", ("open", "closed", "all"), "open")
-        data = _arr(self._get(f"/repos/{repo}/issues?state={state}&per_page={_page(args)}"))
+        path = f"/repos/{repo}/issues?state={state}&per_page={_page(args)}"
+        if "labels" in args:
+            labels = args["labels"]
+            if not isinstance(labels, str):
+                raise Refused("invalid labels")
+            parts = [p.strip() for p in labels.split(",")]
+            if (
+                not parts
+                or len(parts) > 10
+                or any(
+                    not 1 <= len(p) <= 100 or any(ord(ch) < 32 or ord(ch) == 127 for ch in p)
+                    for p in parts
+                )
+            ):
+                raise Refused("invalid labels")
+            path += "&labels=" + ",".join(quote(p, safe="") for p in parts)
+        data = _arr(self._get(path))
         return {
             "issues": [
                 self._issue_summary(x)
@@ -4047,11 +4063,16 @@ class WorkflowVerbs:
                 "repo",
                 "number",
                 "per_page",
+                "page",
             ),
         )
         number = _int(args, "number")
         per_page = _page(args)
-        data = self._get(f"/repos/{repo}/pulls/{number}/comments?per_page={per_page}")
+        path = f"/repos/{repo}/pulls/{number}/comments?per_page={per_page}"
+        if "page" in args:
+            page = _int(args, "page", 1, 1000)
+            path += f"&page={page}"
+        data = self._get(path)
         return {"comments": _arr(data)[:MAX_PAGE], "complete": False}
 
     def wf_issue_comments(self, repo, args):
