@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-11-09T22:19:11Z",
+  "updatedAt": "2026-11-09T22:57:53Z",
   "apps": {
     "app.botfleet": {
       "marketingVersion": "1.0.29",
@@ -46,7 +46,7 @@
     },
     "net.dealdex": {
       "marketingVersion": "0.1.0",
-      "build": "202611091422",
+      "build": "202611091611",
       "appleId": 6804249232,
       "displayName": "DealDex"
     },
