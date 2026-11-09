@@ -105,3 +105,49 @@ export function safeErrorDetails(status, headers = {}) {
   }
   return parts.join(' ');
 }
+
+// The prompt sweep. verdictFor(pr) returns the decide() verdict (and logs it);
+// postTrigger(pr) posts the trigger comment. A post failure classified
+// 'forbidden' or 'rate-limited' is terminal for the run: remaining prompt
+// verdicts are counted as blocked instead of attempted, and the returned counts
+// keep the uncompleted obligations explicit for the caller.
+export async function sweepPrompts(prs, { verdictFor, postTrigger, concurrency = 4, log = () => {}, logError = () => {} }) {
+  let prompted = 0;
+  let failed = 0;
+  let blocked = 0;
+  let terminalClassification = null;
+  let next = 0;
+  async function worker() {
+    while (next < prs.length) {
+      const pr = prs[next];
+      next += 1;
+      let verdict;
+      try {
+        verdict = await verdictFor(pr);
+      } catch (error) {
+        failed += 1;
+        logError(`#${pr.number} error: ${error.message}`);
+        continue;
+      }
+      if (verdict !== 'prompt') continue;
+      if (terminalClassification) {
+        blocked += 1;
+        log(`#${pr.number} prompt blocked: terminal ${terminalClassification} failure already classified this run`);
+        continue;
+      }
+      try {
+        await postTrigger(pr);
+        prompted += 1;
+      } catch (error) {
+        failed += 1;
+        logError(`#${pr.number} error: ${error.message}`);
+        if (!terminalClassification && (error.classification === 'forbidden' || error.classification === 'rate-limited')) {
+          terminalClassification = error.classification;
+          logError(`terminal ${error.classification} failure classified; further prompt POSTs are blocked this run`);
+        }
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, prs.length)) }, worker));
+  return { prompted, failed, blocked, terminalClassification };
+}

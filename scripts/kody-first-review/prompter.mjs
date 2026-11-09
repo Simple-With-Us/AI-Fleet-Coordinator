@@ -6,7 +6,7 @@
 //   GITHUB_TOKEN  required, provided by the workflow (permissions: issues: write)
 //   GITHUB_REPOSITORY  owner/name, set by Actions
 //   DRY_RUN  'true' to list decisions without commenting
-import { classifyHttpError, decide, safeErrorDetails, SAFE_ERROR_HEADERS, TRIGGER_TEXT } from './lib.mjs';
+import { classifyHttpError, decide, safeErrorDetails, SAFE_ERROR_HEADERS, sweepPrompts, TRIGGER_TEXT } from './lib.mjs';
 
 const API = 'https://api.github.com';
 const token = process.env.GITHUB_TOKEN;
@@ -58,62 +58,47 @@ async function listAll(path, maxPages = 20) {
 // Every open PR, drafts included (owner asked for drafts too).
 const listOpenPrs = () => listAll(`/repos/${repo}/pulls?state=open`, 5);
 
-// One PR: fetch every comment and review page, decide, and post if needed. Returns
-// true when it prompted (or would have, in a dry run).
-async function handle(pr) {
+// One PR: fetch every comment and review page and return the decision (logged).
+async function verdictFor(pr) {
   const [issueComments, reviews] = await Promise.all([
     listAll(`/repos/${repo}/issues/${pr.number}/comments`),
     listAll(`/repos/${repo}/pulls/${pr.number}/reviews`),
   ]);
   const verdict = decide(pr, { issueComments, reviews, now: Date.now() });
   console.log(`#${pr.number} ${pr.draft ? 'draft ' : ''}${verdict}`);
-  if (verdict !== 'prompt') return false;
-  if (terminalClassification) {
-    console.log(`#${pr.number} prompt blocked: terminal ${terminalClassification} failure already classified this run`);
-    return false;
-  }
+  return verdict;
+}
+
+async function postTrigger(pr) {
   if (!dryRun) {
     await api(`/repos/${repo}/issues/${pr.number}/comments`, {
       method: 'POST',
       body: JSON.stringify({ body: TRIGGER_TEXT }),
     });
   }
-  return true;
 }
 
 // A few PRs at a time keeps the run well inside the job timeout without bursting the
-// API. One PR's failure is logged and the sweep moves on; the run still exits non-zero
-// so a failing tick is visible in Actions.
-// A classified terminal failure (forbidden, or rate-limited for this run) makes
-// every later prompt POST fail the same way. Verdicts are still computed and
-// logged for every PR, but further prompt POSTs are skipped and reported as
-// blocked so one terminal failure does not become a flood of identical refused
-// writes. Pending manual triggers and missing reviews stay separate outcomes.
-let terminalClassification = null;
+// API. One PR's failure is logged and the sweep moves on; a classified terminal
+// failure blocks the remaining prompt POSTs instead of repeating identical refused
+// writes. Blocked prompts keep the run non-zero with the count explicit, so
+// uncompleted obligations stay visible in Actions.
 const CONCURRENCY = 4;
 const prs = await listOpenPrs();
-let prompted = 0;
-let failed = 0;
-let next = 0;
-async function worker() {
-  while (next < prs.length) {
-    const pr = prs[next];
-    next += 1;
-    try {
-      if (await handle(pr)) prompted += 1;
-    } catch (error) {
-      failed += 1;
-      console.error(`#${pr.number} error: ${error.message}`);
-      if (!terminalClassification && (error.classification === 'forbidden' || error.classification === 'rate-limited')) {
-        terminalClassification = error.classification;
-        console.error(`terminal ${error.classification} failure classified; further prompt POSTs are blocked this run`);
-      }
-    }
-  }
-}
-await Promise.all(Array.from({ length: Math.min(CONCURRENCY, prs.length) }, worker));
+const { prompted, failed, blocked, terminalClassification } = await sweepPrompts(prs, {
+  concurrency: CONCURRENCY,
+  log: (...args) => console.log(...args),
+  logError: (...args) => console.error(...args),
+  verdictFor,
+  postTrigger,
+});
 console.log(dryRun ? `dry-run complete, ${prompted} would prompt` : `prompted ${prompted}`);
+if (blocked > 0) {
+  console.error(`${blocked} prompt(s) blocked after terminal ${terminalClassification} failure; obligations NOT completed this run`);
+}
 if (failed > 0) {
   console.error(`${failed} PR(s) failed`);
+}
+if (failed > 0 || blocked > 0) {
   process.exitCode = 1;
 }

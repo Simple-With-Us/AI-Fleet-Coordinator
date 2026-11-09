@@ -8,6 +8,7 @@ import {
   kodyHasAnswered,
   oldEnough,
   safeErrorDetails,
+  sweepPrompts,
   KODY_LOGIN,
   MIN_PR_AGE_MINUTES,
 } from './lib.mjs';
@@ -95,4 +96,79 @@ test('safeErrorDetails: status, class, allowlisted headers only', () => {
   const rated = safeErrorDetails(429, { 'retry-after': '60' });
   assert.match(rated, /class=rate-limited/);
   assert.match(rated, /retry-after=60/);
+});
+
+const numberedPr = (n) => ({ number: n });
+
+test('sweepPrompts: terminal forbidden blocks remaining prompt POSTs after one attempt', async () => {
+  let posts = 0;
+  const logs = [];
+  const res = await sweepPrompts([numberedPr(1), numberedPr(2), numberedPr(3), numberedPr(4)], {
+    concurrency: 1,
+    verdictFor: async () => 'prompt',
+    postTrigger: async () => {
+      posts += 1;
+      const error = new Error('POST -> status=403 class=forbidden');
+      error.classification = 'forbidden';
+      throw error;
+    },
+    log: (m) => logs.push(m),
+    logError: (m) => logs.push(m),
+  });
+  assert.equal(posts, 1);
+  assert.deepEqual(
+    { prompted: res.prompted, failed: res.failed, blocked: res.blocked, terminalClassification: res.terminalClassification },
+    { prompted: 0, failed: 1, blocked: 3, terminalClassification: 'forbidden' },
+  );
+  assert.ok(logs.some((m) => m.includes('prompt blocked')));
+});
+
+test('sweepPrompts: rate-limited is terminal, unknown is not', async () => {
+  let posts = 0;
+  const res = await sweepPrompts([numberedPr(1), numberedPr(2), numberedPr(3)], {
+    concurrency: 1,
+    verdictFor: async () => 'prompt',
+    postTrigger: async () => {
+      posts += 1;
+      const error = new Error('rate');
+      error.classification = 'rate-limited';
+      throw error;
+    },
+  });
+  assert.equal(posts, 1);
+  assert.equal(res.blocked, 2);
+  assert.equal(res.terminalClassification, 'rate-limited');
+
+  let posts2 = 0;
+  const res2 = await sweepPrompts([numberedPr(1), numberedPr(2), numberedPr(3)], {
+    concurrency: 1,
+    verdictFor: async () => 'prompt',
+    postTrigger: async () => {
+      posts2 += 1;
+      const error = new Error('other');
+      error.classification = 'unknown';
+      throw error;
+    },
+  });
+  assert.equal(posts2, 3);
+  assert.equal(res2.blocked, 0);
+  assert.equal(res2.failed, 3);
+  assert.equal(res2.terminalClassification, null);
+});
+
+test('sweepPrompts: non-prompt verdicts never POST; successes count', async () => {
+  let posts = 0;
+  const verdicts = ['prompt', 'trigger-pending', 'kody-answered'];
+  const res = await sweepPrompts([numberedPr(1), numberedPr(2), numberedPr(3)], {
+    concurrency: 2,
+    verdictFor: async (p) => verdicts[p.number - 1],
+    postTrigger: async () => {
+      posts += 1;
+    },
+  });
+  assert.equal(posts, 1);
+  assert.deepEqual(
+    { prompted: res.prompted, failed: res.failed, blocked: res.blocked },
+    { prompted: 1, failed: 0, blocked: 0 },
+  );
 });
