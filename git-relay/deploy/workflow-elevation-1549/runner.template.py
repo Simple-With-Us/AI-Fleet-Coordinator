@@ -25,7 +25,7 @@ def main():
             s = parent.lstat()
             if not stat.S_ISDIR(s.st_mode) or s.st_uid != 0 or s.st_mode & 0o022:
                 raise SystemExit("unsafe package anchor")
-        fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, "rb") as f:
             s = os.fstat(f.fileno())
             if (

@@ -31,6 +31,11 @@ permissions or exercise the elevation effect. Byte parity and #1549's source
 tests qualify the new bearer-selection/compare-cap behavior. Two runtime proof
 passes are intentional in the existing finite supervisor, with no retry loop.
 Health, a new process identity and exact hashes are separate commit gates.
+The dispatch component accepts exactly the two pinned image digests and refuses
+unknown inventories before network calls. It deliberately has the same refusal
+for both generations: rollback confirms inactive/MainPID zero before restoring
+and starting, and LinuxHost pins process identity and disk hashes around proof.
+This composed gate, not the refusal alone, excludes a retained candidate process.
 
 No fulltree/main sync, auth/config/policy change, or historical outcome replay is
 part of this transaction. The old #1511 builder remains untouched.

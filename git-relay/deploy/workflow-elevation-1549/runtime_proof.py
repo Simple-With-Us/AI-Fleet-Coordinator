@@ -16,6 +16,8 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 class RuntimeProof:
+    BASELINE = "687610ffa3b886f24f2ce77f4513a0684cddf7d2580590028b6fcb8d9baeb078"
+    CANDIDATE = "33c9c8c35c2eed3af01a43b810e3672ea85f3418d1ba45f7eabc182040a2fc1b"
     URL = "http://127.0.0.1:8471/v1/"
     REPO = "Simple-With-Us/AI-Fleet-Coordinator"
 
@@ -61,6 +63,15 @@ class RuntimeProof:
         )
 
     def __call__(self, identity, hashes):
+        # This component proves only own-seat dispatch, not image identity.
+        # LinuxHost separately binds these hashes before/after the calls and
+        # pins the process identity. Rollback confirms MainPID=0/inactive before
+        # restoring the old file and starting a new process. No retained new
+        # process can serve the old-runtime proof on that qualified path.
+        if hashes != {"code/workflow_verbs.py": self.BASELINE} and hashes != {
+            "code/workflow_verbs.py": self.CANDIDATE
+        }:
+            return False
         status, repo = self.call("wf_repo_get", {"repo": self.REPO})
         if (
             status != 200

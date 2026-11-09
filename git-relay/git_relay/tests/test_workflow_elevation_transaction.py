@@ -1,5 +1,8 @@
 import importlib.util
 import json
+import os
+import stat
+import ast
 import tempfile
 import unittest
 from pathlib import Path
@@ -54,6 +57,7 @@ class BuilderTests(unittest.TestCase):
 
     def test_build_has_only_one_exact_file_and_fixed_bindings(self):
         root = Path(__file__).resolve().parents[3]
+        self.assertEqual(builder.digest((root / "git-relay/git_relay/workflow_verbs.py").read_bytes()), builder.AFTER)
         with tempfile.TemporaryDirectory() as directory:
             before = Path(directory) / "before"
             before.write_bytes(b"before")
@@ -84,6 +88,36 @@ class BuilderTests(unittest.TestCase):
                 with patch.object(builder, "image", return_value=b"candidate"):
                     builder.build(root, before, output)
 
+    def test_wrong_directory_binding_refuses(self):
+        template = (HERE / "runner.template.py").read_text()
+        for changed in [template.replace(builder.ROOT, "/wrong"),
+                        template.replace("DIRECTORY = Path(", "DIRECTORY = str(")]:
+            with self.assertRaises(ValueError):
+                builder.render_entry(changed, b"manifest", {"a": b"content"})
+
+    def test_files_explicit_mode_under_permissive_or_strict_umask(self):
+        for mask in (0, 0o777):
+            with tempfile.TemporaryDirectory() as directory:
+                target = Path(directory) / "artifact"
+                old = os.umask(mask)
+                try:
+                    builder.write_file(target, b"source")
+                finally:
+                    os.umask(old)
+                self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o644)
+                self.assertEqual(target.read_bytes(), b"source")
+                with self.assertRaises(FileExistsError):
+                    builder.write_file(target, b"overwrite")
+
+    def test_module_open_is_nonblocking_and_no_follow(self):
+        tree = ast.parse((HERE / "runner.template.py").read_text())
+        calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Attribute) and n.func.attr == "open"]
+        self.assertEqual(len(calls), 1)
+        flags = ast.unparse(calls[0].args[1])
+        self.assertIn("O_NONBLOCK", flags)
+        self.assertIn("O_NOFOLLOW", flags)
+
 
 class ProofTests(unittest.TestCase):
     def run_proof(self, replies):
@@ -103,6 +137,20 @@ class ProofTests(unittest.TestCase):
             200,
             {"repository": {"full_name": proof.RuntimeProof.REPO, "default_branch": default}},
         )
+
+    def test_unknown_hash_fails_before_network(self):
+        instance = proof.RuntimeProof("test-only")
+        instance.call = lambda *args: self.fail("unqualified image reached network")
+        for hashes in ({}, {"code/workflow_verbs.py": "wrong"},
+                       {"code/workflow_verbs.py": builder.AFTER, "extra": "wrong"}):
+            self.assertFalse(instance({}, hashes))
+
+    def test_both_pinned_images_use_same_dispatch_component(self):
+        for digest in (proof.RuntimeProof.BASELINE, proof.RuntimeProof.CANDIDATE):
+            instance = proof.RuntimeProof("test-only")
+            replies = iter([self.repository(), (400, {"error": "default branch is not writable"})])
+            instance.call = lambda *args: next(replies)
+            self.assertTrue(instance({}, {"code/workflow_verbs.py": digest}))
 
     def test_exact_no_write_probes(self):
         result, calls = self.run_proof(
