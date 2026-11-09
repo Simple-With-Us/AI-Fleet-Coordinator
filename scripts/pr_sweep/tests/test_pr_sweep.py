@@ -680,6 +680,85 @@ class AuditTests(unittest.TestCase):
         since = dt.datetime(2026, 10, 17, 12, 0, tzinfo=dt.timezone.utc)  # noqa: UP017 (3.9 has no datetime.UTC)
         self.assertEqual(A.check_pr(self.pr(timelineItems=tl), [], since=since)["violations"], [])
 
+    def dismissal(self, actor: dict[str, Any], author: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "__typename": "ReviewDismissedEvent",
+            "createdAt": "2026-11-08T03:00:00Z",
+            "actor": actor,
+            "previousReviewState": "CHANGES_REQUESTED",
+            "review": {"author": author},
+        }
+
+    def test_a_seat_app_may_dismiss_a_stale_kody_review(self) -> None:
+        # What GraphQL returns since the relay went live (PRs 1454 and 1502):  a Bot actor with the bare App slug.
+        kody = {"__typename": "Bot", "login": "kody-ai"}
+        for actor in (
+            {"__typename": "Bot", "login": "swu-claude"},
+            {"__typename": "Bot", "login": "swu-claude[bot]"},
+            {"__typename": "Bot", "login": "swu-zc"},
+        ):
+            tl = {"nodes": [self.dismissal(actor, kody)]}
+            self.assertEqual(A.check_pr(self.pr(timelineItems=tl), [])["violations"], [], actor)
+
+    def test_a_seat_app_may_not_dismiss_a_human_or_another_bots_review(self) -> None:
+        app = {"__typename": "Bot", "login": "swu-claude"}
+        for author in (
+            {"__typename": "User", "login": "humanreviewer"},
+            {"__typename": "Bot", "login": "sentry"},
+            {"__typename": "Bot", "login": "chatgpt-codex-connector"},
+        ):
+            tl = {"nodes": [self.dismissal(app, author)]}
+            self.assertEqual(self.rules(A.check_pr(self.pr(timelineItems=tl), [])), ["V2"], author)
+
+    def test_an_app_slug_held_by_a_person_or_an_unknown_bot_is_not_allowed(self) -> None:
+        kody = {"__typename": "Bot", "login": "kody-ai"}
+        for actor in (
+            {"__typename": "User", "login": "swu-claude"},
+            {"__typename": "Bot", "login": "swu-stranger"},
+            {"login": "swu-claude"},
+        ):
+            tl = {"nodes": [self.dismissal(actor, kody)]}
+            self.assertEqual(self.rules(A.check_pr(self.pr(timelineItems=tl), [])), ["V2"], actor)
+
+    def test_the_app_list_comes_from_the_seat_registry(self) -> None:
+        slugs = A.seat_app_slugs()
+        self.assertIn("swu-claude", slugs)
+        self.assertIn("swu-zc", slugs)
+        self.assertEqual(A.DEFAULT_ALLOWED_APP_DISMISSERS, slugs)
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "nope.json"
+            self.assertEqual(
+                A.seat_app_slugs(missing), ()
+            )  # unreadable:  only the owner, so more is flagged
+            bad = Path(tmp) / "bad.json"
+            bad.write_text('{"seats": [{"app_slug": "Swu-X "}, {"app_slug": 5}, "x", {}]}')
+            self.assertEqual(A.seat_app_slugs(bad), ("swu-x",))
+        tl = {
+            "nodes": [
+                self.dismissal({"__typename": "Bot", "login": "swu-claude"}, {"login": "kody-ai"})
+            ]
+        }
+        self.assertEqual(
+            self.rules(A.check_pr(self.pr(timelineItems=tl), [], allowed_apps=())), ["V2"]
+        )
+
+    def test_audit_forwards_allowed_apps_to_check_pr(self) -> None:
+        tl = {
+            "nodes": [
+                self.dismissal({"__typename": "Bot", "login": "swu-claude"}, {"login": "kody-ai"})
+            ]
+        }
+        node = self.pr(timelineItems=tl, state="OPEN")
+
+        class StubGh:
+            def graphql(self, _q: str, _v: dict[str, Any]) -> dict[str, Any]:
+                return {"data": {"repository": {"pullRequest": node}}}
+
+        default = A.audit(StubGh(), ["Simple-With-Us/AI-Fleet-Coordinator#1"])  # type: ignore[arg-type]
+        self.assertEqual(default[0]["violations"], [])
+        narrowed = A.audit(StubGh(), ["Simple-With-Us/AI-Fleet-Coordinator#1"], allowed_apps=())  # type: ignore[arg-type]
+        self.assertEqual([x["rule"] for x in narrowed[0]["violations"]], ["V2"])
+
     def test_threads_resolved_without_a_reply_or_later_commit(self) -> None:
         threads = {
             "nodes": [

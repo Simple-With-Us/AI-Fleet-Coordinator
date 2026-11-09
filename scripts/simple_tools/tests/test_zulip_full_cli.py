@@ -48,6 +48,30 @@ class MessageCommandTests(Harness):
         self.assertEqual(edited.code, 0, edited.err)
         self.assertEqual(self.fake._find(posted)["content"], "[CLAUDE·%s 📁OPS] edited" % TAG)
 
+    def test_edit_never_double_tags_an_already_tagged_body(self) -> None:
+        # AFC-666:  the edit path follows the post path's intro rule.  An already-tagged
+        # body keeps its single intro (a foreign compact intro is preserved as post
+        # preserves it), while plain text still gains exactly one seat tag.
+        posted = json.loads(self.run_cli("post", "--topic", "t", "first", "--json").out)["id"]
+        cases = [
+            ("[CLAUDE 📁OPS] status", "[CLAUDE·%s 📁OPS] status" % TAG),
+            ("[CLAUDE: HH.1.M 📁OPS] threaded", "[CLAUDE·%s: HH.1.M 📁OPS] threaded" % TAG),
+            ("👀 [CLAUDE 📁OPS] look", "👀 [CLAUDE·%s 📁OPS] look" % TAG),
+            ("[CLAUDE·old12345 📁OPS] refreshed", "[CLAUDE·%s 📁OPS] refreshed" % TAG),
+            ("[GB-PLUMBER 📁AFC → GB-DIRECTOR] relayed", "[GB-PLUMBER 📁AFC →GB-DIRECTOR] relayed"),
+            ("[MA 📁OPS] quoted", "[MA 📁OPS] quoted"),
+            ("plain words", "[CLAUDE·%s] plain words" % TAG),
+        ]
+        for text, expected in cases:
+            with self.subTest(text=text):
+                edited = self.run_cli("edit", "--id", str(posted), text)
+                self.assertEqual(edited.code, 0, edited.err)
+                self.assertEqual(self.fake._find(posted)["content"], expected)
+        # `to` still merges labels into the kept intro and mentions the peer.
+        peer = self.run_cli("edit", "--id", str(posted), "--to", "CODEX", "[GB-PLUMBER 📁AFC] please")
+        self.assertEqual(peer.code, 0, peer.err)
+        self.assertEqual(self.fake._find(posted)["content"], "[GB-PLUMBER 📁AFC →CODEX] @**Codex** please")
+
     def test_show_prints_one_message_with_its_flags(self) -> None:
         mid = self.fake.add_message("Codex", "simple-tools", "t", "hello @**Claude**")
         result = self.run_cli("show", "--id", str(mid), "--json")

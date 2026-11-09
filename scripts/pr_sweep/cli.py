@@ -194,7 +194,8 @@ def _build() -> _Parser:
         "--allow-dismisser",
         action="append",
         metavar="LOGIN",
-        help=f"an account allowed to dismiss kody-ai reviews (default {', '.join(A.DEFAULT_ALLOWED_DISMISSERS)})",
+        help=f"an account allowed to dismiss kody-ai reviews (default {', '.join(A.DEFAULT_ALLOWED_DISMISSERS)});  "
+        "the seats' own GitHub Apps from git-relay/deploy/seat-policy.json are allowed as well",
     )
     sp = sub.add_parser(
         "lanes", help="your lanes: runs ~/apps/lane prune with the options after it"
