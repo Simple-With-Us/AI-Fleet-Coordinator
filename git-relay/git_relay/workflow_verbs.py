@@ -1409,10 +1409,14 @@ class WorkflowVerbs:
                 or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}(?:\[bot\])?", account["login"])
             ):
                 raise RelayGitHubError(502, "organization installation unverifiable")
+            if item["app_slug"] != self.policy.app_identity(self.seat)[0]:
+                # Org-wide read filtered to the seat's own App: other apps'
+                # installations in the organization are not the seat's to see.
+                continue
             installs.append(
                 {"id": item["id"], "app_slug": item["app_slug"], "account": account["login"]}
             )
-        return {"installations": installs, "total_count": data["total_count"]}
+        return {"installations": installs, "total_count": len(installs)}
 
     def wf_issue_list(self, repo, args):
         _only(args, ("repo", "state", "per_page"))

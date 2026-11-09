@@ -28,7 +28,8 @@ KEY = {
     "read_only": True,
     "key": "ssh-ed25519 " + "A" * 68,
 }
-INSTALL = {"id": 21, "app_slug": "swu-echo", "account": {"login": "Simple-With-Us"}}
+INSTALL = {"id": 21, "app_slug": "swu-wise", "account": {"login": "Simple-With-Us"}}
+OTHER_INSTALL = {"id": 22, "app_slug": "swu-echo", "account": {"login": "Simple-With-Us"}}
 
 
 class MintCeilingTests(unittest.TestCase):
@@ -108,7 +109,7 @@ class AdminScopeReadTests(unittest.TestCase):
             "wf_org_installations", {}, {"total_count": 1, "installations": [INSTALL]}
         )
         self.assertEqual(client.calls[0][1], "/orgs/Simple-With-Us/installations?per_page=50")
-        self.assertEqual(out["installations"][0]["app_slug"], "swu-echo")
+        self.assertEqual(out["installations"][0]["app_slug"], "swu-wise")
 
     def test_org_installations_refuses_bad_slug(self):
         bad = dict(INSTALL, app_slug="Bad Slug!")
@@ -124,6 +125,15 @@ class AdminScopeReadTests(unittest.TestCase):
             )
         self.assertEqual(minter.calls, [])
         self.assertEqual(client.calls, [])
+
+    def test_org_installations_excludes_other_apps(self):
+        out, _ = self.run_action(
+            "wf_org_installations",
+            {},
+            {"total_count": 2, "installations": [INSTALL, OTHER_INSTALL]},
+        )
+        self.assertEqual([i["app_slug"] for i in out["installations"]], ["swu-wise"])
+        self.assertEqual(out["total_count"], 1)
 
 
 if __name__ == "__main__":
