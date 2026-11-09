@@ -1929,8 +1929,37 @@ class LinearSourceTests(unittest.TestCase):
                 sources._linear_query("query { x }")
         msg = str(ctx.exception)
         self.assertIn("no Linear app identity", msg)
-        self.assertIn("SIMPLE_BOARD_BEARER_FILE", msg)
+        self.assertIn("LINEAR_BF_ORACLE_CLIENT_ID", msg)
         self.assertNotIn("secret-ish-tail", msg)
+
+    def test_linear_reads_as_bf_oracle_then_falls_back_to_gb_oracle(self) -> None:
+        env = {
+            "LINEAR_BF_ORACLE_CLIENT_ID": "bf-id", "LINEAR_BF_ORACLE_CLIENT_SECRET": "bf-sec",
+            "LINEAR_GB_ORACLE_CLIENT_ID": "gb-id", "LINEAR_GB_ORACLE_CLIENT_SECRET": "gb-sec",
+        }
+        calls = []
+
+        def fake(argv, **k):
+            calls.append(k["env"]["LINEAR_CLIENT_ID"])
+            if k["env"]["LINEAR_CLIENT_ID"] == "bf-id" and bf_fails:
+                return subprocess.CompletedProcess(argv, 4, stdout="", stderr="invalid_client")
+            return subprocess.CompletedProcess(argv, 0, stdout='{"viewer": {}}', stderr="")
+
+        for bf_fails, want in ((False, ["bf-id"]), (True, ["bf-id", "gb-id"])):
+            calls.clear()
+            with mock.patch.dict(os.environ, env, clear=False), \
+                    mock.patch.object(sources, "_linear_seat_index", 0), \
+                    mock.patch.object(sources.subprocess, "run", side_effect=fake):
+                os.environ.pop("LINEAR_CLIENT_ID", None)
+                os.environ.pop("LINEAR_CLIENT_SECRET", None)
+                os.environ.pop(sources.LINEAR_SEATS_ENV, None)
+                self.assertEqual(sources._linear_query("query { x }"), {"viewer": {}})
+                self.assertEqual(calls, want)
+                if bf_fails:  # sticky:  the next read goes straight to GB-ORACLE
+                    calls.clear()
+                    sources._linear_query("query { y }")
+                    self.assertEqual(calls, ["gb-id"])
+        sources.take_warnings()
 
     def test_doc_walk_finds_the_renamed_socratic_trade_checkout(self) -> None:
         self.assertIn("Socratic-Trade", sources.DOC_APP_REPOS)

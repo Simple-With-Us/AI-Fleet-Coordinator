@@ -1854,16 +1854,82 @@ class LinearSourceError(FleetRagError):
         self.overflow = overflow
 
 
+# Which seat's Linear app the ingest reads as (AFC-677, Jay 2026-11-09):  BF-ORACLE first, and
+# GB-ORACLE when BF-ORACLE's pair is missing or its credentials fail.  The pairs come from the
+# environment only (LINEAR_<SEAT>_CLIENT_ID / _SECRET, the names simple-board and Infisical AI
+# Fleet Coordinator /linear use);  the launcher exports them.  An explicit LINEAR_CLIENT_ID pair
+# in the environment still wins and is used alone.
+LINEAR_SEATS_ENV = "FLEET_RAG_LINEAR_SEATS"
+LINEAR_DEFAULT_SEATS = ("BF-ORACLE", "GB-ORACLE")
+_LINEAR_AUTH_MARKERS = (
+    "no Linear app credentials",
+    "invalid_client",
+    "unauthorized",
+    "authentication",
+    "401",
+    "403",
+    "could not mint",
+)
+_linear_seat_index = 0  # sticky:  once a seat fails auth, later calls skip it
+LINEAR_SEAT_USED: str | None = None
+
+
+def _linear_seat_envs() -> list[tuple[str, dict]]:
+    """(seat, subprocess env) for each configured seat whose pair is present, in order."""
+    if os.environ.get("LINEAR_CLIENT_ID", "").strip() and os.environ.get(
+        "LINEAR_CLIENT_SECRET", ""
+    ).strip():
+        return [("LINEAR_CLIENT_ID", dict(os.environ))]
+    raw = os.environ.get(LINEAR_SEATS_ENV, "").strip()
+    seats = [x.strip().upper() for x in raw.split(",") if x.strip()] if raw else LINEAR_DEFAULT_SEATS
+    out: list[tuple[str, dict]] = []
+    for seat in seats:
+        k = seat.replace("-", "_")
+        cid = os.environ.get(f"LINEAR_{k}_CLIENT_ID", "").strip()
+        sec = os.environ.get(f"LINEAR_{k}_CLIENT_SECRET", "").strip()
+        if cid and sec:
+            env = dict(os.environ)
+            env["LINEAR_CLIENT_ID"], env["LINEAR_CLIENT_SECRET"] = cid, sec
+            out.append((seat, env))
+    return out
+
+
+def _linear_is_auth_failure(proc: subprocess.CompletedProcess) -> bool:
+    if proc.returncode == 0:
+        return False
+    text = (proc.stderr or "").lower()
+    return proc.returncode == 4 or any(m.lower() in text for m in _LINEAR_AUTH_MARKERS)
+
+
+def _linear_run(query: str, timeout_s: int) -> subprocess.CompletedProcess:
+    """Run one simple-board read, falling back seat by seat on a credential failure."""
+    global _linear_seat_index, LINEAR_SEAT_USED
+    argv = [SIMPLE_BOARD_CLI, "api", "query", "--max-chars", str(LINEAR_MAX_CHARS), query]
+    candidates = _linear_seat_envs()
+    if not candidates:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s)
+    proc = None
+    start = min(_linear_seat_index, len(candidates) - 1)
+    for i in range(start, len(candidates)):
+        seat, env = candidates[i]
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s, env=env)
+        if not _linear_is_auth_failure(proc):
+            if LINEAR_SEAT_USED != seat:
+                LINEAR_SEAT_USED = seat
+                warn(f"linear: reading Linear as {seat}")
+            _linear_seat_index = i
+            return proc
+        if i + 1 < len(candidates):
+            warn(f"linear: {seat} credentials failed (exit {proc.returncode});  falling back")
+    _linear_seat_index = len(candidates) - 1
+    return proc
+
+
 def _linear_query(query: str, timeout_s: int = LINEAR_QUERY_TIMEOUT_S) -> dict:
     """One GraphQL read through the simple-board CLI.  Fail-closed:  any transport, exit-code or
     GraphQL error raises LinearSourceError so a broken read can never look like an empty board."""
     try:
-        proc = subprocess.run(
-            [SIMPLE_BOARD_CLI, "api", "query", "--max-chars", str(LINEAR_MAX_CHARS), query],
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-        )
+        proc = _linear_run(query, timeout_s)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise LinearSourceError(f"linear: simple-board api query failed to run: {e}") from None
     if proc.returncode != 0:
@@ -1879,8 +1945,8 @@ def _linear_query(query: str, timeout_s: int = LINEAR_QUERY_TIMEOUT_S) -> dict:
         if "no Linear app credentials" in stderr:
             raise LinearSourceError(
                 f"linear: simple-board api query exited {proc.returncode}: no Linear app identity "
-                f"for this run (the shared Fleet app was retired 2026-11-05;  give the ingest a seat "
-                f"bearer via SIMPLE_BOARD_BEARER_FILE plus its scoped /linear read token, or "
+                f"for this run (the shared Fleet app was retired 2026-11-05;  export "
+                f"LINEAR_BF_ORACLE_CLIENT_ID/_SECRET or LINEAR_GB_ORACLE_CLIENT_ID/_SECRET, or "
                 f"LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET)"
             )
         raise LinearSourceError(f"linear: simple-board api query exited {proc.returncode}")
