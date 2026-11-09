@@ -27,8 +27,8 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from agent_sync import session_registry as SR  # noqa: E402
-from agent_sync.operator_registry_schema import DDL  # noqa: E402
+from agent_sync import session_registry as SR
+from agent_sync.operator_registry_schema import DDL
 
 T0 = 1_763_000_000.0  # a fixed clock so the Registry Updated At stamp is deterministic
 
@@ -43,22 +43,58 @@ def make_store(path: str) -> sqlite3.Connection:
     return conn
 
 
-def add_session(conn, n, *, seat="MA", platform="claude", host="mac-jay",
-                scope="default", native=None, title="", thread_link="",
-                state="active", wake="unknown", registered="2026-11-01T10:00:00.000Z",
-                last_seen="2026-11-03T01:00:00.000Z", closed_at=None, source="hook"):
+def add_session(
+    conn,
+    n,
+    *,
+    seat="MA",
+    platform="claude",
+    host="mac-jay",
+    scope="default",
+    native=None,
+    title="",
+    thread_link="",
+    state="active",
+    wake="unknown",
+    registered="2026-11-01T10:00:00.000Z",
+    last_seen="2026-11-03T01:00:00.000Z",
+    closed_at=None,
+    source="hook",
+):
     conn.execute(
         "INSERT INTO sessions(record_id, seat, platform, verified_host, profile_scope,"
         " native_session_id, title, project, thread_link, apple_note_link, state,"
         " wake_capability, registered_at, last_seen_at, closed_at, source)"
         " VALUES (?,?,?,?,?,?,?,'',?,'',?,?,?,?,?,?)",
-        (rid(n), seat, platform, host, scope, native or "sess-%03d" % n, title,
-         thread_link, state, wake, registered, last_seen, closed_at, source),
+        (
+            rid(n),
+            seat,
+            platform,
+            host,
+            scope,
+            native or "sess-%03d" % n,
+            title,
+            thread_link,
+            state,
+            wake,
+            registered,
+            last_seen,
+            closed_at,
+            source,
+        ),
     )
 
 
-def add_alias(conn, n, letter, generation, *, platform="claude",
-              assigned="2026-11-01T10:00:00.000Z", retired=None):
+def add_alias(
+    conn,
+    n,
+    letter,
+    generation,
+    *,
+    platform="claude",
+    assigned="2026-11-01T10:00:00.000Z",
+    retired=None,
+):
     conn.execute(
         "INSERT INTO alias_assignments(platform, letter, generation, record_id,"
         " assigned_at, retired_at) VALUES (?,?,?,?,?,?)",
@@ -66,8 +102,17 @@ def add_alias(conn, n, letter, generation, *, platform="claude",
     )
 
 
-def add_event(conn, eid, n, *, event="touch", outcome="ok", details="",
-              recorded="2026-11-02T10:00:00.000Z", label="A"):
+def add_event(
+    conn,
+    eid,
+    n,
+    *,
+    event="touch",
+    outcome="ok",
+    details="",
+    recorded="2026-11-02T10:00:00.000Z",
+    label="A",
+):
     conn.execute(
         "INSERT INTO events(event_id, recorded_at, session_record_id, label, event,"
         " actor, outcome, source, details) VALUES (?,?,?,?,?,?,?,?,?)",
@@ -79,29 +124,56 @@ def base_store(path: str) -> str:
     """Four sessions covering the shapes the projection must get right."""
     conn = make_store(path)
     # 1: active, live alias, issues in title + thread link + event details.
-    add_session(conn, 1, title="AFC-412 letters work",
-                thread_link="https://simplewithus.zulipchat.com/#narrow/topic/AFC-593",
-                wake="direct")
+    add_session(
+        conn,
+        1,
+        title="AFC-412 letters work",
+        thread_link="https://simplewithus.zulipchat.com/#narrow/topic/AFC-593",
+        wake="direct",
+    )
     add_alias(conn, 1, "A", 1)
     add_event(conn, "E1", 1, event="register", details="issued letter A for AFC-412")
     add_event(conn, "E2", 1, event="touch")
-    add_event(conn, "E3", 1, event="notes_request",
-              details='{"note_id": "n1", "ref": "AFC-486"}')
+    add_event(conn, "E3", 1, event="notes_request", details='{"note_id": "n1", "ref": "AFC-486"}')
     # 2: closed; its letter was retired at close and later recycled to session 3.
-    add_session(conn, 2, seat="CODEX", platform="codex", host="hetzner",
-                title="plain title", state="closed",
-                registered="2026-10-30T09:00:00.000Z",
-                last_seen="2026-11-01T12:00:00.000Z",
-                closed_at="2026-11-01T12:30:00.000Z", source="cli")
-    add_alias(conn, 2, "A", 1, platform="codex", assigned="2026-10-30T09:00:00.000Z",
-              retired="2026-11-01T12:30:00.000Z")
+    add_session(
+        conn,
+        2,
+        seat="CODEX",
+        platform="codex",
+        host="hetzner",
+        title="plain title",
+        state="closed",
+        registered="2026-10-30T09:00:00.000Z",
+        last_seen="2026-11-01T12:00:00.000Z",
+        closed_at="2026-11-01T12:30:00.000Z",
+        source="cli",
+    )
+    add_alias(
+        conn,
+        2,
+        "A",
+        1,
+        platform="codex",
+        assigned="2026-10-30T09:00:00.000Z",
+        retired="2026-11-01T12:30:00.000Z",
+    )
     add_event(conn, "E4", 2, event="register", label="A")
-    add_event(conn, "E5", 2, event="close", outcome="closed",
-              details="closed by operator", label="A")
+    add_event(
+        conn, "E5", 2, event="close", outcome="closed", details="closed by operator", label="A"
+    )
     # 3: active holder of the recycled letter, generation 2.
-    add_session(conn, 3, seat="CODEX", platform="codex", host="hetzner",
-                title="second codex", registered="2026-11-02T08:00:00.000Z",
-                last_seen="2026-11-02T09:00:00.000Z", source="cli")
+    add_session(
+        conn,
+        3,
+        seat="CODEX",
+        platform="codex",
+        host="hetzner",
+        title="second codex",
+        registered="2026-11-02T08:00:00.000Z",
+        last_seen="2026-11-02T09:00:00.000Z",
+        source="cli",
+    )
     add_alias(conn, 3, "A", 2, platform="codex", assigned="2026-11-02T08:00:00.000Z")
     add_event(conn, "E6", 3, event="register", label="A")
     # 4: registered but never lettered, no events.
@@ -129,9 +201,7 @@ class FakeAdapter:
         return list(self.headers)
 
     def read_rows(self):
-        return [
-            {"rowNumber": i + 2, "cells": list(cells)} for i, cells in enumerate(self.rows)
-        ]
+        return [{"rowNumber": i + 2, "cells": list(cells)} for i, cells in enumerate(self.rows)]
 
     def append_row(self, cells):
         self._write()
@@ -170,12 +240,23 @@ class ProjectionTest(StoreCase):
         self.assertEqual(
             row[:17],
             [
-                rid(1), "A", "1", "MA", "claude", "mac-jay", "default", "sess-001",
+                rid(1),
+                "A",
+                "1",
+                "MA",
+                "claude",
+                "mac-jay",
+                "default",
+                "sess-001",
                 "AFC-412 letters work",
                 "https://simplewithus.zulipchat.com/#narrow/topic/AFC-593",
-                "active", "direct",
-                "2026-11-01T10:00:00.000Z", "2026-11-03T01:00:00.000Z", "",
-                "3", "AFC-412, AFC-486, AFC-593",
+                "active",
+                "direct",
+                "2026-11-01T10:00:00.000Z",
+                "2026-11-03T01:00:00.000Z",
+                "",
+                "3",
+                "AFC-412, AFC-486, AFC-593",
             ],
         )
         self.assertEqual(row[17], SR._iso(T0))
@@ -211,8 +292,13 @@ class LinearIssuesTest(StoreCase):
     def test_accumulates_and_dedupes_over_time(self):
         self.assertEqual(self.row_for(1)[16], "AFC-412, AFC-486, AFC-593")
         conn = sqlite3.connect(self.db)
-        add_event(conn, "E7", 1, event="notes_result",
-                  details='{"note_id": "n2", "follow_up": "CT-2442 and AFC-412 again"}')
+        add_event(
+            conn,
+            "E7",
+            1,
+            event="notes_result",
+            details='{"note_id": "n2", "follow_up": "CT-2442 and AFC-412 again"}',
+        )
         conn.commit()
         conn.close()
         # The new key joins the list;  the repeated key does not duplicate.
@@ -254,28 +340,36 @@ class SyncTest(StoreCase):
         adapter = FakeAdapter()
         result = SR.sync_to_sheet(self.db, adapter, now=T0)
         self.assertEqual(
-            (result["appended"], result["updated"], result["unchanged"],
-             result["failed"], result["partial"]),
+            (
+                result["appended"],
+                result["updated"],
+                result["unchanged"],
+                result["failed"],
+                result["partial"],
+            ),
             (4, 0, 0, 0, False),
         )
         self.assertEqual(adapter.rows, self.rows())
         # A later run, even with a different clock, writes nothing:  only the
         # Registry Updated At stamp differs, and it is excluded from matching.
         again = SR.sync_to_sheet(self.db, adapter, now=T0 + 3600)
-        self.assertEqual((again["appended"], again["updated"], again["unchanged"]),
-                         (0, 0, 4))
+        self.assertEqual((again["appended"], again["updated"], again["unchanged"]), (0, 0, 4))
         self.assertEqual(adapter.writes, 4)
 
     def test_status_transition_updates_in_place(self):
         adapter = FakeAdapter()
         SR.sync_to_sheet(self.db, adapter, now=T0)
         conn = sqlite3.connect(self.db)
-        conn.execute("UPDATE sessions SET state='closed',"
-                     " closed_at='2026-11-03T02:00:00.000Z',"
-                     " last_seen_at='2026-11-03T02:00:00.000Z' WHERE record_id=?",
-                     (rid(1),))
-        conn.execute("UPDATE alias_assignments SET retired_at='2026-11-03T02:00:00.000Z'"
-                     " WHERE record_id=?", (rid(1),))
+        conn.execute(
+            "UPDATE sessions SET state='closed',"
+            " closed_at='2026-11-03T02:00:00.000Z',"
+            " last_seen_at='2026-11-03T02:00:00.000Z' WHERE record_id=?",
+            (rid(1),),
+        )
+        conn.execute(
+            "UPDATE alias_assignments SET retired_at='2026-11-03T02:00:00.000Z' WHERE record_id=?",
+            (rid(1),),
+        )
         conn.commit()
         conn.close()
         result = SR.sync_to_sheet(self.db, adapter, now=T0 + 60)
@@ -291,8 +385,11 @@ class SyncTest(StoreCase):
         adapter = FakeAdapter()
         SR.sync_to_sheet(self.db, adapter, now=T0)
         conn = sqlite3.connect(self.db)
-        conn.execute("UPDATE alias_assignments SET retired_at='2026-11-03T02:00:00.000Z'"
-                     " WHERE record_id=? AND retired_at IS NULL", (rid(3),))
+        conn.execute(
+            "UPDATE alias_assignments SET retired_at='2026-11-03T02:00:00.000Z'"
+            " WHERE record_id=? AND retired_at IS NULL",
+            (rid(3),),
+        )
         add_alias(conn, 3, "B", 1, platform="codex", assigned="2026-11-03T02:00:00.000Z")
         conn.commit()
         conn.close()
@@ -318,8 +415,10 @@ class SyncTest(StoreCase):
         SR.sync_to_sheet(self.db, adapter, now=T0)
         adapter.rows.append(list(adapter.rows[0]))  # a second row with Record ID 1
         conn = sqlite3.connect(self.db)
-        conn.execute("UPDATE sessions SET last_seen_at='2026-11-03T03:00:00.000Z'"
-                     " WHERE record_id=?", (rid(1),))
+        conn.execute(
+            "UPDATE sessions SET last_seen_at='2026-11-03T03:00:00.000Z' WHERE record_id=?",
+            (rid(1),),
+        )
         conn.commit()
         conn.close()
         result = SR.sync_to_sheet(self.db, adapter, now=T0 + 60)
@@ -348,8 +447,7 @@ class SyncTest(StoreCase):
         adapter.fail_on_write = None
         healed = SR.sync_to_sheet(self.db, adapter, now=T0 + 60)
         self.assertEqual((healed["appended"], healed["unchanged"]), (3, 1))
-        self.assertEqual([r[0] for r in adapter.rows],
-                         [rid(1), rid(2), rid(3), rid(4)])
+        self.assertEqual([r[0] for r in adapter.rows], [rid(1), rid(2), rid(3), rid(4)])
 
 
 class CliTest(StoreCase):
@@ -362,8 +460,7 @@ class CliTest(StoreCase):
         self.assertEqual(payload["spreadsheetId"], SR.SPREADSHEET_ID)
         self.assertEqual(payload["tab"], "Sessions")
         self.assertEqual(payload["headers"], SR.HEADERS)
-        self.assertEqual([r[0] for r in payload["rows"]],
-                         [rid(1), rid(2), rid(3), rid(4)])
+        self.assertEqual([r[0] for r in payload["rows"]], [rid(1), rid(2), rid(3), rid(4)])
 
     def test_stats(self):
         out = io.StringIO()
