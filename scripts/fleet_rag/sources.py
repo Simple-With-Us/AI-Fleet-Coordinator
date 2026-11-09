@@ -1876,12 +1876,15 @@ LINEAR_SEAT_USED: str | None = None
 
 def _linear_seat_envs() -> list[tuple[str, dict]]:
     """(seat, subprocess env) for each configured seat whose pair is present, in order."""
-    if os.environ.get("LINEAR_CLIENT_ID", "").strip() and os.environ.get(
-        "LINEAR_CLIENT_SECRET", ""
-    ).strip():
+    if (
+        os.environ.get("LINEAR_CLIENT_ID", "").strip()
+        and os.environ.get("LINEAR_CLIENT_SECRET", "").strip()
+    ):
         return [("LINEAR_CLIENT_ID", dict(os.environ))]
     raw = os.environ.get(LINEAR_SEATS_ENV, "").strip()
-    seats = [x.strip().upper() for x in raw.split(",") if x.strip()] if raw else LINEAR_DEFAULT_SEATS
+    seats = (
+        [x.strip().upper() for x in raw.split(",") if x.strip()] if raw else LINEAR_DEFAULT_SEATS
+    )
     out: list[tuple[str, dict]] = []
     for seat in seats:
         k = seat.replace("-", "_")
