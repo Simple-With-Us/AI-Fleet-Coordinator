@@ -29,6 +29,7 @@ import io
 import json
 import lzma
 import re
+import threading
 import time
 import zipfile
 import zlib
@@ -729,7 +730,11 @@ def _validate_read(action, result):
 # seat policy filter still runs on every call, so a stale snapshot can never
 # widen what a seat may name.
 _INSTALLATION_REPOS_TTL_S = 60.0
+# The relay serves on a bounded threading server, so every cache access
+# (lookup, sweep, store) is serialized under this lock;  the upstream fetch
+# itself stays outside it.
 _INSTALLATION_REPOS_CACHE = {}
+_INSTALLATION_REPOS_CACHE_LOCK = threading.Lock()
 
 
 class WorkflowVerbs:
@@ -768,9 +773,12 @@ class WorkflowVerbs:
                 return stop
 
         handle = cls.__new__(cls)
+        # Policy is environment too:  a verb that consults it before its first
+        # upstream call (wf_pr_search's seat-scope check) must stop at that
+        # probe like any other, not crash on None.
         handle.client, handle.policy, handle.seat, handle.bearer = (
             _Probe(),
-            None,
+            _Probe(),
             "probe",
             "probe",
         )
@@ -1337,7 +1345,8 @@ class WorkflowVerbs:
         # and still fails closed; the seat filter runs per call in wf_repo_list.
         now = time.monotonic()
         key = hashlib.sha256(self.bearer.encode("utf-8")).hexdigest()
-        entry = _INSTALLATION_REPOS_CACHE.get(key)
+        with _INSTALLATION_REPOS_CACHE_LOCK:
+            entry = _INSTALLATION_REPOS_CACHE.get(key)
         if entry is not None and now - entry[0] < _INSTALLATION_REPOS_TTL_S:
             return entry[1]
         rows = []
@@ -1380,14 +1389,15 @@ class WorkflowVerbs:
             exhausted = upstream_page * MAX_PAGE >= data["total_count"]
         if not exhausted:
             raise Refused("installation too large to filter to the seat's repositories")
-        stale = [
-            k
-            for k, (at, _) in _INSTALLATION_REPOS_CACHE.items()
-            if now - at >= _INSTALLATION_REPOS_TTL_S
-        ]
-        for k in stale:
-            del _INSTALLATION_REPOS_CACHE[k]
-        _INSTALLATION_REPOS_CACHE[key] = (now, rows)
+        with _INSTALLATION_REPOS_CACHE_LOCK:
+            stale = [
+                k
+                for k, (at, _) in _INSTALLATION_REPOS_CACHE.items()
+                if now - at >= _INSTALLATION_REPOS_TTL_S
+            ]
+            for k in stale:
+                del _INSTALLATION_REPOS_CACHE[k]
+            _INSTALLATION_REPOS_CACHE[key] = (now, rows)
         return rows
 
     def wf_repo_list(self, repo, args):
