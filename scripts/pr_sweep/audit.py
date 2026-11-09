@@ -262,7 +262,11 @@ def audit(
             if pr.get("state") == "MERGED" and oid:
                 files = (gh.rest(f"repos/{owner}/{repo}/commits/{oid}") or {}).get("files") or []
             res = check_pr(
-                pr, files, since=since, allowed_dismissers=allowed_dismissers, allowed_apps=allowed_apps
+                pr,
+                files,
+                since=since,
+                allowed_dismissers=allowed_dismissers,
+                allowed_apps=allowed_apps,
             )
             out.append(
                 {"pr": f"{full}#{n}", "state": pr.get("state"), "ok": not res["violations"], **res}
