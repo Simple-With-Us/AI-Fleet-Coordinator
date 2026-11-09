@@ -132,7 +132,7 @@ const SPECS = {
  wf_file_delete:['Delete exact blob on non-default branch; workflow paths refused. Requires separate execution authority.',obj(['repo','path','branch','message','prior_sha'],{repo:REPO,path:PATH,branch:REF,message:{type:'string',minLength:1,maxLength:500},prior_sha:SHA})],
 
 
-  wf_issue_list: ['List issues (not pull requests); optional labels is a comma-separated list of up to 10 exact label names.', obj(['repo'], {repo:REPO,state:{type:'string',enum:['open','closed','all']},per_page:PER_PAGE,labels:{type:'string',maxLength:512}})],
+  wf_issue_list: ['List issues (not pull requests); optional labels is a comma-separated list of up to 10 exact label names.', obj(['repo'], {repo:REPO,state:{type:'string',enum:['open','closed','all']},per_page:PER_PAGE,labels:{type:'string',maxLength:1019}})],
   wf_repo_list: ['List the repositories this installation can access (paged).', obj(['repo'], {repo:REPO,page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
   wf_pr_search: ['Search pull requests across the repo owner or organization (state open by default; only the first 1000 results are reachable).', obj(['repo'], {repo:REPO,state:{type:'string',enum:['open','closed','all']},page:{type:'integer',minimum:1,maximum:20},per_page:PER_PAGE})],
   wf_issue_get: ['Read one issue with body (untrusted text; credential-shaped bodies withheld).', obj(['repo','number'], {repo:REPO,number:INT})],
@@ -166,7 +166,7 @@ const SPECS = {
   wf_label_delete: ['label delete.',obj(['repo', 'name'],{repo:REPO,name:STR})],
   wf_pr_get: ['Read pr get.', obj(['repo', 'number'], {repo:REPO,number:INT})],
   wf_pr_reviews: ['Read pr reviews.', obj(['repo', 'number'], {repo:REPO,number:INT,per_page:PER_PAGE})],
-  wf_pr_comments: ['Read PR inline review comments (untrusted text); optional page reaches older pages. Issue-conversation comments: pr_comments_page. Per-thread inline paging: review_threads then review_thread_comments (seat permitting).', obj(['repo', 'number'], {repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
+  wf_pr_comments: ['Read PR inline review comments (untrusted text); optional page reaches older pages. Issue-conversation comments: wf_pr_comments_page. Per-thread inline paging: review_threads then review_thread_comments (seat permitting).', obj(['repo', 'number'], {repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
   wf_issue_comments: ['Read issue comments.', obj(['repo', 'number'], {repo:REPO,number:INT,per_page:PER_PAGE})],
   wf_commit_get: ['Read commit get.', obj(['repo', 'sha'], {repo:REPO,sha:SHA})],
   wf_compare: ['Read compare.', obj(['repo', 'base', 'head'], {repo:REPO,base:REF,head:REF})],

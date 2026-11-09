@@ -1518,7 +1518,11 @@ class WorkflowVerbs:
             body = ""
         if not isinstance(body, str) or "\x00" in body:
             raise RelayGitHubError(502, "issue body unverifiable")
-        if len(body.encode("utf-8")) > 65536:
+        try:
+            body_size = len(body.encode("utf-8"))
+        except UnicodeEncodeError:
+            raise RelayGitHubError(502, "issue body unverifiable") from None
+        if body_size > 65536:
             raise Refused("issue body exceeds supported text size")
         withheld = bool(
             find_secret(body)
