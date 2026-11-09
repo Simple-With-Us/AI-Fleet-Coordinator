@@ -91,6 +91,28 @@ class AdminScopeReadTests(unittest.TestCase):
         self.assertEqual(out["hooks"][0]["url"], "<withheld: credential-shaped text>")
         self.assertTrue(out["hooks"][0]["url_withheld"])
 
+    def test_repo_hooks_withholds_urls_that_carry_a_credential(self):
+        for url in (
+            "https://user:pw@hooks.example.invalid/x",
+            "https://token@hooks.example.invalid/x",
+            "https://hooks.example.invalid/x?token=abc",
+            "https://hooks.example.invalid/x#frag",
+            "https://hooks.slack.com/services/T1/B2/short",
+            "https://discord.com/api/webhooks/1/short",
+            "https://hooks.example.invalid/" + "a" * 24,
+        ):
+            with self.subTest(url=url):
+                out, _ = self.run_action("wf_repo_hooks", {}, [dict(HOOK, config={"url": url})])
+                self.assertEqual(out["hooks"][0]["url"], "<withheld: credential-shaped text>")
+                self.assertTrue(out["hooks"][0]["url_withheld"])
+
+    def test_repo_hooks_keeps_plain_urls(self):
+        for url in ("https://hooks.example.invalid/abc", "https://ci.example.invalid/hook/deploy"):
+            with self.subTest(url=url):
+                out, _ = self.run_action("wf_repo_hooks", {}, [dict(HOOK, config={"url": url})])
+                self.assertEqual(out["hooks"][0]["url"], url)
+                self.assertFalse(out["hooks"][0]["url_withheld"])
+
     def test_repo_hooks_refuses_bad_events(self):
         with self.assertRaises(RelayGitHubError):
             self.run_action("wf_repo_hooks", {}, [dict(HOOK, events=[42])])
@@ -110,6 +132,22 @@ class AdminScopeReadTests(unittest.TestCase):
         for bad in (" x\ny", " x\x00", " " + "c" * 101, " é"):
             with self.assertRaises(RelayGitHubError):
                 self.run_action("wf_deploy_keys", {}, [dict(KEY, key=KEY["key"] + bad)])
+
+    def test_deploy_keys_accepts_ecdsa_and_security_key_types(self):
+        for kind in (
+            "ecdsa-sha2-nistp256",
+            "ecdsa-sha2-nistp384",
+            "ecdsa-sha2-nistp521",
+            "sk-ssh-ed25519@openssh.com",
+            "sk-ecdsa-sha2-nistp256@openssh.com",
+        ):
+            with self.subTest(kind=kind):
+                out, _ = self.run_action(
+                    "wf_deploy_keys", {}, [dict(KEY, key=kind + " " + "A" * 68)]
+                )
+                self.assertEqual(out["deploy_keys"][0]["id"], 7)
+        with self.assertRaises(RelayGitHubError):
+            self.run_action("wf_deploy_keys", {}, [dict(KEY, key="ecdsa-sha2-nistp192 " + "A" * 68)])
 
     def test_deploy_keys_refuses_bad_material(self):
         with self.assertRaises(RelayGitHubError):

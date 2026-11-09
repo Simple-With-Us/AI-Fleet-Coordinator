@@ -785,6 +785,36 @@ _INSTALLATION_REPOS_CACHE = {}
 _INSTALLATION_REPOS_CACHE_LOCK = threading.Lock()
 
 
+# Webhook URLs often carry the credential in the URL itself, which the text scanners do
+# not see: userinfo, a query string or fragment, or a service webhook path. Withhold the
+# whole URL for any of those shapes rather than guess which part is secret.
+_HOOK_SECRET_HOSTS = (
+    "hooks.slack.com",
+    "discord.com",
+    "discordapp.com",
+    "outlook.office.com",
+    "outlook.office365.com",
+    "hooks.zapier.com",
+    "chat.googleapis.com",
+    "api.telegram.org",
+)
+_HOOK_TOKEN_SEGMENT = re.compile(r"[A-Za-z0-9_~.-]{20,}")
+
+
+def _hook_url_carries_secret(url):
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+        has_userinfo = bool(parts.username or parts.password or "@" in parts.netloc)
+    except ValueError:
+        return True
+    if has_userinfo or parts.query or parts.fragment or ";" in parts.path:
+        return True
+    if any(host == h or host.endswith("." + h) for h in _HOOK_SECRET_HOSTS):
+        return True
+    return any(_HOOK_TOKEN_SEGMENT.fullmatch(seg) for seg in parts.path.split("/") if seg)
+
+
 class WorkflowVerbs:
     def __init__(self, client, policy, seat, bearer, app_slug, action, repo):
         expected, _ = policy.app_identity(seat)
@@ -1396,7 +1426,9 @@ class WorkflowVerbs:
                 or len(url) > 2000
             ):
                 raise RelayGitHubError(502, "hook metadata unverifiable")
-            withheld = bool(find_secret(url) or self._provider_token_text(url))
+            withheld = bool(
+                find_secret(url) or self._provider_token_text(url) or _hook_url_carries_secret(url)
+            )
             hooks.append(
                 {
                     "id": item["id"],
@@ -1426,7 +1458,9 @@ class WorkflowVerbs:
                 or len(item["title"]) > 200
                 or not isinstance(item.get("key"), str)
                 or not re.fullmatch(
-                    r"ssh-(rsa|ed25519|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]{1,800}"
+                    r"(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp(?:256|384|521)"
+                    r"|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)"
+                    r" [A-Za-z0-9+/=]{1,800}"
                     r"( [\x20-\x7e]{1,100})?",
                     item["key"],
                 )
