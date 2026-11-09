@@ -1380,7 +1380,11 @@ class WorkflowVerbs:
             exhausted = upstream_page * MAX_PAGE >= data["total_count"]
         if not exhausted:
             raise Refused("installation too large to filter to the seat's repositories")
-        stale = [k for k, (at, _) in _INSTALLATION_REPOS_CACHE.items() if now - at >= _INSTALLATION_REPOS_TTL_S]
+        stale = [
+            k
+            for k, (at, _) in _INSTALLATION_REPOS_CACHE.items()
+            if now - at >= _INSTALLATION_REPOS_TTL_S
+        ]
         for k in stale:
             del _INSTALLATION_REPOS_CACHE[k]
         _INSTALLATION_REPOS_CACHE[key] = (now, rows)
@@ -1405,7 +1409,6 @@ class WorkflowVerbs:
             "page": page,
             "has_more": page * limit < len(allowed),
         }
-
 
     def wf_pr_search(self, repo, args):
         _only(args, ("repo", "state", "per_page", "page"))

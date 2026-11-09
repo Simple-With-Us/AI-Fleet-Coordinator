@@ -150,7 +150,6 @@ class RepoAdminReadTests(unittest.TestCase):
                 {"total_count": 1, "incomplete_results": False, "items": [foreign]},
             )
 
-
     def run_action_shared(self, client, action, args, repos=(REPO,)):
         ceiling = {**CEILING, "metadata": "read", "pull_requests": "read"}
         handle = WorkflowVerbs.for_action(
@@ -183,6 +182,7 @@ class RepoAdminReadTests(unittest.TestCase):
         self.assertEqual([r["full_name"] for r in out["repositories"]], [REPO])
         out2 = self.run_action_shared(client, "wf_repo_list", {})
         self.assertEqual([r["full_name"] for r in out2["repositories"]], [REPO])
+
 
 if __name__ == "__main__":
     unittest.main()
