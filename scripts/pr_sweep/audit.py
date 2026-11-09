@@ -113,6 +113,7 @@ def check_pr(
             return True
         kind = (actor_node or {}).get("__typename") if isinstance(actor_node, dict) else None
         return kind == "Bot" and login.removesuffix("[bot]") in apps
+
     for ev in (pr.get("timelineItems") or {}).get("nodes") or []:
         kind = ev.get("__typename")
         if not _after(ev.get("createdAt"), since):
