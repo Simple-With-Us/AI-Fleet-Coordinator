@@ -2,13 +2,12 @@
   "schemaVersion": 1,
   "mac": {
     "agents": [
-      {"label": "com.jay.agent-sync-runtime-sync", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.botfleet-server", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.fleet-gdrive-backup", "actions": ["start", "stop", "restart"]},
-      {"label": "com.jay.fleet-mac-services", "actions": ["start", "stop", "restart"]},
-      {"label": "com.jay.fleet-tools-doctor", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.fleet-mac-services", "actions": ["start", "stop", "restart"], "role": "reporting", "stopConsequence": "Stopping this stops the Mac's agent report, so Muster's Services panel goes out of date and the Mac's jobs read as not known."},
+      {"label": "com.jay.fleet-tools-doctor", "actions": ["start", "stop", "restart"], "role": "reporting", "stopConsequence": "Stopping this stops the fleet tools report, so Muster's Fleet Tools rows go out of date and then read as not known."},
       {"label": "com.jay.fleet-work-backup", "actions": ["start", "stop", "restart"]},
-      {"label": "com.jay.fleet-worker-health", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.fleet-worker-health", "actions": ["start", "stop", "restart"], "role": "reporting", "stopConsequence": "Stopping this stops the worker health report, so Muster's worker card goes out of date."},
       {"label": "com.jay.github-outbox-bridge", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.grok-idle-unload", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.ios-testflight-freshness", "actions": ["start", "stop", "restart"]},
@@ -18,9 +17,10 @@
       {"label": "com.jay.mac-resource-watch", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.mac-seat-watch", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.needs-owner-notify", "actions": ["start", "stop", "restart"]},
-      {"label": "com.jay.operator-notes-runner", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.operator-notes-runner", "actions": ["start", "stop", "restart"], "stopConsequence": "Stopping this stops the Mac answering Apple Notes requests from the server and cloud seats, and they wait in the Operator's queue for up to 24 hours."},
       {"label": "com.jay.operator-wake-alerter", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.sim-idle-reaper", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.simple-tools-runtime-sync", "actions": ["start", "stop", "restart"], "role": "updater", "stopConsequence": "Stopping this stops the Mac's fleet tools updating from main, and the Operator listener is no longer restarted when its code changes."},
       {"label": "com.jays.weekly-fleet-mode-digest", "actions": ["start", "stop", "restart"]}
     ],
     "pm2Apps": [

@@ -1,5 +1,21 @@
 # Muster Operations:  Live Data, Knob Writes And Process Control
 
+> **Historical, marked November 5, 2026.**  This is the October 28 plan as it was written, kept for its reasoning.  It is not a description of Muster or of the server control route today, and the code wins wherever the two differ.  What each panel reads and changes now is the Every Panel table in `muster/README.md`.  The server route's later changes are in `docs/rollouts/2026-11-03-afc-607-muster-update-route.md`.
+>
+> Where this plan is now wrong:
+>
+> - **Privilege.**  The plan says each user unit names an `account` and that a root-only forced command runs system commands as root.  It does not work that way.  The `fleet-ops-ctl` key's forced command runs `fleet-ops-control.py --from-ssh` as the ordinary server account, under its own uid;  `scripts/fleet-ops-control.json` has no `account` key, and a user unit runs in that account's own user manager.  The one privileged command is the allowlisted fleet-cli update, `sudo -n systemctl start --no-block fleet-cli-git-update.service`, through a fixed mapping;  no other system control has a sudo fallback.
+> - **Verbs.**  The helper also takes the `pm2` scope (`pm2 start|stop|restart NAME`, on the Mac) and the server verbs `logs`, `resource-status`, `resource-policy` and `update-status`.
+> - **Results.**  A result can also be `submitted`:  a fleet-cli update or a Coolify redeploy that was accepted but not yet seen to finish.
+> - **Window.**  The tabs named under D are now places in a sidebar:  Server Status, Hosts (with Worker Health), Operations and Controls.
+>
+> Owner steps, as checked from the server on November 5, 2026:
+>
+> - The write-capable knob token (`fleet-knobs-write` in the Mac keychain):  the Infisical Service Tokens registry has no row for it.  The Mac's keychain was not checked, because it cannot be read from the server.
+> - The `fleet-ops-ctl` forced-command key:  installed.  The server account's `authorized_keys` has one entry whose forced command runs `fleet-ops-control`.
+> - The two Mac LaunchAgents:  not checked, because the Mac cannot be read from the server.
+> - Lingering and the status timer:  done.  Lingering is on for the server account, and `fleet-server-status.timer` is active in its user manager.
+
 Owner ask (2026-10-28):  advance Muster, expand what it shows, and let it control knobs and start, stop and update processes where that is safe.
 
 ## Gaps this closes
@@ -62,7 +78,7 @@ Owner ask (2026-10-28):  advance Muster, expand what it shows, and let it contro
 
 - Refuses an unknown key, any `secret=True` key, and any value that the knob's `Spec` rejects (kind, choices, range, pattern).
 - Writes through the Infisical CLI with a write-capable service token:  `infisical secrets set KEY=VALUE --env prod --path <knob folder> --projectId <id>`, with the token passed as `INFISICAL_TOKEN` in the child's environment only.  The token is read from the Mac keychain item `fleet-knobs-write` (service `fleet-knobs-write`, account `INFISICAL_TOKEN`) or from `FLEET_KNOBS_WRITE_TOKEN`.  It is never printed or written.  If neither is present, the write is refused with `"no write token"`.
-- After a write it refreshes the last-known-good copy, so Muster shows the new value at once, and appends an audit row to `~/.agent-sync/listener/knobs.jsonl` (key, old and new value for non-secret knobs, time, seat).
+- After a write it refreshes the last-known-good copy, so Muster shows the new value at once, and appends an audit row to `~/.simple-tools/listener/knobs.jsonl` (key, old and new value for non-secret knobs, time, seat).
 
 ### D.  Muster (SwiftUI)
 

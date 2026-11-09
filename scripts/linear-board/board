@@ -23,7 +23,7 @@ Usage:
   board stats
   board whoami
 
-Agent-Sync parity (the hosted server's Linear tools, from catalog/*.json):
+Simple-Tools parity (the hosted server's Linear tools, from catalog/*.json):
   board commands [--search WORD] [--kind read|write] [--json]
   board commands show NAME [--json]
   board run NAME [--arg KEY=VALUE ...] [--args-json JSON|@FILE|-] [--selection FIELDS]
@@ -34,7 +34,7 @@ Agent-Sync parity (the hosted server's Linear tools, from catalog/*.json):
   board mcp list|show TOOL [--json]
   board mcp call TOOL [--args-json JSON|@FILE|-] [--idempotency-key KEY] [--max-chars N] [--json]
 
-`run` builds the same `AgentSyncNamed` document the hosted server builds and applies its guards:  one
+`run` builds the same `SimpleToolsNamed` document the hosted server builds and applies its guards:  one
 operation, depth 16, 500 fields, no protected or batch mutation roots, only public input fields, and
 no edits of claimed:, seat: or stale-claim labels (`board claim` owns those).  A write (a write
 command, `api mutation`, or a write `mcp call`) needs a bearer-verified seat and
@@ -64,9 +64,9 @@ Identity:  the run's seat is proven by an admin-minted bearer, verified against
 ST-MCP (gr-bearer-verify/1), never parsed from the token and never taken from
 the environment (owner direction 2026-10-26:  the bearer identifies the agent,
 on the server and the Mac alike;  there is no identity picker).  A trusted
-launcher binds the run to SIMPLE_BOARD_BEARER_LOCATOR, a non-secret
-FOLDER:KEY_NAME location;  with no locator the write verbs refuse and reads
-run without a seat.  The Linear side is a Linear app that mints its own token by OAuth client credentials
+launcher binds the run to SIMPLE_BOARD_BEARER_FILE, the non-secret path of the
+private file holding this seat's bearer;  with no file the write verbs refuse
+and reads run without a seat.  The Linear side is a Linear app that mints its own token by OAuth client credentials
 (design section 2).  Each seat has its own app, named for the seat bot (CLAUDE
 signs as "Claude"), when its <SEAT>_LINEAR_CLIENT_ID and _SECRET are in Infisical Fleet-OPS /linear;
 a seat with no app yet, and every read without a bearer, uses the shared
@@ -130,22 +130,22 @@ TOKEN_URL = "https://api.linear.app/oauth/token"
 SCOPE = "read,write,app:assignable,app:mentionable"
 # A seat whose installed app holds a different scope than SCOPE mints with that app's own scope, never the
 # global one:  asking Linear for another string revokes the app's tokens.  MA's installation carries exactly
-# the four below (no app:assignable, no app:mentionable).  Any other seat, and the shared Fleet app, use SCOPE.
+# the four below (no app:assignable, no app:mentionable).  Any other seat uses SCOPE.
 SEAT_MINT_SCOPES = {"MA": "comments:create,issues:create,read,write"}
 
 
 def mint_scope(ident) -> str:
     """The scope this identity's app is minted with, chosen by the identity's kind and not by the caller's seat.
-    Only a seat's own app (kind "seat") takes its per-seat scope; the Fleet app (kind "fleet", which a seat
-    with no pair of its own resolves to) takes SCOPE.  A generic LINEAR_CLIENT_ID pair (kind "env") may hold
-    the seat's app or Fleet and nothing says which, so for a seat with its own scope it is refused before any
-    mint:  the wrong string would revoke that app's tokens."""
+    Only a seat's own app (kind "seat") takes its per-seat scope;  anything else takes SCOPE.  A generic
+    LINEAR_CLIENT_ID pair (kind "env") may hold the seat's app and nothing says which app it holds, so for a
+    seat with its own scope the pair is refused before any mint:  the wrong string would revoke that app's
+    tokens."""
     seat = ident.seat or ""
     if ident.kind == "seat":
         return SEAT_MINT_SCOPES.get(seat, SCOPE)
     if ident.kind == "env" and seat in SEAT_MINT_SCOPES:
-        die(f"the LINEAR_CLIENT_ID pair cannot mint for the {seat} seat: it may be the {seat} app or Fleet, "
-            f"and each takes a different scope", EXIT_AUTH)
+        die(f"the LINEAR_CLIENT_ID pair cannot mint for the {seat} seat: it may be the {seat} app or another "
+            f"seat's app, and each takes a different scope", EXIT_AUTH)
     return SCOPE
 WORKSPACE_URL_KEY = "simple-with-us"
 USER_AGENT = "swu-board-cli/1"
@@ -161,7 +161,7 @@ EXIT_AUTH = 6  # no verified seat, token refused, mint refused, or whoami check 
 # Linear's client-credentials tokens last 30 days.  A cached token is re-minted
 # early once it is this old (and still used while that early mint fails), so a
 # seat never depends on minting during its token's last day.  Same value as
-# LINEAR_REMINT_AFTER_S in scripts/agent-sync-mcp/src/linear.js.
+# LINEAR_REMINT_AFTER_S in scripts/simple-tools-mcp/src/linear.js.
 REMINT_AFTER = 28 * 86400
 WRITE_VERBS = ("file", "claim", "status", "comment", "label")
 SESSION_ENV_VAR = "CLAUDE_CODE_SESSION_ID"
@@ -174,6 +174,7 @@ SESSION_GENERIC_ENV = "AGENT_SESSION"
 SESSION_EXEMPT_SEATS = frozenset(("ECHO", "GROK-BOT", "JET", "JET-CHAT", "MA", "WISE"))
 SESSION_EXEMPT_PATTERNS = ("GB-*",)
 SESSION_ENV_BY_SEAT = {
+    "AG": ("ANTIGRAVITY_CONVERSATION_ID",),
     "CLAUDE": ("CLAUDE_CODE_SESSION_ID",),
     "CODEX": ("CODEX_THREAD_ID",),
     "CURSOR": ("CURSOR_CONVERSATION_ID", "CURSOR_AGENT_CHAT_ID"),
@@ -182,6 +183,7 @@ SESSION_ENV_BY_SEAT = {
     "OPENCODE": ("OPENCODE_SESSION_ID",),
 }
 SESSION_FALLBACK_ENV = (
+    "ANTIGRAVITY_CONVERSATION_ID",
     "CLAUDE_CODE_SESSION_ID",
     "CODEX_THREAD_ID",
     "CURSOR_CONVERSATION_ID",
@@ -241,9 +243,12 @@ SEAT_ROSTER = {
     "BF-DEPLOYER",
     "BF-BUILDER",
     "BF-PRODUCER",
+    "BF-ENGINEER",
+    "BF-TRADER",
 }
-# The eleven BotFleet role seats are the ten role seats plus BF-DIRECTOR (FLEET-PROTOCOL.md, owner
-# 2026-10-09).  BF-PRODUCER is not one of those eleven and has no Zulip bot.  It stays on this
+# The BotFleet role seats are the eleven of FLEET-PROTOCOL.md (owner 2026-10-09) with
+# BF-ENGINEER in place of BF-BUILDER (owner 2026-11-01), plus BF-TRADER:  twelve live roles.
+# BF-PRODUCER is not one of those twelve and has no Zulip bot.  It stays on this
 # roster so its Linear app signs its own writes (board #531).
 BF_ROLES = {
     "DIRECTOR",
@@ -258,6 +263,8 @@ BF_ROLES = {
     "ORACLE",
     "BUILDER",
     "PRODUCER",
+    "ENGINEER",
+    "TRADER",
 }
 SEAT_ALIASES = {
     "MINIMAX": "MM",
@@ -281,11 +288,11 @@ SEAT_TAG_ALIASES = {"INSTINCT": "WISE"}
 # attribution), but norm_seat resolves them as typed (SeatAliasTests).
 RETIRED_SEAT_TAGS = frozenset(("MINIMAX", "MUSE", "ANTIGRAVITY"))
 # One Linear app per seat (owner 2026-10-10), named for the seat bot's display
-# name.  A seat's app is used when its credentials exist (<SEAT>_LINEAR_CLIENT_ID and
-# _SECRET in Infisical Fleet-OPS /linear, or LINEAR_<SEAT>_CLIENT_ID and _SECRET in
+# name.  A seat's app is used when its credentials exist (LINEAR_<SEAT>_CLIENT_ID and
+# _SECRET in Infisical AI Fleet Coordinator /linear, or LINEAR_<SEAT>_CLIENT_ID and _SECRET in
 # the environment, with hyphens as underscores); its viewer must carry exactly this name before the
-# CLI writes with it.  A seat missing here, or with no credentials yet, uses
-# the shared Fleet app.
+# CLI writes with it.  A seat missing here, or with no credentials yet, fails closed:
+# the shared Fleet app was retired by the owner on 2026-11-05 and nothing falls back to it.
 SEAT_APP_NAMES = {
     "CLAUDE": "Claude",
     "CODEX": "Codex",
@@ -303,9 +310,19 @@ SEAT_APP_NAMES = {
     "OPENCODE": "OpenCode",
     "ECHO": "Echo (Instinct)",
     "WISE": "Wise (Instinct)",
+    # Kimi, Z Code and [Operator] have their own Linear apps (owner, 2026-11-05: the keys live in
+    # Infisical AI Fleet Coordinator /linear);  without these entries their writes signed as the
+    # shared Fleet app, which the owner retired that day.
+    "KIMI": "Kimi",
+    "ZC": "Z Code",
+    "OPERATOR": "[Operator]",
     # BotFleet seats in SEAT_ROSTER.  FLEET-PROTOCOL.md (owner 2026-10-09) names the ten role seats
     # plus BF-DIRECTOR.  BF-PRODUCER is on that same roster (BF_ROLES turns a bare PRODUCER into
-    # it), so it has an app too:  a write from that seat must not sign as the shared Fleet app.
+    # it), so it has an app too:  a write from that seat signs as its own app, never another's.
+    # BF-ENGINEER (in place of BF-BUILDER since owner 2026-11-01) and BF-TRADER hold their own
+    # Linear apps too (their OAuth client pairs are in Infisical AFC prod /linear, and the hosted
+    # MCP's linear.js already carries both as own-app seats); they were missing here until
+    # OPS-1039 (owner, Fri, Nov 6) reconciled the roster.
     # Each app is named for its seat tag, which app_name_ok accepts directly, so a rename in
     # Linear to BF-Fixer, BF-Compiler or any casing still matches its seat.
     "BF-BUILDER": "BF-Builder",
@@ -313,6 +330,7 @@ SEAT_APP_NAMES = {
     "BF-DEPLOYER": "BF-Deployer",
     "BF-DESIGNER": "BF-Designer",
     "BF-DIRECTOR": "BF-Director",
+    "BF-ENGINEER": "BF-Engineer",
     "BF-FIXER": "BF-Fixer",
     "BF-HOUSEKEEPER": "BF-Housekeeper",
     "BF-MONITOR": "BF-Monitor",
@@ -320,6 +338,7 @@ SEAT_APP_NAMES = {
     "BF-PLUMBER": "BF-Plumber",
     "BF-PRODUCER": "BF-Producer",
     "BF-PUBLISHER": "BF-Publisher",
+    "BF-TRADER": "BF-Trader",
 }
 # Other names the owner may give a seat's app (the seat tag and the credentials key names stay as they are).
 # The swapped-credentials check accepts the primary name above, any alias here, or the seat tag itself, and
@@ -334,7 +353,7 @@ SEAT_APP_ALIASES = {
     "MA": ("Muse Assist (MA)", "Muse-Assist", "Rob", "Rob-Muse"),
     "JET": ("Jet (OpenAI dot)",),
     # Deliberate JET/JET-CHAT share (owner, Oct 23 2026):  two logins, one Linear
-    # app, mirroring the Worker tables in scripts/agent-sync-mcp/src/linear.js.
+    # app, mirroring the Worker tables in scripts/simple-tools-mcp/src/linear.js.
     "JET-CHAT": ("Jet (OpenAI dot)",),
     "GROK": ("Grok (Build)", "Grok Build"),
     "GROK-WEB": ("Grok (Web/iOS)", "Grok Web/iOS"),
@@ -789,8 +808,12 @@ class Infisical:
 
     def __init__(self) -> None:
         self.api = (env("LINEAR_BOARD_INFISICAL_API") or "https://app.infisical.com").rstrip("/")
-        self._token = env("LINEAR_BOARD_INFISICAL_READ_TOKEN") or ""
-        self._write_token = env("LINEAR_BOARD_INFISICAL_WRITE_TOKEN") or ""
+        self._token = _secret_from_file_or_env(
+            "LINEAR_BOARD_INFISICAL_READ_TOKEN_FILE", "LINEAR_BOARD_INFISICAL_READ_TOKEN"
+        )
+        self._write_token = _secret_from_file_or_env(
+            "LINEAR_BOARD_INFISICAL_WRITE_TOKEN_FILE", "LINEAR_BOARD_INFISICAL_WRITE_TOKEN"
+        )
         self.enabled = env("LINEAR_BOARD_INFISICAL", "1") != "0"
         self._project = ""
         self._expected_project = env("LINEAR_BOARD_INFISICAL_PROJECT_ID") or env("INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID") or ""
@@ -822,7 +845,8 @@ class Infisical:
                 raw = r.read()
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as e:
-            if e.code == 404 and method != "GET":
+            if e.code == 404:
+                # A missing named key (or object) is a clean miss, not an outage.
                 return {"_status": 404}
             self._off(f"HTTP {e.code} on {path.split('?')[0]}")
         except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as e:
@@ -913,22 +937,28 @@ class Infisical:
         }
 
     def value(self, name: str) -> str:
-        """One /linear secret, read with the whole folder once per run;  "" when absent or off."""
+        """One named /linear secret with the scoped read token;  "" when absent or off.
+        A run fetches only the keys it names, one request each, never a folder
+        listing:  one seat's run never materializes another seat's pair or token
+        blob.  A missing key is a cached clean miss, not an outage."""
         if self._secrets is None:
             self._secrets = {}
-            if self._ready():
-                query = {
-                    "workspaceId": self._project,
-                    "environment": "prod",
-                    "secretPath": INFISICAL_LINEAR_PATH,
-                }
-                js = self._call("GET", "/api/v3/secrets/raw?" + urllib.parse.urlencode(query))
-                for item in (js or {}).get("secrets") or []:
-                    if item.get("secretKey"):
-                        self._secrets[item["secretKey"]] = str(
-                            item.get("secretValue") or ""
-                        ).strip()
-        return self._secrets.get(name, "")
+        if name in self._secrets:
+            return self._secrets[name]
+        value = ""
+        if self._ready():
+            js = self._call(
+                "GET",
+                "/api/v3/secrets/raw/%s?%s"
+                % (urllib.parse.quote(name), urllib.parse.urlencode(self._where())),
+            )
+            if js and not js.get("_status"):
+                secret = js.get("secret")
+                if not isinstance(secret, dict):
+                    secret = js
+                value = str(secret.get("secretValue") or "").strip()
+        self._secrets[name] = value
+        return value
 
     def put(self, name: str, value: str) -> bool:
         """Create or update one /linear secret.  False (with a warning) when it could not be written."""
@@ -951,24 +981,31 @@ INFISICAL_WHERE = "Infisical AI Fleet Coordinator prod /linear"
 # ----------------------------------------------------------------- bearer identity
 #
 # A run may prove its seat with an admin-minted bearer instead of the AGENT_SEAT
-# environment picker (owner direction 2026-10-26: the bearer identifies the agent, on
-# the server and the Mac alike).  A trusted launcher binds the run to a non-secret
-# credential LOCATOR (SIMPLE_BOARD_BEARER_LOCATOR, "FOLDER:KEY_NAME"); the locator
-# says where the credential lives and is never an identity claim.  The bearer bytes
-# are read through `fleet-secrets get`, only their SHA-256 leaves the process (inside
-# an HMAC-signed body to the ST-MCP verify route, the same gr-bearer-verify/1
-# contract git-relay uses), and the seat comes ONLY from the route's own answer.
-# Every failure refuses with EXIT_AUTH:  no environment fallback, no picker.
+# environment picker:  the bearer identifies the agent, on the server and the
+# Mac alike, and there is no identity picker.  A trusted launcher binds the run
+# to SIMPLE_BOARD_BEARER_FILE, the non-secret path of the private file holding
+# this seat's bearer;  the path says where the credential lives and is never an
+# identity claim.  The bearer bytes are read from that file, only their SHA-256
+# leaves the process (inside an HMAC-signed body to the ST-MCP verify route,
+# the same gr-bearer-verify/1 contract git-relay uses), and the seat comes ONLY
+# from the route's own answer.  The HMAC key is read directly from Infisical
+# Fleet-OPS prod /tools with the run's own read-scoped service token, held in
+# another private file - the retired wrapper is gone, and every failure refuses
+# with EXIT_AUTH:  no environment fallback, no picker, no other loader.
 
-BEARER_LOCATOR_ENV = "SIMPLE_BOARD_BEARER_LOCATOR"
+BEARER_FILE_ENV = "SIMPLE_BOARD_BEARER_FILE"
 # The verify endpoint is a fixed trusted origin, never from the environment:  the caller
 # controls its own environment, and a caller-chosen endpoint would let the caller choose
 # the answer - the very identity picker the bearer removes.
 BEARER_VERIFY_URL = "https://agents.simplewithus.com/internal/gr-bearer-verify"
 BEARER_VERIFY_CONTRACT = "gr-bearer-verify/1"
-BEARER_SIGNATURE_HEADER = "X-Agent-Sync-Signature"
+BEARER_SIGNATURE_HEADER = "X-Simple-Tools-Signature"
 BEARER_VERIFY_KEY_NAME = "GR_BEARER_VERIFY_KEY"
-BEARER_VERIFY_KEY_FOLDER = "/tools"
+BEARER_TOOLS_FOLDER = "/tools"
+# The run's own read-scoped service token for the verify key lives in a private
+# file its launcher names (the per-collector pattern), never in the environment.
+BEARER_TOOLS_TOKEN_FILE_ENV = "SIMPLE_BOARD_TOOLS_TOKEN_FILE"
+BEARER_TOOLS_PROJECT_ENV = "SIMPLE_BOARD_TOOLS_PROJECT_ID"
 BEARER_MAX_RESPONSE = 4096
 BEARER_TIMEOUT_S = 10
 # The admin-minted bearer families, mirroring git-relay/git_relay/shared_bearer.py:
@@ -977,11 +1014,6 @@ BEARER_TIMEOUT_S = 10
 BEARER_TOKEN_RES = (
     re.compile(r"^gbb_([a-z][a-z0-9]{1,19})_([A-Za-z0-9_-]{43})\Z"),
     re.compile(r"^sbt_([a-z][a-z0-9-]{1,19})_([A-Za-z0-9_-]{43})\Z"),
-)
-# FOLDER:KEY_NAME - a location, not a value.  One or more plain path segments:  no
-# dots (so no "." or ".."), no empty segments, no trailing slash, depth capped.
-BEARER_LOCATOR_RE = re.compile(
-    r"(/[A-Za-z0-9_-]{1,64}(?:/[A-Za-z0-9_-]{1,64}){0,7}):([A-Z][A-Z0-9_]{0,63})\Z"
 )
 BEARER_REASON_RE = re.compile(r"[a-z_]{1,40}\Z")
 
@@ -999,25 +1031,104 @@ def parse_bearer_identity(token: str) -> str | None:
     return None
 
 
-def fleet_folder_secret(name: str, folder: str) -> str:
-    """One secret from an explicit Fleet-OPS folder through `fleet-secrets get`, or ""
-    when the tool is absent, the key is absent, or the call fails.  The value is
-    never printed, logged, passed on a command line, or written to disk."""
-    binary = fleet_secrets_bin()
-    if not binary:
+PRIVATE_FILE_MAX_BYTES = 4096
+
+
+def read_secret_file(path: str) -> str:
+    """The secret bytes from one private local file, or "" when the path is
+    unusable:  not a regular file, readable by group/other, oversized, or not
+    UTF-8.  The value is never printed, logged, passed on a command line, or
+    written anywhere.  Private files replaced the retired fleet-secrets
+    wrapper:  a missing or loose file fails closed, there is no wrapper
+    fallback."""
+    if not path:
         return ""
     try:
-        proc = subprocess.run(
-            [binary, "get", name, "--path", folder],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-            stdin=subprocess.DEVNULL,
-        )
-    except (OSError, subprocess.SubprocessError):
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or (st.st_mode & 0o077):
+            return ""
+        with open(path, "rb") as fh:
+            raw = fh.read(PRIVATE_FILE_MAX_BYTES + 1)
+    except OSError:
         return ""
-    return proc.stdout.strip() if proc.returncode == 0 else ""
+    if len(raw) > PRIVATE_FILE_MAX_BYTES:
+        return ""
+    try:
+        return raw.decode("utf-8").strip()
+    except ValueError:
+        return ""
+
+
+def _secret_from_file_or_env(file_env: str, value_env: str) -> str:
+    """A scoped service token from its private file when the launcher names one,
+    else from the environment (a cloud runtime's only channel)."""
+    path = env(file_env) or ""
+    if path:
+        return read_secret_file(path)
+    return (env(value_env) or "").strip()
+
+
+def tools_verify_key() -> str:
+    """GR_BEARER_VERIFY_KEY from Fleet-OPS prod /tools, read directly with the
+    run's own read-scoped service token, or "" when unconfigured or refused.
+    The token's grant is verified against its own metadata before any use:
+    the expected project, exactly the prod:/tools scope, read-only, unexpired.
+    Only the key value leaves this function;  the token never does."""
+    token = _secret_from_file_or_env(BEARER_TOOLS_TOKEN_FILE_ENV, "SIMPLE_BOARD_TOOLS_TOKEN")
+    project = (env(BEARER_TOOLS_PROJECT_ENV) or "").strip()
+    if not token or not project:
+        return ""
+    api = (env("LINEAR_BOARD_INFISICAL_API") or "https://app.infisical.com").rstrip("/")
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": USER_AGENT,
+        "Authorization": f"Bearer {token}",
+    }
+
+    def get(path: str):
+        req = urllib.request.Request(api + path, method="GET", headers=headers)
+        try:
+            with opener().open(req, timeout=BEARER_TIMEOUT_S) as r:
+                raw = r.read()
+                return json.loads(raw) if raw else {}
+        except (urllib.error.HTTPError, urllib.error.URLError, http.client.HTTPException, OSError, ValueError):
+            return None
+
+    metadata = get("/api/v2/service-token")
+    if not isinstance(metadata, dict):
+        return ""
+    scopes = metadata.get("scopes")
+    permissions = metadata.get("permissions")
+    if (
+        metadata.get("workspace") != project
+        or ("projectId" in metadata and metadata.get("projectId") != project)
+        or not isinstance(scopes, list)
+        or len(scopes) != 1
+        or scopes[0] != {"environment": "prod", "secretPath": BEARER_TOOLS_FOLDER}
+        or not isinstance(permissions, list)
+        or sorted(permissions) != ["read"]
+    ):
+        return ""
+    expiry = metadata.get("expiresAt")
+    if expiry is not None:
+        try:
+            parsed = datetime.fromisoformat(str(expiry).replace("Z", "+00:00"))
+            if parsed.tzinfo is None or parsed <= datetime.now(timezone.utc):
+                return ""
+        except (AttributeError, TypeError, ValueError):
+            return ""
+    query = {
+        "workspaceId": project,
+        "environment": "prod",
+        "secretPath": BEARER_TOOLS_FOLDER,
+    }
+    js = get("/api/v3/secrets/raw/" + urllib.parse.quote(BEARER_VERIFY_KEY_NAME) + "?" + urllib.parse.urlencode(query))
+    if not isinstance(js, dict):
+        return ""
+    secret = js.get("secret")
+    if isinstance(secret, dict) and secret.get("secretKey") == BEARER_VERIFY_KEY_NAME:
+        return str(secret.get("secretValue") or "").strip()
+    return ""
 
 
 def _verify_reason(payload: bytes) -> str:
@@ -1047,26 +1158,27 @@ BEARER_TRANSPORT = None
 
 
 def bearer_verified_seat() -> str:
-    """The seat PROVEN by the bearer at SIMPLE_BOARD_BEARER_LOCATOR, or die(EXIT_AUTH).
+    """The seat PROVEN by the bearer at SIMPLE_BOARD_BEARER_FILE, or die(EXIT_AUTH).
 
     Order is load-bearing:  the bearer is verified against the ST-MCP SeatGate
     before anything else in this run learns the seat, so no unverified value can
     select a seat's Linear app, sign a write, or pick an allowed set."""
-    locator = env(BEARER_LOCATOR_ENV) or ""
-    m = BEARER_LOCATOR_RE.fullmatch(locator)
-    if not m:
-        die(f"{BEARER_LOCATOR_ENV} must name a non-secret FOLDER:KEY_NAME location", EXIT_AUTH)
-    folder, key_name = m.group(1), m.group(2)
-    token = fleet_folder_secret(key_name, folder)
+    path = env(BEARER_FILE_ENV) or ""
+    if not path:
+        die(
+            f"{BEARER_FILE_ENV} must name the private file holding this seat's bearer",
+            EXIT_AUTH,
+        )
+    token = read_secret_file(path)
     if not token:
         die(
-            "no seat bearer is readable at its locator; refusing to act without a verified identity",
+            "no seat bearer is readable at its private file; refusing to act without a verified identity",
             EXIT_AUTH,
         )
     claimed = parse_bearer_identity(token)
     if claimed is None:
         die("the value at the bearer locator is not an admin-minted bearer", EXIT_AUTH)
-    key = fleet_folder_secret(BEARER_VERIFY_KEY_NAME, BEARER_VERIFY_KEY_FOLDER)
+    key = tools_verify_key()
     if len(key) < 32:
         die("bearer verification is not configured on this host", EXIT_AUTH)
     digest = hashlib.sha256(token.encode()).hexdigest()
@@ -1146,23 +1258,23 @@ def bearer_verified_seat() -> str:
 
 def current_seat(required: bool = True) -> str:
     """The seat this run acts as, proven by the admin-minted bearer at
-    SIMPLE_BOARD_BEARER_LOCATOR (owner direction 2026-10-26:  the bearer
-    identifies the agent;  there is no identity picker).  AGENT_SEAT is never
-    consulted.  The five write verbs require a verified seat, because every
-    write is signed with it and the CLI never guesses;  with no locator they
-    refuse with EXIT_AUTH.  Reads (list, show, stats, whoami) run without one:
-    they write nothing, and a locator is absent in plain shells, in `zsh -lic`,
-    and under the listener's `env -i`."""
-    if env(BEARER_LOCATOR_ENV):
+    SIMPLE_BOARD_BEARER_FILE:  the bearer identifies the agent and there is no
+    identity picker.  AGENT_SEAT is never consulted.  The five write verbs
+    require a verified seat, because every write is signed with it and the CLI
+    never guesses;  with no bearer file they refuse with EXIT_AUTH.  Reads
+    (list, show, stats, whoami) run without one:  they write nothing, and a
+    bearer file is absent in plain shells, in `zsh -lic`, and under the
+    listener's `env -i`."""
+    if env(BEARER_FILE_ENV):
         # The verified route answer is the only seat source, so a stale
         # environment cannot widen or redirect what the bearer proves.
         return bearer_verified_seat()
     if not required:
         return ""
     die(
-        f"no verified seat:  {BEARER_LOCATOR_ENV} is not set.  The CLI writes only as a "
+        f"no verified seat:  {BEARER_FILE_ENV} is not set.  The CLI writes only as a "
         "bearer-verified seat and never takes an identity from the environment;  the trusted "
-        "launcher binds the run's bearer locator.  Reads (list, show, stats, whoami) work "
+        "launcher binds the run's bearer file.  Reads (list, show, stats, whoami) work "
         "without one.",
         EXIT_AUTH,
     )
@@ -1305,91 +1417,7 @@ def prepare_inputs(a) -> None:
 
 # ----------------------------------------------------------------- credentials and token
 
-FLEET_OPS_LINEAR_PATH = "/linear"
-FLEET_OPS_WHERE = "Infisical Fleet-OPS prod /linear"
-
-
-def fleet_secrets_bin() -> str | None:
-    """The fleet-secrets binary, or None when this host has none (a cloud runtime)."""
-    binary = (
-        env("LINEAR_BOARD_FLEET_SECRETS")
-        or shutil.which("fleet-secrets")
-        or str(Path.home() / ".local" / "bin" / "fleet-secrets")
-    )
-    return binary if os.access(binary, os.X_OK) else None
-
-
-def fleet_ops_secret(name: str) -> str:
-    """One Fleet-OPS /linear secret through `fleet-secrets get` (AFC-359), or "" when the tool is absent, the
-    key is absent, or the call fails.  The value is never printed or logged."""
-    binary = fleet_secrets_bin()
-    if not binary:
-        return ""
-    try:
-        proc = subprocess.run(
-            [binary, "get", name, "--path", FLEET_OPS_LINEAR_PATH],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-            stdin=subprocess.DEVNULL,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return proc.stdout.strip() if proc.returncode == 0 else ""
-
-
-AFC_PROJECT = (
-    INFISICAL_PROJECT_SLUG  # the `fleet-secrets get --project` selector for the same project
-)
-AFC_WHERE = INFISICAL_WHERE  # where those credentials live, whichever loader reads them
-
-
-def fleet_project_secret(name: str, folder: str, project: str) -> str:
-    """One secret from one named project folder through `fleet-secrets get NAME --path FOLDER --project PROJECT`,
-    or "" when the tool is absent, the key is absent, or the call fails.  The value is never printed, logged,
-    passed on a command line, or written to disk."""
-    binary = fleet_secrets_bin()
-    if not binary:
-        return ""
-    try:
-        proc = subprocess.run(
-            [binary, "get", name, "--path", folder, "--project", project],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-            stdin=subprocess.DEVNULL,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return proc.stdout.strip() if proc.returncode == 0 else ""
-
-
-def fleet_afc_secret(name: str) -> str:
-    """One AI Fleet Coordinator prod /linear secret through `fleet-secrets get` (AFC-348), or "" when the tool is
-    absent, the key is absent, or the call fails.  The value is never printed or logged."""
-    return fleet_project_secret(name, INFISICAL_LINEAR_PATH, AFC_PROJECT)
-
-
-def fleet_ops_set(name: str, value: str) -> bool:
-    """Write one Fleet-OPS /linear secret with `fleet-secrets set`.  The value goes on standard input, never
-    in an argument.  False when the tool is absent or the write failed."""
-    binary = fleet_secrets_bin()
-    if not binary:
-        return False
-    try:
-        proc = subprocess.run(
-            [binary, "set", name, "--path", FLEET_OPS_LINEAR_PATH],
-            input=value,
-            text=True,
-            capture_output=True,
-            timeout=60,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return proc.returncode == 0
+AFC_WHERE = INFISICAL_WHERE  # where those credentials live
 
 
 ENV_PAIR = "environment (LINEAR_CLIENT_ID, LINEAR_CLIENT_SECRET)"
@@ -1400,21 +1428,15 @@ def seat_env_key(seat: str) -> str:
     return seat.replace("-", "_")
 
 
-def fleet_app_name() -> str:
-    return env("LINEAR_FLEET_APP_NAME", "Fleet")
-
-
 class Identity:
     """The Linear app a run acts as, where its credentials came from (`where`
     is a path or variable names, never a value), the Infisical secret that
     holds its minted token, and the viewer names Linear may answer with for it.
 
     kind "seat":   the seat's own app, from the environment (LINEAR_<SEAT>_CLIENT_ID)
-                   or from Infisical (<SEAT>_LINEAR_CLIENT_ID or LINEAR_<SEAT>_CLIENT_ID).
-    kind "fleet":  the shared Fleet app, from the environment (LINEAR_FLEET_CLIENT_ID)
-                   or from Infisical (FLEET_LINEAR_CLIENT_ID or LINEAR_FLEET_CLIENT_ID).
+                   or from Infisical AI Fleet Coordinator /linear (LINEAR_<SEAT>_CLIENT_ID).
     kind "env":    LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET, a cloud runtime's
-                   pair, which may hold the seat's app or Fleet."""
+                   pair, which may hold the seat's app."""
 
     def __init__(
         self,
@@ -1432,8 +1454,9 @@ class Identity:
     ):
         self.kind, self.seat, self.cid, self.sec = kind, seat, cid, sec
         self.where, self.blob, self.accept, self.label = where, blob, accept, label
-        # blob:  the Fleet-OPS /linear secret that holds this app's minted token (CACHE_<SEAT>, CACHE_FLEET),
-        # or "" for the environment's generic pair, which may be either app, so it has no shared token.
+        # blob:  the AI Fleet Coordinator /linear secret that holds this app's minted token
+        # (LINEAR_<SEAT>_CACHE_TOKEN), read and written directly with the run's scoped tokens,
+        # or "" for the environment's generic pair, which has no shared token.
         # shared:  the AI Fleet Coordinator name (LINEAR_<SEAT>_CACHE_TOKEN), read through a
         # separately scoped LINEAR_BOARD_INFISICAL_READ_TOKEN.
         self.shared = shared
@@ -1451,25 +1474,19 @@ def resolve_identity(seat: str = "") -> Identity:
     a stored value is a fallback:  the first that applies wins.
 
     1. LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET in the environment (a cloud
-       runtime's pair).  They may hold the seat's app or Fleet, so they have
-       no shared token:  one is minted per run.
+       runtime's pair).  They may hold the seat's app, so the pair has no
+       shared token:  one is minted per run.
     2. With a verified seat in SEAT_APP_NAMES:  LINEAR_<SEAT>_CLIENT_ID and
        LINEAR_<SEAT>_CLIENT_SECRET from the environment;  then
-       <SEAT>_LINEAR_CLIENT_ID and <SEAT>_LINEAR_CLIENT_SECRET from Infisical
-       Fleet-OPS prod /linear (`fleet-secrets get`), read together with that
-       app's token blob CACHE_<SEAT>;  then LINEAR_<SEAT>_CLIENT_ID and
-       _SECRET from Infisical AI Fleet Coordinator prod /linear, through
-       `fleet-secrets get` with that project.
-    3. The shared Fleet app (every read without a verified seat, and a seat with
-       no app yet):  LINEAR_FLEET_CLIENT_ID and LINEAR_FLEET_CLIENT_SECRET from
-       the environment;  then FLEET_LINEAR_CLIENT_ID and
-       FLEET_LINEAR_CLIENT_SECRET plus CACHE_FLEET from Fleet-OPS /linear;
-       then LINEAR_FLEET_CLIENT_ID and _SECRET from the AI Fleet Coordinator
-       prod /linear folder.
+       LINEAR_<SEAT>_CLIENT_ID and LINEAR_<SEAT>_CLIENT_SECRET from Infisical
+       AI Fleet Coordinator prod /linear (a direct read with the run's own
+       scoped service token).  That app's token blob is LINEAR_<SEAT>_CACHE_TOKEN
+       in the same folder, read and written directly with the scoped tokens.
 
-    A seat with an app of its own never falls back to the shared Fleet app:
-    the fleet pair is read in the fleet branch, after the seat's own."""
-    fleet = fleet_app_name()
+    There is no third step.  The shared Fleet app was retired and deleted on
+    2026-11-05:  a seat without credentials of its own fails closed, and a run
+    with no verified seat needs the environment's pair.  Nothing falls back to
+    a shared app or to another seat's."""
     app = SEAT_APP_NAMES.get(seat, "") if seat else ""
     app_names = seat_app_names(seat)
     cid_e = os.environ.get("LINEAR_CLIENT_ID", "").strip()
@@ -1482,24 +1499,19 @@ def resolve_identity(seat: str = "") -> Identity:
             sec_e,
             ENV_PAIR,
             "",
-            tuple(n for n in (*app_names, fleet) if n),
+            tuple(n for n in app_names if n),
             "LINEAR_CLIENT_ID app",
         )
 
-    def read_app(prefix: str, blob: str) -> tuple:
-        """(client id, client secret, token blob or None), each through its own `fleet-secrets get NAME`.  Nothing
-        dumps the secret store's environment or parses KEY=value lines, so no other value is ever held."""
-        names = [f"{prefix}_LINEAR_CLIENT_ID", f"{prefix}_LINEAR_CLIENT_SECRET", blob]
-        got = {n: v for n in names if (v := fleet_ops_secret(n))}
-        return got.get(names[0], ""), got.get(names[1], ""), got.get(blob)
-
     def read_afc(prefix: str) -> tuple:
-        """(client id, client secret) from the AI Fleet Coordinator prod /linear folder, through
-        `fleet-secrets get NAME --path /linear --project ai-fleet-coordinator`:  the approved
-        loader, never a direct Infisical call (AFC-348, AFC-359)."""
+        """(client id, client secret) from the AI Fleet Coordinator prod /linear folder, read
+        directly with the run's own /linear-scoped service token (AFC-348's folder).  The
+        retired wrapper is gone:  a missing or mis-scoped token yields no pair and the run
+        fails closed, never a fallback to another loader."""
+        inf = Infisical.get()
         return (
-            fleet_afc_secret(f"LINEAR_{prefix}_CLIENT_ID"),
-            fleet_afc_secret(f"LINEAR_{prefix}_CLIENT_SECRET"),
+            inf.value(f"LINEAR_{prefix}_CLIENT_ID"),
+            inf.value(f"LINEAR_{prefix}_CLIENT_SECRET"),
         )
 
     k = seat_env_key(seat)
@@ -1515,27 +1527,11 @@ def resolve_identity(seat: str = "") -> Identity:
                 cid_s,
                 sec_s,
                 f"environment (LINEAR_{k}_CLIENT_ID, LINEAR_{k}_CLIENT_SECRET)",
-                f"CACHE_{k}",
+                shared,
                 app_names,
                 f"{app} seat app",
                 shared,
                 seat,
-            )
-        # then the seat's own pair in Fleet-OPS prod /linear, with that app's token blob
-        cid_o, sec_o, blob_o = read_app(k, f"CACHE_{k}")
-        if cid_o and sec_o:
-            return Identity(
-                "seat",
-                seat,
-                cid_o,
-                sec_o,
-                f"{FLEET_OPS_WHERE} ({k}_LINEAR_CLIENT_ID, {k}_LINEAR_CLIENT_SECRET)",
-                f"CACHE_{k}",
-                app_names,
-                f"{app} seat app",
-                shared,
-                seat,
-                blob_o or "",
             )
         # then the seat's own pair in the AI Fleet Coordinator prod /linear folder
         cid_i, sec_i = read_afc(k)
@@ -1546,88 +1542,34 @@ def resolve_identity(seat: str = "") -> Identity:
                 cid_i,
                 sec_i,
                 f"{AFC_WHERE} (LINEAR_{k}_CLIENT_ID, LINEAR_{k}_CLIENT_SECRET)",
-                f"CACHE_{k}",
+                shared,
                 app_names,
                 f"{app} seat app",
                 shared,
                 seat,
             )
-    # the shared Fleet app:  the environment first, then Fleet-OPS prod /linear, then the AFC folder
-    cid_f = os.environ.get("LINEAR_FLEET_CLIENT_ID", "").strip()
-    sec_f = os.environ.get("LINEAR_FLEET_CLIENT_SECRET", "").strip()
-    if cid_f and sec_f:
-        return Identity(
-            "fleet",
-            seat,
-            cid_f,
-            sec_f,
-            "environment (LINEAR_FLEET_CLIENT_ID, LINEAR_FLEET_CLIENT_SECRET)",
-            "CACHE_FLEET",
-            (fleet,),
-            f"shared {fleet} app",
-            "LINEAR_FLEET_CACHE_TOKEN",
-            "Fleet",
-        )
-    cid_o, sec_o, blob_o = read_app("FLEET", "CACHE_FLEET")
-    if cid_o and sec_o:
-        return Identity(
-            "fleet",
-            seat,
-            cid_o,
-            sec_o,
-            f"{FLEET_OPS_WHERE} (FLEET_LINEAR_CLIENT_ID, FLEET_LINEAR_CLIENT_SECRET)",
-            "CACHE_FLEET",
-            (fleet,),
-            f"shared {fleet} app",
-            "LINEAR_FLEET_CACHE_TOKEN",
-            "Fleet",
-            blob_o or "",
-        )
-    cid_i, sec_i = read_afc("FLEET")
-    if cid_i and sec_i:
-        return Identity(
-            "fleet",
-            seat,
-            cid_i,
-            sec_i,
-            f"{AFC_WHERE} (LINEAR_FLEET_CLIENT_ID, LINEAR_FLEET_CLIENT_SECRET)",
-            "CACHE_FLEET",
-            (fleet,),
-            f"shared {fleet} app",
-            "LINEAR_FLEET_CACHE_TOKEN",
-            "Fleet",
-        )
     seat_part = (
         (
-            f", and {seat} has no app credentials of its own ({k}_LINEAR_CLIENT_ID and {k}_LINEAR_CLIENT_SECRET "
-            f"in Infisical Fleet-OPS {FLEET_OPS_LINEAR_PATH}, or LINEAR_{k}_CLIENT_ID and LINEAR_{k}_CLIENT_SECRET "
-            "in the environment or in Infisical AI Fleet Coordinator /linear)"
+            f", and the {seat} seat's own pair was found nowhere either (LINEAR_{k}_CLIENT_ID and "
+            f"LINEAR_{k}_CLIENT_SECRET in the environment or in Infisical AI Fleet Coordinator {INFISICAL_LINEAR_PATH})"
         )
         if app
         else ""
     )
     # The variables the message names, in the order it names them:  the structured
     # field is what a caller downstream reads, and it cannot disagree with the prose.
-    missing = [
-        "FLEET_LINEAR_CLIENT_ID",
-        "FLEET_LINEAR_CLIENT_SECRET",
-        "LINEAR_FLEET_CLIENT_ID",
-        "LINEAR_FLEET_CLIENT_SECRET",
-        "LINEAR_CLIENT_ID",
-        "LINEAR_CLIENT_SECRET",
-    ]
+    missing = ["LINEAR_CLIENT_ID", "LINEAR_CLIENT_SECRET"]
     if app:
         missing += [
-            f"{k}_LINEAR_CLIENT_ID",
-            f"{k}_LINEAR_CLIENT_SECRET",
             f"LINEAR_{k}_CLIENT_ID",
             f"LINEAR_{k}_CLIENT_SECRET",
         ]
     die(
-        f"no Fleet credentials: FLEET_LINEAR_CLIENT_ID and FLEET_LINEAR_CLIENT_SECRET are missing from Infisical "
-        f"Fleet-OPS {FLEET_OPS_LINEAR_PATH} (`fleet-secrets get`), LINEAR_FLEET_CLIENT_ID and LINEAR_FLEET_CLIENT_SECRET "
-        f"are not set in the environment or in Infisical AI Fleet Coordinator {FLEET_OPS_LINEAR_PATH}, and LINEAR_CLIENT_ID "
-        f"and LINEAR_CLIENT_SECRET are not set{seat_part}.  Check `fleet-secrets doctor`.",
+        f"no Linear app credentials: LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET are not set in the "
+        f"environment{seat_part}.  The shared Fleet app was retired by the owner on 2026-11-05, so a "
+        f"missing identity fails closed instead of signing as a shared app:  store the seat's own pair "
+        f"in Infisical AI Fleet Coordinator {INFISICAL_LINEAR_PATH} or export it, and check the run's "
+        f"scoped service token for that folder.",
         EXIT_NO_CREDS,
         credential_field=",".join(missing),
     )
@@ -1656,15 +1598,15 @@ def _write_cache(fd: int, cache: dict) -> None:
 
 
 class Auth:
-    """The token of one identity.  It lives in Infisical Fleet-OPS /linear, one secret per app
-    (CACHE_<SEAT>, CACHE_FLEET), read on every run and written back after a mint, so no token
-    ever sits on disk (AFC-359) and every host and process shares one.  Mints at most once per
-    24 hours per app (design section 2).  The token is never printed."""
+    """The token of one identity.  Its shared copy lives in Infisical AI Fleet Coordinator
+    /linear, one secret per app (LINEAR_<SEAT>_CACHE_TOKEN), read on every run and written back
+    after a mint, so no token ever sits on disk (AFC-359) and every host and process shares one.
+    Mints at most once per 24 hours per app (design section 2).  The token is never printed."""
 
     def __init__(self, token_url: str, ident: Identity | None = None):
         self.token_url = token_url
         # None:  resolved with no seat at the first request, so a caller that
-        # names none (relabel_claims.py) acts as the shared Fleet app.
+        # names none (relabel_claims.py) needs the environment's pair.
         self.ident = ident
         self.token: str | None = None
         self.info: dict = {}
@@ -1679,7 +1621,7 @@ class Auth:
 
     @property
     def label(self) -> str:
-        return self.ident.label if self.ident else f"shared {fleet_app_name()} app"
+        return self.ident.label if self.ident else "LINEAR_CLIENT_ID app"
 
     @staticmethod
     def _fingerprint(cid: str, sec: str) -> str:
@@ -1694,15 +1636,11 @@ class Auth:
         return blob if isinstance(blob, dict) else {}
 
     def _has_store(self, ident: Identity) -> bool:
-        """Whether this app's token has a shared home reachable with the scoped read token."""
-        if ident.blob and fleet_secrets_bin():
-            return True
+        """Whether this app's token has a shared home this host can reach."""
         return bool(ident.shared and Infisical.get().enabled and Infisical.get()._identity())
 
     def _read_blob(self, ident: Identity) -> dict:
         self._read_at = time.time()
-        if ident.blob and fleet_secrets_bin():
-            return self._parse(fleet_ops_secret(ident.blob))
         if ident.shared:
             return self._parse(Infisical.get().value(ident.shared))
         return {}
@@ -1712,28 +1650,10 @@ class Auth:
         this run and never written anywhere else."""
         if not self._has_store(ident):
             return
-        text = json.dumps(blob)
-        if ident.blob and fleet_secrets_bin():
-            ok, where = fleet_ops_set(ident.blob, text), f"{FLEET_OPS_WHERE} {ident.blob}"
-        else:
-            row = {
-                k: blob[k]
-                for k in (
-                    "access_token",
-                    "token_type",
-                    "scope",
-                    "minted_at",
-                    "expires_at",
-                    "cred_fp",
-                    "viewer",
-                )
-                if k in blob
-            }
-            row["minted_by"] = os.uname().nodename
-            ok, where = (
-                Infisical.get().put(ident.shared, json.dumps(row)),
-                f"{INFISICAL_WHERE} {ident.shared}",
-            )
+        ok, where = (
+            Infisical.get().put(ident.shared, json.dumps(blob)),
+            f"{INFISICAL_WHERE} {ident.shared}",
+        )
         if not ok:
             warn(
                 f"could not save the new {ident.label} token in Infisical ({where});  using it for this run only"
@@ -1756,12 +1676,7 @@ class Auth:
         self.where = ident.where
         fp = self._fingerprint(ident.cid, ident.sec)
         now = time.time()
-        if ident.prefetched is not None and not self._used_prefetch and failed is None:
-            self._used_prefetch = True
-            self._read_at = now
-            blob = self._parse(ident.prefetched)
-        else:
-            blob = self._read_blob(ident)
+        blob = self._read_blob(ident)
         if not self._usable(blob, fp, failed, now) and (failed or now - self._read_at > 5):
             blob = self._read_blob(ident)  # another process may have just refreshed it
         tok = blob.get("access_token")
@@ -1908,25 +1823,19 @@ def write_identity_problem(ident: Identity, v: dict) -> str:
     if ident.kind == "seat":
         fix = (
             f"They look swapped with another seat's.  Put the {' or '.join(ident.accept)} app's client credentials "
-            f"there, or move them aside so {ident.seat} writes as the shared {fleet_app_name()} app.  "
+            f"there, or unset them:  {ident.seat} fails closed rather than write as another app.  "
             "Set LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET to that app's pair, or unset them."
         )
     else:
-        fix = (
-            "Set LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET to this seat's app or the shared "
-            f"{fleet_app_name()} app, or unset them."
-        )
+        fix = "Set LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET to this seat's own app, or unset them."
     return f"{why}.  {fix}"
 
 
 def check_write_identity(L: "Linear", auth: Auth) -> None:
     """Before a write, a seat app (or the environment's pair) must be the app
     it claims to be:  swapped credentials would sign one seat's words as
-    another's.  Reads skip this.  The shared Fleet app is not checked here,
-    as before."""
+    another's.  Reads skip this."""
     ident = auth.identity()
-    if ident.kind == "fleet":
-        return
     problem = write_identity_problem(ident, auth.viewer(L))
     if problem:
         # The fix names LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET, and the field
@@ -3763,7 +3672,6 @@ def cmd_whoami(L: Linear, auth: Auth, seat: str) -> int:
     org = d.get("organization") or {}
     auth.remember_viewer(v, org)
     ident = auth.identity()
-    fleet = fleet_app_name()
     app = SEAT_APP_NAMES.get(seat, "")
     name = v.get("name")
     writes = (
@@ -3774,16 +3682,16 @@ def cmd_whoami(L: Linear, auth: Auth, seat: str) -> int:
     info = auth.info or {}
     if ident.kind == "seat":
         identity = f"{name or app} (the {seat} seat's own Linear app)"
-    elif ident.kind == "env" and app and app_name_ok(name, seat_app_names(seat), seat):
+    elif app and app_name_ok(name, seat_app_names(seat), seat):
         identity = f"{name} (the {seat} seat's own Linear app, from the environment)"
-    elif ident.kind == "env" and name != fleet:
+    elif not seat:
         identity = (
-            f"unconfirmed (the environment's pair should be {' or '.join(map(repr, ident.accept))})"
+            f"unverified: {name} (the environment's pair; no bearer-verified seat, "
+            "so no seat identity is confirmed and writes refuse)"
         )
     else:
         identity = (
-            f"{fleet} (the shared app{', from the environment' if ident.kind == 'env' else ''}"
-            f"{f'; fallback for {seat}' if seat else ''})"
+            f"unconfirmed (the environment's pair should be {' or '.join(map(repr, ident.accept))})"
         )
     print(
         f"seat:        {seat} (bearer-verified)"
@@ -3802,36 +3710,16 @@ def cmd_whoami(L: Linear, auth: Auth, seat: str) -> int:
         print(
             f"token:       minted {central(info['minted_at'])}, expires {central(info.get('expires_at') or 0)}"
         )
-    if ident.blob and fleet_secrets_bin():
-        print(f"token store: {FLEET_OPS_WHERE} {ident.blob} (no token on disk)")
-    elif ident.shared and Infisical.get().enabled and Infisical.get()._identity():
+    if ident.shared and Infisical.get().enabled and Infisical.get()._identity():
         print(f"token store: {INFISICAL_WHERE} {ident.shared} (no token on disk)")
     else:
         print("token store: none on this host;  a token is minted for each run and kept nowhere")
-    if seat and name == fleet and ident.kind == "env":
-        print(
-            f"notice:      the environment's LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET are the shared {fleet} "
-            f"app's, not an app of {seat}'s own; writes still work and carry the {seat} tag."
-        )
-    elif seat and name == fleet and ident.kind == "fleet":
-        where = (
-            (
-                f"no {seat_env_key(seat)}_LINEAR_CLIENT_ID in the environment, in Fleet-OPS {FLEET_OPS_LINEAR_PATH}, "
-                f"or in AI Fleet Coordinator {INFISICAL_LINEAR_PATH}"
-            )
-            if app
-            else "none in the seat table"
-        )
-        print(
-            f"notice:      {seat} has no Linear app yet ({where}), so it uses the shared {fleet} app; "
-            f"writes still work and carry the {seat} tag."
-        )
     problems = []
     if not v.get("app"):
         problems.append(
             f"the viewer is a person, not the {' or '.join(ident.accept)} app; refusing to act as a human"
         )
-    elif not app_name_ok(name, ident.accept, ident.seat):
+    elif ident.seat and not app_name_ok(name, ident.accept, ident.seat):
         if ident.kind == "seat":
             problems.append(
                 f"the viewer is {name!r}, not the {' or '.join(map(repr, ident.accept))} app:  the credentials in {ident.where} "
@@ -3849,16 +3737,16 @@ def cmd_whoami(L: Linear, auth: Auth, seat: str) -> int:
     return EXIT_AUTH if problems else 0
 
 
-# ----------------------------------------------------------------- Agent-Sync parity:  catalogs
-# The hosted ST-MCP server (scripts/agent-sync-mcp) serves Linear as 175 named commands,
+# ----------------------------------------------------------------- Simple-Tools parity:  catalogs
+# The hosted ST-MCP server (scripts/simple-tools-mcp) serves Linear as 175 named commands,
 # general linear_schema/linear_query/linear_mutation tools and 11 proxied official Linear MCP tools.
 # `board commands`, `board run`, `board api` and `board mcp` give a seat the same tools from a shell.
 # The catalogs are JSON exported from the server's own JavaScript, never retyped here:
-# scripts/agent-sync-mcp/scripts/export-linear-catalog.mjs writes catalog/*.json, and
+# scripts/simple-tools-mcp/scripts/export-linear-catalog.mjs writes catalog/*.json, and
 # test/linear-catalog-parity.test.mjs fails CI when the committed JSON is stale.
 
 CATALOG_DIR = Path(__file__).resolve().parent / "catalog"
-REGENERATE_CATALOG = "cd scripts/agent-sync-mcp && node scripts/export-linear-catalog.mjs"
+REGENERATE_CATALOG = "cd scripts/simple-tools-mcp && node scripts/export-linear-catalog.mjs"
 _CATALOGS: dict = {}
 
 
@@ -3870,13 +3758,13 @@ def load_catalog(name: str) -> dict:
             data = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             die(
-                f"the Agent-Sync catalog {path} is missing.  It ships next to board;  in a checkout, "
+                f"the Simple-Tools catalog {path} is missing.  It ships next to board;  in a checkout, "
                 f"regenerate it with:  {REGENERATE_CATALOG}"
             )
         except (OSError, ValueError) as e:
-            die(f"cannot read the Agent-Sync catalog {path} ({type(e).__name__})")
+            die(f"cannot read the Simple-Tools catalog {path} ({type(e).__name__})")
         if not isinstance(data, dict):
-            die(f"the Agent-Sync catalog {path} is not a JSON object")
+            die(f"the Simple-Tools catalog {path} is not a JSON object")
         _CATALOGS[name] = data
     return _CATALOGS[name]
 
@@ -4018,7 +3906,10 @@ def with_defaults(schema: dict, args: dict) -> dict:
 # resolved arguments.  Parse errors all read "GraphQL document is invalid.", as the server's do.
 
 GQL_DOCUMENT_LIMIT = 24000
-GQL_VARIABLES_LIMIT = 24000
+# Raised from 24000 (AFC-646):  the shared deficiency log passed 26,729 characters and no seat
+# could update it in place.  Still a guard against pathological requests, far under Linear's own
+# request-size limits.  Keep in sync with VARIABLES_LIMIT in scripts/simple-tools-mcp/src/linear-graphql.js.
+GQL_VARIABLES_LIMIT = 100000  # Unicode code points (str len); linear-graphql.js counts the same
 GQL_MAX_DEPTH = 16
 GQL_MAX_FIELDS = 500
 GQL_MAX_TOKENS = 8000
@@ -4411,7 +4302,7 @@ def _copy_variables(variables) -> dict:
     except (TypeError, ValueError):
         _gql_invalid("variables must be JSON data.")
     if len(encoded) > GQL_VARIABLES_LIMIT:
-        _gql_invalid("variables exceed the 24000-character limit.")
+        _gql_invalid("variables exceed the 100000-character limit.")
     copied = json.loads(encoded)
     if not isinstance(copied, dict):
         _gql_invalid("variables must be a JSON object.")
@@ -4601,7 +4492,7 @@ def selected_fields(value: str) -> str:
 
 def build_named_operation(entry: dict, args: dict) -> tuple[str, dict]:
     """The document and variables the hosted server builds for a named command:  only the supplied
-    arguments, in catalog order, under `query|mutation AgentSyncNamed`."""
+    arguments, in catalog order, under `query|mutation SimpleToolsNamed`."""
     variants = entry.get("variants")
     command = (variants["update"] if "id" in args else variants["create"]) if variants else entry
     if variants:
@@ -4626,7 +4517,7 @@ def build_named_operation(entry: dict, args: dict) -> tuple[str, dict]:
     fields = args.get("selection") or command.get("selection")
     op = "mutation" if entry["kind"] == "write" else "query"
     doc = (
-        f"{op} AgentSyncNamed{'(' + ', '.join(definitions) + ')' if definitions else ''} {{ {command['root']}"
+        f"{op} SimpleToolsNamed{'(' + ', '.join(definitions) + ')' if definitions else ''} {{ {command['root']}"
         f"{'(' + ', '.join(parameters) + ')' if parameters else ''}"
         f"{' { ' + selected_fields(fields) + ' }' if fields else ''} }}"
     )
@@ -4708,7 +4599,7 @@ LABEL_ADMIN_OK = (
     "issueLabelRetire",
     "issueLabelRestore",
 )
-Q_LABEL_ONE = "query AgentSyncLabel($id: String!) { issueLabel(id: $id) { id name } }"
+Q_LABEL_ONE = "query SimpleToolsLabel($id: String!) { issueLabel(id: $id) { id name } }"
 
 
 def protect_labels(L: "Linear", prepared: dict) -> None:
@@ -5570,7 +5461,7 @@ def _type_ref(depth: int) -> str:
     return "kind name" + (f" ofType {{ {_type_ref(depth - 1)} }}" if depth else "")
 
 
-Q_SCHEMA_TYPE = f"""query AgentSyncSchema($name: String!) {{
+Q_SCHEMA_TYPE = f"""query SimpleToolsSchema($name: String!) {{
   __type(name: $name) {{
     name kind description
     fields(includeDeprecated: true) {{
@@ -5904,11 +5795,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("stats", help="aggregate counts")
     sub.add_parser("whoami", help="the Linear identity this CLI acts as")
 
-    # Agent-Sync parity:  the hosted server's Linear tools, from catalog/*.json.
+    # Simple-Tools parity:  the hosted server's Linear tools, from catalog/*.json.
     session_flag = dict(
         dest="session_ids", action="append", help=session_help + ", for the seat tag line"
     )
-    cmd_p = sub.add_parser("commands", help="the named Linear commands Agent-Sync serves (175)")
+    cmd_p = sub.add_parser("commands", help="the named Linear commands Simple-Tools serves (175)")
     cmd_p.add_argument(
         "action", nargs="?", choices=("show",), help="show NAME:  one command's arguments"
     )
@@ -5952,7 +5843,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     api_p = sub.add_parser(
-        "api", help="Linear GraphQL with the Agent-Sync guards:  schema, query, mutation"
+        "api", help="Linear GraphQL with the Simple-Tools guards:  schema, query, mutation"
     )
     api_sub = api_p.add_subparsers(dest="api_cmd", required=True)
     sch = api_sub.add_parser("schema", help="discover a type's fields, arguments or enum values")
@@ -6033,11 +5924,12 @@ def remote_selected() -> bool:
 REMOTE_MAX_BYTES = 4_000_000
 REMOTE_MAX_DEPTH = 64
 REMOTE_MAX_NODES = 100_000
-# The error codes the hosted server can return (the ToolError codes in scripts/agent-sync-mcp/src);  a test keeps
+# The error codes the hosted server can return (the ToolError codes in scripts/simple-tools-mcp/src);  a test keeps
 # this list in step with that source.  Anything else, including a code that merely looks safe, prints as "error".
 _REMOTE_CODES = frozenset(
     (
         "invalid_argument",
+        "invalid_response",
         "unavailable",
         "upstream_error",
         "not_authorized",
@@ -6062,6 +5954,8 @@ _REMOTE_CODES = frozenset(
         "forbidden",
         "fleetlink_seat_disabled",
         "fleetlink_refused",
+        "fleetlink_not_found",
+        "fleetlink_expired",
         "dm_not_allowed",
         "budget_exhausted",
     )
@@ -6203,13 +6097,13 @@ def _remote_code(value) -> str:
 
 def _remote_error_object(result: dict, sc) -> dict:
     """The hosted server's error object.  The server answers a tool error with isError and NO structuredContent: the
-    object (code, retry_after_s, ...) is in `_meta["agent-sync/error"]` and, as JSON, in the first text part that is a JSON object.  A
+    object (code, retry_after_s, ...) is in `_meta["simple-tools/error"]` and, as JSON, in the first text part that is a JSON object.  A
     structuredContent that carries a code still wins.  Only the code and the retry-after are ever shown, and
     the code only when it is allow-listed, so nothing the server wrote is copied."""
     if isinstance(sc, dict) and "code" in sc:
         return sc
     meta = result.get("_meta")
-    cand = meta.get("agent-sync/error") if isinstance(meta, dict) else None
+    cand = meta.get("simple-tools/error") if isinstance(meta, dict) else None
     if not isinstance(cand, dict):
         cand = None
         for part in result.get("content") or []:
@@ -6417,11 +6311,11 @@ def remote_bearer() -> str:
 
 
 def _remote_scanner():
-    """The fleet's secret scanner (scripts/agent_sync/secretscan.py, standard library only), loaded by path.  If it
+    """The fleet's secret scanner (scripts/simple_tools/secretscan.py, standard library only), loaded by path.  If it
     cannot be loaded nothing is sent:  remote mode has no unscanned route."""
     import importlib.util
 
-    path = Path(os.path.realpath(__file__)).parent.parent / "agent_sync" / "secretscan.py"
+    path = Path(os.path.realpath(__file__)).parent.parent / "simple_tools" / "secretscan.py"
     try:
         spec = importlib.util.spec_from_file_location("_remote_secretscan", str(path))
         module = importlib.util.module_from_spec(spec)

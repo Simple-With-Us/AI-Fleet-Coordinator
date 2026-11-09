@@ -156,10 +156,8 @@ class GitReadTest(unittest.TestCase):
         self.assertEqual(headers["Git-Protocol"], "version=2")
         self.assertNotIn(BEARER, json.dumps(headers))
         self.assertNotIn(APP_TOKEN.encode(), data)
-        self.assertEqual(
-            self.audited()[0][:4], ("CLAUDE", "git_read", "example-org/example-repo", "ok")
-        )
-        self.assertNotIn(APP_TOKEN, json.dumps(self.audited()))
+        # A successful fetch is a read:  it leaves no audit row (owner ruling 2026-11-06).
+        self.assertEqual(self.audited(), [])
 
     def test_a_remote_written_without_dot_git_reaches_the_same_repo(self):
         port = self.serve(Relay())

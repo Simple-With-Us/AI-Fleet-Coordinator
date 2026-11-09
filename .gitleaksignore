@@ -91,3 +91,19 @@ c3917b4bf6b2b045fa4089ab3ae8f725922d4396:scripts/agent-sync-mcp/test/gr-assert.t
 # the Muster overhaul PR (#1239). The value is made up to prove the audit log hashes
 # credential-shaped strings; assembled at runtime from the next commit on.
 49c3d7345030419da934356240448c7ac9c45622:git-relay/git_relay/tests/test_b9_hardening.py:generic-api-key:112
+# Made-up assignment in a Muster unit test (PR #1377) that proves a hook id never starts at a
+# NAME=value assignment. The next commit replaces it with a plain value.
+f4a3c683da987f3f3cd5afbe669988a67d79ecd7:muster/MusterTests/MiniMaxSurfaceTests.swift:generic-api-key:770
+# Made-up token-shaped value in the seat inventory test (PR #1416), proving no config value reaches an answer.
+# The next commit assembles it at runtime, so this silences the one historical commit only.
+fd45e8fcde90f68f0900e3d57e29bb01d0558a92:scripts/test_fleet_seat_inventory.py:generic-api-key:14
+# Made-up token, API-key and Basic-header values in the config reader's redaction tests (PR #1477), proving
+# the reader hides them.  The next commit splits each value into two string pieces, so this silences the one historical commit only.
+ac764c34b5d3eb5b9eaa949a195e2152cfcad617:muster/MusterTests/ConfigFileReaderTests.swift:generic-api-key:219
+ac764c34b5d3eb5b9eaa949a195e2152cfcad617:muster/MusterTests/ConfigFileReaderTests.swift:generic-api-key:311
+ac764c34b5d3eb5b9eaa949a195e2152cfcad617:muster/MusterTests/ConfigFileReaderTests.swift:curl-auth-header:329
+146b582e95374699d93f905d8cfd8a8db33ab074:muster/MusterTests/ConfigFileReaderTests.swift:generic-api-key:219
+# A variable named key in the Muster route's trust-file reader (PR #1505, its first commit):  the scanner read
+# the attribute test on the line as a generic assignment.  It holds a loaded public key object and no credential.
+# The next commit renames it, so this silences the one historical commit only.
+2806257467c58038e67c191580bb9a1665f48422:scripts/muster_agent/muster_trust_files.py:generic-api-key:101

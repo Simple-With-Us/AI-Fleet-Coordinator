@@ -23,7 +23,12 @@ enum FleetServiceActionRouting {
 //
 // Every action runs `--plan` first,  which changes nothing,  and Muster shows the plan.  The
 // view asks for Touch ID,  then Muster plans again,  refuses when the plan changed,  and only
-// then runs `--yes`.  One action runs at a time,  app-wide.
+// then runs `--yes`.  One action runs at a time in this app,  and the helper holds its own
+// lock on each machine,  so a second app or a shell cannot run one alongside it.
+//
+// The one exception to Touch ID is `OpsController.runUnattended`:  a start that Muster takes on
+// its own for a service whose policy says to keep it running (`ServiceReconciler`).  It plans,
+// runs and audits exactly as above,  with nobody at a sheet,  and it accepts only a start.
 //
 // `ServiceActionRouter` is the one way in for a service row,  from the menu or the panel.
 // BotFleet Server and any LaunchAgent the allowlist does not name stay on `FleetAdmin`'s
@@ -43,11 +48,15 @@ enum OpsControlRoute {
     static let serverAlias = "fleet-ops-ctl"
     static let ssh = "/usr/bin/ssh"
     /// The doctor's own ssh options:  never prompt,  give up quickly,  and never accept a
-    /// host key that is not already known.
+    /// host key that is not already known.  A connection that goes quiet after it opened is
+    /// given up after three missed 15-second checks,  so a dead link ends in under a minute
+    /// instead of holding the sheet until the timeout.
     static let sshOptions = [
         "-o", "BatchMode=yes",
         "-o", "ConnectTimeout=8",
         "-o", "StrictHostKeyChecking=yes",
+        "-o", "ServerAliveInterval=15",
+        "-o", "ServerAliveCountMax=3",
     ]
     /// The pinned interpreter,  the one the rest of the app runs.
     static let interpreter = "/usr/bin/python3"
@@ -60,10 +69,20 @@ enum OpsControlRoute {
 
     /// A plan only reads,  so it is short.
     static let planTimeout: TimeInterval = 90
-    /// Allow time for an update helper's bounded completion check after submission.
+    /// A run on the Mac:  a LaunchAgent bootstrap and kickstart can each take 90 seconds,
+    /// and a knob write goes through the Infisical CLI,  which has no bound of its own.
     static let runTimeout: TimeInterval = 900
+    /// A run on the server.  The server's helper bounds each command at 90 seconds,  its
+    /// update check at 12 and a redeploy at 30 plus 30,  so three minutes covers the slowest
+    /// with room for ssh,  and a lost run frees the app in minutes and not a quarter hour.
+    static let serverRunTimeout: TimeInterval = 180
     /// How long a timed-out helper has to exit after SIGTERM before it gets SIGKILL.
     static let killGrace: TimeInterval = 5
+
+    /// The longest Muster waits for a run of this action.
+    static func runWait(for action: OpsAction) -> TimeInterval {
+        action.runsOnServer ? serverRunTimeout : runTimeout
+    }
 }
 
 // MARK: - The actions
@@ -107,6 +126,20 @@ enum OpsAction: Equatable {
     case serverResource(field: String, value: String, revision: String)
     /// Read the server's coding resource-policy receipt,  without changing anything.
     case resourceStatus
+    /// `server eavesdropper-status server`,  run on the server:  the server eavesdropper's
+    /// status,  reduced to names,  counts,  tokens and times,  read only and `--plan` only.
+    case eavesdropperStatus
+    /// `server unit-status UNIT`,  run on the server:  one listed unit's systemd state
+    /// (active state,  sub-state,  result and times),  read only and `--plan` only.  The unit
+    /// is an allowlisted server unit or a `watch` unit;  `OpsUnitStatusReader` checks that.
+    case unitStatus(unit: String)
+
+    /// The verb the helper names in its answer to `.eavesdropperStatus`.
+    static let eavesdropperStatusVerb = "server eavesdropper-status"
+    /// The verb the helper names in its answer to `.unitStatus`.
+    static let unitStatusVerb = "server unit-status"
+    /// The verb the helper names in its answer to `.logs`.
+    static let logsVerb = "server logs"
 
     /// The machine the action runs on.
     ///
@@ -115,7 +148,8 @@ enum OpsAction: Equatable {
     /// the screen come from the same value that picks the route.
     var runsOn: FleetHost {
         switch self {
-        case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus:
+        case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus,
+             .eavesdropperStatus, .unitStatus:
             return .server
         case .macAgent, .knobSet, .knobUnset, .pm2App:
             return .mac
@@ -127,7 +161,7 @@ enum OpsAction: Equatable {
         switch self {
         case .knobSet, .knobUnset: return .acrossFleet
         case .macAgent, .serverUnit, .serverUpdate, .coolifyRedeploy, .pm2App, .logs,
-             .serverResource, .resourceStatus:
+             .serverResource, .resourceStatus, .eavesdropperStatus, .unitStatus:
             return .machine(runsOn)
         }
     }
@@ -139,7 +173,7 @@ enum OpsAction: Equatable {
     /// part way,  and the Mac knows whether the text reached it,  so it plainly did not work.
     var changesNothing: Bool {
         switch self {
-        case .logs, .resourceStatus:
+        case .logs, .resourceStatus, .eavesdropperStatus, .unitStatus:
             return true
         case .macAgent, .serverUnit, .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .pm2App,
              .serverResource:
@@ -158,8 +192,10 @@ enum OpsAction: Equatable {
         case .knobUnset(let key): return key
         case .pm2App(_, let name): return OpsNames.pm2Title(name)
         case .logs(let unit): return OpsNames.unitTitle(unit)
-        case .serverResource(let field, _, _): return resourceTitle(field)
+        case .serverResource(let field, _, _): return ResourcePolicyField(rawValue: field)?.title ?? "Resource Policy"
         case .resourceStatus: return "The Resource Policy"
+        case .eavesdropperStatus: return "The Eavesdropper's Status"
+        case .unitStatus(let unit): return OpsNames.unitTitle(unit)
         }
     }
 
@@ -176,16 +212,87 @@ enum OpsAction: Equatable {
         case .knobUnset(let key): return "Reset \(key) to the default \(place)"
         case .pm2App(let verb, _): return "\(verb.title) \(subjectTitle) \(place)"
         case .logs: return "Read the last logs of \(subjectTitle) \(place)"
-        case .serverResource(let field, let value, _): return "Set \(resourceTitle(field)) to \(value) \(place)"
+        case .serverResource(let field, let value, _):
+            return "\(ResourcePolicyField.changePhrase(field: field, value: value)) \(place)"
         case .resourceStatus: return "Read the resource policy \(place)"
+        case .eavesdropperStatus: return "Read the eavesdropper's status \(place)"
+        case .unitStatus: return "Read the state of \(subjectTitle) \(place)"
         }
     }
 
-    /// The button that runs the action.
+    /// The title,  with what a plan answer said about the subject in place of what this Mac
+    /// had:  a redeploy names the server's resource name once a plan gave one,  and a logs
+    /// read of a timer names the service whose journal it reads.  The sheet's title and the
+    /// Touch ID question use this (`OpsController.Phase.title`,  `OpsApprovalRequest.reason`).
+    func title(plan: OpsOutcome?) -> String {
+        let place = changes.inProse
+        switch self {
+        case .coolifyRedeploy:
+            // The server's stand-in for a row with no name says less than this Mac's name.
+            guard let name = plan?.resourceName, name != OpsRedeployName.serverPlaceholder else {
+                return title
+            }
+            return "Redeploy \(name) \(place)"
+        case .logs(let unit):
+            guard let read = plan?.logsUnit, read != unit else { return title }
+            return "Read the last logs of \(read) \(place)"
+        case .macAgent, .serverUnit, .serverUpdate, .knobSet, .knobUnset, .pm2App, .serverResource,
+             .resourceStatus, .eavesdropperStatus, .unitStatus:
+            return title
+        }
+    }
+
+    /// The button that runs the action.  The Mac asks for Touch ID,  or the login password
+    /// where it offers that instead,  so the button names the approval and not one way of
+    /// giving it.
     var runButtonTitle: String {
         switch changes {
-        case .machine(let host): return "Run \(host.onTitle) With Touch ID"
-        case .acrossFleet: return "Change For The Whole Fleet With Touch ID"
+        case .machine(let host): return "Approve And Run \(host.onTitle)"
+        case .acrossFleet: return "Approve And Change For The Whole Fleet"
+        }
+    }
+
+    /// What the action does,  in plain words,  at the top of the plan.  The exact commands
+    /// are kept for the owner who opens them.
+    var effectSentence: String {
+        let gap = ServerStatusCopy.sentenceGap
+        let place = runsOn.inProse
+        func verbSentence(_ verb: OpsVerb) -> String {
+            switch verb {
+            case .start: return "Starts \(subjectTitle) \(place)."
+            case .stop: return "Stops \(subjectTitle) \(place)."
+            case .restart: return "Stops \(subjectTitle) \(place) and starts it again."
+            }
+        }
+        switch self {
+        case .macAgent(let verb, _), .serverUnit(let verb, _), .pm2App(let verb, _):
+            return verbSentence(verb)
+        case .serverUpdate(let name):
+            return "Starts the \(name) update \(place), then checks for a short while whether it finished."
+        case .coolifyRedeploy(_, let name):
+            return "Asks Coolify \(place) to redeploy \(name).\(gap)Muster learns only that Coolify accepted the request, not that the new deploy is healthy."
+        case .knobSet(let key, let value):
+            return "Sets \(key) to \"\(value)\" for every machine that reads it."
+        case .knobUnset(let key):
+            return "Removes the \(key) setting, so every machine that reads it goes back to the default."
+        case .logs:
+            return "Reads the last journal lines of \(subjectTitle) \(place).\(gap)Nothing changes."
+        case .serverResource(let field, let value, _):
+            // The field's own words for the change (`ResourcePolicyField.changePhrase`),  told
+            // as what the plan does:  "Set" becomes "Sets",  "Turn" becomes "Turns".
+            var phrase = ResourcePolicyField.changePhrase(field: field, value: value)
+            for (order, does) in [("Set ", "Sets "), ("Turn ", "Turns "), ("Change ", "Changes ")]
+                where phrase.hasPrefix(order) {
+                phrase = does + phrase.dropFirst(order.count)
+                break
+            }
+            return "\(phrase) \(place)."
+        case .resourceStatus:
+            return "Reads the resource policy \(place).\(gap)Nothing changes."
+        case .eavesdropperStatus:
+            return "Reads the eavesdropper's status \(place).\(gap)Nothing changes."
+        case .unitStatus:
+            return "Reads the state of \(subjectTitle) \(place).\(gap)Nothing changes."
         }
     }
 
@@ -214,7 +321,8 @@ enum OpsAction: Equatable {
                 return "It stops right away on the server, and the server's report stops with it, so the Mac stops knowing the server within 45 minutes."
             }
             return "It stops right away on the server, and stays stopped until you start it again."
-        case .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .logs, .serverResource, .resourceStatus:
+        case .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .logs, .serverResource, .resourceStatus,
+             .eavesdropperStatus, .unitStatus:
             return nil
         }
     }
@@ -240,6 +348,8 @@ enum OpsAction: Equatable {
         case .logs: return .logs
         case .serverResource: return .serverResource
         case .resourceStatus: return .resourceStatus
+        case .eavesdropperStatus: return .eavesdropperStatus
+        case .unitStatus: return .unitStatus
         }
     }
 
@@ -256,6 +366,8 @@ enum OpsAction: Equatable {
         case .logs: return "server logs"
         case .serverResource: return "server resource policy"
         case .resourceStatus: return "server resource status"
+        case .eavesdropperStatus: return "server eavesdropper status"
+        case .unitStatus: return "server unit status"
         }
     }
 
@@ -275,6 +387,8 @@ enum OpsAction: Equatable {
         case .logs(let unit): return unit
         case .serverResource(let field, _, _): return "coding.\(field)"
         case .resourceStatus: return "coding"
+        case .eavesdropperStatus: return "server"
+        case .unitStatus(let unit): return unit
         }
     }
 
@@ -292,18 +406,10 @@ enum OpsAction: Equatable {
         case .serverResource(let field, let value, let revision):
             return ["server", "resource-policy", "\(field).\(value).\(revision)"]
         case .resourceStatus: return ["server", "resource-status", "coding"]
-        }
-    }
-
-    private func resourceTitle(_ field: String) -> String {
-        switch field {
-        case "cpu-cores": return "CPU Cores"
-        case "cpu-weight": return "CPU Weight"
-        case "ram-budget-gib": return "RAM Budget"
-        case "ram-critical-gib": return "Critical RAM Budget"
-        case "ram-reserve-gib": return "Host RAM Reserve"
-        case "borrow-idle": return "Idle Memory Borrowing"
-        default: return "Resource Policy"
+        // The target is the instance word `server` and nothing else:  the helper refuses any
+        // other, because the container it reads is the server's.
+        case .eavesdropperStatus: return ["server", "eavesdropper-status", "server"]
+        case .unitStatus(let unit): return ["server", "unit-status", unit]
         }
     }
 }
@@ -312,7 +418,7 @@ enum OpsAction: Equatable {
 /// so the tests that walk every case cover it the day it is added.
 enum OpsActionCase: CaseIterable {
     case macAgent, serverUnit, serverUpdate, coolifyRedeploy, knobSet, knobUnset
-    case pm2App, logs, serverResource, resourceStatus
+    case pm2App, logs, serverResource, resourceStatus, eavesdropperStatus, unitStatus
 
     /// One valid action of this case.
     var sample: OpsAction {
@@ -328,7 +434,14 @@ enum OpsActionCase: CaseIterable {
         case .serverResource:
             return .serverResource(field: "cpu-cores", value: "4", revision: String(repeating: "a", count: 64))
         case .resourceStatus: return .resourceStatus
+        case .eavesdropperStatus: return .eavesdropperStatus
+        case .unitStatus: return .unitStatus(unit: OpsNames.reportTimerUnit)
         }
+    }
+
+    /// True for the reads the helper takes with `--plan` only,  so they have no `--yes` run.
+    var isPlanOnly: Bool {
+        self == .resourceStatus || self == .eavesdropperStatus || self == .unitStatus
     }
 }
 
@@ -360,6 +473,67 @@ enum OpsNames {
             return false
         }
         return named?.title ?? name
+    }
+}
+
+/// A redeploy's resource name as the server's plan gives it,  and the check that it names the
+/// resource on this Mac's button.
+///
+/// The server writes the name the way its audit row names the redeploy:  a trailing
+/// ` (SERVICE)` removed,  at most 120 characters,  printable ASCII with `?` for any other code
+/// point,  and `coolify resource` when the row has no name.  This Mac's name comes from the
+/// server's report,  so it is put in the same shape before the two are compared.
+enum OpsRedeployName {
+    /// The server's name for a row that has none.
+    static let serverPlaceholder = "coolify resource"
+    /// This Mac's name for a row whose report gave none (`ServerStatusReading.redeployName`).
+    static let musterPlaceholder = "this resource"
+    static let maximumLength = 120
+
+    /// Printable ASCII,  with `?` for any other code point,  at most 120 characters.  Nil when
+    /// nothing is left.
+    static func displayed(_ text: String) -> String? {
+        let shaped = String(printable(text).prefix(maximumLength))
+        return shaped.trimmingCharacters(in: .whitespaces).isEmpty ? nil : shaped
+    }
+
+    /// Printable ASCII,  with `?` for any other code point,  at its full length.
+    private static func printable(_ text: String) -> String {
+        let question: Unicode.Scalar = "?"
+        var kept = String.UnicodeScalarView()
+        for scalar in text.unicodeScalars {
+            kept.append((0x20...0x7E).contains(scalar.value) ? scalar : question)
+        }
+        return String(kept)
+    }
+
+    /// True when the server's name is the name this Mac had,  in the server's shape.  A Mac
+    /// that had no name has nothing to compare,  so any name the server gives matches it.  The
+    /// Mac's name may still carry the ` (SERVICE)` the server removes.
+    ///
+    /// The suffix is taken off the whole name before it is cut to 120 characters,  as the
+    /// server does:  cutting first would drop a long name's ` (SERVICE)`,  and the stem could
+    /// never be found.
+    static func matches(muster: String, server: String) -> Bool {
+        let trimmed = muster.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty || trimmed == musterPlaceholder { return true }
+        guard let mine = displayed(muster) else { return true }
+        if mine == server { return true }
+        let whole = printable(muster)
+        if whole.hasSuffix(")"), let open = whole.range(of: " (", options: .backwards) {
+            let stem = String(whole[..<open.lowerBound].prefix(maximumLength))
+            if stem == server { return true }
+        }
+        return false
+    }
+
+    /// The plain sentence for a plan that names another resource,  naming both.
+    static func mismatchSentence(muster: String, server: String) -> String {
+        let mine = displayed(muster) ?? musterPlaceholder
+        return ApplyCopy.join(
+            "Muster planned a redeploy of \"\(mine)\", but the server's plan names \"\(server)\", so nothing will run.",
+            "Read the server's report again, then plan the redeploy again."
+        )
     }
 }
 
@@ -398,7 +572,7 @@ enum OpsControlError: Error, Equatable, LocalizedError {
         case .helperNotFound(let path):
             return ApplyCopy.join(
                 "The helper was not found at \(path).",
-                "Set the fleetConfigRepoRoot default or the MUSTER_REPO_ROOT variable to the repository root."
+                "In Settings, open Folders and choose the fleet checkout."
             )
         case .launchFailed(let detail):
             return "The helper could not be started: \(detail)"
@@ -585,7 +759,9 @@ struct OpsCommandBuilder {
             guard resourcePolicyFields.contains(field) else { throw OpsControlError.invalidArgument("resource field") }
             guard isSafeResourceValue(field: field, value: value) else { throw OpsControlError.invalidArgument("resource value") }
             guard isSafeResourceRevision(revision) else { throw OpsControlError.invalidArgument("resource revision") }
-        case .resourceStatus:
+        case .unitStatus(let unit):
+            guard isUnitName(unit) else { throw OpsControlError.invalidArgument("unit name") }
+        case .resourceStatus, .eavesdropperStatus:
             break
         }
     }
@@ -604,7 +780,8 @@ struct OpsCommandBuilder {
             switch action {
             case .macAgent, .pm2App: return helperURL
             case .knobSet, .knobUnset: return repoRoot.appendingPathComponent(OpsControlRoute.knobsEntryPoint)
-            case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus: return nil
+            case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus,
+                 .eavesdropperStatus, .unitStatus: return nil
             }
         }
     }
@@ -658,6 +835,21 @@ struct OpsCommandBuilder {
         )
     }
 
+    /// The typed, read-only route that asks the server what one platform has installed:
+    /// `server seat-inventory PLATFORM --plan --json`.  It changes nothing, so it needs no
+    /// confirmation sheet and no Touch ID, and the helper accepts only `--plan` for it.  The
+    /// platform is a plain lower-case id and nothing else, so no word reaches the server that
+    /// could be read as a flag or a second verb.
+    func seatInventoryInvocation(platform: String) throws -> OpsInvocation {
+        guard SeatInventoryDecoder.isPlatformId(platform) else {
+            throw OpsControlError.invalidArgument("seat inventory platform")
+        }
+        return serverInvocation(
+            tail: ["server", "seat-inventory", platform, "--plan", "--json"],
+            timeout: OpsControlRoute.planTimeout
+        )
+    }
+
     private func serverInvocation(tail: [String], timeout: TimeInterval) -> OpsInvocation {
         OpsInvocation(
             executable: OpsControlRoute.ssh,
@@ -674,7 +866,13 @@ struct OpsCommandBuilder {
         if case .resourceStatus = action, mode != .plan {
             throw OpsControlError.invalidArgument("read-only resource status mode")
         }
-        let timeout = mode == .plan ? OpsControlRoute.planTimeout : OpsControlRoute.runTimeout
+        if case .eavesdropperStatus = action, mode != .plan {
+            throw OpsControlError.invalidArgument("read-only eavesdropper status mode")
+        }
+        if case .unitStatus = action, mode != .plan {
+            throw OpsControlError.invalidArgument("read-only unit status mode")
+        }
+        let timeout = mode == .plan ? OpsControlRoute.planTimeout : OpsControlRoute.runWait(for: action)
         var tail = action.verbArguments + [mode.flag, "--json"]
         if case .knobSet(let key, let value) = action {
             // The flags go first and `--` ends them,  so the value is never read as a flag
@@ -708,7 +906,8 @@ struct OpsCommandBuilder {
                     environment: localEnvironment,
                     timeout: timeout
                 )
-            case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus:
+            case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus,
+                 .eavesdropperStatus, .unitStatus:
                 // `runsOn` says these are the server's,  so this cannot be reached.  It
                 // refuses rather than running a server action on the Mac.
                 throw OpsControlError.invalidArgument("route")
@@ -882,10 +1081,50 @@ struct OpsResult: Decodable, Equatable {
     /// True when `host` is there and is not a string,  null included,  which is not the same
     /// as a helper too old to carry the field.
     let hostIsMalformed: Bool
+    /// The helper's fixed code for why it refused or failed,  such as `update_busy`.
+    let errorCode: String?
+    /// The id of the row the helper wrote to its own audit log for this run.
+    let auditID: String?
+    /// The target that row names,  which can differ from the name on this Mac's button.
+    let auditTarget: String?
+    /// How many of the commands finished,  when a chain stopped part way or ran through.
+    let completedCommands: Int?
+    /// The server eavesdropper's reduced status,  when `server eavesdropper-status` answered
+    /// one.  Read field by field,  so one odd field never costs the document.
+    let status: ReducedEavesdropperStatus?
+    /// The unit a `server unit-status` answer describes,  and its scope (`user` or `system`).
+    let unit: String?
+    let scope: String?
+    /// systemd's words for that unit:  ActiveState,  SubState and Result.  `unitResult` is
+    /// systemd's Result,  because the answer's own `result` is the helper's word.
+    let activeState: String?
+    let subState: String?
+    let unitResult: String?
+    /// When the service last exited,  and when a timer next elapses,  as the helper spells a
+    /// time (`YYYY-MM-DDTHH:MM:SSZ`),  or null.
+    let lastExitAt: String?
+    let nextElapseAt: String?
+    /// True when the answer carries the `nextElapseAt` key at all,  null included:  the helper
+    /// gives it for a timer only.
+    let hasNextElapseAt: Bool
+    /// When a timer last fired,  as the helper spells a time,  or null.  The helper gives the key
+    /// for a timer only.
+    let lastTriggerAt: String?
+    /// When the server read the unit.
+    let checkedAt: String?
+    /// The unit whose journal a `server logs` answer reads:  the service a timer starts,  for a
+    /// timer.  The timer stays the target and the audit target.
+    let logsUnit: String?
+    /// The Coolify resource a `server redeploy` plan or run names,  the same string as its audit
+    /// target.  Absent in a refusal.
+    let resourceName: String?
 
     enum CodingKeys: String, CodingKey {
         case ok, verb, target, commands, result, detail, old, new, lkg, output, lines, resourcePolicy
         case executionState, verified, invocationID, baselineStartMonotonic, host
+        case errorCode, auditID, auditTarget, completedCommands, status
+        case unit, scope, activeState, subState, unitResult, lastExitAt, nextElapseAt, checkedAt
+        case lastTriggerAt, logsUnit, resourceName
         case oldSource = "old_source"
     }
 
@@ -912,6 +1151,23 @@ struct OpsResult: Decodable, Equatable {
         baselineStartMonotonic = try? container.decodeIfPresent(UInt64.self, forKey: .baselineStartMonotonic)
         host = try? container.decodeIfPresent(String.self, forKey: .host)
         hostIsMalformed = host == nil && container.contains(.host)
+        errorCode = try? container.decodeIfPresent(String.self, forKey: .errorCode)
+        auditID = try? container.decodeIfPresent(String.self, forKey: .auditID)
+        auditTarget = try? container.decodeIfPresent(String.self, forKey: .auditTarget)
+        completedCommands = try? container.decodeIfPresent(Int.self, forKey: .completedCommands)
+        status = try? container.decodeIfPresent(ReducedEavesdropperStatus.self, forKey: .status)
+        unit = try? container.decodeIfPresent(String.self, forKey: .unit)
+        scope = try? container.decodeIfPresent(String.self, forKey: .scope)
+        activeState = try? container.decodeIfPresent(String.self, forKey: .activeState)
+        subState = try? container.decodeIfPresent(String.self, forKey: .subState)
+        unitResult = try? container.decodeIfPresent(String.self, forKey: .unitResult)
+        lastExitAt = try? container.decodeIfPresent(String.self, forKey: .lastExitAt)
+        nextElapseAt = try? container.decodeIfPresent(String.self, forKey: .nextElapseAt)
+        hasNextElapseAt = container.contains(.nextElapseAt)
+        lastTriggerAt = try? container.decodeIfPresent(String.self, forKey: .lastTriggerAt)
+        checkedAt = try? container.decodeIfPresent(String.self, forKey: .checkedAt)
+        logsUnit = try? container.decodeIfPresent(String.self, forKey: .logsUnit)
+        resourceName = try? container.decodeIfPresent(String.self, forKey: .resourceName)
     }
 }
 
@@ -967,6 +1223,10 @@ enum OpsResultKind: String {
     case done
     case refused
     case failed
+    /// A read verb that could not read what it reads (for example `server eavesdropper-status`
+    /// when the eavesdropper's status is not there).  It changed nothing:  it is not a failed
+    /// command and not a refusal.  The helper's `errorCode` says why.
+    case unavailable
     case unknown
 }
 
@@ -1000,6 +1260,52 @@ struct OpsOutcome: Equatable {
     var runNotKnown: Bool = false
     /// True when this answers a plan,  which ran nothing however it came out.
     var isPlan: Bool = false
+    /// The helper's fixed code for a refusal or a failure,  when it gave one.
+    var errorCode: String? = nil
+    /// The id of the row the helper wrote to its own audit log,  for a run that wrote one.
+    var serverAuditID: String? = nil
+    /// The target that row names.
+    var serverAuditTarget: String? = nil
+    /// How many of `commands` finished,  when the helper said.
+    var completedCommands: Int? = nil
+    /// True when a run's answer lists other commands than the plan the owner approved.
+    var differsFromReview: Bool = false
+    /// The server eavesdropper's reduced status,  for a planned `server eavesdropper-status`
+    /// answer that carried one;  nil for every other action.  Its version is not checked here:
+    /// `ServerEavesdropperReading(outcome:)` does that.
+    var eavesdropperStatus: ReducedEavesdropperStatus? = nil
+    /// One unit's systemd state,  for a planned `server unit-status` answer about the unit the
+    /// action names whose state words are in their own shape;  nil for every other answer.
+    var unitState: ServerUnitState? = nil
+    /// The unit whose journal a logs answer reads,  when the helper named one in a unit's own
+    /// shape:  `fleet-server-status.service` for `fleet-server-status.timer`.
+    var logsUnit: String? = nil
+    /// The resource name a redeploy plan or run gave,  in printable ASCII and at most 120
+    /// characters.
+    var resourceName: String? = nil
+    /// True when Muster itself stopped a plan the server gave,  so nothing ran:  a redeploy
+    /// plan that names another resource than the one on this Mac's button.
+    var stoppedOnMac: Bool = false
+
+    /// The heading over a logs run's journal lines,  naming the unit read:  `Logs of
+    /// fleet-server-status.service` for a timer.  Nil when the answer named no unit.
+    var logsHeading: String? {
+        logsUnit.map { "Logs of \($0)" }
+    }
+
+    /// The heading over the sheet's journal block:  the unit read when the answer named it
+    /// (`logsHeading`),  else how many lines were read.
+    var journalHeading: String {
+        if let logsHeading { return logsHeading }
+        return logLines.map { "The Last \($0) Journal Lines" } ?? "The Last Journal Lines"
+    }
+
+    /// The line under that heading when it names the unit:  how many lines were read.  Nil
+    /// when the heading already says so,  or the answer did not.
+    var journalCountLine: String? {
+        guard logsHeading != nil, let lines = logLines else { return nil }
+        return lines == 1 ? "The last journal line." : "The last \(lines) journal lines."
+    }
 
     /// True when the run did what its mode asks for:  a plan that planned,  or a run that
     /// was done.  The helper's `ok`,  its result word and its exit code must all agree.
@@ -1017,10 +1323,93 @@ struct OpsOutcome: Equatable {
     }
 
     /// What the sheet calls those commands once the action has ended.  It says what ran only
-    /// when something is known to have run.
+    /// when the helper said it ran:  a plan ran nothing,  a refusal ran nothing,  a failure
+    /// stopped part way,  and a lost answer cannot say.
     var commandsHeading: String {
-        if isPlan || kind == .planned || kind == .refused { return "The plan" }
-        return runNotKnown ? "What the helper named" : "What ran"
+        // A read that could not read anything planned nothing either, even through `--plan`.
+        if kind == .unavailable { return "What Was Read" }
+        if isPlan || kind == .planned { return "The Plan" }
+        switch kind {
+        case .refused: return "Not Run"
+        case .unavailable: return "What Was Read"
+        case .done, .submitted: return runNotKnown ? "What Was Asked To Run" : "What Ran"
+        case .failed: return "What Was Tried"
+        case .unknown, .planned: return "What Was Asked To Run"
+        }
+    }
+
+    /// True when the helper's own words add something under the result's title.  A bare
+    /// "done" repeats the title,  so it is left out.
+    var showsDetailUnderTitle: Bool {
+        let plain = detail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return !plain.isEmpty && plain != "done" && plain != "done."
+    }
+
+    /// How far a chain got before it stopped,  when the helper said.
+    var progressNote: String? {
+        guard kind == .failed, !isPlan, let finished = completedCommands,
+              !commands.isEmpty, finished < commands.count else { return nil }
+        let total = commands.count
+        if total == 1 { return "The command ran and did not succeed." }
+        if finished == 0 { return "The first command did not succeed, so none after it ran." }
+        return "\(finished) of \(total) commands succeeded, the next one did not, and none after it ran."
+    }
+
+    /// The line at the top of a result:  what happened,  in the owner's words,  and above
+    /// all whether anything ran.
+    func resultTitle(for action: OpsAction) -> String {
+        let gap = ServerStatusCopy.sentenceGap
+        let who = action.runsOn == .mac ? "This Mac" : "The server"
+        if kind == .unavailable {
+            return "\(who) could not read it, so nothing is known yet.\(gap)Nothing was changed."
+        }
+        if isPlan {
+            if stoppedOnMac { return "Muster stopped this before it ran, so nothing ran." }
+            if kind == .refused { return "\(who) refused this, so nothing ran." }
+            return "The plan could not be read, so nothing ran."
+        }
+        switch kind {
+        case .done:
+            return isSuccess(for: .yes) ? "Done." : "\(who) said done but did not confirm it worked."
+        case .submitted:
+            return "Sent.\(gap)Muster has not seen it finish yet."
+        case .planned:
+            return "The plan could not be confirmed, so nothing ran."
+        case .refused:
+            return "\(who) refused this, so nothing ran."
+        case .failed:
+            return "This did not work."
+        case .unavailable:
+            return "\(who) could not read it, so nothing is known yet.\(gap)Nothing was changed."
+        case .unknown:
+            guard runNotKnown else { return "The answer could not be read." }
+            return "This may or may not have run \(action.runsOn.inProse).\(gap)Check its state before you run it again."
+        }
+    }
+
+    /// Plain advice for a helper's fixed error code,  or nil when there is none to give.
+    func advice(for action: OpsAction) -> String? {
+        let gap = ServerStatusCopy.sentenceGap
+        switch errorCode {
+        case "update_busy":
+            return "An update is already running on the server.\(gap)Check again in a minute."
+        case "action_busy":
+            return "Another action is still running \(action.runsOn.inProse).\(gap)Wait for it to end, then try again."
+        case "action_lock_unavailable":
+            return "The control script \(action.runsOn.inProse) could not take its one-action lock."
+        case "authorization_unavailable":
+            return "The server is not set up to let Muster start this update."
+        case "update_route_changed":
+            return "The way the server runs this update changed after the plan.\(gap)Plan it again."
+        case "invocation_replaced":
+            return "Another update run replaced this one before Muster could see it finish."
+        case "read_only_required":
+            return "This only reads, so the server takes it as a plan and never as a run."
+        case "unit_status_unavailable", "unit_unavailable", "unit_status_invalid":
+            return ServerUnitState.cause(errorCode: errorCode, detail: nil)
+        default:
+            return nil
+        }
     }
 }
 
@@ -1150,6 +1539,39 @@ enum OpsResultParser {
             logText = answer.output.map(sanitizedForDisplay)
             logLines = answer.lines
         }
+        // The eavesdropper's status is surfaced only for a planned answer to that verb that names
+        // the verb it answered (or names none):  an answer for another verb is not this document.
+        var eavesdropperStatus: ReducedEavesdropperStatus?
+        if case .eavesdropperStatus = action, mode == .plan, kind == .planned,
+           answer.verb == nil || answer.verb == OpsAction.eavesdropperStatusVerb {
+            eavesdropperStatus = answer.status
+        }
+        // A unit's state is surfaced only for a planned answer to `server unit-status` about the
+        // unit this action names,  and only with its state words in their own shape.
+        var unitState: ServerUnitState?
+        if case .unitStatus(let unit) = action, mode == .plan, kind == .planned,
+           answer.verb == nil || answer.verb == OpsAction.unitStatusVerb {
+            unitState = ServerUnitState(answer: answer, unit: unit)
+        }
+        // The journal a logs answer read:  for a timer,  the service it starts.  As above,  an
+        // answer that names another verb is not a logs answer,  so it names no journal.
+        var logsUnit: String?
+        if case .logs = action, answer.verb == nil || answer.verb == OpsAction.logsVerb {
+            logsUnit = answer.logsUnit.flatMap { OpsCommandBuilder.isUnitName($0) ? $0 : nil }
+        }
+        // The resource a redeploy plan names.  A plan that names another resource than this
+        // Mac's button is stopped here,  before anything can be approved or run.
+        var resourceName: String?
+        var stoppedOnMac = false
+        if case .coolifyRedeploy(_, let name) = action, let given = answer.resourceName {
+            resourceName = OpsRedeployName.displayed(given)
+            if mode == .plan, kind == .planned, let server = resourceName,
+               !OpsRedeployName.matches(muster: name, server: server) {
+                kind = .refused
+                detail = OpsRedeployName.mismatchSentence(muster: name, server: server)
+                stoppedOnMac = true
+            }
+        }
         return OpsOutcome(
             kind: kind,
             ok: answer.ok,
@@ -1165,8 +1587,38 @@ enum OpsResultParser {
             baselineStartMonotonic: answer.baselineStartMonotonic,
             answeredFrom: answeredFrom,
             runNotKnown: canHaveChanged && kind == .unknown,
-            isPlan: mode == .plan
+            isPlan: mode == .plan,
+            errorCode: answer.errorCode.flatMap { isErrorCode($0) ? $0 : nil },
+            serverAuditID: mode == .yes ? answer.auditID.flatMap { isAuditID($0) ? $0 : nil } : nil,
+            serverAuditTarget: mode == .yes ? answer.auditTarget.map(auditTargetText) : nil,
+            completedCommands: answer.completedCommands.flatMap {
+                (0...answer.commands.count).contains($0) ? $0 : nil
+            },
+            eavesdropperStatus: eavesdropperStatus,
+            unitState: unitState,
+            logsUnit: logsUnit,
+            resourceName: resourceName,
+            stoppedOnMac: stoppedOnMac
         )
+    }
+
+    /// A helper error code is its own fixed shape:  lower case words joined by `_`.
+    static func isErrorCode(_ value: String) -> Bool {
+        (1...64).contains(value.count)
+            && value.utf8.allSatisfy { (97...122).contains($0) || $0 == 95 }
+    }
+
+    /// A helper audit row id:  twelve lower case hex digits.
+    static func isAuditID(_ value: String) -> Bool {
+        value.count == 12 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+
+    /// The target a helper's row names,  bounded and with no control characters,  for the
+    /// Mac's own row.
+    private static func auditTargetText(_ value: String) -> String {
+        let plain = sanitizedForDisplay(value).replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\t", with: " ")
+        return String(plain.prefix(120))
     }
 
     /// True when a run that gave no answer may still have done its work.
@@ -1196,18 +1648,23 @@ enum OpsResultParser {
 
     /// What stopped ssh before any command was sent.
     private enum SSHStoppedEarly {
-        case lookup, keyRefused, hostKey, noConnection
+        case lookup, keyRefused, hostKey, hostKeyChanged, noConnection
     }
 
     /// Reads ssh's own diagnostics,  each by the shape of its whole line,  or nil when there
     /// is none.  A remote command's stderr reaches this same text and can say anything,  so
     /// a phrase somewhere in it is not proof that nothing was sent.
+    ///
+    /// ssh ends with the same line for a key it has never seen and for one that changed,
+    /// and only the banner before it tells the two apart.
     private static func sshStoppedEarly(_ stderr: String) -> SSHStoppedEarly? {
-        for line in stderr.lowercased().split(whereSeparator: \.isNewline) {
-            let text = line.trimmingCharacters(in: .whitespaces)
+        let lines = stderr.lowercased().split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        let changed = lines.contains { $0.contains("remote host identification has changed") }
+        for text in lines {
             if text.hasPrefix("ssh: could not resolve hostname") { return .lookup }
             if text.hasPrefix("ssh: connect to host") { return .noConnection }
-            if text.hasPrefix("host key verification failed") { return .hostKey }
+            if text.hasPrefix("host key verification failed") { return changed ? .hostKeyChanged : .hostKey }
             if text.contains(": permission denied ("), text.hasSuffix(").") { return .keyRefused }
         }
         return nil
@@ -1265,6 +1722,7 @@ enum OpsResultParser {
         case .done: return "Done."
         case .refused: return "The helper refused the action."
         case .failed: return "The helper said the action failed (exit \(exitCode))."
+        case .unavailable: return "The helper could not read what this reads, and changed nothing."
         case .unknown: return "The helper's answer has no result this app knows (exit \(exitCode))."
         }
     }
@@ -1282,7 +1740,13 @@ enum OpsResultParser {
             case .some(.keyRefused):
                 return "The server refused the \(alias) key.\(ServerStatusCopy.sentenceGap)Install it on the server."
             case .some(.hostKey):
-                return "The server's host key is not known to ssh,\(ServerStatusCopy.sentenceGap)so nothing was sent."
+                return "This Mac has no record of the server's identity, so Muster sent nothing."
+            case .some(.hostKeyChanged):
+                return ApplyCopy.join(
+                    "The server's identity does not match what this Mac has on record, so Muster sent nothing.",
+                    "This can mean the server was rebuilt or that something is in the way.",
+                    "Do not accept a new key until someone has confirmed which."
+                )
             case .some(.noConnection):
                 return "The server did not answer, so nothing ran."
             case .none:
@@ -1358,7 +1822,7 @@ struct OpsResourcePolicyReader {
             let outcome = OpsResultParser.parse(process, mode: .plan, action: action, timeout: invocation.timeout)
             guard outcome.isSuccess(for: .plan) else { return .unavailable(outcome.detail) }
             guard let snapshot = outcome.resourcePolicy else {
-                return .unavailable("The server did not include a resource policy receipt.")
+                return .unavailable("The server answered without a readable resource policy, so neither the saved values nor the controller's receipt could be shown.")
             }
             let data = try JSONEncoder().encode(snapshot)
             let receivedAt = now ?? Date()
@@ -1379,6 +1843,9 @@ struct OpsAllowlist: Equatable {
     struct Entry: Equatable {
         let name: String
         let actions: [String]
+        /// The scope a server unit is run in,  `user` or `system`,  when the allowlist says.
+        /// The helper acts on a unit in this scope only,  whatever a row says.
+        var scope: String? = nil
     }
 
     struct Update: Equatable, Identifiable {
@@ -1389,11 +1856,17 @@ struct OpsAllowlist: Equatable {
         var id: String { name }
     }
 
+    /// The two scopes a server unit can run in.
+    static let serverScopes: Set<String> = ["user", "system"]
+
     var macAgents: [Entry] = []
     var pm2Apps: [Entry] = []
     var serverUnits: [Entry] = []
     var updates: [Update] = []
     var coolifyRedeploy: Bool = false
+    /// The server's `watch` units:  read and granted nothing,  so they get no verb buttons,
+    /// but `server unit-status` may read them (`allowsUnitStatus`).
+    var watchUnits: [String] = []
 
     /// The verbs the allowlist names for a LaunchAgent,  in the app's order.
     func verbs(forMacAgent label: String) -> [OpsVerb] {
@@ -1408,6 +1881,12 @@ struct OpsAllowlist: Equatable {
     /// The verbs the allowlist names for a unit,  in the app's order.
     func verbs(forServerUnit unit: String) -> [OpsVerb] {
         verbs(in: serverUnits, named: unit)
+    }
+
+    /// The scope the allowlist runs a unit in,  or nil when it does not name the unit or
+    /// gives no scope.
+    func scope(forServerUnit unit: String) -> String? {
+        serverUnits.first(where: { $0.name == unit })?.scope
     }
 
     private func verbs(in entries: [Entry], named name: String) -> [OpsVerb] {
@@ -1426,52 +1905,186 @@ struct OpsAllowlist: Equatable {
         return parse(data)
     }
 
-    /// Parse the allowlist.  A version this app does not know is not read:  the buttons
+    /// Parse the allowlist.  A version this app does not know is not read:  the buttons
     /// it would draw could name verbs that mean something else.
+    ///
+    /// The server refuses the whole file when any entry is malformed, so that a typo can
+    /// never widen what is allowed (`validate_config` in fleet-ops-control.py).  This read
+    /// refuses it for the same structural faults, and returns nil:  buttons drawn from a
+    /// file the server will not accept would only ever fail, and a value the file never
+    /// gave is never filled in.  The faults are a list that is not a list of objects, a
+    /// LaunchAgent without a string label, a pm2 application without a string name, a unit
+    /// without a string name or with a scope other than `user` or `system`, an update
+    /// without a string name, a string unit ending in `.service` and a scope of those two,
+    /// actions that are empty, not a list, or not `start`, `stop` and `restart`, a `mac`,
+    /// `server` or `server.coolify` given as something other than an object, and a
+    /// `server.coolify.redeploy` or `server.resourcePolicy` given as something other than a
+    /// boolean.  The
+    /// server's name patterns and its refusal of a name used twice are not repeated here,
+    /// and the server still checks every run against its own copy.
     static func parse(_ data: Data) -> OpsAllowlist? {
         guard
             let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             (object["schemaVersion"] as? NSNumber)?.intValue == 1
         else { return nil }
         var list = OpsAllowlist()
-        let mac = object["mac"] as? [String: Any]
-        let server = object["server"] as? [String: Any]
-        for item in (mac?["agents"] as? [[String: Any]]) ?? [] {
-            guard let label = item["label"] as? String else { continue }
-            list.macAgents.append(Entry(name: label, actions: (item["actions"] as? [String]) ?? []))
+        // The server reads an absent or empty value as an empty section (`or {}`), and
+        // refuses any other value that is not an object.
+        guard
+            let mac = section(object["mac"]),
+            let server = section(object["server"]),
+            let coolify = section(server["coolify"])
+        else { return nil }
+        // `redeploy` and `resourcePolicy`, when present, must be JSON booleans:  the server
+        // refuses a string such as "true", a number and a null alike.
+        if let redeploy = coolify["redeploy"], !isJSONBool(redeploy) { return nil }
+        if let policy = server["resourcePolicy"], !isJSONBool(policy) { return nil }
+        guard
+            let agents = rows(mac["agents"]),
+            let pm2 = rows(mac["pm2Apps"]),
+            let units = rows(server["units"]),
+            let updates = rows(server["updates"])
+        else { return nil }
+        for item in agents {
+            guard let label = item["label"] as? String, let actions = verbWords(item) else { return nil }
+            list.macAgents.append(Entry(name: label, actions: actions))
         }
-        for item in (mac?["pm2Apps"] as? [[String: Any]]) ?? [] {
-            guard let name = item["name"] as? String else { continue }
-            list.pm2Apps.append(Entry(name: name, actions: (item["actions"] as? [String]) ?? []))
+        for item in pm2 {
+            guard let name = item["name"] as? String, let actions = verbWords(item) else { return nil }
+            list.pm2Apps.append(Entry(name: name, actions: actions))
         }
-        for item in (server?["units"] as? [[String: Any]]) ?? [] {
-            guard let unit = item["unit"] as? String else { continue }
-            list.serverUnits.append(Entry(name: unit, actions: (item["actions"] as? [String]) ?? []))
+        for item in units {
+            guard
+                let unit = item["unit"] as? String,
+                let scope = item["scope"] as? String, serverScopes.contains(scope),
+                let actions = verbWords(item)
+            else { return nil }
+            list.serverUnits.append(Entry(name: unit, actions: actions, scope: scope))
         }
-        for item in (server?["updates"] as? [[String: Any]]) ?? [] {
-            guard let name = item["name"] as? String else { continue }
-            list.updates.append(Update(
-                name: name,
-                unit: (item["unit"] as? String) ?? "",
-                scope: (item["scope"] as? String) ?? "system"
-            ))
+        for item in updates {
+            guard
+                let name = item["name"] as? String,
+                let unit = item["unit"] as? String, unit.hasSuffix(".service"),
+                let scope = item["scope"] as? String, serverScopes.contains(scope)
+            else { return nil }
+            list.updates.append(Update(name: name, unit: unit, scope: scope))
         }
-        let coolify = server?["coolify"] as? [String: Any]
-        list.coolifyRedeploy = (coolify?["redeploy"] as? Bool) == true
+        list.coolifyRedeploy = (coolify["redeploy"] as? Bool) == true
+        // The `watch` units grant nothing,  so a malformed one costs only its own state read:
+        // it is skipped,  and the file is not refused for it here.  The server still checks.
+        if let watch = server["watch"] as? [Any] {
+            list.watchUnits = watch.compactMap { item in
+                guard let row = item as? [String: Any], let unit = row["unit"] as? String,
+                      OpsCommandBuilder.isUnitName(unit) else { return nil }
+                return unit
+            }
+        }
         return list
+    }
+
+    /// A section's entries:  none when the value is absent or empty, as the server's
+    /// `or []` reads it, and nil when it is anything else that is not a list of objects.
+    private static func rows(_ value: Any?) -> [[String: Any]]? {
+        guard isPresent(value) else { return [] }
+        return value as? [[String: Any]]
+    }
+
+    /// An object section:  empty when the value is absent or empty, as the server's `or {}`
+    /// reads it, and nil when it is anything else that is not an object.
+    private static func section(_ value: Any?) -> [String: Any]? {
+        guard isPresent(value) else { return [:] }
+        return value as? [String: Any]
+    }
+
+    /// Whether a JSON value counts as given, by Python's truth rule, which the server's
+    /// `or` defaults use:  null, false, zero and an empty string, list or object do not.
+    private static func isPresent(_ value: Any?) -> Bool {
+        guard let value, !(value is NSNull) else { return false }
+        if let number = value as? NSNumber { return number.doubleValue != 0 }
+        if let text = value as? String { return !text.isEmpty }
+        if let list = value as? [Any] { return !list.isEmpty }
+        if let object = value as? [String: Any] { return !object.isEmpty }
+        return true
+    }
+
+    /// Whether a JSON value is `true` or `false` and not a number:  Foundation hands both
+    /// back as `NSNumber`, so `as? Bool` alone would take 1 and 0 as well.
+    private static func isJSONBool(_ value: Any) -> Bool {
+        guard let number = value as? NSNumber else { return false }
+        return CFGetTypeID(number) == CFBooleanGetTypeID()
+    }
+
+    /// An entry's verbs as written, or nil when they are not a non-empty list of `start`,
+    /// `stop` and `restart`.
+    private static func verbWords(_ item: [String: Any]) -> [String]? {
+        guard
+            let words = item["actions"] as? [String], !words.isEmpty,
+            words.allSatisfy({ OpsVerb(rawValue: $0) != nil })
+        else { return nil }
+        return words
     }
 }
 
 // MARK: - The controller
 
+/// The owner's answer to the approval question,  as the view hands it over.
+enum OpsApprovalAnswer: Equatable {
+    /// Touch ID or the login password said yes.
+    case approved
+    /// The owner canceled,  or the Mac did not accept the approval.  The plan stays on
+    /// screen and can be approved again.
+    case notApproved(String)
+    /// The Mac cannot ask at all,  so nothing can run from this sheet.
+    case unavailable(String)
+}
+
+/// One approval question,  tied to the exact plan that was on screen when it was asked.
+struct OpsApprovalRequest: Equatable {
+    let action: OpsAction
+    let reviewed: OpsOutcome
+
+    /// The Touch ID question:  the action's title,  naming what the reviewed plan named
+    /// (`OpsAction.title(plan:)`),  so a redeploy asks about the server's resource name.
+    var reason: String { action.title(plan: reviewed) }
+}
+
+/// Where a run is,  for the words and the clock on the sheet.
+enum OpsRunStage: Equatable {
+    /// Reading the plan again after the approval.  Nothing has run.
+    case checkingPlan
+    /// The run was sent,  and Muster is waiting for its answer.
+    case running
+
+    /// What the sheet says while the run is at this stage.
+    func sentence(for action: OpsAction, elapsed: TimeInterval) -> String {
+        let gap = ServerStatusCopy.sentenceGap
+        let place = action.runsOn.inProse
+        let clock = OpsController.durationText(elapsed)
+        switch self {
+        case .checkingPlan:
+            return "Checking the plan again \(place), \(clock) so far.\(gap)Nothing has run yet."
+        case .running:
+            let wait = OpsController.durationText(OpsControlRoute.runWait(for: action))
+            return ApplyCopy.join(
+                "Running \(place), \(clock) so far.",
+                "Muster waits up to \(wait) for the answer.",
+                "Closing this sheet does not stop the run, and the sheet comes back when it ends."
+            )
+        }
+    }
+}
+
 /// The app-lifetime owner of the one action in flight.
 ///
-/// Views render what is published here,  so closing a sheet never cancels a run.  The
-/// Touch ID question belongs to the view:  `confirm()` is called only after the owner
-/// answered it.
+/// Views render what is published here,  so closing a sheet never cancels a run.  The
+/// approval question belongs to the view,  and its answer comes back through
+/// `finishApproval`,  tied to the plan it was asked about:  a run starts only for the exact
+/// plan the owner approved.
 @MainActor
 final class OpsController: ObservableObject {
-    static let shared = OpsController()
+    /// The app's one controller.  It reads a server unit's state again right after a run of
+    /// that unit ends (`unitStateAfterRun`).
+    static let shared = OpsController(readsUnitStateAfterRun: true)
 
     enum Phase: Equatable {
         case idle
@@ -1491,20 +2104,66 @@ final class OpsController: ObservableObject {
             case .failed(let action, _): return action
             }
         }
+
+        /// The sheet's title:  the action's title,  naming what its plan named once a plan
+        /// answered (`OpsAction.title(plan:)`).  Nil while idle.
+        var title: String? {
+            switch self {
+            case .idle: return nil
+            case .planning(let action), .failed(let action, _): return action.title
+            case .review(let action, let outcome), .running(let action, let outcome),
+                 .finished(let action, let outcome):
+                return action.title(plan: outcome)
+            }
+        }
     }
 
     @Published private(set) var phase: Phase = .idle
     /// A sentence about the last refusal,  shown in the sheet.
     @Published private(set) var notice: String?
-    /// Counts every `--yes` run that ended,  so a view can read its data again.
+    /// Counts every `--yes` run that ended,  and every recheck that settled one,  so a view
+    /// can read its data again.
     @Published private(set) var completedRuns = 0
     @Published private(set) var isRechecking = false
+    /// True while the approval question is up,  so every window holds its buttons.
+    @Published private(set) var isAsking = false
+    /// True when the owner closed the sheet while a plan or a run was still going.  A run
+    /// goes on,  and the sheet comes back when it ends.
+    @Published private(set) var isSheetHidden = false
+    /// Where the run in flight is,  and since when:  the sheet's run,  or a start Muster
+    /// takes on its own.
+    @Published private(set) var runStage: OpsRunStage?
+    @Published private(set) var stageStartedAt: Date?
+    /// True while Muster runs a start of its own (`runUnattended`),  with nobody at a sheet.
+    @Published private(set) var isRunningUnattended = false
+    /// The live state of the server unit the last `--yes` run acted on,  read through
+    /// `server unit-status` right after the run ended,  for the sheet's "Now:" line
+    /// (`ServerUnitStateAfterRun.line(reportGeneratedAt:)`).  Its reading is nil while the read
+    /// is in flight.  Nil before such a run,  and cleared when a new plan starts.  The read is
+    /// a plan,  changes nothing,  and does not hold the sheet or count as busy.
+    @Published private(set) var unitStateAfterRun: ServerUnitStateAfterRun?
 
     private let runner: OpsRunning
     private let makeBuilder: () -> OpsCommandBuilder
     private let auditURL: URL?
     private let checksInstall: Bool
+    private let now: () -> Date
+    private let readsUnitStateAfterRun: Bool
+    private let readAllowlist: () -> OpsAllowlist?
+    /// Moves on with every unit-state read,  so only the newest one may write.
+    private var unitStateGeneration = 0
     private var task: Task<Void, Never>?
+    /// True when the owner closed the sheet while a plan was being read:  its answer is
+    /// dropped,  because a plan changes nothing.
+    private var abandonPlan = false
+    /// The last action whose run ended with no answer,  and when,  so a new plan for it
+    /// says so before it is approved again.
+    private var unresolved: (action: OpsAction, at: Date)?
+    /// The start Muster is running on its own,  while `runUnattended` has it.
+    private var unattendedAction: OpsAction?
+
+    /// How long a run with no answer is remembered when the same action is planned again.
+    static let unresolvedMemory: TimeInterval = 60 * 60
 
     init(
         runner: OpsRunning = OpsProcessRunner(),
@@ -1512,25 +2171,93 @@ final class OpsController: ObservableObject {
             OpsCommandBuilder(repoRoot: FleetConfigLocation.resolve().repoRoot)
         },
         auditURL: URL? = OpsAuditLog.logURL(),
-        checksInstall: Bool = true
+        checksInstall: Bool = true,
+        now: @escaping () -> Date = { Date() },
+        readsUnitStateAfterRun: Bool = false,
+        readAllowlist: @escaping () -> OpsAllowlist? = {
+            OpsAllowlist.read(at: OpsAllowlist.url(repoRoot: FleetConfigLocation.resolve().repoRoot))
+        }
     ) {
         self.runner = runner
         self.makeBuilder = makeBuilder
         self.auditURL = auditURL
         self.checksInstall = checksInstall
+        self.now = now
+        self.readsUnitStateAfterRun = readsUnitStateAfterRun
+        self.readAllowlist = readAllowlist
+    }
+
+    /// Reads one server unit's state now,  through `server unit-status UNIT --plan`,  and
+    /// publishes it as `unitStateAfterRun`.  The sheet may call it after a run;  the controller
+    /// calls it itself when `readsUnitStateAfterRun` is on.  Nothing is changed,  no Touch ID is
+    /// asked,  and the unit must be on this Mac's allowlist as a server or `watch` unit.
+    func readUnitState(_ unit: String) {
+        unitStateGeneration += 1
+        let generation = unitStateGeneration
+        unitStateAfterRun = ServerUnitStateAfterRun(unit: unit, reading: nil)
+        let reader = OpsUnitStatusReader(runner: runner, makeBuilder: makeBuilder)
+        let allowlist = readAllowlist()
+        Task { [weak self] in
+            let reading = await reader.read(unit: unit, allowlist: allowlist)
+            guard let self, self.unitStateGeneration == generation else { return }
+            self.unitStateAfterRun = ServerUnitStateAfterRun(unit: unit, reading: reading)
+        }
+    }
+
+    /// Forgets the last unit-state read,  and drops one still in flight.
+    private func clearUnitState() {
+        unitStateGeneration += 1
+        unitStateAfterRun = nil
     }
 
     /// True while a helper is running.
     var isBusy: Bool {
-        if isRechecking { return true }
+        if isRechecking || isRunningUnattended { return true }
         switch phase {
         case .planning, .running: return true
         default: return false
         }
     }
 
-    /// True while there is anything to show in the sheet.
+    /// True while there is an action in hand,  shown or not.
     var isPresenting: Bool { phase != .idle }
+
+    /// True while a new plan would be refused:  an action is in hand,  or Muster is running
+    /// a start of its own.  The buttons that ask for a plan hold while this is true.
+    var refusesNewPlan: Bool { isPresenting || isRunningUnattended }
+
+    /// True while the sheet should be on screen.
+    var isSheetShown: Bool { phase != .idle && !isSheetHidden }
+
+    /// The run going on behind a closed sheet,  for the strip that brings it back.
+    var hiddenRun: OpsAction? {
+        guard isSheetHidden, case .running(let action, _) = phase else { return nil }
+        return action
+    }
+
+    /// The question to ask before Muster quits,  or nil when quitting loses nothing.  Only a
+    /// run that was sent can be lost:  a plan,  even the one read again after the approval,
+    /// changes nothing.  A start Muster sent on its own counts too.
+    var quitWarning: String? {
+        guard runStage == .running else { return nil }
+        let action: OpsAction
+        if case .running(let shown, _) = phase {
+            action = shown
+        } else if let own = unattendedAction {
+            action = own
+        } else {
+            return nil
+        }
+        // Only a server action gets a `started` row in this Mac's log:  a local action's own
+        // helper writes its row when it finishes.
+        let logs = action.runsOnServer
+            ? "this Mac's log keeps only that it started."
+            : "this Mac's log has no row for it until it ends."
+        return ApplyCopy.join(
+            "\(action.title) is still running.",
+            "If Muster quits now, it cannot learn how it ended, and \(logs)"
+        )
+    }
 
     var canRecheckUpdate: Bool {
         guard case .finished(.serverUpdate(let name), let outcome) = phase else { return false }
@@ -1539,6 +2266,9 @@ final class OpsController: ObservableObject {
     }
 
     /// A receipt read has no approval or write path and may be closed while pending.
+    ///
+    /// A recheck that settles the update adds a row to this Mac's log that names the same
+    /// service invocation,  so the submitted row does not stay the last word.
     func recheckSubmittedUpdate() {
         guard canRecheckUpdate, task == nil,
               case .finished(let action, let previous) = phase,
@@ -1554,13 +2284,18 @@ final class OpsController: ObservableObject {
             self.phase = .finished(action, outcome)
             self.isRechecking = false
             self.task = nil
+            if outcome.kind != .submitted {
+                self.record(action, result: outcome.kind.rawValue, runID: OpsController.makeRunID(),
+                            outcome: outcome, extra: ["recheck": "true"])
+                self.completedRuns += 1
+            }
         }
     }
 
     /// Plan an action and show the plan.
     ///
     /// One action at a time:  a plan asked for while another action is planned,  waiting
-    /// for review or running is refused,  and the one already there is left alone.
+    /// for review or running is refused,  and the one already there is left alone and shown.
     @discardableResult
     func plan(_ action: OpsAction) -> Bool {
         switch phase {
@@ -1568,10 +2303,17 @@ final class OpsController: ObservableObject {
             break
         case .planning, .review, .running:
             notice = OpsControlError.busy.errorDescription
+            if !abandonPlan { isSheetHidden = false }
             return false
         }
+        // No sheet is up to show a refusal here,  so none is noted:  it would only surface
+        // later,  under some other plan.  The buttons hold on `refusesNewPlan` instead.
+        guard !isRunningUnattended else { return false }
         guard task == nil else { return false }
         notice = nil
+        abandonPlan = false
+        isSheetHidden = false
+        clearUnitState()
         phase = .planning(action)
         task = Task { [weak self] in
             await self?.runPlan(action)
@@ -1579,24 +2321,134 @@ final class OpsController: ObservableObject {
         return true
     }
 
-    /// Run the action the owner reviewed.  The view calls this after Touch ID.
-    func confirm() {
-        guard case .review(let action, let reviewed) = phase, task == nil else { return }
+    /// Start the approval question for the plan on screen.  Every window holds its buttons
+    /// until `finishApproval` is called with the answer.
+    func beginApproval() -> OpsApprovalRequest? {
+        guard case .review(let action, let reviewed) = phase, task == nil, !isAsking else { return nil }
+        isAsking = true
         notice = nil
-        phase = .running(action, reviewed)
-        task = Task { [weak self] in
-            await self?.runConfirmed(action, reviewed: reviewed)
+        return OpsApprovalRequest(action: action, reviewed: reviewed)
+    }
+
+    /// The owner's answer to `beginApproval`.  A yes runs only when the plan on screen is
+    /// still the one the question was asked about.  A cancel leaves the plan up with a
+    /// plain note,  and a Mac that cannot ask ends the sheet.
+    func finishApproval(_ request: OpsApprovalRequest, answer: OpsApprovalAnswer) {
+        isAsking = false
+        guard case .review(let action, let reviewed) = phase,
+              action == request.action, reviewed == request.reviewed else {
+            if case .review = phase {
+                notice = ApplyCopy.join(
+                    "The plan on screen changed while you were approving, so nothing ran.",
+                    "Review it, then approve it again."
+                )
+            }
+            return
+        }
+        switch answer {
+        case .approved:
+            confirm(action: action, reviewed: reviewed)
+        case .notApproved(let reason):
+            notice = reason
+        case .unavailable(let reason):
+            decline(reason)
         }
     }
 
-    /// The owner said no,  or Touch ID could not ask:  nothing runs.
+    /// Run the plan the owner approved.  It runs only when that plan is the one on screen:
+    /// an approval asked about one plan never runs another.
+    @discardableResult
+    func confirm(action: OpsAction, reviewed: OpsOutcome) -> Bool {
+        guard case .review(let shown, let shownPlan) = phase, shown == action, shownPlan == reviewed,
+              task == nil else { return false }
+        notice = nil
+        phase = .running(action, reviewed)
+        enterStage(.checkingPlan)
+        task = Task { [weak self] in
+            await self?.runConfirmed(action, reviewed: reviewed)
+        }
+        return true
+    }
+
+    /// Runs one start that Muster takes on its own (`ServiceReconciler`),  through the same
+    /// helper,  the same plan,  the same `--yes` run and the same bookkeeping as a start the
+    /// owner approved (one run id,  the same stages,  and the same rows),  but with no sheet
+    /// and no Touch ID,  because nobody is there to answer.
+    ///
+    /// Only a start of a pm2 application or a LaunchAgent is accepted here,  and the helper
+    /// still checks its own allowlist.  The plan is read first and must succeed.  Nil when
+    /// another action is in the way or the action is not a start,  and then nothing ran.
+    func runUnattended(_ action: OpsAction) async -> OpsOutcome? {
+        switch action {
+        case .pm2App(let verb, _), .macAgent(let verb, _):
+            guard verb == .start else { return nil }
+        case .serverUnit, .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .logs,
+             .serverResource, .resourceStatus, .eavesdropperStatus, .unitStatus:
+            return nil
+        }
+        guard !isBusy, !isPresenting, task == nil else { return nil }
+        isRunningUnattended = true
+        unattendedAction = action
+        defer {
+            isRunningUnattended = false
+            unattendedAction = nil
+            runStage = nil
+            stageStartedAt = nil
+        }
+        // True once the `--yes` helper may have started:  only then can anything have run.
+        var started = false
+        let runID = Self.makeRunID()
+        do {
+            enterStage(.checkingPlan)
+            let planned = try await execute(action, mode: .plan)
+            guard planned.isSuccess(for: .plan) else { return planned }
+            let invocation = try prepare(action, mode: .yes)
+            enterStage(.running)
+            record(action, result: "started", runID: runID)
+            started = true
+            let outcome = try await launch(invocation, action: action, mode: .yes)
+            record(action, result: outcome.kind.rawValue, runID: runID, outcome: outcome)
+            remember(action, outcome)
+            completedRuns += 1
+            return outcome
+        } catch {
+            // A helper that could not be started ran nothing,  and its row says so.
+            if let control = error as? OpsControlError, case .launchFailed = control, started {
+                record(action, result: "not-run", runID: runID)
+                started = false
+            }
+            guard started else {
+                return OpsOutcome(kind: .failed, ok: false, commands: [],
+                                  detail: error.localizedDescription, exitCode: -1)
+            }
+            // The helper ran,  and what it answered could not be read,  so the Mac cannot say
+            // how far the start got.
+            let outcome = OpsOutcome(kind: .unknown, ok: false, commands: [],
+                                     detail: error.localizedDescription, exitCode: -1,
+                                     runNotKnown: true)
+            record(action, result: outcome.kind.rawValue, runID: runID)
+            remember(action, outcome)
+            completedRuns += 1
+            return outcome
+        }
+    }
+
+    /// The Mac cannot ask for the approval:  nothing runs.
     func decline(_ reason: String) {
         guard case .review(let action, _) = phase else { return }
+        isAsking = false
         phase = .failed(action, reason)
     }
 
-    /// Close the sheet.  A run in flight is never cut short,  so this does nothing while a
-    /// helper is running.
+    /// Bring a closed sheet back.
+    func showSheet() {
+        guard phase != .idle, !abandonPlan else { return }
+        isSheetHidden = false
+    }
+
+    /// Close the sheet.  A run in flight is never cut short:  closing it while it runs only
+    /// hides it,  and it comes back with its result.  A plan being read is given up,  since
+    /// it changes nothing.
     func dismiss() {
         if isRechecking {
             task?.cancel()
@@ -1606,26 +2458,59 @@ final class OpsController: ObservableObject {
             notice = nil
             return
         }
-        guard !isBusy else { return }
-        phase = .idle
-        notice = nil
+        guard !isAsking else { return }
+        switch phase {
+        case .planning:
+            abandonPlan = true
+            isSheetHidden = true
+        case .running:
+            isSheetHidden = true
+            // A refusal noted while the run was in view is old by the time the result comes
+            // back, so it is not shown under that result.
+            notice = nil
+        case .idle, .review, .finished, .failed:
+            phase = .idle
+            notice = nil
+            isSheetHidden = false
+        }
     }
 
     private func runPlan(_ action: OpsAction) async {
         defer { task = nil }
+        let outcome: OpsOutcome
         do {
-            let outcome = try await execute(action, mode: .plan)
-            phase = outcome.isSuccess(for: .plan) ? .review(action, outcome) : .finished(action, outcome)
+            outcome = try await execute(action, mode: .plan)
         } catch {
+            if abandonPlan { return endAbandonedPlan() }
             phase = .failed(action, error.localizedDescription)
+            return
+        }
+        if abandonPlan { return endAbandonedPlan() }
+        if outcome.isSuccess(for: .plan) {
+            phase = .review(action, outcome)
+            notice = unresolvedWarning(for: action)
+        } else {
+            phase = .finished(action, outcome)
         }
     }
 
+    private func endAbandonedPlan() {
+        abandonPlan = false
+        isSheetHidden = false
+        notice = nil
+        phase = .idle
+    }
+
     private func runConfirmed(_ action: OpsAction, reviewed: OpsOutcome) async {
-        defer { task = nil }
-        // True once the `--yes` helper may have started:  only then can anything have run,
-        // so only then does a server action get an audit row.
+        defer {
+            task = nil
+            runStage = nil
+            stageStartedAt = nil
+            isSheetHidden = false
+        }
+        // True once the `--yes` helper may have started:  only then can anything have run.
         var started = false
+        let runID = Self.makeRunID()
         do {
             // The plan is read again after the owner said yes.  A second plan that was
             // refused or failed is shown with its own words,  and a plan that changed in
@@ -1635,18 +2520,20 @@ final class OpsController: ObservableObject {
                 fresh = try await execute(action, mode: .plan)
             } catch {
                 phase = .failed(action, error.localizedDescription)
-                notice = "Nothing ran:\(ServerStatusCopy.sentenceGap)the plan could not be read again after Touch ID."
+                notice = "Nothing ran:\(ServerStatusCopy.sentenceGap)the plan could not be read again after the approval."
                 return
             }
             guard fresh.isSuccess(for: .plan) else {
                 phase = .finished(action, fresh)
-                notice = "Nothing ran:\(ServerStatusCopy.sentenceGap)the plan read again after Touch ID did not succeed."
+                notice = "Nothing ran:\(ServerStatusCopy.sentenceGap)the plan read again after the approval did not succeed."
                 return
             }
             guard
                 fresh.commands == reviewed.commands,
                 fresh.knobChange?.old == reviewed.knobChange?.old,
-                fresh.knobChange?.oldSource == reviewed.knobChange?.oldSource
+                fresh.knobChange?.oldSource == reviewed.knobChange?.oldSource,
+                // A redeploy whose resource was renamed after the review is not the one approved.
+                fresh.resourceName == reviewed.resourceName
             else {
                 phase = .review(action, fresh)
                 notice = ApplyCopy.join(
@@ -1656,13 +2543,26 @@ final class OpsController: ObservableObject {
                 return
             }
             let invocation = try prepare(action, mode: .yes)
+            enterStage(.running)
+            // The row goes in before the run,  so a Muster that quits or crashes part way
+            // still leaves a trace that something was sent.
+            record(action, result: "started", runID: runID)
             started = true
-            let outcome = try await launch(invocation, action: action, mode: .yes)
+            var outcome = try await launch(invocation, action: action, mode: .yes)
+            // The helper plans again itself before it runs,  so what it reports running can
+            // differ from what the owner approved.  That is shown and never hidden.
+            if !outcome.commands.isEmpty, outcome.commands != reviewed.commands {
+                outcome.differsFromReview = true
+            }
             phase = .finished(action, outcome)
-            record(action, result: outcome.kind.rawValue)
+            record(action, result: outcome.kind.rawValue, runID: runID, outcome: outcome)
+            remember(action, outcome)
         } catch {
-            // A helper that could not be started ran nothing.
-            if let control = error as? OpsControlError, case .launchFailed = control { started = false }
+            // A helper that could not be started ran nothing,  and its row says so.
+            if let control = error as? OpsControlError, case .launchFailed = control, started {
+                record(action, result: "not-run", runID: runID)
+                started = false
+            }
             if started, !action.changesNothing {
                 // The helper ran,  and what it answered could not be read,  so the Mac cannot
                 // say how far it got.
@@ -1670,13 +2570,44 @@ final class OpsController: ObservableObject {
                                          detail: error.localizedDescription, exitCode: -1,
                                          runNotKnown: true)
                 phase = .finished(action, outcome)
-                record(action, result: outcome.kind.rawValue)
+                record(action, result: outcome.kind.rawValue, runID: runID)
+                remember(action, outcome)
             } else {
                 phase = .failed(action, error.localizedDescription)
-                if started { record(action, result: OpsResultKind.failed.rawValue) }
+                if started { record(action, result: OpsResultKind.failed.rawValue, runID: runID) }
             }
         }
         if started { completedRuns += 1 }
+        // The helper may have acted on the unit,  so its state is read again,  newer than the
+        // report the plan was made from.
+        if started, readsUnitStateAfterRun, case .serverUnit(_, let unit) = action {
+            readUnitState(unit)
+        }
+    }
+
+    private func enterStage(_ stage: OpsRunStage) {
+        runStage = stage
+        stageStartedAt = now()
+    }
+
+    /// Keeps the last run that ended with no answer,  and forgets it once the same action
+    /// ends with one.
+    private func remember(_ action: OpsAction, _ outcome: OpsOutcome) {
+        if outcome.runNotKnown {
+            unresolved = (action, now())
+        } else if unresolved?.action == action {
+            unresolved = nil
+        }
+    }
+
+    /// The warning on a new plan for an action whose last run ended with no answer.
+    private func unresolvedWarning(for action: OpsAction) -> String? {
+        guard let last = unresolved, last.action == action,
+              now().timeIntervalSince(last.at) < Self.unresolvedMemory else { return nil }
+        return ApplyCopy.join(
+            "The last run of this action ended with no answer, so it may already have run.",
+            "Check its state before you approve it again."
+        )
     }
 
     private func execute(_ action: OpsAction, mode: OpsMode) async throws -> OpsOutcome {
@@ -1702,10 +2633,36 @@ final class OpsController: ObservableObject {
     /// Add a row to the Mac's audit log for a server action.
     ///
     /// A local action's helper writes its own row,  so only a server action gets one here.
-    /// A row that cannot be written does not change the result:  the server's own log has
-    /// the action.
-    private func record(_ action: OpsAction, result: String) {
+    /// One run writes a `started` row before it is sent and a closing row after,  both with
+    /// the same `runID`.  The closing row names the server's own row (`serverAuditID`) and
+    /// its target when the server said,  so the two logs can be matched.  A row that cannot
+    /// be written does not change the result:  the server's own log has the action.
+    private func record(_ action: OpsAction, result: String, runID: String,
+                        outcome: OpsOutcome? = nil, extra: [String: String] = [:]) {
         guard action.runsOnServer, let url = auditURL else { return }
-        try? OpsAuditLog.append(OpsAuditLog.entry(for: action, result: result), to: url)
+        var row = OpsAuditLog.entry(for: action, result: result, now: now())
+        row["runID"] = runID
+        if let outcome {
+            if let id = outcome.serverAuditID { row["serverAuditID"] = id }
+            if let target = outcome.serverAuditTarget { row["serverTarget"] = target }
+            if let id = outcome.invocationID { row["invocationID"] = id }
+            if let baseline = outcome.baselineStartMonotonic { row["baselineStartMonotonic"] = String(baseline) }
+        }
+        for (key, value) in extra where row[key] == nil { row[key] = value }
+        try? OpsAuditLog.append(row, to: url)
+    }
+
+    /// A short id that ties a run's rows together.
+    static func makeRunID() -> String {
+        String(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(12))
+    }
+
+    /// A length of time in words:  "45 seconds",  "3 minutes",  "1 minute 5 seconds".
+    nonisolated static func durationText(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds.rounded(.down)))
+        func unit(_ count: Int, _ word: String) -> String { count == 1 ? "1 \(word)" : "\(count) \(word)s" }
+        if total < 60 { return unit(total, "second") }
+        let minutes = unit(total / 60, "minute")
+        return total % 60 == 0 ? minutes : "\(minutes) \(unit(total % 60, "second"))"
     }
 }

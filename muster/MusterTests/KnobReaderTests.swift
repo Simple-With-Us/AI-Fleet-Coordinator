@@ -241,7 +241,11 @@ final class KnobReaderTests: XCTestCase {
         let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         XCTAssertFalse(registry.copyIsStale)
         XCTAssertEqual(registry.copyAge, "30s")
-        XCTAssertEqual(registry.copyHeadline, "Local copy 30s old.")
+        // The headline names whose copy it is and the clock time it was saved.
+        XCTAssertTrue(registry.copyHeadline.hasPrefix("Values are from this Mac's copy, saved at "))
+        XCTAssertTrue(registry.copyHeadline.hasSuffix("(30s ago)."), registry.copyHeadline)
+        XCTAssertTrue(registry.copyIsReadable)
+        XCTAssertNotNil(registry.copySavedAt)
     }
 
     /// A copy older than the engine's refresh is stale,  and the header says so.
@@ -255,16 +259,21 @@ final class KnobReaderTests: XCTestCase {
         )
         let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         XCTAssertTrue(registry.copyIsStale)
-        XCTAssertTrue(registry.copyHeadline.hasPrefix("Local copy "))
+        XCTAssertTrue(registry.copyHeadline.hasPrefix("Values are from this Mac's copy, saved at "))
+        XCTAssertTrue(registry.freshnessLines().contains(KnobFreshnessLine(text: "It may not be current.", isWarning: true)))
     }
 
     /// With no copy,  the header says there is no copy,  and says nothing silly.
+    ///
+    /// A copy that is not there is not "not current":  the header says it is missing and
+    /// what writes it,  and never adds that a missing copy may not be current.
     func test_the_headline_with_no_copy_reads_as_a_sentence() throws {
         let (root, home) = try makeRepo()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
         let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
-        XCTAssertEqual(registry.copyHeadline, "No local copy of the knobs.")
-        XCTAssertFalse(registry.copyHeadline.contains("old."))
+        XCTAssertEqual(registry.copyHeadline, KnobReader.noCopyHeadline)
+        XCTAssertFalse(registry.copyIsStale)
+        XCTAssertFalse(registry.freshnessLines().map(\.text).contains("It may not be current."))
     }
 
     /// The staleness window is the engine's,  not a guess.

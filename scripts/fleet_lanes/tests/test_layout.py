@@ -2432,7 +2432,7 @@ class LayoutStatusTests(HomeCase):
             "codex-managed",
         )
         for rel in (
-            ("_managed", "fleet", "agent-sync-runtime"),
+            ("_managed", "fleet", "simple-tools-runtime"),
             ("_managed", "codecaps-cursor-163"),
             ("_review", "botfleet", "pr-12-claude"),
         ):

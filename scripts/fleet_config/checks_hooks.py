@@ -37,7 +37,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any
+from typing import Any, NamedTuple
 
 from .checks import CheckContext, CheckError, build_result, expand_target
 from .types import (
@@ -453,8 +453,72 @@ def hook_entries(document: dict[str, Any], event: str) -> list[tuple[str, int | 
 
     Raises ValueError when the document holds a shape this reader cannot read.
     """
+    return [(record.ident, record.timeout) for record in hook_records(document, event)]
+
+
+class HookRecord(NamedTuple):
+    """One registered hook entry:  its id, timeout, matcher and command line.
+
+    ``matcher`` is None for an entry with no matcher key,  which the harnesses read as
+    "every tool".  ``command`` is empty for an entry that carries none.
+    """
+
+    ident: str
+    timeout: int | None
+    matcher: str | None
+    command: str
+
+
+# A matcher is the harness's own filter on which tools reach a hook.  An entry with no
+# matcher key at all is delivered every tool, which is how the harnesses read it;  a
+# matcher that is not text is read as one that matches nothing, because a filter this
+# reader cannot understand must not be taken for permission.
+_UNREADABLE_MATCHER = "\x00unreadable"
+
+
+def _matcher_of(*sources: dict[str, Any]) -> str | None:
+    """The matcher of a hook entry, from its own object first and then its group's."""
+    for source in sources:
+        if "matcher" in source:
+            value = source.get("matcher")
+            return value if isinstance(value, str) else _UNREADABLE_MATCHER
+    return None
+
+
+def matcher_covers(matcher: str | None, tool: str) -> bool:
+    """True when the harness would deliver `tool` to a hook with this matcher.
+
+    No matcher, an empty one and ``*`` deliver every tool.  Any other matcher is a
+    pattern the harness matches against the whole tool name, case-sensitively, so
+    ``Bash`` does not deliver ``bash`` and ``Bash|Write`` delivers both of its names.
+    A pattern that does not compile delivers nothing.
+    """
+    if matcher is None:
+        return True
+    text = matcher.strip()
+    if text in ("", "*"):
+        return True
+    if matcher == _UNREADABLE_MATCHER:
+        return False
+    try:
+        return re.fullmatch(text, tool) is not None
+    except re.error:
+        return False
+
+
+def _command_of(hook: dict[str, Any]) -> str:
+    """The command line of a hook entry, or an empty string when it has none."""
+    command = hook.get("command")
+    return command if isinstance(command, str) else ""
+
+
+def hook_records(document: dict[str, Any], event: str) -> list[HookRecord]:
+    """Every hook entry registered for `event`, with its id, timeout, matcher and command.
+
+    Raises ValueError when the document holds a shape this reader cannot read.
+    """
     wanted = event_key(event)
-    entries: list[tuple[str, int | None]] = []
+    entries: list[HookRecord] = []
     hooks = document.get("hooks")
     if isinstance(hooks, dict):
         if isinstance(hooks.get("events"), dict):
@@ -473,7 +537,14 @@ def hook_entries(document: dict[str, Any], event: str) -> list[tuple[str, int | 
                 raise ValueError("a hook entry is not a table")
             name = item.get("event")
             if isinstance(name, str) and event_key(name) == wanted:
-                entries.append((_hook_id(item, None), _hook_timeout(item)))
+                entries.append(
+                    HookRecord(
+                        _hook_id(item, None),
+                        _hook_timeout(item),
+                        _matcher_of(item),
+                        _command_of(item),
+                    )
+                )
         return entries
     # The named-group shape:  Antigravity holds one group per hook name at the top level.
     for group_name, group in document.items():
@@ -489,19 +560,33 @@ def hook_entries(document: dict[str, Any], event: str) -> list[tuple[str, int | 
     return entries
 
 
-def _group_entries(item: Any, group_name: str | None = None) -> list[tuple[str, int | None]]:
-    """The entries of one hook group or one flat hook object."""
+def _group_entries(item: Any, group_name: str | None = None) -> list[HookRecord]:
+    """The entries of one hook group or one flat hook object, with their matchers."""
     if not isinstance(item, dict):
         raise ValueError("a hook entry is not an object")
     inner = item.get("hooks")
     if isinstance(inner, list):
-        out: list[tuple[str, int | None]] = []
+        out: list[HookRecord] = []
         for hook in inner:
             if not isinstance(hook, dict):
                 raise ValueError("a hook entry is not an object")
-            out.append((_hook_id(hook, group_name), _hook_timeout(hook)))
+            out.append(
+                HookRecord(
+                    _hook_id(hook, group_name),
+                    _hook_timeout(hook),
+                    _matcher_of(hook, item),
+                    _command_of(hook),
+                )
+            )
         return out
-    return [(_hook_id(item, group_name), _hook_timeout(item))]
+    return [
+        HookRecord(
+            _hook_id(item, group_name),
+            _hook_timeout(item),
+            _matcher_of(item),
+            _command_of(item),
+        )
+    ]
 
 
 def _hook_id(hook: dict[str, Any], group_name: str | None) -> str:
@@ -591,15 +676,8 @@ def check_hook_registered(rule: Rule, platform: str, ctx: CheckContext) -> Check
         # `<seat>-hooks-none` rules rely on it:  a harness with no hook surface has
         # no settings file either,  and that seat is in the desired state.
         if rule.expected.present is False:
-            return build_result(
-                rule,
-                platform,
-                CheckState.PASS,
-                "The hook config file %s is absent, as the rule expects." % target,
-                ReasonCode.OK,
-                ObservedState(present=False),
-                ctx,
-                proof_level_achieved=ProofLevel.L0,
+            return _no_guard_result(
+                rule, platform, ctx, "The hook config file %s is absent." % target
             )
         return build_result(
             rule,
@@ -637,7 +715,8 @@ def check_hook_registered(rule: Rule, platform: str, ctx: CheckContext) -> Check
 
     event = rule.check.detail or DEFAULT_EVENT
     try:
-        entries = hook_entries(document, event)
+        records = hook_records(document, event)
+        entries = [(record.ident, record.timeout) for record in records]
     except ValueError as exc:
         return build_result(
             rule,
@@ -656,15 +735,8 @@ def check_hook_registered(rule: Rule, platform: str, ctx: CheckContext) -> Check
 
     if not entries:
         if rule.expected.present is False:
-            return build_result(
-                rule,
-                platform,
-                CheckState.PASS,
-                "No %s hook is registered in %s, as the rule expects." % (event, target),
-                ReasonCode.OK,
-                ObservedState(present=False),
-                ctx,
-                proof_level_achieved=ProofLevel.L0,
+            return _no_guard_result(
+                rule, platform, ctx, "No %s hook is registered in %s." % (event, target)
             )
         return build_result(
             rule,
@@ -723,6 +795,10 @@ def check_hook_registered(rule: Rule, platform: str, ctx: CheckContext) -> Check
             ctx,
         )
 
+    scoped = _guard_scope_result(rule, platform, ctx, records, expected_names, observed, target)
+    if scoped is not None:
+        return scoped
+
     if matched:
         reason = "The %s hook %s is registered in %s." % (
             event,
@@ -741,6 +817,112 @@ def check_hook_registered(rule: Rule, platform: str, ctx: CheckContext) -> Check
         ctx,
         proof_level_achieved=ProofLevel.L0,
     )
+
+
+def _no_guard_result(rule: Rule, platform: str, ctx: CheckContext, found: str) -> CheckResult:
+    """The result for a seat whose rule says it has no hook, when it has none.
+
+    PASS means every check the rule asks for was proven.  A rule that pins the absence
+    of a hook asks for nothing to be proven about a guard, because there is no guard:
+    the seat is unguarded by design, so a PASS here would read as a guarded seat.  The
+    result is ``UNSUPPORTED`` with the reason code ``not-applicable``, which the
+    verdict leaves out of its count and which says plainly that no guard was checked.
+    A hook that does appear is still drift, which the caller reports.
+    """
+    return build_result(
+        rule,
+        platform,
+        CheckState.UNSUPPORTED,
+        "No guard to check for this seat.  %s  The rule only watches for a hook appearing, "
+        "and no guard was proven." % found,
+        ReasonCode.NOT_APPLICABLE,
+        ObservedState(present=False),
+        ctx,
+    )
+
+
+def _guard_scope_result(
+    rule: Rule,
+    platform: str,
+    ctx: CheckContext,
+    records: list[HookRecord],
+    expected_names: tuple[str, ...],
+    observed: ObservedState,
+    target: str,
+) -> CheckResult | None:
+    """The result for a hook the harness would never call for the tools the rule guards.
+
+    A rule that asks for the ``shell`` guard needs the harness to deliver the shell
+    tools to the hook, and one that asks for the ``file`` guard needs it to deliver the
+    file tools.  The harness filters on the entry's matcher, so a hook registered with
+    the matcher ``Read`` passes every probe that pipes a payload straight into it and
+    still never runs for a shell command.  None when the matcher delivers every tool
+    the rule's scope names, or when the rule names no scope.
+    """
+    guards = tuple(rule.expected.guards)
+    if not guards:
+        return None
+    from .proof import NATIVE_FILE_TOOLS, NATIVE_SHELL_TOOL_NAMES
+
+    wanted = {hook_key(name) for name in expected_names}
+    mine = [r.matcher for r in records if r.ident and hook_key(r.ident) in wanted]
+    if not mine:
+        mine = [r.matcher for r in records]
+    shown = ", ".join(repr(m) if m is not None else "none" for m in dict.fromkeys(mine))
+
+    if "shell" in guards:
+        missed = [
+            tool
+            for tool in NATIVE_SHELL_TOOL_NAMES.get(platform, ())
+            if not any(matcher_covers(matcher, tool) for matcher in mine)
+        ]
+        if missed:
+            return build_result(
+                rule,
+                platform,
+                CheckState.DRIFT,
+                "The hook in %s is registered with the matcher %s, which never delivers the %s "
+                "tool, so the harness does not run it for those shell commands."
+                % (target, shown, " or ".join(missed)),
+                ReasonCode.DRIFT,
+                observed,
+                ctx,
+            )
+    if "file" in guards:
+        file_tools = [name for name, _field in NATIVE_FILE_TOOLS.get(platform, ())]
+        if not file_tools:
+            # The harness's hook payload carries no file tool, so there is nothing a
+            # file guard could be sent and nothing for the rule to ask.  That is not a
+            # hole in the proof:  the rule does not apply, and the verdict leaves it out.
+            return build_result(
+                rule,
+                platform,
+                CheckState.UNSUPPORTED,
+                "File guarding does not apply to the %s harness:  its hook payload carries "
+                "no file tool, so no file write reaches a hook." % platform,
+                ReasonCode.NOT_APPLICABLE,
+                observed,
+                ctx,
+            )
+        missed = [
+            tool
+            for tool in file_tools
+            if not any(matcher_covers(matcher, tool) for matcher in mine)
+        ]
+        if missed:
+            return build_result(
+                rule,
+                platform,
+                CheckState.UNPROVEN,
+                "File guarding is not proven:  the hook in %s is registered with the matcher %s, "
+                "which never delivers the %s tool to it, so file writes are not checked by it."
+                % (target, shown, " or ".join(missed)),
+                ReasonCode.PROOF_NOT_RUN,
+                observed,
+                ctx,
+                proof_level_achieved=ProofLevel.L0,
+            )
+    return None
 
 
 def _timeout_of(

@@ -81,7 +81,7 @@ const svcKey = (k) => `svc:${k}`;
 // Source-scoped: two vendors sharing a label must never merge incidents.
 const svcNameKey = (source, service) =>
   `svcname:${source}:${String(service || "").toLowerCase().slice(0, 120)}`;
-// Zulip refuses topics over 60 characters (scripts/agent-sync-mcp contract).
+// Zulip refuses topics over 60 characters (scripts/simple-tools-mcp contract).
 const MAX_TOPIC_LENGTH = 60;
 function boundedTopic(service) {
   if (service.length <= MAX_TOPIC_LENGTH) return service;
@@ -701,6 +701,33 @@ async function refreshStatus(env, source, channel, topic, options = {}) {
   if (!credential) {
     throw credentialError(source, missingCredentialNames(env, source));
   }
+  // The whole read-decide-write section of one topic runs under that topic's
+  // lock, so two refreshes cannot both read "no standing message yet" and
+  // both post one.
+  return withTopicLock(`${source}\u0000${channel}\u0000${topic}`, () =>
+    refreshStatusLocked(env, source, channel, topic, { ...options, credential }),
+  );
+}
+
+/** One lock per source, channel and topic; a second refresh waits for the first. */
+const topicLocks = new Map();
+
+function withTopicLock(key, fn) {
+  const previous = topicLocks.get(key) || Promise.resolve();
+  const run = previous.then(fn, fn);
+  const settled = run.then(
+    () => {},
+    () => {},
+  );
+  topicLocks.set(key, settled);
+  settled.then(() => {
+    if (topicLocks.get(key) === settled) topicLocks.delete(key);
+  });
+  return run;
+}
+
+async function refreshStatusLocked(env, source, channel, topic, options = {}) {
+  const credential = options.credential;
   const states = await collectStates(env, source, channel, topic);
   const content = renderStatus({
     topic,
@@ -786,15 +813,12 @@ async function refreshStatus(env, source, channel, topic, options = {}) {
   // barrier carries the message id as well: an id means the write can be
   // retried, and no id means the write may have created a message nobody
   // knows about, so no further POST may happen for this topic.
-  await env.WRITER_STORAGE.put(outcomeKey, {
-    outcome: "unknown",
-    id: statusId,
+  await claimDeliveryBarrier(env, {
+    source,
+    outcomeKey,
+    barrierKey,
     revision,
-  });
-  await env.WRITER_STORAGE.put(barrierKey, {
-    outcome: "unknown",
-    id: statusId,
-    revision,
+    statusId,
   });
   try {
     const id = await writeStatus({
@@ -853,6 +877,31 @@ async function refreshStatus(env, source, channel, topic, options = {}) {
     throw deliveryError(source, outcome, detail);
   }
   return content;
+}
+
+/**
+ * Claim the uncertainty barrier of one source, channel and topic.
+ *
+ * The check and the claim are one transaction, so two refreshes cannot both
+ * see an open barrier and both write.  A barrier that is still `unknown` with
+ * no message id refuses the claim outright: the write it covers may have
+ * created a message nobody knows about.
+ */
+async function claimDeliveryBarrier(env, { source, outcomeKey, barrierKey, revision, statusId }) {
+  const storage = env.WRITER_STORAGE;
+  const claim = async (txn) => {
+    const barrier = await txn.get(barrierKey);
+    if (barrier?.outcome === "unknown" && !(barrier.id && statusId)) {
+      throw deliveryError(source, "unknown", { code: null, retryAfter: null });
+    }
+    await txn.put(outcomeKey, { outcome: "unknown", id: statusId, revision });
+    await txn.put(barrierKey, { outcome: "unknown", id: statusId, revision });
+  };
+  if (typeof storage.transaction === "function") {
+    await storage.transaction(claim);
+    return;
+  }
+  await claim(storage);
 }
 
 function advanceRevision(previous, next) {

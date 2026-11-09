@@ -10,7 +10,7 @@ Board `22164b50`.  Branch `fx/registry-fx-hoghunter`.  Worktree `~/apps/fleet-fx
 
 - `fleet-apps.json` `seats[]`: FX (`notesName` Fx, `worktreeSuffix` fx, `branchPrefixes` `fx/`).  KIMI marked `retired: true`.
 - `fleet-apps.json` `apps[]`: HogHunter (`HH`, local-only, no public host, `hasAppIcon` false).
-- `AGENT-SYNC.md` Agent Seat table and **Available (normal)** line (repo copy; live `~/apps/AGENT-SYNC.md` updated in the same edit).
+- `FLEET-PROTOCOL.md` Agent Seat table and **Available (normal)** line (repo copy; live `~/apps/FLEET-PROTOCOL.md` updated in the same edit).
 - Digest and calendar `DEFAULT_REPOS`, effort-log protocol, HogHunter live board file.
 - `python3 scripts/check-fleet-registry.py` must pass.
 

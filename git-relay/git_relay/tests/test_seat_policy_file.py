@@ -28,7 +28,7 @@ from git_relay.workflow_verbs import SPECS
 
 RELAY = Path(__file__).resolve().parents[2]
 ROOT = RELAY.parent
-WORKER = ROOT / "scripts" / "agent-sync-mcp" / "src"
+WORKER = ROOT / "scripts" / "simple-tools-mcp" / "src"
 
 _spec = importlib.util.spec_from_file_location("seat_policy", RELAY / "deploy" / "seat_policy.py")
 seat_policy = importlib.util.module_from_spec(_spec)
@@ -52,8 +52,8 @@ NOT_SWU_IDENTITY = {
 # Explicit policy exclusions, documented in the deployed policy's header.
 # Original Jet is wake-only and has no GitHub App entry.  BF-BUILDER is dropped (owner
 # 2026-11-01 4:41pm CT:  BF-ENGINEER replaced it), so the relay admits no bearer for it.
-# KIMI and ZC are newly added seats that do not have deployed GitHub Apps yet.
-EXCLUDED = {"JET", "BF-BUILDER", "KIMI", "ZC"}
+# KIMI is a newly added seat that does not have a deployed GitHub App yet.
+EXCLUDED = {"JET", "BF-BUILDER", "KIMI"}
 # Every GB seat and every BF bot (owner 2026-11-01 4:41pm CT:  "all 12" of each, including
 # the new BF-TRADER and BF-ENGINEER) reaches every repository in both namespaces.
 GB_SEATS = {
@@ -97,7 +97,7 @@ def worker_identities() -> set[str]:
     bearer = (WORKER / "bearer-identities.js").read_text(encoding="utf-8")
     row = r'^\s+"?([A-Z][A-Z0-9-]*)"?: Object\.freeze\(\{ prefix:'
     names |= set(re.findall(row, bearer, re.MULTILINE))
-    personas = ROOT / "scripts" / "agent_sync" / "mcp" / "gb-identities.json"
+    personas = ROOT / "scripts" / "simple_tools" / "mcp" / "gb-identities.json"
     names |= set(json.loads(personas.read_text(encoding="utf-8"))["enabled"])
     return names
 
@@ -285,7 +285,7 @@ class SeatPolicyFile(unittest.TestCase):
         # seat's repositories, actions or permission ceiling fails until this line is edited
         # too, so a widening can never ride in on the policy file alone.  When a policy
         # change is meant, run `seat_policy.py install` for the new digest and update it here.
-        self.assertEqual(seat_policy.digest(SEATS), "3eca9f013dcacb42")
+        self.assertEqual(seat_policy.digest(SEATS), "4fe63e3e32e90998")
 
     def test_render_refuses_a_malformed_file(self):
         good = json.loads(json.dumps(DOC))

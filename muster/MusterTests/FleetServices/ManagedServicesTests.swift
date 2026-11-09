@@ -53,7 +53,13 @@ final class ManagedServicesTests: XCTestCase {
         // server is stopped", which stopped the MCP server under a live one.
         let managedServices = ManagedServices(serverState: .unknown, mcpServerState: .running)
         XCTAssertNil(managedServices.mcpServerWanted)
-        XCTAssertEqual(ManagedServices.action(for: managedServices.entries[0]), .none)
+        // Muster only ever starts a service,  so a running one is never touched whatever
+        // the server is doing.
+        XCTAssertEqual(managedServices.entries[0].summary, "running, not sure if it should be")
+        XCTAssertEqual(ServiceReconcileEngine.decide(state: .running, policy: .keepRunning, stoppedByOwner: false,
+                                                     enabled: true, record: ReconcileRecord(), now: Date(),
+                                                     firstLook: true),
+                       .skip(.nothingToDo))
     }
 
     func testManagedServicesListsTheBotFleetMCPServer() {
@@ -83,32 +89,33 @@ final class ManagedServicesTests: XCTestCase {
         XCTAssertEqual(probe.presence(), .absent)
     }
 
-    // MARK: - Actions
+    // MARK: - Summaries
 
-    func testActionStartsAStoppedServiceAndStopsARunningOne() {
-        XCTAssertEqual(ManagedServices.action(for: entry(wanted: true, state: .stopped)), .start)
-        XCTAssertEqual(ManagedServices.action(for: entry(wanted: false, state: .running)), .stop)
-    }
-
-    func testActionNeverActsOnAnUnknownWantedOrObservedState() {
-        XCTAssertEqual(ManagedServices.action(for: entry(wanted: nil, state: .stopped)), .none)
-        XCTAssertEqual(ManagedServices.action(for: entry(wanted: nil, state: .running)), .none)
-        XCTAssertEqual(ManagedServices.action(for: entry(wanted: nil, state: .unknown)), .none)
-        XCTAssertEqual(ManagedServices.action(for: entry(wanted: true, state: .unknown)), .none)
-        XCTAssertEqual(ManagedServices.action(for: entry(wanted: false, state: .unknown)), .none)
-    }
-
-    func testActionDoesNothingWhenTheServiceAlreadyMatchesTheWantedState() {
-        XCTAssertEqual(ManagedServices.action(for: entry(wanted: true, state: .running)), .none)
-        XCTAssertEqual(ManagedServices.action(for: entry(wanted: false, state: .stopped)), .none)
-    }
-
-    func testSummarySaysWhatIsWantedAndWhatIsSeen() {
+    func testSummaryStatesFactsInPlainWords() {
         XCTAssertEqual(entry(wanted: true, state: .running).summary, "running")
-        XCTAssertEqual(entry(wanted: true, state: .stopped).summary, "stopped — wanted running")
-        XCTAssertEqual(entry(wanted: false, state: .running).summary, "running — not wanted")
+        XCTAssertEqual(entry(wanted: true, state: .stopped).summary, "stopped, should be running")
+        XCTAssertEqual(entry(wanted: true, state: .failed).summary, "failed, should be running")
+        XCTAssertEqual(entry(wanted: true, state: .unknown).summary, "not known, should be running")
+        XCTAssertEqual(entry(wanted: false, state: .running).summary, "running, should be stopped")
         XCTAssertEqual(entry(wanted: false, state: .stopped).summary, "stopped")
-        XCTAssertEqual(entry(wanted: nil, state: .running).summary, "running — wanted state unknown")
+        XCTAssertEqual(entry(wanted: nil, state: .running).summary, "running, not sure if it should be")
+        XCTAssertEqual(entry(wanted: nil, state: .stopped).summary, "stopped, not sure if it should be")
+    }
+
+    func testNoSummaryUsesTheWordWanted() {
+        let states: [ManagedServiceState] = [.running, .stopped, .failed, .notInstalled, .notInPM2, .unknown]
+        for wanted in [true, false, nil] as [Bool?] {
+            for state in states {
+                let words = ManagedServices.summary(wanted: wanted, state: state)
+                XCTAssertFalse(words.lowercased().contains("wanted"), words)
+                XCTAssertFalse(words.contains("\u{2014}"), words)
+            }
+        }
+    }
+
+    func testAnApplicationPM2NeverHeardOfIsNotStopped() {
+        XCTAssertEqual(entry(wanted: false, state: .notInPM2).summary, "not in this Mac's pm2")
+        XCTAssertNotEqual(ManagedServiceState.notInPM2.label, ManagedServiceState.stopped.label)
     }
 
     // MARK: - The pm2 client the Control app has to use
@@ -225,21 +232,45 @@ final class ManagedServicesTests: XCTestCase {
         XCTAssertTrue(commands.calls[0].contains("botfleet-mcp"))
     }
 
-    func testAStartThatDoesNotBringTheMCPServerUpIsRestarted() async throws {
+    func testAStartThatDoesNotBringTheMCPServerUpIsRestartedWhenPM2ShowsAStaleRecord() async throws {
         // pm2 answers a start on a record it believes is online with "already
-        // started" and starts nothing, so a start that leaves the server down
-        // has proved the record was stale, and the record is then restarted.
-        // The start itself stays one pm2 command, so the repair is paid for
-        // only when there is something to repair.
+        // started" and starts nothing.  A start that leaves the server down
+        // is looked at once, and only a record pm2 shows as online with no
+        // process behind it is restarted.
         ManagedServicesURLProtocol.handler = { _ in
             .failure(URLError(.cannotConnectToHost))
         }
         let commands = PM2Commands()
+        commands.listing = #"[{"name": "botfleet-mcp", "pid": 0, "pm2_env": {"status": "online"}}]"#
         let control = try makeControl(commands: commands)
         let state = try await control.setRunning(true, within: 0.1)
         XCTAssertNotEqual(state, .running)
         XCTAssertTrue(commands.calls.contains { $0.contains("restart") })
         XCTAssertTrue(commands.calls.contains { $0.contains("botfleet-mcp") })
+    }
+
+    func testASlowStartIsNotRestarted() async throws {
+        // The record is not stale:  pm2 shows a process behind it, so the server is only slow
+        // to answer, and a restart would kill a start that is still coming up.
+        ManagedServicesURLProtocol.handler = { _ in
+            .failure(URLError(.cannotConnectToHost))
+        }
+        let commands = PM2Commands()
+        commands.listing = #"[{"name": "botfleet-mcp", "pid": 4242, "pm2_env": {"status": "online"}}]"#
+        let control = try makeControl(commands: commands)
+        _ = try await control.setRunning(true, within: 0.1)
+        XCTAssertFalse(commands.calls.contains { $0.contains("restart") })
+    }
+
+    func testAStartIsNotRestartedWhenPM2CannotBeAskedWhichRecordIsStale() async throws {
+        ManagedServicesURLProtocol.handler = { _ in
+            .failure(URLError(.cannotConnectToHost))
+        }
+        let commands = PM2Commands()
+        commands.listing = "garbled"
+        let control = try makeControl(commands: commands)
+        _ = try await control.setRunning(true, within: 0.1)
+        XCTAssertFalse(commands.calls.contains { $0.contains("restart") })
     }
 
     func testARefusedPM2IsReportedRatherThanClaimedAsSuccess() async throws {
@@ -257,7 +288,9 @@ final class ManagedServicesTests: XCTestCase {
         }
     }
 
-    func testAPM2TimeoutIsReportedAsAPM2Problem() async throws {
+    /// A command that ended but whose output could not be read did not time out,  so it is not
+    /// called one.
+    func testAPM2CommandWhoseOutputCouldNotBeReadIsNotCalledATimeout() async throws {
         ManagedServicesURLProtocol.handler = { _ in
             .response(200, Data(#"{"status":"ok","app":"botfleet-admin-mcp"}"#.utf8))
         }
@@ -266,10 +299,45 @@ final class ManagedServicesTests: XCTestCase {
         let control = try makeControl(commands: commands)
         do {
             _ = try await control.setRunning(false, within: 1)
-            XCTFail("Expected the timeout to be reported")
+            XCTFail("Expected the failure to be reported")
         } catch {
             XCTAssertEqual(error as? McpServerError,
-                           .refused("pm2 timed out before it could change the BotFleet MCP Server."))
+                           .refused("pm2 could not change the BotFleet MCP Server."))
+        }
+    }
+
+    func testARunnerTimeoutNamesPM2AndNotSomeOtherService() async throws {
+        ManagedServicesURLProtocol.handler = { _ in
+            .response(200, Data(#"{"status":"ok","app":"botfleet-admin-mcp"}"#.utf8))
+        }
+        let commands = PM2Commands()
+        commands.failure = CommandTimedOutError(executable: "/usr/bin/node",
+                                                arguments: ["/usr/bin/pm2", "stop", "botfleet-mcp"])
+        let control = try makeControl(commands: commands)
+        do {
+            _ = try await control.setRunning(false, within: 1)
+            XCTFail("Expected the timeout to be reported")
+        } catch {
+            // pm2 can take a change and then be slow to answer,  so a timeout is not a refusal.
+            XCTAssertEqual(error as? McpServerError,
+                           .notKnown("pm2 did not finish in time to change the BotFleet MCP Server, so it is not known whether it did."))
+        }
+    }
+
+    func testAPM2ErrorReadsFromStandardErrorAndIsBounded() async throws {
+        ManagedServicesURLProtocol.handler = { _ in
+            .response(200, Data(#"{"status":"ok","app":"botfleet-admin-mcp"}"#.utf8))
+        }
+        let commands = PM2Commands()
+        let table = "\u{250C}\u{2500}\u{2500}\u{2510}\n\u{2502} id \u{2502}\n\u{2514}\u{2500}\u{2500}\u{2518}"
+        commands.failure = CommandExitError(output: table, status: 1,
+                                            errorOutput: "\u{1B}[31m[PM2][ERROR]\u{1B}[39m spawn failed")
+        let control = try makeControl(commands: commands)
+        do {
+            _ = try await control.setRunning(false, within: 1)
+            XCTFail("Expected the refusal to be reported")
+        } catch {
+            XCTAssertEqual(error as? McpServerError, .refused("[PM2][ERROR] spawn failed"))
         }
     }
 
@@ -333,9 +401,12 @@ private enum SocketTestError: Error {
 private final class PM2Commands: CommandRunning {
     var calls: [[String]] = []
     var failure: Error?
+    /// What `pm2 jlist` answers with.
+    var listing = "[]"
     func run(_ executable: String, _ arguments: [String]) throws -> String {
         calls.append(arguments)
         if let failure { throw failure }
+        if arguments.contains("jlist") { return listing }
         return ""
     }
 }

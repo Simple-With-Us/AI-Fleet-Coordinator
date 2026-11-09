@@ -36,7 +36,7 @@ final class OpsActionPlaceTests: XCTestCase {
         XCTAssertEqual(knob.changes, .acrossFleet)
         XCTAssertEqual(knob.title, "Set FLEET_X to \"1\" for the whole fleet")
         XCTAssertEqual(knob.placeSentence, "Runs on the Mac.\u{00A0} Changes a value every machine reads.")
-        XCTAssertEqual(knob.runButtonTitle, "Change For The Whole Fleet With Touch ID")
+        XCTAssertEqual(knob.runButtonTitle, "Approve And Change For The Whole Fleet")
         XCTAssertEqual(OpsActionCase.knobUnset.sample.changes, .acrossFleet)
     }
 
@@ -44,11 +44,11 @@ final class OpsActionPlaceTests: XCTestCase {
         let server = OpsAction.serverUnit(verb: .restart, unit: OpsNames.reportTimerUnit)
         XCTAssertEqual(server.title, "Restart Server Report Timer on the server")
         XCTAssertEqual(server.placeSentence, "Runs on the server.")
-        XCTAssertEqual(server.runButtonTitle, "Run On The Server With Touch ID")
+        XCTAssertEqual(server.runButtonTitle, "Approve And Run On The Server")
         let mac = OpsAction.pm2App(verb: .restart, name: "shellular")
         XCTAssertEqual(mac.title, "Restart Shellular on the Mac")
         XCTAssertEqual(mac.placeSentence, "Runs on the Mac.")
-        XCTAssertEqual(mac.runButtonTitle, "Run On The Mac With Touch ID")
+        XCTAssertEqual(mac.runButtonTitle, "Approve And Run On The Mac")
         XCTAssertEqual(OpsAction.coolifyRedeploy(uuid: "abc123def456", name: "muster-web").title,
                        "Redeploy muster-web on the server")
     }
@@ -754,6 +754,29 @@ final class ServiceActionRouterTests: XCTestCase {
         XCTAssertNil(other, "only BotFleet Server holds work a restart can end")
         let busy = await rig.admin.restartWarning(for: FleetServiceRegistry.server.id)
         XCTAssertEqual(busy, FleetServices.restartBody(work: "1 bot turn"))
+    }
+
+    /// The Mac's eavesdropper is not on the allowlist,  so it takes the direct route,  and its
+    /// restart drops every Mac seat at once:  it always asks first,  and its title says so.
+    func testRestartingTheOperatorEavesdropperAlwaysAsksFirst() async throws {
+        let rig = await makeRig()
+        let id = FleetServiceRegistry.operatorEavesdropper.id
+        let restart = try action(.restart, id, on: rig)
+        XCTAssertEqual(restart.route, .admin(.restart, serviceID: id))
+        XCTAssertTrue(restart.route.asksFirst)
+        XCTAssertEqual(restart.title, "Restart On The Mac\u{2026}")
+        let warning = await rig.admin.restartWarning(for: id)
+        XCTAssertEqual(warning, FleetServices.operatorRestartBody)
+        XCTAssertNil(FleetServices.restartAlwaysAsksBody(forServiceID: "app.botfleet.companion"))
+        rig.confirmations.answer = false
+        rig.router.start(restart)
+        try await waitUntil { !rig.router.isBusy }
+        let request = try XCTUnwrap(rig.confirmations.requests.first)
+        XCTAssertEqual(request.word, "Restart")
+        XCTAssertEqual(request.title, "Operator Eavesdropper")
+        XCTAssertEqual(request.host, .mac)
+        XCTAssertEqual(request.message, FleetServices.operatorRestartBody)
+        XCTAssertNil(rig.router.actionState, "a declined restart runs nothing")
     }
 
     func testAskingTheServerIsARunnerCallAndNeverAPlan() async throws {

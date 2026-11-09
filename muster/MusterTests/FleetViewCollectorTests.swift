@@ -385,18 +385,27 @@ final class FleetViewCollectorTests: XCTestCase {
         XCTAssertEqual(clock.headerText, "Collection time unknown")
     }
 
-    /// The view is not in the test bundle, so its use of these types is pinned by its source.
+    /// The page's reading lives in `FleetViewStore`, which keeps the failure's reason and the
+    /// header's times;  the view only shows them.  The view is not in the test bundle, so both
+    /// halves are pinned by their source (the store's behaviour is in FleetViewStoreTests).
     func test_the_view_keeps_the_reason_and_the_times_apart() throws {
-        let view = scriptsDirectory.deletingLastPathComponent()
-            .appendingPathComponent("muster/Muster/FleetView.swift")
-        let source = try String(contentsOf: view, encoding: .utf8)
+        let muster = scriptsDirectory.deletingLastPathComponent().appendingPathComponent("muster/Muster")
+        let store = try String(contentsOf: muster.appendingPathComponent("Model/FleetViewStore.swift"), encoding: .utf8)
+        let view = try String(contentsOf: muster.appendingPathComponent("FleetView.swift"), encoding: .utf8)
         // Worked out off the main thread, because stderr can be 4 MB in one line.
-        XCTAssertTrue(source.contains("await Task.detached(priority: .userInitiated) {\n                FleetViewFailure(error: error)"))
-        XCTAssertTrue(source.contains("failure = described"))
-        XCTAssertTrue(source.contains("refreshClock.recordFailure()"))
-        XCTAssertTrue(source.contains("refreshClock.recordSuccess(generatedAt: loaded.generatedAt)"))
-        XCTAssertFalse(source.contains("refreshedAt"))
-        XCTAssertFalse(source.contains("\"Refreshed "))
+        XCTAssertTrue(store.contains("await Task.detached(priority: .userInitiated) {\n                FleetViewFailure(error: error)"))
+        XCTAssertTrue(store.contains("failure = described"))
+        XCTAssertTrue(store.contains("refreshClock.recordFailure(at: now())"))
+        XCTAssertTrue(store.contains("refreshClock.recordSuccess(generatedAt: loaded.generatedAt, at: now())"))
+        // The view reads the store's reason and clock, and keeps no failure or clock of its own.
+        XCTAssertTrue(view.contains("private var failure: FleetViewFailure? { reading.failure }"))
+        XCTAssertTrue(view.contains("private var refreshClock: FleetViewRefreshClock { reading.refreshClock }"))
+        XCTAssertFalse(view.contains("FleetViewFailure(error:"), "the view works out a failure of its own")
+        XCTAssertFalse(view.contains("refreshClock.record"), "the view keeps a clock of its own")
+        for source in [store, view] {
+            XCTAssertFalse(source.contains("refreshedAt"))
+            XCTAssertFalse(source.contains("\"Refreshed "))
+        }
     }
 
     // MARK: The real collector, under the interpreter the app runs
@@ -424,6 +433,15 @@ final class FleetViewCollectorTests: XCTestCase {
         )
         let lanes = home.appendingPathComponent("lanes/Fixture-Repo/claude-smoke", isDirectory: true)
         try FileManager.default.createDirectory(at: lanes, withIntermediateDirectories: true)
+        // The collector reads only folders that are git checkouts, so the lane is a real one.
+        let git = Process()
+        git.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        git.arguments = ["init", "-q", lanes.path]
+        git.standardOutput = FileHandle.nullDevice
+        git.standardError = FileHandle.nullDevice
+        try git.run()
+        git.waitUntilExit()
+        XCTAssertEqual(git.terminationStatus, 0, "git init failed for the fixture lane")
         return try FleetViewService.fetch(
             executable: URL(fileURLWithPath: FleetViewService.interpreterPath),
             arguments: [
@@ -455,6 +473,13 @@ final class FleetViewCollectorTests: XCTestCase {
         XCTAssertTrue(envelope.sections.pullRequests.isKnown)
         XCTAssertTrue(envelope.sections.claims.isKnown)
         XCTAssertEqual(envelope.sections.lanes.items.first?.seat, "CLAUDE")
+        XCTAssertEqual(envelope.sections.lanes.items.first?.state, "OK")
+        // The collector names the machine from the platform, and this job runs on macOS.
+        XCTAssertEqual(envelope.host, .mac)
+        XCTAssertEqual(envelope.sections.lanes.items.first?.host, .mac)
+        XCTAssertEqual(envelope.lanesHeading, "Lanes On The Mac")
+        XCTAssertEqual(envelope.sections.pullRequests.unread, [])
+        XCTAssertEqual(envelope.claimExpiryHours, 72)
         XCTAssertEqual(envelope.sections.claims.items.first?.identifier, "FIX-1")
         XCTAssertGreaterThan(envelope.sections.claims.items.first?.ageSeconds ?? -1, 0)
     }

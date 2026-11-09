@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The fleet git tools CLI:  a thin client for the git tools of the hosted simple-tools MCP.
 
-Every operation is remote.  The endpoint is the fixed constant below (no environment override) and the
+Every operation is remote.  The endpoints are the fixed constants below (no environment override) and the
 bearer is the CLI user's OWN credential:  it comes from SIMPLE_TOOLS_BEARER in the environment (automation)
 or one hidden interactive prompt (no echo - never an argument, history, a file or a log line here), and
 there is no direct path, no credential minting and no other credential source.  The server, never this
@@ -22,6 +22,11 @@ a write, or the server's outcome_unknown all print the uncertainty note and stop
 text is untrusted (it can echo caller input), so only its allow-listed error code is ever shown.  A genuine
 relay refusal keeps its real code - it is never reclassified as an uncertain write.
 
+clone, fetch, pull, ls-remote, bundle and archive run the local git program against the hosted read-only route, on the
+same host as the MCP endpoint.  The server reads the repo as this bearer's own GitHub App and keeps the GitHub token, so
+this client never holds one.  That route has no push.  publish reads local files and sends them through the same write
+tool as `call`, so a caller need not pass a large file as an inline argument.
+
 This file is standard library only.  The command environment prefix is _ENV_STEM below;
 everything user-visible takes the installed name from argv[0].  Python 3.10+.
 """
@@ -29,18 +34,26 @@ everything user-visible takes the installed name from argv[0].  Python 3.10+.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
+import contextlib
+import fcntl
 import getpass
 import hashlib
 import http.client
+import io
 import importlib.util
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import signal  # SIGKILL for the isolated pattern-check child only, never this process
 import socket
 import ssl
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -58,6 +71,17 @@ REMOTE_ENV = _ENV_STEM + "_REMOTE"  # set by the seat helper;  informational onl
 USER_AGENT = _ENV_STEM.lower().replace("_", "-") + "-remote/1"
 
 REMOTE_MCP_URL = "https://agents.simplewithus.com/mcp"
+GIT_ROUTE_BASE = "https://agents.simplewithus.com"
+GIT_TIMEOUT_S = 3600
+# The route refuses a chunked request, so git must send a long want list in one piece.
+GIT_POST_BUFFER_BYTES = 8 * 1024 * 1024
+REPO_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}")
+# The server's limits on gr_wf_files_put (git_relay/workflow_verbs.py).
+PUBLISH_MAX_FILE_BYTES = 2 * 1024 * 1024
+PUBLISH_MAX_COMMIT_BYTES = 4 * 1024 * 1024
+PUBLISH_MAX_FILES = 200  # one publish run, all batches together
+PUBLISH_MAX_TOTAL_BYTES = 64 * 1024 * 1024  # one publish run, all batches together
+PUBLISH_MAX_COMMIT_FILES = 20
 REMOTE_BEARER_ENV = "SIMPLE_TOOLS_BEARER"
 REMOTE_TIMEOUT_S = 40
 # One budget for the whole verb:  the identities probe, every discovery page and the target call share
@@ -89,7 +113,7 @@ wf_file_history wf_runs_page wf_workflows_page wf_pr_files_page wf_issue_parent 
 wf_issue_blocked_by wf_issue_blocking wf_commit_statuses wf_git_blob_get wf_git_commit_get wf_git_tree_get
 wf_release_asset_download wf_job_log wf_run_logs wf_artifact_download wf_milestones wf_milestone_get
 wf_deployments wf_deployment_get wf_deployment_statuses wf_environments wf_environment_get wf_release_list
-wf_release_get wf_tag_get wf_review_threads wf_issue_list wf_issue_get wf_pr_get wf_pr_reviews wf_pr_comments
+wf_release_get wf_tag_get wf_review_thread_comments wf_review_threads wf_issue_list wf_issue_get wf_pr_get wf_pr_reviews wf_pr_comments
 wf_issue_comments wf_commit_get wf_compare wf_branch_get wf_repo_get wf_labels wf_workflows wf_run_get
 wf_run_artifacts wf_release_assets wf_release_asset_get wf_pr_list wf_pr_files wf_file_get wf_tree wf_branches
 wf_commits wf_code_search wf_runs wf_run_jobs wf_checks wf_merge_queue_entry wf_job_get wf_workflow_get
@@ -106,7 +130,7 @@ INPUT_LIMITS = {
 }
 DEFAULT_INPUT_LIMIT = 65536
 
-# The error codes the hosted server can return (the ToolError codes in scripts/agent-sync-mcp/src), kept in
+# The error codes the hosted server can return (the ToolError codes in scripts/simple-tools-mcp/src), kept in
 # step with scripts/linear-board/board.  Anything else, including a code that merely looks safe, prints as
 # "error".
 _REMOTE_CODES = frozenset(
@@ -136,6 +160,8 @@ _REMOTE_CODES = frozenset(
         "forbidden",
         "fleetlink_seat_disabled",
         "fleetlink_refused",
+        "fleetlink_not_found",
+        "fleetlink_expired",
         "dm_not_allowed",
         "budget_exhausted",
     )
@@ -300,26 +326,76 @@ def _remote_post(url: str, headers: dict, body: bytes, timeout: float) -> tuple[
     try:
         with op.open(req, timeout=timeout) as r:
             chunks, total = [], 0
-            sock = getattr(getattr(getattr(r, "fp", None), "raw", None), "_sock", None)
-            if sock is None:
-                # Without the socket the remaining budget cannot be applied to each read, so a stalled body could
-                # outlast the deadline:  fail closed rather than read unbounded.
-                raise _TransportError(True, "transport")
+            content_length = r.headers.get("Content-Length")
+            try:
+                expected = int(content_length) if content_length is not None else None
+            except ValueError:
+                expected = None
+            if expected is not None and expected < 0:
+                expected = None
+            if getattr(r, "chunked", False) or r.headers.get("Transfer-Encoding"):
+                expected = None
+            raw_fp = getattr(getattr(r, "fp", None), "raw", None)
+            sock = None
+            # Try every place a response keeps its socket, and accept only an object that can
+            # really set a timeout.
+            for candidate in (
+                getattr(raw_fp, "_sock", None),
+                getattr(getattr(r, "connection", None), "sock", None),
+                raw_fp,
+            ):
+                if callable(getattr(candidate, "settimeout", None)):
+                    sock = candidate
+                    break
+            # The socket is only a way to tighten the per-read timeout to the remaining
+            # budget.  Some responses that have genuinely arrived do not expose it
+            # (wrapped / buffered transports, proxies, test doubles):  requiring it
+            # discarded a complete answer as a transport failure (AFC-638).  When it
+            # is absent, read anyway:  the opener's own timeout (the full budget
+            # passed to op.open) still bounds any single blocking read, and the
+            # deadline is re-checked before and after every chunk below, so a
+            # slow-drip body is cut off at the first chunk after the deadline, at most one
+            # per-read timeout late.
             while True:
+                if expected is not None and total >= expected:
+                    break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise _TransportError(True, "deadline")
-                sock.settimeout(remaining)
+                if sock is not None:
+                    try:
+                        sock.settimeout(remaining)
+                    except OSError:
+                        if expected is None and total > 0:
+                            break
+                        if expected is not None and total > 0:
+                            raise _TransportError(True, "truncated response") from None
+                        raise _TransportError(True, "transport") from None
+                read_size = 65536
+                if expected is not None:
+                    read_size = min(read_size, expected - total)
                 try:
-                    chunk = r.read1(65536)
+                    chunk = r.read1(read_size)
                 except AttributeError:
                     # read1's partial-read semantics serve the slow-drip deadline and an ordinary
                     # http.client.HTTPResponse provides it;  a wrapped response that cannot read this
                     # way is a transport failure here, never a traceback.
                     raise _TransportError(True, "transport") from None
+                except OSError as exc:
+                    closed_after_body = (
+                        getattr(exc, "errno", None) == 9
+                        or isinstance(exc, (http.client.RemoteDisconnected, ssl.SSLEOFError))
+                    )
+                    if expected is None and total > 0 and closed_after_body:
+                        break
+                    if expected is not None and total > 0:
+                        raise _TransportError(True, "truncated response") from None
+                    raise
                 if time.monotonic() > deadline:
                     raise _TransportError(True, "deadline")
                 if not chunk:
+                    if expected is not None and total < expected:
+                        raise _TransportError(True, "truncated response")
                     break
                 total += len(chunk)
                 if total > REMOTE_MAX_BYTES:
@@ -342,15 +418,15 @@ def _remote_post(url: str, headers: dict, body: bytes, timeout: float) -> tuple[
 
 def _error_code_of(result: dict) -> str | None:
     """The hosted server's error code from a tools/call-style result:  structuredContent, then
-    `_meta["agent-sync/error"]`, then the first text part that is a JSON object.  Only allow-listed codes
+    `_meta["simple-tools/error"]`, then the first text part that is a JSON object.  Only allow-listed codes
     are recognized;  anything else (or nothing) is None."""
     candidates = []
     sc = result.get("structuredContent")
     if isinstance(sc, dict):
         candidates.append(sc)
     meta = result.get("_meta")
-    if isinstance(meta, dict) and isinstance(meta.get("agent-sync/error"), dict):
-        candidates.append(meta["agent-sync/error"])
+    if isinstance(meta, dict) and isinstance(meta.get("simple-tools/error"), dict):
+        candidates.append(meta["simple-tools/error"])
     for part in result.get("content") or []:
         if isinstance(part, dict) and isinstance(part.get("text"), str):
             try:
@@ -365,6 +441,69 @@ def _error_code_of(result: dict) -> str | None:
         if isinstance(code, str) and code in _REMOTE_CODES:
             return code
     return None
+
+
+# The closed refusal reasons the hosted front attaches to a relay_refused result
+# (scripts/simple-tools-mcp/src/gr-refusal.js REFUSAL_REASONS, kept in step).  Only an exact member is ever
+# shown, so the relay's own prose, an upstream body and anything a server made up are never copied.
+_REFUSAL_REASONS = frozenset(
+    (
+        "credential_scan",
+        "seat_policy",
+        "seat_rate_limit",
+        "github_refused",
+        "fence_mismatch",
+        "unauthenticated",
+        "bad_request_content_too_large",
+        "bad_request_default_branch_protected",
+        "bad_request_invalid_arguments",
+        "bad_request_invalid_files",
+        "bad_request_invalid_repository",
+        "bad_request_nothing_to_change",
+        "bad_request_pr_merged",
+        "bad_request_pr_not_issue_target",
+        "bad_request_pr_not_open",
+        "bad_request_review_not_pending",
+        "bad_request_unsupported_action",
+        "bad_request_workflow_path_permission",
+    )
+)
+
+
+def _refusal_detail_of(result: dict) -> str:
+    """` (reason=<closed reason>[, github_status=<4xx>])` from a relay_refused result, else "".
+
+    Reads the same candidates as `_error_code_of`.  `reason` must be an exact member of the closed set;
+    `github_status` must be a real int in 400..499 other than 429 (a bool is not an int here).  Nothing
+    else from the result is shown."""
+    candidates = []
+    sc = result.get("structuredContent")
+    if isinstance(sc, dict):
+        candidates.append(sc)
+    meta = result.get("_meta")
+    if isinstance(meta, dict) and isinstance(meta.get("simple-tools/error"), dict):
+        candidates.append(meta["simple-tools/error"])
+    for part in result.get("content") or []:
+        if isinstance(part, dict) and isinstance(part.get("text"), str):
+            try:
+                obj = strict_loads(part["text"])
+            except (ValueError, RecursionError):
+                continue
+            if isinstance(obj, dict):
+                candidates.append(obj)
+                break
+    for cand in candidates:
+        # The reason must come from the same object that carries the relay_refused code, never
+        # from a different candidate (a sibling object could name another refusal's cause).
+        if cand.get("code") != "relay_refused":
+            continue
+        reason = cand.get("reason")
+        if isinstance(reason, str) and reason in _REFUSAL_REASONS:
+            status = cand.get("github_status")
+            if type(status) is int and 400 <= status <= 499 and status != 429:
+                return f" (reason={reason}, github_status={status})"
+            return f" (reason={reason})"
+    return ""
 
 
 # ----------------------------------------------------------------- answer parsing (mirrors board)
@@ -466,13 +605,27 @@ def _rpc_result(ctype: str, raw: bytes, write: bool):
 
 
 def _failure(exc: "_TransportError", write: bool) -> str:
-    if write and exc.sent:
+    if exc.reason == "truncated response":
         return (
-            "the hosted endpoint did not answer"
-            + _REMOTE_UNKNOWN
+            "the hosted endpoint closed the answer before its declared length"
+            + (_REMOTE_UNKNOWN if write and exc.sent else "")
             + " (no direct fallback)"
         )
-    return "the hosted endpoint could not be reached (no direct fallback)"
+    if not exc.sent:
+        # Provably never left this host (DNS, refused connection, certificate
+        # check):  the endpoint really could not be reached.
+        return "the hosted endpoint could not be reached (no direct fallback)"
+    # The request may have been sent:  `sent` is only False for failures that provably never
+    # left, so a timeout wrapped in URLError (a connect timeout cannot be told from a send
+    # timeout, and a write must be treated as possibly sent) lands here too.  So this does not
+    # assert that the endpoint was reachable, only that no answer arrived (deadline, closed SSL
+    # socket, transport error).  Saying "could not be reached" for the common case sent seats
+    # chasing a phantom outage and falling back to gh (AFC-638).
+    return (
+        "the hosted endpoint's answer was lost or never arrived"
+        + (_REMOTE_UNKNOWN if write else "")
+        + " (no direct fallback)"
+    )
 
 
 def _status_message(status: int, write: bool) -> str:
@@ -489,12 +642,12 @@ _SCANNER = None
 
 
 def _scanner():
-    """The fleet's secret scanner (scripts/agent_sync/secretscan.py, standard library only), loaded by path.
+    """The fleet's secret scanner (scripts/simple_tools/secretscan.py, standard library only), loaded by path.
     If it cannot be loaded nothing is sent:  there is no unscanned route."""
     global _SCANNER
     if _SCANNER is not None:
         return _SCANNER
-    path = Path(os.path.realpath(__file__)).parent.parent / "agent_sync" / "secretscan.py"
+    path = Path(os.path.realpath(__file__)).parent.parent / "simple_tools" / "secretscan.py"
     try:
         spec = importlib.util.spec_from_file_location("_git_secretscan", str(path))
         module = importlib.util.module_from_spec(spec)
@@ -508,16 +661,37 @@ def _scanner():
     return module
 
 
-def _scan_arguments(arguments, bearer: str) -> str | None:
+def _scan_arguments(arguments, bearer: str, tool: str | None = None) -> str | None:
     """The first argument field the fleet secret scanner flags, as `secret_scan:<field>` (the field name only,
     never the text or any part of it), or None.  Every string at any depth is checked, and the bearer itself
     always matches."""
     scanner = _scanner()
+    files = {}
+    if isinstance(arguments, dict) and tool in {"gr_wf_file_put", "gr_wf_files_put"}:
+        repo = arguments.get("repo")
+        rows = [arguments] if tool == "gr_wf_file_put" else arguments.get("files", [])
+        if isinstance(repo, str) and isinstance(rows, list):
+            for i, row in enumerate(rows):
+                if isinstance(row, dict) and isinstance(row.get("path"), str):
+                    field = "content_b64" if tool == "gr_wf_file_put" else f"files[{i}].content_b64"
+                    files[field] = (repo, row["path"])
     stack = [("", arguments)]
     while stack:
         path, value = stack.pop()
         if isinstance(value, str):
-            if scanner.scan(value, known=[bearer] if bearer else []) is not None:
+            if path.endswith("content_b64"):
+                # Base64 of ordinary bytes looks like a token, and it hides a real one, so the decoded text is what is
+                # scanned.  Anything that does not decode is scanned as it came.
+                try:
+                    value = base64.b64decode(value, validate=True).decode("utf-8", "replace")
+                except (binascii.Error, ValueError):
+                    pass
+            known = [bearer] if bearer else []
+            if path in files and callable(getattr(scanner, "scan_file", None)):
+                hit = scanner.scan_file(*files[path], value, known)
+            else:
+                hit = scanner.scan(value, known=known)
+            if hit is not None:
                 return "secret_scan:" + (path or "arguments")
         elif isinstance(value, dict):
             stack.extend((f"{path}.{k}" if path else str(k), v) for k, v in value.items())
@@ -576,7 +750,7 @@ def _rpc(bearer: str, method: str, params: dict, write: bool, deadline: float | 
 
 def remote_call(tool: str, arguments: dict, write: bool, bearer: str, deadline: float | None = None) -> dict:
     """One tools/call.  Returns {"structured":..., "text":...}.  Never retried."""
-    hit = _scan_arguments(arguments, bearer)
+    hit = _scan_arguments(arguments, bearer, tool)
     if hit:
         die(f"refused before sending: {hit}", EXIT_USAGE)
     result = _rpc(
@@ -602,16 +776,17 @@ def remote_call(tool: str, arguments: dict, write: bool, bearer: str, deadline: 
         code = _error_code_of(result)
         shown = code if code is not None else "error"
         note = _REMOTE_UNKNOWN if write and code == "outcome_unknown" else ""
+        detail = _refusal_detail_of(result) if code == "relay_refused" else ""
         # retry-after is the only other field ever shown, and only bounded.
         retry = None
         meta = result.get("_meta")
-        for source in (sc if isinstance(sc, dict) else {}, meta.get("agent-sync/error") if isinstance(meta, dict) and isinstance(meta.get("agent-sync/error"), dict) else {}):
+        for source in (sc if isinstance(sc, dict) else {}, meta.get("simple-tools/error") if isinstance(meta, dict) and isinstance(meta.get("simple-tools/error"), dict) else {}):
             value = source.get("retry_after_s", source.get("retry_after"))
             if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value <= 86400:
                 retry = value
                 break
         after = f", retry after {int(-(-retry // 1))}s" if retry is not None else ""
-        die(f"{tool} failed on the hosted server: {shown}{after}{note}", EXIT_ERROR)
+        die(f"{tool} failed on the hosted server: {shown}{detail}{after}{note}", EXIT_ERROR)
     parts = [
         c.get("text")
         for c in content or []
@@ -694,7 +869,7 @@ def discover_tools(bearer: str, deadline: float | None = None) -> dict:
 
 _PATTERN_CHECK_MAX_S = 5  # per-validation wall-clock cap on ALL pattern work, inside the overall budget
 
-# The exact contract for untrusted patterns:  only these 19 patterns - the reviewed catalog's complete
+# The exact contract for untrusted patterns:  only these 20 patterns - the reviewed catalog's complete
 # set, sha256 of the pattern text - may ever be compiled or searched.  Anything unrecognized fails
 # closed, on every platform.  There is NO heuristic:  widening this set is a reviewed code change, and
 # each member's compile size and match cost are verified facts, not estimates.
@@ -712,6 +887,7 @@ _KNOWN_PATTERN_DIGESTS = frozenset(
     "7a3e89f559ebec394da08a91160bb5eab26b2ef30d26eeb88c270079b58d2e2f",
     "7b8be75214feb9b9cc29abc256a0996c92dcd7d05abfb1ca5f7b922d58aaffec",
     "88b2ed1aec9cd281271858178ffa9dc52d0f283a9c71e2b8fb843199216bd11d",
+    "a654b0a196893e4f921c650cf5c9d9d6496a366dbcca86e7adbfd02346d353cc",
     "a6aa272af8e604e6e4097952430e60ec47a3a0578c73732ac48fcdb785db9cb5",
     "ab10742c40c95e23b40b24a42ff97316a3eaa79654b6afb5f2decd39f1ec47f6",
     "b9c4b86e8e227fb8026d44a0115b4e31e00ec77b831c6c430431d5dc6be67a67",
@@ -1333,6 +1509,831 @@ def cmd_whoami(out: dict, a) -> int:
     return 0
 
 
+# ----------------------------------------------------------------- git transfer and file publishing
+
+
+def _git_binary() -> str:
+    found = shutil.which("git")
+    if not found:
+        die("git is not installed on this machine", EXIT_ERROR)
+    return found
+
+
+def _transport_env(bearer: str) -> dict:
+    """git's environment for the hosted read-only route.  The bearer stays out of argv, and no GitHub credential is here.
+
+    git rewrites github.com to the route for this one process, so a clone's stored remote stays the plain GitHub URL.
+    """
+    base = GIT_ROUTE_BASE
+    config = [
+        (f"url.{base}/git/.insteadOf", "https://github.com/"),
+        (f"url.{base}/git/.insteadOf", "git@github.com:"),
+        (f"http.{base}/.extraHeader", f"Authorization: Bearer {bearer}"),
+        ("http.postBuffer", str(GIT_POST_BUFFER_BYTES)),
+        ("http.followRedirects", "false"),  # the bearer goes to the route and nowhere a redirect points
+        ("credential.helper", ""),
+    ]
+    env = dict(os.environ)
+    env.update({"GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": str(len(config))})
+    for index, (key, value) in enumerate(config):
+        env[f"GIT_CONFIG_KEY_{index}"] = key
+        env[f"GIT_CONFIG_VALUE_{index}"] = value
+    return env
+
+
+def _run_git(args: list[str], bearer: str, cwd: str | None = None) -> int:
+    """Run one git command through the route.  git's stderr never reaches the terminal:  a remote failure can put
+    response bodies, headers or request details there, and redacting the bearer does not make the stream safe, so
+    only the exit status is reported.  An interrupted wait terminates and reaps the child, so a runner SIGTERM
+    cannot leave an orphan git behind."""
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def _interrupted(signum, frame):
+        raise InterruptedError(f"interrupted by signal {signum}")
+
+    signal.signal(signal.SIGTERM, _interrupted)
+    try:
+        try:
+            proc = subprocess.Popen(
+                [_git_binary(), *args],
+                env=_transport_env(bearer),
+                cwd=cwd,
+                stdin=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            die("git is not installed or not on PATH", 127)
+        except OSError as exc:
+            die(f"git could not start ({type(exc).__name__})", EXIT_ERROR)
+        try:
+            proc.wait(timeout=GIT_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            die(f"git timed out after {GIT_TIMEOUT_S} seconds", EXIT_ERROR)
+        except BaseException:
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            raise
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    if proc.returncode:
+        sys.stderr.write(f"git exited with status {proc.returncode}\n")
+    return proc.returncode
+
+
+def _repo_url(repo: str) -> str:
+    if REPO_PATTERN.fullmatch(repo) is None or ".." in repo:
+        die("the repo must be written owner/name", EXIT_USAGE)
+    return f"https://github.com/{repo}.git"
+
+
+def _plain_arg(value: str, what: str) -> str:
+    """A value that git could read as an option is refused, not passed on."""
+    if not value or value.startswith("-") or "\0" in value:
+        die(f"{what} must not be empty or start with a dash", EXIT_USAGE)
+    return value
+
+
+def _clone_destination(a) -> str:
+    """The clone folder, made mode 0700 when this command creates it;  a symlink or a non-directory is refused,
+    and an existing directory keeps its own permissions."""
+    raw = a.dir if a.dir else a.repo.rsplit("/", 1)[-1]
+    _plain_arg(raw, "the folder")
+    target = os.path.abspath(raw)
+    if os.path.islink(target):
+        die("the clone folder must not be a symlink", EXIT_USAGE)
+    if os.path.lexists(target):
+        if not os.path.isdir(target):
+            die("the clone folder must be a directory", EXIT_USAGE)
+        return target
+    try:
+        os.makedirs(target, mode=0o700)
+        os.chmod(target, 0o700)
+    except OSError as exc:
+        die(f"cannot create the clone folder ({type(exc).__name__})", EXIT_ERROR)
+    return target
+
+
+def cmd_clone(a, bearer: str) -> int:
+    args = ["clone"]
+    if a.depth is not None:
+        if a.depth < 1:
+            die("--depth must be at least 1", EXIT_USAGE)
+        args += ["--depth", str(a.depth)]
+    if a.branch:
+        args += ["--branch", _plain_arg(a.branch, "--branch")]
+    if a.partial:
+        args.append("--filter=blob:none")
+    url = _repo_url(a.repo)  # before any destination filesystem work:  a bad repo changes nothing on disk
+    destination = _clone_destination(a)
+    args += ["--", url, destination]
+    return _run_git(args, bearer)
+
+
+def cmd_fetch(a, bearer: str) -> int:
+    args = ["-C", a.dir, "fetch"]
+    if a.prune:
+        args.append("--prune")
+    args += ["--", _plain_arg(a.remote, "the remote"), *[_plain_arg(r, "a refspec") for r in a.refspec]]
+    return _run_git(args, bearer)
+
+
+def cmd_pull(a, bearer: str) -> int:
+    return _run_git(["-C", a.dir, "pull", "--ff-only", "--", _plain_arg(a.remote, "the remote")], bearer)
+
+
+def cmd_ls_remote(a, bearer: str) -> int:
+    args = ["ls-remote", "--", _repo_url(a.repo)]
+    if a.ref:
+        args.append(_plain_arg(a.ref, "the ref"))
+    return _run_git(args, bearer)
+
+
+def _new_output(path: str) -> str:
+    target = os.path.abspath(path)
+    if os.path.lexists(target):
+        die(f"{path!r} already exists;  this command never overwrites a file", EXIT_USAGE)
+    return target
+
+
+def cmd_bundle(a, bearer: str) -> int:
+    """A git bundle of every branch and tag, made from a throwaway mirror."""
+    target = _new_output(a.output)
+    with tempfile.TemporaryDirectory(prefix="simple-git-") as tmp:
+        mirror = os.path.join(tmp, "mirror.git")
+        code = _run_git(["clone", "--quiet", "--mirror", "--", _repo_url(a.repo), mirror], bearer)
+        if code:
+            return code
+        code = _run_git(["-C", mirror, "bundle", "create", "--quiet", target, "--all"], bearer)
+    if not code:
+        print(target)
+    return code
+
+
+def cmd_archive(a, bearer: str) -> int:
+    """A tar, tar.gz or zip of one ref, named by the output's extension, from a throwaway shallow fetch."""
+    target = _new_output(a.output)
+    if not target.endswith((".tar", ".tar.gz", ".tgz", ".zip")):
+        die("the output must end in .tar, .tar.gz, .tgz or .zip", EXIT_USAGE)
+    ref = _plain_arg(a.ref, "--ref")
+    url = _repo_url(a.repo)
+    with tempfile.TemporaryDirectory(prefix="simple-git-") as tmp:
+        code = _run_git(["init", "--quiet", "--bare", tmp], bearer)
+        if code:
+            return code
+        code = _run_git(["-C", tmp, "fetch", "--quiet", "--depth", "1", "--", url, ref], bearer)
+        if code:
+            return code
+        code = _run_git(["-C", tmp, "archive", "-o", target, "FETCH_HEAD"], bearer)
+    if not code:
+        print(target)
+    return code
+
+
+def _publish_files(specs: list[str]) -> list[tuple[str, bytes]]:
+    """Each LOCAL or LOCAL=REPO_PATH read and checked before anything is sent."""
+    files: list[tuple[str, bytes]] = []
+    seen: set[str] = set()
+    total = 0
+    for spec in specs:
+        # Split on the LAST "=" only when its left side is an existing, non-symlink file;  a local path may
+        # itself contain "=", and truncating it at the first one would read the wrong file or fail outright.
+        local, separator, repo_path = spec.rpartition("=")
+        if not separator or os.path.islink(local) or not os.path.isfile(local):
+            local, repo_path = spec, spec
+        if not local or not repo_path or repo_path in seen:
+            die(f"--file {spec!r} is empty or repeats a repo path", EXIT_USAGE)
+        seen.add(repo_path)
+        if os.path.islink(local) or not os.path.isfile(local):
+            die(f"{local!r} is not a regular file", EXIT_USAGE)
+        size = os.path.getsize(local)
+        if size == 0:
+            die(f"{local!r} is empty;  the server takes no empty file", EXIT_USAGE)
+        if size > PUBLISH_MAX_FILE_BYTES:
+            die(f"{local!r} is {size} bytes;  one file may be {PUBLISH_MAX_FILE_BYTES} at most", EXIT_USAGE)
+        total += size
+        if len(seen) > PUBLISH_MAX_FILES or total > PUBLISH_MAX_TOTAL_BYTES:
+            die(
+                f"a publish may be {PUBLISH_MAX_FILES} files and {PUBLISH_MAX_TOTAL_BYTES} bytes at most",
+                EXIT_USAGE,
+            )
+        try:
+            with open(local, "rb") as handle:
+                files.append((repo_path, handle.read(PUBLISH_MAX_FILE_BYTES + 1)))
+        except OSError:
+            die(f"cannot read {local!r}", EXIT_USAGE)
+    return files
+
+
+def _publish_batches(files: list[tuple[str, bytes]]) -> list[list[tuple[str, bytes]]]:
+    """Groups that each fit one commit:  PUBLISH_MAX_COMMIT_FILES files and PUBLISH_MAX_COMMIT_BYTES at most."""
+    batches: list[list[tuple[str, bytes]]] = []
+    current: list[tuple[str, bytes]] = []
+    size = 0
+    for item in files:
+        if current and (len(current) >= PUBLISH_MAX_COMMIT_FILES or size + len(item[1]) > PUBLISH_MAX_COMMIT_BYTES):
+            batches.append(current)
+            current, size = [], 0
+        current.append(item)
+        size += len(item[1])
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _branch_head(result: dict) -> str:
+    structured = result.get("structured") if isinstance(result, dict) else None
+    branch = structured.get("branch") if isinstance(structured, dict) else None
+    commit = branch.get("commit") if isinstance(branch, dict) else None
+    sha = commit.get("sha") if isinstance(commit, dict) else None
+    if not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{40}", sha) is None:
+        die("the server did not report the branch head", EXIT_ERROR)
+    return sha
+
+
+def _tool_call(tools: dict, name: str, args: dict, bearer: str, seat: str, deadline: float) -> dict:
+    entry = tools.get(name)
+    if entry is None:
+        die(f"the server does not offer {name} to this bearer", EXIT_ERROR)
+    validate_arguments(entry, args, deadline)
+    args = resolve_actor(entry, args, bearer, seat, deadline)
+    return remote_call(name, args, not entry["read"], bearer, deadline)
+
+
+# ----------------------------------------------------------------- publish outcome store
+#
+# A publish is several commits fenced on each other.  The store makes a RERUN safe:  each batch's outcome is
+# durable (ok / unknown / refused) under one stable key for the whole operation, a batch recorded unknown is
+# never replayed by this client, and batches already visible on the remote branch are skipped by content.
+
+
+def _fsync_dir(directory: Path) -> None:
+    """Durability means the name survives the crash too:  fsync the directory after an atomic replace."""
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _publish_store_path() -> Path:
+    base = os.environ.get("SIMPLE_GIT_STATE_DIR") or os.path.join(os.path.expanduser("~"), ".simple-tools")
+    return Path(base) / "publish-outcomes.json"
+
+
+def _publish_key(repo: str, branch: str, base, message: str, files) -> str:
+    """One stable key for the whole publish operation:  same goal, same content, same key."""
+    canonical = json.dumps(
+        {
+            "repo": repo,
+            "branch": branch,
+            "base": base,
+            "message": message,
+            "files": [[path, hashlib.sha256(data).hexdigest()] for path, data in files],
+        },
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+_RECONCILE_BARRIER = "_reconciliation_required"
+
+
+def _publish_store_load() -> dict:
+    """A corrupt store is never treated as empty state:  the unreadable file is quarantined aside (kept as
+    evidence, never overwritten) and the store becomes one durable reconciliation barrier.  The barrier
+    fails every later publish closed - across restarts and repeated invocations.  There is no in-tool
+    settlement or barrier-clearing path:  recovery is an operator reconciling the quarantined records
+    against each original operation's own receipt and restoring or rebuilding the store by hand.  An
+    absent record is not proof its operation never ran, and branch content shows desired state, not an
+    original operation's settled outcome."""
+    path = _publish_store_path()
+    try:
+        with open(path) as handle:
+            store = json.load(handle)
+    except FileNotFoundError:
+        quarantines = (
+            sorted(path.parent.glob(path.name + ".corrupt-*"), key=lambda q: q.stat().st_mtime)
+            if path.parent.is_dir()
+            else []
+        )
+        if quarantines:
+            # A missing store beside a quarantined corruption is the crash window between quarantining and
+            # persisting the barrier:  fail closed here too, never silently restart with empty state.
+            latest = quarantines[-1]
+            return {
+                _RECONCILE_BARRIER: {
+                    "quarantine": latest.name,
+                    "recorded_at": int(latest.stat().st_mtime),
+                    "reason": "the publish outcome store is missing beside a quarantined corruption;  every record it held is unproven until reconciled",
+                }
+            }
+        return {}  # the normal first run:  no outcomes recorded yet
+    except (json.JSONDecodeError, ValueError):
+        quarantine = path.with_name(f"{path.name}.corrupt-{int(time.time())}-{os.getpid()}")
+        barrier = {
+            _RECONCILE_BARRIER: {
+                "quarantine": quarantine.name,
+                "recorded_at": int(time.time()),
+                "reason": "the publish outcome store was corrupt;  every record it held is unproven until reconciled",
+            }
+        }
+        # Persist the barrier BEFORE moving the corrupt file aside:  a crash anywhere in this sequence still
+        # fails closed - either the barrier is durable in place, or the store is missing beside a quarantine
+        # sibling, which the FileNotFoundError branch above turns into the same barrier.
+        try:
+            fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+            with os.fdopen(fd, "w") as handle:
+                json.dump(barrier, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(path, quarantine)
+            os.replace(tmp, path)
+            _fsync_dir(path.parent)
+        except OSError as exc:
+            die(f"the publish outcome store is corrupt and cannot be quarantined ({type(exc).__name__})", EXIT_ERROR)
+        print(
+            f"the publish outcome store was corrupt;  quarantined to {quarantine};  reconciliation is required before publishing",
+            file=sys.stderr,
+        )
+        return barrier
+    except OSError as exc:
+        # An unavailable registry is not an empty one:  fail closed and name the path rather than publish
+        # without verifiable prior outcomes.
+        die(
+            f"the publish outcome store at {path} cannot be read ({type(exc).__name__});  reconcile it before publishing",
+            EXIT_ERROR,
+        )
+    if not isinstance(store, dict):
+        die(f"the publish outcome store at {path} is not an object;  reconcile it before publishing", EXIT_ERROR)
+    return store
+
+
+def _publish_state_dir() -> Path:
+    """The store's private directory, created 0700 and verified to be a real directory:  a symlinked path would
+    redirect durable outcome state outside its intended location, so it is refused before anything is written."""
+    path = _publish_store_path().parent
+    if path.is_symlink():
+        die(f"the publish state directory {path} is a symlink;  refusing to keep publish state there", EXIT_USAGE)
+    try:
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except FileExistsError:
+        # A dangling symlink or a non-directory at the path:  exist_ok only covers a real directory.
+        die(f"the publish state directory {path} is not a usable directory;  refusing to keep publish state there", EXIT_USAGE)
+    if path.is_symlink():
+        die(f"the publish state directory {path} is a symlink;  refusing to keep publish state there", EXIT_USAGE)
+    return path
+
+
+def _publish_store_lock(deadline_s: float = 30.0):
+    """One cross-process lock held for a publish's whole send phase:  independent CLI writers are serialized, so
+    no read-modify-write can lose another run's record, and a batch recorded unknown is seen - and honored -
+    by every later run of the same operation before it sends anything.  flock releases if the process dies, and
+    acquisition is bounded:  a wedged holder stops later publishes for the deadline, not forever."""
+    _publish_state_dir()
+    path = _publish_store_path()
+    handle = open(path.with_suffix(".lock"), "w")
+    deadline = time.monotonic() + deadline_s
+    while True:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return handle
+        except OSError:
+            if time.monotonic() >= deadline:
+                handle.close()
+                die("another publish holds the outcome-store lock;  try again shortly", EXIT_ERROR)
+            time.sleep(0.1)
+
+
+def _publish_store_save(store: dict) -> None:
+    path = _publish_store_path()
+    try:
+        _publish_state_dir()
+        # A unique sibling per save:  os.replace stays atomic, and concurrent writers never share a temp name.
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+        with os.fdopen(fd, "w") as handle:
+            json.dump(store, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        _fsync_dir(path.parent)
+    except OSError as exc:
+        die(f"the publish outcome store cannot be written ({type(exc).__name__})", EXIT_ERROR)
+
+
+def _publish_state(store: dict, key: str) -> dict:
+    return store.setdefault(key, {"batches": {}})
+
+
+def _outcome_of(fn) -> tuple[str, dict | None]:
+    """("ok", result) / ("refused", None) / ("unknown", None) for one write call, by its own printed verdict."""
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            return "ok", fn()
+    except SystemExit:
+        text = err.getvalue()
+        sys.stderr.write(text)  # the verdict is the caller's to see;  only its CLASS is consumed here
+        unknown = (
+            _REMOTE_UNKNOWN in text
+            or "outcome_unknown" in text
+            or "did not answer" in text
+            or "was cut off" in text
+        )
+        return ("unknown" if unknown else "refused"), None
+
+
+def _git_blob_sha(data: bytes) -> str:
+    return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data, usedforsecurity=False).hexdigest()
+
+
+_PUBLISH_PATH = re.compile(r"^(?!/)(?!.*//)(?!.*(?:^|/)[.]{1,2}(?:/|$))(?!.*[/]$)[A-Za-z0-9._/+@~-]{1,1024}$")
+
+
+def _publish_path_check(path: str) -> None:
+    """The relay's own per-file write rules, mirrored so a bad path in a LATER batch is refused before the first
+    commit is sent, never after earlier batches have landed.  The default-branch guard needs no mirror:  it
+    refuses the first batch like the last, so it cannot leave a partial chain."""
+    if _PUBLISH_PATH.fullmatch(path) is None:
+        die(f"{path!r} is not a repo path the relay accepts", EXIT_USAGE)
+    if path in (".github", ".github/workflows") or path.startswith(".github/workflows/"):
+        die(f"{path!r} is a workflow path;  publish cannot write it", EXIT_USAGE)
+
+
+def _publish_payload(repo: str, branch: str, message: str, number: int, count: int, batch) -> dict:
+    return {
+        "repo": repo,
+        "branch": branch,
+        "message": message if count == 1 else f"{message} (part {number} of {count})",
+        "files": [
+            {"path": path, "content_b64": base64.b64encode(data).decode("ascii")} for path, data in batch
+        ],
+    }
+
+
+def cmd_publish(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
+    """Commit local files to a branch as this bot, with no base64 for the caller to pass by hand.
+
+    Files past one commit's limits go in several commits, in order, each fenced on the head the last one left.
+    Nothing retries:  an unknown outcome stops here, as every other write in this client does.  A corrupt
+    outcome store becomes a durable reconciliation barrier:  every later run stops before any write, and
+    recovery is manual reconciliation against original receipts, never an in-tool settlement.
+    """
+    files = _publish_files(a.file)
+    if not files:
+        die("name at least one --file", EXIT_USAGE)
+    _repo_url(a.repo)
+    batches = _publish_batches(files)
+    # Every commit is checked before the first is sent, so a bad path or a flagged file in a later batch cannot leave a
+    # partial publish on the branch.  One batch's base64 payload exists at a time, so a large publish does not
+    # hold the whole encoded set in memory.
+    entry = tools.get("gr_wf_files_put")
+    if entry is None:
+        die("the server does not offer gr_wf_files_put to this bearer", EXIT_ERROR)
+    for number, batch in enumerate(batches, 1):
+        for path, _data in batch:
+            _publish_path_check(path)
+        payload = _publish_payload(a.repo, a.branch, a.message, number, len(batches), batch)
+        validate_arguments(entry, {**payload, "expected_head_sha": "0" * 40}, deadline)
+        hit = _scan_arguments(payload, bearer, "gr_wf_files_put")
+        if hit is not None:
+            die(f"refused before sending:  {hit}", EXIT_USAGE)
+        del payload
+    lock = _publish_store_lock()
+    try:
+        store = _publish_store_load()
+        barrier = store.get(_RECONCILE_BARRIER)
+        if barrier is not None:
+            # A durable barrier, not a one-shot exit:  every invocation fails closed here, before ANY write
+            # (branch creation included), until the operator reconciles every quarantined record by hand.
+            # Branch content cannot prove an original operation was never dispatched.
+            if not isinstance(barrier, dict):
+                die(
+                    f"the publish outcome store at {_publish_store_path()} holds a malformed reconciliation barrier;  "
+                    "reconcile and rebuild the store by hand - this client has no automatic settlement path",
+                    EXIT_ERROR,
+                )
+            _publish_store_save(store)
+            quarantine = barrier.get("quarantine")
+            location = _publish_store_path()
+            named = (
+                f";  quarantined corruption: {location.with_name(quarantine)}"
+                if isinstance(quarantine, str)
+                else ""
+            )
+            die(
+                f"the publish outcome store at {location} requires reconciliation{named}:  "
+                "settle every quarantined record against the original operation's own receipt, then "
+                "restore or rebuild the store by hand - this client has no automatic settlement path",
+                EXIT_ERROR,
+            )
+        state = _publish_state(store, _publish_key(a.repo, a.branch, a.base, a.message, files))
+        if a.base:
+            branch_state = state["batches"].get("branch")
+            if branch_state == "unknown":
+                die(
+                    "an earlier branch creation's outcome is unknown;  check the branch before running this again",
+                    EXIT_ERROR,
+                )
+            if branch_state != "ok":
+                # The base head is fetched only when the branch still needs creating:  a rerun whose branch
+                # exists fences on the branch's own current head below, not on the base.
+                base = _branch_head(_tool_call(tools, "gr_wf_branch_get", {"repo": a.repo, "branch": a.base}, bearer, seat, deadline))
+                outcome, _ = _outcome_of(
+                    lambda: _tool_call(
+                        tools, "gr_wf_branch_create", {"repo": a.repo, "branch": a.branch, "sha": base}, bearer, seat, deadline
+                    )
+                )
+                if outcome == "unknown":
+                    state["batches"]["branch"] = "unknown"
+                    _publish_store_save(store)
+                    die("the branch creation's outcome is unknown;  check the branch before running this again", EXIT_ERROR)
+                if outcome == "ok":
+                    state["batches"]["branch"] = "ok"
+                    _publish_store_save(store)
+                if outcome == "refused":
+                    # A definite refusal still stops the publish:  later writes must not follow a failed
+                    # branch creation.  The key is reusable - nothing was created, a corrected rerun may try again.
+                    state["batches"]["branch"] = "refused"
+                    _publish_store_save(store)
+                    raise SystemExit(EXIT_ERROR)
+            # Fence on the branch's CURRENT head, not the original base:  an earlier run may already have
+            # landed batches on it, and reconciling against a stale head would reapply them or mis-fence.
+            head = _branch_head(
+                _tool_call(tools, "gr_wf_branch_get", {"repo": a.repo, "branch": a.branch}, bearer, seat, deadline)
+            )
+        else:
+            head = _branch_head(_tool_call(tools, "gr_wf_branch_get", {"repo": a.repo, "branch": a.branch}, bearer, seat, deadline))
+        remote = _remote_tree_shas(tools, a.repo, head, bearer, seat, deadline)
+        live = remote if remote is not None else {}
+        for number, batch in enumerate(batches, 1):
+            prior = state["batches"].get(str(number))
+            if prior == "unknown":
+                _publish_store_save(store)
+                die(
+                    f"batch {number}'s earlier outcome is unknown;  check the branch before running this again",
+                    EXIT_ERROR,
+                )
+            pending = [(path, data) for path, data in batch if live.get(path) != _git_blob_sha(data)]
+            if prior == "ok":
+                if remote is None or not pending:
+                    print(f"batch {number} already committed by an earlier run")
+                    continue
+                # The ledger says this batch landed but the branch's live tree disagrees:  an external
+                # reset or rewrite dropped it.  Trust the live tree over the ledger and recommit the
+                # missing files, fenced on the current head like any other batch.
+                print(f"batch {number} was recorded ok but is missing from the branch;  recommitting")
+            if not pending:
+                state["batches"][str(number)] = "ok"
+                _publish_store_save(store)
+                print(f"batch {number} already on the branch")
+                continue
+            payload = _publish_payload(a.repo, a.branch, a.message, number, len(batches), pending)
+            outcome, out = _outcome_of(
+                lambda: _tool_call(tools, "gr_wf_files_put", {**payload, "expected_head_sha": head}, bearer, seat, deadline)
+            )
+            if outcome == "unknown":
+                state["batches"][str(number)] = "unknown"
+                _publish_store_save(store)
+                die(
+                    f"batch {number}'s outcome is unknown;  check the branch before running this again",
+                    EXIT_ERROR,
+                )
+            if outcome == "refused":
+                # Definite:  nothing was written, so record the refusal like a refused branch creation - a
+                # corrected rerun reuses the key and tries the batch again.
+                state["batches"][str(number)] = "refused"
+                _publish_store_save(store)
+                raise SystemExit(EXIT_ERROR)
+            structured = out.get("structured") if isinstance(out, dict) else None
+            commit = structured.get("commit") if isinstance(structured, dict) else None
+            if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+                die("the server did not report the new commit;  check the branch before trying again", EXIT_ERROR)
+            head = commit
+            for path, data in pending:
+                live[path] = _git_blob_sha(data)
+            state["batches"][str(number)] = "ok"
+            _publish_store_save(store)
+            print(f"{commit}  {len(payload['files'])} file(s)")
+        return 0
+    finally:
+        lock.close()
+
+def _remote_tree_shas(tools: dict, repo: str, head: str, bearer: str, seat: str, deadline: float) -> dict | None:
+    """path -> blob sha for the branch head's tree, for skip-what-already-matches;  None when unreadable,
+    so a ledger "ok" record is trusted only when the live tree could actually be checked against it."""
+    if tools.get("gr_wf_tree") is None:
+        return None
+    try:
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            out = _tool_call(tools, "gr_wf_tree", {"repo": repo, "sha": head, "recursive": True}, bearer, seat, deadline)
+    except SystemExit:
+        return None
+    structured = out.get("structured") if isinstance(out, dict) else None
+    tree = structured.get("tree") if isinstance(structured, dict) else None
+    if not isinstance(tree, list):
+        return None
+    return {
+        item["path"]: item["sha"]
+        for item in tree
+        if isinstance(item, dict)
+        and item.get("type") == "blob"
+        and isinstance(item.get("path"), str)
+        and isinstance(item.get("sha"), str)
+    }
+
+
+# A report, never a merge authorization. Only existing reviewed read tools are used.
+class ReadinessUnknown(ValueError):
+    pass
+
+
+def collect_readiness(read, repo, number, expected_head=None, max_pages=20):
+    """Bounded, non-atomic observations. Missing coverage never becomes zero findings."""
+    report = {"repo": repo, "number": number, "report_only": True,
+              "merge_authorized": False, "complete": False, "verdict": "unknown",
+              "blockers": [], "unknowns": [], "coverage": {}}
+
+    def require(ok, reason):
+        if not ok:
+            raise ReadinessUnknown(reason)
+
+    def pull():
+        p = read("gr_wf_pr_get", {"repo": repo, "number": number}).get("pull")
+        require(isinstance(p, dict) and type(p.get("number")) is int and p["number"] == number,
+                "PR identity missing or mismatched")
+        require(p.get("state") in ("open", "closed") and type(p.get("draft")) is bool
+                and type(p.get("merged")) is bool, "PR lifecycle incomplete")
+        for side in ("head", "base"):
+            require(isinstance(p.get(side), dict)
+                    and isinstance(p[side].get("sha"), str)
+                    and re.fullmatch(r"[0-9a-f]{40}", p[side]["sha"]), "PR head/base missing")
+        return p
+
+    try:
+        require(isinstance(repo, str) and REPO_PATTERN.fullmatch(repo) is not None and ".." not in repo
+                and type(number) is int and 0 < number <= 1000000000000, "invalid repo or PR number")
+        require(expected_head is None or (isinstance(expected_head, str)
+                and re.fullmatch(r"[0-9a-f]{40}", expected_head)), "expected head must be a full SHA")
+        first = pull()
+        head, base = first["head"]["sha"], first["base"]["sha"]
+        report.update(head=head, base=base, state=first["state"], draft=first["draft"],
+                      merged=first["merged"])
+        require(expected_head is None or expected_head == head, "expected head no longer current")
+        # This action is review THREADS, not issue comments or line-comment lists.
+        threads, seen, cursors, cursor = [], set(), set(), None
+        for _ in range(max_pages):
+            args = {"repo": repo, "number": number}
+            if cursor is not None:
+                args["cursor"] = cursor
+            connection = read("gr_wf_review_threads", args).get("threads")
+            require(isinstance(connection, dict) and isinstance(connection.get("nodes"), list)
+                    and isinstance(connection.get("pageInfo"), dict), "review-thread connection incomplete")
+            page = connection["pageInfo"]
+            require(type(page.get("hasNextPage")) is bool, "review-thread pagination unknown")
+            for row in connection["nodes"]:
+                require(isinstance(row, dict) and isinstance(row.get("id"), str)
+                        and row["id"] and row["id"] not in seen
+                        and type(row.get("isResolved")) is bool
+                        and type(row.get("isOutdated")) is bool, "review-thread row missing or duplicate")
+                seen.add(row["id"])
+                # No external prose is emitted as instructions or authorization.
+                threads.append({k: row[k] for k in ("id", "isResolved", "isOutdated")})
+            if page["hasNextPage"] is False:
+                break
+            cursor = page.get("endCursor")
+            require(isinstance(cursor, str) and re.fullmatch(r"[A-Za-z0-9_/=+-]{1,256}", cursor)
+                    and cursor not in cursors, "review-thread cursor missing or repeated")
+            cursors.add(cursor)
+        else:
+            raise ReadinessUnknown("review-thread page bound reached")
+        report["review_threads"] = {"total": len(threads),
+                                    "unresolved": [r for r in threads if not r["isResolved"]]}
+        report["coverage"]["review_threads"] = "complete"
+        if report["review_threads"]["unresolved"]:
+            report["blockers"].append("unresolved_review_threads")
+
+        checked = read("gr_wf_checks", {"repo": repo, "ref": head, "per_page": 50})
+        require(checked.get("complete") is True and isinstance(checked.get("checks"), list),
+                "check-run census incomplete or unknown")
+        check_rows, ids = [], set()
+        for c in checked["checks"]:
+            require(isinstance(c, dict) and type(c.get("id")) is int and c["id"] not in ids
+                    and c.get("head_sha") == head and isinstance(c.get("name"), str)
+                    and c.get("status") in ("queued", "in_progress", "completed", "waiting", "pending", "requested"),
+                    "check-run row missing, duplicate or wrong head")
+            ids.add(c["id"])
+            require(c["status"] != "completed" or c.get("conclusion") in
+                    ("success", "failure", "neutral", "cancelled", "skipped", "timed_out", "action_required", "stale", "startup_failure"),
+                    "check-run conclusion unknown")
+            check_rows.append({k: c.get(k) for k in ("id", "name", "status", "conclusion")})
+        report["checks"] = check_rows
+        report["coverage"]["check_runs"] = "complete"
+        if not check_rows:
+            report["unknowns"].append("no_check_runs_observed")
+        if any(c["status"] != "completed" or c["conclusion"] not in ("success", "neutral", "skipped") for c in check_rows):
+            report["blockers"].append("checks_incomplete_or_unsuccessful")
+
+        statuses = read("gr_wf_commit_statuses", {"repo": repo, "sha": head, "per_page": 50})
+        require(statuses.get("complete") is True and isinstance(statuses.get("statuses"), list),
+                "commit-status history incomplete")
+        # REST statuses are newest first. Older failures must not override their latest context.
+        latest = {}
+        for s in statuses["statuses"]:
+            require(isinstance(s, dict) and isinstance(s.get("context"), str) and s["context"]
+                    and s.get("state") in ("pending", "success", "error", "failure"), "commit-status row unknown")
+            latest.setdefault(s["context"], s["state"])
+        report["commit_statuses"] = latest
+        report["coverage"]["commit_statuses"] = "complete"
+        if any(v != "success" for v in latest.values()):
+            report["blockers"].append("commit_statuses_unsuccessful")
+
+        reviews, review_ids = [], set()
+        for page_num in range(1, max_pages + 1):
+            page = read("gr_wf_pr_reviews_page", {"repo": repo, "number": number,
+                        "expected_head_sha": head, "page": page_num, "per_page": 50})
+            require(page.get("head_sha") == head and page.get("number") == number
+                    and page.get("page") == page_num and type(page.get("has_more")) is bool
+                    and isinstance(page.get("reviews"), list), "review page incomplete or wrong head")
+            for r in page["reviews"]:
+                require(isinstance(r, dict) and type(r.get("id")) is int and r["id"] not in review_ids
+                        and isinstance(r.get("author"), dict) and type(r["author"].get("id")) is int
+                        and r.get("state") in ("APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED", "PENDING")
+                        and isinstance(r.get("commit_id"), str) and re.fullmatch(r"[0-9a-f]{40}", r["commit_id"]),
+                        "review identity/state missing or duplicate")
+                review_ids.add(r["id"])
+                reviews.append({"id": r["id"], "author_id": r["author"]["id"],
+                                "state": r["state"], "commit_id": r["commit_id"]})
+            if not page["has_more"]:
+                break
+        else:
+            raise ReadinessUnknown("review page bound reached")
+        report["reviews"] = reviews
+        report["coverage"]["review_records"] = "complete"
+        if not any(r["commit_id"] == head and r["state"] in ("APPROVED", "COMMENTED") for r in reviews):
+            report["unknowns"].append("no_completed_current_head_review_observed")
+        # Latest decisive review per author, including old-head requests still requiring attention.
+        decisions, latest_ids = {}, {}
+        for r in reviews:
+            if r["state"] in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+                if r["id"] > latest_ids.get(r["author_id"], -1):
+                    latest_ids[r["author_id"]] = r["id"]
+                    decisions[r["author_id"]] = r["state"]
+        if "CHANGES_REQUESTED" in decisions.values() or any(r["state"] == "PENDING" for r in reviews):
+            report["blockers"].append("review_changes_requested_or_pending")
+
+        last = pull()
+        require((last["head"]["sha"], last["base"]["sha"], last["state"], last["draft"], last["merged"])
+                == (head, base, first["state"], first["draft"], first["merged"]), "PR changed during report; re-read needed")
+        report["coverage"]["head_base_rechecked"] = True
+        state = last.get("mergeable_state")
+        report["github_merge_state"] = state if isinstance(state, str) else "unknown"
+        report["github_block_reason"] = "unknown"  # REST exposes state, not the UI's exact rule reason.
+        if first["state"] != "open" or first["draft"] or first["merged"]:
+            report["blockers"].append("PR_not_open_non_draft")
+        if last.get("mergeable") is False or state in ("blocked", "dirty", "behind", "draft"):
+            report["blockers"].append("github_merge_state_" + str(state))
+        elif last.get("mergeable") is not True or state != "clean":
+            report["unknowns"].append("github_merge_state_not_clean")
+        report["complete"] = True
+    except ReadinessUnknown as exc:
+        report["unknowns"].append(str(exc))
+    report["limitations"] = ["Observations are not atomic; changes after the final read are possible.",
+        "Repository rules, required reviewer identity and owner authority are not evaluated.",
+        "GitHub exact block reason is unavailable from these approved reads; never infer a policy waiver."]
+    report["verdict"] = "blocked" if report["blockers"] else "unknown" if report["unknowns"] or not report["complete"] else "observed_checks_passed"
+    return report
+
+
+def cmd_readiness(tools, a, bearer, server_seat, deadline):
+    def read(name, args):
+        entry = tools.get(name)
+        if not entry or entry.get("read") is not True or name not in READ_TOOLS:
+            raise ReadinessUnknown("required read unavailable: " + name)
+        try:
+            validate_arguments(entry, args, deadline)
+            args = resolve_actor(entry, args, bearer, server_seat, deadline)
+            out = remote_call(name, args, False, bearer, deadline)
+        except SystemExit:
+            raise ReadinessUnknown("required read failed: " + name) from None
+        value = out.get("structured")
+        if not isinstance(value, dict) or not value:
+            raise ReadinessUnknown("structured read unavailable: " + name)
+        return value
+    report = collect_readiness(read, a.repo, a.number, a.expected_head)
+    print(json.dumps(report, indent=2))
+    return 0 if report["verdict"] == "observed_checks_passed" else 1
+
+
 # ----------------------------------------------------------------- parser / main
 
 
@@ -1341,7 +2342,9 @@ def build_parser() -> argparse.ArgumentParser:
         prog=prog(),
         allow_abbrev=False,
         description="Fleet git tools: a thin client for the hosted simple-tools MCP git tools. "
-        "Every operation runs on the hosted server as this bot's own identity; there is no direct path.",
+        "Every operation runs on the hosted server as this bot's own identity; there is no direct path. "
+        "clone, fetch, pull, ls-remote, bundle and archive use local git over the hosted read-only route, "
+        "with no GitHub token on this machine.",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
     pl = sub.add_parser(
@@ -1358,6 +2361,10 @@ def build_parser() -> argparse.ArgumentParser:
         "whoami", help="show the identity the hosted server reports for this bearer", allow_abbrev=False
     )
     pw.add_argument("--json", action="store_true")
+    pr = sub.add_parser("readiness", help="read-only PR report; never merge authorization", allow_abbrev=False)
+    pr.add_argument("repo")
+    pr.add_argument("number", type=int)
+    pr.add_argument("--expected-head", help="fail closed if the current full head SHA differs")
     pc = sub.add_parser(
         "call", help="call one tool:  call NAME --args-json JSON|@FILE|-", allow_abbrev=False
     )
@@ -1368,6 +2375,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="arguments as a JSON object, @file, or - for stdin (default: {})",
     )
     pc.add_argument("--json", action="store_true", help="print structured content and text as JSON")
+    pk = sub.add_parser("clone", help="clone a repo as this bot:  clone OWNER/NAME [FOLDER]", allow_abbrev=False)
+    pk.add_argument("repo")
+    pk.add_argument("dir", nargs="?")
+    pk.add_argument("--depth", type=int)
+    pk.add_argument("--branch")
+    pk.add_argument("--partial", action="store_true", help="fetch file contents only when they are needed")
+    pf = sub.add_parser("fetch", help="fetch into a clone as this bot", allow_abbrev=False)
+    pf.add_argument("remote", nargs="?", default="origin")
+    pf.add_argument("refspec", nargs="*")
+    pf.add_argument("--dir", default=".", help="the clone (default: this folder)")
+    pf.add_argument("--prune", action="store_true")
+    pu = sub.add_parser("pull", help="fast-forward a clone as this bot", allow_abbrev=False)
+    pu.add_argument("remote", nargs="?", default="origin")
+    pu.add_argument("--dir", default=".", help="the clone (default: this folder)")
+    pr = sub.add_parser("ls-remote", help="list a repo's refs:  ls-remote OWNER/NAME [REF]", allow_abbrev=False)
+    pr.add_argument("repo")
+    pr.add_argument("ref", nargs="?")
+    pb = sub.add_parser("bundle", help="write a git bundle of a repo:  bundle OWNER/NAME OUTPUT", allow_abbrev=False)
+    pb.add_argument("repo")
+    pb.add_argument("output")
+    pa = sub.add_parser(
+        "archive", help="write a tar, tar.gz or zip of one ref:  archive OWNER/NAME OUTPUT", allow_abbrev=False
+    )
+    pa.add_argument("repo")
+    pa.add_argument("output")
+    pa.add_argument("--ref", default="HEAD", help="a branch or tag (default: HEAD)")
+    pp = sub.add_parser(
+        "publish", help="commit local files to a branch, with no inline base64", allow_abbrev=False
+    )
+    pp.add_argument("--repo", required=True, help="owner/name")
+    pp.add_argument("--branch", required=True)
+    pp.add_argument("--message", required=True)
+    pp.add_argument("--base", help="create the branch from this branch first")
+    pp.add_argument(
+        "--file", action="append", default=[], metavar="LOCAL[=REPO_PATH]", help="repeatable;  up to 2 MiB per file"
+    )
     return p
 
 
@@ -1392,7 +2435,22 @@ def main(argv: list[str] | None = None) -> int:
         )
     if a.cmd == "whoami":
         return cmd_whoami(whoami_out, a)
+    transfer = {
+        "clone": cmd_clone,
+        "fetch": cmd_fetch,
+        "pull": cmd_pull,
+        "ls-remote": cmd_ls_remote,
+        "bundle": cmd_bundle,
+        "archive": cmd_archive,
+    }
+    if a.cmd in transfer:
+        # The identities answer above already proved this bearer;  git needs no tool discovery.
+        return transfer[a.cmd](a, bearer)
     tools = discover_tools(bearer, overall_deadline)
+    if a.cmd == "readiness":
+        return cmd_readiness(tools, a, bearer, server_seat, overall_deadline)
+    if a.cmd == "publish":
+        return cmd_publish(tools, a, bearer, server_seat, overall_deadline)
     if a.cmd == "list":
         return cmd_list(tools, a)
     if a.cmd == "show":

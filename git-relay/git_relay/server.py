@@ -338,7 +338,12 @@ class Relay:
                     # content happens in the verb.
                     scan_args(args, _budget=[MAX_SCAN_NODES, MAX_BINARY_REQUEST_BYTES])
                 elif action in FILE_REQUEST_ACTIONS:
-                    scan_args(args, _budget=[MAX_SCAN_NODES, MAX_FILE_REQUEST_BYTES])
+                    # wf_file_put and wf_files_put scan the decoded bytes of each file themselves.
+                    scan_args(
+                        args,
+                        _budget=[MAX_SCAN_NODES, MAX_FILE_REQUEST_BYTES],
+                        _decoded_elsewhere=True,
+                    )
                 elif action in LARGE_TEXT_REQUEST_ACTIONS:
                     scan_args(args, _budget=[MAX_SCAN_NODES, MAX_LARGE_TEXT_REQUEST_BYTES])
                 else:
@@ -417,7 +422,7 @@ class Relay:
             except PolicyDenied as exc:
                 self._release(key, "refused")
                 outcome = "denied"
-                detail = {"reason": str(exc)}
+                detail = _denied_audit_detail(action, canonical, exc)
                 return 403, {"error": str(exc)}
             except (PreReadUnavailable, DispatchPreReadUnavailable):
                 self._release(key, "refused")
@@ -444,7 +449,7 @@ class Relay:
             except ValueError as exc:
                 self._release(key, "refused")
                 outcome = "bad_request"
-                detail = {"reason": str(exc)}
+                detail = _denied_audit_detail(action, canonical, exc)
                 return 400, {"error": str(exc)}
             except RelayGitHubError as exc:
                 # Audit only allow-listed scalar fields:  an upstream error message
@@ -570,7 +575,10 @@ class Relay:
             detail = {"exception": type(exc).__name__}
             return 500, {"error": "internal relay error"}
         finally:
-            self.audit.record(seat, action, repo, outcome, detail)
+            # Successful reads leave no row (SeatPolicy.audits);  every denial,
+            # error and write still records exactly one.
+            if SeatPolicy.audits(action, outcome):
+                self.audit.record(seat, action, repo, outcome, detail)
 
     def _release(self, key: str | None, state: str) -> None:
         if key is not None:
@@ -677,6 +685,21 @@ _WORKFLOW_AUDIT_SCALARS = (
     "method",
     "path",
 )
+
+
+def _denied_audit_detail(action: str, canonical: dict, exc: Exception) -> dict:
+    """A denied call's audit detail:  the refusal reason plus, for workflow actions,
+    the same bounded scalar allowlist a successful call audits.  The message, edits
+    and file content are never logged - they can carry a private payload.  This is
+    what lets a guarded transaction bind a denied probe call to its one-time proof
+    id through a structured, non-secret field (the probe path)."""
+    detail: dict = {"reason": str(exc)}
+    if action in SeatPolicy.WORKFLOW_ACTIONS and isinstance(canonical, dict):
+        for key in _WORKFLOW_AUDIT_SCALARS:
+            value = canonical.get(key)
+            if isinstance(value, (int, str)) and not isinstance(value, bool):
+                detail[key] = value
+    return detail
 
 
 def _workflow_audit_detail(canonical: dict, result: dict) -> dict:
@@ -932,7 +955,8 @@ def make_handler(relay: Relay):
                 return
             action = parts[1]
             auth = self.headers.get("Authorization") or ""
-            token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
+            bearer_prefix = "Bearer "
+            token = auth[len(bearer_prefix) :].strip() if auth.startswith(bearer_prefix) else ""
             try:
                 length = int(self.headers.get("Content-Length") or "0")
             except ValueError:

@@ -34,6 +34,7 @@ import zlib
 from urllib.parse import quote, urlsplit
 
 from .github_client import MAX_DOWNLOAD_CHUNK, RelayGitHubError
+from .provider_scan import PROVIDER_PATTERN, provider_token_text
 from .reviewed_fixtures import unreviewed_file_secret
 from .secret_scan import find_secret
 from .server import PreReadUnavailable, _perm_within_ceiling
@@ -61,7 +62,12 @@ _PATH = re.compile(r"[A-Za-z0-9._/+@~-]{1,1024}")
 _REPO = re.compile(r"[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}")
 MAX_FILE_RAW = 2 * 1024 * 1024
 MAX_FILE_B64 = 4 * ((MAX_FILE_RAW + 2) // 3)
+# A referenced blob is read back through GitHubClient._call, which rejects any
+# response body over 1 MiB (github_client.MAX_BODY).  700 KiB raw is ~934 KB of
+# base64 plus 60-column line wraps and JSON, which still fits under that cap.
+MAX_REF_BLOB_RAW = 700 * 1024
 MAX_PAGE = 50
+COMPARE_FILES_CAP = 300  # GitHub returns at most 300 files from the compare endpoint
 MAX_PROJECT = 100
 MAX_WORKFLOW_TEXT = 40000
 # Opt-in bounded larger-text class (covers the 83854-byte mirror document class);
@@ -197,6 +203,7 @@ SPECS = {
     "wf_pr_reopen": ({"pull_requests": "write"}, True),
     "wf_automerge_enable": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_automerge_disable": ({"pull_requests": "write", "contents": "write"}, True),
+    "wf_review_thread_comments": ({"pull_requests": "read"}, False),
     "wf_review_threads": ({"pull_requests": "read"}, False),
     "wf_assignees_add": ({"issues": "write"}, True),
     "wf_assignees_remove": ({"issues": "write"}, True),
@@ -252,6 +259,7 @@ SPECS = {
     "wf_run_approve": ({"actions": "write"}, True),
     "wf_file_put": ({"contents": "write"}, True),
     "wf_files_put": ({"contents": "write"}, True),
+    "wf_file_patch": ({"contents": "write"}, True),
     "wf_merge_guarded": ({"contents": "write", "pull_requests": "write"}, True),
 }
 ACTIONS = tuple(SPECS)
@@ -752,7 +760,96 @@ class WorkflowVerbs:
             raise Unknown("own App credential unavailable") from None
         handle = cls(client, policy, seat, token, app_slug, action, repo)
         handle.workflow_write_allowed = needs_workflows
+        # Kept so merge/update-branch can elevate for a PR that edits workflow files.
+        handle._elevation = (minter, app_slug, ceiling)
         return handle
+
+    def _bearer_for_pr(self, repo, number, action, head_sha=None):
+        """Bearer for a PR merge or update-branch.
+
+        The default token is least permission. GitHub refuses a merge or branch update that
+        changes .github/workflows/* unless the token also holds workflows:write, so read what
+        the write will change first and mint the extra scope only when that touches the
+        directory. Merge: the PR file list. Update-branch: the base changes it pulls in
+        (compare head...base), after checking the PR head is still the expected sha.
+        Still bounded by the seat ceiling. A handle with no minter keeps its own bearer.
+        """
+        elevation = getattr(self, "_elevation", None)
+        if elevation is None:
+            return self.bearer
+        minter, app_slug, ceiling = elevation
+
+        def read(path):
+            try:
+                return self._get(path)
+            except RelayGitHubError as exc:
+                if exc.code == "response_too_large":
+                    # Size will not shrink on retry: a definite, non-retryable refusal,
+                    # unlike a transient pre-read failure. Fails closed, nothing written.
+                    raise Refused(
+                        "PR changes too large to verify for workflow files; no write attempted"
+                    ) from None
+                if exc.status in (0, 408) or exc.status >= 500:
+                    raise PreReadUnavailable(
+                        "PR file pre-read unavailable; no write attempted"
+                    ) from None
+                raise
+
+        touches = False
+
+        def scan(rows):
+            nonlocal touches
+            if not isinstance(rows, list):
+                raise RelayGitHubError(502, "PR files page unverifiable")
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise RelayGitHubError(502, "PR files page unverifiable")
+                for key in ("filename", "previous_filename"):
+                    name = row.get(key)
+                    if isinstance(name, str) and name.startswith(".github/workflows/"):
+                        touches = True
+
+        if action == "wf_update_branch":
+            pr = read(f"/repos/{repo}/pulls/{number}")
+            if (
+                not isinstance(pr, dict)
+                or not isinstance(pr.get("head"), dict)
+                or pr["head"].get("sha") != head_sha
+                or not isinstance(pr.get("base"), dict)
+                or not isinstance(pr["base"].get("ref"), str)
+                or not pr["base"]["ref"]
+            ):
+                raise Refused("PR head not matched")
+            # The compare files array is one response capped at 300 files, not paginated:
+            # one read, and a full-size array may be truncated so it is unverifiable.
+            base_ref = quote(pr["base"]["ref"], safe="/")
+            data = read(f"/repos/{repo}/compare/{head_sha}...{base_ref}")
+            files = data.get("files") if isinstance(data, dict) else None
+            scan(files)
+            if not touches and len(files) >= COMPARE_FILES_CAP:
+                raise PreReadUnavailable("base changes too large to verify; no write attempted")
+        else:
+            for page in range(1, 31):
+                rows = read(f"/repos/{repo}/pulls/{number}/files?per_page=100&page={page}")
+                if isinstance(rows, list) and len(rows) > 100:
+                    raise RelayGitHubError(502, "PR files page unverifiable")
+                scan(rows)
+                if touches or len(rows) < 100:
+                    break
+            else:
+                raise PreReadUnavailable("PR file list too long to verify; no write attempted")
+        if not touches:
+            return self.bearer
+        required = dict(SPECS[action][0])
+        required["workflows"] = "write"
+        required.setdefault("metadata", "read")
+        if _perm_within_ceiling(required, ceiling):
+            raise CeilingDenied("seat permission ceiling insufficient")
+        try:
+            token, _ = minter.token_for(app_slug, repo, required)
+        except Exception:
+            raise Unknown("own App credential unavailable") from None
+        return token
 
     def _write_path_denied(self, path):
         if path in (".github", ".github/workflows"):
@@ -781,9 +878,7 @@ class WorkflowVerbs:
             raise RelayGitHubError(502, "repository metadata name unverifiable") from None
         if not 1 <= length <= maximum:
             raise RelayGitHubError(502, "repository metadata name unverifiable")
-        if find_secret(value) or re.search(
-            r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}", value
-        ):
+        if find_secret(value) or re.search(PROVIDER_PATTERN, value):
             raise Refused("credential-shaped repository metadata name refused")
         return value
 
@@ -825,7 +920,7 @@ class WorkflowVerbs:
         withheld = bool(
             find_secret(body)
             or re.search(
-                r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
+                PROVIDER_PATTERN + "|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
                 body,
             )
         )
@@ -855,7 +950,7 @@ class WorkflowVerbs:
             size > 32768
             or find_secret(body)
             or re.search(
-                r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
+                PROVIDER_PATTERN + "|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
                 body,
             )
         ):
@@ -1001,7 +1096,7 @@ class WorkflowVerbs:
             or find_secret(row["tag_name"])
             or re.search(r"[\x00-\x20\x7f]", row["tag_name"])
             or re.search(
-                r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}",
+                PROVIDER_PATTERN,
                 row["tag_name"],
             )
             or type(row.get("draft")) is not bool
@@ -1154,11 +1249,7 @@ class WorkflowVerbs:
 
     @staticmethod
     def _provider_token_text(value):
-        return bool(
-            re.search(
-                r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}", value
-            )
-        )
+        return provider_token_text(value)
 
     @classmethod
     def _issue_text(cls, args, key, required=True):
@@ -1504,9 +1595,7 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "issue relation receipt unverifiable")
         title = data["title"]
-        if find_secret(title) or re.search(
-            r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}", title
-        ):
+        if find_secret(title) or re.search(PROVIDER_PATTERN, title):
             title = "<withheld: credential-shaped title>"
         url = data.get("repository_url")
         bound = None
@@ -1521,9 +1610,7 @@ class WorkflowVerbs:
                 and not parsed.fragment
                 and _REPO.fullmatch(candidate)
             ):
-                if find_secret(candidate) or re.search(
-                    r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}", candidate
-                ):
+                if find_secret(candidate) or re.search(PROVIDER_PATTERN, candidate):
                     raise RelayGitHubError(502, "issue relation receipt unverifiable")
                 bound = candidate
         return {**{k: data[k] for k in ("id", "number", "state")}, "title": title, "repo": bound}
@@ -2671,7 +2758,7 @@ class WorkflowVerbs:
                     or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}(?:\[bot\])?", v)
                     or find_secret(v)
                     or re.search(
-                        r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
+                        PROVIDER_PATTERN + "|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
                         v,
                     )
                     for v in rows
@@ -3531,6 +3618,148 @@ class WorkflowVerbs:
         _only(args, ("repo", "number", "thread_id"))
         return self._review_thread_state(repo, args, False)
 
+    def wf_review_thread_comments(self, repo, args):
+        """Bounded reply page; text is untrusted and head observations not atomic."""
+        _only(args, ("repo", "number", "thread_id", "expected_head_sha", "cursor"))
+        number, head = _int(args, "number"), _sha(args, "expected_head_sha")
+        thread_id, cursor = args.get("thread_id"), args.get("cursor")
+        if not isinstance(thread_id, str) or not re.fullmatch(
+            r"PRRT_[A-Za-z0-9_-]{1,200}", thread_id
+        ):
+            raise Refused("invalid review thread")
+        if cursor is not None and (
+            not isinstance(cursor, str) or not re.fullmatch(r"[A-Za-z0-9_/=+-]{1,256}", cursor)
+        ):
+            raise Refused("invalid cursor")
+        self._pull_at_commit(repo, number, head)
+        query = "query($id:ID!, $cursor:String) { node(id:$id) { ... on PullRequestReviewThread { id isResolved isOutdated pullRequest { number repository { nameWithOwner } } comments(first:5, after:$cursor) { pageInfo { hasNextPage endCursor } nodes { databaseId:fullDatabaseId body url author { login } replyTo { databaseId:fullDatabaseId } pullRequestReview { databaseId:fullDatabaseId commit { oid } } } } } } }"
+        thread = self._fixed_graph(query, {"id": thread_id, "cursor": cursor}, "node", write=False)
+
+        def bad():
+            raise RelayGitHubError(502, "review thread page unverifiable")
+
+        if not isinstance(thread, dict) or thread.get("id") != thread_id:
+            bad()
+        pull = thread.get("pullRequest")
+        if (
+            not isinstance(pull, dict)
+            or type(pull.get("number")) is not int
+            or pull["number"] != number
+            or not isinstance(pull.get("repository"), dict)
+            or pull["repository"].get("nameWithOwner") != repo
+        ):
+            bad()
+        if type(thread.get("isResolved")) is not bool or type(thread.get("isOutdated")) is not bool:
+            bad()
+        connection = thread.get("comments")
+        if (
+            not isinstance(connection, dict)
+            or not isinstance(connection.get("nodes"), list)
+            or len(connection["nodes"]) > 5
+        ):
+            bad()
+        page = connection.get("pageInfo")
+        if not isinstance(page, dict) or type(page.get("hasNextPage")) is not bool:
+            bad()
+        end = page.get("endCursor")
+        if end is not None and (
+            not isinstance(end, str) or not re.fullmatch(r"[A-Za-z0-9_/=+-]{1,256}", end)
+        ):
+            bad()
+        if page["hasNextPage"] and (not end or end == cursor or not connection["nodes"]):
+            bad()
+
+        def identifier(value):
+            if isinstance(value, str) and re.fullmatch(r"[1-9][0-9]{0,11}", value):
+                value = int(value)
+            if type(value) is not int or not 0 < value <= 10**12:
+                bad()
+            return value
+
+        rows, seen, total = [], set(), 0
+        for row in connection["nodes"]:
+            if not isinstance(row, dict):
+                bad()
+            row["databaseId"] = identifier(row.get("databaseId"))
+            if row["databaseId"] in seen:
+                bad()
+            seen.add(row["databaseId"])
+            body = row.get("body")
+            if not isinstance(body, str) or "\x00" in body:
+                bad()
+            try:
+                body_size = len(body.encode("utf-8"))
+            except UnicodeEncodeError:
+                raise RelayGitHubError(502, "PR discussion body unverifiable") from None
+            if body_size > 65536:
+                bad()
+            total += body_size
+            if total > 131072:
+                bad()
+            author, review, reply = (
+                row.get("author"),
+                row.get("pullRequestReview"),
+                row.get("replyTo"),
+            )
+            if author is not None and (
+                not isinstance(author, dict)
+                or not isinstance(author.get("login"), str)
+                or len(author["login"]) > 100
+            ):
+                bad()
+            if (
+                not isinstance(review, dict)
+                or not isinstance(review.get("commit"), dict)
+                or not isinstance(review["commit"].get("oid"), str)
+                or not _SHA.fullmatch(review["commit"]["oid"])
+            ):
+                bad()
+            if reply is not None and (not isinstance(reply, dict) or not reply.get("databaseId")):
+                bad()
+            review["databaseId"] = identifier(review.get("databaseId"))
+            if reply is not None:
+                reply["databaseId"] = identifier(reply.get("databaseId"))
+            url = row.get("url")
+            if (
+                not isinstance(url, str)
+                or url != f"https://github.com/{repo}/pull/{number}#discussion_r{row['databaseId']}"
+            ):
+                bad()
+            withheld = bool(
+                find_secret(body)
+                or self.bearer
+                and self.bearer in body
+                or re.search(
+                    PROVIDER_PATTERN + "|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}", body
+                )
+            )
+            rows.append(
+                {
+                    "id": row["databaseId"],
+                    "body": "<withheld: credential-shaped text>" if withheld else body,
+                    "body_withheld": withheld,
+                    "url": url,
+                    "author": author["login"] if author else None,
+                    "review_id": review["databaseId"],
+                    "commit_id": review["commit"]["oid"],
+                    "reply_to_id": reply["databaseId"] if reply else None,
+                }
+            )
+        self._pull_at_commit(repo, number, head)
+        return self._context_size(
+            {
+                "number": number,
+                "head_sha": head,
+                "thread_id": thread_id,
+                "is_resolved": thread["isResolved"],
+                "is_outdated": thread["isOutdated"],
+                "comments": rows,
+                "has_more": page["hasNextPage"],
+                "end_cursor": end,
+                "snapshot": False,
+            }
+        )
+
     def wf_review_threads(self, repo, args):
         _only(args, ("repo", "number", "cursor"))
         number = _int(args, "number")
@@ -3961,7 +4190,7 @@ class WorkflowVerbs:
                 len(raw) > limit
                 or find_secret(value)
                 or re.search(
-                    r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
+                    PROVIDER_PATTERN + "|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
                     value,
                 )
             ):
@@ -4029,9 +4258,7 @@ class WorkflowVerbs:
                 or not re.fullmatch(r"[A-Za-z0-9_. /-]{1,100}", value)
                 or any(segment in (".", "..") for segment in value.split("/"))
                 or find_secret(value)
-                or re.search(
-                    r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}", value
-                )
+                or re.search(PROVIDER_PATTERN, value)
             ):
                 raise Refused("invalid additive label")
         folded = [x.casefold() for x in labels]
@@ -4091,7 +4318,7 @@ class WorkflowVerbs:
                 or not re.fullmatch(r"[A-Za-z0-9_. /-]{1,100}", item["name"])
                 or find_secret(item["name"])
                 or re.search(
-                    r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}",
+                    PROVIDER_PATTERN,
                     item["name"],
                 )
             ):
@@ -4159,7 +4386,7 @@ class WorkflowVerbs:
             withheld = bool(
                 find_secret(body)
                 or re.search(
-                    r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
+                    PROVIDER_PATTERN + "|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
                     body,
                 )
             )
@@ -4267,7 +4494,11 @@ class WorkflowVerbs:
         page = _int(args, "page", 1, 1000) if "page" in args else 1
         head = _ref(args, "head") if "head" in args else None
         base = _ref(args, "base") if "base" in args else None
-        q = f"state={state}&per_page={limit}&page={page}&sort=created&direction=asc"
+        # Newest first, like gh pr list: a caller paging to a cap (lane retire reads at most
+        # 1000 rows) needs the recent window, not the oldest one (Seer finding on PR #1515).
+        # The bounded-inventory verb below keeps created-ascending on purpose; its contract
+        # says so and its consumers reconcile against live state.
+        q = f"state={state}&per_page={limit}&page={page}&sort=created&direction=desc"
         if head is not None:
             q += "&head=" + quote(repo.split("/")[0] + ":" + head, safe="")
         if base is not None:
@@ -4289,7 +4520,15 @@ class WorkflowVerbs:
                 and row["state"] != state
             ):
                 raise RelayGitHubError(502, "PR list row unverifiable")
-            item = {"number": row["number"], "state": row["state"], "draft": row["draft"]}
+            merged_at = row.get("merged_at")
+            if merged_at is not None and not isinstance(merged_at, str):
+                raise RelayGitHubError(502, "PR list row unverifiable")
+            item = {
+                "number": row["number"],
+                "state": row["state"],
+                "draft": row["draft"],
+                "merged_at": merged_at,
+            }
             for key in ("head", "base"):
                 part = row.get(key)
                 if (
@@ -4462,7 +4701,7 @@ class WorkflowVerbs:
                     size > 4096
                     or find_secret(value)
                     or re.search(
-                        r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}",
+                        PROVIDER_PATTERN,
                         value,
                     )
                 ):
@@ -4880,9 +5119,7 @@ class WorkflowVerbs:
             or len(raw) > 255
             or "\x00" in name
             or find_secret(name)
-            or re.search(
-                r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}", name
-            )
+            or re.search(PROVIDER_PATTERN, name)
         ):
             raise Refused("check-run name withheld")
         status = value.get("status")
@@ -4926,9 +5163,7 @@ class WorkflowVerbs:
             or len(name) > 255
             or "\x00" in name
             or find_secret(name)
-            or re.search(
-                r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}", name
-            )
+            or re.search(PROVIDER_PATTERN, name)
         ):
             raise Refused("invalid check name")
         try:
@@ -5036,11 +5271,12 @@ class WorkflowVerbs:
     def wf_update_branch(self, repo, args):
         _only(args, ("repo", "number", "expected_head_sha"))
         number, sha = _int(args, "number"), _sha(args, "expected_head_sha")
+        bearer = self._bearer_for_pr(repo, number, "wf_update_branch", sha)
         data = self.client._call(
             "PUT",
             f"/repos/{repo}/pulls/{number}/update-branch",
             {"expected_head_sha": sha},
-            bearer=self.bearer,
+            bearer=bearer,
         )
         return {"accepted": True, "message": str((data or {}).get("message", ""))[:200]}
 
@@ -5449,24 +5685,171 @@ class WorkflowVerbs:
         files = args.get("files")
         if not isinstance(files, list) or not 1 <= len(files) <= 20:
             raise Refused("invalid files")
-        entries, seen, total = [], set(), 0
+        entries, seen, total, referenced_total = [], set(), 0, 0
+        source_cache = {}
+        validated_blobs = {}
         for value in files:
             if not isinstance(value, dict):
                 raise Refused("invalid file")
-            _only(value, ("path", "text", "mode"))
+            _only(value, ("path", "text", "sha", "mode", "source_commit"))
             path = _path(value)
             if find_secret(path) or self._provider_token_text(path):
                 raise Refused("credential-shaped file path refused")
             mode = _enum(value, "mode", ("100644", "100755"))
-            text = value.get("text")
+            text, sha = value.get("text"), value.get("sha")
             if (
                 _workflow_path(path)
                 or path in seen
                 or any(path.startswith(x + "/") or x.startswith(path + "/") for x in seen)
-                or not isinstance(text, str)
-                or find_secret(text)
-                or self._provider_token_text(text)
+                or (text is None) == (sha is None)
+                or ("source_commit" in value and sha is None)
             ):
+                raise Refused("invalid file content or path")
+            if sha is not None:
+                # An existing-blob reference still carries the attestation: the
+                # blob is fetched and scanned exactly like supplied text, so a
+                # sha entry can never smuggle unscanned content into a tree.
+                # Referenced bytes never cross the MCP body, so they draw from
+                # the raw work budget (MAX_FILES_RAW), not the transport cap.
+                if not isinstance(sha, str) or not _SHA.fullmatch(sha):
+                    raise Refused("invalid file content or path")
+                if "source_commit" in value:
+                    from .same_path_reuse import verify_same_path
+
+                    try:
+                        size = verify_same_path(
+                            self._get,
+                            repo,
+                            value["source_commit"],
+                            path,
+                            sha,
+                            mode,
+                            MAX_FILE_RAW,
+                            source_cache,
+                        )
+                    except RelayGitHubError as exc:
+                        if exc.code == "response_too_large":
+                            raise Refused("source object proof exceeds bounds") from None
+                        if exc.status in (0, 408) or exc.status >= 500:
+                            raise PreReadUnavailable(
+                                "source proof unavailable; no write attempted"
+                            ) from None
+                        raise
+                    except (ValueError, TypeError, KeyError):
+                        raise Refused("same-path source object proof refused") from None
+                    # Metadata provenance is necessary, not a secret-scan waiver.
+                    # Fetch exact bytes and apply absolute live/provider guards even
+                    # for a release-reviewed unchanged fixture object.
+                    key = ("fixture-bytes", repo, sha)
+                    try:
+                        if key not in source_cache:
+                            blob = _obj(self._get(f"/repos/{repo}/git/blobs/{sha}"))
+                            if (
+                                blob.get("sha") != sha
+                                or blob.get("encoding") != "base64"
+                                or type(blob.get("size")) is not int
+                                or not isinstance(blob.get("content"), str)
+                            ):
+                                raise ValueError("invalid reviewed blob receipt")
+                            raw = base64.b64decode("".join(blob["content"].split()), validate=True)
+                            if (
+                                len(raw) > MAX_FILE_RAW
+                                or len(raw) != blob["size"]
+                                or hashlib.sha1(
+                                    b"blob " + str(len(raw)).encode() + b"\0" + raw
+                                ).hexdigest()
+                                != sha
+                            ):
+                                raise ValueError("invalid reviewed blob identity")
+                            source_cache[key] = raw.decode("utf-8", "strict")
+                        decoded = source_cache[key]
+                        if len(decoded.encode("utf-8")) != size:
+                            raise ValueError("reviewed source size mismatch")
+                        # Always execute the full scanner. Only the exact immutable
+                        # reviewed fixture may retain its baseline shaped finding.
+                        find_secret(decoded)
+                        if self._provider_token_text(decoded) or (
+                            self.bearer and self.bearer in decoded
+                        ):
+                            raise ValueError("absolute credential guard")
+                    except RelayGitHubError as exc:
+                        if exc.status in (0, 408) or exc.status >= 500:
+                            raise PreReadUnavailable(
+                                "reviewed blob unavailable; no write attempted"
+                            ) from None
+                        raise
+                    except (ValueError, TypeError, KeyError, UnicodeError, binascii.Error):
+                        raise Refused("reviewed fixture bytes refused") from None
+                    referenced_total += size
+                    if referenced_total > MAX_FILES_RAW:
+                        raise Refused("file content budget exceeded")
+                    seen.add(path)
+                    entries.append({"path": path, "mode": mode, "type": "blob", "sha": sha})
+                    continue
+                if sha not in validated_blobs:
+                    # The pre-read runs before any dispatch:  a transient upstream
+                    # failure here means NO write was attempted, so it releases the
+                    # idempotency key as retryable instead of locking it unknown.
+                    try:
+                        blob = _obj(self._get(f"/repos/{repo}/git/blobs/{sha}"))
+                    except RelayGitHubError as exc:
+                        if exc.code == "response_too_large":
+                            raise Refused(
+                                "referenced blob exceeds supported response size"
+                            ) from None
+                        if exc.status in (0, 408) or exc.status >= 500:
+                            raise PreReadUnavailable(
+                                "blob pre-read unavailable; no write attempted"
+                            ) from None
+                        raise
+                    raw = blob.get("content")
+                    if (
+                        blob.get("sha") != sha
+                        or blob.get("encoding") != "base64"
+                        or type(blob.get("size")) is not int
+                        or not 0 <= blob["size"] <= MAX_REF_BLOB_RAW
+                        or not isinstance(raw, str)
+                        or len(raw) > ((MAX_REF_BLOB_RAW + 2) // 3) * 4 + MAX_REF_BLOB_RAW // 30
+                    ):
+                        raise Refused("referenced blob unavailable or unsupported")
+                    try:
+                        # GitHub wraps blob content base64 at 60 columns; strip the
+                        # whitespace before validating, as the other blob reads do.
+                        decoded_raw = base64.b64decode("".join(raw.split()), validate=True)
+                    except (binascii.Error, ValueError):
+                        raise Refused("referenced blob unavailable or unsupported") from None
+                    # Budgets measure the decoded bytes, never the receipt's declared
+                    # size:  a receipt that understates blob["size"] cannot smuggle
+                    # content past the raw work budget.
+                    if len(decoded_raw) > MAX_REF_BLOB_RAW:
+                        raise Refused("referenced blob exceeds the per-file raw budget")
+                    if (
+                        len(decoded_raw) != blob["size"]
+                        or hashlib.sha1(
+                            b"blob " + str(len(decoded_raw)).encode() + b"\0" + decoded_raw,
+                            usedforsecurity=False,
+                        ).hexdigest()
+                        != sha
+                    ):
+                        raise Refused("unverifiable blob reference")
+                    validated_blobs[sha] = decoded_raw
+                decoded_raw = validated_blobs[sha]
+                # Cache verified bytes only, not path-dependent scan approvals.
+                if unreviewed_file_secret(repo, path, decoded_raw):
+                    raise Refused("credential-shaped content refused")
+                try:
+                    decoded = decoded_raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    raise Refused("referenced blob is not utf-8 text") from None
+                if self._provider_token_text(decoded):
+                    raise Refused("credential-shaped content refused")
+                referenced_total += len(decoded_raw)
+                if referenced_total > MAX_FILES_RAW:
+                    raise Refused("file content budget exceeded")
+                seen.add(path)
+                entries.append({"path": path, "mode": mode, "type": "blob", "sha": sha})
+                continue
+            if not isinstance(text, str) or find_secret(text) or self._provider_token_text(text):
                 raise Refused("invalid file content or path")
             try:
                 total += len(text.encode("utf-8"))
@@ -5595,13 +5978,7 @@ class WorkflowVerbs:
             raw = text.encode("utf-8")
         except UnicodeError:
             raise Refused("invalid blob text") from None
-        if (
-            len(raw) > cap
-            or find_secret(text)
-            or re.search(
-                r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}", text
-            )
-        ):
+        if len(raw) > cap or find_secret(text) or re.search(PROVIDER_PATTERN, text):
             raise Refused("invalid blob text")
         sha = hashlib.sha1(
             b"blob " + str(len(raw)).encode() + b"\0" + raw, usedforsecurity=False
@@ -5658,9 +6035,7 @@ class WorkflowVerbs:
             ):
                 raise RelayGitHubError(502, "git commit parent unverifiable")
             parents.append(value["sha"])
-        if find_secret(core["message"]) or re.search(
-            r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}", core["message"]
-        ):
+        if find_secret(core["message"]) or re.search(PROVIDER_PATTERN, core["message"]):
             raise Refused("credential-shaped commit message refused")
 
         def native(part):
@@ -5775,7 +6150,7 @@ class WorkflowVerbs:
             len(encoded) > 500
             or find_secret(message)
             or re.search(
-                r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}",
+                PROVIDER_PATTERN,
                 message,
             )
         ):
@@ -6068,6 +6443,225 @@ class WorkflowVerbs:
                 return None
             sha = entry["sha"]
         return None
+
+    def _patch_executable(self, repo, branch, head, base_tree, path, raw, message, repo_info):
+        """Called only after wf_file_patch's complete source/provenance scans.
+
+        Git-data retains the mode. Fixed updateRefs beforeOid supplies the atomic
+        head fence; a REST force=False ref update alone is not a CAS.
+        """
+        node_id = repo_info.get("node_id")
+        if not isinstance(node_id, str) or not 1 <= len(node_id) <= 200:
+            raise Refused("repository node identity unavailable")
+        expected_blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+
+        def post(suffix, body):
+            return _obj(
+                self.client._call("POST", f"/repos/{repo}/git/{suffix}", body, bearer=self.bearer)
+            )
+
+        # A durable object may exist after the first POST; never release for replay.
+        try:
+            blob = post(
+                "blobs",
+                {"content": base64.b64encode(raw).decode(), "encoding": "base64"},
+            )
+            if blob.get("sha") != expected_blob:
+                raise Refused("patch blob receipt unverifiable; branch unchanged")
+            tree = post(
+                "trees",
+                {
+                    "base_tree": base_tree,
+                    "tree": [
+                        {
+                            "path": path,
+                            "mode": "100755",
+                            "type": "blob",
+                            "sha": expected_blob,
+                        }
+                    ],
+                },
+            )
+            tree_sha = tree.get("sha")
+            if not isinstance(tree_sha, str) or not _SHA.fullmatch(tree_sha):
+                raise Refused("patch tree receipt unverifiable; branch unchanged")
+            if self._entry_mode(repo, tree_sha, path, {}) != "100755":
+                raise Refused("patch executable mode receipt unverifiable; branch unchanged")
+            commit = post("commits", {"message": message, "tree": tree_sha, "parents": [head]})
+            new_head = commit.get("sha")
+            if (
+                not isinstance(new_head, str)
+                or not _SHA.fullmatch(new_head)
+                or _sub(commit, "tree").get("sha") != tree_sha
+                or [p.get("sha") for p in _dicts(commit.get("parents"))] != [head]
+            ):
+                raise Refused("patch commit receipt unverifiable; branch unchanged")
+            # Verify immutable content before publishing the ref, not just its metadata.
+            published = _obj(
+                self._get(f"/repos/{repo}/contents/{quote(path, safe='/')}?ref={new_head}")
+            )
+            encoded = published.get("content")
+            if not isinstance(encoded, str):
+                raise WriteOutcomeUnknown("patch immutable bytes unverifiable")
+            try:
+                got = base64.b64decode("".join(encoded.split()), validate=True)
+            except (KeyError, TypeError, ValueError, binascii.Error):
+                raise Refused("patch immutable bytes unverifiable; branch unchanged") from None
+            if (
+                published.get("type") != "file"
+                or published.get("path") != path
+                or published.get("sha") != expected_blob
+                or published.get("encoding") != "base64"
+                or got != raw
+            ):
+                raise Refused("patch immutable bytes unverifiable; branch unchanged")
+            query = "mutation($input:UpdateRefsInput!){updateRefs(input:$input){clientMutationId}}"
+            variables = {
+                "input": {
+                    "repositoryId": node_id,
+                    "clientMutationId": new_head,
+                    "refUpdates": [
+                        {
+                            "name": "refs/heads/" + branch,
+                            "beforeOid": head,
+                            "afterOid": new_head,
+                            "force": False,
+                        }
+                    ],
+                }
+            }
+            receipt = self._fixed_graph(query, variables, "updateRefs")
+            if receipt.get("clientMutationId") != new_head:
+                raise WriteOutcomeUnknown("patch ref update receipt unverifiable")
+            ref = _obj(self._get(f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"))
+            if _sub(ref, "object").get("sha") != new_head:
+                raise WriteOutcomeUnknown("patch ref receipt unverifiable")
+            return {"branch": branch, "path": path, "commit": new_head}
+        except (RelayGitHubError, ValueError, TypeError, KeyError, AttributeError):
+            raise WriteOutcomeUnknown(
+                "patch object/ref outcome unverifiable; never replay"
+            ) from None
+
+    def wf_file_patch(self, repo, args):
+        """Pinned same-path patch. Existing generic matches remain a residual risk."""
+        from .reviewed_preservation import apply_reviewed_patch, reviewed_base
+
+        _only(
+            args,
+            ("repo", "branch", "path", "message", "expected_head_sha", "base_blob_sha", "edits"),
+        )
+        branch, head, blob_sha = (
+            _ref(args, "branch"),
+            _sha(args, "expected_head_sha"),
+            _sha(args, "base_blob_sha"),
+        )
+        path = _path(args)
+        message = args.get("message")
+        if self._write_path_denied(path) or _workflow_path(path):
+            raise Refused("patch path refused")
+        if (
+            not isinstance(message, str)
+            or not 1 <= len(message) <= 500
+            or "\x00" in message
+            or find_secret(message)
+            or self._provider_token_text(message)
+        ):
+            raise Refused("invalid patch message")
+        repo_info = _obj(self._get(f"/repos/{repo}"))
+        default = repo_info.get("default_branch")
+        if not isinstance(default, str) or not default or branch == default:
+            raise Refused("default branch is not writable")
+        ref_path = f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"
+        if _sub(_obj(self._get(ref_path)), "object").get("sha") != head:
+            raise Refused("branch head moved")
+        base_commit = _obj(self._get(f"/repos/{repo}/git/commits/{head}"))
+        tree = _sub(base_commit, "tree").get("sha")
+        if base_commit.get("sha") != head or not isinstance(tree, str) or not _SHA.fullmatch(tree):
+            raise Refused("base commit unverifiable")
+        # Contents receipt pins path AND commit; caller's blob id is only a check.
+        content = _obj(self._get(f"/repos/{repo}/contents/{quote(path, safe='/')}?ref={head}"))
+        if (
+            content.get("type") != "file"
+            or content.get("path") != path
+            or content.get("sha") != blob_sha
+            or content.get("encoding") != "base64"
+        ):
+            raise Refused("base file unverifiable")
+        try:
+            raw = base64.b64decode("".join(content["content"].split()), validate=True)
+            if (
+                len(raw) > MAX_FILE_RAW
+                or hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+                != blob_sha
+            ):
+                raise ValueError()
+            # Only immutable, reviewed source/output fixture pairs can preserve
+            # dedicated source lines. Registry is empty until owner policy approval.
+            preserve = reviewed_base(repo, path, raw)
+            # Scan every complete input, even an eligible reviewed fixture. A
+            # finding may be retained only after exact output/origin validation.
+            base_finding = find_secret(raw.decode("utf-8"))
+            if (
+                (base_finding and not preserve)
+                or self._provider_token_text(raw.decode("utf-8"))
+                or self.bearer in raw.decode("utf-8")
+            ):
+                raise ValueError()
+            result = apply_reviewed_patch(repo, path, raw, args.get("edits"), known=[self.bearer])
+            result_finding = find_secret(result.decode("utf-8"))
+            if (
+                (result_finding and not preserve)
+                or self._provider_token_text(result.decode("utf-8"))
+                or self.bearer
+                and self.bearer in result.decode("utf-8")
+            ):
+                raise ValueError()
+        except (ValueError, TypeError, KeyError, UnicodeError):
+            raise Refused("credential-shaped or invalid patch content") from None
+        mode = self._entry_mode(repo, tree, path, {})
+        if mode not in ("100644", "100755"):
+            raise Refused("patch supports existing regular files only")
+        if mode == "100755":
+            return self._patch_executable(
+                repo, branch, head, tree, path, result, message, repo_info
+            )
+        query = "mutation($input:CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid parents(first:2){nodes{oid}}}ref{name target{oid}}}}"
+        variables = {
+            "input": {
+                "branch": {"repositoryNameWithOwner": repo, "branchName": branch},
+                "expectedHeadOid": head,
+                "message": {"headline": message},
+                "fileChanges": {
+                    "additions": [{"path": path, "contents": base64.b64encode(result).decode()}]
+                },
+            }
+        }
+        made = self._fixed_graph(query, variables, "createCommitOnBranch")
+        commit = _sub(made, "commit")
+        new_head = commit.get("oid")
+        if (
+            not isinstance(new_head, str)
+            or not _SHA.fullmatch(new_head)
+            or _sub(commit, "parents").get("nodes") != [{"oid": head}]
+            or _sub(made, "ref").get("name") != branch
+            or _sub(_sub(made, "ref"), "target").get("oid") != new_head
+        ):
+            raise WriteOutcomeUnknown("patch commit receipt unverifiable")
+        if _sub(_obj(self._get(ref_path)), "object").get("sha") != new_head:
+            raise WriteOutcomeUnknown("patch ref receipt unverifiable")
+        published = _obj(
+            self._get(f"/repos/{repo}/contents/{quote(path, safe='/')}?ref={new_head}")
+        )
+        expected_blob = hashlib.sha1(
+            b"blob " + str(len(result)).encode() + b"\0" + result
+        ).hexdigest()
+        if (
+            published.get("path") != path
+            or published.get("sha") != expected_blob
+            or published.get("type") != "file"
+        ):
+            raise WriteOutcomeUnknown("patch content receipt unverifiable")
+        return {"branch": branch, "path": path, "commit": new_head}
 
     def wf_files_put(self, repo, args):
         """One commit changing several files on a non-default branch, via git-data."""
@@ -6376,11 +6970,12 @@ class WorkflowVerbs:
             payload["commit_message"] = self._pr_text_field(
                 args, "commit_message", 65536, allow_blank=True
             )
+        bearer = self._bearer_for_pr(repo, number, "wf_merge_guarded")
         data = self.client._call(
             "PUT",
             f"/repos/{repo}/pulls/{number}/merge",
             payload,
-            bearer=self.bearer,
+            bearer=bearer,
         )
         if (
             not isinstance(data, dict)

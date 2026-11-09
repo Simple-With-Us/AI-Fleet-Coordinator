@@ -1,8 +1,8 @@
-// Tests for agent_sync/operator_sheets_export.mjs (AFC-412 PR2).
+// Tests for simple_tools/operator_sheets_export.mjs (AFC-412 PR2).
 // Run: node --test scripts/test_operator_sheets_export.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { drainOutbox, SESSIONS_HEADERS, EVENTS_HEADERS } from "./agent_sync/operator_sheets_export.mjs";
+import { drainOutbox, SESSIONS_HEADERS, EVENTS_HEADERS } from "./simple_tools/operator_sheets_export.mjs";
 
 function fakeAdapter() {
   const sessions = []; // { rowNumber, cells }
@@ -159,7 +159,7 @@ test('out-of-page physical row number refuses mutation',async()=>{
 
 // Display contract tests (owner rule): America/Chicago conversion, 12-hour AM/PM, no timezone
 // label, text output; invalid/empty pass through; non-timestamp cells unchanged; UTC stays internal.
-import { formatDisplayTimestamp, formatCellsForDisplay } from "./agent_sync/operator_sheets_export.mjs";
+import { formatDisplayTimestamp, formatCellsForDisplay } from "./simple_tools/operator_sheets_export.mjs";
 
 test("formatter converts UTC to America/Chicago 12-hour with AM/PM and no zone label", () => {
   const out = formatDisplayTimestamp("2026-11-04T15:05:31.000Z"); // 9:05:31 AM CST
@@ -218,4 +218,198 @@ test("drainOutbox writes display-formatted timestamps to the adapter", async () 
   const page = await adapter.readRows("sessions", { startRow: 2, limit: 10 });
   const row = page.rows[0].cells ?? page.rows[0];
   assert.equal(row[12], "11/04/2026, 9:05:31 AM");
+});
+
+test("a credential-shaped cell fails its row without wedging the drain", async () => {
+  const adapter = fakeAdapter();
+  const poison = sessionCells("r-poison");
+  poison[6] = "see gh" + "p_" + "x".repeat(36); // built in parts: no credential literal in the fixture
+  const outbox = fakeOutbox([
+    { outbox_id: "o1", kind: "session_upsert", payload: JSON.stringify({ cells: poison }) },
+    { outbox_id: "o2", kind: "session_upsert", payload: JSON.stringify({ cells: sessionCells("r2") }) },
+  ]);
+  const logs = [];
+  const res = await drainOutbox({ outbox, adapter, log: (m) => logs.push(m) });
+  assert.deepEqual(res, { exported: 1, failed: 1 });
+  assert.deepEqual(outbox.marked, ["o2"]); // the refused row stays pending, the healthy row exports
+  assert.ok(logs.some((m) => m.includes("o1") && m.includes("Title")));
+});
+
+test("drainOutbox skips a deterministically invalid row instead of wedging the drain", async () => {
+  const adapter = fakeAdapter();
+  const realAppend = adapter.appendEvent.bind(adapter);
+  adapter.appendEvent = async (cells) => {
+    if (cells[0] === "poison") {
+      const err = new Error("row must be an array of strings");
+      err.code = "invalid_row";
+      throw err;
+    }
+    return realAppend(cells);
+  };
+  const rows = [
+    { outbox_id: "o-a", kind: "event_append", payload: { cells: eventCells("a-evt", "r") } },
+    { outbox_id: "o-b", kind: "event_append", payload: { cells: eventCells("poison", "r") } },
+    { outbox_id: "o-c", kind: "event_append", payload: { cells: eventCells("c-evt", "r") } },
+  ];
+  const marked = [];
+  const outbox = {
+    marked,
+    async pending() { return rows.filter((r) => !marked.includes(r.outbox_id)); },
+    async markExported(ids) { marked.push(...ids); },
+  };
+  assert.deepEqual(await drainOutbox({ outbox, adapter }), { exported: 2, failed: 1 });
+  assert.deepEqual(marked, ["o-a", "o-c"]);
+  // poison row stays pending for the Operator; a later drain retries only it and fails it again
+  assert.deepEqual(await drainOutbox({ outbox, adapter }), { exported: 0, failed: 1 });
+  assert.deepEqual(marked, ["o-a", "o-c"]);
+});
+
+// ---- OPS-1037: fence recording, layout projection, batch collapse, stale index ----
+
+function fakeAttempts() {
+  return { records: [], async record(r) { this.records.push(r); } };
+}
+
+test("fence records exported and already_present attempts with destination, tab and kind", async () => {
+  const adapter = fakeAdapter();
+  await adapter.appendEvent(eventCells("e1", "r1")); // event already in the sheet
+  adapter.calls = [];
+  const attempts = fakeAttempts();
+  const outbox = fakeOutbox([
+    { outbox_id: "f1", kind: "session_upsert", payload: JSON.stringify({ cells: sessionCells("r1") }) },
+    { outbox_id: "f2", kind: "event_append", payload: JSON.stringify({ cells: eventCells("e1", "r1") }) },
+  ]);
+  const res = await drainOutbox({ outbox, adapter, attempts, destination: "wb-1" });
+  assert.deepEqual(res, { exported: 2, failed: 0 });
+  assert.deepEqual(attempts.records, [
+    { outboxId: "f1", destination: "wb-1", tab: "sessions", kind: "session_upsert", outcome: "exported", detail: "" },
+    { outboxId: "f2", destination: "wb-1", tab: "events", kind: "event_append", outcome: "already_present", detail: "" },
+  ]);
+  assert.deepEqual(outbox.marked, ["f1", "f2"]);
+});
+
+test("fence records a failed attempt and the row stays pending", async () => {
+  const adapter = fakeAdapter();
+  adapter.appendSession = async () => { throw new Error("HTTP 503"); };
+  const attempts = fakeAttempts();
+  const outbox = fakeOutbox([{ outbox_id: "f3", kind: "session_upsert",
+    payload: JSON.stringify({ cells: sessionCells("r9") }) }]);
+  const res = await drainOutbox({ outbox, adapter, attempts, destination: "wb-1" });
+  assert.deepEqual(res, { exported: 0, failed: 1 });
+  assert.equal(attempts.records.length, 1);
+  assert.equal(attempts.records[0].outcome, "failed");
+  assert.match(attempts.records[0].detail, /503/);
+  assert.deepEqual(outbox.marked, []);
+});
+
+test("duplicate IDs in the destination fence as ambiguous and stop the drain", async () => {
+  const writes = [];
+  const adapter = {
+    validateHeaders: async () => {},
+    inspect: async () => ({ sessions: { rowCount: 401 }, events: { rowCount: 1 } }),
+    readRows: async (table, { startRow }) => [{ rowNumber: startRow, cells: sessionCells("same") }],
+    appendSession: async () => writes.push("append"),
+    updateSessionRow: async () => writes.push("update"),
+    appendEvent: async () => writes.push("event"),
+  };
+  const attempts = fakeAttempts();
+  const outbox = fakeOutbox([
+    { outbox_id: "a1", kind: "session_upsert", payload: JSON.stringify({ cells: sessionCells("same") }) },
+    { outbox_id: "a2", kind: "event_append", payload: JSON.stringify({ cells: eventCells("e9", "same") }) },
+  ]);
+  const res = await drainOutbox({ outbox, adapter, attempts, destination: "wb-1" });
+  assert.deepEqual(res, { exported: 0, failed: 1 });
+  assert.deepEqual(writes, []);
+  assert.deepEqual(outbox.marked, []); // the later row never runs: the drain stopped
+  assert.equal(attempts.records.length, 1);
+  assert.equal(attempts.records[0].outcome, "ambiguous");
+  assert.match(attempts.records[0].detail, /appears on 2 rows/);
+});
+
+test("layout projection writes the workbook's own columns by header name", async () => {
+  const WB_SESSIONS = ["Record ID", "Label", "Seat", "Platform", "Host", "Native Session ID",
+    "Title", "Project", "Thread Link", "Apple Note Link"];
+  const adapter = fakeAdapter();
+  const cells = sessionCells("r1", "A");
+  cells[5] = "native-1"; cells[6] = "A Title"; cells[10] = "active"; cells[15] = "test source";
+  const outbox = fakeOutbox([{ outbox_id: "p1", kind: "session_upsert",
+    payload: JSON.stringify({ cells }) }]);
+  const res = await drainOutbox({ outbox, adapter, layout: { sessions: WB_SESSIONS, events: EVENTS_HEADERS } });
+  assert.deepEqual(res, { exported: 1, failed: 0 });
+  const page = await adapter.readRows("sessions", { startRow: 2, limit: 10 });
+  const written = page.rows[0].cells ?? page.rows[0];
+  assert.equal(written.length, 10);
+  assert.deepEqual(written.slice(0, 7), ["r1", "A", "MM", "", "", "native-1", "A Title"]);
+});
+
+test("layout that moves the ID column is refused before any write", async () => {
+  const adapter = fakeAdapter();
+  const outbox = fakeOutbox([{ outbox_id: "p2", kind: "session_upsert",
+    payload: JSON.stringify({ cells: sessionCells("r1") }) }]);
+  await assert.rejects(
+    drainOutbox({ outbox, adapter, layout: { sessions: ["Label", "Record ID"], events: EVENTS_HEADERS } }),
+    /must keep "Record ID" as its first header/);
+  assert.deepEqual(outbox.marked, []);
+});
+
+test("session snapshots collapse to the latest within one batch", async () => {
+  const adapter = fakeAdapter();
+  const attempts = fakeAttempts();
+  const outbox = fakeOutbox([
+    { outbox_id: "s1", kind: "session_upsert", payload: JSON.stringify({ cells: sessionCells("r1", "A") }) },
+    { outbox_id: "s2", kind: "session_upsert", payload: JSON.stringify({ cells: sessionCells("r1", "B") }) },
+  ]);
+  const res = await drainOutbox({ outbox, adapter, attempts, destination: "wb-1" });
+  assert.deepEqual(res, { exported: 2, failed: 0 });
+  assert.deepEqual(outbox.marked, ["s1", "s2"]);
+  assert.equal(adapter.calls.filter((c) => c === "appendSession").length, 1);
+  const page = await adapter.readRows("sessions", { startRow: 2, limit: 10 });
+  const rows = page.rows ?? page;
+  assert.equal(rows.length, 1);
+  assert.equal((rows[0].cells ?? rows[0])[1], "B"); // the latest snapshot's label
+  assert.equal(attempts.records[0].outcome, "exported");
+  assert.match(attempts.records[0].detail, /superseded in batch by s2/);
+  assert.equal(attempts.records[1].outcome, "exported");
+});
+
+test("an append without a confirmed row number rescans before the next lookup", async () => {
+  const adapter = fakeAdapter(); // fake appends return no rowNumber
+  const outbox = fakeOutbox([
+    { outbox_id: "d1", kind: "event_append", payload: JSON.stringify({ cells: eventCells("e1", "r1") }) },
+    { outbox_id: "d2", kind: "event_append", payload: JSON.stringify({ cells: eventCells("e1", "r1") }) },
+  ]);
+  const res = await drainOutbox({ outbox, adapter });
+  assert.deepEqual(res, { exported: 2, failed: 0 });
+  assert.equal(adapter.calls.filter((c) => c === "appendEvent").length, 1); // second reconciled, not duplicated
+});
+
+test("superseded snapshots stay pending when the winning snapshot is refused", async () => {
+  const adapter = fakeAdapter();
+  const winner = sessionCells("r1", "B");
+  winner[6] = "see gh" + "p_" + "x".repeat(36); // Title is scanned: the winner can never export
+  const attempts = fakeAttempts();
+  const outbox = fakeOutbox([
+    { outbox_id: "w1", kind: "session_upsert", payload: JSON.stringify({ cells: sessionCells("r1", "A") }) },
+    { outbox_id: "w2", kind: "session_upsert", payload: JSON.stringify({ cells: winner }) },
+  ]);
+  const res = await drainOutbox({ outbox, adapter, attempts, destination: "wb-1" });
+  assert.deepEqual(res, { exported: 0, failed: 1 });
+  assert.deepEqual(outbox.marked, []); // the loser is NOT marked exported over a refused winner
+  assert.ok(!attempts.records.some((r) => r.outboxId === "w1" && r.outcome === "exported"));
+});
+
+test("recordBatch attempts receive one batched call per flush", async () => {
+  const adapter = fakeAdapter();
+  const batches = [];
+  const attempts = { recordBatch: async (records) => { batches.push(records); } };
+  const outbox = fakeOutbox([
+    { outbox_id: "b1", kind: "session_upsert", payload: JSON.stringify({ cells: sessionCells("r1") }) },
+    { outbox_id: "b2", kind: "event_append", payload: JSON.stringify({ cells: eventCells("e1", "r1") }) },
+    { outbox_id: "b3", kind: "event_append", payload: JSON.stringify({ cells: eventCells("e2", "r1") }) },
+  ]);
+  const res = await drainOutbox({ outbox, adapter, attempts, destination: "wb-1" });
+  assert.deepEqual(res, { exported: 3, failed: 0 });
+  assert.equal(batches.length, 1);
+  assert.deepEqual(batches[0].map((r) => r.outboxId), ["b1", "b2", "b3"]);
+  assert.deepEqual(outbox.marked, ["b1", "b2", "b3"]);
 });

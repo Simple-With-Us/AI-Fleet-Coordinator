@@ -3,7 +3,7 @@ import XCTest
 /// The MiniMax panel's agents row:  what the seat's own agent is called there.
 ///
 /// The MiniMax runtime names the seat's own agent `mavis`, while the fleet calls that
-/// seat `MM`, so a row that said only "this seat" named a runtime persona and never the
+/// seat `MM`, so a row that said only "this seat" named the runtime's agent and never the
 /// fleet's own tag for it.  The row reads `mavis (MM, this seat)`, and every other
 /// agent keeps its bare runtime name.
 ///
@@ -259,12 +259,12 @@ final class MiniMaxDetailViewTests: XCTestCase {
     /// The seat's own agent names the fleet seat beside the runtime name, and every
     /// other agent keeps its bare runtime name.
     ///
-    /// The row used to say "this seat" on its own, which named a runtime persona and
+    /// The row used to say "this seat" on its own, which named the runtime's agent and
     /// never the fleet's tag for it, so the row now reads `mavis (MM, this seat)`.
     func test_the_agents_row_names_the_fleet_seat_beside_the_runtime_name() throws {
         let home = try makeHome()
         defer { try? FileManager.default.removeItem(at: home) }
-        let surface = MiniMaxReader.read(home: home, liveSeats: ["MM"])
+        let surface = MiniMaxReader.read(home: home, rosterSeats: ["MM"])
         let seatAgent = try XCTUnwrap(surface.agents.first { $0.ownsSeatMemory })
         let otherAgent = try XCTUnwrap(surface.agents.first { !$0.ownsSeatMemory })
         XCTAssertEqual(seatAgent.name, "mavis")
