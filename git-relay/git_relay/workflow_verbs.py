@@ -1367,7 +1367,7 @@ class WorkflowVerbs:
                 or not isinstance(item.get("key"), str)
                 or not re.fullmatch(
                     r"ssh-(rsa|ed25519|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]{1,800}"
-                    r"( [\x21-\x7e]{1,100})?",
+                    r"( [\x20-\x7e]{1,100})?",
                     item["key"],
                 )
                 or type(item.get("verified")) is not bool

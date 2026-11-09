@@ -104,6 +104,12 @@ class AdminScopeReadTests(unittest.TestCase):
         commented = dict(KEY, key=KEY["key"] + " ci@host")
         out, client = self.run_action("wf_deploy_keys", {}, [commented])
         self.assertEqual(out["deploy_keys"][0]["id"], 7)
+        spaced = dict(KEY, key=KEY["key"] + " ci host laptop")
+        out, client = self.run_action("wf_deploy_keys", {}, [spaced])
+        self.assertEqual(out["deploy_keys"][0]["id"], 7)
+        for bad in (" x\ny", " x\x00", " " + "c" * 101, "  ", " é"):
+            with self.assertRaises(RelayGitHubError):
+                self.run_action("wf_deploy_keys", {}, [dict(KEY, key=KEY["key"] + bad)])
 
     def test_deploy_keys_refuses_bad_material(self):
         with self.assertRaises(RelayGitHubError):
