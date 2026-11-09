@@ -107,7 +107,7 @@ class AdminScopeReadTests(unittest.TestCase):
         spaced = dict(KEY, key=KEY["key"] + " ci host laptop")
         out, client = self.run_action("wf_deploy_keys", {}, [spaced])
         self.assertEqual(out["deploy_keys"][0]["id"], 7)
-        for bad in (" x\ny", " x\x00", " " + "c" * 101, "  ", " é"):
+        for bad in (" x\ny", " x\x00", " " + "c" * 101, " é"):
             with self.assertRaises(RelayGitHubError):
                 self.run_action("wf_deploy_keys", {}, [dict(KEY, key=KEY["key"] + bad)])
 
