@@ -60,9 +60,7 @@ class Tests(unittest.TestCase):
     def test_directory_binding_drift_refuses(self):
         template = (HERE / "runner.template.py").read_text()
         with self.assertRaises(ValueError):
-            builder.render_entry(
-                template.replace(builder.ROOT, "/wrong"), b"manifest", {"x": b"x"}
-            )
+            builder.render_entry(template.replace(builder.ROOT, "/wrong"), b"manifest", {"x": b"x"})
 
     def test_candidate_mode_independent_of_umask(self):
         for mask in (0, 0o777):

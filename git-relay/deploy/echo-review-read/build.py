@@ -41,8 +41,7 @@ def image(before):
 
     policy = json.loads(before)
     after = (
-        json.dumps(prepare(policy, policy_digest(policy)), sort_keys=True, indent=2)
-        + "\n"
+        json.dumps(prepare(policy, policy_digest(policy)), sort_keys=True, indent=2) + "\n"
     ).encode()
     if digest(after) != AFTER:
         raise ValueError("exact ECHO-only candidate drift")
@@ -143,9 +142,7 @@ def build(repo, before, output):
         "unit": UNIT,
     }
     raw_manifest = json.dumps(manifest, sort_keys=True, indent=2).encode() + b"\n"
-    entry = render_entry(
-        (here / "runner.template.py").read_text(), raw_manifest, sources
-    )
+    entry = render_entry((here / "runner.template.py").read_text(), raw_manifest, sources)
     output = Path(output)
     output.mkdir(mode=0o700, exist_ok=False)
     for name, raw in sources.items():

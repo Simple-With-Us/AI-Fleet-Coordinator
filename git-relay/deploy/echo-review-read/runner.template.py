@@ -10,15 +10,9 @@ MODULE_HASHES = {}  # MODULE_HASHES_PLACEHOLDER
 
 
 def main():
-    if (
-        os.getuid() != 0
-        or len(sys.argv) != 2
-        or sys.argv[1] not in {"deploy", "guard", "recover"}
-    ):
+    if os.getuid() != 0 or len(sys.argv) != 2 or sys.argv[1] not in {"deploy", "guard", "recover"}:
         raise SystemExit("fixed root transaction command required")
-    if len(MANIFEST_DIGEST) != 64 or any(
-        c not in "0123456789abcdef" for c in MANIFEST_DIGEST
-    ):
+    if len(MANIFEST_DIGEST) != 64 or any(c not in "0123456789abcdef" for c in MANIFEST_DIGEST):
         raise SystemExit("transaction is not qualified")
     for p in [DIRECTORY, *DIRECTORY.parents]:
         s = p.lstat()

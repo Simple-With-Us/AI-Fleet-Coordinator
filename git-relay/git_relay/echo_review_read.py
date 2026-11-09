@@ -18,11 +18,7 @@ def prepare(policy, expected_digest):
     if not isinstance(policy, dict) or not policy or digest(policy) != expected_digest:
         raise ValueError("policy shape or digest mismatch")
     row = policy.get(SEAT)
-    if (
-        not isinstance(row, dict)
-        or row.get("app_slug") != SEAT
-        or row.get("auth") != "shared"
-    ):
+    if not isinstance(row, dict) or row.get("app_slug") != SEAT or row.get("auth") != "shared":
         raise ValueError("existing own-App seat required")
     actions = row.get("actions")
     if (
@@ -33,9 +29,7 @@ def prepare(policy, expected_digest):
         or "wf_review_threads" not in actions
         or ACTION in actions
     ):
-        raise ValueError(
-            "qualified prior review read required; new action must be absent"
-        )
+        raise ValueError("qualified prior review read required; new action must be absent")
     if row.get("mint_permissions", {}).get("pull_requests") not in ("read", "write"):
         raise ValueError("existing pull_requests read ceiling required")
     out = copy.deepcopy(policy)
