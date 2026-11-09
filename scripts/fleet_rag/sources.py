@@ -1899,7 +1899,9 @@ def _linear_seat_names() -> list[str]:
     if invalid:
         warn(f"linear: ignored {invalid} invalid seat name(s) in {LINEAR_SEATS_ENV}")
     if len(seats) > LINEAR_MAX_SEATS:
-        warn(f"linear: {LINEAR_SEATS_ENV} names {len(seats)} seats;  using the first {LINEAR_MAX_SEATS}")
+        warn(
+            f"linear: {LINEAR_SEATS_ENV} names {len(seats)} seats;  using the first {LINEAR_MAX_SEATS}"
+        )
     return seats[:LINEAR_MAX_SEATS]
 
 
@@ -1907,9 +1909,10 @@ def _linear_seat_envs() -> list[tuple[str, dict]]:
     """(seat, subprocess env) for each configured seat whose pair is present, in order.  One base
     snapshot of the environment is taken, with every seat pair removed, and each seat's env adds
     only its own pair as LINEAR_CLIENT_ID / LINEAR_CLIENT_SECRET."""
-    if os.environ.get("LINEAR_CLIENT_ID", "").strip() and os.environ.get(
-        "LINEAR_CLIENT_SECRET", ""
-    ).strip():
+    if (
+        os.environ.get("LINEAR_CLIENT_ID", "").strip()
+        and os.environ.get("LINEAR_CLIENT_SECRET", "").strip()
+    ):
         return [("LINEAR_CLIENT_ID", dict(os.environ))]
     seats = _linear_seat_names()
     pairs: list[tuple[str, str, str]] = []
@@ -1926,7 +1929,10 @@ def _linear_seat_envs() -> list[tuple[str, dict]]:
         for key, val in os.environ.items()
         if not (key.startswith("LINEAR_") and key.endswith(("_CLIENT_ID", "_CLIENT_SECRET")))
     }
-    return [(seat, {**base, "LINEAR_CLIENT_ID": cid, "LINEAR_CLIENT_SECRET": sec}) for seat, cid, sec in pairs]
+    return [
+        (seat, {**base, "LINEAR_CLIENT_ID": cid, "LINEAR_CLIENT_SECRET": sec})
+        for seat, cid, sec in pairs
+    ]
 
 
 def _linear_is_auth_failure(proc: subprocess.CompletedProcess) -> bool:
