@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+"""A fake `gh api graphql` for the tests.  Scenario file:  $FF_SCENARIO -> {"gh": {...}}.
+  pages:        {cursor: response}  served by the `endCursor` field ("" when none was sent)
+  fail_502:     the first N calls print an HTTP 502 and exit 1
+  node_responses: responses for `ids[]` (refetch) calls, in order
+Every call is logged as a JSON list to $FF_LOG;  counters live in $FF_STATE."""
+import json
+import os
+import sys
+
+scenario = json.load(open(os.environ["FF_SCENARIO"]))["gh"]
+argv = sys.argv[1:]
+log = os.environ.get("FF_LOG")
+if log:
+    with open(log, "a") as fh:
+        fh.write(json.dumps(["gh"] + argv) + "\n")
+state = os.environ.get("FF_STATE", ".")
+
+
+def bump(name):
+    path = os.path.join(state, "count-" + name)
+    n = int(open(path).read()) if os.path.exists(path) else 0
+    open(path, "w").write(str(n + 1))
+    return n
+
+
+fields = {}
+i = 0
+while i < len(argv):
+    if argv[i] in ("-f", "-F") and i + 1 < len(argv):
+        key, _, value = argv[i + 1].partition("=")
+        fields.setdefault(key, []).append(value)
+        i += 2
+    else:
+        i += 1
+if argv[:2] != ["api", "graphql"]:
+    sys.stderr.write("fake gh: unexpected command\n")
+    sys.exit(1)
+if bump("calls") < scenario.get("fail_502", 0):
+    sys.stderr.write("gh: HTTP 502: Bad Gateway\n")
+    sys.exit(1)
+if "ids[]" in fields:
+    responses = scenario["node_responses"]
+    n = bump("nodes")
+    print(json.dumps(responses[min(n, len(responses) - 1)]))
+    sys.exit(0)
+cursor = fields.get("endCursor", [""])[0]
+page = scenario["pages"].get(cursor)
+if page is None:
+    sys.stderr.write("fake gh: no page for that cursor\n")
+    sys.exit(1)
+print(json.dumps(page))

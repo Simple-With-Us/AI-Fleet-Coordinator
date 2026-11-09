@@ -1,0 +1,2 @@
+Plan for CLAUDE (hooks):  0 entries,  0 auto-fixable.
+  nothing to change:  every checked rule matches the manifest

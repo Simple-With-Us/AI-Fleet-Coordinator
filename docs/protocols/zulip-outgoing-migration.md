@@ -1,0 +1,32 @@
+# Zulip Outgoing Wake Migration
+
+Outgoing webhook identities let Zulip notify the existing eavesdropper immediately on direct messages and mentions.  GB personas are independent of the GROK native chat client.  Their routine endpoints require bearer authentication; JET's bridge requires HMAC authentication.  The receiver translates Zulip's native authenticated payload into the existing routing path, preserving budgets and deduplication with the event listener.
+
+Zulip suppresses message-triggered bot events when the sender is a bot (`zerver/actions/message_send.py`, `get_message_triggered_bot_events`).  Keep the native event listener operational for agent-to-agent wakes.  A bot-authored canary cannot prove Zulip's outgoing delivery; live webhook acceptance requires a human-authored DM or mention, with one shared wake despite both ingress paths.
+
+## Receiver
+
+The existing server daemon owns the HTTP server; there is no additional background job.  Configure `daemon.outgoing_webhook_seats` with the exact eligible seats, then set `[outgoing_webhook] enabled = true`, `bind = "0.0.0.0"`, and `port = 8787` in its private live configuration.  The sample remains disabled.  The reverse proxy must forward HTTPS to that port.  The only accepted path is `/zulip/outgoing/<SEAT>`.
+
+Tokens load at startup from Infisical prod `/zulip` as `ZULIP_OUTGOING_<CODE>_TOKEN`, where hyphens become underscores.  These are Zulip service tokens, not bot API keys or routine keys.  Empty tokens authorize no requests.  Restart after publishing credentials; a configuration reload alone cannot refresh environment values.
+
+The receiver authenticates the token and receiving bot email, then fsyncs only the seat and message ID to the private spool before acknowledging.  The daemon retrieves authoritative message content with that seat's Zulip API client before routing.  Webhook content never establishes owner authority.  Native events and outgoing requests share deduplication; webhook arrivals do not advance the native event cursor.
+
+## Authorized Replacement
+
+`scripts/zulip_migrate_outgoing.py` was retired 2026-10-19 because it needed the owner key.  The GB and JET conversions are finished, and BF seats are still pending.  There is no helper now:  an organization administrator does the Zulip steps in Settings > Bots (the realm-admin bot is used only by `scripts/zulip_provision_bots.py`, which creates generic bots and cannot create or convert an outgoing-webhook bot).  Do one seat at a time, as one attended maintenance operation.
+
+1. Deploy receiver and identity compatibility first.  Confirm unauthenticated requests cannot route messages.  Confirm all credential consumers and whether any bot is actively running.  Before converting BF identities, add all eleven BF seats to `daemon.outgoing_webhook_seats` in BOTH the Mac and server live eavesdropper configurations.  `apply_live_config.py` does not copy `[daemon]`, so edit that key in the live file itself.  The partition already gives BF-DIRECTOR to `server` and the other ten BF seats to `none`.  Do not move BF-DIRECTOR back to `none`:  the server sample holds `[seat.BF-DIRECTOR]` disabled until `ZULIP_ALERT_BF_DIRECTOR_ENDPOINT` and `ZULIP_ALERT_BF_DIRECTOR_KEY` are in Infisical.  The other ten seats have no `[seat.BF-*]` queue.  Listing a BF seat in `outgoing_webhook_seats` makes the eavesdropper treat its migrated type-3 bot as an eligible sender for the other seats.  It does not make the eavesdropper receive that seat's webhooks:  the eavesdropper loads a token and accepts a webhook only for a seat with an enabled `[seat.<SEAT>]` queue, so BF webhooks arrive at BotFleet's native receiver (below) and BF-DIRECTOR's stays off until its section is enabled.  Verify each eavesdropper recognizes the migrated type-3 sender.
+2. In Zulip's admin UI, rename the old bot out of the way, then create an outgoing-webhook bot with the canonical lowercase email (`bf-<role>-bot@` for a BF seat), the same display name, and the exact endpoint for that seat (see below).  Note its API key and its separate service token, and give it the old bot's channel subscriptions.  Keep the old identity until consumers are verified.  Renaming breaks its former email login until consumers are updated.
+3. Have Jay store `ZULIP_<CODE>_EMAIL`, `ZULIP_<CODE>_API_KEY` and `ZULIP_OUTGOING_<CODE>_TOKEN` in Infisical prod `/zulip`, and read each back (`fleet-secrets names --path /zulip` shows the names only).
+4. Refresh each consumer.  The server eavesdropper reads Infisical at startup.  A GB routine's own reply credential must be verified separately.  JET's hosted MCP Worker also uses `ZULIP_KEY_JET` and `ZULIP_EMAIL_JET`; its separate wake HMAC is unchanged.  Recheck both Mac and server eavesdropper outgoing-seat eligibility after their configuration refresh so migrated bots can wake seats on either host.
+5. Verify the new `users/me` identity, channel posting, a real DM or mention through Zulip, one accepted wake, and a reply from the new bot ID.  Verify event-listener convergence does not produce a second wake.
+6. Only then deactivate the renamed old identity in the admin UI.
+
+## BotFleet Native Receiver
+
+The eleven registered BF seats are: `BF-BUILDER`, `BF-COMPILER`, `BF-DEPLOYER`, `BF-DESIGNER`, `BF-DIRECTOR`, `BF-FIXER`, `BF-HOUSEKEEPER`, `BF-MONITOR`, `BF-ORACLE`, `BF-PLUMBER`, and `BF-PUBLISHER`.  A family prefix alone never authorizes a new role.  GB and JET migrations retain their existing behavior.
+
+BotFleet's native receiver uses the same exact `/zulip/outgoing/<SEAT>` path on the BotFleet deployment's HTTPS host.  Use an uppercase seat matching the canonical `bf-<role>-bot@` identity.  Query strings, fragments, URL credentials, alternate paths, and another seat's path are rejected.  The receiver must independently bind that seat to a configured bot, its email, and its service token.
+
+Deploy and verify BotFleet's native receiver and outgoing-bot identity compatibility before staging any BF identity.  Publish the same `ZULIP_BF_<ROLE>_EMAIL`, `ZULIP_BF_<ROLE>_API_KEY`, and `ZULIP_OUTGOING_BF_<ROLE>_TOKEN` entries in Infisical prod `/zulip`.  Refresh BotFleet's credential consumers, validate the new user ID and actual delivery, then retire the renamed bot.  Keep BotFleet's native Zulip listener operational for bot-authored messages and shared deduplication.  This alone does not establish that a receiver is deployed or any identity has been converted.

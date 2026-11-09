@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "tool": "fleet-worker-health",
+  "generatedAt": "2026-10-28T15:00:00Z",
+  "reachable": false,
+  "worst": "unknown",
+  "error": "no_key",
+  "seats": []
+}

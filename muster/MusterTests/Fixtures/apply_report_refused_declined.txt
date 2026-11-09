@@ -1,0 +1,5 @@
+Applied 0 changes;  0 skipped,  1 failed.
+  refused          claude-hooks-lane-guard  hooks  claude
+      file:  .claude/settings.json
+      the Touch ID confirmation did not succeed,  so the write is refused:  user canceled
+  REFUSED:  the Touch ID confirmation did not succeed,  so the write is refused:  user canceled

@@ -1,0 +1,16 @@
+[Unit]
+Description=Fleet app health recover (%i)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=15
+ExecStart=/usr/local/bin/fleet-health-recover.sh
+EnvironmentFile=-/etc/congress-health-recover.env
+EnvironmentFile=-/etc/fleet-health-recover.d/%i.env
+SyslogIdentifier=fleet-health-recover-%i
+
+[Install]
+WantedBy=multi-user.target

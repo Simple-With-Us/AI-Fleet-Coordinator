@@ -1,0 +1,565 @@
+"""Shared-bearer verifier (shared_bearer.py) and its policy integration.
+
+Fakes only:  no network, no real key.  The transport and key source are
+injected;  time is real but tokens/answers are synthetic.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import io
+import json
+import os
+import time
+import unittest
+import urllib.error
+import urllib.request
+from unittest import mock
+
+from git_relay.policy import PolicyError, SeatPolicy
+from git_relay.shared_bearer import SIGNATURE_HEADER, SharedBearerVerifier
+
+KEY = "k" * 48
+URL = "https://agents.example/internal/gr-bearer-verify"
+TOKEN = "gbb_fixer_" + "a" * 43
+IDENTITY = "GB-FIXER"
+
+
+class FakeKeySource:
+    def __init__(self, values):
+        self.values = values
+
+    def secret(self, name):
+        return self.values[name]
+
+
+def make_transport(behavior):
+    """behavior(body: bytes) -> (status, payload: bytes).  Records calls."""
+    calls = []
+
+    def transport(method, url, headers, body, timeout):
+        calls.append({"method": method, "url": url, "headers": headers, "body": body})
+        return behavior(body)
+
+    transport.calls = calls
+    return transport
+
+
+def ok_answer(identity=IDENTITY, expires_in_s=3600):
+    def behavior(body):
+        return 200, json.dumps(
+            {
+                "ok": True,
+                "identity": identity,
+                "expires_at": int((time.time() + expires_in_s) * 1000),
+            }
+        ).encode()
+
+    return behavior
+
+
+def verifier_for(behavior, key=KEY):
+    return SharedBearerVerifier(
+        url=URL,
+        key_name="GR_BEARER_VERIFY_KEY",
+        key_source=FakeKeySource({"GR_BEARER_VERIFY_KEY": key}),
+        transport=make_transport(behavior),
+    )
+
+
+class VerifierTest(unittest.TestCase):
+    def test_threaded_resolve_never_false_refuses_a_valid_bearer(self):
+        # The server is threaded (ThreadingHTTPServer), so concurrent resolve()
+        # calls share the cache.  A non-atomic min()+del eviction raced into
+        # RuntimeError/KeyError, and the fail-closed handler turned that into a
+        # false refusal of a VALID bearer.  Churn the cache hard from many
+        # threads and require the valid bearer to resolve every single time.
+        import sys
+        import threading
+
+        from git_relay import shared_bearer as sb
+
+        good = hashlib.sha256(TOKEN.strip().encode()).hexdigest()
+
+        def behavior(body):
+            time.sleep(0.0002)  # yield the GIL so cache sections interleave
+            if json.loads(body)["hash"] == good:
+                return 200, json.dumps(
+                    {
+                        "ok": True,
+                        "identity": IDENTITY,
+                        "expires_at": int((time.time() + 3600) * 1000),
+                    }
+                ).encode()
+            return 200, json.dumps({"ok": False, "reason": "mismatch"}).encode()
+
+        v = verifier_for(behavior)
+        junk = ["gbb_fill_" + ("%043x" % i) for i in range(256)]
+        errors = []
+        old_cap = sb.CACHE_MAX_ENTRIES
+        old_interval = sys.getswitchinterval()
+        sb.CACHE_MAX_ENTRIES = 8
+        sys.setswitchinterval(0.00001)  # force preemption inside min()+del
+        try:
+
+            def hammer(n):
+                try:
+                    for i in range(300):
+                        got = v.resolve(TOKEN)
+                        if got != IDENTITY:
+                            errors.append(("false refusal", n, i, got))
+                            return
+                        v.resolve(junk[(n * 7 + i) % len(junk)])
+                except Exception as exc:  # resolve() must never raise
+                    errors.append(("raise", n, repr(exc)))
+
+            threads = [threading.Thread(target=hammer, args=(n,)) for n in range(32)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        finally:
+            sb.CACHE_MAX_ENTRIES = old_cap
+            sys.setswitchinterval(old_interval)
+        self.assertEqual(errors, [])
+
+    def test_verify_requests_identify_themselves(self):
+        # The Worker sees this User-Agent on every verify call so relay
+        # traffic is distinguishable in its logs.
+        v = verifier_for(ok_answer())
+        v.resolve(TOKEN)
+        (call,) = v._transport.calls
+        self.assertEqual(call["headers"]["User-Agent"], "git-relay/1.0 (+ops)")
+
+    def test_resolves_a_live_bearer(self):
+        v = verifier_for(ok_answer())
+        self.assertEqual(v.resolve(TOKEN), IDENTITY)
+
+    def test_sends_hash_only_and_signs_the_body(self):
+        v = verifier_for(ok_answer())
+        v.resolve(TOKEN)
+        (call,) = v._transport.calls
+        self.assertNotIn(TOKEN.encode(), call["body"])
+        body = json.loads(call["body"])
+        self.assertEqual(body["hash"], hashlib.sha256(TOKEN.encode()).hexdigest())
+        self.assertEqual(body["identity"], IDENTITY)
+        self.assertEqual(body["contract"], "gr-bearer-verify/1")
+        expected = hmac.new(KEY.encode(), call["body"], hashlib.sha256).hexdigest()
+        self.assertEqual(call["headers"][SIGNATURE_HEADER], expected)
+
+    def test_malformed_token_never_leaves_the_process(self):
+        v = verifier_for(ok_answer())
+        self.assertIsNone(v.resolve("not-a-bearer"))
+        self.assertEqual(v._transport.calls, [])
+
+    def test_answer_for_a_different_identity_is_refused(self):
+        v = verifier_for(ok_answer(identity="GB-ORACLE"))
+        self.assertIsNone(v.resolve(TOKEN))
+
+    def test_expired_answer_is_refused(self):
+        v = verifier_for(ok_answer(expires_in_s=-5))
+        self.assertIsNone(v.resolve(TOKEN))
+
+    def test_refusal_answer_is_refused(self):
+        v = verifier_for(
+            lambda body: (200, json.dumps({"ok": False, "reason": "mismatch"}).encode())
+        )
+        self.assertIsNone(v.resolve(TOKEN))
+
+    def test_http_error_and_garbage_fail_closed(self):
+        self.assertIsNone(verifier_for(lambda body: (500, b"")).resolve(TOKEN))
+        self.assertIsNone(verifier_for(lambda body: (200, b"not json")).resolve(TOKEN))
+
+    def test_transport_exception_fails_closed(self):
+        def boom(body):
+            raise TimeoutError("nope")
+
+        self.assertIsNone(verifier_for(boom).resolve(TOKEN))
+
+    def test_positive_answer_is_reused_for_an_hour_by_default(self):
+        # Owner ruling 2026-11-06:  a checked token may work for an hour.
+        with mock.patch.dict(os.environ):
+            os.environ.pop("GIT_RELAY_VERIFY_CACHE_S", None)
+            v = verifier_for(ok_answer(expires_in_s=90 * 86400))
+        self.assertEqual(v._positive_ttl, 3600)
+        self.assertEqual(v.resolve(TOKEN), IDENTITY)
+        self.assertEqual(v.resolve(TOKEN), IDENTITY)
+        self.assertEqual(len(v._transport.calls), 1)
+        start = time.time()
+        with mock.patch.object(time, "time", return_value=start + 3599):
+            self.assertEqual(v.resolve(TOKEN), IDENTITY)
+        self.assertEqual(len(v._transport.calls), 1)
+        with mock.patch.object(time, "time", return_value=start + 3601):
+            self.assertEqual(v.resolve(TOKEN), IDENTITY)
+        self.assertEqual(len(v._transport.calls), 2)
+
+    def test_revocation_lands_within_the_hour_by_default(self):
+        answers = [
+            ok_answer(expires_in_s=90 * 86400)(b""),
+            (200, json.dumps({"ok": False, "reason": "paused"}).encode()),
+        ]
+        with mock.patch.dict(os.environ):
+            os.environ.pop("GIT_RELAY_VERIFY_CACHE_S", None)
+            v = verifier_for(lambda body: answers.pop(0))
+        self.assertEqual(v.resolve(TOKEN), IDENTITY)
+        self.assertEqual(v.resolve(TOKEN), IDENTITY, "inside the hour the checked answer stands")
+        with mock.patch.object(time, "time", return_value=time.time() + 3601):
+            self.assertIsNone(v.resolve(TOKEN))
+
+    def test_a_different_or_malformed_token_always_verifies_live(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("GIT_RELAY_VERIFY_CACHE_S", None)
+            v = verifier_for(ok_answer())
+        self.assertEqual(v.resolve(TOKEN), IDENTITY)
+        other = "gbb_fixer_" + "b" * 43
+        self.assertEqual(v.resolve(other), IDENTITY)
+        self.assertEqual(len(v._transport.calls), 2, "another token is another key")
+        self.assertIsNone(v.resolve(TOKEN + "x"))
+        self.assertEqual(
+            len(v._transport.calls), 2, "a malformed token never reaches the cache or the Worker"
+        )
+
+    def test_a_worker_cached_answer_does_not_start_a_second_hour(self):
+        # The Worker may answer from its own cache;  its verified_at says when
+        # it last checked live, and the relay's window ends an hour after THAT,
+        # so the two layers together never pass a bearer for two hours.
+        start = time.time()
+
+        def cached_answer(body):
+            return 200, json.dumps(
+                {
+                    "ok": True,
+                    "identity": IDENTITY,
+                    "expires_at": int((start + 90 * 86400) * 1000),
+                    "verified_at": int((start - 3000) * 1000),
+                }
+            ).encode()
+
+        with mock.patch.dict(os.environ):
+            os.environ.pop("GIT_RELAY_VERIFY_CACHE_S", None)
+            v = verifier_for(cached_answer)
+        with mock.patch.object(time, "time", return_value=start):
+            self.assertEqual(v.resolve(TOKEN), IDENTITY)
+        entry = next(iter(v._cache.values()))
+        self.assertLessEqual(entry[1], start - 3000 + 3600 + 0.001)
+        with mock.patch.object(time, "time", return_value=start + 601):
+            self.assertEqual(v.resolve(TOKEN), IDENTITY)
+        self.assertEqual(
+            len(v._transport.calls), 2, "past the Worker check's hour the relay asks again"
+        )
+
+    def test_a_future_or_missing_verified_at_never_stretches_the_window(self):
+        start = time.time()
+        for extra in ({"verified_at": int((start + 86400) * 1000)}, {}, {"verified_at": True}):
+
+            def answer(body, extra=extra):
+                return 200, json.dumps(
+                    {
+                        "ok": True,
+                        "identity": IDENTITY,
+                        "expires_at": int((start + 90 * 86400) * 1000),
+                        **extra,
+                    }
+                ).encode()
+
+            with mock.patch.dict(os.environ):
+                os.environ.pop("GIT_RELAY_VERIFY_CACHE_S", None)
+                v = verifier_for(answer)
+            with mock.patch.object(time, "time", return_value=start):
+                self.assertEqual(v.resolve(TOKEN), IDENTITY)
+            self.assertLessEqual(next(iter(v._cache.values()))[1], start + 3600 + 0.001)
+
+    def test_a_slow_positive_answer_never_overwrites_a_newer_refusal(self):
+        # Call A gets "ok" before a revocation but its reply is slow;  call B
+        # starts after the revocation and is refused.  A's late answer must not
+        # replace B's refusal in the cache, or the bearer works for an hour.
+        import threading
+
+        a_may_return = threading.Event()
+        b_started = threading.Event()
+        calls = []
+
+        def behavior(body):
+            calls.append(1)
+            if len(calls) == 1:
+                b_started.wait(5)
+                a_may_return.wait(5)
+                return ok_answer(expires_in_s=30 * 86400)(body)
+            return 200, json.dumps({"ok": False, "reason": "mismatch"}).encode()
+
+        with mock.patch.dict(os.environ):
+            os.environ.pop("GIT_RELAY_VERIFY_CACHE_S", None)
+            v = verifier_for(behavior)
+        results = {}
+        ta = threading.Thread(target=lambda: results.__setitem__("A", v.resolve(TOKEN)))
+        ta.start()
+        while not calls:
+            time.sleep(0.01)
+        time.sleep(0.02)  # B's clock reading is strictly later than A's
+        b_started.set()
+        results["B"] = v.resolve(TOKEN)
+        a_may_return.set()
+        ta.join(5)
+        self.assertEqual(
+            results["A"], IDENTITY, "A's own in-flight call still answers what it was told"
+        )
+        self.assertIsNone(results["B"])
+        self.assertIsNone(v.resolve(TOKEN), "the newer refusal stands")
+        self.assertEqual(len(calls), 2, "the refusal is served from the cache, with no third ask")
+        self.assertIsNone(next(iter(v._cache.values()))[0])
+
+    def test_positive_answer_caches_for_the_ttl_when_set(self):
+        with mock.patch.dict(os.environ, {"GIT_RELAY_VERIFY_CACHE_S": "60"}):
+            v = verifier_for(ok_answer())
+        self.assertEqual(v.resolve(TOKEN), IDENTITY)
+        self.assertEqual(v.resolve(TOKEN), IDENTITY)
+        self.assertEqual(len(v._transport.calls), 1)
+        start = time.time()
+        with mock.patch.object(time, "time", return_value=start + 59):
+            self.assertEqual(v.resolve(TOKEN), IDENTITY)
+        self.assertEqual(len(v._transport.calls), 1)
+        with mock.patch.object(time, "time", return_value=start + 61):
+            self.assertEqual(v.resolve(TOKEN), IDENTITY)
+        self.assertEqual(len(v._transport.calls), 2)
+
+    def test_revocation_lands_within_the_ttl_when_set(self):
+        answers = [ok_answer()(b""), (200, json.dumps({"ok": False, "reason": "paused"}).encode())]
+        with mock.patch.dict(os.environ, {"GIT_RELAY_VERIFY_CACHE_S": "60"}):
+            v = verifier_for(lambda body: answers.pop(0))
+        self.assertEqual(v.resolve(TOKEN), IDENTITY)
+        with mock.patch.object(time, "time", return_value=time.time() + 61):
+            self.assertIsNone(v.resolve(TOKEN))
+
+    def test_ttl_setting_zero_turns_it_off_and_larger_values_are_capped(self):
+        with mock.patch.dict(os.environ, {"GIT_RELAY_VERIFY_CACHE_S": "0"}):
+            v = verifier_for(ok_answer())
+        v.resolve(TOKEN)
+        v.resolve(TOKEN)
+        self.assertEqual(len(v._transport.calls), 2)
+        self.assertEqual(v._cache, {})
+        with mock.patch.dict(os.environ, {"GIT_RELAY_VERIFY_CACHE_S": "3600"}):
+            self.assertEqual(verifier_for(ok_answer())._positive_ttl, 3600)
+        with mock.patch.dict(os.environ, {"GIT_RELAY_VERIFY_CACHE_S": "86400"}):
+            self.assertEqual(verifier_for(ok_answer())._positive_ttl, 3600)
+        with mock.patch.dict(os.environ, {"GIT_RELAY_VERIFY_CACHE_S": "soon"}):
+            self.assertEqual(verifier_for(ok_answer())._positive_ttl, 0)
+
+    def test_positive_cache_never_outlives_the_bearer(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("GIT_RELAY_VERIFY_CACHE_S", None)
+            v = verifier_for(ok_answer(expires_in_s=5))
+        self.assertEqual(v.resolve(TOKEN), IDENTITY)
+        self.assertEqual(v.resolve(TOKEN), IDENTITY)
+        self.assertEqual(len(v._transport.calls), 1)
+        with mock.patch.object(time, "time", return_value=time.time() + 6):
+            v.resolve(TOKEN)
+        self.assertEqual(len(v._transport.calls), 2)
+
+    def test_worker_trouble_is_not_remembered_as_a_refusal(self):
+        cases = [
+            (500, b""),
+            (503, b"upstream"),
+            (429, b""),
+            (429, b"error code: 1027"),
+            (403, b"<title>Error 1027</title>"),
+            (403, b'{"error":1027}'),
+            (403, b'{"error": "1027"}'),
+            (403, b'{"error_code":1027,"title":"limit"}'),
+            (401, b'{"errors":[{"code":1027}]}'),
+            (408, b""),
+            (404, b'{"ok":false,"reason":"not_configured"}'),  # The verify key is unreadable.
+            (302, b""),
+            (405, b""),
+            (413, b""),
+            (200, b"not json"),
+            (200, b""),
+            (200, b"[]"),
+        ]
+        for trouble in cases:
+            with self.subTest(trouble=trouble):
+                answers = [trouble, ok_answer()(b"")]
+                v = verifier_for(lambda body: answers.pop(0))
+                self.assertIsNone(v.resolve(TOKEN))  # Still fails closed for this call.
+                self.assertEqual(v._cache, {})
+                self.assertEqual(v.resolve(TOKEN), IDENTITY)  # The very next call recovers.
+
+    def test_real_refusals_still_cache_for_thirty_seconds(self):
+        for refusal in (
+            (400, b'{"ok":false,"reason":"bad_identity"}'),
+            (401, b'{"ok":false,"reason":"bad_signature"}'),
+            (403, b"forbidden"),
+            (403, b'{"error":"forbidden","retry_after":1027}'),  # 1027 alone is not the limit.
+            (403, b'{"error":"10270"}'),
+            (200, json.dumps({"ok": False, "reason": "mismatch"}).encode()),
+        ):
+            with self.subTest(refusal=refusal):
+                v = verifier_for(lambda body, refusal=refusal: refusal)
+                self.assertIsNone(v.resolve(TOKEN))
+                self.assertIsNone(v.resolve(TOKEN))
+                self.assertEqual(len(v._transport.calls), 1)
+
+    def test_transport_keeps_a_bounded_error_body_for_classification(self):
+        error = urllib.error.HTTPError(
+            URL, 429, "limit", {}, io.BytesIO(b"error code: 1027" + b"x" * 9000)
+        )
+        opener = mock.Mock()
+        opener.open.side_effect = error
+        with mock.patch.object(urllib.request, "build_opener", return_value=opener):
+            status, body = SharedBearerVerifier._urllib_transport("POST", URL, {}, b"{}", 1)
+        self.assertEqual(status, 429)
+        self.assertLessEqual(len(body), 4097)
+        self.assertTrue(body.startswith(b"error code: 1027"))
+
+    def test_cache_is_bounded_and_evicts_oldest(self):
+        v = verifier_for(
+            lambda body: (200, json.dumps({"ok": False, "reason": "mismatch"}).encode())
+        )
+        for i in range(1100):
+            v.resolve("gbb_fixer_" + str(i % 36) * 43)
+        from git_relay.shared_bearer import CACHE_MAX_ENTRIES
+
+        self.assertLessEqual(len(v._cache), CACHE_MAX_ENTRIES)
+
+    def test_negative_answer_caches_briefly(self):
+        v = verifier_for(
+            lambda body: (200, json.dumps({"ok": False, "reason": "mismatch"}).encode())
+        )
+        self.assertIsNone(v.resolve(TOKEN))
+        self.assertIsNone(v.resolve(TOKEN))
+        self.assertEqual(len(v._transport.calls), 1)
+
+    def test_short_key_and_bad_url_are_startup_errors(self):
+        with self.assertRaises(ValueError):
+            SharedBearerVerifier(
+                url=URL,
+                key_name="K",
+                key_source=FakeKeySource({"K": "short"}),
+                transport=make_transport(ok_answer()),
+            )
+        with self.assertRaises(ValueError):
+            SharedBearerVerifier(
+                url="http://insecure.example/x",
+                key_name="K",
+                key_source=FakeKeySource({"K": KEY}),
+                transport=make_transport(ok_answer()),
+            )
+        with self.assertRaises(KeyError):
+            SharedBearerVerifier(
+                url=URL,
+                key_name="MISSING",
+                key_source=FakeKeySource({}),
+                transport=make_transport(ok_answer()),
+            )
+
+
+SEAT_CFG = {
+    "actions": ["open_pr"],
+    "repos": ["Simple-With-Us/*"],
+}
+
+
+class PolicySharedAuthTest(unittest.TestCase):
+    def test_shared_seat_resolves_through_the_verifier(self):
+        v = verifier_for(ok_answer())
+        policy = SeatPolicy(
+            json.dumps({"swu-fixer": {"auth": "shared", "identity": IDENTITY, **SEAT_CFG}}),
+            verifier=v,
+        )
+        self.assertEqual(policy.authenticate(TOKEN), "swu-fixer")
+
+    def test_unknown_identity_family_never_reaches_the_worker(self):
+        # Wrong guesses naming families the relay does not serve are refused
+        # locally - zero Worker calls - while a configured family still
+        # verifies remotely (Kody 4372744451).
+        v = verifier_for(ok_answer())
+        policy = SeatPolicy(
+            json.dumps({"swu-fixer": {"auth": "shared", "identity": IDENTITY, **SEAT_CFG}}),
+            verifier=v,
+        )
+        for i in range(5):
+            self.assertIsNone(policy.authenticate("gbb_oracle_" + ("%043x" % i)))
+        self.assertIsNone(policy.authenticate("not-a-bearer"))
+        self.assertEqual(v._transport.calls, [])
+        self.assertEqual(policy.authenticate(TOKEN), "swu-fixer")
+        self.assertEqual(len(v._transport.calls), 1)
+
+    def test_shared_seat_without_verifier_is_unreachable(self):
+        policy = SeatPolicy(
+            json.dumps({"swu-fixer": {"auth": "shared", "identity": IDENTITY, **SEAT_CFG}})
+        )
+        self.assertIsNone(policy.authenticate(TOKEN))
+
+    def test_verified_identity_without_a_matching_seat_is_denied(self):
+        v = verifier_for(ok_answer(identity="GB-ORACLE"))
+        policy = SeatPolicy(
+            json.dumps({"swu-fixer": {"auth": "shared", "identity": IDENTITY, **SEAT_CFG}}),
+            verifier=v,
+        )
+        # GB-ORACLE verifies fine but no seat claims that identity.
+        self.assertIsNone(policy.authenticate("gbb_oracle_" + "b" * 43))
+
+    def test_shared_seat_must_not_carry_a_static_token(self):
+        with self.assertRaises(PolicyError):
+            SeatPolicy(
+                json.dumps(
+                    {
+                        "swu-fixer": {
+                            "auth": "shared",
+                            "identity": IDENTITY,
+                            "token": "x" * 20,
+                            **SEAT_CFG,
+                        }
+                    }
+                )
+            )
+
+    def test_static_token_seats_still_work(self):
+        policy = SeatPolicy(
+            json.dumps({"swu-echo": {"token": "s" * 20, **SEAT_CFG}}),
+            verifier=verifier_for(ok_answer()),
+        )
+        self.assertEqual(policy.authenticate("s" * 20), "swu-echo")
+        self.assertIsNone(policy.authenticate("wrong" + "s" * 20))
+
+    def test_bad_auth_mode_is_a_config_error(self):
+        with self.assertRaises(PolicyError):
+            SeatPolicy(json.dumps({"swu-echo": {"auth": "bogus", **SEAT_CFG}}))
+
+    def test_two_seats_cannot_claim_one_identity(self):
+        with self.assertRaises(PolicyError):
+            SeatPolicy(
+                json.dumps(
+                    {
+                        "swu-fixer": {"auth": "shared", "identity": IDENTITY, **SEAT_CFG},
+                        "swu-fixer-2": {"auth": "shared", "identity": IDENTITY, **SEAT_CFG},
+                    }
+                )
+            )
+
+
+class SeatFamilyTest(unittest.TestCase):
+    SBT = "sbt_jet-chat_" + "c" * 43
+
+    def test_seat_token_resolves_to_its_seat_name(self):
+        v = verifier_for(ok_answer(identity="JET-CHAT"))
+        self.assertEqual(v.parse_identity(self.SBT), "JET-CHAT")
+        self.assertEqual(v.resolve(self.SBT), "JET-CHAT")
+
+    def test_seat_identity_sent_verbatim(self):
+        v = verifier_for(ok_answer(identity="JET-CHAT"))
+        v.resolve(self.SBT)
+        (call,) = v._transport.calls
+        self.assertEqual(json.loads(call["body"])["identity"], "JET-CHAT")
+
+    def test_shared_seat_policy_with_sbt_bearer(self):
+        v = verifier_for(ok_answer(identity="JET-CHAT"))
+        policy = SeatPolicy(
+            json.dumps({"swu-jet-chat": {"auth": "shared", "identity": "JET-CHAT", **SEAT_CFG}}),
+            verifier=v,
+        )
+        self.assertEqual(policy.authenticate(self.SBT), "swu-jet-chat")
+
+
+if __name__ == "__main__":
+    unittest.main()

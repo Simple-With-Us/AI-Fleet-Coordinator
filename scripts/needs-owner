@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+"""needs-owner:  decisions that wait on Jay.  See scripts/needs_owner/README.md and
+docs/protocols/needs-owner.md.
+
+This file is the entry point of the checkout (`scripts/needs-owner`) and of the stable copy
+(`~/apps/needs-owner/needs-owner`, linked as ~/.local/bin/needs-owner).  It puts its own real directory on
+sys.path, because `python3 -I` (isolated mode) does not, and so the package next to it is found.
+
+Under launchd or a routine, `/usr/bin/env python3` can be the system Python 3.9, which cannot run the
+package.  Then the script re-runs itself with a Homebrew python3 when one exists.  This part must stay
+valid Python 3.9."""
+import os
+import sys
+
+if sys.version_info < (3, 11):
+    for candidate in ("/opt/homebrew/bin/python3", "/usr/local/bin/python3"):
+        if os.access(candidate, os.X_OK) and os.path.realpath(candidate) != os.path.realpath(sys.executable):
+            os.execv(candidate, [candidate, os.path.realpath(__file__)] + sys.argv[1:])
+    sys.stderr.write("needs-owner: Python 3.11 or newer is required (found %d.%d)\n" % sys.version_info[:2])
+    sys.exit(1)
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+from needs_owner.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

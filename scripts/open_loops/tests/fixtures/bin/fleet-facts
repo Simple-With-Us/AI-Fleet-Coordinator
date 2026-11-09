@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""A fake `fleet-facts` with a `verify` command.  Scenario $OL_SCENARIO -> {"fleet-facts": {"verify_rc": N}}.
+It logs argv, whether FLEET_FACTS_SIGNING_KEY was set (never its value), the mode of the file it was handed and
+a hash of the file to $OL_LOG."""
+import hashlib
+import json
+import os
+import stat
+import sys
+
+argv = sys.argv[1:]
+scenario = json.load(open(os.environ["OL_SCENARIO"]))["fleet-facts"]
+entry = {"tool": "fleet-facts", "argv": [argv[0]] + ["<file>" if os.path.isfile(a) else a for a in argv[1:]],
+         "key_set": bool(os.environ.get("FLEET_FACTS_SIGNING_KEY"))}
+if len(argv) >= 2 and os.path.isfile(argv[1]):
+    entry["file_mode"] = oct(stat.S_IMODE(os.stat(argv[1]).st_mode))
+    entry["sha"] = hashlib.sha256(open(argv[1], "rb").read()).hexdigest()
+with open(os.environ["OL_LOG"], "a") as fh:
+    fh.write(json.dumps(entry) + "\n")
+if argv[:1] != ["verify"]:
+    sys.stderr.write("fake fleet-facts: only verify\n")
+    sys.exit(2)
+sys.exit(scenario.get("verify_rc", 0))

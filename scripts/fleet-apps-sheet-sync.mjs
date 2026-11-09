@@ -1,0 +1,1055 @@
+#!/usr/bin/env node
+/**
+ * fleet-apps-sheet-sync.mjs  (REG, the registry half of the Fleet Reference Sheet)
+ * Regenerates the registry tabs of the Fleet Reference Sheet:
+ *   1fyp76U-GnlRbm5GeevnPY5WxPekxualMiZW5M-5VlSY
+ * The ops tabs (START HERE, Mac and server inventory, web tabs) come from Fleet-OPS
+ * scripts/fleet-sheet/fleet-ops-sheet-sync.mjs.  Run this one first, then that one.
+ *
+ * RUN  from an AI-Fleet-Coordinator lane at origin/main (~/apps/lane new AFC <slug>):
+ *   node scripts/fleet-apps-sheet-sync.mjs --dry-run   # builds every tab, prints live vs new row counts, writes nothing
+ *   node scripts/fleet-apps-sheet-sync.mjs             # backs up the workbook, then rewrites the tabs below
+ * ~/apps/fleet-apps-sheet-sync.mjs is a guarded shim that runs ~/Code/AI-Fleet-Coordinator's copy only when that
+ * tree is clean and at origin/main; ios-fleet/publish-ios-versions.sh calls the shim.
+ *
+ * TABS
+ *   RULES & STANDARDS  — generated from scripts/ios-fleet/sheet-rules.json in this repo.
+ *   App Store Registry — one row per app in ~/apps/ios-fleet/apps.json, reconciled against live ASC.
+ *   TestFlight Builds  — latest uploaded build per app, expiry, public beta link.
+ *   Icon Audit         — output of fleet-icon-audit.mjs; the icon health check.
+ *   Fleet Apps         — every fleet app in fleet-apps.json, with its repo, lanes and Linear team.
+ *   Seats and Bots     — MANUAL since 2026-11-05 (owner decision):  hand-maintained in the sheet;  this sync
+ *                        never clears, creates or rewrites it (same treatment as Infisical Service Tokens).
+ *
+ * DESIGN RULES (learned the hard way — do not undo)
+ *   • The sync OWNS its tabs and rewrites them wholesale:  it clears each tab before writing it, so a tab that
+ *     shrinks leaves no stale tail.  Anything hand-typed into a generated tab is destroyed on the next run.
+ *   • Every tab is built before the first write, and the run aborts when App Store Connect cannot be read, so a
+ *     failed query can never rewrite the registry as "not in ASC".
+ *   • apps.json is intent; App Store Connect is fact. The registry tab shows both and
+ *     reconciles them, so a stale apps.json surfaces as a FLAG instead of silently
+ *     pointing agents at a retired record.
+ *   • ASC apps on the account that are NOT in apps.json get their own section. That is
+ *     how the retired "IGNORE old ST" record and stray duplicates stay visible.
+ *   • Facts no registry file carries live in scripts/fleet-apps-sheet-facts.json, never in the sheet.
+ *
+ * Auth: Google service account from GOOGLE_SHEETS_SA (env) or Infisical /google-sheets-sa via
+ * fleet-secrets; ASC via ios-fleet/asc-api.mjs (env, else Infisical /asc).
+ * Neither prints credentials.
+ */
+
+import { readFileSync, writeFileSync, existsSync, realpathSync, mkdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import crypto from "node:crypto";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { pathToFileURL, fileURLToPath } from "node:url";
+
+const SPREADSHEET_ID = "1fyp76U-GnlRbm5GeevnPY5WxPekxualMiZW5M-5VlSY";
+const IOS_FLEET = "/Users/jay/apps/ios-fleet";
+const APPS_JSON_PATH = `${IOS_FLEET}/apps.json`;
+const ICON_REPORT_PATH = `${IOS_FLEET}/artifacts/icon-audit.json`;
+const ASC_API_SCRIPT = `${IOS_FLEET}/asc-api.mjs`;
+// Tracked sources, read from the checkout this script runs in.
+const repoPath = (rel) => fileURLToPath(new URL(`../${rel}`, import.meta.url));
+const RULES_PATH = repoPath("scripts/ios-fleet/sheet-rules.json");
+const FACTS_PATH = repoPath("scripts/fleet-apps-sheet-facts.json");
+const FLEET_APPS_PATH = repoPath("fleet-apps.json");
+const PARTITION_PATH = repoPath("docs/protocols/simple-tools-partition.toml");
+const SERVER_LISTENER_PATH = repoPath("scripts/simple_tools/server/listener.toml");
+const BOARD_CLI_PATH = repoPath("scripts/linear-board/board");
+const BACKUP_DIR = "/Users/jay/apps/fleet-ops-sheet/backups";
+const LAST_RUN_PATH = "/Users/jay/apps/fleet-ops-sheet/last-run-registry.json";
+// The registry mirror has to land in the SAME tree the `doc` source globs, which is the fleet
+// account's ~/apps (fleet_rag/sources.py:  HOME = pathlib.Path.home();  APPS_DIR = HOME / "apps").
+// Deriving it from the ios-fleet checkout keeps the write target and the source that ingests it
+// from ever diverging, and it keeps the mirror where the nightly Mac ingest will find it again.
+const FLEET_APPS_DIR = dirname(IOS_FLEET);
+// The doc source resolves its dir from the INGEST CHILD's home, not from this script's constants:
+// sources.py does  HOME = pathlib.Path.home();  APPS_DIR = HOME / "apps",  and Path.home()
+// reads the environment the child inherits.  So pinning only the write path is not enough --  under
+// a different $HOME (sudo -H, a wrapper or CI job that overrides HOME) the mirror would be written
+// outside the tree the ingest globs, and the step would silently ingest nothing again.  Exporting
+// the fleet home lets the ingest call pin the child to the same tree it writes the mirror into.
+export const FLEET_HOME = dirname(FLEET_APPS_DIR);
+export const MIRROR_MD_PATH = join(FLEET_APPS_DIR, "FLEET-APPS-REGISTRY.md");
+
+const TAB_RULES = "RULES & STANDARDS";
+const TAB_REGISTRY = "App Store Registry";
+const TAB_TESTFLIGHT = "TestFlight Builds";
+const TAB_ICONS = "Icon Audit";
+const TAB_FLEET_APPS = "Fleet Apps";
+const TAB_SEATS = "Seats and Bots";
+
+// ---------------------------------------------------------------- auth
+
+function base64url(input) {
+  return Buffer.from(input).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// AFC-359: the service account JSON comes from GOOGLE_SHEETS_SA in the environment, else
+// Infisical Fleet-OPS /google-sheets-sa through fleet-secrets.  Never written to disk or printed.
+function loadServiceAccount() {
+  let raw = process.env.GOOGLE_SHEETS_SA || "";
+  if (!raw) {
+    const bin = process.env.FLEET_SECRETS || join(homedir(), ".local", "bin", "fleet-secrets");
+    try {
+      raw = execFileSync(bin, ["get", "GOOGLE_SHEETS_SA", "--path", "/google-sheets-sa"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"]
+      }).replace(/\n$/, "");
+    } catch {
+      raw = "";
+    }
+  }
+  if (!raw) throw new Error("Google service account missing: set GOOGLE_SHEETS_SA or add it to Infisical /google-sheets-sa");
+  return JSON.parse(raw);
+}
+
+async function getGoogleAccessToken() {
+  const sa = loadServiceAccount();
+  const now = Math.floor(Date.now() / 1000);
+  const signingInput = `${base64url(JSON.stringify({ alg: "RS256", typ: "JWT" }))}.${base64url(JSON.stringify({
+    iss: sa.client_email,
+    scope: "https://www.googleapis.com/auth/spreadsheets",
+    aud: "https://oauth2.googleapis.com/token",
+    iat: now,
+    exp: now + 3600
+  }))}`;
+  const signer = crypto.createSign("RSA-SHA256");
+  signer.update(signingInput);
+  signer.end();
+  const jwt = `${signingInput}.${signer.sign(sa.private_key, "base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
+  const res = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(`Google OAuth error: ${JSON.stringify(data)}`);
+  return data.access_token;
+}
+
+let token;
+async function sheetsApi(path, init = {}) {
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}${path}`, {
+    ...init,
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...(init.headers || {}) }
+  });
+  if (!res.ok) throw new Error(`Sheets API ${init.method || "GET"} ${path} -> ${res.status}: ${JSON.stringify(await res.json())}`);
+  return res.json();
+}
+
+function queryASC(endpoint) {
+  try {
+    const raw = execFileSync("node", [ASC_API_SCRIPT, "GET", endpoint], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    // asc-api.mjs prints an "HTTP 200" status line before the JSON body.
+    const jsonStart = raw.indexOf("{");
+    return JSON.parse(raw.slice(jsonStart));
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------- collect
+
+function collectASC() {
+  // Fail closed:  a failed query would otherwise rewrite every registry row as "(not in ASC)".
+  const appsRes = queryASC("/v1/apps?limit=50");
+  const bundleRes = queryASC("/v1/bundleIds?limit=200");
+  if (!Array.isArray(appsRes?.data) || appsRes.data.length === 0) {
+    throw new Error("App Store Connect /v1/apps returned nothing; refusing to rewrite the registry tabs");
+  }
+  if (!Array.isArray(bundleRes?.data)) {
+    throw new Error("App Store Connect /v1/bundleIds failed; refusing to rewrite the registry tabs");
+  }
+  const apps = appsRes.data;
+  const bundleIds = bundleRes.data;
+  const ascAppMap = new Map();
+  for (const a of apps) ascAppMap.set(a.attributes?.bundleId, a);
+  const ascBundleMap = new Map();
+  for (const b of bundleIds) ascBundleMap.set(b.attributes?.identifier, b);
+  return { apps, ascAppMap, ascBundleMap };
+}
+
+// Memoized:  the registry, TestFlight and unregistered sections all ask for the same app's builds.
+const buildsCache = new Map();
+function collectBuilds(appleId) {
+  if (buildsCache.has(appleId)) return buildsCache.get(appleId);
+  // A failed query is not "no builds":  throw, so the run ends before any write instead of showing
+  // "(no builds)" for an app that has them.  An app with no builds answers an empty data array.
+  const builds = queryASC(`/v1/apps/${appleId}/builds?limit=5&fields[builds]=version,expired,uploadedDate,minOsVersion`)?.data;
+  const pre = queryASC(`/v1/apps/${appleId}/preReleaseVersions?limit=5&fields[preReleaseVersions]=version,platform`)?.data;
+  if (!Array.isArray(builds) || !Array.isArray(pre)) {
+    throw new Error(`App Store Connect build query failed for app ${appleId}; refusing to rewrite the registry tabs`);
+  }
+  const out = { builds, pre };
+  buildsCache.set(appleId, out);
+  return out;
+}
+
+function loadIconReport() {
+  if (!existsSync(ICON_REPORT_PATH)) return null;
+  try { return JSON.parse(readFileSync(ICON_REPORT_PATH, "utf8")); } catch { return null; }
+}
+
+function iconStatusFor(iconReport, key) {
+  if (!iconReport || !iconReport.apps || !iconReport.apps[key]) return { verdict: "NOT AUDITED", detail: "" };
+  const app = iconReport.apps[key];
+  const errs = (iconReport.findings || []).filter(f => f.appKey === key && f.level === "error");
+  const warns = (iconReport.findings || []).filter(f => f.appKey === key && f.level === "warn");
+  let verdict = "OK";
+  if (!app.repoRoot || (app.sets || []).length === 0) verdict = "NO ICON SET";
+  else if (errs.length) verdict = "ERROR";
+  else if (warns.length) verdict = "WARN";
+  const bits = [];
+  if (errs.length) bits.push(...errs.map(f => f.code));
+  else if (warns.length) bits.push(...warns.map(f => f.code));
+  return {
+    verdict,
+    detail: bits.join(", "),
+    drift: app.driftStatus || "n/a",
+    master: app.master || "",
+    shipped: app.shippedHash || "",
+    approved: app.approvedHash || ""
+  };
+}
+
+// ---------------------------------------------------------------- tab builders
+
+function buildRulesTab(rules) {
+  const rows = [];
+  rows.push([rules.title]);
+  rows.push([rules.subtitle]);
+  rows.push([rules.updatedNote]);
+  rows.push([]);
+  rows.push(["Generated by fleet-apps-sheet-sync.mjs from AI-Fleet-Coordinator scripts/ios-fleet/sheet-rules.json.  Edit that file by pull request, then re-run the sync."]);
+  rows.push([]);
+
+  for (const section of rules.sections) {
+    rows.push([section.heading]);
+    rows.push(["ID", "Rule", "Detail"]);
+    for (const r of section.rules) rows.push([r.id, r.rule, r.detail]);
+    rows.push([]);
+  }
+  return rows;
+}
+
+// Where an apps.json app's code lives, from the lane map (docs/protocols/lane-map.md), not apps.json's
+// worktreeHint:  lanes v2 and the Oct 10 lane removals left most of those hints pointing at folders that are gone.
+// An app key matches a fleet-apps.json row when, with any "-mac" / "-local" suffix dropped, it equals the row's
+// worktreePrefix or starts its codeDir.
+export function repoForAppKey(key, fleetApps) {
+  const base = String(key).toLowerCase().replace(/-(mac|macos|local)$/, "");
+  return (fleetApps?.apps || []).find(a =>
+    String(a.worktreePrefix || "").toLowerCase() === base ||
+    String(a.codeDir || "").toLowerCase().startsWith(base)) || null;
+}
+
+export function worktreeCell(key, conf, fleetApps) {
+  const app = repoForAppKey(key, fleetApps);
+  if (app) return `~/Code/${app.codeDir} (lanes: ~/apps/lanes/${app.codeDir}/<seat>-<slug>)`;
+  return conf.worktreeHint ? `${conf.worktreeHint} (apps.json hint, unverified)` : "";
+}
+
+function buildRegistryTab(appsData, asc, iconReport, nowIso, fleetApps = null, facts = {}) {
+  const teamId = appsData.teamId || "CC8UTF7ATG";
+  const appNotes = facts.appNotes || {};
+  const ascNotes = facts.ascRecords || {};
+  const rows = [[
+    "App Key", "Display Name (apps.json)", "Live ASC Name", "Platform", "Bundle ID",
+    "Apple ID", "Registered?", "Latest Build", "Released To App Store?",
+    "Icon Status", "Icon Detail", "Release Update XML / Feed", "TestFlight Beta Link", "FLAG", "Repo And Lanes", "Notes"
+  ]];
+
+  const claimed = new Set();
+  const allFindings = (iconReport?.findings || []);
+  const allErrors = new Set(allFindings.filter(f => f.level === "error").map(f => f.appKey));
+  const laneDrift = new Set(allFindings.filter(f => f.code === "LANE_ICON_DRIFT").map(f => f.appKey));
+
+  for (const [key, conf] of Object.entries(appsData.apps)) {
+    const bundleId = conf.bundleId;
+    const ascApp = asc.ascAppMap.get(bundleId) || null;
+    const ascBundle = asc.ascBundleMap.get(bundleId) || null;
+    if (ascApp) claimed.add(ascApp.id);
+
+    const icon = iconStatusFor(iconReport, key);
+    const flags = [];
+
+    if (!ascApp) flags.push("NO ASC APP for this bundle ID");
+    if (conf.appleId && ascApp && String(conf.appleId) !== ascApp.id) {
+      flags.push(`appleId mismatch: apps.json=${conf.appleId} ASC=${ascApp.id}`);
+    }
+    if (/^ignore|^retired/i.test(ascApp?.attributes?.name || "")) flags.push("apps.json points at a RETIRED record");
+    if (allErrors.has(key)) flags.push("icon error");
+    if (laneDrift.has(key)) flags.push("lane icon drift");
+
+    let latest = "";
+    if (ascApp) {
+      const { builds } = collectBuilds(ascApp.id);
+      if (builds.length) {
+        const b = builds[0].attributes || {};
+        latest = `${b.version}${b.expired ? " (EXPIRED)" : ""}`;
+      }
+    }
+
+    rows.push([
+      key,
+      conf.displayName || key,
+      ascApp ? ascApp.attributes.name : "(not in ASC)",
+      conf.platform || "iOS",
+      bundleId || "",
+      String(ascApp ? ascApp.id : (conf.appleId || "—")),
+      ascBundle ? `Yes (${ascBundle.id})` : "No",
+      latest,
+      "No — TestFlight only",
+      icon.verdict,
+      icon.detail,
+      conf.updateFeedUrl || "—",
+      conf.publicBetaLink || "—",
+      flags.join("; "),
+      worktreeCell(key, conf, fleetApps),
+      [appNotes[key], conf.notes].filter(Boolean).join("  ")
+    ]);
+  }
+
+  // Retired / orphan ASC records — the section that keeps "IGNORE old ST" visible.
+  rows.push([]);
+  rows.push(["ASC RECORDS NOT IN apps.json — retired, successor (in progress) or unexplained.  The apps.json ship tooling does not upload to these."]);
+  rows.push(["Apple ID", "ASC Name", "Bundle ID", "SKU", "Latest Build", "Status", "Action"]);
+  for (const a of asc.apps) {
+    if (claimed.has(a.id)) continue;
+    const at = a.attributes || {};
+    const { builds } = collectBuilds(a.id);
+    const latest = builds.length ? builds[0].attributes.version : "(no builds)";
+    const retired = /^ignore|^retired/i.test(at.name || "");
+    const known = ascNotes[a.id];
+    rows.push([
+      a.id,
+      at.name || "",
+      at.bundleId || "",
+      at.sku || "",
+      latest,
+      known ? known.status : retired ? "Retired" : "Unexplained",
+      known ? known.action
+        : retired ? "Retired by owner — safe to remove (see RULES ST-R5/ST-R6)" : "UNEXPLAINED — decide: adopt into apps.json or retire"
+    ]);
+  }
+
+  rows.push([]);
+  rows.push([`Last synced: ${nowIso}  •  team ${teamId}`]);
+  return rows;
+}
+
+function buildTestFlightTab(appsData, asc, nowIso) {
+  const rows = [[
+    "App Key", "Bundle ID", "TestFlight Version", "Latest Build", "Uploaded",
+    "Expired?", "TestFlight Beta Link", "Last Build Age (days)", "Notes"
+  ]];
+
+  for (const [key, conf] of Object.entries(appsData.apps)) {
+    const ascApp = asc.ascAppMap.get(conf.bundleId);
+    if (!ascApp) {
+      rows.push([key, conf.bundleId || "", "—", "—", "—", "—", "—", "", "No ASC app record for this bundle ID"]);
+      continue;
+    }
+    const { builds, pre } = collectBuilds(ascApp.id);
+    const b = builds[0]?.attributes;
+    const p = pre[0]?.attributes;
+    if (!b) {
+      rows.push([key, conf.bundleId, p ? p.version : "—", "(none uploaded)", "—", "—", "—", "", "ASC app exists but no build has ever been uploaded"]);
+      continue;
+    }
+    const uploaded = b.uploadedDate || "";
+    const ageDays = uploaded ? Math.floor((Date.now() - new Date(uploaded).getTime()) / 86400000) : "";
+    const flags = [];
+    if (b.expired) flags.push("build expired — testers cannot install");
+    if (typeof ageDays === "number" && ageDays > 90) flags.push("no new build in 90+ days");
+    rows.push([
+      key,
+      conf.bundleId,
+      p ? p.version : "—",
+      b.version,
+      uploaded ? uploaded.slice(0, 10) : "—",
+      b.expired ? "YES" : "no",
+      conf.publicBetaLink || "—",
+      ageDays,
+      flags.join("; ")
+    ]);
+  }
+
+  rows.push([]);
+  rows.push([`Last synced: ${nowIso}. Release mode for every fleet app: MANUAL (automatic release disabled by owner 2026-10-02 — see RULES REL-1).`]);
+  return rows;
+}
+
+function buildIconTab(iconReport, nowIso) {
+  const rows = [["Fleet icon audit — the standing check that stops icons rotting. See RULES section 5 (ICO-1..ICO-5)."]];
+  if (!iconReport) {
+    rows.push([]);
+    rows.push(["No audit report found.  Run, from an AI-Fleet-Coordinator lane:  node scripts/ios-fleet/fleet-icon-audit.mjs"]);
+    return rows;
+  }
+  rows.push([`Generated: ${iconReport.generatedAt}  •  apps audited: ${iconReport.appsAudited}  •  errors: ${iconReport.counts.error || 0}  •  warnings: ${iconReport.counts.warn || 0}`]);
+  rows.push([]);
+  rows.push(["App Key", "Verdict", "Repo", "Icon Sets", "Master", "Shipped Hash", "Approved Hash", "Drift", "Findings"]);
+  for (const [key, app] of Object.entries(iconReport.apps || {})) {
+    const errs = (iconReport.findings || []).filter(f => f.appKey === key && f.level === "error");
+    const warns = (iconReport.findings || []).filter(f => f.appKey === key && f.level === "warn");
+    const verdict = !app.repoRoot || (app.sets || []).length === 0 ? "NO ICON SET" : errs.length ? "ERROR" : warns.length ? "WARN" : "OK";
+    rows.push([
+      key,
+      verdict,
+      app.repoRoot || "(missing)",
+      app.setCount ?? 0,
+      app.master || "",
+      app.shippedHash || "",
+      app.approvedHash || "",
+      app.driftStatus || "n/a",
+      [...errs, ...warns].map(f => `${f.level === "error" ? "E" : "W"} ${f.code}: ${f.message}`).join("\n")
+    ]);
+  }
+  rows.push([]);
+  rows.push(["RE-APPROVE AFTER AN INTENTIONAL ICON CHANGE, from an AI-Fleet-Coordinator lane:  node scripts/ios-fleet/fleet-icon-audit.mjs --approve, then land icon-lock.json by pull request"]);
+  rows.push([`Last synced: ${nowIso}`]);
+  return rows;
+}
+
+// The facts file is hand-edited, so check its shape before any builder indexes it:  a typo there must
+// stop the run, not quietly drop a note from the sheet.  No dependency:  this script runs with plain node.
+const FACT_SECTIONS = {
+  ascRecords: (v) => v && typeof v.status === "string" && typeof v.action === "string",
+  appNotes: (v) => typeof v === "string",
+  seatPlatforms: (v) => typeof v === "string",
+  hostedSeats: (v) => v && typeof v.notesName === "string" && typeof v.zulipBotEmail === "string" && typeof v.notes === "string",
+  macWake: (v) => typeof v === "string",
+  unheldWake: (v) => typeof v === "string",
+  linearKeysMissing: (v) => typeof v === "string",
+};
+export function validateFacts(facts) {
+  if (!facts || typeof facts !== "object" || Array.isArray(facts)) throw new Error("fleet-apps-sheet-facts.json is not an object");
+  for (const key of Object.keys(facts)) {
+    if (key === "_comment") continue;
+    const check = FACT_SECTIONS[key];
+    if (!check) throw new Error(`fleet-apps-sheet-facts.json has an unknown section "${key}"`);
+    const section = facts[key];
+    if (!section || typeof section !== "object" || Array.isArray(section)) throw new Error(`facts.${key} is not an object`);
+    for (const [k, v] of Object.entries(section)) {
+      if (!check(v)) throw new Error(`facts.${key}.${k} has the wrong shape`);
+    }
+  }
+  return facts;
+}
+
+// ---------------------------------------------------------------- fleet apps + seats
+
+// Tiny readers for the three non-JSON sources.  Each is a regex over a file this repo owns, guarded by tests,
+// so the sheet needs no TOML or Python dependency.
+export function parsePartition(text) {
+  const out = {};
+  const body = String(text).split(/^\[seats\]\s*$/m)[1] || "";
+  for (const m of body.matchAll(/^([A-Z][A-Z0-9-]*)\s*=\s*"(mac|server|none)"/gm)) out[m[1]] = m[2];
+  return out;
+}
+
+export function parseServerListener(text) {
+  const out = {};
+  const parts = String(text).split(/^\[seat\.([A-Z0-9-]+)\]\s*$/m);
+  for (let i = 1; i < parts.length; i += 2) {
+    const tag = parts[i];
+    const body = parts[i + 1].split(/^\[/m)[0];
+    const val = (k) => (body.match(new RegExp(`^${k}\\s*=\\s*"([^"]*)"`, "m")) || [])[1];
+    const enabled = (body.match(/^enabled\s*=\s*(true|false)/m) || [])[1];
+    const routine = body.match(/^routine\s*=\s*\{([^}]*)\}/m);
+    const rv = (k) => routine ? (routine[1].match(new RegExp(`${k}\\s*=\\s*"([^"]*)"`)) || [])[1] : undefined;
+    const credComment = (body.match(/^creds\s*=\s*"env"\s*#\s*(.*)$/m) || [])[1] || "";
+    out[tag] = {
+      wake: val("wake"),
+      enabled: enabled === undefined ? true : enabled === "true",
+      routineUrlEnv: rv("url_env"),
+      routineKeyEnv: rv("key_env"),
+      routineAuth: rv("auth"),
+      credEnvNames: (credComment.match(/ZULIP_[A-Z0-9_]+/g) || []),
+    };
+  }
+  return out;
+}
+
+export function parseBoardCli(text) {
+  const src = String(text);
+  // A dict literal ends at the first line that starts with "}" (values such as "Echo (Instinct)" hold
+  // parentheses, so the closing bracket cannot be found by a lazy match); the team tuple is one line.
+  const names = (src.match(/^SEAT_APP_NAMES\s*=\s*\{([\s\S]*?)^\}/m) || [])[1] || "";
+  const teams = (src.match(/^TEAM_KEYS\s*=\s*\(([^)]*)\)/m) || [])[1] || "";
+  const seatAppNames = {};
+  for (const m of names.matchAll(/"([A-Z][A-Z0-9-]*)"\s*:\s*"([^"]+)"/g)) seatAppNames[m[1]] = m[2];
+  const teamKeys = [...teams.matchAll(/"([A-Z]+)"/g)].map(m => m[1]);
+  return { seatAppNames, teamKeys };
+}
+
+export function buildFleetAppsTab(fleetApps, teamKeys, nowIso) {
+  const rows = [["Acronym", "App", "Repo", "Kind", "Code Dir", "Lanes", "Linear Team", "Status", "Notes"]];
+  const teams = new Set(teamKeys || []);
+  for (const a of fleetApps.apps || []) {
+    // The app acronym is the live Linear team key (owner 2026-10-23, AFC-333:  Clutch is C).
+    const teamKey = a.acronym;
+    rows.push([
+      a.acronym,
+      a.displayName || a.repo,
+      `${fleetApps.owner || "Simple-With-Us"}/${a.repo}`,
+      a.kind || "",
+      `~/Code/${a.codeDir}`,
+      `~/apps/lanes/${a.codeDir}/<seat>-<slug>`,
+      teams.has(teamKey) ? `${a.acronym}  (linear.app/simple-with-us/team/${teamKey})` : "No team yet:  file under AFC",
+      a.retired ? `Retired${a.retiredDate ? ` ${a.retiredDate}` : ""}` : "active",
+      a.notes || "",
+    ]);
+  }
+  rows.push([]);
+  rows.push([`Generated by fleet-apps-sheet-sync.mjs from AI-Fleet-Coordinator fleet-apps.json (apps) and the board CLI's Linear team keys.  Last synced: ${nowIso}`]);
+  return rows;
+}
+
+const ZULIP_DOMAIN = "simplewithus.zulipchat.com";
+// File code rule (docs/protocols/zulip-fleet-guide.md, Who's Here):  split the tag on hyphens; parts of two
+// letters or fewer stay uppercase, longer parts are Title Case.
+export function zulipFileCode(tag) {
+  return String(tag).split("-").map(p => p.length <= 2 ? p : p[0] + p.slice(1).toLowerCase()).join("-");
+}
+
+export function buildSeatsTab({ fleetApps, partition, serverSeats, seatAppNames, facts }, nowIso) {
+  const f = facts || {};
+  const platforms = f.seatPlatforms || {};
+  const hosted = f.hostedSeats || {};
+  const keysMissing = f.linearKeysMissing || {};
+  const rows = [["Seat", "Display Name", "Platform", "Status", "Branch Prefix", "Zulip Bot",
+                 "Zulip Credential (name only)", "Linear App", "Notes"]];
+  const zulipEnvNames = (tag) => {
+    const code = tag.replace(/-/g, "_");
+    return `ZULIP_${code}_EMAIL, ZULIP_${code}_API_KEY`;
+  };
+  const credFor = (tag, instance, fileCode) => {
+    const parts = [];
+    if (fileCode) parts.push(`Infisical Fleet-OPS, prod, /zulip:  ${fileCode.toUpperCase().replace(/-/g, "_")}_ZULIP_KEY`);
+    if (instance === "server") parts.push(`Infisical AI Fleet Coordinator, prod, /zulip:  ${zulipEnvNames(tag)}`);
+    return parts.join(";  ");
+  };
+  const linearFor = (tag) => {
+    const app = seatAppNames[tag];
+    if (!app) return "Shared Fleet app";
+    return keysMissing[tag] ? `${app}  (${keysMissing[tag]})` : app;
+  };
+
+  const viewNotes = (tag, notes) => {
+    if (tag === "GROK") return "Terminal Grok and Grok Build are one identity, signed GROK.";
+    return notes || "";
+  };
+  const seen = new Set();
+  const active = [], retired = [];
+  for (const s of fleetApps.seats || []) {
+    seen.add(s.tag);
+    if (s.tag === "GROK-BOT" || s.tag === "GROK-BUILD") continue;
+    const instance = partition[s.tag];
+    if (s.retired) {
+      const date = s.retiredDate || (String(s.notesName || "").match(/retired (\d{4}-\d{2}-\d{2})/) || [])[1];
+      retired.push([s.tag, s.notesName || s.tag, platforms[s.tag] || "",
+        `Retired${date ? ` ${date}` : ""}`, (s.branchPrefixes || []).join(", "), "", "", "—",
+        s.retiredReason || (s.aliasOf ? `Alias of ${s.aliasOf}.` : "")]);
+      continue;
+    }
+    active.push([s.tag, s.notesName || s.tag, platforms[s.tag] || "",
+      "active", (s.branchPrefixes || []).join(", ") || "Not configured", s.zulipBotEmail || "",
+      credFor(s.tag, instance, s.zulipFileCode), linearFor(s.tag), viewNotes(s.tag, s.notes)]);
+  }
+  // Seats the listener partition knows that fleet-apps.json does not:  the hosted seats, Grok Bot personas
+  // and BotFleet role bots.
+  const extra = Object.keys(partition).filter(t => !seen.has(t) && t !== "GROK-BUILD" && t !== "GROK-BOT");
+  const order = (t) => t.startsWith("GB-") ? 2 : t.startsWith("BF-") ? 3 : 1;
+  extra.sort((a, b) => order(a) - order(b) || a.localeCompare(b));
+  for (const tag of extra) {
+    const instance = partition[tag];
+    const h = hosted[tag] || {};
+    let name = h.notesName || tag, email = h.zulipBotEmail || "", file = "";
+    let platform = platforms[tag] || "";
+    if (tag.startsWith("GB-")) {
+      const role = tag.slice(3).toLowerCase();
+      platform = "Grok Bot routine";
+      name = `GB-${role[0].toUpperCase()}${role.slice(1)}`;
+      email = `${role}-grok-bot@${ZULIP_DOMAIN}`;
+    } else if (tag.startsWith("BF-")) {
+      const role = tag.slice(3).toLowerCase();
+      platform = "BotFleet";
+      name = `BF-${role[0].toUpperCase()}${role.slice(1)}`;
+      email = `bf-${role}-bot@${ZULIP_DOMAIN}`;
+      file = zulipFileCode(tag);
+    }
+    // A BF or GB tag with no seat app prints an em dash.  Those rows are not the shared Fleet
+    // app's coding seats.  A tag that SEAT_APP_NAMES names shows that app, so a BotFleet seat
+    // registered in the board CLI is not left looking as if it had none.
+    const linearCell = seatAppNames[tag]
+      ? linearFor(tag)
+      : (tag.startsWith("BF-") || tag.startsWith("GB-") ? "—" : linearFor(tag));
+    active.push([tag, name, platform, "active", "Not configured", email, credFor(tag, instance, file),
+      linearCell, h.notes || ""]);
+  }
+  rows.push(...active, ...retired);
+  rows.push([]);
+  rows.push(["Terminal Grok and Grok Build are one identity (seat GROK, display name Grok).  Legacy grok-build/ branches remain readable as the same identity, not a second seat.  grok-web is reserved for GROK-WEB; GROK lane slugs must not start with web-.  Local or remote location does not determine PR or lane eligibility.  Eavesdropper responsibilities are separate from BotFleet; this view does not assign wake behavior.  Not configured means no branch prefix is registered here, not a policy forbidding lanes."]);
+  rows.push([`Generated by fleet-apps-sheet-sync.mjs from AI-Fleet-Coordinator fleet-apps.json (seats), docs/protocols/simple-tools-partition.toml, scripts/linear-board/board (Linear seat apps) and scripts/fleet-apps-sheet-facts.json.  Credential names and paths only, never values.  Last synced: ${nowIso}`]);
+  return rows;
+}
+
+// ---------------------------------------------------------------- sheet plumbing
+
+async function ensureTab(meta, title) {
+  const existing = meta.sheets.find(s => s.properties.title === title);
+  if (existing) return { sheetId: existing.properties.sheetId, created: false };
+  const res = await sheetsApi(":batchUpdate", {
+    method: "POST",
+    // Omit sheetId entirely — the API rejects -1 and picks an unused id for us.
+    body: JSON.stringify({ requests: [{ addSheet: { properties: { title } } }] })
+  });
+  const newId = res.replies[0].addSheet.properties.sheetId;
+  meta.sheets.push({ properties: { sheetId: newId, title } });
+  return { sheetId: newId, created: true };
+}
+
+// Clear, then write.  values.update touches only the range it is given, so without the clear a tab that
+// shrinks keeps its old tail (the RULES tab kept stale rows that way until 2026-10-11).  Only tabs this
+// script owns are ever passed here.
+async function writeTab(title, rows) {
+  if (rows.length === 0) throw new Error(`refusing to write an empty ${title} tab`);
+  await sheetsApi(`/values/${encodeURIComponent(`${title}!A1:Z${FORMAT_ROW_COUNT}`)}:clear`, { method: "POST", body: JSON.stringify({}) });
+  const range = `${title}!A1:Z${rows.length}`;
+  await sheetsApi(`/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`, {
+    method: "PUT",
+    body: JSON.stringify({ range, majorDimension: "ROWS", values: rows })
+  });
+}
+
+const DEFAULT_COL_WIDTH_PX = 132;
+const MAX_COL_WIDTH_PX = 320;
+const FORMAT_ROW_COUNT = 1000;
+
+/** Pixel widths per generated tab (long-text columns get more room; all capped at MAX_COL_WIDTH_PX). */
+const TAB_COLUMN_WIDTHS = {
+  // Column A carries title, subtitle, section headings, and other single-cell rows.
+  [TAB_RULES]: [320, 220, 320],
+  [TAB_REGISTRY]: [100, 140, 150, 72, 200, 96, 108, 100, 148, 96, 180, 240, 240, 200, 240, 300],
+  [TAB_TESTFLIGHT]: [100, 200, 108, 100, 108, 72, 240, 108, 220],
+  [TAB_ICONS]: [100, 88, 200, 88, 140, 120, 120, 88, 300],
+  [TAB_FLEET_APPS]: [72, 160, 240, 80, 200, 260, 240, 80, 320],
+  [TAB_SEATS]: [120, 140, 180, 110, 120, 260, 300, 160, 320]
+};
+
+function columnWidthPx(columnWidths, index) {
+  const w = columnWidths?.[index];
+  const px = typeof w === "number" && w > 0 ? w : DEFAULT_COL_WIDTH_PX;
+  return Math.min(px, MAX_COL_WIDTH_PX);
+}
+
+/**
+ * Build Sheets batchUpdate requests for tab chrome (headers, wrap, column widths, freeze).
+ * Exported for unit tests — does not call the API.
+ */
+export function buildFormatTabRequests(sheetId, headerRows, colCount, columnWidths, rowCount) {
+  const wrapEndRow = Math.min(FORMAT_ROW_COUNT, Math.max(1, rowCount));
+  const requests = [];
+  for (const hr of headerRows) {
+    requests.push({
+      repeatCell: {
+        range: { sheetId, startRowIndex: hr, endRowIndex: hr + 1, startColumnIndex: 0, endColumnIndex: colCount },
+        cell: { userEnteredFormat: { textFormat: { bold: true }, backgroundColor: { red: 0.88, green: 0.9, blue: 0.94 } } },
+        fields: "userEnteredFormat.textFormat,userEnteredFormat.backgroundColor"
+      }
+    });
+  }
+  requests.push({
+    repeatCell: {
+      range: {
+        sheetId,
+        startRowIndex: 0,
+        endRowIndex: wrapEndRow,
+        startColumnIndex: 0,
+        endColumnIndex: colCount
+      },
+      cell: {
+        userEnteredFormat: {
+          wrapStrategy: "WRAP",
+          verticalAlignment: "TOP"
+        }
+      },
+      fields: "userEnteredFormat.wrapStrategy,userEnteredFormat.verticalAlignment"
+    }
+  });
+  for (let i = 0; i < colCount; i++) {
+    requests.push({
+      updateDimensionProperties: {
+        range: { sheetId, dimension: "COLUMNS", startIndex: i, endIndex: i + 1 },
+        properties: { pixelSize: columnWidthPx(columnWidths, i) },
+        fields: "pixelSize"
+      }
+    });
+  }
+  requests.push({
+    updateSheetProperties: {
+      properties: { sheetId, gridProperties: { frozenRowCount: headerRows.length ? Math.max(...headerRows) + 1 : 0 } },
+      fields: "gridProperties.frozenRowCount"
+    }
+  });
+  // Clear the old tail so a shrunken table doesn't leave orphan rows behind.
+  requests.push({
+    updateSheetProperties: {
+      properties: { sheetId, gridProperties: { rowCount: FORMAT_ROW_COUNT } },
+      fields: "gridProperties.rowCount"
+    }
+  });
+  return requests;
+}
+
+async function formatTab(sheetId, headerRows, colCount, columnWidths, rowCount) {
+  const requests = buildFormatTabRequests(sheetId, headerRows, colCount, columnWidths, rowCount);
+  await sheetsApi(":batchUpdate", { method: "POST", body: JSON.stringify({ requests }) });
+}
+
+/** True when this module is the process entry (direct node invocation or import.meta.main). */
+export function isScriptEntryPoint(entryPath = process.argv[1]) {
+  if (import.meta.main) return true;
+  if (!entryPath) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(entryPath)).href;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------- main
+
+// ---------------------------------------------------------------- Markdown mirror (Fleet RAG)
+
+function toMarkdownTable(headers, rows) {
+  if (!headers || headers.length === 0) return "";
+  // Cell text comes from apps.json and App Store Connect.  Neutralise HTML before adding the <br> line
+  // breaks, so a name can never inject markup into the mirror or the Fleet RAG index.
+  const escapeCell = (c) => String(c ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/\r?\n/g, "<br>").replace(/\|/g, "\\|");
+  const headerLine = `| ${headers.map(escapeCell).join(" | ")} |`;
+  const separatorLine = `| ${headers.map(() => "---").join(" | ")} |`;
+  const dataLines = rows.map(r => `| ${headers.map((_, i) => escapeCell(r[i] ?? "")).join(" | ")} |`);
+  return [headerLine, separatorLine, ...dataLines].join("\n");
+}
+
+// A table body ends at its first blank row; footers and second sections follow it.
+const tableBody = (rows, from = 1) => {
+  const out = [];
+  for (const r of rows.slice(from)) { if (!r.length) break; out.push(r); }
+  return out;
+};
+
+export function buildMarkdownMirror(rules, tabs) {
+  const lines = [
+    "# Fleet Apps & App Store Connect Registry",
+    "",
+    `> Generated by \`fleet-apps-sheet-sync.mjs\` (AI-Fleet-Coordinator) from the private Fleet Reference Sheet \`${SPREADSHEET_ID}\` sources and the App Store Connect API.  Do not edit by hand.  The file's mtime is when it was last synced.`,
+    "",
+    "---",
+    "",
+    "## 1. App Store Registry",
+    "",
+    toMarkdownTable(tabs.registry[0], tableBody(tabs.registry)),
+    "",
+    "## 2. TestFlight Builds",
+    "",
+    toMarkdownTable(tabs.testflight[0], tableBody(tabs.testflight)),
+    "",
+    "## 3. Icon Health Audit",
+    "",
+    toMarkdownTable(tabs.icons[3] || [], tableBody(tabs.icons, 4)),
+    "",
+    "## 4. Fleet Apps",
+    "",
+    toMarkdownTable(tabs.fleetApps[0], tableBody(tabs.fleetApps)),
+    "",
+    ...(tabs.seats ? ["## 5. Seats and Bots", "", toMarkdownTable(tabs.seats[0], tableBody(tabs.seats)), ""] : []),
+    "## 6. Standing Rules & Standards",
+    ""
+  ];
+  for (const sec of rules.sections || []) {
+    lines.push(`### ${sec.heading}`);
+    lines.push("");
+    for (const r of sec.rules || []) lines.push(`- **${r.id} (${r.rule})**: ${r.detail}`);
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+// The Fleet RAG ingest step.
+//
+// `recall ingest` ingests a SOURCE, not a file:  its argparse takes no positional path, so the old
+// `recall ingest <mirror.md>` call always exited 2 with "unrecognized arguments" and this step had
+// been a silent no-op since the CLI changed.  The registry mirror is a top-level ~/apps/*.md file,
+// and the `doc` source owns exactly that directory (fleet_rag/sources.py:  APPS_DIR.glob("*.md")),
+// so the doc source carries the mirror.  The ingest is hash-skipped, so a sheet sync that changed
+// nothing costs a walk, not a re-embed:  the mirror's body carries no timestamp, because a
+// timestamp changes the content hash on every run and the skip never matches.
+export const REGISTRY_INGEST_SOURCE = "doc";
+
+// The ingest's two controls are fleet knobs, so Infisical -- not an ambient environment variable --
+// is their source of truth:  one fetch per process, the last-known-good copy when Infisical cannot
+// be reached, and the registry default when there is no usable copy.  fleet_knobs is stdlib-only
+// Python, so one scripts-local subprocess resolves both controls in a shared cache.
+export const INGEST_ENABLED_KNOB = "FLEET_SHEET_INGEST_ENABLED";
+export const INGEST_TIMEOUT_KNOB = "FLEET_SHEET_INGEST_TIMEOUT_MS";
+// The registry defaults (scripts/fleet_knobs/registry.py), mirrored so a missing or broken
+// fleet_knobs still runs the step instead of failing the sheet sync.
+const KNOB_DEFAULTS = {
+  [INGEST_ENABLED_KNOB]: "true",
+  [INGEST_TIMEOUT_KNOB]: "5400000",
+};
+let KNOB_CACHE;
+export function readIngestKnobs(run = execFileSync) {
+  const values = { ...KNOB_DEFAULTS };
+  try {
+    const code = "import json,sys; from fleet_knobs import knobs; print(json.dumps({name: knobs.get(name) for name in sys.argv[1:]}))";
+    const out = run("python3", ["-c", code, ...Object.keys(KNOB_DEFAULTS)], {
+      cwd: repoPath("scripts"), env: { ...process.env, HOME: FLEET_HOME },
+      encoding: "utf8", timeout: 20000, stdio: ["ignore", "pipe", "pipe"],
+    });
+    const report = JSON.parse(String(out));
+    if (typeof report[INGEST_ENABLED_KNOB] !== "boolean" || !Number.isInteger(report[INGEST_TIMEOUT_KNOB]) || report[INGEST_TIMEOUT_KNOB] <= 0) throw new Error("invalid knob response");
+    for (const name of Object.keys(values)) values[name] = String(report[name]);
+  } catch {
+    console.warn("Fleet sheet ingest controls unavailable; using registered defaults.");
+  }
+  return values;
+}
+export function fleetKnob(name) {
+  if (!Object.hasOwn(KNOB_DEFAULTS, name)) return undefined;
+  KNOB_CACHE ??= readIngestKnobs();
+  return KNOB_CACHE[name];
+}
+
+// fleetKnob() reads the real fleet_knobs CLI, so the two decisions below take an optional values
+// object:  that is the seam the tests drive, so inverting either one fails a test instead of
+// silently reverting to the behaviour this fix exists to correct.  ingestKnobValues is exported
+// with an injectable reader so the knob-name -> decision mapping itself is asserted too (Kody
+// review, PR #740):  a swapped or misspelled knob then fails a test instead of silently
+// enabling the ingest with the default timeout.
+export function ingestKnobValues(read = fleetKnob) {
+  return {
+    [INGEST_ENABLED_KNOB]: read(INGEST_ENABLED_KNOB),
+    [INGEST_TIMEOUT_KNOB]: read(INGEST_TIMEOUT_KNOB),
+  };
+}
+
+export function ingestEnabled(values = ingestKnobValues()) {
+  return values[INGEST_ENABLED_KNOB] !== "false";
+}
+
+// The doc source covers every document the fleet owns, so a hung embedder or a Qdrant call would
+// otherwise block the sheet sync with no bound at all.  A full corpus walk took about 43 minutes
+// the last time it ran, so the default is generous; Infisical can lower it when a run must be
+// bounded tighter.
+export function ingestTimeoutMs(values = ingestKnobValues()) {
+  const ms = Number(values[INGEST_TIMEOUT_KNOB]);
+  return Number.isFinite(ms) && ms > 0 ? ms : Number(KNOB_DEFAULTS[INGEST_TIMEOUT_KNOB]);
+}
+
+export function registryIngestArgs() {
+  return ["ingest", "--source", REGISTRY_INGEST_SOURCE];
+}
+
+// The ingest prints its JSON report on stdout and its progress on stderr.
+export function summarizeIngest(stdout) {
+  const text = String(stdout || "");
+  try {
+    const report = JSON.parse(text);
+    const stats = (report && report.per_source && report.per_source[REGISTRY_INGEST_SOURCE]) || null;
+    if (stats && typeof stats === "object") {
+      const parts = [];
+      if (Number.isFinite(stats.docs_seen)) parts.push(`${stats.docs_seen} docs`);
+      if (Number.isFinite(stats.docs_changed)) parts.push(`${stats.docs_changed} changed`);
+      if (Number.isFinite(stats.chunks_new)) parts.push(`${stats.chunks_new} chunks written`);
+      return parts.length ? parts.join(", ") : "no counts in the report";
+    }
+    // The output parsed as JSON but carries no doc source.  Say that, rather than reporting a
+    // successful-looking "done":  a wrong summary is worse than an obvious one.
+    return "report has no doc source";
+  } catch {
+    // Not the JSON report (an older CLI, or a wrapper that printed nothing):  fall through.
+  }
+  const lines = text.trim().split("\n").filter(Boolean);
+  return lines.length ? lines[lines.length - 1] : "no output";
+}
+
+// The CLI's own stderr is the only thing that says WHY an ingest failed, so keep it and show
+// the tail of it.  Discarding it leaves the operator with a note and nothing to act on.
+export function ingestFailureDetail(err) {
+  const raw = String((err && err.stderr) || (err && err.message) || "").trim();
+  const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
+  return lines.length ? lines.slice(-3).join(" | ") : "no output";
+}
+
+export function ingestFailureOutcome(err) {
+  return err.signal || ["ETIMEDOUT", "ECONNRESET", "EPIPE"].includes(err.code) || Number(err.status) >= 500 ? "outcome_unknown" : "failed";
+}
+export function summarizeIngestFailure(err) {
+  const report = String(err.stdout || "");
+  return [report ? summarizeIngest(report) : "", ingestFailureDetail(err)].filter(Boolean).join("; ");
+}
+
+function exportMarkdownMirror(markdown) {
+  mkdirSync(dirname(MIRROR_MD_PATH), { recursive: true });
+  writeFileSync(MIRROR_MD_PATH, markdown, "utf8");
+  console.log(`   Exported Markdown mirror: ${MIRROR_MD_PATH}`);
+  if (!ingestEnabled()) {
+    console.log(`   Fleet RAG ingest skipped (${INGEST_ENABLED_KNOB}=false)`);
+    return;
+  }
+  try {
+    const out = execFileSync("recall", registryIngestArgs(), {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 8 * 1024 * 1024,
+      timeout: ingestTimeoutMs(),
+      // Pin the child's home to the fleet account's, so the doc source globs the same apps dir
+      // this mirror was just written into no matter what $HOME the sync inherited.
+      env: { ...process.env, HOME: FLEET_HOME },
+    });
+    console.log(`   Fleet RAG ingested: ${summarizeIngest(out)}`);
+  } catch (err) {
+    // A non-zero exit can still carry the JSON report on stdout:  fleet_rag/ingest.py prints it
+    // and returns 1 when the report is not ok.  Read it, and label the outcome FAILED rather than
+    // skipped, because a skip is a choice and a failure is not.  The sheet itself was already
+    // written and verified by this point, so this warns loudly instead of failing the job.
+    const why = summarizeIngestFailure(err);
+    console.warn(`   Note: Fleet RAG ingest ${ingestFailureOutcome(err).toUpperCase()} (${why})`);
+  }
+}
+
+// ---------------------------------------------------------------- main
+
+async function readLiveCounts(titles) {
+  const out = {};
+  for (const t of titles) {
+    try {
+      const v = await sheetsApi(`/values/${encodeURIComponent(t)}`);
+      out[t] = (v.values || []).length;
+    } catch { out[t] = "(no tab)"; }
+  }
+  return out;
+}
+
+async function backupWorkbook(meta, stamp) {
+  const tabs = {};
+  for (const s of meta.sheets) {
+    const t = s.properties.title;
+    const v = await sheetsApi(`/values/${encodeURIComponent(t)}`);
+    tabs[t] = v.values || [];
+  }
+  mkdirSync(BACKUP_DIR, { recursive: true });
+  const path = `${BACKUP_DIR}/fleet-sheet-${stamp}-before-registry.json`;
+  writeFileSync(path, JSON.stringify({ spreadsheetId: SPREADSHEET_ID, takenAt: new Date().toISOString(), tabs }, null, 1));
+  return path;
+}
+
+async function main() {
+  const DRY = process.argv.includes("--dry-run");
+  // --no-asc:  for when App Store Connect cannot be read (for example its key file is missing).  The two
+  // ASC tabs are then neither cleared nor written, and the Markdown mirror is left as it is; the other four
+  // tabs still sync.  Without the flag an ASC failure aborts the whole run.
+  const NO_ASC = process.argv.includes("--no-asc");
+  console.log(`Registry tabs -> workbook ${SPREADSHEET_ID}${DRY ? "  (DRY RUN: nothing is written)" : ""}${NO_ASC ? "  (--no-asc: App Store Registry and TestFlight Builds left as they are)" : ""}`);
+
+  console.log("1. Reading sources...");
+  const appsData = JSON.parse(readFileSync(APPS_JSON_PATH, "utf8"));
+  const rules = JSON.parse(readFileSync(RULES_PATH, "utf8"));
+  const facts = validateFacts(JSON.parse(readFileSync(FACTS_PATH, "utf8")));
+  const fleetApps = JSON.parse(readFileSync(FLEET_APPS_PATH, "utf8"));
+  const partition = parsePartition(readFileSync(PARTITION_PATH, "utf8"));
+  const serverSeats = parseServerListener(readFileSync(SERVER_LISTENER_PATH, "utf8"));
+  const { seatAppNames, teamKeys } = parseBoardCli(readFileSync(BOARD_CLI_PATH, "utf8"));
+  const iconReport = loadIconReport();
+  const nowIso = new Date().toISOString().replace("T", " ").substring(0, 19) + " UTC";
+  if (!Object.keys(partition).length) throw new Error(`no seats parsed from ${PARTITION_PATH}`);
+  if (!teamKeys.length || !Object.keys(seatAppNames).length) throw new Error(`no Linear teams or seat apps parsed from ${BOARD_CLI_PATH}`);
+
+  let asc = null;
+  if (NO_ASC) {
+    console.log("2. Skipping App Store Connect (--no-asc).");
+  } else {
+    console.log("2. Querying App Store Connect...");
+    asc = collectASC();
+    console.log(`   ${asc.apps.length} ASC app records, ${asc.ascBundleMap.size} bundle IDs.`);
+  }
+
+  console.log("3. Building every tab before any write...");
+  const tabs = {
+    rules: buildRulesTab(rules),
+    registry: asc ? buildRegistryTab(appsData, asc, iconReport, nowIso, fleetApps, facts) : null,
+    testflight: asc ? buildTestFlightTab(appsData, asc, nowIso) : null,
+    icons: buildIconTab(iconReport, nowIso),
+    fleetApps: buildFleetAppsTab(fleetApps, teamKeys, nowIso),
+    // Owner 2026-11-05: Seats and Bots is manually maintained in the sheet.  Build nothing for it and
+    // never write it; the plan filter below already drops null tabs.
+    seats: null,
+  };
+  const plan = [
+    // [key, title, header row indexes, column count]
+    ["rules", TAB_RULES, [0], 3],
+    ["registry", TAB_REGISTRY, [0], 16],
+    ["testflight", TAB_TESTFLIGHT, [0], 9],
+    ["icons", TAB_ICONS, [3], 9],
+    ["fleetApps", TAB_FLEET_APPS, [0], 9],
+    ["seats", TAB_SEATS, [0], 9],
+  ].filter(([key]) => tabs[key] !== null);
+  const appCount = Object.keys(appsData.apps || {}).length;
+  if (tabs.registry && tabs.registry.length < appCount + 1) throw new Error("registry tab built short; refusing to write");
+  if (tabs.fleetApps.length < (fleetApps.apps || []).length + 1) throw new Error("Fleet Apps tab built short; refusing to write");
+
+  console.log("4. Minting Google access token...");
+  token = await getGoogleAccessToken();
+  const live = await readLiveCounts(plan.map(p => p[1]));
+  for (const [key, title] of plan) {
+    console.log(`   ${title.padEnd(22)} live ${String(live[title]).padStart(9)}  ->  new ${String(tabs[key].length).padStart(4)}`);
+  }
+  if (DRY) {
+    console.log("\nDry run:  no tab created, cleared or written; no backup, mirror or last-run file.");
+    return;
+  }
+
+  console.log("5. Backing up the workbook...");
+  let meta = await sheetsApi("?fields=sheets.properties");
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  console.log(`   ${await backupWorkbook(meta, stamp)}`);
+
+  console.log("6. Writing tabs (each cleared first)...");
+  const written = [];
+  for (const [key, title, headerRows, cols] of plan) {
+    const t = await ensureTab(meta, title);
+    await writeTab(title, tabs[key]);
+    await formatTab(t.sheetId, headerRows, cols, TAB_COLUMN_WIDTHS[title], tabs[key].length);
+    written.push({ tab: title, rows: tabs[key].length, created: t.created });
+    console.log(`   ${title.padEnd(22)} ${tabs[key].length} rows${t.created ? "  (tab created)" : ""}`);
+  }
+
+  if (asc) {
+    console.log("7. Exporting Markdown mirror for Fleet RAG...");
+    exportMarkdownMirror(buildMarkdownMirror(rules, tabs));
+  } else {
+    console.log("7. Markdown mirror left as it is (--no-asc).");
+  }
+
+  writeFileSync(LAST_RUN_PATH, JSON.stringify({ ranAt: new Date().toISOString(), noAsc: NO_ASC, tabs: written }, null, 2));
+
+  console.log(`\n✅ Sheet regenerated: https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/edit`);
+  const errCount = (iconReport?.counts?.error || 0);
+  if (errCount) console.log(`   ⚠️  Icon audit reports ${errCount} error(s) — see the ${TAB_ICONS} tab.`);
+}
+
+if (isScriptEntryPoint()) {
+  main().catch(err => {
+    console.error("Sheet sync failed:", err.message);
+    process.exit(1);
+  });
+}
