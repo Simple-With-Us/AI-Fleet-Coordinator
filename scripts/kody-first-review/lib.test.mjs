@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  classifyHttpError,
   decide,
   hasPendingTrigger,
   isTriggerComment,
   kodyHasAnswered,
   oldEnough,
+  safeErrorDetails,
   KODY_LOGIN,
   MIN_PR_AGE_MINUTES,
 } from './lib.mjs';
@@ -60,4 +62,37 @@ test('decide prompts only a quiet old same-repo open PR', () => {
     'trigger-pending',
   );
   assert.equal(hasPendingTrigger([{ body: 'unrelated' }]), false);
+});
+
+test('classifyHttpError: rate-limit evidence vs policy vs unknown', () => {
+  assert.equal(classifyHttpError(429, {}), 'rate-limited');
+  assert.equal(classifyHttpError(403, { 'retry-after': '60' }), 'rate-limited');
+  assert.equal(classifyHttpError(403, { 'x-ratelimit-remaining': '0' }), 'rate-limited');
+  assert.equal(classifyHttpError(403, { 'x-ratelimit-remaining': '4999' }), 'forbidden');
+  assert.equal(classifyHttpError(403, {}), 'forbidden');
+  assert.equal(classifyHttpError(401, {}), 'forbidden');
+  assert.equal(classifyHttpError(500, {}), 'unknown');
+  assert.equal(classifyHttpError(404, {}), 'unknown');
+});
+
+test('safeErrorDetails: status, class, allowlisted headers only', () => {
+  const out = safeErrorDetails(403, {
+    'x-github-request-id': 'ABCD:1234:5678',
+    'x-ratelimit-limit': '5000',
+    'x-ratelimit-remaining': '4999',
+    'x-ratelimit-reset': '1762723200',
+    'x-evil-header': 'must-not-appear',
+    authorization: 'Bearer must-not-appear',
+  });
+  assert.match(out, /status=403/);
+  assert.match(out, /class=forbidden/);
+  assert.match(out, /x-github-request-id=ABCD:1234:5678/);
+  assert.match(out, /x-ratelimit-remaining=4999/);
+  assert.ok(!out.includes('retry-after'));
+  assert.ok(!out.includes('x-evil-header'));
+  assert.ok(!out.includes('must-not-appear'));
+  assert.ok(!out.includes('authorization'));
+  const rated = safeErrorDetails(429, { 'retry-after': '60' });
+  assert.match(rated, /class=rate-limited/);
+  assert.match(rated, /retry-after=60/);
 });

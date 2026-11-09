@@ -6,7 +6,7 @@
 //   GITHUB_TOKEN  required, provided by the workflow (permissions: issues: write)
 //   GITHUB_REPOSITORY  owner/name, set by Actions
 //   DRY_RUN  'true' to list decisions without commenting
-import { decide, TRIGGER_TEXT } from './lib.mjs';
+import { classifyHttpError, decide, safeErrorDetails, SAFE_ERROR_HEADERS, TRIGGER_TEXT } from './lib.mjs';
 
 const API = 'https://api.github.com';
 const token = process.env.GITHUB_TOKEN;
@@ -29,7 +29,16 @@ async function api(path, options = {}) {
     },
   });
   if (!res.ok) {
-    throw new Error(`${options.method || 'GET'} ${path} -> ${res.status}`);
+    // Status plus allowlisted response headers only; the body is never read.
+    const headers = {};
+    for (const name of SAFE_ERROR_HEADERS) {
+      const value = res.headers.get(name);
+      if (value != null) headers[name] = value;
+    }
+    const error = new Error(`${options.method || 'GET'} ${path} -> ${safeErrorDetails(res.status, headers)}`);
+    error.status = res.status;
+    error.classification = classifyHttpError(res.status, headers);
+    throw error;
   }
   return res.status === 204 ? null : res.json();
 }
@@ -59,6 +68,10 @@ async function handle(pr) {
   const verdict = decide(pr, { issueComments, reviews, now: Date.now() });
   console.log(`#${pr.number} ${pr.draft ? 'draft ' : ''}${verdict}`);
   if (verdict !== 'prompt') return false;
+  if (terminalClassification) {
+    console.log(`#${pr.number} prompt blocked: terminal ${terminalClassification} failure already classified this run`);
+    return false;
+  }
   if (!dryRun) {
     await api(`/repos/${repo}/issues/${pr.number}/comments`, {
       method: 'POST',
@@ -71,6 +84,12 @@ async function handle(pr) {
 // A few PRs at a time keeps the run well inside the job timeout without bursting the
 // API. One PR's failure is logged and the sweep moves on; the run still exits non-zero
 // so a failing tick is visible in Actions.
+// A classified terminal failure (forbidden, or rate-limited for this run) makes
+// every later prompt POST fail the same way. Verdicts are still computed and
+// logged for every PR, but further prompt POSTs are skipped and reported as
+// blocked so one terminal failure does not become a flood of identical refused
+// writes. Pending manual triggers and missing reviews stay separate outcomes.
+let terminalClassification = null;
 const CONCURRENCY = 4;
 const prs = await listOpenPrs();
 let prompted = 0;
@@ -85,6 +104,10 @@ async function worker() {
     } catch (error) {
       failed += 1;
       console.error(`#${pr.number} error: ${error.message}`);
+      if (!terminalClassification && (error.classification === 'forbidden' || error.classification === 'rate-limited')) {
+        terminalClassification = error.classification;
+        console.error(`terminal ${error.classification} failure classified; further prompt POSTs are blocked this run`);
+      }
     }
   }
 }

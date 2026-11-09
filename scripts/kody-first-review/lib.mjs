@@ -69,3 +69,39 @@ export function decide(pr, context = {}) {
   if (hasPendingTrigger(context.issueComments)) return 'trigger-pending';
   return 'prompt';
 }
+
+// Failure classification for the prompter's GitHub calls. Only the status and a
+// fixed allowlist of response headers are ever used or logged: request id,
+// rate-limit counters, and retry-after. The response body (which can carry
+// private content) and the request (which carries the token) are never read.
+export const SAFE_ERROR_HEADERS = [
+  'x-github-request-id',
+  'x-ratelimit-limit',
+  'x-ratelimit-remaining',
+  'x-ratelimit-reset',
+  'retry-after',
+];
+
+// 'rate-limited' only on positive rate-limit evidence; a bare 403/401 is a
+// terminal 'forbidden' (policy/authorization), everything else is 'unknown'.
+export function classifyHttpError(status, headers = {}) {
+  if (status === 429) return 'rate-limited';
+  if (status === 403) {
+    if (headers['retry-after'] != null || headers['x-ratelimit-remaining'] === '0') {
+      return 'rate-limited';
+    }
+    return 'forbidden';
+  }
+  if (status === 401) return 'forbidden';
+  return 'unknown';
+}
+
+// Log-safe one-line failure detail: status, class, allowlisted headers only.
+export function safeErrorDetails(status, headers = {}) {
+  const parts = [`status=${status}`, `class=${classifyHttpError(status, headers)}`];
+  for (const name of SAFE_ERROR_HEADERS) {
+    const value = headers[name];
+    if (value != null) parts.push(`${name}=${String(value).slice(0, 64)}`);
+  }
+  return parts.join(' ');
+}
