@@ -2567,6 +2567,8 @@ class TestPublishRerunTrustsLiveTree(unittest.TestCase):
         puts = [args for name, args in transport.calls if name == "gr_wf_files_put"]
         self.assertEqual(puts, [], transport.calls)
         self.assertIn("already committed by an earlier run", out)
+
+
 DISPATCH_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -2621,9 +2623,7 @@ class TestDispatchInputs(unittest.TestCase):
 
     def test_nested_object_value_is_refused(self):
         with self.assertRaises(SystemExit):
-            git.validate_arguments(
-                dispatch_entry(), dict(self.BASE, inputs={"bad": {"nested": 1}})
-            )
+            git.validate_arguments(dispatch_entry(), dict(self.BASE, inputs={"bad": {"nested": 1}}))
 
     def test_array_and_null_values_are_refused(self):
         for bad in (["x"], None):
