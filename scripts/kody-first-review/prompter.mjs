@@ -85,7 +85,7 @@ async function postTrigger(pr) {
 // uncompleted obligations stay visible in Actions.
 const CONCURRENCY = 4;
 const prs = await listOpenPrs();
-const { prompted, failed, blocked, terminalClassification } = await sweepPrompts(prs, {
+const { prompted, failed, blocked, unprocessed, terminalClassification } = await sweepPrompts(prs, {
   concurrency: CONCURRENCY,
   log: (...args) => console.log(...args),
   logError: (...args) => console.error(...args),
@@ -93,12 +93,12 @@ const { prompted, failed, blocked, terminalClassification } = await sweepPrompts
   postTrigger,
 });
 console.log(dryRun ? `dry-run complete, ${prompted} would prompt` : `prompted ${prompted}`);
-if (blocked > 0) {
-  console.error(`${blocked} prompt(s) blocked after terminal ${terminalClassification} failure; obligations NOT completed this run`);
+if (blocked > 0 || unprocessed > 0) {
+  console.error(`${blocked} prompt(s) blocked and ${unprocessed} PR(s) unprocessed after terminal ${terminalClassification} failure; obligations NOT completed this run`);
 }
 if (failed > 0) {
   console.error(`${failed} PR(s) failed`);
 }
-if (failed > 0 || blocked > 0) {
+if (failed > 0 || blocked > 0 || unprocessed > 0) {
   process.exitCode = 1;
 }

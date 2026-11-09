@@ -100,11 +100,11 @@ test('safeErrorDetails: status, class, allowlisted headers only', () => {
 
 const numberedPr = (n) => ({ number: n });
 
-test('sweepPrompts: terminal forbidden blocks remaining prompt POSTs after one attempt', async () => {
+test('sweepPrompts: serialized poster fires at most one terminal-classified POST', async () => {
   let posts = 0;
   const logs = [];
   const res = await sweepPrompts([numberedPr(1), numberedPr(2), numberedPr(3), numberedPr(4)], {
-    concurrency: 1,
+    concurrency: 4,
     verdictFor: async () => 'prompt',
     postTrigger: async () => {
       posts += 1;
@@ -116,18 +116,22 @@ test('sweepPrompts: terminal forbidden blocks remaining prompt POSTs after one a
     logError: (m) => logs.push(m),
   });
   assert.equal(posts, 1);
-  assert.deepEqual(
-    { prompted: res.prompted, failed: res.failed, blocked: res.blocked, terminalClassification: res.terminalClassification },
-    { prompted: 0, failed: 1, blocked: 3, terminalClassification: 'forbidden' },
-  );
+  assert.equal(res.blocked, 3);
+  assert.equal(res.unprocessed, 0);
+  assert.equal(res.failed, 1);
+  assert.equal(res.terminalClassification, 'forbidden');
   assert.ok(logs.some((m) => m.includes('prompt blocked')));
 });
 
-test('sweepPrompts: rate-limited is terminal, unknown is not', async () => {
+test('sweepPrompts: a worker stops scheduling new PRs after terminal failure', async () => {
   let posts = 0;
-  const res = await sweepPrompts([numberedPr(1), numberedPr(2), numberedPr(3)], {
+  let verdicts = 0;
+  const res = await sweepPrompts([numberedPr(1), numberedPr(2), numberedPr(3), numberedPr(4)], {
     concurrency: 1,
-    verdictFor: async () => 'prompt',
+    verdictFor: async () => {
+      verdicts += 1;
+      return 'prompt';
+    },
     postTrigger: async () => {
       posts += 1;
       const error = new Error('rate');
@@ -136,24 +140,29 @@ test('sweepPrompts: rate-limited is terminal, unknown is not', async () => {
     },
   });
   assert.equal(posts, 1);
-  assert.equal(res.blocked, 2);
+  assert.equal(verdicts, 1);
+  assert.equal(res.blocked, 0);
+  assert.equal(res.unprocessed, 3);
   assert.equal(res.terminalClassification, 'rate-limited');
+});
 
-  let posts2 = 0;
-  const res2 = await sweepPrompts([numberedPr(1), numberedPr(2), numberedPr(3)], {
+test('sweepPrompts: unknown failures are not terminal', async () => {
+  let posts = 0;
+  const res = await sweepPrompts([numberedPr(1), numberedPr(2), numberedPr(3)], {
     concurrency: 1,
     verdictFor: async () => 'prompt',
     postTrigger: async () => {
-      posts2 += 1;
+      posts += 1;
       const error = new Error('other');
       error.classification = 'unknown';
       throw error;
     },
   });
-  assert.equal(posts2, 3);
-  assert.equal(res2.blocked, 0);
-  assert.equal(res2.failed, 3);
-  assert.equal(res2.terminalClassification, null);
+  assert.equal(posts, 3);
+  assert.equal(res.failed, 3);
+  assert.equal(res.blocked, 0);
+  assert.equal(res.unprocessed, 0);
+  assert.equal(res.terminalClassification, null);
 });
 
 test('sweepPrompts: non-prompt verdicts never POST; successes count', async () => {
@@ -168,7 +177,7 @@ test('sweepPrompts: non-prompt verdicts never POST; successes count', async () =
   });
   assert.equal(posts, 1);
   assert.deepEqual(
-    { prompted: res.prompted, failed: res.failed, blocked: res.blocked },
-    { prompted: 1, failed: 0, blocked: 0 },
+    { prompted: res.prompted, failed: res.failed, blocked: res.blocked, unprocessed: res.unprocessed },
+    { prompted: 1, failed: 0, blocked: 0, unprocessed: 0 },
   );
 });

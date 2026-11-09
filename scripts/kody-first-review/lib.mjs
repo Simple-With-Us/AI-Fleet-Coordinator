@@ -108,32 +108,25 @@ export function safeErrorDetails(status, headers = {}) {
 
 // The prompt sweep. verdictFor(pr) returns the decide() verdict (and logs it);
 // postTrigger(pr) posts the trigger comment. A post failure classified
-// 'forbidden' or 'rate-limited' is terminal for the run: remaining prompt
-// verdicts are counted as blocked instead of attempted, and the returned counts
-// keep the uncompleted obligations explicit for the caller.
+// 'forbidden' or 'rate-limited' is terminal for the run: workers stop picking up
+// new PRs (no further reads), and prompt POSTs are serialized through a shared
+// chain that re-checks the terminal flag under the lock, so at most one refused
+// write fires. Blocked prompts and unprocessed PRs are counted separately so the
+// uncompleted obligations stay explicit for the caller.
 export async function sweepPrompts(prs, { verdictFor, postTrigger, concurrency = 4, log = () => {}, logError = () => {} }) {
   let prompted = 0;
   let failed = 0;
   let blocked = 0;
+  let processed = 0;
   let terminalClassification = null;
   let next = 0;
-  async function worker() {
-    while (next < prs.length) {
-      const pr = prs[next];
-      next += 1;
-      let verdict;
-      try {
-        verdict = await verdictFor(pr);
-      } catch (error) {
-        failed += 1;
-        logError(`#${pr.number} error: ${error.message}`);
-        continue;
-      }
-      if (verdict !== 'prompt') continue;
+  let postChain = Promise.resolve();
+  const postSerialized = (pr) => {
+    const run = postChain.then(async () => {
       if (terminalClassification) {
         blocked += 1;
         log(`#${pr.number} prompt blocked: terminal ${terminalClassification} failure already classified this run`);
-        continue;
+        return;
       }
       try {
         await postTrigger(pr);
@@ -146,8 +139,29 @@ export async function sweepPrompts(prs, { verdictFor, postTrigger, concurrency =
           logError(`terminal ${error.classification} failure classified; further prompt POSTs are blocked this run`);
         }
       }
+    });
+    postChain = run.catch(() => {});
+    return run;
+  };
+  async function worker() {
+    while (next < prs.length) {
+      if (terminalClassification) return;
+      const pr = prs[next];
+      next += 1;
+      let verdict;
+      try {
+        verdict = await verdictFor(pr);
+      } catch (error) {
+        failed += 1;
+        processed += 1;
+        logError(`#${pr.number} error: ${error.message}`);
+        continue;
+      }
+      processed += 1;
+      if (verdict !== 'prompt') continue;
+      await postSerialized(pr);
     }
   }
   await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, prs.length)) }, worker));
-  return { prompted, failed, blocked, terminalClassification };
+  return { prompted, failed, blocked, unprocessed: prs.length - processed, terminalClassification };
 }
