@@ -742,6 +742,23 @@ class AuditTests(unittest.TestCase):
             self.rules(A.check_pr(self.pr(timelineItems=tl), [], allowed_apps=())), ["V2"]
         )
 
+    def test_audit_forwards_allowed_apps_to_check_pr(self) -> None:
+        tl = {
+            "nodes": [
+                self.dismissal({"__typename": "Bot", "login": "swu-claude"}, {"login": "kody-ai"})
+            ]
+        }
+        node = self.pr(timelineItems=tl, state="OPEN")
+
+        class StubGh:
+            def graphql(self, _q: str, _v: dict[str, Any]) -> dict[str, Any]:
+                return {"data": {"repository": {"pullRequest": node}}}
+
+        default = A.audit(StubGh(), ["Simple-With-Us/AI-Fleet-Coordinator#1"])  # type: ignore[arg-type]
+        self.assertEqual(default[0]["violations"], [])
+        narrowed = A.audit(StubGh(), ["Simple-With-Us/AI-Fleet-Coordinator#1"], allowed_apps=())  # type: ignore[arg-type]
+        self.assertEqual([x["rule"] for x in narrowed[0]["violations"]], ["V2"])
+
     def test_threads_resolved_without_a_reply_or_later_commit(self) -> None:
         threads = {
             "nodes": [

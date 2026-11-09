@@ -246,6 +246,7 @@ def audit(
     *,
     since: _dt.datetime | None = None,
     allowed_dismissers: Sequence[str] = DEFAULT_ALLOWED_DISMISSERS,
+    allowed_apps: Sequence[str] = DEFAULT_ALLOWED_APP_DISMISSERS,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for k in keys:
@@ -260,7 +261,9 @@ def audit(
             oid = (pr.get("mergeCommit") or {}).get("oid")
             if pr.get("state") == "MERGED" and oid:
                 files = (gh.rest(f"repos/{owner}/{repo}/commits/{oid}") or {}).get("files") or []
-            res = check_pr(pr, files, since=since, allowed_dismissers=allowed_dismissers)
+            res = check_pr(
+                pr, files, since=since, allowed_dismissers=allowed_dismissers, allowed_apps=allowed_apps
+            )
             out.append(
                 {"pr": f"{full}#{n}", "state": pr.get("state"), "ok": not res["violations"], **res}
             )
