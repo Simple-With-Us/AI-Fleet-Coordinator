@@ -19,14 +19,26 @@ CEILING = {
 
 
 class Policy:
-    def __init__(self, ceiling=CEILING, allowed=True):
-        self.ceiling, self.allowed = ceiling, allowed
+    def __init__(self, ceiling=CEILING, allowed=True, repos=(REPO,)):
+        self.ceiling, self.allowed, self.repos = ceiling, allowed, tuple(repos)
 
     def app_identity(self, seat):
         return "swu-wise", dict(self.ceiling)
 
     def authorize(self, seat, action, repo):
         return None if self.allowed and repo == REPO else "denied"
+
+    def repo_allowed(self, seat, repo):
+        for pattern in self.repos:
+            if pattern.endswith("/*"):
+                if repo.startswith(pattern[:-1]):
+                    return True
+            elif repo == pattern:
+                return True
+        return False
+
+    def repo_patterns(self, seat):
+        return tuple(self.repos)
 
 
 class Client:

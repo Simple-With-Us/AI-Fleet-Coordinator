@@ -223,6 +223,8 @@ class SeatPolicy:
         "wf_repo_hooks",
         "wf_deploy_keys",
         "wf_org_installations",
+        "wf_repo_list",
+        "wf_pr_search",
         "wf_assignees_add",
         "wf_assignees_remove",
         "wf_issue_lock",
@@ -488,6 +490,14 @@ class SeatPolicy:
             elif repo == pattern:
                 return True
         return False
+
+    def repo_allowed(self, seat: str, repo: str) -> bool:
+        """Public read of the seat allowlist: org-wide verbs filter results to it."""
+        return self._repo_allowed(seat, repo)
+
+    def repo_patterns(self, seat: str) -> tuple:
+        """The seat's repository allowlist patterns (read-only copy)."""
+        return tuple(self._seats[seat]["repos"])
 
     @classmethod
     def is_write(cls, action: str) -> bool:
