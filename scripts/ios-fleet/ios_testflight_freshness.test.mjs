@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   EXIT_BEHIND, EXIT_CURRENT, EXIT_FAILED, SENTENCE_GAP,
-  acquireLockDir, buildCutTime, oldestRun, correlateRun, dispatchCommand, evaluateApp, exitCodeFor, loadRegistry,
+  acquireLockDir, annotateExternalGroups, betaTesterCountFromJson, buildCutTime, oldestRun, correlateRun, dispatchCommand, evaluateApp, exitCodeFor, loadRegistry,
   ascFailureText, ascRequest, main, makeAscGuard, makeContext, makeGate, matchCheckName, ownerTime, parseArgs, planAlerts, runRemedies, sentences,
 } from "./ios_testflight_freshness.mjs";
 
@@ -43,8 +43,9 @@ function ascBuild(id, build, marketing, uploaded, state = "VALID", expired = fal
  * repos: { Demo: { head, headDate, natives: {path: {sha,date}}, wfState, recentRuns, createdRuns,
  *                  compare: {"a...b": status}, checks: {sha: [check runs]} } }
  * builds: { appleId: [ascBuild(...)] }
+ * betaGroups: { appleId: [{ id, name, builds: [...ascBuild], testerTotal, publicLinkEnabled }] }
  */
-function fakeDeps({ repos = {}, builds = {}, window = "normal", lastShip = {}, state = null, failPost = false } = {}) {
+function fakeDeps({ repos = {}, builds = {}, betaGroups = {}, window = "normal", lastShip = {}, state = null, failPost = false } = {}) {
   const calls = { gh: [], dispatch: [], posts: [], states: [] };
   const deps = {
     now: () => NOW,
@@ -85,6 +86,37 @@ function fakeDeps({ repos = {}, builds = {}, window = "normal", lastShip = {}, s
     async ghDispatch(repoFull, workflow, ref, inputs) { calls.dispatch.push({ repoFull, workflow, ref, inputs }); },
     async asc(p) {
       if (p.startsWith("/v1/apps?")) return { data: [] };
+      const groupList = /^\/v1\/apps\/(\d+)\/betaGroups/.exec(p);
+      if (groupList) {
+        const groups = (betaGroups[groupList[1]] || []).map((g) => ({
+          type: "betaGroups",
+          id: g.id,
+          attributes: { name: g.name, isInternalGroup: false, publicLinkEnabled: Boolean(g.publicLinkEnabled) },
+        }));
+        return { data: groups };
+      }
+      const groupBuilds = /^\/v1\/betaGroups\/([^/]+)\/builds/.exec(p);
+      if (groupBuilds) {
+        for (const list of Object.values(betaGroups)) {
+          const g = list.find((x) => x.id === groupBuilds[1]);
+          if (g) {
+            const b = g.builds || [];
+            return { data: b.map((x) => x.data), included: b.map((x) => x.inc) };
+          }
+        }
+        return { data: [], included: [] };
+      }
+      const groupTesters = /^\/v1\/betaGroups\/([^/]+)\/betaTesters/.exec(p);
+      if (groupTesters) {
+        for (const list of Object.values(betaGroups)) {
+          const g = list.find((x) => x.id === groupTesters[1]);
+          if (g) {
+            const total = g.testerTotal ?? 0;
+            return { data: total ? [{ type: "betaTesters", id: "t1" }] : [], meta: { paging: { total, limit: 1 } } };
+          }
+        }
+        return { data: [], meta: { paging: { total: 0, limit: 1 } } };
+      }
       const id = /filter\[app\]=(\d+)/.exec(p)[1];
       const list = builds[id] || [];
       return { data: list.map((b) => b.data), included: list.map((b) => b.inc) };
@@ -186,6 +218,75 @@ async function evalOne(world, builds, appOver = {}, depOver = {}) {
   const r = await evaluateApp(makeContext(deps, reg), "demo", reg.apps.demo, NOW);
   return { r, calls };
 }
+
+const STALE_GROUP_BUILD = ascBuild(9, "202608311519", "1.0.200", "2026-08-31T15:19:00Z");
+const FRESH_GROUP_BUILD = ascBuild(10, "202610171703", "1.0.113", "2026-10-17T17:09:00Z");
+
+test("external beta groups: stale group raises behind even when the app build is current", async () => {
+  const beta = {
+    111: [{
+      id: "bg-public",
+      name: "Public Beta",
+      builds: [STALE_GROUP_BUILD],
+      testerTotal: 12,
+      publicLinkEnabled: true,
+    }],
+  };
+  const { r } = await evalOne(botfleetLike(), BOTFLEET_BUILDS, {}, { betaGroups: beta });
+  assert.equal(r.externalGroups?.length, 1);
+  assert.equal(r.status, "behind", r.reason);
+  assert.match(r.reason, /Public Beta.*older than the valid build/);
+  assert.deepEqual(r.externalGroups[0].findings, ["staleBuild"]);
+});
+
+test("external beta groups: empty group (no builds, no testers)", async () => {
+  const beta = {
+    111: [{
+      id: "bg-invited",
+      name: "Invited Testers",
+      builds: [],
+      testerTotal: 0,
+      publicLinkEnabled: false,
+    }],
+  };
+  const { r } = await evalOne(botfleetLike(), BOTFLEET_BUILDS, {}, { betaGroups: beta });
+  assert.equal(r.status, "behind");
+  assert.match(r.reason, /has no builds/);
+  assert.match(r.reason, /zero testers/);
+  assert.deepEqual(r.externalGroups[0].findings.sort(), ["noBuilds", "noTesters"]);
+});
+
+test("external beta groups: clean group matches the valid build", async () => {
+  const beta = {
+    111: [{
+      id: "bg-public",
+      name: "Public Beta",
+      builds: [FRESH_GROUP_BUILD],
+      testerTotal: 4,
+      publicLinkEnabled: true,
+    }],
+  };
+  const { r } = await evalOne(botfleetLike(), BOTFLEET_BUILDS, {}, { betaGroups: beta });
+  assert.equal(r.status, "current");
+  assert.equal(r.externalGroups[0].findings, undefined);
+  assert.equal(r.externalGroups[0].testerCount, 4);
+  assert.equal(r.externalGroups[0].publicLinkEnabled, true);
+});
+
+test("betaTesterCountFromJson and annotateExternalGroups", () => {
+  assert.equal(betaTesterCountFromJson({ meta: { paging: { total: 7 } }, data: [] }), 7);
+  assert.equal(betaTesterCountFromJson({ data: [{ id: "1" }, { id: "2" }] }), 2);
+  const valid = { build: "b2", marketingVersion: "1.2", uploadedAt: Date.parse("2026-10-17T17:09:00Z") };
+  const { groups, reason } = annotateExternalGroups(valid, [{
+    name: "G",
+    id: "1",
+    newestBuild: { build: "b1", marketingVersion: "1.1", uploadedAt: "2026-08-01T00:00:00Z" },
+    testerCount: 1,
+    publicLinkEnabled: false,
+  }]);
+  assert.match(reason, /older than the valid build/);
+  assert.deepEqual(groups[0].findings, ["staleBuild"]);
+});
 
 test("current:  the correlated ship run contains the newest native commit", async () => {
   const { r } = await evalOne(botfleetLike(), BOTFLEET_BUILDS);

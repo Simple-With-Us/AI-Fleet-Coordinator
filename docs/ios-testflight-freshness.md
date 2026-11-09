@@ -73,6 +73,24 @@ App Store Connect never records a git sha, so the check reconstructs it:
 Containment uses the compare API:  `ahead` or `identical` from the newest native commit to the
 shipped sha means current.  The table's SHIPPED column says which source was used.
 
+## External beta groups (AFC-434)
+
+The build-level check alone cannot see what testers install from a public link or an external
+group.  For each app the check also reads App Store Connect **external** beta groups
+(`GET /v1/apps/{id}/betaGroups` with `filter[isInternalGroup]=false`), then for each group the
+newest assigned build, the tester count, and whether the public link is enabled.  Read-only:  it
+never changes groups, builds in a group, or testers.
+
+Each app row in `--json` carries an **`externalGroups`** array (empty when there are no external
+groups).  Each element has `name`, `id`, `newestBuild` (same shape as `testflight`), `testerCount`,
+and `publicLinkEnabled`.  When a group is wrong, `findings` lists `staleBuild`, `noBuilds`, and/or
+`noTesters`.
+
+The app is **`behind`** (same exit class as code staleness) when any external group's newest build
+is older than the app's newest **VALID** processed build, when a group has **no builds**, or when a
+group has **zero testers**.  The NOTE column and `reason` string name the groups.  The existing
+build-level fields are unchanged; consumers that ignore `externalGroups` keep working.
+
 ## Statuses
 
 | Status | Meaning |

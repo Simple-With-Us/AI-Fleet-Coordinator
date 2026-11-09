@@ -474,6 +474,90 @@ function buildView(b) {
   };
 }
 
+/** Paging total from a betaTesters list response; falls back to the first page length. */
+export function betaTesterCountFromJson(json) {
+  const total = json?.meta?.paging?.total;
+  if (typeof total === "number" && !Number.isNaN(total)) return total;
+  return Array.isArray(json?.data) ? json.data.length : 0;
+}
+
+/**
+ * Mark each external group with findings and build one reason string when something is wrong.
+ * Read-only inspection:  compares group builds to the app's newest VALID build.
+ */
+export function annotateExternalGroups(validBuild, groups) {
+  const validAt = validBuild?.uploadedAt ?? null;
+  const out = [];
+  const parts = [];
+  for (const g of groups || []) {
+    const row = { ...g };
+    const findings = [];
+    if (!row.newestBuild) {
+      findings.push("noBuilds");
+      parts.push(`external group "${row.name}" has no builds`);
+    } else if (validAt != null) {
+      const groupAt = Date.parse(row.newestBuild.uploadedAt || "");
+      if (!Number.isNaN(groupAt) && groupAt < validAt - 1000) {
+        findings.push("staleBuild");
+        const gv = row.newestBuild.marketingVersion || "?";
+        const gb = row.newestBuild.build || "?";
+        const vv = validBuild.marketingVersion || validBuild.build || "?";
+        parts.push(`external group "${row.name}" serves ${gv} (${gb}), older than the valid build ${vv} (${validBuild.build})`);
+      }
+    }
+    if (row.testerCount === 0) {
+      findings.push("noTesters");
+      parts.push(`external group "${row.name}" has zero testers`);
+    }
+    if (findings.length) row.findings = findings;
+    out.push(row);
+  }
+  return { groups: out, reason: parts.length ? parts.join(";  ") : null };
+}
+
+async function loadExternalBetaGroups(ctx, appleId, platform) {
+  const list = await ctx.asc(
+    `/v1/apps/${appleId}/betaGroups?filter[isInternalGroup]=false&limit=200` +
+      "&fields[betaGroups]=name,isInternalGroup,publicLinkEnabled",
+  );
+  const rows = [];
+  for (const g of list.data || []) {
+    const attrs = g.attributes || {};
+    if (attrs.isInternalGroup) continue;
+    const [buildsJson, testersJson] = await Promise.all([
+      ctx.asc(
+        `/v1/betaGroups/${g.id}/builds?sort=-uploadedDate&limit=10` +
+          "&fields[builds]=version,uploadedDate,processingState,expired" +
+          "&include=preReleaseVersion&fields[preReleaseVersions]=version,platform",
+      ),
+      ctx.asc(`/v1/betaGroups/${g.id}/betaTesters?limit=1`),
+    ]);
+    const builds = normalizeBuilds(buildsJson, platform);
+    const newest = builds[0] || null;
+    rows.push({
+      name: attrs.name || g.id,
+      id: g.id,
+      newestBuild: buildView(newest),
+      testerCount: betaTesterCountFromJson(testersJson),
+      publicLinkEnabled: Boolean(attrs.publicLinkEnabled),
+    });
+  }
+  return rows;
+}
+
+/** Raise BEHIND (or extend the reason) when an external beta group is stale or empty. */
+function applyExternalGroupStaleness(r, validNorm, externalRows) {
+  const { groups, reason } = annotateExternalGroups(validNorm, externalRows);
+  r.externalGroups = groups;
+  if (!reason) return;
+  if (r.status === "current") {
+    r.status = "behind";
+    r.reason = reason;
+  } else if (r.status && r.status !== "skipped" && r.status !== "error") {
+    r.reason = r.reason ? `${r.reason};  ${reason}` : reason;
+  }
+}
+
 /** Context shared by every app in one run:  caches per repo. */
 export function makeContext(deps, registry) {
   const cache = new Map();
@@ -718,6 +802,9 @@ export async function evaluateApp(ctx, key, app, now) {
         r.reason += `;  a ship run in flight for ${oldest.ageHours}h looks stuck (${oldest.url})`;
       }
     }
+
+    const externalRows = await loadExternalBetaGroups(ctx, app.appleId, app.platform);
+    applyExternalGroupStaleness(r, valid, externalRows);
   } catch (err) {
     r.status = "error";
     r.reason = String(err.message || err).slice(0, 300);
