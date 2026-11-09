@@ -84,14 +84,22 @@ def render_entry(template, raw_manifest, sources):
                         raise ValueError("duplicate runner binding")
                     if target.id == "DIRECTORY":
                         value = node.value
-                        if not (isinstance(value, ast.Call) and isinstance(value.func, ast.Name)
-                                and value.func.id == "Path" and len(value.args) == 1
-                                and not value.keywords):
+                        if not (
+                            isinstance(value, ast.Call)
+                            and isinstance(value.func, ast.Name)
+                            and value.func.id == "Path"
+                            and len(value.args) == 1
+                            and not value.keywords
+                        ):
                             raise ValueError("runner directory binding shape")
                         bindings[target.id] = ast.literal_eval(value.args[0])
                     else:
                         bindings[target.id] = ast.literal_eval(node.value)
-    if bindings != {"MANIFEST_DIGEST": digest(raw_manifest), "MODULE_HASHES": module_hashes, "DIRECTORY": ROOT}:
+    if bindings != {
+        "MANIFEST_DIGEST": digest(raw_manifest),
+        "MODULE_HASHES": module_hashes,
+        "DIRECTORY": ROOT,
+    }:
         raise ValueError("runner binding drift")
     return entry
 
