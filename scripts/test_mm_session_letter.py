@@ -1555,6 +1555,99 @@ class MmReLetterTitleTest(unittest.TestCase):
         self.assertEqual(M.wanted_title("AA", "AI: the model"), "AA: AI: the model")
 
 
+class MmRegistryLetterResolveTest(unittest.TestCase):
+    """registry_letter_for_session and rename_registry_context stay location-safe."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "registry.sqlite3")
+        from simple_tools import operator_registry as R
+
+        R.SessionRegistry(self.db).close_db()
+
+    def _env(self):
+        return mock.patch.dict(
+            os.environ,
+            {
+                "SIMPLE_TOOLS_OPERATOR_REGISTRY": self.db,
+                "MINIMAX_HOOKS_DATA": "",
+                "MINIMAX_DATA_DIR": self.tmp.name,
+            },
+            clear=False,
+        )
+
+    def test_registry_letter_from_rows_skips_empty_labels(self):
+        rows = [{"verified_host": "mac-1", "profile_scope": "default", "label": ""}]
+        self.assertEqual(
+            M._registry_letter_from_rows(
+                rows, verified_host="mac-1", profile_scope="default"
+            ),
+            "",
+        )
+        rows = [{"verified_host": "mac-1", "profile_scope": "default", "label": "AA"}]
+        self.assertEqual(
+            M._registry_letter_from_rows(
+                rows, verified_host="mac-1", profile_scope="default"
+            ),
+            "AA",
+        )
+
+    def test_registry_letter_for_session_matches_profile_scope(self):
+        from simple_tools import operator_registry as R
+
+        native = "mvs_scope_disambiguation"
+        with self._env(), mock.patch.object(M, "location", return_value="mac-1"):
+            R.register_session(
+                self.db,
+                platform="minimax",
+                native_session_id=native,
+                seat="MM",
+                source="test",
+                issuer=R.ISSUER_OPERATOR,
+                verified_host="mac-1",
+                profile_scope="scope-a",
+                letter_space="double",
+            )
+            R.register_session(
+                self.db,
+                platform="minimax",
+                native_session_id=native,
+                seat="MM",
+                source="test",
+                issuer=R.ISSUER_OPERATOR,
+                verified_host="mac-1",
+                profile_scope="default",
+                letter_space="double",
+            )
+            with mock.patch.object(M, "PROFILE_SCOPE", "default"):
+                letters = [
+                    R.lookup_label(self.db, "minimax", "mac-1", "scope-a", native),
+                    R.lookup_label(self.db, "minimax", "mac-1", "default", native),
+                ]
+                self.assertEqual(len(set(letters)), 2)
+                self.assertEqual(M.registry_letter_for_session(native), letters[1])
+
+    def test_rename_registry_context_opens_the_registry_once(self):
+        import simple_tools.operator_registry as OR
+
+        calls: list[bool] = []
+        original = OR.SessionRegistry
+
+        class _CountingRegistry(original):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                calls.append(kwargs.get("read_only"))
+
+        with (
+            self._env(),
+            mock.patch.object(M, "location", return_value="mac-1"),
+            mock.patch.object(OR, "SessionRegistry", _CountingRegistry),
+        ):
+            M.rename_registry_context(SESSION_ID)
+        self.assertEqual(calls, [True])
+
+
 class MmReopenStrictTouchTest(unittest.TestCase):
     """The sweep sees a reopen that could not be done, so it keeps the session for a retry."""
 

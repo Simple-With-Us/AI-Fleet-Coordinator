@@ -527,6 +527,25 @@ class SessionRegistry:
                 held.append(letter)
         return tuple(held)
 
+    def live_registration_rows_for_native_id(
+        self, platform: str, native_session_id: str
+    ) -> list[dict[str, Any]]:
+        """Live registrations of one native session id, for reads on this open handle."""
+        native = SI.check(native_session_id, "the native session id")
+        namespace = normalize_platform(platform)
+        rows = self._conn.execute(
+            "SELECT s.verified_host AS verified_host, s.profile_scope AS profile_scope,"
+            " s.seat AS seat, s.state AS state,"
+            " a.letter AS label, a.generation AS generation"
+            " FROM sessions s"
+            " JOIN alias_assignments a"
+            "   ON a.record_id = s.record_id AND a.platform = ? AND a.retired_at IS NULL"
+            " WHERE s.platform = ? AND s.native_session_id = ? AND s.closed_at IS NULL"
+            " ORDER BY s.registered_at",
+            (namespace, namespace, native),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def _last_alias(self, conn: sqlite3.Connection, record_id: str) -> tuple[str, int]:
         """The letter this record holds now, or, once it is retired, the last one it held.
 
@@ -1320,20 +1339,31 @@ def _session_row_for_update(
 ) -> sqlite3.Row:
     """The session row one update should touch, found by its native session id.
 
-    The caller names its own location, but the row that really carries the session id on
-    the platform may live at another location.  A row whose native session id is empty is
-    never a match:  an update keyed on a real session id must not land on a placeholder row.
+    Updates are pinned to the caller's own location:  a host or scope miss does not write
+    another location's live row.  A row whose native session id is empty is never a match.
+    A closed row at the caller's location is still returned so callers can answer the closed
+    state without cross-location mutation.
     """
     namespace = normalize_platform(platform)
     native = SI.check(native_session_id, "the native session id")
     row = conn.execute(
         "SELECT * FROM sessions WHERE platform = ? AND verified_host = ?"
         " AND profile_scope = ? AND native_session_id = ? AND native_session_id != ''"
+        " AND closed_at IS NULL"
         " ORDER BY registered_at DESC LIMIT 1",
         (namespace, verified_host, profile_scope, native),
     ).fetchone()
     if row is not None:
         return row
+    closed = conn.execute(
+        "SELECT * FROM sessions WHERE platform = ? AND verified_host = ?"
+        " AND profile_scope = ? AND native_session_id = ? AND native_session_id != ''"
+        " AND closed_at IS NOT NULL"
+        " ORDER BY registered_at DESC LIMIT 1",
+        (namespace, verified_host, profile_scope, native),
+    ).fetchone()
+    if closed is not None:
+        return closed
     rows = conn.execute(
         "SELECT * FROM sessions WHERE platform = ? AND native_session_id = ?"
         " AND native_session_id != '' AND closed_at IS NULL"
@@ -1351,11 +1381,14 @@ def _session_row_for_update(
             and candidate["profile_scope"] == profile_scope
         ):
             return candidate
-    if len(rows) == 1:
-        return rows[0]
+    if len(rows) > 1:
+        raise ValueError(
+            "session %s is registered at more than one location on %s; resolve the contradiction first"
+            % (native, namespace)
+        )
     raise ValueError(
-        "session %s is registered at more than one location on %s; resolve the contradiction first"
-        % (native, namespace)
+        "session %s is not registered on %s at %s/%s; register it first"
+        % (native, namespace, verified_host, profile_scope)
     )
 
 
@@ -1848,16 +1881,7 @@ def registrations_for_native_id(
             "the registry %s is unavailable (%s)" % (db_path, type(exc).__name__)
         ) from exc
     try:
-        rows = registry._conn.execute(
-            "SELECT s.verified_host AS verified_host, s.seat AS seat, s.state AS state,"
-            " a.letter AS label, a.generation AS generation"
-            " FROM sessions s"
-            " JOIN alias_assignments a"
-            "   ON a.record_id = s.record_id AND a.platform = ? AND a.retired_at IS NULL"
-            " WHERE s.platform = ? AND s.native_session_id = ? AND s.closed_at IS NULL"
-            " ORDER BY s.registered_at",
-            (namespace, namespace, native),
-        ).fetchall()
+        rows = registry.live_registration_rows_for_native_id(platform, native_session_id)
     except Exception as exc:
         raise RegistryUnavailable(
             "the registry %s is unavailable (%s)" % (db_path, type(exc).__name__)
@@ -1867,7 +1891,7 @@ def registrations_for_native_id(
             registry.close_db()
         except Exception:
             pass
-    return [dict(row) for row in rows]
+    return rows
 
 
 def resolve_ref(db_path: str, platform: str, ref: str) -> dict[str, Any] | None:

@@ -1112,7 +1112,7 @@ class RegistryTest(unittest.TestCase):
             platform="minimax",
             native_session_id=native,
             title="AFC-621 Housekeeper Webhook Credential Path",
-            **cloud,
+            **mac,
         )
         self.assertEqual(out["record_id"], eh["record_id"])
         self.assertEqual(out["label"], "EH")
@@ -1120,6 +1120,51 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(str(self.reg._get(remote_orphan)["native_session_id"]), "")
         resolved = R.resolve_label(self.db, "minimax", "EH")
         self.assertEqual(resolved["native_session_id"], native)
+
+    def test_update_session_at_a_mismatched_host_does_not_touch_a_remote_live_row(self):
+        """Fail closed:  a cloud caller must not mutate a mac row with the same session id."""
+        native = "mvs_cross_host_guard"
+        mac = self._loc(platform="minimax", host="mac-1")
+        cloud = self._loc(platform="minimax", host="cloud-1")
+        eh = self.reg.resolve_or_register(
+            ident(platform="minimax", host="mac-1", native=native, letter_space="double")
+        )
+        self._force_live_letter(eh["record_id"], "EH")
+        with self.assertRaises(ValueError) as caught:
+            R.update_session(
+                self.db,
+                platform="minimax",
+                native_session_id=native,
+                title="Should not land",
+                **cloud,
+            )
+        self.assertIn("not registered", str(caught.exception))
+        self.assertNotIn("Should not land", str(self.reg._get(eh["record_id"])["title"]))
+
+    def test_update_session_on_a_closed_row_is_consistent_across_hosts(self):
+        """A closed row at the caller's host answers closed;  another host sees a miss."""
+        native = "mvs_closed_consistency"
+        mac = self._loc(platform="minimax", host="mac-1")
+        cloud = self._loc(platform="minimax", host="cloud-1")
+        live = self.reg.resolve_or_register(ident(platform="minimax", host="mac-1", native=native))
+        self.reg.close(live["record_id"], actor="MM", source="test")
+        at_mac = R.update_session(
+            self.db,
+            platform="minimax",
+            native_session_id=native,
+            title="T",
+            **mac,
+        )
+        self.assertEqual(at_mac["outcome"], "closed")
+        with self.assertRaises(ValueError) as caught:
+            R.update_session(
+                self.db,
+                platform="minimax",
+                native_session_id=native,
+                title="T",
+                **cloud,
+            )
+        self.assertIn("not registered", str(caught.exception))
 
     def test_update_session_needs_a_field(self):
         self.reg.resolve_or_register(ident(platform="minimax"))

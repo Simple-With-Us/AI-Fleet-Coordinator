@@ -791,6 +791,28 @@ def reopen_closed(record_id: str, parent_session_id: str = "") -> dict:
     return _require_registry(registry_call(args))
 
 
+def _registry_letter_from_rows(
+    rows: list[dict[str, object]],
+    *,
+    verified_host: str,
+    profile_scope: str,
+) -> str:
+    """Pick the live letter for this location from registration rows, skipping empty labels."""
+    for row in rows:
+        if (
+            row.get("verified_host") == verified_host
+            and row.get("profile_scope") == profile_scope
+        ):
+            label = str(row.get("label") or "")
+            if label:
+                return label
+    if len(rows) == 1:
+        label = str(rows[0].get("label") or "")
+        if label:
+            return label
+    return ""
+
+
 def registry_letter_for_session(session_id: str) -> str:
     """The letter the registry maps to this session id, without registering again.
 
@@ -812,14 +834,47 @@ def registry_letter_for_session(session_id: str) -> str:
         if label:
             return label
         rows = OR.registrations_for_native_id(db, PLATFORM, session_id)
-        if len(rows) == 1:
-            return str(rows[0].get("label") or "")
-        for row in rows:
-            if row.get("verified_host") == location() and row.get("profile_scope") == PROFILE_SCOPE:
-                return str(row.get("label") or "")
+        return _registry_letter_from_rows(
+            rows, verified_host=location(), profile_scope=PROFILE_SCOPE
+        )
     except (OR.RegistryUnavailable, sqlite3.Error, OSError, ValueError):
         return ""
     return ""
+
+
+def rename_registry_context(session_id: str) -> tuple[tuple[str, ...], str]:
+    """Held letters and resolved letter for one rename, using one registry read handle."""
+    letter = cached_letter(session_id)
+    db = registry_db()
+    if not db:
+        return (), letter
+    from simple_tools import operator_registry as OR
+
+    held: tuple[str, ...] = ()
+    try:
+        reg = OR.SessionRegistry(db, read_only=True)
+        try:
+            row = reg.session_by_identity(
+                platform=PLATFORM,
+                verified_host=location(),
+                profile_scope=PROFILE_SCOPE,
+                native_session_id=session_id,
+            )
+            if row is not None:
+                held = reg.letters_held(row["record_id"])
+                live_letter, _generation = reg._active_alias(reg._conn, row["record_id"])
+                if live_letter:
+                    letter = live_letter
+            if not letter:
+                rows = reg.live_registration_rows_for_native_id(PLATFORM, session_id)
+                letter = _registry_letter_from_rows(
+                    rows, verified_host=location(), profile_scope=PROFILE_SCOPE
+                )
+        finally:
+            reg.close_db()
+    except (OR.RegistryUnavailable, sqlite3.Error, OSError, ValueError):
+        return held, letter
+    return held, letter
 
 
 def update_title(session_id: str, title: str, directories: list[str] | None = None) -> dict:
@@ -2198,8 +2253,7 @@ def main(argv: list[str] | None = None) -> int:
         return migrate_pairs()
     if args.command == "rename":
         parent = parent_for_row(session_row(args.session_id) or {})
-        held = held_letters(args.session_id)
-        letter = registry_letter_for_session(args.session_id)
+        held, letter = rename_registry_context(args.session_id)
         if not letter:
             try:
                 answer = _require_registry(register(args.session_id, "", parent), needs_label=True)
