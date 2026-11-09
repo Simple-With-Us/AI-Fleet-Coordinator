@@ -39,6 +39,8 @@ class Tests(unittest.TestCase):
             ("actions", ["wf_review_threads"] * 2),
             ("actions", ["wf_review_threads", m.ACTION]),
             ("mint_permissions", {"contents": "write"}),
+            ("mint_permissions", None),
+            ("mint_permissions", []),
         ]:
             p = copy.deepcopy(self.policy)
             p["swu-echo"][field] = value

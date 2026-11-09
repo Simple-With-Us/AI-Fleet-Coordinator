@@ -30,7 +30,11 @@ def prepare(policy, expected_digest):
         or ACTION in actions
     ):
         raise ValueError("qualified prior review read required; new action must be absent")
-    if row.get("mint_permissions", {}).get("pull_requests") not in ("read", "write"):
+    permissions = row.get("mint_permissions")
+    if not isinstance(permissions, dict) or permissions.get("pull_requests") not in (
+        "read",
+        "write",
+    ):
         raise ValueError("existing pull_requests read ceiling required")
     out = copy.deepcopy(policy)
     out[SEAT]["actions"].append(ACTION)

@@ -57,6 +57,19 @@ class Tests(unittest.TestCase):
             ):
                 builder.build(root, source, out)
 
+    def test_runtime_proof_pin_and_tamper_refusal(self):
+        self.assertEqual(builder.digest((HERE / "runtime_proof.py").read_bytes()), builder.PROOF)
+        root = Path(__file__).resolve().parents[3]
+        with tempfile.TemporaryDirectory() as tmp:
+            before = Path(tmp) / "before"
+            before.write_bytes(b"fixture")
+            with (
+                patch.object(builder, "image", return_value=b"candidate"),
+                patch.object(builder, "PROOF", "wrong"),
+                self.assertRaisesRegex(ValueError, "runtime proof module drift"),
+            ):
+                builder.build(root, before, Path(tmp) / "out")
+
     def test_directory_binding_drift_refuses(self):
         template = (HERE / "runner.template.py").read_text()
         with self.assertRaises(ValueError):
