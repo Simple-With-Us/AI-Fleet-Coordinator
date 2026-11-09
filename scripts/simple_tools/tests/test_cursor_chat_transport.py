@@ -297,5 +297,47 @@ class SendTests(unittest.TestCase):
         self.assertEqual(CursorCloudTransport(api).send(binding(), "nudge"), "unknown")
 
 
+class SteerTests(unittest.TestCase):
+    def test_posts_a_steer_and_a_queued_delivery_counts_as_sent(self) -> None:
+        api = FakeCursorApi()
+        api.run_response = {"delivery": "queued"}
+        self.assertEqual(CursorCloudTransport(api).steer("bc-one", "rename"), "sent")
+        self.assertEqual(
+            api.calls[-1],
+            ("POST", "/v1/agents/bc-one/runs", {"prompt": {"text": "rename"}, "delivery": "steer"}),
+        )
+
+    def test_a_steered_delivery_and_a_run_id_also_count_as_sent(self) -> None:
+        api = FakeCursorApi()
+        api.run_response = {"delivery": "steered", "runId": "run-1"}
+        self.assertEqual(CursorCloudTransport(api).steer("bc-one", "rename"), "sent")
+        api.run_response = {"run": {"id": "run-2"}}
+        self.assertEqual(CursorCloudTransport(api).steer("bc-one", "rename"), "sent")
+
+    def test_403_is_unavailable_and_409_is_busy_and_400_is_refused(self) -> None:
+        api = FakeCursorApi()
+        api.run_error = RuntimeError("Cursor API 403 on POST /v1/agents/bc-one/runs: feature_unavailable")
+        self.assertEqual(CursorCloudTransport(api).steer("bc-one", "rename"), "unavailable")
+        api.run_error = RuntimeError("Cursor API 409 on POST /v1/agents/bc-one/runs: agent_busy")
+        self.assertEqual(CursorCloudTransport(api).steer("bc-one", "rename"), "busy")
+        api.run_error = RuntimeError("Cursor API 400 on POST /v1/agents/bc-one/runs: validation_error")
+        self.assertEqual(CursorCloudTransport(api).steer("bc-one", "rename"), "refused")
+
+    def test_a_missing_key_sends_nothing_and_a_network_error_is_unknown(self) -> None:
+        api = FakeCursorApi()
+        api.load_api_key = lambda: ""
+        self.assertEqual(CursorCloudTransport(api).steer("bc-one", "rename"), "not-started")
+        api.load_api_key = lambda: "test-key"
+        api.run_error = RuntimeError("Cursor API unreachable: timed out")
+        self.assertEqual(CursorCloudTransport(api).steer("bc-one", "rename"), "unknown")
+
+    def test_a_bad_id_or_empty_text_is_refused_without_a_request(self) -> None:
+        api = FakeCursorApi()
+        transport = CursorCloudTransport(api)
+        self.assertEqual(transport.steer("not-an-agent", "rename"), "refused")
+        self.assertEqual(transport.steer("bc-one", ""), "refused")
+        self.assertEqual(api.calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()

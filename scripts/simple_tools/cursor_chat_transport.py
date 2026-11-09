@@ -356,6 +356,40 @@ class CursorCloudTransport:
                 return "failed"
             return "accepted" if self.receipt(binding, text) else "unknown"
 
+    def steer(self, agent_id: str, text: str) -> str:
+        """Steer one existing agent.  "sent" once Cursor accepted it, "unavailable" when the account
+        refuses steering, "busy" on 409, "refused" on any other 4xx, "not-started" when nothing was
+        sent, and "unknown" when a later error may still have delivered the prompt."""
+        safe_id = _agent_id(agent_id)
+        if safe_id is None or not isinstance(text, str) or not text:
+            return "refused"
+        try:
+            payload = self._api(
+                "POST",
+                f"/v1/agents/{urllib.parse.quote(safe_id, safe='')}/runs",
+                {"prompt": {"text": text}, "delivery": "steer"},
+                timeout_seconds=min(self.timeout_seconds, 15),
+            )
+        except _ApiFailure as exc:
+            if exc.code == "missing_api_key":
+                return "not-started"
+            if exc.status == 403:
+                return "unavailable"
+            if exc.status == 409:
+                return "busy"
+            if exc.status is not None and 400 <= exc.status < 500:
+                return "refused"
+            return "unknown"
+        if not isinstance(payload, dict):
+            return "unknown"
+        delivery = payload.get("delivery")
+        if delivery in ("steered", "queued"):
+            return "sent"
+        run = payload.get("run") if isinstance(payload.get("run"), dict) else None
+        if isinstance(run, dict) and isinstance(run.get("id"), str) and run.get("id"):
+            return "sent"
+        return "unknown"
+
 
 _default_transport: CursorCloudTransport | None = None
 
@@ -381,6 +415,10 @@ def preflight(binding: dict[str, str]) -> str:
 
 def send(binding: dict[str, str], text: str, permit: Callable[[], bool] | None = None) -> str:
     return _default().send(binding, text, permit)
+
+
+def steer(agent_id: str, text: str) -> str:
+    return _default().steer(agent_id, text)
 
 
 def receipt(binding: dict[str, str], text: str) -> bool:
