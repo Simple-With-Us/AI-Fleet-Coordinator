@@ -2567,3 +2567,105 @@ class TestPublishRerunTrustsLiveTree(unittest.TestCase):
         puts = [args for name, args in transport.calls if name == "gr_wf_files_put"]
         self.assertEqual(puts, [], transport.calls)
         self.assertIn("already committed by an earlier run", out)
+DISPATCH_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["repo", "workflow", "ref", "identity"],
+    "properties": {
+        "repo": {"type": "string"},
+        "workflow": {"type": "string"},
+        "ref": {"type": "string"},
+        "inputs": {
+            "type": "object",
+            "maxProperties": 32,
+            "additionalProperties": {
+                "anyOf": [
+                    {"type": "string", "maxLength": 1024},
+                    {"type": "number"},
+                    {"type": "boolean"},
+                ]
+            },
+        },
+        "intent_id": {"type": "string", "pattern": r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}$"},
+        "expected_head_sha": {"type": "string", "pattern": r"^[0-9a-f]{40}$"},
+        "identity": {"type": "string", "enum": ["ECHO"]},
+    },
+}
+
+
+def dispatch_entry():
+    return {
+        "name": "gr_workflow_dispatch",
+        "read": False,
+        "input_bytes": 65536,
+        "schema": json.loads(json.dumps(DISPATCH_SCHEMA)),
+    }
+
+
+DISPATCH_BASE = {"repo": "o/r", "workflow": "w.yml", "ref": "main", "identity": "ECHO"}
+
+
+class TestDispatchInputs(unittest.TestCase):
+    """gr_workflow_dispatch advertises flat scalar `inputs` (additionalProperties + maxProperties):  the
+    client validates representative values pre-network instead of refusing every non-empty object, and
+    strictness is unchanged for schemas that do not declare additionalProperties."""
+
+    BASE = DISPATCH_BASE
+
+    def test_scalar_inputs_validate(self):
+        args = dict(
+            self.BASE,
+            inputs={"expected_source_sha": "a" * 40, "dry": True, "count": 2, "ratio": 1.5},
+        )
+        git.validate_arguments(dispatch_entry(), args)
+
+    def test_nested_object_value_is_refused(self):
+        with self.assertRaises(SystemExit):
+            git.validate_arguments(
+                dispatch_entry(), dict(self.BASE, inputs={"bad": {"nested": 1}})
+            )
+
+    def test_array_and_null_values_are_refused(self):
+        for bad in (["x"], None):
+            with self.assertRaises(SystemExit):
+                git.validate_arguments(dispatch_entry(), dict(self.BASE, inputs={"bad": bad}))
+
+    def test_inputs_past_the_key_cap_are_refused(self):
+        with self.assertRaises(SystemExit):
+            git.validate_arguments(
+                dispatch_entry(), dict(self.BASE, inputs={f"k{i}": "v" for i in range(33)})
+            )
+
+    def test_string_values_past_the_length_cap_are_refused(self):
+        with self.assertRaises(SystemExit):
+            git.validate_arguments(dispatch_entry(), dict(self.BASE, inputs={"long": "x" * 1025}))
+
+    def test_strict_object_still_refuses_unknown_keys(self):
+        entry = {"name": "gr_wf_issue_create", "read": False, "schema": dict(WRITE_SCHEMA)}
+        with self.assertRaises(SystemExit):
+            git.validate_arguments(entry, {"title": "t", "identity": "ECHO", "extra": 1})
+
+    def test_bare_object_still_refuses_unknown_keys(self):
+        entry = {
+            "name": "gr_x",
+            "read": False,
+            "schema": {"type": "object", "properties": {"inputs": {"type": "object"}}},
+        }
+        with self.assertRaises(SystemExit):
+            git.validate_arguments(entry, {"inputs": {"k": "v"}})
+
+    def test_a_refused_inputs_write_is_never_sent(self):
+        t = FakeTransport([[make_tool("gr_workflow_dispatch", DISPATCH_SCHEMA)]])
+        code, _out, err = run_cli(
+            [
+                "call",
+                "gr_workflow_dispatch",
+                "--args-json",
+                json.dumps(dict(self.BASE, inputs={"bad": {"nested": 1}})),
+            ],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=t,
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("do not match", err)
+        self.assertNotIn("gr_workflow_dispatch", [c[0] for c in t.calls])
