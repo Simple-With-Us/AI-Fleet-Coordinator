@@ -49,6 +49,19 @@ class IssueTests(unittest.TestCase):
         self.assertEqual(out["issue"]["body"], "<withheld: credential-shaped text>")
         self.assertTrue(out["issue"]["body_withheld"])
 
+    def test_get_lone_surrogate_body_is_controlled_502(self):
+        from git_relay.workflow_verbs import RelayGitHubError
+
+        with self.assertRaises(RelayGitHubError) as cm:
+            self.run_action("wf_issue_get", {"number": 2}, {**ISSUE, "body": "ok\ud800end"})
+        self.assertEqual(cm.exception.status, 502)
+
+    def test_list_labels_accepts_ten_max_length_names(self):
+        labels = ",".join(("a" * 100) for _ in range(10))
+        out, c = self.run_action("wf_issue_list", {"labels": labels}, [ISSUE])
+        self.assertEqual(len(out["issues"]), 1)
+        self.assertLessEqual(len(labels), 1019)
+
     def test_create_uses_own_app_fixed_endpoint(self):
         out, c = self.run_action("wf_issue_create", {"title": "fix", "body": "details"}, ISSUE)
         self.assertEqual(out["issue"]["number"], 2)
