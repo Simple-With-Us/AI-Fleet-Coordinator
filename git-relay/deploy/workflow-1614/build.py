@@ -108,9 +108,7 @@ def render_entry(template, raw_manifest, sources):
 def build(repo, before, output):
     here = Path(__file__).resolve().parent
     package = Path(repo) / "git-relay/git_relay"
-    workflow = image(
-        Path(before).read_bytes(), (package / "workflow_verbs.py").read_bytes()
-    )
+    workflow = image(Path(before).read_bytes(), (package / "workflow_verbs.py").read_bytes())
     sources = {}
     for name, expected in MODULES.items():
         raw = (package / name).read_bytes()
@@ -141,9 +139,7 @@ def build(repo, before, output):
         "unit": UNIT,
     }
     raw_manifest = json.dumps(manifest, sort_keys=True, indent=2).encode() + b"\n"
-    entry = render_entry(
-        (here / "runner.template.py").read_text(), raw_manifest, sources
-    )
+    entry = render_entry((here / "runner.template.py").read_text(), raw_manifest, sources)
     output = Path(output)
     output.mkdir(mode=0o700, exist_ok=False)
     for name, raw in sources.items():

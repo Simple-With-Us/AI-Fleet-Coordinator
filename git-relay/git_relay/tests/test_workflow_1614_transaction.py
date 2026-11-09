@@ -37,25 +37,19 @@ class BuilderTests(unittest.TestCase):
 
     def test_image_parses_syntax(self):
         with (
-            patch.object(
-                builder, "digest", side_effect=[builder.BEFORE, builder.AFTER]
-            ),
+            patch.object(builder, "digest", side_effect=[builder.BEFORE, builder.AFTER]),
             self.assertRaises(SyntaxError),
         ):
             builder.image(b"before", b"def broken(")
 
     def test_candidate_gate_accepts_only_pinned_bytes(self):
-        with patch.object(
-            builder, "digest", side_effect=[builder.BEFORE, builder.AFTER]
-        ):
+        with patch.object(builder, "digest", side_effect=[builder.BEFORE, builder.AFTER]):
             self.assertEqual(builder.image(b"before", b"x = 1"), b"x = 1")
 
     def test_render_binds_exact_manifest_and_modules(self):
         raw = b"manifest"
         sources = {"git_relay/a.py": b"content"}
-        entry = builder.render_entry(
-            (HERE / "runner.template.py").read_text(), raw, sources
-        )
+        entry = builder.render_entry((HERE / "runner.template.py").read_text(), raw, sources)
         self.assertNotIn("PLACEHOLDER", entry)
         self.assertIn(builder.digest(raw), entry)
         self.assertIn(builder.digest(b"content"), entry)
@@ -149,9 +143,7 @@ class BuilderTests(unittest.TestCase):
 
 class ProofTests(unittest.TestCase):
     def test_proof_pin(self):
-        self.assertEqual(
-            builder.digest((HERE / "runtime_proof.py").read_bytes()), builder.PROOF
-        )
+        self.assertEqual(builder.digest((HERE / "runtime_proof.py").read_bytes()), builder.PROOF)
 
     def test_exact_inventory_no_write_calls_and_candidate_labels(self):
         for digest in [proof.RuntimeProof.BASELINE, proof.RuntimeProof.CANDIDATE]:
@@ -162,9 +154,7 @@ class ProofTests(unittest.TestCase):
             def call(action, args, calls=calls, repo=p.REPO):
                 calls.append((action, args))
                 if action == "wf_repo_get":
-                    return 200, {
-                        "repository": {"full_name": repo, "default_branch": "main"}
-                    }
+                    return 200, {"repository": {"full_name": repo, "default_branch": "main"}}
                 return 200, {"issues": [], "complete": False}
 
             p.call = call
@@ -248,9 +238,7 @@ class ProofTests(unittest.TestCase):
 
     def test_no_redirects(self):
         self.assertIsNone(
-            proof.NoRedirect().redirect_request(
-                None, None, 302, "redirect", {}, "http://other"
-            )
+            proof.NoRedirect().redirect_request(None, None, 302, "redirect", {}, "http://other")
         )
 
     def test_proof_pin_tamper_refuses_build(self):
