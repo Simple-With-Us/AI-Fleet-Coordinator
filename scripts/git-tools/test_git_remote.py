@@ -2650,14 +2650,22 @@ class TestLeafAnyOf(unittest.TestCase):
         self.assertFalse(git._type_ok(schema, None))
 
     def test_annotation_only_siblings_add_no_check(self):
-        schema = {"description": "an input value", "anyOf": [{"type": "string"}, {"type": "number"}, {"type": "boolean"}]}
+        schema = {
+            "description": "an input value",
+            "anyOf": [{"type": "string"}, {"type": "number"}, {"type": "boolean"}],
+        }
         self.assertTrue(git._type_ok(schema, 5))
         self.assertTrue(git._type_ok(schema, True))
         self.assertTrue(git._type_ok(schema, "v"))
         self.assertFalse(git._type_ok(schema, None))
 
     def test_a_definite_later_variant_wins_over_a_deferred_pattern(self):
-        schema = {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{40}$"}, {"type": "string", "maxLength": 8}]}
+        schema = {
+            "anyOf": [
+                {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+                {"type": "string", "maxLength": 8},
+            ]
+        }
         checks: list = []
         self.assertTrue(git._type_ok(schema, "main", checks))
         self.assertEqual(checks, [])  # settled by the second variant;  nothing deferred
@@ -2669,7 +2677,9 @@ class TestLeafAnyOf(unittest.TestCase):
         self.assertEqual(checks, [("^[0-9a-f]{40}$", "abc")])
 
     def test_two_deferred_variants_refuse(self):
-        schema = {"anyOf": [{"type": "string", "pattern": "^a"}, {"type": "string", "pattern": "^b"}]}
+        schema = {
+            "anyOf": [{"type": "string", "pattern": "^a"}, {"type": "string", "pattern": "^b"}]
+        }
         self.assertFalse(git._type_ok(schema, "bc", []))
 
 
