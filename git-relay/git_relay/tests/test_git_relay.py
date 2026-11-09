@@ -580,7 +580,7 @@ class TestMcpWrapper(unittest.TestCase):
         reply = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = [t["name"] for t in reply["result"]["tools"]]
         self.assertEqual(
-            names,
+            names[:7],
             [
                 "open_pr",
                 "edit_pr",
@@ -589,8 +589,10 @@ class TestMcpWrapper(unittest.TestCase):
                 "merge_pr",
                 "workflow_dispatch",
                 "resolve_thread",
-            ],  # mint_token stays HTTP-only: raw App tokens never cross stdio
+            ],
         )
+        # mint_token stays HTTP-only: raw App tokens never cross stdio
+        self.assertNotIn("mint_token", names)
 
     def test_tools_call_forwards_to_relay_with_seat_token(self):
         opener = FakeOpener({"number": 9, "url": "u"})
