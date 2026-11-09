@@ -1915,6 +1915,26 @@ class LinearSourceTests(unittest.TestCase):
             with self.assertRaises(sources.LinearSourceError):
                 sources._linear_query("query { x }")
 
+    def test_missing_linear_identity_is_named_without_echoing_stderr(self) -> None:
+        """AFC-677:  the retired shared app makes simple-board exit 4;  the error says why."""
+
+        def no_identity(*a, **k):
+            return subprocess.CompletedProcess(
+                a, 4, stdout="",
+                stderr="simple-board: no Linear app credentials: LINEAR_CLIENT_ID ... secret-ish-tail",
+            )
+
+        with mock.patch.object(sources.subprocess, "run", side_effect=no_identity):
+            with self.assertRaises(sources.LinearSourceError) as ctx:
+                sources._linear_query("query { x }")
+        msg = str(ctx.exception)
+        self.assertIn("no Linear app identity", msg)
+        self.assertIn("SIMPLE_BOARD_BEARER_FILE", msg)
+        self.assertNotIn("secret-ish-tail", msg)
+
+    def test_doc_walk_finds_the_renamed_socratic_trade_checkout(self) -> None:
+        self.assertIn("Socratic-Trade", sources.DOC_APP_REPOS)
+
     def test_oversized_chunk_halves_until_it_fits(self) -> None:
         """A response past the CLI size cap is retried as smaller chunks, not a failure."""
         def fake_query(query, timeout_s=0):

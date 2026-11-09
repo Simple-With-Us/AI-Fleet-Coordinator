@@ -98,6 +98,7 @@ DOC_SKIP_DIR_NAMES = frozenset(
 )
 DOC_APP_REPOS = (
     "Socratic.Trade",
+    "Socratic-Trade",  # the checkout's current name;  missing it pruned the repo (AFC-677)
     "Congress.Trade",
     "congress-trading-shared",
     "API-usage-monitor",
@@ -1874,6 +1875,13 @@ def _linear_query(query: str, timeout_s: int = LINEAR_QUERY_TIMEOUT_S) -> dict:
                 f"linear: simple-board api query exited {proc.returncode}: response exceeds "
                 f"the CLI size cap",
                 overflow=True,
+            )
+        if "no Linear app credentials" in stderr:
+            raise LinearSourceError(
+                f"linear: simple-board api query exited {proc.returncode}: no Linear app identity "
+                f"for this run (the shared Fleet app was retired 2026-11-05;  give the ingest a seat "
+                f"bearer via SIMPLE_BOARD_BEARER_FILE plus its scoped /linear read token, or "
+                f"LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET)"
             )
         raise LinearSourceError(f"linear: simple-board api query exited {proc.returncode}")
     try:
