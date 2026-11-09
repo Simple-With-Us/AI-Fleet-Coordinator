@@ -446,6 +446,43 @@ class DirtyAlertTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertFalse(S.alert_problems([("X", "dirty (1 path)")], self.ENV, self.state, now=1, post=boom))
 
+    def test_bad_state_file_or_unwritable_state_never_raises(self) -> None:
+        for raw in ("null", "[1]", '{"problems": ["X"], "at": "soon"}', "{"):
+            (self.state / S.ALERT_STATE).write_text(raw)
+            self.assertTrue(self._alert([("X", "dirty (1 path)")], S.ALERT_REPEAT_S + 10))
+        self.state = self.state / "missing" / "deeper"
+        self.state.parent.mkdir()
+        self.state.parent.chmod(0o500)
+        try:
+            self.assertTrue(self._alert([("Y", "dirty (1 path)")], 20))
+        finally:
+            self.state.parent.chmod(0o700)
+
+    def test_zulip_post_refuses_redirects_and_plain_http(self) -> None:
+        import urllib.error
+        import urllib.request
+
+        with self.assertRaises(ValueError):
+            S._zulip_post("http://z.example", "e", "k", {})
+        seen = []
+
+        class Opener:
+            def __init__(self, *handlers):
+                seen.extend(handlers)
+
+            def open(self, req, timeout=None):
+                raise urllib.error.URLError("stop")
+
+        orig = urllib.request.build_opener
+        urllib.request.build_opener = lambda *h: Opener(*h)
+        try:
+            with self.assertRaises(urllib.error.URLError):
+                S._zulip_post("https://z.example", "e", "k", {"a": "b"})
+        finally:
+            urllib.request.build_opener = orig
+        handler = seen[0]()
+        self.assertIsNone(handler.redirect_request(None, None, 302, "Found", {}, "https://evil.example/"))
+
 
 if __name__ == "__main__":
     unittest.main()

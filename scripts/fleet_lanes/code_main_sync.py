@@ -439,12 +439,18 @@ def alert_problems(problems: list[tuple[str, str]], env: Mapping[str, str], stat
         last = json.loads(path.read_text())
     except (OSError, ValueError):
         last = {}
+    if not isinstance(last, dict):
+        last = {}
+    try:
+        last_at = float(last.get("at") or 0)
+    except (TypeError, ValueError):
+        last_at = 0.0
     key = sorted(name for name, _ in problems)
     if not problems:
         if last.get("problems"):
-            path.write_text(json.dumps({"problems": [], "at": now}))
+            _save_alert_state(path, [], now)
         return False
-    if key == last.get("problems") and now - float(last.get("at") or 0) < ALERT_REPEAT_S:
+    if key == last.get("problems") and now - last_at < ALERT_REPEAT_S:
         return False
     site = (env.get("ZULIP_SITE") or "").strip().rstrip("/")
     email = (env.get("ZULIP_EMAIL") or "").strip()
@@ -464,9 +470,19 @@ def alert_problems(problems: list[tuple[str, str]], env: Mapping[str, str], stat
     except Exception as exc:  # noqa: BLE001 - alerting must never fail the sync
         log(f"alert: Zulip post failed ({type(exc).__name__})")
         return False
-    path.write_text(json.dumps({"problems": key, "at": now}))
+    _save_alert_state(path, key, now)
     log(f"alert: posted {len(problems)} problem clone(s) to Zulip")
     return True
+
+
+def _save_alert_state(path: Path, key: list[str], now: float) -> None:
+    import json
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"problems": key, "at": now}))
+    except OSError as exc:  # alerting must never fail the sync;  the worst case is a repeat post next run
+        log(f"alert: state write failed ({type(exc).__name__})")
 
 
 def _zulip_post(site: str, email: str, api_key: str, fields: Mapping[str, str]) -> None:
@@ -483,7 +499,13 @@ def _zulip_post(site: str, email: str, api_key: str, fields: Mapping[str, str]) 
         headers={"Authorization": f"Basic {auth}", "Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=20) as resp:  # noqa: S310 - https enforced above
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        # A 3xx is an error, never followed, so the Authorization header never reaches another host.
+        def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201
+            return None
+
+    opener = urllib.request.build_opener(_NoRedirect)
+    with opener.open(req, timeout=20) as resp:  # noqa: S310 - https enforced above
         if resp.status != 200:
             raise RuntimeError(f"HTTP {resp.status}")
 
