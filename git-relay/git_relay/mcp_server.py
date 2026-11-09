@@ -8,6 +8,15 @@ git-relay over HTTP, where policy, rate caps and the audit log apply.
 Config:  GIT_RELAY_URL (default http://127.0.0.1:8471), GIT_RELAY_SEAT_TOKEN.
 The seat token rides every call, so a non-loopback relay URL must be https -
 plaintext http is accepted only for loopback relays.
+
+A seat host reaching the relay's public hostname directly (AFC-672) goes
+through Cloudflare, which refuses urllib's default User-Agent (error 1010) and
+then Cloudflare Access (403) without a service token.  Every call therefore
+carries a named User-Agent, and an https relay also gets the Access service
+token headers when GIT_RELAY_CF_ACCESS_CLIENT_ID / GIT_RELAY_CF_ACCESS_CLIENT_SECRET
+(or the fleet-wide CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET pair) are set.
+Redirects are never followed, so neither the bearer nor the Access secret can
+be carried to another host.
 """
 
 from __future__ import annotations
@@ -37,6 +46,41 @@ def _validate_relay_url(relay_url: str) -> None:
     raise ValueError(
         "GIT_RELAY_URL must be https (plaintext http is allowed only for loopback relays)"
     )
+
+
+USER_AGENT = "gr-mcp/1 (+swu-git-relay)"
+
+# Checked in order;  the first pair with either half set wins, and a half pair
+# is a startup error rather than a silent Access 403 on every call.
+ACCESS_ENV_PAIRS = (
+    ("GIT_RELAY_CF_ACCESS_CLIENT_ID", "GIT_RELAY_CF_ACCESS_CLIENT_SECRET"),
+    ("CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET"),
+)
+
+
+def access_headers_from_env(env) -> dict[str, str]:
+    """Cloudflare Access service-token headers from the environment, or {}."""
+    for id_name, secret_name in ACCESS_ENV_PAIRS:
+        client_id = (env.get(id_name) or "").strip()
+        secret = (env.get(secret_name) or "").strip()
+        if not client_id and not secret:
+            continue
+        if not (client_id and secret):
+            raise ValueError(f"{id_name} and {secret_name} must be set together")
+        return {"CF-Access-Client-Id": client_id, "CF-Access-Client-Secret": secret}
+    return {}
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect:  urllib would otherwise re-send Authorization and
+    the Access headers to wherever a 3xx points (an Access login page included)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _default_opener():
+    return urllib.request.build_opener(_NoRedirect()).open
 
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -280,13 +324,17 @@ def _validate_args(name: str, args: dict) -> str | None:
 class RelayMcp:
     """Transport-free core, so tests drive it without stdio."""
 
-    def __init__(self, relay_url: str, seat_token: str, opener=None):
+    def __init__(self, relay_url: str, seat_token: str, opener=None, access_headers=None):
         if not seat_token:
             raise ValueError("GIT_RELAY_SEAT_TOKEN is required")
         _validate_relay_url(relay_url)
         self._url = relay_url.rstrip("/")
         self._token = seat_token
-        self._opener = opener or urllib.request.urlopen
+        self._opener = opener or _default_opener()
+        # The Access secret only ever rides https;  a loopback relay is not
+        # behind Cloudflare and must not receive it over plaintext http.
+        https = urllib.parse.urlparse(relay_url).scheme == "https"
+        self._access_headers = dict(access_headers or {}) if https else {}
 
     def handle(self, message: dict) -> dict | None:
         method = message.get("method")
@@ -330,8 +378,11 @@ class RelayMcp:
             method="POST",
             data=json.dumps(args).encode(),
             headers={
+                **self._access_headers,
                 "Authorization": f"Bearer {self._token}",
                 "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": USER_AGENT,
             },
         )
         # A wf read verb writes nothing whatever happens to its answer, so none of its
@@ -497,6 +548,7 @@ def main() -> None:
     server = RelayMcp(
         os.environ.get("GIT_RELAY_URL", "http://127.0.0.1:8471"),
         os.environ.get("GIT_RELAY_SEAT_TOKEN", ""),
+        access_headers=access_headers_from_env(os.environ),
     )
 
     def log(text: str) -> None:
