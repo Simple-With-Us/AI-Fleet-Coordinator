@@ -147,7 +147,9 @@ class AdminScopeReadTests(unittest.TestCase):
                 )
                 self.assertEqual(out["deploy_keys"][0]["id"], 7)
         with self.assertRaises(RelayGitHubError):
-            self.run_action("wf_deploy_keys", {}, [dict(KEY, key="ecdsa-sha2-nistp192 " + "A" * 68)])
+            self.run_action(
+                "wf_deploy_keys", {}, [dict(KEY, key="ecdsa-sha2-nistp192 " + "A" * 68)]
+            )
 
     def test_deploy_keys_refuses_bad_material(self):
         with self.assertRaises(RelayGitHubError):
