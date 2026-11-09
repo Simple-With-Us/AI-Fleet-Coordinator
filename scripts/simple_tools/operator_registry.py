@@ -471,9 +471,22 @@ class SessionRegistry:
     ) -> sqlite3.Row | None:
         return self._conn.execute(
             "SELECT * FROM sessions WHERE platform = ? AND verified_host = ?"
-            " AND profile_scope = ? AND native_session_id = ?",
+            " AND profile_scope = ? AND native_session_id = ? AND native_session_id != ''",
             (platform, verified_host, profile_scope, native_session_id),
         ).fetchone()
+
+    def _live_rows_for_native_session_id(
+        self, conn: sqlite3.Connection, platform: str, native_session_id: str
+    ) -> list[sqlite3.Row]:
+        """Every live session row on one platform that carries this native session id."""
+        native = SI.check(native_session_id, "the native session id")
+        namespace = normalize_platform(platform)
+        return conn.execute(
+            "SELECT * FROM sessions WHERE platform = ? AND native_session_id = ?"
+            " AND native_session_id != '' AND closed_at IS NULL"
+            " ORDER BY registered_at DESC",
+            (namespace, native),
+        ).fetchall()
 
     def session_by_identity(
         self,
@@ -1305,20 +1318,42 @@ def _session_row_for_update(
     profile_scope: str,
     native_session_id: str,
 ) -> sqlite3.Row:
+    """The session row one update should touch, found by its native session id.
+
+    The caller names its own location, but the row that really carries the session id on
+    the platform may live at another location.  A row whose native session id is empty is
+    never a match:  an update keyed on a real session id must not land on a placeholder row.
+    """
     namespace = normalize_platform(platform)
     native = SI.check(native_session_id, "the native session id")
     row = conn.execute(
         "SELECT * FROM sessions WHERE platform = ? AND verified_host = ?"
-        " AND profile_scope = ? AND native_session_id = ?"
+        " AND profile_scope = ? AND native_session_id = ? AND native_session_id != ''"
         " ORDER BY registered_at DESC LIMIT 1",
         (namespace, verified_host, profile_scope, native),
     ).fetchone()
-    if row is None:
+    if row is not None:
+        return row
+    rows = conn.execute(
+        "SELECT * FROM sessions WHERE platform = ? AND native_session_id = ?"
+        " AND native_session_id != '' AND closed_at IS NULL"
+        " ORDER BY registered_at DESC",
+        (namespace, native),
+    ).fetchall()
+    if not rows:
         raise ValueError(
-            f"session {native} is not registered on {namespace} at {verified_host}/{profile_scope};"
-            " register it first"
+            "session %s is not registered on %s at %s/%s; register it first"
+            % (native, namespace, verified_host, profile_scope)
         )
-    return row
+    for candidate in rows:
+        if candidate["verified_host"] == verified_host and candidate["profile_scope"] == profile_scope:
+            return candidate
+    if len(rows) == 1:
+        return rows[0]
+    raise ValueError(
+        "session %s is registered at more than one location on %s; resolve the contradiction first"
+        % (native, namespace)
+    )
 
 
 def update_session(
@@ -1371,22 +1406,13 @@ def update_session(
     namespace = normalize_platform(platform)
     try:
         with registry._write_txn() as conn:
-            row = conn.execute(
-                "SELECT * FROM sessions WHERE platform = ? AND verified_host = ?"
-                " AND profile_scope = ? AND native_session_id = ?"
-                " ORDER BY registered_at DESC LIMIT 1",
-                (
-                    namespace,
-                    verified_host,
-                    profile_scope,
-                    SI.check(native_session_id, "the native session id"),
-                ),
-            ).fetchone()
-            if row is None:
-                raise ValueError(
-                    "session %s is not registered on %s at %s/%s; register it first"
-                    % (native_session_id, namespace, verified_host, profile_scope)
-                )
+            row = _session_row_for_update(
+                conn,
+                platform=platform,
+                verified_host=verified_host,
+                profile_scope=profile_scope,
+                native_session_id=native_session_id,
+            )
             record_id = row["record_id"]
             if row["closed_at"]:
                 letter, generation = registry._last_alias(conn, record_id)
