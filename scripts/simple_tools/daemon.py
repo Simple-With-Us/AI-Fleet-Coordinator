@@ -1441,9 +1441,7 @@ class Daemon:
                 error=self.scrub(type(exc).__name__ + ": " + str(exc)),
             )
 
-    def _observe_linear_stream_event(
-        self, runner: SeatRunner, event: Mapping[str, Any]
-    ) -> None:
+    def _observe_linear_stream_event(self, runner: SeatRunner, event: Mapping[str, Any]) -> None:
         """A stream create, update or delete: the living comments forget the public-stream
         set and reload it on the next feed, as the standalone relay did."""
         engine = getattr(self, "linear_comments", None)
@@ -1457,7 +1455,6 @@ class Daemon:
                 seat=runner.seat,
                 error=self.scrub(type(exc).__name__ + ": " + str(exc)),
             )
-
 
     def _configure_listener_api(self) -> None:
         """Start the optional signed read API (AFC-330) for the seats this instance holds, and with it the Operator's
@@ -8866,9 +8863,7 @@ class Daemon:
             if engine is not None:
                 # Any seat's client can load the public-stream set;  the tick itself only
                 # flushes edits whose batching interval has passed.
-                client = next(
-                    (r.client for r in self.seats.values() if r.client is not None), None
-                )
+                client = next((r.client for r in self.seats.values() if r.client is not None), None)
                 try:
                     engine.tick(client)
                 except Exception as exc:  # the comments must never stop the tick
