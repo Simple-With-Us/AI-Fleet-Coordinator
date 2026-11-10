@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   EXIT_BEHIND, EXIT_CURRENT, EXIT_FAILED, SENTENCE_GAP,
-  acquireLockDir, annotateExternalGroups, betaTesterCountFromJson, buildCutTime, buildsFilterForBetaGroupPath, buildsRelationshipForBetaGroupPath, externalBetaGroupsListPath, oldestRun, correlateRun, dispatchCommand, evaluateApp, exitCodeFor, loadRegistry,
+  acquireLockDir, annotateExternalGroups, attachPreReleaseVersions, betaTesterCountFromJson, buildCutTime, buildsFilterForBetaGroupPath, buildsRelationshipForBetaGroupPath, externalBetaGroupsListPath, oldestRun, preReleaseVersionsBulkPath, correlateRun, dispatchCommand, evaluateApp, exitCodeFor, loadRegistry,
   ascFailureText, ascRequest, main, makeAscGuard, makeContext, makeGate, matchCheckName, ownerTime, parseArgs, planAlerts, runRemedies, sentences,
 } from "./ios_testflight_freshness.mjs";
 
@@ -132,6 +132,22 @@ function fakeDeps({ repos = {}, builds = {}, betaGroups = {}, window = "normal",
           }
         }
         return { data: [], meta: { paging: { total: 0, limit: 1 } } };
+      }
+      const prBulk = /^\/v1\/preReleaseVersions\?/.exec(p);
+      if (prBulk) {
+        const ids = new Set((/filter\[id\]=([^&]+)/.exec(p)?.[1] || "").split(",").map(decodeURIComponent));
+        const out = [];
+        for (const list of Object.values(builds)) {
+          for (const b of list) {
+            const pid = b.inc?.id?.replace(/^p/, "p") || b.inc?.id;
+            if (b.inc && ids.has(b.inc.id)) out.push(b.inc);
+          }
+        }
+        return { data: out.length ? out : [...ids].map((id) => ({ type: "preReleaseVersions", id, attributes: { version: "9.9", platform: "IOS" } })) };
+      }
+      const prOne = /^\/v1\/preReleaseVersions\/([^?]+)/.exec(p);
+      if (prOne) {
+        return { data: { type: "preReleaseVersions", id: prOne[1], attributes: { version: "9.9", platform: "IOS" } } };
       }
       const appFilter = /filter\[app\]=(\d+)/.exec(p);
       if (appFilter) {
@@ -320,7 +336,7 @@ test("mixed external groups: empty filter skips relationship; sibling with build
   assert.ok(calls.asc.some((p) => p.includes("filter%5BbetaGroups%5D=bg-public") || p.includes("filter[betaGroups]=bg-public")));
 });
 
-test("per-group lookupWarning when builds fail but testers succeed", async () => {
+test("build lookup failure leaves the app current (unknown group, not false empty)", async () => {
   const beta = {
     111: [{
       id: "bg-bad",
@@ -340,10 +356,62 @@ test("per-group lookupWarning when builds fail but testers succeed", async () =>
   };
   const reg = registry({ demo: app() });
   const r = await evaluateApp(makeContext(deps, reg), "demo", reg.apps.demo, NOW);
-  assert.equal(r.status, "behind", r.reason);
+  assert.equal(r.status, "current", r.reason);
+  assert.equal(r.externalGroups[0].newestBuildKnown, false);
+  assert.equal(r.externalGroups[0].testerCountKnown, true);
   assert.equal(r.externalGroups[0].testerCount, 2);
   assert.match(r.externalGroups[0].lookupWarning, /HTTP 503/);
-  assert.match(r.reason, /Broken.*has no builds/);
+  assert.deepEqual(r.externalGroups[0].findings, ["lookupUnknown"]);
+  assert.ok(!r.reason?.includes("has no builds"));
+});
+
+test("tester lookup failure uses null count and does not flag noTesters", async () => {
+  const beta = {
+    111: [{
+      id: "bg-bad",
+      name: "Broken",
+      builds: [FRESH_GROUP_BUILD],
+      testerTotal: 2,
+      publicLinkEnabled: true,
+    }],
+  };
+  const { deps } = fakeDeps({ repos: { Demo: botfleetLike() }, builds: BOTFLEET_BUILDS, betaGroups: beta });
+  const orig = deps.asc;
+  deps.asc = async (p) => {
+    if (p.includes("bg-bad/betaTesters")) throw new Error("App Store Connect /v1/betaGroups/bg-bad/betaTesters: HTTP 503");
+    return orig(p);
+  };
+  const reg = registry({ demo: app() });
+  const r = await evaluateApp(makeContext(deps, reg), "demo", reg.apps.demo, NOW);
+  assert.equal(r.status, "current");
+  assert.equal(r.externalGroups[0].testerCountKnown, false);
+  assert.equal(r.externalGroups[0].testerCount, null);
+  assert.ok(r.externalGroups[0].newestBuildKnown);
+  assert.ok(!r.reason?.includes("zero testers"));
+});
+
+test("attachPreReleaseVersions bulk-fetches duplicate preRelease ids in one call", async () => {
+  const builds = Array.from({ length: 8 }, (_, i) => ({
+    type: "builds",
+    id: `b${i}`,
+    attributes: { version: `${i}`, uploadedDate: "2026-10-17T17:09:00Z", processingState: "VALID", expired: false },
+    relationships: { preReleaseVersion: { data: { type: "preReleaseVersions", id: "pr-shared" } } },
+  }));
+  const ascCalls = [];
+  const ctx = makeContext({
+    asc: async (p) => {
+      ascCalls.push(p);
+      if (p.startsWith("/v1/preReleaseVersions?")) {
+        return { data: [{ type: "preReleaseVersions", id: "pr-shared", attributes: { version: "1.0.1", platform: "IOS" } }] };
+      }
+      throw new Error(`unexpected ${p}`);
+    },
+  }, { owner: "Org", apps: {} });
+  const out = await attachPreReleaseVersions(ctx, { data: builds });
+  assert.equal(out.included.length, 1);
+  assert.equal(ascCalls.length, 1);
+  assert.ok(ascCalls[0].includes("filter%5Bid%5D=pr-shared") || ascCalls[0].includes("filter[id]=pr-shared"));
+  assert.equal(preReleaseVersionsBulkPath(["a", "b"]).includes("filter[id]=a,b"), true);
 });
 
 test("external beta groups: clean group matches the valid build", async () => {
@@ -396,7 +464,9 @@ test("betaTesterCountFromJson and annotateExternalGroups", () => {
     name: "G",
     id: "1",
     newestBuild: { build: "b1", marketingVersion: "1.1", uploadedAt: "2026-08-01T00:00:00Z" },
+    newestBuildKnown: true,
     testerCount: 1,
+    testerCountKnown: true,
     publicLinkEnabled: false,
   }]);
   assert.match(reason, /older than the valid build/);
