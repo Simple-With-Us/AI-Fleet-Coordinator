@@ -190,8 +190,34 @@ const clean = (value, max) =>
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
     .slice(0, max);
 
+// Error diagnostics never need more than a few KiB, but a hostile or broken proxy can
+// stream an unbounded error body.  Cap the read instead of buffering it whole.
+export const ERROR_BODY_CAP = 16 * 1024;
+
+export async function readBoundedBody(res, max = ERROR_BODY_CAP) {
+  if (!res.body) return '';
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > max) {
+        await reader.cancel().catch(() => {});
+        break;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks));
+}
+
 export function describeApiError({ method = 'GET', path = '', status, headers, bodyText = '' } = {}) {
-  const parts = [`${method} ${path} -> ${status}`];
+  const parts = [`${clean(method, 20)} ${clean(path, 200)} -> ${clean(status, 10)}`];
   let message = '';
   let docs = '';
   try {

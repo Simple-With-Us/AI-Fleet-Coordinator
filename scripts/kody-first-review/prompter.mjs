@@ -6,7 +6,7 @@
 //   GITHUB_TOKEN  required, provided by the workflow (permissions: issues: write)
 //   GITHUB_REPOSITORY  owner/name, set by Actions
 //   DRY_RUN  'true' to list decisions without commenting
-import { classifyHttpError, decide, describeApiError, SAFE_ERROR_HEADERS, sweepPrompts, TRIGGER_TEXT } from './lib.mjs';
+import { classifyHttpError, decide, describeApiError, readBoundedBody, SAFE_ERROR_HEADERS, sweepPrompts, TRIGGER_TEXT } from './lib.mjs';
 
 const API = 'https://api.github.com';
 const token = process.env.GITHUB_TOKEN;
@@ -36,7 +36,7 @@ async function api(path, options = {}) {
       const value = res.headers.get(name);
       if (value != null) headers[name] = value;
     }
-    const bodyText = await res.text().catch(() => '');
+    const bodyText = await readBoundedBody(res).catch(() => '');
     const error = new Error(
       describeApiError({ method: options.method || 'GET', path, status: res.status, headers: res.headers, bodyText }),
     );

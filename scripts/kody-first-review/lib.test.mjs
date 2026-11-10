@@ -4,6 +4,7 @@ import {
   classifyHttpError,
   decide,
   describeApiError,
+  readBoundedBody,
   hasPendingTrigger,
   isTriggerComment,
   kodyHasAnswered,
@@ -285,4 +286,35 @@ test('describeApiError ignores non-JSON bodies and caps the message', () => {
   );
   const long = describeApiError({ status: 403, bodyText: JSON.stringify({ message: 'a'.repeat(5000) }) });
   assert.ok(long.length < 400);
+});
+
+
+test('describeApiError cleans method, path and status into the single-line bound', () => {
+  const text = describeApiError({
+    method: 'GE\nT injected',
+    path: '/repos/x\r\nforged-log-line' + 'y'.repeat(500),
+    status: 403,
+    bodyText: '{}',
+  });
+  assert.ok(!/[\r\n]/.test(text), 'diagnostic must stay one line');
+  assert.ok(text.length <= 400);
+});
+
+test('readBoundedBody caps an unbounded error stream', async () => {
+  const chunk = new Uint8Array(64 * 1024).fill(120);
+  let pulls = 0;
+  const res = {
+    body: new ReadableStream({
+      pull(controller) {
+        pulls += 1;
+        if (pulls > 8) return controller.close();
+        controller.enqueue(chunk);
+      },
+    }),
+  };
+  const text = await readBoundedBody(res);
+  assert.ok(text.length <= 64 * 1024 + 1, 'read stays at or under one chunk past the cap');
+  assert.ok(pulls <= 3, `stream cancelled early, got ${pulls} pulls`);
+  const empty = await readBoundedBody({ body: null });
+  assert.equal(empty, '');
 });
