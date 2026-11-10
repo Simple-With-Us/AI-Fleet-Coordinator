@@ -355,7 +355,28 @@ class TitleWriter(Base):
         )
         self.assertTrue(Z.zcode_rename(request))
         rows = dict((r[0], (r[1], r[2])) for r in self.rows())
-        self.assertEqual(rows[sid], ("AA: Words the prompt gave", "generated"))
+        self.assertEqual(rows[sid], ("AA: Words the prompt gave", "custom"))
+
+    def test_the_write_is_custom_so_the_app_keeps_its_hands_off(self) -> None:
+        # The app model-retitles a `generated` thread and wipes the letter prefix (seen
+        # live); a `custom` title is a user rename it leaves alone.  The hook's lettered
+        # title must therefore be written AS custom.
+        sid = sess(23)
+        self.add_session(sid, title="Words", title_source="first_input")
+        request = PL.TitleRequest(
+            platform=Z.PLATFORM,
+            session_id=sid,
+            label="AA",
+            title="AA: Words",
+            words="Words",
+            current="Words",
+            reason="start",
+            data={},
+            env=self.env(),
+        )
+        self.assertTrue(Z.zcode_rename(request))
+        rows = dict((r[0], (r[1], r[2])) for r in self.rows())
+        self.assertEqual(rows[sid], ("AA: Words", "custom"))
 
     def test_rename_never_writes_over_a_user_rename(self) -> None:
         sid = sess(21)
@@ -391,7 +412,7 @@ class TitleWriter(Base):
         )
         self.assertTrue(Z.zcode_rename(request))
         rows = dict((r[0], (r[1], r[2])) for r in self.rows())
-        self.assertEqual(rows[sid], ("AA: Jay kept the letter", "generated"))
+        self.assertEqual(rows[sid], ("AA: Jay kept the letter", "custom"))
 
 
 class Install(Base):

@@ -213,11 +213,19 @@ def zcode_chat_payload(sid: str) -> Mapping[str, Any]:
 
 
 def zcode_rename(request: Any) -> bool:
-    """Put the lettered title on the chat:  one UPDATE in the store, `title_source` `generated`.
+    """Put the lettered title on the chat:  one UPDATE in the store, `title_source` `custom`.
 
-    A name the user gave (`title_source` `custom`) that does not already carry this letter
-    is never written over:  the chat keeps the user's words, and the registry keeps the
-    letter, so the two say the same chat in different words."""
+    `custom`, not `generated`:  the app model-retitles a thread whose title it considers its
+    own (`generated`) and wipes the letter prefix off it (seen live — a thread titled
+    "DD: work on ..." came back as plain "Merge and Close Draft PRs"), while a custom title
+    is a user rename the app leaves alone.  The letter hook's own rule keeps working on top:
+    a custom title that already carries this letter is updated in place (new words, same
+    letter), and a custom title without the letter is a name the user chose, so the chat
+    keeps the user's words and the registry keeps the letter.
+
+    The write retries once on a locked store:  the live app holds the database, and a busy
+    timeout alone was seen losing title writes under it (titles landed hours late, on a much
+    later event's retry)."""
     env = request.env
     sid = request.session_id
     title = str(request.title or "").strip()
@@ -234,20 +242,24 @@ def zcode_rename(request: Any) -> bool:
         current = str(row.get("title") or "")
         if current and not current.startswith(str(request.label or "") + ":"):
             return True
-    try:
-        conn = sqlite3.connect(path, timeout=5)
+    for attempt in range(2):
         try:
-            with conn:
-                cur = conn.execute(
-                    "UPDATE session SET title = ?, title_source = 'generated',"
-                    " time_title_updated = ? WHERE id = ?",
-                    (title, int(time.time()), sid),
-                )
-                return cur.rowcount == 1
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return False
+            conn = sqlite3.connect(path, timeout=15)
+            try:
+                with conn:
+                    cur = conn.execute(
+                        "UPDATE session SET title = ?, title_source = 'custom',"
+                        " time_title_updated = ? WHERE id = ?",
+                        (title, int(time.time()), sid),
+                    )
+                    return cur.rowcount == 1
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            if attempt == 0:
+                time.sleep(0.25)
+                continue
+    return False
 
 
 SPEC = PL.PlatformSpec(
