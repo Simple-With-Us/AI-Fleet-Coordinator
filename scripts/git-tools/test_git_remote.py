@@ -1176,6 +1176,16 @@ class TestOutcomes(unittest.TestCase):
             worker,
             "client pinned read set drifted from gr-workflow-v1.js WF_V1_READ_ACTIONS",
         )
+        # The catalog exporter pins the same set for its read/write tags;  it drifts too.
+        src = (IMPL.parent / "export_catalog.py").read_text()
+        m = re.search(r"WF_V1_READ_ACTIONS\s*=\s*\[([^\]]*)\]", src)
+        self.assertIsNotNone(m, "export_catalog.py WF_V1_READ_ACTIONS list not found")
+        exporter = set(re.findall(r'"([a-z0-9_]+)"', m.group(1)))
+        self.assertEqual(
+            set(git.WF_V1_READ_ACTIONS),
+            exporter,
+            "export_catalog.py pinned read set drifted from the client reviewed read set",
+        )
 
     def test_new_read_verbs_classify_as_reads(self):
         for name in (
