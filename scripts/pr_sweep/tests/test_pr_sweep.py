@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime as dt
 import io
+import os
 import json
 import re
 import tempfile
@@ -23,6 +24,44 @@ from pr_sweep import prompt as PR
 from pr_sweep import run as R
 from pr_sweep import status as S
 from pr_sweep.gh import Gh, GhError
+
+class LaneToolTests(unittest.TestCase):
+    """resolve_lane_tool: directories and plain files are not a lane tool."""
+
+    def _with_path(self, d: Path, fn: Any) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            bindir = Path(t, "bin")
+            bindir.mkdir()
+            import unittest.mock as _mock
+            with _mock.patch.dict(os.environ, {"PATH": str(bindir)}):
+                fn()
+
+    def test_rejects_directory_and_plain_file_accepts_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            apps = d / "apps"
+            apps.mkdir()
+            self._with_path(d, lambda: self.assertIsNone(R.resolve_lane_tool(home=str(d))))
+            (apps / "lane").mkdir()
+            self._with_path(d, lambda: self.assertIsNone(R.resolve_lane_tool(home=str(d))))
+            (apps / "lane").rmdir()
+            (apps / "lane").write_text("#!/bin/sh\n", encoding="utf-8")
+            self._with_path(d, lambda: self.assertIsNone(R.resolve_lane_tool(home=str(d))))
+            (apps / "lane").chmod(0o755)
+            self._with_path(d, lambda: self.assertEqual(R.resolve_lane_tool(home=str(d)), str(apps / "lane")))
+
+    def test_falls_back_to_executable_lane_on_path(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            (d / "apps").mkdir()
+
+            def run() -> None:
+                fake = Path(os.environ["PATH"]) / "lane"
+                fake.write_text("#!/bin/sh\n", encoding="utf-8")
+                fake.chmod(0o755)
+                self.assertEqual(R.resolve_lane_tool(home=str(d)), str(fake))
+
+            self._with_path(d, run)
 
 NOW = dt.datetime(2026, 10, 17, 18, 0, 0, tzinfo=dt.timezone.utc)  # noqa: UP017 (3.9 has no datetime.UTC)
 OLD = "2026-10-17T12:00:00Z"
