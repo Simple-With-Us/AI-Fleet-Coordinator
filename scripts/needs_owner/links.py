@@ -15,7 +15,7 @@ from typing import NamedTuple
 from .errors import Refusal
 
 DEFAULT_REALM = "https://simplewithus.zulipchat.com"
-DEFAULT_CHANNEL = "work-in-progress"  # the realm renamed #agent-sync;  AGENT_SYNC_CHANNEL overrides
+DEFAULT_CHANNEL = "work-in-progress"  # SIMPLE_TOOLS_CHANNEL overrides
 
 
 def resolve_channel(environ: dict | None = None) -> str:
@@ -24,7 +24,7 @@ def resolve_channel(environ: dict | None = None) -> str:
     Read from the caller's own `environ` when one is supplied, so a caller (and its tests) controls
     the channel instead of the module's import-time snapshot of `os.environ`."""
     env = os.environ if environ is None else environ
-    return (env.get("AGENT_SYNC_CHANNEL") or "").strip().casefold() or DEFAULT_CHANNEL
+    return (env.get("SIMPLE_TOOLS_CHANNEL") or "").strip().casefold() or DEFAULT_CHANNEL
 
 
 CHANNEL = resolve_channel()
@@ -39,7 +39,7 @@ class TopicLink(NamedTuple):
 
 def realm_host(environ: dict | None = None) -> str:
     env = os.environ if environ is None else environ
-    site = (env.get("AGENT_SYNC_REALM") or DEFAULT_REALM).strip().rstrip("/")
+    site = (env.get("SIMPLE_TOOLS_REALM") or DEFAULT_REALM).strip().rstrip("/")
     if "://" not in site:
         site = "https://" + site
     return urllib.parse.urlsplit(site).netloc.lower()

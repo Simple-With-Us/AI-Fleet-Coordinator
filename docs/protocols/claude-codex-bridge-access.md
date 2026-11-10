@@ -1,6 +1,6 @@
 # Claude and Codex bridge access (AFC-296)
 
-Prepared Mon, Oct 12, 2026.  The hosted Agent-Sync endpoint is
+Prepared Mon, Oct 12, 2026.  The hosted Simple-Tools endpoint is
 `https://agents.simplewithus.com/mcp`; the server binds each grant to a seat and
 uses that seat's bot credential.  Identity is never a caller-supplied argument.
 
@@ -21,7 +21,7 @@ its own seat tag, and its callback belongs only to CLAUDE.  Worker bindings
 AFC `prod` `/zulip` entry names; Worker provisioning remains unconfirmed.  The existing JET
 client and grant cannot be reused.  A real `whoami` must confirm CLAUDE,
 `claude-bot@simplewithus.zulipchat.com`, role 400 and hosted transport.  Follow
-[owner connection steps](../../scripts/agent-sync-mcp/ARMING-JAY.md#connect-hosted-claude-claude-afc-296).
+[owner connection steps](../../scripts/simple-tools-mcp/ARMING-JAY.md#connect-hosted-claude-claude-afc-296).
 
 Codex Cloud needs a separate hosted MCP connection's actual OAuth identity from
 its management page or a matching owner-initiated refusal.  OpenAI's hosted

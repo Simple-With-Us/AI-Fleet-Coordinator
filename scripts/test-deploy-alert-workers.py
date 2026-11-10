@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import unittest
 from unittest.mock import patch
 
@@ -6,11 +7,252 @@ s = importlib.util.spec_from_file_location("release", "scripts/deploy-alert-work
 m = importlib.util.module_from_spec(s)
 s.loader.exec_module(m)
 
+# A second alert target for the tests that prove one target cannot block another.
+# alert-ingress is the only real one since pr-conflict-watch retired on 2026-11-06.
+OTHER = {
+    "deployer": "alert-workers-deploy",
+    "root": "workers/other/",
+    "config": "workers/other/wrangler.toml",
+    "paths": ["workers/other/src/**"],
+    "ignore": ["*.test.*"],
+    "health": "https://other.invalid/health",
+    "ok": True,
+}
+
+
+def two_targets():
+    return patch.dict(m.TARGETS, {"other-worker": OTHER})
+
 
 class Tests(unittest.TestCase):
     def test_targets_cannot_expand_to_shared_workers(self):
-        self.assertEqual(set(m.TARGETS), {"alert-ingress", "pr-conflict-watch"})
-        self.assertIn("zulip-cutover", m.TARGETS["pr-conflict-watch"]["config"])
+        self.assertEqual(set(m.TARGETS), {"alert-ingress"})
+
+    def test_retired_worker_is_not_a_target(self):
+        self.assertNotIn("pr-conflict-watch", m.TARGETS)
+        self.assertNotIn("pr-conflict-watch", m.m.TARGETS)
+
+    def test_no_worker_is_mapped_to_both_pipelines(self):
+        import re
+
+        workflow = m.pathlib.Path(".github/workflows/worker-deploy.yml").read_text()
+        matrix = json.loads(
+            re.search(r"^\s*worker:\s*(\[.*\])\s*$", workflow, re.MULTILINE).group(1)
+        )
+        self.assertFalse(set(matrix) & set(m.TARGETS))
+
+    def test_tripped_target_is_refused_and_the_other_still_runs(self):
+        order = []
+
+        def tripped(name):
+            order.append(name)
+            return name == "alert-ingress"
+
+        with (
+            two_targets(),
+            patch.object(m.subprocess, "check_output", return_value="a" * 40),
+            patch.object(m.subprocess, "run") as run,
+            patch.object(m, "current_main", return_value="a" * 40),
+            patch.object(m, "credential_receipt", return_value=True),
+            patch.object(
+                m,
+                "github",
+                return_value={
+                    "workflow_runs": [
+                        {"head_sha": "a" * 40, "status": "completed", "conclusion": "success"}
+                    ]
+                },
+            ),
+            patch.object(m, "guard_tripped", side_effect=tripped),
+            patch.object(m, "deployed_tag", return_value="a" * 40),
+            patch.object(m.m, "worker_changed", return_value=False),
+            patch.object(m, "probe"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "budget guard tripped: alert-ingress"):
+                m.main()
+            for call in run.call_args_list:
+                self.assertNotIn("deploy", call.args[0])
+        self.assertEqual(order, ["alert-ingress", "other-worker"])
+
+    def test_unrelated_merge_does_not_release(self):
+        with (
+            patch.object(m.subprocess, "check_output", return_value="a" * 40),
+            patch.object(m.subprocess, "run") as run,
+            patch.object(m, "current_main", return_value="a" * 40),
+            patch.object(m, "credential_receipt", return_value=True),
+            patch.object(
+                m,
+                "github",
+                return_value={
+                    "workflow_runs": [
+                        {"head_sha": "a" * 40, "status": "completed", "conclusion": "success"}
+                    ]
+                },
+            ),
+            patch.object(m, "guard_tripped", return_value=False),
+            patch.object(m, "deployed_tag", return_value="b" * 40),
+            patch.object(m.m, "worker_changed", return_value=False),
+            patch.object(m, "probe") as probe,
+        ):
+            m.main()
+        for call in run.call_args_list:
+            self.assertNotIn("deploy", call.args[0])
+        self.assertEqual(probe.call_count, 1)
+
+    def test_release_refuses_to_drop_live_limits(self):
+        with (
+            patch.object(m.pathlib.Path, "read_text", return_value='name = "x"\n'),
+            self.assertRaisesRegex(RuntimeError, "drop live limits"),
+        ):
+            m.preflight_config({"config": "x"}, {"limits": {"cpu_ms": 200}})
+
+    def test_qualification_reads_every_target(self):
+        checked = []
+        with (
+            patch.dict(m.os.environ, {"CLOUDFLARE_API_TOKEN": "offline", "GH_TOKEN": "offline"}),
+            patch.object(m, "current_main"),
+            patch.object(m, "guard_tripped", return_value=False),
+            patch.object(m, "cloudflare", return_value={}),
+            patch.object(m, "preflight_config"),
+            patch.object(
+                m, "deployed_tag", side_effect=lambda name: checked.append(name) or "a" * 40
+            ),
+            patch.object(m, "probe"),
+        ):
+            m.qualify_credentials()
+        self.assertEqual(checked, ["alert-ingress"])
+
+    def test_tripped_target_does_not_fail_qualification_for_the_other(self):
+        # The qualify step runs first on every trigger, so a raise here would skip the
+        # release step and stop the healthy Worker's release too.
+        probed = []
+        with (
+            two_targets(),
+            patch.dict(m.os.environ, {"CLOUDFLARE_API_TOKEN": "offline", "GH_TOKEN": "offline"}),
+            patch.object(m, "current_main"),
+            patch.object(m, "guard_tripped", side_effect=lambda name: name == "alert-ingress"),
+            patch.object(m, "cloudflare", return_value={}) as read,
+            patch.object(m, "preflight_config") as preflight,
+            patch.object(m, "deployed_tag", return_value="a" * 40) as tag,
+            patch.object(m, "probe", side_effect=probed.append),
+        ):
+            m.qualify_credentials()
+            names = list(m.TARGETS)
+        self.assertEqual(probed, [OTHER])
+        # The receipt's proof holds for the stopped Worker too: only the probe is skipped.
+        self.assertEqual(preflight.call_count, 2)
+        self.assertEqual([c.args[0] for c in tag.call_args_list], names)
+        reads = [c.args[0] for c in read.call_args_list]
+        self.assertIn("/workers/scripts/alert-ingress/settings", reads)
+        self.assertIn("/workers/scripts/other-worker/settings", reads)
+
+    def qualify_with_one_stopped(self, **patches):
+        """Qualify with alert-ingress stopped and a second target running; returns the probes."""
+        probed = []
+        with (
+            two_targets(),
+            patch.dict(m.os.environ, {"CLOUDFLARE_API_TOKEN": "offline", "GH_TOKEN": "offline"}),
+            patch.object(m, "current_main"),
+            patch.object(m, "guard_tripped", side_effect=lambda name: name == "alert-ingress"),
+            patch.object(m, "preflight_config", patches.get("preflight", lambda *args: None)),
+            patch.object(m, "cloudflare", patches.get("read", lambda path: {})),
+            patch.object(m, "deployed_tag", patches.get("tag", lambda name: "a" * 40)),
+            patch.object(m, "probe", side_effect=probed.append),
+        ):
+            m.qualify_credentials()
+        return probed
+
+    def test_a_stopped_target_still_needs_the_credential_read(self):
+        def read(path):
+            if "alert-ingress" in path:
+                raise RuntimeError("Cloudflare read rejected")
+            return {}
+
+        with self.assertRaisesRegex(RuntimeError, "read rejected"):
+            self.qualify_with_one_stopped(read=read)
+
+    def test_a_stopped_targets_preconditions_cannot_block_the_other_target(self):
+        running = [OTHER]
+
+        def no_baseline(name):
+            return None if name == "alert-ingress" else "a" * 40
+
+        def drifted(target, settings):
+            if target is m.TARGETS["alert-ingress"]:
+                raise RuntimeError("Release would drop live limits")
+
+        self.assertEqual(self.qualify_with_one_stopped(tag=no_baseline), running)
+        self.assertEqual(self.qualify_with_one_stopped(preflight=drifted), running)
+        # A transport failure or a malformed answer is the same to a target not released.
+        for failure in (m.urllib.error.URLError("x"), KeyError("deployments"), ValueError("x")):
+
+            def broken(name, failure=failure):
+                if name == "alert-ingress":
+                    raise failure
+                return "a" * 40
+
+            self.assertEqual(self.qualify_with_one_stopped(tag=broken), running)
+
+    def test_a_running_targets_preconditions_still_fail_qualification(self):
+        def no_baseline(name):
+            return None if name == "other-worker" else "a" * 40
+
+        def drifted(target, settings):
+            if target is OTHER:
+                raise RuntimeError("Release would drop live limits")
+
+        with self.assertRaisesRegex(RuntimeError, "Missing qualified live version baseline"):
+            self.qualify_with_one_stopped(tag=no_baseline)
+        with self.assertRaisesRegex(RuntimeError, "drop live limits"):
+            self.qualify_with_one_stopped(preflight=drifted)
+
+    def release(self, guard, tags):
+        """Run main() through a real target change, with every external edge mocked."""
+        sha = "a" * 40
+        with (
+            patch.object(m.subprocess, "check_output", return_value=sha),
+            patch.object(m.subprocess, "run") as run,
+            patch.object(m, "current_main", return_value=sha),
+            patch.object(m, "credential_receipt", return_value=True),
+            patch.object(
+                m,
+                "github",
+                return_value={
+                    "workflow_runs": [
+                        {"head_sha": sha, "status": "completed", "conclusion": "success"}
+                    ]
+                },
+            ),
+            patch.object(m, "guard_tripped", side_effect=guard),
+            patch.object(m, "deployed_tag", side_effect=tags),
+            patch.object(m.m, "worker_changed", return_value=True),
+            patch.object(m, "git", return_value=""),
+            patch.object(m, "reviewed"),
+            patch.object(m, "cloudflare", return_value={}),
+            patch.object(m, "preflight_config"),
+            patch.object(m, "probe"),
+        ):
+            try:
+                m.main()
+            except RuntimeError as error:
+                return run, error
+        return run, None
+
+    def uploads(self, run):
+        return [c.args[0] for c in run.call_args_list if "--tag" in c.args[0]]
+
+    def test_changed_target_releases_with_the_exact_tag(self):
+        run, error = self.release([False, False], ["b" * 40, "a" * 40])
+        self.assertIsNone(error)
+        uploads = self.uploads(run)
+        self.assertEqual(len(uploads), 1)
+        self.assertIn("a" * 40, uploads[0])
+        self.assertIn("--keep-vars", uploads[0])
+
+    def test_trip_during_the_release_refuses_the_upload(self):
+        run, error = self.release([False, True], ["b" * 40])
+        self.assertIn("budget guard tripped: alert-ingress", str(error))
+        self.assertEqual(self.uploads(run), [])
 
     def test_no_review_fails_closed(self):
         with patch.object(m, "github", return_value=[]), self.assertRaises(RuntimeError):
@@ -48,29 +290,6 @@ class Tests(unittest.TestCase):
             run.assert_not_called()
             current.assert_called_once()
 
-    def test_missing_cutover_proof_skips_only_that_target(self):
-        with patch.object(m.pathlib.Path, "exists", return_value=False):
-            self.assertFalse(m.cutover_receipt())
-
-    def test_synthetic_cutover_proof_fails(self):
-        import json
-
-        receipt = {
-            "sender_id": 1212033,
-            "channel_id": 642233,
-            "source_sha": "a" * 40,
-            "version_id": "verified",
-            "message_id": 123,
-            "message_url": "https://simplewithus.zulipchat.com/#narrow/id/123",
-            "real_conflict_event": False,
-        }
-        with (
-            patch.object(m.pathlib.Path, "exists", return_value=True),
-            patch.object(m.pathlib.Path, "read_text", return_value=json.dumps(receipt)),
-            self.assertRaises(RuntimeError),
-        ):
-            m.cutover_receipt()
-
     def test_review_includes_release_infrastructure(self):
         self.assertIn(".github/workflows/alert-workers-deploy.yml", m.RELEASE_PATHS)
         self.assertIn("scripts/deploy-mapped-worker.py", m.RELEASE_PATHS)
@@ -80,23 +299,23 @@ class Tests(unittest.TestCase):
             patch.object(
                 m.pathlib.Path,
                 "read_text",
-                return_value='[[kv_namespaces]]\nbinding="PR_STATE"\nid="changed"\n',
+                return_value='[[kv_namespaces]]\nbinding="STATE"\nid="changed"\n',
             ),
             self.assertRaises(RuntimeError),
         ):
             m.preflight_config(
                 {"config": "x"},
-                {"bindings": [{"name": "PR_STATE", "namespace_id": "existing"}]},
+                {"bindings": [{"name": "STATE", "namespace_id": "existing"}]},
             )
 
     def test_unchanged_kv_passes(self):
         with patch.object(
             m.pathlib.Path,
             "read_text",
-            return_value='[[kv_namespaces]]\nbinding="PR_STATE"\nid="same"\n',
+            return_value='[[kv_namespaces]]\nbinding="STATE"\nid="same"\n',
         ):
             m.preflight_config(
-                {"config": "x"}, {"bindings": [{"name": "PR_STATE", "namespace_id": "same"}]}
+                {"config": "x"}, {"bindings": [{"name": "STATE", "namespace_id": "same"}]}
             )
 
     def test_old_review_cannot_cover_changed_release_source(self):
@@ -238,27 +457,8 @@ class Tests(unittest.TestCase):
         self.assertIn("workflow_run:", text)
         self.assertIn("workflows: [CI]", text)
         self.assertNotIn("WORKER_DEPLOY_ENABLED", text)
-        self.assertNotIn("agent-sync-mcp/wrangler", text)
+        self.assertNotIn("simple-tools-mcp/wrangler", text)
         self.assertIn("17,47 * * * *", text)
-
-    def test_numeric_receipt_not_boolean(self):
-        import json
-
-        receipt = {
-            "sender_id": 1212033,
-            "channel_id": 642233,
-            "source_sha": "a" * 40,
-            "version_id": "verified",
-            "message_id": 123,
-            "message_url": "https://simplewithus.zulipchat.com/#narrow/id/123",
-            "real_conflict_event": 1,
-        }
-        with (
-            patch.object(m.pathlib.Path, "exists", return_value=True),
-            patch.object(m.pathlib.Path, "read_text", return_value=json.dumps(receipt)),
-            self.assertRaises(RuntimeError),
-        ):
-            m.cutover_receipt()
 
     def test_redirect_handler_refuses_forward(self):
         self.assertIsNone(
@@ -310,6 +510,7 @@ class Tests(unittest.TestCase):
         with (
             patch.dict(m.os.environ, {"CLOUDFLARE_API_TOKEN": "offline", "GH_TOKEN": "offline"}),
             patch.object(m, "current_main"),
+            patch.object(m, "guard_tripped", return_value=False),
             patch.object(m, "cloudflare", return_value={}),
             patch.object(m, "preflight_config"),
             patch.object(m, "deployed_tag", return_value="a" * 40),
@@ -335,7 +536,12 @@ class Tests(unittest.TestCase):
             current.assert_not_called()
 
     def receipt_fixture(self, **changes):
-        receipt = {"run_id": 123, "source_sha": "a" * 40, "nondeployment": True}
+        receipt = {
+            "run_id": 123,
+            "source_sha": "a" * 40,
+            "nondeployment": True,
+            "gate": m.RECEIPT_GATE,
+        }
         receipt.update(changes)
         run = {
             "event": "workflow_dispatch",
@@ -364,22 +570,76 @@ class Tests(unittest.TestCase):
         }
         return receipt, run, jobs
 
-    def check_receipt(self, receipt, run, jobs, changed=""):
+    WORKFLOW = """\
+jobs:
+  deploy:
+    steps:
+      - uses: actions/setup-python@v7
+      - name: Load existing scoped release credential
+        env:
+          INFISICAL_NAMES: CLOUDFLARE_FLEET_API_TOKEN
+        run: node scripts/infisical-fetch.mjs
+      - name: Qualify existing credential delivery without deployment
+        run: python3 scripts/deploy-alert-workers.py --qualify-only
+      - name: Verify reviews and release exact alert targets
+        run: python3 scripts/deploy-alert-workers.py
+"""
+
+    def check_receipt(self, receipt, run, jobs, changed="", workflow=None):
         import json
+
+        def git(*args):
+            if args[0] == "diff":
+                self.assertEqual(args[-1], "scripts/infisical-fetch.mjs")
+                return changed
+            if args[1].startswith("HEAD:"):
+                return workflow or self.WORKFLOW
+            return self.WORKFLOW
 
         with (
             patch.object(m.pathlib.Path, "exists", return_value=True),
             patch.object(m.pathlib.Path, "read_text", return_value=json.dumps(receipt)),
             patch.object(m, "github", side_effect=[run, jobs]),
-            patch.object(m, "git", return_value=changed) as git,
+            patch.object(m, "git", side_effect=git),
         ):
-            result = m.credential_receipt()
-            self.assertIn("scripts/worker-targets.json", git.call_args.args)
-            self.assertIn("scripts/agent-sync-mcp/package-lock.json", git.call_args.args)
-            return result
+            return m.credential_receipt()
 
     def test_qualified_receipt_passes(self):
         self.assertTrue(self.check_receipt(*self.receipt_fixture()))
+
+    def test_receipt_from_before_this_gate_cannot_arm_a_release(self):
+        with self.assertRaisesRegex(RuntimeError, "predates this gate"):
+            self.check_receipt(*self.receipt_fixture(gate=None))
+
+    def test_credential_unrelated_workflow_edit_keeps_the_receipt(self):
+        bumped = self.WORKFLOW.replace("setup-python@v7", "setup-python@v8")
+        bumped = bumped.replace(
+            "run: python3 scripts/deploy-alert-workers.py\n",
+            "run: python3 scripts/deploy-alert-workers.py # x\n",
+        )
+        self.assertTrue(self.check_receipt(*self.receipt_fixture(), workflow=bumped))
+
+    def test_credential_step_edit_voids_the_receipt(self):
+        changed = self.WORKFLOW.replace("CLOUDFLARE_FLEET_API_TOKEN", "OTHER_TOKEN")
+        with self.assertRaisesRegex(RuntimeError, "source changed"):
+            self.check_receipt(*self.receipt_fixture(), workflow=changed)
+
+    def test_qualify_step_edit_voids_the_receipt(self):
+        changed = self.WORKFLOW.replace("--qualify-only", "--qualify-only --skip")
+        with self.assertRaisesRegex(RuntimeError, "source changed"):
+            self.check_receipt(*self.receipt_fixture(), workflow=changed)
+
+    def test_missing_credential_step_voids_the_receipt(self):
+        changed = self.WORKFLOW.replace("Load existing scoped release credential", "Renamed")
+        with self.assertRaisesRegex(RuntimeError, "Credential step not found"):
+            self.check_receipt(*self.receipt_fixture(), workflow=changed)
+
+    def test_real_workflow_has_the_credential_steps(self):
+        text = m.pathlib.Path(m.CREDENTIAL_WORKFLOW).read_text()
+        blocks = m.workflow_credential_steps(text)
+        self.assertIn("infisical-fetch.mjs", blocks[0])
+        self.assertIn("--qualify-only", blocks[1])
+        self.assertNotIn("Verify reviews", blocks[1])
 
     def test_numeric_nondeployment_receipt_fails(self):
         with self.assertRaises(RuntimeError):
@@ -398,7 +658,7 @@ class Tests(unittest.TestCase):
 
     def test_changed_release_source_invalidates_receipt(self):
         with self.assertRaises(RuntimeError):
-            self.check_receipt(*self.receipt_fixture(), changed="scripts/worker-targets.json")
+            self.check_receipt(*self.receipt_fixture(), changed="scripts/infisical-fetch.mjs")
 
     def test_effective_request_superseded_only_by_same_reviewer_approval(self):
         request = {"id": 1, "user": {"id": 10}, "state": "CHANGES_REQUESTED"}

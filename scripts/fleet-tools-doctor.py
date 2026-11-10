@@ -31,6 +31,11 @@ fleet-server-status of at most 512 KiB.  On the Mac, `--remote` with `--write P
 valid `serverStatus` to ~/.local/state/fleet-tools/server-status.json (0600, atomically) and
 leaves it out of the combined report.
 
+AFC-576:  on the server, `--json` also carries `appProcesses`, the fleet-app process scan of
+scripts/fleet_app_processes.py (no argv, no environment).  On the Mac, `--write PATH` also
+scans the Mac and writes it, with the server's scan, to app-processes.json beside PATH;  the
+server's scan never enters the combined report.  A scan that fails never fails the doctor.
+
 `--vms` pulls each VM named in ~/.config/fleet-tools/vm-hosts.json over its read-only
 forced-command key (the key prints `fleet-vm-status.py --json`) into
 ~/.local/state/fleet-tools/vms/<label>.json, 0600 and atomically.  A missing config is a
@@ -53,8 +58,7 @@ Checks:
   seat:<S>    per seat:  Zulip bot, Linear app and FleetLink token key NAMES in Infisical
               (Fleet-OPS /zulip and /linear, AI Fleet Coordinator /fleetlink;  AFC-359:  no credential file is read)
   mcp:codex   Codex registers the fleet's stdio server (simple-chat) and FleetLink when a
-              token exists;  a host that still carries the retired agent-sync name still
-              serves the seat, and is reported as the drift it is
+              token exists
   mcp:claude  Claude Code registers the same two (the stdio server, FleetLink)
   tool:<T>    each fleet tool's currency (simple-chat, simple-notes, simple-board, recall, lane, fleet-mode,
               fleet-secrets, fleetlink), then each registry tool's install and version
@@ -72,15 +76,16 @@ from __future__ import annotations
 import argparse
 import calendar
 import concurrent.futures
+import errno
 import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.request
 from collections.abc import Callable
@@ -108,7 +113,7 @@ COMMANDS = (*FLEET_TOOLS, "fleetlink")
 # The Mac keeps lane and fleet-mode in ~/apps rather than on PATH.
 COMMAND_FALLBACK_DIRS = (HOME / "apps",)
 # Where a Mac finds the published runtime (the server reads RUNTIME/current).
-MAC_RUNTIME = HOME / "apps/lanes/_managed/fleet/agent-sync-runtime"
+MAC_RUNTIME = HOME / "apps/lanes/_managed/fleet/simple-tools-runtime"
 # The simple-tools commands the Mac links into the managed runtime:  command name -> entry script.
 MAC_SIMPLE_TOOLS = (
     ("simple-chat", "simple-chat"),
@@ -129,15 +134,22 @@ SHIPPED = (
     # The git tools CLI entry wrapper and implementation (mirrors the release policy).
     "scripts/simple-git",
     "scripts/git-tools/",
-    "scripts/agent_sync/",
+    "scripts/simple_tools/",
+    # The ZC wake bridge and the letter hook's wrapper are roots of their own (OPS-1048), not
+    # under a directory the list already covers.
+    "scripts/zc-wake-bridge",
+    "scripts/ag-wake-bridge",
+    "scripts/zcode-letter-hook/",
     "scripts/linear-board/",
     "fleet-apps.json",
-    "docs/protocols/agent-sync-partition.toml",
+    "docs/protocols/simple-tools-partition.toml",
     "scripts/fleet-cli-release.py",
     "scripts/recall",
     "scripts/fleet_rag/",
     "scripts/fleet_lanes/",
     "scripts/fleet_knobs/",
+    "scripts/fleet_secrets/__init__.py",
+    "scripts/fleet_secrets/core.py",
     "scripts/fleet-mode",
     "docs/FLEET-MODE.md",
     "docs/protocols/simple-tools-guide.md",
@@ -158,23 +170,34 @@ SHIPPED_EXACT = frozenset(
         "scripts/linear-board/board",
         "scripts/linear-board/board-ids.txt",
         "fleet-apps.json",
-        "docs/protocols/agent-sync-partition.toml",
+        "docs/protocols/simple-tools-partition.toml",
         "scripts/fleet-cli-release.py",
-        "scripts/agent_sync/mcp/tools.json",
-        "scripts/agent_sync/mcp/fixtures.jsonl",
-        "scripts/agent_sync/mcp/eavesdropper-tools.json",
-        "scripts/agent_sync/mcp/renamed-tools.json",
-        "scripts/agent_sync/mcp/gb-identities.json",
-        "scripts/agent_sync/mcp/notes-tools.json",
-        "scripts/agent_sync/mcp/recall-tools.json",
+        "scripts/simple_tools/mcp/tools.json",
+        "scripts/simple_tools/mcp/fixtures.jsonl",
+        "scripts/simple_tools/mcp/eavesdropper-tools.json",
+        "scripts/simple_tools/mcp/renamed-tools.json",
+        "scripts/simple_tools/mcp/gb-identities.json",
+        "scripts/simple_tools/mcp/notes-tools.json",
+        "scripts/simple_tools/mcp/recall-tools.json",
         "scripts/linear-board/catalog/core-tools.json",
-        "scripts/agent_sync/mcp/fleetlink-tools.json",
+        "scripts/simple_tools/mcp/fleetlink-tools.json",
         # AFC-412 PR2:  mirrors the release EXACT entry for the operator registry outbox exporter.
-        "scripts/agent_sync/operator_sheets_export.mjs",
+        "scripts/simple_tools/operator_sheets_export.mjs",
+        "scripts/simple_tools/operator_sheets_google.mjs",
+        "scripts/simple_tools/operator_sheets_drain.mjs",
         # AFC-564:  mirrors the release EXACT entry for the OpenCode letter plugin.
-        "scripts/agent_sync/opencode_letter_plugin/index.js",
+        "scripts/simple_tools/opencode_letter_plugin/index.js",
+        # OPS-1048:  mirror the release EXACT entries for the ZC wake bridge and the letter hook's
+        # wrapper (the receiver the seat's http routine POSTs to, and the copy the install writes).
+        "scripts/zc-wake-bridge",
+        "scripts/ag-wake-bridge",
+        "scripts/zcode-letter-hook/platform-letter",
+        # The scoped verifier library the new knobs and recall bundles depend on.  The generic
+        # secrets CLI does not ship, so only these two modules are listed.
+        "scripts/fleet_secrets/__init__.py",
+        "scripts/fleet_secrets/core.py",
         "docs/protocols/simple-tools-guide.md",
-        "scripts/agent_sync/wake/wake-schema.json",
+        "scripts/simple_tools/wake/wake-schema.json",
         "scripts/linear-board/catalog/named-commands.json",
         "scripts/linear-board/catalog/official-mcp-tools.json",
         "scripts/linear-board/catalog/public-inputs.json",
@@ -199,6 +222,8 @@ SHIPPED_EXACT = frozenset(
         "scripts/fleet_lanes/layout.py",
         "scripts/fleet_lanes/placement.py",
         "scripts/fleet_lanes/placement-exceptions.json",
+        # AFC-618:  guard.py imports temp_build, so it ships beside it (mirrors the release EXACT entry).
+        "scripts/fleet_lanes/temp_build.py",
         "scripts/fleet_knobs/__init__.py",
         "scripts/fleet_knobs/knobs.py",
         "scripts/fleet_knobs/lkg.py",
@@ -211,7 +236,7 @@ SHIPPED_EXACT = frozenset(
 )
 STATE = HOME / ".local/state/fleet-tools-doctor.json"
 CATALOGS = (
-    ("scripts/agent_sync/mcp/tools.json", True),
+    ("scripts/simple_tools/mcp/tools.json", True),
     ("scripts/linear-board/catalog/named-commands.json", False),
     ("scripts/linear-board/catalog/official-mcp-tools.json", False),
 )
@@ -251,7 +276,14 @@ GITHUB_TIMEOUT = 8
 # more try afterwards, on its own.
 REGISTRY_WORKERS = 4
 GRACE_MINUTES = 70  # an hourly timer that fired within this window is still on schedule
-MAC_UPDATER_LABEL = "com.jay.agent-sync-runtime-sync"
+# The Mac's runtime sync job (scripts/launchd/com.jay.simple-tools-runtime-sync.plist), every 120 s.
+MAC_UPDATER_LABEL = "com.jay.simple-tools-runtime-sync"
+# The sync script's own log (~/apps/simple-tools-runtime-sync.sh, $LOG).  launchd's own stdout and
+# stderr files stay empty on no-op runs.
+MAC_UPDATER_LOG = "~/apps/logs/simple-tools-runtime-sync.log"
+# Its state folder (STATE_DIR in scripts/simple-tools-runtime-sync.sh):  the pause file and the
+# commit it refused are kept here.
+MAC_UPDATER_STATE = ".simple-tools"
 SERVER_TIMERS = ("fleet-cli-git-update.timer", "fleet-tools-doctor.timer")
 # The collector is a systemd user unit for the forced-command user (scripts/systemd), so it
 # runs only while that user's manager does:  with linger on, or while someone is logged in.
@@ -488,8 +520,8 @@ def is_shipped(path: str) -> bool:
     if policy is not None and callable(getattr(policy, "allowed_path", None)):
         return bool(policy.allowed_path(path))
     return path in SHIPPED_EXACT or bool(
-        re.fullmatch(r"scripts/agent_sync/(?:mcp/)?[a-z][a-z0-9_]*\.py", path)
-        or path in ("scripts/agent_sync/__init__.py", "scripts/agent_sync/mcp/__init__.py")
+        re.fullmatch(r"scripts/simple_tools/(?:mcp/)?[a-z][a-z0-9_]*\.py", path)
+        or path in ("scripts/simple_tools/__init__.py", "scripts/simple_tools/mcp/__init__.py")
     )
 
 
@@ -1011,7 +1043,7 @@ def check_mac_updater(
     previous: dict | None = None,
     clock: Callable = time.time,
 ) -> dict:
-    """com.jay.agent-sync-runtime-sync:  loaded, not paused, exiting cleanly, and still being started
+    """com.jay.simple-tools-runtime-sync:  loaded, not paused, exiting cleanly, and still being started
     (its launchd run counter moved since the previous report)."""
     job = launchd_job(MAC_UPDATER_LABEL, runner) or {"label": MAC_UPDATER_LABEL, "loaded": None}
     prev = previous_host(previous, "mac")
@@ -1021,7 +1053,7 @@ def check_mac_updater(
     judged = prev_at is not None and clock() - prev_at >= 270 and isinstance(prev_runs, int)
     runs = job.get("runs")
     advanced = (runs != prev_runs) if (judged and runs is not None) else None
-    paused = (HOME / ".agent-sync/runtime-sync.pause").exists()
+    paused = (HOME / MAC_UPDATER_STATE / "runtime-sync.pause").exists()
     info = dict(job, paused=paused, previousRuns=prev_runs, advanced=advanced)
     check = f"updater:{MAC_UPDATER_LABEL}"
     fields = {"category": "fleet-tool", "tool": None}
@@ -1040,7 +1072,7 @@ def check_mac_updater(
             **fields,
         )
     elif paused:
-        why = "paused by ~/.agent-sync/runtime-sync.pause"
+        why = f"paused by ~/{MAC_UPDATER_STATE}/runtime-sync.pause"
         report.add(
             check, "FAIL", f"{why} (remove it to resume)", state="stale", reason=why, **fields
         )
@@ -1049,7 +1081,7 @@ def check_mac_updater(
         report.add(
             check,
             "FAIL",
-            f"{why}:  see ~/apps/logs/agent-sync-runtime-sync.log",
+            f"{why}:  see {MAC_UPDATER_LOG}",
             state="stale",
             reason=why,
             **fields,
@@ -1115,7 +1147,7 @@ def check_mac_runtime(
     count = "count unknown" if rt["behind"] is None else f"{rt['behind']} commits behind"
     blocking = []
     if updater.get("paused"):
-        blocking.append("the updater is paused (~/.agent-sync/runtime-sync.pause)")
+        blocking.append(f"the updater is paused (~/{MAC_UPDATER_STATE}/runtime-sync.pause)")
     tracked = git_try(MAC_RUNTIME, "status", "--porcelain", "--untracked-files=no", runner=runner)
     if tracked:
         blocking.append("tracked changes in the runtime block the updater")
@@ -1126,7 +1158,7 @@ def check_mac_runtime(
     if updater.get("advanced") is False:
         blocking.append("the updater's run counter has not moved since the previous report")
     try:
-        bad = (HOME / ".agent-sync/runtime-sync.bad-sha").read_text().strip()
+        bad = (HOME / MAC_UPDATER_STATE / "runtime-sync.bad-sha").read_text().strip()
     except OSError:
         bad = ""
     prev_rt = next(
@@ -1442,7 +1474,7 @@ def check_fleet_mode_doc(report: Report, rt: dict | None = None) -> None:
         )
 
 
-# The Zulip key prefix where it differs from the seat (agent_sync/zulip.py SEAT_FILE_OVERRIDES).
+# The Zulip key prefix where it differs from the seat (simple_tools/zulip.py SEAT_FILE_OVERRIDES).
 ZULIP_PREFIX_OVERRIDES = {"GROK": "GROK_BUILD"}
 _names_cache: dict[str, frozenset[str] | None] = {}
 _UNSET = object()
@@ -1605,12 +1637,10 @@ def client_servers(seat: str, home: Path = HOME) -> dict:
     return servers
 
 
-# The stdio MCP server the seats register is the fleet's own local Agent-Sync server.  The name
+# The stdio MCP server the seats register is the fleet's own local Simple-Tools server.  The name
 # the fleet writes is "simple-chat":  fleet-cli-release.py writes that key into a host's Codex
-# config and install_mcp.py installs the server under it.  "agent-sync" is the retired
-# pre-rename registration key;  a host installed before the rename may still carry it and it
-# still serves the seat, but it is not the name to write, and the next apply retires it.
-MCP_STDIO_NAMES = ("simple-chat", "agent-sync")
+# config and install_mcp.py installs the server under it.
+MCP_STDIO_NAMES = ("simple-chat",)
 MCP_CANONICAL_NAME = "simple-chat"
 
 
@@ -1701,7 +1731,6 @@ def check_mcp(report: Report, fleetlink_tokens: dict[str, bool | None]) -> None:
             report.add(label, "FAIL", str(exc))
             continue
         registered = [name for name in MCP_STDIO_NAMES if name in names]
-        retired = [name for name in registered if name != MCP_CANONICAL_NAME]
         lacking = []
         unreadable = []
         if not registered:
@@ -1720,12 +1749,6 @@ def check_mcp(report: Report, fleetlink_tokens: dict[str, bool | None]) -> None:
         if unreadable:
             status = "WARN"
             detail += ";  " + ", ".join(unreadable) + " token names could not be read"
-        if retired:
-            # The retired pre-rename key alone still serves the seat, but it is not the name the
-            # fleet writes and the next apply retires it, so it is reported as drift.
-            status = "WARN"
-            retired_names = ", ".join(retired)
-            detail += ";  pre-rename name %s, canonical %s" % (retired_names, MCP_CANONICAL_NAME)
         report.add(label, status, detail)
 
 
@@ -2067,7 +2090,8 @@ PLACEMENT_WATCH_MAX_AGE_S = 3 * 3600
 def check_placement_watch(
     report: Report, *, status_path: Path | None = None, now: float | None = None
 ) -> None:
-    """A watcher that has gone quiet or cannot file.  No row until it is installed:  its first run writes the file."""
+    """A watcher that has gone quiet, cannot file, saw only part of the machine, or is held in dry run.  No row until it is installed:
+    its first run writes the file."""
     path = PLACEMENT_WATCH_STATUS if status_path is None else status_path
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -2083,10 +2107,30 @@ def check_placement_watch(
     if age > PLACEMENT_WATCH_MAX_AGE_S:
         why = f"last ran {int(age / 3600)} hours ago"
         report.add("placement-watch", "FAIL", why, state="stale", category="fleet-tool", reason=why)
-    elif not data.get("ok"):
+    elif data.get("errors") or (
+        not data.get("ok") and data.get("coverage") != "external-unreadable"
+    ):
         why = "; ".join(str(e) for e in data.get("errors", ()))[:200] or "its inputs were stale"
         report.add(
             "placement-watch", "FAIL", why, state="failing", category="fleet-tool", reason=why
+        )
+    elif data.get("coverage") == "external-unreadable":
+        held = "held in dry run, " if data.get("held") else ""
+        why = (
+            f"{held}could not read an external root, so {data.get('findings', 0)} findings is partial, "
+            "not clean;  nothing on that root was forgotten"
+        )
+        report.add(
+            "placement-watch", "WARN", why, state="unknown", category="fleet-tool", reason=why
+        )
+    elif data.get("held"):
+        last = f", last acting run {data['last_acting_run']}" if data.get("last_acting_run") else ""
+        why = (
+            f"held in dry run, nothing filed:  {data.get('findings', 0)} findings, "
+            f"{data.get('new', 0)} new{last}"
+        )
+        report.add(
+            "placement-watch", "WARN", why, state="unknown", category="fleet-tool", reason=why
         )
     else:
         detail = f"{data.get('findings', 0)} findings, {data.get('new', 0)} new"
@@ -2619,7 +2663,7 @@ NOTES_POLL_STALE_S = (
 NOTES_QUEUE_STALE_S = 600  # a request waiting ten minutes means the runner is not taking work
 NOTES_LOG_STALE_S = 1800  # unsent log lines older than this mean the runner stopped sending them
 NOTES_LOG_ROTATIONS = (
-    5  # apple-notes-coding.sh keeps .1 to .5 (agent_sync.notes.ACTION_LOG_ROTATIONS)
+    5  # apple-notes-coding.sh keeps .1 to .5 (simple_tools.notes.ACTION_LOG_ROTATIONS)
 )
 
 
@@ -2699,7 +2743,7 @@ def notes_health(env: dict[str, str]) -> dict:
     scripts = str(Path(__file__).resolve().parent)
     if scripts not in sys.path:
         sys.path.insert(0, scripts)
-    from agent_sync import (
+    from simple_tools import (
         notes_client as NC,
     )  # the shipped runtime carries it;  imported only on the server
 
@@ -3281,6 +3325,21 @@ def pull_vms(
     return [result for result in results if result is not None]
 
 
+def app_processes():
+    """AFC-576:  scripts/fleet_app_processes.py beside this file, or None when it cannot load.
+    Loaded by path, because `python3 -I` leaves this folder off sys.path."""
+    try:
+        import importlib.util
+
+        path = Path(__file__).resolve().parent / "fleet_app_processes.py"
+        spec = importlib.util.spec_from_file_location("fleet_app_processes", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:
+        return None
+
+
 def combined_report(docs: list) -> dict:
     apply_skew(docs)
     return {
@@ -3293,38 +3352,63 @@ def combined_report(docs: list) -> dict:
 
 def write_report(path: Path, report_doc: dict) -> None:
     """Atomic and private:  a 0600 temporary file in the same folder, fsynced, then renamed over.
-    The folder must be a real directory (a symlink is refused), created 0700 when absent."""
+    The folder must be a real directory, created 0700 when absent.  It is opened once with
+    O_NOFOLLOW, and the temporary file, the rename and the folder fsync all go through that one
+    descriptor, so a folder swapped for a symlink after the check cannot redirect the report
+    (Kody, PR 1477).  A symlinked folder is refused with ValueError."""
     if path.parent.is_symlink():
         raise ValueError(f"refusing to write the report through a symlinked folder:  {path.parent}")
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd, tmp = tempfile.mkstemp(prefix=".report.", suffix=".tmp", dir=str(path.parent))
+    dir_fd = open_report_folder(path.parent)
     try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w") as handle:
-            json.dump(report_doc, handle, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, path)
-    except BaseException:
+        tmp = f".report.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+        fd = os.open(
+            tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd
+        )
         try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    # The rename has already replaced the report atomically;  syncing the folder only makes that
-    # rename survive a power cut.  Some file systems refuse a directory fsync, and a lost rename only
-    # leaves the previous report, which a reader ages out to unknown, so this step is best effort.
-    try:
-        dir_fd = os.open(str(path.parent), os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(dir_fd)
-    except OSError:
-        pass
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w") as handle:
+                json.dump(report_doc, handle, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        except BaseException:
+            try:
+                os.unlink(tmp, dir_fd=dir_fd)
+            except OSError:
+                pass
+            raise
+        # The rename has already replaced the report atomically;  syncing the folder makes that rename
+        # survive a power cut, as the other collectors do.  A file system that does not support a folder
+        # fsync says so with EINVAL or ENOTSUP, and only that answer is let through:  a lost rename then
+        # leaves the previous report, which a reader ages out to unknown.  Any other failure is raised.
+        try:
+            os.fsync(dir_fd)
+        except OSError as error:
+            if error.errno not in FOLDER_FSYNC_UNSUPPORTED:
+                raise
     finally:
         os.close(dir_fd)
+
+
+def open_report_folder(folder: Path) -> int:
+    """The report folder as a descriptor, refusing a symlink (ELOOP) or a non-folder (ENOTDIR) at the
+    moment it is opened, not before."""
+    try:
+        return os.open(str(folder), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as error:
+        if error.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise ValueError(
+                f"refusing to write the report through a symlinked folder:  {folder}"
+            ) from error
+        raise
+
+
+# The errors a file system gives when it does not support fsync on a folder at all.
+FOLDER_FSYNC_UNSUPPORTED = frozenset(
+    getattr(errno, name) for name in ("EINVAL", "ENOTSUP", "EOPNOTSUPP") if hasattr(errno, name)
+)
 
 
 def state_counts(doc: dict) -> str:
@@ -3341,14 +3425,79 @@ def stable_failing(line: str) -> str:
     return re.sub(r"\b\d+ minutes ago\b", "<N> minutes ago", line)
 
 
-def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
-    """Post once per change in the failing set, so a standing problem is not repeated every run."""
-    failing = sorted(f"{r['check']}: {r['detail']}" for r in report.rows if r["status"] == "FAIL")
+def posted_message_id(stdout: object) -> int | None:
+    """The message id from `simple-chat post --json`, which prints one JSON object with an `id`.
+
+    The object may be on one line among others, or pretty-printed over several lines, so each
+    line is tried and then the whole output."""
+    text = str(stdout or "")
+    candidates = [line.strip() for line in text.splitlines() if line.strip().startswith("{")]
+    candidates.append(text.strip())
+    for candidate in candidates:
+        try:
+            doc = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(doc, dict):
+            message_id = doc.get("id")
+            if type(message_id) is int and message_id > 0:
+                return message_id
+    return None
+
+
+# simple-chat exit codes (scripts/simple_tools/cli.py):  2 usage, 3 credential, realm or refusal,
+# 5 Zulip answered with an error.  Those mean the edit was not applied.  6 is a network error that
+# may have reached Zulip, and 1 an internal error, so neither proves the edit did not happen.
+EDIT_REFUSED_CODES = frozenset({2, 3, 5})
+# A proxy status in front of Zulip says nothing about whether the edit was stored.
+GATEWAY_STATUS_RE = re.compile(r"\bHTTP 50[234]\b")
+
+
+def edit_outcome(argv: list[str], runner: Callable) -> str:
+    """Return "edited", "refused" (clearly not applied) or "unknown" (it may have been applied)."""
     try:
-        previous = json.loads(STATE.read_text()).get("failing", [])
+        result = runner(argv, capture_output=True, text=True, timeout=60, check=False)
+    except OSError:  # simple-chat is missing from PATH:  nothing was sent
+        return "refused"
+    except subprocess.SubprocessError:  # timed out:  the edit may already be on Zulip
+        return "unknown"
+    if result.returncode == 0:
+        return "edited"
+    if result.returncode in EDIT_REFUSED_CODES and not GATEWAY_STATUS_RE.search(
+        f"{result.stdout or ''}\n{result.stderr or ''}"
+    ):
+        return "refused"
+    return "unknown"
+
+
+def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
+    """Report the failing set to Zulip without repeating a standing problem every run.
+
+    A new message goes out on the first run and whenever the set of failing checks changes (a check
+    fails or clears, including the all-clear), and its id is kept in STATE.  When the same checks
+    still fail but a line's text changed (beyond the elapsed-minute counter), the kept message is
+    edited instead, so the topic shows the current text without a new notification.  An edit Zulip
+    refused falls back to a new post;  an edit that timed out or hit a network error may have been
+    applied, so nothing is posted and the next run tries the edit again.  A new post that timed out or
+    hit a network error may have landed too, so its set is remembered without an id:  the next run
+    does not post the same text again, and a later change posts a new message.  A STATE with no
+    message id (an older doctor) posts as before."""
+    rows = [r for r in report.rows if r["status"] == "FAIL"]
+    failing = sorted(f"{r['check']}: {r['detail']}" for r in rows)
+    checks = sorted(str(r["check"]) for r in rows)
+    try:
+        state = json.loads(STATE.read_text())
     except (OSError, ValueError):
-        previous = []
-    if [stable_failing(f) for f in failing] == [stable_failing(p) for p in previous]:
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    previous = state.get("failing")
+    previous = previous if isinstance(previous, list) else []
+    previous_checks = state.get("checks")
+    message_id = state.get("message_id")
+    if not (type(message_id) is int and message_id > 0):
+        message_id = None
+    if [stable_failing(f) for f in failing] == [stable_failing(str(p)) for p in previous]:
         return False
     host = os.uname().nodename
     if failing:
@@ -3358,31 +3507,55 @@ def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
         )
     else:
         body = f"fleet-tools-doctor on {host}:  every check passes again."
+
+    def remember(kept_id: int | None) -> None:
+        doc: dict = {"failing": failing, "checks": checks}
+        if kept_id is not None:
+            doc["message_id"] = kept_id
+        STATE.parent.mkdir(parents=True, exist_ok=True)
+        STATE.write_text(json.dumps(doc))
+
+    if failing and message_id is not None and previous_checks == checks:
+        outcome = edit_outcome(["simple-chat", "edit", "--id", str(message_id), body], runner)
+        if outcome == "edited":
+            remember(message_id)
+            return True
+        if outcome == "unknown":
+            # A timeout or network error may have applied the edit, and a new post on top of it
+            # would repeat the same text in the topic.  Keep STATE as it is, so the next run edits
+            # the same message again.
+            return False
+        # Zulip refused the edit (the message is gone or past its edit window) or simple-chat is
+        # missing:  post a new message instead and keep its id.
+    argv = [
+        "simple-chat",
+        "post",
+        "--channel",
+        "Work-In-Progress",
+        "--topic",
+        "fleet tools doctor",
+        "--json",
+        body,
+    ]
     try:
-        result = runner(
-            [
-                "simple-chat",
-                "post",
-                "--channel",
-                "Work-In-Progress",
-                "--topic",
-                "fleet tools doctor",
-                body,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
+        result = runner(argv, capture_output=True, text=True, timeout=60, check=False)
     except (
-        OSError,
-        subprocess.SubprocessError,
-    ):  # simple-chat missing from PATH (check_commands reports it) or hung
+        OSError
+    ):  # simple-chat is missing from PATH:  nothing was sent, so the next run tries again
+        return False
+    except subprocess.SubprocessError:
+        # Timed out:  the post may already be on Zulip.  Remember this set without an id, so the
+        # next run does not post the same text again;  a later text change posts a new message.
+        remember(None)
         return False
     if result.returncode == 0:
-        STATE.parent.mkdir(parents=True, exist_ok=True)
-        STATE.write_text(json.dumps({"failing": failing}))
+        remember(posted_message_id(result.stdout))
         return True
+    if result.returncode not in EDIT_REFUSED_CODES or GATEWAY_STATUS_RE.search(
+        f"{result.stdout or ''}\n{result.stderr or ''}"
+    ):
+        # A network or internal error that may have reached Zulip:  the same rule as a timeout.
+        remember(None)
     return False
 
 
@@ -3407,7 +3580,7 @@ def run(
     parser.add_argument(
         "--post",
         action="store_true",
-        help="when the set of failing checks changes, post it with simple-chat to #Work-In-Progress, topic 'fleet tools doctor' (the seat comes from AGENT_SEAT in the environment, as simple-chat resolves it)",
+        help="when the set of failing checks changes, post it with simple-chat to #Work-In-Progress, topic 'fleet tools doctor';  when only a failing line's text changes, edit that post instead (the seat comes from AGENT_SEAT in the environment, as simple-chat resolves it)",
     )
     parser.add_argument(
         "--no-registry",
@@ -3494,6 +3667,12 @@ def run(
     elif host == "mac" and args.write:
         server = unreachable_server(f"{NO_ROUTE} (no --remote given)")
     vms = pull_vms(runner=runner) if args.vms else []
+    scan = app_processes()  # AFC-576:  the fleet-app process scan
+    if scan and host == "mac" and report_path:
+        mac_scan = scan.scan_host("mac", runner=runner, home=HOME)
+        scan.keep(server, mac_scan, report_path.parent / scan.REPORT_NAME, write_report)
+    elif server is not None:
+        server.pop("appProcesses", None)
     combined = None
     if args.write:
         docs = json.loads(
@@ -3509,6 +3688,8 @@ def run(
             status = read_server_status()
             if status is not None:
                 doc["serverStatus"] = status
+            if scan:
+                doc["appProcesses"] = scan.scan_host("server", runner=runner, home=HOME)
         print(json.dumps(doc, indent=2))
     elif report_path:
         far = ""

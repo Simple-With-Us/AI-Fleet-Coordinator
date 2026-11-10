@@ -26,7 +26,22 @@
     ]
   },
   "services": [
-    {"unit": "fleet-server-status.timer", "scope": "user", "description": "Fleet server status", "activeState": "active", "subState": "waiting", "since": "2026-10-28T14:00:00Z", "enabled": "enabled", "controllable": true},
-    {"unit": "fleet-example.service", "scope": "system", "activeState": "failed", "subState": "failed", "enabled": "disabled", "controllable": false}
-  ]
+    {"unit": "fleet-server-status.timer", "scope": "user", "description": "Fleet server status", "activeState": "active", "subState": "waiting", "since": "2026-10-28T14:00:00Z", "enabled": "enabled", "controllable": true, "actions": ["start", "restart", "logs"], "job": "fleet-server-status.service", "lastRunAt": "2026-10-28T14:45:00Z", "lastResult": "success", "lastFinishedAt": "2026-10-28T14:45:07Z", "nextRunAt": "2026-10-28T15:15:00Z", "selfObserved": true, "role": "reporting", "stopConsequence": "Stopping this stops the server's report."},
+    {"unit": "fleet-example.service", "scope": "system", "activeState": "failed", "subState": "failed", "enabled": "disabled", "controllable": false, "actions": [], "watched": true}
+  ],
+  "failedUnits": [
+    {"unit": "fleet-example.service", "scope": "system", "description": "An example", "since": "2026-10-28T14:10:00Z", "result": "exit-code", "exitCode": 1}
+  ],
+  "removedCheckouts": [
+    {"repo": "Example-Removed", "files": 15, "noticedAt": "2026-10-28T14:00:00Z"}
+  ],
+  "applications": [
+    {"uuid": "example-uuid-1", "name": "example-app", "containers": 2, "services": ["web", "worker"]}
+  ],
+  "collection": {
+    "coolify": {"ok": true, "partial": false},
+    "files": {"ok": true, "partial": true, "errorCode": "files_truncated"},
+    "failedUnits": {"ok": false, "partial": false, "errorCode": "systemctl_unreadable"}
+  },
+  "processSampleSeconds": 2.0
 }

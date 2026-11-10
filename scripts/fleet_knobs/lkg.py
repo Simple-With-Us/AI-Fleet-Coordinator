@@ -157,8 +157,8 @@ def write(
 #
 # After a failed fetch, ``fetch-failed.json`` beside the copy records when and why (a reason
 # token, never output and never a secret).  For FAILURE_TTL_SECONDS a sibling process skips
-# its own fetch and goes straight to the copy, so a broken auth path (a locked keychain under
-# launchd) costs one timeout across a burst of processes instead of one each.  Same trust
+# its own fetch and goes straight to the copy, so a broken service-token path costs one timeout
+# across a burst of processes instead of one each.  Same trust
 # rules as the copy:  a marker that is a symlink, someone else's, readable by group or other
 # or malformed is ignored, and so the fetch runs.
 

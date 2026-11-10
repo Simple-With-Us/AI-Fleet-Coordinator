@@ -5,7 +5,7 @@
   "workers": {
     "simple-tools-mcp": {
       "repo": "Simple-With-Us/AI-Fleet-Coordinator",
-      "config": "scripts/agent-sync-mcp/wrangler.jsonc",
+      "config": "scripts/simple-tools-mcp/wrangler.jsonc",
       "status": "gated",
       "workers_dev": false,
       "limits": { "cpu_ms": 300, "subrequests": 200 },
@@ -23,28 +23,16 @@
       "health": "GET /health, plus the */5 sweep showing no exceptions and a real vendor delivery reaching Zulip.",
       "deploy": "alert-workers-deploy.yml is the intended path.  It has been failing, so the last deploys were by hand, and a wrangler.toml change always needs a manual reconcile."
     },
-    "pr-conflict-watch": {
-      "repo": "Simple-With-Us/AI-Fleet-Coordinator",
-      "config": "workers/pr-conflict-watch/zulip-cutover/wrangler.toml",
-      "extra_configs": ["workers/pr-conflict-watch/wrangler.toml"],
-      "status": "gated",
-      "workers_dev": true,
-      "limits": { "cpu_ms": 50, "subrequests": 20 },
-      "head_sampling_rate": 0.1,
-      "health": "A real conflict alert in Zulip.  GET only answers ok with no dependency check, and every GitHub call has returned 401 since Oct 21.",
-      "deploy": "alert-workers-deploy.yml skips it until docs/releases/pr-conflict-zulip-verified.json exists.  Whether to retire it is an open owner decision.",
-      "note": "The first config is the live source.  The extra one is a never-deployed variant that worker-targets.json still names."
-    },
     "expenses-jays-services": {
       "repo": "Simple-With-Us/Usage-Monitor",
       "config": "workers/expenses-site/wrangler.jsonc",
       "status": "auto",
       "workers_dev": false,
-      "limits": { "cpu_ms": 100, "subrequests": 200 },
+      "limits": { "cpu_ms": 100, "subrequests": 60 },
       "head_sampling_rate": 1,
       "health": "The cron advancing sync state with rows actually fetched, and an Access-authenticated read of the expense list.",
       "deploy": "Usage-Monitor worker-deploy.yml is the intended path.  Its gate variable is off, so deploys are by hand.",
-      "note": "This repository's CI does not read this row's config, and the 200 covers D1 calls per sync until the sync fix lands."
+      "note": "This repository's CI does not read this row's config, and the sync now writes a few rows a run, so 60 covers it."
     },
     "usage-monitor-receipt-inbox": {
       "repo": "Simple-With-Us/Usage-Monitor",

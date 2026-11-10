@@ -10,8 +10,8 @@ ongoing tasks related to this (scheduled routines, webhooks, or custom coded met
 Claude's 2026-09-01 write-up below treated several pieces as landed while they were still
 uncommitted in this worktree (no `recall` on PATH, MCP configs unregistered, `~/apps/fleet-rag`
 had only a notes cache + a stale ingest lock, Oracle fleet-RAG routines not created).  GROK
-verified the files, restored `AGENT-SYNC.md` to the repo copy (the dirty tree had mixed in the
-live `~/apps/AGENT-SYNC.md` drift and dropped Cloud → Mac), put `recall` on PATH like `simple-board`,
+verified the files, restored `FLEET-PROTOCOL.md` to the repo copy (the dirty tree had mixed in the
+live `~/apps/FLEET-PROTOCOL.md` drift and dropped Cloud → Mac), put `recall` on PATH like `simple-board`,
 and is landing the branch.  Treat any "landed" row as code-present until the verify section
 below is green.
 
@@ -34,7 +34,7 @@ Plan B.
 | Backup: daily snapshot → `/data/backups/qdrant` → B2 | box `/usr/local/sbin/fleet-qdrant-snapshot.sh`, `/etc/cron.d/fleet-qdrant` (tracked in `scripts/hetzner/`) | installed, first run verified |
 | Health rows: snapshot age + ingest sentinel, paging via the existing Pushover path | box `fleet-health-verify.sh` → `fleet-qdrant-health.sh` | installed |
 | Oracle routines: nightly ingest, weekly health + eval | `~/.botfleet/routines.json` | created |
-| Seat pointers: AGENT-SYNC stanza, global CLAUDE.md stanza, TEMPLATE-AGENTS, skill `fleet-recall` | this repo + `~/apps/AGENT-SYNC.md` + `~/.claude/CLAUDE.md` | landed |
+| Seat pointers: FLEET-PROTOCOL stanza, global CLAUDE.md stanza, TEMPLATE-AGENTS, skill `fleet-recall` | this repo + `~/apps/FLEET-PROTOCOL.md` + `~/.claude/CLAUDE.md` | landed |
 | Docs: `docs/RAG-FLEET-INFRA.md` rewritten, `MAC-LOCAL-PROCESSES.md` rows, fleet-ops ATTACK-MAP | | landed |
 
 Numbers after the first full ingest are in the effort-log row and the Apple Note.

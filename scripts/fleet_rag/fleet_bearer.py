@@ -5,11 +5,11 @@ provider credentials and account authorization stay on the servers.
 
 A successful whoami verification is remembered on disk for
 VERIFY_CACHE_TTL_SECONDS (see below), so a burst of one-shot CLI processes
-from one seat verifies once a minute instead of once per process.  The cache
-holds only the SHA-256 of the bearer, never the bearer;  it is a local
-pre-flight shortcut only - the gateway still runs its full gate on every
-call, so a revoked bearer is refused by the server immediately and only
-this client's own "identity confirmed" step can be up to a minute stale.
+from one seat verifies once an hour instead of once per process (owner
+ruling 2026-11-06:  a checked token may work for an hour).  The cache holds
+only the SHA-256 of the bearer, never the bearer;  it is a local pre-flight
+shortcut only - the gateway still authenticates every call, and only this
+client's own "identity confirmed" step can be up to an hour stale.
 """
 
 from __future__ import annotations
@@ -155,16 +155,16 @@ def canonical_hint(raw):
 
 # The whoami verification cache:  one small JSON row beside the seat's
 # idempotency state (<state>/<SEAT>/mcp-idem.json), in the state root
-# agent_sync.state resolves ($AGENT_SYNC_STATE_DIR, else ~/.agent-sync).
+# simple_tools.state resolves ($SIMPLE_TOOLS_STATE_DIR, else ~/.simple-tools).
 # The rule is mirrored here, not imported, so this file stays self-contained
 # for its vendored copies.  Every cache anomaly - missing, malformed, loose
 # permissions, wrong owner, a different bearer's hash, a stale or future
 # timestamp - is a miss, never an error:  the client falls back to the live
 # whoami it has always made, so the cache can only ever save a call, never
 # change an outcome.
-VERIFY_CACHE_TTL_SECONDS = 60.0
+VERIFY_CACHE_TTL_SECONDS = 3600.0
 VERIFY_CACHE_FILE = "fleet-bearer-verify.json"
-STATE_DIR_ENV = "AGENT_SYNC_STATE_DIR"
+STATE_DIR_ENV = "SIMPLE_TOOLS_STATE_DIR"
 
 
 class GatewayTransport:
@@ -340,7 +340,7 @@ class Client:
         if not re.fullmatch(r"[A-Z0-9][A-Z0-9-]{0,39}", self.seat):
             return None
         override = self._env.get(STATE_DIR_ENV, "")
-        root = Path(override).expanduser() if override else Path.home() / ".agent-sync"
+        root = Path(override).expanduser() if override else Path.home() / ".simple-tools"
         if not root.is_dir():
             return None
         seat_dir = root / self.seat

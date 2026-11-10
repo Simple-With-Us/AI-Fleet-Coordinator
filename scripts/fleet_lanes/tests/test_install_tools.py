@@ -288,6 +288,14 @@ def path_without_muse() -> str:
     return os.pathsep.join(keep)
 
 
+def shell_group_index(doc: dict) -> int:
+    """The index of the PreToolUse group that holds our shell hook (Claude also has a file-guard group after it)."""
+    for i, group in enumerate(doc["hooks"]["PreToolUse"]):
+        if any(T.is_ours(h.get("command")) for h in group.get("hooks") or ()):
+            return i
+    raise AssertionError("no shell hook group")
+
+
 class World(unittest.TestCase):
     """A fake home, a small source tree, and helpers.  Nothing here touches the real home."""
 
@@ -1432,7 +1440,7 @@ class VerifyTests(World):
     def test_fails_when_the_config_command_was_edited(self) -> None:
         # a path that does not exist
         doc = self.load("claude")
-        doc["hooks"]["PreToolUse"][-1]["hooks"][0]["command"] = (
+        doc["hooks"]["PreToolUse"][shell_group_index(doc)]["hooks"][0]["command"] = (
             "/nonexistent/dir/lane-guard-hook --format claude"
         )
         write_json(self.config("claude"), doc)
@@ -1450,7 +1458,7 @@ class VerifyTests(World):
 
     def test_fails_when_the_entry_is_not_where_the_platform_gates_on_it(self) -> None:
         doc = self.load("claude")
-        group = doc["hooks"]["PreToolUse"].pop()
+        group = doc["hooks"]["PreToolUse"].pop(shell_group_index(doc))
         doc["hooks"]["PostToolUse"].append(group)  # runs, prints a deny, protects nothing
         write_json(self.config("claude"), doc)
         checks = self.verify("claude")
@@ -1877,6 +1885,7 @@ class StableDirOwnershipTests(World):
             sorted(p.name for p in stable.iterdir()),
             [
                 "VERSION",
+                "claude-file-guard-hook",
                 "clutch",
                 "fleet-apps.json",
                 "fleet-guard-hook",
@@ -2905,7 +2914,7 @@ def bash_payload(
         "hook_event_name": "PreToolUse",
         "tool_name": tool,
         "tool_input": {"command": command, "description": "test"},
-        "cwd": "/Users/jay",
+        "cwd": "/Users/fixture-home",
     }
     doc.update(extra)
     return json.dumps(doc, ensure_ascii=ensure_ascii).encode("utf-8")
@@ -2997,7 +3006,8 @@ class GuardFactsTests(World):
         ok = self.make_source(
             "fewer",
             guard=self.guard_with(
-                'r"clone|worktree|archive|codeload|tarball|zipball|fetch|pull|remote|checkout-index"',
+                'r"clone|worktree|archive|codeload|tarball|zipball|fetch|pull|remote|checkout-index"\n'
+                '    r"|deriveddatapath|bundlepath|ymroot|objroot|target-dir|build-path|cratch-path"',
                 'r"clone|pull"',
             ),
         )
@@ -3039,7 +3049,7 @@ class GuardFactsTests(World):
         self.install(())
         checks = {c.name: c for c in T.verify_tools(self.paths, timeout=TIMEOUT)}
         self.assertEqual(checks["prefilter"].status, "PASS", checks["prefilter"].line())
-        self.assertIn("10 trigger words", checks["prefilter"].detail)
+        self.assertIn("17 trigger words", checks["prefilter"].detail)
 
     def test_the_generated_patterns_are_exactly_the_guards_words(self) -> None:
         text = T.render_hook_shim()
@@ -3186,7 +3196,7 @@ class PrefilterShimTests(World):
         # "clone" decodes to "clone"; a prefilter that only looked at the raw text would let it through
         command = "gh repo cl\\u006fne Simple-With-Us/HogHunter /tmp/hh-verify"
         raw = (
-            '{"tool_name":"Bash","tool_input":{"command":"' + command + '"},"cwd":"/Users/jay"}'
+            '{"tool_name":"Bash","tool_input":{"command":"' + command + '"},"cwd":"/Users/fixture-home"}'
         ).encode("ascii")
         self.assertNotIn(b"clone", raw)
         self.assertEqual(
@@ -3229,7 +3239,7 @@ class PrefilterShimTests(World):
 
     SJIS_REPRO = (
         '{"tool_name":"Bash","tool_input":{"command":"c=あclone; gh repo ${c#あ} '
-        'Simple-With-Us/HogHunter /tmp/hh-verify"},"cwd":"/Users/jay"}'
+        'Simple-With-Us/HogHunter /tmp/hh-verify"},"cwd":"/Users/fixture-home"}'
     ).encode()
 
     def test_a_multibyte_locale_cannot_hide_a_trigger_word(self) -> None:
@@ -4283,7 +4293,7 @@ class MusePlanApplyVerifyTests(World):
         self.assertIn("new      muse-seat", out)
         self.assertIn("muse-plugin/fleet-lane-guard/hooks/lane-guard.sh", out)
         self.assertIn("muse-plugin/fleet-lane-guard/.muse-plugin/plugin.json", out)
-        self.assertIn("prefilter: derived from guard.py _TRIGGER (10 words: clone, worktree", out)
+        self.assertIn("prefilter: derived from guard.py _TRIGGER (17 words: clone, worktree", out)
         self.assertTrue(all(ord(c) < 128 for c in out), "plan output must print on any terminal")
 
     def test_plan_all_default_still_lists_muse_and_exits_zero(self) -> None:
@@ -4721,7 +4731,7 @@ ORDINARY_COMMANDS = (
     "git status",
     "ls -la ~/apps",
     "python3 -m unittest fleet_lanes.tests.test_x",
-    "cd /Users/jay/apps/lanes && ls",
+    "cd /Users/fixture-home/apps/lanes && ls",
     "echo hi && pwd",
     "cat README.md",
     "gh pr merge 5 --squash --auto",
@@ -4739,7 +4749,7 @@ def _payload(command: str, ascii_only: bool) -> bytes:
         {
             "tool_name": "Bash",
             "tool_input": {"command": command},
-            "cwd": "/Users/jay/apps/lanes/X/y",
+            "cwd": "/Users/fixture-home/apps/lanes/X/y",
             "session_id": "s1",
             "hook_event_name": "PreToolUse",
         },
@@ -6435,6 +6445,106 @@ class MinimaxBundleTests(World):
         hooks.unlink()
         self.assertFails(self.verify_mm(), "hooks.json")
 
+    def test_a_hook_path_in_another_users_home_is_refused_and_fails_verify(self) -> None:
+        # The server incident:  the installer ran as root for jay's home and wrote
+        # /root/apps/lane-tools/minimax-guard-hook into jay's hooks.json.  Root's own probes ran it
+        # fine, but jay's MiniMax got Permission denied and so let every tool call through.
+        self.assertEqual(self.apply().status, "added")
+        healthy = self.verify_mm()
+        self.assertTrue(
+            any(c.name == "hook runnable by home owner" and c.status == "PASS" for c in healthy),
+            healthy,
+        )
+        other_home = str(Path(self.paths.stable).parent)
+        root_like = mock.Mock(pw_name="root", pw_uid=0, pw_dir=other_home)
+        with mock.patch.object(T, "_login_users", return_value=[root_like]):
+            checks = self.verify_mm()
+            r = self.apply()
+        failed = [c for c in checks if c.name == "hook runnable by home owner"]
+        self.assertEqual([c.status for c in failed], ["FAIL"], checks)
+        self.assertIn("inside root's home", failed[0].detail)
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("inside root's home", r.detail)
+
+    def test_a_hook_the_home_owner_cannot_execute_is_refused(self) -> None:
+        self.assertEqual(self.apply().status, "added")
+        shim = Path(self.paths.stable) / T.MINIMAX_HOOK_NAME
+        mode = shim.stat().st_mode
+        shim.chmod(0o644)
+        self.addCleanup(shim.chmod, mode)
+        problem = T.hook_home_problem(str(shim), str(self.home))
+        self.assertIsNotNone(problem)
+        self.assertIn("not executable", problem)
+
+    @unittest.skipIf(
+        os.geteuid() == 0, "root passes every search and owner check, so the mode bits cannot deny it"
+    )
+    def test_the_mode_bit_check_answers_for_the_target_user_not_the_caller(self) -> None:
+        # Root's os.access says yes to almost anything, so a check for another user reads the mode bits.
+        me = os.getuid()
+        gids = {os.getgid()}
+        inner = self.tmp / "inner"
+        inner.mkdir()
+        hook = inner / "hook"
+        hook.write_text("#!/bin/sh\n")
+        hook.chmod(0o700)
+        self.assertIsNone(T._runnable_by(str(hook), me, gids))
+        hook.chmod(0o070)  # group can run it, the owner cannot:  owner bits decide for the owner
+        self.assertIn("not executable", T._runnable_by(str(hook), me, gids) or "")
+        hook.chmod(0o300)  # execute without read:  the kernel cannot read a script's interpreter line
+        self.assertIn("not readable", T._runnable_by(str(hook), me, gids) or "")
+        hook.chmod(0o700)
+        inner.chmod(0o600)  # the owner cannot search the directory on the way
+        self.addCleanup(inner.chmod, 0o700)
+        self.assertIn(str(inner), T._runnable_by(str(hook), me, gids) or "")
+
+    def test_an_account_whose_home_holds_the_target_home_still_guards_its_other_paths(self) -> None:
+        # An account whose home contains the target home covers only paths inside the target home.
+        outside = self.tmp / "elsewhere" / "hook"
+        outside.parent.mkdir()
+        outside.write_text("#!/bin/sh\n")
+        outside.chmod(0o755)
+        inside = self.home / "hook"
+        inside.write_text("#!/bin/sh\n")
+        inside.chmod(0o755)
+        parent = mock.Mock(pw_name="parent", pw_uid=1500, pw_dir=str(self.tmp))
+        with mock.patch.object(T, "_login_users", return_value=[parent]):
+            self.assertIn("inside parent's home", T.hook_home_problem(str(outside), str(self.home)) or "")
+            self.assertIsNone(T.hook_home_problem(str(inside), str(self.home)))
+
+    def test_a_home_reached_through_a_symlink_gets_the_same_verdict(self) -> None:
+        real_homes = self.tmp / "real-homes"
+        (real_homes / "seat").mkdir(parents=True)
+        (real_homes / "elsewhere").mkdir()
+        link = self.tmp / "homes"
+        link.symlink_to(real_homes)
+        for rel in ("seat/hook", "elsewhere/hook"):
+            (real_homes / rel).write_text("#!/bin/sh\n")
+            (real_homes / rel).chmod(0o755)
+        parent = mock.Mock(pw_name="parent", pw_uid=1500, pw_dir=str(real_homes))
+        with mock.patch.object(T, "_login_users", return_value=[parent]):
+            for home, base in ((link / "seat", link), (real_homes / "seat", real_homes)):
+                with self.subTest(home=str(home)):
+                    self.assertIsNone(T.hook_home_problem(str(base / "seat" / "hook"), str(home)))
+                    self.assertIn(
+                        "inside parent's home",
+                        T.hook_home_problem(str(base / "elsewhere" / "hook"), str(home)) or "",
+                    )
+
+    def test_login_accounts_outside_the_regular_uid_range_still_count(self) -> None:
+        def account(name: str, uid: int, shell: str) -> mock.Mock:
+            return mock.Mock(pw_name=name, pw_uid=uid, pw_dir=f"/srv/{name}", pw_shell=shell)
+
+        users = [
+            account("svc", 200, "/bin/bash"),
+            account("daemon", 1, "/usr/sbin/nologin"),
+            account("nobody", 65534, "/usr/bin/false"),
+            account("person", 1001, "/bin/zsh"),
+        ]
+        with mock.patch.object(T.pwd, "getpwall", return_value=users):
+            names = [u.pw_name for u in T._login_users()]
+        self.assertEqual(names, ["svc", "person"])
+
     def test_an_unwired_bundle_is_a_skip_unless_the_platform_is_named(self) -> None:
         checks = self.verify_mm()
         self.assertEqual([(c.name, c.status) for c in checks], [("bundle", "SKIP")])
@@ -6934,6 +7044,177 @@ class MinimaxProbeRootTests(World):
         self.assertIn(
             os.path.join(str(volume), "Code", "ExampleRepo", "probe-placeholder"), seen
         )
+
+
+class ClaudeFileGuardInstallTests(World):
+    """Claude Code's file guard:  its own shim, its own PreToolUse group, its own probes."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.seed(".claude/settings.json")
+        r = T.apply_tools(self.source, self.paths, timeout=TIMEOUT, probes=False)
+        self.assertTrue(r.ok, r)
+
+    def groups(self) -> list:
+        return self.load("claude")["hooks"]["PreToolUse"]
+
+    def file_groups(self) -> list:
+        return [
+            g for g in self.groups() if any(T.is_claude_file_hook(h.get("command")) for h in g["hooks"])
+        ]
+
+    def test_the_stable_copy_has_the_shim_and_the_modules(self) -> None:
+        files = T.build_files(self.source, self.paths)
+        self.assertIn(T.CLAUDE_FILE_HOOK_NAME, files)
+        self.assertIn("fleet_lanes/file_guard.py", files)
+        self.assertIn("fleet_lanes/claude_file_guard_hook.py", files)
+        self.assertEqual(T.file_mode(T.CLAUDE_FILE_HOOK_NAME), 0o755)
+        shim = files[T.CLAUDE_FILE_HOOK_NAME].decode("utf-8")
+        self.assertIn("fleet_lanes.claude_file_guard_hook", shim)
+        self.assertNotIn("*) exit 0 ;;", shim)  # no prefilter:  every file path reaches Python
+        self.assertTrue(os.access(self.paths.claude_file_shim, os.X_OK))
+        self.assertAllPass(
+            [c for c in T.verify_tools(self.paths, timeout=TIMEOUT) if T.CLAUDE_FILE_HOOK_NAME in c.name]
+        )
+
+    def test_apply_adds_a_second_group_and_keeps_the_shell_group(self) -> None:
+        before = len(self.groups())
+        r = T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True)
+        self.assertEqual(r.status, "added", r)
+        groups = self.groups()
+        self.assertEqual(len(groups), before + 2)
+        shell = groups[shell_group_index(self.load("claude"))]
+        self.assertEqual(shell["matcher"], T.CLAUDE_MATCHER)
+        self.assertEqual(len(self.file_groups()), 1)
+        group = self.file_groups()[0]
+        self.assertEqual(group["matcher"], T.CLAUDE_FILE_MATCHER)
+        self.assertEqual(
+            group["hooks"],
+            [
+                {
+                    "type": "command",
+                    "command": T.claude_file_hook_command(self.paths),
+                    "timeout": T.CLAUDE_FILE_HOOK_TIMEOUT_S,
+                    "statusMessage": "Checking file path",
+                }
+            ],
+        )
+        again = T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True)
+        self.assertEqual(again.status, "unchanged", again)
+
+    def test_a_shell_only_install_from_before_gets_the_file_group(self) -> None:
+        T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True)
+        doc = self.load("claude")
+        doc["hooks"]["PreToolUse"] = [
+            g for g in doc["hooks"]["PreToolUse"] if g not in self.file_groups()
+        ]
+        write_json(self.config("claude"), doc, 0o600)
+        self.assertFails(self.verify("claude"), "no claude-file-guard-hook hook")
+        plan = T.plan_platform(T.PLATFORMS["claude"], self.paths)
+        self.assertEqual(plan.action, "add")
+        self.assertTrue(any(T.CLAUDE_FILE_HOOK_NAME in line for line in plan.diff), plan.diff)
+        r = T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True)
+        self.assertEqual(r.status, "added", r)
+        self.assertEqual(len(self.file_groups()), 1)
+
+    def test_a_narrow_or_stale_file_group_is_corrected(self) -> None:
+        T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True)
+        doc = self.load("claude")
+        for g in doc["hooks"]["PreToolUse"]:
+            if any(T.is_claude_file_hook(h.get("command")) for h in g["hooks"]):
+                g["matcher"] = "Write|Edit"
+                g["hooks"][0]["command"] = "/old/place/claude-file-guard-hook"
+        write_json(self.config("claude"), doc, 0o600)
+        self.assertFails(self.verify("claude"), "never matches Read, MultiEdit, NotebookEdit")
+        r = T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True)
+        self.assertEqual(r.status, "updated", r)
+        group = self.file_groups()[0]
+        self.assertEqual(group["matcher"], T.CLAUDE_FILE_MATCHER)
+        self.assertEqual(group["hooks"][0]["command"], T.claude_file_hook_command(self.paths))
+
+    def test_verify_runs_the_file_probes_and_they_pass(self) -> None:
+        T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True)
+        checks = self.verify("claude")
+        self.assertAllPass(checks)
+        names = {c.name for c in checks}
+        for name in (
+            "file-guard",
+            "Read/probe-placeholder/deny/login-PATH",
+            "Read/.env/deny/login-PATH",
+            "Write/integration/deny/login-PATH",
+            "MultiEdit/probe-placeholder/deny/login-PATH",
+            "NotebookEdit/probe-placeholder.ipynb/deny/login-PATH",
+            "Read/integration/allow/login-PATH",
+            "Write/public-placeholder/allow/login-PATH",
+        ):
+            self.assertIn(name, names)
+
+    def test_verify_fails_when_the_file_guard_lets_a_secret_read_through(self) -> None:
+        T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True)
+        doc = self.load("claude")
+        for g in doc["hooks"]["PreToolUse"]:
+            for h in g["hooks"]:
+                if T.is_claude_file_hook(h.get("command")):
+                    h["command"] = "/bin/true # claude-file-guard-hook"
+        write_json(self.config("claude"), doc, 0o600)
+        self.assertFails(self.verify("claude"), "Read/probe-placeholder/deny")
+
+    def test_verify_checks_every_file_guard_entry_not_only_the_first(self) -> None:
+        """Claude Code runs every entry, so a stale duplicate fails verify (Kody finding on #1423)."""
+        T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True)
+        doc = self.load("claude")
+        current = copy.deepcopy(self.file_groups()[0])
+        doc["hooks"]["PreToolUse"].append(copy.deepcopy(current))
+        write_json(self.config("claude"), doc, 0o600)
+        checks = self.verify("claude")
+        self.assertNotIn("FAIL", {c.status for c in checks})
+        self.assertIn("file-guard duplicates", {c.name for c in checks if c.status == "WARN"})
+        stale = copy.deepcopy(current)
+        stale["hooks"][0]["command"] = "/bin/true # claude-file-guard-hook"
+        doc["hooks"]["PreToolUse"].append(stale)
+        write_json(self.config("claude"), doc, 0o600)
+        checks = self.verify("claude")
+        self.assertFails(checks, "remove the stale entry by hand")
+        self.assertFails(checks, "Read/probe-placeholder/deny")
+        narrow = copy.deepcopy(current)
+        narrow["matcher"] = "Write"
+        doc["hooks"]["PreToolUse"][-1] = narrow
+        write_json(self.config("claude"), doc, 0o600)
+        self.assertFails(self.verify("claude"), "never matches Read, Edit, MultiEdit, NotebookEdit")
+
+    def test_verify_probes_at_most_the_current_and_one_stale_command(self) -> None:
+        """A settings file bloated with stale entries must not multiply the probe matrix (Kody on #1423)."""
+        T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True)
+        doc = self.load("claude")
+        current = copy.deepcopy(self.file_groups()[0])
+        for n in range(4):
+            stale = copy.deepcopy(current)
+            stale["hooks"][0]["command"] = f"/old/{n}/claude-file-guard-hook"
+            doc["hooks"]["PreToolUse"].append(stale)
+        write_json(self.config("claude"), doc, 0o600)
+        with mock.patch.object(T, "probe_claude_files", return_value=[]) as probe:
+            checks = self.verify("claude")
+        probed = [c.args[0] for c in probe.call_args_list]
+        self.assertEqual(probed, [T.claude_file_hook_command(self.paths), "/old/0/claude-file-guard-hook"])
+        self.assertEqual(sum(1 for c in checks if "remove the stale entry by hand" in c.detail), 4)
+
+    def test_apply_refuses_to_wire_in_a_missing_file_shim(self) -> None:
+        os.unlink(self.paths.claude_file_shim)
+        r = T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP)
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("file-guard shim", r.detail)
+
+    def test_the_merge_never_touches_another_hook(self) -> None:
+        doc = {"hooks": {"PreToolUse": [{"matcher": "Read", "hooks": [{"type": "command", "command": "x"}]}]}}
+        new, action, _notes = T.merge_claude_files(doc, "/s/claude-file-guard-hook")
+        self.assertEqual(action, "added")
+        self.assertTrue(T._is_extension(doc, new))
+        self.assertEqual(new["hooks"]["PreToolUse"][0], doc["hooks"]["PreToolUse"][0])
+        self.assertEqual(T._combine_actions("unchanged", "added"), "added")
+        self.assertEqual(T._combine_actions("updated", "added"), "updated")
+        self.assertEqual(T._combine_actions("unchanged", "unchanged"), "unchanged")
+        self.assertFalse(T.is_ours("/s/claude-file-guard-hook"))
+        self.assertTrue(T.is_claude_file_hook("'/s p/claude-file-guard-hook'"))
 
 
 if __name__ == "__main__":

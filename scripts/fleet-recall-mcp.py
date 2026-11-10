@@ -102,6 +102,11 @@ TOOLS = [
                     "description": "Boost agent lessons into the fusion; false for raw "
                     "document research.",
                 },
+                "include_retracted": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Include retracted contributions for audit; normal search hides them.",
+                },
             },
             "required": ["query"],
         },
@@ -154,6 +159,63 @@ TOOLS = [
             "required": ["text", "category"],
         },
     },
+    {
+        "name": "recall_correct",
+        "description": (
+            "Correct one of your own seat's agent contributions by exact doc_id.  The replacement "
+            "keeps the same point and doc_id, and the old text stays in the revision audit.  OWNER "
+            "may correct any contribution.  A retracted contribution is not resurrected."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "doc_id": {"type": "string", "description": "Exact contrib/... lesson id."},
+                "text": {
+                    "type": "string",
+                    "minLength": recall_api.CONTRIB_MIN,
+                    "maxLength": recall_api.CONTRIB_MAX,
+                },
+                "reason": {
+                    "type": "string",
+                    "minLength": recall_api.REASON_MIN,
+                    "maxLength": recall_api.REASON_MAX,
+                },
+                "seat": {
+                    "type": "string",
+                    "description": "Uppercase seat tag; must be your own seat (the default, from your bearer).",
+                },
+                "title": {"type": "string"},
+                "url": {"type": "string", "description": "Source link, optional."},
+                "expected_revision": {"type": "integer", "minimum": 1},
+            },
+            "required": ["doc_id", "text", "reason"],
+        },
+    },
+    {
+        "name": "recall_retract",
+        "description": (
+            "Retract (take back) one of your own seat's agent contributions by exact doc_id.  "
+            "The point stays as audit metadata, but normal search excludes it.  OWNER may retract "
+            "any contribution.  Repeating a retraction is idempotent."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "doc_id": {"type": "string", "description": "Exact contrib/... lesson id."},
+                "reason": {
+                    "type": "string",
+                    "minLength": recall_api.REASON_MIN,
+                    "maxLength": recall_api.REASON_MAX,
+                },
+                "seat": {
+                    "type": "string",
+                    "description": "Uppercase seat tag; must be your own seat (the default, from your bearer).",
+                },
+                "expected_revision": {"type": "integer", "minimum": 1},
+            },
+            "required": ["doc_id", "reason"],
+        },
+    },
 ]
 
 # True only inside a process main() started with FLEET_RECALL_FAKE=1.  Importing a fake backend elsewhere
@@ -181,6 +243,49 @@ def _bool(args: dict, key: str) -> None:
         raise FleetRagError(f"{key} must be a boolean")
 
 
+def _validate_mutation_result(name: str, result: dict) -> dict:
+    """Fail closed before a local/public mutation result is returned as tool data."""
+
+    def string(field: str, *, required: bool = True) -> str:
+        value = result.get(field)
+        if value is None and not required:
+            return ""
+        if not isinstance(value, str):
+            raise FleetRagError("fleet recall returned an invalid response field: %s" % field)
+        return value
+
+    def integer(field: str, *, required: bool = True) -> int:
+        value = result.get(field)
+        if value is None and not required:
+            return 0
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise FleetRagError("fleet recall returned an invalid response field: %s" % field)
+        return value
+
+    string("id")
+    doc_id = string("doc_id")
+    if not recall_api._DOC_ID_RE.fullmatch(doc_id):
+        raise FleetRagError("fleet recall returned an invalid response field: doc_id")
+    string("seat")
+    string("status")
+    integer("revision")
+    if name == "recall_correct":
+        integer("corrected_at", required=False)
+        string("corrected_by", required=False)
+        string("previous_content_hash")
+        string("content_hash")
+        scrubbed = result.get("scrubbed")
+        if not isinstance(scrubbed, list) or any(not isinstance(item, str) for item in scrubbed):
+            raise FleetRagError("fleet recall returned an invalid response field: scrubbed")
+    else:
+        if not isinstance(result.get("retracted"), bool):
+            raise FleetRagError("fleet recall returned an invalid response field: retracted")
+        integer("retracted_at")
+        string("retracted_by")
+        string("retraction_reason")
+    return result
+
+
 def call_tool(name: str, args: dict) -> dict:
     if name not in _ALLOWED_ARGS:
         raise KeyError(name)
@@ -203,6 +308,7 @@ def call_tool(name: str, args: dict) -> dict:
         _int(args, "per_doc")
         _bool(args, "rerank")
         _bool(args, "prefer_lessons")
+        _bool(args, "include_retracted")
         # The log names who asked:  the bearer's seat, never an argument.  (`seat` itself stays a corpus filter.)
         caller_seat = (
             verified
@@ -211,7 +317,7 @@ def call_tool(name: str, args: dict) -> dict:
             or os.environ.get("AGENT_TAG")
         )
         # A null for an optional flag means "default", not False.
-        for key in ("per_doc", "rerank", "prefer_lessons"):
+        for key in ("per_doc", "rerank", "prefer_lessons", "include_retracted"):
             if key in args and args[key] is None:
                 del args[key]
         t0 = time.time()
@@ -231,6 +337,20 @@ def call_tool(name: str, args: dict) -> dict:
     if name == "recall_stats":
         return public_fallback.call_with_fallback("recall_stats", {}, recall_api.recall_stats)
     work = dict(args)
+    if name in ("recall_correct", "recall_retract"):
+        _int(work, "expected_revision")
+        if verified:
+            claimed = work.get("seat")
+            if claimed and seat_auth.F.canonical_hint(claimed) != verified:
+                raise FleetRagError(
+                    "%s runs under your own seat (%s), not %s; nothing was changed"
+                    % (name, verified, str(claimed)[:40])
+                )
+            work["seat"] = verified
+        local = recall_api.recall_correct if name == "recall_correct" else recall_api.recall_retract
+        return _validate_mutation_result(
+            name, public_fallback.call_mutation(name, work, lambda: local(**work))
+        )
     if verified:
         claimed = work.get("seat")
         if claimed and seat_auth.F.canonical_hint(claimed) != verified:

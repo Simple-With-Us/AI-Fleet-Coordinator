@@ -444,14 +444,14 @@ class LaunchTests(unittest.TestCase):
     def _launch(self, mode, token=None, denied=False):
         import contextlib
         import io
-        import subprocess
+        import urllib.parse
         from pathlib import Path
 
         from fleet_secrets import cli, core
 
         from whatsapp_bridge import launch
 
-        exports, children = [], []
+        requests, children = [], []
         request_id = "00000000-0000-4000-8000-000000000009"
         folder = launch.OPERATOR_FOLDER if mode == "operator" else "/jet"
         expected_token = self.OPERATOR_TOKEN if mode == "operator" else self.BRIDGE_TOKEN
@@ -469,21 +469,40 @@ class LaunchTests(unittest.TestCase):
             values["WHATSAPP_API_KEY"] = "must-never-reach-operator"
         output = io.StringIO()
 
-        def export(argv, **options):
-            exports.append((argv, dict(options["env"])))
-            self.assertEqual(argv[1], "export", "no login/session/machine fallback")
-            self.assertIn("--env=prod", argv)
-            self.assertIn("--projectId=" + self.PROJECT, argv)
-            self.assertIn("--path=" + folder, argv)
-            self.assertNotIn(token, " ".join(argv))
-            # Simulates the server's exact-folder read-only token boundary.
-            accepted = not denied and options["env"].get("INFISICAL_TOKEN") == expected_token
-            return subprocess.CompletedProcess(
-                argv,
-                0 if accepted else 1,
-                json.dumps(values).encode() if accepted else b"",
-                b"forbidden",
-            )
+        def api(method, path, request_token, body, env, **options):
+            requests.append((method, path))
+            self.assertEqual(method, "GET")
+            self.assertEqual(request_token, token)
+            self.assertIsNone(body)
+            self.assertNotIn(token, path)
+            if path == "/v2/service-token":
+                granted_folder = launch.OPERATOR_FOLDER if token == self.OPERATOR_TOKEN else "/jet"
+                return 200, {
+                    "workspace": self.PROJECT,
+                    "scopes": [{"environment": "prod", "secretPath": granted_folder}],
+                    "permissions": ["read"],
+                    "expiresAt": "2000-01-01T00:00:00Z" if denied else None,
+                }
+            self.assertTrue(path.startswith("/v3/secrets/raw?"))
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)
+            self.assertEqual(query["workspaceId"], [self.PROJECT])
+            self.assertEqual(query["environment"], ["prod"])
+            self.assertEqual(query["secretPath"], [folder])
+            for field in ("recursive", "include_imports", "expandSecretReferences"):
+                self.assertEqual(query[field], ["false"])
+            return 200, {
+                "secrets": [
+                    {
+                        "secretKey": name,
+                        "secretValue": value,
+                        "type": "shared",
+                        "workspace": self.PROJECT,
+                        "environment": "prod",
+                        "secretPath": folder,
+                    }
+                    for name, value in values.items()
+                ]
+            }
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / launch.CREDENTIAL_NAMES[mode]
@@ -494,8 +513,11 @@ class LaunchTests(unittest.TestCase):
                 "WA_INFISICAL_PROJECT_ID": self.PROJECT,
             }
             with (
-                patch.object(core, "find_cli", return_value="/fake/infisical"),
-                patch.object(core.subprocess, "run", side_effect=export),
+                patch.object(core, "_api_json", side_effect=api),
+                patch.object(core, "find_cli", side_effect=AssertionError("CLI fallback")),
+                patch.object(
+                    core.subprocess, "run", side_effect=AssertionError("subprocess fallback")
+                ),
                 patch.object(
                     cli.os,
                     "execvpe",
@@ -512,11 +534,13 @@ class LaunchTests(unittest.TestCase):
                         launch.main(argv, environment)
                 else:
                     self.assertEqual(launch.main(argv, environment), 0)
-        self.assertEqual(len(exports), 1)
+        self.assertEqual(requests[0], ("GET", "/v2/service-token"))
         self.assertNotIn(token, output.getvalue())
         if denied or token != expected_token:
+            self.assertEqual(len(requests), 1, "wrong folder or expiry stops before secret values")
             self.assertEqual(children, [])
             return
+        self.assertEqual(len(requests), 2)
         self.assertEqual(len(children), 1)
         child = children[0][2]
         self.assertTrue(set(core.AUTH_ENV_VARS).isdisjoint(child))

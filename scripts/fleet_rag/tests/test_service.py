@@ -29,12 +29,14 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from fleet_rag import recall_api
+from fleet_knobs.tests._fake import ScopedReadAPI
 from fleet_rag.recall_api import FakeQdrant
 
 SERVICE_DIR = pathlib.Path(__file__).resolve().parents[2] / "fleet-recall-service"
 SERVER_PY = SERVICE_DIR / "server.py"
 BOOTSTRAP_SH = SERVICE_DIR / "bootstrap.sh"
 TOKEN = "test-token-0123456789"
+OWNER_TOKEN = "owner-token-0123456789"
 GOOD_TEXT = ("pm2 start does not re-read env from the ecosystem file; restart with --update-env "
              "so the cached PATH is replaced.")
 
@@ -72,6 +74,17 @@ class _ServiceCase(unittest.TestCase):
         recall_api.install_fake_backend()
         server.reset_health_cache()
         os.environ.pop("AGENT_SEAT", None)
+
+    def owner_settings(self):
+        return (
+            mock.patch.object(
+                server.infisical_settings, "get",
+                lambda key, default=None: OWNER_TOKEN if key == "RECALL_OWNER_TOKEN" else default,
+            ),
+            mock.patch.object(
+                server.infisical_settings, "present", lambda key: key == "RECALL_OWNER_TOKEN"
+            ),
+        )
 
     def request(self, method: str, path: str, body=None, token: str | None = TOKEN,
                 headers: dict | None = None, raw: bytes | None = None):
@@ -190,8 +203,55 @@ class AuthTests(_ServiceCase):
         self.assertFalse(server.bearer_ok("Bearer " + TOKEN, ""))
         self.assertFalse(server.bearer_ok("", TOKEN))
         self.assertFalse(server.bearer_ok(None, TOKEN))
+
+    def test_owner_bearer_opens_owner_mutation_routes_and_mcp(self):
+        get_patch, present_patch = self.owner_settings()
+        with get_patch, present_patch:
+            for method, path, body in (
+                ("GET", "/recall/stats", None),
+                ("POST", "/recall/search", {"query": "x"}),
+                ("POST", "/recall/contribute", {"text": "x", "category": "lesson", "seat": "OWNER"}),
+            ):
+                status, _, _ = self.request(method, path, body, token=OWNER_TOKEN)
+                self.assertEqual(status, 401, (method, path))
+            status, _, body = self.rpc("ping", rid=1, token=OWNER_TOKEN)
+            self.assertEqual(status, 200)
+            self.assertEqual(body["result"], {})
+            status, _, body = self.request(
+                "POST", "/recall/retract", {"doc_id": "bad", "reason": "obsolete", "seat": "OWNER"}, token=OWNER_TOKEN
+            )
+        self.assertEqual(status, 400)  # auth passed; input validation owns this refusal
+        self.assertIn("doc_id", body["error"])
         self.assertFalse(server.bearer_ok("Bearer", TOKEN))
         self.assertFalse(server.bearer_ok("Bearer " + TOKEN[:-1], TOKEN))
+
+
+class ServiceSettingAndIndexTests(unittest.TestCase):
+    def test_owner_token_environment_wins_and_infisical_is_the_fallback(self):
+        with mock.patch.dict(os.environ, {"RECALL_OWNER_TOKEN": "env-token"}, clear=True), \
+                mock.patch.object(server.infisical_settings, "get", return_value="infisical-token"):
+            self.assertEqual(server._setting_value("RECALL_OWNER_TOKEN"), "env-token")
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(server.infisical_settings, "get", return_value="infisical-token"):
+            self.assertEqual(server._setting_value("RECALL_OWNER_TOKEN"), "infisical-token")
+
+    def test_retracted_bool_index_is_created_once_for_a_real_backend(self):
+        calls = []
+
+        class Backend:
+            def __init__(self, cfg):
+                self.cfg = cfg
+
+            def create_payload_index(self, field_name, field_schema):
+                calls.append((field_name, field_schema))
+
+        with mock.patch.object(server, "_retracted_index_ready", False), \
+                mock.patch.object(recall_api, "fake_backend_installed", return_value=False), \
+                mock.patch.object(recall_api, "get_config", return_value={"cfg": True}), \
+                mock.patch.object(recall_api, "Qdrant", Backend):
+            server.ensure_retracted_index()
+            server.ensure_retracted_index()
+        self.assertEqual(calls, [("retracted", "bool")])
 
 
 def _read_pipelined(sock: socket.socket, timeout: float = 5.0) -> tuple[list[tuple[int, dict, bytes]], bool]:
@@ -587,6 +647,62 @@ class RestTests(_ServiceCase):
         self.assertEqual(len(again["hits"]), 1)
         self.assertEqual(again["hits"][0]["seat"], "CURSOR")
 
+    def test_correct_retract_round_trip_and_authority(self):
+        status, _, body = self.request("POST", "/recall/contribute",
+                                       {"text": GOOD_TEXT, "category": "lesson", "seat": "cursor"})
+        self.assertEqual(status, 200)
+        doc_id = body["doc_id"]
+        status, _, body = self.request("POST", "/recall/correct",
+                                       {"doc_id": doc_id, "text": GOOD_TEXT + " Then check pm2 describe.",
+                                        "reason": "add the verification step", "seat": "grok"})
+        self.assertEqual(status, 400)
+        self.assertIn("owning seat", body["error"])
+        self.assertEqual(len(FakeQdrant.upserts), 1)
+        status, _, body = self.request("POST", "/recall/correct",
+                                       {"doc_id": doc_id, "text": GOOD_TEXT + " Then check pm2 describe.",
+                                        "reason": "add the verification step", "seat": "cursor",
+                                        "expected_revision": 1})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["revision"], 2)
+        self.assertEqual(len(FakeQdrant.upserts), 2)
+        status, _, body = self.request("POST", "/recall/retract",
+                                       {"doc_id": doc_id, "reason": "obsolete for the service", "seat": "OWNER"})
+        self.assertEqual(status, 403)
+        self.assertIn("owner mutation token not configured", body["error"])
+        get_patch, present_patch = self.owner_settings()
+        with get_patch, present_patch:
+            status, _, body = self.request("POST", "/recall/retract",
+                                           {"doc_id": doc_id, "reason": "obsolete for the service", "seat": "OWNER"})
+            self.assertEqual(status, 401)
+            status, _, body = self.request("POST", "/recall/retract",
+                                           {"doc_id": doc_id, "reason": "obsolete for the service", "seat": "OWNER"},
+                                           token=OWNER_TOKEN)
+        self.assertEqual(status, 200)
+        self.assertTrue(body["retracted"])
+        self.assertEqual(body["retracted_by"], "OWNER")
+        get_patch, present_patch = self.owner_settings()
+        with get_patch, present_patch:
+            status, _, body = self.rpc("tools/call", {"name": "recall_retract",
+                                                   "arguments": {"doc_id": doc_id, "reason": "duplicate", "seat": "OWNER"}}, rid=11, token=OWNER_TOKEN)
+        self.assertEqual(status, 200)
+        self.assertFalse(body["result"]["isError"])
+        self.assertEqual(body["result"]["structuredContent"]["status"], "already_retracted")
+        status, _, body = self.request("POST", "/recall/search", {"query": "update-env", "source": "agent-contribution"})
+        self.assertEqual(body["hits"], [])
+        status, _, body = self.request("POST", "/recall/search", {"query": "update-env", "source": "agent-contribution",
+                                                                   "include_retracted": True})
+        self.assertEqual(body["hits"][0]["retraction_reason"], "obsolete for the service")
+
+    def test_mutation_doc_id_is_validated_at_the_service_boundary(self):
+        status, _, body = self.request(
+            "POST", "/recall/correct",
+            {"doc_id": "docs/not-a-contribution", "text": GOOD_TEXT,
+             "reason": "boundary validation", "seat": "CURSOR"},
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("doc_id", body["error"])
+        self.assertEqual(FakeQdrant.upserts, [])
+
     def test_contribute_validation(self):
         status, _, body = self.request("POST", "/recall/contribute", {"text": "too short", "category": "lesson", "seat": "X"})
         self.assertEqual(status, 400)
@@ -659,15 +775,17 @@ class McpTests(_ServiceCase):
         self.assertEqual(body, {"jsonrpc": "2.0", "id": 7, "result": {}})
         _, _, body = self.rpc("tools/list", rid=8)
         tools = body["result"]["tools"]
-        self.assertEqual([t["name"] for t in tools], ["recall_search", "recall_stats", "recall_contribute"])
+        self.assertEqual([t["name"] for t in tools], ["recall_search", "recall_stats", "recall_contribute", "recall_correct", "recall_retract"])
         for t in tools:
             self.assertEqual(t["inputSchema"]["type"], "object")
             self.assertTrue(t["description"])
         self.assertEqual(tools[0]["inputSchema"]["required"], ["query"])
         self.assertEqual(tools[2]["inputSchema"]["required"], ["text", "category", "seat"])
+        self.assertEqual(tools[3]["inputSchema"]["required"], ["doc_id", "text", "reason", "seat"])
+        self.assertEqual(tools[4]["inputSchema"]["required"], ["doc_id", "reason", "seat"])
         _, _, body = self.rpc("server/discover", rid=9)
         self.assertEqual(body["result"]["protocolVersions"], list(server.PROTOCOL_VERSIONS))
-        self.assertEqual(len(body["result"]["tools"]), 3)
+        self.assertEqual(len(body["result"]["tools"]), 5)
 
     def test_tools_call_stats_search_contribute(self):
         _, _, body = self.rpc("tools/call", {"name": "recall_stats"}, rid=2)
@@ -692,6 +810,23 @@ class McpTests(_ServiceCase):
         _, _, body = self.rpc("tools/call", {"name": "recall_search",
                                              "arguments": {"query": "update-env", "source": "agent-contribution"}}, rid=5)
         self.assertEqual(body["result"]["structuredContent"]["hits"][0]["seat"], "GROK")
+
+        _, _, body = self.rpc("tools/call", {"name": "recall_search",
+                                             "arguments": {"query": "update-env", "source": "agent-contribution"}}, rid=6)
+        doc_id = body["result"]["structuredContent"]["hits"][0]["doc_id"]
+        _, _, body = self.rpc("tools/call", {"name": "recall_correct",
+                                             "arguments": {"doc_id": doc_id, "text": GOOD_TEXT + " Check pm2 describe.",
+                                                            "reason": "add the verification command", "seat": "GROK"}}, rid=7)
+        self.assertFalse(body["result"]["isError"])
+        self.assertEqual(body["result"]["structuredContent"]["revision"], 2)
+        _, _, body = self.rpc("tools/call", {"name": "recall_retract",
+                                             "arguments": {"doc_id": doc_id, "reason": "obsolete for this test", "seat": "GROK"}}, rid=8)
+        self.assertFalse(body["result"]["isError"])
+        self.assertTrue(body["result"]["structuredContent"]["retracted"])
+        _, _, body = self.rpc("tools/call", {"name": "recall_search",
+                                             "arguments": {"query": "update-env", "source": "agent-contribution",
+                                                            "include_retracted": True}}, rid=9)
+        self.assertTrue(body["result"]["structuredContent"]["hits"][0]["retracted"])
 
     def test_tools_call_errors(self):
         _, _, body = self.rpc("tools/call", {"name": "recall_contribute",
@@ -787,6 +922,10 @@ class BootstrapTests(unittest.TestCase):
         _tgz(cls.www / "src.tgz", {
             "AI-Fleet-Coordinator-main/scripts/fleet_rag/__init__.py": b"__version__ = 'test'\n",
             "AI-Fleet-Coordinator-main/scripts/fleet-recall-service/server.py": b"# stub\n",
+            **{"AI-Fleet-Coordinator-main/scripts/fleet_secrets/" + name:
+               (SERVICE_DIR.parent / "fleet_secrets" / name).read_bytes()
+               for name in ("__init__.py", "core.py")},
+            "AI-Fleet-Coordinator-main/scripts/fleet_secrets/cli.py": b"raise AssertionError('must not ship')\n",
             "AI-Fleet-Coordinator-main/README.md": b"not extracted\n",
         })
         _tgz(cls.www / "gitleaks_8.30.1_linux_arm64.tar.gz",
@@ -833,7 +972,8 @@ class BootstrapTests(unittest.TestCase):
     def test_installs_gitleaks_from_release_tarball(self):
         proc, work = self.run_bootstrap(self.base + "/gitleaks_8.30.1_linux_arm64.tar.gz")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertIn("bootstrap: extracted 2 files", proc.stdout)
+        self.assertIn("bootstrap: extracted 4 files", proc.stdout)
+        self.assertEqual(sorted(p.name for p in (work / "app/fleet_secrets").iterdir()), ["__init__.py", "core.py"])
         self.assertTrue((work / "app" / "fleet-recall-service" / "server.py").is_file())
         self.assertTrue((work / "app" / "fleet_rag" / "__init__.py").is_file())
         self.assertFalse((work / "app" / "README.md").exists())
@@ -859,6 +999,64 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
         self.assertIn("aborting", proc.stdout)
         self.assert_no_binary(work)
+
+    def test_extracted_real_settings_verify_scoped_access_without_a_secrets_cli(self):
+        source = self.www / "real-settings.tgz"
+        prefix = "AI-Fleet-Coordinator-main/scripts/"
+        _tgz(source, {
+            prefix + "fleet_rag/__init__.py": b"",
+            prefix + "fleet_rag/infisical_settings.py": (SERVICE_DIR.parent / "fleet_rag/infisical_settings.py").read_bytes(),
+            prefix + "fleet-recall-service/server.py": b"# bootstrap fixture\n",
+            **{prefix + "fleet_secrets/" + name: (SERVICE_DIR.parent / "fleet_secrets" / name).read_bytes()
+               for name in ("__init__.py", "core.py")},
+            prefix + "fleet_secrets/cli.py": b"raise AssertionError('must not ship')\n",
+            prefix + "fleet_secrets/__main__.py": b"raise AssertionError('must not ship')\n",
+            prefix + "fleet-secrets": b"must not ship\n",
+        })
+        proc, work = self.run_bootstrap(None, RECALL_GITLEAKS_SKIP="1", RECALL_TARBALL=str(source))
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        app = work / "app"
+        self.assertEqual(sorted(p.name for p in (app / "fleet_secrets").iterdir()), ["__init__.py", "core.py"])
+        self.assertFalse((app / "fleet-secrets").exists())
+        boot = (
+            "import os,sys;sys.path.insert(0,sys.argv[1]);"
+            "from fleet_rag import infisical_settings as settings;import fleet_secrets.core as verifier;"
+            "assert os.path.commonpath([sys.argv[1],verifier.__file__])==sys.argv[1];"
+            "settings.configure(project_id=sys.argv[2],environment='prod',managed_keys=('RECALL_API_TOKEN',),"
+            "required_keys=('RECALL_API_TOKEN',),secret_keys=('RECALL_API_TOKEN',));"
+            "settings.init_settings();assert settings.get('RECALL_API_TOKEN');print('ready')"
+        )
+        with ScopedReadAPI({"RECALL_API_TOKEN": "synthetic-server-value"}, allow_bulk=True) as api:
+            env = {"HOME": str(work), "PATH": "/usr/bin:/bin", "INFISICAL_TOKEN": api.token,
+                   "INFISICAL_API_BASE": api.env["FLEET_SECRETS_API"].removesuffix("/api")}
+            ran = subprocess.run([sys.executable, "-I", "-B", "-c", boot, str(app), api.project],
+                                 env=env, cwd=work, capture_output=True, text=True, timeout=15)
+            self.assertEqual(ran.returncode, 0, ran.stderr)
+            self.assertEqual(ran.stdout.strip(), "ready")
+            self.assertEqual(len(api.requests), 2)
+            self.assertEqual(api.requests[0], "/api/v2/service-token")
+            self.assertTrue(api.requests[1].startswith("/api/v3/secrets/raw?"))
+            api.requests.clear()
+            api.metadata_override["permissions"] = ["read", "write"]
+            denied = subprocess.run([sys.executable, "-I", "-B", "-c", boot, str(app), api.project],
+                                    env=env, cwd=work, capture_output=True, text=True, timeout=15)
+            self.assertNotEqual(denied.returncode, 0)
+            self.assertEqual(api.requests, ["/api/v2/service-token"])
+
+    def test_missing_library_fails_even_when_old_files_exist_and_docker_copies_only_library(self):
+        source = self.www / "missing-verifier.tgz"
+        _tgz(source, {"fixture/scripts/fleet-recall-service/server.py": b"# stub\n"})
+        work = pathlib.Path(tempfile.mkdtemp(prefix="missing-", dir=self.tmp.name))
+        package = work / "app/fleet_secrets"
+        package.mkdir(parents=True)
+        (package / "core.py").write_text("# stale\n")
+        (package / "__init__.py").write_text("")
+        proc, _ = self.run_bootstrap(None, RECALL_GITLEAKS_SKIP="1", RECALL_TARBALL=str(source), RECALL_APP_DIR=str(work / "app"))
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("scoped verifier library missing from source", proc.stdout)
+        docker = (SERVICE_DIR / "Dockerfile").read_text()
+        copies = [line for line in docker.splitlines() if line.startswith("COPY ") and "fleet_secrets" in line]
+        self.assertEqual(copies, ["COPY fleet_secrets/__init__.py fleet_secrets/core.py /app/fleet_secrets/"])
 
     def test_download_failure_continues_only_with_explicit_opt_out(self):
         proc, work = self.run_bootstrap(self.base + "/missing.tgz", RECALL_GITLEAKS_REQUIRED="0")

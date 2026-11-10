@@ -16,21 +16,21 @@ Owner direction (quoted):  "I don't want notes going from Zulip to Apple notes."
 | status | `simple-notes status ID` | `notes_status` | Where a queued request stands. |
 | log | `simple-notes log` | `notes_log` | The action log of `apple-notes-coding.sh`. |
 
-The verbs, their options and the tool arguments are one contract:  `scripts/agent_sync/mcp/notes-tools.json`.  `scripts/agent_sync/tests/test_notes_parity.py` fails when `simple-notes`, the stdio server or the hosted Worker drifts from it.
+The verbs, their options and the tool arguments are one contract:  `scripts/simple_tools/mcp/notes-tools.json`.  `scripts/simple_tools/tests/test_notes_parity.py` fails when `simple-notes`, the stdio server or the hosted Worker drifts from it.
 
 The output is the same everywhere:  a write answers `status: done` with the `note_id`, a read answers the note, and only a request still waiting when the caller's wait ran out answers `queued` or `running` with its `request_id`.
 
 ## Where a Request Runs
 
 - **On the Mac** (macOS, `osascript` and the script found):  `simple-notes`, the stdio MCP and the apple-notes skill run `apple-notes-coding.sh` directly, as before.
-- **Everywhere else** (the server's CLIs and stdio MCP, the hosted ST-MCP Worker for cloud seats):  the request goes to the Operator's notes queue over signed HTTPS (below), and a seatless runner on the Mac claims it, runs the same script and reports the result.  The caller waits for that result, polling once a second or so:  `simple-notes` up to 300 seconds (`--wait SECONDS`, `--no-wait`);  the stdio MCP 25 seconds by default, which `wait_seconds` may raise to 90 (it answers one call at a time, so a long default would hold up the next);  ST-MCP up to 25 seconds.  No Zulip message is involved at any point.
+- **Everywhere else** (the server's CLIs and stdio MCP, the hosted ST-MCP Worker for cloud seats):  the caller goes to the hosted gateway as its own per-bot fleet bearer (`--fleet-bearer-file`, else that seat's own private file at `~/.secrets/fleet-tools/<seat>`;  there is no shared-credential fallback), and the gateway enqueues the request on the Operator's notes queue (below), which a seatless runner on the Mac claims, runs the same script and reports the result.  The caller waits for that result, polling once a second or so:  `simple-notes` up to 300 seconds (`--wait SECONDS`, `--no-wait`);  the stdio MCP 25 seconds by default, which `wait_seconds` may raise to 90 (it answers one call at a time, so a long default would hold up the next);  ST-MCP up to 25 seconds.  No Zulip message is involved at any point.
 
 The script is the one place formatting is enforced (the title row, the date row, the Session row, sentence gaps, fleet dates), so a note reads the same whoever wrote it and from wherever.
 
 ## Who May Do What
 
 - **create:**  the title is `[TEAM_KEY, Agent] Topic` and the Agent is the caller's own canonical name (notes.title_problem).  A create or an update carries a session id unless the caller is a single-thread identity (session_ids.is_exempt).
-- **Calling from the server:**  `simple-notes` acts as `AGENT_SEAT` (or `--identity`), over signed HTTPS as the SERVER principal.  That seat must be in `[notes_queue] server_seats` and pass the same title and session rules, so `AGENT_SEAT=CLAUDE simple-notes create "[AFC, Claude] Topic"` works from any server shell holding the key.  `AGENT_SEAT=OPERATOR` does not:  OPERATOR is in no seat list, the title check knows it only as `OPERATOR` (never the display form `Operator`), and it is not session-exempt.
+- **Calling from the server:**  `simple-notes` acts as `AGENT_SEAT` (or `--identity`), authenticated by that bot's own fleet bearer;  the shared SERVER key is the queue's backend (the Mac runner, the doctor), never a caller's credential.  The gateway derives the seat from the bearer and passes the same title and session rules, so `AGENT_SEAT=CLAUDE simple-notes create "[AFC, Claude] Topic"` works from any server shell holding that bot's own bearer file.  `AGENT_SEAT=OPERATOR` does not:  OPERATOR is in no seat list, the title check knows it only as `OPERATOR` (never the display form `Operator`), and it is not session-exempt.
 - **update, pin, unpin, read:**  any note in the Coding folder (owner, Oct 22).  An update whose title does not carry the caller's name runs with `--existing-only`, so a missing note answers `not_found` instead of a new untagged note.
 - **list:**  the whole Coding folder.
 - Every title is at most 200 characters, holds no double quote, backslash or control character, and does not start with `-`.
@@ -39,7 +39,7 @@ The script is the one place formatting is enforced (the title row, the date row,
 
 ## The Wire Protocol
 
-Contract `agent-sync-notes/1`, on the Operator's API server (the listener API, `listener_api.py`, port 8788), under `/notes/v1/`.  The Worker reaches it at `LISTENER_API_URL`;  Python clients and the runner read the fleet knob `OPERATOR_API_URL`.  Both are the same https origin.  When the knob reads empty, the Python side asks `fleet-secrets get OPERATOR_API_URL --path / --project ai-fleet-coordinator` for the same key, the way it reads its principal's key.  This is for the server:  its agent shells carry no Infisical automation pair, so fleet_knobs there has only its last-known-good copy, which lapses after 48 hours, while `fleet-secrets` logs in for itself.
+Contract `simple-tools-notes/1`, on the Operator's API server (the listener API, `listener_api.py`, port 8788), under `/notes/v1/`.  The Worker reaches it at `LISTENER_API_URL`;  Python clients and the runner read the fleet knob `OPERATOR_API_URL`.  Both are the same https origin.  When the knob reads empty, the Python side asks `fleet-secrets get OPERATOR_API_URL --path / --project ai-fleet-coordinator` for the same key, the way it reads its principal's key.  This is for the server:  its agent shells carry no Infisical automation pair, so fleet_knobs there has only its last-known-good copy, which lapses after 48 hours, while `fleet-secrets` logs in for itself.
 
 **Principals.**  Every request is signed by one of three principals, each with its own key in Infisical (project AI Fleet Coordinator, `prod`, folder `/operator`, at least 32 characters):
 
@@ -53,9 +53,9 @@ Each principal works on its own, on purpose:  the Operator serves the principals
 
 The three keys separate what each caller may do over the network:  a leaked Worker key cannot claim a request, and a leaked runner key cannot enqueue one.  They are not a boundary between processes on one host.  Today the server's and the Mac's Infisical identities can each read all of `/operator`, so any process on either host that can run `fleet-secrets` can take any of the three keys.
 
-**Signing.**  Three headers:  `X-Agent-Sync-Principal`, `X-Agent-Sync-Timestamp` (unix seconds) and `X-Agent-Sync-Signature`, the lowercase hex HMAC-SHA256, keyed with the principal's key, of
+**Signing.**  Three headers:  `X-Simple-Tools-Principal`, `X-Simple-Tools-Timestamp` (unix seconds) and `X-Simple-Tools-Signature`, the lowercase hex HMAC-SHA256, keyed with the principal's key, of
 
-    agent-sync-notes/1\n<METHOD>\n<path>\n<raw query>\n<timestamp>\n<principal>\n<sha256 hex of the body bytes>
+    simple-tools-notes/1\n<METHOD>\n<path>\n<raw query>\n<timestamp>\n<principal>\n<sha256 hex of the body bytes>
 
 good for 300 seconds either side of the Operator's clock.  Bodies are UTF-8 JSON, at most 4 MiB.  An unknown principal, a principal with no key, an unknown path:  404.  A bad or stale signature:  401.  A principal on a path it may not use, or a seat it may not act for:  403.
 

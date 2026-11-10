@@ -1,12 +1,41 @@
 import SwiftUI
 
-/// The operations tab:  the Mac's LaunchAgents,  the server's updates,  and the audit log.
+/// The three panels that were Operations:  the Mac's background agents,  the server's
+/// updates,  and the history of actions run from the Mac.
 ///
-/// It initially reads the saved Mac report, allowlist and audit log.  Refresh collects
-/// current agents through the existing read-only collector without writing a report.
-/// Service changes use `OpsController`: plan, review, Touch ID, re-plan, then run.
+/// Operations held all three on one page under the Server heading,  so the Mac's agents
+/// could be stopped from under a heading that said Server.  Each part is now its own panel
+/// under the place it acts on,  and they share one read:  the saved Mac report,  the
+/// allowlist and the audit log.  Reading the Mac's agents collects current agents through
+/// the existing read-only collector without writing a report.  Changes use `OpsController`:
+/// plan,  review,  Touch ID,  re-plan,  then run.
 struct OperationsView: View {
-    @State private var services: MacServicesReading?
+    /// Which of the three panels this is.
+    enum Part {
+        case agents
+        case updates
+        case history
+
+        /// The panel's place in the sidebar,  which names it.
+        var destination: MusterDestination {
+            switch self {
+            case .agents: return .macAgents
+            case .updates: return .serverUpdates
+            case .history: return .actionHistory
+            }
+        }
+    }
+
+    let part: Part
+
+    /// What the menu knows about reaching the server,  so an update is not offered as if it
+    /// could run when the Mac already knows the server cannot be reached.
+    @EnvironmentObject private var watch: PlaceWatch
+    /// The agents shown:  the newest good reading of the saved file or of a live collection.
+    @State private var agents = MacAgentsShown()
+    /// When the saved file was last read,  and when the Mac last woke.
+    @State private var readAt: Date?
+    @State private var wokeAt: Date?
     @State private var allowlist: OpsAllowlist?
     @State private var allowlistPath = ""
     @State private var audit: OpsAuditReading?
@@ -15,31 +44,59 @@ struct OperationsView: View {
     @State private var refreshRequests = OperationsRefreshRequests()
     @ObservedObject private var controller = OpsController.shared
 
+    init(part: Part) {
+        self.part = part
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
-                HogHunterMacPanel()
-                if loading && services == nil {
-                    Text("Reading the Mac's agents…")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                } else {
-                    TimelineView(.periodic(from: .now, by: 30)) { context in
-                        agentsSection(services?.aged(at: context.date))
+                switch part {
+                case .agents:
+                    HogHunterMacPanel()
+                    if loading && agents.reading == nil {
+                        Text("Reading the Mac's agents\u{2026}")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        TimelineView(.periodic(from: .now, by: ReportFreshness.tickInterval)) { context in
+                            agentsSection(agents, now: context.date)
+                        }
                     }
-                    updatesSection
-                    auditSection
+                case .updates:
+                    if loading && allowlist == nil {
+                        Text("Reading the allowlist\u{2026}")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        updatesSection
+                    }
+                case .history:
+                    if loading && audit == nil {
+                        Text("Reading the action log\u{2026}")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        auditSection
+                    }
                 }
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 18)
         }
-        .task { await load(collectAgents: false) }
+        // The saved file,  the allowlist and the log are read again every minute and when the
+        // Mac wakes,  so a newer file never sits unread beside older rows.
+        .rereadsOnTickAndWake(onWake: { wokeAt = Date() }) {
+            await load(collectAgents: false)
+        }
         .onChange(of: controller.completedRuns) { _, _ in
             let localAgentChanged: Bool
-            if let action = controller.phase.action, case .macAgent = action { localAgentChanged = true }
-            else { localAgentChanged = false }
+            if part == .agents, let action = controller.phase.action, case .macAgent = action {
+                localAgentChanged = true
+            } else {
+                localAgentChanged = false
+            }
             Task { await load(collectAgents: localAgentChanged) }
         }
     }
@@ -49,23 +106,25 @@ struct OperationsView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Operations")
+                Text(part.destination.title)
                     .font(.largeTitle.weight(.semibold))
                 Spacer()
                 Button {
-                    Task { await load() }
+                    Task { await load(collectAgents: part == .agents) }
                 } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                    Label(refreshTitle, systemImage: "arrow.clockwise")
                 }
                 .disabled(loading || collectingAgents || controller.isBusy)
+                .help(refreshHelp)
             }
-            Text("Start, stop and update the fleet's processes.\u{00A0} Service changes show their plan and ask Touch ID before they run.")
+            Text(description)
                 .font(.callout)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             if loading || collectingAgents {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
-                    Text("Reading operations state…")
+                    Text(collectingAgents ? "Reading the Mac's agents\u{2026}" : "Reading\u{2026}")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -78,6 +137,35 @@ struct OperationsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+        }
+    }
+
+    /// The panel's one reread,  named for what it reads.
+    private var refreshTitle: String {
+        switch part {
+        case .agents: return "Read The Mac's Agents"
+        case .updates: return "Read The Allowlist Again"
+        case .history: return "Read The Log Again"
+        }
+    }
+
+    private var refreshHelp: String {
+        switch part {
+        case .agents: return "Checks the Mac's current agents without changing them."
+        case .updates: return "Reads the allowlist in the Mac's checkout again."
+        case .history: return "Reads the Mac's action log again."
+        }
+    }
+
+    private var description: String {
+        let gap = ServerStatusCopy.sentenceGap
+        switch part {
+        case .agents:
+            return "The LaunchAgents the Mac runs for the fleet, and Hog Hunter's report about the Mac.\(gap)A change shows its plan and asks Touch ID before it runs on the Mac."
+        case .updates:
+            return "The updates the allowlist names.\(gap)An update shows its plan and asks Touch ID before it runs on the server."
+        case .history:
+            return "What was run from the Mac, newest first, and the machine each action ran on."
         }
     }
 
@@ -113,39 +201,65 @@ struct OperationsView: View {
 
     // MARK: The Mac's agents
 
+    /// The agents at a moment.  Their age and verdict are worked out again for `now`,  so the
+    /// rows go stale on screen when their reading does.
     @ViewBuilder
-    private func agentsSection(_ services: MacServicesReading?) -> some View {
+    private func agentsSection(_ shown: MacAgentsShown, now: Date) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Checks this Mac's current agents without changing them.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Read Current Agents") {
-                    Task { await load() }
-                }
-                .controlSize(.small)
-                .disabled(loading || collectingAgents || controller.isBusy)
-            }
-            if let services {
+            if let raw = shown.reading {
+                // A live collection is read when it lands,  so only the saved file's read can
+                // be from before a sleep.
+                let freshness = raw.freshness(now: now,
+                                              readAt: shown.source == .savedFile ? readAt : nil,
+                                              wokeAt: shown.source == .savedFile ? wokeAt : nil)
+                let services = raw.aged(by: freshness)
                 let current = services.problem == nil && services.isCurrent
+                let origin: ReportOrigin = shown.source == .collectedLive
+                    ? .collectedNow : .macCollector("the Mac services collector")
                 sectionHeader(
-                    "Mac LaunchAgents",
+                    "LaunchAgents",
                     state: current ? services.state : nil,
                     detail: services.problem == nil
                         ? "\(services.loadedCount) of \(services.agents.count) expected loaded"
                             + (services.unreadCount > 0 ? ", \(services.unreadCount) unread" : "")
                         : ""
                 )
-                if let age = services.age {
-                    Text("Read \(age) ago · \(services.path)")
-                        .font(.system(size: 11, design: .monospaced))
+                if let line = ReportFreshnessCopy.ageLine(origin, freshness) {
+                    Text(line)
+                        .font(.caption)
                         .foregroundStyle(services.isCurrent ? Color.secondary : Color.orange)
+                }
+                if shown.source == .savedFile {
+                    Text(services.path)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                if let failed = shown.collectProblem {
+                    problemBox("The last collection failed, so the rows below are from before it.\u{00A0} \(failed)")
                 }
                 if let problem = services.problem {
                     problemBox(problem)
+                } else if freshness.verdict == .checking {
+                    Text("Reading the saved file again, because the Mac woke since it was read\u{2026}")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                 } else if !services.isCurrent {
-                    problemBox("This snapshot is stale.\u{00A0} Choose Read Current Agents to collect current state.")
+                    problemBox("These rows are past their \(FreshnessWords.window(TimeInterval(MacServicesContract.maxAgeSeconds))) window, so they are old evidence, not current health.\u{00A0} Choose \(refreshTitle) to collect current state.")
+                    // The last rows stay in view,  dimmed and without actions,  so the owner
+                    // can see what they said without taking them for current health.
+                    if !services.agents.isEmpty {
+                        VStack(alignment: .leading, spacing: 2) {
+                            GridRowHeader(labels: ["Agent", "Installed", "Last Known State", "Actions"])
+                            ForEach(services.agents) { agent in
+                                agentRow(agent)
+                            }
+                        }
+                        .opacity(0.55)
+                        .disabled(true)
+                    }
                 } else if services.agents.isEmpty {
                     Text("The file names no agents.")
                         .font(.callout)
@@ -157,8 +271,8 @@ struct OperationsView: View {
                     }
                 }
             } else {
-                sectionHeader("Mac LaunchAgents", state: nil, detail: "")
-                Text("No file yet.\u{00A0} Refresh to read it.")
+                sectionHeader("LaunchAgents", state: nil, detail: "")
+                Text("No file yet.\u{00A0} Choose \(refreshTitle) to collect it.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -192,11 +306,15 @@ struct OperationsView: View {
             HStack(spacing: 4) {
                 if agent.controllable {
                     ForEach(verbs(for: agent), id: \.self) { verb in
+                        let action = OpsAction.macAgent(verb: verb, label: agent.label)
+                        let spoken = action.title
                         Button(verb.title) {
-                            controller.plan(.macAgent(verb: verb, label: agent.label))
+                            controller.plan(action)
                         }
                         .controlSize(.small)
-                        .disabled(controller.isPresenting)
+                        .disabled(controller.refusesNewPlan)
+                        .help(spoken)
+                        .accessibilityLabel(spoken)
                     }
                 } else {
                     Text("not in the allowlist")
@@ -210,7 +328,7 @@ struct OperationsView: View {
     }
 
     /// The verbs an agent gets:  the ones the allowlist names for it,  or all three when
-    /// this checkout has no entry.  The helper checks the allowlist again either way.
+    /// this checkout has no entry.  The helper checks the allowlist again either way.
     private func verbs(for agent: MacAgent) -> [OpsVerb] {
         let named = allowlist?.verbs(forMacAgent: agent.label) ?? []
         return named.isEmpty ? OpsVerb.allCases : named
@@ -218,13 +336,37 @@ struct OperationsView: View {
 
     // MARK: The server's updates
 
+    /// Whether an update can run,  from the same reach the menu and Server Status read.
+    private var serverGate: ServerActionGate {
+        ServerActionGate.make(reach: ServerReach.make(status: watch.status, tools: watch.tools),
+                              asked: watch.asked)
+    }
+
     private var updatesSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let gate = serverGate
+        return VStack(alignment: .leading, spacing: 8) {
             sectionHeader(
-                "Server Updates",
+                "Updates",
                 state: nil,
                 detail: allowlist.map { "\($0.updates.count) \($0.updates.count == 1 ? "update" : "updates")" } ?? ""
             )
+            if let note = gate.note {
+                HStack(alignment: .top, spacing: 10) {
+                    Text(note)
+                        .font(.callout)
+                        .foregroundStyle(gate.blocked ? Color.orange : Color.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    if gate.blocked {
+                        if watch.isAsking {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Button("Ask The Server Now") { watch.askServer() }
+                                .help("Tries the read-only route to the server.\u{00A0} It changes nothing.")
+                        }
+                    }
+                }
+            }
             if let allowlist {
                 if allowlist.updates.isEmpty {
                     Text("The allowlist names no updates.")
@@ -241,11 +383,15 @@ struct OperationsView: View {
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                             Spacer(minLength: 0)
+                            let action = OpsAction.serverUpdate(name: update.name)
+                            let spoken = action.title
                             Button("Run Update") {
-                                controller.plan(.serverUpdate(name: update.name))
+                                controller.plan(action)
                             }
                             .controlSize(.small)
-                            .disabled(controller.isPresenting)
+                            .disabled(controller.refusesNewPlan || gate.blocked)
+                            .help(gate.blocked ? (gate.note ?? spoken) : spoken)
+                            .accessibilityLabel(spoken)
                         }
                         .padding(.vertical, 2)
                     }
@@ -256,12 +402,12 @@ struct OperationsView: View {
         }
     }
 
-    // MARK: The audit log
+    // MARK: The action history
 
     private var auditSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionHeader(
-                "Audit Log",
+                "Actions",
                 state: nil,
                 detail: "last \(OpsAuditLog.defaultLimit) rows, newest first"
             )
@@ -269,11 +415,11 @@ struct OperationsView: View {
                 if let problem = audit.problem {
                     problemBox(problem)
                 } else if audit.entries.isEmpty {
-                    Text("Nothing has been run from this Mac yet.")
+                    Text("Nothing has been run from the Mac yet.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 } else {
-                    GridRowHeader(labels: ["Time", "Host", "Verb", "Target", "Result"])
+                    GridRowHeader(labels: ["Time", "Machine", "Verb", "Target", "Result"])
                     ForEach(audit.entries) { entry in
                         auditRow(entry)
                     }
@@ -304,11 +450,11 @@ struct OperationsView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            GridCellText(value: (entry.host ?? "—") + (entry.via.map { " via \($0)" } ?? ""))
+            GridCellText(value: ActionHistoryWords.host(entry.host, via: entry.via))
                 .frame(maxWidth: .infinity, alignment: .leading)
-            GridCellText(value: entry.verb ?? "—")
+            GridCellText(value: entry.verb ?? "\u{2014}")
                 .frame(maxWidth: .infinity, alignment: .leading)
-            GridCellText(value: entry.target ?? "—", emphasised: true)
+            GridCellText(value: entry.target ?? "\u{2014}", emphasised: true)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -340,6 +486,10 @@ struct OperationsView: View {
                 let servicesURL = MacServicesReportReader.reportURL()
                 let allowlistURL = OpsAllowlist.url(repoRoot: FleetConfigLocation.resolve().repoRoot)
                 let auditURL = OpsAuditLog.logURL()
+                // Stamped with the time the read started,  so bytes read before a sleep are never
+                // stamped after the wake.  A wake mid-read queues its own pass through
+                // refreshRequests,  so the loop reads again.
+                let started = Date()
                 let (readServices, readAllowlist, readAudit) = await Task.detached(priority: .userInitiated) {
                     (
                         MacServicesReportReader.read(at: servicesURL),
@@ -347,7 +497,13 @@ struct OperationsView: View {
                         OpsAuditLog.read(at: auditURL)
                     )
                 }.value
-                if services == nil { services = readServices }
+                // A newer saved file replaces older rows,  and a file that could not be read
+                // never replaces good ones.
+                // Only a read that the rows now come from counts as read after a wake:  a file
+                // that was discarded leaves the rows checking.
+                if agents.takeSaved(readServices) {
+                    readAt = started
+                }
                 allowlist = readAllowlist
                 allowlistPath = allowlistURL.path
                 audit = readAudit
@@ -359,7 +515,9 @@ struct OperationsView: View {
             repeat {
                 refreshRequests.beginAgentRead()
                 schedulePendingMetadataRead()
-                services = await MacServicesCollector(repoRoot: FleetConfigLocation.resolve().repoRoot).collect()
+                // A failed collection keeps the last good rows and says why beside them.
+                let collected = await MacServicesCollector(repoRoot: FleetConfigLocation.resolve().repoRoot).collect()
+                agents.takeCollected(collected)
             } while refreshRequests.agentsRequested
         }
         schedulePendingMetadataRead()
@@ -375,5 +533,6 @@ struct OperationsView: View {
 }
 
 #Preview {
-    OperationsView()
+    OperationsView(part: .agents)
+        .environmentObject(PlaceWatch(interval: nil))
 }
