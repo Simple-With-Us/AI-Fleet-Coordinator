@@ -17,7 +17,7 @@ AFTER = "30aaa6b107e241499435bc797c9d0ed40fe6bba6973f56174514b9e2ee7248e4"
 CONFIG = "af09bf3b8e0679ec50c7bf3808fb11e203a46ac2ab32e8652961182f38c9e29b"
 ROOT = "/opt/git-relay/transactions/echo-review-read"
 UNIT = "git-relay-echo-review-read.service"
-PROOF = "5f5ed040560b1fc831c65fa0519d2e978f1db4a64c5611fba4cf5efea831000c"
+PROOF = "7289f96d4449a332c7e9923331ebe0eaef162e428d2d0c9dd0b79f407d479138"
 MODULES = {
     "__init__.py": "e9c5519a796eab24d04e416e5bd30598015b5a03c09141d856a39d898d92c423",
     "deploy_guard.py": "3acb883f2163f7acf23d50213c259a17792761003e277157a5193f4e248e0aba",
@@ -148,6 +148,8 @@ def build(repo, before, output):
     raw_manifest = json.dumps(manifest, sort_keys=True, indent=2).encode() + b"\n"
     entry = render_entry((here / "runner.template.py").read_text(), raw_manifest, sources)
     output = Path(output)
+    if output.is_symlink():
+        raise ValueError("scratch output symlink refused")
     output.mkdir(mode=0o700, exist_ok=False)
     for name, raw in sources.items():
         target = output / "runner-package" / name

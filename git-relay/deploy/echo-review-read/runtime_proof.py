@@ -50,7 +50,19 @@ class RuntimeProof:
 
     def selector(self, identity):
         try:
-            env = (Path("/proc") / str(identity["pid"]) / "environ").read_bytes()
+            pid = identity["pid"]
+            if isinstance(pid, bool):
+                return False
+            if isinstance(pid, int):
+                if pid <= 0:
+                    return False
+                pid = str(pid)
+            elif isinstance(pid, str):
+                if not pid.isdigit() or not pid.strip("0"):
+                    return False
+            else:
+                return False
+            env = (Path("/proc") / pid / "environ").read_bytes()
             selectors = [
                 v
                 for v in env.split(b"\0")
@@ -74,10 +86,15 @@ class RuntimeProof:
         # service process identity and startup selector are separate host gates.
         # ECHO supplies its own successful thread read after activation; no ECHO
         # bearer is passed to this transaction or this seat.
-        if hashes not in (
-            {"state/seats.json": self.BASELINE},
-            {"state/seats.json": self.CANDIDATE},
+        accepted = [{"state/seats.json": self.BASELINE}]
+        candidate = self.CANDIDATE
+        if (
+            isinstance(candidate, str)
+            and len(candidate) == 64
+            and all(c in "0123456789abcdef" for c in candidate)
         ):
+            accepted.append({"state/seats.json": candidate})
+        if hashes not in accepted:
             return False
         if not self.selector(identity):
             return False
