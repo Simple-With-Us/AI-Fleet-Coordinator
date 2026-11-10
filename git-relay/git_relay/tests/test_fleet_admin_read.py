@@ -43,8 +43,7 @@ class Tests(unittest.TestCase):
                     self.assertEqual(out[name][key], row[key])
         self.assertEqual(
             report,
-            {name: {"added": m.ACTIONS, "already_present": [], "excluded": []}
-             for name in before},
+            {name: {"added": m.ACTIONS, "already_present": [], "excluded": []} for name in before},
         )
 
     def test_missing_ceiling_excludes_only_that_verb(self):
@@ -90,17 +89,13 @@ class Tests(unittest.TestCase):
         out, report = m.prepare(self.policy, m.digest(self.policy))
         self.assertEqual(out["swu-legacy"], "legacy string row")
         self.assertIn("skipped", report["swu-legacy"])
-        self.assertEqual(
-            out["swu-echo"]["actions"], ["wf_repo_get", "wf_pr_get"] + m.ACTIONS
-        )
+        self.assertEqual(out["swu-echo"]["actions"], ["wf_repo_get", "wf_pr_get"] + m.ACTIONS)
 
     def test_partially_granted_seat_gets_only_missing(self):
         # As if the ECHO-only transaction already landed: no duplicate verbs.
         self.policy["swu-echo"]["actions"] = ["wf_repo_get", "wf_pr_get"] + m.ACTIONS
         out, report = m.prepare(self.policy, m.digest(self.policy))
-        self.assertEqual(
-            out["swu-echo"]["actions"], ["wf_repo_get", "wf_pr_get"] + m.ACTIONS
-        )
+        self.assertEqual(out["swu-echo"]["actions"], ["wf_repo_get", "wf_pr_get"] + m.ACTIONS)
         self.assertEqual(report["swu-echo"]["added"], [])
         self.assertEqual(report["swu-echo"]["already_present"], m.ACTIONS)
         self.assertEqual(report["swu-wise"]["added"], m.ACTIONS)
@@ -115,7 +110,10 @@ class Tests(unittest.TestCase):
         with self.assertRaises(ValueError):
             m.prepare(self.policy, "wrong")
         with self.assertRaises(ValueError):
-            m.prepare({}, "cf83e1357eefb8bdf1542850d66d8007d620e4050b5714dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e")
+            m.prepare(
+                {},
+                "cf83e1357eefb8bdf1542850d66d8007d620e4050b5714dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e",
+            )
 
 
 if __name__ == "__main__":
