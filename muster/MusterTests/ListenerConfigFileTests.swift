@@ -398,8 +398,10 @@ final class ListenerConfigFileTests: XCTestCase {
         XCTAssertNil(WakeSettingKey.usdPerDay.value(from: "-0.5"))
         XCTAssertNil(WakeSettingKey.liveLoopTurns.value(from: "nan"))
         XCTAssertNil(WakeSettingKey.liveLoopTurns.value(from: "inf"))
-        // Zero is a real cap.
+        // Zero is read as a number;  the draft then refuses it where it would stop every wake.
         XCTAssertEqual(WakeSettingKey.wakesPerHour.value(from: "0"), .number(0))
+        XCTAssertNotNil(WakeSettingKey.wakesPerHour.fieldProblem(.number(0)))
+        XCTAssertNil(WakeSettingKey.liveLoopTurns.fieldProblem(.number(0)))
     }
 
     /// Two numbers with the same value are the same number,  whatever they are written as.

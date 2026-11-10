@@ -549,8 +549,9 @@ struct WakeSettingsView: View {
         }
     }
 
-    /// Whether the seat Wakes or Captures Only, by its own section of the file, with what that
-    /// means in the help text.  A kind Muster cannot read is said to be not known, with why.
+    /// Whether the seat Wakes, Captures Only or still has an Old Wake Setting, by its own section
+    /// of the file, with what that means in the help text.  A kind Muster cannot read is said to
+    /// be not known, with why.
     @ViewBuilder
     private func kindLabel(_ seat: WakeSeat) -> some View {
         switch seat.kind {
@@ -563,37 +564,56 @@ struct WakeSettingsView: View {
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .help(seat.kind.help)
+        case .oldWakeSetting:
+            Label(seat.kind.title, systemImage: "clock.arrow.circlepath")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.orange)
+                .help(seat.kind.help)
         case .notKnown(let why):
-            Label("Not known", systemImage: "questionmark.circle")
+            Label(seat.kind.title, systemImage: "questionmark.circle")
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(.orange)
                 .help(why)
         }
     }
 
-    /// What the seat's section says about its kind, beyond the label:  a routine Muster cannot
-    /// read, why a seat that Captures Only is not offered a routine, and a `wake` line left over
-    /// from the old wake types, which Muster shows and never reads or changes.
+    /// What the seat's section says about its kind, beyond the label:  a routine or a line Muster
+    /// cannot read, the old wake line today's listener still wakes the seat by, why a seat that
+    /// Captures Only is not offered a routine, and a `wake` line left over from the old wake types,
+    /// which Muster shows and never changes.
     @ViewBuilder
     private func kindNotes(_ seat: WakeSeat) -> some View {
         if case .unreadable(let why) = seat.routineForm {
             problemBox(why)
-        }
-        if seat.kind == .capturesOnly, seat.host.isTheMac, seat.hasSection {
-            Text(WakeSeatKind.routineWaitsOnTheListener)
+        } else if case .notKnown(let why) = seat.kind, seat.hasSection {
+            // A line Muster cannot read, or a file it did not read:  the kind is not known, and
+            // the note says why.  A seat with no section says so in its notices already.
+            Text(why)
                 .font(.system(size: 10))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.orange)
                 .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
         }
-        if let wake = seat.leftoverWake {
-            Text("The file also has wake = \"\(wake)\", left over from the old wake types.\u{00A0} Muster does not read it or change it.")
+        if case .oldWakeSetting(let wake) = seat.kind {
+            Label(WakeSeatKind.oldWakeNote(wake), systemImage: "clock.arrow.circlepath")
+                .font(.system(size: 10))
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        } else if let wake = seat.leftoverWake {
+            Text("The file also has wake = \"\(wake)\", left over from the old wake types.\u{00A0} Muster does not change it.")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
         }
+        if seat.kind == .capturesOnly, seat.host.isTheMac {
+            Text(WakeSeatKind.routineWaitsOnTheListener)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
-
     /// The seat's connection, in words and a symbol.
     @ViewBuilder
     private func connectionLabel(_ seat: WakeSeat) -> some View {
@@ -775,15 +795,16 @@ struct WakeSettingsView: View {
     }
 
     /// The settings that mean something for the seat, plus any the file holds anyway.  A seat that
-    /// Wakes shows its routine and its caps;  one that Captures Only shows only what its file holds.
+    /// Wakes shows its routine and its caps, one with an Old Wake Setting its caps, and one that
+    /// Captures Only only what its file holds.
     private func settingsGrid(_ seat: WakeSeat, changed: Set<WakeSettingKey>) -> some View {
         let shown = seat.settings.filter {
             $0.key.applies(to: seat.kind) || $0.configured != nil
         }
         let hidden = seat.settings.count - shown.count
         let hiddenText = hidden == 1
-            ? "1 setting that applies only to a seat that Wakes is not shown."
-            : "\(hidden) settings that apply only to a seat that Wakes are not shown."
+            ? "1 setting that does not apply to a seat that is \(seat.kind.title) is not shown."
+            : "\(hidden) settings that do not apply to a seat that is \(seat.kind.title) are not shown."
         let moved = store.movedUnderneath[seat.seat] ?? []
         return VStack(alignment: .leading, spacing: 4) {
             WakeGridHeader(labels: ["Setting", "The File", "The Eavesdropper"])
@@ -834,14 +855,14 @@ struct WakeSettingsView: View {
                 .disabled(changed.isEmpty)
                 .help("Puts this seat's fields back to what the file holds.")
                 Divider().frame(height: 16)
-                testWakeButton(seat)
+                testWakeButton
             }
-            testWakeResult(seat)
+            testWakeResult
         }
     }
 
     /// Test Wake, off until the listener's dry run exists.
-    private func testWakeButton(_ seat: WakeSeat) -> some View {
+    private var testWakeButton: some View {
         Button {} label: {
             Label("Test Wake…", systemImage: "play.and.pause")
         }
@@ -852,7 +873,7 @@ struct WakeSettingsView: View {
     /// Where Test Wake's answer goes:  for a seat that Wakes, the chat a wake would reach and why,
     /// with its receipt, and for one that Captures Only, whether the eavesdropper captured it.
     /// Until the dry run exists it says only that it waits.
-    private func testWakeResult(_ seat: WakeSeat) -> some View {
+    private var testWakeResult: some View {
         Text(WakeSeatKind.testWakeWaits)
             .font(.system(size: 10))
             .foregroundStyle(.secondary)
@@ -942,10 +963,10 @@ struct WakeSettingsView: View {
     }
 
     /// One fact, with a symbol as well as a colour, so colour is never the only sign:  a warning
-    /// for a problem, a question mark for something not known, and a check mark otherwise.
-    private func factLine(_ text: String, problem: Bool, unknown: Bool = false) -> some View {
+    /// for a problem, and a check mark otherwise.
+    private func factLine(_ text: String, problem: Bool) -> some View {
         HStack(alignment: .top, spacing: 5) {
-            Image(systemName: problem ? "exclamationmark.triangle.fill" : (unknown ? "questionmark.circle" : "checkmark.circle"))
+            Image(systemName: problem ? "exclamationmark.triangle.fill" : "checkmark.circle")
                 .font(.system(size: 10))
                 .foregroundStyle(problem ? Color.orange : Color.secondary)
                 .accessibilityHidden(true)

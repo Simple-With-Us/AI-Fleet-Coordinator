@@ -161,7 +161,11 @@ struct WakeSettingsWriter {
             }
         }
         var updated = text
-        for edit in edits {
+        // Every value is set before any is taken out, so a batch that clears one routine setting and
+        // sets another is judged on the table it leaves:  taking out the last key of an inline table
+        // is refused only when nothing the same batch sets is left in it.
+        let ordered = edits.filter { $0.value != nil } + edits.filter { $0.value == nil }
+        for edit in ordered {
             let document = ListenerConfigDocument(text: updated)
             let location = edit.key.location(seat: edit.seat, in: document)
             if edit.key.isRoutine {
@@ -248,7 +252,9 @@ struct WakeSettingsWriter {
     // MARK: The gates
 
     /// Refuses a routine setting for a seat with no routine table Muster can read, and the
-    /// removal of the last setting of an inline table, which would take the whole table out.
+    /// removal of the last setting of an inline table, which would take the whole table out.  The
+    /// writer applies every set before any removal, so the table judged here already holds what the
+    /// batch adds.
     private func requireRoutineTable(
         _ edit: Edit,
         location: (section: String, key: String, subPath: [String]),
@@ -407,10 +413,16 @@ extension WakeSettingKey {
         }
     }
 
+    /// Why a 0 cap is refused where the eavesdropper compares with `>=`.
+    static let zeroStopsEveryWakeReason = "0 would stop every wake.\u{00A0} A no-limit setting waits on the listener change."
+
     /// What is wrong with a value for this setting on its own, by the eavesdropper's rules, or nil
     /// when nothing is.  A rule that needs the whole routine table, such as two variables that must
     /// differ, is checked by the writer on the table it would leave.
     func fieldProblem(_ value: ListenerConfigValue) -> String? {
+        if zeroStopsEveryWake, case .number(let number) = value, number == 0 {
+            return Self.zeroStopsEveryWakeReason
+        }
         switch self {
         case .routineURLEnv, .routineKeyEnv:
             return WakeRoutineRules.envNameProblem(value, name: configLocation.subPath.first ?? configLocation.key)

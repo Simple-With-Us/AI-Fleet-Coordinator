@@ -17,13 +17,20 @@ import Foundation
 /// single-threaded seat it wakes the one thread.  A seat with no routine has no wake at all:  its
 /// mentions are kept in its inbox.  The one mechanism is the `routine` table:  a `[seat.X]`
 /// section that holds one (`routine = { … }`, or a `[seat.X.routine]` header) Wakes, and one that
-/// holds none Captures Only.  Muster never reads the old `wake` line to decide this, and never
-/// writes one.
+/// holds none Captures Only.  Muster never writes a `wake` line.
+///
+/// Until the listener change lands, today's listener still wakes a seat through its old `wake`
+/// line, so a seat with no routine and a `wake` other than inbox is neither:  it is an Old Wake
+/// Setting, and the panel says so rather than call it Captures Only.
 enum WakeSeatKind: Equatable {
     /// The seat's section holds a routine table, so each mention wakes the right chat.
     case wakes
-    /// The seat's section holds none, so mentions are kept in its inbox and nothing is woken.
+    /// The seat's section holds none, and no old wake line, so mentions are kept in its inbox and
+    /// nothing is woken.
     case capturesOnly
+    /// The seat's section holds no routine, and an old `wake` line other than inbox, which today's
+    /// listener still wakes it by.  The value is that line's, as the file holds it.
+    case oldWakeSetting(String)
     /// Muster cannot say.  The text says why.
     case notKnown(String)
 
@@ -32,12 +39,21 @@ enum WakeSeatKind: Equatable {
         switch self {
         case .wakes: return "Wakes"
         case .capturesOnly: return "Captures Only"
+        case .oldWakeSetting: return "Old Wake Setting"
         case .notKnown: return "Not Known"
         }
     }
 
-    /// Whether the seat holds a routine table, so its routine and its caps apply.
+    /// Whether the seat holds a routine table, so its routine applies.
     var hasRoutine: Bool { self == .wakes }
+
+    /// Whether the seat is woken today, by its routine or by an old wake line, so its caps apply.
+    var isWoken: Bool {
+        switch self {
+        case .wakes, .oldWakeSetting: return true
+        case .capturesOnly, .notKnown: return false
+        }
+    }
 
     /// What the label means, for its help text.
     var help: String {
@@ -46,9 +62,16 @@ enum WakeSeatKind: Equatable {
             return "Each mention goes to this seat's routine, which wakes the right chat:  it picks among the seat's chats by letter, topic words or recency, or wakes the seat's only thread."
         case .capturesOnly:
             return "Mentions are kept in the seat's inbox, and nothing is woken."
+        case .oldWakeSetting(let wake):
+            return Self.oldWakeNote(wake)
         case .notKnown(let why):
             return why
         }
+    }
+
+    /// What the panel says about a seat the listener still wakes through its old wake line.
+    static func oldWakeNote(_ wake: String) -> String {
+        "The listener still wakes this seat through its old wake = \"\(wake)\" setting until the listener change lands.\u{00A0} Muster no longer edits it."
     }
 
     /// Why a seat that Captures Only is not offered a routine here.
@@ -57,7 +80,6 @@ enum WakeSeatKind: Equatable {
     /// Why Test Wake is not offered yet.
     static let testWakeWaits = "Test Wake waits on the listener's new dry run, which shows the chat a wake would reach and why, without waking it."
 }
-
 /// How a seat's section holds its routine table.
 enum WakeRoutineForm: Equatable {
     /// No routine table:  the seat Captures Only.
@@ -149,8 +171,9 @@ enum WakeRoutineRules {
     static let minimumTimeout: Double = 1
     static let maximumTimeout: Double = 60
 
-    /// The router contract (`docs/protocols/zulip-wake-routing.md`):  every router takes a POST,
-    /// signed with a bearer key in the Authorization header.  Muster shows these and never offers
+    /// The router contract on PR #1702:  every router's routine line is `routine = { url_env,
+    /// key_env, method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`,
+    /// so each takes a POST, signed with a bearer key in the Authorization header.  Muster shows these and never offers
     /// them as choices.
     static let contract: [String: String] = [
         "method": "POST",
@@ -606,16 +629,35 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Where the setting lives for one seat in this file:  a routine setting under a
-    /// `[seat.X.routine]` header lives in that section, and every other one in the seat's own,
-    /// so a write keeps the form the file already has.
+    /// Where the setting lives for one seat in this file.  A table the file keeps under its own
+    /// header (`[seat.X.routine]`, `[seat.X.budget]` or `[seat.X.live]`) is read and written there,
+    /// in place, and every other setting lives in the seat's own section, so a write keeps the form
+    /// the file already has.  A table written both ways at once is left to the seat's own section,
+    /// where the writer refuses it.
     func location(seat tag: String, in config: ListenerConfigDocument) -> (section: String, key: String, subPath: [String]) {
         let section = "seat.\(tag)"
-        if let routineKey, config.routineForm(seat: tag) == .subTable {
-            return ("\(section).routine", routineKey, [])
-        }
         let location = configLocation
+        let table = "\(section).\(location.key)"
+        if location.subPath.count == 1, let inner = location.subPath.first,
+           config.sections.contains(where: { $0.name == table }),
+           config.assignment(section: section, key: location.key) == nil {
+            return (table, inner, [])
+        }
         return (section, location.key, location.subPath)
+    }
+
+    /// Whether a value of 0 stops every wake:  the eavesdropper refuses a wake once its count is
+    /// at or over the cap (`wakes.py` `budget_block` and `live.py`'s live limits both compare with
+    /// `>=`), so a 0 cap there refuses every wake, never "no limit".  The live loop turns treat 0 as
+    /// off, and live minutes per topic as no spacing, so 0 is a real setting for those two.
+    var zeroStopsEveryWake: Bool {
+        switch self {
+        case .wakesPerHour, .wakesPerDay, .perTopicPerHour, .ownerPerDay, .ownerPerTopicPerHour,
+             .usdPerDay, .livePerHour, .livePerDay, .liveOwnerPerDay:
+            return true
+        default:
+            return false
+        }
     }
 
     /// The settings that are live caps.
@@ -628,14 +670,15 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Whether the setting means anything for a seat of this kind:  the routine table and the
-    /// caps for a seat that Wakes, and none of them for one that Captures Only, which never wakes.
+    /// Whether the setting means anything for a seat of this kind:  the routine table for a seat
+    /// that Wakes, the caps for any seat the listener wakes today (by its routine or by an old wake
+    /// line), and none of them for one that Captures Only, which never wakes.
     func applies(to kind: WakeSeatKind) -> Bool {
         switch self {
         case .hostLoadGate:
             return true
         default:
-            return kind.hasRoutine
+            return isRoutine ? kind.hasRoutine : kind.isWoken
         }
     }
 
@@ -1298,16 +1341,46 @@ enum WakeSettingsBuilder {
         return model
     }
 
-    /// What a seat is, by its own section of the file and nothing else.  The old `wake` line is
-    /// never read here.
-    static func kind(form: WakeRoutineForm, configProblem: String?) -> WakeSeatKind {
+    /// What a seat is, by its own section of the Mac's file.
+    ///
+    /// A routine table makes it a seat that Wakes, whatever else the section says.  With no
+    /// routine, an old `wake` line other than inbox is one today's listener still wakes the seat
+    /// by, so the seat is an Old Wake Setting, and only a section with neither Captures Only.  The
+    /// wake line is read for that one purpose and never written.  Muster cannot say what a seat is
+    /// when the file was not read, when another eavesdropper holds the seat (the Mac's file does not
+    /// describe it), when the Mac's file has no section for it, or when its section holds a line
+    /// Muster cannot read, which may be the routine itself.
+    static func kind(
+        form: WakeRoutineForm,
+        configProblem: String?,
+        host: ListenerSeatHost = .mac,
+        hasSection: Bool = true,
+        lineProblems: [String] = [],
+        leftoverWake: String? = nil
+    ) -> WakeSeatKind {
         if configProblem != nil {
             return .notKnown("The configuration file was not read, so whether this seat has a routine table is not known.")
         }
+        if host.isElsewhere {
+            return .notKnown("Another eavesdropper holds this seat, and Muster does not read its file, so whether it Wakes is not known here.")
+        }
+        if !hasSection {
+            return .notKnown("The Mac's file has no section for this seat, so the Mac's eavesdropper does not run it and whether it Wakes is not known here.")
+        }
+        if !lineProblems.isEmpty {
+            return .notKnown("This seat's section holds a line Muster can't read, which may be its routine, so whether it Wakes is not known.\u{00A0} " + lineProblems.joined(separator: " "))
+        }
         switch form {
-        case .inline, .subTable: return .wakes
-        case .absent: return .capturesOnly
-        case .unreadable(let why): return .notKnown(why)
+        case .inline, .subTable:
+            return .wakes
+        case .unreadable(let why):
+            return .notKnown(why)
+        case .absent:
+            let wake = leftoverWake?.trimmingCharacters(in: .whitespaces) ?? ""
+            if wake.isEmpty || wake == "inbox" {
+                return .capturesOnly
+            }
+            return .oldWakeSetting(wake)
         }
     }
 
@@ -1331,7 +1404,15 @@ enum WakeSettingsBuilder {
         let staleText = Self.staleNote(sources)
         let hasSection = !sources.config.sections(ofSeat: tag).isEmpty
         let form = sources.config.routineForm(seat: tag)
-        let kind = Self.kind(form: form, configProblem: sources.configProblem)
+        let leftoverWake = sources.config.leftoverWake(seat: tag)
+        let kind = Self.kind(
+            form: form,
+            configProblem: sources.configProblem,
+            host: host,
+            hasSection: hasSection,
+            lineProblems: sources.config.sections(ofSeat: tag).flatMap(\.problems),
+            leftoverWake: leftoverWake
+        )
         let routine = sources.config.routineTable(seat: tag) ?? [:]
         let settings = WakeSettingKey.seatKeys.map { key -> WakeSetting in
             if host.isElsewhere {
@@ -1393,7 +1474,7 @@ enum WakeSettingsBuilder {
             // eavesdropper left, does not say the seat is connected now.
             connected: current ? live?.connected : nil,
             routineForm: form,
-            leftoverWake: sources.config.leftoverWake(seat: tag),
+            leftoverWake: leftoverWake,
             reported: live != nil,
             everySeatPaused: pause.everySeat,
             redWarnings: live?.red ?? [],
