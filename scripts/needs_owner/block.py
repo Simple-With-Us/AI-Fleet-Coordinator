@@ -68,7 +68,7 @@ class Block:
 
     @property
     def for_seat(self) -> str | None:
-        """`for GB-PLUMBER` at the start of the context marks an item CLAUDE mirrored for a persona."""
+        """`for GB-PLUMBER` at the start of the context marks an item CLAUDE mirrored for a bot."""
         match = re.match(r"for (GB-[A-Z0-9-]+)", self.context or "")
         return match.group(1) if match else None
 

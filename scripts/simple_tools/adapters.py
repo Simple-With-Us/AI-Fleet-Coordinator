@@ -19,10 +19,10 @@ the realpath of the claude binary that passed `simple-chat daemon test-wake --ru
 confirmed with `--pin`; after an update changes it, wakes fall back to inbox-only until the test
 passes again.  The pinned realpath is what runs, never the PATH symlink.
 
-The `http` adapter (the server instance's Grok Bot personas) sends one fixed JSON body to a
+The `http` adapter (the server instance's Grok bots) sends one fixed JSON body to a
 remote routine webhook whose URL and sender key come from environment variables named in the
 seat's config.  The body carries the trigger's metadata and a 2,000-character excerpt wrapped in
-the untrusted-content markers; the routine itself replies in Zulip with the persona's own key.
+the untrusted-content markers; the routine itself replies in Zulip with the bot's own key.
 2xx is accepted; a 5xx or a network failure is retried with backoff (3 retries, so at most 4
 requests, the identical body each time); a 4xx or a redirect is never retried.  The URL, its
 query string, the key and the signature are never logged.

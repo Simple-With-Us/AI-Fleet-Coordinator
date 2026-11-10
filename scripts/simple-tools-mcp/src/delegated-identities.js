@@ -2,14 +2,14 @@
 //
 // The verified credential assigns exactly one acting seat. A caller's identity
 // argument is an assertion of that assignment, never permission to select another
-// seat, including legacy CURSOR/GROK-WEB shared identities or GB personas.
+// seat, including legacy CURSOR/GROK-WEB shared identities or GB bots.
 // Every tool family passes through the same server-side allow-set check. Existing
 // admin provisioning endpoints remain separate from acting as another agent.
 //
 // GB_IDENTITIES is read from scripts/simple_tools/mcp/gb-identities.json, the one list the stdio
-// server reads too.  No other list of personas exists, here or anywhere.  It comes through
+// server reads too.  No other list of bots exists, here or anywhere.  It comes through
 // infisical-manifest.js, which checks the table's shape once:  a malformed table enables no
-// persona (an empty list and one logged event) instead of failing this module's load, which
+// bot (an empty list and one logged event) instead of failing this module's load, which
 // would stop the whole Worker (kody 4367022121).
 import { GB_ENABLED_IDENTITIES } from "./infisical-manifest.js";
 import RENAMED from "../../simple_tools/mcp/renamed-tools.json" with { type: "json" };
@@ -106,13 +106,13 @@ export function loadDelegatedCredentials(env) {
 /**
  * The GB credential set with Infisical resolution (paths /zulip + /linear).
  * Off mode is exactly loadDelegatedCredentials(env).  Every field of every
- * enabled persona is declared in INFISICAL_EXPECT:  in required mode a
+ * enabled bot is declared in INFISICAL_EXPECT:  in required mode a
  * missing declared field throws visibly instead of silently dropping a
- * configured persona.  In fallback each field's read falls back to its
+ * configured bot.  In fallback each field's read falls back to its
  * legacy per-field env binding (observable in logs + stats);  when NO field
  * resolves at all the family falls back to the env bundle/legacy rows as a
  * whole, so a bundle-configured deployment is never silently emptied.  A
- * partial resolution in fallback keeps the bundle row of every persona the
+ * partial resolution in fallback keeps the bundle row of every bot the
  * Infisical path could not assemble completely (kody 4365622415).
  * completeRole validates every assembled row exactly as for the bundle.
  */

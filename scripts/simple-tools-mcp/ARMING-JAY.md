@@ -281,7 +281,7 @@ Your first attempt may be refused if Instinct presents a client the server does 
 
 ## What to note
 
-These go into the design doc (section 6):  Grok's form fields and whether it asked for a client ID, how Grok asked to approve the post, your xAI account type, whether iOS can create a connector or only use one, and whether Grok Bot personas see it.  For ChatGPT later:  your plan, the menu path, and how a chat and a dot confirm a post.
+These go into the design doc (section 6):  Grok's form fields and whether it asked for a client ID, how Grok asked to approve the post, your xAI account type, whether iOS can create a connector or only use one, and whether Grok bots see it.  For ChatGPT later:  your plan, the menu path, and how a chat and a dot confirm a post.
 
 ## If something looks wrong
 

@@ -70,7 +70,7 @@ def parse_ident(raw: str, field: str) -> str:
 
 def uid_hash(question: str, options: list[str], *, version: int = 1, mirror_msg: int | None = None) -> str:
     """The first 8 hex characters of the SHA-256 of the normalized question and options.  A mirrored item
-    also folds in the Zulip message it mirrors (two personas asking one question are two items), and a
+    also folds in the Zulip message it mirrors (two bots asking one question are two items), and a
     version above 1 (`--again`) is folded in too, so the uid stays three parts."""
     parts = ["q:" + normalize(question)]
     parts += ["o%d:%s" % (i, normalize(o)) for i, o in enumerate(options, 1)]

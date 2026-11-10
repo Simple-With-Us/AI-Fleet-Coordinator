@@ -491,7 +491,7 @@ async function serveMcp(request, env, ctx) {
     notes: operatorNotesClientFromEnv(env),
   });
   // The authenticated grant assigns the acting principal. No per-call peer or
-  // persona credential loader is installed, even for legacy shared OAuth seats.
+  // bot credential loader is installed, even for legacy shared OAuth seats.
   const routedTools = new IdentityRouter({ callerTools: tools, credentials: null, createIdentity: null });
   const authInfo = {
     token: auth.token,
@@ -539,10 +539,10 @@ function safeHost(origin) {
 // ---------------------------------------------------------------- /mcp with a per-bot bearer
 
 /**
- * A Grok Bot persona's own bearer (src/gb-bearer.js) in place of an OAuth token.  The token names its persona;
- * that persona's SeatGate holds the hash.  The router is built with NO createIdentity, so the connection acts
- * only as that persona (allowedIdentities for a non-shared seat is just itself).  Every refusal is the same
- * generic 401.  Paused personas, an unset credential bundle and an expired bearer all refuse.
+ * A Grok bot's own bearer (src/gb-bearer.js) in place of an OAuth token.  The token names its bot;
+ * that bot's SeatGate holds the hash.  The router is built with NO createIdentity, so the connection acts
+ * only as that bot (allowedIdentities for a non-shared seat is just itself).  Every refusal is the same
+ * generic 401.  Paused bots, an unset credential bundle and an expired bearer all refuse.
  */
 async function serveGbBearerMcp(request, env, token, ctx, credential = null) {
   const config = configFor(env);
@@ -583,7 +583,7 @@ async function serveGbBearerMcp(request, env, token, ctx, credential = null) {
     return refuse();
   }
   // A valid hash is not consent for hosted tool access.  Legacy missing rows
-  // and explicit GR-only rows both refuse before loading any persona bundle.
+  // and explicit GR-only rows both refuse before loading any bot bundle.
   if (checked.mcp_accept !== true) { IDENTITY_CACHE.evict(bearerHash); return refuse(); }
   // The pause flag rides the bearer check's own answer (R1):  no second
   // gate RPC for the one boolean.
@@ -687,7 +687,7 @@ async function serveSbtBearerMcp(request, env, token, ctx, credential = null) {
     if (checked.reason === "expired") {
       try { await seatGate.audit({ event: "gb_bearer_refused", reason: checked.reason }); } catch { /* A missing row is a gap in the log, not a hole. */ }
     } else if (checked.reason === "mismatch") {
-      // Static seat set for the same outage reason as the persona path.
+      // Static seat set for the same outage reason as the bot path.
       try { await seatGate.gbBearerMismatch(seat, new Set(BEARER_SEATS)); } catch { /* A counter is observability, never the security path. */ }
     }
     rememberBadBearer(bearerHash);
@@ -739,7 +739,7 @@ async function serveSbtBearerMcp(request, env, token, ctx, credential = null) {
     grantRef,
     paused: false,
     config: { ...config, botEmails: { ...config.botEmails, [seat]: email } },
-    // Same pass-through as the persona path:  the relay authenticates this
+    // Same pass-through as the bot path:  the relay authenticates this
     // bearer and enforces the seat's own allowlist.
     gr: grClientFromResolved(grSecrets, env, { bearer: token }),
     zulip: new ZulipClient({ email, key, ownerUserId: config.ownerUserId }),
@@ -891,7 +891,7 @@ async function serveSpike(request, env, ctx, config) {
 
 /**
  * The Linear token health of every seat that has Linear credentials (the six
- * LINEAR_SEATS and the twelve Grok Bot personas), for Muster's launchd reader.
+ * LINEAR_SEATS and the twelve Grok bots), for Muster's launchd reader.
  * 404 when HEALTH_HMAC_KEY is unset or equals any seat's wake key, POST only,
  * signed.  The body holds ages, counts and fixed codes:  no token or credential.
  */
@@ -919,7 +919,7 @@ async function serveLinearHealth(request, env, config) {
   }
   const identities = [];
   const missing = [];
-  // /zulip too:  the Grok Bot persona rows below read it (kody 4365622780).
+  // /zulip too:  the Grok bot rows below read it (kody 4365622780).
   await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
   for (const seat of LINEAR_SEATS) {
     if (!linearSecretNames(seat) || !config.hostedSeats.includes(seat)) continue;
@@ -1353,7 +1353,7 @@ async function serveAdmin(request, env, config, oauth, email) {
         const g = gate(env, identity);
         try { status = await g.gbBearerStatus(); } catch { /* Shown as unknown. */ }
         try { mismatches = (await g.gbBearerMismatches())[identity] ?? null; } catch { mismatchesUnavailable = true; }
-        return { identity, kind: "persona", credentials: delegatedRoles.has(identity), credentialsUnavailable: delegatedReadiness.credentialsUnavailable, status, mismatches, mismatchesUnavailable };
+        return { identity, kind: "bot", credentials: delegatedRoles.has(identity), credentialsUnavailable: delegatedReadiness.credentialsUnavailable, status, mismatches, mismatchesUnavailable };
       }),
       // Every seat may hold a bearer too (owner direction 2026-10-23:  all apps in
       // this panel, one credential per identity, honored by ST-MCP and GR-MCP).
@@ -1499,8 +1499,8 @@ async function serveAdmin(request, env, config, oauth, email) {
           await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
           if (!(await resolveDelegatedCredentials(env)).roles.has(identity)) return errorPage("Request Refused", "Unknown Grok Bot, or its credentials are not loaded.", 400);
           ({ token } = await newGbBearer(identity));
-          // A persona's bearer is its only credential:  accepted on /mcp by design.
-          mcpAccept = true; kind = "persona";
+          // A bot's bearer is its only credential:  accepted on /mcp by design.
+          mcpAccept = true; kind = "bot";
         } else {
           let credentials;
           try {

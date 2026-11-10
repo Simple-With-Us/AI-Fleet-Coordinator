@@ -1290,7 +1290,7 @@ class JetWakeTests(DaemonHarness):
 
 class EveryoneWakesTests(DaemonHarness):
     """Owner, Fri, Oct 9, 2026:  "everyone should be able to DM to wake anyone else or tag to wake anyone
-    else".  Every fleet bot (GB personas, ECHO, BF role bots and the rest) wakes a seat by mention or DM
+    else".  Every fleet bot (GB bots, ECHO, BF role bots and the rest) wakes a seat by mention or DM
     without a pin, inside the peer budgets and the loop guard.  Integrations, API posts from the owner's
     account and a seat's own posts still never wake."""
 

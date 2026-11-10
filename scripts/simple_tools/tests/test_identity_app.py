@@ -386,7 +386,7 @@ class SeatAppTests(RealRegistryCase):
         self.assertEqual(
             self.app("GROK-BOT"),
             "grok-bot",
-            "the fleet-wide row is the same app as its personas",
+            "the fleet-wide row is the same app as its bots",
         )
 
     def test_the_extra_seat_has_no_row_in_seats_and_still_has_an_app(self) -> None:

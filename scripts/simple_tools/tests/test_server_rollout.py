@@ -380,7 +380,7 @@ class ApplyLiveConfigTests(unittest.TestCase):
             self.assertEqual(new["seat." + seat], sample["seat." + seat], seat)
         cfg = C.from_dict(tomllib.loads(after))
         self.assertEqual(cfg.errors, [])
-        self.assertEqual(sorted(cfg.disabled), [], "every GB persona is enabled")
+        self.assertEqual(sorted(cfg.disabled), [], "every GB bot is enabled")
         self.assertEqual(AL.problems(after), [])
         code, out = self.run_main("--apply")
         self.assertEqual(code, 0, out)

@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--question", required=True, metavar="TEXT", help="the question for Jay (at most 200 characters)")
     p.add_argument("--urgent", action="store_true", help="file as P1")
     p.add_argument("--again", action="store_true", help="ask again with changed words:  a new version that quotes the earlier item")
-    p.add_argument("--mirror-of", metavar="TOPIC_LINK", help="mirror an OWNER topic a Grok Bot persona already opened (no post of its own)")
+    p.add_argument("--mirror-of", metavar="TOPIC_LINK", help="mirror an OWNER topic a Grok bot already opened (no post of its own)")
     p.add_argument("--dry-run", action="store_true", help="check everything and print the plan, change nothing")
 
     p = sub.add_parser("adopt", help="make an issue filed earlier a needs-owner item, and announce it")

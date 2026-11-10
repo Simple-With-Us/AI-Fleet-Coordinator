@@ -2,7 +2,7 @@
 
 The store (heldback.py), the hosted Worker's `held_back` rules ported from
 scripts/simple-tools-mcp/src/wake.js, the routine's answer, the config, the claude prompt, and the
-daemon end to end for a Grok Bot persona (`http`), JET (`http` to the hosted MCP Worker), the
+daemon end to end for a Grok bot (`http`), JET (`http` to the hosted MCP Worker), the
 headless CLAUDE seat (`claude`) and the inbox cloud seats.  Fake Zulip, a fake routine, a fake claude
 and a fake clock:  nothing live.
 """
@@ -725,7 +725,7 @@ class HeldMixin:
 
 
 class HeldBackRoutineTests(HeldMixin, ServerHarness):
-    """A Grok Bot persona (GB-COMPILER):  an `http` routine that is not the hosted Worker."""
+    """A Grok bot (GB-COMPILER):  an `http` routine that is not the hosted Worker."""
 
     def jay(self):
         return self.fake.user_named("Jay Wedgeworth")

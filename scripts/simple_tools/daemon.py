@@ -6,7 +6,7 @@ Threads in production (`Daemon.run`):  one poller per seat bot, the router on th
 drive the same code step by step:  `connect_seat`, `pump`, `tick` and `run_jobs`, with a fake clock.
 
 Two instances run this code (owner decision, Thu, Oct 8):  `mac` holds the CLAUDE seat (live
-delivery and the tool-less claude wake), `server` holds the Grok Bot personas (environment
+delivery and the tool-less claude wake), `server` holds the Grok bots (environment
 credentials and the remote routine wake).  A daemon whose config holds a seat that the seat
 partition does not give to its instance (another instance's seat, a `none` seat, or one the
 partition does not list) refuses to start (config.partition_errors).
