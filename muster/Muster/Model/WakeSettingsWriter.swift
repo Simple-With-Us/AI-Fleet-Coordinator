@@ -17,6 +17,11 @@ import Foundation
 //     not overwritten
 //   * a seat the file spells differently is not written:  the eavesdropper folds both spellings to one
 //     seat, and one section would silently replace the other
+//   * a routine setting is written only into a routine table the seat already has, in the form the
+//     file already uses (`routine = { … }` or `[seat.X.routine]`), and never so as to take the table
+//     out:  Muster does not turn a seat that Wakes into one that Captures Only, or the other way
+//   * a routine table the eavesdropper's own rules (`_routine`) would refuse is not written
+//   * no `wake` line is ever written:  no setting this writer knows lives there
 //   * the old file is kept as a timestamped backup
 //   * the new file reaches the disk under a unique name at mode 0600, and is then swapped with the
 //     original.  0600 is the mode the runtime's own writer uses (`listener_cli.py` `cmd_init`).
@@ -69,6 +74,10 @@ struct WakeSettingsWriter {
         case noSectionToRemove(String)
         case spelledDifferently(seat: String, inFile: String)
         case anotherWritersTextMoved(path: String, keptAt: String)
+        case noRoutineTable(String)
+        case unreadableRoutine(seat: String, reason: String)
+        case lastRoutineSetting(String)
+        case routineRefused(seat: String, problems: [String])
 
         var errorDescription: String? {
             switch self {
@@ -93,6 +102,14 @@ struct WakeSettingsWriter {
                 return "The file spells this seat [seat.\(inFile)], and the eavesdropper reads that as \(seat), so a [seat.\(seat)] section would replace it.\u{00A0} Nothing was written."
             case .anotherWritersTextMoved(let path, let keptAt):
                 return "Another writer changed the configuration file at \(path) during the write, and Muster could not put its text back.\u{00A0} That text is at \(keptAt), and the file now holds Muster's edit."
+            case .noRoutineTable(let seat):
+                return "The \(seat) section has no routine table, so the seat Captures Only and nothing was written.\u{00A0} \(WakeSeatKind.routineWaitsOnTheListener)"
+            case .unreadableRoutine(let seat, let reason):
+                return "Nothing was written for \(seat).\u{00A0} \(reason)"
+            case .lastRoutineSetting(let seat):
+                return "Taking out the last setting of \(seat)'s routine table would take the table out, and the seat would then capture only, so nothing was written."
+            case .routineRefused(let seat, let problems):
+                return "The eavesdropper would refuse \(seat)'s routine table, so nothing was written:  " + problems.joined(separator: "; ")
             }
         }
     }
@@ -145,21 +162,35 @@ struct WakeSettingsWriter {
         }
         var updated = text
         for edit in edits {
-            let location = edit.key.configLocation
             let document = ListenerConfigDocument(text: updated)
+            let location = edit.key.location(seat: edit.seat, in: document)
+            if edit.key.isRoutine {
+                try requireRoutineTable(edit, location: location, in: document)
+            }
             if let value = edit.value {
                 updated = try document.setting(
-                    section: "seat.\(edit.seat)",
+                    section: location.section,
                     key: location.key,
                     subPath: location.subPath,
                     to: value
                 )
             } else {
                 updated = try document.removing(
-                    section: "seat.\(edit.seat)",
+                    section: location.section,
                     key: location.key,
                     subPath: location.subPath
                 )
+            }
+        }
+        // The eavesdropper's own routine rules, on what this write would leave.  Only what the
+        // write adds stops it, as `daemon check-config` judges an ordinary edit by its new errors.
+        let after = ListenerConfigDocument(text: updated)
+        for seat in seats where edits.contains(where: { $0.seat == seat && $0.key.isRoutine }) {
+            let before = WakeRoutineRules.problems(seat: seat, routine: base.routineTable(seat: seat) ?? [:])
+            let now = WakeRoutineRules.problems(seat: seat, routine: after.routineTable(seat: seat) ?? [:])
+            let added = now.filter { !before.contains($0) }
+            guard added.isEmpty else {
+                throw WriteError.routineRefused(seat: seat, problems: added)
             }
         }
         return PreparedWrite(original: text, candidate: updated, seats: seats, repairedSeat: nil)
@@ -215,6 +246,29 @@ struct WakeSettingsWriter {
     }
 
     // MARK: The gates
+
+    /// Refuses a routine setting for a seat with no routine table Muster can read, and the
+    /// removal of the last setting of an inline table, which would take the whole table out.
+    private func requireRoutineTable(
+        _ edit: Edit,
+        location: (section: String, key: String, subPath: [String]),
+        in document: ListenerConfigDocument
+    ) throws {
+        switch document.routineForm(seat: edit.seat) {
+        case .absent:
+            throw WriteError.noRoutineTable(edit.seat)
+        case .unreadable(let why):
+            throw WriteError.unreadableRoutine(seat: edit.seat, reason: why)
+        case .subTable:
+            return
+        case .inline:
+            guard edit.value == nil,
+                  let entries = document.assignment(section: "seat.\(edit.seat)", key: "routine")?.node.tableEntries,
+                  entries.count == 1,
+                  entries.first?.key == location.subPath.first else { return }
+            throw WriteError.lastRoutineSetting(edit.seat)
+        }
+    }
 
     /// Refuses any seat the partition does not give to the Mac, and every seat when the partition
     /// cannot be read.  With the file's text, it also refuses a seat whose own section names the
@@ -346,37 +400,31 @@ extension WakeSettingKey {
         switch self {
         case .wakesPerHour, .wakesPerDay, .perTopicPerHour, .ownerPerDay,
              .ownerPerTopicPerHour, .usdPerDay, .livePerHour, .livePerDay,
-             .livePerTopicMinutes, .liveOwnerPerDay, .liveLoopTurns:
+             .livePerTopicMinutes, .liveOwnerPerDay, .liveLoopTurns, .routineTimeout:
             return true
         default:
             return false
         }
     }
 
-    /// Whether the setting holds a yes or a no.
-    var isBoolean: Bool {
-        self == .fallbackUncontained
-    }
-
-    /// The values a setting may take, when it is a short fixed list.  These come from the eavesdropper:
-    /// `KNOWN_WAKES` and `KNOWN_FALLBACKS` in `simple_tools/config.py`.
-    var choices: [String]? {
+    /// What is wrong with a value for this setting on its own, by the eavesdropper's rules, or nil
+    /// when nothing is.  A rule that needs the whole routine table, such as two variables that must
+    /// differ, is checked by the writer on the table it would leave.
+    func fieldProblem(_ value: ListenerConfigValue) -> String? {
         switch self {
-        case .wakeType: return WakeType.allCases.map(\.rawValue)
-        case .fallback: return ["mcode", "openrouter"]
-        case .fallbackUncontained: return ["true", "false"]
-        default: return nil
+        case .routineURLEnv, .routineKeyEnv:
+            return WakeRoutineRules.envNameProblem(value, name: configLocation.subPath.first ?? configLocation.key)
+                .map { $0 + ".\u{00A0} This is the name of a variable, never its value." }
+        case .routineTimeout:
+            guard case .number(let seconds) = value,
+                  seconds >= WakeRoutineRules.minimumTimeout,
+                  seconds <= WakeRoutineRules.maximumTimeout else {
+                return "timeout_seconds must be a number from 1 to 60"
+            }
+            return nil
+        default:
+            return nil
         }
-    }
-
-    /// What a picker offers, when the setting has one:  nothing set, the listed values, and a value
-    /// the file already holds that is not on the list, so opening the panel does not change it.
-    func pickerOptions(current: String) -> [String]? {
-        guard let choices else { return nil }
-        var options = [WakeSetting.unsetText] + choices
-        let trimmed = current.trimmingCharacters(in: .whitespaces)
-        if !trimmed.isEmpty, !options.contains(trimmed) { options.append(trimmed) }
-        return options
     }
 
     /// The value a field holds, when the text can be read as one.
@@ -386,18 +434,11 @@ extension WakeSettingKey {
     func value(from text: String) -> ListenerConfigValue? {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return nil }
-        if isBoolean {
-            switch trimmed.lowercased() {
-            case "true", "yes": return .bool(true)
-            case "false", "no": return .bool(false)
-            default: return nil
-            }
-        }
         if isNumeric {
             guard let number = Double(trimmed) else { return nil }
             // A cap is a count or an amount, so a negative or a non-finite one is not a value this
             // app can write.  `simple_tools/config.py` would refuse the setting when it read the
-            // file, and the seat would fall back to an inbox wake after a reload:  a bad number
+            // file, and the seat would stop waking after a reload:  a bad number
             // must never reach the file.
             guard number.isFinite, number >= 0 else { return nil }
             // `live_limits` keeps only whole numbers, so 2.5 would leave the default in force.

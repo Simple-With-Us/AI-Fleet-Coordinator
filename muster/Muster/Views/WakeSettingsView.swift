@@ -1,7 +1,12 @@
 import SwiftUI
 
-/// The wake settings panel:  what every seat's wake is,  what the configuration file says
-/// it should be,  and a way to change it.
+/// The wake settings panel:  whether each seat Wakes or Captures Only,  what the configuration
+/// file says,  and a way to change what may be changed.
+///
+/// A seat Wakes when its `[seat.X]` section holds a routine table, and Captures Only when it holds
+/// none.  Muster never reads the old `wake` line to decide which, and never writes one.  For a
+/// seat that Wakes, the routine's address and key variables and its timeout can be changed, and
+/// the method, signing and header the router contract fixes are shown and never offered.
 ///
 /// The panel has two columns of truth and never mixes them.  The left column is the file,
 /// and it is editable.  The middle column is the running eavesdropper's own account of itself.
@@ -11,8 +16,8 @@ import SwiftUI
 /// A setting the engine does not enforce is shown as NOT ENFORCED and is not editable:  the
 /// eavesdropper counts wakes and not dollars,  so a dollar cap in the file would never bind.
 ///
-/// The store lives as long as the app, so a test wake that is still running, its result, and
-/// the owner's unapplied edits are all still here when the panel is opened again.
+/// The store lives as long as the app, so the owner's unapplied edits are still here when the
+/// panel is opened again.
 struct WakeSettingsView: View {
     enum SeatFilter: String, CaseIterable, Identifiable {
         case all = "All Seats"
@@ -58,8 +63,7 @@ struct WakeSettingsView: View {
         let matched = query.isEmpty ? base : base.filter {
             $0.seat.lowercased().contains(query)
                 || ($0.bot?.lowercased().contains(query) ?? false)
-                || ($0.liveWakeText?.lowercased().contains(query) ?? false)
-                || ($0.configuredWake?.rawValue.contains(query) ?? false)
+                || $0.kind.title.lowercased().contains(query)
         }
         // Seats that need attention first, each group in roster order.
         return matched.filter(\.needsAttention) + matched.filter { !$0.needsAttention }
@@ -130,15 +134,14 @@ struct WakeSettingsView: View {
         }
     }
 
-    /// Runs a confirmed action.  A change to what runs (the wake type, the fallback's container
-    /// rule, or a pin) asks for the owner's Touch ID first, and a refusal runs nothing.
+    /// Runs a confirmed action.  A change to the routine's address or key variable asks for the
+    /// owner's Touch ID first, and a refusal runs nothing.
     @MainActor
     private func perform(_ action: PendingWakeAction) async {
         let needsOwner: Bool
         switch action.kind {
         case .apply: needsOwner = store.needsOwnerCheck(seat: action.seat)
-        case .pin: needsOwner = true
-        case .testWake, .removeSection, .resume: needsOwner = false
+        case .removeSection, .resume: needsOwner = false
         }
         if needsOwner {
             // Anything but a yes runs nothing:  a cancel, a refused approval and a Mac that
@@ -153,8 +156,6 @@ struct WakeSettingsView: View {
         }
         switch action.kind {
         case .apply: await store.apply(seat: action.seat)
-        case .testWake: await store.testWake(seat: action.seat, runtime: action.runtime)
-        case .pin: await store.pin(seat: action.seat, runtime: action.runtime)
         case .removeSection: await store.removeRefusedSection(seat: action.seat)
         case .resume: await store.resume(seat: action.seat)
         }
@@ -169,7 +170,7 @@ struct WakeSettingsView: View {
             }
             .pickerStyle(.segmented)
             .frame(maxWidth: 420)
-            TextField("Filter seats by tag, bot, or wake type…", text: $searchText)
+            TextField("Filter seats by tag, bot, Wakes or Captures Only…", text: $searchText)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 11, design: .monospaced))
                 .frame(maxWidth: 260)
@@ -195,7 +196,7 @@ struct WakeSettingsView: View {
                 }
                 .disabled(store.isBusy)
             }
-            Text("What every seat's wake is,  what the configuration file says it should be,  and a way to change it.")
+            Text("Whether each seat Wakes or Captures Only,  what the configuration file says,  and a way to change what may be changed.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -396,6 +397,7 @@ struct WakeSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             operatorVoiceLine
+            deciderLine
             DisclosureGroup("Where The Operator's Names Live") {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(OperatorOptions.names) { name in
@@ -414,6 +416,34 @@ struct WakeSettingsView: View {
             }
             .font(.caption)
         }
+    }
+
+    /// The decider every platform shares, for when a seat's routine cannot pick a chat:  its
+    /// runtime and its model slug, read only, from `[muse_bridge] consult_backup`.  No key is ever
+    /// shown, and there are no controls:  changing it is a deliberate edit of the file.
+    private var deciderLine: some View {
+        let decider = store.model.operatorOptions.decider
+        let symbol: String
+        switch decider {
+        case .set: symbol = decider.hasUnexpectedRuntime ? "exclamationmark.triangle.fill" : "checkmark.circle"
+        case .notSet: symbol = "info.circle"
+        case .notKnown: symbol = "questionmark.circle"
+        }
+        return HStack(alignment: .top, spacing: 8) {
+            Image(systemName: symbol)
+                .foregroundStyle(decider.hasUnexpectedRuntime ? Color.orange : Color.secondary)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Decider")
+                    .font(.system(size: 11, weight: .semibold))
+                Text(decider.sentence)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+        }
+        .help(OperatorDecider.help)
     }
 
     /// Whether the Operator can post to Zulip,  as the Mac's eavesdropper reports it.  An
@@ -445,7 +475,7 @@ struct WakeSettingsView: View {
     // MARK: One seat
 
     /// One seat.  A seat another eavesdropper holds gets no fields and no buttons:  a section for it
-    /// would stop the Mac's eavesdropper, and its pause, test wake and pin could not reach it.
+    /// would stop the Mac's eavesdropper, and its pause could not reach it.
     @ViewBuilder
     private func seatSection(_ seat: WakeSeat) -> some View {
         if seat.host.isElsewhere {
@@ -486,7 +516,7 @@ struct WakeSettingsView: View {
                     failureBox(title: "This Section Stops The Mac's Eavesdropper", text: problem)
                 }
                 Button {
-                    pendingWakeAction = PendingWakeAction(kind: .removeSection, seat: seat.seat, runtime: nil)
+                    pendingWakeAction = PendingWakeAction(kind: .removeSection, seat: seat.seat)
                 } label: {
                     Label("Remove This Section…", systemImage: "trash")
                 }
@@ -519,28 +549,48 @@ struct WakeSettingsView: View {
         }
     }
 
-    /// The seat's wake, by the eavesdropper's own word.  A word this app does not know is shown as
-    /// itself, never as no wake.
+    /// Whether the seat Wakes or Captures Only, by its own section of the file, with what that
+    /// means in the help text.  A kind Muster cannot read is said to be not known, with why.
     @ViewBuilder
-    private func wakeLabel(_ seat: WakeSeat) -> some View {
-        if let wake = seat.liveWake {
-            Text(wake.title)
+    private func kindLabel(_ seat: WakeSeat) -> some View {
+        switch seat.kind {
+        case .wakes:
+            Label(seat.kind.title, systemImage: "bell")
                 .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(wake.runsWorker ? Color.primary : Color.orange)
-            if !wake.runsWorker {
-                Text("runs no worker")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .help("An inbox seat captures every DM and tag,  and runs nothing.")
-            }
-        } else if let raw = seat.liveWakeText {
-            Label("\(raw), a wake this app does not know", systemImage: "questionmark.circle")
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(.orange)
-        } else {
-            Text("wake not reported")
+                .help(seat.kind.help)
+        case .capturesOnly:
+            Label(seat.kind.title, systemImage: "tray")
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(.secondary)
+                .help(seat.kind.help)
+        case .notKnown(let why):
+            Label("Not known", systemImage: "questionmark.circle")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.orange)
+                .help(why)
+        }
+    }
+
+    /// What the seat's section says about its kind, beyond the label:  a routine Muster cannot
+    /// read, why a seat that Captures Only is not offered a routine, and a `wake` line left over
+    /// from the old wake types, which Muster shows and never reads or changes.
+    @ViewBuilder
+    private func kindNotes(_ seat: WakeSeat) -> some View {
+        if case .unreadable(let why) = seat.routineForm {
+            problemBox(why)
+        }
+        if seat.kind == .capturesOnly, seat.host.isTheMac, seat.hasSection {
+            Text(WakeSeatKind.routineWaitsOnTheListener)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if let wake = seat.leftoverWake {
+            Text("The file also has wake = \"\(wake)\", left over from the old wake types.\u{00A0} Muster does not read it or change it.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
         }
     }
 
@@ -589,7 +639,7 @@ struct WakeSettingsView: View {
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
-                wakeLabel(seat)
+                kindLabel(seat)
                 connectionLabel(seat)
                 pauseLabel(seat)
                 Spacer()
@@ -597,7 +647,8 @@ struct WakeSettingsView: View {
             }
             summaryLine(seat)
             seatNotices(seat)
-            runsLine(seat)
+            kindNotes(seat)
+            routineLine(seat)
             if !seat.redWarnings.isEmpty {
                 // An old status's warnings are its last word, and say so.
                 let suffix = seat.liveIsCurrent ? "" : " (\(seat.notCurrentSuffix().dropFirst(2)))"
@@ -620,15 +671,7 @@ struct WakeSettingsView: View {
             }
             usageLine(seat)
             deferredAndQuotaLine(seat)
-            pinsLine(seat)
             recentWakes(seat)
-            if let running = store.running, running.seat == seat.seat {
-                runningLine(running)
-            }
-            // The seat's own wake and its fallback each keep their last answer, newest first.
-            ForEach(Array(store.allTestReports(seat: seat.seat).enumerated()), id: \.offset) { _, report in
-                testReportBox(report)
-            }
             if seat.host.isTheMac {
                 actionButtons(seat, changed: changed)
             }
@@ -655,7 +698,7 @@ struct WakeSettingsView: View {
             .help(help)
         } else if seat.paused || seat.wakesPaused {
             Button {
-                pendingWakeAction = PendingWakeAction(kind: .resume, seat: seat.seat, runtime: nil)
+                pendingWakeAction = PendingWakeAction(kind: .resume, seat: seat.seat)
             } label: {
                 Label("Resume…", systemImage: "play.circle")
             }
@@ -684,15 +727,16 @@ struct WakeSettingsView: View {
         }
         // Worded in the model, so an old status's counts say they are not current.
         parts.append(contentsOf: seat.heldBackSummary)
-        if seat.fallbackIsAnswering {
-            parts.append("the OpenRouter fallback is answering")
-        }
         let problems = seat.problems.count
         if problems > 0 {
             parts.append("\(problems) setting\(problems == 1 ? "" : "s") need\(problems == 1 ? "s" : "") a look")
         }
-        if seat.pinState.isProblem {
-            parts.append("pin needs a look")
+        let differences = seat.contractDifferences.count
+        if differences > 0 {
+            parts.append("\(differences) routine setting\(differences == 1 ? "" : "s") differ\(differences == 1 ? "s" : "") from the router contract")
+        }
+        if seat.routineNotReady {
+            parts.append("the routine is not ready")
         }
         return HStack(spacing: 6) {
             Image(systemName: seat.needsAttention ? "exclamationmark.triangle.fill" : "checkmark.circle")
@@ -704,57 +748,50 @@ struct WakeSettingsView: View {
         }
     }
 
-    /// What the seat runs, as the eavesdropper resolved it.
+    /// The seat's routine, as the eavesdropper last found it:  whether it can be reached.  The
+    /// eavesdropper's status carries no record yet of which chat a wake reached and why, so no
+    /// receipt is shown.
     @ViewBuilder
-    private func runsLine(_ seat: WakeSeat) -> some View {
-        let facts: [String] = {
-            var facts: [String] = []
-            if let claude = seat.claudeBinary { facts.append("claude at \(claude)") }
-            if let provider = seat.provider, !provider.isEmpty { facts.append("provider \(provider)") }
-            if let routine = seat.routine {
-                if routine.ready == true {
-                    facts.append("routine ready\(routine.host.map { " at \($0)" } ?? "")")
-                } else {
-                    let why = routine.detail ?? routine.why ?? "no reason given"
-                    facts.append("routine not ready:  \(why)")
-                }
-            }
-            return facts
-        }()
-        if !facts.isEmpty {
+    private func routineLine(_ seat: WakeSeat) -> some View {
+        if let fact = seat.routineReadiness {
             HStack(alignment: .top, spacing: 6) {
-                Text("Runs")
+                Text("Routine")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
-                Text(facts.joined(separator: ";  "))
+                factLine(fact.text, problem: fact.emphasised)
+            }
+        }
+        if let provider = seat.provider, !provider.isEmpty {
+            HStack(alignment: .top, spacing: 6) {
+                Text("Provider")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(provider)
                     .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(seat.routine?.ready == false ? Color.orange : Color.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
         }
     }
 
-    /// The settings that mean something for the seat's wake, plus any the file holds anyway.
+    /// The settings that mean something for the seat, plus any the file holds anyway.  A seat that
+    /// Wakes shows its routine and its caps;  one that Captures Only shows only what its file holds.
     private func settingsGrid(_ seat: WakeSeat, changed: Set<WakeSettingKey>) -> some View {
-        let values = store.draft[seat.seat] ?? [:]
-        let draftWake = Self.setValue(values[.wakeType]).flatMap(WakeType.init(rawValue:))?.rawValue
-        let wake = draftWake ?? seat.configuredWake?.rawValue ?? seat.liveWakeText
-        let fallback = Self.setValue(values[.fallback])
         let shown = seat.settings.filter {
-            $0.key.applies(toWake: wake, fallback: fallback) || $0.configured != nil
+            $0.key.applies(to: seat.kind) || $0.configured != nil
         }
         let hidden = seat.settings.count - shown.count
         let hiddenText = hidden == 1
-            ? "1 setting that does not apply to a \(wake ?? "inbox") wake is not shown."
-            : "\(hidden) settings that do not apply to a \(wake ?? "inbox") wake are not shown."
+            ? "1 setting that applies only to a seat that Wakes is not shown."
+            : "\(hidden) settings that apply only to a seat that Wakes are not shown."
         let moved = store.movedUnderneath[seat.seat] ?? []
         return VStack(alignment: .leading, spacing: 4) {
             WakeGridHeader(labels: ["Setting", "The File", "The Eavesdropper"])
             ForEach(shown) { setting in
                 WakeSettingRow(
                     setting: setting,
-                    editable: seat.host.isTheMac && setting.key.refusalReason == nil,
+                    editable: seat.host.isTheMac && setting.key.refusalReason == nil
+                        && (!setting.key.isRoutine || seat.kind.hasRoutine),
                     changed: changed.contains(setting.key),
                     moved: moved.contains(setting.key),
                     draft: draftBinding(seat: seat.seat, key: setting.key)
@@ -768,37 +805,20 @@ struct WakeSettingsView: View {
         }
     }
 
-    /// A draft value with its spaces taken off, or nil when it says nothing is set.
-    private static func setValue(_ text: String?) -> String? {
-        guard let trimmed = text?.trimmingCharacters(in: .whitespaces),
-              !trimmed.isEmpty, trimmed != WakeSetting.unsetText else { return nil }
-        return trimmed
-    }
-
-    /// Apply and Revert, then the test wake and the pin, each enabled only where it can work.
+    /// Apply and Revert, then Test Wake.
+    ///
+    /// Test Wake is shown for every seat the Mac holds and is off for now:  its new meaning, a
+    /// dry run through the eavesdropper that shows the chat a wake would reach and why, waits on
+    /// the listener.  Nothing here runs `daemon test-wake`.  The result area below the buttons is
+    /// where that dry run's answer will go.
     private func actionButtons(_ seat: WakeSeat, changed: Set<WakeSettingKey>) -> some View {
-        let testRuntime = seat.testRuntime
-        let noTest = seat.configuredWake?.noPinReason
-            ?? (seat.configuredWake == nil ? "The file names no wake for this seat, so it is an inbox seat and runs nothing to test." : nil)
-        let pinGate = testRuntime.map { store.pinGate(seat: seat.seat, runtime: $0, pinKey: $0) }
-        let pinBlocker: String?
-        if let gate = pinGate {
-            pinBlocker = gate.blocker
-        } else {
-            pinBlocker = noTest
-        }
-        let fallback = seat.fallbackRuntime
-        let fallbackKey = fallback.map(WakeType.fallbackPinKey)
-        let fallbackPinGate = fallbackKey.map { store.pinGate(seat: seat.seat, runtime: "fallback", pinKey: $0) }
-        let fallbackPinBlocker = fallbackPinGate?.blocker
-        let busy = store.isBusy || store.running != nil
+        let busy = store.isBusy
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Button {
                     pendingWakeAction = PendingWakeAction(
                         kind: .apply,
                         seat: seat.seat,
-                        runtime: nil,
                         detail: store.applySummary(seat: seat.seat)
                     )
                 } label: {
@@ -814,70 +834,29 @@ struct WakeSettingsView: View {
                 .disabled(changed.isEmpty)
                 .help("Puts this seat's fields back to what the file holds.")
                 Divider().frame(height: 16)
-                Button {
-                    pendingWakeAction = PendingWakeAction(kind: .testWake, seat: seat.seat, runtime: testRuntime)
-                } label: {
-                    Label("Test Wake…", systemImage: "play.and.pause")
-                }
-                .disabled(busy || testRuntime == nil)
-                .help(noTest ?? "Runs this seat's wake on canned hostile messages.\u{00A0} Nothing is posted.")
-                Button {
-                    pendingWakeAction = PendingWakeAction(
-                        kind: .pin, seat: seat.seat, runtime: testRuntime,
-                        candidateAt: pinGate?.candidateAt
-                    )
-                } label: {
-                    Label("Pin…", systemImage: "pin")
-                }
-                .disabled(busy || testRuntime == nil || pinBlocker != nil)
-                .help(pinBlocker ?? pinGate.map(Self.pinHelp) ?? "Pins what the passing test wake ran.\u{00A0} It asks for Touch ID.")
-                if let fallback, testRuntime != nil {
-                    Divider().frame(height: 16)
-                    Button {
-                        pendingWakeAction = PendingWakeAction(kind: .testWake, seat: seat.seat, runtime: "fallback", fallback: fallback)
-                    } label: {
-                        Label("Test Fallback…", systemImage: "play.and.pause")
-                    }
-                    .disabled(busy)
-                    .help("Runs the \(fallback) fallback on the same canned hostile messages.\u{00A0} Nothing is posted.")
-                    Button {
-                        pendingWakeAction = PendingWakeAction(
-                            kind: .pin, seat: seat.seat, runtime: "fallback", fallback: fallback,
-                            candidateAt: fallbackPinGate?.candidateAt
-                        )
-                    } label: {
-                        Label("Pin Fallback…", systemImage: "pin")
-                    }
-                    .disabled(busy || fallbackPinBlocker != nil)
-                    .help(fallbackPinBlocker ?? fallbackPinGate.map(Self.pinHelp) ?? "Pins what the passing fallback test ran.\u{00A0} It asks for Touch ID.")
-                }
+                testWakeButton(seat)
             }
-            if let noTest {
-                Text(noTest)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else if let pinBlocker {
-                Text("Pin:  \(pinBlocker)")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else if let note = pinGate?.confirmationNote {
-                Label("Pin:  \(note)", systemImage: "eye.slash")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            testWakeResult(seat)
         }
     }
 
-    /// What Pin's tooltip says when it is offered:  that it pins the test this panel showed, or
-    /// that Muster never saw the answer of a test run elsewhere.
-    private static func pinHelp(_ gate: WakeSettingsStore.PinGate) -> String {
-        if let note = gate.confirmationNote {
-            return note + "\u{00A0} It asks for Touch ID."
+    /// Test Wake, off until the listener's dry run exists.
+    private func testWakeButton(_ seat: WakeSeat) -> some View {
+        Button {} label: {
+            Label("Test Wake…", systemImage: "play.and.pause")
         }
-        return "Pins what the passing test shown here ran.\u{00A0} It asks for Touch ID."
+        .disabled(true)
+        .help(WakeSeatKind.testWakeWaits)
+    }
+
+    /// Where Test Wake's answer goes:  for a seat that Wakes, the chat a wake would reach and why,
+    /// with its receipt, and for one that Captures Only, whether the eavesdropper captured it.
+    /// Until the dry run exists it says only that it waits.
+    private func testWakeResult(_ seat: WakeSeat) -> some View {
+        Text(WakeSeatKind.testWakeWaits)
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     /// The draft's binding for one setting.
@@ -954,47 +933,12 @@ struct WakeSettingsView: View {
             facts.append(("\(floor)\(usage.droppedThisDay) dropped in the last 24 hours", usage.droppedThisDay > 0))
             facts.append(("\(floor)\(usage.skippedThisDay) skipped in the last 24 hours", false))
         }
-        // The held-back wakes, chat nudges, quota and fallback are worded in the model, so an old
+        // The held-back wakes, chat nudges and quota are worded in the model, so an old
         // status's values say so there and never read as now.
         for fact in seat.liveFacts() {
             facts.append((fact.text, fact.emphasised))
         }
         return factGrid(title: "Deferred And Held", facts: facts)
-    }
-
-    /// The pin the seat's own wake needs, and the fallback's, judged by the eavesdropper.
-    private func pinsLine(_ seat: WakeSeat) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text("Pin")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-            pinFact(seat.pinState)
-            if let fallbackState = seat.fallbackPinState {
-                pinFact(fallbackState, missingAdvice: "Test the fallback, read the result, then pin it.")
-            }
-        }
-    }
-
-    /// One pin, in words.  A pin file nobody gave a current verdict on is shown with a question
-    /// mark, never a check mark:  that it is there does not say it holds.
-    @ViewBuilder
-    private func pinFact(_ state: SeatPinState, missingAdvice: String? = nil) -> some View {
-        switch state {
-        case .notNeeded(let why):
-            factLine("No pin needed.\u{00A0} \(why)", problem: false)
-        case .pinned(let pin):
-            factLine("\(PinEvidence.runtimeTitle(pin.runtime)) pin holds:  \(pin.binary ?? pin.model ?? "no binary named")\(pin.model.map { ", model \($0)" } ?? ""), \(pin.age ?? "no date")", problem: false)
-        case .notHolding(let pin, let why):
-            factLine("\(PinEvidence.runtimeTitle(pin.runtime)) pin does not hold.\u{00A0} \(PinEvidence.words(forWhy: why))\u{00A0} Pinned \(pin.binary ?? pin.model ?? "nothing named"), \(pin.age ?? "no date").", problem: true)
-        case .fileOnly(let pin, let why, let needsLook):
-            factLine("\(PinEvidence.runtimeTitle(pin.runtime)) pin file is there:  \(pin.binary ?? pin.model ?? "no binary named"), \(pin.age ?? "no date").\u{00A0} \(why)", problem: needsLook, unknown: true)
-        case .missing(let runtime, let why):
-            factLine("No \(PinEvidence.runtimeTitle(runtime)) pin.\u{00A0} \(missingAdvice ?? PinEvidence.words(forWhy: why ?? "not_pinned"))", problem: true)
-        case .unreadable(let runtime, let problem):
-            factLine("The \(PinEvidence.runtimeTitle(runtime)) pin could not be read.\u{00A0} \(problem)", problem: true)
-        case .unknownWake:
-            factLine("The seat's wake is not one this app knows, so it cannot say which pin the seat needs.", problem: true)
-        }
     }
 
     /// One fact, with a symbol as well as a colour, so colour is never the only sign:  a warning
@@ -1046,72 +990,6 @@ struct WakeSettingsView: View {
                 }
             }
         }
-    }
-
-    /// A test wake or a pin that is still running, with how long it has run.
-    private func runningLine(_ running: WakeSettingsStore.RunningAction) -> some View {
-        TimelineView(.periodic(from: running.startedAt, by: 1)) { context in
-            HStack(spacing: 8) {
-                ProgressView()
-                    .controlSize(.small)
-                let seconds = max(0, Int(context.date.timeIntervalSince(running.startedAt)))
-                Text("\(running.title) running since \(FleetTime.clock(running.startedAt)), \(seconds / 60)m \(seconds % 60)s so far.\u{00A0} It can take up to \(Int(SimpleToolsInvocation.testWakeTimeout / 60)) minutes, and leaving this panel does not stop it.")
-                    .font(.system(size: 11))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    /// The last test wake's answer, in words and in full.
-    private func testReportBox(_ report: TestWakeReport) -> some View {
-        let title: String
-        let symbol: String
-        let tint: Color
-        switch report.verdict {
-        case .passed:
-            title = report.kind == .run ? "Test Wake Passed" : "Pinned"
-            symbol = "checkmark.seal.fill"
-            tint = .green
-        case .failed:
-            title = report.kind == .run ? "Test Wake Did Not Pass" : "Not Pinned"
-            symbol = "xmark.octagon.fill"
-            tint = .red
-        case .unclear:
-            title = "Test Wake Gave No Verdict"
-            symbol = "questionmark.circle.fill"
-            tint = .orange
-        }
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Image(systemName: symbol)
-                    .foregroundStyle(tint)
-                    .accessibilityHidden(true)
-                Text("\(title)\(report.runtime.map { " (\($0))" } ?? "")")
-                    .font(.system(size: 11, weight: .semibold))
-                Text("finished \(FleetTime.clock(report.finishedAt))")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(Array(report.summary.enumerated()), id: \.offset) { _, line in
-                Text(line)
-                    .font(.system(size: 11))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-            }
-            DisclosureGroup("Everything It Printed") {
-                ScrollView {
-                    Text(report.output + (report.errors.isEmpty ? "" : "\n\nstderr:\n" + report.errors))
-                        .font(.system(size: 10, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(maxHeight: 280)
-            }
-            .font(.caption)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(tint.opacity(0.08))
     }
 }
 
@@ -1205,16 +1083,7 @@ private struct WakeSettingRow: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                if editable, let options = setting.key.pickerOptions(current: draft) {
-                    // A short fixed list is a picker, so a typo cannot drop the seat to inbox.
-                    Picker(setting.title, selection: $draft) {
-                        ForEach(options, id: \.self) { option in
-                            Text(option == WakeSetting.unsetText ? "not set" : option).tag(option)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                } else if editable {
+                if editable {
                     TextField(setting.title, text: fieldText, prompt: Text("not set, default"))
                         .labelsHidden()
                         .textFieldStyle(.roundedBorder)
@@ -1252,13 +1121,21 @@ private struct WakeSettingRow: View {
                 .font(.system(size: 10))
                 .foregroundStyle(.orange)
             }
-            if setting.key == .fallbackUncontained, changed, draft == "true" {
+            // The router contract fixes this setting, and the file holds something else:  it is
+            // said plainly, and no control is offered for it.
+            if let difference = setting.contractDifference {
+                Label(difference, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if setting.key.needsOwnerCheck, changed {
                 Label(
-                    "This lets the mcode fallback answer with its tools live, outside any container.\u{00A0} A side effect it causes cannot be undone.\u{00A0} Apply asks for Touch ID.",
-                    systemImage: "exclamationmark.shield.fill"
+                    "This names where the seat's wakes go, or the key that signs them, so Apply asks for Touch ID.\u{00A0} It is the name of a variable, never its value.",
+                    systemImage: "lock.shield"
                 )
                 .font(.system(size: 10))
-                .foregroundStyle(.red)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -1303,14 +1180,12 @@ private struct WakeStateBadge: View {
 private extension WakeSettingState {
     /// The colour the badge uses.
     ///
-    /// The grid's own vocabulary:  green for a pass,  orange for drift,  indigo for a
-    /// setting nobody has proved,  grey for one the engine does not own,  and red for a
-    /// read that failed.
+    /// The grid's own vocabulary:  green for a pass,  orange for drift,  grey for one the
+    /// engine does not own,  and red for a read that failed.
     var tint: Color {
         switch self {
         case .match: return .green
         case .drift, .stale: return .orange
-        case .unproven: return .indigo
         case .notOwned, .unpublished: return .gray
         case .unset, .off, .heldElsewhere, .seatOff: return .secondary
         case .unknown: return .red
@@ -1323,7 +1198,6 @@ private extension WakeSettingState {
         case .match: return "checkmark.circle"
         case .drift: return "arrow.left.arrow.right.circle"
         case .stale: return "clock.badge.exclamationmark"
-        case .unproven: return "questionmark.square"
         case .notOwned: return "minus.circle"
         case .unpublished: return "eye.slash"
         case .unset: return "circle.dashed"
@@ -1336,7 +1210,7 @@ private extension WakeSettingState {
 
     /// The legend's order:  the states that need a look first, then the quiet ones.
     static let legendOrder: [WakeSettingState] = [
-        .drift, .unknown, .stale, .unproven, .match, .unset, .off, .seatOff, .heldElsewhere,
+        .drift, .unknown, .stale, .match, .unset, .off, .seatOff, .heldElsewhere,
         .notOwned, .unpublished,
     ]
 
@@ -1345,7 +1219,6 @@ private extension WakeSettingState {
         switch self {
         case .match: return "The eavesdropper is using the value the file holds.\u{00A0} This compares two values, and it does not prove the setting works."
         case .drift: return "The eavesdropper is using something other than the file's value."
-        case .unproven: return "Configured,  but no pin has ever proved it works."
         case .notOwned: return "The engine does not enforce this setting,  so Muster will not write it."
         case .unpublished: return "The engine reads this one,  but does not publish it."
         case .unset: return "The file holds nothing,  so the eavesdropper's default is in effect."
@@ -1365,30 +1238,16 @@ private extension WakeSettingState {
 
 /// A wake action waiting for the owner's confirmation, with its concrete effect.
 private struct PendingWakeAction: Identifiable {
-    enum Kind { case apply, testWake, pin, removeSection, resume }
+    enum Kind { case apply, removeSection, resume }
     let kind: Kind
     let seat: String
-    let runtime: String?
-    /// The fallback runtime, when the action is on the seat's fallback.
-    var fallback: String? = nil
     /// The changes this would make, in words.
     var detail: String = ""
-    /// For a pin let through by a candidate from a test run outside this panel:  when that test
-    /// left it.  Muster never saw its answer, so the confirmation says so.
-    var candidateAt: Date? = nil
-    var id: String { "\(kind)-\(seat)-\(runtime ?? "")" }
-
-    /// What is being tested or pinned, in words.
-    private var subject: String {
-        if let fallback { return "\(seat)'s \(fallback) fallback" }
-        return "\(seat)'s wake"
-    }
+    var id: String { "\(kind)-\(seat)" }
 
     var title: String {
         switch kind {
         case .apply: return "Apply Settings For \(seat)?"
-        case .testWake: return fallback == nil ? "Run A Test Wake For \(seat)?" : "Test The Fallback For \(seat)?"
-        case .pin: return fallback == nil ? "Pin The Wake For \(seat)?" : "Pin The Fallback For \(seat)?"
         case .removeSection: return "Remove The \(seat) Section From The Mac's File?"
         case .resume: return "Resume Wakes For \(seat)?"
         }
@@ -1396,8 +1255,6 @@ private struct PendingWakeAction: Identifiable {
     var confirmTitle: String {
         switch kind {
         case .apply: return "Apply"
-        case .testWake: return "Run Test Wake"
-        case .pin: return "Pin"
         case .removeSection: return "Remove Section"
         case .resume: return "Resume"
         }
@@ -1405,9 +1262,8 @@ private struct PendingWakeAction: Identifiable {
     /// Why Touch ID is asked, as the system dialog shows it.
     var ownerReason: String {
         switch kind {
-        case .apply: return "change \(seat)'s wake settings"
-        case .pin: return "pin \(subject)"
-        case .testWake, .removeSection, .resume: return "change \(seat)'s wake"
+        case .apply: return "change where \(seat)'s wakes go or the key that signs them"
+        case .removeSection, .resume: return "change \(seat)'s wake"
         }
     }
     var message: String {
@@ -1415,13 +1271,6 @@ private struct PendingWakeAction: Identifiable {
         case .apply:
             let opening = "This checks \(seat)'s edited settings with the eavesdropper's own rules, writes them to the Mac's eavesdropper configuration file, and asks the eavesdropper to re-read it.\u{00A0} Muster then says whether the eavesdropper took the change."
             return detail.isEmpty ? opening : opening + "\n\n" + detail
-        case .testWake:
-            return "This runs \(subject) on this Mac against canned hostile messages.\u{00A0} Nothing is posted, and no wake budget is spent.\u{00A0} It uses the provider's quota and can take up to \(Int(SimpleToolsInvocation.testWakeTimeout / 60)) minutes.\u{00A0} You then read its answer and decide whether to pin it."
-        case .pin:
-            let pins = "This pins what the last passing test of \(subject) ran, as proved.\u{00A0} The eavesdropper refuses a test over a day old, or one whose binary or model has changed since.\u{00A0} It asks for Touch ID."
-            guard let at = candidateAt,
-                  let note = WakeSettingsStore.PinGate.candidate(at).confirmationNote else { return pins }
-            return note + "\n\n" + pins
         case .removeSection:
             return "This takes the [seat.\(seat)] section out of the Mac's eavesdropper configuration file and keeps a backup of the old file.\u{00A0} The Mac's eavesdropper refuses this section, so it can only stop the eavesdropper."
         case .resume:

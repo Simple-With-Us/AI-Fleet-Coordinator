@@ -413,9 +413,9 @@ final class ListenerConfigFileTests: XCTestCase {
     /// A value the panel holds is read into the value the file holds.
     func test_a_value_from_the_panel_is_read_by_its_kind() {
         XCTAssertEqual(WakeSettingKey.wakesPerHour.value(from: " 6 "), .number(6))
-        XCTAssertEqual(WakeSettingKey.fallbackUncontained.value(from: "true"), .bool(true))
-        XCTAssertEqual(WakeSettingKey.wakeType.value(from: "muse"), .text("muse"))
+        XCTAssertEqual(WakeSettingKey.routineTimeout.value(from: "20"), .number(20))
+        XCTAssertEqual(WakeSettingKey.routineURLEnv.value(from: "MM_ROUTINE_URL"), .text("MM_ROUTINE_URL"))
         XCTAssertNil(WakeSettingKey.wakesPerHour.value(from: "six"))
-        XCTAssertNil(WakeSettingKey.wakeType.value(from: ""))
+        XCTAssertNil(WakeSettingKey.routineKeyEnv.value(from: ""))
     }
 }
