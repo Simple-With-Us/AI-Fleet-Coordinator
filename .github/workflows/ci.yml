@@ -656,6 +656,9 @@ jobs:
     - name: Kody defer and deferred sweep tests
       timeout-minutes: 10
       run: node --test scripts/kody-defer/*.test.mjs scripts/kody-deferred-sweep.test.mjs
+    - name: Kody first-review prompter tests
+      timeout-minutes: 10
+      run: node --test scripts/kody-first-review/*.test.mjs
     - name: Autofix dispatcher tests
       timeout-minutes: 10
       run: node --test scripts/autofix-dispatcher/*.test.mjs
