@@ -23,6 +23,14 @@ This module is the one place the daemon gets that client:
     the caller logs a refusal and posts nothing.  It never reaches for a seat's client, which is
     the whole point.
 
+Direct messages (owner ruling, Tue, Nov 10 2026): no seat or agent ever sends a direct message, and the
+Operator's own are only clarification questions about a wake.  `SIMPLE_TOOLS_OPERATOR_DM_MODE` stages
+that for this voice.  `legacy` (the default, and what a missing, empty or unrecognised value means) is
+today's behaviour: every `direct` message the daemon composes goes out.  `clarify` refuses every
+`direct` (or `private`) message unless the caller passes `clarify=True`, which a later change sets for
+the consultant's one clarification question.  A refusal sends nothing, builds no client and carries no
+message text (`CODE_DM_CLARIFY_ONLY`).  Stream posts and edits are never affected.
+
 The client is built WITHOUT `mark_operator_verified`: the owner-in-the-conversation guard (AFC-469)
 applies to it exactly as it does to any bot, so a direct message must carry the owner, and the narrow
 one-to-one status exemption (`ZulipClient.operator_status_dm`) is not opened for anything here.
@@ -55,6 +63,21 @@ CODE_OWNER = "operator_owner_not_pinned"
 CODE_SECRET = "secret_scanner"
 #: Not a refusal: the client is being built in the background and the caller (which must not wait) asks again.
 CODE_BUILDING = "operator_building"
+#: A direct message refused because `SIMPLE_TOOLS_OPERATOR_DM_MODE` is `clarify` and the caller did not
+#: say it is a clarification question.  A stable token: nothing parses the reason sentence.
+CODE_DM_CLARIFY_ONLY = "operator_dm_clarify_only"
+
+#: The setting that stages the DM policy for this voice, and the two modes it takes.
+ENV_DM_MODE = "SIMPLE_TOOLS_OPERATOR_DM_MODE"
+DM_MODE_LEGACY = "legacy"
+DM_MODE_CLARIFY = "clarify"
+#: Zulip spells a direct message `direct`, and still accepts its old name `private`.
+DM_TYPES = frozenset({"direct", "private"})
+#: Fixed text, so a refusal can never carry the message it refused.
+DM_CLARIFY_ONLY_REASON = (
+    "the Operator sends a direct message only to ask one clarifying question about a wake "
+    "(%s=clarify), so this one was not sent" % ENV_DM_MODE
+)
 
 Factory = Callable[[int], Any]
 
@@ -72,7 +95,8 @@ class OperatorUnavailable(Z.SimpleToolsError):
 
 
 class OperatorRefused(Z.SimpleToolsError):
-    """The text itself was refused before it left (the secret scanner)."""
+    """The text itself was refused before it left (the secret scanner), or a direct message that
+    `SIMPLE_TOOLS_OPERATOR_DM_MODE=clarify` does not allow.  `code` says which."""
 
     exit_code = 3
 
@@ -91,6 +115,29 @@ def pinned_user_id(env: Mapping[str, str]) -> int:
         return SI.operator_identity(env)[0]
     except Z.CredentialError:
         return 0
+
+
+def parse_dm_mode(env: Mapping[str, str] | None) -> tuple[str, bool]:
+    """The mode `SIMPLE_TOOLS_OPERATOR_DM_MODE` asks for, and whether its value was acceptable.
+
+    Read like its siblings (`dm_policy.rule_enabled`): from the host's environment mapping, trimmed
+    and case-folded.  Unset or empty is `legacy`, today's behaviour, and acceptable.  `legacy` and
+    `clarify` are the only values.  Anything else is `legacy` too (a typo must not start refusing
+    messages) and is reported as not acceptable so the caller can warn."""
+    raw = (env or {}).get(ENV_DM_MODE)
+    if raw is None:
+        return DM_MODE_LEGACY, True
+    value = str(raw).strip().casefold()
+    if not value:
+        return DM_MODE_LEGACY, True
+    if value in (DM_MODE_LEGACY, DM_MODE_CLARIFY):
+        return value, True
+    return DM_MODE_LEGACY, False
+
+
+def is_direct(params: Mapping[str, Any]) -> bool:
+    """True when these `messages` parameters are a direct message (either spelling of the type)."""
+    return str(params.get("type") or "").strip().casefold() in DM_TYPES
 
 
 def default_factory(
@@ -183,6 +230,7 @@ class OperatorVoice:
         self._flight: _Flight | None = None
         self._failed_until = -1e18
         self._failure = ""
+        self._warn_dm_mode(self._env)
 
     # ---- the client ----------------------------------------------------------------------
     def client(self, *, wait: bool = True) -> Any:
@@ -280,6 +328,7 @@ class OperatorVoice:
                     self._since = self._wall()
                     self._available = None
                     self._code = None
+        self._warn_dm_mode(fresh)
 
     def _note_state(self, available: bool, code: str | None) -> None:
         """Remember whether the Operator can speak and since when (caller holds the lock).
@@ -423,13 +472,48 @@ class OperatorVoice:
         except Exception:  # noqa: BLE001 - a logging failure never changes a refusal
             pass
 
+    def _warn_dm_mode(self, env: Mapping[str, str]) -> None:
+        """Say that the DM mode value was not recognised and `legacy` is used.
+
+        The value itself is not logged: it is free text from the host's environment.  A setting
+        that is unset, empty or valid logs nothing."""
+        mode, valid = parse_dm_mode(env)
+        if not valid:
+            self._write("operator-dm-mode-invalid", setting=ENV_DM_MODE, using=mode)
+
+    def _refuse_unclarified_dm(self, params: Mapping[str, Any], clarify: Any) -> None:
+        """Raise OperatorRefused for a direct message that `clarify` mode does not allow.
+
+        Runs before the client is built, so a refused message costs no vault read and reaches no
+        client.  The reason is fixed text: nothing from `params` goes into the error or a log.
+        """
+        if not is_direct(params) or clarify is True:
+            return
+        if parse_dm_mode(self._env)[0] != DM_MODE_CLARIFY:
+            return
+        raise OperatorRefused(DM_CLARIFY_ONLY_REASON, code=CODE_DM_CLARIFY_ONLY)
+
     # ---- the writes ----------------------------------------------------------------------
     def post(
-        self, params: Mapping[str, Any], *, timeout: float | None = None, wait: bool = True
+        self,
+        params: Mapping[str, Any],
+        *,
+        timeout: float | None = None,
+        wait: bool = True,
+        clarify: bool = False,
     ) -> dict[str, Any]:
         """POST messages as the Operator.  Raises OperatorUnavailable when there is no Operator
-        (or, with `wait=False`, none ready yet) and whatever the client raises (DmGuardRefused,
-        ApiError, NetworkError) otherwise."""
+        (or, with `wait=False`, none ready yet), OperatorRefused (`CODE_DM_CLARIFY_ONLY`) for a
+        direct message that `SIMPLE_TOOLS_OPERATOR_DM_MODE=clarify` does not allow, and whatever
+        the client raises (DmGuardRefused, ApiError, NetworkError) otherwise.
+
+        `clarify=True` is the caller saying this direct message is its one clarification question
+        about a wake.  Only the value `True` counts, so a truthy string or number cannot open the
+        gate, and it is never sent to Zulip.  In `legacy` mode (the default) it changes nothing.
+        The mode is read from the voice's copy of the environment on every post, and a reload
+        refreshes that copy (`update_env`), so a change applies at once.
+        """
+        self._refuse_unclarified_dm(params, clarify)
         client = self.client(wait=wait)
         try:
             if timeout is None:
