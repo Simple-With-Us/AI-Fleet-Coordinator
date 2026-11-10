@@ -205,7 +205,7 @@ gap this attestation exists to close:
 | `scripts/simple-tools-mcp/DEPLOY-PHASE0.md` | `cb10a4f133a5e90a1b3bdc77b1df818ad9dac0e9` | `5f85629a6a6979a763063ad3b79fd56b5d77ab93d2cd0e6da4c200485debca3f` |
 | `scripts/simple-tools-mcp/test/gr-assert.test.mjs` | `80f27a413e461e9adfc8924c881e29d4d9e2d21c` | `ecfa713b33754e1331a8fee0e07c67271fc186908a52830839f1b530a246dad8` |
 | `scripts/simple-tools-mcp/test/gr-front.test.mjs` | `b46549565f659d145f30d6ff1ede3af6515de64d` | `9de759b53f8cb987b16ade0a9cf99ff69d999659519a620b292f4aa748eee3b9` |
-| `scripts/simple-tools-mcp/test/gr-workflow-v1.test.mjs` | `9a36132edd4b6614209c2f6dd12a9df13a939c05` | `1caec47629a7a4592051b25efcfd229cfe662471027c13eb3c5d812952816e95` |
+| `scripts/simple-tools-mcp/test/gr-workflow-v1.test.mjs` | `804d547cb96bba4cade20a058e76ec32c1fa7022` | `8a0cf816252c39f32202429861483d0d128d4a30a7ff92e6cbbbad988ee7dad2` |
 | `scripts/simple-tools-mcp/test/integration.workerd.mjs` | `f122a279489d871d7fc3f71c97acd5e2ec9dcfaf` | `2b76ceeed6f6fdf66f6e04523d05cc9652e00377e82bcb55268ceaf143e10f8c` |
 | `scripts/simple_tools/tests/test_infisical_api_route.py` | `0c8b4ed4acf205c619f970824a7eba4d7e3a96b3` | `3ee7aac6e82c0f22bbadc29ba915cc05054c7d5e3c0962f9c84f9db5b8f94d88` |
 | `scripts/simple_tools/tests/test_mcp_extras.py` | `eaf0c913742de23ef19e5c655a01dc3e5ef071c7` | `d31c6f0a7f84f17dd0d480714a5d0be9f05fad97d3a3ef5d519da68b304bc95a` |
@@ -231,6 +231,27 @@ claim or a digest supplied by a seat cannot create an attestation. Do not add re
 credentials even if already present in history. Fail closed if review cannot
 establish that a fixture is synthetic. No automatic registry generation/update
 runs in the service. This change does not deploy itself or resume a paused write.
+
+On November 10, 2026 the `scripts/simple-tools-mcp/test/gr-workflow-v1.test.mjs` row was
+refreshed to the exact bytes under review in PR #1707 (source blob
+`804d547cb96bba4cade20a058e76ec32c1fa7022`, SHA-256
+`8a0cf816252c39f32202429861483d0d128d4a30a7ff92e6cbbbad988ee7dad2`, 109,448 UTF-8
+bytes). The prior digest attested the corrected rename-checkpoint bytes, which never
+landed on main, match nothing there, and are carried by no open PR. The complete
+attested file was re-reviewed, not only the changed lines: it is the wf-v1
+caller-contract test suite - input shape validation, receipt guards, traversal and
+refusal fail-closed cases, and own-bearer Authorization header assertions.
+Independent pattern enumeration found 38 occurrences of one distinct bearer-shaped
+literal: a synthetic 17-character hyphenated placeholder introduced with the
+relay-parity contract tests in #1011, standing for the caller's own bearer in
+header-shape assertions (the literal itself is withheld from this document so the
+document stays publishable under the scanner). No other pattern label matched, no
+credential literal was found, non-ASCII content is confined to UTF-8 length-boundary
+fixtures, and the file holds no network or dynamic-evaluation constructs. Negative
+controls are unchanged: dedicated shapes and loaded values still refuse, and
+superseded bytes fail closed (git_relay/tests/test_reviewed_fixtures.py). The
+attested bytes are a FUTURE target until PR #1707 merges; this source change deploys
+only through the relay operator's normal review and authorizes no write by itself.
 
 `mint_token` returns a raw App installation token, so it is NOT exposed over the MCP wrapper
 (a stdio transcript is too easy to capture);  seats that need a token for git-over-HTTPS call the

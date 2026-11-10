@@ -54,7 +54,7 @@ _REVIEWED_FIXTURES = frozenset(
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
             "scripts/simple-tools-mcp/test/gr-workflow-v1.test.mjs",
-            "1caec47629a7a4592051b25efcfd229cfe662471027c13eb3c5d812952816e95",
+            "8a0cf816252c39f32202429861483d0d128d4a30a7ff92e6cbbbad988ee7dad2",
         ),
         (
             "Simple-With-Us/AI-Fleet-Coordinator",

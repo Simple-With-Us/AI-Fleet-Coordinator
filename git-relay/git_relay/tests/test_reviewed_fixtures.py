@@ -160,3 +160,26 @@ class CurrentManifestScopeTests(unittest.TestCase):
         self.assertEqual(len(row["edits"]), 5)
         self.assertIn((row["repo"], row["path"], row["result_sha256"]), _REVIEWED_FIXTURES)
         self.assertEqual(len(_REVIEWED_FIXTURES), 13)
+
+
+class GrWorkflowV1AttestationRowTests(TestCase):
+    """The 2026-11-10 refresh binds exactly the PR #1707 bytes; superseded bytes fail closed."""
+
+    PATH = "scripts/simple-tools-mcp/test/gr-workflow-v1.test.mjs"
+    DIGEST = "8a0cf816252c39f32202429861483d0d128d4a30a7ff92e6cbbbad988ee7dad2"
+
+    def test_row_is_exact_and_unique(self):
+        rows = [r for r in _REVIEWED_FIXTURES if r[1] == self.PATH]
+        self.assertEqual(rows, [(support.REPO, self.PATH, self.DIGEST)])
+
+    def test_bearer_fixture_bytes_pass_only_with_the_exact_attestation(self):
+        raw = ("h = 'Bear" + "er caller-own-" + "bearer'\n").encode()
+        self.assertEqual(find_secret(raw.decode()), "bearer_credential")
+        self.assertEqual(
+            unreviewed_file_secret(support.REPO, self.PATH, raw), "bearer_credential"
+        )
+        entry = (support.REPO, self.PATH, sha256(raw).hexdigest())
+        with patch(
+            "git_relay.reviewed_fixtures._REVIEWED_FIXTURES", frozenset({entry})
+        ):
+            self.assertIsNone(unreviewed_file_secret(support.REPO, self.PATH, raw))
