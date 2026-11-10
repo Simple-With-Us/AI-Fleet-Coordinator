@@ -14,10 +14,11 @@ from pathlib import Path
 
 BEFORE = "30aaa6b107e241499435bc797c9d0ed40fe6bba6973f56174514b9e2ee7248e4"
 AFTER = "PENDING_QUALIFIED_OPERATOR_OBSERVATION_PIN"
+LOGICAL_BEFORE = "PENDING_QUALIFIED_OPERATOR_OBSERVATION_PIN"
 CONFIG = "af09bf3b8e0679ec50c7bf3808fb11e203a46ac2ab32e8652961182f38c9e29b"
 ROOT = "/opt/git-relay/transactions/echo-admin-read"
 UNIT = "git-relay-echo-admin-read.service"
-PROOF = "67460d00c873056a6ebcf937f55c0fc9c7741986149261d03029978cbd4f52fa"
+PROOF = "51f635af67cf8bd3eae7cee979372414db60c20cd0afde101a70a0e6098bcbf6"
 MODULES = {
     "__init__.py": "e9c5519a796eab24d04e416e5bd30598015b5a03c09141d856a39d898d92c423",
     "deploy_guard.py": "3acb883f2163f7acf23d50213c259a17792761003e277157a5193f4e248e0aba",
@@ -37,12 +38,11 @@ def digest(raw):
 def image(before):
     if digest(before) != BEFORE:
         raise ValueError("live ECHO policy baseline drift")
-    from git_relay.echo_admin_read import digest as policy_digest
     from git_relay.echo_admin_read import prepare
 
     policy = json.loads(before)
     after = (
-        json.dumps(prepare(policy, policy_digest(policy)), sort_keys=True, indent=2) + "\n"
+        json.dumps(prepare(policy, LOGICAL_BEFORE), sort_keys=True, indent=2) + "\n"
     ).encode()
     if digest(after) != AFTER:
         raise ValueError("exact ECHO-only candidate drift")
@@ -148,6 +148,8 @@ def build(repo, before, output):
     raw_manifest = json.dumps(manifest, sort_keys=True, indent=2).encode() + b"\n"
     entry = render_entry((here / "runner.template.py").read_text(), raw_manifest, sources)
     output = Path(output)
+    if output.is_symlink():
+        raise ValueError("scratch output symlink refused")
     output.mkdir(mode=0o700, exist_ok=False)
     for name, raw in sources.items():
         target = output / "runner-package" / name

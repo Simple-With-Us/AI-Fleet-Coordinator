@@ -15,14 +15,16 @@ new seat, provider permission, identity or credential audience is introduced.
 
 The observed live baseline hash (30aa..., confirmed by the operator's live
 read 2026-11-09 22:52) and the config hash (af09...) are pinned in the
-builder. The candidate hash is NOT pinned in source: the qualified operator
-observes the live policy, runs the fixed transform over it, then pins the
-resulting candidate hash in three places together - AFTER in build.py,
-CANDIDATE in runtime_proof.py, and PROOF in build.py as the sha256 of the
-re-pinned runtime_proof.py - before activation review, exactly as the
-echo-review-read transaction's pins were produced. Until then the builder
-refuses every candidate and the runtime proof accepts only the baseline. The
-only manifest target is state/seats.json, mode0600 and
+builder. The logical baseline digest and the candidate hash are NOT pinned
+in source: the qualified operator observes the live policy, computes its
+canonical digest, runs the fixed transform over it, then pins four constants
+together - LOGICAL_BEFORE and AFTER in build.py, CANDIDATE in
+runtime_proof.py, and PROOF in build.py as the sha256 of the re-pinned
+runtime_proof.py - before activation review, exactly as the echo-review-read
+transaction's pins were produced. Until then the builder refuses every
+candidate and the runtime proof accepts only the baseline (a non-hex
+candidate placeholder is never an accepted gate state). The only manifest
+target is state/seats.json, mode0600 and
 existing 65534 ownership. Policy contents stay on the host; candidates are
 private0600, never source/log material. Baseline drift refuses rather than
 widening scope.

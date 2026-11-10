@@ -87,24 +87,40 @@ class Tests(unittest.TestCase):
                 self.assertEqual(stat.S_IMODE(p.stat().st_mode), 0o600)
 
     def test_proof_inventory_selector_and_ownseat_read(self):
-        for digest in (builder.BEFORE, builder.AFTER):
-            p = proof.RuntimeProof("test-only")
-            calls = []
-            p.selector = lambda identity: True
-            p.call = lambda action, args, calls=calls, p=p: (
-                calls.append((action, args))
-                or (
-                    200,
-                    {"repository": {"full_name": p.REPO, "default_branch": "main"}},
-                )
+        p = proof.RuntimeProof("test-only")
+        calls = []
+        p.selector = lambda identity: True
+        p.call = lambda action, args, calls=calls, p=p: (
+            calls.append((action, args))
+            or (
+                200,
+                {"repository": {"full_name": p.REPO, "default_branch": "main"}},
             )
-            self.assertTrue(p({"pid": 1}, {"state/seats.json": digest}))
-            self.assertEqual(calls, [("wf_repo_get", {"repo": p.REPO})])
-            p.selector = lambda identity: False
-            self.assertFalse(p({"pid": 1}, {"state/seats.json": digest}))
-            self.assertEqual(len(calls), 1)
-            self.assertFalse(p({"pid": 1}, {"state/seats.json": "wrong"}))
-            self.assertEqual(len(calls), 1)
+        )
+        self.assertTrue(p({"pid": 1}, {"state/seats.json": builder.BEFORE}))
+        self.assertEqual(calls, [("wf_repo_get", {"repo": p.REPO})])
+        p.selector = lambda identity: False
+        self.assertFalse(p({"pid": 1}, {"state/seats.json": builder.BEFORE}))
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(p({"pid": 1}, {"state/seats.json": "wrong"}))
+        self.assertEqual(len(calls), 1)
+
+    def test_unpinned_candidate_placeholder_refused(self):
+        p = proof.RuntimeProof("test-only")
+        p.selector = lambda identity: True
+        p.call = lambda action, args: (
+            200,
+            {"repository": {"full_name": p.REPO, "default_branch": "main"}},
+        )
+        self.assertFalse(p({"pid": 1}, {"state/seats.json": builder.AFTER}))
+        pinned = "a" * 64
+        with patch.object(proof.RuntimeProof, "CANDIDATE", pinned):
+            self.assertTrue(p({"pid": 1}, {"state/seats.json": pinned}))
+
+    def test_selector_pid_shape_validated(self):
+        p = proof.RuntimeProof("test-only")
+        for bad in (-1, 0, True, "1/2", "../1", "abc", "", None, 1.5):
+            self.assertFalse(p.selector({"pid": bad}))
 
     def test_selector_exact_startup_file_and_same_physical_file(self):
         p = proof.RuntimeProof("test-only")
