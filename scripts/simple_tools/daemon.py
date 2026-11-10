@@ -1456,6 +1456,36 @@ class Daemon:
                 error=self.scrub(type(exc).__name__ + ": " + str(exc)),
             )
 
+    def _configure_registry(self) -> LREG.RegistryService | None:
+        """The Operator's session registry API for the listener API to serve under /registry/v1/, or None:
+        off unless at least one principal has a key.  The principals are the seats this instance holds, keyed
+        exactly as the read API keys them (the seat's routine `key_env` key), plus the OPERATOR principal,
+        whose key is the value of the env var listener_registry.OPERATOR_KEY_ENV when it is set.  Every key
+        value is hidden from the log by listener_api_keys / here, before anything can print it.  A reload that
+        leaves the principals and the store as they were keeps the same service object.  Construction opens
+        no file:  the service opens the registry per call, through the registry's own functions."""
+        old = getattr(self, "registry_service", None)
+        old_spec = getattr(self, "_registry_spec", None)
+        self.registry_service = None
+        self._registry_spec = None
+        keys = self.listener_api_keys()
+        operator_key = Z._strip_quotes(self.env.get(LREG.OPERATOR_KEY_ENV) or "")
+        if operator_key:
+            self.hide_values([operator_key])
+            keys[LREG.OPERATOR] = operator_key
+        usable = sorted(name for name, key in keys.items() if len(key) >= LREG.MIN_KEY_LEN)
+        if not usable:
+            return None
+        db_path = OR.registry_db_path(self.root, self.env)
+        spec = (db_path, tuple(sorted((name, key) for name, key in keys.items())))
+        if old is not None and old_spec == spec:
+            service = old
+        else:
+            service = LREG.RegistryService(db_path, keys, clock=self.clock.time, log=self.log.write)
+        self.registry_service = service
+        self._registry_spec = spec
+        return service
+
     def _configure_listener_api(self) -> None:
         """Start the optional signed read API (AFC-330) for the seats this instance holds, and with it the Operator's
         notes queue (AFC-486) under /notes/v1/, the Linear project webhook (AFC-565) under /linear/v1/ and the
