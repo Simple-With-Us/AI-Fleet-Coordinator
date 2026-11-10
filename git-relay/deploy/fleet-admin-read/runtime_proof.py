@@ -38,6 +38,9 @@ class RuntimeProof:
             status = response.code
             with response:
                 raw = response.read(65537)
+        except OSError:
+            # URLError, timeouts and socket resets fail closed, not crash.
+            return None, None
         else:
             with response:
                 status, raw = response.status, response.read(65537)

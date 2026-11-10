@@ -97,6 +97,8 @@ def prepare(policy, expected_digest):
     if not any(r.get("added") for r in report.values()):
         raise ValueError("no seat extension available; candidate would be a no-op")
     for seat, before in policy.items():
+        if "skipped" in report[seat]:
+            continue  # excluded unchanged; there is nothing extended to verify
         after = out[seat]
         if {k: v for k, v in after.items() if k != "actions"} != {
             k: v for k, v in before.items() if k != "actions"

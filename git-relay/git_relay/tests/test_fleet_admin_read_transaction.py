@@ -155,6 +155,20 @@ class Tests(unittest.TestCase):
         ):
             self.assertFalse(p.selector({"pid": 1}))
 
+    def test_proof_transport_failure_returns_none_none(self):
+        from urllib.error import URLError
+
+        class FailingOpener:
+            def __init__(self, error):
+                self.error = error
+
+            def open(self, request, timeout=0):
+                raise self.error
+
+        for error in (URLError("refused"), TimeoutError("timed out"), OSError("reset")):
+            p = proof.RuntimeProof("test-only", opener=FailingOpener(error))
+            self.assertEqual(p.call("wf_repo_get", {"repo": p.REPO}), (None, None))
+
     def test_proof_bad_repo_and_provider_failure_refuse(self):
         for reply in [
             (401, {}),
@@ -163,8 +177,10 @@ class Tests(unittest.TestCase):
         ]:
             p = proof.RuntimeProof("test-only")
             p.selector = lambda identity: True
-            p.call = lambda *args, reply=reply: reply
-            self.assertFalse(p({"pid": 1}, {"state/seats.json": builder.AFTER}))
+            called = []
+            p.call = lambda *args, reply=reply, called=called: called.append(args) or reply
+            self.assertFalse(p({"pid": 1}, {"state/seats.json": builder.BEFORE}))
+            self.assertEqual(len(called), 1)  # the provider branch was reached
 
 
 if __name__ == "__main__":
