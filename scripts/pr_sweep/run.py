@@ -164,6 +164,7 @@ def default_launch(
 
 def default_lane(argv: Sequence[str]) -> tuple[int, str]:
     import shutil as _sh
+
     lane = os.path.expanduser("~/apps/lane")
     if os.path.isdir(lane) or not os.access(lane, os.X_OK):
         lane = _sh.which("lane") or lane
