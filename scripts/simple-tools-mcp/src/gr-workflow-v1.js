@@ -227,8 +227,8 @@ export const WF_V1_READ_ACTIONS = Object.freeze(['wf_installation_metadata','wf_
 // candidate note sends seats at a refusal.  Give those two the working routes instead;
 // the note stays for the rest (it predates workflow verbs being enabled).
 const UNGRANTED_GUIDANCE = new Map([
-  ['wf_pr_create', 'UNGRANTED: no seat policy grants this verb.  PR creation runs through gr_open_pr, which opens the PR under the owner\'s account by owner design (review tooling covers owner-authored PRs only).  On relay failure use the logged gh fallback under your own App per the fleet GitHub route rules.'],
-  ['wf_pr_edit', 'UNGRANTED: no seat policy grants this verb.  PR title/body edits run through gr_edit_pr, which the current seat policy grants.  On relay failure use the logged gh fallback under your own App per the fleet GitHub route rules.'],
+  ['wf_pr_create', 'UNGRANTED: no seat policy grants this verb.  PR creation runs through gr_open_pr, which opens the PR under the owner\'s account by owner design (review tooling covers owner-authored PRs only).  gh backup covers only operations the relay has no verb for, logged the same day in the Fleet GitOPS deficiencies document; on relay failure do NOT substitute gh for PR creation - a seat-App PR breaks owner authorship and review coverage.  Retry through the relay or report no relay connection and stop.'],
+  ['wf_pr_edit', 'UNGRANTED: no seat policy grants this verb.  PR title/body edits run through gr_edit_pr, which the current seat policy grants.  gh backup covers only operations the relay has no verb for, logged the same day in the Fleet GitOPS deficiencies document; on relay failure retry through the relay or report no relay connection and stop.'],
 ]);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: UNGRANTED_GUIDANCE.has(action) ? `${SPECS[action][0]} ${UNGRANTED_GUIDANCE.get(action)}` : `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
