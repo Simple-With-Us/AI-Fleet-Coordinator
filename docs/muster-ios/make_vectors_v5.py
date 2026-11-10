@@ -57,8 +57,32 @@ def b64u(data):
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
+B64U_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+
 def unb64u(text):
-    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+    """Strict base64url (v5.4):  the alphabet only, no padding, a possible length, no stray trailing bits."""
+    if not isinstance(text, str) or not re.fullmatch(r"[A-Za-z0-9_-]*", text) or len(text) % 4 == 1:
+        raise ValueError("not base64url")
+    data = base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+    if b64u(data) != text:
+        raise ValueError("base64url with stray trailing bits")
+    return data
+
+
+# DER SubjectPublicKeyInfo of an uncompressed P-256 point (v5.4):  this prefix, then 04 || X || Y, 91 bytes.
+P256_SPKI_PREFIX = bytes.fromhex("3059301306072a8648ce3d020106082a8648ce3d030107034200")
+
+
+def load_key(text):
+    """The P-256 key of a base64url SubjectPublicKeyInfo that is exactly the 91-byte uncompressed form."""
+    der = unb64u(text)
+    if len(der) != 91 or not der.startswith(P256_SPKI_PREFIX) or der[26] != 0x04:
+        raise ValueError("not the 91-byte SubjectPublicKeyInfo of an uncompressed P-256 point")
+    key = serialization.load_der_public_key(der)
+    if not isinstance(key, ec.EllipticCurvePublicKey) or not isinstance(key.curve, ec.SECP256R1):
+        raise ValueError("not a P-256 key")
+    return key
 
 
 def spki(key):
@@ -106,15 +130,36 @@ def sign(key, data):
 
 
 def verify(pub_b64, sig_b64, data):
+    """v5.4:  the key and the signature are decoded strictly, so stray trailing bits fail the check."""
     try:
-        serialization.load_der_public_key(unb64u(pub_b64)).verify(unb64u(sig_b64), data, ecdsa())
+        load_key(pub_b64).verify(unb64u(sig_b64), data, ecdsa())
         return True
-    except (InvalidSignature, ValueError):
+    except (InvalidSignature, ValueError, TypeError):
         return False
 
 
 def t(text):
     return datetime.datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.UTC)
+
+
+def real_time(text):
+    """v5.4:  §2's form and a real calendar time (no 23:59:60, no February 30, no year 0000)."""
+    if not isinstance(text, str) or not re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", text
+    ):
+        return False
+    try:
+        datetime.datetime(
+            int(text[0:4]),
+            int(text[5:7]),
+            int(text[8:10]),
+            int(text[11:13]),
+            int(text[14:16]),
+            int(text[17:19]),
+        )
+    except ValueError:
+        return False
+    return True
 
 
 def reopen_check(version, device_id, code):
@@ -135,6 +180,7 @@ def entry_hash(entry):
 
 # ---------------------------------------------------------------- keys
 owner = test_key("owner")
+new_owner = test_key("owner after rotation (T24 only)")
 rogue_owner = test_key("rogue owner (not pinned)")
 helper = test_key("server helper")
 devA = {r: test_key("device A " + r) for r in ("approval", "request", "reading", "notification")}
@@ -189,9 +235,10 @@ def make_list(
     owner_key=None,
     signer=None,
     previous=None,
+    contract="muster-trust-list/1",
 ):
     body = {
-        "contract": "muster-trust-list/1",
+        "contract": contract,
         "version": version,
         "previousSHA256": previous
         if previous is not None
@@ -285,6 +332,17 @@ bad = {
     "T21": make_list(
         4, L3, "2026-11-07T20:50:00Z", [DC], countersigners=[C_], reopen_code=CODE_UNUSED
     ),
+    # v5.3:  a version 1 other than the one the rotated history closed (check 3, history_hash).
+    "T24": make_list(1, None, "2026-11-07T20:05:00Z", [DA]),
+    # v5.3 (§17A A8):  rule A that removes both server keys.
+    "T25": make_list(
+        2,
+        L1,
+        "2026-11-07T20:10:00Z",
+        [DA, DB],
+        countersigners=[A_],
+        services=dict(SERVICES, serverHelper=None),
+    ),
 }
 # T15:  the same body as v4, countersigned by A instead of C (a tampered copy a hostile hub could make)
 bad["T15"] = {
@@ -301,6 +359,159 @@ bad["T15"] = {
 }
 
 
+def stray_bit(text):
+    """The same base64url with one stray trailing bit set in its last character (v5.4).  The bytes a lenient
+    decoder reads are unchanged;  only canonical base64url refuses it.  Possible only when the byte length is
+    not a multiple of 3."""
+    data = unb64u(text)
+    assert len(data) % 3, "no stray bits at this length"
+    last = B64U_ALPHABET.index(text[-1])
+    assert last & 1 == 0
+    changed = text[:-1] + B64U_ALPHABET[last | 1]
+    assert base64.urlsafe_b64decode(changed + "=" * (-len(changed) % 4)) == data
+    return changed
+
+
+def first_fit(make, field):
+    """The first list `make(i)` builds whose signature in `field` has a byte length that can carry stray bits.
+    Signing is deterministic (RFC 6979), so the search always ends at the same list;  without it the search
+    could end elsewhere, so it refuses to run on a cryptography that lacks deterministic signing."""
+    try:
+        ec.ECDSA(hashes.SHA256(), deterministic_signing=True)
+    except TypeError as exc:
+        raise RuntimeError("cryptography does not support deterministic ECDSA signing") from exc
+    for i in range(50):
+        lst = make(i)
+        if len(unb64u(field(lst))) % 3:
+            return lst
+    sys.exit("no list fits")
+
+
+# T26 (v5.4):  a first list whose owner signature carries a stray trailing bit (check 4, owner_signature).
+_t26 = first_fit(
+    lambda i: make_list(1, None, f"2026-11-07T20:{i:02d}:30Z", [DA]),
+    lambda lst: lst["ownerSignature"],
+)
+bad["T26"] = dict(_t26, ownerSignature=stray_bit(_t26["ownerSignature"]))
+# T27 (v5.4):  rule A whose one countersignature carries a stray trailing bit (rule A, countersignature).
+_t27 = first_fit(
+    lambda i: make_list(2, L1, f"2026-11-07T20:{10 + i:02d}:30Z", [DA, DB], countersigners=[A_]),
+    lambda lst: lst["countersignatures"][0]["signature"],
+)
+bad["T27"] = dict(
+    _t27,
+    countersignatures=[
+        dict(
+            _t27["countersignatures"][0],
+            signature=stray_bit(_t27["countersignatures"][0]["signature"]),
+        )
+    ],
+)
+
+
+# ---------------------------------------------------------------- P3:  section 5's and 8's structure (v5.4 strictness)
+DEVICE_ID = re.compile(r"d-[0-9a-f]{24}")
+HEX64 = re.compile(r"[0-9a-f]{64}")
+SIG_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,100}")
+SERVICE_NAMES = {
+    "macPublisher",
+    "macExecutor",
+    "macAgreement",
+    "serverPublisher",
+    "serverExecutor",
+    "serverExecutorAgreement",
+    "serverHelper",
+}
+
+
+def p3_failure(entry):
+    """What P3 refuses in one signed list (`bad_input`), or None.  Keys are decoded and loaded here;  a
+    signature only has its pattern checked here, and its decoding is judged when it is verified."""
+
+    def key_ok(value):
+        try:
+            load_key(value)
+            return True
+        except (ValueError, TypeError):
+            return False
+
+    if not isinstance(entry, dict) or set(entry) != {"body", "ownerSignature", "countersignatures"}:
+        return "entry keys"
+    b = entry["body"]
+    if not isinstance(b, dict) or set(b) != {
+        "contract",
+        "version",
+        "previousSHA256",
+        "issuedAt",
+        "ownerKey",
+        "closed",
+        "devices",
+        "services",
+        "reopenTag",
+    }:
+        return "body keys"
+    if b["contract"] != "muster-trust-list/1":
+        return "contract"
+    if type(b["version"]) is not int or not 1 <= b["version"] <= 2**53 - 1:
+        return "version"
+    for name in ("previousSHA256", "reopenTag"):
+        if b[name] is not None and not (isinstance(b[name], str) and HEX64.fullmatch(b[name])):
+            return name
+    if not real_time(b["issuedAt"]):
+        return "issuedAt"
+    if not key_ok(b["ownerKey"]):
+        return "ownerKey"
+    if type(b["closed"]) is not bool:
+        return "closed"
+    if not isinstance(b["devices"], list) or len(b["devices"]) > 64:
+        return "devices"
+    for d in b["devices"]:
+        if not isinstance(d, dict) or set(d) != {
+            "deviceId",
+            "name",
+            "approvalKey",
+            "requestKey",
+            "readingKey",
+            "notificationKey",
+        }:
+            return "device keys"
+        if not (isinstance(d["deviceId"], str) and DEVICE_ID.fullmatch(d["deviceId"])):
+            return "deviceId"
+        if not (isinstance(d["name"], str) and 1 <= len(d["name"]) <= 40):
+            return "name"
+        if not all(
+            key_ok(d[k]) for k in ("approvalKey", "requestKey", "readingKey", "notificationKey")
+        ):
+            return "device key"
+    s = b["services"]
+    if not isinstance(s, dict) or set(s) != SERVICE_NAMES:
+        return "services"
+    if not all(v is None or key_ok(v) for v in s.values()):
+        return "service key"
+    if not (
+        isinstance(entry["ownerSignature"], str) and SIG_PATTERN.fullmatch(entry["ownerSignature"])
+    ):
+        return "ownerSignature"
+    cs = entry["countersignatures"]
+    if not isinstance(cs, list) or len(cs) > 64:
+        return "countersignatures"
+    for c in cs:
+        if (
+            not isinstance(c, dict)
+            or set(c) != {"deviceId", "signature"}
+            or not (isinstance(c["deviceId"], str) and DEVICE_ID.fullmatch(c["deviceId"]))
+            or not (isinstance(c["signature"], str) and SIG_PATTERN.fullmatch(c["signature"]))
+        ):
+            return "countersignature"
+    try:
+        size = len(canonical(entry))
+    except ValueError:
+        return "not canonical"
+    if size > 65536:
+        return "size"  # v5.5:  more than the stored file may hold (section 11)
+    return None
+
+
 # ---------------------------------------------------------------- reference checker:  section 8's numbered order
 def history_key(history, version):
     for h in history:
@@ -310,7 +521,11 @@ def history_key(history, version):
 
 
 def check_chain(held, chain, history, records, frozen=False):
-    """frozen=True is version 5 as frozen:  every rule C entry is refused reopen_unavailable after checks 1 to 7."""
+    """frozen=True is version 5 as frozen:  every rule C entry is refused reopen_unavailable after checks 1 to 7.
+    v5.4:  P3 reads the whole document before any check, so one malformed entry is bad_input for the request."""
+    for entry in chain:
+        if p3_failure(entry) is not None:
+            return "bad_input", entry
     prev = held
     for entry in chain:
         b = entry["body"]
@@ -326,6 +541,9 @@ def check_chain(held, chain, history, records, frozen=False):
         key = history_key(history, b["version"])
         if key is None or b["ownerKey"] != key:  # 3
             return "owner_key", entry
+        closing = [h for h in history if h["toVersion"] == b["version"]]
+        if any(h["toSHA256"] != sha(bb) for h in closing):  # 3, v5.3:  every line for this version
+            return "history_hash", entry
         if not verify(key, entry["ownerSignature"], b"muster-trust-list/1\n" + bb):  # 4
             return "owner_signature", entry
         ids = [d["deviceId"] for d in b["devices"]]
@@ -398,11 +616,21 @@ def check_chain(held, chain, history, records, frozen=False):
                 return "first_rule", entry
             if not cs or not cs_ok(prev["body"]["devices"]):
                 return "countersignature", entry
+            if server_keys_removed():  # v5.3, §17A A8
+                return "server_keys_removed", entry
         prev = entry
     return "accepted", None
 
 
 HISTORY = [{"fromVersion": 1, "ownerKey": OWNER, "toSHA256": None, "toVersion": None}]
+# v5.3, T24 only:  the owner key rotated after version 1, so the closed line names v1's body hash.
+NEW_OWNER = b64u(spki(new_owner))
+HISTORY_ROTATED = [
+    {"fromVersion": 1, "ownerKey": OWNER, "toSHA256": sha(canonical(L1["body"])), "toVersion": 1},
+    {"fromVersion": 2, "ownerKey": NEW_OWNER, "toSHA256": None, "toVersion": None},
+]
+HISTORY_ROTATED_LINES = "".join(canonical(h).decode() + "\n" for h in HISTORY_ROTATED)
+CASE_HISTORY = {"T24": HISTORY_ROTATED}  # every other chain vector runs under HISTORY
 chain_cases = [
     ("T1 first list", None, [L1], "accepted", "Holding nothing, version 1 under rule First."),
     ("T2 rule A", L1, [L2], "accepted", "Adds device B, countersigned by device A from version 1."),
@@ -533,11 +761,104 @@ chain_cases = [
         "accepted",
         "Signed at 20:55 with the same code and device:  a server could hold this instead of v4 (R5).",
     ),
+    (
+        "T24 a version 1 the rotated history did not close",
+        None,
+        [bad["T24"]],
+        "history_hash",
+        "Under the rotated history, whose closed line names v1's body hash:  another version 1, signed by the key that history assigns to version 1, so only check 3's history hash fails (v5.3).",
+    ),
+    (
+        "T25 rule A that removes both server keys",
+        L1,
+        [bad["T25"]],
+        "server_keys_removed",
+        "Adds device B, countersigned by device A, and sets serverHelper to null, leaving no server key (§17A A8, settled in v5.3).",
+    ),
+    (
+        "T26 owner signature with a stray trailing bit",
+        None,
+        [bad["T26"]],
+        "owner_signature",
+        "A first list whose ownerSignature has a stray trailing bit set in its last base64url character:  a lenient decoder reads the same valid DER, but the base64url is not canonical, so check 4 fails (v5.4).",
+    ),
+    (
+        "T27 countersignature with a stray trailing bit",
+        L1,
+        [bad["T27"]],
+        "countersignature",
+        "Adds device B, countersigned by device A, but the countersignature has a stray trailing bit set in its last base64url character, so rule A's countersignature condition fails (v5.4).",
+    ),
 ]
 for name, held, chain, expect, _ in chain_cases:
-    got, _ = check_chain(held, chain, HISTORY, RECORDS)
+    history = CASE_HISTORY.get(name.split(" ")[0], HISTORY)
+    got, _ = check_chain(held, chain, history, RECORDS)
     if got != expect:
         sys.exit(f"{name}: expected {expect}, reference says {got}")
+# T24's list is refused only by the history it runs under, and the genuine v1 passes under it.
+assert check_chain(None, [bad["T24"]], HISTORY, RECORDS)[0] == "accepted"
+assert check_chain(None, [L1], HISTORY_ROTATED, RECORDS)[0] == "accepted"
+# v5.4:  every list this script prints passes P3, so the helper never refuses one of them as bad_input.
+for _entry in [L1, L2, L3, L4, L4b] + list(bad.values()):
+    assert p3_failure(_entry) is None, p3_failure(_entry)
+
+
+# v5.4:  the strictness §16's harness cases build, each re-signed so that only its one fault remains.
+def _compressed(key):
+    point = key.public_key().public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.CompressedPoint
+    )
+    return b64u(bytes.fromhex("3039301306072a8648ce3d020106082a8648ce3d030107032200") + point)
+
+
+def _hybrid(key):
+    der = spki(key)
+    return b64u(der[:26] + bytes([0x06 | (der[-1] & 1)]) + der[27:])
+
+
+for _label, _lst in [
+    (
+        "compressed owner key",
+        make_list(1, None, "2026-11-07T20:00:00Z", [DA], owner_key=_compressed(owner)),
+    ),
+    (
+        "hybrid owner key",
+        make_list(1, None, "2026-11-07T20:00:00Z", [DA], owner_key=_hybrid(owner)),
+    ),
+    (
+        "compressed service key",
+        make_list(
+            1,
+            None,
+            "2026-11-07T20:00:00Z",
+            [DA],
+            services=dict(SERVICES, serverExecutor=_compressed(helper)),
+        ),
+    ),
+    (
+        "owner key with a stray bit",
+        make_list(1, None, "2026-11-07T20:00:00Z", [DA], owner_key=stray_bit(OWNER)),
+    ),
+    (
+        "owner key with padding",
+        make_list(1, None, "2026-11-07T20:00:00Z", [DA], owner_key=OWNER + "=="),
+    ),
+    ("leap second", make_list(1, None, "2026-11-07T23:59:60Z", [DA])),
+    ("February 30", make_list(1, None, "2026-02-30T20:00:00Z", [DA])),
+    ("year 0000", make_list(1, None, "0000-11-07T20:00:00Z", [DA])),
+    (
+        "another contract",
+        make_list(1, None, "2026-11-07T20:00:00Z", [DA], contract="muster-trust-list/2"),
+    ),
+]:
+    assert check_chain(None, [_lst], HISTORY, RECORDS)[0] == "bad_input", _label
+    # The same fault in the second entry of a chain still refuses the whole request at P3.
+    assert check_chain(None, [L1, dict(_lst)], HISTORY, RECORDS)[0] == "bad_input", _label
+# v5.4, check 7 says "exactly when":  an open first list with no device is closed_rule.
+assert (
+    check_chain(None, [make_list(1, None, "2026-11-07T20:00:00Z", [])], HISTORY, RECORDS)[0]
+    == "closed_rule"
+)
 # Version 5 as frozen (Milestones 1 to 4):  a rule C entry is refused reopen_unavailable.
 frozen_cases = [
     (
@@ -1119,6 +1440,7 @@ w(
 w("")
 for label, key in [
     ("owner", owner),
+    ("owner after rotation (T24 only)", new_owner),
     ("rogue owner (not pinned)", rogue_owner),
     ("server helper", helper),
     ("device A approval", devA["approval"]),
@@ -1188,6 +1510,14 @@ w(
     f"The retired first code's check group for version 4 and device C was `{reopen_check(4, FP_C, CODE_UNUSED)}`."
 )
 w("")
+w(
+    "`/etc/muster/owner-history.jsonl` for T24 only (two lines, v5.3:  the owner key rotated after version 1, so the closed line names version 1's body hash, and `owner.pub` holds the `owner after rotation (T24 only)` key):"
+)
+w("")
+w("```")
+w(HISTORY_ROTATED_LINES.rstrip("\n"))
+w("```")
+w("")
 w("### Trust Lists")
 w("")
 for label, lst in [
@@ -1223,6 +1553,10 @@ for key in [
     "T19",
     "T20",
     "T21",
+    "T24",
+    "T25",
+    "T26",
+    "T27",
 ]:
     w(f"**{key} list**, entry SHA-256 `{entry_hash(bad[key])}`:")
     w("")
@@ -1235,7 +1569,8 @@ w("")
 w(
     "Each is `muster trust-list chain --yes` with the lists named, under the pin, history and record above.  The reason is the first failing check in §8's numbered order;  each bad list fails exactly one check.  "
     "**The rule C rows (T4, T5, T8, T15, T18, T20, T21 and T22) give the OPEN proposal's outcomes.  A Milestone 1 to 4 builder skips them, or expects `chain_refused` with reason `reopen_unavailable` for each rule C entry (T5 is refused at its fourth entry), as T23 below shows.**  "
-    "`Final` gives the version 4 proposal's classification, which is OPEN (§17A, A2);  version 5 records and reports nothing as final.  Until the chain slice lands, the helper answers each of these requests `bad_command` (§4), so a helper harness runs these against the chain slice;  the other verifiers check them now."
+    "`Final` gives the version 4 proposal's classification, which is OPEN (§17A, A2);  version 5 records and reports nothing as final.  Until the chain slice lands, the helper answers each of these requests `bad_command` (§4), so a helper harness runs these against the chain slice;  the other verifiers check them now.  "
+    "T24 runs under the rotated history printed above (T24 only);  every other row runs under the one-line history."
 )
 w("")
 w("| Vector | Held Before | Chain | Expected | Final | Why |")
@@ -1249,6 +1584,11 @@ for name, held, chain, expect, why in chain_cases:
     out = "ack" if expect == "accepted" else f"`chain_refused`, reason `{expect}`"
     fin = "" if expect == "accepted" else ("yes" if expect in FINAL else "no")
     w(f"| {name} | {hv} | {cv} | {out} | {fin} | {why} |")
+w("")
+w(
+    "T9 was retired, and a vector's number is never reused, so the table has no T9.  T24 and T25 were added in version 5.3, and T26 and T27 in version 5.4;  none of them is a rule C row.  "
+    "T26 and T27 carry the same DER signature bytes a lenient base64url decoder would read, so a verifier that does not hold base64url to its canonical form (§5, v5.4) accepts them, and the helper refuses them."
+)
 w("")
 w("### Frozen Version 5 Vector")
 w("")
@@ -1335,7 +1675,33 @@ for label, ans in [
 w("### Cases Without Fixed Bytes")
 w("")
 w(
-    "A harness builds these:  `pin_unsafe` (owner.pub group-writable, owned by jay, or a symbolic link;  the same for the reopen record when it exists, or a record line that does not match its pattern);  `helper_key_missing` (the key file absent, a symbolic link, mode 0644, or unparseable);  `input_too_large` (4,097 bytes);  `bad_input` (a duplicate key, `NaN`, a non-ASCII string, or a chain entry missing a body field);  a valid approval whose stdin keys are in another order with extra spaces (accepted, since formatting does not matter);  `state_unsafe` (`muster-nonces.jsonl` mode 0644, `muster-trust.json` a symbolic link or empty, or an unparseable rate file);  a torn final ledger fragment (truncated, then the approval proceeds);  a complete final ledger line without a line feed (a line feed is appended, and that nonce stays spent);  a corrupt middle line (`ledger_corrupt`);  `rate_limited` (two `plan` requests for one `verb target` within the spacing, two different approvals for one `verb target` within 2 seconds, the class's hourly cap reached, or `muster-rate.lock` held elsewhere for more than 2 seconds);  a `yes` approval refused `rate_limited` at Y8b (its nonce not in the ledger afterwards, and no audit row), then retried inside its window and accepted;  60 approvals with bad signatures, then V1 (accepted:  none of the 60 used the `yes` budget);  V1 replayed 60 times after it ran (`replayed_nonce` each time, and a fresh approval for the same `verb target` 2 seconds after V1 is accepted);  `bad_command` for `muster trust-list chain --yes` until the chain slice lands (before its input is read, and no audit row);  the acknowledgement with nothing held (`closed` false, `signedByCurrentKey` false, `helperTrustListVersion` and `trustListSHA256` null);  `plan_refused` with `revision_stale` (a `resource-policy` target naming a revision older than the saved policy's);  a redeploy row named `Café App` (the muster plan's `auditTarget` is `Caf? App`, and the `--from-ssh` route's `audit_target` is unchanged);  `trust_list_changed` (the stored list replaced between Y2 and Y7);  a replay of V1 long after its window (`expired` at Y6, before the ledger is read, and no audit row);  V1 replayed inside its window after the clock was stepped forward more than seven days and back (`replayed_nonce`:  the ledger kept its nonce, which is within the last 4,096 lines);  a ledger of more than 4,096 lines rewritten under the lock (only lines beyond the last 4,096 whose `expiresAt` is more than seven days before `now` are dropped, a line whose `expiresAt` is after `now` stays, and the rewrite is `fsync`ed, renamed and its directory `fsync`ed);  a ledger over 2 MiB (`ledger_corrupt`);  V1's `approvalNonce` in another approval from another device or another job (`replayed_nonce`);  V1's high-S twin sent after V1 ran (`replayed_nonce`);  `clock_unsynced` (V1 with the clock reported unsynchronised, and no audit row);  V1 at `now` = 21:02:00.001 (`expired`);  rate boundaries (a second `plan` request exactly 5 seconds after the first passes, at 4.999 seconds is `rate_limited`;  an event exactly 3,600 seconds old still counts;  a rate file with 811 events is `state_unsafe`);  `plan_refused` (`update_busy` with the update's unit activating;  `report_stale` with a 46-minute-old report;  each with `helperTrustListVersion` `null`, since R2 comes before the list is read);  an unsafe state directory (mode 0755:  `helper_key_missing`);  a fault after Y8c before the action began (a signed result with outcome `failed`, `detail` `plan_refused: <reason>` or `internal_error`, and one audit row whose `result` is `failed`);  a fault once the run began (outcome `unknown`, `detail` `the helper stopped unexpectedly while running`, and one audit row whose `result` is `unknown`);  a command killed at its limit, and a Coolify GET that timed out, was reset or got a cut answer (`unknown` each);  a refused connection to Coolify (`failed`);  an empty reopen record (accepted as no lines);  a record whose last line has no line feed (`pin_unsafe`)."
+    "A harness builds these:  `pin_unsafe` (owner.pub group-writable, owned by jay, or a symbolic link;  the same for the reopen record when it exists, or a record line that does not match its pattern);  `helper_key_missing` (the key file absent, a symbolic link, mode 0644, or unparseable);  `input_too_large` (4,097 bytes);  `bad_input` (a duplicate key, `NaN`, a non-ASCII string, or a chain entry missing a body field);  a valid approval whose stdin keys are in another order with extra spaces (accepted, since formatting does not matter);  `state_unsafe` (`muster-nonces.jsonl` mode 0644, `muster-trust.json` a symbolic link or empty, or an unparseable rate file);  a torn final ledger fragment (truncated, then the approval proceeds);  a complete final ledger line without a line feed (a line feed is appended, and that nonce stays spent);  a corrupt middle line (`ledger_corrupt`);  `rate_limited` (two `plan` requests for one `verb target` within the spacing, two different approvals for one `verb target` within 2 seconds, the class's hourly cap reached, or `muster-rate.lock` held elsewhere for more than 2 seconds);  a `yes` approval refused `rate_limited` at Y8b (its nonce not in the ledger afterwards, and no audit row), then retried inside its window and accepted;  60 approvals with bad signatures, then V1 (accepted:  none of the 60 used the `yes` budget);  V1 replayed 60 times after it ran (`replayed_nonce` each time, and a fresh approval for the same `verb target` 2 seconds after V1 is accepted);  `bad_command` for `muster trust-list chain --yes` until the chain slice lands (before its input is read, and no audit row);  the acknowledgement with nothing held (`closed` false, `signedByCurrentKey` false, `helperTrustListVersion` and `trustListSHA256` null);  `plan_refused` with `revision_stale` (a `resource-policy` target naming a revision older than the saved policy's);  a redeploy row named `Café App` (the muster plan's `auditTarget` is `Caf? App`, and the `--from-ssh` route's `audit_target` is unchanged);  `trust_list_changed` (the stored list replaced between Y2 and Y7);  a replay of V1 long after its window (`expired` at Y6, before the ledger is read, and no audit row);  V1 replayed inside its window after the clock was stepped forward more than seven days and back (`replayed_nonce`:  the ledger kept its nonce, which is within the last 4,096 lines);  a ledger of more than 4,096 lines rewritten under the lock (only lines beyond the last 4,096 whose `expiresAt` is more than seven days before `now` are dropped, a line whose `expiresAt` is after `now` stays, and the rewrite is `fsync`ed, renamed and its directory `fsync`ed);  a ledger over 4 MiB (`ledger_corrupt`);  V1's `approvalNonce` in another approval from another device or another job (`replayed_nonce`);  V1's high-S twin sent after V1 ran (`replayed_nonce`);  `clock_unsynced` (V1 with the clock reported unsynchronised, and no audit row);  V1 at `now` = 21:02:00.001 (`expired`);  rate boundaries (a second `plan` request exactly 5 seconds after the first passes, at 4.999 seconds is `rate_limited`;  an event exactly 3,600 seconds old still counts;  a rate file with 811 events is `state_unsafe`);  `plan_refused` (`update_busy` with the update's unit activating;  `report_stale` with a 46-minute-old report;  each with `helperTrustListVersion` `null`, since R2 comes before the list is read);  an unsafe state directory (mode 0755:  `helper_key_missing`);  a fault after Y8c before the action began (a signed result with outcome `failed`, `detail` `plan_refused: <reason>` or `internal_error`, and one audit row whose `result` is `failed`);  a fault once the run began (outcome `unknown`, `detail` `the helper stopped unexpectedly while running`, and one audit row whose `result` is `unknown`);  a command killed at its limit, and a Coolify GET that timed out, was reset or got a cut answer (`unknown` each);  a refused connection to Coolify (`failed`);  an empty reopen record (accepted as no lines);  a record whose last line has no line feed (`pin_unsafe`);  "
+    "once the chain slice lands (v5.3):  after T1, `muster-trust.json` holds v1's canonical bytes with no line feed, and its SHA-256 is v1's entry SHA-256;  "
+    "a stored list written by someone else with spaces and a line feed (accepted, since readers take any formatting);  "
+    "the T24 list held under the rotated history, whose closed line names another body hash for version 1 (`state_unsafe` at C2);  "
+    "a list stored after C2 where none was held, and a list removed after C2 (`trust_list_changed` at C4 each);  "
+    "a fault at C5 before the rename (`internal_error`, nothing stored, and the temporary file gone);  "
+    "a fault at C5 after the rename (`internal_error`, the list held, and the same chain sent again is `version_gap`);  "
+    "a failed audit append at C5 after the rename (the signed `ack` is answered and the list is held);  "
+    "from version 5.4, each at P3 and `bad_input`, never a §8 reason, and not counted, with the list re-signed so that only its one fault remains (`make_vectors_v5.py` asserts each):  "
+    "an `ownerKey`, a device key or a `services` key that is a compressed point (a 33-byte point in a 59-byte SubjectPublicKeyInfo) or a hybrid point (the 91-byte form with `06` or `07` where `04` belongs);  "
+    "a key whose last base64url character has a stray trailing bit set, or that ends in `=` padding;  "
+    "an `issuedAt` of `2026-11-07T23:59:60Z`, `2026-02-30T20:00:00Z` or `0000-11-07T20:00:00Z`;  "
+    "a body whose `contract` is `muster-trust-list/2`;  "
+    "and any of these in the second entry of a chain whose first entry is valid (the whole request is `bad_input`);  "
+    "also from version 5.4:  an approval whose `signature` has a stray trailing bit set (`bad_signature` at Y5);  "
+    "a first list with `closed` false and `devices` empty (`chain_refused`, reason `closed_rule`:  check 7 holds `closed` true exactly when there is no device);  "
+    "a reader that opens `muster-trust.json` just before a chain's rename and `fstat`s it just after (link count 0:  accepted, and it reads the old list);  "
+    "a second hard link to `muster-trust.json` (`state_unsafe`);  "
+    "a FIFO in place of `muster-trust.json`, the ledger or the rate file (the open does not hang, and the answer is `state_unsafe`);  "
+    "`pin_unsafe` for a chain, `bad_command` for `muster trust-list chain --yes` with a fifth word, and `mode_not_allowed` for `muster trust-list chain --plan` (each with `claimed` `{}` and no `chain`), against `bad_input` and `rate_limited` for a chain (`chain` `null` and no `claimed`);  "
+    "the T24 list held under the rotated history (`state_unsafe` at C2 with `helperTrustListVersion` `null`);  "
+    "a signing fault at C5 after the rename that repeats when the refusal is signed (the unsigned `helper_key_missing`, and the list held) and one that does not (the signed `internal_error`, and the list held);  "
+    "and a failed directory `fsync` at C5 (`internal_error`, the list held, and no audit row);  "
+    "from version 5.5:  a stale temporary file named `.muster-trust.json.`, 16 lowercase hex characters and `.tmp`, a regular file of the helper's account with one link, is gone after an accepted chain;  "
+    "a file of another name (15 or 17 hex characters, upper-case hex, or another state file's prefix), a symbolic link or a directory of that name, a file of that name with two links, and one owned by another account are left alone;  "
+    "a chain refused before C5 (at C3, or `action_busy` at C4) sweeps nothing;  "
+    "and a sweep whose listing, `stat` or `unlink` fails still lets the chain be accepted."
 )
 
 with open(SPEC, encoding="utf-8") as f:

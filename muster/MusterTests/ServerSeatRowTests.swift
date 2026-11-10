@@ -2,7 +2,7 @@ import XCTest
 
 // What a server seat's row in Seat Activity shows, for each thing the server eavesdropper's
 // reading can say about the seat (ServerSeatRowPresentation).  The document below is shaped like
-// the reducer's own output (scripts/agent_sync/reduced_status.py), generated at 2:00 PM on
+// the reducer's own output (scripts/simple_tools/reduced_status.py), generated at 2:00 PM on
 // Nov 8, 2026;  the live one is session BB's capture of the deployed helper's answer.
 
 private let rowDocumentText = #"""

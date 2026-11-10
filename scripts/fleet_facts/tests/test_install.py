@@ -48,9 +48,9 @@ class Install(unittest.TestCase):
                     "fleet_facts/interfaces.py", "fleet_facts/safety.py", "fleet_facts/runner.py", "fleet_facts/gather.py",
                     "fleet_facts/signing.py", "fleet_facts/publish.py", "fleet_facts/repo.py", "fleet_facts/minimize.py", "fleet_facts/localtime.py",
                     "fleet_knobs/__init__.py", "fleet_knobs/knobs.py", "fleet_knobs/registry.py", "fleet_knobs/source.py",
-                    "agent_sync/__init__.py", "agent_sync/textsafe.py", "agent_sync/secretscan.py"):
+                    "simple_tools/__init__.py", "simple_tools/textsafe.py", "simple_tools/secretscan.py"):
             self.assertTrue((self.stable / rel).is_file(), rel)
-        self.assertEqual((self.stable / "agent_sync" / "__init__.py").read_text(), "")
+        self.assertEqual((self.stable / "simple_tools" / "__init__.py").read_text(), "")
         self.assertEqual(sorted(p.name for p in (self.stable / "fleet_secrets").iterdir()), ["__init__.py", "core.py"])
         self.assertFalse((self.stable / "fleet-secrets").exists())
         self.assertFalse((self.stable / "fleet_facts" / "tests").exists())            # no tests in the stable copy
@@ -69,7 +69,7 @@ class Install(unittest.TestCase):
             proc = self.isolated(program, "--help")
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("gather", proc.stdout)
-        # A real gather, which loads the F3 helpers by path from the stable copy's own agent_sync folder.
+        # A real gather, which loads the F3 helpers by path from the stable copy's own simple_tools folder.
         proc = self.isolated(self.link, "gather", "--no-mac", "--part", "lanes", "--part", "backup", "--json")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         doc = json.loads(proc.stdout)

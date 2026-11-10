@@ -90,6 +90,7 @@ from urllib.parse import urlsplit
 
 from . import layout as L
 from . import placement as P
+from . import temp_build as TB
 
 __all__ = [
     "ALLOW",
@@ -111,6 +112,7 @@ __all__ = [
     "RULE_PLACEMENT_ELSEWHERE",
     "RULE_PLACEMENT_HOME",
     "RULE_TARBALL",
+    "RULE_TEMP_BUILD",
     "RULE_WORKTREE_ADD",
     "RULE_WORKTREE_ADD_CODE",
     "RULE_WORKTREE_MOVE",
@@ -118,6 +120,7 @@ __all__ = [
     "Decision",
     "GuardContext",
     "evaluate",
+    "evaluate_build_argv",
     "evaluate_git_argv",
     "evaluate_shell_text",
     "lane_name_reads_back",
@@ -152,6 +155,8 @@ RULE_PLACEMENT_APPS = "placement-apps"  # a fleet checkout under ~/apps but outs
 RULE_PLACEMENT_CLONE_IN_LANES = "placement-clone-in-lanes"  # a full clone inside a lane folder
 RULE_PLACEMENT_ELSEWHERE = "placement-elsewhere"  # a fleet checkout anywhere else on the disk
 RULE_ISOLATION = "isolation-from-integration-tree"  # a harness worktree spawned from the integration tree
+RULE_TEMP_BUILD = "build-into-temp"  # xcodebuild, swift, cargo or a node package manager writing its output into temp
+TEMP_BUILD_RULES = (RULE_TEMP_BUILD,)
 PLACEMENT_RULES = {
     P.CLASS_HOME: RULE_PLACEMENT_HOME,
     P.CLASS_APPS: RULE_PLACEMENT_APPS,
@@ -176,6 +181,7 @@ DENY_RULES = (
     RULE_PLACEMENT_CLONE_IN_LANES,
     RULE_PLACEMENT_ELSEWHERE,
     RULE_ISOLATION,
+    RULE_TEMP_BUILD,
 )
 
 # Allow outcomes, so a caller (and the tests) can tell why a command passed.
@@ -195,9 +201,17 @@ MAX_COMMAND_CHARS = 256 * 1024
 _MAX_DEPTH = 6  # nesting of $(...), bash -c, eval and heredoc-to-shell evaluation
 
 # Words that must appear before any deny rule can fire.  A command without one is allowed
-# without being parsed.
+# without being parsed.  install_tools turns them into the hook shims' `sh` prefilter, so an ordinary
+# `xcodebuild` or `npm run build` must never match:  the temp-build words are the output options
+# alone (-derivedDataPath, -resultBundlePath, SYMROOT=, OBJROOT=, --target-dir, --build-path and
+# --scratch-path), and -archivePath already holds `archive`.  A word may hold only lower-case letters
+# and `-`, and none of these holds an `s`, because U+017F folds onto it and would add a lookalike the
+# prefilter must spell out;  so `cratch-path` and `ymroot` stand for --scratch-path and SYMROOT.  A
+# build that writes into temp only because it runs there, or through CARGO_TARGET_DIR, names none of
+# them, and the build shim and the watcher see it instead.
 _TRIGGER = re.compile(
-    r"clone|worktree|archive|codeload|tarball|zipball|fetch|pull|remote|checkout-index",
+    r"clone|worktree|archive|codeload|tarball|zipball|fetch|pull|remote|checkout-index"
+    r"|deriveddatapath|bundlepath|ymroot|objroot|target-dir|build-path|cratch-path",
     re.IGNORECASE,
 )
 
@@ -877,6 +891,8 @@ def _detail(ev: _Evaluator, hit: _Hit, cls: str) -> dict[str, str]:
 
 def _rule_class(rule: str) -> str:
     """The mode file's word for a rule."""
+    if rule in TEMP_BUILD_RULES:
+        return P.CLASS_TEMP_BUILD
     for cls, name in PLACEMENT_RULES.items():
         if name == rule:
             return cls
@@ -939,6 +955,25 @@ def evaluate_shell_text(
         st.vars[str(i)] = arg
     ev.run(command, st)
     return _shim_verdict(ev, others)
+
+
+def evaluate_build_argv(
+    tool: str,
+    args: Sequence[str],
+    cwd: str,
+    ctx: GuardContext,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> tuple[str, Decision] | None:
+    """The build shim's question:  judge one real build argv (`tool` is a word from temp_build.TOOLS, or `xcrun`).  Returns
+    (temp-build, a DENY Decision ready to print) when its output lands in temp outside the scratchpad, (CLASS_EXCUSED, an ALLOW
+    naming the row) when a row covers it, and None otherwise.  The caller applies the mode.  `env` is the build's own
+    environment, read for CARGO_TARGET_DIR."""
+    ev = _Evaluator(ctx, None, via="shim")
+    st = _State(_norm(cwd) if cwd.startswith("/") else _UNK)
+    cargo_dir = (env or {}).get("CARGO_TARGET_DIR")
+    ev._build(tool, list(args), {"CARGO_TARGET_DIR": cargo_dir} if cargo_dir else {}, st)
+    return _shim_verdict(ev)
 
 
 def _shim_verdict(ev: _Evaluator, others: list[tuple[str, Decision]] | None = None) -> tuple[str, Decision] | None:
@@ -2251,11 +2286,17 @@ class _Evaluator:
             for name, value in assigns:
                 st.vars[name] = value
             return None
+        start = i
         i = self._skip_wrappers(args, i)
         if i >= n:
             return None
         name = os.path.basename(args[i])
         rest = args[i + 1 :]
+        if name in TB.TOOLS or name == "xcrun":
+            # `env NAME=VALUE tool` sets the variable for the tool as surely as `NAME=VALUE tool` does.
+            assigns += [(m.group(1), a[m.end():]) for a in args[start:i] if (m := _ASSIGN_RE.match(a)) and not m.group(2)]
+            self._build(name, rest, dict(assigns), st)
+            return None
         if name in ("cd", "chdir"):
             self._cd(rest, st)
         elif name == "pushd":
@@ -2387,6 +2428,32 @@ class _Evaluator:
                 self._recurse(r[3], st.scoped_copy())
             elif r[1] == "<<<" and r[2] is not None:
                 self._recurse(self._expand(r[2], st), st.scoped_copy())
+
+    # ---- temp-build
+
+    def _temp_build(self, rule: str, target: str, src: _Src, what: str) -> None:
+        """Record build output bound for temp.  The scratchpad is excused (`_where` calls it scratch), so is
+        an in-date temp-build, package-temp, service or backup row, and the mode file decides the rest."""
+        if self._where(target) != "temp":
+            return
+        if target.startswith("/") and _UNK not in target:
+            row = self.ctx.in_date_exception(target)
+            if row is not None and P.row_excuses_build(row, typed=self.via != "shim"):
+                self.excused.append((row, target, src))
+                return
+        self.placement.append((P.CLASS_TEMP_BUILD, _Hit(rule, target, src, what)))
+
+    def _build(self, name: str, rest: list[str], assigns: Mapping[str, str], st: _State) -> None:
+        """xcodebuild, swift, cargo, npm, pnpm, Yarn or Bun, directly or through `xcrun`."""
+        tool: str | None = name
+        if name == "xcrun":
+            tool, rest = TB.unwrap_xcrun(rest)
+        if tool is None:
+            return
+        env = {k: v for k, v in st.vars.items() if k == "CARGO_TARGET_DIR"}
+        env.update(assigns)
+        for out in TB.build_outputs(tool, rest, env):
+            self._temp_build(RULE_TEMP_BUILD, self._path(out.path, st), _Src(tool, kind="build"), out.what)
 
     # ---- git
 
@@ -3103,6 +3170,15 @@ class _Evaluator:
         return text
 
     def _reason_text(self, hit: _Hit) -> str:
+        if hit.rule in TEMP_BUILD_RULES:
+            tool = hit.src.label
+            return "  ".join((
+                f"Blocked: this would put {hit.what} from {tool} in system temp at {self.display(hit.target)}.",
+                "Build trees in temp outlive the session, no cleaner tracks them, and with clones they drained about "
+                "43 GB in one week.",
+                TB.alternative(tool, self.ctx.host),
+                "Throwaway work can use the session scratchpad (/private/tmp/claude-<uid>/), which is allowed.",
+            ))
         src = hit.src
         app = src.app
         prefix = app.prefix if app is not None else src.prefix

@@ -1,0 +1,2 @@
+# Historical evidence must retain exact blob bytes on all checkouts.
+workflow-1549.py.txt -text

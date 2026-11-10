@@ -709,6 +709,10 @@
           "source": "",
           "ttlSeconds": 900
         }
+      ],
+      "runsOn": [
+        "mac",
+        "server"
       ]
     },
     "CLUTCH": {
@@ -744,7 +748,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.clutch/dsh/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "bbf8d661fc7f1d388c4b9ac82f1e212c424b95acbc3d82445b1c332aa1035257"
+            "sha256": "dc07172c4df103af370e75fdc3f46107e38e238b05f47042735a357927721363"
           },
           "id": "clutch-instructions-lane-map",
           "kind": "instructions",
@@ -1911,7 +1915,10 @@
         }
       ],
       "platforms": [],
-      "rules": []
+      "rules": [],
+      "runsOn": [
+        "cloud"
+      ]
     },
     "GROK-WEB": {
       "notApplicable": [
@@ -1975,7 +1982,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.kimi-code/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "8ff9548c9298d9007d8efa36ed7a60236b633bfba515cec7dbacaa0128077284"
+            "sha256": "96e4cf2c01b492b737c90610a780b4b6a5db440d19bb1ff1276e724fade2b716"
           },
           "id": "kimi-instructions-lane-map",
           "kind": "instructions",
@@ -2310,6 +2317,9 @@
           "source": "",
           "ttlSeconds": 900
         }
+      ],
+      "runsOn": [
+        "vm"
       ]
     },
     "MC": {
@@ -2961,7 +2971,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.zcode/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "4c0f1c988069778ce258e0448fb66cb66848aefaeefc34227601e018b012cf04"
+            "sha256": "e1b8067a2f07ff42df081515c952f504f0af386cffaf302ab2773ba1e9e59ea1"
           },
           "id": "zc-instructions-lane-map",
           "kind": "instructions",
@@ -3161,6 +3171,10 @@
           "source": "",
           "ttlSeconds": 900
         }
+      ],
+      "runsOn": [
+        "mac",
+        "server"
       ]
     }
   }

@@ -10,12 +10,12 @@ import { join } from "node:path";
 
 import {
   drainOutbox, EVENTS_HEADERS, PAYLOAD_HEADERS, projectCells, SESSIONS_HEADERS,
-} from "./agent_sync/operator_sheets_export.mjs";
-import { OperatorSheetsError, OperatorSheetsGoogle } from "./agent_sync/operator_sheets_google.mjs";
+} from "./simple_tools/operator_sheets_export.mjs";
+import { OperatorSheetsError, OperatorSheetsGoogle } from "./simple_tools/operator_sheets_google.mjs";
 import {
   acquireLease, drainOnce, makeRegistryBridge, PACING_DEFAULTS, pacedAdapter,
   REGISTRY_CALL_TIMEOUT_MS, RUN_DEADLINE_MS, TABLES, workbookProfileFromEnv,
-} from "./agent_sync/operator_sheets_drain.mjs";
+} from "./simple_tools/operator_sheets_drain.mjs";
 
 test("runner profile: workbook identity resolves from env and fails closed", () => {
   const profile = workbookProfileFromEnv({
@@ -53,7 +53,7 @@ test("runner profile: the workbook tables are the exporter's canonical headers, 
 
 test("systemd unit: the service passes no flags the runner ignores", async () => {
   const unit = await readFile(
-    new URL("./agent_sync/server/operator-sheets-drain.service", import.meta.url), "utf8");
+    new URL("./simple_tools/server/operator-sheets-drain.service", import.meta.url), "utf8");
   const exec = unit.split("\n").find((line) => line.startsWith("ExecStart="));
   assert.ok(exec, "ExecStart present");
   assert.match(exec, /operator_sheets_drain\.mjs$/);

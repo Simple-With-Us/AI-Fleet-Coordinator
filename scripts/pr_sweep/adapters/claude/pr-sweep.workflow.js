@@ -22,6 +22,9 @@ export const meta = {
 //
 // args (all optional except cli):
 //   cli      the pr-sweep shim of a fresh AI-Fleet-Coordinator checkout, e.g. ~/apps/lanes/AI-Fleet-Coordinator/claude-pr-sweep-run/scripts/pr-sweep
+//   lane     the sweep's own lane directory; the CLI and `lane prune` run from it (default ~).  Pass it on a host
+//            whose lane guard refuses commands that do not start in a lane, such as the server.  The lane tool is
+//            ~/apps/lane where that is an executable file, else `lane` from PATH, on any host.
 //   seat     the seat tag (default CLAUDE); workers inherit it
 //   prs      ["owner/repo#n", ...] to sweep only these (default: the whole inventory)
 //   repos    "BotFleet,DealDex" to limit the inventory
@@ -35,7 +38,13 @@ if (!A.cli) throw new Error('pass args.cli: the scripts/pr-sweep shim of a fresh
 const CLI = A.cli
 const SEAT = A.seat || 'CLAUDE'
 const ROUNDS = A.rounds || 3
-const RUN = `cd ~ && AGENT_SEAT=${SEAT} ${CLI}`
+// A lane path goes to the shell as one single-quoted word, so a space or a metacharacter in it stays a path.
+const shq = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'"
+const HOME_CD = A.lane ? `cd ${shq(A.lane)}` : 'cd ~'
+// The lane tool is ~/apps/lane where that is an executable file (the Mac), else `lane` from PATH (the server,
+// where ~/apps/lane is a directory).  Chosen by what the host has, not by whether args.lane was passed.
+const LANE_TOOL = 'L="$HOME/apps/lane"; { [ -f "$L" ] && [ -x "$L" ]; } || L=lane; "$L"'
+const RUN = `${HOME_CD} && AGENT_SEAT=${SEAT} ${CLI}`
 const MODEL = { small: 'haiku', mid: 'sonnet', frontier: 'opus' }
 const key = (full, n) => full + '#' + n
 
@@ -204,7 +213,7 @@ if (A.deploy !== false && Object.keys(merged).length) {
 // ---------- prune ----------
 phase('Prune')
 const prune = await agent([
-  `Run exactly: cd ~ && AGENT_SEAT=${SEAT} ~/apps/lane prune` + (A.prune === 'apply' ? ' --apply' : ''),
+  `Run exactly: ${HOME_CD} && export AGENT_SEAT=${SEAT} && ${LANE_TOOL} prune` + (A.prune === 'apply' ? ' --apply' : ''),
   'Change nothing else.  Return the summary line, the counts of removable or removed and kept lanes, and the kept lanes with their reasons (at most 40 lines).',
 ].join('\n'), { label: 'lane prune', phase: 'Prune', model: 'haiku', effort: 'low' })
 

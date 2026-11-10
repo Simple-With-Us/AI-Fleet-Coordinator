@@ -105,6 +105,9 @@ targets:
       - path: Muster/Model/EngineRunner.swift
       - path: Muster/Model/FleetAdmin.swift
       - path: Muster/Model/FleetConfigContract.swift
+      # The fleet-wide compliance rules' results, their states and their alerts (GRID-18,
+      # ComplianceResultsTests).
+      - path: Muster/Model/ComplianceResults.swift
       - path: Muster/Model/FleetGrid.swift
       # The grid's words:  scope, state spellings, the legend, where a seat and a rule are
       # read, the watch line and the panel's selection key (GridPresentationTests).
@@ -123,6 +126,7 @@ targets:
       - path: Muster/Model/HogHunterMacReport.swift
       - path: Muster/Model/OpsAuditLog.swift
       - path: Muster/Model/OpsControl.swift
+      - path: Muster/Model/ServerUnitStatus.swift
       - path: Muster/Model/KnobRegistry.swift
       - path: Muster/Model/MachineStatus.swift
       # Report age and verdict at a moment, and the words for them (ReportFreshnessTests).

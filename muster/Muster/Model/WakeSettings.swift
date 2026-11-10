@@ -3,7 +3,7 @@ import Foundation
 // The seat wake settings,  as the panel shows them.
 //
 // The panel has two sources and never mixes them:  the configuration file
-// (`~/.agent-sync/listener.toml`) holds what the operator wrote,  and the running eavesdropper
+// (`~/.simple-tools/listener.toml`) holds what the operator wrote,  and the running eavesdropper
 // holds what is actually in effect.  A setting where the two disagree is DRIFT,  and it is
 // never shown as a quiet green.
 //
@@ -67,10 +67,10 @@ enum WakeType: String, CaseIterable {
 
 /// Who holds a seat, according to the seat partition.
 ///
-/// The partition (`docs/protocols/agent-sync-partition.toml`) gives each seat to one eavesdropper.  A
+/// The partition (`docs/protocols/simple-tools-partition.toml`) gives each seat to one eavesdropper.  A
 /// eavesdropper refuses to run with a `[seat.X]` section the partition does not give to it, enabled or
 /// not, and it fails closed:  a seat it does not list is refused, and a file it cannot read
-/// refuses every seat (`agent_sync/config.py` `partition_errors`).  Muster runs on the Mac and
+/// refuses every seat (`simple_tools/config.py` `partition_errors`).  Muster runs on the Mac and
 /// reaches only the Mac's eavesdropper, so only `.mac` seats can be changed here.
 enum ListenerSeatHost: Equatable {
     case mac
@@ -142,7 +142,7 @@ enum ListenerSeatHost: Equatable {
 struct ListenerPartition: Equatable {
     /// Where the file sits in a checkout.  The Mac's eavesdropper reads its own checkout's copy, and
     /// says which one in its status (`partition_file`), so that copy decides once it has said.
-    static let relativePath = "docs/protocols/agent-sync-partition.toml"
+    static let relativePath = "docs/protocols/simple-tools-partition.toml"
     /// The instance name Muster's own machine has in the partition.
     static let thisInstance = "mac"
 
@@ -239,7 +239,7 @@ struct ListenerPartition: Equatable {
         return .markedForTheServer
     }
 
-    /// Whether a tag is one the eavesdropper accepts:  `_SEAT_RE` in `agent_sync/config.py`.
+    /// Whether a tag is one the eavesdropper accepts:  `_SEAT_RE` in `simple_tools/config.py`.
     static func isSeatName(_ value: String) -> Bool {
         let scalars = Array(value.unicodeScalars)
         guard (1...32).contains(scalars.count), let first = scalars.first else { return false }
@@ -337,7 +337,7 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
     }
 
     /// Whether the setting means anything for a seat with this wake and fallback, by the rules
-    /// `agent_sync/config.py` applies:  the muse binary only for a muse wake, the mcode binary only
+    /// `simple_tools/config.py` applies:  the muse binary only for a muse wake, the mcode binary only
     /// for a claude or muse wake, a fallback only for a wake that runs a turn, the container rule
     /// only for the mcode fallback, and no cap for an inbox seat, which never runs a wake.  A nil
     /// wake is the file's own default, inbox.
@@ -353,7 +353,7 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
         case .mcodePath:
             return ["claude", "muse"].contains(wake)
         case .fallback:
-            // `WORKER_WAKES` in `agent_sync/config.py`:  every wake that runs a turn, HTTP included.
+            // `WORKER_WAKES` in `simple_tools/config.py`:  every wake that runs a turn, HTTP included.
             return ["claude", "http", "muse", "openrouter"].contains(wake)
         case .fallbackUncontained:
             return fallback == "mcode"
@@ -610,7 +610,7 @@ struct WakeUsage: Equatable {
     }
 }
 
-/// What reading the kill switch file (`~/.agent-sync/listener/pause.json`) found.
+/// What reading the kill switch file (`~/.simple-tools/listener/pause.json`) found.
 enum WakePauseFile: Equatable {
     /// Muster did not read it.
     case notRead

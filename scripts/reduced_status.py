@@ -6,7 +6,7 @@ config errors, none of which belongs on an owner's screen or on the wire to the 
 `reduce_status` is the one place that turns it into the document the apps read.  It is pure and
 stdlib only: no file, no network and no clock except the `now` the caller passes.  It is also
 kept beside `fleet-ops-control.py` (in `scripts/` of a checkout, flat in the installed folder on
-the server) and not in the agent_sync package, which the fleet CLI release ships under a file
+the server) and not in the simple_tools package, which the fleet CLI release ships under a file
 budget, so it imports nothing from that package.
 
 The rules that hold for every field:
@@ -130,9 +130,12 @@ What the source does NOT carry, and so is null here (or never produced) whatever
 
 Deliberately never read: `config_errors`, `reload_refused`, `reload_at`, `partition_file`,
 `owner_user_id`, `loop_guard`, `chat_nudges`, `muse_bridge`, `pid`, `version`, `started`, each
-seat's `creds`, `cursor`, `claude`, `muse`, `routine`, `pin`, `pinned`, `model`, `red`, `live`,
+seat's `creds`, `cursor` and its `webhook_high_water` (both internal ingestion positions), `claude`, `muse`, `routine`, `pin`, `pinned`, `model`, `red`, `live`,
 `budget`, `routes_24h`, `route_enabled`, `provider` and `fallback` (beyond `stands_in`), and a
-lease's `lease_id`, `session_id` and `title`.
+lease's `lease_id`, `session_id` and `title`.  `drain` is not read either:  it is the AFC-652
+planned-drain checklist, on-host operator tooling the fleet CLI reads from the raw status.json
+before a SIGTERM, and its terminal rows name message ids and effect reasons - an id and free
+text are exactly what this document never emits, and the apps have no drain surface to feed.
 """
 
 from __future__ import annotations

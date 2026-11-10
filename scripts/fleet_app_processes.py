@@ -92,7 +92,7 @@ EXPLICIT_RULES = (
     ("BF", "launchd", "com.jay.botfleet-", False),
     ("BF", "pm2", "botfleet-mcp", True),
     # AI-Fleet-Coordinator's own LaunchAgents and units.
-    ("AFC", "launchd", "com.jay.agent-sync-runtime-sync", True),
+    ("AFC", "launchd", "com.jay.simple-tools-runtime-sync", True),
     ("AFC", "launchd", "com.jay.fleet-gdrive-backup", True),
     ("AFC", "launchd", "com.jay.fleet-mac-services", True),
     ("AFC", "launchd", "com.jay.fleet-tools-doctor", True),
@@ -125,6 +125,12 @@ EXPLICIT_RULES = (
     ("AFC", "systemd", "fleet-vm-status.service", True),
     ("AFC", "systemd", "lane-placement-watch.service", True),
     ("AFC", "systemd", "operator-sheets-drain.service", True),
+    # OPS-1048:  the ZC seat's wake bridge (the template installs as
+    # afc-zc-wake-bridge.service, but the attribution matches the shipped file name).
+    ("AFC", "systemd", "zc-wake-bridge.service", True),
+    # AFC-665:  the AG seat's wake bridge (the template installs as
+    # afc-ag-wake-bridge.service, but the attribution matches the shipped file name).
+    ("AFC", "systemd", "ag-wake-bridge.service", True),
     # Clutch's browser UI, and Congress.Trade's scanned-PTR worker (docs/MAC-LOCAL-PROCESSES.md).
     ("C", "pm2", "clutch-web", True),
     ("CT", "pm2", "vision-worker", True),

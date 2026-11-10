@@ -4,11 +4,11 @@ AFC-411 picks up Claude handoff `4237229e-5f06-4aa5-8329-f43051bfce93`.  PR #722
 
 ## Verified
 
-- 117 focused tests passed on macOS: `cd scripts && python3 -m unittest agent_sync.tests.test_router agent_sync.tests.test_attach agent_sync.tests.test_live agent_sync.tests.test_server_session_routing agent_sync.tests.test_systemd agent_sync.tests.test_listener_install`.
+- 117 focused tests passed on macOS: `cd scripts && python3 -m unittest simple_tools.tests.test_router simple_tools.tests.test_attach simple_tools.tests.test_live simple_tools.tests.test_server_session_routing simple_tools.tests.test_systemd simple_tools.tests.test_listener_install`.
 - 26 focused Linux tests passed; `systemd-analyze --user verify` accepted ordinary and escaped unit paths.
 - Two new fake-Zulip integration cases prove session A receives its topic mention/reply while session B receives no live item, even when B reads the shared CLI inbox before or after routing.
 - The existing server Claude lane guard passed 22 cases after plugin installation; `AGENT_SEAT=CLAUDE` and the PreToolUse guard remain present.
-- `agent-sync@afc` 1.0.0 is installed and enabled from the existing fleet-cli runtime marketplace.
+- `simple-chat@afc` 1.0.0 is installed and enabled from the existing fleet-cli runtime marketplace.
 - The host user service is installed, validated and inactive; its private sample config enables no seats.  No persistent credential file was created, and no active chat was restarted.
 
 The Linux fast-import check was contaminated by the host Datadog sitecustomize in its subprocess; the same complete focused suite passed on macOS.  This is separate from listener behavior.

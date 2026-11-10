@@ -13,11 +13,11 @@ procedure for onboarding new agents and new apps.
 - `docs/ONBOARDING-NEW-AGENT.md` + `scripts/onboard-new-agent.sh`.
 - `scripts/check-fleet-registry.py` — fails if a registered app is missing
   from digest/calendar/protocol/Slack acronyms/live boards.
-- Registries: `AGENT-SYNC.md`, `EFFORT-LOG-PROTOCOL.md`, `FLEET-UI-COPY.md`,
+- Registries: `FLEET-PROTOCOL.md`, `EFFORT-LOG-PROTOCOL.md`, `FLEET-UI-COPY.md`,
   `TEMPLATE-AGENTS.md`, digest + calendar `DEFAULT_REPOS`, Slack comment tags,
   `agent-logos/app-dd.png`, `setup-agent-lanes.sh` (grok + monet).
 - Live machine mirrors under `/Users/jay/apps` updated in the same session
-  (protocol, AGENT-SYNC, quickstart, UI copy, ios-fleet, DEALDEX board).
+  (protocol, FLEET-PROTOCOL, quickstart, UI copy, ios-fleet, DEALDEX board).
 
 ## Decisions & Trade-offs
 

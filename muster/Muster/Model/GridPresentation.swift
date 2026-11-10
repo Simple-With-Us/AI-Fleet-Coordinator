@@ -87,56 +87,122 @@ enum GridPresentation {
 
     // MARK: Where a seat's config lives
 
-    /// Whether a seat's config is on the Mac at all.
+    /// Where a seat runs, and, apart from that, whether its rules check anything on the Mac.
     ///
-    /// The manifest carries no host field yet, so this is decided from what the manifest
-    /// does carry:  a seat with no rule has nothing on the Mac to check, and its covers say
-    /// where it runs instead.  The cover's own sentence is shown, never parsed.
+    /// A seat's place comes only from its manifest entry's `runsOn` list (GRID-4).  A seat
+    /// without the key is a seat whose place is not known, and it is shown that way:  its
+    /// place is never guessed from its rules (the fleet config design, section 6.1).  Where
+    /// its rules check is a separate fact, which its tooltip and row still state.  A cover's
+    /// own sentence is shown, never parsed.
     enum SeatLocation: Equatable {
-        case onTheMac
-        case notOnTheMac(reason: String?)
+        /// The manifest does not name the seat.
         case notKnown
+        /// The manifest names the seat but not where it runs.  `rulesCheckTheMac` is true
+        /// when the manifest has a rule for the seat, which is read on the Mac;  `reason` is
+        /// the first cover's sentence for a seat with no rule, and nil otherwise.
+        case placeNotSaid(rulesCheckTheMac: Bool, reason: String?)
+        /// The manifest's `runsOn` names where the seat runs.  `checkedOnTheMac` and
+        /// `reason` are as for `placeNotSaid`.
+        case runsOn(places: Set<SeatRunPlace>, checkedOnTheMac: Bool, reason: String?)
 
         static func of(seat: String, manifest: SeatManifest?) -> SeatLocation {
             guard let manifest, let entry = manifest.seats[seat] else { return .notKnown }
-            guard entry.rules.isEmpty else { return .onTheMac }
-            let reason = ConfigKind.columnOrder.lazy
-                .compactMap { manifest.coverReason(seat: seat, kind: $0) }
-                .first
-            return .notOnTheMac(reason: reason)
+            let checked = !entry.rules.isEmpty
+            let reason = checked
+                ? nil
+                : ConfigKind.columnOrder.lazy
+                    .compactMap { manifest.coverReason(seat: seat, kind: $0) }
+                    .first
+            guard !entry.runsOn.isEmpty else {
+                return .placeNotSaid(rulesCheckTheMac: checked, reason: reason)
+            }
+            return .runsOn(places: entry.runsOn, checkedOnTheMac: checked, reason: reason)
         }
+
+        /// Whether the manifest says the seat runs on the Mac, which the chip's colour
+        /// follows:  a seat on the Mac is drawn plain, and any other is marked.  A seat whose
+        /// place is not said is never on the Mac here, whatever its rules check.
+        var runsOnTheMac: Bool {
+            switch self {
+            case .runsOn(let places, _, _): return places.contains(.mac)
+            case .placeNotSaid, .notKnown: return false
+            }
+        }
+
+        /// How the chip is drawn:  plain for a seat the manifest says runs on the Mac (alone or
+        /// with other places), and marked for any other, including a place that is not known,
+        /// which should draw the eye.
+        enum ChipTone: Equatable {
+            case plain
+            case marked
+        }
+
+        var chipTone: ChipTone { runsOnTheMac ? .plain : .marked }
 
         /// The chip under the seat's tag.
         var chip: String {
             switch self {
-            case .onTheMac: return FleetHost.mac.onTitle
-            case .notOnTheMac: return "Not \(FleetHost.mac.onTitle)"
-            case .notKnown: return "Place Not Known"
+            case .notKnown, .placeNotSaid: return "Place Not Known"
+            case .runsOn(let places, _, _): return SeatRunPlace.title(places)
             }
         }
 
         /// The line under a seat's row, when the row needs one to be read right.
+        ///
+        /// A seat that runs somewhere other than the Mac says where (GRID-5).  A seat whose
+        /// place is not said and whose rules check the Mac needs no line:  its chip and
+        /// tooltip say it all.
         var note: String? {
             switch self {
-            case .onTheMac:
-                return nil
-            case .notOnTheMac(let reason):
+            case .placeNotSaid(let checked, let reason):
+                guard !checked else { return nil }
                 let why = reason.map { GridPresentation.gap + $0 } ?? ""
-                return "Not on the Mac, so nothing here is checked for it.\(why)"
+                return "The manifest does not say where this seat runs, and no rule checks anything on the Mac for it.\(why)"
             case .notKnown:
                 return "The manifest does not name this seat, so where its config lives is not known."
+            case .runsOn(let places, let checked, let reason):
+                let runs = "Runs \(SeatRunPlace.prose(places))"
+                let why = reason.map { GridPresentation.gap + $0 } ?? ""
+                switch (places.contains(.mac), checked) {
+                case (true, true):
+                    return nil
+                case (true, false):
+                    return "\(runs), but the manifest names nothing on the Mac to check for it.\(why)"
+                case (false, true):
+                    return "\(runs), not on the Mac;  only what the Mac holds for it is checked here."
+                case (false, false):
+                    return "\(runs), not on the Mac, so nothing here is checked for it.\(why)"
+                }
             }
         }
 
         /// The chip's tooltip.
         var help: String {
             switch self {
-            case .onTheMac:
-                return "This seat's config files are read on the Mac."
-            case .notOnTheMac:
-                return "This seat does not run on the Mac, so the Mac holds none of its config."
+            case .placeNotSaid(let checked, _):
+                let rules = checked
+                    ? "Its rules check files on the Mac."
+                    : "No rule checks anything on the Mac for it."
+                return "The manifest does not say where this seat runs." + GridPresentation.gap + rules
             case .notKnown:
                 return "The manifest does not name this seat."
+            case .runsOn(let places, let checked, _):
+                let runs = "This seat runs \(SeatRunPlace.prose(places))"
+                let elsewhere = places.subtracting([.mac])
+                switch (places.contains(.mac), checked) {
+                case (true, true):
+                    let rest = elsewhere.isEmpty
+                        ? ""
+                        : ", and its config \(SeatRunPlace.prose(elsewhere)) is not checked here"
+                    return "\(runs)." + GridPresentation.gap + "Its config files are read on the Mac\(rest)."
+                case (true, false):
+                    return "\(runs), but the manifest names no config file on the Mac for it."
+                case (false, true):
+                    return "\(runs), not on the Mac." + GridPresentation.gap
+                        + "Only the files the Mac holds for it are read here."
+                case (false, false):
+                    return "\(runs), not on the Mac, so the Mac holds none of its config."
+                }
             }
         }
     }
@@ -338,6 +404,65 @@ enum GridPresentation {
                 tone: .watching
             )
         }
+
+        /// The line, from what the watcher actually holds (GRID-37).
+        ///
+        /// The paths counted are the ones with a started stream on them, never the ones only
+        /// asked for.  A stream that failed to start makes the line a warning that says how
+        /// many paths are not watched, and none started is "Watching nothing".
+        static func make(
+            isWatching: Bool,
+            coverage: DriftWatchCoverage,
+            seatCount: Int,
+            recheckSeconds: TimeInterval
+        ) -> WatchLine {
+            let minutes = max(1, Int((recheckSeconds / 60).rounded()))
+            let every = minutes == 1 ? "every minute" : "every \(minutes) minutes"
+            let recheck = "Secret store checks cannot be watched, so they are checked again at least \(every)."
+            guard isWatching else {
+                return WatchLine(
+                    text: "Not watching:  a change to a seat's config is seen only when the seat setup is checked again.",
+                    tone: .warning
+                )
+            }
+            guard coverage.pathsAsked > 0 else {
+                return WatchLine(
+                    text: "Watching nothing:  the manifest names no path on the Mac to watch, so a change is seen only at the check \(every).",
+                    tone: .warning
+                )
+            }
+            guard coverage.pathsWatched > 0 else {
+                return WatchLine(
+                    text: "Watching nothing:  none of the \(coverage.streamsAsked) watches on the Mac could be started, so a change is seen only at the check \(every).",
+                    tone: .warning
+                )
+            }
+            let watched = coverage.pathsWatched == 1 ? "1 path" : "\(coverage.pathsWatched) paths"
+            let seats = seatCount == 1 ? "1 seat" : "\(seatCount) seats"
+            guard coverage.isComplete else {
+                let failed = coverage.streamsFailed == 1
+                    ? "1 watch could not be started"
+                    : "\(coverage.streamsFailed) watches could not be started"
+                let unwatched = coverage.unwatchedPaths.count
+                let rest: String
+                if unwatched == 0 {
+                    rest = "every path still has a watch on it"
+                } else if unwatched == 1 {
+                    rest = "a change to 1 path is seen only at the check \(every)"
+                } else {
+                    rest = "a change to \(unwatched) paths is seen only at the check \(every)"
+                }
+                return WatchLine(
+                    text: "Watching \(watched) of \(coverage.pathsAsked) on the Mac for \(seats)." + GridPresentation.gap
+                        + "\(failed), so \(rest).",
+                    tone: .warning
+                )
+            }
+            return WatchLine(
+                text: "Watching \(watched) on the Mac for \(seats)." + GridPresentation.gap + recheck,
+                tone: .watching
+            )
+        }
     }
 
     // MARK: Compliance rules
@@ -348,6 +473,11 @@ enum GridPresentation {
     /// What that list is, and what it is not.
     static let complianceExplanation = "These rules are listed from fleet-seats.json."
         + gap + "Their results are not shown in this grid, so a rule here says only whether its check exists, never that it passed."
+
+    /// What that list is once each rule shows its result from `FleetStore.complianceStatuses`
+    /// (GRID-18).
+    static let complianceResultsExplanation = "These rules are listed from fleet-seats.json, each with the engine's last result for it."
+        + gap + "A rule the engine has not run, or cannot run yet, is never shown as passing."
 
     /// The status a compliance rule shows, in place of a result the app does not have.
     static func complianceStatus(_ rule: ComplianceRule) -> (text: String, isBuilt: Bool) {
@@ -404,6 +534,105 @@ enum GridPresentation {
         case "fleet": return 2
         default: return 3
         }
+    }
+
+    // MARK: Compliance results (GRID-18)
+
+    /// How one compliance rule's result is drawn in the rules list:  its word, the symbol
+    /// beside it, and the grid state whose colour it wears.
+    ///
+    /// A result wears the grid's own colour for its state, so a rule that passed is the green
+    /// of a passing cell, and a failing one is never calmer than the cell it would be.  A rule
+    /// with no result (not built yet, left out of the answer, or not answered) claims nothing,
+    /// so it wears the neutral colour:  never green, and never red.
+    struct ComplianceRuleLook: Equatable {
+        /// The word the badge shows:  the status's own (`ComplianceRuleStatus.word`), or the
+        /// drawn state's grid word when a failing flag escalated a calm-looking state.
+        let word: String
+        let symbol: String
+        /// The state whose colour the rule wears, or nil for the neutral colour.
+        let colourState: CellState?
+
+        static func of(_ status: ComplianceRuleStatus) -> ComplianceRuleLook {
+            switch status.standing {
+            case .answered(let state):
+                // A result the engine flagged as failing while its state reads calm:  the
+                // flag wins, so the rule never wears a calm colour over a failure.
+                let shown = status.isFailing && !state.isRed && state != .drift ? CellState.unknown : state
+                // The word follows the state drawn, so a calm word never sits on the red it was
+                // escalated to;  an answer that was not escalated keeps the status's own word.
+                let word = shown == state ? status.word : shown.gridWord
+                return ComplianceRuleLook(word: word, symbol: shown.gridSymbol, colourState: shown)
+            case .notBuilt:
+                return ComplianceRuleLook(word: status.word, symbol: "hammer", colourState: nil)
+            case .notInAnswer:
+                return ComplianceRuleLook(word: status.word, symbol: "questionmark.circle", colourState: nil)
+            case .notAnswered:
+                return ComplianceRuleLook(word: status.word, symbol: GridPresentation.checkingSymbol, colourState: nil)
+            }
+        }
+    }
+
+    /// The rules' statuses grouped by the places they are about, each rule once, in the
+    /// store's order (the manifest's) within a group.
+    ///
+    /// A group's heading is its rules' own `placeWords`, and the groups sort as
+    /// `complianceGroups` sorts them:  the Mac, then the server, then the fleet, then the rest.
+    static func complianceStatusGroups(_ statuses: [ComplianceRuleStatus]) -> [ComplianceGroup] {
+        var order: [String] = []
+        var members: [String: [String]] = [:]
+        var rank: [String: Int] = [:]
+        var seen: Set<String> = []
+        for status in statuses where seen.insert(status.ruleID).inserted {
+            let heading = status.placeWords
+            if members[heading] == nil {
+                order.append(heading)
+                rank[heading] = scopeRank(status.scope.filter { !$0.isEmpty })
+            }
+            members[heading, default: []].append(status.ruleID)
+        }
+        let sorted = order.enumerated().sorted { lhs, rhs in
+            let left = rank[lhs.element] ?? 9
+            let right = rank[rhs.element] ?? 9
+            return left == right ? lhs.offset < rhs.offset : left < right
+        }
+        return sorted.map { ComplianceGroup(heading: $0.element, ruleIDs: members[$0.element] ?? []) }
+    }
+
+    /// The heading over the compliance results that failed in the last trusted run, which
+    /// Drift History shows beside the red count.
+    static func complianceFailuresTitle(count: Int) -> String {
+        "Compliance Rules Failing Now (\(count))"
+    }
+
+    /// What that list is.
+    static let complianceFailuresExplanation = "These fleet-wide rules failed in the last check that could be trusted."
+        + ServerStatusCopy.sentenceGap + "A rule is about a place rather than a seat, so it reaches no cell in the grid."
+
+    /// The grid state whose colour a failing compliance result wears:  its own state's when
+    /// that is a warning colour, and UNKNOWN's red when the engine flagged a calm-looking
+    /// state as failing, so a failure never wears a calm colour.
+    static func colourState(of failure: DriftComplianceFailure) -> CellState {
+        let state = CellState(checkState: CheckState(envelopeValue: failure.state))
+        return state.isRed || state == .drift ? state : .unknown
+    }
+
+    // MARK: Paths not watched (GRID-37)
+
+    /// The heading over the paths no started watch covers, or nil when every path has one.
+    static func unwatchedPathsTitle(_ coverage: DriftWatchCoverage) -> String? {
+        let count = coverage.unwatchedPaths.count
+        guard count > 0 else { return nil }
+        return "Paths Not Watched (\(count))"
+    }
+
+    /// What that list is.
+    static let unwatchedPathsExplanation = "A watch could not be started on these paths, so a change to one is seen only when the seat setup is checked again."
+
+    /// Each path no started watch covers, in the watch list's order, with the home folder
+    /// written as `~`.
+    static func unwatchedPathLines(_ coverage: DriftWatchCoverage) -> [String] {
+        coverage.unwatchedPaths.map { ($0.path as NSString).abbreviatingWithTildeInPath }
     }
 }
 

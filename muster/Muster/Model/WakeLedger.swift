@@ -1,6 +1,6 @@
 import Foundation
 
-/// The seat's wake ledger:  `~/.agent-sync/<SEAT>/wakes.jsonl`.
+/// The seat's wake ledger:  `~/.simple-tools/<SEAT>/wakes.jsonl`.
 ///
 /// One row per state change of one wake.  The panel counts the wakes the runtime counts,
 /// so the number it shows is the number the budget is measured against.

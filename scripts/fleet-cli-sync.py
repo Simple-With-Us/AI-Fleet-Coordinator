@@ -23,7 +23,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-DEFAULT_SOURCE = "/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime"
+DEFAULT_SOURCE = "/Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime"
 RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # The reviewed allowlisted runtime contains 152 files.  Keep the exact minimum
 # ceiling in sender and receiver: a new file still needs an explicit policy review.
@@ -35,16 +35,24 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # and its implementation;  tests and the offline catalog fixture stay repo-only).
 # The 146th is fleet_rag/recall_presentation.py, the lossless agent-facing recall boundary.
 # Files 147 and 148 are the existing low-level scoped verifier library; no secrets CLI ships.
-# The 149th is agent_sync/listener_registry.py, the Operator session-registry service the daemon
+# The 149th is simple_tools/listener_registry.py, the Operator session-registry service the daemon
 # serves over the listener HTTPS API (Path B, operator.simplewithus.com).
-# The 151st is agent_sync/registry_api.py, the signed client the package's own registry callers
+# The 151st is simple_tools/registry_api.py, the signed client the package's own registry callers
 # (the operator-registry CLI, the platform-letter registry side) use to reach that API.
-# The 153rd is agent_sync/operator_sheets_google.mjs;  must equal the receiver cap in
+# The 153rd is simple_tools/operator_sheets_google.mjs;  must equal the receiver cap in
 # fleet-cli-release.py or build_bundle() rejects the newly included adapter.
-# The 154th is agent_sync/operator_sheets_drain.mjs (OPS-1037), the production drain runner.
-# The 155th is agent_sync/muster_service.py (AFC-654), the read-only Operator service `simple-chat`
+# The 154th is simple_tools/operator_sheets_drain.mjs (OPS-1037), the production drain runner.
+# The 155th is simple_tools/muster_service.py (AFC-654), the read-only Operator service `simple-chat`
 # dispatches for Muster's Seats panel.
-MAX_FILES = 155
+# The 156th is fleet_lanes/temp_build.py (AFC-618), the build-argv reader `lane`'s guard.py imports.
+# The 157th to 159th are the ZCode letter adapter, the ZC wake bridge and the ZC letter hook wrapper
+# (OPS-1048);  fleet-cli-release.py carries the same ledger.
+# The 160th and 161st are simple_tools/platform_letter_cursor.py (the Cursor session-letter adapter) and
+# simple_tools/cursor_cloud_letters.py (the Cursor Cloud letter sweep).
+# The 162nd is scripts/ag-wake-bridge (AFC-665), the AG seat's wake bridge.
+# The 163rd and 164th are the Clutch and Fx session-letter adapters;  fleet-cli-release.py carries the
+# same ledger.
+MAX_FILES = 164
 MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65
@@ -461,7 +469,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-repo", type=Path, default=Path(DEFAULT_SOURCE))
     parser.add_argument(
-        "--state-dir", type=Path, default=Path.home() / ".agent-sync/coolify-cli-sync"
+        "--state-dir", type=Path, default=Path.home() / ".simple-tools/coolify-cli-sync"
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force", action="store_true")

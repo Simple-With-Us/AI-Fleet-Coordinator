@@ -58,6 +58,104 @@ struct SeatManifestEntry: Decodable {
     let platforms: [String]
     let rules: [ManifestRule]
     let notApplicable: [ManifestCover]
+    /// Where the seat runs, from the manifest's optional `runsOn` list (AFC-616).
+    ///
+    /// Empty means the manifest does not say, so the place is not known.  The key is
+    /// read leniently:  a word this app does not know is skipped, and a value that is
+    /// not a list reads as not said, so a newer manifest never stops the grid.
+    let runsOn: Set<SeatRunPlace>
+
+    private enum CodingKeys: String, CodingKey {
+        case platforms, rules, notApplicable, runsOn
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        platforms = try container.decode([String].self, forKey: .platforms)
+        rules = try container.decode([ManifestRule].self, forKey: .rules)
+        notApplicable = try container.decode([ManifestCover].self, forKey: .notApplicable)
+        let words = (try? container.decodeIfPresent([LenientWord].self, forKey: .runsOn)) ?? []
+        runsOn = Set(words.compactMap { $0.word.flatMap(SeatRunPlace.init(rawValue:)) })
+    }
+
+    /// One item of a list, which reads as nil rather than failing when it is not a string.
+    private struct LenientWord: Decodable {
+        let word: String?
+
+        init(from decoder: Decoder) throws {
+            word = try? decoder.singleValueContainer().decode(String.self)
+        }
+    }
+}
+
+/// One place a seat runs, as the manifest's `runsOn` names it.
+///
+/// This is where the seat's sessions run.  It is not `SeatPlace`, which is the machine whose
+/// eavesdropper holds the seat's Zulip queue.
+enum SeatRunPlace: String, CaseIterable, Comparable, Sendable {
+    case mac
+    case server
+    case vm
+    case cloud
+
+    /// The order the places are named in:  the Mac, the server, a VM, the cloud.
+    static func < (lhs: SeatRunPlace, rhs: SeatRunPlace) -> Bool {
+        (allCases.firstIndex(of: lhs) ?? 0) < (allCases.firstIndex(of: rhs) ?? 0)
+    }
+
+    /// The word before the place, in Title Case.
+    var titlePreposition: String {
+        self == .cloud ? "In" : "On"
+    }
+
+    /// The place without its preposition, in Title Case.
+    var titleNoun: String {
+        switch self {
+        case .mac: return FleetHost.mac.heading
+        case .server: return FleetHost.server.heading
+        case .vm: return "A VM"
+        case .cloud: return "The Cloud"
+        }
+    }
+
+    /// The place without its preposition, inside a sentence.
+    var proseNoun: String {
+        switch self {
+        case .mac: return FleetHost.mac.name
+        case .server: return FleetHost.server.name
+        case .vm: return "a VM"
+        case .cloud: return "the cloud"
+        }
+    }
+
+    /// Several places, on a chip:  "On The Mac And The Server", "On A VM And In The Cloud".
+    ///
+    /// The places are named in their own order, and a preposition is said again only when
+    /// it changes.  No places give an empty string.
+    static func title(_ places: Set<SeatRunPlace>) -> String {
+        joined(places, preposition: \.titlePreposition, noun: \.titleNoun, and: " And ")
+    }
+
+    /// Several places, inside a sentence:  "on the Mac and the server", "in the cloud".
+    static func prose(_ places: Set<SeatRunPlace>) -> String {
+        joined(places, preposition: { $0.titlePreposition.lowercased() }, noun: \.proseNoun, and: " and ")
+    }
+
+    private static func joined(
+        _ places: Set<SeatRunPlace>,
+        preposition: (SeatRunPlace) -> String,
+        noun: (SeatRunPlace) -> String,
+        and: String
+    ) -> String {
+        var parts: [String] = []
+        var said: String?
+        for place in places.sorted() {
+            let word = preposition(place)
+            parts.append(word == said ? noun(place) : "\(word) \(noun(place))")
+            said = word
+        }
+        return parts.joined(separator: and)
+    }
 }
 
 /// One rule of a seat, as the manifest declares it.
@@ -125,6 +223,12 @@ extension SeatManifest {
             if !cover.platforms.filter({ seatPlatforms.contains($0) }).isEmpty { return cover.reason }
         }
         return nil
+    }
+
+    /// Where the manifest says a seat runs, empty when it does not say or does not name
+    /// the seat.
+    func runsOn(seat: String) -> Set<SeatRunPlace> {
+        seats[seat]?.runsOn ?? []
     }
 
     /// The rules the manifest declares for one seat and kind.
