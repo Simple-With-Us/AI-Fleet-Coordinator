@@ -462,10 +462,18 @@ function ownIntro(prefix, text) {
   const leading = text.match(/^(?:👀\s*)?\s*/u)[0];
   const start = leading.length;
   if (!text.startsWith(`[${seat}`, start)) return null;
-  if (!["]", " ", ":", "·", "→", "\t"].includes(text.charAt(start + seat.length + 1))) return null;
+  const after = start + seat.length + 1;
+  // A folder intro typed with no space or a non-ASCII space before 📁 (`[SEAT📁AFC]`,
+  // `[SEAT\u00a0📁AFC]`) is still this seat's own intro (AFC-676);  missing it put the
+  // legacy `[SEAT]` tag in front of the seat's own intro.
+  const folder = /^\s*📁/u.test(text.slice(after));
+  if (!folder && !["]", " ", ":", "·", "→", "\t"].includes(text.charAt(after))) return null;
   const end = text.indexOf("]", start);
   if (end < 0 || /[\r\n\[]/.test(text.slice(start + 1, end))) return null;
-  return { end, intro: text.slice(0, end), rest: text.slice(end + 1) };
+  let intro = text.slice(0, end);
+  // Exactly one ASCII space before 📁, the Policy shape the router parses.
+  if (folder) intro = intro.slice(0, after) + " " + intro.slice(after).replace(/^\s*/u, "");
+  return { end, intro, rest: text.slice(end + 1) };
 }
 
 /** Preserve an existing own-seat intro, adding resolved recipients without a second attribution.

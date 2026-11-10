@@ -656,6 +656,9 @@ jobs:
     - name: Kody defer and deferred sweep tests
       timeout-minutes: 10
       run: node --test scripts/kody-defer/*.test.mjs scripts/kody-deferred-sweep.test.mjs
+    - name: Kody first-review prompter tests
+      timeout-minutes: 10
+      run: node --test scripts/kody-first-review/*.test.mjs
     - name: Autofix dispatcher tests
       timeout-minutes: 10
       run: node --test scripts/autofix-dispatcher/*.test.mjs
@@ -692,6 +695,7 @@ jobs:
       timeout-minutes: 10
       run: |
         node --test scripts/ios-fleet/ios_testflight_freshness.test.mjs
+        node --test scripts/ios-fleet/build_number_audit.test.mjs
         bash -n scripts/ios-fleet/install-testflight-freshness.sh
     # The fleet iOS version manifest publisher (AFC-540).  It publishes as a
     # branch plus a pull request against this repository, because the ruleset

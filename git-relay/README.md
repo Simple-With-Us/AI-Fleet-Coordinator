@@ -93,7 +93,7 @@ must be on PATH at startup.
 (initialize, tools/list, tools/call) that advertises itself as `GR-MCP` and exposes the relay
 actions as MCP tools. A seat runs it with only its own bearer token
 (GIT_RELAY_SEAT_TOKEN, GIT_RELAY_URL); the wrapper forwards over HTTP, so policy, caps and audit
-stay server-side. Refusals come back as tool errors, never protocol errors.
+stay server-side. Refusals come back as tool errors, never protocol errors.  Every call carries the `gr-mcp/1` User-Agent (Cloudflare refuses urllib's default with error 1010), redirects are never followed, and an https relay also gets the Cloudflare Access service-token headers from the env pair below (AFC-672).
 
 ## Relay as a permission layer (owner direction 2026-10-21)
 
@@ -302,6 +302,8 @@ credential (never cached in the store) and a re-mint is safe under the minter's 
 | GIT_RELAY_SECRETS_PATH | /github-apps | Fleet-OPS prod folder the GH_APP_<SLUG>_* pairs are read from;  a set-but-empty value is a startup config error |
 | GIT_RELAY_URL | http://127.0.0.1:8471 | GR-MCP (`git-relay mcp`) only:  the relay base URL each tool call is posted to, as `<url>/v1/<tool>` |
 | GIT_RELAY_SEAT_TOKEN | (required by `git-relay mcp`) | GR-MCP only:  the seat's own bearer token, sent to the relay as `Authorization: Bearer`;  unset or empty stops the wrapper at startup |
+| GIT_RELAY_CF_ACCESS_CLIENT_ID / GIT_RELAY_CF_ACCESS_CLIENT_SECRET | (unset) | GR-MCP only:  the Cloudflare Access service token sent as `CF-Access-Client-Id` / `CF-Access-Client-Secret` when `GIT_RELAY_URL` is the relay's public https hostname;  never sent to a loopback http relay;  setting only one half stops the wrapper at startup (AFC-672) |
+| CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET | (unset) | GR-MCP only:  fallback for the pair above, the fleet-wide names (Infisical Fleet-OPS `/agents-jays-services-access-service-token`) |
 
 ```
 git-relay serve                 # the CLI; also the default command
