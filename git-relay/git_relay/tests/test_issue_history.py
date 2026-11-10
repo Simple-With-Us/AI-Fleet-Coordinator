@@ -106,8 +106,8 @@ class History(unittest.TestCase):
             "reactions": {k: 0 for k in ("+1", "-1", "laugh", "hooray", "confused", "heart")},
         }
         c = Client([dict(row, id=i + 1) for i in range(30)])
-        out = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", "wf_issue_timeline", REPO).run(
-            "wf_issue_timeline", {"repo": REPO, "number": 1}
-        )
+        out = WorkflowVerbs(
+            c, Policy(), "swu-wise", "own", "swu-wise", "wf_issue_timeline", REPO
+        ).run("wf_issue_timeline", {"repo": REPO, "number": 1})
         self.assertEqual(len(out["events"]), 30)
         self.assertEqual(out["events"][0]["created_at"], "2026-11-06T10:00:00Z")

@@ -582,7 +582,10 @@ def _fit_comparison(comparison):
     commits = fitted.get("commits")
     if isinstance(commits, list):
         keep = len(commits)
-        while keep and _read_size({"comparison": {**fitted, "commits": commits[:keep]}}) > READ_MAX_BYTES:
+        while (
+            keep
+            and _read_size({"comparison": {**fitted, "commits": commits[:keep]}}) > READ_MAX_BYTES
+        ):
             keep //= 2
         if keep < len(commits):
             fitted["commits"] = commits[:keep]

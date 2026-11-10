@@ -82,14 +82,20 @@ def commit(i):
         "node_id": "C_" + str(i),
         "commit": {
             "author": {"name": "A", "email": "a@example.invalid", "date": "2026-11-01T00:00:00Z"},
-            "committer": {"name": "A", "email": "a@example.invalid", "date": "2026-11-01T00:00:00Z"},
+            "committer": {
+                "name": "A",
+                "email": "a@example.invalid",
+                "date": "2026-11-01T00:00:00Z",
+            },
             "message": "change %d\n\n" % i + "detail " * 200,
             "tree": {"sha": SHA, "url": "https://api.github.com/x"},
             "comment_count": 0,
         },
         "author": dict(USER),
         "committer": dict(USER),
-        "parents": [{"sha": SHA, "url": "https://api.github.com/x", "html_url": "https://github.com/x"}],
+        "parents": [
+            {"sha": SHA, "url": "https://api.github.com/x", "html_url": "https://github.com/x"}
+        ],
     }
 
 
@@ -103,13 +109,17 @@ def run(action, reply, args):
 
 class RealSizeReads(unittest.TestCase):
     def test_twenty_eight_reviews_come_back_with_bodies_and_timestamps(self):
-        rows = [review(i, body="" if i % 3 else "# Found critical issues\n" * 40) for i in range(28)]
+        rows = [
+            review(i, body="" if i % 3 else "# Found critical issues\n" * 40) for i in range(28)
+        ]
         out, _ = run("wf_pr_reviews", rows, {"number": 1494})
         self.assertEqual(len(out["reviews"]), 28)
         self.assertEqual(out["reviews"][0]["submitted_at"], "2026-11-08T02:42:01Z")
         self.assertTrue(out["reviews"][0]["body"].startswith("# Found critical issues"))
         # The old bound refused the 14th review;  50 (the page maximum) fit too.
-        out, _ = run("wf_pr_reviews", [review(i) for i in range(50)], {"number": 1494, "per_page": 50})
+        out, _ = run(
+            "wf_pr_reviews", [review(i) for i in range(50)], {"number": 1494, "per_page": 50}
+        )
         self.assertEqual(len(out["reviews"]), 50)
 
     def test_large_pull_request_and_long_comments_come_back(self):
@@ -130,7 +140,9 @@ class RealSizeReads(unittest.TestCase):
         self.assertEqual(len(out["comments"]), 5)
 
     def test_compare_keeps_counts_and_says_what_it_left_out(self):
-        files = [{"filename": f"f{i}", "patch": "+" * 4000, "status": "modified"} for i in range(300)]
+        files = [
+            {"filename": f"f{i}", "patch": "+" * 4000, "status": "modified"} for i in range(300)
+        ]
         data = {
             "status": "diverged",
             "ahead_by": 3,
@@ -153,9 +165,19 @@ class RealSizeReads(unittest.TestCase):
 
     def test_still_too_large_is_a_definite_refusal_not_an_unreadable_502(self):
         with self.assertRaises(Refused) as ctx:
-            _validate_read("wf_pr_get", {"pull": {"id": 1, "number": 1, "state": "open",
-                                                   "head": {"sha": SHA}, "base": {"sha": SHA},
-                                                   "body": "x" * (READ_MAX_BYTES + 1)}})
+            _validate_read(
+                "wf_pr_get",
+                {
+                    "pull": {
+                        "id": 1,
+                        "number": 1,
+                        "state": "open",
+                        "head": {"sha": SHA},
+                        "base": {"sha": SHA},
+                        "body": "x" * (READ_MAX_BYTES + 1),
+                    }
+                },
+            )
         self.assertEqual(str(ctx.exception), READ_TOO_LARGE)
         self.assertNotIsInstance(ctx.exception, RelayGitHubError)
 
@@ -164,8 +186,14 @@ class RealSizeReads(unittest.TestCase):
         for _ in range(13):
             deep = [deep]
         for result in (
-            {"reviews": [{"id": 1, "state": "COMMENTED", "commit_id": SHA, "x": deep}], "complete": False},
-            {"reviews": [{"id": 1, "state": "COMMENTED", "commit_id": SHA, "x": float("inf")}], "complete": False},
+            {
+                "reviews": [{"id": 1, "state": "COMMENTED", "commit_id": SHA, "x": deep}],
+                "complete": False,
+            },
+            {
+                "reviews": [{"id": 1, "state": "COMMENTED", "commit_id": SHA, "x": float("inf")}],
+                "complete": False,
+            },
         ):
             with self.assertRaises(RelayGitHubError):
                 _validate_read("wf_pr_reviews", result)
@@ -192,7 +220,10 @@ def redirect(status, location):
 class MovedRepository(unittest.TestCase):
     def test_client_names_the_redirect_and_never_follows_it(self):
         for status, path in ((301, ""), (301, "/pulls/183"), (307, "/issues/183/comments")):
-            client = GitHubClient("fixture", opener=redirect(status, f"https://api.github.com/repositories/1341401578{path}"))
+            client = GitHubClient(
+                "fixture",
+                opener=redirect(status, f"https://api.github.com/repositories/1341401578{path}"),
+            )
             with self.assertRaises(RelayGitHubError) as ctx:
                 client._call("GET", f"/repos/jaywedgeworth22/Fleet-OPS{path}")
             self.assertEqual(ctx.exception.code, "repository_moved")
@@ -254,7 +285,9 @@ class FakeGitHub:
         if path == "/app":
             return {"id": 42, "slug": "swu-test"}
         if path == f"/repos/{OLD}/installation":
-            raise RelayGitHubError(301, "repository moved", code="repository_moved", moved_repository_id=REPO_ID)
+            raise RelayGitHubError(
+                301, "repository moved", code="repository_moved", moved_repository_id=REPO_ID
+            )
         if path == f"/repositories/{REPO_ID}/installation":
             if not self.resolvable:
                 raise RelayGitHubError(404, "Not Found")
@@ -298,8 +331,16 @@ class MovedThroughTheRelay(unittest.TestCase):
         )
         mint = [c for c in api.calls if c[1] == "/app/installations/7/access_tokens"]
         # Least privilege:  one repository, metadata read, revoked after the one read.
-        self.assertEqual(mint, [("POST", "/app/installations/7/access_tokens",
-                                 {"repository_ids": [REPO_ID], "permissions": {"metadata": "read"}})])
+        self.assertEqual(
+            mint,
+            [
+                (
+                    "POST",
+                    "/app/installations/7/access_tokens",
+                    {"repository_ids": [REPO_ID], "permissions": {"metadata": "read"}},
+                )
+            ],
+        )
         self.assertEqual(api.calls[-1][:2], ("DELETE", "/installation/token"))
         self.assertNotIn("minted-fixture", json.dumps(body))
 
@@ -315,10 +356,12 @@ class MovedThroughTheRelay(unittest.TestCase):
 
     def test_unresolvable_new_name_still_reports_the_move(self):
         with tempfile.TemporaryDirectory() as tmp:
-            status, body = self.relay(tmp, ["jaywedgeworth22/*", "Simple-With-Us/*"], FakeGitHub(False)).handle(
-                TOKEN, "wf_repo_get", {"repo": OLD}
-            )
-        self.assertEqual((status, body["error"], body["retryable"]), (400, "repository moved", False))
+            status, body = self.relay(
+                tmp, ["jaywedgeworth22/*", "Simple-With-Us/*"], FakeGitHub(False)
+            ).handle(TOKEN, "wf_repo_get", {"repo": OLD})
+        self.assertEqual(
+            (status, body["error"], body["retryable"]), (400, "repository moved", False)
+        )
         self.assertNotIn("moved_to", body)
 
 
