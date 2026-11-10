@@ -72,9 +72,7 @@ class RuleReadTests(unittest.TestCase):
     def run_action(self, action, args, *replies, ceiling=CEILING, minter=None):
         client = Client(*replies)
         minter = minter or Minter()
-        handle = WorkflowVerbs.for_action(
-            client, Policy(ceiling), minter, "swu-wise", action, REPO
-        )
+        handle = WorkflowVerbs.for_action(client, Policy(ceiling), minter, "swu-wise", action, REPO)
         return handle.run(action, {"repo": REPO, **args}), client, minter
 
     def test_verbs_are_metadata_reads(self):
