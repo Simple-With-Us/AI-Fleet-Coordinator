@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import datetime as dt
 import io
-import os
 import json
+import os
 import re
 import tempfile
 import unittest
@@ -25,6 +25,7 @@ from pr_sweep import run as R
 from pr_sweep import status as S
 from pr_sweep.gh import Gh, GhError
 
+
 class LaneToolTests(unittest.TestCase):
     """resolve_lane_tool: directories and plain files are not a lane tool."""
 
@@ -33,6 +34,7 @@ class LaneToolTests(unittest.TestCase):
             bindir = Path(t, "bin")
             bindir.mkdir()
             import unittest.mock as _mock
+
             with _mock.patch.dict(os.environ, {"PATH": str(bindir)}):
                 fn()
 
@@ -48,7 +50,9 @@ class LaneToolTests(unittest.TestCase):
             (apps / "lane").write_text("#!/bin/sh\n", encoding="utf-8")
             self._with_path(d, lambda: self.assertIsNone(R.resolve_lane_tool(home=str(d))))
             (apps / "lane").chmod(0o755)
-            self._with_path(d, lambda: self.assertEqual(R.resolve_lane_tool(home=str(d)), str(apps / "lane")))
+            self._with_path(
+                d, lambda: self.assertEqual(R.resolve_lane_tool(home=str(d)), str(apps / "lane"))
+            )
 
     def test_falls_back_to_executable_lane_on_path(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -62,6 +66,7 @@ class LaneToolTests(unittest.TestCase):
                 self.assertEqual(R.resolve_lane_tool(home=str(d)), str(fake))
 
             self._with_path(d, run)
+
 
 NOW = dt.datetime(2026, 10, 17, 18, 0, 0, tzinfo=dt.timezone.utc)  # noqa: UP017 (3.9 has no datetime.UTC)
 OLD = "2026-10-17T12:00:00Z"
