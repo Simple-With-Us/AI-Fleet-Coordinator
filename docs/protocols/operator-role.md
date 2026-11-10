@@ -314,7 +314,7 @@ PR #1506 lists AA's readings of these lines, which are readings and not rulings,
 remove the `claude`, `muse` and `openrouter` seat wakes and their fallbacks in favour of the
 Operator's one consultant run, fix the per-seat model run an `@all` starts, and move the Mac bridge
 consult onto the owner's preset.  ECHO's candidate for that preset, `@preset/operator-inbox-router`
-version 3, is held and applied nowhere until ECHO's coordinator releases it.
+version 3, was held when this was written.  The Mac's `listener.toml` declares it as the bridge consult backup (`[muse_bridge] consult_backup`, the AFC-649 known-cap mode) since Nov 7, 2026, 10:14 PM, with the owner's Nov 6 line as the reason and no `review_by`.  That is the only place it is applied;  making it the consult's standing runtime is still pending Phase 2, and no release by ECHO's coordinator is recorded in the repository.
 
 **The direct message consequence, and what Jay has now ruled.**  AFC-469, merged on Oct 25, 2026,
 says a direct message may go out only when the owner is in the conversation, checked by user id.
