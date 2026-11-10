@@ -494,6 +494,19 @@ class AllowlistTests(unittest.TestCase):
             ["git", "rev-parse", "--verify", "-q", "HEAD^{tree}"],
             ["git", "rev-parse", "--verify", "-q", self.SHA + "^{tree}"],
             ["git", "rev-list", "--max-count=100", "--format=%T", "refs/remotes/origin/main"],
+            [
+                "git",
+                "fetch",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "--no-recurse-submodules",
+                "--quiet",
+                "origin",
+                "refs/pull/1494/head",
+            ],
+            ["git", "merge-base", "HEAD", "refs/remotes/origin/main"],
+            ["git", "diff", "--name-only", "-z", "--no-renames", self.SHA, "HEAD"],
+            ["git", "rev-list", "--max-count=50", self.SHA, "--not", "refs/remotes/origin/main"],
             ["lsof", "-d", "cwd", "-Fpcn"],
         ]:
             with self.subTest(argv=argv):
@@ -609,6 +622,68 @@ class AllowlistTests(unittest.TestCase):
             ["git", "rev-list", "--max-count=101", "--format=%T", "refs/remotes/origin/main"],
             ["git", "rev-list", "--max-count=100", "--format=%T", "main"],
             ["git", "rev-list", "--max-count=100", "refs/remotes/origin/main"],
+            # the one fetch: objects of a PR head only, never a ref, FETCH_HEAD, tags or another remote
+            ["git", "fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "--quiet", "origin"],
+            [
+                "git",
+                "fetch",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "--no-recurse-submodules",
+                "--quiet",
+                "origin",
+                "refs/pull/7/head:refs/heads/x",
+            ],
+            [
+                "git",
+                "fetch",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "--no-recurse-submodules",
+                "--quiet",
+                "origin",
+                "+refs/pull/7/head",
+            ],
+            [
+                "git",
+                "fetch",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "--no-recurse-submodules",
+                "--quiet",
+                "peer",
+                "refs/pull/7/head",
+            ],
+            [
+                "git",
+                "fetch",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "--no-recurse-submodules",
+                "--quiet",
+                "origin",
+                "refs/pull/0/head",
+            ],
+            [
+                "git",
+                "fetch",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "--no-recurse-submodules",
+                "--quiet",
+                "origin",
+                "refs/pull/7/merge",
+            ],
+            ["git", "fetch", "--quiet", "origin", "refs/pull/7/head"],
+            ["git", "merge-base", "HEAD", "main"],
+            ["git", "merge-base", "--all", "HEAD", "refs/remotes/origin/main"],
+            ["git", "diff", "--name-only", "-z", "--no-renames", "main", "HEAD"],
+            ["git", "diff", "--name-only", "-z", "--no-renames", self.SHA, "main"],
+            ["git", "diff", "--name-only", "-z", self.SHA, "HEAD"],
+            ["git", "diff", "--output=/tmp/x", "--name-only", "-z", self.SHA, "HEAD"],
+            ["git", "rev-list", "--max-count=51", self.SHA, "--not", "refs/remotes/origin/main"],
+            ["git", "rev-list", "--max-count=50", "HEAD", "--not", "refs/remotes/origin/main"],
+            ["git", "rev-list", "--max-count=50", self.SHA, "--not", "main"],
             ["lsof"],
             ["lsof", "-p", "1"],
             ["bash", "-c", "true"],
@@ -958,6 +1033,128 @@ class PruneTests(WorldCase):
         row = res.row("claude-unlanded")
         self.assertEqual(row["action"], "keep", row)
         self.assertIn("no merged or closed PR holds HEAD", row["reason"])
+
+    # --- a lane published through the GitHub API (the server's publish helper), then squash-merged
+
+    def _publish_as_pr(
+        self, lane: Path, number: int, files: dict[str, str], revise: dict[str, str] | None = None
+    ) -> str:
+        """The PR's commits as the API publish helper makes them:  new commits on the lane's merge base, made in
+        another clone (so no lane object is reused), reachable on origin only from refs/pull/<n>/head.  `revise`
+        is a later review fix made on GitHub.  Returns the PR head sha."""
+        clone = self.w.root / f"publisher-{number}"
+        self.w.git(["clone", "-q", self.w.origins["DealDex"].as_uri(), str(clone)], self.w.root)
+        base = self.w.git(["merge-base", "HEAD", "refs/remotes/origin/main"], lane)
+        self.w.git(["checkout", "-q", base], clone)
+        for step, batch in enumerate([files] + ([revise] if revise else [])):
+            for name, text in batch.items():
+                (clone / name).write_text(text, encoding="utf-8")
+                self.w.git(["add", name], clone)
+            self.w.git(["commit", "-q", "-m", f"published {number} step {step}"], clone)
+        sha = self.w.git(["rev-parse", "HEAD"], clone)
+        self.w.git(["push", "-q", "origin", f"HEAD:refs/pull/{number}/head"], clone)
+        return sha
+
+    def _land_on_moved_main(self, files: dict[str, str]) -> None:
+        """origin/main moves on (another PR), then the squash commit lands on top of it."""
+        tree = self.w.trees["DealDex"]
+        (tree / "someone-else.txt").write_text("other work\n", encoding="utf-8")
+        self.w.git(["add", "someone-else.txt"], tree)
+        self.w.git(["commit", "-q", "-m", "another PR"], tree)
+        for name, text in files.items():
+            (tree / name).write_text(text, encoding="utf-8")
+            self.w.git(["add", name], tree)
+        self.w.git(["commit", "-q", "-m", "squash"], tree)
+        self.w.git(["push", "-q", "origin", "main"], tree)
+
+    def test_api_published_and_revised_pr_on_a_moved_main_is_covered_by_its_own_commit(self) -> None:
+        # The live case (PRs 1494, 1523, 1613):  the lane's commit never reached GitHub, the PR was fixed on
+        # GitHub after it, and main moved before the squash.  No head holds HEAD and no main tree equals it.
+        lane = self.w.new_lane("published")
+        self.w.commit(lane)
+        mine = {"claude-published.txt": "claude-published.txt\n"}
+        head = self._publish_as_pr(lane, 35, mine, revise={"review-fix.txt": "fix\n"})
+        self._land_on_moved_main({**mine, "review-fix.txt": "fix\n"})
+        self.w.old_pr("claude/published", head, number=35, state="MERGED")
+        self.assertFalse(
+            self.w.git(["rev-parse", "--verify", "-q", head + "^{commit}"], lane, check=False)
+        )
+        res = self.w.run("prune", "--json")
+        row = res.row("claude-published")
+        self.assertEqual(row["action"], "remove", row)
+        self.assertIn("byte-identical in a commit of PR #35", row["reason"])
+        self.assertTrue(res.has("fetch", "--no-tags", "--no-write-fetch-head"))
+        # objects only: the fetch wrote no ref
+        self.assertEqual(
+            self.w.git(["for-each-ref", "--format=%(refname)", "refs/pull"], lane), ""
+        )
+
+    def test_retire_removes_an_api_published_lane(self) -> None:
+        lane = self.w.new_lane("pubretire")
+        self.w.commit(lane)
+        mine = {"claude-pubretire.txt": "claude-pubretire.txt\n"}
+        head = self._publish_as_pr(lane, 36, mine)
+        self._land_on_moved_main(mine)
+        self.w.old_pr("claude/pubretire", head, number=36, state="MERGED")
+        res = self.w.run("retire", "pubretire", "--repo", "DealDex")
+        self.assertEqual(res.rc, 0, res.err)
+        self.assertFalse(lane.exists())
+
+    def test_a_pr_head_already_here_is_not_fetched(self) -> None:
+        lane = self.w.new_lane("prhere")
+        self.w.commit(lane)
+        mine = {"claude-prhere.txt": "claude-prhere.txt\n"}
+        head = self._publish_as_pr(lane, 37, mine)
+        self._land_on_moved_main(mine)
+        self.w.git(["fetch", "-q", "origin", "refs/pull/37/head"], lane)
+        self.w.old_pr("claude/prhere", head, number=37, state="MERGED")
+        res = self.w.run("prune", "--json")
+        self.assertEqual(res.row("claude-prhere")["action"], "remove")
+        self.assertFalse(res.has("fetch"))
+
+    def test_lane_content_in_no_pr_commit_is_kept(self) -> None:
+        # The PR used the branch name, but none of its commits holds what the lane holds:  unpublished work.
+        lane = self.w.new_lane("drifted")
+        self.w.commit(lane)
+        other = {"claude-drifted.txt": "something else\n"}
+        head = self._publish_as_pr(lane, 38, other)
+        self._land_on_moved_main(other)
+        self.w.old_pr("claude/drifted", head, number=38, state="MERGED")
+        row = self.w.run("prune", "--json").row("claude-drifted")
+        self.assertEqual(row["action"], "keep", row)
+        self.assertIn("no merged or closed PR holds HEAD", row["reason"])
+
+    def test_a_partly_published_lane_is_kept(self) -> None:
+        # One of the lane's two changed paths matches the PR; the other never went out.
+        lane = self.w.new_lane("partial")
+        self.w.commit(lane)
+        self.w.commit(lane, "unsent.txt")
+        mine = {"claude-partial.txt": "claude-partial.txt\n"}
+        head = self._publish_as_pr(lane, 39, mine)
+        self._land_on_moved_main(mine)
+        self.w.old_pr("claude/partial", head, number=39, state="MERGED")
+        row = self.w.run("prune", "--json").row("claude-partial")
+        self.assertEqual(row["action"], "keep", row)
+
+    def test_a_closed_unmerged_pr_with_the_content_is_not_landed(self) -> None:
+        lane = self.w.new_lane("closedpr")
+        self.w.commit(lane)
+        mine = {"claude-closedpr.txt": "claude-closedpr.txt\n"}
+        head = self._publish_as_pr(lane, 40, mine)
+        self.w.old_pr("claude/closedpr", head, number=40, state="CLOSED")
+        res = self.w.run("prune", "--json")
+        row = res.row("claude-closedpr")
+        self.assertEqual(row["action"], "keep", row)
+        self.assertFalse(res.has("fetch"))
+
+    def test_an_unfetchable_pr_head_keeps_the_lane(self) -> None:
+        lane = self.w.new_lane("nopull")
+        self.w.commit(lane)
+        self.w.old_pr("claude/nopull", "d" * 40, number=42, state="MERGED")
+        res = self.w.run("prune", "--json")
+        row = res.row("claude-nopull")
+        self.assertEqual(row["action"], "keep", row)
+        self.assertTrue(res.has("fetch"))
 
     def test_an_open_pr_keeps_the_lane(self) -> None:
         lane = self.w.new_lane("open")
