@@ -30,14 +30,25 @@ root = Path(dest)
 (root / "node_modules" / "pkg").mkdir(parents=True)
 (root / ".git").mkdir(parents=True)
 (root / "dist").mkdir(parents=True)
+(root / "build").mkdir(parents=True)
 (root / "src").mkdir(parents=True)
+(root / "src" / "node_modules" / "pkg").mkdir(parents=True)
+(root / "src" / ".git").mkdir(parents=True)
+(root / "src" / "dist").mkdir(parents=True)
+(root / "src" / "build").mkdir(parents=True)
 (root / "app.py").write_text("print('hi')\\n")
 (root / "src" / "keep.txt").write_text("keep\\n")
 (root / ".env").write_text("SECRET=1\\n")
 (root / ".env.local").write_text("SECRET=2\\n")
+(root / "src" / ".env").write_text("SECRET=3\\n")
 (root / ".git" / "config").write_text("[core]\\n")
+(root / "src" / ".git" / "HEAD").write_text("ref\\n")
 (root / "node_modules" / "pkg" / "index.js").write_text("x\\n")
+(root / "src" / "node_modules" / "pkg" / "index.js").write_text("x\\n")
 (root / "dist" / "out.js").write_text("x\\n")
+(root / "src" / "dist" / "out.js").write_text("x\\n")
+(root / "build" / "out.js").write_text("x\\n")
+(root / "src" / "build" / "out.js").write_text("x\\n")
 (root / "secret.key").write_text("k\\n")
 (root / "cert.pem").write_text("p\\n")
 (root / "id_rsa").write_text("rsa\\n")
@@ -45,6 +56,7 @@ root = Path(dest)
 (root / "credentials.json").write_text("{}\\n")
 (root / "src" / "my-credentials.txt").write_text("c\\n")
 (root / "service-account.json").write_text("{}\\n")
+(root / "src" / "svc-service-account.json").write_text("{}\\n")
 """
 
 
@@ -107,10 +119,17 @@ class BackupReposTest(unittest.TestCase):
                       proc.stdout)
 
     def test_secret_and_noise_exclusions(self):
+        # Actual archive content, root and nested:  a fixture shaped like a
+        # private repo with secret-shaped files at both levels must archive
+        # only the two plain source files, so no secret spills offsite.
         proc = self.run_script(["Alpha"])
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
         names = self.zip_names(self.outdir / "Alpha-backup-2026-11-10.zip")
         self.assertEqual(names, {"app.py", "src/keep.txt"})
+        # Byte-level check:  no secret value appears anywhere in the archive.
+        blob = (self.outdir / "Alpha-backup-2026-11-10.zip").read_bytes()
+        for needle in (b"SECRET=", b"rsa", b"service-account", b"credential"):
+            self.assertNotIn(needle, blob)
 
     def test_exclusion_matcher(self):
         for excluded in (".env", ".env.production", "sub/.env",

@@ -49,13 +49,18 @@ jobs:
             --outdir backups \
             --date "$(date +%Y-%m-%d)"
 
-      # if: always() so the archives that succeeded still upload when the
-      # archive step failed partway.  On a cancelled run the runner
-      # terminates in-flight steps, so this cannot hang the job;  the upload
-      # path is limited to the zips and the summary the script writes (the
-      # zip exclusions keep secrets out), so nothing unintended publishes.
+      # !cancelled() so the archives that succeeded still upload when the
+      # archive step failed with an ordinary non-zero exit, while a cancelled
+      # run skips the upload.  This is the docs-recommended alternative to
+      # always(), which runs even on cancel and which GitHub warns can hang
+      # until timeout:  docs.github.com/en/actions/reference/workflows-and-actions/expressions#status-check-functions
+      # The bounded timeout is the backstop, not a cancellation guarantee.
+      # The upload path is limited to the zips and the summary the script
+      # writes (the zip exclusions keep secrets out), so nothing unintended
+      # publishes.
       - name: Upload backup archives as artifacts
-        if: always()
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
         uses: actions/upload-artifact@v7
         with:
           name: fleet-repo-backups-${{ github.run_id }}${{ env.BACKUP_ARTIFACT_SUFFIX }}
