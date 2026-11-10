@@ -57,10 +57,7 @@ class RuntimeProof:
                 if pid <= 0:
                     return False
                 pid = str(pid)
-            elif isinstance(pid, str):
-                if not pid.isdigit() or not pid.strip("0"):
-                    return False
-            else:
+            if not isinstance(pid, str) or not pid.isdigit() or not pid.strip("0"):
                 return False
             env = (Path("/proc") / pid / "environ").read_bytes()
             selectors = [
