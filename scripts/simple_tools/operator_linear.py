@@ -31,9 +31,9 @@ rulings (2026-10-21 and 2026-10-23), with the keying stated exactly as the owner
 
 What is different from the standalone relay:
 
-  - Identity.  Writes go out under the Operator's own Linear app (the renamed relay app),
-    reached through its OAuth client pair in Infisical (below), never a seat's credential
-    and never a baked token.  The comment footer names the
+  - Identity.  Writes go out under the owner's Linear developer token (a personal API
+    key with Write permission) held in Infisical (below), never a seat's credential and
+    never a baked token.  The comment footer names the
     Operator; the marker line is deliberately the relay's own (`<!-- zulip-relay -->`), so
     the hosted worker ADOPTS the comments the standalone relay already created instead of
     stacking new ones beside them.
@@ -45,15 +45,19 @@ What is different from the standalone relay:
     client (a read of a public stream); Linear writes are the only writes, and they use
     the Operator's token alone.
 
-Credentials (never logged; the pair and the minted token live in memory only):
+Credentials (never logged; the developer key lives in memory only):
 
-    The writing credential is the Operator's own Linear app (the renamed relay app), an
-    OAuth client pair in Infisical (project AI Fleet Coordinator, prod, folder /linear):
-    LINEAR_OPERATOR_CLIENT_ID and LINEAR_OPERATOR_CLIENT_SECRET.  The daemon reaches
-    the pair through ONE scoped read-only Infisical service token (operator-linear-read;
-    registry:  SWU Fleet References, "Infisical Service Tokens"), never through a
-    machine identity and never through a baked Linear token.  The service token itself
-    arrives one of two ways:
+    The writing credential is the owner's Linear developer token — a personal API key
+    with Write permission — in Infisical (project AI Fleet Coordinator, prod, folder
+    /linear) as LINEAR_OPERATOR_DEVELOPER_TOKEN.  The owner ruled this route on
+    2026-11-03:  the lane originally minted tokens from the Operator app's OAuth client
+    pair, but the app's registered scopes are create-only, so comment EDITS fail with
+    "Invalid scope: write required";  a personal API key carries the owner's own write
+    permission and needs no mint.  The daemon reaches the key through ONE scoped
+    read-only Infisical service token (operator-linear-read;  registry:  SWU Fleet
+    References, "Infisical Service Tokens"), never through a machine identity and
+    never through a baked Linear token.  The service token itself arrives one of two
+    ways:
 
     OPERATOR_LINEAR_INFISICAL_TOKEN   the service token, bound directly by the host as
                             a runtime-only variable;  wins when set
@@ -62,11 +66,11 @@ Credentials (never logged; the pair and the minted token live in memory only):
                             defaults to ~/workspace/.secrets/operator-linear-service-token
 
     At engine build (daemon start, and again whenever the service token changes) the
-    pair is fetched with the service token — after the token is verified against its
-    own record:  read-only, one scope, exactly prod /linear in this project — then
-    exchanged at Linear's OAuth token endpoint (client_credentials, the app's own
-    registered scopes), and the minted access token is what the relay's LinearClient
-    writes with.  A configured credential that is refused stops this feature
+    key is fetched with the service token — after the token is verified against its
+    own record:  read-only, one scope, exactly prod /linear in this project — and the
+    key itself is what the relay's LinearClient writes with, sent as
+    `Authorization: <key>` with no Bearer prefix (Linear's personal-key form;  there is
+    no OAuth exchange).  A configured credential that is refused stops this feature
     (CredentialRefused, logged with its stage and status, never a value), never the
     daemon.
 
@@ -110,14 +114,8 @@ INFISICAL_API = "https://app.infisical.com/api"
 INFISICAL_PROJECT_ID = "9bf7417a-fbbb-42ca-870c-2b45207233f5"  # AI Fleet Coordinator
 INFISICAL_ENVIRONMENT = "prod"
 INFISICAL_SECRET_PATH = "/linear"
-CLIENT_ID_NAME = "LINEAR_OPERATOR_CLIENT_ID"
-CLIENT_SECRET_NAME = "LINEAR_OPERATOR_CLIENT_SECRET"
-PAIR_NAMES = (CLIENT_ID_NAME, CLIENT_SECRET_NAME)
+API_KEY_NAME = "LINEAR_OPERATOR_DEVELOPER_TOKEN"
 DEFAULT_SERVICE_TOKEN_FILE = "~/workspace/.secrets/operator-linear-service-token"
-LINEAR_TOKEN_URL = "https://api.linear.app/oauth/token"
-# The Operator app's own registered scopes.  Asking Linear for a different scope string
-# revokes every token the app holds (the linear-board rule), so this is a constant.
-LINEAR_MINT_SCOPE = "read,comments:create"
 
 
 class CredentialRefused(Exception):
@@ -166,7 +164,7 @@ def _default_http(
 
 
 def service_token(env: Mapping[str, str], token_file: str | None = None) -> str:
-    """The scoped Infisical service token for the pair fetch:  the host-bound variable
+    """The scoped Infisical service token for the key fetch:  the host-bound variable
     wins;  else the configured file (default DEFAULT_SERVICE_TOKEN_FILE).  "" when
     neither source yields one — the feature is simply unconfigured.  A file that
     exists but is group- or other-readable raises CredentialRefused:  a service token
@@ -206,12 +204,10 @@ def _infisical_get(http: HttpFn, url: str, token: str, stage: str) -> Any:
     return payload
 
 
-def fetch_client_pair(token: str, *, http: HttpFn | None = None) -> tuple[str, str]:
-    """The Operator's Linear OAuth client pair from Infisical, the ONLY source.  The
-    service token is first verified against its own record — read-only, scoped to
-    exactly prod /linear in the AI Fleet Coordinator project — and anything wider is
-    refused before a single secret is read."""
-    request = http or _default_http
+def _verify_service_token(request: HttpFn, token: str) -> None:
+    """Verify the service token against its own record — read-only, scoped to exactly
+    prod /linear in the AI Fleet Coordinator project — and refuse anything wider
+    before a single secret is read."""
     record = _infisical_get(
         request, INFISICAL_API + "/v2/service-token", token, "read the service-token record"
     )
@@ -245,6 +241,15 @@ def fetch_client_pair(token: str, *, http: HttpFn | None = None) -> tuple[str, s
         raise CredentialRefused(
             "token_scope_mismatch", "the service token belongs to another project"
         )
+
+
+def fetch_api_key(token: str, *, http: HttpFn | None = None) -> str:
+    """The owner's Linear developer token from Infisical, the ONLY source.  The service
+    token is first verified against its own record — read-only, scoped to exactly
+    prod /linear in the AI Fleet Coordinator project — and anything wider is refused
+    before a single secret is read."""
+    request = http or _default_http
+    _verify_service_token(request, token)
     query = urllib.parse.urlencode(
         {
             "workspaceId": INFISICAL_PROJECT_ID,
@@ -253,76 +258,42 @@ def fetch_client_pair(token: str, *, http: HttpFn | None = None) -> tuple[str, s
         }
     )
     raw = _infisical_get(
-        request, INFISICAL_API + "/v3/secrets/raw?" + query, token, "read the Linear client pair"
+        request, INFISICAL_API + "/v3/secrets/raw?" + query, token, "read the Linear developer token"
     )
     items: Any = raw.get("secrets", raw) if isinstance(raw, dict) else raw
-    found: dict[str, str] = {}
     if isinstance(items, list):
         for item in items:
             if not isinstance(item, dict):
                 continue
             key = item.get("secretKey", item.get("key", item.get("name")))
             value = item.get("secretValue", item.get("value"))
-            if isinstance(key, str) and isinstance(value, str) and key in PAIR_NAMES:
-                found[key] = value
-    missing = [name for name in PAIR_NAMES if not found.get(name)]
-    if missing:
-        raise CredentialRefused(
-            "pair_incomplete",
-            "Infisical prod /linear is missing %s" % " and ".join(missing),
-        )
-    return found[CLIENT_ID_NAME], found[CLIENT_SECRET_NAME]
+            if key == API_KEY_NAME and isinstance(value, str) and value:
+                return value
+    raise CredentialRefused(
+        "key_missing",
+        "Infisical prod /linear is missing %s" % API_KEY_NAME,
+    )
 
 
-def mint_access_token(client_id: str, client_secret: str, *, http: HttpFn | None = None) -> str:
-    """Exchange the pair at Linear's OAuth token endpoint (client_credentials, the app's
-    own registered scopes — a different scope string would revoke the app's other
-    tokens).  Only the access token comes back;  a refusal names the HTTP status and
-    nothing of Linear's answer."""
-    request = http or _default_http
-    body = urllib.parse.urlencode(
-        {
-            "grant_type": "client_credentials",
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "scope": LINEAR_MINT_SCOPE,
-        }
-    ).encode()
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "operator-linear-comments",
-    }
-    try:
-        status, payload = request("POST", LINEAR_TOKEN_URL, headers, body)
-    except OSError as exc:
-        raise CredentialRefused(
-            "linear_mint_failed",
-            "minting the Operator's Linear token: %s" % type(exc).__name__,
-        ) from None
-    if (
-        status is None
-        or not 200 <= int(status) < 300
-        or not isinstance(payload, dict)
-        or not payload.get("access_token")
-    ):
-        raise CredentialRefused(
-            "linear_mint_failed", "minting the Operator's Linear token: HTTP %s" % status
-        )
-    return str(payload["access_token"])
-
-
-def load_access_token(
-    env: Mapping[str, str], token_file: str | None = None, *, http: HttpFn | None = None
+def load_api_key(
+    env: Mapping[str, str],
+    token_file: str | None = None,
+    *,
+    http: HttpFn | None = None,
+    hide: Callable[[list[str]], None] | None = None,
 ) -> str | None:
-    """The minted Linear access token for the hosted engine, or None when no service
-    token is configured (the feature is off).  Raises CredentialRefused when a service
-    token IS configured but the pair cannot be fetched or exchanged.  The pair and the
-    token are held in memory only — nothing here writes either anywhere."""
+    """The Linear developer token for the hosted engine, or None when no service token
+    is configured (the feature is off).  Raises CredentialRefused when a service token
+    IS configured but the key cannot be fetched.  The key is held in memory only —
+    nothing here writes it anywhere;  `hide` (the daemon's log scrubber registry) is
+    told the value the moment it is fetched, so no later log line can carry it."""
     token = service_token(env, token_file)
     if not token:
         return None
-    client_id, client_secret = fetch_client_pair(token, http=http)
-    return mint_access_token(client_id, client_secret, http=http)
+    key = fetch_api_key(token, http=http)
+    if hide is not None:
+        hide([key])
+    return key
 
 
 def state_path(root: str | Path, env: Mapping[str, str], dry_run: bool) -> Path:
@@ -353,6 +324,7 @@ def fetch_topic_history(
         {"operator": "topic", "operand": topic},
     ]
     out: list[dict[str, Any]] = []
+    seen: set[int] = set()
     anchor: Any = "oldest"
     while len(out) < max_messages:
         result = client.get(
@@ -369,13 +341,21 @@ def fetch_topic_history(
         page = result.get("messages") if isinstance(result, Mapping) else None
         if not isinstance(page, list) or not all(isinstance(m, Mapping) for m in page):
             raise ValueError("a Zulip message page must be a list of messages")
-        fresh = [m for m in page if isinstance(m.get("id"), int)]
+        # Only ids never seen count:  a page the API repeats (an anchor it did not
+        # honour) must neither duplicate messages into the comment nor page forever.
+        fresh = [
+            m for m in page if isinstance(m.get("id"), int) and int(m["id"]) not in seen
+        ]
         if not fresh:
             break
+        seen.update(int(m["id"]) for m in fresh)
         out.extend(dict(m) for m in fresh)
         if len(page) < PAGE:
             break
-        anchor = max(int(m["id"]) for m in fresh)
+        new_anchor = max(int(m["id"]) for m in fresh)
+        if new_anchor == anchor:
+            break  # the anchor failed to advance:  the next page would repeat this one
+        anchor = new_anchor
     return out[:max_messages]
 
 
@@ -516,19 +496,20 @@ def build(
     monotonic: Callable[[], float] = time.monotonic,
     service_token_file: str | None = None,
     http: HttpFn | None = None,
+    hide: Callable[[list[str]], None] | None = None,
 ) -> OperatorLinearComments | None:
     """The hosted engine, or None when no Infisical service token is configured (the
-    feature is off; the daemon logs the reason).  The Operator's Linear pair is fetched
-    and exchanged here, at build, so a build is the one moment credentials move.  A
+    feature is off; the daemon logs the reason).  The owner's Linear developer token is
+    fetched here, at build, so a build is the one moment credentials move.  A
     configured credential that is refused raises CredentialRefused, and a ledger that
     refuses to open raises SystemExit:  the daemon logs both as this feature failing
     closed — never as a daemon failure."""
-    token = load_access_token(env, service_token_file, http=http)
+    token = load_api_key(env, service_token_file, http=http, hide=hide)
     if token is None:
         return None
     dry = env.get(DRY_RUN_ENV) == "1"
     ledger = lr.Ledger(state_path(root, env, dry))
-    linear = lr.LinearClient(token, dry_run=dry)
+    linear = lr.LinearClient(token, dry_run=dry, auth_scheme="api_key")
     own_email = (env.get(OWN_EMAIL_ENV) or "").strip().lower()
     return OperatorLinearComments(
         realm=realm_url(env),

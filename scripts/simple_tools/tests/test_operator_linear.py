@@ -416,7 +416,7 @@ class FakeHttp:
     """Scripted HTTP for the credential loader:  routes by URL, records every call.
     Nothing here touches the network."""
 
-    def __init__(self, record=None, secrets=None, mint=None, statuses=None) -> None:
+    def __init__(self, record=None, secrets=None, statuses=None) -> None:
         self.record = (
             {
                 "permissions": ["read"],
@@ -429,15 +429,13 @@ class FakeHttp:
         self.secrets = (
             {
                 "secrets": [
-                    {"secretKey": "LINEAR_OPERATOR_CLIENT_ID", "secretValue": "cid"},
-                    {"secretKey": "LINEAR_OPERATOR_CLIENT_SECRET", "secretValue": "sec"},
+                    {"secretKey": "LINEAR_OPERATOR_DEVELOPER_TOKEN", "secretValue": "dev-key"},
                     {"secretKey": "LINEAR_MA_CLIENT_ID", "secretValue": "not-the-operator"},
                 ]
             }
             if secrets is None
             else secrets
         )
-        self.mint = {"access_token": "minted-token"} if mint is None else mint
         self.statuses = statuses or {}
         self.calls: list[tuple[str, str, dict, bytes | None]] = []
 
@@ -447,8 +445,6 @@ class FakeHttp:
             return self.statuses.get("record", 200), self.record
         if "/v3/secrets/raw" in url:
             return self.statuses.get("secrets", 200), self.secrets
-        if url == opl.LINEAR_TOKEN_URL:
-            return self.statuses.get("mint", 200), self.mint
         raise AssertionError("unexpected url %s" % url)
 
 
@@ -483,11 +479,11 @@ class CredentialTests(unittest.TestCase):
         self.assertEqual(caught.exception.reason, "token_file_permissions")
         self.assertNotIn("st-from-file", str(caught.exception))
 
-    # -- the pair fetch -----------------------------------------------------------------
-    def test_pair_fetch_verifies_scope_then_reads_the_pair(self) -> None:
+    # -- the key fetch ----------------------------------------------------------------------
+    def test_key_fetch_verifies_scope_then_reads_the_key(self) -> None:
         http = FakeHttp()
-        pair = opl.fetch_client_pair("st-test", http=http)
-        self.assertEqual(pair, ("cid", "sec"))
+        key = opl.fetch_api_key("st-test", http=http)
+        self.assertEqual(key, "dev-key")
         record_call, secrets_call = http.calls
         self.assertEqual(record_call[2]["Authorization"], "Bearer st-test")
         query = secrets_call[1].split("?", 1)[1]
@@ -495,7 +491,7 @@ class CredentialTests(unittest.TestCase):
         self.assertIn("environment=prod", query)
         self.assertIn("secretPath=%2Flinear", query)
 
-    def test_pair_fetch_refuses_a_write_capable_token(self) -> None:
+    def test_key_fetch_refuses_a_write_capable_token(self) -> None:
         http = FakeHttp(
             record={
                 "permissions": ["read", "write"],
@@ -504,11 +500,11 @@ class CredentialTests(unittest.TestCase):
             }
         )
         with self.assertRaises(opl.CredentialRefused) as caught:
-            opl.fetch_client_pair("st-test", http=http)
+            opl.fetch_api_key("st-test", http=http)
         self.assertEqual(caught.exception.reason, "token_not_read_only")
         self.assertEqual(len(http.calls), 1)  # refused before any secret was read
 
-    def test_pair_fetch_refuses_a_wider_scope(self) -> None:
+    def test_key_fetch_refuses_a_wider_scope(self) -> None:
         for scopes in (
             [{"environment": "prod", "secretPath": "/"}],
             [
@@ -524,10 +520,10 @@ class CredentialTests(unittest.TestCase):
                 }
             )
             with self.assertRaises(opl.CredentialRefused) as caught:
-                opl.fetch_client_pair("st-test", http=http)
+                opl.fetch_api_key("st-test", http=http)
             self.assertEqual(caught.exception.reason, "token_scope_mismatch")
 
-    def test_pair_fetch_refuses_another_projects_token(self) -> None:
+    def test_key_fetch_refuses_another_projects_token(self) -> None:
         http = FakeHttp(
             record={
                 "permissions": ["read"],
@@ -536,67 +532,49 @@ class CredentialTests(unittest.TestCase):
             }
         )
         with self.assertRaises(opl.CredentialRefused) as caught:
-            opl.fetch_client_pair("st-test", http=http)
+            opl.fetch_api_key("st-test", http=http)
         self.assertEqual(caught.exception.reason, "token_scope_mismatch")
 
-    def test_pair_fetch_refuses_an_incomplete_pair(self) -> None:
+    def test_key_fetch_refuses_a_missing_key(self) -> None:
         http = FakeHttp(
-            secrets={"secrets": [{"secretKey": "LINEAR_OPERATOR_CLIENT_ID", "secretValue": "cid"}]}
+            secrets={"secrets": [{"secretKey": "LINEAR_MA_CLIENT_ID", "secretValue": "x"}]}
         )
         with self.assertRaises(opl.CredentialRefused) as caught:
-            opl.fetch_client_pair("st-test", http=http)
-        self.assertEqual(caught.exception.reason, "pair_incomplete")
-        self.assertIn("LINEAR_OPERATOR_CLIENT_SECRET", str(caught.exception))
+            opl.fetch_api_key("st-test", http=http)
+        self.assertEqual(caught.exception.reason, "key_missing")
+        self.assertIn("LINEAR_OPERATOR_DEVELOPER_TOKEN", str(caught.exception))
+        self.assertNotIn("dev-key", str(caught.exception))
 
-    def test_pair_fetch_refuses_on_an_http_error(self) -> None:
+    def test_key_fetch_refuses_on_an_http_error(self) -> None:
         http = FakeHttp(statuses={"record": 500})
         with self.assertRaises(opl.CredentialRefused) as caught:
-            opl.fetch_client_pair("st-test", http=http)
+            opl.fetch_api_key("st-test", http=http)
         self.assertEqual(caught.exception.reason, "infisical_error")
         self.assertIn("HTTP 500", str(caught.exception))
 
-    # -- the Linear mint ------------------------------------------------------------------
-    def test_mint_exchanges_the_pair_with_the_apps_own_scopes(self) -> None:
-        http = FakeHttp()
-        token = opl.mint_access_token("cid", "sec", http=http)
-        self.assertEqual(token, "minted-token")
-        _method, _url, _headers, body = http.calls[0]
-        import urllib.parse
-
-        form = urllib.parse.parse_qs(body.decode("utf-8"))
-        self.assertEqual(form["grant_type"], ["client_credentials"])
-        self.assertEqual(form["client_id"], ["cid"])
-        self.assertEqual(form["client_secret"], ["sec"])
-        self.assertEqual(form["scope"], [opl.LINEAR_MINT_SCOPE])
-
-    def test_mint_refuses_without_an_access_token(self) -> None:
-        for mint, statuses in (({}, None), ({"access_token": "x"}, {"mint": 401})):
-            http = FakeHttp(mint=mint, statuses=statuses)
-            with self.assertRaises(opl.CredentialRefused) as caught:
-                opl.mint_access_token("cid", "sec", http=http)
-            self.assertEqual(caught.exception.reason, "linear_mint_failed")
-
     # -- the whole load, and build ---------------------------------------------------------
-    def test_load_access_token_runs_the_whole_chain(self) -> None:
+    def test_load_api_key_runs_the_whole_chain(self) -> None:
         http = FakeHttp()
+        hidden: list[str] = []
         env = {opl.SERVICE_TOKEN_ENV: "st-test"}
-        self.assertEqual(opl.load_access_token(env, http=http), "minted-token")
-        self.assertEqual(len(http.calls), 3)  # record, pair, mint — in that order
+        self.assertEqual(opl.load_api_key(env, http=http, hide=hidden.extend), "dev-key")
+        self.assertEqual(len(http.calls), 2)  # record, then the key — no OAuth exchange
         self.assertTrue(http.calls[0][1].endswith("/v2/service-token"))
         self.assertIn("/v3/secrets/raw", http.calls[1][1])
-        self.assertEqual(http.calls[2][1], opl.LINEAR_TOKEN_URL)
+        self.assertEqual(hidden, ["dev-key"])  # registered for log scrubbing at fetch
 
-    def test_load_access_token_unconfigured_is_none(self) -> None:
+    def test_load_api_key_unconfigured_is_none(self) -> None:
         http = FakeHttp()
-        self.assertIsNone(opl.load_access_token({}, str(self.dir / "absent"), http=http))
+        self.assertIsNone(opl.load_api_key({}, str(self.dir / "absent"), http=http))
         self.assertEqual(http.calls, [])
 
-    def test_build_wires_the_minted_token_into_the_engine(self) -> None:
+    def test_build_wires_the_developer_token_into_the_engine(self) -> None:
         http = FakeHttp()
         env = {opl.SERVICE_TOKEN_ENV: "st-test"}
         engine = opl.build(env, self.dir, log=self.logs.append, http=http)
         self.assertIsNotNone(engine)
         self.assertIsInstance(engine.worker.linear, lr.LinearClient)
+        self.assertEqual(engine.worker.linear.auth_scheme, "api_key")
         engine.close()
 
     def test_build_without_a_service_token_is_off(self) -> None:
@@ -614,6 +592,89 @@ class CredentialTests(unittest.TestCase):
         env = {opl.SERVICE_TOKEN_ENV: "st-test"}
         with self.assertRaises(opl.CredentialRefused):
             opl.build(env, self.dir, log=self.logs.append, http=http)
+
+
+class _StubResponse:
+    def __init__(self, payload) -> None:
+        import json
+
+        self._raw = json.dumps(payload).encode()
+
+    def read(self):
+        return self._raw
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+class _StubOpener:
+    """Captures the requests a LinearClient sends; answers a canned GraphQL payload."""
+
+    def __init__(self) -> None:
+        self.requests: list = []
+
+    def open(self, req, timeout=None):
+        self.requests.append(req)
+        return _StubResponse({"data": {"ok": True}})
+
+
+class LinearAuthFormTests(unittest.TestCase):
+    """The developer token goes out bare (Linear's personal-key form);  the default
+    OAuth form keeps its Bearer prefix for the standalone relay."""
+
+    def test_api_key_scheme_sends_the_token_without_a_prefix(self) -> None:
+        opener = _StubOpener()
+        client = lr.LinearClient("dev-key", opener=opener, auth_scheme="api_key")
+        client._gql("query { ok }", {})
+        self.assertEqual(opener.requests[0].get_header("Authorization"), "dev-key")
+
+    def test_default_scheme_sends_a_bearer_token(self) -> None:
+        opener = _StubOpener()
+        client = lr.LinearClient("oauth-token", opener=opener)
+        client._gql("query { ok }", {})
+        self.assertEqual(
+            opener.requests[0].get_header("Authorization"), "Bearer oauth-token"
+        )
+
+    def test_an_unknown_scheme_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            lr.LinearClient("x", auth_scheme="basic")
+
+
+class LedgerCloseTests(unittest.TestCase):
+    def test_close_saves_entries_dirtied_since_the_last_save(self) -> None:
+        import json
+
+        path = Path(tempfile.mkdtemp()) / "state.json"
+        led = lr.Ledger(path)
+        led.open()
+        led.mark_dirty()
+        led.close()  # must flush the dirty state before releasing the flock
+        self.assertTrue(path.exists())
+        self.assertIn("entries", json.loads(path.read_text("utf-8")))
+        again = lr.Ledger(path)
+        again.open()  # the flock was released, so a rebuilt engine can open it
+        again.close()
+
+
+class HistoryPagingEdgeTests(unittest.TestCase):
+    def test_a_repeated_page_neither_duplicates_nor_pages_forever(self) -> None:
+        class DupZulip:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def get(self, path, params=None):
+                self.calls += 1
+                return {"messages": [api_message(1, "one"), api_message(2, "two")]}
+
+        zulip = DupZulip()
+        with mock.patch.object(opl, "PAGE", 2):
+            got = opl.fetch_topic_history(zulip, 5, "thread")
+        self.assertEqual([m["id"] for m in got], [1, 2])
+        self.assertEqual(zulip.calls, 2)  # one repeat, recognised, and done
 
 
 class _StubLog:
@@ -680,10 +741,26 @@ class DaemonConfigureTests(unittest.TestCase):
             self.assertIsNotNone(engine)
             self.assertEqual(stub._linear_comments_spec, ("st-test",))
             self.assertIn("st-test", stub.hidden)  # the log scrubber knows the value
+            self.assertIn("dev-key", stub.hidden)  # and the fetched developer token
             stub.configure()  # a reload with the same token keeps the engine
             self.assertIs(stub.linear_comments, engine)
-            self.assertEqual(len(http.calls), 3)  # no second fetch or mint
+            self.assertEqual(len(http.calls), 2)  # no second fetch
         engine.close()
+
+    def test_a_stopped_engine_is_rebuilt_on_reload(self) -> None:
+        http = FakeHttp()
+        stub = self.stub({opl.SERVICE_TOKEN_ENV: "st-test"})
+        with mock.patch.object(opl, "_default_http", http):
+            stub.configure()
+            engine = stub.linear_comments
+            self.assertIsNotNone(engine)
+            engine.stopped = "linear refused the credential"  # an auth stop
+            stub.configure()  # the same service token, but the engine is stopped
+            rebuilt = stub.linear_comments
+            self.assertIsNotNone(rebuilt)  # the old ledger lock was released first
+            self.assertIsNot(rebuilt, engine)
+            self.assertIsNone(rebuilt.stopped)
+        rebuilt.close()
 
     def test_a_group_readable_token_file_fails_closed_in_the_log(self) -> None:
         path = self.dir / "service-token"

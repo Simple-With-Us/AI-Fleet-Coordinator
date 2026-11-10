@@ -97,8 +97,8 @@ retirement sequence at the end runs, in order, after verification.
   to a live volume that lacks it.  The server image copies the whole `agent_sync`
   package, so no Dockerfile change is needed.
 - **Credentials:** the daemon's Linear credential loads through the scoped Infisical
-  service token described in the credential seam below — the pair is fetched and
-  exchanged inside `operator_linear.build`, so a daemon reload that leaves the
+  service token described in the credential seam below — the developer token is
+  fetched inside `operator_linear.build`, so a daemon reload that leaves the
   service token unchanged keeps the running engine (and its ledger lock), and a
   service-token change rebuilds the engine on the same ledger file.
 - **Update policy** (inherited, unchanged):  create immediately on first mention;  edits
@@ -120,7 +120,7 @@ the container).  That is superseded by the live layout, verified 2026-11-03:
   `/linear`, as `LINEAR_OPERATOR_CLIENT_ID` and `LINEAR_OPERATOR_CLIENT_SECRET`
   (registered in INFISICAL.md).  No seat's credential and not the
   `/operator-linkifiers` `LINEAR_API_KEY` (that one reads projects for the webhook).
-- **The daemon reaches the pair through a service token, never a machine identity.**
+- **The daemon reaches the key through a service token, never a machine identity.**
   A scoped read-only Infisical service token, `operator-linear-read`, was minted for
   exactly prod `/linear` (registry:  SWU Fleet References, "Infisical Service Tokens"
   row 61).  The daemon resolves it from the runtime-only variable
@@ -130,16 +130,24 @@ the container).  That is superseded by the live layout, verified 2026-11-03:
 - **The load, at engine build** (daemon start, and again when the service token
   changes):  the token is verified against its own Infisical record (read-only, one
   scope, exactly prod `/linear`, this project — anything wider is refused before a
-  secret is read), the pair is fetched from `GET /api/v3/secrets/raw`, and the pair
-  is exchanged at Linear's OAuth token endpoint (`client_credentials`, the app's own
-  registered scope string — a different string would revoke the app's other tokens).
-  The pair and the minted access token are held in memory only;  a refused load
-  stops this feature, never the daemon.
-- **Still owed before any live enablement:**  the sandbox proof (the relay's open
-  question) — create a comment with this credential, then EDIT it.  It is step 1 of
-  the retirement sequence below, and it needs a validated OAuth token for the app;
-  the old relay's cached token lives in its ledger on the server host, which is
-  where the proof runs.
+  secret is read), and the developer token is fetched from
+  `GET /api/v3/secrets/raw`.  There is no OAuth exchange:  the key is sent to Linear
+  as `Authorization: <key>` with no Bearer prefix.  The key is held in memory only
+  and registered with the daemon's log scrubber at fetch;  a refused load stops
+  this feature, never the daemon.
+- **Superseded (owner ruling, 2026-11-03):**  the mint design above was replaced
+  before enablement.  The app's registered scopes are create-only, so an edit under
+  a minted token fails with "Invalid scope: write required";  the owner ruled the
+  lane writes with his Linear developer token instead — a personal API key with
+  Write permission, stored in the same folder as `LINEAR_OPERATOR_DEVELOPER_TOKEN`.
+  The daemon no longer reads the app's client pair, and no scope change on the app
+  is needed.
+- **Still owed before any live enablement:**  the sandbox proof — create a comment
+  with the developer token, then EDIT it, on the server host.  It is step 1 of the
+  retirement sequence below.  A read-only check from the agent VM on 2026-11-10
+  found the value stored under `LINEAR_OPERATOR_DEVELOPER_TOKEN` is an OAuth-format
+  token that Linear currently refuses (401 in both header forms), so the stored
+  value must be a live personal API key before the proof can pass.
 
 `OPERATOR_ZULIP_EMAIL` (the Operator bot's own address, already bound on the container
 for the Operator voice) is read when present so the engine skips the Operator's own
@@ -163,10 +171,10 @@ streams never commented;  dry run writes nothing;  the ledger path;  the
 load with the HTTP fetch faked — the service token's sources (bound variable wins,
 owner-only file, missing file is simply off, group-readable file refused), the scope
 verification (a write-capable token, a wider scope or another project's token is
-refused before any secret is read), the pair fetch, the Linear mint with the app's
-own scope string, and the daemon's configure step on a stub (engine built from the
-service token, kept across a reload, a refused token file logged as this feature's
-error and nothing built).  The relay's own suite
+refused before any secret is read), the developer-token fetch and its bare-key
+Authorization form, and the daemon's configure step on a stub (engine built from the
+service token, kept across a reload, a stopped engine rebuilt on reload, a refused
+token file logged as this feature's error and nothing built).  The relay's own suite
 (`test_linear_relay.py`, 78 tests) stays green unchanged in behaviour except the
 whole-topic continuation above.
 
@@ -176,9 +184,9 @@ Run only after the fold-in is merged and deployed, in this order — the order i
 safety property:  at no point are both writers live on the same topic, and at no point
 is neither live.
 
-1. **Sandbox proof.**  The Operator's Linear credential exists (seam above);  in the
-   sandbox, create and then EDIT a comment with it.  If the edit is refused under
-   `read` + `comments:create`, widen the app's scopes first — do not proceed on a
+1. **Sandbox proof.**  The developer token exists (seam above);  in the
+   sandbox, create and then EDIT a comment with it.  If the edit is refused, the
+   stored key lacks Write permission — replace the stored key;  do not proceed on a
    create-only proof.
 2. **Deploy dark.**  Ship the fold-in with `[linear_comments] enabled = false` (the
    sample's default) in the server image;  restart the app;  confirm the daemon is
