@@ -3,15 +3,10 @@
 
 Implements the fleet-wide canonical pattern (see repo-root INFISICAL.md):
 
-1. **Load at startup.**  ``init_settings()`` fetches the full managed settings set from
-   the app's Infisical project (universal-auth login -> access token ->
-   GET /api/v3/secrets/raw) into an in-memory cache.  The credential is first match
-   wins:  an ``INFISICAL_TOKEN`` service token in the environment is the bearer
-   directly, with no universal-auth login on that path at all;  otherwise the machine
-   identity is logged in.  When no Infisical credential is configured (local dev
-   without the machine identity), the managed keys are populated from the process
-   environment instead and a warning is logged -- the service keeps its old env-based
-   behavior.  Missing *required* keys fail fast with a SettingsError naming the key and
+1. **Load at startup.**  ``init_settings()`` fetches managed settings with the app's
+   dedicated scoped service-token binding and verifies its grant before reading.  When
+   no token is configured, managed keys come from the process environment and a warning
+   is logged.  Missing *required* keys fail fast with a SettingsError naming the key and
    pointing at INFISICAL.md.
 2. **Never fetch per-request.**  ``get()`` reads memory only.  All runtime reads come
    from the cache; no per-request (or per-tick, per-event) Infisical call exists.
@@ -40,7 +35,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import pathlib
 import threading
 import urllib.error
 import urllib.request
@@ -55,27 +49,17 @@ HTTP_TIMEOUT = 10.0
 # Knob read from the cache itself, so the refresh cadence is tunable without a deploy.
 REFRESH_INTERVAL_KEY = "SETTINGS_REFRESH_SECONDS"
 
-# Identity env names, in priority order.  The fleet's shared automation machine
-# identity is injected into the container environment on hosted services; local dev may
-# also use the JSON identity file below.
-IDENTITY_PREFIXES = ("INFISICAL_AUTOMATION", "INFISICAL_SHARED")
-IDENTITY_FILE_ENV = "INFISICAL_MACHINE_IDENTITY"
-# Fleet convention (see the Infisical SOT rollout brief): the machine identity JSON lives
-# under ~/workspace/.secrets on agent machines; the Mac runs under `fleet-secrets run`.
-IDENTITY_FILE_DEFAULT = pathlib.Path("~/workspace/.secrets/infisical-machine-identity.json")
-# The service token a consumer binds in the environment, used as the bearer directly:
-# no universal-auth login happens on that path.  First match wins, so it sits ahead of
-# the machine identity.
+# Per-use-case read/write service-token bindings, used as bearers directly.
+IDENTITY_PREFIXES: tuple[str, ...] = ()
 ENV_TOKEN = "INFISICAL_TOKEN"
+ENV_WRITE_TOKEN = "INFISICAL_WRITE_TOKEN"
 # The shape the fleet uses for a service token (the BotFleet reader's rule):  the st.
 # prefix, 20 to 2048 characters, and no whitespace anywhere.
 SERVICE_TOKEN_PREFIX = "st."
 MIN_SERVICE_TOKEN_LENGTH = 20
 MAX_SERVICE_TOKEN_LENGTH = 2048
-# Where the bearer came from, so a 401 is answered the right way:  a machine identity
-# can log in again, a service token cannot.
+# The only supported bearer source is an explicit scoped service token.
 SOURCE_SERVICE_TOKEN = "service-token"
-SOURCE_MACHINE_IDENTITY = "machine-identity"
 
 
 class SettingsError(Exception):
@@ -130,14 +114,8 @@ class InfisicalSettings:
         self.api_base = (
             api_base or os.environ.get("INFISICAL_API_BASE") or INFISICAL_API_DEFAULT
         ).rstrip("/")
-        self.identity_prefixes = identity_prefixes
+        # Keep the argument for source compatibility; it is deliberately ignored.
         self._lock = threading.Lock()
-        # The login lock is separate from the cache lock on purpose:  a slow
-        # universal-auth login must not block a reader that only wants the
-        # cache, and the two locks are always taken in the same order (login
-        # lock, then cache lock) so they cannot deadlock.
-        self._login_lock = threading.Lock()
-        self._identity_lock = threading.Lock()
         self._cache: dict[str, str] = {}
         # Keys some Infisical fetch actually returned.  The env backfill is a
         # migration bridge for keys that have only ever lived in the process
@@ -145,9 +123,6 @@ class InfisicalSettings:
         # propagate instead of the backfill resurrecting the env copy.
         # (A dict, not a set: this module's own set() API shadows the builtin.)
         self._infisical_keys: dict[str, None] = {}
-        self._access_token: str | None = None
-        self._credential_source: str | None = None
-        self._identity: tuple[str | None, str | None] | None = None
         self._refresh_thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._listeners: list = []
@@ -170,56 +145,16 @@ class InfisicalSettings:
         if refusal:
             raise SettingsError(refusal)
 
-    # -- identity -----------------------------------------------------------
-
-    def _identity_from_env(self) -> tuple[str | None, str | None]:
-        for prefix in self.identity_prefixes:
-            cid = (os.environ.get(f"{prefix}_CLIENT_ID") or "").strip()
-            csec = (os.environ.get(f"{prefix}_CLIENT_SECRET") or "").strip()
-            if cid and csec:
-                return cid, csec
-        return None, None
-
-    def _identity_from_file(self) -> tuple[str | None, str | None]:
-        path = pathlib.Path(
-            os.environ.get(IDENTITY_FILE_ENV, "") or IDENTITY_FILE_DEFAULT
-        ).expanduser()
-        if not path.is_file():
-            return None, None
-        try:
-            data = json.loads(path.read_text())
-        except (OSError, ValueError):
-            return None, None
-        for prefix in self.identity_prefixes:
-            cid = str(data.get(f"{prefix}_CLIENT_ID") or "").strip()
-            csec = str(data.get(f"{prefix}_CLIENT_SECRET") or "").strip()
-            if cid and csec:
-                return cid, csec
-        return None, None
-
-    def identity(self) -> tuple[str | None, str | None]:
-        """(client_id, client_secret); resolved once and cached.  Values never logged.
-
-        The resolution runs under its own lock so two cold-start callers cannot
-        both read the identity file, and so the cached tuple is published once.
-        """
-        with self._identity_lock:
-            if self._identity is None:
-                cid, csec = self._identity_from_env()
-                if not cid:
-                    cid, csec = self._identity_from_file()
-                self._identity = (cid, csec)
-            return self._identity
-
     # -- credential ---------------------------------------------------------
 
-    def _service_token(self) -> str | None:
+    def _service_token(self, *, writer: bool = False) -> str | None:
         """The INFISICAL_TOKEN service token, validated, or None when it is not set.
 
         A token that is set but unusable is refused here, before any API call, and its
         value never reaches an error message.  An empty or whitespace-only value counts
         as not set, so the next leg of the chain gets its turn."""
-        raw = os.environ.get(ENV_TOKEN)
+        name = ENV_WRITE_TOKEN if writer else ENV_TOKEN
+        raw = os.environ.get(name)
         if raw is None:
             return None
         token = raw.strip()
@@ -227,59 +162,21 @@ class InfisicalSettings:
             return None
         if not _is_service_token(token):
             raise SettingsError(
-                f"{ENV_TOKEN} is not a usable Infisical service token:  it must start with "
+                f"{name} is not a usable Infisical service token:  it must start with "
                 f"the {SERVICE_TOKEN_PREFIX} prefix, carry no whitespace and be "
                 f"{MIN_SERVICE_TOKEN_LENGTH} to {MAX_SERVICE_TOKEN_LENGTH} characters long; "
                 "see INFISICAL.md"
             )
         return token
 
-    def _credential(self) -> tuple[str | None, str]:
-        """The bearer for the next Infisical call and where it came from, first match wins.
-
-        The INFISICAL_TOKEN service token is the bearer directly:  no universal-auth
-        login happens on that path.  The machine identity is logged in and its session
-        token is the bearer;  a session token already held is reused, and concurrent
-        cold-start callers share one login.  With neither, the caller gets (None, "")
-        and the module's own fail-closed behaviour applies.  Neither value is ever
-        logged."""
-        token = self._service_token()
+    def _credential(self, *, writer: bool = False) -> tuple[str | None, str]:
+        """Return only the explicit read or write service-token binding."""
+        token = self._service_token(writer=writer)
         if token:
             return token, SOURCE_SERVICE_TOKEN
-        cid, _csec = self.identity()
-        if not cid:
+        if any((os.environ.get(name) or "").strip() for name in (ENV_TOKEN, ENV_WRITE_TOKEN)):
             return None, ""
-        return self._machine_session_token(), SOURCE_MACHINE_IDENTITY
-
-    def _machine_session_token(self, *, stale_token: str | None = None) -> str:
-        """The machine-identity session token, with at most one login per cache miss.
-
-        Concurrent cold-start callers share one universal-auth login:  the first
-        one to arrive logs in and caches the token, and the others wait on the
-        login lock and then read the cached token instead of logging in again.
-        The login runs under its own lock rather than the cache lock, so a slow
-        login never blocks a reader that only wants the cache, and the two locks
-        are always taken in the same order (login lock, then cache lock) so they
-        cannot deadlock.
-
-        ``stale_token`` is a token the server has already rejected with a 401.
-        It is dropped from the cache so the login below produces a different
-        one;  a token cached in the meantime that is not the stale one is reused,
-        so a burst of concurrent 401s still costs exactly one login.  The
-        comparison happens in memory and the value is never logged.
-        """
-        with self._login_lock:
-            with self._lock:
-                cached = self._access_token
-                cached_source = self._credential_source
-                if stale_token is not None and cached == stale_token:
-                    self._access_token = None
-                    self._credential_source = None
-                    cached = None
-                    cached_source = None
-            if cached and cached_source == SOURCE_MACHINE_IDENTITY:
-                return cached
-            return self._login()
+        return None, ""
 
     # -- HTTP ---------------------------------------------------------------
 
@@ -296,79 +193,90 @@ class InfisicalSettings:
         if token:
             req.add_header("Authorization", "Bearer " + token)
         try:
-            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-                return resp.status, json.loads(resp.read().decode("utf-8") or "{}")
+            from fleet_secrets.core import MAX_OUTPUT_BYTES, _opener
+
+            with _opener().open(req, timeout=HTTP_TIMEOUT) as resp:
+                raw = resp.read(MAX_OUTPUT_BYTES + 1)
+                if len(raw) > MAX_OUTPUT_BYTES:
+                    raise SettingsError("Infisical response exceeded the size limit")
+                return resp.status, json.loads(raw.decode("utf-8") or "{}")
         except urllib.error.HTTPError as e:
             try:
-                payload = json.loads(e.read().decode("utf-8") or "{}")
+                payload = {}
             except (OSError, ValueError):
                 payload = {}
             return e.code, payload
 
-    def _login(self) -> str:
-        cid, csec = self.identity()
-        if not cid:
-            raise SettingsError(
-                "no Infisical identity configured (checked "
-                + ", ".join(f"{p}_CLIENT_ID" for p in self.identity_prefixes)
-                + " in the environment and the machine-identity file); see INFISICAL.md"
-            )
-        status, payload = self._request(
-            "POST", "/api/v1/auth/universal-auth/login", {"clientId": cid, "clientSecret": csec}
-        )
-        token = payload.get("accessToken") if status == 200 else None
-        if not token:
-            raise SettingsError(
-                f"Infisical universal-auth login failed (status {status}); "
-                "check the machine identity in INFISICAL.md"
-            )
-        self._cache_machine_token(token)
-        return token
+    def _verify_service_scope(self, token: str, *, writer: bool = False) -> None:
+        from fleet_secrets.core import SecretsError, declared_paths, validate_service_metadata
 
-    def _cache_machine_token(self, token: str) -> None:
-        """Cache a machine-identity session token with the source that owns it.
-
-        The token and the source are one fact, so they are written together
-        under the lock:  a reader that sees the source always sees the token
-        that goes with it.  The service-token path never writes here, so a
-        service token can never end up paired with the machine-identity
-        source and sent down a re-login path that cannot refresh it.
-        """
-        with self._lock:
-            self._access_token = token
-            self._credential_source = SOURCE_MACHINE_IDENTITY
+        status, metadata = self._request("GET", "/api/v2/service-token", token=token)
+        if status != 200:
+            raise SettingsError("Infisical service-token metadata verification failed")
+        try:
+            validate_service_metadata(
+                metadata,
+                self.project_id,
+                declared_paths(os.environ, "/", writer=writer),
+                ("read", "write") if writer else ("read",),
+            )
+        except SecretsError:
+            raise SettingsError(
+                "Infisical service-token scope does not match this project use"
+            ) from None
 
     def _fetch_all(self, token: str, source: str) -> dict[str, str]:
         self._require_prod()
+        if source == SOURCE_SERVICE_TOKEN:
+            self._verify_service_scope(token)
         path = (
             "/api/v3/secrets/raw?workspaceId="
             + urllib.parse.quote(self.project_id)
             + "&environment="
             + urllib.parse.quote(self.environment)
+            + "&secretPath=%2F&viewSecretValue=true&expandSecretReferences=false&recursive=false&include_imports=false"
         )
         status, payload = self._request("GET", path, token=token)
         if status == 401:
-            if source == SOURCE_SERVICE_TOKEN:
-                # A service token cannot be refreshed by a re-login, so there is
-                # nothing to retry with.
-                raise SettingsError(_service_token_401_message())
-            # Token expired or rotated: one re-login, then retry once.
-            token = self._machine_session_token(stale_token=token)
-            status, payload = self._request("GET", path, token=token)
+            raise SettingsError(_service_token_401_message())
         if status != 200:
             raise SettingsError(
                 f"Infisical secrets fetch failed (status {status}) for project "
                 f"{self.project_id} environment {self.environment}; see INFISICAL.md"
             )
         out: dict[str, str] = {}
-        for secret in payload.get("secrets", []):
-            key = secret.get("secretKey")
+        seen: dict[str, None] = {}
+        if not isinstance(payload, dict) or not isinstance(payload.get("secrets"), list):
+            raise SettingsError("Infisical secret response is invalid")
+        for secret in payload["secrets"]:
+            if source == SOURCE_SERVICE_TOKEN:
+                from fleet_secrets.core import (
+                    SecretsError,
+                    declared_paths,
+                    reject_unresolved,
+                    validate_secret_record,
+                )
+
+                try:
+                    key, value = validate_secret_record(
+                        secret,
+                        self.project_id,
+                        "/",
+                        single_scope=len(declared_paths(os.environ, "/")) == 1,
+                    )
+                    if key in seen:
+                        raise SecretsError("unverified-source")
+                    seen[key] = None
+                    if key in self.managed_keys:
+                        reject_unresolved({key: value})
+                except SecretsError:
+                    raise SettingsError(
+                        "Infisical secret response failed scope validation"
+                    ) from None
+            else:
+                key, value = secret.get("secretKey"), str(secret.get("secretValue") or "")
             if key in self.managed_keys:
-                out[key] = str(secret.get("secretValue") or "")
-        if source == SOURCE_MACHINE_IDENTITY:
-            # Only the machine identity owns the session-token cache.  A
-            # service token is its own credential and never goes in there.
-            self._cache_machine_token(token)
+                out[key] = value
         return out
 
     # -- lifecycle ----------------------------------------------------------
@@ -413,8 +321,8 @@ class InfisicalSettings:
             fetched = self._fetch_all(token, source)
         else:
             logger.warning(
-                "infisical-settings: no Infisical credential (no service token and no "
-                "machine identity); populating managed keys from the process environment"
+                "infisical-settings: no Infisical service token; populating managed keys "
+                "from the process environment"
             )
             fetched = {}
         self._infisical_keys.update(dict.fromkeys(fetched.keys()))
@@ -522,13 +430,15 @@ class InfisicalSettings:
                 f"refusing to write unmanaged key {key!r}; "
                 "see INFISICAL.md for the managed key inventory"
             )
-        token, source = self._credential()
+        token, source = self._credential(writer=True)
         if not token:
             raise SettingsError(
                 "no Infisical credential configured; cannot write through to the "
-                f"source of truth (set {ENV_TOKEN} or the machine identity; "
+                f"source of truth (set {ENV_WRITE_TOKEN}; "
                 "see INFISICAL.md)"
             )
+
+        self._verify_service_scope(token, writer=True)
 
         def _write(method: str, bearer: str) -> int:
             status, _payload = self._request(
@@ -548,23 +458,11 @@ class InfisicalSettings:
         try:
             status = _write("PATCH", token)
             if status == 401:
-                if source == SOURCE_SERVICE_TOKEN:
-                    # A service token cannot be refreshed by a re-login, so there is
-                    # nothing to retry with.
-                    raise SettingsError(_service_token_401_message())
-                # Token may have expired mid-flight: re-login once and retry.
-                token = self._machine_session_token(stale_token=token)
-                status = _write("PATCH", token)
+                raise SettingsError(_service_token_401_message())
             if status == 404:
                 status = _write("POST", token)
                 if status == 401:
-                    if source == SOURCE_SERVICE_TOKEN:
-                        # A service token cannot be refreshed by a re-login, so
-                        # there is nothing to retry with.
-                        raise SettingsError(_service_token_401_message())
-                    # Token may have expired mid-flight: re-login once and retry.
-                    token = self._machine_session_token(stale_token=token)
-                    status = _write("POST", token)
+                    raise SettingsError(_service_token_401_message())
         except SettingsError:
             raise
         except Exception as e:
@@ -632,7 +530,7 @@ class InfisicalSettings:
         stays out of the export path."""
         exported = []
         for key in keys:
-            if key == ENV_TOKEN:
+            if key in (ENV_TOKEN, ENV_WRITE_TOKEN):
                 continue
             val = self.get(key)
             if val:
@@ -650,7 +548,7 @@ class InfisicalSettings:
         out: dict[str, dict] = {}
         for key in keys:
             val = cache.get(key, "")
-            if key in self.secret_keys or key == ENV_TOKEN:
+            if key in self.secret_keys or key in (ENV_TOKEN, ENV_WRITE_TOKEN):
                 out[key] = {"set": bool(val), "value": "set" if val else "empty"}
             else:
                 out[key] = {"set": bool(val), "value": val}

@@ -5,8 +5,8 @@ try:
 except ImportError:
     from test_workflow_verbs import REPO, SHA, Client, Policy
 from git_relay.github_client import RelayGitHubError
-from git_relay.server import _REAPPLY_STATE_ACTIONS
-from git_relay.workflow_verbs import Refused, WorkflowVerbs
+from git_relay.server import _REAPPLY_STATE_ACTIONS, PreReadUnavailable
+from git_relay.workflow_verbs import MAX_REF_BLOB_RAW, Refused, WorkflowVerbs
 
 
 class Writes(unittest.TestCase):
@@ -38,6 +38,277 @@ class Writes(unittest.TestCase):
         ]:
             with self.assertRaises(Refused):
                 WorkflowVerbs.check_shape(a, {**args, "files": files}, REPO)
+
+    def test_tree_sha_entries_reference_verified_existing_blobs(self):
+        import base64 as b64m
+        import hashlib as hl
+
+        a = "wf_git_tree_create"
+
+        def blob_of(raw):
+            sha = hl.sha1(
+                b"blob " + str(len(raw)).encode() + b"\0" + raw, usedforsecurity=False
+            ).hexdigest()
+            return sha, {
+                "sha": sha,
+                "encoding": "base64",
+                "size": len(raw),
+                "content": b64m.b64encode(raw).decode(),
+            }
+
+        # A 61 KB blob, over the inline text cap, is referenceable once verified.
+        blob_sha, blob = blob_of(b"x = 1\n" * 8000)
+        tree_reply = {"sha": "b" * 40, "truncated": False, "tree": []}
+        args = {
+            "repo": REPO,
+            "base_tree": SHA,
+            "files": [
+                {"path": "big.py", "sha": blob_sha, "mode": "100644"},
+                {"path": "small.txt", "text": "hi", "mode": "100644"},
+            ],
+        }
+        c = Client(blob, tree_reply)
+        out = self.handle(c, a).run(a, args)["tree"]
+        self.assertEqual(out["files"], 2)
+        self.assertEqual(c.calls[0][0], "GET")
+        self.assertIn("/git/blobs/" + blob_sha, c.calls[0][1])
+        self.assertEqual(
+            c.calls[1][2]["tree"][0],
+            {"path": "big.py", "mode": "100644", "type": "blob", "sha": blob_sha},
+        )
+
+        # Content the relay scanner reads as credential-shaped is refused at the
+        # destination path even though the blob already exists upstream.
+        secret_sha, secret_blob = blob_of(b"Authorization: Bearer " + b"a1" * 12)
+        with self.assertRaises(Refused):
+            self.handle(Client(secret_blob), a).run(
+                a,
+                {
+                    "repo": REPO,
+                    "base_tree": SHA,
+                    "files": [{"path": "s.py", "sha": secret_sha, "mode": "100644"}],
+                },
+            )
+        # An unverifiable blob identity is a definite refusal BEFORE any write
+        # is dispatched:  no tree POST happens, the idempotency key is released,
+        # and the caller may correct the reference and retry.
+        bad = dict(blob)
+        bad["content"] = b64m.b64encode(b"different bytes").decode()
+        with self.assertRaises(Refused):
+            self.handle(Client(bad), a).run(
+                a,
+                {
+                    "repo": REPO,
+                    "base_tree": SHA,
+                    "files": [{"path": "big.py", "sha": blob_sha, "mode": "100644"}],
+                },
+            )
+        # Binary (non-UTF-8) blob content is refused:  parity with inline text.
+        bin_sha, bin_blob = blob_of(b"\xff\xfe\x00\x01binary")
+        with self.assertRaises(Refused):
+            self.handle(Client(bin_blob), a).run(
+                a,
+                {
+                    "repo": REPO,
+                    "base_tree": SHA,
+                    "files": [{"path": "bin.dat", "sha": bin_sha, "mode": "100644"}],
+                },
+            )
+        # Shape refusals before any upstream call:  mixed keys, workflow path, bad mode.
+        for files in [
+            [{"path": "x", "sha": blob_sha, "text": "hi", "mode": "100644"}],
+            [{"path": ".github/workflows/x", "sha": blob_sha, "mode": "100644"}],
+            [{"path": "x", "sha": blob_sha, "mode": "120000"}],
+            [{"path": "x", "sha": "z" * 40, "mode": "100644"}],
+        ]:
+            with self.assertRaises(Refused):
+                WorkflowVerbs.check_shape(a, {"repo": REPO, "base_tree": SHA, "files": files}, REPO)
+
+    def test_tree_existing_blob_reference(self):
+        import base64
+
+        a = "wf_git_tree_create"
+        blob_sha = __import__("hashlib").sha1(b"blob 2\0hi", usedforsecurity=False).hexdigest()
+        blob = {
+            "sha": blob_sha,
+            "encoding": "base64",
+            "size": 2,
+            "content": base64.b64encode(b"hi").decode(),
+        }
+        tree = {"sha": "e" * 40, "truncated": False, "tree": []}
+        args = {
+            "repo": REPO,
+            "base_tree": SHA,
+            "files": [{"path": "big.txt", "sha": blob_sha, "mode": "100644"}],
+        }
+        c = Client(blob, tree)
+        out = self.handle(c, a).run(a, args)
+        self.assertEqual(out["tree"]["sha"], "e" * 40)
+        self.assertEqual(c.calls[0][0], "GET")
+        self.assertIn(f"/git/blobs/{blob_sha}", c.calls[0][1])
+        self.assertEqual(
+            c.calls[1][2],
+            {
+                "base_tree": SHA,
+                "tree": [{"path": "big.txt", "mode": "100644", "type": "blob", "sha": blob_sha}],
+            },
+        )
+        # exactly one of text/sha, well-formed sha
+        for bad_files in [
+            [{"path": "x", "mode": "100644"}],
+            [{"path": "x", "text": "hi", "sha": blob_sha, "mode": "100644"}],
+            [{"path": "x", "sha": "zz", "mode": "100644"}],
+        ]:
+            with self.assertRaises(Refused):
+                WorkflowVerbs.check_shape(
+                    a, {"repo": REPO, "base_tree": SHA, "files": bad_files}, REPO
+                )
+
+    def test_tree_blob_reference_never_bypasses_scan(self):
+        import base64
+
+        a = "wf_git_tree_create"
+        import hashlib
+
+        def sha_of(payload):
+            return hashlib.sha1(
+                b"blob " + str(len(payload)).encode() + b"\0" + payload, usedforsecurity=False
+            ).hexdigest()
+
+        blob_sha = sha_of(b"hi")
+
+        def blob(payload):
+            # The identity check passes, so a refusal must come from the scan or
+            # the utf-8 gate rather than from a sha/content mismatch.
+            return {
+                "sha": sha_of(payload),
+                "encoding": "base64",
+                "size": len(payload),
+                "content": base64.b64encode(payload).decode(),
+            }
+
+        base = {"repo": REPO, "base_tree": SHA}
+        files = [{"path": "x.txt", "sha": blob_sha, "mode": "100644"}]
+
+        def files_for(b):
+            return [{"path": "x.txt", "sha": b["sha"], "mode": "100644"}]
+
+        # secret-shaped referenced content is refused before any tree write
+        secret = blob(b"ghp_" + b"a" * 30)
+        c = Client(secret)
+        # Pin the message, so the test fails if the scan stops being what refuses it.
+        with self.assertRaisesRegex(Refused, "^credential-shaped content refused$"):
+            self.handle(c, a).run(a, {**base, "files": files_for(secret)})
+        self.assertEqual(len(c.calls), 1)
+        # non-utf-8 referenced content is refused (text trees only)
+        non_utf = blob(b"\xff\xfe\x00")
+        c = Client(non_utf)
+        with self.assertRaisesRegex(Refused, "^referenced blob is not utf-8 text$"):
+            self.handle(c, a).run(a, {**base, "files": files_for(non_utf)})
+        self.assertEqual(len(c.calls), 1)
+        # GitHub wraps blob base64 at 60 columns: wrapped content still decodes
+        wrapped = blob(b"hi")
+        wrapped["content"] = wrapped["content"][:2] + "\n" + wrapped["content"][2:]
+        tree = {"sha": "e" * 40, "truncated": False, "tree": []}
+        c = Client(wrapped, tree)
+        self.assertEqual(
+            self.handle(c, a).run(a, {**base, "files": files})["tree"]["sha"], "e" * 40
+        )
+        # A mismatched declared size or identity is a definite pre-write refusal.
+        for bad in [
+            {"sha": blob_sha, "encoding": "base64", "size": 3, "content": "aGk="},
+            {"sha": "d" * 40, "encoding": "base64", "size": 2, "content": "aGk="},
+            {"sha": blob_sha, "encoding": "base64", "size": True, "content": "aGk="},
+        ]:
+            c = Client(bad)
+            with self.assertRaises(Refused):
+                self.handle(c, a).run(a, {**base, "files": files})
+            self.assertEqual(len(c.calls), 1)
+        c = Client({"encoding": "utf-8", "size": 2, "content": "hi"})
+        with self.assertRaises(Refused):
+            self.handle(c, a).run(a, {**base, "files": files})
+
+    def test_tree_blob_reference_budget_measures_decoded_bytes(self):
+        import base64
+
+        a = "wf_git_tree_create"
+        blob_sha = __import__("hashlib").sha1(b"blob 2\0hi", usedforsecurity=False).hexdigest()
+        base = {"repo": REPO, "base_tree": SHA}
+        files = [{"path": "x.txt", "sha": blob_sha, "mode": "100644"}]
+        # adversarial: the declared size lies low while the decoded bytes exceed the
+        # per-file raw budget - refused on the measured length, never the receipt
+        big = b"a" * (MAX_REF_BLOB_RAW + 1)
+        c = Client(
+            {
+                "sha": blob_sha,
+                "encoding": "base64",
+                "size": 2,
+                "content": base64.b64encode(big).decode(),
+            }
+        )
+        with self.assertRaisesRegex(Refused, "^referenced blob exceeds the per-file raw budget$"):
+            self.handle(c, a).run(a, {**base, "files": files})
+        self.assertEqual(len(c.calls), 1, "refused before any tree write")
+
+    def test_referenced_blob_cap_fits_the_github_response_bound(self):
+        import base64
+        import json
+
+        from git_relay.github_client import MAX_BODY
+
+        # The largest accepted reference, as GitHub's JSON blob reply carries it
+        # (base64 wrapped at 60 columns, each newline escaped), fits the client's
+        # body bound, so the per-reference cap is reachable rather than dead code.
+        raw = b"a" * MAX_REF_BLOB_RAW
+        b64 = base64.b64encode(raw).decode()
+        wrapped = "\n".join(b64[i : i + 60] for i in range(0, len(b64), 60)) + "\n"
+        reply = {
+            "sha": "a" * 40,
+            "node_id": "B_" + "k" * 60,
+            "size": len(raw),
+            "url": "https://api.github.com/repos/%s/git/blobs/%s" % (REPO, "a" * 40),
+            "content": wrapped,
+            "encoding": "base64",
+        }
+        self.assertLessEqual(len(json.dumps(reply).encode()), MAX_BODY)
+
+    def test_tree_blob_pre_read_failures_release_retryable(self):
+        a = "wf_git_tree_create"
+        blob_sha = __import__("hashlib").sha1(b"blob 2\0hi", usedforsecurity=False).hexdigest()
+        base = {"repo": REPO, "base_tree": SHA}
+        files = [{"path": "x.txt", "sha": blob_sha, "mode": "100644"}]
+
+        class Boom(Client):
+            def __init__(self, exc):
+                super().__init__()
+                self.exc = exc
+
+            def _call(self, *args, **kw):
+                raise self.exc
+
+        # transient upstream failures during the pre-read release as retryable
+        # (PreReadUnavailable): the read ran before any dispatch, so no write was
+        # attempted and nothing is unknown
+        for status in (0, 408, 500, 503):
+            with self.assertRaises(PreReadUnavailable):
+                self.handle(Boom(RelayGitHubError(status, "boom")), a).run(
+                    a, {**base, "files": files}
+                )
+        # an oversized response is a definite refusal, never a retryable unknown
+        with self.assertRaises(Refused):
+            self.handle(
+                Boom(
+                    RelayGitHubError(
+                        0, "github response exceeded 1 MiB bound", code="response_too_large"
+                    )
+                ),
+                a,
+            ).run(a, {**base, "files": files})
+        # a definite 404 stays a hard upstream error, not a retry
+        with self.assertRaises(RelayGitHubError):
+            self.handle(Boom(RelayGitHubError(404, "not found")), a).run(
+                a, {**base, "files": files}
+            )
 
     def test_commit_exact_tree_parents_and_no_identity_selector(self):
         a = "wf_git_commit_create"
@@ -114,3 +385,68 @@ class Writes(unittest.TestCase):
                     with self.assertRaises(Refused):
                         self.handle(client, action).run(action, args)
                     self.assertEqual(client.calls, [])
+
+
+class RepeatedReferenceTests(unittest.TestCase):
+    def handle(self, client):
+        return WorkflowVerbs(
+            client, Policy(), "swu-wise", "own", "swu-wise", "wf_git_tree_create", REPO
+        )
+
+    def fixture(self, raw, count=2):
+        import base64
+        import hashlib
+
+        sha = hashlib.sha1(
+            b"blob " + str(len(raw)).encode() + b"\0" + raw, usedforsecurity=False
+        ).hexdigest()
+        files = [{"path": "file-%s.txt" % n, "sha": sha, "mode": "100644"} for n in range(count)]
+        blob = {
+            "sha": sha,
+            "encoding": "base64",
+            "size": len(raw),
+            "content": base64.b64encode(raw).decode(),
+        }
+        return {"repo": REPO, "base_tree": SHA, "files": files}, blob
+
+    def test_one_download_but_every_destination_is_scanned(self):
+        from unittest.mock import patch
+
+        args, blob = self.fixture(b"safe\n")
+        client = Client(blob, {"sha": "b" * 40, "truncated": False, "tree": []})
+        with patch("git_relay.workflow_verbs.unreviewed_file_secret", return_value=None) as check:
+            out = self.handle(client).run("wf_git_tree_create", args)
+        self.assertEqual(out["tree"]["files"], 2)
+        self.assertEqual(len([c for c in client.calls if c[0] == "GET"]), 1)
+        self.assertEqual([c.args[1] for c in check.call_args_list], ["file-0.txt", "file-1.txt"])
+
+    def test_one_path_approval_cannot_bless_another(self):
+        from unittest.mock import patch
+
+        args, blob = self.fixture(b"safe\n")
+        client = Client(blob)
+        with (
+            patch(
+                "git_relay.workflow_verbs.unreviewed_file_secret", side_effect=[None, "credential"]
+            ),
+            self.assertRaises(Refused),
+        ):
+            self.handle(client).run("wf_git_tree_create", args)
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(client.calls[0][0], "GET")
+
+    def test_repeated_bytes_are_charged_for_every_reference(self):
+        from git_relay.workflow_verbs import MAX_FILES_RAW
+
+        count = MAX_FILES_RAW // MAX_REF_BLOB_RAW + 1
+        raw = b"x" * MAX_REF_BLOB_RAW
+        self.assertGreater(len(raw) * count, MAX_FILES_RAW)
+        args, blob = self.fixture(raw, count=count)
+        client = Client(blob)
+        # Each reference is within the per-reference cap, so only the cumulative
+        # budget can refuse this tree.
+        with self.assertRaisesRegex(Refused, "^file content budget exceeded$"):
+            self.handle(client).run("wf_git_tree_create", args)
+        self.assertEqual(
+            len(client.calls), 1, "all references charged, no repeated GET or tree POST"
+        )

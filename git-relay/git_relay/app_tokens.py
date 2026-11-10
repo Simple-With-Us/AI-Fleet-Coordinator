@@ -36,6 +36,27 @@ MINT_PERMISSION_CEILING = (
     "metadata",
 )
 
+# Permission keys mintable only at read level.  These widen what the relay can
+# READ (repository webhooks, deploy keys, organization installations); the
+# level check below makes a write mint for any of them a hard error, so no
+# verb or seat can ever receive a write-scoped token for them.
+MINT_READ_ONLY_PERMISSIONS = (
+    "administration",
+    "repository_hooks",
+    "organization_administration",
+)
+
+
+def mint_permission_allowed(key, level):
+    """True when a mint request for (key, level) stays inside the ceiling.
+
+    Keys in MINT_PERMISSION_CEILING mint at the requested level exactly as
+    before; keys in MINT_READ_ONLY_PERMISSIONS mint only at read level.
+    """
+    if key in MINT_PERMISSION_CEILING:
+        return level in ("read", "write")
+    return key in MINT_READ_ONLY_PERMISSIONS and level == "read"
+
 
 class InstallationReadError(Exception):
     """Safe status/retry-only read failure, never upstream prose or credentials."""
@@ -141,7 +162,7 @@ class FleetSecretsSource:
     child with an allowlist environment (INFISICAL_FLEET_OPS_PROJECT_ID
     required, INFISICAL_ENVIRONMENT=prod set, no HOME), so no co-located
     secret in the relay's own environment is ever inherited and the CLI
-    cannot fall through to ~/.agent-sync file resolution.  When unset the
+    cannot fall through to ~/.simple-tools file resolution.  When unset the
     child inherits the process environment - the legacy shape the fleet's
     other local tooling still uses.
     """
@@ -222,7 +243,7 @@ class FleetSecretsSource:
     # Matches the supported fleet-secrets core:  ENV_PROJECT /
     # ENV_NAMES in scripts/fleet_secrets/core.py.  The required
     # INFISICAL_FLEET_OPS_PROJECT_ID binding is what keeps the CLI off
-    # its ~/.agent-sync project-file fallback (expanduser reaches the
+    # its ~/.simple-tools project-file fallback (expanduser reaches the
     # runtime user's home regardless of HOME), and HOME is simply not
     # forwarded.
     _CHILD_ENV_KEYS = (
@@ -248,7 +269,7 @@ class FleetSecretsSource:
             raise AppTokenError(
                 "INFISICAL_FLEET_OPS_PROJECT_ID is not set:  without it the "
                 "CLI would resolve the Fleet-OPS project from the runtime "
-                "user's ~/.agent-sync file instead of the explicit binding"
+                "user's ~/.simple-tools file instead of the explicit binding"
             )
         env = {k: self._environ[k] for k in self._CHILD_ENV_KEYS if k in self._environ}
         env["INFISICAL_TOKEN"] = token
@@ -418,9 +439,11 @@ class AppTokenMinter:
 
     def token_for(self, slug: str, repo: str, permissions: dict) -> tuple[str, float]:
         """Mint (or serve from cache) an installation token;  returns (token, expiry epoch)."""
-        for key in permissions:
-            if key not in MINT_PERMISSION_CEILING:
-                raise AppTokenError(f"permission {key!r} is outside the mint ceiling")
+        for key, level in permissions.items():
+            if not mint_permission_allowed(key, level):
+                raise AppTokenError(
+                    f"permission {key!r} at level {level!r} is outside the mint ceiling"
+                )
         cache_key = json.dumps(
             [slug, repo.casefold(), sorted(permissions.items())], separators=(",", ":")
         )

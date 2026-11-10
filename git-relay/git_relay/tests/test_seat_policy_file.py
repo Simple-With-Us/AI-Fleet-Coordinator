@@ -19,7 +19,11 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from git_relay.app_tokens import MINT_PERMISSION_CEILING
+from git_relay.app_tokens import (
+    MINT_PERMISSION_CEILING,
+    MINT_READ_ONLY_PERMISSIONS,
+    mint_permission_allowed,
+)
 from git_relay.policy import SeatPolicy
 from git_relay.server import ACTION_REQUIRED_PERMISSIONS
 from git_relay.shared_bearer import SharedBearerVerifier
@@ -28,7 +32,7 @@ from git_relay.workflow_verbs import SPECS
 
 RELAY = Path(__file__).resolve().parents[2]
 ROOT = RELAY.parent
-WORKER = ROOT / "scripts" / "agent-sync-mcp" / "src"
+WORKER = ROOT / "scripts" / "simple-tools-mcp" / "src"
 
 _spec = importlib.util.spec_from_file_location("seat_policy", RELAY / "deploy" / "seat_policy.py")
 seat_policy = importlib.util.module_from_spec(_spec)
@@ -50,9 +54,10 @@ NOT_SWU_IDENTITY = {
     "AMP": "swu-amp-agent",
 }
 # Explicit policy exclusions, documented in the deployed policy's header.
-# Original Jet is wake-only and has no GitHub App entry.  BF-BUILDER is dropped (owner
-# 2026-11-01 4:41pm CT:  BF-ENGINEER replaced it), so the relay admits no bearer for it.
-EXCLUDED = {"JET", "BF-BUILDER"}
+# Original Jet is wake-only and has no GitHub App entry.  BF-BUILDER is dropped (owner
+# 2026-11-01 4:41pm CT:  BF-ENGINEER replaced it), so the relay admits no bearer for it.
+# KIMI is a newly added seat that does not have a deployed GitHub App yet.
+EXCLUDED = {"JET", "BF-BUILDER", "KIMI"}
 # Every GB seat and every BF bot (owner 2026-11-01 4:41pm CT:  "all 12" of each, including
 # the new BF-TRADER and BF-ENGINEER) reaches every repository in both namespaces.
 GB_SEATS = {
@@ -96,7 +101,7 @@ def worker_identities() -> set[str]:
     bearer = (WORKER / "bearer-identities.js").read_text(encoding="utf-8")
     row = r'^\s+"?([A-Z][A-Z0-9-]*)"?: Object\.freeze\(\{ prefix:'
     names |= set(re.findall(row, bearer, re.MULTILINE))
-    personas = ROOT / "scripts" / "agent_sync" / "mcp" / "gb-identities.json"
+    personas = ROOT / "scripts" / "simple_tools" / "mcp" / "gb-identities.json"
     names |= set(json.loads(personas.read_text(encoding="utf-8"))["enabled"])
     return names
 
@@ -201,7 +206,14 @@ class SeatPolicyFile(unittest.TestCase):
         rank = {"read": 1, "write": 2}
         for cfg in SEATS.values():
             ceiling = cfg["mint_permissions"]
-            self.assertTrue(set(ceiling) <= set(MINT_PERMISSION_CEILING))
+            self.assertTrue(
+                set(ceiling) <= set(MINT_PERMISSION_CEILING) | set(MINT_READ_ONLY_PERMISSIONS)
+            )
+            for key, level in ceiling.items():
+                self.assertTrue(
+                    mint_permission_allowed(key, level),
+                    f"seat ceiling {key}:{level} exceeds the mint allowance",
+                )
             for action in cfg["actions"]:
                 if action == "open_pr":
                     continue  # the owner's PR-only token, never the seat's App
@@ -284,7 +296,7 @@ class SeatPolicyFile(unittest.TestCase):
         # seat's repositories, actions or permission ceiling fails until this line is edited
         # too, so a widening can never ride in on the policy file alone.  When a policy
         # change is meant, run `seat_policy.py install` for the new digest and update it here.
-        self.assertEqual(seat_policy.digest(SEATS), "c8ba1a18e33ded34")
+        self.assertEqual(seat_policy.digest(SEATS), "4fe63e3e32e90998")
 
     def test_render_refuses_a_malformed_file(self):
         good = json.loads(json.dumps(DOC))
@@ -363,11 +375,11 @@ class SeatPolicyFile(unittest.TestCase):
                 "Environment=PATH=/usr/bin GIT_RELAY_HOST=localhost GIT_RELAY_PORT=18080",
             ]
         )
-        cat = "[Service]\nLoadCredential=other-token:/tmp/fixture/other-token\nLoadCredential=git-relay-apps-token:/tmp/fixture/apps-token\n"
+        cat = "[Service]\nLoadCredential=other-token:/tmp/o\nLoadCredential=git-relay-apps-token:/tmp/a\n"
         unit = seat_policy.read_unit("relay.service", show=show, cat=cat)
         self.assertEqual(unit.relay, "/tmp/fixture/relay/code")
         self.assertEqual(unit.config, "/tmp/fixture/relay/relay.env")
-        self.assertEqual(unit.apps_token, "/tmp/fixture/apps-token")
+        self.assertEqual(unit.apps_token, "/tmp/a")
         self.assertEqual(unit.health, "http://localhost:18080/healthz")
         # No assumed bind address:  a unit that sets none cannot be health-checked.
         no_bind = seat_policy.read_unit(
@@ -448,10 +460,7 @@ class SeatPolicyOauthAssertRender(unittest.TestCase):
         # accepts the rendered JSON unchanged, assertions refused everywhere.
         policy = SeatPolicy(seat_policy.compact(SEATS), assertion_verifier=None)
         self.assertIsNone(
-            policy.authenticate(
-                "gra1_codex_1800000000_1800000090_AbCdEfGhIjKlMnOp_"
-                "6c83d4e7a1b73c7c8afcc28641b50e8afe2b53ec21ed554f4c96947ca255f334"
-            )
+            policy.authenticate("gra1_codex_1800000000_1800000090_AbCdEfGhIjKlMnOp_" + "0" * 64)
         )
 
 

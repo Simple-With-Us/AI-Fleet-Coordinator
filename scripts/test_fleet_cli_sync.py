@@ -26,11 +26,11 @@ SPEC.loader.exec_module(S)
 POLICY = """import hashlib,json
 MAX_BUNDLE_BYTES=8*1024*1024
 def allowed_path(path):
-    if path in {"scripts/simple-chat","scripts/fleet-cli-release.py","fleet-apps.json","docs/protocols/agent-sync-partition.toml","scripts/linear-board/board","scripts/linear-board/board-ids.txt"}: return True
+    if path in {"scripts/simple-chat","scripts/fleet-cli-release.py","fleet-apps.json","docs/protocols/simple-tools-partition.toml","scripts/linear-board/board","scripts/linear-board/board-ids.txt"}: return True
     parts=path.split("/")
-    if len(parts)==3 and parts[:2]==["scripts","agent_sync"] and parts[2].endswith(".py"): return True
-    if len(parts)==4 and parts[:3]==["scripts","agent_sync","mcp"] and (parts[3].endswith(".py") or parts[3] in {"tools.json","fixtures.jsonl"}): return True
-    return path=="scripts/agent_sync/wake/wake-schema.json"
+    if len(parts)==3 and parts[:2]==["scripts","simple_tools"] and parts[2].endswith(".py"): return True
+    if len(parts)==4 and parts[:3]==["scripts","simple_tools","mcp"] and (parts[3].endswith(".py") or parts[3] in {"tools.json","fixtures.jsonl"}): return True
+    return path=="scripts/simple_tools/wake/wake-schema.json"
 def manifest_digest(files):
     value={path:{"mode":entry["mode"],"sha256":entry["sha256"]} for path,entry in files.items()}
     return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(",",":")).encode()).hexdigest()
@@ -84,7 +84,7 @@ class Fixture(unittest.TestCase):
         self.put(
             "scripts/simple-chat", "#!/usr/bin/env python3\nprint('fixture')\n", executable=True
         )
-        self.put("scripts/agent_sync/core.py", "VALUE = 1\n")
+        self.put("scripts/simple_tools/core.py", "VALUE = 1\n")
         self.put("fleet-apps.json", "{}\n")
         self.put("docs/private-fixture.md", "PRIVATE_FIXTURE_MUST_NOT_SHIP\n")
         self.commit()
@@ -137,7 +137,7 @@ class SourceTests(Fixture):
         bundle, _raw, receiver = S.build_bundle(self.repo)
         policy = S.receiver_policy(receiver.encode())
         self.assertEqual(bundle["bundle_sha256"], policy.manifest_digest(bundle["files"]))
-        self.assertTrue(policy.allowed_path("scripts/agent_sync/core.py"))
+        self.assertTrue(policy.allowed_path("scripts/simple_tools/core.py"))
         self.assertNotIn("docs/private-fixture.md", bundle["files"])
 
     def test_only_published_allowlisted_blobs_and_regular_modes_ship(self):
@@ -147,7 +147,7 @@ class SourceTests(Fixture):
             {
                 "scripts/fleet-cli-release.py",
                 "scripts/simple-chat",
-                "scripts/agent_sync/core.py",
+                "scripts/simple_tools/core.py",
                 "fleet-apps.json",
             },
         )
@@ -159,18 +159,18 @@ class SourceTests(Fixture):
 
     def test_untracked_allowlisted_file_and_secret_are_ignored(self):
         before = S.build_bundle(self.repo)[1]
-        self.put("scripts/agent_sync/untracked.py", "SHOULD_NOT_SHIP\n")
+        self.put("scripts/simple_tools/untracked.py", "SHOULD_NOT_SHIP\n")
         self.put(".env", "SECRET_FIXTURE\n")
         self.assertEqual(S.build_bundle(self.repo)[1], before)
 
     def test_tracked_staged_and_unstaged_changes_are_refused(self):
-        self.put("scripts/agent_sync/core.py", "VALUE = 2\n")
+        self.put("scripts/simple_tools/core.py", "VALUE = 2\n")
         self.assert_code("source_tracked_dirty", S.build_bundle, self.repo)
-        self.git("add", "scripts/agent_sync/core.py")
+        self.git("add", "scripts/simple_tools/core.py")
         self.assert_code("source_tracked_dirty", S.build_bundle, self.repo)
 
     def test_unpublished_head_is_refused(self):
-        self.put("scripts/agent_sync/core.py", "VALUE = 2\n")
+        self.put("scripts/simple_tools/core.py", "VALUE = 2\n")
         self.commit(published=False)
         self.assert_code("source_not_published", S.build_bundle, self.repo)
 
@@ -179,26 +179,26 @@ class SourceTests(Fixture):
         self.assert_code("source_origin_refused", S.build_bundle, self.repo)
 
     def test_allowlisted_symlink_and_symlink_receiver_are_refused(self):
-        (self.repo / "scripts/agent_sync/link.py").symlink_to("../../docs/private-fixture.md")
+        (self.repo / "scripts/simple_tools/link.py").symlink_to("../../docs/private-fixture.md")
         self.commit()
         self.assert_code("source_entry_refused", S.build_bundle, self.repo)
-        self.git("rm", "scripts/agent_sync/link.py", "scripts/fleet-cli-release.py")
+        self.git("rm", "scripts/simple_tools/link.py", "scripts/fleet-cli-release.py")
         (self.repo / "scripts/fleet-cli-release.py").symlink_to("../docs/private-fixture.md")
         self.commit()
         self.assert_code("receiver_blob_refused", S.build_bundle, self.repo)
 
     def test_export_attributes_cannot_hide_or_rewrite_payload(self):
         original = "$Format:%H$\n"
-        self.put("scripts/agent_sync/substitute.py", original)
+        self.put("scripts/simple_tools/substitute.py", original)
         self.put(
             ".gitattributes",
-            "scripts/agent_sync/core.py export-ignore\nscripts/agent_sync/substitute.py export-subst\n",
+            "scripts/simple_tools/core.py export-ignore\nscripts/simple_tools/substitute.py export-subst\n",
         )
         self.commit()
         files = S.build_bundle(self.repo)[0]["files"]
-        self.assertIn("scripts/agent_sync/core.py", files)
+        self.assertIn("scripts/simple_tools/core.py", files)
         self.assertEqual(
-            base64.b64decode(files["scripts/agent_sync/substitute.py"]["data"]), original.encode()
+            base64.b64decode(files["scripts/simple_tools/substitute.py"]["data"]), original.encode()
         )
 
     def test_git_environment_cannot_redirect_source_or_replace_objects(self):
@@ -218,22 +218,22 @@ class SourceTests(Fixture):
 
     def test_file_count_and_encoded_bundle_size_are_bounded(self):
         for number in range(S.MAX_FILES):
-            self.put(f"scripts/agent_sync/f{number}.py", "x\n")
+            self.put(f"scripts/simple_tools/f{number}.py", "x\n")
         self.commit()
         self.assert_code("bundle_too_many_files", S.build_bundle, self.repo)
 
     def test_file_count_exact_limit_builds_but_one_more_is_refused(self):
         count = len(S.build_bundle(self.repo)[0]["files"])
         for number in range(S.MAX_FILES - count):
-            self.put(f"scripts/agent_sync/boundary_{number}.py", "# boundary\n")
+            self.put(f"scripts/simple_tools/boundary_{number}.py", "# boundary\n")
         self.commit()
         self.assertEqual(len(S.build_bundle(self.repo)[0]["files"]), S.MAX_FILES)
-        self.put("scripts/agent_sync/one_too_many.py", "# boundary\n")
+        self.put("scripts/simple_tools/one_too_many.py", "# boundary\n")
         self.commit()
         self.assert_code("bundle_too_many_files", S.build_bundle, self.repo)
 
     def test_encoded_size_limit_is_checked_after_base64(self):
-        self.put("scripts/agent_sync/large.py", "x" * (6 * 1024 * 1024))
+        self.put("scripts/simple_tools/large.py", "x" * (6 * 1024 * 1024))
         self.commit()
         self.assert_code("bundle_too_large", S.build_bundle, self.repo)
 
@@ -274,7 +274,7 @@ class TransportTests(Fixture):
     def test_failed_send_retries_next_trigger_and_preserves_last_success(self):
         S.sync(self.repo, self.state, runner=Transport())
         before = json.loads((self.state / "state.json").read_text())
-        self.put("scripts/agent_sync/core.py", "VALUE = 2\n")
+        self.put("scripts/simple_tools/core.py", "VALUE = 2\n")
         self.commit()
         failed = Transport("timeout")
         self.assert_code("command_timeout", S.sync, self.repo, self.state, runner=failed)
@@ -299,6 +299,24 @@ class TransportTests(Fixture):
                 state = json.loads((state_dir / "state.json").read_text())
                 self.assertNotIn("last_success_bundle_sha256", state)
                 self.assertEqual(state["last_error_code"], code)
+
+    def test_a_named_receiver_refusal_is_carried_and_anything_else_is_ssh_failed(self):
+        bundle = {}
+        for stderr, code in (
+            (b"fleet-cli: release_retention_limit\n", "receiver_release_retention_limit"),
+            (
+                b"fleet-cli: smoke_start_failed_simple_chat_version_errno_2\n",
+                "receiver_smoke_start_failed_simple_chat_version_errno_2",
+            ),
+            (b"fleet-cli: Bad Code\n", "ssh_failed"),
+            (b"permission denied\n", "ssh_failed"),
+            (b"", "ssh_failed"),
+        ):
+            with self.subTest(stderr=stderr):
+                result = subprocess.CompletedProcess([], 255, b"", stderr)
+                with self.assertRaises(S.SyncError) as error:
+                    S.receipt(result, bundle)
+                self.assertEqual(error.exception.code, code)
 
     def test_ssh_command_has_strict_fixed_options_and_quoted_receiver(self):
         text = "print('shell $(touch should-not-exist) `anything`')\n"
@@ -343,7 +361,7 @@ class TransportTests(Fixture):
 
 class HookTests(unittest.TestCase):
     def test_opt_in_hook_precedes_fetch_and_no_change_exit_inside_existing_lock(self):
-        hook = Path(__file__).with_name("agent-sync-runtime-sync.sh").read_text()
+        hook = Path(__file__).with_name("simple-tools-runtime-sync.sh").read_text()
         start = hook.index("# Code-only Coolify CLI sync")
         self.assertGreater(start, hook.index("trap 'rmdir"))
         self.assertLess(start, hook.index("if ! rgit fetch"))

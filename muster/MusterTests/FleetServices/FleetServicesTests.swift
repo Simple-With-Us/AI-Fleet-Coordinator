@@ -20,7 +20,45 @@ final class FleetServicesTests: XCTestCase {
         // The launchd agents.
         XCTAssertTrue(ids.contains("app.botfleet.server"))
         XCTAssertTrue(ids.contains("app.botfleet.companion"))
-        XCTAssertEqual(ids.count, 12)
+        XCTAssertTrue(ids.contains("com.jay.operator"))
+        XCTAssertEqual(ids.count, 13)
+    }
+
+    /// The Mac's eavesdropper (`com.jay.operator`) is on the Services list as a LaunchAgent,
+    /// so its state is launchd's and its restart takes the LaunchAgent route.  The wake
+    /// alerter is not:  whether it should run is the owner's call.
+    func testTheOperatorEavesdropperIsALaunchAgentServiceAndTheWakeAlerterIsNot() {
+        let descriptor = FleetServiceRegistry.descriptor(for: "com.jay.operator")
+        XCTAssertEqual(descriptor?.kind, .launchAgent(label: "com.jay.operator"))
+        XCTAssertEqual(descriptor?.policy, .alwaysOn)
+        XCTAssertEqual(descriptor?.host, .mac)
+        XCTAssertEqual(descriptor, FleetServiceRegistry.operatorEavesdropper)
+        XCTAssertNil(FleetServiceRegistry.descriptor(for: "com.jay.operator-wake-alerter"))
+        let labels = FleetServiceRegistry.all.compactMap { descriptor -> String? in
+            if case .launchAgent(let label) = descriptor.kind { return label }
+            return nil
+        }
+        XCTAssertTrue(labels.contains("com.jay.operator"))
+        XCTAssertFalse(labels.contains("com.jay.operator-wake-alerter"))
+        // Muster never starts it on its own:  launchd keeps it alive.
+        XCTAssertEqual(ServicePolicyTable.policy(for: "com.jay.operator"), .leaveAlone)
+        XCTAssertEqual(ServicePolicyTable.row(for: "com.jay.operator")?.source, .servicesList)
+    }
+
+    /// Its row reads launchd's state and offers the restart a running LaunchAgent gets.
+    func testTheOperatorEavesdropperRowCarriesItsLaunchdStateAndOffersARestart() {
+        let running = FleetServices(serverState: .running, states: ["com.jay.operator": .running])
+        let entry = running.entries.first { $0.id == "com.jay.operator" }
+        XCTAssertEqual(entry?.state, .running)
+        XCTAssertEqual(entry?.summary, "running")
+        XCTAssertEqual(entry?.availableActions, [.stop, .restart])
+        let failed = FleetServices(serverState: .running, states: ["com.jay.operator": .failed])
+        let failedEntry = failed.entries.first { $0.id == "com.jay.operator" }
+        XCTAssertEqual(failedEntry?.availableActions, [.start, .restart])
+        XCTAssertEqual(failedEntry?.needsAttention, true)
+        // A state nobody read is not known,  never running.
+        let unread = FleetServices(serverState: .running, states: [:])
+        XCTAssertEqual(unread.entries.first { $0.id == "com.jay.operator" }?.state, .unknown)
     }
 
     func testTheMCPServerIsSupervisedByPM2AndFollowsTheBotFleetServer() {
@@ -68,47 +106,19 @@ final class FleetServicesTests: XCTestCase {
         XCTAssertEqual(mcpServer?.wanted, false)
     }
 
-    // MARK: - The action the Control app takes on its own
+    // MARK: - A service the owner stopped
 
-    func testAFailedServiceIsBroughtBackUpWhenItIsWanted() {
-        XCTAssertEqual(ManagedServices.action(wanted: true, state: .failed), .start)
-    }
-
-    func testAServiceThatWasStoppedIsLeftAlone() {
-        XCTAssertEqual(ManagedServices.action(wanted: false, state: .stopped), .none)
-    }
-
-    func testARunningServiceThatIsNotWantedIsStopped() {
-        XCTAssertEqual(ManagedServices.action(wanted: false, state: .running), .stop)
-    }
-
-    func testAnUnknownServiceIsNeverActedOn() {
-        XCTAssertEqual(ManagedServices.action(wanted: true, state: .unknown), .none)
-        XCTAssertEqual(ManagedServices.action(wanted: nil, state: .stopped), .none)
-    }
-
-    func testAFailedFleetServiceIsBroughtBackByTheAutomaticAction() {
-        let services = FleetServices(serverState: .running, states: ["shellular": .failed])
-        let entry = services.entries.first { $0.id == "shellular" }
-        XCTAssertEqual(FleetServices.automaticAction(for: entry!), .start)
-    }
-
-    func testAServiceTheOwnerStoppedIsLeftAloneByTheAutomaticAction() {
-        // A service the owner stopped on purpose can read as failed, and a
-        // failed service is wanted, so the automatic action would bring it
-        // back up and take the owner's stop away.
+    func testAServiceTheOwnerStoppedCarriesItsRecordAndTime() {
+        let when = Date(timeIntervalSince1970: 1_800_000_000)
         let services = FleetServices(serverState: .running,
                                      states: ["shellular": .failed],
-                                     stoppedByOwner: ["shellular"])
+                                     stoppedByOwner: ["shellular"],
+                                     stoppedAt: ["shellular": when])
         let entry = services.entries.first { $0.id == "shellular" }
         XCTAssertEqual(entry?.stoppedByOwner, true)
-        XCTAssertEqual(FleetServices.automaticAction(for: entry!), .none)
-    }
-
-    func testAStoppedFleetServiceIsLeftAloneByTheAutomaticAction() {
-        let services = FleetServices(serverState: .running, states: ["shellular": .stopped])
-        let entry = services.entries.first { $0.id == "shellular" }
-        XCTAssertEqual(FleetServices.automaticAction(for: entry!), .none)
+        XCTAssertEqual(entry?.stoppedAt, when)
+        XCTAssertTrue(entry?.ownerStopLine?.hasPrefix("Stopped by you at ") == true, entry?.ownerStopLine ?? "")
+        XCTAssertTrue(entry?.menuNote?.hasPrefix("stopped by you at ") == true, entry?.menuNote ?? "")
     }
 
     // MARK: - The actions the owner may pick
@@ -141,11 +151,28 @@ final class FleetServicesTests: XCTestCase {
         XCTAssertEqual(FleetServices.availableActions(for: .stopped, wanted: true, policy: .whileServerRuns), [.start, .restart])
     }
 
-    func testAServiceThatFollowsTheServerCannotBeStartedWhileTheServerIsDown() {
-        // Starting it now would be undone at once, so no action is offered
-        // that the reconciler would take straight back.
+    func testAServiceThatFollowsTheServerIsNotStartedWhileTheServerIsDown() {
+        // It has nothing to serve then,  and the row says so instead of showing a bare empty menu.
         XCTAssertEqual(FleetServices.availableActions(for: .stopped, wanted: false, policy: .whileServerRuns), [])
-        XCTAssertEqual(FleetServices.availableActions(for: .running, wanted: false, policy: .whileServerRuns), [])
+        let services = FleetServices(serverState: .stopped, states: ["botfleet-mcp": .stopped])
+        let entry = services.entries.first { $0.id == "botfleet-mcp" }
+        XCTAssertEqual(entry?.whyNoActions, "it starts when BotFleet Server is running")
+    }
+
+    func testARunningServiceThatFollowsTheServerCanAlwaysBeStopped() {
+        // The server it follows is down and the service is still up:  the owner can stop it.
+        XCTAssertEqual(FleetServices.availableActions(for: .running, wanted: false, policy: .whileServerRuns), [.stop])
+    }
+
+    func testAnApplicationPM2NeverHeardOfIsNotOfferedAStart() {
+        XCTAssertEqual(FleetServices.availableActions(for: .notInPM2, wanted: false, policy: .alwaysOn), [])
+        let services = FleetServices(serverState: .running, states: ["seat-mcp": .notInPM2, "shellular": .running])
+        let entry = services.entries.first { $0.id == "seat-mcp" }
+        XCTAssertEqual(entry?.summary, "not in this Mac's pm2")
+        XCTAssertEqual(entry?.availableActions, [])
+        XCTAssertEqual(entry?.whyNoActions, "pm2 on the Mac has no record of it, so it is not started from here")
+        // pm2 answered,  so the rest of its rows are known.
+        XCTAssertTrue(services.pm2Answered)
     }
 
     func testAServiceTheOwnerStoppedCanBeStartedAgain() {
@@ -193,9 +220,9 @@ final class FleetServicesTests: XCTestCase {
 
     func testTheFleetServicesMenuHasOneRowPerService() {
         let services = FleetServices(serverState: .running, states: [:])
-        XCTAssertEqual(services.menuItems.count, 12)
+        XCTAssertEqual(services.menuItems.count, 13)
         XCTAssertEqual(services.menuItems.first?.id, "botfleet-mcp")
-        XCTAssertEqual(services.menuTitle, "Fleet Services (12)")
+        XCTAssertEqual(services.menuTitle, "Services On The Mac (13)")
     }
 
     func testEachMenuRowShowsTheStateAndTheActions() {
@@ -216,9 +243,9 @@ final class FleetServicesTests: XCTestCase {
     func testThePM2StatesAreReadFromTheJSON() throws {
         let listing = """
         [
-          {"name": "shellular", "pm2_env": {"status": "online"}},
-          {"name": "botfleet-mcp", "pm2_env": {"status": "stopped"}},
-          {"name": "grok-acp", "pm2_env": {"status": "errored"}}
+          {"name": "shellular", "pid": 4242, "pm2_env": {"status": "online"}},
+          {"name": "botfleet-mcp", "pid": 0, "pm2_env": {"status": "stopped"}},
+          {"name": "grok-acp", "pid": 0, "pm2_env": {"status": "errored"}}
         ]
         """
         let states = try XCTUnwrap(PM2Client.parseAppStates(listing))
@@ -239,11 +266,13 @@ final class FleetServicesTests: XCTestCase {
         XCTAssertEqual(pm2.state(ofApp: "grok-acp"), .unknown)
     }
 
-    func testAnApplicationPM2HasNoRecordOfIsNotRunning() {
+    func testAnApplicationPM2HasNoRecordOfIsNotStopped() {
+        // pm2 answered and has never heard of it:  that is not a stopped application,  and a
+        // start could make a second copy of a job that belongs to another machine.
         let commands = FleetServiceCommands()
-        commands.pm2Listing = #"[{"name": "shellular", "pm2_env": {"status": "online"}}]"#
+        commands.pm2Listing = #"[{"name": "shellular", "pid": 4242, "pm2_env": {"status": "online"}}]"#
         let pm2 = PM2Client(commands: commands, nodePath: "/usr/bin/node", pm2Path: "/usr/bin/pm2")
-        XCTAssertEqual(pm2.state(ofApp: "grok-acp"), .stopped)
+        XCTAssertEqual(pm2.state(ofApp: "grok-acp"), .notInPM2)
     }
 
     func testAPM2ThatCannotBeReachedKnowsNothing() {
@@ -259,12 +288,115 @@ final class FleetServicesTests: XCTestCase {
         XCTAssertEqual(PM2Client.state(forStatus: "launching"), .unknown)
     }
 
+    func testAnApplicationPM2CallsOnlineWithNoProcessBehindItIsNotRunning() throws {
+        // pm2 keeps the record of every application it started, and the record
+        // outlives the process.  The BotFleet MCP adapter read as online for
+        // days while nothing served its port, and a record that says online
+        // with no pid behind it is exactly that:  a stale record, and a stale
+        // record is not a running service.
+        let listing = """
+        [
+          {"name": "botfleet-mcp", "pm2_env": {"status": "online"}},
+          {"name": "shellular", "pid": 4242, "pm2_env": {"status": "online"}}
+        ]
+        """
+        let states = try XCTUnwrap(PM2Client.parseAppStates(listing))
+        XCTAssertEqual(states["botfleet-mcp"], .failed)
+        XCTAssertEqual(states["shellular"], .running)
+    }
+
+    func testAnApplicationPM2ReportsOnlineWithNoPidAtAllIsNotRunning() throws {
+        // A listing with no pid proves nothing about a process, so it cannot
+        // read as running either.
+        let listing = #"[{"name": "botfleet-mcp", "pm2_env": {"status": "online"}}]"#
+        let states = try XCTUnwrap(PM2Client.parseAppStates(listing))
+        XCTAssertEqual(states["botfleet-mcp"], .failed)
+    }
+
+    func testTheStaleApplicationsAreTheOnesWithNoProcessBehindThem() throws {
+        let listing = """
+        [
+          {"name": "botfleet-mcp", "pm2_env": {"status": "online"}},
+          {"name": "shellular", "pid": 4242, "pm2_env": {"status": "online"}},
+          {"name": "grok-acp", "pid": 0, "pm2_env": {"status": "errored"}}
+        ]
+        """
+        XCTAssertEqual(PM2Client.snapshot(from: listing)?.stale, ["botfleet-mcp"])
+    }
+
+    func testAPidInTheNestedEnvironmentIsReadWhenTheEntryHasNone() throws {
+        // pm2 has carried the process id in more than one place in its listing.
+        // The entry level is the one that decides, and the nested value is the
+        // fallback, so a shape that moves the field cannot make every running
+        // application read as failed.
+        let listing = #"[{"name": "shellular", "pm2_env": {"status": "online", "pid": 4242}}]"#
+        let states = try XCTUnwrap(PM2Client.parseAppStates(listing))
+        XCTAssertEqual(states["shellular"], .running)
+        XCTAssertEqual(PM2Client.snapshot(from: listing)?.stale, [])
+    }
+
+    func testAnEntryPidOfZeroIsNotOverriddenByANestedOne() throws {
+        // The nested environment can keep the id of a process that is long
+        // gone, so an explicit zero at the entry level means no process.
+        let listing = #"[{"name": "botfleet-mcp", "pid": 0, "pm2_env": {"status": "online", "pid": 4242}}]"#
+        let states = try XCTUnwrap(PM2Client.parseAppStates(listing))
+        XCTAssertEqual(states["botfleet-mcp"], .failed)
+    }
+
+    func testAListingThatCannotBeReadNamesNoStaleApplication() {
+        XCTAssertNil(PM2Client.snapshot(from: "not json"))
+        XCTAssertEqual(PM2Client.snapshot(from: "[]")?.stale, [])
+    }
+
     // MARK: - Changing the pm2 applications
 
     func testStartingAPM2ApplicationRunsPM2Start() throws {
         let commands = FleetServiceCommands()
         try pm2(commands).start(appName: "shellular")
+        // A start is one pm2 command.  The listing that would tell a stale
+        // record from a running one is a second command, and a caller that
+        // cannot tell them apart finds out from a start that achieved
+        // nothing rather than from a listing every start would pay for.
         XCTAssertEqual(commands.calls, [["start", "shellular"]])
+    }
+
+    func testAStartWithNoStaleSetReadsNoListing() throws {
+        // The reconciler reads the listing and hands the stale set over, so a
+        // start never has to read one of its own.
+        let commands = FleetServiceCommands()
+        commands.pm2Listing = #"[{"name": "botfleet-mcp", "pm2_env": {"status": "online"}}]"#
+        try pm2(commands).start(appName: "botfleet-mcp")
+        XCTAssertEqual(commands.calls, [["start", "botfleet-mcp"]])
+    }
+
+    func testStartingAStaleApplicationRestartsItInsteadOfStartingIt() throws {
+        // pm2 answers `pm2 start` on a record it believes is online with
+        // "already started" and starts nothing, so a stale application would
+        // never come back and the start would report a success it did not
+        // achieve.  A stale record is restarted, which runs the script again.
+        let commands = FleetServiceCommands()
+        try pm2(commands).start(appName: "botfleet-mcp", stale: ["botfleet-mcp"])
+        XCTAssertTrue(commands.calls.contains { $0 == ["restart", "botfleet-mcp"] })
+        XCTAssertFalse(commands.calls.contains { $0.first == "start" })
+    }
+
+    func testStartingAStaleApplicationFallsBackToTheEcosystemFile() throws {
+        // A stale record whose launcher is gone is exactly the botfleet-mcp
+        // case, and the ecosystem file is the way back, so the stale path
+        // carries the same fallback as any other restart.
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        try FileManager.default.createDirectory(at: home.appendingPathComponent("apps"), withIntermediateDirectories: true)
+        try Data().write(to: home.appendingPathComponent("apps/pm2-ecosystem.config.cjs"))
+        let commands = FleetServiceCommands()
+        commands.restartFailure = CommandExitError(output: "", status: 1,
+                                                   errorOutput: "[PM2][ERROR] Process or Namespace botfleet-mcp not found")
+        try pm2(commands, home: home).start(appName: "botfleet-mcp", stale: ["botfleet-mcp"])
+        XCTAssertEqual(commands.calls.count, 2)
+        XCTAssertEqual(commands.calls[0], ["restart", "botfleet-mcp"])
+        XCTAssertEqual(commands.calls[1], ["start",
+                                          home.appendingPathComponent("apps/pm2-ecosystem.config.cjs").path,
+                                          "--only", "botfleet-mcp"])
     }
 
     func testStartingAPM2ApplicationFallsBackToTheEcosystemFile() throws {
@@ -273,13 +405,39 @@ final class FleetServicesTests: XCTestCase {
         try FileManager.default.createDirectory(at: home.appendingPathComponent("apps"), withIntermediateDirectories: true)
         try Data().write(to: home.appendingPathComponent("apps/pm2-ecosystem.config.cjs"))
         let commands = FleetServiceCommands()
-        commands.startFailure = CommandExitError(output: "pm2 said no")
+        commands.startFailure = CommandExitError(output: "", status: 1,
+                                                 errorOutput: "[PM2][ERROR] Process or Namespace shellular not found")
         try pm2(commands, home: home).start(appName: "shellular")
         XCTAssertEqual(commands.calls.count, 2)
         XCTAssertEqual(commands.calls[0], ["start", "shellular"])
         XCTAssertEqual(commands.calls[1], ["start",
                                           home.appendingPathComponent("apps/pm2-ecosystem.config.cjs").path,
                                           "--only", "shellular"])
+    }
+
+    func testAStartThatTimedOutIsNeverRunAgainFromTheEcosystemFile() throws {
+        // A timeout says nothing about whether pm2 knows the application,  and a second start
+        // could start a second copy of one that is coming up.
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        try FileManager.default.createDirectory(at: home.appendingPathComponent("apps"), withIntermediateDirectories: true)
+        try Data().write(to: home.appendingPathComponent("apps/pm2-ecosystem.config.cjs"))
+        let commands = FleetServiceCommands()
+        commands.startFailure = CommandTimedOutError(executable: "/usr/bin/node",
+                                                     arguments: ["/usr/bin/pm2", "start", "shellular"])
+        XCTAssertThrowsError(try pm2(commands, home: home).start(appName: "shellular"))
+        XCTAssertEqual(commands.calls, [["start", "shellular"]])
+    }
+
+    func testAStartThatFailedForAnotherReasonIsNeverRunAgainFromTheEcosystemFile() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        try FileManager.default.createDirectory(at: home.appendingPathComponent("apps"), withIntermediateDirectories: true)
+        try Data().write(to: home.appendingPathComponent("apps/pm2-ecosystem.config.cjs"))
+        let commands = FleetServiceCommands()
+        commands.startFailure = CommandExitError(output: "", status: 1, errorOutput: "script failed to spawn")
+        XCTAssertThrowsError(try pm2(commands, home: home).start(appName: "shellular"))
+        XCTAssertEqual(commands.calls, [["start", "shellular"]])
     }
 
     func testStoppingAPM2ApplicationRunsPM2Stop() throws {
@@ -302,7 +460,8 @@ final class FleetServicesTests: XCTestCase {
         try FileManager.default.createDirectory(at: home.appendingPathComponent("apps"), withIntermediateDirectories: true)
         try Data().write(to: home.appendingPathComponent("apps/pm2-ecosystem.config.cjs"))
         let commands = FleetServiceCommands()
-        commands.restartFailure = CommandExitError(output: "pm2 said no")
+        commands.restartFailure = CommandExitError(output: "", status: 1,
+                                                   errorOutput: "[PM2][ERROR] Process or Namespace shellular not found")
         try pm2(commands, home: home).restart(appName: "shellular")
         XCTAssertEqual(commands.calls.count, 2)
         XCTAssertEqual(commands.calls[0], ["restart", "shellular"])
@@ -314,7 +473,7 @@ final class FleetServicesTests: XCTestCase {
     func testTheStateAfterTheActionIsTheOneThatIsReported() async throws {
         let commands = FleetServiceCommands()
         commands.pm2Listing = #"[{"name": "shellular", "pm2_env": {"status": "stopped"}}]"#
-        commands.pm2ListingAfterChange = #"[{"name": "shellular", "pm2_env": {"status": "online"}}]"#
+        commands.pm2ListingAfterChange = #"[{"name": "shellular", "pid": 4242, "pm2_env": {"status": "online"}}]"#
         let state = try await pm2(commands).setRunning(true, appName: "shellular", attempts: 2)
         XCTAssertEqual(state, .running)
         XCTAssertTrue(commands.calls.contains { $0.first == "start" })
@@ -340,7 +499,7 @@ final class FleetServicesTests: XCTestCase {
 
     func testAnApplicationThatIsAlreadyRunningIsNotStartedAgain() async throws {
         let commands = FleetServiceCommands()
-        commands.pm2Listing = #"[{"name": "shellular", "pm2_env": {"status": "online"}}]"#
+        commands.pm2Listing = #"[{"name": "shellular", "pid": 4242, "pm2_env": {"status": "online"}}]"#
         let state = try await pm2(commands).setRunning(true, appName: "shellular", attempts: 1)
         XCTAssertEqual(state, .running)
         XCTAssertFalse(commands.calls.contains { $0.first == "start" })
@@ -457,6 +616,16 @@ final class FleetServicesTests: XCTestCase {
         XCTAssertLessThan(elapsed, 3.0)
     }
 
+    func testATimedSettleDoesNotSleepPastItsBudget() async {
+        // A step longer than what is left must not carry the wait past its budget.
+        let start = Date()
+        let observed = await ManagedServices.settle(to: .running, within: 0.2, interval: 30) {
+            .stopped
+        }
+        XCTAssertEqual(observed, .stopped)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 5.0)
+    }
+
     // MARK: - A stop the owner asked for
 
     func testAStopIsRemembered() {
@@ -510,14 +679,26 @@ final class FleetServicesTests: XCTestCase {
                                     stoppedByOwner: ["botfleet-mcp"])
         let entry = services.entries.first { $0.id == "botfleet-mcp" }
         XCTAssertEqual(entry?.wanted, false)
-        XCTAssertEqual(FleetServices.automaticAction(for: entry!), .none)
     }
 
     func testAServiceTheOwnerStoppedIsWantedAgainWhenTheOwnerStartsIt() {
         let services = FleetServices(serverState: .running, states: ["botfleet-mcp": .stopped])
         let entry = services.entries.first { $0.id == "botfleet-mcp" }
         XCTAssertEqual(entry?.wanted, true)
-        XCTAssertEqual(FleetServices.automaticAction(for: entry!), .start)
+    }
+
+    func testTheOwnersStopsKeepTheirTimes() {
+        let when = Date(timeIntervalSince1970: 1_800_000_000)
+        var stops = OwnerStops()
+        stops.record(.stop, id: "shellular", at: when)
+        XCTAssertEqual(stops.stoppedAt["shellular"], when)
+        let before = stops
+        stops.record(.start, id: "shellular")
+        XCTAssertNil(stops.stoppedAt["shellular"])
+        // Putting the whole record back brings the time back too.
+        stops.restore(before)
+        XCTAssertEqual(stops.ids, ["shellular"])
+        XCTAssertEqual(stops.stoppedAt["shellular"], when)
     }
 
     // MARK: - Stopping the BotFleet Server
@@ -594,6 +775,47 @@ final class FleetServicesTests: XCTestCase {
         XCTAssertEqual(state, .running)
     }
 
+    func testTheServersStopGivesUpWithinItsBudgetWhenALookIsSlow() async throws {
+        // A look can cost a whole request timeout, so the budget is time and
+        // not a number of looks.  A count of eight would run nine looks here.
+        let home = try makeHome(serverInstalled: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let looks = Counter()
+        let control = FleetServiceControl(
+            pm2: pm2(FleetServiceCommands()),
+            startup: StartupPolicy(home: home, commands: LaunchAgentCommands(), uid: 501, environment: [:]),
+            mcpServer: nil,
+            stopServer: { },
+            observeServer: {
+                looks.increment()
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                return .running
+            },
+            agentSettleInterval: 0.05)
+        let state = try await control.perform(.stop, serviceID: FleetServiceRegistry.server.id, attempts: 8)
+        XCTAssertEqual(state, .running)
+        XCTAssertLessThan(looks.value, 9)
+    }
+
+    func testAPM2ThatTimesOutDuringARestartIsNotKnownAndNotARefusal() async throws {
+        // pm2 can take a restart and then be slow to answer,  so the outcome is not known.
+        let home = try makeHome(serverInstalled: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let commands = FleetServiceCommands()
+        commands.restartFailure = CommandTimedOutError(executable: "/usr/bin/node",
+                                                       arguments: ["/usr/bin/pm2", "restart", "shellular"])
+        let control = FleetServiceControl(pm2: pm2(commands),
+                                          startup: StartupPolicy(home: home, commands: LaunchAgentCommands(), uid: 501, environment: [:]),
+                                          mcpServer: nil)
+        do {
+            _ = try await control.perform(.restart, serviceID: "shellular")
+            XCTFail("a restart that timed out should not be reported as a success")
+        } catch {
+            XCTAssertEqual(error as? FleetServiceError,
+                           .notKnown("pm2 did not finish in time to restart shellular, so it is not known whether it did."))
+        }
+    }
+
     func testStoppingTheBotFleetServerIsRefusedWhenTheServerCannotBeAsked() async throws {
         let home = try makeHome(serverInstalled: true)
         defer { try? FileManager.default.removeItem(at: home) }
@@ -605,6 +827,9 @@ final class FleetServicesTests: XCTestCase {
             XCTFail("the stop should not have been reported as a success")
         } catch {
             XCTAssertTrue("\(error)".contains("stop itself"))
+            // The app is Muster;  the retired BotFleet Control name is not shown.
+            XCTAssertTrue("\(error)".contains("Muster could not ask it to"))
+            XCTAssertFalse("\(error)".contains("Control app"))
         }
     }
 
@@ -672,7 +897,7 @@ final class FleetServicesTests: XCTestCase {
     func testARefusedRestartDoesNotPutTheMarkerBackWhenTheStateIsUnknown() async throws {
         // launchctl could not be asked, so nothing is known about the
         // server.  The marker must not be re-created on that, and the
-        // refusal must not claim the server was not replaced.
+        // answer is not a refusal that claims the server was not replaced.
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: home) }
         try FileManager.default.createDirectory(at: home.appendingPathComponent("apps"), withIntermediateDirectories: true)
@@ -693,8 +918,8 @@ final class FleetServicesTests: XCTestCase {
             _ = try await control.perform(.restart, serviceID: FleetServiceRegistry.server.id, attempts: 2)
             XCTFail("a restart that could not be checked should not be reported as a success")
         } catch {
-            XCTAssertTrue("\(error)".contains("could not be checked"))
-            XCTAssertFalse("\(error)".contains("not replaced"))
+            XCTAssertEqual(error as? FleetServiceError,
+                           .notKnown("launchctl could not be asked after the restart"))
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
     }
@@ -707,7 +932,7 @@ final class FleetServicesTests: XCTestCase {
                                     startupPolicySupported: false)
         let row = services.menuItems.first { $0.id == "app.botfleet.server" }
         let body = FleetServices.stopBody(for: row!, startupPolicySupported: false)
-        XCTAssertFalse(body.contains("Restart clears the marker"))
+        XCTAssertFalse(body.contains("Restart brings it back"))
         XCTAssertTrue(body.contains("stopped.marker"))
     }
 
@@ -717,7 +942,25 @@ final class FleetServicesTests: XCTestCase {
                                     startupPolicySupported: true)
         let row = services.menuItems.first { $0.id == "app.botfleet.server" }
         let body = FleetServices.stopBody(for: row!, startupPolicySupported: true)
-        XCTAssertTrue(body.contains("Restart clears the marker"))
+        XCTAssertTrue(body.contains("Restart brings it back"))
+        XCTAssertFalse(body.contains("marker"))
+    }
+
+    func testTheStopCopyNamesTheMacInEveryBranch() {
+        for supported in [true, false] {
+            for id in [FleetServiceRegistry.server.id, "app.botfleet.companion", "shellular"] {
+                let body = FleetServices.stopBody(forServiceID: id, startupPolicySupported: supported)
+                XCTAssertTrue(body.contains("on the Mac"), body)
+                XCTAssertFalse(body.contains("this Mac"), body)
+            }
+        }
+    }
+
+    func testPM2AnsweredIsDecidedByItsOwnApplications() {
+        XCTAssertFalse(FleetServices(serverState: .running, states: ["shellular": .unknown]).pm2Answered)
+        XCTAssertTrue(FleetServices(serverState: .running, states: ["shellular": .stopped]).pm2Answered)
+        // The MCP server is read through its own health endpoint,  so it says nothing about pm2.
+        XCTAssertFalse(FleetServices(serverState: .running, states: ["botfleet-mcp": .running]).pm2Answered)
     }
 
     func testAServerRestartWaitsNoLongerThanTheCallerAskedFor() async throws {
@@ -793,8 +1036,8 @@ final class FleetServicesTests: XCTestCase {
         FleetServiceURLProtocol.handler = { _ in .failure(URLError(.timedOut)) }
         let commands = FleetServiceCommands()
         commands.pm2Listing = """
-        [{"name": "shellular", "pm2_env": {"status": "online"}},
-         {"name": "grok-acp", "pm2_env": {"status": "errored"}}]
+        [{"name": "shellular", "pid": 4242, "pm2_env": {"status": "online"}},
+         {"name": "grok-acp", "pid": 0, "pm2_env": {"status": "errored"}}]
         """
         let home = try makeHome(serverInstalled: true)
         defer { try? FileManager.default.removeItem(at: home) }
@@ -802,8 +1045,8 @@ final class FleetServicesTests: XCTestCase {
         let states = await control.states(serverState: .running)
         XCTAssertEqual(states["shellular"], .running)
         XCTAssertEqual(states["grok-acp"], .failed)
-        // An application pm2 has no record of is not running.
-        XCTAssertEqual(states["seat-mcp"], .stopped)
+        // An application pm2 has no record of is not stopped:  it is not in this Mac's pm2.
+        XCTAssertEqual(states["seat-mcp"], .notInPM2)
     }
 
     // MARK: - Helpers

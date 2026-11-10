@@ -6,10 +6,13 @@ import contextlib
 import io
 import json
 import os
+import pathlib
 import signal
+import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -546,6 +549,60 @@ class MmSessionLetterTest(unittest.TestCase):
         self.assertIn("secret_detected", out.getvalue())
         self.assertNotIn(secret, out.getvalue())
 
+    def test_the_rename_command_uses_the_resolved_letter_and_one_prefix(self):
+        """AFC-640: rename must not register() a second letter or double-prefix the title."""
+        from simple_tools import operator_registry as OR
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "registry.sqlite3")
+            reg = OR.SessionRegistry(db)
+            native = SESSION_ID
+            made = reg.resolve_or_register(
+                {
+                    "seat": "MM",
+                    "platform": "minimax",
+                    "verified_host": "mac-1",
+                    "profile_scope": "default",
+                    "native_session_id": native,
+                    "source": "test",
+                    "letter_space": "double",
+                }
+            )
+            reg._conn.execute(
+                "UPDATE alias_assignments SET letter = 'EH' WHERE record_id = ?",
+                (made["record_id"],),
+            )
+            reg._conn.commit()
+            reg.close_db()
+            out = io.StringIO()
+            with (
+                mock.patch.object(M, "registry_db", return_value=db),
+                mock.patch.object(M, "location", return_value="cloud-1"),
+                mock.patch.object(M, "set_title", return_value=True),
+                mock.patch.object(M, "update_title", return_value={"outcome": "updated"}),
+                mock.patch.object(M, "session_row", return_value={}),
+                mock.patch.object(
+                    M, "register", side_effect=AssertionError("register must not run")
+                ),
+                contextlib.redirect_stdout(out),
+            ):
+                code = M.main(
+                    [
+                        "rename",
+                        "--session-id",
+                        native,
+                        "--title",
+                        "EH: AFC-621 Housekeeper Webhook Credential Path",
+                    ]
+                )
+            self.assertEqual(code, 0)
+            payload = json.loads(out.getvalue().strip())
+            self.assertEqual(payload["letter"], "EH")
+            self.assertEqual(
+                payload["title"],
+                "EH: AFC-621 Housekeeper Webhook Credential Path",
+            )
+
     def test_read_hook_input_rejects_oversized_bytes(self):
         payload = b"x" * (M.HOOK_INPUT_MAX + 2)
         with mock.patch.object(sys, "stdin", _StdinBytes(payload)):
@@ -993,6 +1050,13 @@ class MmSessionLetterTest(unittest.TestCase):
         self.assertTrue(M.title_ok("AA: Topic", "AA")[0])
         self.assertFalse(M.title_ok("A: Topic", "AA")[0])
 
+    def test_wanted_title_strips_a_stale_prefix_from_a_held_letter(self):
+        # AFC-640: a title that still carries EH must not become "NN: EH: ..." after re-lettering.
+        self.assertEqual(M.wanted_title("EH", "EH: AFC-621 Topic", ("EH",)), "EH: AFC-621 Topic")
+        self.assertEqual(
+            M.wanted_title("EH", "NN: EH: AFC-621 Topic", ("EH", "NN")), "EH: AFC-621 Topic"
+        )
+
     def test_wanted_title_drops_the_letter_the_title_already_carries(self):
         # A thread that is re-lettered keeps its topic:  the old prefix goes, the new one comes.
         self.assertEqual(M.wanted_title("AA", "A: Fix the sweep"), "AA: Fix the sweep")
@@ -1321,7 +1385,7 @@ class MmLetterReopenTest(unittest.TestCase):
         self.scripts = os.path.dirname(os.path.abspath(M.__file__))
         self.scope = os.path.join(self.tmp.name, "v2", "hook-data", "user", "session-letters")
         # The script never brings a registry into being, so the file is created here.
-        from agent_sync import operator_registry as R
+        from simple_tools import operator_registry as R
 
         R.SessionRegistry(self.db).close_db()
 
@@ -1329,14 +1393,14 @@ class MmLetterReopenTest(unittest.TestCase):
         return mock.patch.dict(
             os.environ,
             {
-                "AGENT_SYNC_OPERATOR_REGISTRY": self.db,
+                "SIMPLE_TOOLS_OPERATOR_REGISTRY": self.db,
                 "MINIMAX_HOOKS_DATA": "",
                 "MINIMAX_DATA_DIR": self.tmp.name,
             },
         )
 
     def _registry(self):
-        from agent_sync import operator_registry as R
+        from simple_tools import operator_registry as R
 
         reg = R.SessionRegistry(self.db)
         self.addCleanup(reg.close_db)
@@ -1491,6 +1555,95 @@ class MmReLetterTitleTest(unittest.TestCase):
         self.assertEqual(M.wanted_title("AA", "AI: the model"), "AA: AI: the model")
 
 
+class MmRegistryLetterResolveTest(unittest.TestCase):
+    """registry_letter_for_session and rename_registry_context stay location-safe."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "registry.sqlite3")
+        from simple_tools import operator_registry as R
+
+        R.SessionRegistry(self.db).close_db()
+
+    def _env(self):
+        return mock.patch.dict(
+            os.environ,
+            {
+                "SIMPLE_TOOLS_OPERATOR_REGISTRY": self.db,
+                "MINIMAX_HOOKS_DATA": "",
+                "MINIMAX_DATA_DIR": self.tmp.name,
+            },
+            clear=False,
+        )
+
+    def test_registry_letter_from_rows_skips_empty_labels(self):
+        rows = [{"verified_host": "mac-1", "profile_scope": "default", "label": ""}]
+        self.assertEqual(
+            M._registry_letter_from_rows(rows, verified_host="mac-1", profile_scope="default"),
+            "",
+        )
+        rows = [{"verified_host": "mac-1", "profile_scope": "default", "label": "AA"}]
+        self.assertEqual(
+            M._registry_letter_from_rows(rows, verified_host="mac-1", profile_scope="default"),
+            "AA",
+        )
+
+    def test_registry_letter_for_session_matches_profile_scope(self):
+        from simple_tools import operator_registry as R
+
+        native = "mvs_scope_disambiguation"
+        with self._env(), mock.patch.object(M, "location", return_value="mac-1"):
+            R.register_session(
+                self.db,
+                platform="minimax",
+                native_session_id=native,
+                seat="MM",
+                source="test",
+                issuer=R.ISSUER_OPERATOR,
+                verified_host="mac-1",
+                profile_scope="scope-a",
+                letter_space="double",
+            )
+            R.register_session(
+                self.db,
+                platform="minimax",
+                native_session_id=native,
+                seat="MM",
+                source="test",
+                issuer=R.ISSUER_OPERATOR,
+                verified_host="mac-1",
+                profile_scope="default",
+                letter_space="double",
+            )
+            with mock.patch.object(M, "PROFILE_SCOPE", "default"):
+                letters = [
+                    R.lookup_label(self.db, "minimax", "mac-1", "scope-a", native),
+                    R.lookup_label(self.db, "minimax", "mac-1", "default", native),
+                ]
+                self.assertEqual(len(set(letters)), 2)
+                self.assertEqual(M.registry_letter_for_session(native), letters[1])
+
+    def test_rename_registry_context_opens_the_registry_once(self):
+        import simple_tools.operator_registry as OR
+
+        calls: list[bool] = []
+        original = OR.SessionRegistry
+
+        class _CountingRegistry(original):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                calls.append(kwargs.get("read_only"))
+
+        with (
+            self._env(),
+            mock.patch.object(M, "location", return_value="mac-1"),
+            mock.patch.object(OR, "SessionRegistry", _CountingRegistry),
+        ):
+            M.rename_registry_context(SESSION_ID)
+        self.assertEqual(calls, [True])
+
+
 class MmReopenStrictTouchTest(unittest.TestCase):
     """The sweep sees a reopen that could not be done, so it keeps the session for a retry."""
 
@@ -1501,7 +1654,7 @@ class MmReopenStrictTouchTest(unittest.TestCase):
         # The script never brings a registry into being, so the file is created here.  A
         # test that reads the registry of the host it runs on passes for the wrong
         # reason on the seat's own Mac and fails on a runner that keeps none.
-        from agent_sync import operator_registry as R
+        from simple_tools import operator_registry as R
 
         R.SessionRegistry(self.db).close_db()
 
@@ -1509,7 +1662,7 @@ class MmReopenStrictTouchTest(unittest.TestCase):
         return mock.patch.dict(
             os.environ,
             {
-                "AGENT_SYNC_OPERATOR_REGISTRY": self.db,
+                "SIMPLE_TOOLS_OPERATOR_REGISTRY": self.db,
                 "MINIMAX_HOOKS_DATA": "",
                 "MINIMAX_DATA_DIR": self.tmp.name,
             },
@@ -1551,7 +1704,7 @@ class MmReopenStrictTouchTest(unittest.TestCase):
     def test_a_reopen_that_fails_on_the_registry_is_a_registry_error(self):
         # A raw storage failure out of the reopen travels as a RegistryError, so every
         # caller handles it the same way.
-        from agent_sync import operator_registry as OR
+        from simple_tools import operator_registry as OR
 
         with (
             self._env(),
@@ -1562,9 +1715,456 @@ class MmReopenStrictTouchTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, "reopen_failed")
 
     def test_a_reopen_without_a_registry_is_a_registry_error_too(self):
-        # A host that keeps no registry answers no_registry, and that travels as one
-        # error type as well.
-        with mock.patch.object(M, "registry_db", return_value=""):
-            with self.assertRaises(M.RegistryError) as caught:
-                M.reopen_closed("r1")
+        # A host that keeps no registry asks the host that holds one, and a host that
+        # holds none answers no_registry:  that travels as one error type as well.
+        with (
+            mock.patch.object(M, "registry_db", return_value=""),
+            mock.patch.object(
+                M,
+                "remote_registry_call",
+                return_value={
+                    "error": "no Operator registry on this host",
+                    "code": "no_registry",
+                },
+            ),
+            self.assertRaises(M.RegistryError) as caught,
+        ):
+            M.reopen_closed("r1")
         self.assertEqual(caught.exception.code, "no_registry")
+
+
+class RemoteRegistryHopTest(unittest.TestCase):
+    """The hop to the host that holds the Operator's registry (AFC-412, server seat).
+
+    This host keeps no registry of its own, so it asks the host that holds one
+    through the transport command.  The transport is host configuration:  the helper
+    names the command and the command carries the host, so the helper names no host,
+    no user, no alias, no ssh flag and no remote path anywhere.
+    """
+
+    def _hop(self, **env: str):
+        """Run the hop with the environment given, and hand back the answer."""
+
+        def fake_run(cmd, **kwargs):
+            self.cmd = cmd
+            self.kwargs = kwargs
+            return subprocess.CompletedProcess(cmd, 0, stdout=self.stdout, stderr="")
+
+        self.stdout = '{"label": "AA"}\n'
+        self.cmd = []
+        self.kwargs = {}
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(M.subprocess, "run", side_effect=fake_run),
+        ):
+            answer = M.remote_registry_call(["history", "--platform=minimax"])
+        return answer
+
+    def test_the_transport_is_a_command_and_the_helper_names_nothing_else(self):
+        answer = self._hop(**{M.ENV_TRANSPORT: "mm-operator-registry"})
+        self.assertEqual(answer, {"label": "AA"})
+        # The whole command:  the transport and the registry CLI's own arguments.
+        # There is no host, no user, no alias, no ssh flag, no remote path and no
+        # remote interpreter in it.
+        self.assertEqual(self.cmd, ["mm-operator-registry", "history", "--platform=minimax"])
+
+    def test_the_default_transport_is_the_one_the_house_keeps(self):
+        # The transport defaults to the wrapper the house already installs, so a host
+        # that names no transport of its own still has one.
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(M.ENV_TRANSPORT, None)
+            with mock.patch.object(M.subprocess, "run") as run:
+                run.return_value = subprocess.CompletedProcess(
+                    [], 0, stdout='{"label": "AA"}', stderr=""
+                )
+                M.remote_registry_call(["history"])
+        self.assertEqual(M.DEFAULT_TRANSPORT, "mm-operator-registry")
+        self.assertEqual(run.call_args.args[0][0], M.DEFAULT_TRANSPORT)
+
+    def test_the_helper_names_no_host_and_no_ssh_in_its_source(self):
+        # The rule is about the source, not only about the command that comes out of
+        # it:  a host, a user, an alias or an ssh flag in this file is the thing the
+        # transport command exists to keep out.
+        source = pathlib.Path(M.__file__).read_text(encoding="utf-8")
+        for forbidden in ("BatchMode", "ConnectTimeout", "ProxyCommand"):
+            self.assertNotIn(forbidden, source)
+
+    def test_a_transport_that_is_not_a_plain_command_name_is_refused(self):
+        # The shell reads an option before a command, so a transport name that is not
+        # a plain command name is refused rather than run.
+        for name in ("-oProxyCommand=touch /tmp/x", "mac host", "mac;id", "a/b", "-mac"):
+            with self.subTest(name=name):
+                with mock.patch.dict(os.environ, {M.ENV_TRANSPORT: name}):
+                    answer = M.remote_registry_call(["history"])
+                self.assertIsNotNone(answer)
+                self.assertEqual(answer["code"], "remote_refused")
+
+    def test_the_transport_runs_the_registry_cli_s_own_arguments(self):
+        self._hop(**{M.ENV_TRANSPORT: "mm-operator-registry"})
+        self.assertEqual(self.cmd[1:], ["history", "--platform=minimax"])
+        # The hop has to finish inside the hook's own timeout.
+        self.assertEqual(self.kwargs["timeout"], M.REMOTE_TIMEOUT)
+        self.assertLess(M.REMOTE_TIMEOUT, 8)
+
+    def test_an_argument_that_holds_a_space_is_one_argument(self):
+        # The title is one argument on the far side, never two words the far shell
+        # would read as two arguments.
+        with (
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
+            mock.patch.object(
+                M.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    [], 0, stdout='{"label": "AA"}', stderr=""
+                ),
+            ) as run,
+        ):
+            M.remote_registry_call(["update", "--title=two words"])
+        cmd = run.call_args.args[0]
+        self.assertIn("--title=two words", cmd)
+        self.assertEqual(len([a for a in cmd if a.startswith("--title")]), 1)
+
+    def test_a_transport_that_cannot_start_is_unreachable(self):
+        with (
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
+            mock.patch.object(M.subprocess, "run", side_effect=OSError("no transport")),
+        ):
+            answer = M.remote_registry_call(["history"])
+        self.assertEqual(answer["code"], "remote_unreachable")
+
+    def test_a_missing_transport_is_its_own_failure(self):
+        # A host with no transport command at all is a different fault from one whose
+        # transport cannot reach the registry host, and the operator has to be able to
+        # tell them apart.
+        with (
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
+            mock.patch.object(
+                M.subprocess, "run", side_effect=FileNotFoundError(2, "No such file")
+            ),
+        ):
+            answer = M.remote_registry_call(["history"])
+        self.assertEqual(answer["code"], "missing_tool")
+        self.assertEqual(M._registry_exit_code(M.RegistryError("x", "missing_tool")), 127)
+
+    def test_a_hop_that_times_out_has_an_unknown_outcome(self):
+        # The write may have landed before the answer was lost, so this is an
+        # unknown outcome and never a call that never happened.
+        with (
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
+            mock.patch.object(
+                M.subprocess, "run", side_effect=subprocess.TimeoutExpired("transport", 6)
+            ),
+        ):
+            answer = M.remote_registry_call(["register"])
+        self.assertEqual(answer["code"], "timeout")
+        self.assertEqual(answer["outcome"], "outcome_unknown")
+        self.assertEqual(M._registry_exit_code(M.RegistryError("x", "timeout")), 124)
+
+    def test_a_hop_that_answers_with_nothing_has_an_unknown_outcome(self):
+        self.stdout = "   \n"
+        with (
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
+            mock.patch.object(
+                M.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, stdout=self.stdout, stderr=""),
+            ),
+        ):
+            answer = M.remote_registry_call(["register"])
+        self.assertEqual(answer["code"], "remote_empty")
+        self.assertEqual(answer["outcome"], "outcome_unknown")
+
+    def test_a_hop_that_answers_with_something_else_is_refused(self):
+        for payload in ("not json at all", "[1, 2, 3]", '"a string"'):
+            with self.subTest(payload=payload):
+                self.stdout = payload
+                with (
+                    mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
+                    mock.patch.object(
+                        M.subprocess,
+                        "run",
+                        return_value=subprocess.CompletedProcess([], 0, stdout=payload, stderr=""),
+                    ),
+                ):
+                    answer = M.remote_registry_call(["register"])
+                self.assertEqual(answer["code"], "remote_unparseable")
+                self.assertEqual(answer["outcome"], "outcome_unknown")
+
+    def test_a_far_host_that_exits_non_zero_with_a_success_answer_is_a_failure(self):
+        # The far side's exit code counts:  a call that failed with a non-zero exit is
+        # not a success, whatever its answer looks like.
+        with (
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
+            mock.patch.object(
+                M.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    [], 2, stdout='{"label": "AA"}', stderr=""
+                ),
+            ),
+        ):
+            answer = M.remote_registry_call(["register"])
+        self.assertIn("error", answer)
+        self.assertNotIn("label", answer)
+
+    def test_a_far_host_that_keeps_no_registry_is_a_configuration_state(self):
+        # The registry's own guard answers that the host that holds it keeps no
+        # registry:  that is a configuration state, not a fault of this call.
+        with (
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
+            mock.patch.object(
+                M.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    [], 3, stdout='{"error": "no Operator registry on this host"}', stderr=""
+                ),
+            ),
+        ):
+            answer = M.remote_registry_call(["history"])
+        self.assertEqual(answer["code"], "no_registry")
+
+    def test_the_local_registry_is_used_when_this_host_has_one(self):
+        # A host that keeps its own registry never goes over the wire.
+        with (
+            mock.patch.object(M, "registry_db", return_value="/tmp/registry.sqlite3"),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.object(M.subprocess, "Popen") as popen,
+            mock.patch.object(M.subprocess, "run") as run,
+        ):
+            popen.return_value.communicate.return_value = ('{"label": "AA"}', "")
+            popen.return_value.returncode = 0
+            answer = M.registry_call(["history"])
+        self.assertEqual(answer, {"label": "AA"})
+        run.assert_not_called()
+
+    def test_the_far_host_is_asked_when_this_host_has_no_registry(self):
+        with (
+            mock.patch.object(M, "registry_db", return_value=""),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.object(M, "remote_registry_call", return_value={"label": "AA"}) as hop,
+        ):
+            answer = M.registry_call(["history", "--platform=minimax"])
+        self.assertEqual(answer, {"label": "AA"})
+        hop.assert_called_once()
+        self.assertEqual(hop.call_args.args[0], ["history", "--platform=minimax"])
+
+    def test_a_refused_transport_is_a_fault_and_not_a_missing_registry(self):
+        # A host that names a transport the shell would read as an option has a
+        # misconfiguration, and that is not the same as having no registry at all.
+        with (
+            mock.patch.object(M, "registry_db", return_value=""),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "-oProxyCommand=touch /tmp/x"}),
+        ):
+            answer = M.registry_call(["history"])
+        self.assertEqual(answer["code"], "remote_refused")
+
+    def test_a_letter_is_issued_over_the_hop(self):
+        # The whole path a MiniMax chat walks when it has no local registry.
+        with (
+            mock.patch.object(M, "registry_db", return_value=""),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.object(
+                M, "remote_registry_call", return_value={"label": "AA", "created": True}
+            ) as hop,
+        ):
+            answer = M.register(SESSION_ID)
+        self.assertEqual(answer["label"], "AA")
+        args = hop.call_args.args[0]
+        self.assertEqual(args[0], "register")
+        self.assertIn("--platform=minimax", args)
+        self.assertIn("--session-id=" + SESSION_ID, args)
+
+
+class ReopenOverTheHopTest(unittest.TestCase):
+    """A chat that comes back to life gets its letter back, wherever the registry is.
+
+    The sweep ends a session's letter while its chat is live.  When the chat returns,
+    the reopen has to reach the registry:  on a host that keeps no copy, that is the
+    host that holds one.
+    """
+
+    def test_the_reopen_goes_to_the_far_host_when_this_host_has_no_registry(self):
+        with (
+            mock.patch.object(M, "registry_db", return_value=""),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.object(
+                M,
+                "remote_registry_call",
+                return_value={"record_id": "r1", "label": "AA", "outcome": "reopened"},
+            ) as hop,
+        ):
+            answer = M.reopen_closed("r1")
+        self.assertEqual(answer["label"], "AA")
+        args = hop.call_args.args[0]
+        self.assertEqual(args[0], "reopen")
+        self.assertIn("--record-id=r1", args)
+        self.assertIn("--letter-pick=" + M.LETTER_PICK, args)
+
+    def test_the_reopen_asks_for_the_parents_pair_when_there_is_one(self):
+        parent = "mvs_parent000000000000000000000000000001"
+        with (
+            mock.patch.object(M, "registry_db", return_value=""),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.object(
+                M, "remote_registry_call", return_value={"record_id": "r1", "label": "BB"}
+            ) as hop,
+        ):
+            M.reopen_closed("r1", parent)
+        self.assertIn("--parent-session-id=" + parent, hop.call_args.args[0])
+
+    def test_a_refused_reopen_keeps_its_own_code_and_outcome(self):
+        # The far host answers a refusal with the code and the outcome, and the
+        # caller reads them the same way it reads a local refusal.
+        with (
+            mock.patch.object(M, "registry_db", return_value=""),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.object(
+                M,
+                "remote_registry_call",
+                return_value={
+                    "error": "the pair AA went to another chat",
+                    "code": "space_lost",
+                    "outcome": "reopen_refused",
+                },
+            ),
+            self.assertRaises(M.RegistryError) as caught,
+        ):
+            M.reopen_closed("r1")
+        self.assertEqual(caught.exception.code, "space_lost")
+        self.assertEqual(caught.exception.outcome, "reopen_refused")
+
+
+class ScriptsDirTest(unittest.TestCase):
+    """The helper and the CLI it calls have to be the same version."""
+
+    def test_the_checkout_the_helper_runs_in_comes_first(self):
+        # A verb the helper sends has to be a verb the CLI knows, so the CLI comes
+        # from the checkout the helper itself is in.
+        here = os.path.dirname(os.path.abspath(M.__file__))
+        with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "/nowhere/at/all"}):
+            self.assertEqual(M.repo_scripts_dir(), here)
+
+    def test_a_host_that_names_no_checkout_still_finds_one(self):
+        here = os.path.dirname(os.path.abspath(M.__file__))
+        with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "", "FLEET_APPS_ROOT": ""}):
+            self.assertEqual(M.repo_scripts_dir(), here)
+
+
+class StopHookTest(unittest.TestCase):
+    """The Stop hook never blocks the agent over a registry that cannot be reached."""
+
+    def _payload(self):
+        return json.dumps({"session_id": SESSION_ID}).encode()
+
+    def _row(self):
+        return {"session_id": SESSION_ID, "title": "AA: A topic", "session_kind": "conversation"}
+
+    def test_a_registry_that_cannot_be_reached_does_not_block_the_stop(self):
+        # A far host that is asleep is not the agent's fault, and a Stop hook that
+        # exits 2 keeps the agent in a loop.
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(self._payload())),
+            mock.patch.object(sys, "stderr", stderr),
+            mock.patch.object(M, "session_row", return_value=self._row()),
+            mock.patch.object(M, "cached_letter", return_value="AA"),
+            mock.patch.object(
+                M,
+                "update_title",
+                side_effect=M.RegistryError("the registry host did not answer", "timeout"),
+            ),
+        ):
+            self.assertEqual(M.hook_stop(), 0)
+        self.assertIn("registry host did not answer", stderr.getvalue())
+
+    def test_a_title_that_carries_a_credential_still_blocks_the_stop(self):
+        # A bad title is the agent's to fix, so that one still says so.
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(self._payload())),
+            mock.patch.object(sys, "stderr", stderr),
+            mock.patch.object(M, "session_row", return_value=self._row()),
+            mock.patch.object(M, "cached_letter", return_value="AA"),
+            mock.patch.object(M, "update_title", side_effect=ValueError("secret_detected")),
+        ):
+            self.assertEqual(M.hook_stop(), 2)
+        self.assertIn("secret_detected", stderr.getvalue())
+
+
+class RegistryHttpsCallTest(unittest.TestCase):
+    """_registry_https_call:  the registry API's client discipline (Path B)."""
+
+    def _call(self, args, *, error=None, raw=b'{"label": "AA"}'):
+        captured = {}
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return raw
+
+        class _Opener:
+            def open(self, request, timeout=None):
+                captured["request"] = request
+                captured["timeout"] = timeout
+                if error is not None:
+                    raise error
+                return _Response()
+
+        env = {"SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY": "k" * 40}
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(M, "_REGISTRY_OPENER", _Opener()),
+        ):
+            answer = M._registry_https_call(args, "https://operator.example.test", timeout=5)
+        return answer, captured["request"]
+
+    def _http_error(self, code, body):
+        return urllib.error.HTTPError(
+            "https://operator.example.test", code, "error", None, io.BytesIO(body)
+        )
+
+    def test_the_request_carries_an_explicit_user_agent(self):
+        # The API's host is Cloudflare-fronted, and Cloudflare answers 1010 to
+        # Python's default urllib agent:  the call names itself instead.
+        _answer, request = self._call(["resolve", "--platform=minimax", "--letter=AA"])
+        self.assertEqual(request.get_header("User-agent"), "mm-session-letter/1.0")
+
+    def test_a_post_5xx_with_a_json_body_is_outcome_unknown(self):
+        answer, _request = self._call(
+            ["touch", "--platform=minimax"],
+            error=self._http_error(500, b'{"error": "boom"}'),
+        )
+        self.assertEqual(answer["code"], "http_500")
+        self.assertEqual(answer["outcome"], "outcome_unknown")
+
+    def test_a_post_5xx_without_a_json_body_is_outcome_unknown(self):
+        answer, _request = self._call(
+            ["touch", "--platform=minimax"],
+            error=self._http_error(502, b"bad gateway"),
+        )
+        self.assertEqual(answer["code"], "http_error")
+        self.assertEqual(answer["outcome"], "outcome_unknown")
+
+    def test_a_post_4xx_answer_is_a_definitive_refusal(self):
+        # A 4xx is the API speaking for itself:  the write was not applied, so
+        # the outcome is known and no idempotency re-check is owed.
+        answer, _request = self._call(
+            ["register", "--platform=minimax"],
+            error=self._http_error(403, b'{"error": "refused", "code": "issuer_refused"}'),
+        )
+        self.assertEqual(answer["code"], "issuer_refused")
+        self.assertNotIn("outcome", answer)
+
+    def test_a_get_5xx_is_not_a_write_outcome(self):
+        answer, _request = self._call(
+            ["resolve", "--platform=minimax", "--letter=AA"],
+            error=self._http_error(500, b'{"error": "boom"}'),
+        )
+        self.assertEqual(answer["code"], "http_500")
+        self.assertNotIn("outcome", answer)

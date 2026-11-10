@@ -79,7 +79,7 @@ class LinkTests(unittest.TestCase):
         other = self.OK.replace("simplewithus.zulipchat.com", "chat.example.test")
         with self.assertRaises(Refusal):
             links.parse_topic_link(other, {})
-        self.assertEqual(links.parse_topic_link(other, {"AGENT_SYNC_REALM": "https://chat.example.test"}).message_id, 777)
+        self.assertEqual(links.parse_topic_link(other, {"SIMPLE_TOOLS_REALM": "https://chat.example.test"}).message_id, 777)
 
     def test_bad_links(self) -> None:
         # the slug comes from the one canonical channel, so a rename cannot leave a stale no-op replace here
@@ -219,14 +219,14 @@ class F3Tests(unittest.TestCase):
         self.assertEqual(f3.textsafe.render_untrusted("@x", 10, code_span=False), "＠x")
         self.assertIsNone(f3.secretscan.scan("plain words"))
 
-    def test_the_package_never_imports_agent_sync(self) -> None:
+    def test_the_package_never_imports_simple_tools(self) -> None:
         import subprocess
         import sys
 
         from .world import SCRIPTS
 
         code = ("import sys; sys.path.insert(0, %r); import needs_owner.cli, needs_owner.verbs; "
-                "bad = [m for m in sys.modules if m == 'agent_sync' or m.startswith('agent_sync.')]; "
+                "bad = [m for m in sys.modules if m == 'simple_tools' or m.startswith('simple_tools.')]; "
                 "sys.exit(1 if bad else 0)" % str(SCRIPTS))
         self.assertEqual(subprocess.run([sys.executable, "-I", "-c", code]).returncode, 0)
 
@@ -324,7 +324,7 @@ class TrustedBinaryTests(unittest.TestCase):
         bad = self.make(0o777, 0o755)
         self.addCleanup(setattr, S, "MANAGED_BIN_DIR", S.MANAGED_BIN_DIR)
         S.MANAGED_BIN_DIR = bad
-        env = {"PATH": bad, S.LOCATOR_ENV: "/fleet-seats:CLAUDE_SEAT_BEARER"}
+        env = {"PATH": bad, S.BEARER_FILE_ENV: "/run/seat-bearers/claude"}
         with self.assertRaises(Refusal):
             S.verified_seat("CLAUDE", env)
 
@@ -332,7 +332,7 @@ class TrustedBinaryTests(unittest.TestCase):
         planted = self.make(0o755, 0o755)  # user-owned and tidy:  only the caller's PATH and HOME point at it
         self.addCleanup(setattr, S, "MANAGED_BIN_DIR", S.MANAGED_BIN_DIR)
         S.MANAGED_BIN_DIR = None
-        env = {"PATH": planted, "HOME": os.path.dirname(planted), S.LOCATOR_ENV: "/fleet-seats:CLAUDE_SEAT_BEARER"}
+        env = {"PATH": planted, "HOME": os.path.dirname(planted), S.BEARER_FILE_ENV: "/run/seat-bearers/claude"}
         from needs_owner import proc
 
         self.assertNotEqual(proc.find_tool("simple-board", env), os.path.join(planted, "simple-board"))
@@ -410,7 +410,7 @@ class TrustedBinaryTests(unittest.TestCase):
 class VerifiedSeatTests(unittest.TestCase):
     """The seat is proven by the board CLI's bearer verification, never by AGENT_SEAT or a launcher variable."""
 
-    LOCATOR = {"SIMPLE_BOARD_BEARER_LOCATOR": "/fleet-seats:CLAUDE_SEAT_BEARER"}
+    LOCATOR = {"SIMPLE_BOARD_BEARER_FILE": "/run/seat-bearers/claude"}
 
     def probe(self, out, code=0):
         calls = []
@@ -426,7 +426,7 @@ class VerifiedSeatTests(unittest.TestCase):
         run = self.probe("seat:        CLAUDE (bearer-verified)\nidentity:    Claude\n")
         self.assertEqual(S.verified_seat("claude", dict(self.LOCATOR, AGENT_SEAT="CODEX"), probe=run), "CLAUDE")
 
-    def test_no_locator_refuses_even_with_agent_seat(self) -> None:
+    def test_no_bearer_file_refuses_even_with_agent_seat(self) -> None:
         from needs_owner import seat as S
         run = self.probe("seat:        CLAUDE (bearer-verified)\n")
         with self.assertRaises(Refusal):
@@ -446,12 +446,12 @@ class VerifiedSeatTests(unittest.TestCase):
         with self.assertRaises(Refusal):
             S.verified_seat("CODEX", self.LOCATOR, probe=self.probe("seat:        CLAUDE (bearer-verified)\n"))
 
-    def test_children_lose_every_identity_variable_and_keep_the_locator(self) -> None:
+    def test_children_lose_every_identity_variable_and_keep_the_bearer_file(self) -> None:
         from needs_owner import seat as S
         env = S.child_environment(dict(self.LOCATOR, AGENT_SEAT="CODEX", AGENT_LAUNCH_SEAT="CODEX", PATH="/bin"))
         self.assertNotIn("AGENT_SEAT", env)
         self.assertNotIn("AGENT_LAUNCH_SEAT", env)
-        self.assertEqual(env["SIMPLE_BOARD_BEARER_LOCATOR"], self.LOCATOR["SIMPLE_BOARD_BEARER_LOCATOR"])
+        self.assertEqual(env["SIMPLE_BOARD_BEARER_FILE"], self.LOCATOR["SIMPLE_BOARD_BEARER_FILE"])
 
 
 if __name__ == "__main__":

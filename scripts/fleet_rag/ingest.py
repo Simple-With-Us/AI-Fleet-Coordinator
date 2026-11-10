@@ -1,7 +1,7 @@
 """Ingest orchestrator for the fleet-agents corpus.
 
     python3 -m fleet_rag.ingest --all [--dry-run] [--limit N] [--prune]
-    python3 -m fleet_rag.ingest --source board,doc [--since 2026-08-01 | --since 7d]
+    python3 -m fleet_rag.ingest --source linear,doc [--since 2026-08-01 | --since 7d]
     python3 -m fleet_rag.ingest --fix-seeds
 
 Pipeline per document (see docs/RAG-FLEET-INFRA.md, payload schema v2):
@@ -477,11 +477,7 @@ def prune_source(
     Ids still credited to any surviving state row are kept (shared chunks).  Returns the
     pruned doc_ids.  Only ever deletes by explicit id.
     """
-    gone = sorted(
-        did
-        for did, rec in state.items()
-        if isinstance(rec, dict) and rec.get("source") == name and did not in yielded
-    )
+    gone = _prune_candidates(name, yielded, state)
     if not gone:
         return []
     gone_set = set(gone)
@@ -781,6 +777,7 @@ def _run_locked(
     seen_run: dict[str, str] = {}  # doc_id -> source, for the duplicate guard
     live_owners: set[str] = set()  # doc_ids yielded so far (shared-chunk re-pointing)
     sources.take_warnings()  # drop anything left over from an earlier call
+    pending_prunes: list[tuple[str, set[str], dict]] = []
 
     for name in names:
         stats = _empty_stats()
@@ -885,21 +882,14 @@ def _run_locked(
                 "linear: pruning skipped; generator is not a complete deletion inventory"
             )
         if prune and source_ok and name != "linear":
-            try:
-                gone = prune_source(name, yielded, state, writer, stats, state_path)
-                if gone:
-                    log(
-                        f"[{name}] {'would prune' if dry_run else 'pruned'} {len(gone)} document(s): "
-                        + ", ".join(gone[:10])
-                        + (" ..." if len(gone) > 10 else "")
-                    )
-            except Exception as e:  # noqa: BLE001
-                msg = f"{name}: prune: {type(e).__name__}: {e}"
-                report["errors"].append(msg)
-                report["ok"] = False
-                log(f"[{name}] ERROR {msg}")
-                telemetry.capture_exception(e, operation="ingest-prune", source=name)
+            # Deferred:  no source prunes until every source in the run has finished
+            # cleanly (AFC-677).  A failure anywhere means the run cannot vouch that a
+            # missing document is really gone.
+            pending_prunes.append((name, yielded, stats))
         log(f"[{name}] done in {time.monotonic() - t0:.1f}s: {json.dumps(stats)}")
+
+    if pending_prunes:
+        _run_pending_prunes(pending_prunes, report, state, writer, state_path, dry_run, log)
 
     if state_touched and not dry_run:
         save_state(state, state_path)
@@ -916,6 +906,106 @@ def _run_locked(
                 _heartbeat()
         _append_log(log_path, report)
     return report
+
+
+# Prune safety (AFC-677).  On 2026-11-09 a real `--all --prune` run with a failed linear
+# source still pruned 1,650 doc documents, 1,644 of them live files in a checkout the walk
+# had stopped finding (DOC_APP_REPOS named Socratic.Trade;  the checkout is Socratic-Trade).
+# A prune now needs (1) every source in the run to have finished without error, (2) no more
+# documents to go than the source yielded, and (3) no whole doc repository to vanish at once,
+# which is a missing root, not a deletion.  FLEET_RAG_PRUNE_FORCE=1 lifts (2) and (3) for a
+# deliberate one-off cleanup;  nothing lifts (1).
+PRUNE_FORCE_ENV = "FLEET_RAG_PRUNE_FORCE"
+PRUNE_ROOT_MIN_DOCS = 5  # a repo with fewer tracked docs may legitimately empty out
+
+
+def _prune_candidates(name: str, yielded: set[str], state: dict) -> list[str]:
+    return sorted(
+        did
+        for did, rec in state.items()
+        if isinstance(rec, dict) and rec.get("source") == name and did not in yielded
+    )
+
+
+def _repo_key(doc_id: str) -> str | None:
+    parts = doc_id.split("/")
+    return "/".join(parts[:2]) if len(parts) >= 3 else None
+
+
+def prune_refusal(name: str, yielded: set[str], state: dict) -> str | None:
+    """Why pruning `name` this run is unsafe, or None when it may go ahead."""
+    gone = _prune_candidates(name, yielded, state)
+    if not gone:
+        return None
+    if not yielded:
+        return f"{name}: prune refused: the source yielded no documents but {len(gone)} would go"
+    if len(gone) > len(yielded):
+        return (
+            f"{name}: prune refused: {len(gone)} document(s) would go but the source yielded "
+            f"only {len(yielded)}; the walk is probably missing a root"
+        )
+    tracked: dict[str, int] = {}
+    live: set[str] = set()
+    for did, rec in state.items():
+        if isinstance(rec, dict) and rec.get("source") == name:
+            key = _repo_key(did)
+            if key:
+                tracked[key] = tracked.get(key, 0) + 1
+    for did in yielded:
+        key = _repo_key(did)
+        if key:
+            live.add(key)
+    vanished = sorted(k for k, n in tracked.items() if n >= PRUNE_ROOT_MIN_DOCS and k not in live)
+    if vanished:
+        return (
+            f"{name}: prune refused: every document under {', '.join(vanished[:5])}"
+            f"{' (+more)' if len(vanished) > 5 else ''} would go at once; that is a missing "
+            f"checkout or renamed root, not a deletion"
+        )
+    return None
+
+
+def _run_pending_prunes(
+    pending: list[tuple[str, set[str], dict]],
+    report: dict,
+    state: dict,
+    writer: Writer,
+    state_path: pathlib.Path,
+    dry_run: bool,
+    log,
+) -> None:
+    if report["errors"]:
+        msg = (
+            "prune skipped for every source: the run had a failed source "
+            f"({len(report['errors'])} error(s)), so a missing document cannot be told from a failed read"
+        )
+        report["warnings"].append(msg)
+        log(f"[prune] WARNING {msg}")
+        return
+    force = os.environ.get(PRUNE_FORCE_ENV) == "1"
+    for name, yielded, stats in pending:
+        refusal = prune_refusal(name, yielded, state)
+        if refusal and not force:
+            report["errors"].append(refusal)
+            report["ok"] = False
+            log(f"[{name}] ERROR {refusal}")
+            continue
+        if refusal:
+            report["warnings"].append(f"{refusal} (overridden by {PRUNE_FORCE_ENV}=1)")
+        try:
+            gone = prune_source(name, yielded, state, writer, stats, state_path)
+            if gone:
+                log(
+                    f"[{name}] {'would prune' if dry_run else 'pruned'} {len(gone)} document(s): "
+                    + ", ".join(gone[:10])
+                    + (" ..." if len(gone) > 10 else "")
+                )
+        except Exception as e:  # noqa: BLE001
+            msg = f"{name}: prune: {type(e).__name__}: {e}"
+            report["errors"].append(msg)
+            report["ok"] = False
+            log(f"[{name}] ERROR {msg}")
+            telemetry.capture_exception(e, operation="ingest-prune", source=name)
 
 
 def _write_sentinel_safely(cfg: dict | None, qd: Qdrant | None, report: dict, log) -> None:

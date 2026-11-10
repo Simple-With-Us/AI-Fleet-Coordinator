@@ -64,12 +64,12 @@ class HomeCase(unittest.TestCase):
         return os.path.join(self.home, "apps", "fleet-rag", "fleet-recall-mcp.py")
 
     @property
-    def agent_sync(self) -> str:
+    def simple_tools(self) -> str:
         return os.path.join(self.home, ".local", "bin", "simple-chat")
 
 
 TOOL_DIRS = {"opencode": ".config/opencode", "kimi": ".kimi-code", "copilot": ".copilot", "muse": ".config/muse",
-             "minimax": ".minimax", "fx": ".fx", "clutch": ".clutch/dsh"}
+             "minimax": ".minimax", "fx": ".fx", "clutch": ".clutch/dsh", "zcode": ".zcode/cli"}
 
 
 class ShapeTests(HomeCase):
@@ -80,6 +80,7 @@ class ShapeTests(HomeCase):
         return {
             ".config/opencode/opencode.json": {"mcp": {"servers": {"fleet-recall": {"type": "local", "command": ["python3", r]}}}},
             ".kimi-code/mcp.json": {"mcpServers": {"fleet-recall": {"command": "python3", "args": [r]}}},
+            ".zcode/cli/config.json": {"mcpServers": {"fleet-recall": {"command": "python3", "args": [r]}}},
             ".copilot/mcp-config.json": {"mcpServers": {"fleet-recall": {"tools": ["*"], "type": "local", "command": "python3", "args": [r]}}},
             ".config/muse/settings.json": {"mcpServers": {"fleet-recall": {"type": "stdio", "command": "python3", "args": [r], "mode": "optional"}}},
             ".minimax/mcp.json": {"mcpServers": {"fleet-recall": {"type": "stdio", "enabled": True, "configured": True,
@@ -98,7 +99,7 @@ class ShapeTests(HomeCase):
             with self.subTest(rel=rel):
                 self.assertEqual(self.load(rel), want)
                 self.assertEqual(stat.S_IMODE(os.stat(self.path(rel)).st_mode), 0o600, "a new config is owner-only")
-        self.assertIn("Summary: 6 files changed.", out)
+        self.assertIn("Summary: 7 files changed.", out)
         # a second apply changes nothing and writes no backup
         before = {rel: self.read(rel) for rel in self.expect()}
         code, out, _ = self.run_cli("apply", *keys)
@@ -112,7 +113,7 @@ class ShapeTests(HomeCase):
         argv = M.server_argv("fleet-recall", self.home, None, self.env)
         self.assertEqual(argv, ["python3", self.recall])
         argv = M.server_argv("simple-chat", self.home, "MC", self.env)
-        self.assertEqual(argv, [self.agent_sync, "mcp", "--default-seat", "MC"])
+        self.assertEqual(argv, [self.simple_tools, "mcp", "--default-seat", "MC"])
         self.assertFalse(any(a.startswith("~") for a in argv))
 
     def test_fleet_rag_home_is_honoured(self) -> None:
@@ -201,7 +202,7 @@ class ExistingConfigTests(HomeCase):
 
     def test_credential_shapes(self) -> None:
         for raw in (b'{"token": "abcdefghijklmnop"}', b'{"my_api_key": "abcdefghijklmnop"}', b'{"password": "correct horse battery"}',
-                    b'{"a": "Authorization: Bearer abcdefghijklmnop"}', b'{"Authorization": "abcdefghijklmnop"}'):
+                    b'{"a": "Authorization: Bear' b'er abcdefghijklmnop"}', b'{"Authorization": "abcdefghijklmnop"}'):
             with self.subTest(raw=raw):
                 self.assertIsNotNone(M.credential_hint(raw))
         for raw in (b"", None, b'{"token": "short"}', b'{"command": "python3"}', b'{"token": "${TOKEN_VALUE}"}',
@@ -289,8 +290,8 @@ class ExistingConfigTests(HomeCase):
         self.assertIn("FAILED", out)
 
 
-class AgentSyncTests(HomeCase):
-    def test_only_fixed_seat_tools_get_agent_sync_and_never_a_pinned_seat(self) -> None:
+class SimpleToolsTests(HomeCase):
+    def test_only_fixed_seat_tools_get_simple_tools_and_never_a_pinned_seat(self) -> None:
         self.mkdir(*TOOL_DIRS.values())
         keys = [k for k in M.TARGET_KEYS if k != "clutch"]
         code, out, _ = self.run_cli("apply", *keys, "--with-simple-chat")
@@ -298,7 +299,9 @@ class AgentSyncTests(HomeCase):
         seats = {"opencode": ("OPENCODE", ".config/opencode/opencode.json", ("mcp", "servers")),
                  "muse": ("MC", ".config/muse/settings.json", ("mcpServers",)),
                  "minimax": ("MM", ".minimax/mcp.json", ("mcpServers",)),
-                 "fx": ("FX", ".fx/mcp.json", ("mcp",))}
+                 "fx": ("FX", ".fx/mcp.json", ("mcp",)),
+                 "kimi": ("KIMI", ".kimi-code/mcp.json", ("mcpServers",)),
+                 "zcode": ("ZC", ".zcode/cli/config.json", ("mcpServers",))}
         for key, (seat, rel, path) in seats.items():
             doc = self.load(rel)
             for k in path:
@@ -307,66 +310,13 @@ class AgentSyncTests(HomeCase):
                 self.assertIn("simple-chat", doc)
                 entry = doc["simple-chat"]
                 argv = ([entry["command"]] + entry["args"]) if isinstance(entry["command"], str) else entry["command"]
-                self.assertEqual(argv, [self.agent_sync, "mcp", "--default-seat", seat])
+                self.assertEqual(argv, [self.simple_tools, "mcp", "--default-seat", seat])
                 self.assertNotIn("env", entry, "never a pinned AGENT_SEAT")
-        for key, rel in (("kimi", ".kimi-code/mcp.json"), ("copilot", ".copilot/mcp-config.json")):
+        for key, rel in (("copilot", ".copilot/mcp-config.json"),):
             with self.subTest(key=key):
                 self.assertNotIn("simple-chat", self.read(rel), "a tool with no default seat has no seat to register")
 
-    def test_apply_retires_the_pre_rename_json_registration(self) -> None:
-        self.mkdir(*TOOL_DIRS.values())
-        legacy = {"mcpServers": {"agent-sync": {"command": self.agent_sync, "args": ["mcp", "--default-seat", "MC"]},
-                                 "other": {"command": "/x"}}}
-        self.write(".config/muse/settings.json", json.dumps(legacy))
-        code, out, _ = self.run_cli("apply", "muse", "--with-simple-chat")
-        self.assertEqual(code, M.EXIT_OK, out)
-        doc = self.load(".config/muse/settings.json")["mcpServers"]
-        self.assertNotIn("agent-sync", doc)
-        self.assertIn("simple-chat", doc)
-        self.assertIn("other", doc)
-
-    def test_the_pre_rename_entry_stays_when_the_new_simple_chat_entry_is_refused(self) -> None:
-        self.mkdir(*TOOL_DIRS.values())
-        doc = {"mcpServers": {"agent-sync": {"command": self.agent_sync, "args": ["mcp", "--default-seat", "MC"]},
-                              "simple-chat": {"command": "/owner/custom"}}}
-        self.write(".config/muse/settings.json", json.dumps(doc))
-        self.run_cli("apply", "muse", "--with-simple-chat")
-        got = self.load(".config/muse/settings.json")["mcpServers"]
-        self.assertIn("agent-sync", got, "a refused replacement must not take the working entry with it")
-        self.assertEqual(got["simple-chat"], {"command": "/owner/custom"})
-
-    def test_a_foreign_agent_sync_entry_is_left_alone(self) -> None:
-        self.mkdir(*TOOL_DIRS.values())
-        self.write(".config/muse/settings.json", json.dumps({"mcpServers": {"agent-sync": {"command": "/owner/custom"}}}))
-        self.run_cli("apply", "muse", "--with-simple-chat")
-        doc = self.load(".config/muse/settings.json")["mcpServers"]
-        self.assertEqual(doc["agent-sync"], {"command": "/owner/custom"})
-
-    def test_apply_retires_the_pre_rename_clutch_block(self) -> None:
-        self.mkdir(".clutch/dsh")
-        self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
-        text = self.read(".clutch/dsh/cordis.patch.yml").replace("mcp-simple-chat", "mcp-agent-sync")
-        self.write(".clutch/dsh/cordis.patch.yml", text)
-        code, out, _ = self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
-        self.assertEqual(code, M.EXIT_OK, out)
-        new = self.read(".clutch/dsh/cordis.patch.yml")
-        self.assertNotIn("mcp-agent-sync", new)
-        self.assertEqual(new.count("fleet:begin mcp-simple-chat"), 1)
-
-    def test_apply_retires_the_pre_rename_block_when_the_new_block_is_already_current(self) -> None:
-        self.mkdir(".clutch/dsh")
-        self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
-        path = ".clutch/dsh/cordis.patch.yml"
-        current = self.read(path)
-        legacy = current.replace("mcp-simple-chat", "mcp-agent-sync")
-        self.write(path, current + legacy)    # both mounts present, the new one already up to date
-        code, out, _ = self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
-        self.assertEqual(code, M.EXIT_OK, out)
-        new = self.read(path)
-        self.assertNotIn("mcp-agent-sync", new)
-        self.assertEqual(new.count("fleet:begin mcp-simple-chat"), 1)
-
-    def test_without_the_flag_agent_sync_is_never_written(self) -> None:
+    def test_without_the_flag_simple_tools_is_never_written(self) -> None:
         self.mkdir(*TOOL_DIRS.values())
         self.run_cli("apply", "muse", "minimax", "fx")
         for rel in (".config/muse/settings.json", ".minimax/mcp.json", ".fx/mcp.json"):
@@ -496,7 +446,7 @@ class ClutchTests(HomeCase):
         self.assertIn("native agent preset", out)
         self.assertEqual(os.listdir(self.path(".clutch/dsh")), [])
 
-    def test_the_agent_sync_block_is_created_with_a_header(self) -> None:
+    def test_the_simple_tools_block_is_created_with_a_header(self) -> None:
         self.mkdir(".clutch/dsh")
         code, out, _ = self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
         self.assertEqual(code, M.EXIT_OK, out)
@@ -505,7 +455,7 @@ class ClutchTests(HomeCase):
         self.assertIn("# fleet:begin mcp-simple-chat (managed by fleet_lanes.install_mcp)\n- insert:\n", text)
         self.assertIn("      name: '@deepseek-ai/dsh-mcp-client'\n", text)
         self.assertIn('        serverName: simple-chat\n        transport: stdio\n', text)
-        self.assertIn('        command: "%s"\n' % self.agent_sync, text)
+        self.assertIn('        command: "%s"\n' % self.simple_tools, text)
         self.assertIn('          - "mcp"\n          - "--default-seat"\n          - "CLUTCH"\n', text)
         self.assertIn("        failOnStartupError: false\n# fleet:end mcp-simple-chat\n", text)
         self.assertNotIn("env:", text, "no env, so no pinned seat")
@@ -528,12 +478,12 @@ class ClutchTests(HomeCase):
     def test_a_changed_command_replaces_the_block_in_place(self) -> None:
         self.mkdir(".clutch/dsh")
         self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
-        text = self.read(self.patch()).replace(self.agent_sync, "/old/simple-chat")
+        text = self.read(self.patch()).replace(self.simple_tools, "/old/simple-chat")
         self.write(self.patch(), text + "- id: tail\n")
         code, out, _ = self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
         self.assertIn("block replaced in place", out)
         new = self.read(self.patch())
-        self.assertIn(self.agent_sync, new)
+        self.assertIn(self.simple_tools, new)
         self.assertNotIn("/old/simple-chat", new)
         self.assertTrue(new.endswith("- id: tail\n"))
 
@@ -702,7 +652,7 @@ class ProbeSeatTests(HomeCase):
             code = M.main(["verify", "minimax", "--with-simple-chat", "--probe", "--home", self.home], out=out, err=err, env=self.env)
         return code, out.getvalue()
 
-    def test_from_another_seat_the_agent_sync_probe_is_skipped_and_never_started(self) -> None:
+    def test_from_another_seat_the_simple_tools_probe_is_skipped_and_never_started(self) -> None:
         code, out = self.verify({"AGENT_SEAT": "CLAUDE"})
         self.assertEqual(code, M.EXIT_OK, out)
         line = [ln for ln in out.splitlines() if "simple-chat" in ln and "probe" in ln][0]

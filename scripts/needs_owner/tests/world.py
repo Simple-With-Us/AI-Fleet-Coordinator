@@ -30,7 +30,7 @@ if str(SCRIPTS) not in sys.path:
 from needs_owner import cli  # noqa: E402
 
 REALM_LINK = "https://simplewithus.zulipchat.com/#narrow/channel/12-work-in-progress/topic/%s/near/%d"
-OWNER_ID = 7  # Jay, the pinned owner in the fake realm (fake_agent_sync.OWNER_ID)
+OWNER_ID = 7  # Jay, the pinned owner in the fake realm (fake_simple_tools.OWNER_ID)
 KEYCAP = {n: "003%d-20e3" % n for n in range(1, 6)}  # Zulip's emoji_code for 1️⃣ to 5️⃣
 
 
@@ -88,7 +88,7 @@ class World:
         _seat.MANAGED_BIN_DIR = str(self.bin)  # the import-only seam:  the fake tools are the "managed" install
         test.addCleanup(setattr, _seat, "MANAGED_BIN_DIR", self._saved_bin)
         self._launcher("simple-board", HERE / "fake_board.py")
-        self._launcher("simple-chat", HERE / "fake_agent_sync.py")
+        self._launcher("simple-chat", HERE / "fake_simple_tools.py")
 
     def _launcher(self, name: str, script: Path) -> None:
         path = self.bin / name
@@ -107,12 +107,12 @@ class World:
                # same per-world folder here and the leak check covers it too.
                "TMPDIR": str(self.tmp), "TEMP": str(self.tmp), "TMP": str(self.tmp)}
         env.update(extra)
-        # The harness plays the trusted launcher:  a seat binds the run to a bearer locator and the fake board
+        # The harness plays the trusted launcher:  a seat binds the run to a bearer file and the fake board
         # proves that seat (FAKE_BEARER_SEAT).  AGENT_SEAT itself is never an identity any more, so it is not
-        # passed on;  no seat means no locator and the run refuses.
+        # passed on;  no seat means no bearer file and the run refuses.
         seat = env.pop("AGENT_SEAT", None)
         if seat:
-            env["SIMPLE_BOARD_BEARER_LOCATOR"] = "/fleet-seats:%s_SEAT_BEARER" % seat.replace("-", "_")
+            env["SIMPLE_BOARD_BEARER_FILE"] = "/run/seat-bearers/%s" % seat.replace("-", "_").lower()
             env["FAKE_BEARER_SEAT"] = seat
         return {k: v for k, v in env.items() if v is not None}
 

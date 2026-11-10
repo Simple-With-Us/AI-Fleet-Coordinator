@@ -286,7 +286,10 @@
           "collector": "mac",
           "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
           "expected": {
-            "description": "The fleet guard hook is registered for PreToolUse in ~/.gemini/config/hooks.json",
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.gemini/config/hooks.json and denies a shell command that writes into a forbidden tree",
+            "guards": [
+              "shell"
+            ],
             "names": [
               "lane-guard"
             ],
@@ -294,6 +297,36 @@
             "timeoutSeconds": 5
           },
           "id": "ag-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "AG",
+          "platforms": [
+            "antigravity"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.gemini/config/hooks.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "Shell guarding has its own rule.  This one asks the same hook to police file writes too, which needs a matcher that delivers the file tools to it.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.gemini/config/hooks.json with a matcher that delivers the file tools to it, and it denies a file write into a forbidden tree",
+            "guards": [
+              "file"
+            ],
+            "names": [
+              "lane-guard"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "ag-hooks-file-guard",
           "kind": "hooks",
           "ownerSeat": "AG",
           "platforms": [
@@ -361,6 +394,7 @@
               "secret-handoff",
               "secret-safety",
               "sentence-gap",
+              "service-tokens",
               "session-start",
               "simple-tools-guide",
               "token-thrift",
@@ -471,7 +505,10 @@
           "collector": "mac",
           "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
           "expected": {
-            "description": "The fleet guard hook is registered for PreToolUse in ~/.claude/settings.json",
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.claude/settings.json and denies a shell command that writes into a forbidden tree",
+            "guards": [
+              "shell"
+            ],
             "names": [
               "lane-guard-hook"
             ],
@@ -479,6 +516,36 @@
             "timeoutSeconds": 5
           },
           "id": "claude-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "CLAUDE",
+          "platforms": [
+            "claude"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.claude/settings.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "Shell guarding has its own rule.  This one asks the same hook to police file writes too, which needs a matcher that delivers the file tools to it.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.claude/settings.json with a matcher that delivers the file tools to it, and it denies a file write into a forbidden tree",
+            "guards": [
+              "file"
+            ],
+            "names": [
+              "claude-file-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 10
+          },
+          "id": "claude-hooks-file-guard",
           "kind": "hooks",
           "ownerSeat": "CLAUDE",
           "platforms": [
@@ -546,6 +613,7 @@
               "secret-handoff",
               "secret-safety",
               "sentence-gap",
+              "service-tokens",
               "session-start",
               "simple-tools-guide",
               "token-thrift",
@@ -641,6 +709,10 @@
           "source": "",
           "ttlSeconds": 900
         }
+      ],
+      "runsOn": [
+        "mac",
+        "server"
       ]
     },
     "CLUTCH": {
@@ -676,7 +748,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.clutch/dsh/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "bbf8d661fc7f1d388c4b9ac82f1e212c424b95acbc3d82445b1c332aa1035257"
+            "sha256": "dc07172c4df103af370e75fdc3f46107e38e238b05f47042735a357927721363"
           },
           "id": "clutch-instructions-lane-map",
           "kind": "instructions",
@@ -698,7 +770,10 @@
           "collector": "mac",
           "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
           "expected": {
-            "description": "The fleet guard hook is registered for PreToolUse in ~/apps/lane-tools/clutch/hooks.json",
+            "description": "The fleet guard hook is registered for PreToolUse in ~/apps/lane-tools/clutch/hooks.json and denies a shell command that writes into a forbidden tree",
+            "guards": [
+              "shell"
+            ],
             "names": [
               "fleet-guard-hook"
             ],
@@ -706,6 +781,36 @@
             "timeoutSeconds": 5
           },
           "id": "clutch-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "CLUTCH",
+          "platforms": [
+            "clutch"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/apps/lane-tools/clutch/hooks.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "Shell guarding has its own rule.  This one asks the same hook to police file writes too, which needs a matcher that delivers the file tools to it.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/apps/lane-tools/clutch/hooks.json with a matcher that delivers the file tools to it, and it denies a file write into a forbidden tree",
+            "guards": [
+              "file"
+            ],
+            "names": [
+              "fleet-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "clutch-hooks-file-guard",
           "kind": "hooks",
           "ownerSeat": "CLUTCH",
           "platforms": [
@@ -747,6 +852,7 @@
               "secret-handoff",
               "secret-safety",
               "sentence-gap",
+              "service-tokens",
               "session-start",
               "simple-tools-guide",
               "token-thrift",
@@ -857,7 +963,10 @@
           "collector": "mac",
           "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
           "expected": {
-            "description": "The fleet guard hook is registered for PreToolUse in ~/.codex/hooks.json",
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.codex/hooks.json and denies a shell command that writes into a forbidden tree",
+            "guards": [
+              "shell"
+            ],
             "names": [
               "lane-guard-hook"
             ],
@@ -865,6 +974,36 @@
             "timeoutSeconds": 5
           },
           "id": "codex-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "CODEX",
+          "platforms": [
+            "codex"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.codex/hooks.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "Shell guarding has its own rule.  This one asks the same hook to police file writes too, which needs a matcher that delivers the file tools to it.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.codex/hooks.json with a matcher that delivers the file tools to it, and it denies a file write into a forbidden tree",
+            "guards": [
+              "file"
+            ],
+            "names": [
+              "lane-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "codex-hooks-file-guard",
           "kind": "hooks",
           "ownerSeat": "CODEX",
           "platforms": [
@@ -932,6 +1071,7 @@
               "secret-handoff",
               "secret-safety",
               "sentence-gap",
+              "service-tokens",
               "session-start",
               "simple-tools-guide",
               "token-thrift",
@@ -1077,7 +1217,10 @@
           "collector": "mac",
           "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
           "expected": {
-            "description": "The fleet guard hook is registered for beforeShellExecution in ~/.cursor/hooks.json",
+            "description": "The fleet guard hook is registered for beforeShellExecution in ~/.cursor/hooks.json and denies a shell command that writes into a forbidden tree",
+            "guards": [
+              "shell"
+            ],
             "names": [
               "lane-guard-hook"
             ],
@@ -1085,6 +1228,36 @@
             "timeoutSeconds": 5
           },
           "id": "cursor-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "CURSOR",
+          "platforms": [
+            "cursor"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "beforeShellExecution",
+            "target": "~/.cursor/hooks.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "Shell guarding has its own rule.  This one asks the same hook to police file writes too, which needs a matcher that delivers the file tools to it.",
+          "expected": {
+            "description": "The fleet guard hook is registered for beforeShellExecution in ~/.cursor/hooks.json with a matcher that delivers the file tools to it, and it denies a file write into a forbidden tree",
+            "guards": [
+              "file"
+            ],
+            "names": [
+              "lane-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "cursor-hooks-file-guard",
           "kind": "hooks",
           "ownerSeat": "CURSOR",
           "platforms": [
@@ -1152,6 +1325,7 @@
               "secret-handoff",
               "secret-safety",
               "sentence-gap",
+              "service-tokens",
               "session-start",
               "simple-tools-guide",
               "token-thrift",
@@ -1252,7 +1426,7 @@
         {
           "kind": "permissions",
           "platforms": [],
-          "reason": "Echo's credential is held by the hosted listener's secret store, not by a Mac file of its own."
+          "reason": "Echo's credential is held by the hosted eavesdropper's secret store, not by a Mac file of its own."
         }
       ],
       "platforms": [],
@@ -1385,6 +1559,7 @@
               "secret-handoff",
               "secret-safety",
               "sentence-gap",
+              "service-tokens",
               "session-start",
               "simple-tools-guide",
               "token-thrift",
@@ -1527,7 +1702,10 @@
           "collector": "mac",
           "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
           "expected": {
-            "description": "The fleet guard hook is registered for PreToolUse in ~/.grok/hooks/lane-guard.json",
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.grok/hooks/lane-guard.json and denies a shell command that writes into a forbidden tree",
+            "guards": [
+              "shell"
+            ],
             "names": [
               "lane-guard-hook"
             ],
@@ -1535,6 +1713,36 @@
             "timeoutSeconds": 5
           },
           "id": "grok-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "GROK",
+          "platforms": [
+            "grok"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.grok/hooks/lane-guard.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "Shell guarding has its own rule.  This one asks the same hook to police file writes too, which needs a matcher that delivers the file tools to it.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.grok/hooks/lane-guard.json with a matcher that delivers the file tools to it, and it denies a file write into a forbidden tree",
+            "guards": [
+              "file"
+            ],
+            "names": [
+              "lane-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "grok-hooks-file-guard",
           "kind": "hooks",
           "ownerSeat": "GROK",
           "platforms": [
@@ -1602,6 +1810,7 @@
               "secret-handoff",
               "secret-safety",
               "sentence-gap",
+              "service-tokens",
               "session-start",
               "simple-tools-guide",
               "token-thrift",
@@ -1677,36 +1886,39 @@
         {
           "kind": "instructions",
           "platforms": [],
-          "reason": "The Grok Bot personas run as Cursor cloud agents, so this Mac holds no rules file for it."
+          "reason": "Grok Bot runs as Cursor cloud agents, so this Mac holds no rules file for it."
         },
         {
           "kind": "hooks",
           "platforms": [],
-          "reason": "The Grok Bot personas run as Cursor cloud agents, so this Mac holds no hook config for it."
+          "reason": "Grok Bot runs as Cursor cloud agents, so this Mac holds no hook config for it."
         },
         {
           "kind": "mcp",
           "platforms": [],
-          "reason": "The Grok Bot personas run as Cursor cloud agents, so this Mac holds no MCP config for it."
+          "reason": "Grok Bot runs as Cursor cloud agents, so this Mac holds no MCP config for it."
         },
         {
           "kind": "skills",
           "platforms": [],
-          "reason": "The Grok Bot personas run as Cursor cloud agents, so this Mac holds no skills home for it."
+          "reason": "Grok Bot runs as Cursor cloud agents, so this Mac holds no skills home for it."
         },
         {
           "kind": "subagents",
           "platforms": [],
-          "reason": "The Grok Bot personas run as Cursor cloud agents, so this Mac holds no sub-agent definitions for it."
+          "reason": "Grok Bot runs as Cursor cloud agents, so this Mac holds no sub-agent definitions for it."
         },
         {
           "kind": "permissions",
           "platforms": [],
-          "reason": "Grok Bot has no Zulip credential of its own:  its GB-<ROLE> personas are owner-managed and hold no zuliprc."
+          "reason": "Grok Bot has no Zulip credential of its own:  its GB-<ROLE> bots are owner-managed and hold no zuliprc."
         }
       ],
       "platforms": [],
-      "rules": []
+      "rules": [],
+      "runsOn": [
+        "cloud"
+      ]
     },
     "GROK-WEB": {
       "notApplicable": [
@@ -1738,11 +1950,239 @@
         {
           "kind": "permissions",
           "platforms": [],
-          "reason": "Grok Web's credential is held by the server listener's secret store, not by a Mac file of its own."
+          "reason": "Grok Web's credential is held by the server eavesdropper's secret store, not by a Mac file of its own."
         }
       ],
       "platforms": [],
       "rules": []
+    },
+    "KIMI": {
+      "notApplicable": [
+        {
+          "kind": "subagents",
+          "platforms": [
+            "kimi"
+          ],
+          "reason": "The fleet installs no sub-agent definitions for the kimi harness."
+        }
+      ],
+      "platforms": [
+        "kimi"
+      ],
+      "rules": [
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "fleet-lane-map",
+            "target": "~/.kimi-code/AGENTS.md",
+            "type": "marked_block_hash"
+          },
+          "collector": "mac",
+          "description": "The expected hash is the body the rules installer writes, read from the installer source, so a template change shows as drift instead of hiding.",
+          "expected": {
+            "description": "The fleet-lane-map block in ~/.kimi-code/AGENTS.md matches the installer template",
+            "present": true,
+            "sha256": "96e4cf2c01b492b737c90610a780b4b6a5db440d19bb1ff1276e724fade2b716"
+          },
+          "id": "kimi-instructions-lane-map",
+          "kind": "instructions",
+          "ownerSeat": "KIMI",
+          "platforms": [
+            "kimi"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.kimi-code/config.toml",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.kimi-code/config.toml and denies a shell command that writes into a forbidden tree",
+            "guards": [
+              "shell"
+            ],
+            "names": [
+              "fleet-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "kimi-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "KIMI",
+          "platforms": [
+            "kimi"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.kimi-code/config.toml",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "Shell guarding has its own rule.  This one asks the same hook to police file writes too, which needs a matcher that delivers the file tools to it.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.kimi-code/config.toml with a matcher that delivers the file tools to it, and it denies a file write into a forbidden tree",
+            "guards": [
+              "file"
+            ],
+            "names": [
+              "fleet-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "kimi-hooks-file-guard",
+          "kind": "hooks",
+          "ownerSeat": "KIMI",
+          "platforms": [
+            "kimi"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.kimi-code/mcp.json",
+            "type": "mcp_servers_registered"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  the harness may hold servers of its own, and only a missing fleet server is drift.",
+          "expected": {
+            "description": "The fleet MCP servers are registered in ~/.kimi-code/mcp.json",
+            "names": [
+              "fleet-recall",
+              "simple-chat"
+            ],
+            "present": true
+          },
+          "id": "kimi-mcp-fleet-servers",
+          "kind": "mcp",
+          "ownerSeat": "KIMI",
+          "platforms": [
+            "kimi"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.kimi-code/skills",
+            "type": "skills_installed"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  a seat may hold skills of its own, and only a missing fleet skill is drift.",
+          "expected": {
+            "description": "The fleet skill pack is installed in ~/.kimi-code/skills",
+            "names": [
+              "apple-notes",
+              "board-ops",
+              "closeout",
+              "codex-triage",
+              "deploy-verify",
+              "dns-and-registrars",
+              "drive-grok-tui",
+              "fleet-coordination",
+              "fleet-infra",
+              "fleet-mode",
+              "fleet-recall",
+              "housekeeper",
+              "land-lane",
+              "mac-cleanup",
+              "owner-copy",
+              "pickup-seat",
+              "pr-sweep",
+              "secret-handoff",
+              "secret-safety",
+              "sentence-gap",
+              "service-tokens",
+              "session-start",
+              "simple-tools-guide",
+              "token-thrift",
+              "unstick-pr"
+            ],
+            "present": true
+          },
+          "id": "kimi-skills-fleet",
+          "kind": "skills",
+          "ownerSeat": "KIMI",
+          "platforms": [
+            "kimi"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "the KIMI Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "KIMI_ZULIP_EMAIL",
+              "KIMI_ZULIP_KEY",
+              "KIMI_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "kimi-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "KIMI",
+          "platforms": [
+            "kimi"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "ZULIP_KIMI",
+            "target": "~/.secrets/Zulip/Kimi-zuliprc",
+            "type": "credential_stat"
+          },
+          "collector": "mac",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
+          "expected": {
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
+          },
+          "id": "kimi-permissions-zulip-retired-file",
+          "kind": "permissions",
+          "ownerSeat": "KIMI",
+          "platforms": [
+            "kimi"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        }
+      ]
     },
     "MA": {
       "notApplicable": [
@@ -1877,6 +2317,9 @@
           "source": "",
           "ttlSeconds": 900
         }
+      ],
+      "runsOn": [
+        "vm"
       ]
     },
     "MC": {
@@ -1987,6 +2430,7 @@
               "secret-handoff",
               "secret-safety",
               "sentence-gap",
+              "service-tokens",
               "session-start",
               "simple-tools-guide",
               "token-thrift",
@@ -2097,14 +2541,47 @@
           "collector": "mac",
           "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
           "expected": {
-            "description": "The fleet guard hook is registered for PreToolUse in ~/.minimax/plugins/fleet-guard/hooks/hooks.json",
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.minimax/plugins/fleet-guard/hooks/hooks.json and denies a shell command that writes into a forbidden tree",
+            "guards": [
+              "shell"
+            ],
             "names": [
-              "fleet-guard-hook"
+              "minimax-guard-hook"
             ],
             "present": true,
             "timeoutSeconds": 10
           },
           "id": "mm-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "MM",
+          "platforms": [
+            "minimax"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.minimax/plugins/fleet-guard/hooks/hooks.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "Shell guarding has its own rule.  This one asks the same hook to police file writes too, which needs a matcher that delivers the file tools to it.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.minimax/plugins/fleet-guard/hooks/hooks.json with a matcher that delivers the file tools to it, and it denies a file write into a forbidden tree",
+            "guards": [
+              "file"
+            ],
+            "names": [
+              "minimax-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 10
+          },
+          "id": "mm-hooks-file-guard",
           "kind": "hooks",
           "ownerSeat": "MM",
           "platforms": [
@@ -2173,6 +2650,7 @@
               "secret-handoff",
               "secret-safety",
               "sentence-gap",
+              "service-tokens",
               "session-start",
               "simple-tools-guide",
               "token-thrift",
@@ -2461,11 +2939,243 @@
         {
           "kind": "permissions",
           "platforms": [],
-          "reason": "Wise's credential is held by the hosted listener's secret store, not by a Mac file of its own."
+          "reason": "Wise's credential is held by the hosted eavesdropper's secret store, not by a Mac file of its own."
         }
       ],
       "platforms": [],
       "rules": []
+    },
+    "ZC": {
+      "notApplicable": [
+        {
+          "kind": "subagents",
+          "platforms": [
+            "zcode"
+          ],
+          "reason": "The fleet installs no sub-agent definitions for the zcode harness."
+        }
+      ],
+      "platforms": [
+        "zcode"
+      ],
+      "rules": [
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "fleet-lane-map",
+            "target": "~/.zcode/AGENTS.md",
+            "type": "marked_block_hash"
+          },
+          "collector": "mac",
+          "description": "The expected hash is the body the rules installer writes, read from the installer source, so a template change shows as drift instead of hiding.",
+          "expected": {
+            "description": "The fleet-lane-map block in ~/.zcode/AGENTS.md matches the installer template",
+            "present": true,
+            "sha256": "e1b8067a2f07ff42df081515c952f504f0af386cffaf302ab2773ba1e9e59ea1"
+          },
+          "id": "zc-instructions-lane-map",
+          "kind": "instructions",
+          "ownerSeat": "ZC",
+          "platforms": [
+            "zcode"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.zcode/cli/config.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.zcode/cli/config.json and denies a shell command that writes into a forbidden tree",
+            "guards": [
+              "shell"
+            ],
+            "names": [
+              "lane-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "zc-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "ZC",
+          "platforms": [
+            "zcode"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.zcode/cli/config.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "Shell guarding has its own rule.  This one asks the same hook to police file writes too, which needs a matcher that delivers the file tools to it.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.zcode/cli/config.json with a matcher that delivers the file tools to it, and it denies a file write into a forbidden tree",
+            "guards": [
+              "file"
+            ],
+            "names": [
+              "lane-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "zc-hooks-file-guard",
+          "kind": "hooks",
+          "ownerSeat": "ZC",
+          "platforms": [
+            "zcode"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.zcode/cli/config.json",
+            "type": "mcp_servers_registered"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  the harness may hold servers of its own, and only a missing fleet server is drift.",
+          "expected": {
+            "description": "The fleet MCP servers are registered in ~/.zcode/cli/config.json",
+            "names": [
+              "fleet-recall",
+              "simple-chat"
+            ],
+            "present": true
+          },
+          "id": "zc-mcp-fleet-servers",
+          "kind": "mcp",
+          "ownerSeat": "ZC",
+          "platforms": [
+            "zcode"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.zcode/skills",
+            "type": "skills_installed"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  a seat may hold skills of its own, and only a missing fleet skill is drift.",
+          "expected": {
+            "description": "The fleet skill pack is installed in ~/.zcode/skills",
+            "names": [
+              "apple-notes",
+              "board-ops",
+              "closeout",
+              "codex-triage",
+              "deploy-verify",
+              "dns-and-registrars",
+              "drive-grok-tui",
+              "fleet-coordination",
+              "fleet-infra",
+              "fleet-mode",
+              "fleet-recall",
+              "housekeeper",
+              "land-lane",
+              "mac-cleanup",
+              "owner-copy",
+              "pickup-seat",
+              "pr-sweep",
+              "secret-handoff",
+              "secret-safety",
+              "sentence-gap",
+              "service-tokens",
+              "session-start",
+              "simple-tools-guide",
+              "token-thrift",
+              "unstick-pr"
+            ],
+            "present": true
+          },
+          "id": "zc-skills-fleet",
+          "kind": "skills",
+          "ownerSeat": "ZC",
+          "platforms": [
+            "zcode"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "the ZC Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "ZC_ZULIP_EMAIL",
+              "ZC_ZULIP_KEY",
+              "ZC_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "zc-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "ZC",
+          "platforms": [
+            "zcode"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "ZULIP_ZC",
+            "target": "~/.secrets/Zulip/ZC-zuliprc",
+            "type": "credential_stat"
+          },
+          "collector": "mac",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
+          "expected": {
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
+          },
+          "id": "zc-permissions-zulip-retired-file",
+          "kind": "permissions",
+          "ownerSeat": "ZC",
+          "platforms": [
+            "zcode"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        }
+      ],
+      "runsOn": [
+        "mac",
+        "server"
+      ]
     }
   }
 }

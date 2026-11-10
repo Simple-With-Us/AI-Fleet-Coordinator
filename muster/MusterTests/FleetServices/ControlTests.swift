@@ -12,7 +12,7 @@ final class ControlTests: XCTestCase {
             (200, Data(#"{"app":"other","pid":1}"#.utf8))
         }
         let api = ControlAPI(session: mockSession())
-        do { try await api.stopVMs(); XCTFail("Expected identity refusal") }
+        do { try await api.stopServer(); XCTFail("Expected identity refusal") }
         catch { XCTAssertEqual(error as? ControlAPIError, .foreignService) }
         XCTAssertEqual(MockURLProtocol.requests.map(\.url!.path), ["/api/health"])
     }
@@ -26,26 +26,126 @@ final class ControlTests: XCTestCase {
         catch { XCTAssertEqual(error as? ControlAPIError, .invalidResponse) }
     }
 
-    func testOnlyMissingSharedVMCanStart() async throws {
+    func testAStatusWithoutTheServersFullShapeIsRefused() async {
+        // The Local VM list is not read by Muster, but it is part of the
+        // server's answer, and an answer without it is not the server's.
         MockURLProtocol.handler = { request in
             if request.url!.path == "/api/health" { return (200, Data(#"{"app":"botfleet","pid":42,"ready":true}"#.utf8)) }
-            return (200, Data(#"{"activeBotCount":0,"persistOnExit":true,"localVms":[{"key":"shared","name":"Shared Local VM","running":false,"state":"stopped"}]}"#.utf8))
+            return (200, Data(#"{"activeBotCount":0,"persistOnExit":true}"#.utf8))
         }
-        let stopped = try await ControlAPI(session: mockSession()).status()
-        XCTAssertFalse(stopped.canStartSharedVM)
-        XCTAssertEqual(stopped.sharedVM?.state, "stopped")
+        do { _ = try await ControlAPI(session: mockSession()).status(); XCTFail("Expected invalid response") }
+        catch { XCTAssertEqual(error as? ControlAPIError, .invalidResponse) }
+    }
+
+    func testTheBlockingWorkIsReadFromTheStatus() async throws {
         MockURLProtocol.handler = { request in
             if request.url!.path == "/api/health" { return (200, Data(#"{"app":"botfleet","pid":42,"ready":true}"#.utf8)) }
-            return (200, Data(#"{"activeBotCount":0,"persistOnExit":true,"localVms":[{"key":"shared","name":"Shared Local VM","running":false,"state":"missing"}]}"#.utf8))
+            return (200, Data(#"{"activeBotCount":1,"persistOnExit":true,"localVms":[],"blockingWork":[{"count":2,"label":"bot turn"},{"count":0,"label":"lease"}]}"#.utf8))
         }
-        let missing = try await ControlAPI(session: mockSession()).status()
-        XCTAssertTrue(missing.canStartSharedVM)
+        let status = try await ControlAPI(session: mockSession()).status()
+        XCTAssertEqual(status.activeBotCount, 1)
+        XCTAssertEqual(status.blockingWorkSummary, "2 bot turns")
+    }
+
+    /// Muster asks only the BotFleet Server on this Mac.  A server anywhere
+    /// else is refused before a request is made, so nothing leaves the Mac.
+    func testAServerThatIsNotOnThisMacIsNeverAsked() async {
+        MockURLProtocol.handler = { _ in (200, Data(#"{"app":"botfleet","pid":42,"ready":true}"#.utf8)) }
+        for base in ["https://server.example.test:8799", "http://server.example.test:8799", "https://127.0.0.1:8799"] {
+            let session = mockSession()
+            let api = ControlAPI(session: session, baseURL: URL(string: base)!)
+            do { _ = try await api.status(); XCTFail("Expected a refusal for \(base)") }
+            catch { XCTAssertEqual(error as? ControlAPIError, .invalidResponse, base) }
+            do { try await api.stopServer(); XCTFail("Expected a refusal for \(base)") }
+            catch { XCTAssertEqual(error as? ControlAPIError, .invalidResponse, base) }
+            let pid = await api.serverPID()
+            XCTAssertNil(pid, base)
+            XCTAssertTrue(MockURLProtocol.requests.isEmpty, base)
+        }
+    }
+
+    /// Muster holds no credential, so no request it sends carries one.
+    func testNoRequestCarriesACredential() async throws {
+        MockURLProtocol.failure = nil
         MockURLProtocol.handler = { request in
-            if request.url!.path == "/api/health" { return (200, Data(#"{"app":"botfleet","pid":42,"ready":true}"#.utf8)) }
-            return (200, Data(#"{"activeBotCount":0,"persistOnExit":true,"localVms":[{"key":"shared","name":"Shared Local VM","running":false,"state":"created"}]}"#.utf8))
+            switch request.url!.path {
+            case "/api/health": return (200, Data(#"{"app":"botfleet","pid":42,"ready":true}"#.utf8))
+            case "/api/system/control/stop": return (200, Data(#"{"ok":true}"#.utf8))
+            default: return (200, Data(#"{"activeBotCount":0,"persistOnExit":true,"localVms":[]}"#.utf8))
+            }
         }
-        let created = try await ControlAPI(session: mockSession()).status()
-        XCTAssertTrue(created.canStartSharedVM)
+        let api = ControlAPI(session: mockSession())
+        _ = try await api.status()
+        try await api.stopServer()
+        XCTAssertEqual(MockURLProtocol.requests.map(\.url!.path),
+                       ["/api/health", "/api/system/control", "/api/health", "/api/system/control/stop"])
+        for request in MockURLProtocol.requests {
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+            XCTAssertNil(request.value(forHTTPHeaderField: "x-botfleet-gate-token"))
+            XCTAssertEqual(request.url?.host, "127.0.0.1")
+            XCTAssertEqual(request.url?.scheme, "http")
+        }
+    }
+
+    func testAChangeThatGetsNoAnswerHasAnUnknownOutcome() async {
+        // The health check answers, and the stop is sent and then dropped:
+        // the server may have applied it, so it is not reported as unavailable.
+        MockURLProtocol.handler = { _ in (200, Data(#"{"app":"botfleet","pid":42,"ready":true}"#.utf8)) }
+        MockURLProtocol.failure = { request in
+            request.url!.path == "/api/system/control/stop" ? URLError(.timedOut) : nil
+        }
+        defer { MockURLProtocol.failure = nil }
+        do {
+            try await ControlAPI(session: mockSession()).stopServer()
+            XCTFail("Expected an unknown outcome")
+        } catch {
+            XCTAssertEqual(error as? ControlAPIError, .outcomeUnknown)
+        }
+    }
+
+    func testAChangeThatIsRefusedBeforeSendingIsUnavailableNotUnknown() async {
+        // The health check answers, and the connection for the stop is refused:
+        // nothing was sent, so a retry is safe and the server is unavailable.
+        MockURLProtocol.handler = { _ in (200, Data(#"{"app":"botfleet","pid":42,"ready":true}"#.utf8)) }
+        MockURLProtocol.failure = { request in
+            request.url!.path == "/api/system/control/stop" ? URLError(.cannotConnectToHost) : nil
+        }
+        defer { MockURLProtocol.failure = nil }
+        do {
+            try await ControlAPI(session: mockSession()).stopServer()
+            XCTFail("Expected unavailable")
+        } catch {
+            XCTAssertEqual(error as? ControlAPIError, .unavailable)
+        }
+    }
+
+    func testAChangeWhoseConnectionDropsMidFlightHasAnUnknownOutcome() async {
+        // The health check answers, and the stop's connection is lost while the
+        // request is in flight:  the server may have applied it, and this code
+        // must never join the safe-to-retry set.
+        MockURLProtocol.handler = { _ in (200, Data(#"{"app":"botfleet","pid":42,"ready":true}"#.utf8)) }
+        MockURLProtocol.failure = { request in
+            request.url!.path == "/api/system/control/stop" ? URLError(.networkConnectionLost) : nil
+        }
+        defer { MockURLProtocol.failure = nil }
+        do {
+            try await ControlAPI(session: mockSession()).stopServer()
+            XCTFail("Expected an unknown outcome")
+        } catch {
+            XCTAssertEqual(error as? ControlAPIError, .outcomeUnknown)
+        }
+    }
+
+    func testACancelledReadIsPassedOnAsACancellation() async {
+        MockURLProtocol.handler = { _ in (200, Data(#"{"app":"botfleet","pid":42,"ready":true}"#.utf8)) }
+        MockURLProtocol.failure = { _ in URLError(.cancelled) }
+        defer { MockURLProtocol.failure = nil }
+        do {
+            _ = try await ControlAPI(session: mockSession()).status()
+            XCTFail("Expected a cancellation")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "got \(error)")
+        }
     }
 
     func testBusyRefusalIsSurfaced() async {
@@ -59,8 +159,7 @@ final class ControlTests: XCTestCase {
 
     /// A server that answers the health check but is too slow for the status
     /// route is running, not stopped.  Reporting it as unavailable would offer
-    /// to start a server that is already up, and would grey out Start Local
-    /// VM on a healthy machine.
+    /// to start a server that is already up.
     func testSlowServerIsUnresponsiveRatherThanUnavailable() async {
         MockURLProtocol.failure = { request in
             request.url!.path == "/api/system/control" ? URLError(.timedOut) : nil
@@ -71,6 +170,25 @@ final class ControlTests: XCTestCase {
         }
         do { _ = try await ControlAPI(session: mockSession()).status(); XCTFail("Expected unresponsive") }
         catch { XCTAssertEqual(error as? ControlAPIError, .unresponsive) }
+    }
+
+    /// The identity check answers, then the status read's connection is
+    /// refused:  the server proved it was alive a moment ago, so the refusal
+    /// is surfaced as itself instead of reading as a slow answer.
+    func testAStatusReadRefusedBeforeSendingSurfacesTheRefusal() async {
+        MockURLProtocol.failure = { request in
+            request.url!.path == "/api/system/control" ? URLError(.cannotConnectToHost) : nil
+        }
+        defer { MockURLProtocol.failure = nil }
+        MockURLProtocol.handler = { request in
+            (200, Data(#"{"app":"botfleet","pid":42,"ready":true}"#.utf8))
+        }
+        do { _ = try await ControlAPI(session: mockSession()).status(); XCTFail("Expected a refusal") }
+        catch {
+            guard case .refused = (error as? ControlAPIError) else {
+                return XCTFail("Expected a refusal, got \(error)")
+            }
+        }
     }
 
     /// A server that does not answer the health check at all really is gone.
@@ -102,7 +220,7 @@ final class ControlTests: XCTestCase {
             if request.url!.path == "/api/health" { return (200, Data(#"{"app":"botfleet","pid":42,"ready":true}"#.utf8)) }
             return (200, Data(#"{"ok":false}"#.utf8))
         }
-        do { try await ControlAPI(session: mockSession()).stopVMs(); XCTFail("Expected failure") }
+        do { try await ControlAPI(session: mockSession()).stopServer(); XCTFail("Expected failure") }
         catch { XCTAssertEqual(error as? ControlAPIError, .invalidResponse) }
     }
 
@@ -157,74 +275,6 @@ final class ControlTests: XCTestCase {
         runner.launchctlListing = "PID\tStatus\tLabel\n742\t0\tapp.botfleet.server"
         XCTAssertEqual(policy.installedServerState, .running)
         XCTAssertEqual(runner.calls, ["/bin/launchctl list", "/bin/launchctl list"])
-    }
-
-    func testOfflinePersistencePolicyUsesStrictAtomicPrivateBoolean() throws {
-        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: home) }
-        let policy = PersistencePolicy(home: home, environment: [:])
-        XCTAssertNil(policy.value)
-        try policy.set(false)
-        XCTAssertEqual(policy.value, false)
-        let path = home.appendingPathComponent(".botfleet/persist-on-exit.policy")
-        XCTAssertEqual(try String(contentsOf: path), "false\n")
-        let mode = try FileManager.default.attributesOfItem(atPath: path.path)[.posixPermissions] as? NSNumber
-        XCTAssertEqual(mode?.intValue, 0o600)
-        try policy.set(true)
-        XCTAssertEqual(policy.value, true)
-        XCTAssertEqual(try String(contentsOf: path), "true\n")
-        try Data("not-a-boolean\n".utf8).write(to: path)
-        XCTAssertNil(policy.value)
-    }
-
-    func testOfflineDockerInspectionOnlyCountsOwnLabeledContainersOnLocalSocket() throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let binary = directory.appendingPathComponent("docker")
-        try Data().write(to: binary)
-        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: binary.path)
-        let runner = DockerCommands()
-        runner.listing = "botfleet-computer-jay\nother-service\n"
-        runner.inspection = "1\t1\tshared\tfalse"
-        let inspector = OfflineDockerVM(commands: runner, environment: [:], executable: binary.path, username: "jay")
-        XCTAssertEqual(inspector.inspect(), .local([OfflineVM(name: "botfleet-computer-jay", running: false)]))
-        XCTAssertEqual(runner.calls.count, 3)
-        XCTAssertFalse(runner.calls.contains { $0.last == "other-service" })
-        runner.host = "tcp://remote.example:2375"
-        XCTAssertEqual(inspector.inspect(), .unavailable)
-        XCTAssertEqual(runner.calls.count, 4)
-        runner.calls = []
-        let overridden = OfflineDockerVM(commands: runner, environment: ["DOCKER_HOST": "tcp://remote.example:2375"], executable: binary.path, username: "jay")
-        XCTAssertEqual(overridden.inspect(), .unavailable)
-        XCTAssertTrue(runner.calls.isEmpty)
-    }
-
-    func testOfflineHelperRequiresInstalledBundleAndConfirmsCreatedState() throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let node = directory.appendingPathComponent("node")
-        let script = directory.appendingPathComponent("botfleet-vm-control.mjs")
-        try Data().write(to: node)
-        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: node.path)
-        let runner = HelperCommands()
-        let helper = OfflineVMHelper(script: script, node: node.path, commands: runner)
-        XCTAssertFalse(helper.available)
-        XCTAssertThrowsError(try helper.status())
-        try Data().write(to: script)
-        XCTAssertTrue(helper.available)
-        runner.response = #"{"ok":true,"localVms":[{"key":"shared","name":"shared","running":false,"state":"missing"}]}"#
-        XCTAssertEqual(try helper.status().first?.state, "missing")
-        XCTAssertEqual(runner.lastTimeout, 20)
-        XCTAssertThrowsError(try helper.createStopped())
-        runner.response = #"{"ok":true,"localVms":[{"key":"shared","name":"shared","running":false,"state":"created"}]}"#
-        XCTAssertEqual(try helper.createStopped().first?.state, "created")
-        XCTAssertEqual(runner.lastTimeout, 300)
-        runner.response = #"{"ok":false,"error":"server still running"}"#
-        XCTAssertThrowsError(try helper.stop()) { error in
-            XCTAssertEqual(error.localizedDescription, "server still running")
-        }
     }
 
     func testStartServerUsesNonKillingKickstartOnlyAfterMarkerAndAgentCheck() throws {
@@ -327,32 +377,6 @@ private final class MockCommands: CommandRunning {
         }
         if failKickstart && arguments.first == "kickstart" { throw StartupPolicyError.commandFailed }
         return ""
-    }
-}
-
-private final class DockerCommands: CommandRunning {
-    var host = "unix:///tmp/docker.sock"
-    var listing = ""
-    var inspection = ""
-    var calls: [[String]] = []
-    func run(_ executable: String, _ arguments: [String]) throws -> String {
-        calls.append(arguments)
-        switch arguments.first {
-        case "context": return host
-        case "ps": return listing
-        case "inspect": return inspection
-        default: throw StartupPolicyError.commandFailed
-        }
-    }
-}
-
-private final class HelperCommands: CommandRunning {
-    var response = ""
-    var lastTimeout: TimeInterval = 0
-    func run(_ executable: String, _ arguments: [String]) throws -> String { response }
-    func run(_ executable: String, _ arguments: [String], timeout: TimeInterval) throws -> String {
-        lastTimeout = timeout
-        return response
     }
 }
 
