@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TextIO
 
-from . import f3, records, safety
+from . import bar, f3, records, safety
 from . import items as itemsmod
 from . import links as linkmod
 from . import notify as notifymod
@@ -41,6 +41,8 @@ class Fields:
     recommend: int | None
     context: str | None
     urgent: bool
+    # The reason class the bar recorded (bar.py);  None when the bar is off or none was given.
+    why_owner: str | None = None
 
 
 @dataclass
@@ -131,6 +133,7 @@ def make_block(
         version=version,
         again_of=again_of,
         mirror_of=mirror.url if mirror else None,
+        why_owner=f.why_owner,
     )
 
 
@@ -274,6 +277,11 @@ def run_file(args, io: Streams) -> int:
         raise Refusal(
             "--again and --mirror-of do not go together:  a mirrored item is one persona request"
         )
+    # The owner bar (bar.py).  A Grok Bot mirror is exempt:  the persona already opened its own OWNER topic.
+    policy = bar.Policy() if mirror else bar.read_policy(io.knobs)
+    fields.why_owner, class_warning = bar.check_class(policy.mode, getattr(args, "why_owner", None))
+    if class_warning:
+        io.warn(class_warning)
     runner = Runner(seat, io.environ)
     runner.require_board()
     parent = resolve_parent(runner, seat, args.parent)
@@ -331,6 +339,12 @@ def run_file(args, io: Streams) -> int:
                 )
             )
 
+    # An item about to be filed counts against the seat's daily cap;  a rerun does not.
+    if existing is None:
+        cap_warning = bar.check_cap(policy, io.environ, seat, bar.wall(io.clock))
+        if cap_warning:
+            io.warn(cap_warning)
+
     if args.dry_run:
         plan = {
             "dry_run": True,
@@ -340,6 +354,8 @@ def run_file(args, io: Streams) -> int:
             "existing": existing.identifier if existing else None,
             "options": len(fields.options),
         }
+        if policy.on:
+            plan.update({"bar": policy.mode, "why_owner": fields.why_owner})
         if args.json:
             emit_json(io, plan)
         else:
@@ -355,9 +371,14 @@ def run_file(args, io: Streams) -> int:
         item, new = file_new(
             io, runner, seat, app, fields, scope, parent, mirror, wanted, args.again
         )
+        if new and policy.on:
+            bar.record_filing(io.environ, seat, item.identifier, bar.wall(io.clock))
         if parent and new:
             comment_on_parent(io, runner, parent, item.identifier)
     others = [i for i in items if i.identifier != item.identifier]
+    extra = {"already_filed": not new, "again": bool(args.again)}
+    if policy.on:
+        extra.update({"bar": policy.mode, "why_owner": fields.why_owner})
     return finish(
         io,
         runner,
@@ -368,7 +389,7 @@ def run_file(args, io: Streams) -> int:
         new=new,
         rescan=not new,
         words=("filed", "already filed"),
-        extra={"already_filed": not new, "again": bool(args.again)},
+        extra=extra,
     )
 
 

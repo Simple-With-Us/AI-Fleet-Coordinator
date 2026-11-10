@@ -15,6 +15,7 @@ item, and an issue with the label but no valid block is an item that is not adop
 
 Awaiting Jay means unadopted, notify_pending or notified.
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -121,10 +122,19 @@ def build_item(show: dict) -> Item:
     """An Item from the JSON of `board show --json`."""
     comments = list(show.get("comments") or [])
     item = Item(
-        identifier=str(show.get("identifier") or ""), id=str(show.get("id") or ""), url=str(show.get("url") or ""),
-        title=str(show.get("title") or ""), status=str(show.get("status") or ""), severity=show.get("severity"),
-        app=str(show.get("app") or ""), created_at=show.get("created_at"), labels=list(show.get("labels") or []),
-        kind=show.get("source_kind"), reported_by=show.get("reported_by"), comments=comments)
+        identifier=str(show.get("identifier") or ""),
+        id=str(show.get("id") or ""),
+        url=str(show.get("url") or ""),
+        title=str(show.get("title") or ""),
+        status=str(show.get("status") or ""),
+        severity=show.get("severity"),
+        app=str(show.get("app") or ""),
+        created_at=show.get("created_at"),
+        labels=list(show.get("labels") or []),
+        kind=show.get("source_kind"),
+        reported_by=show.get("reported_by"),
+        comments=comments,
+    )
     description = str(show.get("description") or "")
     if find_fence(description) is not None:
         try:
@@ -163,9 +173,16 @@ def fetch(runner: Runner, ref: str) -> Item | None:
     if not result.ok:
         message = (result.err or "").lower()
         # board says "no issue AFC-9", or (for text it cannot read as an id) "... is not a board id ..."
-        if result.code in (1, 2) and ("no issue" in message or "not a board id" in message or "no imported board id" in message):
+        if result.code in (1, 2) and (
+            "no issue" in message
+            or "not a board id" in message
+            or "no imported board id" in message
+        ):
             return None
-        raise BoardFailed("board show failed:  %s" % (first_line(result.err) or "exit %d" % result.code), result.code)
+        raise BoardFailed(
+            "board show failed:  %s" % (first_line(result.err) or "exit %d" % result.code),
+            result.code,
+        )
     try:
         return build_item(json.loads(result.out))
     except ValueError:
@@ -196,6 +213,7 @@ def open_count_for(items: list[Item], seat: str) -> int:
 
 # ---- JSON ------------------------------------------------------------------------------------
 
+
 def now() -> dt.datetime:
     """The current time;  NEEDS_OWNER_TEST_NOW (an ISO time) pins it for the golden test."""
     pinned = os.environ.get("NEEDS_OWNER_TEST_NOW")
@@ -216,10 +234,12 @@ def age_hours(created_at: str | None, at: dt.datetime) -> float | None:
     return round(max(0.0, (at - created).total_seconds() / 3600.0), 1)
 
 
-def to_json(item: Item, at: dt.datetime, over_five_seats: set[str] | frozenset[str] = frozenset()) -> dict:
+def to_json(
+    item: Item, at: dt.datetime, over_five_seats: set[str] | frozenset[str] = frozenset()
+) -> dict:
     """The record `list --json` and `status --json` print.  It never holds an answer's text."""
     block = item.block
-    return {
+    record = {
         "id": item.id,
         "identifier": item.identifier,
         "url": item.url,
@@ -227,8 +247,14 @@ def to_json(item: Item, at: dt.datetime, over_five_seats: set[str] | frozenset[s
         "seat_verified": item.seat_verified,
         "for_seat": block.for_seat if block else None,
         "app": item.app,
-        "question": block.question if block else T.clean_text(item.title.removeprefix(T.TITLE_PREFIX.strip()).strip() or item.title,
-                                                              "title", 500, required=False),
+        "question": block.question
+        if block
+        else T.clean_text(
+            item.title.removeprefix(T.TITLE_PREFIX.strip()).strip() or item.title,
+            "title",
+            500,
+            required=False,
+        ),
         "options": list(block.options) if block else [],
         "low_stakes": list(block.low_stakes) if block else [],
         "recommend": block.recommend if block else None,
@@ -239,8 +265,16 @@ def to_json(item: Item, at: dt.datetime, over_five_seats: set[str] | frozenset[s
         "topic": item.topic,
         "created_at": item.created_at,
         "notified_msg_id": item.notified[0] if item.notified else None,
-        "replied": ({"kind": item.replied["kind"], "id": item.replied["id"], "option": item.replied["option"],
-                     "by": item.replied_by} if item.replied else None),
+        "replied": (
+            {
+                "kind": item.replied["kind"],
+                "id": item.replied["id"],
+                "option": item.replied["option"],
+                "by": item.replied_by,
+            }
+            if item.replied
+            else None
+        ),
         "state": item.state,
         "status": item.status,
         "age_hours": age_hours(item.created_at, at),
@@ -251,6 +285,10 @@ def to_json(item: Item, at: dt.datetime, over_five_seats: set[str] | frozenset[s
         "edited": bool(block and not block.hash_matches_uid()),
         "problem": item.problem if block is None else None,
     }
+    # Only an item filed with a reason class (the bar was on) carries the key.
+    if block and block.why_owner:
+        record["why_owner"] = block.why_owner
+    return record
 
 
 def over_five_seats(items: list[Item]) -> set[str]:

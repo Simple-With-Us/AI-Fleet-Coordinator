@@ -6,7 +6,7 @@ Zulip topic `OWNER <ID> <subject>` that mentions him.  The contract, the formats
 
 ```
 needs-owner file --by SEAT --app APP --question TEXT --option TEXT ... [--low-stakes N] [--recommend N]
-                 [--parent ID] [--context TEXT] [--urgent] [--again] [--mirror-of LINK] [--dry-run] [--json]
+                 [--parent ID] [--context TEXT] [--urgent] [--again] [--mirror-of LINK] [--why-owner CLASS] [--dry-run] [--json]
 needs-owner adopt ID --by SEAT --option TEXT ... [--question TEXT] [--no-notify]
 needs-owner list [--open | --replied | --all] [--seat SEAT] [--json]
 needs-owner status ID [--json]
@@ -17,6 +17,7 @@ needs-owner notify [--dry-run] [--json]        the fallback notifier (CLAUDE onl
 |---|---|
 | `cli.py` | argparse front end;  `scripts/needs-owner` is the entry point |
 | `verbs.py` | `file`, `adopt`, `list`, `status` |
+| `bar.py` | the owner bar: the six `--why-owner` classes, the `NEEDS_OWNER_BAR` mode and `NEEDS_OWNER_SEAT_DAILY_MAX` cap (read through `fleet_knobs`), and the per-host filings count the cap uses |
 | `block.py` | the fenced block in the issue description:  render and strict parse |
 | `records.py` | the comment formats (`notified`, `notify_pending`, `block`, `owner replied:`) |
 | `items.py` | reading items back (`board list` and `board show`), derived state, the JSON |
