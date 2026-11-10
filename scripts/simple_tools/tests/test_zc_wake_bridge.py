@@ -69,21 +69,7 @@ class Base(unittest.TestCase):
         with open(self.key_file, "w", encoding="utf-8") as fh:
             fh.write(self.key + "\n")
         os.chmod(self.key_file, 0o600)
-        # The fake delivery writes to a path baked into the template:  the bridge runs its
-        # child with a minimal environment (HOME, PATH, the launcher marks), so nothing else
-        # crosses, exactly as it will not in production.
-        self.fake_path = os.path.join(self.tmp.name, "fake-out.txt")
-        self.config = {
-            "delivery_enabled": True,
-            "command_template": [
-                "/bin/sh", "-c",
-                "printenv AGENT_LAUNCHER >> '%s'; "
-                "printf '%%s %%s\n' \"$1\" \"$2\" >> '%s'" % (self.fake_path, self.fake_path),
-                "bridge", "{session_id}", "{wake_text}",
-            ],
-            "timeout_seconds": 30,
-            "target_host": "server",
-        }
+        self.config = {"target_host": "server"}
         self.config_file = os.path.join(self.state, "config.json")
         with open(self.config_file, "w", encoding="utf-8") as fh:
             json.dump(self.config, fh)
@@ -105,8 +91,6 @@ class Base(unittest.TestCase):
         env.update(extra)
         return env
 
-    def fake_out(self) -> str:
-        return self.fake_path
 
     def rows(self, *rows: dict) -> list[dict]:
         return list(rows)
@@ -183,11 +167,8 @@ class Receiver(Base):
         )))
         status, answer = self.post(self.wake(), env, key=self.key)
         self.assertEqual(status, 200)
-        self.assertTrue(answer["delivered"], answer)
+        self.assertEqual(answer["session_id"], "sess_a", answer)
         self.assertEqual(answer["picked"], "topic-match")
-        seen = open(self.fake_out()).read().split()
-        self.assertIn("sess_a", seen)
-        self.assertIn("OPS-1048", seen)
         # a second identical wake is a no-op
         status, answer = self.post(self.wake(), env, key=self.key)
         self.assertEqual(status, 200)
@@ -211,68 +192,6 @@ class Receiver(Base):
         status, _ = self.post(self.wake(wake_id="bad id!"), env, key=self.key)
         self.assertEqual(status, 400)
 
-    def test_failed_delivery_is_503_and_not_marked_seen(self) -> None:
-        # The delivery command fails (the fake writes nowhere and exits 3):  the answer is
-        # 503, the id stays unmarked, and a retry delivers again instead of hitting
-        # already-seen forever.
-        failing = dict(self.config)
-        failing["command_template"] = ["/bin/sh", "-c", "exit 3"]
-        env = self.env(**self.registry_env(self.rows(
-            {"native_session_id": "sess_retry", "title": "Retry me", "verified_host": "server",
-             "state": "open", "assigned_at": 1, "retired_at": None, "closed_at": None},
-        )))
-        status, answer = self.post(self.wake(wake_id="w-retry"), env, key=self.key, config=failing)
-        self.assertEqual(status, 503, answer)
-        self.assertEqual(answer["reason"], "command-failed-3")
-        status, answer = self.post(self.wake(wake_id="w-retry"), env, key=self.key, config=failing)
-        self.assertEqual(status, 503, answer)
-        self.assertNotEqual(answer.get("reason"), "already-seen")
-
-    def test_concurrent_duplicate_wake_delivers_once(self) -> None:
-        # Two posts of one wake id while the first delivery is still running:  the second is
-        # answered "in-flight" and starts no second turn, and the id is marked seen once the
-        # first delivery is handled.
-        import threading
-        from http.server import ThreadingHTTPServer
-
-        slow = dict(self.config)
-        slow["command_template"] = [
-            "/bin/sh", "-c",
-            "sleep 1; printf '%%s\n' \"$1\" >> '%s'" % self.fake_path,
-            "bridge", "{session_id}", "{wake_text}",
-        ]
-        env = self.env(**self.registry_env(self.rows(
-            {"native_session_id": "sess_once", "title": "Once only", "verified_host": "server",
-             "state": "open", "assigned_at": 1, "retired_at": None, "closed_at": None},
-        )))
-        server = ThreadingHTTPServer(("127.0.0.1", 0), B.make_handler(env, slow, []))
-        server.daemon_threads = True
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        host, bound = server.server_address[:2]
-        body = json.dumps(self.wake(wake_id="w-twice")).encode()
-        answers: list[tuple[int, dict]] = []
-
-        def fire() -> None:
-            request = urllib.request.Request(
-                "http://%s:%d/wake/ZC" % (host, bound), data=body, method="POST",
-                headers={"Content-Type": "application/json",
-                         "Authorization": "Bearer %s" % self.key},
-            )
-            with urllib.request.urlopen(request, timeout=20) as response:
-                answers.append((response.status, json.loads(response.read().decode())))
-
-        first = threading.Thread(target=fire)
-        first.start()
-        time.sleep(0.3)
-        fire()
-        first.join(timeout=20)
-        self.assertEqual(sorted(a.get("reason") for _, a in answers), ["in-flight", "ok"], answers)
-        self.assertEqual(sorted(bool(a.get("delivered")) for _, a in answers), [False, True])
-        self.assertEqual(open(self.fake_path).read().split(), ["sess_once"])
-        self.assertIn("w-twice", B.seen_ids(B.state_dir(env) / "seen.json"))
-
     def test_topic_target_never_starts_without_sess_prefix(self) -> None:
         # A crafted registry row whose native id is argv-shaped ("-p") is not a target.
         env = self.env(**self.registry_env(self.rows(
@@ -280,20 +199,9 @@ class Receiver(Base):
              "state": "open", "assigned_at": 9, "retired_at": None, "closed_at": None},
         )))
         status, answer = self.post(self.wake(), env, key=self.key)
-        self.assertEqual(status, 503, answer)
-        self.assertIn(answer.get("reason"), ("no-live-session", "command-failed"))
-        self.assertFalse(os.path.exists(self.fake_path))
-
-    def test_disabled_delivery_answers_without_running(self) -> None:
-        disabled = dict(self.config, delivery_enabled=False)
-        self.config_file = os.path.join(self.state, "config-off.json")
-        with open(self.config_file, "w", encoding="utf-8") as fh:
-            json.dump(disabled, fh)
-        env = self.env(**self.registry_env([]))
-        status, answer = self.post(self.wake(), env, key=self.key, config=disabled)
-        self.assertEqual(status, 200)
-        self.assertEqual(answer["reason"], "delivery-disabled")
-        self.assertFalse(os.path.exists(self.fake_path))  # nothing ran
+        self.assertEqual(status, 200, answer)
+        self.assertIn(answer.get("reason"), ("no-live-session",))
+        self.assertEqual(answer.get("session_id"), "")
 
 
 class ConfigLoad(Base):
@@ -303,19 +211,10 @@ class ConfigLoad(Base):
 
     def test_default_missing_config_is_defaults(self) -> None:
         config = B.load_config(Path(self.tmp.name) / "nope.json")
-        self.assertFalse(config["delivery_enabled"])
+        self.assertEqual(config["target_host"], "server")
 
     def test_mistyped_fields_refuse(self) -> None:
         bad = Path(self.tmp.name) / "bad.json"
-        bad.write_text(json.dumps({"delivery_enabled": "yes"}), encoding="utf-8")
-        with self.assertRaises(SystemExit):
-            B.load_config(bad)
-        bad.write_text(json.dumps({"command_template": []}), encoding="utf-8")
-        with self.assertRaises(SystemExit):
-            B.load_config(bad)
-        bad.write_text(json.dumps({"timeout_seconds": -1}), encoding="utf-8")
-        with self.assertRaises(SystemExit):
-            B.load_config(bad)
         bad.write_text(json.dumps({"target_host": "cloud"}), encoding="utf-8")
         with self.assertRaises(SystemExit):
             B.load_config(bad)
@@ -359,7 +258,7 @@ class LetterAddress(Base):
 
     def test_a_dead_letter_delivers_nowhere(self) -> None:
         env = self.env()  # no registry URL:  resolve_letter answers "" (nothing live)
-        receipt = B.deliver(
+        receipt = B.record(
             env,
             self.config,
             wake_id="w-dead",
@@ -368,8 +267,9 @@ class LetterAddress(Base):
             link="",
             letter="ZZ",
         )
-        self.assertFalse(receipt["delivered"])
         self.assertEqual(receipt["reason"], "letter-not-live")
+        self.assertEqual(receipt["session_id"], "")
+        self.assertEqual(receipt["picked"], "")
 
 
 class TargetPick(Base):
@@ -423,7 +323,7 @@ class TargetPick(Base):
 
 
 class DeliverCli(Base):
-    def test_deliver_cli_runs_one_delivery(self) -> None:
+    def test_record_cli_runs_one_routing(self) -> None:
         history = os.path.join(self.tmp.name, "history.json")
         with open(history, "w", encoding="utf-8") as fh:
             json.dump({"items": [{"native_session_id": "sess_cli", "title": "Letters",
@@ -431,16 +331,13 @@ class DeliverCli(Base):
                                   "retired_at": None, "closed_at": None}], "count": 1}, fh)
         env = self.env(ZC_WAKE_HISTORY_FILE=history)
         result = run_bridge(
-            ["deliver", "--wake-id", "w-cli-1", "--topic", "Letters", "--config", self.config_file],
+            ["record", "--wake-id", "w-cli-1", "--topic", "Letters", "--config", self.config_file],
             env,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         receipt = json.loads(result.stdout.decode().strip().splitlines()[-1])
-        self.assertTrue(receipt["delivered"])
-        self.assertIn("sess_cli", open(self.fake_out()).read())
-        log = json.loads(open(os.path.join(self.state, "delivery.jsonl")).read().splitlines()[-1])
+        log = json.loads(open(os.path.join(self.state, "wakes.jsonl")).read().splitlines()[-1])
         self.assertEqual(log["wake_id"], "w-cli-1")
-        self.assertIn("simple-tools-wake", open(self.fake_out()).read())
 
 
 if __name__ == "__main__":

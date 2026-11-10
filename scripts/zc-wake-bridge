@@ -1,32 +1,36 @@
 #!/usr/bin/env python3
-"""zc-wake-bridge:  the webhook the Operator's http wake reaches, and the deliverer that turns
-one wake into a prompt in a specific ZCode thread (OPS-1048, owner request Nov 7, 2026).
+"""zc-wake-bridge:  the webhook the Operator's http wake reaches, and the deterministic router
+that decides which ZCode chat one wake belongs to (OPS-1048; owner ruling Nov 10, 2026).
 
 The chain.  A message that tags @ZC or DMs the seat lands in the seat's inbox on the listener
 that holds it (the Mac instance today).  When the seat's section carries wake = "http", the
 listener POSTs the fixed simple-tools-wake/1 contract to the seat's routine URL, signed with the
 routine key, the same path the Grok personas and Jet follow.  This bridge is that routine's
 receiver:  it answers the POST, remembers the wake id, resolves which lettered ZCode session the
-wake belongs to, and runs the delivery command in that session.
+wake belongs to, and records the pick.  No turn is ever delivered.
 
 It holds no Zulip key and no listener state.  Its one secret is the routine key, read from a
 0600 file on every request.  Its registry access is the Operator's read API, signed as the
 OPERATOR principal from the environment the unit sources (the same shared env file the letter
 hooks use).  Message bodies never pass through it:  the wake payload carries metadata and a
-bounded excerpt, and the delivered prompt names the thread, never quotes it.
+bounded excerpt, and the receipt names the thread, never quotes the message.
 
-Delivery.  The command is configuration (a template in the config file), because the model a
-headless ZCode run uses is the desktop's provider order, and which provider that should be is
-the owner's call:  on this server the first entry (MiniMax) holds a dead key today, so delivery
-ships disabled (config delivery_enabled false) and every wake this bridge accepts is still
-logged, deduped and answered.  The target resolution is deterministic:  the live zcode
-registration whose title shares the wake topic's words, else the most recently seen live
-registration on this host;  a session the store calls a subagent or one whose host this bridge
-cannot reach (the Mac desktop has no zcode CLI) is skipped with the reason logged.
+What the bridge does with a wake (owner ruling, Nov 10):  it ROUTES, it never answers and it
+never delivers a turn into a chat - there is no headless ZCode and no model per platform, ever.
+The routing is deterministic first:  a letter the sender addressed resolves through the
+registry;  without one, the live registration whose title shares the wake topic's words, else
+the most recently seen live registration on this host;  a session the store calls a subagent is
+never picked.  The picked chat is surfaced, not messaged:  the wake already sits in the seat's
+inbox (the listener captured it), the Operator's pending-inbox tells a live session it has
+wake-worthy items, and the receipt records the pick.  A model has exactly one role, in the
+minority of cases the deterministic rules cannot decide (no letter, no confident topic match):
+the Operator's consultant, on the Operator's own preset, picks the chat - and its only
+permitted message to anyone is a clarification question to the sender.  It composes no reply
+text, ever (that slot is deliberately unwired until a real ambiguous case needs it).
 
 Usage:
   zc-wake-bridge serve [--bind ADDR] [--port N] [--config FILE] [--state DIR]
-  zc-wake-bridge deliver --wake-id ID [--topic T] [--channel C] [--link URL] [--config FILE]
+  zc-wake-bridge record --wake-id ID [--topic T] [--channel C] [--link URL] [--config FILE]
 
 Python 3.11+, standard library only.
 """
@@ -34,7 +38,6 @@ Python 3.11+, standard library only.
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hmac
 import json
 import os
@@ -59,7 +62,7 @@ MAX_BODY = 64 * 1024
 MAX_TITLE = 120
 SEEN_CAP = 200
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
-# A delivery target is a ZCode session id, which begins `sess_`;  the prefix keeps a crafted
+# A routing target is a ZCode session id, which begins `sess_`;  the prefix keeps a crafted
 # registry row from ever steering an argv token that a child could read as a flag.
 TARGET_RE = re.compile(r"^sess_[A-Za-z0-9._-]{1,123}$")
 #: ZCode has no public thread URL today (no share links are minted, and the app has no URI
@@ -85,17 +88,8 @@ ENV_URL = "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL"
 ENV_PRINCIPAL = "SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL"
 ENV_KEY = "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"
 
-WAKE_TEXT = (
-    "[{seat}\u00b7wake] You were tagged in Zulip:  #{channel} / {topic}.  {link}\n"
-    "Wake id {wake_id}.  Read your inbox with `simple-chat inbox --peek`, respond in that "
-    "thread, and follow your seat rules.  This prompt was delivered by the Operator's wake "
-    "bridge;  the message text is not quoted here on purpose."
-)
 
 DEFAULT_CONFIG = {
-    "delivery_enabled": False,
-    "command_template": ["zcode", "--resume", "{session_id}", "-p", "{wake_text}"],
-    "timeout_seconds": 900,
     "target_host": "server",
 }
 
@@ -132,22 +126,7 @@ def load_config(path: Path, *, required: bool = False) -> dict[str, Any]:
         if key not in loaded:
             continue
         value = loaded[key]
-        if key == "delivery_enabled":
-            if not isinstance(value, bool):
-                raise SystemExit("zc-wake-bridge: %s: delivery_enabled must be a boolean" % path)
-        elif key == "command_template":
-            if (
-                not isinstance(value, list)
-                or not value
-                or not all(isinstance(part, str) and part for part in value)
-            ):
-                raise SystemExit(
-                    "zc-wake-bridge: %s: command_template must be a non-empty list of strings" % path
-                )
-        elif key == "timeout_seconds":
-            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                raise SystemExit("zc-wake-bridge: %s: timeout_seconds must be a positive whole number" % path)
-        elif key == "target_host":
+        if key == "target_host":
             if value not in ("mac", "server", ""):
                 raise SystemExit("zc-wake-bridge: %s: target_host must be mac, server or empty" % path)
         config[key] = value
@@ -378,14 +357,7 @@ def remember_id(path: Path, wake_id: str) -> None:
         raise
 
 
-def session_lock(store_dir: Path, sid: str):
-    """An exclusive mark per target session, so one wake waits rather than two turns clobber
-    one thread.  The lock lives on a descriptor this process holds for the delivery."""
-    store_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    return open(os.open(str(store_dir / ("session-%s.lock" % sid)), os.O_CREAT | os.O_RDWR, 0o600), "w")
-
-
-def deliver(
+def record(
     env: dict[str, str],
     config: dict[str, Any],
     *,
@@ -396,81 +368,49 @@ def deliver(
     letter: str = "",
     log_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Resolve the target and run the delivery command.  The answer is the receipt:  delivered
-    true or false, with the reason either way.  Never raises.
+    """Route the wake deterministically and record the pick.  Never raises, never messages
+    anyone, never runs a turn in a chat (owner ruling, Nov 10:  the bridge routes;  the only
+    thing a model may ever add is the PICK, in the minority of cases the deterministic rules
+    cannot decide, and its only outbound message is a clarification question).
 
-    A letter the sender addressed is resolved through the Operator's registry and wins the
-    target choice; without one, the topic-words and recency rules stand."""
-    if not config.get("delivery_enabled"):
-        return {"delivered": False, "reason": "delivery-disabled"}
+    The picked chat is surfaced, not delivered:  the message is already in the seat's inbox,
+    the Operator's pending-inbox tells a live session, and this receipt is the record."""
     store = Path(env.get("ZC_WAKE_STORE") or os.path.join(
         str(env.get("HOME") or os.path.expanduser("~")), ".zcode", "cli", "db", "db.sqlite"
     ))
     letter_sid = resolve_letter(env, letter) if letter else ""
+    reason = ""
+    sid = ""
+    picked = ""
     if letter and not letter_sid:
-        return {"delivered": False, "reason": "letter-not-live", "letter": letter}
-    try:
-        rows = registry_history(env)
-    except Exception:  # noqa: BLE001 - an unreadable registry is an undelivered wake, never a crash
-        rows = []
-    if letter_sid:
-        rows = []  # the letter said which chat this is; nothing else may override it
-    sid, why = pick_target(rows, topic, store, str(config.get("target_host") or "server"), letter_sid)
-    if not sid:
-        return {"delivered": False, "reason": why}
-    text = WAKE_TEXT.format(
-        seat=SEAT, channel=channel or "-", topic=topic or "-", link=link or "", wake_id=wake_id
-    )
-    argv = [
-        str(part).replace("{session_id}", sid).replace("{wake_text}", text)
-        for part in (config.get("command_template") or [])
-    ]
-    if not argv:
-        return {"delivered": False, "reason": "no-command"}
-    lock_path = state_dir(env)
-    with session_lock(lock_path, sid) as lock:
+        reason = "letter-not-live"
+    else:
         try:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            return {"delivered": False, "reason": "session-busy", "session_id": sid}
-        # The child runs with a minimal environment:  HOME and PATH to live, the launcher mark
-        # so the letter hook knows a wake run started it.  Nothing else crosses the trust
-        # boundary - the registry signing key the bridge itself holds never reaches a woken
-        # agent process.
-        spawn_env = {
-            "HOME": env.get("HOME") or os.path.expanduser("~"),
-            "PATH": env.get("PATH") or "/usr/local/bin:/usr/bin:/bin",
-            "AGENT_LAUNCHER": "simple-tools-wake",
-            "AGENT_LAUNCH_SEAT": SEAT,
-        }
-        try:
-            import subprocess
-
-            proc = subprocess.run(
-                argv,
-                env=spawn_env,
-                capture_output=True,
-                timeout=int(config.get("timeout_seconds") or 900),
-                check=False,
-            )
-            delivered = proc.returncode == 0
-            reason = "ok" if delivered else "command-failed-%d" % proc.returncode
-        except subprocess.TimeoutExpired:
-            delivered, reason = False, "command-timeout"
-        except OSError as exc:
-            delivered, reason = False, "command-error-%s" % type(exc).__name__
+            rows = registry_history(env)
+        except Exception:  # noqa: BLE001 - an unreadable registry is an unpicked wake, never a crash
+            rows = []
+        if letter_sid:
+            rows = []  # the letter said which chat this is; nothing else may override it
+        sid, picked = pick_target(
+            rows, topic, store, str(config.get("target_host") or "server"), letter_sid
+        )
+        if not sid:
+            reason = picked  # no-live-session / letter-target-is-subagent
+            picked = ""
     receipt = {
         "at": time.time(),
         "wake_id": wake_id,
-        "session_id": sid,
-        "thread_link": THREAD_LINK_FORM.format(sid=sid),
-        "picked": why,
         "letter": letter or "",
-        "delivered": delivered,
+        "session_id": sid,
+        "thread_link": THREAD_LINK_FORM.format(sid=sid) if sid else "",
+        "picked": picked,
         "reason": reason,
+        "channel": channel or "-",
+        "topic": topic or "-",
+        "zulip_link": link or "",
     }
     if log_path is None:
-        log_path = state_dir(env) / "delivery.jsonl"
+        log_path = state_dir(env) / "wakes.jsonl"
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with open(log_path, "a", encoding="utf-8") as fh:
@@ -549,14 +489,14 @@ def make_handler(env: dict[str, str], config: dict[str, Any], receipts: list[dic
                     self._answer(200, {"delivered": False, "reason": "already-seen", "wake_id": wake_id})
                     return
                 if wake_id in _INFLIGHT:
-                    # The first post of this id is still delivering;  its own answer decides
-                    # whether the listener retries, so this duplicate starts nothing.
-                    self._answer(200, {"delivered": False, "reason": "in-flight", "wake_id": wake_id})
+                    # The first post of this id is still routing;  its own answer is the
+                    # record, so this duplicate starts nothing.
+                    self._answer(200, {"reason": "in-flight", "wake_id": wake_id})
                     return
                 _INFLIGHT.add(wake_id)
             handled = False
             try:
-                receipt = deliver(
+                receipt = record(
                     env,
                     config,
                     wake_id=wake_id,
@@ -565,11 +505,11 @@ def make_handler(env: dict[str, str], config: dict[str, Any], receipts: list[dic
                     link=str(payload.get("zulip_link") or ""),
                     letter=letter_of(payload),
                 )
-                # The wake is handled:  delivered, or the owner has delivery switched off and
-                # the receipt is the record of it.  Anything else answers 503 so the
-                # listener's own retry brings the wake back, and the id stays unmarked - a
-                # failed delivery is never permanently already-seen.
-                handled = bool(receipt.get("delivered")) or receipt.get("reason") == "delivery-disabled"
+                # The wake is handled:  routed and receipted (owner ruling, Nov 10 - the
+                # bridge never delivers a turn, so there is no failure mode that a retry
+                # could fix;  an unpicked wake is still recorded, its message held by the
+                # seat inbox and the Operator, the receipt saying no chat was picked).
+                handled = True
             finally:
                 # Release the reservation and record a handled wake in one step, so no other
                 # post of this id can slip between the two.
@@ -623,7 +563,7 @@ def main(argv: list[str] | None = None) -> int:
     p_serve = sub.add_parser("serve")
     p_serve.add_argument("--bind", default="127.0.0.1")
     p_serve.add_argument("--port", type=int, default=DEFAULT_PORT)
-    p_deliver = sub.add_parser("deliver")
+    p_deliver = sub.add_parser("record")
     p_deliver.add_argument("--wake-id", required=True)
     p_deliver.add_argument("--topic", default="")
     p_deliver.add_argument("--channel", default="")
@@ -640,7 +580,7 @@ def main(argv: list[str] | None = None) -> int:
     config = load_config(config_path, required=bool(args.config or env.get("ZC_WAKE_CONFIG")))
     if args.cmd == "serve":
         return serve(env, args.bind, args.port, config)
-    receipt = deliver(
+    receipt = record(
         env,
         config,
         wake_id=args.wake_id,
@@ -650,7 +590,7 @@ def main(argv: list[str] | None = None) -> int:
         letter=args.letter,
     )
     print(json.dumps(receipt, sort_keys=True))
-    return 0 if receipt.get("delivered") else 1
+    return 0
 
 
 if __name__ == "__main__":
