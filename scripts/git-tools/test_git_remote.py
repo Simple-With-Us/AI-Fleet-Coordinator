@@ -1713,7 +1713,7 @@ class TestReview1199(unittest.TestCase):
         # literal slash neither class holds, one character class.  This runs it through the same child as every pattern.
         pattern = r"^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$"
         self.assertTrue(git._pattern_known(pattern))
-        for good in ("acme/widgets", "Simple-With-Us/AI-Fleet-Coordinator", "a.b/c_d-e"):
+        for good in ("acme/widgets", "Example-Org/Example-Repo", "a.b/c_d-e"):
             self.assertTrue(git._patterns_match([(pattern, good)], time.monotonic() + 5), good)
         for bad in ("acme", "acme/", "/widgets", "acme/wid gets", "a/b/c", "acme/widgéts", ""):
             self.assertFalse(git._patterns_match([(pattern, bad)], time.monotonic() + 5), repr(bad))
