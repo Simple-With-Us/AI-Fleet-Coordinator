@@ -2,6 +2,8 @@
 signed read API (listener_api.py) that the hosted Worker's listener_* tools call."""
 from __future__ import annotations
 
+import builtins
+import contextlib
 import json
 import os
 import pathlib
@@ -9,6 +11,7 @@ import time
 import types
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
 from unittest import mock
 
 from simple_tools import config as C
@@ -17,6 +20,7 @@ from simple_tools import heldback as HELD
 from simple_tools import listener_api as API
 from simple_tools import listener_records as LR
 from simple_tools import live as L
+from simple_tools import wakes as W
 from simple_tools.tests.harness import Harness
 
 KEY = "k" * 40
@@ -220,6 +224,8 @@ class PendingInboxTests(Harness):
     def setUp(self) -> None:
         super().setUp()
         self.root = str(self.state_dir)
+        LR._clear_receipt_cache()
+        self.addCleanup(LR._clear_receipt_cache)
         self.paths = seed(self.root)
         self.now = time.time()
         self.api = API.ListenerReadApi(
@@ -349,6 +355,67 @@ class PendingReceiptTests(Harness):
     def setUp(self) -> None:
         super().setUp()
         self.root = str(self.state_dir)
+        LR._clear_receipt_cache()  # the cache is the module's:  every test starts cold
+        self.addCleanup(LR._clear_receipt_cache)
+
+    @contextlib.contextmanager
+    def watch(self, path: str) -> Iterator[types.SimpleNamespace]:
+        """What the code does to one file:  `pread` calls as (offset, bytes returned), `os.open` calls on the
+        path, `open` calls on it, `os.stat` calls on it and the byte-string `json.loads` calls (the ledger's
+        tail lines are parsed from bytes;  the seat inbox is read as text)."""
+        spy = types.SimpleNamespace(preads=[], opens=0, builtin_opens=0, stats=0, parsed=0)
+        real_pread, real_open, real_builtin, real_stat, real_loads = (
+            os.pread, os.open, builtins.open, os.stat, json.loads)
+
+        def pread(fd: int, count: int, offset: int) -> bytes:
+            data = real_pread(fd, count, offset)
+            spy.preads.append((offset, len(data)))
+            return data
+
+        def os_open(target: object, *args: object, **kwargs: object) -> int:
+            flags = args[0] if args else kwargs.get("flags", 0)
+            spy.opens += str(target) == path and not flags & (os.O_WRONLY | os.O_RDWR)  # reads only
+            return real_open(target, *args, **kwargs)
+
+        def builtin_open(target: object, *args: object, **kwargs: object) -> object:
+            spy.builtin_opens += str(target) == path
+            return real_builtin(target, *args, **kwargs)
+
+        def stat(target: object, *args: object, **kwargs: object) -> os.stat_result:
+            spy.stats += str(target) == path
+            return real_stat(target, *args, **kwargs)
+
+        def loads(text: object, *args: object, **kwargs: object) -> object:
+            spy.parsed += isinstance(text, bytes)
+            return real_loads(text, *args, **kwargs)
+
+        with mock.patch.object(os, "pread", pread), mock.patch.object(os, "open", os_open), \
+                mock.patch.object(builtins, "open", builtin_open), mock.patch.object(os, "stat", stat), \
+                mock.patch.object(json, "loads", loads):
+            yield spy
+
+    @staticmethod
+    def wrote(rows: list[dict]) -> list[int]:
+        """The byte offset each row starts at, as L.append_jsonl writes them (one line each)."""
+        offsets, at = [], 0
+        for row in rows:
+            offsets.append(at)
+            at += len((json.dumps(row, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8"))
+        return offsets
+
+    def full_scan(self, paths: L.SeatPaths, ids: set[int]) -> dict[int, dict]:
+        """The pre-window algorithm, verbatim:  the whole ledger through its own merged view."""
+        best: dict[int, tuple[tuple, dict]] = {}
+        for order, (wake_id, view) in enumerate(W.Ledger(paths.wakes).wakes().items()):
+            triggers = view.get("trigger_ids")
+            if not LR._WAKE_ID_RE.fullmatch(wake_id) or not isinstance(triggers, list):
+                continue
+            born = [t for t in map(LR._number, (view.get("times") or {}).values()) if t is not None]
+            rank = (view.get("state") != "merged", min(born) if born else float("-inf"), order)
+            for message_id in {LR._int(i) for i in triggers} & ids:
+                if message_id not in best or rank > best[message_id][0]:
+                    best[message_id] = (rank, LR._receipt(wake_id, view))
+        return {message_id: found[1] for message_id, found in best.items()}
 
     def seat(self, seat: str, inbox: list[dict], ledger: list[dict] | None = None) -> L.SeatPaths:
         paths = L.SeatPaths(self.root, seat)
@@ -564,13 +631,206 @@ class PendingReceiptTests(Harness):
             1306: {"wake_id": "wok", "state": "done", "via": "claude", "at": t},
         })
 
-    def test_a_count_only_read_and_a_page_with_no_items_never_open_the_ledger(self) -> None:
-        self.seat("COUNT", [self.row(1, 1401)], [self.wake("w1", "done", self.T0, [1401], adapter="claude")])
-        with mock.patch.object(LR.W, "Ledger", side_effect=AssertionError("the ledger was opened")):
+    def test_a_count_only_read_and_a_page_with_no_items_never_touch_the_ledger(self) -> None:
+        paths = self.seat("COUNT", [self.row(1, 1401)], [self.wake("w1", "done", self.T0, [1401], adapter="claude")])
+        with self.watch(paths.wakes) as spy:
             counted = LR.pending_inbox_view(self.root, "COUNT", after_seq=0, limit=0)
             self.assertEqual((counted["count"], counted["items"]), (1, []))
             empty = LR.pending_inbox_view(self.root, "COUNT", after_seq=5)
             self.assertEqual((empty["count"], empty["items"]), (0, []))
+        self.assertEqual((spy.stats, spy.opens, spy.builtin_opens, spy.preads), (0, 0, 0, []))
+        with self.watch(paths.wakes) as spy:  # and a read that does show an item does read it, once
+            self.assertEqual(self.receipts("COUNT")[1401]["wake_id"], "w1")
+        self.assertEqual((spy.opens, spy.builtin_opens), (1, 0))
+
+    def test_only_the_tail_of_a_large_ledger_is_read_and_older_wakes_get_null(self) -> None:
+        # Three times the real window, in 3000 wakes of about a kilobyte:  one read of the last
+        # TAIL_BYTES and one byte more, at the right offset, and never an `open` of the whole file.
+        rows = [self.wake("w%d" % n, "done", self.T0 + n, [10000 + n], adapter="claude", pad="x" * 1000)
+                for n in range(3000)]
+        paths = self.seat("BIG", [self.row(1, 10000)], rows)
+        size = os.stat(paths.wakes).st_size
+        self.assertGreater(size, 2 * LR.TAIL_BYTES)
+        offsets = self.wrote(rows)
+        inside = {10000 + n for n, at in enumerate(offsets) if at >= size - LR.TAIL_BYTES}
+        self.assertTrue(0 < len(inside) < len(rows) // 2)
+        with self.watch(paths.wakes) as spy:
+            found = LR.wake_receipts(paths, {10000 + n for n in range(len(rows))})
+        self.assertEqual(spy.preads, [(size - LR.TAIL_BYTES - 1, LR.TAIL_BYTES + 1)])
+        self.assertEqual((spy.opens, spy.builtin_opens), (1, 0))
+        self.assertEqual(set(found), inside)
+        self.assertEqual(found[10000 + len(rows) - 1], {"wake_id": "w%d" % (len(rows) - 1), "state": "done",
+                                                        "via": "claude", "at": self.T0 + len(rows) - 1})
+        # An old wake gives a null receipt on the row itself, through the pending read.
+        self.assertEqual(self.receipts("BIG"), {10000: None})
+
+    def small_ledger(self, seat: str, count: int = 40) -> tuple[L.SeatPaths, list[dict], list[int], int]:
+        rows = [self.wake("w%d" % n, "done", self.T0 + n, [2000 + n], adapter="claude") for n in range(count)]
+        paths = self.seat(seat, [self.row(n + 1, 2000 + n) for n in range(count)], rows)
+        return paths, rows, self.wrote(rows), os.stat(paths.wakes).st_size
+
+    def ids_in(self, paths: L.SeatPaths, count: int = 40) -> set[int]:
+        return {i for i, r in self.receipts_of(paths, count).items() if r is not None}
+
+    def receipts_of(self, paths: L.SeatPaths, count: int) -> dict[int, object]:
+        found = LR.wake_receipts(paths, {2000 + n for n in range(count)})
+        return {2000 + n: found.get(2000 + n) for n in range(count)}
+
+    def test_a_wake_inside_the_window_matches_and_the_edge_is_exact(self) -> None:
+        paths, rows, offsets, size = self.small_ledger("EDGE")
+        self.assertGreater(size, 3000)
+        k = 30
+        # (window, first row that must match):  the window starts at `size - window`.  A row that starts exactly
+        # there is kept (the byte before it is a newline);  one byte later its first byte is cut, so it is a
+        # partial line and is dropped;  one byte earlier the window holds the newline that ended the row before.
+        # The window changes between reads of one unchanged file, so it is part of the cache's key.
+        for window, first in [(size - offsets[k], k), (size - offsets[k] - 1, k + 1), (size - offsets[k] + 1, k),
+                              (size - offsets[k - 1], k - 1), (size - offsets[k - 1] - 1, k),
+                              (size - offsets[39], 39), (size - offsets[39] - 1, 40),
+                              (size, 0), (size + 1000, 0), (size - 1, 1)]:
+            with mock.patch.object(LR, "TAIL_BYTES", window):
+                got = self.ids_in(paths)
+            self.assertEqual(got, {2000 + n for n in range(first, 40)}, (window, first))
+        # No newline anywhere in the window:  nothing to parse, nothing raised.
+        with mock.patch.object(LR, "TAIL_BYTES", 10):
+            self.assertEqual(self.ids_in(paths), set())
+
+    def test_the_partial_first_line_is_never_parsed(self) -> None:
+        paths, rows, offsets, size = self.small_ledger("PARTIAL")
+        # The window starts 7 bytes into row 25 (a partial line:  14 complete rows follow), exactly at row 25's
+        # start, and at the newline that ended row 24 (15 complete rows each).
+        for window, complete in [(size - offsets[25] - 7, 14), (size - offsets[25], 15), (size - offsets[25] + 1, 15)]:
+            with mock.patch.object(LR, "TAIL_BYTES", window), self.watch(paths.wakes) as spy:
+                LR._clear_receipt_cache()
+                self.ids_in(paths)
+            self.assertEqual(spy.parsed, complete, window)
+            self.assertEqual(spy.preads, [(size - window - 1, window + 1)], window)
+
+    def test_an_unchanged_ledger_is_opened_once_and_any_change_is_read_afresh(self) -> None:
+        t = self.T0
+        paths = self.seat("CACHE", [self.row(1, 1), self.row(2, 2), self.row(3, 3)], [
+            self.wake("wa", "done", t, [1], adapter="claude"),
+            self.wake("wb", "done", t + 1, [2], adapter="claude"),
+        ])
+        ids = lambda: {m: (r or {}).get("wake_id") for m, r in self.receipts("CACHE").items()}  # noqa: E731
+        with self.watch(paths.wakes) as spy:
+            first, second = ids(), ids()
+            self.assertEqual(first, {1: "wa", 2: "wb", 3: None})
+            self.assertEqual((first, spy.opens), (second, 1))
+            # A caller changing what it was given never changes the next answer.
+            got = LR.wake_receipts(paths, {1})
+            got[1]["state"] = "tampered"
+            self.assertEqual(LR.wake_receipts(paths, {1})[1]["state"], "done")
+            self.assertEqual(spy.opens, 1)
+            # An append, with the mtime put back so that only the size tells the two apart.
+            before = os.stat(paths.wakes)
+            L.append_jsonl(paths.wakes, [self.wake("wc", "done", t + 2, [3], adapter="http")])
+            os.utime(paths.wakes, ns=(before.st_atime_ns, before.st_mtime_ns))
+            self.assertEqual(ids(), {1: "wa", 2: "wb", 3: "wc"})
+            self.assertEqual(spy.opens, 2)
+            # A rewrite in place that keeps the size and the inode, with only the mtime changed.
+            with open(paths.wakes, "r+b") as fh:
+                data = fh.read().replace(b'"wc"', b'"wd"')
+                fh.seek(0)
+                fh.write(data)
+            current = os.stat(paths.wakes)
+            os.utime(paths.wakes, ns=(current.st_atime_ns, before.st_mtime_ns + 5_000_000_000))
+            self.assertEqual(ids()[3], "wd")
+            self.assertEqual(spy.opens, 3)
+            # A replace (what the ledger's prune does):  the same size and the same mtime, a new inode.
+            stamp = os.stat(paths.wakes)
+            fresh = paths.wakes + ".new"
+            fd = os.open(fresh, os.O_WRONLY | os.O_CREAT, 0o600)
+            os.write(fd, pathlib.Path(paths.wakes).read_bytes().replace(b'"wa"', b'"wz"'))
+            os.close(fd)
+            os.utime(fresh, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            os.replace(fresh, paths.wakes)
+            now = os.stat(paths.wakes)
+            self.assertEqual((now.st_size, now.st_mtime_ns), (stamp.st_size, stamp.st_mtime_ns))
+            self.assertNotEqual(now.st_ino, stamp.st_ino)
+            self.assertEqual(ids()[1], "wz")
+            self.assertEqual(spy.opens, 4)
+            # A truncate to the first row, and then to nothing.
+            first_line = len(pathlib.Path(paths.wakes).read_bytes().split(b"\n")[0]) + 1
+            os.truncate(paths.wakes, first_line)
+            self.assertEqual(ids(), {1: "wz", 2: None, 3: None})
+            self.assertEqual(spy.opens, 5)
+            os.truncate(paths.wakes, 0)
+            self.assertEqual(ids(), {1: None, 2: None, 3: None})
+            self.assertEqual(spy.opens, 6)
+            # Rotated away:  no ledger, no receipts, nothing opened;  a new one at the path is read.
+            L.append_jsonl(paths.wakes, [self.wake("wq", "done", t, [2], adapter="claude")])
+            self.assertEqual(ids()[2], "wq")
+            os.rename(paths.wakes, paths.wakes + ".1")
+            opened = spy.opens
+            self.assertEqual(ids(), {1: None, 2: None, 3: None})
+            self.assertEqual(spy.opens, opened)
+            L.append_jsonl(paths.wakes, [self.wake("wr", "done", t, [3], adapter="claude")])
+            self.assertEqual(ids(), {1: None, 2: None, 3: "wr"})
+            self.assertEqual(spy.opens, opened + 1)
+            # Unreadable beats a warm cache, and the cache survives the mode going back.
+            opened = spy.opens
+            os.chmod(paths.wakes, 0o644)
+            self.assertEqual(ids(), {1: None, 2: None, 3: None})
+            os.chmod(paths.wakes, 0o600)
+            self.assertEqual(ids()[3], "wr")
+            self.assertEqual(spy.opens, opened)
+
+    def test_the_cache_holds_one_entry_of_ids_and_receipts_and_never_a_row_or_text(self) -> None:
+        t = self.T0
+        secret = "SECRET MESSAGE TEXT"
+        for seat, message in (("CA", 1), ("CB", 2), ("CC", 3)):
+            self.seat(seat, [self.row(1, message)], [self.wake("w%d" % message, "done", t, [message], adapter="claude",
+                                                                content=secret, body=secret, reason=secret)])
+        self.assertEqual(self.receipts("CA")[1]["wake_id"], "w1")
+        self.assertEqual(self.receipts("CB")[2]["wake_id"], "w2")
+        self.assertEqual(self.receipts("CC")[3]["wake_id"], "w3")
+        key, joined = LR._receipt_cache
+        self.assertTrue(key[0].endswith("/CC/wakes.jsonl"), key)  # one entry:  the ledger last read
+        self.assertEqual(sorted(joined), [3])
+        self.assertEqual({tuple(sorted(r)) for r in joined.values()}, {tuple(sorted(self.SHAPE))})
+        self.assertNotIn(secret, json.dumps(joined) + repr(LR._receipt_cache))
+        # The first seat's entry is gone:  reading it again opens it again.
+        with self.watch(L.SeatPaths(self.root, "CA").wakes) as spy:
+            self.receipts("CA")
+        self.assertEqual(spy.opens, 1)
+
+    def test_for_a_ledger_smaller_than_the_window_the_result_is_the_full_scan_result(self) -> None:
+        t = self.T0
+        rows = [
+            self.wake("wa", "held_back", t, [1, 2], reason="wakes_per_day"),
+            self.wake("wb", "queued", t + 100, [1]),
+            self.wake("wb", "done", t + 110, [1], adapter="http"),
+            self.wake("wa", "surfaced", t + 500, [1, 2], by="wb"),
+            self.wake("ws", "queued", t, [3]),
+            self.wake("wm", "queued", t + 5, [3]),
+            self.wake("wm", "merged", t + 6, [3], merged_into="ws"),
+            self.wake("ws", "accepted", t + 7, [3], adapter="claude"),
+            self.wake("wo", "merged", t + 20, [4], merged_into="ws"),
+            self.wake("wl", "skipped", t + 21, [5], reason="leased", lease="claude-code-1-100"),
+            self.wake("wf", "failed", t + 22, [6], reason="history: SECRET", adapter="Weird Adapter!"),
+            self.wake("wbool", "done", True, [7], adapter=5),
+            self.wake("wnan", "done", float("nan"), [True, "8", 1.5, 8], adapter="claude"),
+            self.wake("has space", "done", t, [9]),
+            dict(self.wake("wdict", "done", t, [10]), trigger_ids={"10": 10}),
+            {"wake_id": 5, "state": "done", "ts": t, "trigger_ids": [11]},
+            {"state": "done", "ts": t, "trigger_ids": [12]},
+            self.wake("wx", "Done!", t + 30, [13], adapter="claude"),
+        ]
+        paths = self.seat("FULL", [self.row(1, 1)], rows)
+        with open(paths.wakes, "a", encoding="utf-8") as fh:
+            fh.write('{"wake_id": "wtorn", "state": "do')
+        ids = set(range(0, 16))
+        self.assertLess(os.stat(paths.wakes).st_size, LR.TAIL_BYTES)
+        found = LR.wake_receipts(paths, ids)
+        self.assertEqual(found, self.full_scan(paths, ids))
+        self.assertEqual(sorted(found), [1, 2, 3, 4, 5, 6, 7, 8, 13])
+        self.assertEqual(found[1]["wake_id"], "wb")
+        # The same ledger through a window that just holds it all is the same answer, and the
+        # real windowed read of a ledger that fits is the full scan, byte for byte of its result.
+        with mock.patch.object(LR, "TAIL_BYTES", os.stat(paths.wakes).st_size):
+            LR._clear_receipt_cache()
+            self.assertEqual(LR.wake_receipts(paths, ids), found)
 
 
 class RecordViewTests(Harness):

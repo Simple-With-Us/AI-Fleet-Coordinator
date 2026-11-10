@@ -18,9 +18,11 @@ surface fences them as untrusted before showing them.  Python 3.11+, standard li
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
+import threading
 import time
 from collections.abc import Mapping
 from typing import Any
@@ -203,6 +205,9 @@ def wake_receipts(paths: L.SeatPaths, message_ids: set[int]) -> dict[int, dict[s
     ledger wake carries a message (a catch-up or a requeue mints a new wake for it, a coalesced wake
     absorbs another) the newest wake wins, and a `merged` wake only when no other carries the id.
 
+    Only the last TAIL_BYTES of the ledger are read (_ledger_receipts), so a wake older than that window
+    gets no receipt, which the item shows as None (the documented fail-soft behaviour).
+
     Read-only:  the ledger is read through its own merged view and no file, cursor or ack is
     written.  An unreadable ledger (open to other users, owned by another user) is refused like
     every other record here, but it never takes the pending read down with it:  every receipt is
@@ -210,22 +215,121 @@ def wake_receipts(paths: L.SeatPaths, message_ids: set[int]) -> dict[int, dict[s
     if not message_ids:
         return {}
     try:
-        views = W.Ledger(_private(paths.wakes, "wake ledger")).wakes()
+        joined = _ledger_receipts(_private(paths.wakes, "wake ledger"))
     except UsageError:
         return {}
+    return {m: dict(joined[m]) for m in message_ids if m in joined}
+
+
+# How much of the end of the wake ledger a pending read looks at.  The ledger keeps 90 days and a busy seat
+# writes a row for every state change, so reading all of it on every poll would cost more each day.
+TAIL_BYTES = 1 << 20
+
+
+class _TailRows:
+    """The rows of a ledger's tail, with the ledger's own merge (`Ledger.wakes`) over them."""
+
+    wakes = W.Ledger.wakes
+
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+
+    def rows(self) -> list[dict[str, Any]]:
+        return self._rows
+
+
+def _tail_rows(fd: int, size: int, window: int) -> list[dict[str, Any]]:
+    """The complete rows inside the last `window` bytes of the file behind `fd`, oldest first.
+
+    One bounded read, never the whole file:  the byte before the window is read too, to tell a row
+    that starts exactly at the window's edge (kept) from the end of one that began before it, which is
+    dropped unparsed.  A torn last line or a line that is not a JSON object is skipped, as read_jsonl does."""
+    if size <= 0:
+        return []
+    start = size - window - 1 if size > window else 0
+    data = b""
+    while len(data) < size - start:
+        chunk = os.pread(fd, size - start - len(data), start + len(data))
+        if not chunk:
+            break
+        data += chunk
+    if size > window:
+        newline = data.find(b"\n")  # the first byte read is the one before the window
+        data = data[newline + 1 :] if newline >= 0 else b""
+    rows: list[dict[str, Any]] = []
+    for line in data.split(b"\n"):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except (ValueError, RecursionError):
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _join(rows: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    """message id -> receipt over ledger rows:  the merged views, then the newest wake per message."""
     best: dict[int, tuple[tuple[bool, float, int], dict[str, Any]]] = {}
-    for order, (wake_id, view) in enumerate(views.items()):
+    for order, (wake_id, view) in enumerate(_TailRows(rows).wakes().items()):
         triggers = view.get("trigger_ids")
         if not _WAKE_ID_RE.fullmatch(wake_id) or not isinstance(triggers, list):
             continue
         born = [t for t in map(_number, (view.get("times") or {}).values()) if t is not None]
         rank = (view.get("state") != "merged", min(born) if born else float("-inf"), order)
         receipt = None
-        for message_id in {_int(i) for i in triggers} & message_ids:
+        for message_id in {_int(i) for i in triggers} - {None}:
             if message_id not in best or rank > best[message_id][0]:
                 receipt = receipt or _receipt(wake_id, view)
                 best[message_id] = (rank, receipt)
     return {message_id: found[1] for message_id, found in best.items()}
+
+
+# One entry, for the ledger last read:  (path, device, inode, size, mtime in ns, window) -> the joined map.
+# The map holds message ids and receipts (four ledger words each), never a row or any text.  An unchanged
+# ledger is not read again between polls;  an append, a truncate and a replace (a new inode, as the
+# ledger's prune makes) each change the key, so each is read afresh.  The read API is threaded, hence the lock.
+_receipt_cache: tuple[tuple[Any, ...], dict[int, dict[str, Any]]] | None = None
+_receipt_lock = threading.Lock()
+
+
+def _clear_receipt_cache() -> None:
+    global _receipt_cache
+    with _receipt_lock:
+        _receipt_cache = None
+
+
+def _ledger_receipts(path: str) -> dict[int, dict[str, Any]]:
+    """The joined map for the ledger at `path`:  from the cache when the file is unchanged, else from a
+    bounded tail read.  A missing, unreadable or rotated-away ledger is an empty map."""
+    global _receipt_cache
+    window = TAIL_BYTES
+    try:
+        info = os.stat(path)
+    except OSError:
+        _clear_receipt_cache()
+        return {}
+    key = (path, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, window)
+    with _receipt_lock:
+        if _receipt_cache is not None and _receipt_cache[0] == key:
+            return _receipt_cache[1]
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return {}
+    try:
+        # The file read is the one stamped:  it may have grown since the stat above.
+        info = os.fstat(fd)
+        key = (path, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, window)
+        joined = _join(_tail_rows(fd, info.st_size, window))
+    except OSError:
+        return {}
+    finally:
+        os.close(fd)
+    with _receipt_lock:
+        _receipt_cache = (key, joined)
+    return joined
 
 
 def pending_inbox_view(
