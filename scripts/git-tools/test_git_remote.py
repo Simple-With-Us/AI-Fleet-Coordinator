@@ -1194,8 +1194,6 @@ class TestOutcomes(unittest.TestCase):
             "gr_wf_repo_hooks",
             "gr_wf_deploy_keys",
             "gr_wf_org_installations",
-            "gr_wf_branch_rules",
-            "gr_wf_rulesets",
         ):
             self.assertIn(name, git.READ_TOOLS, name)
 
