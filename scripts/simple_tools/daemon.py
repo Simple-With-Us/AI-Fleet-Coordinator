@@ -663,7 +663,22 @@ def merge_routine_env(seats, env, home, *, fetch=None):
         return []
     if fetch is None:
         fetch = lambda ns: Z._fetch_from_fleet_secrets(ns, env, home)
-    for name, value in dict(fetch(tuple(names))).items():
+    try:
+        got = dict(fetch(tuple(names)))
+    except Z.CredentialError as exc:
+        # One batched `--only` read fails whole when any name is absent, and a routine's
+        # URL legitimately lives in the daemon environment (the plist) rather than the
+        # store while its key does not (OPS-1048):  fall back to one read per name, so
+        # the names the store holds still land.  An outage fails the same way it did.
+        if "key-absent" not in str(exc):
+            raise
+        got = {}
+        for name in names:
+            try:
+                got.update(dict(fetch((name,))))
+            except Z.CredentialError:
+                continue
+    for name, value in got.items():
         if value:
             env[name] = value
     return names
