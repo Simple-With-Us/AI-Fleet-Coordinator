@@ -287,9 +287,8 @@ def _record_thread_link(env: Mapping[str, str], sid: str) -> None:
 
     if not RA.base_url(env):
         return
-    location = (
-        str(env.get("SESSION_LETTER_LOCATION") or "").strip()
-        or ("mac" if sys.platform == "darwin" else "server")
+    location = str(env.get("SESSION_LETTER_LOCATION") or "").strip() or (
+        "mac" if sys.platform == "darwin" else "server"
     )
     try:
         RA.call(
