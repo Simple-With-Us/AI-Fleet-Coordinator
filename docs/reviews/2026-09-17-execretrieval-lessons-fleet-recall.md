@@ -142,7 +142,7 @@ status is already in the hashed markdown, so a status edit already re-ingests th
 
 **Item 4 details.**  RAG ingests the loose `~/apps/FLEET-UI-COPY.md` as canonical and skips the
 tracked mirror, so a PR alone changes nothing recall serves.  The `AFL` offenders
-(`Fleet-OPS/AGENT-SYNC.md`, `AGENTS.md`, and `ATTACK-MAP.md`, which lists AFL canonical and AFC
+(`Fleet-OPS/FLEET-PROTOCOL.md`, `AGENTS.md`, and `ATTACK-MAP.md`, which lists AFL canonical and AFC
 retired at rerank 0.91 against 0.015 for the corrective board row) live in the `fleet-ops` repo
 and need a cross-repo row.  The conflict sweep belongs as a step in the existing weekly Oracle
 routine "Fleet RAG weekly health + recall eval," not a new job.

@@ -31,7 +31,7 @@ For each bot in ROSTER it:
     is stored in Infisical /zulip,
   - skips a name that belongs to a non-bot user,
   - writes <out-dir>/<file>-zuliprc (mode 600, atomically) for each new or regenerated bot.
-    --out-dir defaults to ~/.agent-sync/provisioned/ (created mode 700).  An existing file is
+    --out-dir defaults to ~/.simple-tools/provisioned/ (created mode 700).  An existing file is
     never overwritten without --force, and such a bot is skipped BEFORE anything is created
     or rotated, so a key can never be lost to a kept file.  Nothing is ever written under
     the retired credentials folder,
@@ -61,11 +61,11 @@ import urllib.request
 # The fleet's coordination channel, from the runtime that owns it:  a provisioned bot has to be
 # subscribed to the channel the seats actually use, and a name written here goes stale the day
 # the realm renames it.  This script runs from scripts/, which is where the package lives.
-from agent_sync.zulip import default_channel
+from simple_tools.zulip import default_channel
 
 REALM = "https://simplewithus.zulipchat.com"
 ADMIN_FOLDER = "/zulip_operator"
-DEFAULT_OUT_DIR = "~/.agent-sync/provisioned"
+DEFAULT_OUT_DIR = "~/.simple-tools/provisioned"
 ROLE_OWNER, ROLE_ADMIN = 100, 200
 
 
@@ -134,7 +134,7 @@ ROSTER = [
         "OpenCode",
         "opencode",
         "OpenCode",
-    ),  # the stem breaks the Title Case rule: SEAT_FILE_OVERRIDES in agent_sync/zulip.py
+    ),  # the stem breaks the Title Case rule: SEAT_FILE_OVERRIDES in simple_tools/zulip.py
     ("Rob (Muse)", "muse-assist", "MA"),
     # BotFleet role bots
     ("BF-Builder", "bf-builder", "BF-Builder"),
@@ -166,7 +166,7 @@ def call(email, key, method, path, data=None):
         url,
         data=body,
         method=method,
-        headers={"Authorization": auth, "User-Agent": "agent-sync-provision/2"},
+        headers={"Authorization": auth, "User-Agent": "simple-tools-provision/2"},
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:

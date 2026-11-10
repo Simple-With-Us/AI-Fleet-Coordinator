@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
+import errno
 import io
 import json
 import multiprocessing
@@ -798,9 +799,9 @@ class WatcherInstall(WatchReview):
         self.assertIn(W.board_env(P.HOST_SERVER), allowed)
         self.assertIn(W.board_env(P.HOST_MAC), allowed)
 
-    def test_the_templates_carry_the_bearer_locator_and_registry(self) -> None:
+    def test_the_templates_carry_the_bearer_file_and_registry(self) -> None:
         plist = (PKG / "templates" / "com.jay.lane-placement-watch.plist").read_text(encoding="utf-8")
-        self.assertIn("SIMPLE_BOARD_BEARER_LOCATOR", plist)
+        self.assertIn("SIMPLE_BOARD_BEARER_FILE", plist)
         self.assertIn("FLEET_APPS_JSON", plist)
         unit = (REPO / "scripts" / "systemd" / "lane-placement-watch.service").read_text(encoding="utf-8")
         self.assertIn("placement-watch.conf", unit)
@@ -813,7 +814,7 @@ class WatcherInstall(WatchReview):
         self.assertEqual(rc, W.EXIT_FILING)
         status = json.loads(Path(self.state, W.STATUS_NAME).read_text(encoding="utf-8"))
         self.assertFalse(status["ok"])
-        self.assertIn("SIMPLE_BOARD_BEARER_LOCATOR", " ".join(status["errors"]))
+        self.assertIn("SIMPLE_BOARD_BEARER_FILE", " ".join(status["errors"]))
 
     def test_an_unreadable_registry_is_a_status_and_not_a_crash(self) -> None:
         self.vars["FLEET_APPS_JSON"] = self.p("missing.json")
@@ -1704,9 +1705,9 @@ class FirstInstall(WatchRoundTwo):
             self.assertEqual(self.run_watch(self.one(self.p("foo")), run), W.EXIT_FILING)
         self.assertEqual(len(run.calls), sent)
 
-    def test_the_readme_names_the_locator_before_the_first_apply(self) -> None:
+    def test_the_readme_names_the_bearer_file_before_the_first_apply(self) -> None:
         text = (PKG / "README.md").read_text(encoding="utf-8")
-        self.assertLess(text.index("export " + W.BEARER_LOCATOR + "="), text.index("--apply --accept-burst"))
+        self.assertLess(text.index("export " + W.BEARER_FILE + "="), text.index("--apply --accept-burst"))
 
 
 class CliExits(WatchRoundTwo):
@@ -1760,7 +1761,7 @@ class CliExits(WatchRoundTwo):
         self.assertEqual(len(run.named("simple-chat", "dm")), 2)
 
     def test_the_words_this_relies_on_are_in_the_clis(self) -> None:
-        text = (REPO / "scripts" / "agent_sync" / "cli.py").read_text(encoding="utf-8")
+        text = (REPO / "scripts" / "simple_tools" / "cli.py").read_text(encoding="utf-8")
         self.assertGreaterEqual(text.count(W.CHAT_MAYBE_SENT), 2)
         self.assertIn("(already filed; unchanged)", (REPO / "scripts" / "linear-board" / "board").read_text(encoding="utf-8"))
 
@@ -1788,13 +1789,13 @@ class BoardDedupe(WatchRoundTwo):
                 return res
             return super().__call__(argv, **kw)
 
-    UID = "placement-watch:mac:claude|BotFleet"
+    UID = "placement-watch:mac:misplaced"
 
     def test_a_retried_filing_puts_the_new_rows_in_a_comment(self) -> None:
         run = self.Board({self.UID: "AFC-700"})
         run.issue = 700
         self.assertEqual(self.run_watch(self.one(self.p("foo"), branch="claude/x"), run), W.EXIT_OK)
-        self.assertEqual(self.state_doc()["groups"]["claude|BotFleet"]["issue"], "AFC-700")
+        self.assertEqual(self.state_doc()["groups"]["misplaced"]["issue"], "AFC-700")
         self.assertEqual(run.named("simple-chat", "post"), [])
         comment = run.named("simple-board", "comment")[0]
         self.assertIn("foo", comment[comment.index("--text") + 1])
@@ -1804,7 +1805,7 @@ class BoardDedupe(WatchRoundTwo):
         run.issue = 800
         run.closed.add("AFC-700")
         self.assertEqual(self.run_watch(self.one(self.p("foo"), branch="claude/x"), run), W.EXIT_OK)
-        group = self.state_doc()["groups"]["claude|BotFleet"]
+        group = self.state_doc()["groups"]["misplaced"]
         self.assertEqual((group["issue"], group["generation"]), ("AFC-801", 1))
         self.assertEqual(run.named("simple-board", "comment"), [])
         self.assertTrue(any("foo" in body for body in run.bodies))
@@ -1824,31 +1825,46 @@ class BoardDedupe(WatchRoundTwo):
 
 
 class EveryRowIsSent(WatchRoundTwo):
-    def test_past_the_display_limit_the_rows_go_in_comments(self) -> None:
+    def test_every_row_of_a_filing_is_in_its_body(self) -> None:
         run = Run()
         self.assertEqual(self.run_burst(self.many(90), run), W.EXIT_OK)
-        sent = run.bodies[0] + "".join(c[c.index("--text") + 1] for c in run.named("simple-board", "comment"))
         for i in range(90):
-            self.assertIn(f"m{i:02d}", sent)
-        self.assertEqual(len(run.named("simple-board", "comment")), 2)
+            self.assertIn(f"m{i:02d}", run.bodies[0])
+        self.assertEqual(run.named("simple-board", "comment"), [])
         self.assertEqual(len(self.remembered()), 90)
 
+    def test_a_later_batch_past_the_comment_limit_goes_in_several_comments(self) -> None:
+        run = Run()
+        self.run_watch(self.one(self.p("first")), run)
+        self.assertEqual(self.run_burst(self.many(90), run), W.EXIT_OK)
+        comments = run.named("simple-board", "comment")
+        sent = "".join(c[c.index("--text") + 1] for c in comments)
+        for i in range(90):
+            self.assertIn(f"m{i:02d}", sent)
+        self.assertEqual(len(comments), 3)
+
     def test_a_refused_comment_remembers_only_what_went_out(self) -> None:
-        run = Run(code=4, verb="comment")
+        run = Run()
+        self.run_watch(self.one(self.p("first")), run)
+        run.code, run.verb = 4, "comment"
         self.run_burst(self.many(60), run)
-        self.assertEqual(len(self.remembered()), 40)
+        self.assertEqual({k for k in self.remembered() if "/m" in k}, set())
         run.code = 0
         self.run_burst(self.many(60), run)
-        self.assertEqual(len(self.remembered()), 60)
+        self.assertEqual(len([k for k in self.remembered() if "/m" in k]), 60)
 
-    def test_a_dm_past_its_limit_tells_the_rest_next_time(self) -> None:
-        paths = [os.path.join(self.code, f"R{i:02d}") for i in range(14)]
+    def test_one_message_names_every_row(self) -> None:
+        paths = [os.path.join(self.code, f"R{i:02d}") for i in range(16)]
         report = self.report([TW.anomaly(p) for p in paths], [{"path": p, "owner_repo": "Simple-With-Us/BotFleet", "unpushed": 1} for p in paths])
         run = Run()
         self.run_watch(report, run)
-        self.assertEqual(len(self.state_doc()["dm_paths"]), 10)
         self.run_watch(report, run)
-        self.assertEqual(len(self.state_doc()["dm_paths"]), 14)
+        self.assertEqual(len(run.named("simple-chat", "dm")), 1)
+        self.assertEqual(len(self.state_doc()["dm_paths"]), 16)
+        message = next(b for b in run.bodies if "From the placement watcher" in b)
+        for i in range(16):
+            self.assertIn(f"R{i:02d}", message)
+        self.assertNotIn("next message", message)
 
 
 class BadStateShapes(WatchRoundTwo):
@@ -1936,6 +1952,385 @@ class EventLogBoundary(unittest.TestCase):
             self.assertNotIn(0, got)
 
 
+class CodeCloneWorkAge(TD.Case):
+    def clone_with_branch(self, committed: str) -> None:
+        TD.git(["remote", "set-url", "origin", str(self.upstream)], self.repo)
+        TD.git(["fetch", "-q", "origin"], self.repo)
+        TD.git(["remote", "set-head", "origin", "main"], self.repo)
+        TD.git(["checkout", "-q", "-b", "wip"], self.repo)
+        env = {"HOME": str(self.repo), "PATH": os.environ["PATH"], "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e", "GIT_COMMITTER_NAME": "t",
+               "GIT_COMMITTER_EMAIL": "t@e", "GIT_COMMITTER_DATE": committed, "GIT_AUTHOR_DATE": committed}
+        subprocess.run([TD.GIT, "commit", "-q", "--allow-empty", "-m", "side"], cwd=self.repo, check=True, capture_output=True, env=env)
+        TD.git(["checkout", "-q", "main"], self.repo)
+
+    def rows_of(self) -> tuple:
+        rep = self.report()
+        registry = L.load_registry(env=self.vars)
+        found = W.findings_from_report(rep, L.make_roots(str(self.home), self.vars, registry=registry), registry)
+        return [w for w in rep["placement_warnings"] if w["type"] == "CODE-WORK"], found
+
+    def test_a_clone_with_only_old_branches_is_not_urgent_and_stays_in_the_issue(self) -> None:
+        self.clone_with_branch("2020-01-01T00:00:00+00:00")
+        rows, found = self.rows_of()
+        self.assertTrue(rows[0]["old_branches_only"])
+        self.assertRegex(rows[0]["detail"], r"newest \d+ days old")
+        self.assertEqual([(f.kind, f.unpushed_in_code) for f in found], [("CODE-WORK", False)])
+
+    def test_a_recent_branch_is_urgent(self) -> None:
+        self.clone_with_branch(dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"))
+        rows, found = self.rows_of()
+        self.assertFalse(rows[0]["old_branches_only"])
+        self.assertEqual([f.unpushed_in_code for f in found], [True])
+
+    def test_a_stash_beside_old_branches_is_urgent(self) -> None:
+        self.clone_with_branch("2020-01-01T00:00:00+00:00")
+        (self.repo / "f").write_text("x", encoding="utf-8")
+        TD.git(["add", "f"], self.repo)
+        TD.git(["stash", "-q"], self.repo)
+        self.assertEqual([f.unpushed_in_code for f in self.rows_of()[1]], [True])
+
+    def test_an_age_that_could_not_be_read_is_urgent(self) -> None:
+        self.clone_with_branch("2020-01-01T00:00:00+00:00")
+        with mock.patch.object(D, "_newest_unpushed_age", return_value=None):
+            self.assertEqual([f.unpushed_in_code for f in self.rows_of()[1]], [True])
+
+    def test_a_report_from_an_older_doctor_stays_urgent(self) -> None:
+        report = {"placement_warnings": [{"type": "CODE-WORK", "path": str(self.code / "R"), "detail": "1 commit(s) on other branches"}]}
+        registry = L.load_registry(env=self.vars)
+        found = W.findings_from_report(report, L.make_roots(str(self.home), self.vars, registry=registry), registry)
+        self.assertEqual([f.unpushed_in_code for f in found], [True])
+
+
+class OwnerMessageLimit(WatchRoundTwo):
+    def clones(self, *names: str) -> dict:
+        paths = [os.path.join(self.code, n) for n in names]
+        report = self.report([])
+        report["placement_warnings"] = [{"type": "CODE-WORK", "path": p, "detail": "a stash"} for p in paths]
+        return report
+
+    def test_a_new_set_within_the_day_waits_then_goes_as_one(self) -> None:
+        run = Run()
+        self.run_watch(self.clones("A"), run)
+        later = TW.NOW + dt.timedelta(hours=2)
+        self.run_watch({**self.clones("A", "B"), "generated_at": later.isoformat()}, run, now=later)
+        self.assertEqual(len(run.named("simple-chat", "dm")), 1)
+        next_day = TW.NOW + dt.timedelta(hours=25)
+        self.run_watch({**self.clones("A", "B", "C"), "generated_at": next_day.isoformat()}, run, now=next_day)
+        self.assertEqual(len(run.named("simple-chat", "dm")), 2)
+        message = [b for b in run.bodies if "From the placement watcher" in b][-1]
+        self.assertIn("{code}/B", message)
+        self.assertIn("{code}/C", message)
+        self.assertNotIn("{code}/A", message)
+
+    def test_a_repeat_leak_shares_the_day_with_unpushed_work(self) -> None:
+        run = Run()
+        self.run_watch(self.one(self.p("leak"), branch="claude/x"), run)
+        much_later = TW.NOW + dt.timedelta(days=8)
+        report = self.clones("A")
+        report["placement_anomalies"] = [TW.anomaly(self.p("leak")), TW.anomaly(self.p("leak2"))]
+        report["checkouts"] = [{"path": self.p(n), "owner_repo": "Simple-With-Us/BotFleet", "branch": "claude/x"} for n in ("leak", "leak2")]
+        report["generated_at"] = much_later.isoformat()
+        self.run_watch(report, run, now=much_later)
+        self.assertEqual(len(run.named("simple-chat", "dm")), 1)
+        message = next(b for b in run.bodies if "From the placement watcher" in b)
+        self.assertIn("{code}/A", message)
+        self.assertIn("{home}/leak2", message)
+
+    def test_a_code_clone_with_old_branches_never_reaches_the_owner_however_late_it_appears(self) -> None:
+        run = Run()
+        first = self.clones("A")
+        first["placement_warnings"][0].update(detail="1 commit(s) on other branches, the newest 90 days old", old_branches_only=True)
+        self.run_watch(first, run)
+        much_later = TW.NOW + dt.timedelta(days=8)
+        later = {**self.clones("A", "B"), "generated_at": much_later.isoformat()}
+        for row in later["placement_warnings"]:
+            row.update(detail="1 commit(s) on other branches, the newest 90 days old", old_branches_only=True)
+        self.run_watch(later, run, now=much_later)
+        self.assertEqual(run.named("simple-chat", "dm"), [])
+        self.assertEqual(self.state_doc()["repeat_pending"], {})
+
+    def test_a_state_file_from_before_the_regrouping_keeps_its_leak_date(self) -> None:
+        path = Path(self.state, W.STATE_NAME)
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"groups": {"claude|BotFleet": {"first_seen": "2026-10-01T00:00:00+00:00", "issue": "AFC-1", "paths": {}}}}), encoding="utf-8")
+        run = Run()
+        self.run_watch(self.one(self.p("new"), branch="claude/x"), run)
+        self.assertEqual(len(run.named("simple-chat", "dm")), 1)
+
+    def test_seven_days_count_per_leak_not_per_rule_class(self) -> None:
+        run = Run()
+        self.run_watch(self.one(self.p("old"), branch="claude/x"), run)
+        much_later = TW.NOW + dt.timedelta(days=8)
+        report = self.report([TW.anomaly(self.p("old")), TW.anomaly(self.p("other"))],
+                             [{"path": self.p("old"), "owner_repo": "Simple-With-Us/BotFleet", "branch": "claude/x"},
+                              {"path": self.p("other"), "owner_repo": "Simple-With-Us/DealDex", "branch": "codex/y"}], age_hours=-192)
+        self.run_watch(report, run, now=much_later)
+        self.assertEqual(run.named("simple-chat", "dm"), [])
+
+    def test_the_limit_outlives_a_reset(self) -> None:
+        run = Run()
+        self.run_watch(self.clones("A"), run)
+        Path(self.state, W.STATE_NAME).write_text("{not json", encoding="utf-8")
+        filer = W.Filer("CLAUDE", "s", "Mac", run=run)
+        W.run_once(home=self.home, env=self.vars, apply=False, seat="CLAUDE", session="s", report_path=None, verify_hooks=False, stable=None,
+                   now=TW.NOW, build_report=lambda *a, **k: self.clones("A", "B"), filer=filer, out=io.StringIO(), reset_state=True)
+        self.assertEqual(len(run.named("simple-chat", "dm")), 1)
+
+    def test_a_message_too_long_for_zulip_counts_what_it_cut(self) -> None:
+        rows = [f"- `{{code}}/R{i:04d}`: code-work, {'x' * 100}" for i in range(200)]
+        fitted = W._fit_message("From the placement watcher.\n\n200 checkout(s):\n" + "\n".join(rows) + "\n")  # noqa: SLF001
+        self.assertLessEqual(len(fitted), 10000)
+        shown = sum(line.startswith("- `") for line in fitted.splitlines())
+        self.assertIn(f"and {200 - shown} more", fitted)
+
+
+class HeldInDryRun(WatchRoundTwo):
+    def dry(self, report: dict | None = None, now=TW.NOW, **kw) -> int:
+        def build(*_a, **_k):
+            if report is None:
+                raise OSError("no")
+            return report
+
+        return W.run_once(home=self.home, env=self.vars, apply=False, seat="CLAUDE", session="s", report_path=None, verify_hooks=False,
+                          stable=None, now=now, build_report=build, out=io.StringIO(), **kw)
+
+    def status(self) -> dict:
+        return json.loads(Path(self.state, W.STATUS_NAME).read_text(encoding="utf-8"))
+
+    def test_a_dry_run_writes_a_status_marked_held(self) -> None:
+        self.assertEqual(self.dry(self.one(self.p("foo"))), W.EXIT_OK)
+        status = self.status()
+        self.assertTrue(status["held"])
+        self.assertTrue(status["ok"])
+        self.assertFalse(status["applied"])
+        self.assertEqual((status["findings"], status["new"]), (1, 1))
+        self.assertFalse(Path(self.state, W.STATE_NAME).exists())
+
+    def test_an_applying_run_is_not_held(self) -> None:
+        self.run_watch(self.one(self.p("foo")), Run())
+        self.assertFalse(self.status()["held"])
+
+    def test_a_dry_run_with_no_registry_still_says_held(self) -> None:
+        self.vars["FLEET_APPS_JSON"] = self.p("missing.json")
+        self.assertEqual(self.dry(self.report([])), W.EXIT_STALE)
+        self.assertTrue(self.status()["held"])
+        self.assertFalse(self.status()["ok"])
+
+    def test_a_dry_run_keeps_the_lost_state_alarm(self) -> None:
+        run = Run()
+        self.run_watch(self.one(self.p("foo")), run)
+        later = TW.NOW + dt.timedelta(hours=4)
+        os.unlink(Path(self.state, W.STATE_NAME))
+        self.dry(self.report([]), now=later)
+        self.assertTrue(self.status()["state_written"])
+        sent = len(run.calls)
+        self.assertEqual(self.run_watch(self.one(self.p("foo")), run, now=later), W.EXIT_FILING)
+        self.assertEqual(len(run.calls), sent)
+
+    def test_a_dry_run_leaves_an_applying_watchers_recent_status_alone(self) -> None:
+        self.run_watch(self.one(self.p("foo")), Run())
+        before = self.status()
+        self.dry(self.report([]), now=TW.NOW + dt.timedelta(hours=1))
+        self.assertEqual(self.status(), before)
+
+    def test_a_dry_run_replaces_an_applying_status_gone_stale_and_says_when_it_last_acted(self) -> None:
+        self.run_watch(self.one(self.p("foo")), Run())
+        acted = self.status()["at"]
+        later = TW.NOW + dt.timedelta(hours=4)
+        self.dry(self.report([]), now=later)
+        self.assertTrue(self.status()["held"])
+        self.assertEqual(self.status()["last_acting_run"], acted)
+        self.dry(self.report([]), now=later + dt.timedelta(hours=5))
+        self.assertEqual(self.status()["last_acting_run"], acted)
+
+    def test_a_dry_run_does_not_hide_a_failed_acting_run(self) -> None:
+        self.assertEqual(self.run_watch(self.one(self.p("foo")), Run(code=1, verb="file")), W.EXIT_FILING)
+        before = self.status()
+        self.assertTrue(before["errors"])
+        self.dry(self.report([]), now=TW.NOW + dt.timedelta(hours=1))
+        self.assertEqual(self.status(), before)
+
+    def test_a_dry_run_with_no_acting_run_before_it_names_none(self) -> None:
+        self.dry(self.report([]))
+        self.assertEqual(self.status()["last_acting_run"], "")
+
+
+class UnreadableRoot(WatchRoundTwo):
+    """launchd has no permission for the external disk, so a sweep finds nothing there.  That has to read as partial and forget nothing."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.ext = Path(self.home, "ExtDisk", "Lanes")
+        (self.ext / "Ex" / "clone").mkdir(parents=True)
+        Path(self.home, "apps", "lanes").mkdir(parents=True)
+        os.symlink(self.ext / "Ex", Path(self.home, "apps", "lanes", "Ex"))
+        self.vars["FLEET_LANES_EXTERNAL_ROOT"] = str(self.ext)
+        self.path = str(self.ext / "Ex" / "clone")
+
+    def partial(self) -> dict:
+        report = self.report([])
+        report["unreadable_roots"] = [{"path": str(self.ext), "error": "Operation not permitted"}]
+        return report
+
+    def status(self) -> dict:
+        return json.loads(Path(self.state, W.STATUS_NAME).read_text(encoding="utf-8"))
+
+    def test_it_is_a_distinct_status_and_exit_not_a_smaller_clean_result(self) -> None:
+        self.assertEqual(self.run_watch(self.partial(), Run()), W.EXIT_UNREADABLE)
+        status = self.status()
+        self.assertFalse(status["ok"])
+        self.assertEqual(status["coverage"], W.COVERAGE_UNREADABLE)
+        self.assertEqual(status["unreadable_roots"][0]["error"], "Operation not permitted")
+        self.assertNotIn(str(self.ext), json.dumps(status))
+        self.assertEqual(status["errors"], [])
+
+    def test_a_readable_run_says_full(self) -> None:
+        self.assertEqual(self.run_watch(self.report([]), Run()), W.EXIT_OK)
+        self.assertEqual(self.status()["coverage"], W.COVERAGE_FULL)
+
+    def test_a_filing_failure_still_outranks_it(self) -> None:
+        partial = self.partial()
+        partial["placement_anomalies"] = [TW.anomaly(self.p("foo"))]
+        self.assertEqual(self.run_watch(partial, Run(code=1, verb="file")), W.EXIT_FILING)
+
+    def test_a_dry_run_reports_it_too(self) -> None:
+        out = io.StringIO()
+        rc = W.run_once(home=self.home, env=self.vars, apply=False, seat="CLAUDE", session="s", report_path=None, verify_hooks=False,
+                        stable=None, now=TW.NOW, build_report=lambda *a, **k: self.partial(), out=out)
+        self.assertEqual(rc, W.EXIT_UNREADABLE)
+        self.assertIn("partial, not clean", out.getvalue())
+        self.assertTrue(self.status()["held"])
+
+    def test_findings_on_a_mounted_but_unreadable_root_are_not_forgotten(self) -> None:
+        """The disk is there and answers `isdir`, as an Operation not permitted disk does, so only the sweep's word says it was not seen."""
+        run = Run()
+        self.run_watch(self.one(self.path), run)
+        self.assertEqual(self.run_watch(self.partial(), run), W.EXIT_UNREADABLE)
+        self.assertEqual(self.remembered(), {f"{self.path}|misplaced"})
+        self.assertEqual(self.status()["out_of_sight"], 1)
+        sent = len([c for c in run.calls if c[1] != "show"])
+        self.assertEqual(self.run_watch(self.one(self.path), run), W.EXIT_OK)
+        self.assertEqual(len([c for c in run.calls if c[1] != "show"]), sent)
+
+    def test_a_lanes_link_into_it_is_not_forgotten_either(self) -> None:
+        link = str(Path(self.home, "apps", "lanes", "Ex", "clone"))
+        run = Run()
+        self.run_watch(self.one(link), run)
+        self.assertEqual(self.run_watch(self.partial(), run), W.EXIT_UNREADABLE)
+        self.assertEqual(self.remembered(), {f"{link}|misplaced"})
+
+    def test_a_finding_elsewhere_is_still_forgotten(self) -> None:
+        run = Run()
+        self.run_watch(self.one(self.p("foo")), run)
+        self.run_watch(self.partial(), run)
+        self.assertEqual(self.remembered(), set())
+
+
+class DoctorSaysARootIsUnreadable(TD.Case):
+    def setUp(self) -> None:
+        super().setUp()
+        self.ext = self.home / "ExtDisk" / "Lanes"
+        self.ext.mkdir(parents=True)
+        self.vars["FLEET_LANES_EXTERNAL_ROOT"] = str(self.ext)
+
+    def refusing(self, err: int, text: str):
+        real = os.scandir
+        ext = str(self.ext)
+
+        def scandir(path="."):
+            if os.fspath(path) == ext:
+                raise OSError(err, text, ext)
+            return real(path)
+
+        return mock.patch.object(D.os, "scandir", scandir)
+
+    def test_operation_not_permitted_is_named_in_the_report(self) -> None:
+        with self.refusing(errno.EPERM, "Operation not permitted"):
+            rep = self.report()
+        self.assertEqual(rep["unreadable_roots"], [{"path": str(self.ext), "error": "Operation not permitted"}])
+        self.assertTrue(any("cannot be read" in w for w in rep["warnings"]))
+
+    def test_an_unmounted_disk_is_not_called_unreadable(self) -> None:
+        with self.refusing(errno.ENOENT, "No such file or directory"):
+            self.assertEqual(self.report()["unreadable_roots"], [])
+
+    def test_a_readable_root_is_not_called_unreadable(self) -> None:
+        self.assertEqual(self.report()["unreadable_roots"], [])
+
+    def test_the_watcher_acts_on_a_real_report(self) -> None:
+        with self.refusing(errno.EPERM, "Operation not permitted"):
+            rep = self.report()
+        roots = L.make_roots(str(self.home), self.vars, registry=L.load_registry(env=self.vars))
+        kept = {"groups": {"misplaced": {"paths": {f"{self.ext}/Ex/gone|misplaced": "t"}}}}
+        held = W._forget_resolved(kept, [], roots, [row["path"] for row in rep["unreadable_roots"]])  # noqa: SLF001
+        self.assertEqual(held, 1)
+
+
+class VerifyUnderLoad(WatchRoundTwo):
+    class Verify:
+        """`install_tools verify` as a script:  the first answer, then what each platform says alone."""
+
+        def __init__(self, first: str, alone: dict) -> None:
+            self.first, self.alone, self.calls = first, alone, []
+
+        def __call__(self, argv, **_kw):
+            targets = argv[6:]  # after the interpreter, its flags, the code and the stable folder
+            self.calls.append(targets)
+            out = self.first if len(self.calls) == 1 else self.alone.get(targets[0], "")
+            return SimpleNamespace(returncode=1 if "FAIL" in out else 0, stdout=out)
+
+    TIMEOUT = "FAIL  claude       deny/minimal-path        timed out after 5s; exit=None stdout=\n"
+    GONE = "FAIL  codex        config                   no lane-guard-hook hook under PreToolUse in /x/hooks.json\n"
+    BROKEN = "FAIL  grok         deny/full-path           exit 1, expected 0; exit=1 stdout=\n"
+
+    def rows(self, verify) -> list:
+        return W.hook_findings(self.home, L.make_roots(self.home, self.vars), "mac", "/stable", run=verify)
+
+    def test_a_probe_that_passes_alone_is_not_reported(self) -> None:
+        verify = self.Verify(self.TIMEOUT, {"claude": "PASS  claude  deny/minimal-path\n"})
+        self.assertEqual([f for f in self.rows(verify) if f.kind.startswith("VERIFY")], [])
+
+    def test_the_retry_is_one_platform_at_a_time(self) -> None:
+        verify = self.Verify(self.TIMEOUT + self.GONE, {})
+        self.rows(verify)
+        self.assertEqual(verify.calls[1:], [["claude"], ["codex"]])
+        self.assertEqual(len(verify.calls[0]), len(W.VERIFY_TARGETS))
+
+    def test_a_clean_first_answer_is_not_retried(self) -> None:
+        verify = self.Verify("PASS  claude  x\n", {})
+        self.rows(verify)
+        self.assertEqual(len(verify.calls), 1)
+
+    def test_timed_out_and_missing_and_broken_are_told_apart(self) -> None:
+        verify = self.Verify(self.TIMEOUT + self.GONE + self.BROKEN, {"claude": self.TIMEOUT, "codex": self.GONE, "grok": self.BROKEN})
+        got = {f.public: (f.kind, f.detail) for f in self.rows(verify) if f.kind.startswith("VERIFY")}
+        self.assertEqual(got["claude deny/minimal-path"], (W.VERIFY_TIMEOUT, "install_tools verify: probe timed out, twice"))
+        self.assertEqual(got["codex config"], ("VERIFY-FAIL", "install_tools verify: hook missing, twice"))
+        self.assertEqual(got["grok deny/full-path"], ("VERIFY-FAIL", "install_tools verify: hook failed its probe, twice"))
+
+    def test_a_row_keeps_a_name_with_a_space_and_no_detail_leaves_it(self) -> None:
+        row = W._verify_row("FAIL  claude       shim lane-guard-hook     /private/thing is missing")  # noqa: SLF001
+        self.assertEqual((row.target, row.name, row.problem), ("claude", "shim lane-guard-hook", "hook missing"))
+        verify = self.Verify(self.GONE, {"codex": self.GONE})
+        found = next(f for f in self.rows(verify) if f.kind == "VERIFY-FAIL")
+        self.assertNotIn("/x/hooks.json", found.public + found.detail)
+
+    def test_a_retry_that_cannot_run_keeps_the_first_answer(self) -> None:
+        calls = []
+
+        def verify(argv, **_kw):
+            calls.append(argv)
+            if len(calls) == 1:
+                return SimpleNamespace(returncode=1, stdout=self.GONE)
+            raise subprocess.TimeoutExpired("verify", 180)
+
+        self.assertEqual(W.verify_failures("/s", ("codex",), run=verify), ["codex config"])
+
+    def test_a_row_only_the_retry_saw_is_not_reported(self) -> None:
+        verify = self.Verify(self.GONE, {"codex": "FAIL  codex        other                    x\n"})
+        self.assertEqual(W.verify_failures("/s", ("codex",), run=verify), [])
+
+
 class CodeCloneWork(TD.Case):
     def on_default(self) -> None:
         TD.git(["remote", "set-url", "origin", str(self.upstream)], self.repo)
@@ -1978,7 +2373,7 @@ class CodeCloneWork(TD.Case):
 
 
 class OneMessagePerClone(WatchRoundTwo):
-    def test_many_clones_are_one_issue_and_one_message_each(self) -> None:
+    def test_many_clones_are_one_issue_and_one_message(self) -> None:
         paths = [os.path.join(self.code, f"R{i}") for i in range(3)]
         report = self.report([])
         report["placement_warnings"] = [{"type": "CODE-WORK", "path": p, "detail": "a stash"} for p in paths]
@@ -2037,7 +2432,7 @@ class WatcherAndBrokenFiles(WatchRoundTwo):
         report["placement_anomalies"].insert(0, {"type": "EXCEPTIONS-UNUSABLE", "path": P.EXCEPTIONS_NAME, "detail": "broken"})
         run = Run()
         self.assertEqual(self.run_watch(report, run), W.EXIT_STALE)
-        self.assertEqual(list(self.state_doc()["groups"]), ["exceptions-file|AI-Fleet-Coordinator"])
+        self.assertEqual(list(self.state_doc()["groups"]), ["exceptions-file"])
         self.assertIn("Unusable", run.named("simple-board", "file")[0][3])
         self.assertEqual(self.state_doc()["events_since"], "")
 
@@ -2072,7 +2467,8 @@ class RepeatLeakRate(WatchRoundTwo):
     def old_group(self) -> None:
         path = Path(self.state, W.STATE_NAME)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"groups": {"claude|BotFleet": {"first_seen": "2026-10-01T00:00:00+00:00", "issue": "AFC-1", "paths": {}}}}),
+        path.write_text(json.dumps({"groups": {"misplaced": {"first_seen": "2026-10-01T00:00:00+00:00", "issue": "AFC-1", "paths": {},
+                                                                 "leaks": {"claude|BotFleet": "2026-10-01T00:00:00+00:00"}}}}),
                         encoding="utf-8")
 
     def test_new_paths_in_an_old_group_message_the_owner_once_a_day(self) -> None:
@@ -2094,7 +2490,7 @@ class RepeatLeakRate(WatchRoundTwo):
         run = Run(code=3, verb="dm")
         self.event(self.p("a"))
         self.run_watch(self.report([]), run)
-        self.assertEqual(self.state_doc()["last_repeat_dm"], "")
+        self.assertEqual(self.state_doc()["last_owner_dm"], "")
         run.code = 0
         self.run_watch(self.report([]), run)
         self.assertEqual(self.state_doc()["repeat_pending"], {})

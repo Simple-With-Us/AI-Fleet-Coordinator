@@ -9,7 +9,7 @@ extend-exclude = [
     "scripts/fleet_rag/tests",
     "scripts/fleet_facts/tests",
     "scripts/fleet_lanes/tests",
-    "scripts/agent_sync/tests",
+    "scripts/simple_tools/tests",
     "scripts/fleet-work-backup",
     "scripts/needs_owner/tests",
     "scripts/open_loops/tests",
@@ -39,12 +39,18 @@ extend-exclude = [
 # under /usr/bin/python3 (3.9).  An automated fix once rewrote `timezone.utc` to the 3.11+
 # `datetime.UTC` here,  which does not import on that interpreter.
 "scripts/fleet_knobs/**" = "py39"
+"scripts/fleet_view/**" = "py39"
 "scripts/fleet-ops-control.py" = "py39"
 "scripts/fleet-mac-services.py" = "py39"
 "scripts/fleet-worker-health.py" = "py39"
 "scripts/fleet-tools-doctor.py" = "py39"
 "scripts/fleet-server-status.py" = "py39"
 "scripts/fleet-vm-status.py" = "py39"
+# Muster's build helpers run under the Mac's /usr/bin/python3 (3.9) from build_and_run.sh.
+"muster/script/**" = "py39"
+# fleet-rag already requires Python 3.10 syntax, but the Mac installer registers it as plain
+# `python3`; keep it off the 3.11-only datetime.UTC spelling so a 3.10 consumer still runs.
+"scripts/fleet_rag/**" = "py310"
 
 [lint.per-file-ignores]
 "scripts/fleet_lanes/**" = ["UP006", "UP007", "UP017", "UP035", "UP045", "RUF100"]
@@ -59,12 +65,14 @@ extend-exclude = [
 # annotations`,  so builtin generics and `X | None` in annotations are fine;  UP017 is the one
 # rewrite that breaks them.
 "scripts/fleet_knobs/**" = ["UP017"]
+"scripts/fleet_view/**" = ["UP017"]
 "scripts/fleet-ops-control.py" = ["UP017"]
 "scripts/fleet-mac-services.py" = ["UP017"]
 "scripts/fleet-worker-health.py" = ["UP017"]
 "scripts/fleet-tools-doctor.py" = ["UP017"]
 "scripts/fleet-server-status.py" = ["UP017"]
 "scripts/fleet-vm-status.py" = ["UP017"]
+"muster/script/**" = ["UP017"]
 
 [format]
 # Whitespace churn and py313-only syntax: the 3.9-run package keeps its hand layout.  See AFC-425.

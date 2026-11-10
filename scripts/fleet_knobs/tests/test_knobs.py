@@ -27,7 +27,7 @@ GOOD = {
 
 
 class FetchTests(KnobTestCase):
-    def test_fetch_ok_returns_typed_values_with_one_cli_call(self):
+    def test_fetch_ok_returns_typed_values_through_one_scoped_read(self):
         self.fake.set(secrets=GOOD)
         self.assertEqual(knobs.get("FLEET_AUTOPUSH_MODE", "off", "enum"), "snapshot")
         self.assertEqual(knobs.get("FLEET_AUTOPUSH_REPOS"), (REPO_A, REPO_B))
@@ -36,14 +36,21 @@ class FetchTests(KnobTestCase):
         self.assertIs(knobs.get("CONSULT_ENABLED", False, "bool"), True)
         calls = self.fake.calls()
         self.assertEqual(len(calls), 1, "one fetch per process")
-        argv = calls[0]
-        self.assertEqual(argv[:2], ["secrets", "get"])
-        self.assertIn("FLEET_AUTOPUSH_MODE", argv)
-        self.assertNotIn("QDRANT_API_KEY", argv)
-        self.assertIn("--env=prod", argv)
-        self.assertIn(f"--projectId={source.PROJECT_ID}", argv)
-        self.assertIn("--output=json", argv)
-        self.assertFalse([a for a in argv if "dev" in a or "staging" in a])
+        self.assertEqual(calls[0]["project"], source.PROJECT_ID)
+        self.assertEqual(calls[0]["path"], "/")
+        self.assertTrue(
+            {
+                "FLEET_AUTOPUSH_MODE",
+                "FLEET_AUTOPUSH_REPOS",
+                "FLEET_AUTOPUSH_IDLE_HOURS",
+                "ASK_CAPTURE_CAPS",
+                "CONSULT_ENABLED",
+                "CLAIM_EXPIRY_MODE",
+                "FLEET_FACTS_SIGNING_KEY",
+            }
+            <= set(calls[0]["names"])
+        )
+        self.assertNotIn("QDRANT_API_KEY", calls[0]["names"])
         rep = knobs.report()
         self.assertEqual(rep["fetch"], "ok")
         self.assertFalse(rep["stale"])
@@ -135,7 +142,7 @@ class UnreachableTests(KnobTestCase):
         rep = knobs.report()
         self.assertTrue(rep["stale"])
         self.assertEqual(rep["fetch"], "failed")
-        self.assertEqual(rep["fetch_reason"], "exit-1")
+        self.assertEqual(rep["fetch_reason"], "scoped-read-failed")
         self.assertIsInstance(rep["lkg_age_seconds"], int)
         self.assertEqual(rep["knobs"]["FLEET_AUTOPUSH_MODE"]["source"], "lkg")
         text = "\n".join(logs.output) + json.dumps(rep) + repr(knob)
@@ -150,7 +157,7 @@ class UnreachableTests(KnobTestCase):
         self.assertTrue(knobs.report()["stale"])
 
     def test_failure_reasons_are_tokens(self):
-        for mode, token in (("garbage", "bad-output"), ("fail", "exit-1")):
+        for mode, token in (("garbage", "bad-output"), ("fail", "scoped-read-failed")):
             self.new_process()
             self.fake.set(mode=mode)
             knobs.get("FLEET_AUTOPUSH_MODE")
@@ -162,10 +169,10 @@ class UnreachableTests(KnobTestCase):
         self.addCleanup(setattr, source, "TIMEOUT_SECONDS", original)
         knobs.get("FLEET_AUTOPUSH_MODE")
         self.assertEqual(knobs.report()["fetch_reason"], "timeout")
-        self.new_process()
-        os.environ["PATH"] = str(self.root)  # no infisical anywhere (fallback dirs are patched out)
-        knobs.get("FLEET_AUTOPUSH_MODE")
-        self.assertEqual(knobs.report()["fetch_reason"], "cli-missing")
+        with mock.patch.object(source, "HELPER_LOADER", return_value=None):
+            self.new_process()
+            knobs.get("FLEET_AUTOPUSH_MODE")
+        self.assertEqual(knobs.report()["fetch_reason"], "scoped-reader-unavailable")
 
     def test_an_unexpected_fetch_error_is_a_failed_fetch_not_a_crash(self):
         with mock.patch.object(

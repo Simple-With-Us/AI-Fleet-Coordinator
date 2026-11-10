@@ -2,14 +2,16 @@ import XCTest
 
 /// The Operator's own options:  the identity it must have,  and where each name lives.
 final class OperatorOptionsTests: XCTestCase {
-    /// The Operator is not provisioned when the file has no section for it.
-    func test_the_operator_is_not_provisioned_without_a_section() {
+    /// The Mac needs no `[seat.OPERATOR]` section:  the eavesdropper builds the Operator's client
+    /// from Fleet-OPS on first use.  So a file without one is not called unprovisioned.
+    func test_a_file_without_a_section_is_not_a_fault() {
         let document = ListenerConfigDocument(text: "[seat.MM]\nwake = \"muse\"\n")
         let options = OperatorOptions.build(from: document)
         XCTAssertFalse(options.isConfigured)
         XCTAssertFalse(options.hasRequiredIdentity)
-        XCTAssertNotNil(options.problem)
-        XCTAssertTrue(options.problem?.contains("seat.OPERATOR") == true)
+        XCTAssertNil(options.problem)
+        XCTAssertTrue(options.summary.contains("[seat.OPERATOR]"))
+        XCTAssertTrue(options.summary.contains("needs none"))
     }
 
     /// The Operator has the identity the runtime requires.
@@ -60,7 +62,7 @@ final class OperatorOptionsTests: XCTestCase {
     /// Every name the Operator needs names Infisical as its source.
     ///
     /// The eavesdropper's environment is where the values arrive,  not where they live:
-    /// `scripts/agent_sync/service_identity.py` holds `OPERATOR_INFISICAL_PATH =
+    /// `scripts/simple_tools/service_identity.py` holds `OPERATOR_INFISICAL_PATH =
     /// "/zulip_operator"`,  so the panel must not point an operator at a plain env var.
     func test_every_operator_name_names_infisical_as_its_source() {
         for name in OperatorOptions.names {
@@ -70,12 +72,5 @@ final class OperatorOptionsTests: XCTestCase {
             )
         }
         XCTAssertEqual(OperatorOptions.requiredCreds, "infisical")
-    }
-
-    /// The letters the Operator issues come from one pool.
-    func test_the_letter_pool_is_the_letters_the_registry_uses() {
-        XCTAssertEqual(OperatorOptions.letterPool.count, 26)
-        XCTAssertEqual(OperatorOptions.letterPool.first, "A")
-        XCTAssertEqual(OperatorOptions.letterPool.last, "Z")
     }
 }

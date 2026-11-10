@@ -1,7 +1,7 @@
 """Thin GitHub REST client for the PR relay.
 
-Holds the scoped token; seats never see it.  Responses are bounded (1 MiB,
-32 KiB error previews) and every call carries a timeout.  Errors surface as
+Holds the scoped token; seats never see it.  Responses are bounded (1 MiB, or
+8 MiB for a paged GET;  32 KiB error previews) and every call carries a timeout.  Errors surface as
 RelayGitHubError with the HTTP status so the server can classify them without
 leaking response bodies upstream.
 """
@@ -13,10 +13,16 @@ import json
 import re
 import urllib.error
 import urllib.request
+from urllib.parse import parse_qsl
 
 from .secret_scan import mask_credential
 
 MAX_BODY = 1024 * 1024
+# A paged GET (``per_page`` in its query) is bounded by its page size, not by MAX_BODY.  GitHub's raw
+# rows are far larger than the slim rows the relay returns:  50 pull requests are 1.0 to 1.3 MB raw,
+# so the 1 MiB bound refused ordinary pages (BotFleet page 11 at per_page 50) as unreadable.  Fifty
+# rows of GitHub's largest objects (65,536-character bodies) stay well under this.
+MAX_PAGE_BODY = 8 * 1024 * 1024
 MAX_ERROR_PREVIEW = 512
 TIMEOUT_SECONDS = 30
 MAX_DISPATCH_INPUTS = 32
@@ -205,6 +211,26 @@ def _retry_after_seconds(headers) -> int | None:
     return None
 
 
+# A compare answer pages only its commits:  the whole file list, patches included, comes with every
+# page, so ``per_page`` does not bound it and it keeps the plain bound.
+_COMPARE_ROUTE = re.compile(r"/repos/[^/?]+/[^/?]+/compare/")
+
+
+def response_limit(method: str, path: str) -> int:
+    """The response bound for one call:  MAX_PAGE_BODY for a paged GET, else MAX_BODY.
+
+    Paged means ``per_page`` is a key of the query after the first ``?``.  A file name that
+    contains ``per_page=`` sits in the path (``?`` is quoted there), so it never widens a read.
+    """
+    if method == "GET":
+        route, _, query = path.partition("?")
+        if not _COMPARE_ROUTE.match(route) and any(
+            key == "per_page" for key, _ in parse_qsl(query, keep_blank_values=True)
+        ):
+            return MAX_PAGE_BODY
+    return MAX_BODY
+
+
 class DispatchPreReadUnavailable(Exception):
     """Dispatch source read failed before any write was attempted."""
 
@@ -231,6 +257,7 @@ class GitHubClient:
             # owner token and run a privileged write under the wrong identity.
             raise ValueError("empty task credential; refusing to use the owner token")
         url = f"{self._base}{path}"
+        limit = response_limit(method, path)
         req = urllib.request.Request(
             url,
             method=method,
@@ -250,7 +277,7 @@ class GitHubClient:
         )
         try:
             with self._opener(req, timeout=TIMEOUT_SECONDS) as resp:
-                raw = resp.read(MAX_BODY + 1)
+                raw = resp.read(limit + 1)
                 completion_body_ok = not raw
                 if allow_empty_object and expected_status in (201, 202):
                     try:
@@ -294,9 +321,11 @@ class GitHubClient:
             raise RelayGitHubError(0, f"connection failed: {exc.reason}") from exc
         except (OSError, http.client.HTTPException) as exc:
             raise RelayGitHubError(0, f"connection failed: {exc}") from exc
-        if len(raw) > MAX_BODY:
+        if len(raw) > limit:
             raise RelayGitHubError(
-                0, "github response exceeded 1 MiB bound", code="response_too_large"
+                0,
+                f"github response exceeded {limit // (1024 * 1024)} MiB bound",
+                code="response_too_large",
             )
         if not raw:
             return {}

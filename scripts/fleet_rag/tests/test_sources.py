@@ -220,7 +220,7 @@ class FileSourceTests(unittest.TestCase):
         (repo / "node_modules" / "x" / "README.md").write_text("# nm\n")
         (repo / ".claude" / "skills" / "s1" / "SKILL.md").write_text("---\nname: s1\n---\n# S1\n")
         extra = self.root / "FLEET-PROTOCOL.md"
-        extra.write_text("# Agent sync\n")
+        extra.write_text("# Simple tools\n")
         (repo / "docs" / "dist").mkdir()
         (repo / "docs" / "dist" / "out.md").write_text("# dist\n")
         (repo / "docs" / "vendor").mkdir()
@@ -617,7 +617,7 @@ class ExtraDocWalkerTests(unittest.TestCase):
         (um / "README.md").write_text("# Usage Monitor\n")
 
         self.apps.mkdir()
-        (self.apps / "FLEET-PROTOCOL.md").write_text("# Agent sync protocol\n")
+        (self.apps / "FLEET-PROTOCOL.md").write_text("# Simple tools protocol\n")
         (self.apps / "COOLIFY.md").write_text("# Coolify\n")
         (self.apps / "SOCRATIC-TRADE-EFFORT-LOG.md").write_text("# ST effort\n")
         (self.apps / "EFFORT-LOG-PROTOCOL.md").write_text("# Protocol\n")
@@ -718,11 +718,11 @@ class MirrorSkipTests(unittest.TestCase):
         return kept, skipped
 
     def test_rule_a_live_apps_copy_beats_the_repo_mirror(self):
-        live_sync = self._w(self.apps / "FLEET-PROTOCOL.md", "# Agent sync (live)\n")
+        live_sync = self._w(self.apps / "FLEET-PROTOCOL.md", "# Simple tools (live)\n")
         live_mlp = self._w(self.apps / "MAC-LOCAL-PROCESSES.md", "# Mac local processes (live)\n")
         live_ui = self._w(self.apps / "FLEET-UI-COPY.md")
         self._w(self.apps / "README.md", "# apps readme\n")
-        mirror_sync = self._w(self.fleet / "FLEET-PROTOCOL.md", "# Agent sync (mirror)\n")
+        mirror_sync = self._w(self.fleet / "FLEET-PROTOCOL.md", "# Simple tools (mirror)\n")
         mirror_mlp = self._w(self.fleet / "docs" / "MAC-LOCAL-PROCESSES.md", "# mirror\n")
         mirror_ui = self._w(self.fleet / "FLEET-UI-COPY.md")
         fleet_readme = self._w(self.fleet / "README.md", "# Fleet coordinator\n")
@@ -889,10 +889,10 @@ class MirrorSkipTests(unittest.TestCase):
     def _handbook(self):
         """The shapes build.mjs makes: public pages, a private page, a ruling log whose front matter says public by
         mistake, the README, and generated/FLEET-PROTOCOL.md; plus the live file and the AFC mirror that hold the same text."""
-        live = self._w(self.apps / "FLEET-PROTOCOL.md", f"# Agent sync (live)\n\n{self.RULE}\n")
-        mirror = self._w(self.fleet / "FLEET-PROTOCOL.md", f"# Agent sync (mirror)\n\n{self.RULE}\n")
+        live = self._w(self.apps / "FLEET-PROTOCOL.md", f"# Simple tools (live)\n\n{self.RULE}\n")
+        mirror = self._w(self.fleet / "FLEET-PROTOCOL.md", f"# Simple tools (mirror)\n\n{self.RULE}\n")
         generated = self._w(
-            self.ops / "generated" / "FLEET-PROTOCOL.md", f"# Agent sync (generated)\n\n{self.RULE}\n"
+            self.ops / "generated" / "FLEET-PROTOCOL.md", f"# Simple tools (generated)\n\n{self.RULE}\n"
         )
         h = self.ops / "handbook"
         public = [
@@ -982,7 +982,7 @@ class MirrorSkipTests(unittest.TestCase):
         hits = [d.path for d in docs if self.RULE in d.text_markdown]
         self.assertEqual(hits, [str(mirror)])
 
-    def test_rule_d_keeps_the_public_pages_when_no_agent_sync_copy_is_ingested(self):
+    def test_rule_d_keeps_the_public_pages_when_no_simple_tools_copy_is_ingested(self):
         live, mirror, generated, public, private = self._handbook()
         live.unlink()
         mirror.unlink()  # nothing else holds the text:  the public pages are the only copy
@@ -1003,7 +1003,7 @@ class MirrorSkipTests(unittest.TestCase):
         self.assertEqual(skipped, {})
         self.assertEqual(len([d for d in docs if self.RULE in d.text_markdown]), 1)
 
-    def test_rule_d_is_not_satisfied_by_another_repos_agent_sync_copy(self):
+    def test_rule_d_is_not_satisfied_by_another_repos_simple_tools_copy(self):
         live, mirror, generated, public, private = self._handbook()
         live.unlink()
         mirror.unlink()
@@ -1018,7 +1018,7 @@ class MirrorSkipTests(unittest.TestCase):
     def test_a_live_file_the_walk_rejects_does_not_hide_its_mirrors(self):
         live, mirror, generated, public, private = self._handbook()
         live.write_text(
-            f"# Agent sync (live)\n\n{self.RULE}\n" + "x" * (sources.DOC_MAX_BYTES + 10)
+            f"# Simple tools (live)\n\n{self.RULE}\n" + "x" * (sources.DOC_MAX_BYTES + 10)
         )
         docs = list(
             sources.iter_docs(
@@ -1063,7 +1063,7 @@ class MirrorSkipTests(unittest.TestCase):
                 )
             )
         kept = {d.path for d in docs}
-        # the walk finishes, and since no AGENT-SYNC.md could be read the public pages are the only copy
+        # the walk finishes, and since no FLEET-PROTOCOL.md could be read the public pages are the only copy
         self.assertNotIn(str(mirror), kept)
         for page in public:
             self.assertIn(str(page), kept, page)
@@ -1071,8 +1071,8 @@ class MirrorSkipTests(unittest.TestCase):
     def test_a_live_file_and_mirror_the_walk_both_reject_do_not_hide_the_pages(self):
         live, mirror, generated, public, private = self._handbook()
         big = "x" * (sources.DOC_MAX_BYTES + 10)
-        live.write_text(f"# Agent sync (live)\n\n{self.RULE}\n{big}")
-        mirror.write_text(f"# Agent sync (mirror)\n\n{self.RULE}\n{big}")
+        live.write_text(f"# Simple tools (live)\n\n{self.RULE}\n{big}")
+        mirror.write_text(f"# Simple tools (mirror)\n\n{self.RULE}\n{big}")
         docs = list(
             sources.iter_docs(
                 self.fleet,
@@ -1147,17 +1147,17 @@ class MirrorSkipTests(unittest.TestCase):
         self.assertIsNone(r(elsewhere, ops_repos=ops, live_basenames=live))
         # without an ops repo the rule is off, so existing callers are unchanged
         self.assertIsNone(r(pub, live_basenames=live))
-        # without an ingested AGENT-SYNC.md the public pages and generated/ are the only copy, so they stay
+        # without an ingested FLEET-PROTOCOL.md the public pages and generated/ are the only copy, so they stay
         self.assertIsNone(r(pub, ops_repos=ops))
         self.assertIsNone(r(gen, ops_repos=ops, live_basenames={"MAC-LOCAL-PROCESSES.md"}))
         # the caller may say a copy is ingested that is not live (the coordinator's mirror), or that none is
         self.assertEqual(
-            r(pub, ops_repos=ops, agent_sync_ingested=True), sources.SKIP_HANDBOOK_MIRROR
+            r(pub, ops_repos=ops, simple_tools_ingested=True), sources.SKIP_HANDBOOK_MIRROR
         )
         self.assertEqual(
-            r(gen, ops_repos=ops, agent_sync_ingested=True), sources.SKIP_HANDBOOK_MIRROR
+            r(gen, ops_repos=ops, simple_tools_ingested=True), sources.SKIP_HANDBOOK_MIRROR
         )
-        self.assertIsNone(r(pub, ops_repos=ops, live_basenames=live, agent_sync_ingested=False))
+        self.assertIsNone(r(pub, ops_repos=ops, live_basenames=live, simple_tools_ingested=False))
 
     def test_rule_d_public_page_reads_only_the_front_matter(self):
         rel = pathlib.PurePath("handbook/chat/posting.md")
@@ -1497,14 +1497,13 @@ class ChatLogTests(unittest.TestCase):
 
 
 
-class ProtocolDocRename(unittest.TestCase):
-    """The protocol document was renamed;  readers know the current name only."""
+class ProtocolDocName(unittest.TestCase):
+    """Readers know the protocol document by its one name."""
 
     def test_only_the_current_name_is_known_and_the_extra_docs_list_it(self) -> None:
         self.assertEqual(set(sources.PROTOCOL_DOC_NAMES), {"FLEET-PROTOCOL.md"})
         names = {p.name for p in sources.EXTRA_DOCS}
         self.assertTrue({"FLEET-PROTOCOL.md"} <= names)
-        self.assertNotIn("AGENT-SYNC.md", names)
 
 if __name__ == "__main__":
     unittest.main()
@@ -1915,6 +1914,85 @@ class LinearSourceTests(unittest.TestCase):
         with mock.patch.object(sources.subprocess, "run", side_effect=bad_rc):
             with self.assertRaises(sources.LinearSourceError):
                 sources._linear_query("query { x }")
+
+    def test_missing_linear_identity_is_named_without_echoing_stderr(self) -> None:
+        """AFC-677:  the retired shared app makes simple-board exit 4;  the error says why."""
+
+        def no_identity(*a, **k):
+            return subprocess.CompletedProcess(
+                a, 4, stdout="",
+                stderr="simple-board: no Linear app credentials: LINEAR_CLIENT_ID ... secret-ish-tail",
+            )
+
+        with mock.patch.object(sources.subprocess, "run", side_effect=no_identity):
+            with self.assertRaises(sources.LinearSourceError) as ctx:
+                sources._linear_query("query { x }")
+        msg = str(ctx.exception)
+        self.assertIn("no Linear app identity", msg)
+        self.assertIn("LINEAR_BF_ORACLE_CLIENT_ID", msg)
+        self.assertNotIn("secret-ish-tail", msg)
+
+    def test_linear_reads_as_bf_oracle_then_falls_back_to_gb_oracle(self) -> None:
+        env = {
+            "LINEAR_BF_ORACLE_CLIENT_ID": "bf-id", "LINEAR_BF_ORACLE_CLIENT_SECRET": "bf-sec",
+            "LINEAR_GB_ORACLE_CLIENT_ID": "gb-id", "LINEAR_GB_ORACLE_CLIENT_SECRET": "gb-sec",
+        }
+        calls = []
+
+        def fake(argv, **k):
+            calls.append(k["env"]["LINEAR_CLIENT_ID"])
+            if k["env"]["LINEAR_CLIENT_ID"] == "bf-id" and bf_fails:
+                return subprocess.CompletedProcess(argv, 1, stdout="", stderr="invalid_client")
+            return subprocess.CompletedProcess(argv, 0, stdout='{"viewer": {}}', stderr="")
+
+        for bf_fails, want in ((False, ["bf-id"]), (True, ["bf-id", "gb-id"])):
+            calls.clear()
+            with mock.patch.dict(os.environ, env, clear=False), \
+                    mock.patch.object(sources.subprocess, "run", side_effect=fake):
+                os.environ.pop("LINEAR_CLIENT_ID", None)
+                os.environ.pop("LINEAR_CLIENT_SECRET", None)
+                os.environ.pop(sources.LINEAR_SEATS_ENV, None)
+                sources.reset_linear_seat_state()
+                self.assertEqual(sources._linear_query("query { x }"), {"viewer": {}})
+                self.assertEqual(calls, want)
+                if bf_fails:  # sticky:  the next read goes straight to GB-ORACLE
+                    calls.clear()
+                    sources._linear_query("query { y }")
+                    self.assertEqual(calls, ["gb-id"])
+        sources.take_warnings()
+
+    def test_linear_non_auth_errors_never_fall_back(self) -> None:
+        def proc(rc, err):
+            return subprocess.CompletedProcess([], rc, stdout="", stderr=err)
+
+        self.assertFalse(sources._linear_is_auth_failure(proc(1, "fetched 401 issues, then timeout")))
+        self.assertFalse(sources._linear_is_auth_failure(proc(2, "GraphQL error: field 4013")))
+        self.assertTrue(sources._linear_is_auth_failure(proc(1, "HTTP 401 from token endpoint")))
+        self.assertTrue(sources._linear_is_auth_failure(proc(1, "403 Forbidden")))
+        self.assertTrue(sources._linear_is_auth_failure(proc(4, "anything")))
+
+    def test_linear_seat_list_is_validated_deduped_capped_and_env_minimal(self) -> None:
+        env = {
+            sources.LINEAR_SEATS_ENV: "gb-oracle, BAD\nSEAT, GB-ORACLE, BF-ORACLE, CLAUDE",
+            "LINEAR_GB_ORACLE_CLIENT_ID": "gb-id", "LINEAR_GB_ORACLE_CLIENT_SECRET": "gb-sec",
+            "LINEAR_BF_ORACLE_CLIENT_ID": "bf-id", "LINEAR_BF_ORACLE_CLIENT_SECRET": "bf-sec",
+            "LINEAR_CLAUDE_CLIENT_ID": "c-id", "LINEAR_CLAUDE_CLIENT_SECRET": "c-sec",
+        }
+        with mock.patch.dict(os.environ, env, clear=False):
+            os.environ.pop("LINEAR_CLIENT_ID", None)
+            os.environ.pop("LINEAR_CLIENT_SECRET", None)
+            got = sources._linear_seat_envs()
+        warnings = sources.take_warnings()
+        self.assertEqual([s for s, _ in got], ["GB-ORACLE", "BF-ORACLE"])
+        gb_env = got[0][1]
+        self.assertEqual(gb_env["LINEAR_CLIENT_ID"], "gb-id")
+        self.assertNotIn("LINEAR_BF_ORACLE_CLIENT_SECRET", gb_env)
+        self.assertNotIn("LINEAR_CLAUDE_CLIENT_SECRET", gb_env)
+        self.assertTrue(any("invalid seat name" in w for w in warnings))
+        self.assertFalse(any("\n" in w for w in warnings))
+
+    def test_doc_walk_finds_the_renamed_socratic_trade_checkout(self) -> None:
+        self.assertIn("Socratic-Trade", sources.DOC_APP_REPOS)
 
     def test_oversized_chunk_halves_until_it_fits(self) -> None:
         """A response past the CLI size cap is retried as smaller chunks, not a failure."""

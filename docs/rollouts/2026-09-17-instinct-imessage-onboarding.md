@@ -16,7 +16,7 @@ one-off join.
   needs before its first session), the prompt itself, the Agent Seat row text, a "how to tell it
   took" list, and the existing iMessage jobs the prompt builds on.
 - `STATUS.md` and `docs/EFFORT-LOG.md` rows for this unit.
-- Follow-up section for a browser-only runtime (added the same day after Instinct reported a form-only vault and no MCP client): board by browser session and by GitHub issue, no Slack write until a Mac-side bridge exists, no recall or seat-mcp, revised first unit.  Facts checked in `scripts/mac-collab/mac-collab-server.py`, `scripts/mac-collab/sync_board.py`, and `scripts/agent-sync-push/daemon.js`.
+- Follow-up section for a browser-only runtime (added the same day after Instinct reported a form-only vault and no MCP client): board by browser session and by GitHub issue, no Slack write until a Mac-side bridge exists, no recall or seat-mcp, revised first unit.  Facts checked in `scripts/mac-collab/mac-collab-server.py`, `scripts/mac-collab/sync_board.py`, and `scripts/simple-tools-push/daemon.js`.
 
 ## Decisions
 
@@ -24,7 +24,7 @@ one-off join.
   coding lane unless the owner assigns one.  So no `fleet-apps.json` entry yet (that file drives
   worktrees, branch prefixes, and the digest legend).
 - Tag `INSTINCT` by default; `BF-INSTINCT` if it runs as a BotFleet bot.  Everything else holds.
-- Transport is bound by `AGENT-SYNC.md` § Process 10: send only from the `agents` macOS account
+- Transport is bound by `FLEET-PROTOCOL.md` § Process 10: send only from the `agents` macOS account
   through the one authorized listener and sender; never a second `chat.db` reader or a sender
   under `jay` (the 2026-09-02 echo loop is the precedent).  The prompt tells Instinct to file a
   board item and stop if it needs more; only the owner amends Process 10.
@@ -42,7 +42,7 @@ one-off join.
 
 - Board item and Slack claim: this sandbox has no `MAC_COLLAB_TOKEN` and its `SLACK_BOT_TOKEN`
   returns `invalid_auth`.  A Mac seat files the board item when the owner confirms the tag.
-- Seat row not landed in `AGENT-SYNC.md` (either copy) until the owner confirms the tag; the row
+- Seat row not landed in `FLEET-PROTOCOL.md` (either copy) until the owner confirms the tag; the row
   text is in the doc.
 
 ## Board `/login` form and GitHub outbox bridge (same day, owner: "Ok let's do that")
@@ -61,10 +61,10 @@ deterministic pieces:
   Basic, Bearer, and the existing cookie path are unchanged.  Tests:
   `scripts/mac-collab/test_login_form.py` (8).
 - `scripts/github-outbox-bridge.py` + `scripts/launchd/com.jay.github-outbox-bridge.plist`: every
-  120 s, post new comments on a private outbox issue to `#agent-sync` through the loopback relay
+  120 s, post new comments on a private outbox issue to `#Work-In-Progress` through the loopback relay
   as `username=<SEAT>` after a header-shape check (rocket = posted; confused + reply = rejected),
   and mirror skim matches back as `<!-- outbox-bridge:slack -->` comments marked as data.  Tokens
-  from `~/.secrets/agent-sync.env` only.  Relay failures keep the comment queued and note the outage
+  from `~/.secrets/simple-tools.env` only.  Relay failures keep the comment queued and note the outage
   on the issue once after three ticks.  Single-flight `flock`.  Stdlib only; compiles and tests on
   Python 3.10 (the Mac runs 3.9; no 3.10+ syntax used).  Tests: `scripts/test_github_outbox_bridge.py`
   (14).
@@ -93,7 +93,7 @@ launchctl print gui/$(id -u)/com.jay.github-outbox-bridge | head -5
 
 Then, in the same unit: the live `~/apps/MAC-LOCAL-PROCESSES.md` row (flip the tracked row from
 "Not yet installed" to its live status), `~/apps/apple-notes-coding.sh --update "⭐️ Background Jobs
-Master List"`, the live `~/apps/AGENT-SYNC.md` § THE BOARD paragraph, and the outbox issue number
+Master List"`, the live `~/apps/FLEET-PROTOCOL.md` § THE BOARD paragraph, and the outbox issue number
 on Instinct's registration item.  Rotate the outbox issue when it grows long: close it, open a new
 one, update the JSON.
 

@@ -29,8 +29,8 @@ RELEASE_PATHS = [
     "scripts/deploy-mapped-worker.py",
     "scripts/worker-targets.json",
     "scripts/infisical-fetch.mjs",
-    "scripts/agent-sync-mcp/package.json",
-    "scripts/agent-sync-mcp/package-lock.json",
+    "scripts/simple-tools-mcp/package.json",
+    "scripts/simple-tools-mcp/package-lock.json",
     ".github/workflows/alert-workers-deploy.yml",
     "docs/releases/alert-credentials-qualified.json",
 ]
@@ -51,28 +51,6 @@ RECEIPT_GATE = 2
 
 def git(*args):
     return subprocess.check_output(["git", *args], text=True, timeout=30).strip()
-
-
-def cutover_receipt():
-    path = pathlib.Path("docs/releases/pr-conflict-zulip-verified.json")
-    if not path.exists():
-        return False
-    receipt = json.loads(path.read_text())
-    if receipt.get("sender_id") != 1212033 or receipt.get("channel_id") != 642233:
-        raise RuntimeError("Wrong cutover sender or audience")
-    if not re.fullmatch(r"[0-9a-f]{40}", receipt.get("source_sha", "")) or not receipt.get(
-        "version_id"
-    ):
-        raise RuntimeError("Missing exact cutover release receipt")
-    if (
-        not isinstance(receipt.get("message_id"), int)
-        or receipt["message_id"] <= 0
-        or not receipt.get("message_url", "").startswith("https://simplewithus.zulipchat.com/")
-    ):
-        raise RuntimeError("Missing verified first real Zulip delivery")
-    if receipt.get("real_conflict_event") is not True:
-        raise RuntimeError("Synthetic alerts cannot qualify the cutover")
-    return True
 
 
 def preflight_config(target, settings):
@@ -237,10 +215,6 @@ def qualify_credentials():
         raise RuntimeError("Existing release credential delivery missing")
     current_main()
     for name, target in TARGETS.items():
-        # An uncut-over target is never released, so it cannot block this proof either.
-        if name == "pr-conflict-watch" and not cutover_receipt():
-            print("Awaiting first verified real Zulip delivery; skipping " + name)
-            continue
         # A receipt is accepted as proof the credential reads the live targets, so this read
         # must succeed for a stopped Worker too.
         settings = cloudflare("/workers/scripts/" + name + "/settings")
@@ -363,10 +337,6 @@ def main():
         raise RuntimeError("Exact-main CI has not passed")
     tripped = []
     for name, target in TARGETS.items():
-        # An uncut-over target must not block the independent ingress release.
-        if name == "pr-conflict-watch" and not cutover_receipt():
-            print("Awaiting first verified real Zulip delivery; skipping " + name)
-            continue
         # Never reconcile over the budget guard, and let the other target proceed.
         if guard_tripped(name):
             print("Stopped by the budget guard; re-arm by hand: " + name)
@@ -393,7 +363,6 @@ def main():
                 "--",
                 target["root"],
                 *RELEASE_PATHS,
-                "docs/releases/pr-conflict-zulip-verified.json",
             ],
             text=True,
             timeout=30,
@@ -404,42 +373,13 @@ def main():
             raise RuntimeError("Release range exceeds bounded review limit")
         for commit in commits:
             reviewed(commit)
-        # Initial cutover is manual and verified first. Automated code releases
-        # cannot provision delivery credentials or reintroduce Slack.
+        # Automated code releases cannot provision bindings: see preflight_config.
         settings = cloudflare("/workers/scripts/" + name + "/settings")
         preflight_config(target, settings)
-        if name == "pr-conflict-watch":
-            names = {b["name"] for b in settings.get("bindings", [])}
-            required = {
-                "GITHUB_WEBHOOK_SECRET",
-                "GITHUB_TOKEN",
-                "PR_STATE",
-                "ZULIP_SITE",
-                "ZULIP_BOT_EMAIL",
-                "ZULIP_BOT_API_KEY",
-            }
-            if not required <= names or "SLACK_BOT_TOKEN" in names:
-                raise RuntimeError("Verified Zulip cutover prerequisite not met")
-            subprocess.run(
-                ["npm", "ci", "--ignore-scripts", "--prefix", target["root"]],
-                check=True,
-                timeout=300,
-            )
-            subprocess.run(
-                [
-                    "node",
-                    "--test",
-                    target["root"] + "body.test.js",
-                    target["root"] + "index.test.js",
-                ],
-                check=True,
-                timeout=300,
-            )
-        else:
-            tests = glob.glob(target["root"] + "src/*.test.js")
-            if not tests:
-                raise RuntimeError("Missing enforced target tests")
-            subprocess.run(["node", "--test", *tests], check=True, timeout=300)
+        tests = glob.glob(target["root"] + "src/*.test.js")
+        if not tests:
+            raise RuntimeError("Missing enforced target tests")
+        subprocess.run(["node", "--test", *tests], check=True, timeout=300)
         probe(target)
         if current_main() != sha:
             print("Superseded before release")
@@ -450,7 +390,7 @@ def main():
             continue
         subprocess.run(
             [
-                "scripts/agent-sync-mcp/node_modules/.bin/wrangler",
+                "scripts/simple-tools-mcp/node_modules/.bin/wrangler",
                 "deploy",
                 "--config",
                 target["config"],
