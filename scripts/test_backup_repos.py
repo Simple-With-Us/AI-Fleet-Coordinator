@@ -185,7 +185,6 @@ class BackupReposTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
         self.assertIn("::error::expected", proc.stdout)
 
-
     def test_invalid_repo_name_refused_before_filesystem_use(self):
         proc = self.run_script(["../evil", "a/b", ".", "Alpha"])
         self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
@@ -199,8 +198,7 @@ class BackupReposTest(unittest.TestCase):
         self.assertIn("../evil", summary)
 
     def test_clone_timeout_recorded_and_batch_continues(self):
-        proc = self.run_script(["Slow-slow", "Beta"],
-                               extra_env={"BACKUP_REPOS_CLONE_TIMEOUT": "1"})
+        proc = self.run_script(["Slow-slow", "Beta"], extra_env={"BACKUP_REPOS_CLONE_TIMEOUT": "1"})
         self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
         self.assertIn("::error::clone timed out after 1s", proc.stdout)
         self.assertTrue((self.outdir / "Beta-backup-2026-11-10.zip").exists())
@@ -212,8 +210,7 @@ class BackupReposTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
         self.assertIn("::error::archive failed for Locked-unreadable", proc.stdout)
         self.assertTrue((self.outdir / "Beta-backup-2026-11-10.zip").exists())
-        self.assertFalse(
-            (self.outdir / "Locked-unreadable-backup-2026-11-10.zip").exists())
+        self.assertFalse((self.outdir / "Locked-unreadable-backup-2026-11-10.zip").exists())
         summary = (self.outdir / "BACKUP-SUMMARY.txt").read_text()
         self.assertIn("PARTIAL", summary)
 
@@ -229,8 +226,7 @@ class BackupReposTest(unittest.TestCase):
         self.assertIn("PARTIAL", summary)
         self.assertIn("does not reconcile", summary)
         self.assertNotIn("COMPLETE", summary)
-        self.assertIn("BACKUP_ARTIFACT_SUFFIX=-PARTIAL\n",
-                      self.env_file.read_text())
+        self.assertIn("BACKUP_ARTIFACT_SUFFIX=-PARTIAL\n", self.env_file.read_text())
 
 
 if __name__ == "__main__":
