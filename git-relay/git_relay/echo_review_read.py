@@ -1,7 +1,6 @@
 """Pure exact existing-seat read restoration. No host I/O or activation."""
 
 import copy
-import json
 
 ACTION = "wf_review_thread_comments"
 SEAT = "swu-echo"
