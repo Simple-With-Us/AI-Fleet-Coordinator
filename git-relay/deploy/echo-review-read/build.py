@@ -152,11 +152,7 @@ def build(repo, before, output):
         raise ValueError("scratch output symlink refused")
     output.mkdir(mode=0o700, exist_ok=False)
     info = os.lstat(output)
-    if (
-        stat.S_ISLNK(info.st_mode)
-        or not stat.S_ISDIR(info.st_mode)
-        or info.st_uid != os.geteuid()
-    ):
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
         raise ValueError("scratch output symlink refused")
     for name, raw in sources.items():
         target = output / "runner-package" / name
