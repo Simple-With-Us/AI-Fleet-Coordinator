@@ -1300,7 +1300,7 @@ final class WakeSettingsTests: XCTestCase {
         let seat = try XCTUnwrap(WakeSettingsBuilder.build(held).seats.first(where: { $0.seat == "MA" }))
         XCTAssertFalse(seat.host.isElsewhere)
         // An old wake line with no routine is one today's listener still wakes the seat by.
-        XCTAssertEqual(seat.kind, .oldWakeSetting("muse"))
+        XCTAssertEqual(seat.kind, .oldWakeSetting(.stillWakes("muse")))
         XCTAssertEqual(seat.leftoverWake, "muse")
 
         // Once it names the partition,  that copy gives MA away,  so nothing is read for it.

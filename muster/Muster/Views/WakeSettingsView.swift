@@ -578,7 +578,7 @@ struct WakeSettingsView: View {
     }
 
     /// What the seat's section says about its kind, beyond the label:  a routine or a line Muster
-    /// cannot read, the old wake line today's listener still wakes the seat by, why a seat that
+    /// cannot read, what today's listener does with an old wake setting, why a seat that
     /// Captures Only is not offered a routine, and a `wake` line left over from the old wake types,
     /// which Muster shows and never changes.
     @ViewBuilder
@@ -594,8 +594,8 @@ struct WakeSettingsView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
         }
-        if case .oldWakeSetting(let wake) = seat.kind {
-            Label(WakeSeatKind.oldWakeNote(wake), systemImage: "clock.arrow.circlepath")
+        if case .oldWakeSetting(let old) = seat.kind {
+            Label(old.note, systemImage: "clock.arrow.circlepath")
                 .font(.system(size: 10))
                 .foregroundStyle(.orange)
                 .fixedSize(horizontal: false, vertical: true)
