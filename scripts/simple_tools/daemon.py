@@ -8566,6 +8566,8 @@ class Daemon:
         stands in a build of the client, which reads the vault and can take a minute.  With no client
         ready it raises OperatorUnavailable (code `operator_building`) and the build goes on in the
         background, so the post is skipped this time and tried again."""
+        # First, before the scan, the client build and the pacing wait: a refused DM costs nothing.
+        self.operator_voice.refuse_unclarified_dm(params)
         found = secretscan.scan(str(params.get("content") or ""), self.hidden)
         if found:
             raise OPV.OperatorRefused("secret scanner: %s" % found)
@@ -8575,6 +8577,7 @@ class Daemon:
 
     def _operator_edit(self, message_id: int, content: str, *, wait: bool = True) -> dict[str, Any]:
         """Edit one of the Operator's own messages, with the same scan and no other client."""
+        self.operator_voice.refuse_unclarified_edit(message_id)  # first: costs nothing when refused
         found = secretscan.scan(str(content or ""), self.hidden)
         if found:
             raise OPV.OperatorRefused("secret scanner: %s" % found)

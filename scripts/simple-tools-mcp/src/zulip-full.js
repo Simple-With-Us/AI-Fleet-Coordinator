@@ -6,6 +6,8 @@
 //   - the channel rule (src/channels.js) by stream id on every channel and message:  a public
 //     channel the seat's bot is subscribed to, minus CHANNELS_DENY;  a direct message only when the
 //     bot is in it;
+//   - the DM rule (dmRuleCheck in hosted-tools.js) on every direct target a scheduled message or a draft
+//     builds, so neither can deliver a DM that zulip_dm_send would have refused;
 //   - the secret scan over everything the caller wrote, before any request;
 //   - raw @-mentions silenced and the [SEAT·session] tag on outbound message text;
 //   - budgets and spacing in the seat's SeatGate:  `read` for reads, `write` for content writes,
@@ -149,14 +151,23 @@ export const ZULIP_FULL_METHODS = {
     }
   },
 
-  /** The target of a scheduled message, draft or typing notice:  a channel and topic, or a DM. */
-  async fullTarget(args, audit) {
+  /**
+   * The target of a scheduled message, draft or typing notice:  a channel and topic, or a DM.
+   *
+   * The DM rule runs here, where every direct target is built, so a scheduled or draft message cannot
+   * deliver a DM that zulip_dm_send would have refused.  It is the same check with the same code and
+   * message, and the stdio twin (_target in scripts/simple_tools/mcp/tools.py) does the same.  A caller
+   * that sends no message, the typing notice, passes dmRule: false.  It opens no conversation, and the
+   * stdio twin applies no rule to it either.  Needs ensureSeat() first, like dmRuleCheck.
+   */
+  async fullTarget(args, audit, { dmRule = true } = {}) {
     const ids = args.user_ids ?? [];
     if (ids.length) {
       if (args.topic !== undefined) throw new ToolError("invalid_argument", "a direct message has no topic:  give user_ids or topic, not both");
-      const { userIds } = await this.resolveDm({ user_ids: ids }, { active: true });
+      const { userIds, users } = await this.resolveDm({ user_ids: ids }, { active: true });
       if (!userIds.length) throw new ToolError("invalid_argument", "that is only this bot:  name at least one other person");
       audit.recipient_ids = userIds;
+      if (dmRule) await this.dmRuleCheck(args, { userIds, users });
       return { type: "direct", to: userIds };
     }
     if (args.topic === undefined) throw new ToolError("invalid_argument", "a channel message needs a topic (or give user_ids for a DM)");
@@ -746,7 +757,7 @@ export const ZULIP_FULL_METHODS = {
 
   async tool_typing(args, audit) {
     await this.ensureSeat();
-    const target = await this.fullTarget(args, audit);
+    const target = await this.fullTarget(args, audit, { dmRule: false });
     await this.reserve("react");
     await this.zulip.post("typing", target.type === "direct"
       ? { type: "direct", op: args.op, to: target.to }
