@@ -310,15 +310,15 @@ final class WakePanelTruthTests: XCTestCase {
     }
 
     /// Today's listener reads a routine only with `wake = "http"`, and drops any other wake beside
-    /// a routine to inbox, so a routine with no wake line, `wake = "inbox"` or `wake = "claude"` is
-    /// an Old Wake Setting that only captures, and only `wake = "http"` with a routine Wakes.
+    /// a routine to inbox, so `wake = "inbox"` or `wake = "claude"` beside a routine is an Old Wake
+    /// Setting that only captures.  A routine with no wake line Wakes, as the one-wake-path schema
+    /// reads it, so the panel keeps working when the live files drop the line.
     func test_a_routine_with_the_wrong_wake_only_captures() {
         let none = WakeSettingsBuilder.kind(form: .inline, configProblem: nil, leftoverWake: nil)
-        XCTAssertEqual(none, .oldWakeSetting(.routineNeedsHTTP(wake: nil)))
-        XCTAssertEqual(
-            none.help,
-            "This seat has a routine and has no wake line.\u{00A0} Today's listener uses a routine only with wake = \"http\", so this seat only captures until the listener change lands."
-        )
+        XCTAssertEqual(none, .wakes)
+        XCTAssertTrue(none.isWoken)
+        XCTAssertTrue(none.hasRoutine)
+        XCTAssertEqual(WakeSettingsBuilder.kind(form: .subTable, configProblem: nil, leftoverWake: nil), .wakes)
         for wake in ["inbox", "claude"] {
             let kind = WakeSettingsBuilder.kind(form: .subTable, configProblem: nil, leftoverWake: wake)
             XCTAssertEqual(kind, .oldWakeSetting(.routineNeedsHTTP(wake: wake)), wake)
@@ -330,15 +330,25 @@ final class WakePanelTruthTests: XCTestCase {
         XCTAssertEqual(WakeSettingsBuilder.kind(form: .inline, configProblem: nil, leftoverWake: "http"), .wakes)
         XCTAssertTrue(WakeSeatKind.wakes.isWoken)
 
-        // Built from a file:  the routine rows of such a seat are shown, and never offered.
+        // Built from a file:  the routine rows of a seat with the wrong wake are shown, and never
+        // offered.
         var input = sources(status: nil)
-        input.config = ListenerConfigDocument(text: "[seat.MM]\nbot = \"MM\"\nroutine = { url_env = \"MM_ROUTINE_URL\" }\n")
+        input.config = ListenerConfigDocument(text: "[seat.MM]\nbot = \"MM\"\nwake = \"inbox\"\nroutine = { url_env = \"MM_ROUTINE_URL\" }\n")
         input.seats = ["MM"]
         let mm = seat("MM", in: WakeSettingsBuilder.build(input))
-        XCTAssertEqual(mm.kind, .oldWakeSetting(.routineNeedsHTTP(wake: nil)))
+        XCTAssertEqual(mm.kind, .oldWakeSetting(.routineNeedsHTTP(wake: "inbox")))
         XCTAssertNil(mm.routineReadiness)
         XCTAssertFalse(WakeSettingKey.routineURLEnv.applies(to: mm.kind))
         XCTAssertFalse(WakeSettingKey.wakesPerHour.applies(to: mm.kind))
+
+        // The same seat with no wake line Wakes, and its routine and caps are offered.
+        var bare = sources(status: nil)
+        bare.config = ListenerConfigDocument(text: "[seat.MM]\nbot = \"MM\"\nroutine = { url_env = \"MM_ROUTINE_URL\" }\n")
+        bare.seats = ["MM"]
+        let woken = seat("MM", in: WakeSettingsBuilder.build(bare))
+        XCTAssertEqual(woken.kind, .wakes)
+        XCTAssertTrue(WakeSettingKey.routineURLEnv.applies(to: woken.kind))
+        XCTAssertTrue(WakeSettingKey.wakesPerHour.applies(to: woken.kind))
     }
     /// Muster cannot say what a seat is when another eavesdropper holds it, when the Mac's file has
     /// no section for it, or when its section holds a line Muster cannot read, such as a dotted

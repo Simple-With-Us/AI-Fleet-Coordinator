@@ -21,12 +21,13 @@ import Foundation
 /// Until the listener change lands, today's listener (`simple_tools/config.py`) still decides by
 /// the old `wake` line:  it defaults to inbox, reads a routine only with `wake = "http"`, still
 /// runs `claude`, `muse` and `openrouter`, and drops every other mismatch to inbox, which only
-/// captures.  So a seat Wakes only with a routine and `wake = "http"`, and Captures Only with no
-/// routine and no wake line or `wake = "inbox"`.  Every other mix is an Old Wake Setting, and the
-/// panel says what today's listener does with it rather than call it either.
+/// captures.  So a seat Wakes with a routine and `wake = "http"`, or with a routine and no wake
+/// line, which is how the one-wake-path schema reads every seat once the line is gone.  It
+/// Captures Only with no routine and no wake line or `wake = "inbox"`.  Every other mix is an Old
+/// Wake Setting, and the panel says what today's listener does with it rather than call it either.
 enum WakeSeatKind: Equatable {
-    /// The seat's section holds a routine table and `wake = "http"`, so each mention wakes the
-    /// right chat.
+    /// The seat's section holds a routine table, with `wake = "http"` or no wake line, so each
+    /// mention wakes the right chat.
     case wakes
     /// The seat's section holds no routine and no wake line, or `wake = "inbox"`, so mentions are
     /// kept in its inbox and nothing is woken.
@@ -88,8 +89,9 @@ enum WakeOldSetting: Equatable {
     /// No routine, and an old wake line the listener refuses:  `http` without a routine, or a word
     /// it does not know.  It drops the seat to inbox.
     case refused(String)
-    /// A routine with a wake other than `http`, or with no wake line (nil).  The listener reads a
-    /// routine only with `wake = "http"`, so it drops the seat to inbox.
+    /// A routine beside a wake line other than `http`.  Today's listener reads a routine only with
+    /// `wake = "http"`, so it drops the seat to inbox.  A routine with no wake line is not this
+    /// case:  it Wakes, as the one-wake-path schema reads it.
     case routineNeedsHTTP(wake: String?)
 
     /// The old wakes today's listener still runs without a routine.
@@ -1463,7 +1465,11 @@ enum WakeSettingsBuilder {
         case .unreadable(let why):
             return .notKnown(why)
         case .inline, .subTable:
-            if wake == "http" {
+            // A routine with no wake line Wakes:  in the one-wake-path schema `wake` is gone and a
+            // routine alone means the seat wakes, so the panel must not turn every working seat
+            // into "only captures" the day the live files drop the line.  Only a wake line that
+            // names something other than `http` beside a routine is today's dropped-to-inbox case.
+            if wake == nil || wake == "http" {
                 return .wakes
             }
             return .oldWakeSetting(.routineNeedsHTTP(wake: wake))
