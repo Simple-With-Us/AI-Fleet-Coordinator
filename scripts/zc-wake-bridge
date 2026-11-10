@@ -180,6 +180,7 @@ def registry_history(env: dict[str, str], limit: int = 50) -> list[dict[str, Any
         parts = urllib.parse.urlsplit(url)
         target = url.rstrip("/") + path + "?" + query
         request = urllib.request.Request(target, method="GET")
+        request.add_header("User-Agent", USER_AGENT)
         headers = RG.headers(key, "GET", path, query, principal, b"", time.time())
         for name, value in headers.items():
             request.add_header(name, value)
@@ -189,6 +190,12 @@ def registry_history(env: dict[str, str], limit: int = 50) -> list[dict[str, Any
         return []
     rows = answer.get("rows") or answer.get("records") or answer.get("items") or []
     return rows if isinstance(rows, list) else []
+
+
+#: The registry API's host is Cloudflare-fronted, and Cloudflare refuses a bare urllib
+#: signature (error 1010) - the same reason registry_api.py pins an explicit agent.  Every
+#: request this bridge sends carries it.
+USER_AGENT = "simple-tools-registry/1.0"
 
 
 #: How a letter is read out of a wake:  the mention forms first (the daemon escapes the
@@ -226,6 +233,7 @@ def resolve_letter(env: dict[str, str], letter: str) -> str:
     principal = (env.get(ENV_PRINCIPAL) or "").strip() or "OPERATOR"
     try:
         request = urllib.request.Request(url.rstrip("/") + path + "?" + query, method="GET")
+        request.add_header("User-Agent", USER_AGENT)
         for name, value in RG.headers(key, "GET", path, query, principal, b"", time.time()).items():
             request.add_header(name, value)
         with urllib.request.urlopen(request, timeout=10) as response:

@@ -220,6 +220,44 @@ class ConfigLoad(Base):
             B.load_config(bad)
 
 
+class UserAgentHeader(Base):
+    """The registry host is Cloudflare-fronted and refuses a bare urllib signature (1010);
+    every request the bridge sends carries the explicit agent (found live:  the first real
+    wake receipt picked nothing because Cloudflare 1010'd the history read)."""
+
+    def test_history_and_resolve_carry_the_agent(self) -> None:
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        seen: list[str] = []
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):  # noqa: N802
+                pass
+
+            def do_GET(self) -> None:  # noqa: N802
+                seen.append(str(self.headers.get("User-Agent")))
+                body = b'{"found": true, "native_session_id": "sess_ua_check_0001"}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        server = HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        host, port = server.server_address[:2]
+        env = self.env(
+            SIMPLE_TOOLS_OPERATOR_REGISTRY_URL="http://%s:%d" % (host, port),
+            SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL="OPERATOR",
+            SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY="k" * 40,
+        )
+        sid = B.resolve_letter(env, "AA")
+        self.assertEqual(sid, "sess_ua_check_0001")
+        self.assertEqual(seen, [B.USER_AGENT])
+
+
 class LetterAddress(Base):
     """A wake that carries a letter addresses one chat:  the registry resolves it, and the
     letter wins the target outright.  A letter that resolves to nothing delivers nowhere."""
