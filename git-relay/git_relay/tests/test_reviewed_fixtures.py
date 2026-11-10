@@ -175,11 +175,7 @@ class GrWorkflowV1AttestationRowTests(TestCase):
     def test_bearer_fixture_bytes_pass_only_with_the_exact_attestation(self):
         raw = ("h = 'Bear" + "er caller-own-" + "bearer'\n").encode()
         self.assertEqual(find_secret(raw.decode()), "bearer_credential")
-        self.assertEqual(
-            unreviewed_file_secret(support.REPO, self.PATH, raw), "bearer_credential"
-        )
+        self.assertEqual(unreviewed_file_secret(support.REPO, self.PATH, raw), "bearer_credential")
         entry = (support.REPO, self.PATH, sha256(raw).hexdigest())
-        with patch(
-            "git_relay.reviewed_fixtures._REVIEWED_FIXTURES", frozenset({entry})
-        ):
+        with patch("git_relay.reviewed_fixtures._REVIEWED_FIXTURES", frozenset({entry})):
             self.assertIsNone(unreviewed_file_secret(support.REPO, self.PATH, raw))
