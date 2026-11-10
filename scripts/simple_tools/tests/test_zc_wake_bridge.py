@@ -256,6 +256,28 @@ class LetterAddress(Base):
         sid, why = B.pick_target([], "anything", Path(self.store), "server", letter_sid="sess_sub2")
         self.assertEqual((sid, why), ("", "letter-target-is-subagent"))
 
+    def test_a_dead_letter_falls_back_to_deterministic_routing(self) -> None:
+        # "ZCode PR" must not dead-end the wake:  an unresolved letter records itself and
+        # the topic/recency rules pick instead (Kody:  the mention regex can read a word).
+        history = os.path.join(self.tmp.name, "history-fb.json")
+        with open(history, "w", encoding="utf-8") as fh:
+            json.dump({"items": [{"native_session_id": "sess_fb", "title": "Router contract work",
+                                  "verified_host": "server", "state": "open", "assigned_at": 9,
+                                  "retired_at": None, "closed_at": None}], "count": 1}, fh)
+        env = self.env(ZC_WAKE_HISTORY_FILE=history)
+        receipt = B.record(
+            env,
+            self.config,
+            wake_id="w-fb",
+            topic="Router contract work",
+            channel="Side-Chats",
+            link="",
+            letter="PR",
+        )
+        self.assertEqual(receipt["session_id"], "sess_fb")
+        self.assertEqual(receipt["picked"], "topic-match")
+        self.assertEqual(receipt["reason"], "letter-not-live-fell-back")
+
     def test_a_dead_letter_delivers_nowhere(self) -> None:
         env = self.env()  # no registry URL:  resolve_letter answers "" (nothing live)
         receipt = B.record(
@@ -267,9 +289,10 @@ class LetterAddress(Base):
             link="",
             letter="ZZ",
         )
-        self.assertEqual(receipt["reason"], "letter-not-live")
+        # a dead letter no longer dead-ends:  nothing else to route on here, so no session
         self.assertEqual(receipt["session_id"], "")
         self.assertEqual(receipt["picked"], "")
+        self.assertIn(receipt["reason"], ("no-live-session", "letter-not-live-fell-back"))
 
 
 class TargetPick(Base):

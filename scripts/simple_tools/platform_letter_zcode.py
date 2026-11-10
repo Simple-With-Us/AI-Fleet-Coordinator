@@ -291,7 +291,7 @@ def _record_thread_link(env: Mapping[str, str], sid: str) -> None:
         "mac" if sys.platform == "darwin" else "server"
     )
     try:
-        RA.call(
+        answer = RA.call(
             env,
             "update",
             {
@@ -301,10 +301,17 @@ def _record_thread_link(env: Mapping[str, str], sid: str) -> None:
                 "session_id": sid,
                 "thread_link": THREAD_LINK_FORM.format(sid=sid),
             },
-            timeout=6,
+            timeout=2,
         )
-    except Exception:  # noqa: BLE001 - a link that cannot be recorded never blocks a chat
+    except Exception as exc:  # noqa: BLE001 - a link that cannot be recorded never blocks a chat
+        print("platform-letter: thread-link update failed (%s)" % type(exc).__name__, file=sys.stderr)
         return
+    if isinstance(answer, dict) and answer.get("error"):
+        # swallowed no longer:  one stderr line names it, the chat is never blocked
+        print(
+            "platform-letter: thread-link update refused (%s)" % str(answer.get("error"))[:120],
+            file=sys.stderr,
+        )
 
 
 def _hook_owned_title(env: Mapping[str, str], sid: str, current: str) -> bool:

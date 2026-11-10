@@ -230,9 +230,9 @@ def resolve_letter(env: dict[str, str], letter: str) -> str:
             request.add_header(name, value)
         with urllib.request.urlopen(request, timeout=10) as response:
             answer = json.loads(response.read().decode("utf-8"))
-    except (OSError, ValueError, KeyError):
+    except (OSError, ValueError, KeyError, AttributeError, TypeError):
         return ""
-    if not answer.get("found"):
+    if not isinstance(answer, dict) or not answer.get("found"):
         return ""
     sid = str(answer.get("native_session_id") or "")
     return sid if TARGET_RE.fullmatch(sid) else ""
@@ -257,6 +257,11 @@ def pick_target(
     target id always begins `sess_`:  a crafted row can never steer an argv token a child
     would read as a flag."""
     if letter_sid:
+        # Cross-host BY DESIGN:  the sender addressed one chat and the registry said which -
+        # routing is registry-level, nothing executes locally, so a letter that resolves to a
+        # session on the other host is still the right pick (its letter, its receipt).
+        # Liveness is already enforced behind it:  resolve answers only a live holder, so a
+        # retired or closed letter resolves nothing and the deterministic rules take over.
         if letter_sid in _subagent_ids(store, [letter_sid]):
             return "", "letter-target-is-subagent"
         return letter_sid, "letter"
@@ -382,21 +387,24 @@ def record(
     reason = ""
     sid = ""
     picked = ""
-    if letter and not letter_sid:
-        reason = "letter-not-live"
-    else:
+    rows: list = []
+    if not letter_sid:
+        # No letter, or one that does not resolve live:  the deterministic rules stand either
+        # way.  A dead letter never dead-ends the wake - the mention forms are a regex, and a
+        # pair like "PR" after the seat name may be a word, so an unresolved letter falls
+        # back to topic words and recency with the dead letter recorded in the receipt.
         try:
             rows = registry_history(env)
         except Exception:  # noqa: BLE001 - an unreadable registry is an unpicked wake, never a crash
             rows = []
-        if letter_sid:
-            rows = []  # the letter said which chat this is; nothing else may override it
-        sid, picked = pick_target(
-            rows, topic, store, str(config.get("target_host") or "server"), letter_sid
-        )
-        if not sid:
-            reason = picked  # no-live-session / letter-target-is-subagent
-            picked = ""
+    sid, picked = pick_target(
+        rows, topic, store, str(config.get("target_host") or "server"), letter_sid
+    )
+    if not sid:
+        reason = picked  # no-live-session / letter-target-is-subagent
+        picked = ""
+    elif letter and not letter_sid:
+        reason = "letter-not-live-fell-back"
     receipt = {
         "at": time.time(),
         "wake_id": wake_id,
