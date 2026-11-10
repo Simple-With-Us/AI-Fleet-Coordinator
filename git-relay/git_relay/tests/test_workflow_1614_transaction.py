@@ -301,6 +301,9 @@ class ProofTests(unittest.TestCase):
         before = Path(__file__).parent / "fixtures" / "workflow-1549.py.txt"
         with (
             tempfile.TemporaryDirectory() as tmp,
+            # Isolate the proof gate from the earlier historical-image gate.
+            # Moving main is deliberately not the fixed 1614 candidate.
+            patch.object(builder, "image", return_value=b"candidate"),
             patch.object(builder, "PROOF", "wrong"),
             self.assertRaisesRegex(ValueError, "runtime proof module drift"),
         ):
