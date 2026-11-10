@@ -10,6 +10,7 @@ tree is refused before anything is written.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -47,6 +48,24 @@ class ScrubTests(unittest.TestCase):
         self.assertEqual(cleared, str(sorted(hermetic.FLEET_ROOT_VARS)), "the roots were not set before the import")
         self.assertEqual(remaining, "[]")
 
+    def test_a_systemd_folder_named_in_the_environment_never_reaches_server_working_dirs(self) -> None:
+        # server_working_dirs reads FLEET_SYSTEMD_DIR once, when it is imported, and builds the paths of the units it checks and
+        # rewrites from it.  Started from a shell that sets it, the module follows it;  started after the tests package, which
+        # clears it first, it does not.
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONDONTWRITEBYTECODE": "1", "FLEET_SYSTEMD_DIR": DECOY}
+
+        def systemd_dir(*preamble: str) -> str:
+            code = "\n".join(
+                ("import sys", "sys.path.insert(0, sys.argv[1])", *preamble,
+                 "from fleet_lanes import server_working_dirs as swd", "print(swd.SYSTEMD_DIR)")
+            )
+            run = subprocess.run([sys.executable, "-B", "-c", code, str(SCRIPTS_DIR)], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            return run.stdout.strip()
+
+        self.assertEqual(systemd_dir(), DECOY, "the hazard this guards against is gone from server_working_dirs")
+        self.assertNotEqual(systemd_dir("import fleet_lanes.tests"), DECOY)
+
     def test_without_fleet_roots_hides_them_and_restores_the_callers(self) -> None:
         with mock.patch.dict(os.environ, {"FLEET_APPS_ROOT": DECOY, "FLEET_LANES_ROOT": DECOY}):
             with hermetic.without_fleet_roots():
@@ -60,6 +79,66 @@ class ScrubTests(unittest.TestCase):
         self.assertEqual(hermetic.clear(env), ["FLEET_CODE_ROOT"])
         self.assertEqual(env, {"AGENT_SEAT": "CLAUDE", "HOME": "/h"})
         self.assertEqual(hermetic.clear(env), [])
+
+
+# The shapes in which the lane tools read an environment variable:  a call or index that names it, an ENV_ constant that holds its
+# name, a membership test, and, in the shell shims and the lane launcher, ${NAME}.  A name assembled from pieces is not found by
+# this scan and has to be added to the tables in hermetic.py by hand.
+PYTHON_READS = tuple(
+    re.compile(shape)
+    for shape in (
+        r"""(?:environ|env)\.get\(\s*["'](FLEET_[A-Z0-9_]+)""",
+        r"""(?:environ|env)\[\s*["'](FLEET_[A-Z0-9_]+)""",
+        r"""getenv\(\s*["'](FLEET_[A-Z0-9_]+)""",
+        r"""\bENV_[A-Z0-9_]+\s*=\s*["'](FLEET_[A-Z0-9_]+)""",
+        r"""["'](FLEET_[A-Z0-9_]+)["']\s+in\s+(?:os\.)?(?:environ|env)\b""",
+    )
+)
+SHELL_READS = (re.compile(r"""\$\{?(FLEET_[A-Z0-9_]+)"""),)
+
+
+def fleet_variables_read() -> dict[str, list[str]]:
+    """Every FLEET_ name the lane tools (everything in the package but its tests and docs) read, with the files that read it."""
+    package = SCRIPTS_DIR / "fleet_lanes"
+    found: dict[str, list[str]] = {}
+    for path in sorted(package.rglob("*")):
+        relative = path.relative_to(package)
+        if not path.is_file() or {"tests", "__pycache__"} & set(relative.parts) or path.suffix in {".md", ".pyc"}:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        for pattern in PYTHON_READS if path.suffix == ".py" else PYTHON_READS + SHELL_READS:
+            for name in pattern.findall(text):
+                files = found.setdefault(name, [])
+                if relative.as_posix() not in files:
+                    files.append(relative.as_posix())
+    return found
+
+
+class AuditTests(unittest.TestCase):
+    """Every FLEET_ variable the lane tools read is either a place (scrubbed) or reviewed as not one (hermetic.NOT_LOCATIONS)."""
+
+    def test_every_fleet_variable_the_tools_read_is_classified(self) -> None:
+        read = fleet_variables_read()
+        self.assertGreater(len(read), 20, "the scan found almost nothing:  the read shapes no longer match the code")
+        # A name the scan does not know is a new read:  one that names a folder or a file belongs in FLEET_ROOT_VARS (so every
+        # test starts without it and cannot be pointed at the live copy through it), anything else in NOT_LOCATIONS with the reason.
+        unclassified = {name: files for name, files in read.items() if name not in hermetic.FLEET_ROOT_VARS and name not in hermetic.NOT_LOCATIONS}
+        self.assertEqual(unclassified, {}, "classify these in scripts/fleet_lanes/tests/hermetic.py")
+        stale = sorted((set(hermetic.FLEET_ROOT_VARS) | set(hermetic.NOT_LOCATIONS)) - set(read))
+        self.assertEqual(stale, [], "hermetic.py lists names the lane tools no longer read:  remove them")
+
+    def test_the_two_tables_do_not_overlap_or_repeat(self) -> None:
+        self.assertEqual(sorted(set(hermetic.FLEET_ROOT_VARS) & set(hermetic.NOT_LOCATIONS)), [])
+        self.assertEqual(len(set(hermetic.FLEET_ROOT_VARS)), len(hermetic.FLEET_ROOT_VARS))
+        self.assertTrue(all(reason.strip() for reason in hermetic.NOT_LOCATIONS.values()), "every name that is not a place says why")
+
+    def test_the_scan_sees_python_reads_and_shell_reads(self) -> None:
+        read = fleet_variables_read()
+        self.assertEqual(read["FLEET_SYSTEMD_DIR"], ["server_working_dirs.py"])  # os.environ.get at import time
+        self.assertEqual(read["FLEET_SCRIPTS_DIR"], ["bin/lane"])  # ${FLEET_SCRIPTS_DIR} in the launcher
 
 
 class AssertInsideTests(unittest.TestCase):

@@ -16,6 +16,13 @@ Three layers, so one mistake cannot reach the live folders again:
     its temp tree.
 
 test_hermetic.py proves each layer, including that a root set in the environment is ignored.
+
+Which variables are scrubbed.  A FLEET_ variable the tools read is a LOCATION when its value is a folder or a file the code reads or
+writes (a root, a state folder, a registry, a credential file, the systemd units folder):  those are FLEET_ROOT_VARS, and a test
+that does not pass its own environment would otherwise follow them to the live copy.  Every other FLEET_ variable the tools read is
+a flag, a counter, a note, a URL, a program to run or a chat target;  those are NOT_LOCATIONS, each with its reason.  The two
+tables together are the audit, and test_hermetic.py scans the package and fails when a FLEET_ name the tools read is in neither,
+so a new variable is classified in the pull request that adds it.
 """
 
 from __future__ import annotations
@@ -26,16 +33,45 @@ from collections.abc import Iterator, Mapping, MutableMapping
 from pathlib import Path
 from unittest import mock
 
-# Every variable through which the lane tools are pointed at a folder or a registry on this machine.
+# Every variable through which the lane tools are pointed at a folder or a file on this machine.
 FLEET_ROOT_VARS: tuple[str, ...] = (
+    # the trees
     "FLEET_CODE_ROOT",
     "FLEET_APPS_ROOT",
     "FLEET_LANES_ROOT",
     "FLEET_LANES_EXTERNAL_ROOT",
     "FLEET_SERVER_VOLUME",
+    # the registry and the layout it selects
     "FLEET_APPS_JSON",
     "FLEET_LAYOUT",
+    # state, logs and configuration the tools read or write
+    "FLEET_LANE_GUARD_STATE_DIR",
+    "FLEET_LANE_GUARD_MODE_FILE",
+    "FLEET_PLACEMENT_EXCEPTIONS",
+    "FLEET_SYSTEMD_DIR",
+    "FLEET_TEMP_BUILD_SCAN_ROOTS",
+    "FLEET_SYNC_BEARER_FILE",
+    "FLEET_RAG_HOME",
+    "FLEET_SCRIPTS_DIR",
 )
+
+# The other FLEET_ variables the tools read, and why none of them is a place a test could reach the live machine through.
+NOT_LOCATIONS: dict[str, str] = {
+    "FLEET_BUILD_SHIM_DENY_NOTE": "the text the build shim shows when it refuses",
+    "FLEET_BUILD_SHIM_DEPTH": "a recursion counter the build shim sets for itself",
+    "FLEET_GIT_SHIM_DENY_NOTE": "the text the git shim shows when it refuses",
+    "FLEET_GIT_SHIM_DEPTH": "a recursion counter the git shim sets for itself",
+    "FLEET_GIT_SHIM_PYTHON": "the interpreter the shims run their checks with, a program and not a tree",
+    "FLEET_GIT_SHIM_REAL": "the real git the shims call, a program and not a tree;  the tests that need it set their own",
+    "FLEET_HOST_KIND": "names the kind of host (mac or server), not a place",
+    "FLEET_LANES_TEST_RUN": "marks a test run, not a place",
+    "FLEET_LANE_GUARD": "the guard's on/off switch, not a place",
+    "FLEET_PYTHON": "the interpreter the lane shim runs, a program and not a tree",
+    "FLEET_SYNC_ALERT_STREAM": "the chat channel code-main-sync alerts in, not a folder",
+    "FLEET_SYNC_ALERT_TAG": "the tag in that alert's text, not a folder",
+    "FLEET_SYNC_ALERT_TOPIC": "the chat topic code-main-sync alerts in, not a folder",
+    "FLEET_SYNC_RELAY_URL": "a URL, not a folder",
+}
 
 
 def clear(env: MutableMapping[str, str] | None = None) -> list[str]:
