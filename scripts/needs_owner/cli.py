@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Mapping, Sequence, TextIO
+from collections.abc import Mapping, Sequence
+from typing import TextIO
 
 from . import __version__
 from .errors import NeedsOwnerError
@@ -202,7 +203,7 @@ def main(
         return 0
     except KeyboardInterrupt:
         return 130
-    except Exception as exc:  # noqa: BLE001 - say what failed, never print a traceback (it can carry a filer's words)
+    except Exception as exc:
         if env.get("NEEDS_OWNER_DEBUG"):
             raise
         err.write(

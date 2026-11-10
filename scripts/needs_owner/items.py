@@ -219,7 +219,7 @@ def now() -> dt.datetime:
     pinned = os.environ.get("NEEDS_OWNER_TEST_NOW")
     if pinned:
         return dt.datetime.fromisoformat(pinned.replace("Z", "+00:00"))
-    return dt.datetime.now(dt.timezone.utc)
+    return dt.datetime.now(dt.UTC)
 
 
 def age_hours(created_at: str | None, at: dt.datetime) -> float | None:
@@ -230,7 +230,7 @@ def age_hours(created_at: str | None, at: dt.datetime) -> float | None:
     except ValueError:
         return None
     if created.tzinfo is None:
-        created = created.replace(tzinfo=dt.timezone.utc)
+        created = created.replace(tzinfo=dt.UTC)
     return round(max(0.0, (at - created).total_seconds() / 3600.0), 1)
 
 

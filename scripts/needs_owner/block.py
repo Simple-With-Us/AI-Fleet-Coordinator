@@ -101,7 +101,7 @@ class Block:
             self.question, self.options, version=self.version, mirror_msg=self.mirror_message()
         )
 
-    def same_request(self, other: "Block") -> bool:
+    def same_request(self, other: Block) -> bool:
         """Every field a request can set, compared without case or spacing differences."""
         return (
             T.normalize(self.question) == T.normalize(other.question)
