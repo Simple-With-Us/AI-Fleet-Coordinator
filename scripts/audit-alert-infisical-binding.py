@@ -173,7 +173,7 @@ def validate_metadata(metadata, project, token, now):
         raise Refusal("invalid_metadata")
     if workspace != project or ("projectId" in metadata and metadata["projectId"] != project):
         raise Refusal("grant_mismatch")
-    if metadata.get("scopes") != [{"environment": "prod", "secretPath": "/"}]:
+    if metadata.get("scopes") != [{"environment": "prod", "secretPath": "/alert-workers-release"}]:
         raise Refusal("grant_mismatch")
     if metadata.get("permissions") != ["read"]:
         raise Refusal("grant_mismatch")
