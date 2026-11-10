@@ -81,18 +81,24 @@ def clone_cmd(repo, dest):
     return [part.format(repo=repo, dest=str(dest)) for part in shlex.split(template)]
 
 
+# Directories that never enter an archive:  pruned during traversal so full
+# clones do not pay enumeration and sort for thousands of discarded objects.
+PRUNE_DIRS = frozenset({"node_modules", ".git", "dist", "build"})
+
+
 def zip_clone(clone_root, zip_path):
     """Zip clone_root into zip_path, applying EXCLUDE_PATTERNS."""
     count = 0
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for path in sorted(clone_root.rglob("*")):
-            if not path.is_file():
-                continue
-            rel = path.relative_to(clone_root).as_posix()
-            if is_excluded(rel):
-                continue
-            zf.write(path, rel)
-            count += 1
+        for dirpath, dirnames, filenames in os.walk(clone_root):
+            dirnames[:] = sorted(d for d in dirnames if d not in PRUNE_DIRS)
+            for name in sorted(filenames):
+                path = Path(dirpath) / name
+                rel = path.relative_to(clone_root).as_posix()
+                if is_excluded(rel):
+                    continue
+                zf.write(path, rel)
+                count += 1
     return count
 
 
@@ -103,8 +109,9 @@ def append_env_file(path, text):
         fh.write(text)
 
 
-def write_summary(outdir, date_str, succeeded, failed, zip_count):
-    status = "COMPLETE" if not failed else "PARTIAL"
+def write_summary(outdir, date_str, succeeded, failed, zip_count, count_mismatch):
+    partial = bool(failed) or count_mismatch
+    status = "PARTIAL" if partial else "COMPLETE"
     lines = [
         f"Fleet repo backup {date_str}: {status}",
         f"generated: {datetime.now(UTC).isoformat(timespec='seconds')}",
@@ -117,6 +124,11 @@ def write_summary(outdir, date_str, succeeded, failed, zip_count):
             "WARNING: this artifact set is incomplete; "
             "the failed repositories have no archive in this run."
         )
+    if count_mismatch:
+        lines.append(
+            "WARNING: the on-disk archive count does not reconcile with the "
+            "repo list; treat this set as incomplete."
+        )
     (outdir / SUMMARY_NAME).write_text("\n".join(lines) + "\n", encoding="utf-8")
     return status
 
@@ -125,24 +137,60 @@ def run_backup(repo_list_path, outdir, date_str):
     repos = [line.strip() for line in Path(repo_list_path).read_text().splitlines() if line.strip()]
     outdir.mkdir(parents=True, exist_ok=True)
     succeeded, failed = [], []
+    timeout = int(os.environ.get("BACKUP_REPOS_CLONE_TIMEOUT", "300"))
     for repo in repos:
         print("=" * 40)
+        # A repo name becomes a filesystem path and an rmtree target:  only
+        # GitHub's own name charset may reach either, so a crafted entry can
+        # never escape the output directory.
+        if (
+            not repo
+            or repo in (".", "..")
+            or not all(c.isascii() and (c.isalnum() or c in "_.-") for c in repo)
+        ):
+            print(f"::error::invalid repo name refused before filesystem use: {repo!r}")
+            failed.append(repo)
+            continue
         print(f"Cloning Simple-With-Us/{repo}")
         clone_dest = outdir / repo
-        proc = subprocess.run(clone_cmd(repo, clone_dest))
+        try:
+            proc = subprocess.run(clone_cmd(repo, clone_dest), timeout=timeout)
+        except subprocess.TimeoutExpired:
+            print(f"::error::clone timed out after {timeout}s for Simple-With-Us/{repo}")
+            failed.append(repo)
+            continue
+        except Exception as exc:  # one bad item must not abort the batch
+            print(f"::error::clone dispatch failed for {repo}: {type(exc).__name__}: {exc}")
+            failed.append(repo)
+            continue
         if proc.returncode != 0:
             print(f"::error::could not clone Simple-With-Us/{repo}")
             failed.append(repo)
             continue
-        zip_path = outdir / f"{repo}-backup-{date_str}.zip"
-        zip_clone(clone_dest, zip_path)
-        shutil.rmtree(clone_dest)
+        try:
+            zip_path = outdir / f"{repo}-backup-{date_str}.zip"
+            zip_clone(clone_dest, zip_path)
+            shutil.rmtree(clone_dest)
+        except Exception as exc:  # one bad item must not abort the batch
+            zip_path.unlink(missing_ok=True)  # never ship a partial archive
+            print(f"::error::archive failed for {repo}: {type(exc).__name__}: {exc}")
+            failed.append(repo)
+            continue
         print(f"Archive created: {zip_path.name}")
         succeeded.append(repo)
 
+    # The count guard runs BEFORE any labeling:  a mismatch can never read
+    # as a complete offsite.
     zips = sorted(outdir.glob("*.zip"))
-    status = write_summary(outdir, date_str, succeeded, failed, len(zips))
-    suffix = "-PARTIAL" if failed else ""
+    expected = len(repos)
+    count_mismatch = len(zips) != expected - len(failed)
+    if count_mismatch:
+        print(
+            f"::error::expected {expected - len(failed)} archives "
+            f"({expected} repos, {len(failed)} failed), found {len(zips)}"
+        )
+    status = write_summary(outdir, date_str, succeeded, failed, len(zips), count_mismatch)
+    suffix = "-PARTIAL" if status == "PARTIAL" else ""
     append_env_file(os.environ.get("GITHUB_ENV"), f"BACKUP_ARTIFACT_SUFFIX={suffix}\n")
     append_env_file(
         os.environ.get("GITHUB_STEP_SUMMARY"),
@@ -151,14 +199,7 @@ def run_backup(repo_list_path, outdir, date_str):
         f"- failed: {', '.join(failed) or 'none'}\n",
     )
 
-    # The count guard stays:  a silent drop must read as an error, not as a
-    # complete offsite.
-    expected = len(repos)
-    if len(zips) != expected - len(failed):
-        print(
-            f"::error::expected {expected - len(failed)} archives "
-            f"({expected} repos, {len(failed)} failed), found {len(zips)}"
-        )
+    if count_mismatch:
         return 1
     if failed:
         print(f"::error::{len(failed)} repositories failed to clone: {', '.join(failed)}")

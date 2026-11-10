@@ -21,11 +21,20 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 import backup_repos
 
 STUB = """\
-import shutil, sys
+import os, shutil, sys, time
 from pathlib import Path
 repo, dest = sys.argv[1], sys.argv[2]
 if repo.endswith("-missing"):
     sys.exit(3)
+if repo.endswith("-slow"):
+    time.sleep(30)
+if repo.endswith("-unreadable"):
+    root = Path(dest)
+    root.mkdir(parents=True, exist_ok=True)
+    locked = root / "locked.txt"
+    locked.write_text("x")
+    os.chmod(locked, 0)
+    sys.exit(0)
 root = Path(dest)
 (root / "node_modules" / "pkg").mkdir(parents=True)
 (root / ".git").mkdir(parents=True)
@@ -71,13 +80,14 @@ class BackupReposTest(unittest.TestCase):
         self.repo_list = self.tmp / "repo-list.txt"
         self.outdir = self.tmp / "backups"
 
-    def run_script(self, repos):
+    def run_script(self, repos, extra_env=None):
         self.repo_list.write_text("\n".join(repos) + "\n")
         env = dict(os.environ)
         env["BACKUP_REPOS_CLONE_CMD"] = f"{sys.executable} {self.stub} {{repo}} {{dest}}"
         env["GITHUB_ENV"] = str(self.env_file)
         env["GITHUB_STEP_SUMMARY"] = str(self.step_summary)
         env.pop("GH_TOKEN", None)
+        env.update(extra_env or {})
         return subprocess.run(
             [
                 sys.executable,
@@ -174,6 +184,53 @@ class BackupReposTest(unittest.TestCase):
         proc = self.run_script(proc_env_repo)
         self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
         self.assertIn("::error::expected", proc.stdout)
+
+
+    def test_invalid_repo_name_refused_before_filesystem_use(self):
+        proc = self.run_script(["../evil", "a/b", ".", "Alpha"])
+        self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
+        self.assertIn("::error::invalid repo name refused", proc.stdout)
+        # Only the valid repo was attempted and archived.
+        self.assertTrue((self.outdir / "Alpha-backup-2026-11-10.zip").exists())
+        self.assertFalse((self.tmp / "evil-backup-2026-11-10.zip").exists())
+        self.assertFalse((self.outdir / ".." / "evil").exists())
+        summary = (self.outdir / "BACKUP-SUMMARY.txt").read_text()
+        self.assertIn("PARTIAL", summary)
+        self.assertIn("../evil", summary)
+
+    def test_clone_timeout_recorded_and_batch_continues(self):
+        proc = self.run_script(["Slow-slow", "Beta"],
+                               extra_env={"BACKUP_REPOS_CLONE_TIMEOUT": "1"})
+        self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
+        self.assertIn("::error::clone timed out after 1s", proc.stdout)
+        self.assertTrue((self.outdir / "Beta-backup-2026-11-10.zip").exists())
+        summary = (self.outdir / "BACKUP-SUMMARY.txt").read_text()
+        self.assertIn("failed (1): Slow-slow", summary)
+
+    def test_zip_exception_isolated_and_batch_continues(self):
+        proc = self.run_script(["Locked-unreadable", "Beta"])
+        self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
+        self.assertIn("::error::archive failed for Locked-unreadable", proc.stdout)
+        self.assertTrue((self.outdir / "Beta-backup-2026-11-10.zip").exists())
+        self.assertFalse(
+            (self.outdir / "Locked-unreadable-backup-2026-11-10.zip").exists())
+        summary = (self.outdir / "BACKUP-SUMMARY.txt").read_text()
+        self.assertIn("PARTIAL", summary)
+
+    def test_count_mismatch_forces_partial_label(self):
+        self.outdir.mkdir(parents=True)
+        stray = self.outdir / "Stray-backup-2026-11-10.zip"
+        with zipfile.ZipFile(stray, "w") as zf:
+            zf.writestr("x", "y")
+        proc = self.run_script(["Alpha"])
+        self.assertEqual(proc.returncode, 1, proc.stderr + proc.stdout)
+        self.assertIn("::error::expected", proc.stdout)
+        summary = (self.outdir / "BACKUP-SUMMARY.txt").read_text()
+        self.assertIn("PARTIAL", summary)
+        self.assertIn("does not reconcile", summary)
+        self.assertNotIn("COMPLETE", summary)
+        self.assertIn("BACKUP_ARTIFACT_SUFFIX=-PARTIAL\n",
+                      self.env_file.read_text())
 
 
 if __name__ == "__main__":
