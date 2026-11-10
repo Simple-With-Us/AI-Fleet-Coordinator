@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   classifyHttpError,
   decide,
+  describeApiError,
+  readBoundedBody,
   hasPendingTrigger,
   isTriggerComment,
   kodyHasAnswered,
@@ -249,4 +251,70 @@ test('sweepPrompts: unknown GET failure degrades gracefully and the sweep contin
   assert.equal(res.failed, 1);
   assert.equal(res.unprocessed, 0);
   assert.equal(res.terminalClassification, null);
+});
+
+// Built at runtime so no token-shaped literal sits in the source.
+const FAKE_PREFIX = ['g', 'h', 's', '_'].join('');
+
+test('describeApiError keeps a bounded GitHub reason and drops credentials', () => {
+  const headers = new Map([
+    ['x-accepted-github-permissions', 'issues=write'],
+    ['x-github-request-id', 'ABCD:1234'],
+    ['authorization', `Bearer ${FAKE_PREFIX}SHOULDNEVERAPPEAR1234567890`],
+  ]);
+  const text = describeApiError({
+    method: 'POST',
+    path: '/repos/o/r/issues/1/comments',
+    status: 403,
+    headers,
+    bodyText: JSON.stringify({
+      message: `Resource not accessible by integration ${FAKE_PREFIX}ABCDEFGHIJKLMNOP1234`,
+      documentation_url: 'https://docs.github.com/rest/issues/comments',
+    }),
+  });
+  assert.match(text, /^POST \/repos\/o\/r\/issues\/1\/comments -> 403 /);
+  assert.match(text, /Resource not accessible by integration \[redacted\]/);
+  assert.match(text, /x-accepted-github-permissions=issues=write/);
+  assert.match(text, /x-github-request-id=ABCD:1234/);
+  assert.doesNotMatch(text, /SHOULDNEVERAPPEAR|ABCDEFGHIJKLMNOP|authorization/i);
+});
+
+test('describeApiError ignores non-JSON bodies and caps the message', () => {
+  assert.equal(
+    describeApiError({ method: 'GET', path: '/x', status: 502, bodyText: '<html>secret page</html>' }),
+    'GET /x -> 502',
+  );
+  const long = describeApiError({ status: 403, bodyText: JSON.stringify({ message: 'a'.repeat(5000) }) });
+  assert.ok(long.length < 400);
+});
+
+
+test('describeApiError cleans method, path and status into the single-line bound', () => {
+  const text = describeApiError({
+    method: 'GE\nT injected',
+    path: '/repos/x\r\nforged-log-line' + 'y'.repeat(500),
+    status: 403,
+    bodyText: '{}',
+  });
+  assert.ok(!/[\r\n]/.test(text), 'diagnostic must stay one line');
+  assert.ok(text.length <= 400);
+});
+
+test('readBoundedBody caps an unbounded error stream', async () => {
+  const chunk = new Uint8Array(64 * 1024).fill(120);
+  let pulls = 0;
+  const res = {
+    body: new ReadableStream({
+      pull(controller) {
+        pulls += 1;
+        if (pulls > 8) return controller.close();
+        controller.enqueue(chunk);
+      },
+    }),
+  };
+  const text = await readBoundedBody(res);
+  assert.ok(text.length <= 64 * 1024 + 1, 'read stays at or under one chunk past the cap');
+  assert.ok(pulls <= 3, `stream cancelled early, got ${pulls} pulls`);
+  const empty = await readBoundedBody({ body: null });
+  assert.equal(empty, '');
 });
