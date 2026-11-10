@@ -132,7 +132,6 @@ class Tests(unittest.TestCase):
         ):
             self.assertFalse(p.selector({"pid": 1}))
 
-
     def test_selector_pid_shape_validated(self):
         p = proof.RuntimeProof("test-only")
         for bad in (-1, 0, True, "1/2", "../1", "abc", "", None, 1.5):
