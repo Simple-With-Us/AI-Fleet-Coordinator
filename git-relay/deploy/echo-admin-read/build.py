@@ -41,9 +41,7 @@ def image(before):
     from git_relay.echo_admin_read import prepare
 
     policy = json.loads(before)
-    after = (
-        json.dumps(prepare(policy, LOGICAL_BEFORE), sort_keys=True, indent=2) + "\n"
-    ).encode()
+    after = (json.dumps(prepare(policy, LOGICAL_BEFORE), sort_keys=True, indent=2) + "\n").encode()
     if digest(after) != AFTER:
         raise ValueError("exact ECHO-only candidate drift")
     return after
