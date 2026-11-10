@@ -40,8 +40,6 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping
-
-from . import session_ids as SI
 from pathlib import Path
 from typing import Any, NamedTuple
 from urllib.parse import parse_qsl, urlsplit
@@ -52,6 +50,7 @@ from . import live as L
 from . import notes as N
 from . import notes_wire as W
 from . import secretscan
+from . import session_ids as SI
 
 QUEUE_DIR = "notes-queue"
 REQUESTS_DIR = "requests"
