@@ -200,9 +200,7 @@ def _infisical_get(http: HttpFn, url: str, token: str, stage: str) -> Any:
     try:
         status, payload = http("GET", url, headers, None)
     except OSError as exc:
-        raise CredentialRefused(
-            "infisical_error", "%s: %s" % (stage, type(exc).__name__)
-        ) from None
+        raise CredentialRefused("infisical_error", "%s: %s" % (stage, type(exc).__name__)) from None
     if status is None or not 200 <= int(status) < 300:
         raise CredentialRefused("infisical_error", "%s: HTTP %s" % (stage, status))
     return payload
@@ -276,9 +274,7 @@ def fetch_client_pair(token: str, *, http: HttpFn | None = None) -> tuple[str, s
     return found[CLIENT_ID_NAME], found[CLIENT_SECRET_NAME]
 
 
-def mint_access_token(
-    client_id: str, client_secret: str, *, http: HttpFn | None = None
-) -> str:
+def mint_access_token(client_id: str, client_secret: str, *, http: HttpFn | None = None) -> str:
     """Exchange the pair at Linear's OAuth token endpoint (client_credentials, the app's
     own registered scopes — a different scope string would revoke the app's other
     tokens).  Only the access token comes back;  a refusal names the HTTP status and
