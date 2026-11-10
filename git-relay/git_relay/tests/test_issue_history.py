@@ -73,10 +73,13 @@ class History(unittest.TestCase):
         )
 
     def test_raw_history_json_is_bounded_before_projection(self):
+        deep = 1
+        for _ in range(13):
+            deep = [deep]
         for extra in (
-            {"body": "x" * 65537},
-            {"nested": [[[[[[[1]]]]]]]},
-            {"nodes": list(range(501))},
+            {"nested": deep},
+            {"wide": {str(i): i for i in range(1001)}},
+            {"bad": float("nan")},
         ):
             c = Client([{"id": 1, "event": "closed", **extra}])
             a = "wf_issue_events"
@@ -84,3 +87,27 @@ class History(unittest.TestCase):
                 WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", a, REPO).run(
                     a, {"repo": REPO, "number": 1}
                 )
+        c = Client([{"id": 1, "event": "closed", "nodes": [list(range(900)) for _ in range(60)]}])
+        with self.assertRaises(Refused):
+            WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", "wf_issue_events", REPO).run(
+                "wf_issue_events", {"repo": REPO, "number": 1}
+            )
+
+    def test_real_timeline_pages_are_not_refused_for_their_raw_size(self):
+        # GB-DEPLOYER, Nov 6:  every timeline with a Kody summary or a few commits was refused,
+        # because the raw page (bodies, commit and user objects) passed the old 500-node, 64 KiB
+        # bound long before it was projected down to metadata.
+        row = {
+            "id": 1,
+            "event": "commented",
+            "created_at": "2026-11-06T10:00:00Z",
+            "body": "k" * 65536,
+            "actor": {"login": "kody-ai[bot]", "id": 2, "type": "Bot", "url": "u" * 80},
+            "reactions": {k: 0 for k in ("+1", "-1", "laugh", "hooray", "confused", "heart")},
+        }
+        c = Client([dict(row, id=i + 1) for i in range(30)])
+        out = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", "wf_issue_timeline", REPO).run(
+            "wf_issue_timeline", {"repo": REPO, "number": 1}
+        )
+        self.assertEqual(len(out["events"]), 30)
+        self.assertEqual(out["events"][0]["created_at"], "2026-11-06T10:00:00Z")

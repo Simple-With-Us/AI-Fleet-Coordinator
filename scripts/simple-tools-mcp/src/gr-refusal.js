@@ -91,7 +91,37 @@ const REFUSAL_BASE_REASONS = Object.freeze([
   "github_refused",
   "fence_mismatch",
   "unauthenticated",
+  "repository_moved",
+  "read_too_large",
 ]);
+
+/** The relay's fixed strings for a renamed or transferred repository (GitHub
+ * redirected the slug, OPS-1036) and for a well-formed read answer over the
+ * relay's size bound.  Both are definite:  nothing ran upstream, and a retry
+ * of the same call gets the same answer. */
+const REPOSITORY_MOVED_ERROR = "repository moved";
+const READ_TOO_LARGE_ERROR = "workflow read result too large";
+
+/** A GitHub owner/name, strictly:  the only shape a relay `moved_to` may take. */
+export const MOVED_SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/(?!.*\.\.)[A-Za-z0-9_.-]{1,100}$/;
+
+/** The validated move details of a relay body:  `moved_to` only as a strict
+ * owner/name, `repository_id` only as a positive safe integer.  Anything else
+ * is dropped, never reflected. */
+export function movedRepository(body) {
+  const out = {};
+  if (!body || typeof body !== "object" || Array.isArray(body)) return out;
+  if (typeof body.moved_to === "string" && MOVED_SLUG_RE.test(body.moved_to)) out.moved_to = body.moved_to;
+  if (Number.isSafeInteger(body.repository_id) && body.repository_id > 0) out.repository_id = body.repository_id;
+  return out;
+}
+
+/** Caller-facing text for a moved repository:  ours, built only from the validated details. */
+export function repositoryMovedText({ moved_to: movedTo, repository_id: repositoryId } = {}) {
+  if (movedTo) return `This repository moved to ${movedTo} (it was renamed or transferred, and GitHub redirects the old name).  Call again with repo "${movedTo}".  Nothing ran upstream.`;
+  const id = repositoryId ? ` (GitHub repository id ${repositoryId})` : "";
+  return `This repository moved${id}:  it was renamed or transferred, and GitHub redirects the old name.  Its current owner/name could not be read or is outside this seat's relay policy.  Call again with the current owner/name.  Nothing ran upstream.`;
+}
 
 /** Every reason this module can produce, in a stable order. */
 export const REFUSAL_REASONS = Object.freeze([
@@ -125,6 +155,8 @@ export function classifyRelayRefusal(error, githubStatus) {
     return status === undefined ? null : { reason: "github_refused", github_status: status };
   }
   if (error === "unauthenticated") return { reason: "unauthenticated" };
+  if (error === REPOSITORY_MOVED_ERROR) return { reason: "repository_moved" };
+  if (error === READ_TOO_LARGE_ERROR) return { reason: "read_too_large" };
   if (SEAT_RATE_LIMIT_ERRORS.has(error)) return { reason: "seat_rate_limit" };
   if (SEAT_POLICY_ERRORS.has(error) || SEAT_POLICY_PATTERNS.some((re) => re.test(error))) return { reason: "seat_policy" };
   if (FENCE_MISMATCH_ERRORS.has(error)) return { reason: "fence_mismatch" };
@@ -140,6 +172,8 @@ const REASON_TEXT = Object.freeze({
   github_refused: "GitHub itself refused the request (see github_status:  403 is permission or a branch rule, 405 is a merge block, 422 is a rejected change).  The relay passed it on;  fix the cause on GitHub, not in the seat policy.",
   fence_mismatch: "The pull request, branch, comment or check no longer matches the head, base or state the call expected.  Read the current state, then send the call again with the fresh value.",
   unauthenticated: "git-relay did not accept this seat's credential.  Nothing was written.",
+  repository_moved: repositoryMovedText(),
+  read_too_large: "GitHub's answer to this read is larger than git-relay's read bound.  Ask for less per call:  a smaller per_page, or the paged verb (for example gr_wf_pr_reviews_page, gr_wf_pr_comments_page or gr_wf_compare_commits_page).",
   bad_request_pr_not_issue_target: "The target is a pull request, not an issue.  Use the pull-request tool for it.",
   bad_request_default_branch_protected: "The relay refuses to write to or move the default branch.  Use a feature branch and a pull request.",
   bad_request_pr_not_open: "The pull request is not open.",

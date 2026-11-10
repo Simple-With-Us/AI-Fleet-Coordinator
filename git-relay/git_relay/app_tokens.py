@@ -432,10 +432,72 @@ class AppTokenMinter:
             from .github_client import RelayGitHubError
 
             if isinstance(exc, RelayGitHubError):
+                if exc.code == "repository_moved":
+                    raise
                 raise InstallationReadError(exc.status, exc.retry_after) from None
             raise AppTokenError("installation metadata unavailable") from None
         finally:
             del bearer
+
+    def moved_repository_name(self, slug: str, repo_id: int) -> str | None:
+        """The current owner/name of a repository GitHub said moved, read as the seat's own App.
+
+        Read-only and least-privilege:  the App's installation for that repository id, one
+        installation token limited to that single repository and ``metadata: read``, one GET of
+        the repository, then the token is revoked.  The token never leaves this method.  Any
+        failure answers None:  the caller still reports the move, only without the new name.
+        """
+        if (
+            not re.fullmatch(r"swu-[a-z0-9-]{1,90}", slug)
+            or type(repo_id) is not int
+            or not 0 < repo_id <= 2**53 - 1
+            or not mint_permission_allowed("metadata", "read")
+        ):
+            return None
+        token = None
+        try:
+            app_id, pem = self._app_credentials(slug)
+            bearer = self._signer(app_id, pem, int(self._clock()))
+            del pem
+            install = self._api("GET", f"/repositories/{repo_id}/installation", bearer)
+            iid = install.get("id") if isinstance(install, dict) else None
+            if (
+                type(iid) is not int
+                or iid <= 0
+                or install.get("app_id") != app_id
+                or install.get("suspended_at")
+            ):
+                return None
+            data = self._api(
+                "POST",
+                f"/app/installations/{iid}/access_tokens",
+                bearer,
+                {"repository_ids": [repo_id], "permissions": {"metadata": "read"}},
+            )
+            del bearer
+            token = data.get("token") if isinstance(data, dict) else None
+            if not isinstance(token, str) or not token:
+                token = None
+                return None
+            repo = self._api("GET", f"/repositories/{repo_id}", token)
+            full_name = repo.get("full_name") if isinstance(repo, dict) else None
+            if (
+                repo.get("id") != repo_id
+                or not isinstance(full_name, str)
+                or not re.fullmatch(
+                    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/(?!.*\.\.)[A-Za-z0-9_.-]{1,100}", full_name
+                )
+            ):
+                return None
+            return full_name
+        except Exception:
+            return None
+        finally:
+            if token:
+                try:
+                    self._api("DELETE", "/installation/token", token)
+                except Exception:
+                    pass  # it expires within the hour regardless
 
     def token_for(self, slug: str, repo: str, permissions: dict) -> tuple[str, float]:
         """Mint (or serve from cache) an installation token;  returns (token, expiry epoch)."""
