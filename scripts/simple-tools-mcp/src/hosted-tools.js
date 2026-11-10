@@ -782,7 +782,7 @@ export class HostedTools {
     // reserve, cached or not.
     if (this._identityHit && (kind === "read" || kind === "linear_read")) return;
     try {
-      // A delegated persona cannot multiply the authenticated CURSOR grant's
+      // A delegated bot cannot multiply the authenticated CURSOR grant's
       // allowance.  Its own gate is a second, independent limit and token cache.
       if (this.callerGate !== this.gate) {
         const callerPolicy = this.callerSeat === "CURSOR" ? this.config.cursorToolBudgets?.[kind] : undefined;

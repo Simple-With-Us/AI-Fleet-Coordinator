@@ -6,7 +6,7 @@
 #           inbox capture (owner, Thu, Oct 8:  "grok build is on the mac too").
 #   server  the Coolify container on the Hetzner box:  the cloud seats (owner, Thu, Oct 8:
 #           OpenAI dot (Jet), Muse Assist, the Grok Bots, Instinct and Echo, plus GROK-WEB).
-#           GB personas wake through their Grok Bot routine webhooks.  The other cloud seats (MA,
+#           GB bots wake through their Grok Bot routine webhooks.  The other cloud seats (MA,
 #           JET, GROK-WEB, WISE and ECHO) hold a queue with inbox capture since Fri, Oct 9 (no
 #           Mac config can hold them), and get a wake adapter when one exists.
 #   none    no listener instance holds the seat.  Only retired names stay here (owner,
@@ -56,7 +56,7 @@ GROK-WEB = "server"
 WISE = "server"
 ECHO = "server"
 
-# Grok Bot personas.  GB-DIRECTOR is a realm member now (it was an admin earlier), and
+# Grok bots.  GB-DIRECTOR is a realm member now (it was an admin earlier), and
 # the listener accepts moderator and member bots only (listener decision 7), so its key is
 # accepted.
 GB-DIRECTOR = "server"

@@ -30,7 +30,7 @@ Access service token in front of the public hostname.  The relay mints every se
 itself from the App keys in Fleet-OPS.
 
 A seat reaches it through ST-MCP's `gr_*` tools on a bearer connection:  its own `sbt_<seat>_`
-bearer, or `gbb_<role>_` for a Grok Bot persona, minted on the ST-MCP + GR-MCP Admin page.  The
+bearer, or `gbb_<role>_` for a Grok bot, minted on the ST-MCP + GR-MCP Admin page.  The
 Worker forwards that bearer and the relay resolves it through the Worker's verifier.  An OAuth
 connection carries no bearer, so its `gr_*` tools answer `not_configured`.
 

@@ -5,7 +5,7 @@ that decides which ZCode chat one wake belongs to (OPS-1048; owner ruling Nov 10
 The chain.  A message that tags @ZC or DMs the seat lands in the seat's inbox on the listener
 that holds it (the Mac instance today).  When the seat's section carries wake = "http", the
 listener POSTs the fixed simple-tools-wake/1 contract to the seat's routine URL, signed with the
-routine key, the same path the Grok personas and Jet follow.  This bridge is that routine's
+routine key, the same path the Grok bots and Jet follow.  This bridge is that routine's
 receiver:  it answers the POST, remembers the wake id, resolves which lettered ZCode session the
 wake belongs to, and records the pick.  No turn is ever delivered.
 

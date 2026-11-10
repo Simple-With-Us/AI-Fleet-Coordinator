@@ -45,7 +45,7 @@ the out-dir.  Keys are never printed.
 What the realm-admin bot CANNOT do (needs the organization OWNER, role 100, i.e. Jay's own
 login in the web UI):  change a user's role to owner, deactivate or reactivate users, and
 change realm-level settings.  GET /bots answers HTTP 400 to a bot caller, so this script
-never uses it.  Grok Bot (GB-*) personas are out of scope.
+never uses it.  Grok Bot (GB-*) bots are out of scope.
 """
 
 import argparse

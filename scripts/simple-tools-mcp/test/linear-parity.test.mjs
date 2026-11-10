@@ -203,8 +203,8 @@ test("the Infisical /linear names are the live LINEAR_<SEAT>_CLIENT_* names for 
 });
 
 // MA: its cached token was refused (401) at check time;  BF-ENGINEER and BF-TRADER had no token to read.
-const HELD_BACK = Object.freeze(["BF-ENGINEER", "BF-TRADER", "OPERATOR", "GB-COMPILER", "GB-DEPLOYER", "GB-DESIGNER", "GB-DIRECTOR", "GB-ENGINEER", "GB-FIXER", "GB-HOUSEKEEPER", "GB-MONITOR", "GB-ORACLE", "GB-PLUMBER", "GB-PUBLISHER", "GB-TRADER"]); // BF pair and the twelve GB personas: prepared but not enabled until each own viewer is qualified;  OPERATOR: viewer qualified but no hosted auth route (not in KNOWN_SEATS or the bearer tables), so nothing can sign in as it;  the other 21 are on
-test("the 36 own-app seats have prepared names, 21 are enabled (BF-ENGINEER, BF-TRADER, OPERATOR and the twelve GB personas held back), and none share a pair", async () => {
+const HELD_BACK = Object.freeze(["BF-ENGINEER", "BF-TRADER", "OPERATOR", "GB-COMPILER", "GB-DEPLOYER", "GB-DESIGNER", "GB-DIRECTOR", "GB-ENGINEER", "GB-FIXER", "GB-HOUSEKEEPER", "GB-MONITOR", "GB-ORACLE", "GB-PLUMBER", "GB-PUBLISHER", "GB-TRADER"]); // BF pair and the twelve GB bots: prepared but not enabled until each own viewer is qualified;  OPERATOR: viewer qualified but no hosted auth route (not in KNOWN_SEATS or the bearer tables), so nothing can sign in as it;  the other 21 are on
+test("the 36 own-app seats have prepared names, 21 are enabled (BF-ENGINEER, BF-TRADER, OPERATOR and the twelve GB bots held back), and none share a pair", async () => {
   const L = await import("../src/linear.js");
   const own = Object.keys(L.OWN_APP_LINEAR_PREFIXES);
   assert.equal(own.length, 36);
