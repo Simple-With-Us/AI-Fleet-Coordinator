@@ -208,34 +208,57 @@ class RuleReadTests(unittest.TestCase):
         self.assertIsNone(out["rulesets"][0]["target"])
 
 
+WIDE_BODY = dict(
+    REPO_BODY,
+    **SETTINGS,
+    security_and_analysis={"secret_scanning": {"status": "enabled"}},
+    allow_update_branch=True,
+    temp_clone_token="AABBCC",
+)
+
+
+class FailingWideClient(Client):
+    """Answers the least-permission read, then fails the settings read."""
+
+    def _call(self, method, path, payload=None, bearer=None, **kw):
+        if bearer == "settings-bearer":
+            self.calls.append((method, path, payload, bearer))
+            raise RelayGitHubError(403, "forbidden")
+        return super()._call(method, path, payload, bearer, **kw)
+
+
 class RepoSettingsTests(unittest.TestCase):
-    def run_get(self, reply, ceiling, minter=None):
-        client = Client(reply)
-        minter = minter or Minter()
+    def run_get(self, replies, ceiling, minter=None, client=None):
+        client = client or Client(*replies)
+        minter = minter or ScopedMinter()
         handle = WorkflowVerbs.for_action(
             client, Policy(ceiling), minter, "swu-wise", "wf_repo_get", REPO
         )
         return handle.run("wf_repo_get", {"repo": REPO}), client, minter
 
-    def test_settings_read_minted_when_ceiling_holds_administration(self):
-        out, client, minter = self.run_get(dict(REPO_BODY, **SETTINGS), CEILING, ScopedMinter())
+    def test_only_the_five_merge_settings_come_from_the_settings_read(self):
+        out, client, minter = self.run_get([dict(REPO_BODY), WIDE_BODY], CEILING)
         self.assertEqual(
             [m[2] for m in minter.calls],
             [{"metadata": "read"}, {"metadata": "read", "administration": "read"}],
         )
-        self.assertEqual(client.calls[0][1], "/repos/" + REPO)
-        self.assertEqual(client.calls[0][3], "settings-bearer")
-        for key, value in SETTINGS.items():
-            self.assertIs(out["repository"][key], value, key)
+        self.assertEqual(
+            [(c[1], c[3]) for c in client.calls],
+            [("/repos/" + REPO, "base-bearer"), ("/repos/" + REPO, "settings-bearer")],
+        )
+        repo = out["repository"]
+        self.assertEqual(repo, dict(REPO_BODY, **SETTINGS))
+        for key in ("security_and_analysis", "allow_update_branch", "temp_clone_token"):
+            self.assertNotIn(key, repo, key)
 
-    def test_least_permission_kept_without_administration_ceiling(self):
+    def test_least_permission_only_without_administration_ceiling(self):
         ceiling = {k: v for k, v in CEILING.items() if k != "administration"}
-        out, client, minter = self.run_get(dict(REPO_BODY), ceiling, ScopedMinter())
+        out, client, minter = self.run_get([dict(REPO_BODY)], ceiling)
         self.assertEqual([m[2] for m in minter.calls], [{"metadata": "read"}])
-        self.assertEqual(client.calls[0][3], "base-bearer")
-        self.assertNotIn("allow_squash_merge", out["repository"])
+        self.assertEqual([c[3] for c in client.calls], ["base-bearer"])
+        self.assertEqual(out["repository"], REPO_BODY)
 
-    def test_settings_mint_failure_falls_back_to_least_permission(self):
+    def test_settings_mint_failure_keeps_the_least_permission_object(self):
         class HalfMinter(ScopedMinter):
             def token_for(self, slug, repo, perms):
                 if "administration" in perms:
@@ -243,29 +266,32 @@ class RepoSettingsTests(unittest.TestCase):
                     raise RuntimeError("not accepted")
                 return super().token_for(slug, repo, perms)
 
-        out, client, minter = self.run_get(dict(REPO_BODY), CEILING, HalfMinter())
+        out, client, minter = self.run_get([dict(REPO_BODY)], CEILING, HalfMinter())
         self.assertEqual(len(minter.calls), 2)
-        self.assertEqual(client.calls[0][3], "base-bearer")
-        self.assertEqual(out["repository"]["full_name"], REPO)
+        self.assertEqual([c[3] for c in client.calls], ["base-bearer"])
+        self.assertEqual(out["repository"], REPO_BODY)
+
+    def test_settings_read_failure_keeps_the_least_permission_object(self):
+        client = FailingWideClient(dict(REPO_BODY))
+        out, client, _ = self.run_get(None, CEILING, client=client)
+        self.assertEqual([c[3] for c in client.calls], ["base-bearer", "settings-bearer"])
+        self.assertEqual(out["repository"], REPO_BODY)
+
+    def test_settings_from_another_repository_or_wrong_type_are_ignored(self):
+        out, _, _ = self.run_get([dict(REPO_BODY), dict(WIDE_BODY, id=10)], CEILING)
+        self.assertEqual(out["repository"], REPO_BODY)
+        out, _, _ = self.run_get(
+            [dict(REPO_BODY), dict(REPO_BODY, allow_squash_merge="yes", allow_auto_merge=None)],
+            CEILING,
+        )
+        self.assertEqual(out["repository"], REPO_BODY)
 
     def test_temp_clone_token_never_returned(self):
-        out, _, _ = self.run_get(dict(REPO_BODY, temp_clone_token="AABBCC"), CEILING)
+        ceiling = {k: v for k, v in CEILING.items() if k != "administration"}
+        out, _, _ = self.run_get([dict(REPO_BODY, temp_clone_token="AABBCC")], ceiling)
         self.assertNotIn("temp_clone_token", out["repository"])
-        out, _, _ = self.run_get(dict(REPO_BODY, temp_clone_token=""), CEILING)
+        out, _, _ = self.run_get([dict(REPO_BODY, temp_clone_token="")], ceiling)
         self.assertEqual(out["repository"]["temp_clone_token"], "")
-
-    def test_wide_object_drops_hypermedia_templates_only(self):
-        body = dict(REPO_BODY, **SETTINGS)
-        body["url"] = "https://api.github.com/repos/" + REPO
-        body["html_url"] = "https://github.com/" + REPO
-        for i in range(100):
-            body[f"x{i}_url"] = "https://api.github.com/repos/" + REPO + f"/x{i}"
-        out, _, _ = self.run_get(body, CEILING)
-        repo = out["repository"]
-        self.assertFalse(any(k.startswith("x") and k.endswith("_url") for k in repo))
-        self.assertEqual(repo["url"], body["url"])
-        self.assertEqual(repo["html_url"], body["html_url"])
-        self.assertIs(repo["allow_squash_merge"], True)
 
     def test_check_shape_needs_no_minter(self):
         WorkflowVerbs.check_shape("wf_repo_get", {"repo": REPO}, REPO)

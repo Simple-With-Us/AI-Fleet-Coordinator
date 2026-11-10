@@ -843,6 +843,15 @@ _HOOK_SECRET_HOSTS = (
 )
 _HOOK_TOKEN_SEGMENT = re.compile(r"[A-Za-z0-9_~.-]{20,}")
 
+# The merge settings wf_repo_get copies from its settings-read response, and nothing else.
+_REPO_MERGE_SETTINGS = (
+    "allow_merge_commit",
+    "allow_squash_merge",
+    "allow_rebase_merge",
+    "allow_auto_merge",
+    "delete_branch_on_merge",
+)
+
 
 def _hook_url_carries_secret(url):
     try:
@@ -4645,30 +4654,25 @@ class WorkflowVerbs:
 
     def wf_repo_get(self, repo, args):
         _only(args, ("repo",))
+        # The repository object always comes from the least-permission (metadata:read)
+        # token.  The settings-read token is used for one more read, and only the five
+        # merge settings are copied from it:  any other field GitHub shows only to a
+        # settings reader (security_and_analysis, a filled temp_clone_token, ...) is
+        # discarded with that response.
+        data = dict(_obj(self._get(f"/repos/{repo}")))
         bearer = self._repo_settings_bearer(repo)
-        if bearer is self.bearer:
-            data = self._get(f"/repos/{repo}")
-        else:
-            data = self.client._call("GET", f"/repos/{repo}", None, bearer=bearer)
-        data = _obj(data)
-        # A settings-read token can make GitHub fill temp_clone_token, a short-lived
-        # clone credential;  it never leaves the relay.
+        if bearer is not self.bearer:
+            try:
+                wide = self.client._call("GET", f"/repos/{repo}", None, bearer=bearer)
+            except RelayGitHubError:
+                wide = None
+            if isinstance(wide, dict) and wide.get("id") == data.get("id"):
+                for key in _REPO_MERGE_SETTINGS:
+                    if type(wide.get(key)) is bool:
+                        data[key] = wide[key]
+        # temp_clone_token is a short-lived clone credential;  it never leaves the relay.
         if data.get("temp_clone_token"):
-            data = {k: v for k, v in data.items() if k != "temp_clone_token"}
-        # The settings keys can take the object past the 100-key read bound.  Only then,
-        # drop the API hypermedia templates (forks_url, hooks_url, ...), which any caller
-        # can rebuild from full_name;  url and html_url always stay.
-        if len(data) > 100:
-            data = {
-                k: v
-                for k, v in data.items()
-                if not (
-                    k.endswith("_url")
-                    and k != "html_url"
-                    and isinstance(v, str)
-                    and v.startswith("https://api.github.com/repos/")
-                )
-            }
+            del data["temp_clone_token"]
         return {"repository": data}
 
     def wf_branch_rules(self, repo, args):
