@@ -41,11 +41,14 @@ new hosted tool can take that long to appear.
 - A server that issues a session gets none of this: that seat's cache is cleared, nothing is
 stored, and a connection with a live session is never answered from disk.
 - `MCP-Protocol-Version` is the version in the request's own `_meta` when it names one, or
-else the negotiated version, or else `2025-06-18`.  An `initialize` never sends it.
+else the negotiated version, or else `2025-06-18`.  An `initialize` that names no version in its `_meta` sends none.
 
-A request in the modern `_meta` form also needs `Mcp-Method` and `Mcp-Name` headers, which
-this adapter does not send, so the hosted server refuses it and the client gets an ordinary
-transport failure, as it did before this cache existed.  The legacy handshake is unaffected.
+A request in the modern `_meta` form is served on the hosted server's modern path, which refuses
+it with HTTP 400 and code -32020 unless its headers match the body.  The adapter sends
+`MCP-Protocol-Version`, `Mcp-Method` (the method) and, for `tools/call`, `prompts/get`,
+`resources/read`, `tasks/get`, `tasks/update` and `tasks/cancel`, `Mcp-Name` (`params.name`,
+`params.uri` or `params.taskId`), in the `=?base64?…?=` form when the value is not plain ASCII,
+is blank, or already looks like that form.  The legacy handshake is unaffected.
 
 The cache is `$XDG_CACHE_HOME/assigned-hosted-stdio`, or `~/.cache/assigned-hosted-stdio`.
 It holds hosted discovery answers and no bearer, and file names derive from a one-way

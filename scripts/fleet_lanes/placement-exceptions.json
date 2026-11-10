@@ -33,23 +33,10 @@
       "pattern": "{lanes}/_managed/fleet/simple-tools-runtime",
       "class": "service",
       "creator": "afc",
-      "reason": "Launchd jobs and a running process use this managed runtime checkout.",
+      "reason": "Launchd jobs, a running process, the simple-chat CLI and its runtime-sync job use this managed runtime checkout.",
       "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
       "decided_on": "2026-11-04",
       "expires": "2027-03-04",
-      "hosts": [
-        "mac"
-      ]
-    },
-    {
-      "id": "service-agent-sync-runtime",
-      "pattern": "{lanes}/_managed/fleet/agent-sync-runtime",
-      "class": "service",
-      "creator": "afc",
-      "reason": "The simple-chat CLI and its runtime-sync job run from this managed checkout.",
-      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
-      "decided_on": "2026-11-04",
-      "expires": "2027-02-04",
       "hosts": [
         "mac"
       ]
@@ -579,6 +566,34 @@
       "decided_by": "CLAUDE, seeded from the AFC-618 review; the owner reviews at expiry",
       "decided_on": "2026-11-04",
       "expires": "2027-08-05",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "temp-build-homebrew-source",
+      "pattern": "**/tmp/*-20??????-*",
+      "class": "temp-build",
+      "creator": "homebrew",
+      "reason": "Homebrew builds a formula from source in a temp folder named for the formula and the date, and removes it when the install ends.",
+      "decided_by": "CLAUDE, seeded with the temp-build rule (AFC-618); the owner reviews at expiry",
+      "decided_on": "2026-11-07",
+      "expires": "2027-05-07",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "temp-build-cargo-install",
+      "pattern": "**/cargo-install*",
+      "class": "temp-build",
+      "creator": "cargo",
+      "reason": "`cargo install` builds in a temp target folder of its own and removes it when the install ends.",
+      "decided_by": "CLAUDE, seeded with the temp-build rule (AFC-618); the owner reviews at expiry",
+      "decided_on": "2026-11-07",
+      "expires": "2027-05-21",
       "hosts": [
         "mac",
         "server"

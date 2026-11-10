@@ -454,6 +454,59 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 0)
         self.assertIn("doc/b", json.loads(self.state.read_text()))
 
+    def test_prune_deferred_and_skipped_when_any_later_source_fails(self) -> None:
+        # AFC-677:  a failure in ANY source of the run blocks every prune, including a
+        # source that ran (and finished cleanly) before the failure.
+        self._run()
+        self.docs["doc"] = [make_doc("doc/a", LONG_A)]
+
+        def gen(limit=None):  # noqa: ANN001
+            yield from self.docs["doc"]
+
+        def broken(limit=None):  # noqa: ANN001
+            raise RuntimeError("simple-board api query exited 4")
+            yield  # pragma: no cover
+
+        with mock.patch.object(sources, "NIGHTLY_SOURCES", ("doc", "linear")), \
+                mock.patch.object(ingest, "GENERATORS", {"doc": gen, "linear": broken}):
+            rep = ingest.run("doc,linear", cfg={"x": "y"}, qd=self.qd, state_path=self.state,
+                             last_run_path=self.last, log_path=self.logf, log=lambda *a: None,
+                             prune=True)
+        self.assertFalse(rep["ok"])
+        self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 0)
+        self.assertEqual(self.qd.deleted, [])
+        self.assertIn("doc/b", json.loads(self.state.read_text()))
+        self.assertTrue(any("prune skipped for every source" in w for w in rep["warnings"]))
+
+    def test_prune_refused_when_more_docs_would_go_than_were_yielded(self) -> None:
+        self.docs["doc"] = [make_doc(f"doc/x{i}", f"Body number {i} text here.", title=f"X{i}")
+                            for i in range(3)]
+        self._run()
+        self.docs["doc"] = [make_doc("doc/x0", "Body number 0 text here.", title="X0")]
+        rep = self._run(prune=True)
+        self.assertFalse(rep["ok"])
+        self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 0)
+        self.assertEqual(self.qd.deleted, [])
+        self.assertTrue(any("yielded only 1" in e for e in rep["errors"]))
+        self.assertEqual(set(json.loads(self.state.read_text())), {"doc/x0", "doc/x1", "doc/x2"})
+
+    def test_prune_refused_when_a_whole_repo_vanishes_unless_forced(self) -> None:
+        keep = [make_doc(f"doc/Keep/k{i}.md", f"Keep body {i} text.", title=f"K{i}") for i in range(8)]
+        lost = [make_doc(f"doc/Socratic-Trade/s{i}.md", f"Lost body {i} text.", title=f"S{i}")
+                for i in range(5)]
+        self.docs["doc"] = keep + lost
+        self._run()
+        self.docs["doc"] = keep
+        rep = self._run(prune=True)
+        self.assertFalse(rep["ok"])
+        self.assertEqual(self.qd.deleted, [])
+        self.assertTrue(any("doc/Socratic-Trade" in e and "missing" in e for e in rep["errors"]))
+        with mock.patch.dict(os.environ, {ingest.PRUNE_FORCE_ENV: "1"}):
+            rep = self._run(prune=True)
+        self.assertTrue(rep["ok"])
+        self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 5)
+        self.assertTrue(any("overridden" in w for w in rep["warnings"]))
+
     def test_duplicate_doc_id_is_an_error(self) -> None:
         self.docs["doc"] = [make_doc("doc/a", LONG_A), make_doc("doc/a", LONG_B)]
         rep = self._run()

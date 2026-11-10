@@ -27,11 +27,13 @@ extension View {
 
 private struct OpsActionSheetModifier: ViewModifier {
     @ObservedObject private var controller = OpsController.shared
+    @EnvironmentObject private var watch: PlaceWatch
 
     func body(content: Content) -> some View {
         content
             .sheet(isPresented: presented) {
-                OpsActionSheet()
+                // The server's report time,  so the "Now:" line after a run can say it is newer.
+                OpsActionSheet(reportGeneratedAt: watch.status?.generatedAt)
             }
             // A run whose sheet was closed keeps a line at the foot of the window,  with its
             // time so far and a way back to the sheet.
@@ -80,7 +82,7 @@ private struct HiddenRunStrip: View {
 
     private func line(at date: Date) -> String {
         let elapsed = controller.stageStartedAt.map { date.timeIntervalSince($0) } ?? 0
-        return "\(action.title) is still running, \(OpsController.durationText(elapsed)) so far."
+        return "\(controller.phase.title ?? action.title) is still running, \(OpsController.durationText(elapsed)) so far."
     }
 }
 
@@ -91,10 +93,17 @@ private struct HiddenRunStrip: View {
 /// back tied to the plan it asked about.
 struct OpsActionSheet: View {
     @ObservedObject private var controller = OpsController.shared
+    /// When the server's report the screen was drawn from was written,  or nil when none was
+    /// read.  The "Now:" line after a run says whether its read is newer.
+    var reportGeneratedAt: Date? = nil
+    /// The Mac's agents as the collector last saved them,  read for the plan of a stop,  so
+    /// the plan can say what depends on the agent and what stopping it costs.
+    @State private var macAgents: [MacAgent] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(controller.phase.action?.title ?? "Action")
+            // The plan-aware title:  what the server's plan named,  once a plan answered.
+            Text(controller.phase.title ?? "Action")
                 .font(.title3.weight(.semibold))
                 .fixedSize(horizontal: false, vertical: true)
             if let action = controller.phase.action {
@@ -124,6 +133,34 @@ struct OpsActionSheet: View {
         .padding(20)
         .frame(minWidth: 520, idealWidth: 560, minHeight: 280)
         .interactiveDismissDisabled(controller.isAsking)
+        .task(id: controller.phase.action) {
+            await readMacAgents(for: controller.phase.action)
+        }
+    }
+
+    /// Reads the collector's saved file off the main thread when the action is a stop of a
+    /// LaunchAgent,  and forgets the rows for any other action.
+    @MainActor
+    private func readMacAgents(for action: OpsAction?) async {
+        guard MacAgent.mayHaveStopNote(action) else {
+            macAgents = []
+            return
+        }
+        let reading = await Task.detached(priority: .userInitiated) {
+            MacServicesReportReader.readDefault()
+        }.value
+        macAgents = reading.agents
+    }
+
+    /// What a redeploy restarts,  as the panel that planned it noted:  every container of the
+    /// application,  not only the row its button was on.  Nil for any other action.
+    private static func redeployScope(_ action: OpsAction) -> String? {
+        switch action {
+        case .coolifyRedeploy(let uuid, _):
+            return RedeployScopeNotes.shared.scope(for: uuid)?.sentence
+        default:
+            return nil
+        }
     }
 
     @ViewBuilder
@@ -145,6 +182,11 @@ struct OpsActionSheet: View {
                 Text(action.effectSentence)
                     .font(.callout)
                     .fixedSize(horizontal: false, vertical: true)
+                if let scope = Self.redeployScope(action) {
+                    Text(scope)
+                        .font(.callout.weight(.semibold))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 // A stop takes a service down at once,  so its warning is on the plan,  the
                 // same words the alert uses on the direct route.
                 if let warning = action.stopWarning {
@@ -156,6 +198,13 @@ struct OpsActionSheet: View {
                             .accessibilityHidden(true)
                     }
                     .font(.callout)
+                }
+                // A Mac agent's own note,  as the allowlist gives it:  what depends on it and
+                // what stopping it costs,  like the help on a server unit's Stop button.
+                if let note = MacAgent.stopNote(for: action, agents: macAgents) {
+                    Text(note)
+                        .font(.callout.weight(.semibold))
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 if let change = outcome.knobChange {
                     knobChangeBlock(change, finished: false)
@@ -183,6 +232,12 @@ struct OpsActionSheet: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if let scope = Self.redeployScope(action) {
+                    Text(scope)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 commandsDisclosure(outcome, title: "The Approved Commands")
             }
         case .finished(let action, let outcome):
@@ -195,6 +250,7 @@ struct OpsActionSheet: View {
                     }
                 }
                 resultLine(outcome, action: action)
+                nowLine(for: action)
                 if outcome.differsFromReview {
                     Label {
                         Text("\(action.runsOn == .mac ? "This Mac" : "The server") reported other commands than the plan you approved.\u{00A0} Check them below.")
@@ -217,23 +273,40 @@ struct OpsActionSheet: View {
                     knobChangeBlock(change, finished: outcome.kind == .done)
                 }
                 if let logText = outcome.logText {
-                    logBlock(logText, lines: outcome.logLines)
+                    logBlock(logText, heading: outcome.journalHeading, countLine: outcome.journalCountLine)
                 } else if !outcome.commands.isEmpty {
                     commandsDisclosure(outcome, title: outcome.commandsHeading,
                                        expanded: outcome.differsFromReview)
                 }
                 receiptDetails(outcome, action: action)
             }
-        case .failed(_, let reason):
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "xmark.octagon.fill")
-                    .foregroundStyle(.red)
-                    .accessibilityHidden(true)
-                Text(reason)
-                    .font(.callout)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+        case .failed(let action, let reason):
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "xmark.octagon.fill")
+                        .foregroundStyle(.red)
+                        .accessibilityHidden(true)
+                    Text(reason)
+                        .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+                nowLine(for: action)
             }
+        }
+    }
+
+    /// The unit's state read right after its run,  under the result:  "Now:  active (running),
+    /// checked 10:02 AM",  newer than the Mac's copy of the server's report.  Nothing for an
+    /// action whose unit was not read.
+    @ViewBuilder
+    private func nowLine(for action: OpsAction) -> some View {
+        if let line = ServerUnitStateAfterRun.sheetLine(controller.unitStateAfterRun, for: action,
+                                                         reportGeneratedAt: reportGeneratedAt) {
+            Text(line)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
         }
     }
 
@@ -275,11 +348,18 @@ struct OpsActionSheet: View {
         }
     }
 
-    /// A logs run's journal text:  scrollable and selectable,  so the owner can copy it.
-    private func logBlock(_ text: String, lines: Int?) -> some View {
+    /// A logs run's journal text:  scrollable and selectable,  so the owner can copy it.  The
+    /// heading names the unit whose journal was read (`OpsOutcome.journalHeading`).
+    private func logBlock(_ text: String, heading: String, countLine: String?) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(lines.map { "The Last \($0) Journal Lines" } ?? "The Last Journal Lines")
+            Text(heading)
                 .font(.headline)
+                .textSelection(.enabled)
+            if let countLine {
+                Text(countLine)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             ScrollView {
                 Text(text.isEmpty ? "The journal held no lines for this unit." : text)
                     .font(.system(size: 11, design: .monospaced))
@@ -391,7 +471,8 @@ struct OpsActionSheet: View {
     @MainActor
     private func approveAndRun() async {
         guard let request = controller.beginApproval() else { return }
-        let answer = await OwnerCheck.ask(reason: request.action.title)
+        // The plan-aware question:  it names what the reviewed plan named.
+        let answer = await OwnerCheck.ask(reason: request.reason)
         controller.finishApproval(request, answer: answer)
     }
 }

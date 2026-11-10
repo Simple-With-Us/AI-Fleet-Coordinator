@@ -135,6 +135,10 @@ struct MachineMenuInputs {
     /// Whether the last run could be trusted,  or nil before any run has landed.
     var lastRunWasTrusted: Bool?
     var transitions: [DriftTransition] = []
+    /// When the engine's last check of the seats landed,  or nil when the caller does not keep
+    /// it.  A check older than `SeatCheckFreshness.window` is not current,  whatever it
+    /// counted:  after a long sleep the counts are from before it.
+    var seatCheckedAt: Date? = nil
     var status: ServerStatusReading?
     var tools: FleetToolsReading?
     var asked: ServerAskResult?
@@ -259,7 +263,9 @@ enum MachineMenuCopy {
 
     private static func macHealth(_ inputs: MachineMenuInputs, problems: Int, fetchStopped: Bool,
                                   macIsCurrent: Bool, pm2Answered: Bool) -> MachineHealth {
-        guard macIsCurrent, let reds = inputs.redCells else { return .notKnown }
+        // An old seat check is not a reading:  the Mac reads not known until a new one lands,
+        // even when its services were just read again.
+        guard macIsCurrent, seatCheckIsCurrent(inputs), let reds = inputs.redCells else { return .notKnown }
         let count = reds.count + inputs.driftCells.count + problems + (fetchStopped ? 1 : 0)
         if !pm2Answered {
             return count == 0 ? .notKnown : .attention(count, someUnread: true)
@@ -330,7 +336,17 @@ enum MachineMenuCopy {
         return "\(words.prefix(1).uppercased())\(words.dropFirst())."
     }
 
+    /// True when the seat check is recent enough to count,  or when the caller keeps no time.
+    private static func seatCheckIsCurrent(_ inputs: MachineMenuInputs) -> Bool {
+        guard let checkedAt = inputs.seatCheckedAt else { return true }
+        return SeatCheckFreshness.isCurrent(checkedAt: checkedAt, now: inputs.now)
+    }
+
     private static func seatItem(_ inputs: MachineMenuInputs) -> MenuItem {
+        if inputs.redCells != nil, let checkedAt = inputs.seatCheckedAt, !seatCheckIsCurrent(inputs) {
+            // The counts are from an old check,  so they are not said as if they were current.
+            return .line(SeatCheckFreshness.menuLine(checkedAt: checkedAt, now: inputs.now))
+        }
         guard let reds = inputs.redCells else {
             if inputs.lastRunWasTrusted == false {
                 return .line("Seat setup:  the last check could not be trusted.")
@@ -403,7 +419,6 @@ enum MachineMenuCopy {
     static func server(_ inputs: MachineMenuInputs) -> ServerPlaceSummary {
         let reach = ServerReach.make(status: inputs.status, tools: inputs.tools)
         var items: [MenuItem] = []
-        var offersFetch = false
         let notKnownTimers = MenuItem.line("Timers \(FleetHost.server.onTitle):  not known")
         var health = MachineHealth.notKnown
 
@@ -413,13 +428,11 @@ enum MachineMenuCopy {
         case .fetchStopped(_, let lastReportAt):
             items.append(.line("\(lastReportLine(lastReportAt))\(gap)Whether the server is up is not known."))
             items.append(notKnownTimers)
-            offersFetch = true
         case .unreachable(let checkedAt, let lastReportAt):
             let reached = checkedAt.map { "The Mac could not reach the server at \(FleetTime.clock($0))." }
                 ?? "The Mac could not reach the server."
             items.append(.line("\(reached)\(gap)\(lastReportLine(lastReportAt))"))
             items.append(notKnownTimers)
-            offersFetch = true
         case .reportStopped(let reachedAt, let reportAt):
             let stopped = reachedAt.map {
                 "Reached at \(FleetTime.clock($0)), but its report stopped at \(FleetTime.clock(reportAt))."
@@ -429,7 +442,6 @@ enum MachineMenuCopy {
             health = .attention(1, someUnread: false)
         case .noReport:
             items.append(.line("No server report on the Mac yet."))
-            offersFetch = true
         case .cannotRead(let refusal):
             switch refusal {
             case .appOutOfDate:
@@ -439,10 +451,8 @@ enum MachineMenuCopy {
             case .notFromServer:
                 // The next fetch writes the server's own report over this file.
                 items.append(.line("This report did not come from the server."))
-                offersFetch = true
             case .unreadable:
                 items.append(.line("The server's report on the Mac could not be read."))
-                offersFetch = true
             }
         case .futureDated:
             items.append(.line("The server's report has a time ahead of the Mac's clock, so it is not current."))
@@ -465,7 +475,8 @@ enum MachineMenuCopy {
                 : "The server did not answer at \(time)."))
         }
         items.append(.command(title: "Open Server Status", .openServerStatus))
-        if offersFetch {
+        // Server Status offers the same fetch from the same rule (`ServerReach.offersFetch`).
+        if reach.offersFetch {
             items.append(.command(title: "Fetch From The Server Again\u{2026}", .fetchFromServer))
         }
         items.append(inputs.isAsking

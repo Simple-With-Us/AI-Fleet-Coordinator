@@ -22,7 +22,7 @@ nightly ingest + weekly eval routines exist.  First corpus ingest still running 
 ## Not in this PR
 
 - Bulk ingest of staged chat JSONL (forbidden).  Extra markdown after ingest lock drops.
-- AGENT-SYNC byte diet (board `0f9a13b1` leftover).
+- FLEET-PROTOCOL byte diet (board `0f9a13b1` leftover).
 - Product-app `AGENTS.md` PRs (snippet is ready).
 - BotFleet native MCP consumer: Oracle already runs ingest/eval; bots that spawn Mac CLIs inherit stdio MCP.  Native BotFleet config.json has no mcpServers key — REST hop is the cloud/phone path.
 
