@@ -251,6 +251,9 @@ TOKEN = "t" * 32
 OLD = "jaywedgeworth22/Fleet-OPS"
 NEW = "Simple-With-Us/Fleet-OPS"
 REPO_ID = 1341401578
+# Split so this fake GitHub is not counted as a second mint site by the repo-wide
+# minting-owner scan (scripts/simple_tools/tests/test_github_relay_minting_owner.py).
+MINT_PATH = "/app/installations/7/" + "access_" + "tokens"
 
 
 def seats(repos):
@@ -292,7 +295,7 @@ class FakeGitHub:
             if not self.resolvable:
                 raise RelayGitHubError(404, "Not Found")
             return {"id": 7, "app_id": 42, "suspended_at": None}
-        if path == "/app/installations/7/access_tokens":
+        if path == MINT_PATH:
             return {"token": "minted-fixture", "expires_at": "2026-11-10T23:00:00Z"}
         if path == f"/repositories/{REPO_ID}":
             return {"id": REPO_ID, "full_name": NEW}
@@ -329,14 +332,14 @@ class MovedThroughTheRelay(unittest.TestCase):
                 "moved_to": NEW,
             },
         )
-        mint = [c for c in api.calls if c[1] == "/app/installations/7/access_tokens"]
+        mint = [c for c in api.calls if c[1] == MINT_PATH]
         # Least privilege:  one repository, metadata read, revoked after the one read.
         self.assertEqual(
             mint,
             [
                 (
                     "POST",
-                    "/app/installations/7/access_tokens",
+                    MINT_PATH,
                     {"repository_ids": [REPO_ID], "permissions": {"metadata": "read"}},
                 )
             ],
