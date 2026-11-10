@@ -304,7 +304,9 @@ def _record_thread_link(env: Mapping[str, str], sid: str) -> None:
             timeout=2,
         )
     except Exception as exc:  # noqa: BLE001 - a link that cannot be recorded never blocks a chat
-        print("platform-letter: thread-link update failed (%s)" % type(exc).__name__, file=sys.stderr)
+        print(
+            "platform-letter: thread-link update failed (%s)" % type(exc).__name__, file=sys.stderr
+        )
         return
     if isinstance(answer, dict) and answer.get("error"):
         # swallowed no longer:  one stderr line names it, the chat is never blocked
