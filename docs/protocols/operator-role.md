@@ -63,8 +63,9 @@ does it today.
     "Seat wake doesn't need an agent" and "Consultant is an agent needed minority of the time
     hopefully".  The preset is his own, built on the Muse spark 1.3 contributor ("Not just normal
     one").  ECHO reports it as `@preset/operator-inbox-router` version 3 (served by
-    `meta/muse-spark-1.3-contributor`, backup `minimax/minimax-m3.1-flash`);  it is held, and applied
-    nowhere, until ECHO's coordinator releases it.  Jay also objected to the Operator ever being
+    `meta/muse-spark-1.3-contributor`, backup `minimax/minimax-m3.1-flash`);  it was held when this
+    was written, and the Mac has declared it as the bridge consult backup since Nov 7, 2026, 10:14 PM
+    (section 3.2).  Jay also objected to the Operator ever being
     called "MM-wake":  the wake tag is `[OPERATOR·wake]`, and a wake is not tied to MM or to any
     seat.  This is a ruling, not current behaviour:  per-seat model wakes still run until Phase 2,
     and PR #1506 only records how often each start was avoidable (section 3.2).
