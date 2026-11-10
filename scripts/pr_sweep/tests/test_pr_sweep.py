@@ -409,7 +409,7 @@ class PromptTests(unittest.TestCase):
         self.assertIn("sub-agent of the CODEX seat", text)
         self.assertIn("git checkout -B codex/pr<N>-sweep", text)
         self.assertIn("End with: X-Trailer", text)
-        self.assertIn("lane retire pr<N>-sweep", text)
+        self.assertIn("retire pr<N>-sweep", text)
         self.assertIn("labels: do-not-automerge", text)
         for owner_ruling in (
             "The default is MERGE",
