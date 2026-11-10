@@ -1156,6 +1156,25 @@ class PruneTests(WorldCase):
         self.assertEqual(row["action"], "keep", row)
         self.assertTrue(res.has("fetch"))
 
+    def test_an_out_of_range_pr_number_keeps_the_lane_without_a_refused_fetch(self) -> None:
+        lane = self.w.new_lane("bignum")
+        self.w.commit(lane)
+        self.w.old_pr("claude/bignum", "d" * 40, number=12345678901, state="MERGED")
+        res = self.w.run("prune", "--json")
+        row = res.row("claude-bignum")
+        self.assertEqual(row["action"], "keep", row)
+        self.assertFalse(res.has("fetch"))
+
+    def test_only_the_newest_merged_prs_on_a_reused_name_are_compared(self) -> None:
+        lane = self.w.new_lane("reused")
+        self.w.commit(lane)
+        for n in (51, 52, 53):
+            self.w.old_pr("claude/reused", "d" * 40, number=n, state="MERGED")
+        res = self.w.run("prune", "--json")
+        self.assertEqual(res.row("claude-reused")["action"], "keep")
+        fetched = [v[-1] for v in res.verbs if v[:1] == ("fetch",)]
+        self.assertEqual(fetched, ["refs/pull/53/head", "refs/pull/52/head"])
+
     def test_an_open_pr_keeps_the_lane(self) -> None:
         lane = self.w.new_lane("open")
         self.w.commit(lane)

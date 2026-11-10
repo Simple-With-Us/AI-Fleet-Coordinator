@@ -110,6 +110,8 @@ RELAY_BULK_LIMIT = RELAY_PAGE * RELAY_MAX_PAGES
 TREE_LANDED_COMMITS = 100
 # How many commits of a merged PR (those not on origin/<default>) the content comparison reads.
 PR_CONTENT_COMMITS = 50
+# How many MERGED PRs on a reused branch name (newest first) that comparison tries.
+PR_CONTENT_PRS = 2
 WORKERS = 8
 
 _CAPS = {"git": 30.0, "remove": 600.0, "net": 90.0, "relay": 90.0, "lsof": 30.0}
@@ -924,7 +926,8 @@ def _pr_content_landed(
     ancestry nor whole-tree equality can see it.  The PR head is fetched from refs/pull/<n>/head into the object
     store only when it is not already here; no ref and no FETCH_HEAD is written.  A lane with no change of its
     own, or any failed read, answers False:  this gate only ever adds evidence, never guesses it."""
-    if not _SHA.match(head_oid or "") or number < 1:
+    # The same bound the fetch allowlist holds (refs/pull/<1-9 digits>/head), so no refusal is ever raised here.
+    if not _SHA.match(head_oid or "") or not _PULL_HEAD.match(f"refs/pull/{number}/head"):
         return False
     have = ["git", "rev-parse", "--verify", "-q", f"{head_oid}^{{commit}}"]
     if not run(have, cwd=path).ok:
@@ -1061,7 +1064,8 @@ def _pr_view(
         # GitHub API, which makes new commits, then fixed on GitHub).  The lane's own changes still sit,
         # byte for byte, in a commit of that merged PR: that commit is on GitHub for good.
         if merged and own_work:
-            for pick in sorted(merged, key=lambda p: int(p.get("number") or 0), reverse=True):
+            newest = sorted(merged, key=lambda p: int(p.get("number") or 0), reverse=True)
+            for pick in newest[:PR_CONTENT_PRS]:
                 number = int(pick.get("number") or 0)
                 if number and _pr_content_landed(
                     run, rec.path, default_branch, number, str(pick.get("headRefOid") or "")
