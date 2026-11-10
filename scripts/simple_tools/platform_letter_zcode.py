@@ -220,12 +220,15 @@ def zcode_rename(request: Any) -> bool:
     "DD: work on ..." came back as plain "Merge and Close Draft PRs"), while a custom title
     is a user rename the app leaves alone.  The letter hook's own rule keeps working on top:
     a custom title that already carries this letter is updated in place (new words, same
-    letter), and a custom title without the letter is a name the user chose, so the chat
-    keeps the user's words and the registry keeps the letter.
+    letter).  A custom title without the letter is the hook's own earlier write when it is
+    exactly the note's last applied title (label and words) — a later letter, such as a
+    reissue after a recycle, replaces it — and anything else is a name a person chose, so
+    the chat keeps the user's words and the registry keeps the letter.
 
-    The write retries once on a locked store:  the live app holds the database, and a busy
-    timeout alone was seen losing title writes under it (titles landed hours late, on a much
-    later event's retry)."""
+    The write stays inside the hook's own budget while still beating a busy store:  two
+    short attempts (4 s each, a quarter second apart), not one long one — a busy timeout
+    alone was seen losing title writes under the live app (titles landed hours late, on a
+    much later event's retry)."""
     env = request.env
     sid = request.session_id
     title = str(request.title or "").strip()
@@ -241,10 +244,11 @@ def zcode_rename(request: Any) -> bool:
     if row and row.get("title_source") == "custom":
         current = str(row.get("title") or "")
         if current and not current.startswith(str(request.label or "") + ":"):
-            return True
+            if not _hook_owned_title(env, sid, current):
+                return True  # a person's rename:  the words stay
     for attempt in range(2):
         try:
-            conn = sqlite3.connect(path, timeout=15)
+            conn = sqlite3.connect(path, timeout=4)
             try:
                 with conn:
                     cur = conn.execute(
@@ -260,6 +264,21 @@ def zcode_rename(request: Any) -> bool:
                 time.sleep(0.25)
                 continue
     return False
+
+
+def _hook_owned_title(env: Mapping[str, str], sid: str, current: str) -> bool:
+    """True when `current` is exactly the title the hook last applied to this chat (the
+    note's label and words), so it is the hook's own `custom` write and a later letter may
+    replace it.  A missing or unreadable note answers False:  without proof the name is
+    treated as a person's, which is the safe side."""
+    try:
+        with open(PL.note_path(env, SEAT, sid), encoding="utf-8") as fh:
+            note = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    label = str(note.get("label") or "")
+    words = str(note.get("title") or "")
+    return bool(label and words and current == "%s: %s" % (label, words))
 
 
 SPEC = PL.PlatformSpec(

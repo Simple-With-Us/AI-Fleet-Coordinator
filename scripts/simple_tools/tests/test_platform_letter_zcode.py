@@ -378,6 +378,53 @@ class TitleWriter(Base):
         rows = dict((r[0], (r[1], r[2])) for r in self.rows())
         self.assertEqual(rows[sid], ("AA: Words", "custom"))
 
+    def test_a_hook_written_custom_yields_to_a_later_letter(self) -> None:
+        # The hook writes custom titles now; without the note check, its own earlier write
+        # would look like a person's rename and block a reissued letter forever (Kody).
+        sid = sess(24)
+        self.add_session(sid, title="AA: Words", title_source="custom")
+        note = {
+            "label": "AA",
+            "title": "Words",
+            "state": "open",
+        }
+        os.makedirs(os.path.join(self.state, "ZC", "letters"), exist_ok=True)
+        with open(os.path.join(self.state, "ZC", "letters", sid + ".json"), "w") as fh:
+            json.dump(note, fh)
+        request = PL.TitleRequest(
+            platform=Z.PLATFORM,
+            session_id=sid,
+            label="BB",
+            title="BB: Words",
+            words="Words",
+            current="AA: Words",
+            reason="rename",
+            data={},
+            env=self.env(),
+        )
+        self.assertTrue(Z.zcode_rename(request))
+        rows = dict((r[0], (r[1], r[2])) for r in self.rows())
+        self.assertEqual(rows[sid], ("BB: Words", "custom"))
+
+    def test_a_persons_custom_still_blocks_without_note_proof(self) -> None:
+        sid = sess(25)
+        self.add_session(sid, title="Jay named this", title_source="custom")
+        # no note:  nothing says the hook wrote it
+        request = PL.TitleRequest(
+            platform=Z.PLATFORM,
+            session_id=sid,
+            label="AA",
+            title="AA: Jay named this",
+            words="Jay named this",
+            current="Jay named this",
+            reason="start",
+            data={},
+            env=self.env(),
+        )
+        self.assertTrue(Z.zcode_rename(request))
+        rows = dict((r[0], (r[1], r[2])) for r in self.rows())
+        self.assertEqual(rows[sid], ("Jay named this", "custom"))
+
     def test_rename_never_writes_over_a_user_rename(self) -> None:
         sid = sess(21)
         self.add_session(sid, title="Jay renamed this", title_source="custom")
