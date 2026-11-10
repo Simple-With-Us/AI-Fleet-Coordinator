@@ -890,7 +890,7 @@ class Daemon:
         # The Operator's Zulip -> Linear living comments (operator_linear.py), the
         # standalone relay hosted by this daemon:  rebuilt on every start and reload
         # (_configure_linear_comments), None while [linear_comments] is off or no
-        # Infisical service token for the Operator's Linear pair resolves.
+        # Infisical service token for the Operator's Linear developer token resolves.
         self.linear_comments: Any | None = None
         self._linear_comments_spec: tuple[Any, ...] | None = None
         # The Operator's session registry API (listener_registry.py), served by the
@@ -1329,14 +1329,17 @@ class Daemon:
     def _configure_linear_comments(self) -> None:
         """The Operator's Zulip -> Linear living comments (operator_linear.py), or None:
         off unless [linear_comments] enabled is true and the Operator's Linear credential
-        loads — the OAuth client pair in Infisical prod /linear, reached through the
-        scoped read-only Infisical service token (OPERATOR_LINEAR_INFISICAL_TOKEN, or
-        the [linear_comments] infisical_token_file).  A reload that leaves the service
+        loads — the owner's developer token in Infisical prod /linear, reached through
+        the scoped read-only Infisical service token (OPERATOR_LINEAR_INFISICAL_TOKEN,
+        or the [linear_comments] infisical_token_file).  A reload that leaves the service
         token as it was keeps the same engine object, so its ledger lock and its
-        (topic, issue) -> comment mapping survive;  a service-token change builds a
-        fresh engine on the same ledger file, which adopts the standing comments by
-        their marker instead of stacking new ones.  The pair is fetched and exchanged
-        inside the build, and held in memory only."""
+        (topic, issue) -> comment mapping survive — unless the engine has stopped (a
+        refused Linear credential), in which case the reload rebuilds it, so a repaired
+        credential takes effect without a daemon restart;  a service-token change also
+        builds a fresh engine on the same ledger file, which adopts the standing
+        comments by their marker instead of stacking new ones.  The key is fetched
+        inside the build, registered with the log scrubber there, and held in memory
+        only."""
         old = getattr(self, "linear_comments", None)
         old_spec = getattr(self, "_linear_comments_spec", None)
         self.linear_comments = None
@@ -1366,7 +1369,11 @@ class Daemon:
             )
             return
         self.hide_values([service])
-        if old is not None and old_spec == (service,):
+        if (
+            old is not None
+            and old_spec == (service,)
+            and getattr(old, "stopped", None) is None
+        ):
             self.linear_comments = old
             self._linear_comments_spec = old_spec
             return
@@ -1384,9 +1391,10 @@ class Daemon:
                 clock=self.clock.time,
                 monotonic=self.clock.monotonic,
                 service_token_file=token_file,
+                hide=self.hide_values,
             )
         except OPL.CredentialRefused as exc:
-            # The pair fetch or the Linear mint was refused:  this feature fails
+            # The developer-token fetch was refused:  this feature fails
             # closed, the daemon does not.  The message names a stage and a status.
             self.log.write("linear-comments-error", error=self.scrub(str(exc)))
             return
