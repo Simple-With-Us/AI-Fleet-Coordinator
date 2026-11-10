@@ -9,6 +9,7 @@ import ast
 import hashlib
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 
@@ -18,7 +19,7 @@ LOGICAL_BEFORE = "PENDING_QUALIFIED_OPERATOR_OBSERVATION_PIN"
 CONFIG = "af09bf3b8e0679ec50c7bf3808fb11e203a46ac2ab32e8652961182f38c9e29b"
 ROOT = "/opt/git-relay/transactions/echo-admin-read"
 UNIT = "git-relay-echo-admin-read.service"
-PROOF = "51f635af67cf8bd3eae7cee979372414db60c20cd0afde101a70a0e6098bcbf6"
+PROOF = "c393ce0f02841710cd29b3df1667d852636d4b127793656580e392491d86bc95"
 MODULES = {
     "__init__.py": "e9c5519a796eab24d04e416e5bd30598015b5a03c09141d856a39d898d92c423",
     "deploy_guard.py": "3acb883f2163f7acf23d50213c259a17792761003e277157a5193f4e248e0aba",
@@ -149,6 +150,13 @@ def build(repo, before, output):
     if output.is_symlink():
         raise ValueError("scratch output symlink refused")
     output.mkdir(mode=0o700, exist_ok=False)
+    info = os.lstat(output)
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+    ):
+        raise ValueError("scratch output symlink refused")
     for name, raw in sources.items():
         target = output / "runner-package" / name
         private_dir(target.parent.parent)

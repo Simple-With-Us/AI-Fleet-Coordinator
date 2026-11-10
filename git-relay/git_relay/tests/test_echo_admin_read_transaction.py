@@ -118,8 +118,12 @@ class Tests(unittest.TestCase):
             self.assertTrue(p({"pid": 1}, {"state/seats.json": pinned}))
 
     def test_selector_pid_shape_validated(self):
+        class StrInt(int):
+            def __str__(self):
+                return "1/2"
+
         p = proof.RuntimeProof("test-only")
-        for bad in (-1, 0, True, "1/2", "../1", "abc", "", None, 1.5):
+        for bad in (-1, 0, True, "1/2", "../1", "abc", "", None, 1.5, StrInt(1)):
             self.assertFalse(p.selector({"pid": bad}))
 
     def test_selector_exact_startup_file_and_same_physical_file(self):
