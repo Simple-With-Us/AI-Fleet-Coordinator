@@ -593,9 +593,10 @@ class TestMcpWrapper(unittest.TestCase):
                 "resolve_thread",
             ],
         )
+        # mint_token stays HTTP-only: raw App tokens never cross stdio
         from git_relay.mcp_server import WF_ACTIONS
 
-        self.assertEqual(set(names[7:]), set(WF_ACTIONS))
+        self.assertEqual(set(names[7:]), set(WF_ACTIONS) | {"stage_chunk", "stage_abort"})
         self.assertNotIn("mint_token", names)
 
     def test_tools_call_forwards_to_relay_with_seat_token(self):

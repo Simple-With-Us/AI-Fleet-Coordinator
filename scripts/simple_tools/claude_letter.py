@@ -12,6 +12,15 @@ an SSH hop to the Mac (the destination in CLAUDE_LETTER_REMOTE) by running `simp
 so the Mac's own managed runtime makes the write.  The registry side refuses a host that has no registry file and
 never creates one:  a second file would issue letters that collide with the Mac's, and the server has none.
 
+The registry API cutover applies here as it does to the platform-letter registry side:  when the registry API
+URL is configured in the hook's environment (`registry_api`: SIMPLE_TOOLS_OPERATOR_REGISTRY_URL and the key env
+it names, which reach a Claude hook through the settings the installer writes or the host's shared registry env
+file), the registry side answers from the server registry over the API and the local file is never opened, and
+a chat on a host off the Mac calls the API through its own in-process registry side instead of the SSH hop.  A
+failed API call is an error answer, never a quiet local write.  With no URL configured nothing changes.  The
+key reaches the hook the way it reaches the other seats' hooks — through host configuration the seat's own
+install already owns — and is never another seat's to borrow.
+
 What the hook does.
 - SessionStart registers the chat, or resumes its registration, and titles it:  "<letter>: <Title>" when the chat
   already has a title (or, when resumed, a first prompt in its transcript), else "<letter>: New Chat" until its first
@@ -677,6 +686,145 @@ def _on_record(OR: Any, db: str, args: Any, sid: str) -> dict[str, Any]:
         reg.close_db()
 
 
+def _api_parent(args: Any, sid: str) -> tuple[str, str]:
+    """(the Claude Code session id of the chat that started this one, why none), for the API path.
+
+    Named by the caller (--parent-session-id), else read from the desktop app's record of the chat
+    (`claude_app_lineage`), which lives on the host this registry side runs on — the Mac, where the hook's
+    own registry side runs when the API is configured there.  The local path also skips the lookup for a
+    chat that already holds a live letter; the API's register answers a resume itself, and a parent named
+    for a resumed chat is ignored by the registry, so asking is harmless.  The lookup is a hint the chat
+    was never owed, so nothing it can raise stops a registration."""
+    if args.parent_session_id:
+        return str(args.parent_session_id), ""
+    try:
+        return AL.lookup(
+            args.home,
+            host_session_id=args.host_session_id,
+            cli_session_id=sid,
+            allow_lag=args.after_clear,
+        )
+    except Exception:  # noqa: BLE001 - a hint, never a reason to leave a chat without a letter
+        return "", AL.UNREADABLE
+
+
+def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[str, Any]:
+    """Register one chat through the registry API: resume it, or reopen it when it comes back closed.
+
+    The local `_register`'s orchestration over the API's ops, as the platform-letter registry side's API
+    path already does it: the API's register answers for a fresh chat and for a resume (its resume stamps
+    the session seen), a resumed-closed chat is reopened, and a resumed or reopened chat that arrived with
+    a title has the title carried over, because register keeps an existing record's old title.  What the
+    local path also does, this path does not: it sweeps nothing and evicts nothing — reclaiming letters is
+    the registry's own sweep's work once the store is the API's, and an exhausted space answers with the
+    registry's refusal instead of this side closing another chat to make room."""
+    from . import platform_letter as PL
+
+    title = clean_title(args.title)
+    parent, no_parent = _api_parent(args, sid)
+    identity = {"platform": PLATFORM, "location": args.location, "scope": SCOPE, "session_id": sid}
+    params: dict[str, Any] = {
+        **identity,
+        "seat": args.seat,
+        "source": args.source,
+        "title": title,
+        "letter_space": LETTER_SPACE,
+        "letter_pick": LETTER_PICK,
+    }
+    if parent:
+        params["parent_session_id"] = parent
+    out = PL._call_api(env, "register", params)
+    if out.get("code") == "labels_exhausted":
+        return {
+            "error": "all %d Claude letters are in use" % len(OR.LETTER_SPACES[LETTER_SPACE]),
+            "swept": 0,
+        }
+    error = PL._api_error(out)
+    if error is not None:
+        return error
+    if out.get("outcome") == "resumed_closed":
+        reopen_params: dict[str, Any] = {
+            "record_id": out["record_id"],
+            "actor": args.seat,
+            "source": args.source,
+            "letter_pick": LETTER_PICK,
+        }
+        if parent:
+            reopen_params["parent_session_id"] = parent
+        reopened = PL._call_api(env, "reopen", reopen_params)
+        if reopened.get("code") == "labels_exhausted":
+            return {
+                "error": "all %d Claude letters are in use" % len(OR.LETTER_SPACES[LETTER_SPACE]),
+                "swept": 0,
+            }
+        if reopened.get("code") == "space_lost":
+            return {
+                "error": "this registry cannot give a closed chat a pair letter again yet",
+                "swept": 0,
+            }
+        error = PL._api_error(reopened)
+        if error is not None:
+            return error
+        out = {
+            **out,
+            "label": reopened["label"],
+            "generation": reopened["generation"],
+            "previous": reopened["previous"],
+            "outcome": "reopened",
+            "title_display": OR.display_title(reopened["label"], title),
+        }
+    if title and out.get("outcome") in ("resumed", "reopened"):
+        updated = PL._call_api(env, "update", {**identity, "title": title})
+        error = PL._api_error(updated)
+        if error is not None:
+            return error
+        out = {**out, "title": updated.get("title"), "title_display": updated.get("title_display")}
+    out["swept"] = 0
+    out["evicted"] = 0
+    if no_parent and out.get("outcome") in ("registered", "reopened"):
+        out["parent_lookup"] = no_parent
+    return out
+
+
+def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[str, Any]:
+    """title, touch and close for one chat through the registry API.
+
+    The local path looks the record up first and answers from it: no record is the no-registration error,
+    and a closed one is retired, before any op writes.  The API's ops are addressed by identity and answer
+    in the registry's own words, so this path probes with the touch op where the local path reads, as the
+    platform-letter API path does: a touch stamps a live session seen, answers outcome "closed" for a
+    closed one without writing anything, and refuses a session the registry does not hold."""
+    from . import platform_letter as PL
+
+    identity = {"platform": PLATFORM, "location": args.location, "scope": SCOPE, "session_id": sid}
+    if args.op == "close":
+        out = PL._call_api(
+            env,
+            "close",
+            {**identity, "reason": "session ended", "actor": args.seat, "source": args.source},
+        )
+        error = PL._api_error(out)
+        if error is not None:
+            return error
+        if out.get("outcome") == "already_closed":
+            return {"retired": True, "record_id": out.get("record_id", "")}
+        return {"closed": bool(out.get("closed")), "label": out.get("label", "")}
+    probe = PL._call_api(env, "touch", identity)
+    error = PL._api_error(probe)
+    if error is not None:
+        return error
+    if probe.get("outcome") == "closed":
+        return {"retired": True, "record_id": probe.get("record_id", "")}
+    title = clean_title(args.title) if args.op == "title" else ""
+    if args.op == "touch" or not title:
+        return {"ok": True, "record_id": probe.get("record_id", "")}
+    updated = PL._call_api(env, "update", {**identity, "title": title})
+    error = PL._api_error(updated)
+    if error is not None:
+        return error
+    return {"ok": True, "label": updated.get("label", ""), "generation": updated.get("generation")}
+
+
 def registry_main(
     argv: list[str], *, env: Mapping[str, str], stdout: TextIO, now: float | None = None
 ) -> int:
@@ -684,6 +832,7 @@ def registry_main(
     import argparse
 
     from . import operator_registry as OR
+    from . import registry_api
 
     parser = argparse.ArgumentParser(prog="simple-chat letter registry", add_help=True)
     parser.add_argument("op", choices=("register", "title", "touch", "close"))
@@ -707,6 +856,32 @@ def registry_main(
         return _emit(stdout, {"error": "bad arguments:  %s" % " ".join(argv)[:200]}, 2)
     args.home = str(env.get("HOME") or os.path.expanduser("~"))
     db = OR.registry_db_path(L.state_root(env), env)
+    if not registry_api.base_url(env) and not os.path.isfile(db):
+        # No URL in the environment and no registry file on this host:  the host's shared registry env
+        # file may carry the URL (the platform-letter registry side reads it on the same terms), and a
+        # host with a registry file of its own is never redirected by it.
+        from . import platform_letter as PL
+
+        env = PL.with_registry_env(env)
+    if registry_api.base_url(env):
+        # The registry API is the store now: with its URL configured (registry_api), the server's store
+        # answers instead and the local file is never opened, so the "no registry on this host" answer
+        # below does not arise.  A failed call is an error answer, never a quiet local write: two stores
+        # taking writes is the split the cutover exists to end.
+        try:
+            sid = SI.check(args.session_id, "the session id")
+            args.seat = I.canonical_seat(args.seat) or SEAT_DEFAULT
+            if args.op == "register":
+                out = _register_api(OR, env, args, sid)
+            else:
+                out = _on_record_api(OR, env, args, sid)
+        except ValueError as exc:
+            return _emit(stdout, {"error": "%s: %s" % (type(exc).__name__, str(exc)[:200])}, 4)
+        except (KeyError, TypeError):
+            # A registry answer too short to fold (a key the orchestration reads is not there) is a
+            # failed call, answered the same way: an error, never a traceback.
+            return _emit(stdout, {"error": "the registry answer was incomplete"}, 5)
+        return _emit(stdout, out, 0 if "error" not in out else 5)
     if not os.path.isfile(db):
         # Never create one:  a second registry would hand out letters that collide with the one the Operator keeps.
         return _emit(stdout, {"error": "no Operator registry on this host"}, 3)
@@ -840,11 +1015,39 @@ class Chat:
         return self._call(argv)
 
     def _call(self, argv: list[str]) -> dict[str, Any]:
+        from . import platform_letter as PL
+        from . import registry_api
+
         if self.location == "mac":
+            # On the Mac the registry side runs in process, as it always has.
             out = io.StringIO()
             registry_main(argv, env=self.env, stdout=out)
             return _answer(_last_json(out.getvalue()))
         dest = str(self.env.get(ENV_REMOTE) or "").strip()
+        env = (
+            self.env
+            if (registry_api.base_url(self.env) or dest)
+            else PL.with_registry_env(self.env)
+        )
+        # A register with no parent named, from a host that has the Mac's ssh destination, still hops:  the
+        # parent of a sub-thread is found in the desktop app's record of the chat (`_api_parent`), and that
+        # record lives on the Mac, so an in-process lookup on this host would find none and the chat would
+        # lose its after-parent placement.  The Mac's own registry side then makes the API call.
+        needs_mac_lineage = (
+            bool(dest)
+            and argv[:1] == ["register"]
+            and not any(
+                a == "--parent-session-id" or a.startswith("--parent-session-id=") for a in argv
+            )
+        )
+        if registry_api.base_url(env) and not needs_mac_lineage:
+            # The registry API is the cutover (registry_api):  a chat on a host off the Mac calls the
+            # Operator's API itself, through its own in-process registry side, and never hops over ssh
+            # to a host whose own call would land back on the API — the platform-letter library's rule,
+            # its shared registry env file included.
+            out = io.StringIO()
+            registry_main(argv, env=env, stdout=out)
+            return _answer(_last_json(out.getvalue()))
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._@-]*", dest):
             # Empty, or something ssh could read as an option:  refuse it rather than run it.
             return {"error": "%s does not name an ssh destination" % ENV_REMOTE}

@@ -1046,6 +1046,126 @@ class RegistryTest(unittest.TestCase):
                 self.db, platform="minimax", native_session_id="nope", title="T", **self._loc()
             )
 
+    def _force_live_letter(self, record_id: str, letter: str) -> None:
+        now = "2026-11-05T12:00:00.000Z"
+        self.reg._conn.execute(
+            "UPDATE alias_assignments SET letter = ?, retired_at = NULL WHERE record_id = ?",
+            (letter, record_id),
+        )
+        live = self.reg._conn.execute(
+            "SELECT 1 FROM alias_assignments WHERE record_id = ? AND retired_at IS NULL",
+            (record_id,),
+        ).fetchone()
+        if not live:
+            self.reg._conn.execute(
+                "INSERT INTO alias_assignments(platform, letter, generation, record_id, assigned_at)"
+                " VALUES (?, ?, 1, ?, ?)",
+                ("minimax", letter, record_id, now),
+            )
+        self.reg._conn.commit()
+
+    def _insert_orphan_session_row(self, *, host: str, letter: str, native: str = "") -> str:
+        """A live row with no real native session id (AFC-640 reproduction)."""
+        from simple_tools.operator_registry import _ulid
+
+        now = "2026-11-05T12:00:00.000Z"
+        record_id = _ulid()
+        self.reg._conn.execute(
+            "INSERT INTO sessions(record_id, seat, platform, verified_host, profile_scope,"
+            " native_session_id, title, project, thread_link, apple_note_link,"
+            " wake_capability, registered_at, last_seen_at, source)"
+            " VALUES (?, ?, ?, ?, ?, ?, '', '', '', '', 'unknown', ?, ?, ?)",
+            (record_id, "MM", "minimax", host, "default", native, now, now, "test orphan"),
+        )
+        self.reg._conn.execute(
+            "INSERT INTO alias_assignments(platform, letter, generation, record_id, assigned_at)"
+            " VALUES (?, ?, 1, ?, ?)",
+            ("minimax", letter, record_id, now),
+        )
+        self.reg._conn.commit()
+        return record_id
+
+    def test_register_and_update_follow_the_live_session_id_not_a_placeholder_row(self):
+        """AFC-640: EH holds the session id; an empty-session row holds NN and must not win."""
+        native = "mvs_b3fef2c69d4e44c9b07f403581d6938a"
+        mac = self._loc(platform="minimax", host="mac-1")
+        cloud = self._loc(platform="minimax", host="cloud-1")
+        eh = self.reg.resolve_or_register(
+            ident(platform="minimax", host="mac-1", native=native, letter_space="double")
+        )
+        self._force_live_letter(eh["record_id"], "EH")
+        remote_orphan = self._insert_orphan_session_row(host="cloud-1", letter="NN", native="")
+        resumed = R.register_session(
+            self.db,
+            platform="minimax",
+            native_session_id=native,
+            seat="MM",
+            source="test rename",
+            issuer=R.ISSUER_OPERATOR,
+            **mac,
+        )
+        self.assertEqual(resumed["outcome"], "resumed")
+        self.assertEqual(resumed["record_id"], eh["record_id"])
+        self.assertEqual(resumed["label"], "EH")
+        out = R.update_session(
+            self.db,
+            platform="minimax",
+            native_session_id=native,
+            title="AFC-621 Housekeeper Webhook Credential Path",
+            **mac,
+        )
+        self.assertEqual(out["record_id"], eh["record_id"])
+        self.assertEqual(out["label"], "EH")
+        self.assertIn("Housekeeper", str(self.reg._get(eh["record_id"])["title"]))
+        self.assertEqual(str(self.reg._get(remote_orphan)["native_session_id"]), "")
+        resolved = R.resolve_label(self.db, "minimax", "EH")
+        self.assertEqual(resolved["native_session_id"], native)
+
+    def test_update_session_at_a_mismatched_host_does_not_touch_a_remote_live_row(self):
+        """Fail closed:  a cloud caller must not mutate a mac row with the same session id."""
+        native = "mvs_cross_host_guard"
+        mac = self._loc(platform="minimax", host="mac-1")
+        cloud = self._loc(platform="minimax", host="cloud-1")
+        eh = self.reg.resolve_or_register(
+            ident(platform="minimax", host="mac-1", native=native, letter_space="double")
+        )
+        self._force_live_letter(eh["record_id"], "EH")
+        with self.assertRaises(ValueError) as caught:
+            R.update_session(
+                self.db,
+                platform="minimax",
+                native_session_id=native,
+                title="Should not land",
+                **cloud,
+            )
+        self.assertIn("not registered", str(caught.exception))
+        self.assertNotIn("Should not land", str(self.reg._get(eh["record_id"])["title"]))
+
+    def test_update_session_on_a_closed_row_is_consistent_across_hosts(self):
+        """A closed row at the caller's host answers closed;  another host sees a miss."""
+        native = "mvs_closed_consistency"
+        mac = self._loc(platform="minimax", host="mac-1")
+        cloud = self._loc(platform="minimax", host="cloud-1")
+        live = self.reg.resolve_or_register(ident(platform="minimax", host="mac-1", native=native))
+        self.reg.close(live["record_id"], actor="MM", source="test")
+        at_mac = R.update_session(
+            self.db,
+            platform="minimax",
+            native_session_id=native,
+            title="T",
+            **mac,
+        )
+        self.assertEqual(at_mac["outcome"], "closed")
+        with self.assertRaises(ValueError) as caught:
+            R.update_session(
+                self.db,
+                platform="minimax",
+                native_session_id=native,
+                title="T",
+                **cloud,
+            )
+        self.assertIn("not registered", str(caught.exception))
+
     def test_update_session_needs_a_field(self):
         self.reg.resolve_or_register(ident(platform="minimax"))
         with self.assertRaises(ValueError):

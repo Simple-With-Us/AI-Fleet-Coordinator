@@ -12,6 +12,9 @@ CEILING = {
     "issues": "write",
     "actions": "write",
     "metadata": "read",
+    "administration": "read",
+    "repository_hooks": "read",
+    "organization_administration": "read",
 }
 
 
@@ -306,6 +309,32 @@ class Tests(unittest.TestCase):
         s.run("wf_commits", {"repo": REPO, "ref": "main", "path": "a/b.md"})
         self.assertTrue(all(b == "opaque" for *_, b in c.calls))
         self.assertIn("path=a%2Fb.md", c.calls[2][1])
+
+    def test_branches_pages_past_the_fifty_row_cap(self):
+        # Item 5 (2026-11-08): wf_branches had no page argument, so branch
+        # enumeration stopped at MAX_PAGE rows and six fleet repos truncated
+        # at exactly 50 during the PR sweep.  Page 2 must be reachable, a
+        # full page must say has_more, and a short page 1 is the only
+        # complete inventory.
+        rows = [{"name": f"b{i}", "commit": {"sha": SHA}} for i in range(50)]
+        s, c = svc(rows)
+        out = s.run("wf_branches", {"repo": REPO, "per_page": 50, "page": 1})
+        self.assertIn("per_page=50&page=1", c.calls[0][1])
+        self.assertEqual(len(out["branches"]), 50)
+        self.assertTrue(out["has_more"])
+        self.assertFalse(out["complete"])
+        s, c = svc([{"name": "tail", "commit": {"sha": SHA}}])
+        out = s.run("wf_branches", {"repo": REPO, "per_page": 50, "page": 2})
+        self.assertIn("page=2", c.calls[0][1])
+        self.assertEqual(out["branches"][0]["name"], "tail")
+        self.assertFalse(out["has_more"])
+        self.assertFalse(out["complete"])  # page 2 can never prove completeness
+        s, _c = svc([{"name": "only", "commit": {"sha": SHA}}])
+        out = s.run("wf_branches", {"repo": REPO})
+        self.assertTrue(out["complete"])
+        self.assertFalse(out["has_more"])
+        with self.assertRaises(Refused):
+            s.run("wf_branches", {"repo": REPO, "page": 0})
 
     def test_spec_permissions_stay_inside_shared_ceiling(self):
         for action, (perms, _) in SPECS.items():
