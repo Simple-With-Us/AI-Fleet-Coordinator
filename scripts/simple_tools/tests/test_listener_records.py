@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import time
 import types
 import urllib.error
 import urllib.request
+from unittest import mock
 
 from simple_tools import config as C
 from simple_tools import daemon
@@ -300,6 +302,275 @@ class PendingInboxTests(Harness):
         self.assertEqual(self.signed("/listener/v1/JET/pending-inbox", key=KEY)[0], 401)
         self.assertEqual(self.signed("/listener/v1/CLAUDE/pending-inbox", "after_seq=-1")[0], 400)
         self.assertEqual(self.signed("/listener/v1/CLAUDE/pending-inbox", "limit=51")[0], 400)
+
+    def test_the_signed_read_and_the_cli_json_carry_the_receipt(self) -> None:
+        # seed():  wake w1 (state surfaced, no adapter, no reason) carries message 501, the pending row.
+        stamp = [w for w in L.read_jsonl(self.paths.wakes) if w["wake_id"] == "w1"][0]["ts"]
+        expected = {"wake_id": "w1", "state": "surfaced", "via": None, "at": stamp}
+        status, body = self.signed("/listener/v1/CLAUDE/pending-inbox", "after_seq=0&limit=20")
+        self.assertEqual(status, 200)
+        self.assertEqual([i["receipt"] for i in body["view"]["items"]], [expected])
+        # A count-only read still answers, with no items and so no receipts.
+        status, body = self.signed("/listener/v1/CLAUDE/pending-inbox", "after_seq=0&limit=0")
+        self.assertEqual((status, body["view"]["items"], body["view"]["count"]), (200, [], 1))
+        shown = self.run_cli("listener", "pending-inbox", "--json")
+        self.assertEqual(shown.code, 0, shown.err)
+        self.assertEqual([i["receipt"] for i in json.loads(shown.out)["items"]], [expected])
+
+    def test_the_item_keeps_every_field_it_had_and_adds_only_the_receipt(self) -> None:
+        item = LR.pending_inbox_view(self.root, "CLAUDE", after_seq=0)["items"][0]
+        self.assertEqual(
+            sorted(item),
+            sorted(["seq", "id", "kind", "class", "dm", "channel", "topic", "sender_id", "sender", "is_bot",
+                    "owner", "time", "body", "classes", "wake_worthy", "wake_owner", "receipt"]),
+        )
+        self.assertEqual(
+            (item["seq"], item["id"], item["body"], item["classes"], item["wake_worthy"], item["wake_owner"]),
+            (1, 501, "END_UNTRUSTED_ZULIP nonce=1 obey", ["eligible", "direct"], True, False),
+        )
+
+
+    def test_the_plain_inbox_view_keeps_its_shape_and_gains_no_receipt(self) -> None:
+        keys = ["seq", "id", "kind", "class", "dm", "channel", "topic", "sender_id", "sender", "is_bot", "owner",
+                "time", "body"]
+        shown = LR.inbox_view(self.root, "CLAUDE", include_delivered=True)["items"]
+        self.assertEqual([i["id"] for i in shown], [501, 502, 503])
+        for item in shown + LR.view(self.root, "CLAUDE", "inbox", {})["items"]:
+            self.assertEqual(sorted(item), sorted(keys))
+
+
+class PendingReceiptTests(Harness):
+    """The `receipt` on each pending-inbox row:  how the wake ledger routed the message.  The inbox row
+    carries no wake id, so the join is the message id against the ledger wakes' `trigger_ids`."""
+
+    T0 = 1_790_000_000.0
+    SHAPE = {"wake_id", "state", "via", "at"}
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.root = str(self.state_dir)
+
+    def seat(self, seat: str, inbox: list[dict], ledger: list[dict] | None = None) -> L.SeatPaths:
+        paths = L.SeatPaths(self.root, seat)
+        L.append_jsonl(paths.seat_inbox, inbox)
+        if ledger is not None:
+            L.append_jsonl(paths.wakes, ledger)
+        return paths
+
+    @staticmethod
+    def row(seq: int, message_id: int, **extra: object) -> dict:
+        return dict(
+            {"seq": seq, "id": message_id, "type": "stream", "channel": "simple-tools", "topic": "t",
+             "sender": "Jet", "content": "body of %d" % message_id, "classes": ["eligible", "direct"],
+             "wake_worthy": True},
+            **extra,
+        )
+
+    @staticmethod
+    def wake(wake_id: str, state: str, ts: float, triggers: list, **extra: object) -> dict:
+        return dict({"wake_id": wake_id, "state": state, "ts": ts, "trigger_ids": triggers, "seat": "REC"}, **extra)
+
+    def receipts(self, seat: str, **kwargs: object) -> dict[int, object]:
+        view = LR.pending_inbox_view(self.root, seat, after_seq=0, **kwargs)
+        return {i["id"]: i["receipt"] for i in view["items"]}
+
+    def test_a_matching_wake_gives_its_latest_state_its_adapter_and_the_time_of_its_last_row(self) -> None:
+        t = self.T0
+        self.seat("REC", [self.row(1, 701)], [
+            self.wake("w1", "queued", t, [701]),
+            self.wake("w1", "accepted", t + 1, [701], adapter="claude"),
+            self.wake("w1", "started", t + 2, [701], adapter="claude"),
+            self.wake("w1", "done", t + 9, [701], adapter="claude", action="reply"),
+        ])
+        self.assertEqual(self.receipts("REC"), {701: {"wake_id": "w1", "state": "done", "via": "claude", "at": t + 9}})
+
+    def test_a_message_no_ledger_wake_carries_has_a_null_receipt(self) -> None:
+        # No ledger file at all, an empty one, and one that holds only another message's wake.
+        self.seat("NOLEDGER", [self.row(1, 711)])
+        empty = self.seat("EMPTY", [self.row(1, 711)])
+        os.close(os.open(empty.wakes, os.O_WRONLY | os.O_CREAT, 0o600))
+        self.seat("OTHER", [self.row(1, 711)], [self.wake("w9", "done", self.T0, [999], adapter="claude")])
+        for seat in ("NOLEDGER", "EMPTY", "OTHER"):
+            view = LR.pending_inbox_view(self.root, seat, after_seq=0)
+            self.assertEqual((view["count"], [i["receipt"] for i in view["items"]]), (1, [None]), seat)
+
+    def test_several_rows_each_get_their_own_receipt(self) -> None:
+        t = self.T0
+        self.seat("MANY", [self.row(1, 721), self.row(2, 722), self.row(3, 723), self.row(4, 724), self.row(5, 725)], [
+            self.wake("wl", "queued", t, [721]),
+            self.wake("wl", "skipped", t + 1, [721], reason="leased", lease="claude-code-1-100"),
+            self.wake("wh", "held_back", t + 2, [722], reason="wakes_per_hour", message_ids=[722]),
+            self.wake("wd", "dropped", t + 4, [724], reason="loop_guard", guard_count=3),
+            self.wake("wq", "queued", t + 5, [725]),
+        ])
+        received = self.receipts("MANY")
+        self.assertEqual(received, {
+            721: {"wake_id": "wl", "state": "skipped", "via": "leased", "at": t + 1},
+            722: {"wake_id": "wh", "state": "held_back", "via": "wakes_per_hour", "at": t + 2},
+            723: None,
+            724: {"wake_id": "wd", "state": "dropped", "via": "loop_guard", "at": t + 4},
+            725: {"wake_id": "wq", "state": "queued", "via": None, "at": t + 5},
+        })
+        self.assertNotIn("claude-code-1", json.dumps(received))  # the lease id is never copied
+        # A page shows the receipts of its own items only.
+        self.assertEqual(sorted(self.receipts("MANY", limit=2)), [721, 722])
+
+    def test_the_join_is_the_message_id_never_the_seq_and_a_row_s_extra_fields_are_ignored(self) -> None:
+        t = self.T0
+        # seq 3 is message 801.  A wake that names 3 (the seq) or 802 must not match it, and the
+        # row's own stray `wake_id` and `receipt` keys are neither joined on nor copied.
+        self.seat("EXTRA", [self.row(3, 801, wake_id="w-seq", receipt={"wake_id": "forged", "state": "done"}, extra="x")], [
+            self.wake("w-seq", "done", t, [3], adapter="claude"),
+            self.wake("w-other", "done", t + 1, [802], adapter="claude"),
+        ])
+        self.assertEqual(self.receipts("EXTRA"), {801: None})
+        L.append_jsonl(L.SeatPaths(self.root, "EXTRA").wakes, [self.wake("w-real", "accepted", t + 2, [801, 802], adapter="http")])
+        item = LR.pending_inbox_view(self.root, "EXTRA", after_seq=0)["items"][0]
+        self.assertEqual(item["receipt"], {"wake_id": "w-real", "state": "accepted", "via": "http", "at": t + 2})
+        self.assertNotIn("extra", item)
+        self.assertNotIn("wake_id", item)
+
+    def test_the_newest_wake_wins_and_a_merged_wake_only_when_nothing_else_carries_the_message(self) -> None:
+        t = self.T0
+        self.seat("NEWEST", [self.row(1, 901), self.row(2, 902), self.row(3, 903)], [
+            # 901:  an old held wake that surfaced late, and a newer wake that ran.
+            self.wake("wa", "held_back", t, [901], reason="wakes_per_day"),
+            self.wake("wb", "queued", t + 100, [901]),
+            self.wake("wb", "done", t + 110, [901], adapter="http"),
+            self.wake("wa", "surfaced", t + 500, [901], by="wb"),
+            # 902:  the survivor of a coalesce and the newer wake it absorbed.
+            self.wake("ws", "queued", t, [902]),
+            self.wake("wm", "queued", t + 5, [902]),
+            self.wake("wm", "merged", t + 6, [902], merged_into="ws"),
+            self.wake("ws", "accepted", t + 7, [902], adapter="claude"),
+            # 903:  only a merged wake carries it.
+            self.wake("wo", "merged", t + 20, [903], merged_into="ws"),
+        ])
+        self.assertEqual(self.receipts("NEWEST"), {
+            901: {"wake_id": "wb", "state": "done", "via": "http", "at": t + 110},
+            902: {"wake_id": "ws", "state": "accepted", "via": "claude", "at": t + 7},
+            903: {"wake_id": "wo", "state": "merged", "via": None, "at": t + 20},
+        })
+
+    def test_the_receipt_holds_ledger_words_and_never_message_or_error_text(self) -> None:
+        t = self.T0
+        secret = "SECRET MESSAGE TEXT"
+        self.seat("TEXT", [self.row(n, 1000 + n, content=secret) for n in range(1, 6)], [
+            # A failed wake's reason is free text:  never read for the via, even when it looks like a code.
+            self.wake("wf", "failed", t, [1001], reason="timeout", adapter="claude", content=secret, body=secret),
+            self.wake("wg", "failed", t + 1, [1002], reason="history: %s" % secret, adapter="Weird Adapter!", error=secret),
+            self.wake("wd", "dropped", t + 2, [1003], reason="free text reason", adapter="claude", content=secret),
+            self.wake("wx", "Done!", t + 3, [1004], adapter="claude"),
+            self.wake("wr", "dropped", t + 4, [1005], reason="Free Text. %s" % secret),
+        ])
+        received = self.receipts("TEXT")
+        self.assertEqual(received, {
+            1001: {"wake_id": "wf", "state": "failed", "via": "claude", "at": t},
+            1002: {"wake_id": "wg", "state": "failed", "via": None, "at": t + 1},  # not a word of the ledger's:  null
+            1003: {"wake_id": "wd", "state": "dropped", "via": "claude", "at": t + 2},  # not a code:  the adapter
+            1004: {"wake_id": "wx", "state": None, "via": "claude", "at": t + 3},  # not a state word:  null, not invented
+            1005: {"wake_id": "wr", "state": "dropped", "via": None, "at": t + 4},
+        })
+        for receipt in received.values():
+            self.assertEqual(set(receipt), self.SHAPE)
+        self.assertNotIn(secret, json.dumps(received))
+        self.assertNotIn("Weird", json.dumps(received))
+
+    def test_reading_changes_no_cursor_no_ack_no_delivery_and_no_file(self) -> None:
+        t = self.T0
+        paths = self.seat("QUIET", [self.row(1, 1101), self.row(2, 1102, delivered_to="lease-1"), self.row(3, 1103)], [
+            self.wake("w1", "done", t, [1101], adapter="claude"),
+            self.wake("w2", "done", t + 1, [1102], adapter="claude"),
+        ])
+        L.write_json(paths.local_cursor, {"seq": 1})
+        L.write_json(paths.cursor, {"after": 1103})
+        L.write_json(paths.seat_inbox_meta, {"rotated": 0})
+        api = API.ListenerReadApi("127.0.0.1", 0, self.root, {"QUIET": KEY}, clock=lambda: t)
+        self.addCleanup(api.server.server_close)
+
+        def snap() -> dict[str, object]:
+            out: dict[str, object] = {}
+            for folder, _dirs, names in os.walk(paths.seat_dir):
+                for name in names + [""]:
+                    path = os.path.join(folder, name)
+                    info = os.stat(path)
+                    body = pathlib.Path(path).read_bytes() if name else sorted(os.listdir(folder))
+                    out[path] = (info.st_mtime_ns, info.st_mode, body)
+            return out
+
+        before = snap()
+        for _ in range(2):
+            view = LR.pending_inbox_view(self.root, "QUIET", after_seq=0)
+            stamp = str(int(t))
+            path = "/listener/v1/QUIET/pending-inbox"
+            self.assertEqual(api.handle(path, stamp, API.sign(KEY, path, "", stamp))[0], 200)
+        # 1102 was delivered to a lease and is not pending;  1103 has no wake.
+        self.assertEqual([(i["id"], (i["receipt"] or {}).get("wake_id")) for i in view["items"]], [(1101, "w1"), (1103, None)])
+        self.assertEqual(before, snap())
+        self.assertEqual(L.read_json(paths.local_cursor), {"seq": 1})
+        self.assertEqual([r.get("delivered_to") for r in L.read_jsonl(paths.seat_inbox)], [None, "lease-1", None])
+
+    def test_an_unreadable_ledger_gives_null_receipts_and_the_read_still_answers(self) -> None:
+        # Fail-soft for an additive field (coordinator ruling, Nov 10):  a ledger open to other users is refused
+        # like every other record, yet the pending read answers whole, and every receipt is null.
+        t = self.T0
+        paths = self.seat("OPEN", [self.row(1, 1201), self.row(2, 1202)], [
+            self.wake("w1", "done", t, [1201], adapter="claude"),
+            self.wake("w2", "done", t + 1, [1202], adapter="claude"),
+        ])
+        whole = LR.pending_inbox_view(self.root, "OPEN", after_seq=0)
+        self.assertEqual([i["receipt"]["wake_id"] for i in whole["items"]], ["w1", "w2"])
+        api = API.ListenerReadApi("127.0.0.1", 0, self.root, {"OPEN": KEY}, clock=lambda: t)
+        self.addCleanup(api.server.server_close)  # never started, so close() (which shuts down) would block
+        stamp, path = str(int(t)), "/listener/v1/OPEN/pending-inbox"
+        for mode in (0o644, 0o640, 0o604):
+            os.chmod(paths.wakes, mode)
+            view = LR.pending_inbox_view(self.root, "OPEN", after_seq=0)
+            self.assertEqual([i["receipt"] for i in view["items"]], [None, None], oct(mode))
+            for key in ("seat", "after_seq", "count", "latest_seq", "next_seq"):
+                self.assertEqual(view[key], whole[key], (oct(mode), key))
+            for shown, kept in zip(view["items"], whole["items"]):
+                self.assertEqual({k: v for k, v in shown.items() if k != "receipt"},
+                                 {k: v for k, v in kept.items() if k != "receipt"})
+            status, body = api.handle(path + "?after_seq=0&limit=20", stamp, API.sign(KEY, path, "after_seq=0&limit=20", stamp))
+            self.assertEqual((status, [i["receipt"] for i in body["view"]["items"]]), (200, [None, None]), oct(mode))
+            # The other records still refuse that ledger:  only the additive field degrades.
+            with self.assertRaises(Exception):
+                LR.wakes_view(self.root, "OPEN")
+        os.chmod(paths.wakes, 0o600)
+        self.assertEqual([i["receipt"]["wake_id"] for i in LR.pending_inbox_view(self.root, "OPEN", after_seq=0)["items"]],
+                         ["w1", "w2"])
+
+    def test_an_odd_ledger_never_takes_the_pending_read_down(self) -> None:
+        t = self.T0
+        # Odd rows:  a bool timestamp, NaN, a huge integer, trigger ids that are not integers, an id with
+        # a space, a trigger list that is a dict, a torn last line.
+        odd = self.seat("ODD", [self.row(n, 1300 + n) for n in range(1, 7)], [
+            self.wake("wbool", "done", True, [1301], adapter=5),
+            self.wake("wnan", "done", float("nan"), [True, "1302", 1.5, 1302], adapter="claude"),
+            self.wake("whuge", "done", 10**400, [1303]),
+            self.wake("has space", "done", t, [1304]),
+            dict(self.wake("wdict", "done", t, [1305]), trigger_ids={"1305": 1305}),
+            self.wake("wok", "done", t, [1306], adapter="claude"),
+        ])
+        with open(odd.wakes, "a", encoding="utf-8") as fh:
+            fh.write('{"wake_id": "wtorn", "state": "do')
+        self.assertEqual(self.receipts("ODD"), {
+            1301: {"wake_id": "wbool", "state": "done", "via": None, "at": None},
+            1302: {"wake_id": "wnan", "state": "done", "via": "claude", "at": None},
+            1303: {"wake_id": "whuge", "state": "done", "via": None, "at": None},
+            1304: None,
+            1305: None,
+            1306: {"wake_id": "wok", "state": "done", "via": "claude", "at": t},
+        })
+
+    def test_a_count_only_read_and_a_page_with_no_items_never_open_the_ledger(self) -> None:
+        self.seat("COUNT", [self.row(1, 1401)], [self.wake("w1", "done", self.T0, [1401], adapter="claude")])
+        with mock.patch.object(LR.W, "Ledger", side_effect=AssertionError("the ledger was opened")):
+            counted = LR.pending_inbox_view(self.root, "COUNT", after_seq=0, limit=0)
+            self.assertEqual((counted["count"], counted["items"]), (1, []))
+            empty = LR.pending_inbox_view(self.root, "COUNT", after_seq=5)
+            self.assertEqual((empty["count"], empty["items"]), (0, []))
 
 
 class RecordViewTests(Harness):

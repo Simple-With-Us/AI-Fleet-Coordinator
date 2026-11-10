@@ -18,6 +18,7 @@ surface fences them as untrusted before showing them.  Python 3.11+, standard li
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import time
@@ -136,10 +137,13 @@ def inbox_view(
     }
 
 
-def pending_item(row: Mapping[str, Any]) -> dict[str, Any]:
+def pending_item(
+    row: Mapping[str, Any], receipt: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
     """One pending-inbox item:  the inbox view's fields, plus the router's stored classification
     (`classes`, `wake_worthy`, `wake_owner`) exactly as the daemon wrote the row, so a caller can
-    see why the prefilter marked it wake-worthy without any second classifier."""
+    see why the prefilter marked it wake-worthy without any second classifier, plus the `receipt`
+    (wake_receipts) of how the wake ledger routed it, or None when no ledger wake carries it."""
     item = inbox_item(row)
     classes = row.get("classes")
     item["classes"] = (
@@ -147,7 +151,81 @@ def pending_item(row: Mapping[str, Any]) -> dict[str, Any]:
     )
     item["wake_worthy"] = bool(row.get("wake_worthy"))
     item["wake_owner"] = bool(row.get("wake_owner"))
+    item["receipt"] = dict(receipt) if receipt is not None else None
     return item
+
+
+# The shapes a receipt's words must have.  Every word comes out of the wake ledger, which the
+# daemon writes from fixed codes;  a value that is not shaped like one is dropped, so a receipt can
+# never carry message text, an error string or anything a Zulip author could have written.
+_WAKE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
+_STATE_RE = re.compile(r"^[a-z_]{1,32}$")
+_VIA_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+# The ledger states of a wake that never went to an adapter:  the `reason` row field is then a fixed
+# code (`leased`, `loop_guard`, `wakes_per_hour`, `pin_stale`, ...) and says where the wake went or
+# why it stopped.  A `failed` row's reason is free text, so it is never read for the via.
+_STOP_STATES = ("skipped", "dropped", "held_back", "surfaced", "expired", "evicted")
+
+
+def _number(value: Any) -> float | None:
+    """A finite number for a real timestamp, else None (a bool, a string, NaN and infinity are None)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:  # an integer too large for a float
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _word(value: Any, shape: re.Pattern[str]) -> str | None:
+    return value if isinstance(value, str) and shape.fullmatch(value) else None
+
+
+def _receipt(wake_id: str, view: Mapping[str, Any]) -> dict[str, Any]:
+    """One wake's receipt from its merged ledger view:  `state` is the ledger's latest state word and
+    `at` the time of its latest row.
+
+    `via` is how the wake was or was not carried, in the ledger's own words (the `adapter` that took it, or
+    the `reason` code of a wake that stopped before it ran), else None;  it says nothing of the router's own choice."""
+    state = _word(view.get("state"), _STATE_RE)
+    via = _word(view.get("adapter"), _VIA_RE)
+    if state in _STOP_STATES:
+        via = _word(view.get("reason"), _VIA_RE) or via
+    return {"wake_id": wake_id, "state": state, "via": via, "at": _number(view.get("ts"))}
+
+
+def wake_receipts(paths: L.SeatPaths, message_ids: set[int]) -> dict[int, dict[str, Any]]:
+    """message id -> the receipt of the wake the ledger routed it through, for the ids that have one.
+
+    A seat-inbox row carries no wake id:  the wake ledger names its triggers (`trigger_ids`), and
+    that message-id join is the daemon's own (daemon._wake_already_recorded).  When more than one
+    ledger wake carries a message (a catch-up or a requeue mints a new wake for it, a coalesced wake
+    absorbs another) the newest wake wins, and a `merged` wake only when no other carries the id.
+
+    Read-only:  the ledger is read through its own merged view and no file, cursor or ack is
+    written.  An unreadable ledger (open to other users, owned by another user) is refused like
+    every other record here, but it never takes the pending read down with it:  every receipt is
+    then absent, which the item shows as None."""
+    if not message_ids:
+        return {}
+    try:
+        views = W.Ledger(_private(paths.wakes, "wake ledger")).wakes()
+    except UsageError:
+        return {}
+    best: dict[int, tuple[tuple[bool, float, int], dict[str, Any]]] = {}
+    for order, (wake_id, view) in enumerate(views.items()):
+        triggers = view.get("trigger_ids")
+        if not _WAKE_ID_RE.fullmatch(wake_id) or not isinstance(triggers, list):
+            continue
+        born = [t for t in map(_number, (view.get("times") or {}).values()) if t is not None]
+        rank = (view.get("state") != "merged", min(born) if born else float("-inf"), order)
+        receipt = None
+        for message_id in {_int(i) for i in triggers} & message_ids:
+            if message_id not in best or rank > best[message_id][0]:
+                receipt = receipt or _receipt(wake_id, view)
+                best[message_id] = (rank, receipt)
+    return {message_id: found[1] for message_id, found in best.items()}
 
 
 def pending_inbox_view(
@@ -161,7 +239,11 @@ def pending_inbox_view(
     just the page shown;  `latest_seq` is the newest seq in the inbox file, pending or not, so a
     check with no pending items still learns how far the inbox has run.  Read-only like every
     view here:  neither the acknowledged cursor (seat-inbox.cursor.json) nor the daemon's own
-    cursor.json or seat-inbox.meta.json is read for a floor or ever moved."""
+    cursor.json or seat-inbox.meta.json is read for a floor or ever moved.
+
+    Each shown item also carries a `receipt` (wake_receipts):  `{wake_id, state, via, at}` joined
+    from the wake ledger by message id, or None when no ledger wake carries the message.  It is
+    read-only like the rest, and a count-only read (limit 0) never opens the ledger."""
     paths = seat_paths(root, seat)
     # Both inbox files, reconciled like the daemon's _seat_inbox_rows:  rotation moves the whole
     # file to seat-inbox.jsonl.1 and starts a fresh one, so a wake-worthy row still waiting for a
@@ -181,12 +263,15 @@ def pending_inbox_view(
         if r["seq"] > after_seq and r.get("wake_worthy") and not r.get("delivered_to")
     ]
     shown = pending[: max(0, limit)]
+    receipts = wake_receipts(
+        paths, {i for i in (_int(r.get("id")) for r in shown) if i is not None}
+    )
     return {
         "seat": seat,
         "after_seq": after_seq,
         "count": len(pending),
         "latest_seq": latest_seq,
-        "items": [pending_item(r) for r in shown],
+        "items": [pending_item(r, receipts.get(_int(r.get("id")))) for r in shown],
         "next_seq": shown[-1]["seq"] if shown else after_seq,
     }
 
