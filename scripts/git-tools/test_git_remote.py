@@ -19,6 +19,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -83,7 +84,7 @@ DEFAULT_PAGE = [
 
 
 class FakeScanner:
-    """Stands in for scripts/agent_sync/secretscan.py:  flags any string containing a known token."""
+    """Stands in for scripts/simple_tools/secretscan.py:  flags any string containing a known token."""
 
     def scan(self, value, known=()):
         for token in known:
@@ -825,9 +826,9 @@ class TestValidationAndScanning(unittest.TestCase):
         self.assertEqual([c[0] for c in t.calls], ["identities"])  # the target call never left
 
     def test_scanner_missing_fails_closed(self):
-        # The real scripts/agent_sync/secretscan.py is not in this repository:  loading must fail closed.
+        # The real scripts/simple_tools/secretscan.py is not in this repository:  loading must fail closed.
         scanner_path = (
-            Path(os.path.realpath(str(IMPL))).parent.parent / "agent_sync" / "secretscan.py"
+            Path(os.path.realpath(str(IMPL))).parent.parent / "simple_tools" / "secretscan.py"
         )
         if scanner_path.is_file():
             self.skipTest("the real scanner is present here; the fail-closed path is unreachable")
@@ -959,6 +960,104 @@ class TestOutcomes(unittest.TestCase):
         self.assertIn("outcome_unknown", err)
         self.assertNotIn("may or may not have been applied", err)
 
+    def _refused(self, sc):
+        t = FakeTransport(
+            call_results={
+                "gr_wf_issue_create": {
+                    "isError": True,
+                    "structuredContent": sc,
+                    "content": [{"type": "text", "text": "x"}],
+                }
+            }
+        )
+        code, out, err = run_cli(
+            ["call", "gr_wf_issue_create", "--args-json", '{"title":"t"}'],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=t,
+        )
+        self.assertEqual(code, 1, err)
+        return err
+
+    def test_relay_refused_shows_closed_reason_and_github_status(self):
+        err = self._refused(
+            {
+                "code": "relay_refused",
+                "reason": "github_refused",
+                "github_status": 404,
+                "message": "SECRETBODY",
+            }
+        )
+        self.assertIn("relay_refused (reason=github_refused, github_status=404)", err)
+        self.assertNotIn("SECRETBODY", err)
+
+    def test_relay_refused_seat_policy_reason_without_status(self):
+        err = self._refused({"code": "relay_refused", "reason": "seat_policy"})
+        self.assertIn("relay_refused (reason=seat_policy)", err)
+        self.assertNotIn("github_status", err)
+
+    def test_relay_refused_unknown_reason_and_bad_status_are_not_shown(self):
+        err = self._refused({"code": "relay_refused", "reason": "echo SECRETINPUT"})
+        self.assertNotIn("SECRETINPUT", err)
+        self.assertNotIn("reason=", err)
+        for bad in (200, 429, 500, True, "404", 99999):
+            err = self._refused(
+                {"code": "relay_refused", "reason": "github_refused", "github_status": bad}
+            )
+            self.assertIn("(reason=github_refused)", err)
+            self.assertNotIn("github_status", err)
+
+    def test_refusal_reason_set_matches_the_hosted_front_source(self):
+        # Drift guard:  the CLI's closed set must equal the hosted front's REFUSAL_REASONS
+        # (gr-refusal.js: the base reasons plus every distinct BAD_REQUEST_REASONS value).
+        import re
+
+        root = Path(__file__).resolve().parent.parent
+        src_path = root / "simple-tools-mcp" / "src" / "gr-refusal.js"
+        if not src_path.exists():
+            self.skipTest("hosted front source not in this checkout")
+        src = src_path.read_text(encoding="utf-8")
+        base = re.search(r"REFUSAL_BASE_REASONS = Object\.freeze\(\[(.*?)\]\)", src, re.DOTALL)
+        bad = re.search(r"BAD_REQUEST_REASONS = new Map\(\[(.*?)\]\);", src, re.DOTALL)
+        self.assertTrue(base and bad)
+        want = set(re.findall(r'"([a-z_]+)"', base.group(1)))
+        want |= set(re.findall(r'"[^"]+",\s*"(bad_request_[a-z_]+)"', bad.group(1)))
+        self.assertEqual(set(git._REFUSAL_REASONS), want)
+
+    def test_relay_refused_without_reason_is_unchanged(self):
+        err = self._refused({"code": "relay_refused"})
+        self.assertIn("failed on the hosted server: relay_refused", err)
+        self.assertNotIn("reason=", err)
+
+    def test_reason_from_another_candidate_is_not_attributed(self):
+        # structuredContent says relay_refused with no reason;  a reason in a different object
+        # (the first text part) must not be shown as this refusal's cause.
+        t = FakeTransport(
+            call_results={
+                "gr_wf_issue_create": {
+                    "isError": True,
+                    "structuredContent": {"code": "relay_refused"},
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps({"code": "upstream_error", "reason": "seat_policy"}),
+                        }
+                    ],
+                }
+            }
+        )
+        code, out, err = run_cli(
+            ["call", "gr_wf_issue_create", "--args-json", '{"title":"t"}'],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=t,
+        )
+        self.assertEqual(code, 1, err)
+        self.assertIn("relay_refused", err)
+        self.assertNotIn("reason=", err)
+
+    def test_reason_is_shown_only_for_relay_refused(self):
+        err = self._refused({"code": "upstream_error", "reason": "seat_policy"})
+        self.assertNotIn("reason=", err)
+
     def test_rate_limited_shows_bounded_retry_after(self):
         t = FakeTransport(
             call_results={
@@ -1062,6 +1161,75 @@ class TestOutcomes(unittest.TestCase):
         parsed = json.loads(out)
         self.assertIn("structured", parsed)
         self.assertIn("text", parsed)
+
+    def test_pinned_read_set_matches_worker_read_actions(self):
+        # Drift guard:  the pinned reviewed read set must equal the Worker's WF_V1_READ_ACTIONS
+        # (gr-workflow-v1.js).  1629 and 1638 shipped read verbs this set did not name, and the
+        # mismatch was only caught by hand.
+        src = (IMPL.parent.parent / "simple-tools-mcp" / "src" / "gr-workflow-v1.js").read_text()
+        m = re.search(r"WF_V1_READ_ACTIONS\s*=\s*Object\.freeze\(\[([^\]]*)\]\)", src)
+        self.assertIsNotNone(m, "gr-workflow-v1.js WF_V1_READ_ACTIONS export not found")
+        worker = set(re.findall(r"'([a-z0-9_]+)'", m.group(1)))
+        self.assertTrue(worker)
+        self.assertEqual(
+            set(git.WF_V1_READ_ACTIONS),
+            worker,
+            "client pinned read set drifted from gr-workflow-v1.js WF_V1_READ_ACTIONS",
+        )
+        # The catalog exporter pins the same set for its read/write tags;  it drifts too.
+        src = (IMPL.parent / "export_catalog.py").read_text()
+        m = re.search(r"WF_V1_READ_ACTIONS\s*=\s*\[([^\]]*)\]", src)
+        self.assertIsNotNone(m, "export_catalog.py WF_V1_READ_ACTIONS list not found")
+        exporter = set(re.findall(r'"([a-z0-9_]+)"', m.group(1)))
+        self.assertEqual(
+            set(git.WF_V1_READ_ACTIONS),
+            exporter,
+            "export_catalog.py pinned read set drifted from the client reviewed read set",
+        )
+
+    def test_new_read_verbs_classify_as_reads(self):
+        for name in (
+            "gr_wf_repo_list",
+            "gr_wf_pr_search",
+            "gr_wf_repo_hooks",
+            "gr_wf_deploy_keys",
+            "gr_wf_org_installations",
+        ):
+            self.assertIn(name, git.READ_TOOLS, name)
+
+    def test_read_verb_near_misses_stay_writes(self):
+        # Boundary:  look-alike names that are not the reviewed verbs must not classify as reads.
+        for name in (
+            "gr_wf_repo_hook",  # singular of a pinned verb
+            "gr_wf_repo_hooks_write",  # pinned name as a prefix
+            "gr_wf_repo_hooks_page",
+            "gr_wf_deploy_key",
+            "gr_wf_org_installation",
+            "gr_wf_pr_search_page",
+            "gr_wf_repo_lists",
+        ):
+            self.assertNotIn(name, git.READ_TOOLS, name)
+
+    def test_pinned_read_verb_failure_has_no_write_uncertainty(self):
+        # gr_wf_repo_hooks IS in the reviewed read set:  its failures are plain read failures,
+        # never write-uncertainty wording.
+        t = FakeTransport(
+            pages=[[make_tool("gr_wf_repo_hooks", None, "list repository webhooks")]],
+            call_results={
+                "gr_wf_repo_hooks": {
+                    "isError": True,
+                    "structuredContent": {"code": "outcome_unknown"},
+                    "content": [{"type": "text", "text": "lost"}],
+                }
+            },
+        )
+        code, out, err = run_cli(
+            ["call", "gr_wf_repo_hooks", "--args-json", "{}"],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=t,
+        )
+        self.assertEqual(code, 1)
+        self.assertNotIn("may or may not have been applied", err)
 
 
 class TestNoCallerEcho(unittest.TestCase):
@@ -1919,6 +2087,77 @@ class TestReview1199(unittest.TestCase):
         )
         self.assertIn(git._REMOTE_UNKNOWN, git._failure(exc, True))
 
+    # AFC-638:  a response that arrived without an exposed raw socket must be
+    # read, not discarded, and a sent request whose answer is lost must not be
+    # reported as "could not be reached".
+    def _remote_post_without_sock(self, chunks, headers, fp="raw-none"):
+        chunks = list(chunks)
+
+        class Response:
+            status = 200
+
+            def __init__(self):
+                self.headers = headers
+                self.chunked = False
+                if fp == "raw-none":
+                    self.fp = types.SimpleNamespace(raw=types.SimpleNamespace(_sock=None))
+                elif fp == "no-raw":
+                    self.fp = types.SimpleNamespace()
+                else:
+                    self.fp = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read1(self, size):
+                if chunks:
+                    return chunks.pop(0)
+                return b""
+
+        class FakeOpener:
+            def open(self, req, timeout=None):
+                return Response()
+
+        with mock.patch.object(git.urllib.request, "build_opener", lambda *handlers: FakeOpener()):
+            return git._remote_post(git.REMOTE_MCP_URL, {}, b"{}", 5)
+
+    def test_response_without_a_socket_returns_its_body(self):
+        body = b'{"jsonrpc":"2.0","id":1,"result":{}}'
+        for fp in ("raw-none", "no-raw", "none"):
+            (status, ctype, raw) = self._remote_post_without_sock(
+                [body[:10], body[10:], b""],
+                {
+                    "Content-Type": "application/json",
+                    "Content-Length": str(len(body)),
+                    "Connection": "close",
+                },
+                fp=fp,
+            )
+            self.assertEqual((status, raw), (200, body), fp)
+
+    def test_response_without_a_socket_unknown_length_reads_to_eof(self):
+        (status, ctype, raw) = self._remote_post_without_sock(
+            [b"abc", b""], {"Content-Type": "application/json", "Connection": "close"}
+        )
+        self.assertEqual((status, ctype, raw), (200, "application/json", b"abc"))
+
+    def test_sent_failure_says_the_answer_was_lost_not_unreachable(self):
+        for reason in ("transport", "deadline", "unreachable"):
+            read_msg = git._failure(git._TransportError(True, reason), False)
+            self.assertIn("answer was lost", read_msg, reason)
+            self.assertNotIn("could not be reached", read_msg, reason)
+            write_msg = git._failure(git._TransportError(True, reason), True)
+            self.assertIn("answer was lost", write_msg, reason)
+            self.assertIn(git._REMOTE_UNKNOWN, write_msg, reason)
+
+    def test_unsent_failure_still_says_could_not_be_reached(self):
+        msg = git._failure(git._TransportError(False, "unreachable"), True)
+        self.assertIn("could not be reached", msg)
+        self.assertNotIn("may or may not have been applied", msg)
+
     # 5. The program name cannot carry newline/tab into stderr lines.
     def test_prog_escapes_newline_and_tab(self):
         with mock.patch.dict(os.environ, {"SIMPLE_GIT_ARGV0": "evil\nname\there"}):
@@ -1957,10 +2196,12 @@ class TestReview1199(unittest.TestCase):
         self.assertTrue(git._type_ok({"type": "array", "minItems": 0, "maxItems": 2}, [1]))
 
 
-REAL_SCANNER = Path(os.path.realpath(str(IMPL))).parent.parent / "agent_sync" / "secretscan.py"
+REAL_SCANNER = Path(os.path.realpath(str(IMPL))).parent.parent / "simple_tools" / "secretscan.py"
 
 
-@unittest.skipUnless(REAL_SCANNER.is_file(), "scripts/agent_sync/secretscan.py not available here")
+@unittest.skipUnless(
+    REAL_SCANNER.is_file(), "scripts/simple_tools/secretscan.py not available here"
+)
 class TestRealSharedScanner(unittest.TestCase):
     """The actual fleet scanner, loaded exactly the way the implementation loads it."""
 
@@ -2396,3 +2637,181 @@ class TestPublishRerunTrustsLiveTree(unittest.TestCase):
         puts = [args for name, args in transport.calls if name == "gr_wf_files_put"]
         self.assertEqual(puts, [], transport.calls)
         self.assertIn("already committed by an earlier run", out)
+
+
+DISPATCH_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["repo", "workflow", "ref", "identity"],
+    "properties": {
+        "repo": {"type": "string"},
+        "workflow": {"type": "string"},
+        "ref": {"type": "string"},
+        "inputs": {
+            "type": "object",
+            "maxProperties": 32,
+            "additionalProperties": {
+                "anyOf": [
+                    {"type": "string", "maxLength": 1024},
+                    {"type": "number"},
+                    {"type": "boolean"},
+                ]
+            },
+        },
+        "intent_id": {"type": "string", "pattern": r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}$"},
+        "expected_head_sha": {"type": "string", "pattern": r"^[0-9a-f]{40}$"},
+        "identity": {"type": "string", "enum": ["ECHO"]},
+    },
+}
+
+
+def dispatch_entry():
+    return {
+        "name": "gr_workflow_dispatch",
+        "read": False,
+        "input_bytes": 65536,
+        "schema": json.loads(json.dumps(DISPATCH_SCHEMA)),
+    }
+
+
+DISPATCH_BASE = {"repo": "o/r", "workflow": "w.yml", "ref": "main", "identity": "ECHO"}
+
+
+class TestLeafAnyOf(unittest.TestCase):
+    """Fail-closed leaf-union semantics in _type_ok:  a recognized anyOf never falls through to a
+    looser reading, a malformed union (non-list, empty, non-dict variant) refuses, and sibling
+    constraints still apply to a matched variant - they intersect, never replace."""
+
+    def test_empty_any_of_refuses(self):
+        self.assertFalse(git._type_ok({"anyOf": []}, "x"))
+
+    def test_non_list_any_of_refuses(self):
+        self.assertFalse(git._type_ok({"anyOf": "string"}, "x"))
+
+    def test_non_dict_variant_refuses(self):
+        self.assertFalse(git._type_ok({"anyOf": [{"type": "string"}, 42]}, "x"))
+
+    def test_no_matching_variant_refuses(self):
+        self.assertFalse(git._type_ok({"anyOf": [{"type": "string"}]}, 5))
+
+    def test_bool_is_not_a_number_variant(self):
+        self.assertFalse(git._type_ok({"anyOf": [{"type": "number"}]}, True))
+
+    def test_sibling_type_still_applies(self):
+        self.assertFalse(git._type_ok({"type": "number", "anyOf": [{"type": "string"}]}, "abc"))
+        self.assertTrue(git._type_ok({"type": "string", "anyOf": [{"type": "string"}]}, "abc"))
+
+    def test_sibling_scalar_constraints_still_apply(self):
+        schema = {"anyOf": [{"type": "string"}], "maxLength": 3}
+        self.assertFalse(git._type_ok(schema, "abcd"))
+        self.assertTrue(git._type_ok(schema, "abc"))
+
+    def test_union_without_siblings_still_accepts(self):
+        schema = {
+            "anyOf": [
+                {"type": "string", "maxLength": 1024},
+                {"type": "number"},
+                {"type": "boolean"},
+            ]
+        }
+        self.assertTrue(git._type_ok(schema, "v"))
+        self.assertTrue(git._type_ok(schema, 1.5))
+        self.assertTrue(git._type_ok(schema, False))
+        self.assertFalse(git._type_ok(schema, None))
+
+    def test_annotation_only_siblings_add_no_check(self):
+        schema = {
+            "description": "an input value",
+            "anyOf": [{"type": "string"}, {"type": "number"}, {"type": "boolean"}],
+        }
+        self.assertTrue(git._type_ok(schema, 5))
+        self.assertTrue(git._type_ok(schema, True))
+        self.assertTrue(git._type_ok(schema, "v"))
+        self.assertFalse(git._type_ok(schema, None))
+
+    def test_a_definite_later_variant_wins_over_a_deferred_pattern(self):
+        schema = {
+            "anyOf": [
+                {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+                {"type": "string", "maxLength": 8},
+            ]
+        }
+        checks: list = []
+        self.assertTrue(git._type_ok(schema, "main", checks))
+        self.assertEqual(checks, [])  # settled by the second variant;  nothing deferred
+
+    def test_one_deferred_variant_defers_its_pattern(self):
+        schema = {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{40}$"}, {"type": "number"}]}
+        checks: list = []
+        self.assertTrue(git._type_ok(schema, "abc", checks))
+        self.assertEqual(checks, [("^[0-9a-f]{40}$", "abc")])
+
+    def test_two_deferred_variants_refuse(self):
+        schema = {
+            "anyOf": [{"type": "string", "pattern": "^a"}, {"type": "string", "pattern": "^b"}]
+        }
+        self.assertFalse(git._type_ok(schema, "bc", []))
+
+
+class TestDispatchInputs(unittest.TestCase):
+    """gr_workflow_dispatch advertises flat scalar `inputs` (additionalProperties + maxProperties):  the
+    client validates representative values pre-network instead of refusing every non-empty object, and
+    strictness is unchanged for schemas that do not declare additionalProperties."""
+
+    BASE = DISPATCH_BASE
+
+    def test_scalar_inputs_validate(self):
+        args = dict(
+            self.BASE,
+            inputs={"expected_source_sha": "a" * 40, "dry": True, "count": 2, "ratio": 1.5},
+        )
+        git.validate_arguments(dispatch_entry(), args)
+
+    def test_nested_object_value_is_refused(self):
+        with self.assertRaises(SystemExit):
+            git.validate_arguments(dispatch_entry(), dict(self.BASE, inputs={"bad": {"nested": 1}}))
+
+    def test_array_and_null_values_are_refused(self):
+        for bad in (["x"], None):
+            with self.assertRaises(SystemExit):
+                git.validate_arguments(dispatch_entry(), dict(self.BASE, inputs={"bad": bad}))
+
+    def test_inputs_past_the_key_cap_are_refused(self):
+        with self.assertRaises(SystemExit):
+            git.validate_arguments(
+                dispatch_entry(), dict(self.BASE, inputs={f"k{i}": "v" for i in range(33)})
+            )
+
+    def test_string_values_past_the_length_cap_are_refused(self):
+        with self.assertRaises(SystemExit):
+            git.validate_arguments(dispatch_entry(), dict(self.BASE, inputs={"long": "x" * 1025}))
+
+    def test_strict_object_still_refuses_unknown_keys(self):
+        entry = {"name": "gr_wf_issue_create", "read": False, "schema": dict(WRITE_SCHEMA)}
+        with self.assertRaises(SystemExit):
+            git.validate_arguments(entry, {"title": "t", "identity": "ECHO", "extra": 1})
+
+    def test_bare_object_still_refuses_unknown_keys(self):
+        entry = {
+            "name": "gr_x",
+            "read": False,
+            "schema": {"type": "object", "properties": {"inputs": {"type": "object"}}},
+        }
+        with self.assertRaises(SystemExit):
+            git.validate_arguments(entry, {"inputs": {"k": "v"}})
+
+    def test_a_refused_inputs_write_is_never_sent(self):
+        t = FakeTransport([[make_tool("gr_workflow_dispatch", DISPATCH_SCHEMA)]])
+        code, _out, err = run_cli(
+            [
+                "call",
+                "gr_workflow_dispatch",
+                "--args-json",
+                json.dumps(dict(self.BASE, inputs={"bad": {"nested": 1}})),
+            ],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=t,
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("do not match", err)
+        self.assertNotIn("gr_workflow_dispatch", [c[0] for c in t.calls])

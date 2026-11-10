@@ -78,7 +78,7 @@ source removal. MCP `structuredContent` and CLI `--json` stdout retain the raw r
 and original source text; CLI JSON writes its trust warning to stderr. REST and the Python
 API remain raw-data interfaces. Machine consumers must treat their hits as untrusted source
 data and separately verify authority before acting; indexing text does not authenticate it.
-No text fence can make an agent immune to prompt injection. The hosted/agent-sync MCP already
+No text fence can make an agent immune to prompt injection. The hosted/simple-tools MCP already
 has its own untrusted recall envelope. `install-fleet-rag.sh --with-seat-mcp` now copies the
 seat server renderer as well as its bridge/tools; the main package rsync and service Docker
 COPY include the shared helper. These source changes do not install, restart or deploy a

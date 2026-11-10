@@ -24,10 +24,26 @@ struct OverviewView: View {
         _gridRequest = gridRequest
     }
 
+    /// True unless the last trusted seat check is older than its window,  as after a long
+    /// sleep.  An old check's counts are not current,  so they read as not known until a new
+    /// one lands.
+    ///
+    /// It is measured from `DriftMonitor.lastTrustedRunAt` (GRID-33):  the counts and the
+    /// verdict on screen are only ever a trusted run's,  and a run that could not be trusted
+    /// clears them,  so its landing time says nothing about how old they are.  The "Last
+    /// checked" line beside the verdict still says when any check last landed.
+    private var seatCheckIsCurrent: Bool {
+        monitor.lastTrustedRunAt.map { SeatCheckFreshness.isCurrent(checkedAt: $0, now: watch.now) } ?? true
+    }
+
+    /// The counts,  kept while a run checks again:  the store keeps the last answer on
+    /// screen then,  so the counts are that answer's and do not go to dashes every run.  A
+    /// cell being checked with no earlier answer is not a finding yet,  so it is not counted.
     private var counts: OverviewCounts {
         OverviewCounts.make(
-            cells: store.cells,
-            trusted: store.phase == .loaded,
+            cells: store.cells.filter { !$0.isCheckingWithNoAnswer },
+            trusted: GridPresentation.engineAnswerShown(phase: store.phase, showingLastAnswer: store.isShowingLastAnswer)
+                && seatCheckIsCurrent,
             commonCheckedAt: store.commonCheckedAt
         )
     }
@@ -41,11 +57,19 @@ struct OverviewView: View {
                     placeCard(menu.serverCard)
                 }
                 Divider()
-                Label("Seat Setup \(FleetHost.mac.onTitle)", systemImage: "square.grid.3x3")
-                    .font(.title3.weight(.semibold))
+                VStack(alignment: .leading, spacing: 2) {
+                    Label("Seat Setup \(FleetHost.mac.onTitle)", systemImage: "square.grid.3x3")
+                        .font(.title3.weight(.semibold))
+                    // The counts below prove the Mac's config and nothing else.
+                    Text(GridPresentation.overviewScope)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 VStack(alignment: .leading, spacing: 4) {
                     verdictRow
-                    if let meaning = RunVerdict.meaning(phase: store.phase, verdict: store.summary?.overallVerdict) {
+                    if seatCheckIsCurrent,
+                       let meaning = RunVerdict.meaning(phase: store.phase, verdict: store.summary?.overallVerdict) {
                         Text(meaning)
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -138,8 +162,10 @@ struct OverviewView: View {
     /// The verdict,  its failing count and when the Mac last checked.
     private var verdictRow: some View {
         HStack(spacing: 10) {
-            RunVerdictLabel(verdict: RunVerdict.make(phase: store.phase, verdict: store.summary?.overallVerdict))
-            if let failing = RunVerdict.failingText(store.summary) {
+            RunVerdictLabel(verdict: SeatCheckFreshness.verdict(
+                RunVerdict.make(phase: store.phase, verdict: store.summary?.overallVerdict),
+                isCurrent: seatCheckIsCurrent))
+            if seatCheckIsCurrent, let failing = RunVerdict.failingText(store.summary) {
                 Text(failing)
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -147,24 +173,33 @@ struct OverviewView: View {
                 ProgressView().controlSize(.small)
             }
             Spacer()
-            if let lastRunAt = monitor.lastRunAt {
-                Text("Last checked at \(FleetTime.clock(lastRunAt))")
+            // With its age and a day word,  at the menu's own moment,  so a check from last
+            // night never reads as this morning's,  and an old one says it is not current.
+            if let line = SeatCheckFreshness.overviewLine(checkedAt: monitor.lastRunAt, now: watch.now) {
+                let current = monitor.lastRunAt.map { SeatCheckFreshness.isCurrent(checkedAt: $0, now: watch.now) } ?? false
+                Text(line)
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(current ? Color.secondary : Color.orange)
             }
         }
     }
 
-    /// What the watcher holds,  when it holds anything.
-    @ViewBuilder
+    /// What the watcher actually holds,  always shown:  a watcher that is off,  watching
+    /// nothing,  or missing a stream that failed to start is a warning,  never a hidden line
+    /// (GRID-37).  The paths no started watch covers are folded under it.
     private var watchLine: some View {
-        if monitor.isWatching {
-            Label(
-                "Watching \(monitor.watchedPathCount) paths on the Mac for \(monitor.watchedSeats.count) seats",
-                systemImage: "eye"
-            )
-            .font(.callout)
-            .foregroundStyle(.secondary)
+        let line = GridPresentation.WatchLine.make(
+            isWatching: monitor.isWatching,
+            coverage: monitor.watchCoverage,
+            seatCount: monitor.watchedSeats.count,
+            recheckSeconds: DriftMonitor.safetyNetInterval
+        )
+        return VStack(alignment: .leading, spacing: 4) {
+            Label(line.text, systemImage: line.tone == .watching ? "eye" : "eye.slash")
+                .font(.callout)
+                .foregroundStyle(line.tone == .watching ? Color.secondary : Color.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            UnwatchedPathsDisclosure(coverage: monitor.watchCoverage)
         }
     }
 

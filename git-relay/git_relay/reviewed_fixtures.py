@@ -24,6 +24,11 @@ from .secret_scan import find_secret
 # Only these exact bytes at these exact repository destinations are attested
 # synthetic fixtures.
 # The source Git blob ids and review procedure are recorded in the README.
+# The Infisical API-route row is separately refreshed for the current rename
+# reconciliation tree550beb61fb7cd372b3504d3b4f023130d7d730ec. Its immutable
+# main27801add source, five safe rename/import/env edits and whole credential-
+# line origin proof are recorded in preservation-pending-manifest.json. All
+# credential-shaped spans are unchanged; provider/loaded guards are NOT waived.
 _REVIEWED_FIXTURES = frozenset(
     {
         (
@@ -64,7 +69,7 @@ _REVIEWED_FIXTURES = frozenset(
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
             "scripts/simple_tools/tests/test_infisical_api_route.py",
-            "34041aaa826e24b919621c7d5ed6703c2b602beda05449dd9801a13e02d67090",
+            "3ee7aac6e82c0f22bbadc29ba915cc05054c7d5e3c0962f9c84f9db5b8f94d88",
         ),
         (
             "Simple-With-Us/AI-Fleet-Coordinator",

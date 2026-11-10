@@ -9,11 +9,11 @@ import Foundation
 
 /// Where the eavesdropper keeps its state on this Mac.
 struct ListenerStateLocation: Equatable {
-    /// The eavesdropper's state directory:  `~/.agent-sync`.
+    /// The eavesdropper's state directory:  `~/.simple-tools`.
     var root: URL
 
     init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
-        self.root = home.appendingPathComponent(".agent-sync", isDirectory: true)
+        self.root = home.appendingPathComponent(".simple-tools", isDirectory: true)
     }
 
     /// The configuration file.
@@ -133,7 +133,7 @@ struct WakeSettingsReader {
     /// Where the state lives.
     var location: ListenerStateLocation
     /// The command line,  for the eavesdropper's own account of itself.
-    var runner: AgentSyncRunning
+    var runner: SimpleToolsRunning
     /// The seats to show.
     var roster: [String]
     /// Where the seat partition is,  or nil when the checkout could not be found.
@@ -146,7 +146,7 @@ struct WakeSettingsReader {
 
     init(
         location: ListenerStateLocation = ListenerStateLocation(),
-        runner: AgentSyncRunning = AgentSyncCLI(),
+        runner: SimpleToolsRunning = SimpleToolsCLI(),
         roster: [String] = [],
         partitionURL: URL? = ListenerPartition.defaultURL(),
         now: @escaping () -> Date = { Date() },
@@ -192,6 +192,9 @@ struct WakeSettingsReader {
         // The configuration file.  A file that is not there yet and one that cannot be read are
         // told apart, and neither stops the status read:  the eavesdropper can be running either way.
         sources.configPath = location.configURL.path
+        // Why a file that is there could not be read.  A file that is not there is known to hold
+        // no Operator section, so only this leaves that section not known.
+        var configUnreadable: String?
         switch readFile(location.configURL, limit: Self.maximumFileBytes) {
         case .text(let text, _):
             sources.config = ListenerConfigDocument(text: text)
@@ -205,13 +208,14 @@ struct WakeSettingsReader {
             sources.config = ListenerConfigDocument(text: "")
             let problem = "The configuration file at \(location.configURL.path) could not be read:  \(why)"
             sources.configProblem = problem
+            configUnreadable = problem
             problems.append(problem)
         }
 
         // The eavesdropper's own account of itself.
         var status: ListenerStatus?
         do {
-            let result = try await runner.run(AgentSyncInvocation.status())
+            let result = try await runner.run(SimpleToolsInvocation.status())
             if result.exitCode == 0, let data = result.stdout.data(using: .utf8) {
                 status = try? JSONDecoder().decode(ListenerStatus.self, from: data)
                 if status == nil {
@@ -314,9 +318,39 @@ struct WakeSettingsReader {
         sources.recentWakes = recent
         sources.usageProblems = usageProblems
         sources.tornRows = tornRows
-        sources.operatorOptions = OperatorOptions.build(from: sources.config)
+        sources.operatorOptions = OperatorOptions.build(from: sources.config, configProblem: configUnreadable)
+        // The kill switch itself, so the pause a seat is under is known when the status is not
+        // current or could not be read.
+        sources.pauseFile = readPauseFile()
         sources.problems = problems
         return sources
+    }
+
+    /// The kill switch, `~/.simple-tools/listener/pause.json`:  a JSON object keyed by scope (a seat
+    /// tag, or `*` for every seat).  An entry that is not an object is no pause, as the eavesdropper
+    /// reads it.  A file that is there and cannot be read is unreadable, never no pause.
+    func readPauseFile() -> WakePauseFile {
+        let url = location.pauseURL
+        let text: String
+        switch readFile(url, limit: Self.maximumFileBytes) {
+        case .missing: return .missing
+        case .unreadable(let why): return .unreadable("The pause file at \(url.path) could not be read:  \(why)")
+        case .text(let read, _): text = read
+        }
+        guard let data = text.data(using: .utf8),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return .unreadable("The pause file at \(url.path) is not a JSON object.")
+        }
+        var entries: [String: ListenerStatus.PauseEntry] = [:]
+        for (scope, value) in object {
+            guard let entry = value as? [String: Any] else { continue }
+            entries[scope] = ListenerStatus.PauseEntry(
+                wakes_only: entry["wakes_only"] as? Bool,
+                by: entry["by"] as? String,
+                ts: (entry["ts"] as? NSNumber)?.doubleValue
+            )
+        }
+        return .entries(entries)
     }
 
     /// What reading a pin file found.

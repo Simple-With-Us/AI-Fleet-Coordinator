@@ -1,7 +1,7 @@
 {
   "count": 10,
-  "generated_by": "scripts/agent-sync-mcp/scripts/export-linear-catalog.mjs",
-  "regenerate": "cd scripts/agent-sync-mcp && node scripts/export-linear-catalog.mjs",
+  "generated_by": "scripts/simple-tools-mcp/scripts/export-linear-catalog.mjs",
+  "regenerate": "cd scripts/simple-tools-mcp && node scripts/export-linear-catalog.mjs",
   "sources": [
     "src/linear.js",
     "src/linear-api.js"
@@ -576,7 +576,7 @@
         "properties": {
           "max_chars": {
             "default": 24000,
-            "maximum": 64000,
+            "maximum": 1000000,
             "minimum": 1000,
             "type": "integer"
           },
@@ -617,7 +617,7 @@
           },
           "max_chars": {
             "default": 24000,
-            "maximum": 64000,
+            "maximum": 1000000,
             "minimum": 1000,
             "type": "integer"
           },

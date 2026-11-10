@@ -274,7 +274,8 @@ def _exception(repo: Path, env: Mapping[str, str], home: Path, code_root: Path):
 
 
 def process_repo(repo: Path, dry_run: bool, counters: dict[str, int], *, env: Mapping[str, str], home: Path,
-                 code_root: Path) -> None:
+                 code_root: Path, problems: list[tuple[str, str]] | None = None) -> None:
+    problems = [] if problems is None else problems
     if repo.is_symlink():
         counters["skipped"] += 1
         log(f"skip {repo.name}: symlink")
@@ -319,7 +320,9 @@ def process_repo(repo: Path, dry_run: bool, counters: dict[str, int], *, env: Ma
         return
     if dirty:
         counters["skipped"] += 1
+        n = len(dirty.splitlines())
         log(f"skip {repo.name}: working tree is dirty")
+        problems.append((repo.name, f"dirty ({n} path{'s' if n != 1 else ''})"))
         return
     if dry_run:
         code, remote_head = git(repo, "rev-parse", "--verify", "refs/remotes/origin/main")
@@ -395,6 +398,117 @@ def process_repo(repo: Path, dry_run: bool, counters: dict[str, int], *, env: Ma
     log(f"updated {repo.name}: {head[:12]} -> {remote_head[:12]}")
 
 
+
+# Loud reporting (AFC-677):  a dirty or failing clone in the Code root is agent work in the wrong place, and the server's
+# Fleet RAG doc source reads this folder, so a skipped clone means stale docs.  When ZULIP_SITE, ZULIP_EMAIL and
+# ZULIP_API_KEY are set (a systemd EnvironmentFile, mode 600, holding one seat bot's own key), the job posts one Zulip
+# message when the set of problem clones changes, and again once a day while any remain.  Nothing is posted when all
+# clones are clean, and a failed post is only logged:  alerting never changes the sync's own exit code.
+ALERT_STATE = "code-main-sync-alert.json"
+ALERT_REPEAT_S = 24 * 3600
+ALERT_DEFAULT_TAG = "[GB-ORACLE \U0001f4c1OPS]"
+ALERT_DEFAULT_STREAM = "Alerts"
+ALERT_DEFAULT_TOPIC = "code-main-sync"
+GAP = "\u00a0 "
+
+
+def alert_message(problems: list[tuple[str, str]], tag: str, host: str) -> str:
+    lines = [tag, ""]
+    lines.append(
+        GAP.join(
+            [
+                f"code-main-sync on {host} skipped {len(problems)} Code clone{'s' if len(problems) != 1 else ''}, "
+                "so they are not at origin/main.",
+                "Agents must work in lanes, never in the Code folder.",
+            ]
+        )
+    )
+    lines.append("")
+    lines += [f"- `{name}`: {reason}" for name, reason in sorted(problems)]
+    return "\n".join(lines)
+
+
+def alert_problems(problems: list[tuple[str, str]], env: Mapping[str, str], state_dir: Path, *, now: float | None = None,
+                   post=None) -> bool:
+    """Post the problem clones to Zulip when the set changed or a day passed.  Returns True when a post was sent."""
+    import json
+
+    now = time.time() if now is None else now
+    path = state_dir / ALERT_STATE
+    try:
+        last = json.loads(path.read_text())
+    except (OSError, ValueError):
+        last = {}
+    if not isinstance(last, dict):
+        last = {}
+    try:
+        last_at = float(last.get("at") or 0)
+    except (TypeError, ValueError):
+        last_at = 0.0
+    key = sorted(name for name, _ in problems)
+    if not problems:
+        if last.get("problems"):
+            _save_alert_state(path, [], now)
+        return False
+    if key == last.get("problems") and now - last_at < ALERT_REPEAT_S:
+        return False
+    site = (env.get("ZULIP_SITE") or "").strip().rstrip("/")
+    email = (env.get("ZULIP_EMAIL") or "").strip()
+    api_key = (env.get("ZULIP_API_KEY") or "").strip()
+    if not (site and email and api_key):
+        log("alert: Zulip is not configured;  problem clones are only logged")
+        return False
+    body = alert_message(problems, env.get("FLEET_SYNC_ALERT_TAG") or ALERT_DEFAULT_TAG, os.uname().nodename)
+    fields = {
+        "type": "stream",
+        "to": env.get("FLEET_SYNC_ALERT_STREAM") or ALERT_DEFAULT_STREAM,
+        "topic": env.get("FLEET_SYNC_ALERT_TOPIC") or ALERT_DEFAULT_TOPIC,
+        "content": body,
+    }
+    try:
+        (post or _zulip_post)(site, email, api_key, fields)
+    except Exception as exc:  # noqa: BLE001 - alerting must never fail the sync
+        log(f"alert: Zulip post failed ({type(exc).__name__})")
+        return False
+    _save_alert_state(path, key, now)
+    log(f"alert: posted {len(problems)} problem clone(s) to Zulip")
+    return True
+
+
+def _save_alert_state(path: Path, key: list[str], now: float) -> None:
+    import json
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"problems": key, "at": now}))
+    except OSError as exc:  # alerting must never fail the sync;  the worst case is a repeat post next run
+        log(f"alert: state write failed ({type(exc).__name__})")
+
+
+def _zulip_post(site: str, email: str, api_key: str, fields: Mapping[str, str]) -> None:
+    import base64
+    import urllib.parse
+    import urllib.request
+
+    if urlsplit(site).scheme != "https":
+        raise ValueError("ZULIP_SITE must be https")
+    auth = base64.b64encode(f"{email}:{api_key}".encode()).decode()
+    req = urllib.request.Request(
+        f"{site}/api/v1/messages",
+        data=urllib.parse.urlencode(fields).encode(),
+        headers={"Authorization": f"Basic {auth}", "Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        # A 3xx is an error, never followed, so the Authorization header never reaches another host.
+        def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201
+            return None
+
+    opener = urllib.request.build_opener(_NoRedirect)
+    with opener.open(req, timeout=20) as resp:  # noqa: S310 - https enforced above
+        if resp.status != 200:
+            raise RuntimeError(f"HTTP {resp.status}")
+
 def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) -> int:
     env = os.environ if env is None else env
     parser = argparse.ArgumentParser(description="Fetch and fast-forward clean clones in the Code root to origin/main.")
@@ -416,6 +530,7 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
         return 0
     try:
         counters = {"updated": 0, "current": 0, "would_update": 0, "skipped": 0, "failed": 0}
+        problems: list[tuple[str, str]] = []
         # With the relay route set, this job acts as its seat's own App, so it never looks up an owner token.
         relay_route = bool((env.get("FLEET_SYNC_RELAY_URL") or "").strip())
         token_source = "" if args.dry_run or relay_route else resolve_github_token(env, home)
@@ -424,12 +539,17 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
         for repo in sorted(root.iterdir(), key=lambda path: path.name.casefold()):
             if repo.name.startswith(".") or not repo.is_dir():
                 continue
+            before_failed = counters["failed"]
             try:
-                process_repo(repo, args.dry_run, counters, env=env, home=home, code_root=root)
+                process_repo(repo, args.dry_run, counters, env=env, home=home, code_root=root, problems=problems)
             except Exception as exc:  # noqa: BLE001 - one clone must not stop the others
                 counters["failed"] += 1
                 log(f"fail {repo.name}: {type(exc).__name__}")
+            if counters["failed"] > before_failed and not any(name == repo.name for name, _ in problems):
+                problems.append((repo.name, "failed to sync (see the job log)"))
         log("summary: " + " ".join(f"{key}={value}" for key, value in counters.items()))
+        if not args.dry_run:
+            alert_problems(problems, env, state)
         return 1 if counters["failed"] else 0
     finally:
         os.close(lock_fd)

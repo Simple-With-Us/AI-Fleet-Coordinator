@@ -213,6 +213,50 @@ class UncoveredSurfaceTests(ManifestFixture):
             self.load(self._document([{"reason": "no surface named"}]))
 
 
+class RunsOnTests(ManifestFixture):
+    """A seat may say where it runs;  the key is optional and a seat without it is not placed."""
+
+    def _document(self, **claude: Any) -> dict[str, Any]:
+        seat: dict[str, Any] = {"platforms": [], "rules": [], "notApplicable": []}
+        seat.update(claude)
+        return _manifest_dict(
+            {"CLAUDE": seat, "CODEX": {"platforms": [], "rules": [], "notApplicable": []}}
+        )
+
+    def test_a_seat_that_says_nothing_reads_as_place_not_known(self) -> None:
+        seat = self.load(self._document()).seat("CLAUDE")
+        self.assertEqual(seat.runs_on, ())
+
+    def test_a_seat_may_run_on_one_or_more_places(self) -> None:
+        for places in (["server"], ["mac", "server"], ["mac", "server", "vm", "cloud"]):
+            with self.subTest(places=places):
+                seat = self.load(self._document(runsOn=places)).seat("CLAUDE")
+                self.assertEqual(seat.runs_on, tuple(places))
+
+    def test_the_place_words_are_exactly_these_four(self) -> None:
+        self.assertEqual(manifest_module.RUN_PLACES, ("mac", "server", "vm", "cloud"))
+
+    def test_a_bad_runs_on_is_refused_and_names_the_seat(self) -> None:
+        for bad in (
+            [],
+            None,
+            "server",
+            ["laptop"],
+            ["Mac"],
+            ["mac", "mac"],
+            [1],
+            [None],
+            ["mac", ""],
+            {"mac": True},
+        ):
+            with self.subTest(runsOn=bad), self.assertRaises(ManifestError) as caught:
+                self.load(self._document(runsOn=bad))
+            self.assertIn("seat CLAUDE runsOn", str(caught.exception))
+
+    def test_the_schema_version_stays_two_because_the_key_is_additive(self) -> None:
+        self.assertEqual(manifest_module.MANIFEST_SCHEMA_VERSION, 2)
+
+
 class CoverageTests(ManifestFixture):
     """Every (seat, platform, kind) triple needs a rule or an explicit cover."""
 
@@ -554,6 +598,18 @@ class SeededManifestTests(unittest.TestCase):
         live = registry_seat_tags(REGISTRY_FILE)
         seeded = sorted(seat.seat for seat in self.manifest.seats)
         self.assertEqual(seeded, sorted(live))
+
+    def test_the_seed_says_where_only_the_seats_whose_place_the_fleet_has_stated(self) -> None:
+        placed = {seat.seat: seat.runs_on for seat in self.manifest.seats if seat.runs_on}
+        self.assertEqual(
+            placed,
+            {
+                "CLAUDE": ("mac", "server"),
+                "ZC": ("mac", "server"),
+                "MA": ("vm",),
+                "GROK-BOT": ("cloud",),
+            },
+        )
 
     def test_the_seed_generator_reproduces_the_file_byte_for_byte(self) -> None:
         from fleet_config import seed_manifest

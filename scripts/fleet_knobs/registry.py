@@ -123,7 +123,7 @@ _NOTIFIER = (("the owner notifier", "scripts/needs_owner/notifier.py"),)
 _PUBLISHER = (("the facts publisher", "scripts/fleet_facts/publish.py"),)
 _SIGNER = (("the facts publisher", "scripts/fleet_facts/signing.py"),)
 _NOTES = (
-    ("simple-notes, the stdio MCP and the notes runner", "scripts/agent_sync/notes_client.py"),
+    ("simple-notes, the stdio MCP and the notes runner", "scripts/simple_tools/notes_client.py"),
 )
 _PIN = (("the Apple Notes helper", "scripts/apple-notes-coding.sh"),)
 _SHEET = (("the reference sheet sync", "scripts/fleet-apps-sheet-sync.mjs"),)

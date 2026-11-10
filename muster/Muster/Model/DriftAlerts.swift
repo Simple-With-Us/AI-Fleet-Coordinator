@@ -15,7 +15,10 @@ struct DriftRedCell: Identifiable, Equatable {
     var id: String { "\(seat)/\(kind)" }
 
     /// The kind as the column names it.
-    var kindTitle: String { ConfigKind(rawValue: kind)?.title ?? kind }
+    var kindTitle: String {
+        if kind == CheckResult.complianceKind { return DriftTransition.complianceTitle }
+        return ConfigKind(rawValue: kind)?.title ?? kind
+    }
 }
 
 /// One drift:  a cell that was not red and became red.
@@ -44,8 +47,18 @@ struct DriftTransition: Codable, Identifiable, Equatable {
     /// The cell the transition is about.
     var cellID: String { "\(seat)/\(kind)" }
 
-    /// The kind as the column names it.
-    var kindTitle: String { ConfigKind(rawValue: kind)?.title ?? kind }
+    /// Whether the transition is a fleet-wide compliance result that started failing, rather
+    /// than a cell.  Its seat is then the place the rule ran on, in the app's words.
+    var isCompliance: Bool { kind == CheckResult.complianceKind }
+
+    /// The kind as the column names it, and "Compliance" for a compliance rule.
+    var kindTitle: String {
+        if isCompliance { return DriftTransition.complianceTitle }
+        return ConfigKind(rawValue: kind)?.title ?? kind
+    }
+
+    /// The title a compliance transition shows where a cell shows its column.
+    static let complianceTitle = "Compliance"
 
     /// The check that turned red,  in words.
     ///

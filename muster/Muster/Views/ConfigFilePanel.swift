@@ -24,6 +24,12 @@ struct ConfigFilePanel: View {
     let artifacts: FleetStore.CellArtifacts
     /// The citation each rule carries in the manifest,  by rule id.
     let sources: [String: String]
+    /// When the run this cell came from checked it (`GridPresentation.asOfLine`).
+    let asOf: String
+    /// Each rule's file split into display lines when it was read, lined up with
+    /// `artifacts.views` (`GridPresentation.splitLines(for:)`).  Empty leaves each rule to
+    /// split its own text.
+    var lines: [[String]?] = []
     /// Called when the operator closes the panel.
     let onClose: () -> Void
 
@@ -32,9 +38,13 @@ struct ConfigFilePanel: View {
             header
             Divider()
             if artifacts.rules.isEmpty {
-                Text(artifacts.coverReason ?? "No rule covers this seat and kind.")
+                // The true reason the cell is empty (GRID-10):  the cover's reason, or the
+                // gap's sentence (`CellGap.sentence`).  "No rule covers this seat and kind."
+                // is said only when the manifest was read and names none.
+                Text(artifacts.emptyText)
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(18)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
@@ -44,7 +54,9 @@ struct ConfigFilePanel: View {
                             RuleArtifactView(
                                 rule: rule,
                                 view: artifacts.views.indices.contains(index) ? artifacts.views[index] : nil,
-                                source: sources[rule.ruleId]
+                                source: sources[rule.ruleId],
+                                read: artifacts.reads.indices.contains(index) ? artifacts.reads[index] : nil,
+                                lines: lines.indices.contains(index) ? lines[index] : nil
                             )
                         }
                     }
@@ -64,10 +76,11 @@ struct ConfigFilePanel: View {
             Text(cell.kind.title)
                 .font(.headline)
             HStack(spacing: 5) {
-                Circle()
-                    .fill(cell.state.tint)
-                    .frame(width: 8, height: 8)
-                Text(cell.stateFullName)
+                Image(systemName: cell.gridSymbol)
+                    .font(.system(size: 10, weight: .semibold))
+                    .accessibilityHidden(true)
+                // The grid's one spelling of the state, the same word the badge shows.
+                Text(cell.gridWord)
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
             }
             .foregroundStyle(cell.state.tint)
@@ -78,9 +91,12 @@ struct ConfigFilePanel: View {
                 .padding(.vertical, 2)
                 .background(Color.secondary.opacity(0.12), in: Capsule())
             Spacer()
-            Text("What this cell refers to,  as it is on this Mac.")
+            // Each rule block says where its evidence is read, so the header says only
+            // which run this is.
+            Text(asOf)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .help("When the check this panel shows was run.\u{00A0} The panel reads the cell again when the next check lands.")
             Button {
                 onClose()
             } label: {
@@ -98,8 +114,8 @@ struct ConfigFilePanel: View {
 
 }
 
-/// One rule of a cell, with the facts the engine measured and the artifact it checks as it
-/// is on this Mac.
+/// One rule of a cell, with the facts the engine measured, where its evidence is read (a
+/// file on the Mac or the secret store), and the artifact it checks.
 ///
 /// The grid's detail panel and the Seat Setup panel both show a rule this way, so a rule
 /// reads the same wherever it is opened.  The same read-only and no-credential rules apply:
@@ -109,55 +125,75 @@ struct RuleArtifactView: View {
     let view: ConfigFileView?
     /// The citation the manifest carries for the rule, when it has one.
     let source: String?
+    /// What the reader found at the rule's path, with the states `view` folds together
+    /// (not text, unreadable, missing) kept apart and the words for each.  Nil leaves the
+    /// panel to say what `view` alone can.
+    var read: ConfigFileRead? = nil
+    /// The file's display lines, split once when the file was read (off the main thread,
+    /// `GridPresentation.displayLines`), so a redraw never splits half a megabyte again.  Nil
+    /// splits `view`'s text here, as Seat Setup does.
+    var lines: [String]? = nil
 
     var body: some View {
         ruleBlock(rule: rule, view: view)
     }
 
+    /// Where this rule's evidence is read:  a file on the Mac, or the secret store.
+    private var location: GridPresentation.RuleLocation {
+        GridPresentation.RuleLocation.of(checkType: rule.checkType)
+    }
+
+    /// The colour of the rule's own state, so a MISSING rule is never orange under a red
+    /// header.
+    private var stateTint: Color {
+        rule.isNotApplicable ? Color.secondary : CellState(checkState: rule.checkState).tint
+    }
+
+    /// Plain words first:  the state and what it found, where it was read, then the
+    /// values.  The ids, the collector and the codes are under Technical Details.
     @ViewBuilder
     private func ruleBlock(rule: CheckResult, view: ConfigFileView?) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(rule.ruleId)
+                Text(GridPresentation.ruleWord(rule))
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                Text(rule.platform)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(stateTint)
                 if let scope = rule.guardScope {
                     // What this rule asks the guard to cover,  so a PASS here reads as
                     // exactly that and not as a guard that covers everything.
                     Text(scope)
                         .font(.system(size: 10, weight: .semibold, design: .monospaced))
                 }
-                Text(rule.checkType)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
                 Spacer()
-                Text(rule.state)
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(rule.checkState == .passed ? Color.green : Color.orange)
+                // Where the evidence is read, on every rule block:  the Permissions key
+                // rules ask the secret store, not a file on the Mac.
+                Label(location.label, systemImage: location == .secretStore ? "key" : FleetHost.mac.systemImage)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
             }
             Text(rule.reason)
                 .font(.callout)
-                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            // The citation the manifest carries,  which is the directive or the
-            // message that asked for the rule.  It is empty on every rule today,  and
-            // the panel says so rather than showing a blank line.
-            ProofLine(
-                label: "Source",
-                value: source.flatMap { $0.isEmpty ? nil : $0 } ?? "not cited yet"
-            )
+            // The citation the manifest carries,  which is the directive or the message
+            // that asked for the rule.  A rule that cites none shows no line at all.
+            if let cited = GridPresentation.shownSource(source) {
+                ProofLine(label: "Source", value: cited)
+            }
 
             HStack(alignment: .top, spacing: 18) {
                 ValueTable(title: "Expected", values: rule.expected)
                 ValueTable(title: "Observed", values: rule.observed)
             }
 
-            GroupBox("Last proof") {
+            ProofLine(label: "Proof", value: rule.proofText)
+
+            // The ids, the collector and the codes are for whoever debugs the engine,
+            // so they wait under a disclosure rather than lead the block.
+            DisclosureGroup("Technical Details") {
                 VStack(alignment: .leading, spacing: 4) {
-                    ProofLine(label: "Proof", value: rule.proofText)
+                    ProofLine(label: "Rule", value: rule.ruleId)
+                    ProofLine(label: "Platform", value: rule.platform)
                     ProofLine(label: "Check type", value: rule.checkType)
                     ProofLine(label: "Collector", value: rule.collector)
                     ProofLine(label: "Reason code", value: rule.reasonCode)
@@ -168,8 +204,9 @@ struct RuleArtifactView: View {
                     ProofLine(label: "Counts as failing", value: rule.failing ? "yes" : "no")
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(4)
+                .padding(.top, 4)
             }
+            .font(.caption)
 
             if let view {
                 Divider()
@@ -182,55 +219,142 @@ struct RuleArtifactView: View {
     private func artifactView(_ artifact: ConfigFileView) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
+                // A store folder such as /zulip is not a path on the Mac, so the line
+                // names which of the two it is.
+                if case .unresolved = artifact {
+                    EmptyView()
+                } else {
+                    Text("\(location.pathLabel):")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Text(artifact.path)
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .textSelection(.enabled)
-                Text(artifact.summary)
+                // The reader's own summary when there is one:  it tells a file that is not
+                // text, an unreadable path and a refusal apart, and says "redacted" only
+                // when a value was really replaced.
+                Text(read?.summary ?? artifact.summary)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Spacer()
             }
-            switch artifact {
-            case .file(_, let text, let truncated, _):
-                if truncated {
-                    Text("The file is longer than the panel reads, so this is its first part.")
+            if let message = read?.message {
+                // Not text, not on this Mac, not readable, refused or no path:  the reader's
+                // sentence stands in place of a body.
+                Text(message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(Array(notes(for: artifact).enumerated()), id: \.offset) { _, note in
+                    Text(note)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                ScrollView(.horizontal, showsIndicators: true) {
-                    Text(text.isEmpty ? "(the file is empty)" : text)
-                        .font(.system(size: 11, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                }
-                .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
-            case .directory(_, let entries):
-                if entries.isEmpty {
-                    Text("The directory is empty.")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text(entries.joined(separator: "\n"))
-                        .font(.system(size: 11, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
-                }
-            case .missing:
-                Text("This path is not on this Mac,  so there is no file to show.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            case .refused(_, let reason):
-                Text(reason)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            case .unresolved(let reason):
-                Text(reason)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                artifactBody(artifact)
             }
         }
+    }
+
+    /// The notes above the body:  cut off, rewritten for reading, cut-off JSON.
+    private func notes(for artifact: ConfigFileView) -> [String] {
+        let truncated: Bool
+        if case .file(_, _, let cut, _) = artifact {
+            truncated = cut
+        } else {
+            truncated = false
+        }
+        return GridPresentation.readNotes(
+            read,
+            truncated: truncated,
+            previewShowsTruncation: rule.configKind == .instructions
+        )
+    }
+
+    @ViewBuilder
+    private func artifactBody(_ artifact: ConfigFileView) -> some View {
+        switch artifact {
+        case .file(_, let text, let truncated, _):
+            // An instruction file carries the onboarding marks (AFC-444);  every other
+            // artifact reads as the plain text it is.
+            if rule.configKind == .instructions {
+                InstructionFilePreview(
+                    text: text,
+                    platform: rule.platform,
+                    seatTags: [rule.seat],
+                    truncated: truncated
+                )
+            } else if text.isEmpty {
+                Text("(the file is empty)")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .padding(10)
+            } else {
+                // A line at a time, so a file of half a megabyte is not one giant text
+                // (PERF-28), from lines split once at read time when the caller has them.
+                if let lines {
+                    LazyTextLines(lines: lines)
+                } else {
+                    LazyTextLines(text: text)
+                }
+            }
+        case .directory(_, let entries):
+            if entries.isEmpty {
+                Text("The directory is empty.")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            } else {
+                LazyTextLines(lines: entries)
+            }
+        case .missing:
+            Text(ConfigFileReader.missingMessage)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        case .refused(_, let reason):
+            Text(reason)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        case .unresolved(let reason):
+            Text(reason)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+/// A long text drawn a line at a time, so a large file is laid out as the lines on screen
+/// and never as one giant text (PERF-28).
+///
+/// The lines sit in a lazy stack inside the panel's own scroll view, so only the lines in
+/// view are built.  Each line can be selected and copied.  A long line wraps, and a line
+/// past `GridPresentation.displayLineLimit` characters is drawn in pieces.
+struct LazyTextLines: View {
+    private let lines: [String]
+
+    init(text: String) {
+        lines = GridPresentation.displayLines(text)
+    }
+
+    init(lines: [String]) {
+        self.lines = lines
+    }
+
+    var body: some View {
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(lines.indices, id: \.self) { index in
+                Text(lines[index])
+                    .font(.system(size: 11, design: .monospaced))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(10)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
     }
 }

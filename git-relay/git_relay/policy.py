@@ -13,7 +13,7 @@ import json
 import threading
 import time
 
-from .app_tokens import MINT_PERMISSION_CEILING
+from .app_tokens import mint_permission_allowed
 
 
 class PolicyError(ValueError):
@@ -218,7 +218,13 @@ class SeatPolicy:
         "wf_pr_reopen",
         "wf_automerge_enable",
         "wf_automerge_disable",
+        "wf_review_thread_comments",
         "wf_review_threads",
+        "wf_repo_hooks",
+        "wf_deploy_keys",
+        "wf_org_installations",
+        "wf_repo_list",
+        "wf_pr_search",
         "wf_assignees_add",
         "wf_assignees_remove",
         "wf_issue_lock",
@@ -271,6 +277,7 @@ class SeatPolicy:
         "wf_run_approve",
         "wf_file_put",
         "wf_files_put",
+        "wf_file_patch",
         "wf_merge_guarded",
     )
     ALL_ACTIONS = VALID_ACTIONS + APP_ACTIONS + REGISTERED_ACTIONS + WORKFLOW_ACTIONS
@@ -355,7 +362,7 @@ class SeatPolicy:
                     for k, v in mint_perms.items()
                 ):
                     raise PolicyError(f"seat {seat!r}: mint_permissions must be name: read|write")
-                outside = [k for k in mint_perms if k not in MINT_PERMISSION_CEILING]
+                outside = [k for k, v in mint_perms.items() if not mint_permission_allowed(k, v)]
                 if outside:
                     # Config load must refuse names the minter always rejects,
                     # so a bad seat entry cannot pass startup and fail every mint.
@@ -484,6 +491,14 @@ class SeatPolicy:
                 return True
         return False
 
+    def repo_allowed(self, seat: str, repo: str) -> bool:
+        """Public read of the seat allowlist: org-wide verbs filter results to it."""
+        return self._repo_allowed(seat, repo)
+
+    def repo_patterns(self, seat: str) -> tuple:
+        """The seat's repository allowlist patterns (read-only copy)."""
+        return tuple(self._seats[seat]["repos"])
+
     @classmethod
     def is_write(cls, action: str) -> bool:
         """Whether an authorized dispatch of this action can change something upstream.
@@ -502,6 +517,19 @@ class SeatPolicy:
             spec = SPECS.get(action)
             return True if spec is None else bool(spec[1])
         return True
+
+    @classmethod
+    def audits(cls, action: str, outcome: str) -> bool:
+        """Whether a finished, authenticated call writes an audit row.
+
+        Owner ruling 2026-11-06:  successful reads leave the audit log.  A call is skipped only when
+        it ended "ok" and its action is a known read (is_write False).  Every failure, denial and
+        write still records, and so does mint_token:  it changes no repository state but issues a
+        credential, which the log must show.
+        """
+        if outcome != "ok" or action == "mint_token":
+            return True
+        return action not in cls.ALL_ACTIONS or cls.is_write(action)
 
     def _rate_ok(self, seat: str, now: float, write: bool = False) -> str | None:
         """Charge one call, and one write when `write`, or None and nothing charged when either bucket is full."""

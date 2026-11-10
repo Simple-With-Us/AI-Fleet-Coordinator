@@ -25,6 +25,21 @@ struct SeatSetupView: View {
     @State private var inventory: SeatInventoryReading?
     @State private var inventorySeat: String?
     @State private var inventoryHost: SeatSetupHost?
+    /// When the reading shown was read, when it is one that succeeded.
+    @State private var inventoryReadAt: Date?
+    /// The seat and host of each inventory read that is running, once per read.  A read the
+    /// panel has moved on from still runs to its end, so this is a list and not one flag.
+    @State private var inventoryReads: [SeatInventoryCache.Key] = []
+    /// Whether the reader is running for the seat and host shown.
+    private var readingInventory: Bool {
+        guard let shown = shownKey else { return false }
+        return inventoryReads.contains(shown)
+    }
+
+    /// The seat and host the panel shows now.
+    private var shownKey: SeatInventoryCache.Key? {
+        seat.map { SeatInventoryCache.Key(seat: $0, host: host) }
+    }
     @State private var openInventory: Set<String> = []
     /// Which host's setup is shown.  The engine's answers are the Mac's only, so the server's
     /// side is what the platform has installed there, read over the restricted route.
@@ -80,9 +95,18 @@ struct SeatSetupView: View {
             .padding(.horizontal, 22)
             .padding(.vertical, 18)
         }
-        // The files are read again when the seat changes and when the engine finishes a run,
-        // so a panel opened before the engine answered fills in when it does.
-        .task(id: "\(seat ?? "")/\(host.rawValue)/\(String(describing: store.phase))") { await loadArtifacts() }
+        // The files are read again when the seat or host changes and when an engine run lands,
+        // so a panel opened before the engine answered fills in when it does.  The key is the
+        // run's stamp and not its phase:  the phase moves twice in a run (running, then
+        // loaded), and each move used to run the platform inventory again.  Whether the
+        // inventory is read at all is SeatInventoryCache's call.
+        .task(id: loadKey) { await loadArtifacts() }
+    }
+
+    /// What the panel's reading is keyed on:  the seat, the host and the engine run.
+    private var loadKey: String {
+        let run = store.generatedAt.map { String($0.timeIntervalSince1970) } ?? "none"
+        return "\(seat ?? "")/\(host.rawValue)/\(run)"
     }
 
     // MARK: - the seat
@@ -223,7 +247,7 @@ struct SeatSetupView: View {
         } else if let found = artifacts[kind], artifactsSeat == seat {
             if found.rules.isEmpty {
                 EmptyNote(text: answered
-                    ? (found.coverReason ?? "No rule covers this seat and kind.")
+                    ? found.emptyText
                     : SeatSetup.waitingForEngine)
             } else {
                 let sources = store.ruleSources(seat: seat, kind: kind)
@@ -232,7 +256,8 @@ struct SeatSetupView: View {
                         RuleArtifactView(
                             rule: rule,
                             view: found.views.indices.contains(index) ? found.views[index] : nil,
-                            source: sources[rule.ruleId]
+                            source: sources[rule.ruleId],
+                            read: found.reads.indices.contains(index) ? found.reads[index] : nil
                         )
                         if index < found.rules.count - 1 { Divider() }
                     }
@@ -265,19 +290,49 @@ struct SeatSetupView: View {
                         .foregroundStyle(.secondary)
                 }
             } else {
-                switch inventory {
-                case .some(.loaded(let found)):
-                    VStack(alignment: .leading, spacing: 10) {
-                        ForEach(found.sections) { section in
-                            inventorySection(section)
+                VStack(alignment: .leading, spacing: 10) {
+                    switch inventory {
+                    case .some(.loaded(let found)):
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(found.sections) { section in
+                                inventorySection(section)
+                            }
                         }
+                    case .some(.unavailable(let why)):
+                        EmptyNote(text: why)
+                    case .none:
+                        EmptyNote(text: "No platform is known for this seat, so nothing was read.")
                     }
-                case .some(.unavailable(let why)):
-                    EmptyNote(text: why)
-                case .none:
-                    EmptyNote(text: "No platform is known for this seat, so nothing was read.")
+                    if inventory != nil {
+                        inventoryFooter
+                    }
                 }
             }
+        }
+    }
+
+    /// When the reading was read, and the button that reads it now.
+    private var inventoryFooter: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            if readingInventory {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Reading again.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if let readAt = inventoryReadAt {
+                Text(SeatInventoryCache.readLine(readAt: readAt))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            Button("Read Again") {
+                Task { await readInventoryNow() }
+            }
+            // While the engine runs, no platform is known for the seat, so nothing could be read.
+            .disabled(readingInventory || store.isRunning)
+            .help("Reads what the platform has installed \(host.inProse) now.")
         }
     }
 
@@ -347,6 +402,7 @@ struct SeatSetupView: View {
 
     // MARK: - reading
 
+    @MainActor
     private func loadArtifacts() async {
         guard let seat else {
             artifacts = [:]
@@ -356,23 +412,12 @@ struct SeatSetupView: View {
         let fleetStore = store
         let wanted = ConfigKind.columnOrder.compactMap { fleetStore.cell(seat: seat, kind: $0) }
         let readHost = host
+        let platform = SeatSetup.platform(of: wanted)
 
         // The server's side is the platform's inventory over the restricted read-only route.
         // The platform is the one the engine's rules name for this seat.
         if readHost == .server {
-            guard let platform = SeatSetup.platform(of: wanted) else {
-                inventory = .unavailable("No platform is known for this seat, so nothing was read on the server.")
-                inventorySeat = seat
-                inventoryHost = readHost
-                return
-            }
-            inventory = nil
-            inventorySeat = nil
-            let reading = await ServerSeatInventoryReader().read(platform: platform)
-            guard !Task.isCancelled else { return }
-            inventory = reading
-            inventorySeat = seat
-            inventoryHost = readHost
+            await loadInventory(seat: seat, host: readHost, platform: platform, force: false)
             return
         }
 
@@ -387,16 +432,95 @@ struct SeatSetupView: View {
 
         // What the platform has installed is read once the engine's files are shown, so the
         // slower read never holds the panel up.  MiniMax's seat has its own section.
-        guard let platform = SeatSetup.platform(of: wanted), platform != "minimax" else {
-            inventory = nil
-            inventorySeat = seat
-            inventoryHost = readHost
+        guard platform != "minimax" else {
+            showInventory(nil, readAt: nil, seat: seat, host: readHost)
             return
         }
-        let repoRoot = FleetConfigLocation.resolve().repoRoot
-        let reading = await MacSeatInventoryReader(repoRoot: repoRoot).read(platform: platform)
+        await loadInventory(seat: seat, host: readHost, platform: platform, force: false)
+    }
+
+    /// The Read Again button:  reads the seat and host shown now, whatever is held.  The task
+    /// is not tied to the seat or host:  when the owner switches while it runs, its reading is
+    /// cached and never drawn over the new seat or host (`showInventory`).
+    @MainActor
+    private func readInventoryNow() async {
+        guard let seat else { return }
+        let wanted = ConfigKind.columnOrder.compactMap { store.cell(seat: seat, kind: $0) }
+        await loadInventory(seat: seat, host: host, platform: SeatSetup.platform(of: wanted), force: true)
+    }
+
+    /// What the platform has installed, from the reading held for this seat and host when it is
+    /// still good (SeatInventoryCache.decide), and from the reader otherwise.
+    @MainActor
+    private func loadInventory(seat: String, host readHost: SeatSetupHost, platform: String?, force: Bool) async {
+        let cacheStore = SeatInventoryCacheStore.shared
+        let held = cacheStore.cache.entry(seat: seat, host: readHost)
+
+        // While an engine run is in flight the cells carry no rules, so no platform is known.
+        // A reading already held for this seat and host stays on screen until the run lands.
+        guard let platform else {
+            if let held {
+                showInventory(held.reading, readAt: held.readAt, seat: seat, host: readHost)
+            } else if readHost == .server {
+                showInventory(
+                    .unavailable("No platform is known for this seat, so nothing was read on the server."),
+                    readAt: nil, seat: seat, host: readHost
+                )
+            } else {
+                showInventory(nil, readAt: nil, seat: seat, host: readHost)
+            }
+            return
+        }
+
+        let runStamp = store.generatedAt
+        let decision = SeatInventoryCache.decide(
+            held: held, host: readHost, platform: platform, runStamp: runStamp, now: Date(), force: force
+        )
+        if case .useHeld(let entry) = decision {
+            showInventory(entry.reading, readAt: entry.readAt, seat: seat, host: readHost)
+            return
+        }
+
+        let readKey = SeatInventoryCache.Key(seat: seat, host: readHost)
+        inventoryReads.append(readKey)
+        let startedAt = Date()
+        let reading: SeatInventoryReading
+        switch readHost {
+        case .server:
+            reading = await ServerSeatInventoryReader().read(platform: platform)
+        case .mac:
+            let repoRoot = FleetConfigLocation.resolve().repoRoot
+            reading = await MacSeatInventoryReader(repoRoot: repoRoot).read(platform: platform)
+        }
+        let readAt = Date()
+        // A reading that came back is kept even when the panel has moved on, so it is not run
+        // again on the way back.  A failed one is not kept.
+        cacheStore.cache.record(
+            reading, seat: seat, host: readHost, platform: platform, runStamp: runStamp,
+            startedAt: startedAt, at: readAt
+        )
+        if let index = inventoryReads.firstIndex(of: readKey) {
+            inventoryReads.remove(at: index)
+        }
         guard !Task.isCancelled else { return }
+        if case .loaded = reading {
+            showInventory(reading, readAt: readAt, seat: seat, host: readHost)
+        } else {
+            showInventory(reading, readAt: nil, seat: seat, host: readHost)
+        }
+    }
+
+    /// Put a reading on screen, only when the panel still shows the seat and host it is for.
+    /// A read that came back after the owner switched seat or host is dropped here, so it
+    /// never leaves the panel labelled for one seat and host while showing another, or stuck
+    /// on its spinner.
+    @MainActor
+    private func showInventory(_ reading: SeatInventoryReading?, readAt: Date?, seat: String, host readHost: SeatSetupHost) {
+        guard SeatInventoryCache.belongsOnScreen(
+            readFor: SeatInventoryCache.Key(seat: seat, host: readHost), shown: shownKey
+        ) else { return }
         inventory = reading
+        inventoryReadAt = readAt
         inventorySeat = seat
         inventoryHost = readHost
     }

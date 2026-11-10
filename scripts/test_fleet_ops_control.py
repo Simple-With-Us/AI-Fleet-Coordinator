@@ -1,17 +1,23 @@
 """Tests for fleet-ops-control.py:  the allowlist, the ssh gate, the plans and the audit.
 
-Nothing here runs launchctl, systemctl, fleet-secrets or Coolify:  every runner is a fake.
+Nothing here runs launchctl, systemctl, fleet-secrets, docker or Coolify: every runner is a fake,
+except that the bounded reader of `server eavesdropper-status` is also tried against small
+Python child processes of its own (and a stand-in `docker` script).
 
   python3 scripts/test_fleet_ops_control.py
 """
 
+import contextlib
 import datetime
 import importlib.util
 import io
 import json
 import os
+import shutil
 import stat
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -24,6 +30,10 @@ SPEC.loader.exec_module(foc)
 UUID = "abc123def456"
 TOKEN = "tok-" + "z" * 40
 NOW = 1_800_000_000.0
+# US Central time as a POSIX rule, and a summer epoch (2026-07-15T12:00:00Z, 7:00 AM CDT); with NOW,
+# which is in January (CST), both offsets from UTC are tried.
+CENTRAL_TZ = "CST6CDT,M3.2.0,M11.1.0"
+JULY_NOON_UTC = 1_784_116_800
 
 
 def stamp(epoch):
@@ -186,13 +196,33 @@ class AllowlistTests(Base):
                 text.split("<key>Label</key>", 1)[1]
                 .split("<string>", 1)[1]
                 .split("</string>", 1)[0]
-            )
-            self.assertIn(label.strip(), config["agents"], plist.name)
+            ).strip()
+            self.assertIn(label, config["agents"], plist.name)
         self.assertIn("com.jay.fleet-worker-health", config["agents"])
         self.assertIn("com.jay.fleet-mac-services", config["agents"])
         self.assertEqual(config["units"]["fleet-server-status.timer"]["scope"], "user")
         self.assertEqual(config["updates"]["fleet-cli"]["unit"], "fleet-cli-git-update.service")
         self.assertTrue(config["redeploy"])
+
+    def test_the_allowlist_names_the_runtime_sync_job(self):
+        config = foc.load_config()
+        self.assertEqual(
+            config["agents"]["com.jay.simple-tools-runtime-sync"], ("start", "stop", "restart")
+        )
+
+    def test_the_repo_allowlist_plans_the_runtime_sync_job(self):
+        for label, expected in (("com.jay.simple-tools-runtime-sync", (0, "planned")),):
+            with self.subTest(label=label):
+                context = self.ctx("darwin")
+                context.config_path = foc.CONFIG_PATH
+                code, answer = self.run_main(["mac", "restart", label, "--plan", "--json"], context)
+                self.assertEqual((code, answer["result"]), expected)
+                if expected[1] == "planned":
+                    self.assertEqual(
+                        answer["commands"],
+                        [[foc.LAUNCHCTL, "kickstart", "-k", f"gui/{os.getuid()}/{label}"]],
+                    )
+                self.assertEqual(self.audit_rows(), [])
 
     def test_malformed_entries_refuse_the_whole_file(self):
         bad_docs = [
@@ -249,6 +279,252 @@ class AllowlistTests(Base):
         for doc in bad_docs:
             with self.assertRaises(foc.Refused, msg=json.dumps(doc)):
                 foc.validate_config(doc)
+
+
+class AllowlistListShapeTests(Base):
+    """Each list of the allowlist must be a list.  A number, a flag, a string or an object in its
+    place is a refused file, never a traceback that takes every verb down with it."""
+
+    LISTS = (
+        ("mac", "agents"),
+        ("mac", "pm2Apps"),
+        ("server", "units"),
+        ("server", "watch"),
+        ("server", "updates"),
+    )
+    NOT_LISTS = (5, -1, True, 5.5, "docker.service", {"unit": "docker.service"})
+    # Python's truth rule, as every `or` default of the loader reads it and as Muster's reader does.
+    EMPTY = (None, 0, 0.0, False, "", {}, [])
+
+    @staticmethod
+    def document(section, key, value):
+        return {"schemaVersion": 1, section: {key: value}}
+
+    def test_a_list_given_as_anything_else_is_a_refusal_naming_the_list(self):
+        for section, key in self.LISTS:
+            for value in self.NOT_LISTS:
+                with self.subTest(key=key, value=value), self.assertRaises(foc.Refused) as caught:
+                    foc.validate_config(self.document(section, key, value))
+                self.assertIn(f"{section}.{key} is not a list", str(caught.exception))
+
+    def test_an_absent_or_empty_list_is_an_empty_list(self):
+        empty = {"agents": {}, "pm2": {}, "units": {}, "watch": {}, "updates": {}}
+        parsed = foc.validate_config({"schemaVersion": 1})
+        self.assertEqual({name: parsed[name] for name in empty}, empty)
+        for section, key in self.LISTS:
+            for value in self.EMPTY:
+                with self.subTest(key=key, value=value):
+                    parsed = foc.validate_config(self.document(section, key, value))
+                    self.assertEqual({name: parsed[name] for name in empty}, empty)
+        parsed = foc.validate_config({"schemaVersion": 1, "mac": {}, "server": {}})
+        self.assertEqual({name: parsed[name] for name in empty}, empty)
+
+    def test_a_list_that_is_a_list_of_entries_still_loads(self):
+        foc.validate_config(
+            {
+                "schemaVersion": 1,
+                "mac": {
+                    "agents": [{"label": "com.jay.x", "actions": ["stop"]}],
+                    "pm2Apps": [{"name": "x-app", "actions": ["stop"]}],
+                },
+                "server": {
+                    "units": [{"unit": "a.timer", "scope": "user", "actions": ["stop"]}],
+                    "watch": [{"unit": "docker.service", "scope": "system"}],
+                    "updates": [{"name": "x", "unit": "x.service", "scope": "system"}],
+                },
+            }
+        )
+
+    def test_through_the_helper_a_bad_list_is_a_json_refusal_for_every_verb(self):
+        for section, key in self.LISTS:
+            for value in self.NOT_LISTS:
+                document = json.loads(json.dumps(CONFIG))
+                document.setdefault(section, {})[key] = value
+                self.config_path.write_text(json.dumps(document))
+                for argv in (
+                    ["server", "restart", "fleet-server-status.timer", "--plan", "--json"],
+                    ["server", "unit-status", "fleet-server-status.timer", "--plan", "--json"],
+                    ["server", "logs", "fleet-server-status.timer", "--plan", "--json"],
+                ):
+                    with self.subTest(key=key, value=value, verb=argv[1]):
+                        code, answer = self.run_main(argv, self.ctx())
+                        self.assertEqual((code, answer["result"]), (2, "refused"))
+                        self.assertIn("is not a list", answer["detail"])
+                        self.assertEqual(self.runner.calls, [])
+        # The same over the forced command, which prints JSON and no traceback.
+        document = json.loads(json.dumps(CONFIG))
+        document["server"]["watch"] = 5
+        self.config_path.write_text(json.dumps(document))
+        context = self.ctx(
+            environ={
+                "PATH": "/usr/bin:/bin",
+                "SSH_ORIGINAL_COMMAND": "server restart fleet-server-status.timer --plan --json",
+            }
+        )
+        code, answer = self.run_main(["--from-ssh"], context)
+        self.assertEqual((code, answer["result"]), (2, "refused"))
+        self.assertIn("server.watch is not a list", answer["detail"])
+
+
+class AllowlistNotesTests(Base):
+    """The owner copy an entry may carry (`role`, `stopConsequence`), `logsUnit` and the `watch` list."""
+
+    # The five Mac agents that carry owner copy, as the repo allowlist words it.  The notes runner
+    # has no role: neither word the allowlist uses (`reporting`, `updater`) describes it.
+    MAC_NOTES = {
+        "com.jay.fleet-mac-services": (
+            "reporting",
+            "Stopping this stops the Mac's agent report, so Muster's Services panel goes out of "
+            "date and the Mac's jobs read as not known.",
+        ),
+        "com.jay.fleet-tools-doctor": (
+            "reporting",
+            "Stopping this stops the fleet tools report, so Muster's Fleet Tools rows go out of "
+            "date and then read as not known.",
+        ),
+        "com.jay.fleet-worker-health": (
+            "reporting",
+            "Stopping this stops the worker health report, so Muster's worker card goes out of "
+            "date.",
+        ),
+        "com.jay.simple-tools-runtime-sync": (
+            "updater",
+            "Stopping this stops the Mac's fleet tools updating from main, and the Operator "
+            "listener is no longer restarted when its code changes.",
+        ),
+        "com.jay.operator-notes-runner": (
+            None,
+            "Stopping this stops the Mac answering Apple Notes requests from the server and "
+            "cloud seats, and they wait in the Operator's queue for up to 24 hours.",
+        ),
+    }
+    BAD_ROLES = ("boss", "", "Reporting", "reporting ", "reporting\n", 7, None, True, ["reporting"])
+    BAD_CONSEQUENCES = (
+        "",
+        " leading space",
+        "trailing space ",
+        "x" * 201,
+        "two\nlines",
+        "Stopping this stops it.\n",
+        "\nStopping this stops it.",
+        "tab\there",
+        "café",
+        "no\u00a0break",
+        "bell\x07",
+        "del\x7f",
+        7,
+        None,
+        True,
+        ["Stopping this stops it."],
+    )
+
+    @staticmethod
+    def document(kind, **extra):
+        if kind == "agents":
+            row = {"label": "com.jay.x", "actions": ["stop"]}
+            return {"schemaVersion": 1, "mac": {"agents": [dict(row, **extra)]}}
+        if kind == "pm2Apps":
+            row = {"name": "x-app", "actions": ["stop"]}
+            return {"schemaVersion": 1, "mac": {"pm2Apps": [dict(row, **extra)]}}
+        row = {"unit": "x.timer", "scope": "user", "actions": ["stop"]}
+        return {"schemaVersion": 1, "server": {"units": [dict(row, **extra)]}}
+
+    def raw_agents(self):
+        document = json.loads(Path(HERE, "fleet-ops-control.json").read_text())
+        return {row["label"]: row for row in document["mac"]["agents"]}
+
+    def test_the_mac_agents_carry_their_owner_copy_and_keep_every_action(self):
+        agents = self.raw_agents()
+        config = foc.load_config()
+        for label, (role, text) in self.MAC_NOTES.items():
+            with self.subTest(label=label):
+                row = agents[label]
+                self.assertEqual(row.get("role"), role)
+                if role is None:
+                    self.assertNotIn("role", row)
+                self.assertEqual(row["stopConsequence"], text)
+                self.assertEqual(row["actions"], ["start", "stop", "restart"])
+                self.assertEqual(config["agents"][label], ("start", "stop", "restart"))
+                # One sentence of owner copy, within the length the collector carries.
+                self.assertTrue(text.startswith("Stopping this "))
+                self.assertEqual(text.count("."), 1, text)
+                self.assertTrue(text.endswith("."))
+                self.assertLessEqual(len(text), 200)
+                self.assertTrue(text.isascii())
+
+    def test_only_those_mac_agents_carry_owner_copy_and_no_agent_lost_an_action(self):
+        agents = self.raw_agents()
+        carrying = {label for label, row in agents.items() if "stopConsequence" in row}
+        self.assertEqual(carrying, set(self.MAC_NOTES))
+        for label, row in agents.items():
+            self.assertEqual(row["actions"], ["start", "stop", "restart"], label)
+            self.assertLessEqual(set(row), {"label", "actions", "role", "stopConsequence"}, label)
+
+    def test_the_roles_the_repo_allowlist_uses_are_words_the_validator_knows(self):
+        document = json.loads(Path(HERE, "fleet-ops-control.json").read_text())
+        rows = document["mac"]["agents"] + document["mac"]["pm2Apps"] + document["server"]["units"]
+        used = {row["role"] for row in rows if "role" in row}
+        self.assertEqual(used, {"reporting", "updater"})
+        self.assertEqual(set(foc.UNIT_ROLES), used)
+
+    def test_the_collectors_role_words_and_length_limit_are_the_helpers(self):
+        # The collector (fleet-server-status.py) carries these two values for the report;
+        # the helper checks the same file, so the two must not drift apart.
+        spec = importlib.util.spec_from_file_location(
+            "collector", os.path.join(HERE, "fleet-server-status.py")
+        )
+        collector = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(collector)
+        self.assertEqual(tuple(collector.UNIT_ROLES), foc.UNIT_ROLES)
+        self.assertEqual(collector.STOP_CONSEQUENCE_LIMIT, 200)
+
+    def test_good_owner_copy_is_accepted_on_every_kind_of_entry(self):
+        for kind in ("agents", "pm2Apps", "units"):
+            for role in foc.UNIT_ROLES:
+                with self.subTest(kind=kind, role=role):
+                    foc.validate_config(self.document(kind, role=role))
+            for text in ("x", "x" * 200, "Stopping this stops it.", 'It\'s "a" (b), c; d: e/f'):
+                with self.subTest(kind=kind, text=text):
+                    foc.validate_config(self.document(kind, stopConsequence=text))
+            foc.validate_config(self.document(kind, role="updater", stopConsequence="Stops it."))
+
+    def test_a_bad_role_refuses_the_whole_file_on_every_kind_of_entry(self):
+        for kind in ("agents", "pm2Apps", "units"):
+            for role in self.BAD_ROLES:
+                with self.subTest(kind=kind, role=role), self.assertRaises(foc.Refused) as caught:
+                    foc.validate_config(self.document(kind, role=role))
+                self.assertIn("role", str(caught.exception))
+
+    def test_a_bad_stop_consequence_refuses_the_whole_file_on_every_kind_of_entry(self):
+        for kind in ("agents", "pm2Apps", "units"):
+            for text in self.BAD_CONSEQUENCES:
+                with self.subTest(kind=kind, text=text), self.assertRaises(foc.Refused) as caught:
+                    foc.validate_config(self.document(kind, stopConsequence=text))
+                self.assertIn("stopConsequence", str(caught.exception))
+
+    def test_a_bad_note_on_one_mac_agent_leaves_no_label_usable(self):
+        document = json.loads(Path(HERE, "fleet-ops-control.json").read_text())
+        document["mac"]["agents"][0]["stopConsequence"] = "x" * 201
+        self.config_path.write_text(json.dumps(document))
+        ctx = self.ctx("darwin")
+        code, answer = self.run_main(
+            ["mac", "restart", "com.jay.fleet-tools-doctor", "--plan", "--json"], ctx
+        )
+        self.assertEqual((code, answer["result"]), (2, "refused"))
+        self.assertEqual(self.runner.calls, [])
+
+    def test_the_length_limit_is_exactly_200_characters(self):
+        foc.validate_config(self.document("agents", stopConsequence="a" * 200))
+        with self.assertRaises(foc.Refused):
+            foc.validate_config(self.document("agents", stopConsequence="a" * 201))
+        with self.assertRaises(foc.Refused):
+            foc.validate_config(self.document("agents", stopConsequence="a" * 199 + " "))
+
+    def test_the_notes_are_not_kept_in_what_the_helper_acts_on(self):
+        config = foc.validate_config(
+            self.document("agents", role="reporting", stopConsequence="Stopping this stops it.")
+        )
+        self.assertEqual(config["agents"], {"com.jay.x": ("stop",)})
 
 
 class ServerVerbTests(Base):
@@ -893,6 +1169,858 @@ class UpdateStatusTests(Base):
             self.assertGreater(len(closed), 1)
 
 
+class WatchListTests(Base):
+    """The allowlist's `watch` list: read by `server unit-status`, validated, granted nothing."""
+
+    def test_the_watch_list_is_read_and_grants_nothing(self):
+        document = {
+            "schemaVersion": 1,
+            "server": {
+                "units": [{"unit": "a.timer", "scope": "user", "actions": ["stop"]}],
+                "watch": [
+                    {"unit": "docker.service", "scope": "system"},
+                    {"unit": "w.timer", "scope": "user", "actions": ["stop"], "role": "boss"},
+                    {"unit": "docker.service", "scope": "system"},
+                    {"unit": "a.timer", "scope": "user"},
+                ],
+            },
+        }
+        config = foc.validate_config(document)
+        self.assertEqual(
+            config["watch"], {"docker.service": {"scope": "system"}, "w.timer": {"scope": "user"}}
+        )
+        self.assertEqual(set(config["units"]), {"a.timer"})
+        self.assertEqual(foc.validate_config({"schemaVersion": 1})["watch"], {})
+
+    def test_a_malformed_watch_entry_refuses_the_whole_file(self):
+        base = {"unit": "docker.service", "scope": "system"}
+        for watch in (
+            "docker.service",
+            {"docker.service": "system"},
+            ["docker.service"],
+            [None],
+            [{"scope": "system"}],
+            [{"unit": 7, "scope": "system"}],
+            [{"unit": "docker.service"}],
+            [dict(base, scope="root")],
+            [dict(base, scope=None)],
+            [dict(base, unit="docker")],
+            [dict(base, unit="--now")],
+            [dict(base, unit="docker.service\n")],
+            [dict(base, unit="x@y.service")],
+            [dict(base, unit="x.mount")],
+            [base, dict(base, scope="user")],
+        ):
+            with self.subTest(watch=watch), self.assertRaises(foc.Refused):
+                foc.validate_config({"schemaVersion": 1, "server": {"watch": watch}})
+
+    def test_a_watched_name_in_two_scopes_across_the_lists_refuses_the_file(self):
+        document = {
+            "schemaVersion": 1,
+            "server": {
+                "units": [{"unit": "a.timer", "scope": "user", "actions": ["stop"]}],
+                "watch": [{"unit": "a.timer", "scope": "system"}],
+            },
+        }
+        with self.assertRaises(foc.Refused):
+            foc.validate_config(document)
+
+
+class ShowRunner:
+    """A fake `systemctl show`: answers every call with `status` and `out`, and records the calls."""
+
+    def __init__(self, out=b"", status=0):
+        self.out = out
+        self.status = status
+        self.calls = []
+
+    def __call__(
+        self,
+        argv,
+        timeout=None,
+        env=None,
+        want_stdout=False,
+        max_bytes=None,
+        combine_stderr=False,
+    ):
+        assert isinstance(argv, list) and all(isinstance(a, str) for a in argv)
+        assert "sudo" not in " ".join(argv)
+        self.calls.append(
+            {
+                "argv": list(argv),
+                "timeout": timeout,
+                "env": dict(env or {}),
+                "want_stdout": want_stdout,
+                "max_bytes": max_bytes,
+            }
+        )
+        return self.status, (self.out if want_stdout else b"")
+
+
+def show_text(*lines):
+    return "".join(line + "\n" for line in lines).encode()
+
+
+# What `systemctl show --timestamp=unix` printed on the server, in the order systemd printed it
+# (not the order the properties were asked for): a timer, a service that ran, a service that is
+# running and has never exited, and a timer that fires by a monotonic clock and so has no
+# realtime elapse.
+TIMER_SHOW = show_text(
+    "LoadState=loaded",
+    "ActiveState=active",
+    "SubState=waiting",
+    "NextElapseUSecRealtime=@1794127500",
+    "LastTriggerUSec=@1794126600",
+    "Result=success",
+)
+SERVICE_SHOW = show_text(
+    "LoadState=loaded",
+    "ActiveState=inactive",
+    "SubState=dead",
+    "Result=success",
+    "ExecMainExitTimestamp=@1794126615",
+)
+RUNNING_SHOW = show_text(
+    "LoadState=loaded",
+    "ActiveState=active",
+    "SubState=running",
+    "Result=success",
+    "ExecMainExitTimestamp=",
+)
+MONOTONIC_TIMER_SHOW = show_text(
+    "LoadState=loaded",
+    "ActiveState=active",
+    "SubState=waiting",
+    "NextElapseUSecRealtime=",
+    "LastTriggerUSec=@1794099048",
+    "Result=success",
+)
+# A timer that has not fired since systemd loaded it: both times are empty.
+NEVER_FIRED_TIMER_SHOW = show_text(
+    "LoadState=loaded",
+    "ActiveState=active",
+    "SubState=waiting",
+    "NextElapseUSecRealtime=",
+    "LastTriggerUSec=",
+    "Result=success",
+)
+
+
+class UnitStatusTests(Base):
+    """`server unit-status UNIT --plan`: a read of one listed unit's state."""
+
+    TIMER_ARGV = [
+        "--user",
+        "show",
+        "--timestamp=unix",
+        "--property=LoadState,ActiveState,SubState,Result,NextElapseUSecRealtime,LastTriggerUSec",
+        "fleet-server-status.timer",
+    ]
+
+    def setUp(self):
+        super().setUp()
+        # The server's own zone is US Central, and a runner's may be UTC, so the zone is pinned so that a
+        # time converted in local time instead of UTC is wrong here whatever the machine's zone is.
+        # The POSIX rule is America/Chicago (CST, and CDT from the second Sunday of March to the
+        # first of November) and needs no zone database on the runner.
+        previous = os.environ.get("TZ")
+        os.environ["TZ"] = CENTRAL_TZ
+        time.tzset()
+        self.addCleanup(self.restore_zone, previous)
+        self.assertEqual(time.strftime("%Z", time.localtime(NOW)), "CST")
+        self.assertEqual(time.strftime("%Z", time.localtime(JULY_NOON_UTC)), "CDT")
+        config = json.loads(json.dumps(CONFIG))
+        config["server"]["watch"] = [
+            {"unit": "docker.service", "scope": "system"},
+            {"unit": "code-main-sync.timer", "scope": "system"},
+            {"unit": "user-watched.service", "scope": "user"},
+        ]
+        self.config_path.write_text(json.dumps(config))
+
+    @staticmethod
+    def restore_zone(previous):
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
+
+    def read(self, unit, out=b"", status=0, mode="--plan", platform="linux", environ=None):
+        runner = ShowRunner(out, status)
+        context = self.ctx(platform=platform, runner=runner, environ=environ)
+        code, answer = self.run_main(["server", "unit-status", unit, mode, "--json"], context)
+        return code, answer, runner
+
+    def assert_refused_with(self, unit, out, code_word, status=0):
+        code, answer, _ = self.read(unit, out, status)
+        self.assertEqual((code, answer["result"], answer["ok"]), (2, "refused", False), out)
+        self.assertEqual(answer["errorCode"], code_word, out)
+        # The answer is the envelope and a fixed sentence: none of the output reaches it.
+        self.assertEqual(
+            set(answer), {"ok", "verb", "target", "commands", "result", "detail", "errorCode"}
+        )
+        self.assertEqual(answer["commands"], [])
+        self.assertEqual(self.audit_rows(), [])
+        return answer
+
+    def test_a_user_timer_is_read_in_the_user_manager_with_one_fixed_argv(self):
+        code, answer, runner = self.read("fleet-server-status.timer", TIMER_SHOW)
+        self.assertEqual(code, 0)
+        (call,) = runner.calls
+        self.assertTrue(call["argv"][0].endswith("systemctl"))
+        self.assertEqual(call["argv"][1:], self.TIMER_ARGV)
+        self.assertEqual(
+            answer,
+            {
+                "ok": True,
+                "verb": "server unit-status",
+                "target": "fleet-server-status.timer",
+                "commands": [],
+                "result": "planned",
+                "detail": "read-only status of a listed unit",
+                "unit": "fleet-server-status.timer",
+                "scope": "user",
+                "activeState": "active",
+                "subState": "waiting",
+                "unitResult": "success",
+                "lastExitAt": None,
+                "nextElapseAt": "2026-11-08T08:45:00Z",
+                "lastTriggerAt": "2026-11-08T08:30:00Z",
+                "checkedAt": "2027-01-15T08:00:00Z",
+            },
+        )
+
+    def test_a_system_timer_has_no_user_flag_and_a_monotonic_timer_has_no_next_elapse(self):
+        code, answer, runner = self.read("fleet-cli-git-update.timer", MONOTONIC_TIMER_SHOW)
+        self.assertEqual(code, 0)
+        (call,) = runner.calls
+        self.assertEqual(call["argv"][1], "show")
+        self.assertNotIn("--user", call["argv"])
+        self.assertEqual((answer["scope"], answer["nextElapseAt"]), ("system", None))
+        self.assertIn("nextElapseAt", answer)
+        # It has no next realtime elapse but did fire: the last trigger is the live one.
+        self.assertEqual(answer["lastTriggerAt"], "2026-11-08T00:50:48Z")
+
+    def test_a_timer_that_has_not_fired_has_both_times_null_and_both_keys(self):
+        code, answer, _ = self.read("code-main-sync.timer", NEVER_FIRED_TIMER_SHOW)
+        self.assertEqual(code, 0)
+        self.assertEqual((answer["nextElapseAt"], answer["lastTriggerAt"]), (None, None))
+        self.assertIn("lastTriggerAt", answer)
+        self.assertIn("nextElapseAt", answer)
+
+    def test_a_timer_is_asked_for_its_last_trigger_and_a_service_never_is(self):
+        code, answer, runner = self.read("fleet-server-status.timer", TIMER_SHOW)
+        self.assertEqual((code, answer["lastTriggerAt"]), (0, "2026-11-08T08:30:00Z"))
+        self.assertIn("LastTriggerUSec", runner.calls[0]["argv"][-2])
+        code, answer, runner = self.read("docker.service", SERVICE_SHOW)
+        self.assertNotIn("lastTriggerAt", answer)
+        self.assertNotIn("LastTriggerUSec", " ".join(runner.calls[0]["argv"]))
+        code, answer, runner = self.read("docker.service", RUNNING_SHOW)
+        self.assertNotIn("lastTriggerAt", answer)
+        # The key is the timer's alone, whatever the scope, and sits with nextElapseAt.
+        for unit, out in (
+            ("fleet-server-status.timer", TIMER_SHOW),
+            ("fleet-cli-git-update.timer", MONOTONIC_TIMER_SHOW),
+            ("code-main-sync.timer", NEVER_FIRED_TIMER_SHOW),
+        ):
+            code, answer, _ = self.read(unit, out)
+            self.assertEqual(code, 0)
+            self.assertIn("lastTriggerAt", answer)
+            self.assertEqual("lastTriggerAt" in answer, "nextElapseAt" in answer)
+
+    def test_a_service_is_asked_for_a_last_exit_and_never_for_a_next_elapse(self):
+        code, answer, runner = self.read("docker.service", SERVICE_SHOW)
+        self.assertEqual(code, 0)
+        (call,) = runner.calls
+        self.assertEqual(
+            call["argv"][1:],
+            [
+                "show",
+                "--timestamp=unix",
+                "--property=LoadState,ActiveState,SubState,Result,ExecMainExitTimestamp",
+                "docker.service",
+            ],
+        )
+        self.assertEqual(
+            (answer["activeState"], answer["subState"], answer["unitResult"]),
+            ("inactive", "dead", "success"),
+        )
+        self.assertEqual(answer["lastExitAt"], "2026-11-08T08:30:15Z")
+        self.assertNotIn("nextElapseAt", answer)
+        self.assertNotIn("lastTriggerAt", answer)
+
+    def test_a_timer_has_no_main_process_so_its_last_exit_is_always_null(self):
+        # systemd prints no ExecMainExitTimestamp for a timer, and the reader does not ask for one.
+        code, answer, runner = self.read("fleet-server-status.timer", TIMER_SHOW)
+        self.assertEqual((code, answer["lastExitAt"]), (0, None))
+        self.assertIn("lastExitAt", answer)
+        self.assertNotIn("ExecMainExitTimestamp", " ".join(runner.calls[0]["argv"]))
+
+    def test_the_scope_comes_from_the_entry_and_a_user_watch_is_read_with_user(self):
+        for unit, scope, user in (
+            ("fleet-server-status.timer", "user", True),
+            ("fleet-cli-git-update.timer", "system", False),
+            ("code-main-sync.timer", "system", False),
+            ("user-watched.service", "user", True),
+            ("docker.service", "system", False),
+        ):
+            with self.subTest(unit=unit):
+                out = TIMER_SHOW if unit.endswith(".timer") else SERVICE_SHOW
+                code, answer, runner = self.read(unit, out)
+                self.assertEqual((code, answer["scope"], answer["unit"]), (0, scope, unit))
+                self.assertEqual("--user" in runner.calls[0]["argv"], user)
+
+    def test_a_watched_unit_is_read_and_granted_nothing(self):
+        code, _, _ = self.read("docker.service", RUNNING_SHOW)
+        self.assertEqual(code, 0)
+        for verb in ("start", "stop", "restart", "logs"):
+            code, answer = self.run_main(
+                ["server", verb, "docker.service", "--plan", "--json"], self.ctx()
+            )
+            self.assertEqual((code, answer["result"]), (2, "refused"), verb)
+            self.assertEqual(self.runner.calls, [], verb)
+
+    def test_a_unit_in_both_lists_is_read_in_the_scope_of_its_units_entry(self):
+        config = json.loads(self.config_path.read_text())
+        config["server"]["watch"].append({"unit": "fleet-server-status.timer", "scope": "user"})
+        self.config_path.write_text(json.dumps(config))
+        code, answer, _ = self.read("fleet-server-status.timer", TIMER_SHOW)
+        self.assertEqual((code, answer["scope"]), (0, "user"))
+        watch = foc.load_config(self.config_path)["watch"]
+        self.assertEqual(watch["docker.service"], {"scope": "system"})
+        self.assertNotIn("fleet-server-status.timer", watch)
+
+    def test_a_unit_that_never_exited_or_never_elapses_has_null_times(self):
+        for value in ("", "n/a", "0", "@0"):
+            with self.subTest(value=value):
+                running = show_text(
+                    "LoadState=loaded",
+                    "ActiveState=active",
+                    "SubState=running",
+                    "Result=success",
+                    "ExecMainExitTimestamp=" + value,
+                )
+                code, answer, _ = self.read("docker.service", running)
+                self.assertEqual((code, answer["lastExitAt"]), (0, None))
+                timer = show_text(
+                    "LoadState=loaded",
+                    "ActiveState=active",
+                    "SubState=waiting",
+                    "NextElapseUSecRealtime=" + value,
+                    "LastTriggerUSec=@1794126600",
+                    "Result=success",
+                )
+                code, answer, _ = self.read("code-main-sync.timer", timer)
+                self.assertEqual(
+                    (code, answer["nextElapseAt"], answer["lastTriggerAt"]),
+                    (0, None, "2026-11-08T08:30:00Z"),
+                )
+                fired_never = show_text(
+                    "LoadState=loaded",
+                    "ActiveState=active",
+                    "SubState=waiting",
+                    "NextElapseUSecRealtime=@1794127500",
+                    "LastTriggerUSec=" + value,
+                    "Result=success",
+                )
+                code, answer, _ = self.read("code-main-sync.timer", fired_never)
+                self.assertEqual(
+                    (code, answer["nextElapseAt"], answer["lastTriggerAt"]),
+                    (0, "2026-11-08T08:45:00Z", None),
+                )
+
+    def test_the_properties_may_come_in_any_order_and_the_last_newline_is_optional(self):
+        lines = TIMER_SHOW.decode().splitlines()
+        for order in (lines, lines[::-1]):
+            for end in ("\n", ""):
+                with self.subTest(order=order[0], end=end):
+                    code, answer, _ = self.read(
+                        "fleet-server-status.timer", ("\n".join(order) + end).encode()
+                    )
+                    self.assertEqual((code, answer["nextElapseAt"]), (0, "2026-11-08T08:45:00Z"))
+                    self.assertEqual(answer["lastTriggerAt"], "2026-11-08T08:30:00Z")
+
+    def test_a_result_that_is_empty_is_null_and_a_failed_unit_says_why(self):
+        empty = show_text(
+            "LoadState=loaded",
+            "ActiveState=inactive",
+            "SubState=dead",
+            "Result=",
+            "ExecMainExitTimestamp=@1794126615",
+        )
+        code, answer, _ = self.read("docker.service", empty)
+        self.assertEqual((code, answer["unitResult"]), (0, None))
+        failed = show_text(
+            "LoadState=loaded",
+            "ActiveState=failed",
+            "SubState=failed",
+            "Result=start-limit-hit",
+            "ExecMainExitTimestamp=@1794126615",
+        )
+        code, answer, _ = self.read("docker.service", failed)
+        self.assertEqual(
+            (code, answer["activeState"], answer["subState"], answer["unitResult"]),
+            (0, "failed", "failed", "start-limit-hit"),
+        )
+
+    def test_the_runner_gets_the_pinned_environment_a_time_limit_and_a_byte_cap(self):
+        environ = {
+            "PATH": "/usr/bin:/bin",
+            "XDG_RUNTIME_DIR": "/run/user/1000",
+            "SECRET_THING": "x" * 20,
+        }
+        _, _, runner = self.read("fleet-server-status.timer", TIMER_SHOW, environ=environ)
+        (call,) = runner.calls
+        self.assertEqual(call["env"]["XDG_RUNTIME_DIR"], "/run/user/1000")
+        self.assertNotIn("SECRET_THING", call["env"])
+        self.assertEqual(call["timeout"], foc.UNIT_STATUS_TIMEOUT)
+        self.assertTrue(call["want_stdout"])
+        self.assertEqual(call["max_bytes"], foc.UNIT_STATUS_MAX_BYTES + 1)
+
+    def test_the_limits_are_the_documented_ones(self):
+        # The rollout note says 4096 bytes and 10 seconds; the tests above use the constants, so
+        # this is what ties them to the note.
+        self.assertEqual((foc.UNIT_STATUS_MAX_BYTES, foc.UNIT_STATUS_TIMEOUT), (4096, 10))
+
+    def test_it_takes_no_lock_asks_for_no_sudo_and_writes_no_audit_row(self):
+        code, _, runner = self.read("fleet-server-status.timer", TIMER_SHOW)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.audit_rows(), [])
+        self.assertFalse((self.state / "ops-control.lock").exists())
+        self.assertEqual(len(runner.calls), 1)
+
+    def test_it_needs_nothing_from_the_status_report_or_credentials(self):
+        self.assertEqual(list(self.state.iterdir()), [])
+        code, _, _ = self.read("fleet-server-status.timer", TIMER_SHOW)
+        self.assertEqual((code, self.http_calls), (0, []))
+
+    def test_yes_is_refused_and_audited_and_runs_nothing(self):
+        code, answer, runner = self.read("fleet-server-status.timer", TIMER_SHOW, mode="--yes")
+        self.assertEqual(
+            (code, answer["result"], answer["errorCode"]), (2, "refused", "read_only_required")
+        )
+        self.assertEqual(runner.calls, [])
+        # Like every refused `--yes`, the attempt is audited, and nothing else is.
+        rows = self.audit_rows()
+        self.assertEqual(
+            [(r["verb"], r["target"], r["result"]) for r in rows],
+            [("server unit-status", "fleet-server-status.timer", "refused")],
+        )
+        self.assertEqual(answer["auditID"], rows[0]["id"])
+        self.assertFalse((self.state / "ops-control.lock").exists())
+
+    def test_without_plan_or_yes_it_is_refused_and_runs_nothing(self):
+        runner = ShowRunner(TIMER_SHOW)
+        code, answer = self.run_main(
+            ["server", "unit-status", "fleet-server-status.timer", "--json"],
+            self.ctx(runner=runner),
+        )
+        self.assertEqual((code, answer["result"]), (2, "refused"))
+        self.assertEqual(runner.calls, [])
+
+    def test_a_unit_outside_the_allowlist_is_refused_like_any_other_unlisted_target(self):
+        for unit in ("sshd.service", "fleet-server-status.service", "docker.timer", "cron.timer"):
+            with self.subTest(unit=unit):
+                code, answer, runner = self.read(unit, SERVICE_SHOW)
+                self.assertEqual((code, answer["result"]), (2, "refused"))
+                self.assertEqual(answer["detail"], "the unit is not in the allowlist")
+                self.assertNotIn("errorCode", answer)
+                self.assertEqual(runner.calls, [])
+        _, restart = self.run_main(
+            ["server", "restart", "sshd.service", "--plan", "--json"], self.ctx()
+        )
+        _, status, _ = self.read("sshd.service", SERVICE_SHOW)
+        self.assertEqual(status["detail"], restart["detail"])
+
+    def test_a_name_that_is_not_a_unit_name_is_refused_before_any_read(self):
+        for unit in (
+            "../etc.service",
+            "x.mount",
+            "x@y.service",
+            "docker.service\n",
+            "docker.service ",
+            "docker",
+            "DOCKER.service;id",
+            "",
+        ):
+            with self.subTest(unit=unit):
+                code, answer, runner = self.read(unit, SERVICE_SHOW)
+                self.assertEqual((code, answer["result"]), (2, "refused"))
+                # Refused for its shape, not for being unlisted.
+                self.assertEqual(answer["detail"], "the unit is not a valid unit name")
+                self.assertEqual(runner.calls, [])
+        # A name that starts with a dash never gets that far: the command line refuses it.
+        for unit in ("-docker.service", "--now"):
+            with self.subTest(unit=unit):
+                code, answer, runner = self.read(unit, SERVICE_SHOW)
+                self.assertEqual((code, answer["result"]), (2, "refused"))
+                self.assertEqual(runner.calls, [])
+
+    def test_the_allowlist_is_checked_first_so_a_bad_file_refuses_this_verb_too(self):
+        self.config_path.write_text(json.dumps({"schemaVersion": 2}))
+        code, answer, runner = self.read("docker.service", SERVICE_SHOW)
+        self.assertEqual((code, answer["result"]), (2, "refused"))
+        self.assertEqual(runner.calls, [])
+
+    def test_a_systemctl_that_fails_is_a_fixed_code_and_never_systemds_text(self):
+        for status in (1, 3, 124, 127, -9):
+            with self.subTest(status=status):
+                text = b"Failed to connect to bus: No medium found /home/owner/secret-place\n"
+                answer = self.assert_refused_with(
+                    "fleet-server-status.timer", text, "unit_status_unavailable", status
+                )
+                self.assertEqual(answer["detail"], "the unit status is unavailable")
+                self.assertNotIn("bus", json.dumps(answer))
+
+    def test_a_unit_that_is_not_there_is_unit_unavailable(self):
+        for state in ("not-found", "masked", "error", "bad-setting"):
+            with self.subTest(state=state):
+                out = show_text(
+                    "LoadState=" + state,
+                    "ActiveState=inactive",
+                    "SubState=dead",
+                    "Result=success",
+                    "ExecMainExitTimestamp=",
+                )
+                answer = self.assert_refused_with("docker.service", out, "unit_unavailable")
+                self.assertEqual(answer["detail"], "the unit is missing or unavailable")
+        # Whatever else the output says, a unit that is not loaded is that, not "invalid".
+        self.assert_refused_with(
+            "docker.service", show_text("LoadState=not-found"), "unit_unavailable"
+        )
+        # But an output that is not the asked shape is invalid even for a unit that is not there.
+        for lines in (
+            ("LoadState=not-found", "Description=x"),
+            ("LoadState=not-found", "LoadState=not-found"),
+            ("LoadState=not-found", "garbage"),
+        ):
+            self.assert_refused_with("docker.service", show_text(*lines), "unit_status_invalid")
+
+    def test_a_load_state_that_is_not_loaded_is_invalid(self):
+        for state in ("stub", "merged", "", "Loaded", "loaded "):
+            with self.subTest(state=state):
+                out = show_text(
+                    "LoadState=" + state,
+                    "ActiveState=active",
+                    "SubState=running",
+                    "Result=success",
+                    "ExecMainExitTimestamp=",
+                )
+                self.assert_refused_with("docker.service", out, "unit_status_invalid")
+
+    def test_hostile_output_is_refused_and_none_of_it_reaches_the_answer(self):
+        good = SERVICE_SHOW.decode().splitlines()
+        long_value = "a" * 5000
+        cases = {
+            "an unexpected key": good + ["Description=" + "x" * 20],
+            "an unexpected key that looks like a command": good + ["ExecStart=/bin/rm"],
+            "a duplicate key": good + ["ActiveState=failed"],
+            "a duplicate key with the same value": good + ["Result=success"],
+            "a key with no equals sign": good + ["ActiveState"],
+            "a blank line in the middle": good[:2] + [""] + good[2:],
+            "a value that is 5000 bytes": [
+                "LoadState=loaded",
+                "ActiveState=active",
+                "SubState=" + long_value,
+                "Result=success",
+                "ExecMainExitTimestamp=",
+            ],
+            "a state word 33 characters long": [
+                "LoadState=loaded",
+                "ActiveState=" + "a" * 33,
+                "SubState=dead",
+                "Result=success",
+                "ExecMainExitTimestamp=",
+            ],
+            "a missing property": good[:-1],
+            "no property at all": [],
+            "two units' blocks": good + [""] + good,
+            "a capital letter": ["LoadState=loaded"] + ["ActiveState=Active"] + good[2:],
+            "a space in a value": ["LoadState=loaded", "ActiveState=in active"] + good[2:],
+            "a path as a value": ["LoadState=loaded", "ActiveState=/etc/passwd"] + good[2:],
+            "a value that starts with a digit": ["LoadState=loaded", "ActiveState=1a"] + good[2:],
+            "a value that starts with a dash": ["LoadState=loaded", "ActiveState=-x"] + good[2:],
+            "a result that is not a word": good[:3] + ["Result=ok!", good[4]],
+            "a lowercase key": good + ["activestate=active"],
+            "a key with a space": good + [" ActiveState=active"],
+        }
+        for label, lines in cases.items():
+            with self.subTest(label):
+                out = "\n".join(lines).encode() + b"\n"
+                answer = self.assert_refused_with("docker.service", out, "unit_status_invalid")
+                self.assertEqual(answer["detail"], "the unit status is invalid")
+                text = json.dumps(answer)
+                for needle in ("/bin/rm", "passwd", "aaaa", "xxxx"):
+                    self.assertNotIn(needle, text)
+
+    def test_output_with_carriage_returns_or_non_ascii_or_nul_is_refused(self):
+        crlf = SERVICE_SHOW.replace(b"\n", b"\r\n")
+        outputs = {
+            "crlf": crlf,
+            "a carriage return inside a value": SERVICE_SHOW.replace(b"dead", b"de\rad"),
+            "a lone carriage return line break": SERVICE_SHOW.replace(b"\n", b"\r"),
+            "utf-8 in a value": SERVICE_SHOW.replace(b"dead", "déad".encode()),
+            "bytes that are not utf-8": SERVICE_SHOW.replace(b"dead", b"d\xe9\xffad"),
+            "a nul": SERVICE_SHOW.replace(b"dead", b"de\x00ad"),
+            "a unicode line separator": SERVICE_SHOW.replace(b"dead", "d\u2028ead".encode()),
+            "a vertical tab": SERVICE_SHOW.replace(b"dead", b"d\x0bead"),
+            "an escape sequence": SERVICE_SHOW.replace(b"dead", b"d\x1b[31mead"),
+            "a non-ascii key": SERVICE_SHOW + "ÄctiveState=active\n".encode(),
+            "a byte order mark": b"\xef\xbb\xbf" + SERVICE_SHOW,
+            "one blank line at the end": SERVICE_SHOW + b"\n",
+            "two blank lines at the end": SERVICE_SHOW + b"\n\n",
+            "a blank line at the start": b"\n" + SERVICE_SHOW,
+        }
+        for label, out in outputs.items():
+            with self.subTest(label):
+                self.assert_refused_with("docker.service", out, "unit_status_invalid")
+
+    def test_output_past_the_byte_cap_is_refused_whatever_it_says(self):
+        # A well formed answer is far smaller than the cap, so the cap is tried by lowering it: one
+        # byte under the answer's length refuses it, and its exact length reads it.
+        with mock.patch.object(foc, "UNIT_STATUS_MAX_BYTES", len(SERVICE_SHOW) - 1):
+            self.assert_refused_with("docker.service", SERVICE_SHOW, "unit_status_invalid")
+        with mock.patch.object(foc, "UNIT_STATUS_MAX_BYTES", len(SERVICE_SHOW)):
+            code, _, runner = self.read("docker.service", SERVICE_SHOW)
+            self.assertEqual(code, 0)
+            self.assertEqual(runner.calls[0]["max_bytes"], len(SERVICE_SHOW) + 1)
+
+    def test_a_megabyte_of_output_is_refused(self):
+        huge = SERVICE_SHOW * 20000
+        self.assertGreater(len(huge), 1 << 20)
+        self.assert_refused_with("docker.service", huge, "unit_status_invalid")
+
+    def test_a_time_that_is_not_a_unix_second_count_is_refused(self):
+        for value in (
+            "Sat 2026-11-07 17:05:07 CST",
+            "2026-11-08T08:30:15Z",
+            "yesterday",
+            "@-1",
+            "@1.5",
+            "@12abc",
+            "@ 5",
+            " @5",
+            "@",
+            "5",
+            "1794126615",
+            "@" + "9" * 21,
+            "@99999999999999",
+            "@253402300800",
+            "infinity",
+            "N/A",
+            "-",
+        ):
+            with self.subTest(value=value):
+                out = SERVICE_SHOW.replace(b"@1794126615", value.encode())
+                self.assert_refused_with("docker.service", out, "unit_status_invalid")
+                timer = TIMER_SHOW.replace(b"@1794127500", value.encode())
+                self.assert_refused_with("code-main-sync.timer", timer, "unit_status_invalid")
+                # The last trigger is read by the same rule as the next elapse.
+                trigger = TIMER_SHOW.replace(b"@1794126600", value.encode())
+                self.assert_refused_with("code-main-sync.timer", trigger, "unit_status_invalid")
+
+    def test_the_last_trigger_in_systemds_other_timestamp_styles_is_refused_not_guessed(self):
+        # What this server's systemd prints for the same timer without `--timestamp=unix` (in the
+        # server's zone) and with `--timestamp=utc`: the reader always asks for unix, so these
+        # cannot come from it, and are refused rather than parsed in a zone it does not know.
+        for value in ("Sat 2026-11-07 18:50:48 CST", "Sun 2026-11-08 00:50:48 UTC", "1d 2h ago"):
+            with self.subTest(value=value):
+                trigger = TIMER_SHOW.replace(b"@1794126600", value.encode())
+                self.assert_refused_with("code-main-sync.timer", trigger, "unit_status_invalid")
+
+    def test_the_last_trigger_hostile_output_is_refused(self):
+        lines = TIMER_SHOW.decode().splitlines()
+        trigger = "LastTriggerUSec=@1794126600"
+        cases = {
+            "the last trigger twice": lines + [trigger],
+            "the last trigger twice, once empty": lines + ["LastTriggerUSec="],
+            "the last trigger missing": [line for line in lines if line != trigger],
+            "the last trigger and the next elapse both missing": [
+                line for line in lines if "USec" not in line
+            ],
+            "the last trigger on its own line twice with a blank": lines + ["", trigger],
+            "a lower-case key": [
+                line.replace("LastTriggerUSec", "lasttriggerusec") for line in lines
+            ],
+            "the monotonic twin instead": [
+                line.replace("LastTriggerUSec", "LastTriggerUSecMonotonic") for line in lines
+            ],
+            "a very long value": [
+                "LastTriggerUSec=@" + "9" * 5000 if line == trigger else line for line in lines
+            ],
+            "a non-numeric value": [
+                "LastTriggerUSec=@soon" if line == trigger else line for line in lines
+            ],
+            "a negative value": [
+                "LastTriggerUSec=@-1" if line == trigger else line for line in lines
+            ],
+            "a value past the year 9999": [
+                "LastTriggerUSec=@253402300800" if line == trigger else line for line in lines
+            ],
+            "a carriage return": [
+                "LastTriggerUSec=@1794126600\r" if line == trigger else line for line in lines
+            ],
+            "a non-ascii digit": [
+                "LastTriggerUSec=@١٢" if line == trigger else line for line in lines
+            ],
+        }
+        for label, shown in cases.items():
+            with self.subTest(label):
+                out = "\n".join(shown).encode("utf-8") + b"\n"
+                answer = self.assert_refused_with(
+                    "code-main-sync.timer", out, "unit_status_invalid"
+                )
+                self.assertNotIn("9999", json.dumps(answer))
+        # A service is never asked for it, so an output that carries it is not the asked shape.
+        service = SERVICE_SHOW + b"LastTriggerUSec=@1794126600\n"
+        self.assert_refused_with("docker.service", service, "unit_status_invalid")
+        # And a timer's output that carries a last exit (a service property) is not either.
+        timer = TIMER_SHOW + b"ExecMainExitTimestamp=@1794126615\n"
+        self.assert_refused_with("code-main-sync.timer", timer, "unit_status_invalid")
+
+    def test_the_time_converter_on_its_own(self):
+        for value, expected in (
+            ("@1794126615", "2026-11-08T08:30:15Z"),
+            ("@1", "1970-01-01T00:00:01Z"),
+            ("@253402300799", "9999-12-31T23:59:59Z"),
+            ("@0", None),
+            ("0", None),
+            ("", None),
+            ("n/a", None),
+        ):
+            self.assertEqual(foc.unit_status_time(value), expected, value)
+        with self.assertRaises(foc.Refused):
+            foc.unit_status_time("@253402300800")
+
+    def test_the_server_verb_refuses_on_the_mac(self):
+        code, answer, runner = self.read("docker.service", SERVICE_SHOW, platform="darwin")
+        self.assertEqual((code, answer["result"]), (2, "refused"))
+        self.assertEqual(runner.calls, [])
+
+    def test_checked_at_is_the_helpers_own_clock(self):
+        runner = ShowRunner(TIMER_SHOW)
+        context = self.ctx(runner=runner)
+        context.now = lambda: 1_794_127_500.9
+        code, answer = self.run_main(
+            ["server", "unit-status", "fleet-server-status.timer", "--plan", "--json"], context
+        )
+        self.assertEqual((code, answer["checkedAt"]), (0, "2026-11-08T08:45:00Z"))
+
+    def test_every_time_is_utc_in_a_summer_zone_and_a_winter_one(self):
+        # July is CDT (UTC-5) and January CST (UTC-6) here: a time converted in the local zone is
+        # off by the zone's offset in either, and the offset differs, so both are tried.
+        summer = "2026-07-15T12:00:00Z"
+        self.assertEqual(foc.unit_status_time(f"@{JULY_NOON_UTC}"), summer)
+        service = SERVICE_SHOW.replace(b"@1794126615", f"@{JULY_NOON_UTC}".encode())
+        code, answer, _ = self.read("docker.service", service)
+        self.assertEqual((code, answer["lastExitAt"]), (0, summer))
+        timer = TIMER_SHOW.replace(b"@1794127500", f"@{JULY_NOON_UTC}".encode())
+        code, answer, _ = self.read("code-main-sync.timer", timer)
+        self.assertEqual((code, answer["nextElapseAt"]), (0, summer))
+        trigger = TIMER_SHOW.replace(b"@1794126600", f"@{JULY_NOON_UTC}".encode())
+        code, answer, _ = self.read("code-main-sync.timer", trigger)
+        self.assertEqual((code, answer["lastTriggerAt"]), (0, summer))
+        # And in January, the winter side of the same check.
+        winter = TIMER_SHOW.replace(b"@1794126600", f"@{int(NOW)}".encode())
+        code, answer, _ = self.read("code-main-sync.timer", winter)
+        self.assertEqual((code, answer["lastTriggerAt"]), (0, "2027-01-15T08:00:00Z"))
+        context = self.ctx(runner=ShowRunner(SERVICE_SHOW))
+        context.now = lambda: JULY_NOON_UTC + 0.5
+        code, answer = self.run_main(
+            ["server", "unit-status", "docker.service", "--plan", "--json"], context
+        )
+        self.assertEqual((code, answer["checkedAt"]), (0, summer))
+        # And the January clock of the other tests, 8:00 AM UTC and 2:00 AM CST.
+        self.assertEqual(foc.unit_status_time(f"@{int(NOW)}"), "2027-01-15T08:00:00Z")
+
+    def test_the_ssh_gate_accepts_the_verb_and_rejects_shell_or_extra_arguments(self):
+        words = foc.parse_ssh_command("server unit-status fleet-server-status.timer --plan --json")
+        self.assertEqual(words[:3], ["server", "unit-status", "fleet-server-status.timer"])
+        for suffix in (
+            " --plan;id",
+            " --plan --json extra",
+            " --plan --yes",
+            " --plan --user",
+            " --plan\n",
+        ):
+            with self.subTest(suffix=suffix), self.assertRaises(foc.Refused):
+                foc.parse_ssh_command("server unit-status docker.service" + suffix)
+        for line in (
+            "server unit-status --plan",
+            "server unit-status a.service b.service --plan",
+            "mac unit-status docker.service --plan",
+            "server unit_status docker.service --plan",
+        ):
+            with self.subTest(line=line), self.assertRaises(foc.Refused):
+                foc.parse_ssh_command(line)
+
+    def test_over_ssh_the_answer_is_json(self):
+        runner = ShowRunner(TIMER_SHOW)
+        context = self.ctx(
+            runner=runner,
+            environ={
+                "PATH": "/usr/bin:/bin",
+                "SSH_ORIGINAL_COMMAND": "server unit-status fleet-server-status.timer --plan --json",
+            },
+        )
+        code, answer = self.run_main(["--from-ssh"], context)
+        self.assertEqual((code, answer["result"], answer["scope"]), (0, "planned", "user"))
+        self.assertEqual(len(runner.calls), 1)
+
+    def test_over_ssh_a_yes_is_refused_at_the_gate_and_runs_nothing(self):
+        runner = ShowRunner(TIMER_SHOW)
+        context = self.ctx(
+            runner=runner,
+            environ={
+                "PATH": "/usr/bin:/bin",
+                "SSH_ORIGINAL_COMMAND": "server unit-status docker.service --yes --json",
+            },
+        )
+        code, answer = self.run_main(["--from-ssh"], context)
+        self.assertEqual(
+            (code, answer["result"], answer["errorCode"]), (2, "refused", "read_only_required")
+        )
+        self.assertEqual(runner.calls, [])
+
+    def test_the_repo_allowlist_lists_the_units_the_server_status_report_rows_name(self):
+        config = foc.load_config()
+        listed = set(config["units"]) | set(config["watch"])
+        self.assertLessEqual(
+            {
+                "fleet-server-status.timer",
+                "fleet-cli-git-update.timer",
+                "code-main-sync.timer",
+                "fleet-tools-doctor.timer",
+                "fleet-housekeep.timer",
+                "box-disk-hygiene.timer",
+                "docker.service",
+                "tailscaled.service",
+            },
+            listed,
+        )
+        self.assertEqual(config["units"]["fleet-server-status.timer"]["scope"], "user")
+        self.assertEqual(config["watch"]["docker.service"], {"scope": "system"})
+        # A watch entry never reaches the controllable list.
+        self.assertFalse(set(config["watch"]) & set(config["units"]))
+
+    def test_every_repo_allowlist_unit_can_be_read_with_the_scope_the_entry_names(self):
+        config = foc.load_config()
+        for unit in sorted(set(config["units"]) | set(config["watch"])):
+            with self.subTest(unit=unit):
+                entry = config["units"].get(unit) or config["watch"][unit]
+                context = self.ctx(
+                    runner=ShowRunner(TIMER_SHOW if unit.endswith(".timer") else SERVICE_SHOW)
+                )
+                context.config_path = foc.CONFIG_PATH
+                code, answer = self.run_main(
+                    ["server", "unit-status", unit, "--plan", "--json"], context
+                )
+                self.assertEqual(
+                    (code, answer["result"], answer["scope"]), (0, "planned", entry["scope"])
+                )
+                self.assertEqual("--user" in self.runner.calls[0]["argv"], entry["scope"] == "user")
+
+
 class MacVerbTests(Base):
     def plist(self, label, mode=0o600):
         folder = self.home / "Library" / "LaunchAgents"
@@ -1104,6 +2232,9 @@ GOLDEN_ACTIONS = {
     "serverUpdate": "update",
     "coolifyRedeploy": "redeploy",
     "resourceStatus": "resource-status",
+    "eavesdropperStatus": "eavesdropper-status",
+    # Inert until Muster's fixture has a line for it (that line belongs to the Muster change).
+    "unitStatus": "unit-status",
 }
 
 
@@ -1359,6 +2490,234 @@ class RedeployTests(Base):
             else:
                 with self.assertRaises(foc.Refused, msg=base):
                     foc.coolify_base(ctx)
+
+
+class RedeployResourceNameTests(Base):
+    """`resourceName`: the application's name as the planner resolved it, in the ssh answer."""
+
+    def row(self, name, **extra):
+        return dict(
+            {
+                "uuid": UUID,
+                "name": name,
+                "type": "application",
+                "uuidSource": "label",
+                "status": "running",
+            },
+            **extra,
+        )
+
+    def redeploy(self, name, mode="--plan", **extra):
+        row = self.row(name, **extra)
+        if name is None:
+            del row["name"]
+        self.write_status([row])
+        return self.run_main(["server", "redeploy", UUID, mode, "--json"], self.ctx())
+
+    def test_the_plan_and_the_yes_answer_both_name_the_application(self):
+        code, plan = self.redeploy("fleet-recall")
+        self.assertEqual((code, plan["resourceName"]), (0, "fleet-recall"))
+        code, done = self.redeploy("fleet-recall", "--yes")
+        self.assertEqual(
+            (code, done["result"], done["resourceName"]), (0, "submitted", "fleet-recall")
+        )
+        self.assertEqual(self.audit_rows()[0]["target"], "fleet-recall")
+        self.assertEqual(done["auditTarget"], done["resourceName"])
+
+    def test_a_trailing_service_is_removed_only_when_the_row_names_that_service(self):
+        code, answer = self.redeploy("fleet-recall (worker)", service="worker")
+        self.assertEqual((code, answer["resourceName"]), (0, "fleet-recall"))
+        for name, extra in (
+            ("fleet-recall (worker)", {"service": "web"}),
+            ("fleet-recall (worker)", {}),
+            ("fleet-recall (worker)", {"service": 7}),
+            ("fleet-recall", {"service": "worker"}),
+        ):
+            with self.subTest(name=name, extra=extra):
+                code, answer = self.redeploy(name, **extra)
+                self.assertEqual((code, answer["resourceName"]), (0, name))
+
+    def test_a_name_with_characters_outside_printable_ascii_is_made_printable(self):
+        for name, shown in (
+            ("Café App", "Caf? App"),
+            ("tab\there", "tab?here"),
+            ("new\nline", "new?line"),
+            ("emoji \U0001f600 x", "emoji ? x"),
+            ("two\u00a0\u00a0spaces", "two??spaces"),
+            ("\u202eevil", "?evil"),
+            ("del\x7f", "del?"),
+            ("ééé", "???"),
+            ("a" * 5 + "\u0000", "aaaaa?"),
+        ):
+            with self.subTest(name=name):
+                code, answer = self.redeploy(name)
+                self.assertEqual((code, answer["resourceName"]), (0, shown))
+                self.assertEqual(len(answer["resourceName"]), len(name))
+        # The audit row keeps the real name: only what the phone reads is made printable.
+        self.redeploy("Café App", "--yes")
+        self.assertEqual(self.audit_rows()[-1]["target"], "Café App")
+
+    def test_a_name_over_120_characters_is_cut_first_and_then_made_printable(self):
+        code, answer = self.redeploy("n" * 130)
+        self.assertEqual((code, answer["resourceName"]), (0, "n" * 120))
+        code, answer = self.redeploy("a" * 119 + "é" + "zzz")
+        self.assertEqual((code, answer["resourceName"]), (0, "a" * 119 + "?"))
+        code, answer = self.redeploy("é" * 130)
+        self.assertEqual((code, answer["resourceName"]), (0, "?" * 120))
+        code, answer = self.redeploy("m" * 120)
+        self.assertEqual(answer["resourceName"], "m" * 120)
+        code, answer = self.redeploy("m" * 121)
+        self.assertEqual(answer["resourceName"], "m" * 120)
+        # The service is taken off first and the cap applies to what is left.
+        code, answer = self.redeploy("s" * 125 + " (worker)", service="worker")
+        self.assertEqual(answer["resourceName"], "s" * 120)
+
+    def test_it_is_the_name_the_audit_row_and_the_signed_plan_use(self):
+        for name in ("fleet-recall", "Café App", "z" * 130, "\U0001f600"):
+            with self.subTest(name=name):
+                self.write_status([self.row(name)])
+                ctx = self.ctx()
+                config = foc.load_config(ctx.config_path)
+                commands, _note, audit_target = foc.plan_request(
+                    ctx, config, "server", "redeploy", UUID
+                )
+                plan = foc.plan_object("server", "redeploy", UUID, commands, audit_target)
+                _, answer = self.run_main(["server", "redeploy", UUID, "--plan", "--json"], ctx)
+                self.assertEqual(answer["resourceName"], plan["auditTarget"])
+                self.assertEqual(audit_target, name[:120])
+
+    def test_a_row_without_a_name_is_the_placeholder_the_audit_uses(self):
+        code, answer = self.redeploy(None)
+        self.assertEqual((code, answer["resourceName"]), (0, "coolify resource"))
+        code, answer = self.redeploy(None, "--yes")
+        self.assertEqual(answer["resourceName"], "coolify resource")
+        self.assertEqual(self.audit_rows()[-1]["target"], "coolify resource")
+        code, answer = self.redeploy(12345)
+        self.assertEqual((code, answer["resourceName"]), (0, "coolify resource"))
+
+    def test_a_name_that_is_not_a_name_is_the_placeholder_in_the_answer_and_the_audit(self):
+        for label, name, extra in (
+            ("equal to the uuid", UUID, {}),
+            ("empty", "", {}),
+            ("blank", "   ", {}),
+            ("tabs and a newline", "\t \n", {}),
+            ("only a no-break space", "\u00a0", {}),
+            ("service-only", " (worker)", {"service": "worker"}),
+        ):
+            with self.subTest(label):
+                code, plan = self.redeploy(name, **extra)
+                self.assertEqual((code, plan["resourceName"]), (0, "coolify resource"))
+                code, done = self.redeploy(name, "--yes", **extra)
+                self.assertEqual((code, done["resourceName"]), (0, "coolify resource"))
+                self.assertEqual(self.audit_rows()[-1]["target"], "coolify resource")
+                self.assertEqual(done["auditTarget"], done["resourceName"])
+                self.assertNotIn(UUID, json.dumps(done["resourceName"]))
+
+    def test_a_name_that_only_contains_the_uuid_or_a_service_is_still_a_name(self):
+        for name, extra in (
+            (UUID + "-app", {}),
+            ("app-" + UUID, {}),
+            ("(worker)", {"service": "worker"}),
+            ("a (worker)", {"service": "worker"}),
+            (" x ", {}),
+        ):
+            with self.subTest(name=name):
+                expected = "a" if name == "a (worker)" else name
+                code, answer = self.redeploy(name, **extra)
+                self.assertEqual((code, answer["resourceName"]), (0, expected))
+
+    def test_the_answer_is_always_the_printable_form_of_what_the_audit_records(self):
+        for name in (
+            "fleet-recall",
+            "Café App",
+            "z" * 130,
+            "\U0001f600",
+            UUID,
+            "",
+            "   ",
+            "m" * 119 + "é" + "tail",
+        ):
+            with self.subTest(name=name):
+                code, done = self.redeploy(name, "--yes")
+                self.assertEqual(code, 0)
+                recorded = self.audit_rows()[-1]["target"]
+                self.assertEqual(done["resourceName"], foc.printable_ascii(recorded))
+                self.assertEqual(done["auditTarget"], recorded)
+        # The audit row keeps the real name and the answer carries the printable form.
+        self.redeploy("Café App", "--yes")
+        self.assertEqual(self.audit_rows()[-1]["target"], "Café App")
+
+    def test_the_audit_target_function_on_its_own(self):
+        placeholder = "coolify resource"
+        for given in (None, UUID, "", " ", "\t\n", "\u00a0\u2003"):
+            self.assertEqual(
+                foc.redeploy_audit_target("server", "redeploy", UUID, given), placeholder, given
+            )
+        for given in ("fleet-recall", "Café", " x ", UUID + "x", "0"):
+            self.assertEqual(foc.redeploy_audit_target("server", "redeploy", UUID, given), given)
+        # Every other verb keeps its own target, blank or not.
+        self.assertEqual(foc.redeploy_audit_target("server", "restart", "a.timer", None), "a.timer")
+        self.assertEqual(foc.redeploy_audit_target("server", "restart", "a.timer", ""), "")
+        self.assertEqual(foc.redeploy_audit_target("mac", "redeploy", UUID, ""), "")
+
+    def test_the_signed_plan_keeps_what_the_planner_returned_for_a_blank_or_uuid_name(self):
+        # The signed `--from-muster` plan is not changed by this answer field: its `auditTarget`
+        # is still the planner's own value, so it can differ from `resourceName` for these names.
+        for name, planned in ((UUID, UUID), ("", ""), ("   ", "   ")):
+            with self.subTest(name=name):
+                self.write_status([self.row(name)])
+                ctx = self.ctx()
+                config = foc.load_config(ctx.config_path)
+                _commands, _note, audit_target = foc.plan_request(
+                    ctx, config, "server", "redeploy", UUID
+                )
+                self.assertEqual(audit_target, planned)
+
+    def test_the_name_never_carries_the_uuid(self):
+        code, answer = self.redeploy("fleet-recall")
+        self.assertNotIn(UUID, answer["resourceName"])
+        self.assertEqual(answer["commands"], [["coolify", "GET", f"/api/v1/deploy?uuid={UUID}"]])
+
+    def test_a_refused_redeploy_has_no_resource_name(self):
+        self.write_status([self.row("fleet-recall", status="absent")])
+        code, answer = self.run_main(["server", "redeploy", UUID, "--plan", "--json"], self.ctx())
+        self.assertEqual((code, answer["result"]), (2, "refused"))
+        self.assertNotIn("resourceName", answer)
+        code, answer = self.run_main(
+            ["server", "redeploy", "zzzzzzzzzz", "--plan", "--json"], self.ctx()
+        )
+        self.assertNotIn("resourceName", answer)
+
+    def test_a_failed_redeploy_still_names_the_application(self):
+        self.write_status([self.row("fleet-recall")])
+        code, answer = self.run_main(
+            ["server", "redeploy", UUID, "--yes", "--json"], self.ctx(http_status=500)
+        )
+        self.assertEqual((code, answer["result"]), (1, "failed"))
+        self.assertEqual(answer["resourceName"], "fleet-recall")
+
+    def test_no_other_verb_carries_a_resource_name_or_a_logs_unit(self):
+        for argv in (
+            ["server", "restart", "fleet-server-status.timer", "--plan", "--json"],
+            ["server", "stop", "fleet-server-status.timer", "--yes", "--json"],
+            ["server", "update", "fleet-cli", "--plan", "--json"],
+        ):
+            with self.subTest(argv=argv):
+                code, answer = self.run_main(argv, self.ctx())
+                self.assertEqual(code, 0, answer)
+                self.assertNotIn("resourceName", answer)
+                self.assertNotIn("logsUnit", answer)
+
+    def test_the_signed_plan_object_has_no_new_field(self):
+        self.write_status([self.row("Café App")])
+        ctx = self.ctx()
+        config = foc.load_config(ctx.config_path)
+        commands, _note, audit_target = foc.plan_request(ctx, config, "server", "redeploy", UUID)
+        plan = foc.plan_object("server", "redeploy", UUID, commands, audit_target)
+        self.assertEqual(
+            set(plan), {"contract", "scope", "action", "target", "commands", "auditTarget"}
+        )
+        self.assertEqual(plan["auditTarget"], "Caf? App")
 
 
 class CredentialTests(Base):
@@ -1764,6 +3123,953 @@ class SeatInventoryDispatchTests(Base):
         self.assertEqual(answer["inventory"]["host"], "server")
 
 
+class StatusReader:
+    """Stands in for `run_bounded_read`: answers the one `docker exec` read of
+    `server eavesdropper-status` the way the real reader would, and records what it was asked."""
+
+    def __init__(self, status=0, out=b"", err=b""):
+        self.status = status
+        self.out = out
+        self.err = err
+        self.calls = []
+
+    def __call__(self, argv, timeout=None, env=None, max_bytes=None):
+        assert isinstance(argv, list) and all(isinstance(a, str) for a in argv)
+        config = (env or {}).get("DOCKER_CONFIG", "")
+        self.calls.append(
+            {
+                "argv": list(argv),
+                "env": dict(env or {}),
+                "timeout": timeout,
+                "max_bytes": max_bytes,
+                "config_dir": config,
+                "config_is_empty_and_private": (
+                    os.path.isdir(config)
+                    and os.listdir(config) == []
+                    and stat.S_IMODE(os.stat(config).st_mode) == 0o700
+                ),
+            }
+        )
+        over = max_bytes is not None and len(self.out) > max_bytes
+        return self.status, (b"" if over else self.out), self.err, over
+
+
+GOOD_MODULE = (
+    "FROM = 'good'\n"
+    "\n"
+    "\n"
+    "def reduce_status(status, now, instance):\n"
+    "    return {'schema': 1, 'from': FROM}\n"
+)
+
+
+class EavesdropperStatusDispatchTests(Base):
+    """`server eavesdropper-status server --plan`: a read-only reading of the eavesdropper."""
+
+    # Made up and assembled here so no token-shaped literal sits in the file.
+    VALUE = "".join(["aB3dE6g", "H9jK2mN", "5pQ8sT1", "vW4yZ7b", "C0eF"])
+    PATH = "/" + "/".join(["home", "owner", "private", "place"])
+    EMAIL = "owner" + "@" + "example.invalid"
+    USER_ID = 918273645
+    SESSION = "-".join(["0123abcd", "4567", "89ab", "cdef", "0123456789ab"])
+    ARGV = [
+        "docker",
+        "exec",
+        "--user",
+        "simpletools",
+        "eavesdropper",
+        "/bin/cat",
+        "/data/listener/status.json",
+    ]
+    VERB = ["server", "eavesdropper-status", "server", "--plan", "--json"]
+
+    def setUp(self):
+        super().setUp()
+        # A copy of the real reducer beside a pretend helper, with modes the loader trusts,
+        # whatever the modes of this working tree are (a lane on the server is group-writable).
+        scripts = self.home / "scripts"
+        scripts.mkdir()
+        real = Path(HERE) / "reduced_status.py"
+        (scripts / "reduced_status.py").write_bytes(real.read_bytes())
+        (scripts / "reduced_status.py").chmod(0o644)
+        scripts.chmod(0o755)
+        self.enterContext(mock.patch.object(foc, "HELPER_DIR", scripts))
+
+    def document(self, **changes):
+        """What Daemon.status() emits, in the fields the reducer reads and some it must not."""
+        seat = {
+            "bot": "MA",
+            "creds": "env",
+            "connected": True,
+            "cursor": self.USER_ID,
+            "last_event": NOW - 30,
+            "wake": "inbox",
+            "routine": None,
+            "pin": None,
+            "claude": None,
+            "provider": None,
+            "quota": None,
+            "wakes_24h": 3,
+            "budget": {"wakes_per_day": 40},
+            "jobs": 1,
+            "running": None,
+            "paused": False,
+            "wakes_paused": False,
+            "held_back": {"count": 2, "reasons": {"wakes_per_hour": 2}},
+            "leases": [],
+            "red": [],
+        }
+        document = {
+            "pid": 7,
+            "version": "1.2.3",
+            "updated": NOW - 2,
+            "instance": "server",
+            "disabled": ["GROK"],
+            "skipped_seats": {},
+            "config_errors": [],
+            "partition_file": self.PATH,
+            "owner_user_id": self.USER_ID,
+            "loop_guard": [],
+            "pause": {},
+            "seats": {"MA": seat},
+        }
+        document.update(changes)
+        return document
+
+    def reader(self, **kwargs):
+        kwargs.setdefault("out", json.dumps(self.document()).encode())
+        return StatusReader(**kwargs)
+
+    def plan(self, reader=None, **ctx_args):
+        context = self.ctx(**ctx_args)
+        context.reader = reader or self.reader()
+        return self.run_main(self.VERB, context)
+
+    def test_the_plan_answers_with_the_reduced_status_after_one_fixed_read(self):
+        reader = self.reader()
+        code, answer = self.plan(reader)
+        self.assertEqual(
+            (code, answer["ok"], answer["result"], answer["verb"]),
+            (0, True, "planned", "server eavesdropper-status"),
+        )
+        status = answer["status"]
+        self.assertEqual((status["schema"], status["instance"]), (1, "server"))
+        self.assertEqual(status["generated_at"], stamp(NOW))
+        self.assertEqual(status["status_updated"], stamp(NOW - 2))
+        self.assertEqual([seat["seat"] for seat in status["seats"]], ["MA"])
+        self.assertEqual(status["seats"][0]["running"], "running")
+        self.assertEqual(status["disabled"], ["GROK"])
+        (call,) = reader.calls
+        self.assertTrue(call["argv"][0].endswith("/docker"), call["argv"])
+        self.assertEqual(call["argv"][1:], self.ARGV[1:])
+        # The capture and the wait are bounded.
+        self.assertEqual(call["max_bytes"], foc.EAVESDROPPER_STATUS_MAX_BYTES)
+        self.assertEqual(call["timeout"], foc.EAVESDROPPER_READ_TIMEOUT)
+
+    def test_the_docker_environment_is_pinned_with_an_empty_private_config(self):
+        reader = self.reader()
+        self.plan(reader)
+        (call,) = reader.calls
+        config = call["config_dir"]
+        self.assertEqual(
+            call["env"],
+            {
+                "PATH": "/usr/bin:/bin",
+                "DOCKER_HOST": "unix:///var/run/docker.sock",
+                "DOCKER_CONFIG": config,
+                "HOME": config,
+            },
+        )
+        self.assertTrue(call["config_is_empty_and_private"])
+        self.assertFalse(os.path.exists(config), "the temporary config is removed afterwards")
+
+    def test_nothing_from_the_callers_environment_reaches_docker(self):
+        hostile = {
+            "PATH": "/evil/bin",
+            "DOCKER_HOST": "tcp://evil.invalid:2375",
+            "DOCKER_CONFIG": "/evil/config",
+            "DOCKER_CONTEXT": "evil",
+            "DOCKER_TLS_VERIFY": "1",
+            "DOCKER_CERT_PATH": "/evil/certs",
+            "HOME": "/home/evil",
+            "HTTP_PROXY": "http://evil.invalid",
+            "SECRET_THING": "x" * 20,
+        }
+        reader = self.reader()
+        code, answer = self.plan(reader, environ=hostile)
+        self.assertEqual((code, answer["result"]), (0, "planned"))
+        (call,) = reader.calls
+        self.assertEqual(
+            set(call["env"]), {"PATH", "DOCKER_HOST", "DOCKER_CONFIG", "HOME"}, call["env"]
+        )
+        self.assertEqual(call["env"]["PATH"], "/usr/bin:/bin")
+        self.assertEqual(call["env"]["DOCKER_HOST"], "unix:///var/run/docker.sock")
+        self.assertNotIn("evil", json.dumps(call["env"]))
+
+    def test_the_answer_has_only_the_known_keys_and_no_sudo(self):
+        reader = self.reader()
+        _, answer = self.plan(reader)
+        self.assertEqual(
+            set(answer), {"ok", "verb", "target", "commands", "result", "detail", "status"}
+        )
+        self.assertEqual(answer["commands"], [])
+        self.assertNotIn(foc.SUDO, [word for call in reader.calls for word in call["argv"]])
+
+    def test_no_value_from_the_document_outside_the_reduced_fields_reaches_the_answer(self):
+        seat = self.document()["seats"]["MA"]
+        seat.update(
+            bot=self.VALUE,
+            creds=self.PATH,
+            quota={"known": True, "exhausted": True, "reason": self.PATH + " " + self.EMAIL},
+            leases=[
+                {
+                    "lease_id": self.SESSION,
+                    "session_id": self.SESSION,
+                    "platform": "claude-code",
+                    "alive": True,
+                    "why": self.PATH,
+                    "letter": "A",
+                    "title": "Letters Work: " + self.PATH + " for " + self.EMAIL + " " + self.VALUE,
+                }
+            ],
+            red=[self.PATH, self.EMAIL, self.VALUE],
+        )
+        document = self.document(
+            seats={"MA": seat},
+            config_errors=[self.PATH, self.VALUE],
+            skipped_seats={"X": [self.PATH + " " + self.VALUE]},
+            pause={"*": {"by": self.EMAIL, "ts": NOW - 10, "wakes_only": False, "message_id": 5}},
+        )
+        out = io.StringIO()
+        context = self.ctx()
+        context.reader = StatusReader(out=json.dumps(document).encode())
+        foc.main(self.VERB, ctx=context, out=out)
+        text = out.getvalue()
+        self.assertIn('"result": "planned"', text)
+        for hidden in (self.VALUE, self.PATH, self.EMAIL, self.SESSION, str(self.USER_ID)):
+            self.assertNotIn(hidden, text)
+        self.assertNotIn("/data/listener", text)
+        # Lease titles are never emitted, a plain one included, and there is no title key.
+        self.assertNotIn("Letters Work", text)
+        self.assertNotIn('"title"', text)
+        (lease,) = json.loads(text)["status"]["seats"][0]["leases"]
+        self.assertEqual(lease["letter"], "A")
+        self.assertNotIn("title", lease)
+
+    def test_the_operator_voice_block_is_read_and_a_bad_one_is_null(self):
+        block = {
+            "available": False,
+            "code": "operator_credential_rejected",
+            "since": "2026-11-07T20:00:00Z",
+        }
+        reader = self.reader(out=json.dumps(self.document(operator_voice=block)).encode())
+        code, answer = self.plan(reader)
+        self.assertEqual((code, answer["status"]["operator_voice"]), (0, block))
+        hostile = {"available": self.PATH, "code": self.PATH, "since": self.EMAIL}
+        reader = self.reader(out=json.dumps(self.document(operator_voice=hostile)).encode())
+        code, answer = self.plan(reader)
+        self.assertEqual(
+            (code, answer["status"]["operator_voice"]),
+            (0, {"available": None, "code": None, "since": None}),
+        )
+        self.assertNotIn(self.PATH, json.dumps(answer))
+        # An older listener has no block at all, which reads as all null.
+        code, answer = self.plan()
+        self.assertEqual(
+            answer["status"]["operator_voice"], {"available": None, "code": None, "since": None}
+        )
+
+    def test_it_takes_no_lock_and_writes_no_audit_row_for_a_plan(self):
+        with mock.patch.object(foc, "action_lock", side_effect=AssertionError("lock taken")):
+            code, answer = self.plan()
+        self.assertEqual((code, answer["result"]), (0, "planned"))
+        self.assertEqual(self.audit_rows(), [])
+        self.assertFalse((self.state / "ops-control.lock").exists())
+
+    def test_it_needs_no_allowlist_entry(self):
+        config = json.loads(self.config_path.read_text())
+        config["server"] = {key: type(value)() for key, value in config["server"].items()}
+        self.config_path.write_text(json.dumps(config))
+        code, answer = self.plan()
+        self.assertEqual((code, answer["result"]), (0, "planned"))
+
+    def test_a_missing_allowlist_refuses_it_like_every_other_verb(self):
+        # The helper loads the allowlist before it dispatches any verb, so the file itself is
+        # needed even though this verb reads no entry from it.
+        self.config_path.unlink()
+        reader = self.reader()
+        code, answer = self.plan(reader)
+        self.assertEqual((code, answer["result"]), (2, "refused"))
+        self.assertNotIn("status", answer)
+        self.assertEqual(reader.calls, [])
+
+    def test_yes_is_refused_and_audited_and_runs_nothing(self):
+        reader = self.reader()
+        context = self.ctx()
+        context.reader = reader
+        code, answer = self.run_main(
+            ["server", "eavesdropper-status", "server", "--yes", "--json"], context
+        )
+        self.assertEqual((code, answer["result"]), (2, "refused"))
+        self.assertNotIn("status", answer)
+        self.assertEqual(reader.calls, [])
+        rows = self.audit_rows()
+        self.assertEqual(
+            [(r["verb"], r["result"]) for r in rows], [("server eavesdropper-status", "refused")]
+        )
+
+    def test_it_runs_on_the_server_only_like_every_server_verb(self):
+        reader = self.reader()
+        code, answer = self.plan(reader, platform="darwin")
+        self.assertEqual((code, answer["result"]), (2, "refused"))
+        self.assertNotIn("status", answer)
+        self.assertEqual(reader.calls, [])
+
+    def test_a_target_other_than_server_is_refused_and_runs_nothing(self):
+        for target in ("nope", "mac", "SERVER", "..", "server.x", "a" * 40, "eavesdropper"):
+            with self.subTest(target=target):
+                reader = self.reader()
+                context = self.ctx()
+                context.reader = reader
+                code, answer = self.run_main(
+                    ["server", "eavesdropper-status", target, "--plan", "--json"], context
+                )
+                self.assertEqual((code, answer["result"]), (2, "refused"))
+                self.assertEqual(reader.calls, [])
+
+    def test_a_status_that_cannot_be_read_is_unavailable_with_a_reason_word_only(self):
+        limit = foc.EAVESDROPPER_STATUS_MAX_BYTES
+        daemon = b"Error response from daemon: "
+        cases = (
+            ("docker_unavailable", StatusReader(status=127)),
+            ("timeout", StatusReader(status=124)),
+            (
+                "container_not_running",
+                StatusReader(status=1, err=daemon + b"No such container: eavesdropper"),
+            ),
+            (
+                "container_not_running",
+                StatusReader(status=1, err=daemon + b"container 0123abcd is not running"),
+            ),
+            (
+                "container_not_running",
+                StatusReader(
+                    status=1,
+                    err=daemon + b"Container 0123abcd is restarting, wait until it is running",
+                ),
+            ),
+            (
+                "container_not_running",
+                StatusReader(
+                    status=1, err=b"ERROR RESPONSE FROM DAEMON: CONTAINER X IS NOT RUNNING"
+                ),
+            ),
+            (
+                "read_failed",
+                StatusReader(status=1, err=b"cat: /data/listener/status.json: No such file"),
+            ),
+            (
+                "read_failed",
+                StatusReader(status=1, err=b"permission denied connecting to the docker socket"),
+            ),
+            ("read_failed", StatusReader(status=1, out=self.PATH.encode())),
+            # A phrase after the bounded start of stderr is not looked for.
+            ("read_failed", StatusReader(status=1, err=b"x" * 5000 + b" is not running")),
+            ("too_large", StatusReader(out=b" " * (limit + 1))),
+            ("not_json", StatusReader(out=b"not json " + self.PATH.encode())),
+            ("not_json", StatusReader(out=b"[1, 2]")),
+            ("not_json", StatusReader(out=b"")),
+            ("not_json", StatusReader(out=b"\xff\xfe")),
+            ("not_json", StatusReader(out=b"[" * 100000)),
+        )
+        for reason, reader in cases:
+            with self.subTest(reason=reason, out=reader.out[:12], err=reader.err[:24]):
+                code, answer = self.plan(reader)
+                self.assertEqual(
+                    (code, answer["ok"], answer["result"], answer["errorCode"]),
+                    (1, False, "unavailable", reason),
+                )
+                self.assertEqual(answer["detail"], foc.EAVESDROPPER_UNAVAILABLE[reason])
+                self.assertNotIn("status", answer)
+                text = json.dumps(answer)
+                for hidden in ("/data", self.PATH, "daemon", "0123abcd", "container: "):
+                    self.assertNotIn(hidden, text)
+                self.assertEqual(self.audit_rows(), [])
+
+    def test_docker_failure_is_classified_from_known_phrases_only(self):
+        for stderr, expected in (
+            (b"Error response from daemon: No such container: x", "container_not_running"),
+            (b"error response from daemon: container abc is not running", "container_not_running"),
+            (
+                b"Container abc is restarting, wait until the container is running",
+                "container_not_running",
+            ),
+            (b"", "read_failed"),
+            (None, "read_failed"),
+            (b"\xff\xfe is not running", "container_not_running"),
+            (b"something else entirely", "read_failed"),
+            (b"x" * foc.DOCKER_STDERR_MAX + b"is not running", "read_failed"),
+        ):
+            with self.subTest(stderr=(stderr or b"")[:30]):
+                self.assertEqual(foc._docker_failure(stderr), expected)
+
+    def test_a_file_of_exactly_the_limit_is_read_and_one_byte_more_is_not(self):
+        limit = foc.EAVESDROPPER_STATUS_MAX_BYTES
+        base = json.dumps({"updated": NOW, "seats": {}, "pad": ""})
+        exact = json.dumps({"updated": NOW, "seats": {}, "pad": "x" * (limit - len(base))})
+        self.assertEqual(len(exact), limit)
+        code, answer = self.plan(StatusReader(out=exact.encode()))
+        self.assertEqual((code, answer["result"]), (0, "planned"))
+        code, answer = self.plan(StatusReader(out=exact.encode() + b" "))
+        self.assertEqual((code, answer["errorCode"]), (1, "too_large"))
+
+    def with_module(self, text, mode=0o644, dir_mode=0o755):
+        """The verb's plan with HELPER_DIR a folder holding `text` as the installed module."""
+        folder = self.home / "installed"
+        folder.mkdir(exist_ok=True)
+        (folder / "reduced_status.py").write_text(text)
+        (folder / "reduced_status.py").chmod(mode)
+        folder.chmod(dir_mode)
+        reader = self.reader()
+        with (
+            mock.patch.object(foc, "HELPER_DIR", folder),
+            mock.patch.object(foc, "TRUSTED_MODULE_UID", os.getuid()),
+        ):
+            code, answer = self.plan(reader)
+        return code, answer, reader
+
+    def test_the_trusted_installed_module_is_the_one_that_reduces(self):
+        code, answer, reader = self.with_module(GOOD_MODULE)
+        self.assertEqual((code, answer["status"]), (0, {"schema": 1, "from": "good"}))
+        self.assertEqual(len(reader.calls), 1)
+
+    def test_a_missing_reduction_module_is_unavailable_and_runs_no_docker(self):
+        empty = self.home / "empty"
+        empty.mkdir()
+        reader = self.reader()
+        with mock.patch.object(foc, "HELPER_DIR", empty):
+            code, answer = self.plan(reader)
+        self.assertEqual(
+            (code, answer["result"], answer["errorCode"]),
+            (1, "unavailable", "module_unavailable"),
+        )
+        self.assertEqual(reader.calls, [])
+
+    def test_an_untrusted_module_is_unavailable_and_runs_no_docker(self):
+        for kind, kwargs in (
+            ("file writable by others", {"mode": 0o666}),
+            ("file writable by group", {"mode": 0o664}),
+            ("folder writable by others", {"dir_mode": 0o757}),
+            ("folder writable by group", {"dir_mode": 0o775}),
+        ):
+            with self.subTest(kind=kind):
+                code, answer, reader = self.with_module(GOOD_MODULE, **kwargs)
+                self.assertEqual(
+                    (code, answer["result"], answer["errorCode"]),
+                    (1, "unavailable", "module_unavailable"),
+                )
+                self.assertEqual(reader.calls, [])
+
+    def test_a_module_that_cannot_load_or_raises_is_unavailable_not_an_exception(self):
+        for text in (
+            "def reduce_status(status, now, instance):\n    raise RuntimeError('boom')\n",
+            "raise RuntimeError('does not load')\n",
+            "raise SystemExit(3)\n",
+            "x = 1\n",
+            "def (:\n",
+            "reduce_status = 5\n",
+        ):
+            with self.subTest(text=text):
+                code, answer, _ = self.with_module(text)
+                self.assertEqual(
+                    (code, answer["result"], answer["errorCode"]),
+                    (1, "unavailable", "module_unavailable"),
+                )
+
+    def test_ssh_accepts_the_verb_and_rejects_shell_or_extra_arguments(self):
+        words = foc.parse_ssh_command("server eavesdropper-status server --plan --json")
+        self.assertEqual(words[:3], ["server", "eavesdropper-status", "server"])
+        for suffix in (" --plan;id", " --plan --json extra", " --plan --yes", " --path=/data"):
+            with self.subTest(suffix=suffix), self.assertRaises(foc.Refused):
+                foc.parse_ssh_command("server eavesdropper-status server" + suffix)
+        for line in (
+            "server eavesdropper-status server extra --plan --json",
+            "server eavesdropper-status --plan --json",
+            "mac eavesdropper-status server --plan --json",
+        ):
+            with self.subTest(line=line), self.assertRaises(foc.Refused):
+                foc.parse_ssh_command(line)
+
+    def test_over_ssh_the_answer_is_json_and_reads_the_servers_status(self):
+        reader = self.reader()
+        context = self.ctx(
+            environ={"SSH_ORIGINAL_COMMAND": "server eavesdropper-status server --plan --json"},
+        )
+        context.reader = reader
+        code, answer = self.run_main(["--from-ssh"], context)
+        self.assertEqual((code, answer["result"]), (0, "planned"))
+        self.assertEqual(answer["status"]["instance"], "server")
+        self.assertEqual(len(reader.calls), 1)
+
+    def test_over_ssh_a_yes_is_refused_before_anything_runs(self):
+        reader = self.reader()
+        context = self.ctx(
+            environ={"SSH_ORIGINAL_COMMAND": "server eavesdropper-status server --yes --json"},
+        )
+        context.reader = reader
+        code, answer = self.run_main(["--from-ssh"], context)
+        self.assertEqual((code, answer["result"]), (2, "refused"))
+        self.assertEqual(reader.calls, [])
+
+    def test_the_default_reader_is_the_bounded_one(self):
+        self.assertIs(foc.Context().reader, foc.run_bounded_read)
+
+    def fake_docker(self, body):
+        """An executable stand-in for docker, written as a Python script."""
+        script = self.home / "docker"
+        script.write_text("#!" + sys.executable + "\n" + body)
+        script.chmod(0o755)
+        return script
+
+    def run_real(self, script, **patches):
+        """The verb with the REAL reader, `script` as the docker binary, and the caller's
+        environment full of things docker must not see."""
+        environ = {"PATH": "/evil/bin", "DOCKER_HOST": "tcp://evil.invalid:1", "SECRET_THING": "s"}
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(foc, "DOCKER_CANDIDATES", (str(script),)))
+            for name, value in patches.items():
+                stack.enter_context(mock.patch.object(foc, name, value))
+            return self.run_main(self.VERB, self.ctx(environ=environ))
+
+    def test_with_the_real_reader_the_fake_docker_sees_the_pinned_argv_and_environment(self):
+        record = self.home / "record.json"
+        script = self.fake_docker(
+            "import json, os, sys\n"
+            "with open(%r, 'w') as handle:\n"
+            "    json.dump({'argv': sys.argv[1:], 'env': dict(os.environ), 'cwd': os.getcwd(),\n"
+            "               'config_entries': os.listdir(os.environ['DOCKER_CONFIG'])}, handle)\n"
+            "sys.stdout.write(%r)\n" % (str(record), json.dumps(self.document()))
+        )
+        code, answer = self.run_real(script)
+        self.assertEqual((code, answer["result"]), (0, "planned"), answer)
+        seen = json.loads(record.read_text())
+        self.assertEqual(seen["argv"], self.ARGV[1:])
+        self.assertEqual(seen["cwd"], "/")
+        self.assertEqual(seen["config_entries"], [])
+        env = seen["env"]
+        self.assertEqual(env["PATH"], "/usr/bin:/bin")
+        self.assertEqual(env["DOCKER_HOST"], "unix:///var/run/docker.sock")
+        self.assertEqual(env["HOME"], env["DOCKER_CONFIG"])
+        self.assertNotIn("SECRET_THING", env)
+        self.assertNotIn("evil", json.dumps(env))
+        self.assertFalse(os.path.exists(env["DOCKER_CONFIG"]))
+
+    def test_with_the_real_reader_a_huge_file_is_too_large_at_once_and_the_child_is_gone(self):
+        pid_file = self.home / "pid"
+        script = self.fake_docker(
+            "import os, sys, time\n"
+            "open(%r, 'w').write(str(os.getpid()))\n"
+            "time.sleep(0.3)\n"
+            "sys.stdout.buffer.write(b' ' * 3000000)\n"
+            "sys.stdout.flush()\n"
+            "time.sleep(60)\n" % str(pid_file)
+        )
+        started = time.monotonic()
+        code, answer = self.run_real(script)
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertEqual((code, answer["errorCode"]), (1, "too_large"))
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(pid_file.read_text()), 0)
+
+    def test_with_the_real_reader_a_hung_docker_times_out_and_the_child_is_gone(self):
+        pid_file = self.home / "pid"
+        script = self.fake_docker(
+            "import os, time\nopen(%r, 'w').write(str(os.getpid()))\ntime.sleep(60)\n"
+            % str(pid_file)
+        )
+        started = time.monotonic()
+        code, answer = self.run_real(script, EAVESDROPPER_READ_TIMEOUT=1)
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertEqual((code, answer["errorCode"]), (1, "timeout"))
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(pid_file.read_text()), 0)
+
+    def test_with_the_real_reader_a_stopped_container_is_told_apart_from_a_failed_read(self):
+        for stderr, reason in (
+            ("Error response from daemon: container abc is not running", "container_not_running"),
+            (
+                "Error response from daemon: No such container: eavesdropper",
+                "container_not_running",
+            ),
+            ("cat: /data/listener/status.json: No such file or directory", "read_failed"),
+        ):
+            with self.subTest(reason=reason, stderr=stderr[:30]):
+                script = self.fake_docker(
+                    "import sys\nsys.stderr.write(%r)\nsys.exit(1)\n" % stderr
+                )
+                code, answer = self.run_real(script)
+                self.assertEqual((code, answer["errorCode"]), (1, reason))
+                self.assertNotIn("abc", json.dumps(answer))
+
+
+class ReducerModuleTests(Base):
+    """The module the verb runs is read through descriptors and judged by fstat, never imported.
+
+    It sits beside the helper, and the layout is read from who owns that folder.  A folder owned
+    by TRUSTED_MODULE_UID (root, in production) is the installed layout.  These tests stand in for
+    it by naming this account the trusted one (`installed`); a folder owned by the calling
+    account while root is the trusted one is a checkout (`checkout`)."""
+
+    def build(self, dir_mode=0o755, file_mode=0o644, text=GOOD_MODULE):
+        folder = self.home / "helper"
+        folder.mkdir()
+        path = folder / "reduced_status.py"
+        path.write_text(text, encoding="utf-8")
+        path.chmod(file_mode)
+        folder.chmod(dir_mode)
+        return folder, path
+
+    def load(self, folder, uid=None, trusted=0):
+        context = self.ctx()
+        if uid is not None:
+            context.uid = uid
+        with (
+            mock.patch.object(foc, "HELPER_DIR", folder),
+            mock.patch.object(foc, "TRUSTED_MODULE_UID", trusted),
+        ):
+            return foc._load_reduced_status(context)
+
+    def installed(self, folder, **kwargs):
+        return self.load(folder, trusted=os.getuid(), **kwargs)
+
+    def checkout(self, folder, **kwargs):
+        return self.load(folder, trusted=0, **kwargs)
+
+    def not_root(self):
+        if os.getuid() == 0:
+            self.skipTest("running as root, so every file here is the trusted owner's")
+
+    def test_a_trusted_module_is_compiled_in_memory(self):
+        folder, _ = self.build()
+        module = self.installed(folder)
+        self.assertEqual(module.reduce_status(None, 0, "server"), {"schema": 1, "from": "good"})
+        self.assertEqual(module.__name__, "reduced_status")
+        self.assertNotIn("reduced_status", sys.modules)
+        self.assertFalse((folder / "__pycache__").exists())
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), ["reduced_status.py"])
+
+    def test_the_installed_layout_refuses_a_file_that_group_or_others_can_write(self):
+        for mode in (0o666, 0o664, 0o646, 0o626, 0o622):
+            with self.subTest(mode=oct(mode)):
+                folder, _ = self.build(file_mode=mode)
+                self.assertIsNone(self.installed(folder))
+                shutil.rmtree(folder)
+
+    def test_the_installed_layout_refuses_a_folder_that_group_or_others_can_write(self):
+        for mode in (0o777, 0o775, 0o757, 0o722, 0o702):
+            with self.subTest(mode=oct(mode)):
+                folder, _ = self.build(dir_mode=mode)
+                self.assertIsNone(self.installed(folder))
+                shutil.rmtree(folder)
+
+    def fake_file_owner(self, uid):
+        """os.fstat answering `uid` as the owner of every regular file (folders unchanged)."""
+        real = os.fstat
+
+        def fstat(fd):
+            info = real(fd)
+            if not stat.S_ISREG(info.st_mode):
+                return info
+            fields = tuple(info)
+            return os.stat_result(fields[:4] + (uid,) + fields[5:])
+
+        return mock.patch.object(foc.os, "fstat", fstat)
+
+    def test_the_installed_layout_needs_the_trusted_owner_not_the_calling_account(self):
+        folder, _ = self.build()
+        other = os.getuid() + 1000
+        # The folder is the trusted owner's, so this is the installed layout, and the file is
+        # the calling account's: refused, although the account may own a checkout's file.
+        with self.fake_file_owner(other):
+            self.assertIsNone(self.installed(folder, uid=other))
+            self.assertIsNone(self.installed(folder))
+        self.assertIsNotNone(self.installed(folder))
+
+    def test_a_folder_owned_by_neither_the_trusted_owner_nor_the_calling_account_is_refused(self):
+        self.not_root()
+        folder, _ = self.build()
+        self.assertIsNone(self.checkout(folder, uid=os.getuid() + 1000))
+        self.assertIsNone(self.load(folder, uid=os.getuid() + 1000, trusted=os.getuid() + 1001))
+        self.assertIsNotNone(self.checkout(folder))
+
+    def test_a_symlinked_module_is_refused(self):
+        folder = self.home / "helper"
+        folder.mkdir()
+        elsewhere = self.home / "elsewhere.py"
+        elsewhere.write_text(GOOD_MODULE)
+        elsewhere.chmod(0o644)
+        (folder / "reduced_status.py").symlink_to(elsewhere)
+        folder.chmod(0o755)
+        self.assertIsNone(self.installed(folder))
+        self.not_root()
+        self.assertIsNone(self.checkout(folder))
+
+    def test_a_symlinked_folder_is_refused(self):
+        folder, _ = self.build()
+        link = self.home / "link"
+        link.symlink_to(folder, target_is_directory=True)
+        self.assertIsNotNone(self.installed(folder))
+        self.assertIsNone(self.installed(link))
+        self.not_root()
+        self.assertIsNone(self.checkout(link))
+
+    def test_a_pipe_in_place_of_the_module_is_refused_without_waiting(self):
+        folder = self.home / "helper"
+        folder.mkdir()
+        os.mkfifo(folder / "reduced_status.py", 0o644)
+        folder.chmod(0o755)
+        self.assertIsNone(self.installed(folder))
+
+    def test_a_missing_module_and_an_oversized_module_are_refused(self):
+        empty = self.home / "empty"
+        empty.mkdir()
+        empty.chmod(0o755)
+        self.assertIsNone(self.installed(empty))
+        folder, _ = self.build(text=GOOD_MODULE + "#" * (foc.REDUCED_STATUS_MAX_BYTES + 1) + "\n")
+        self.assertIsNone(self.installed(folder))
+
+    def swap(self, folder, path, before, text):
+        """Run the loader while the module file is replaced by an evil one `before` the open
+        of it or after it.  Returns (module, whether the evil code ran)."""
+        marker = self.home / "evil-ran"
+        evil = self.home / "evil.py"
+        evil.write_text("open(%r, 'w').write('ran')\n%s" % (str(marker), text))
+        evil.chmod(0o666 if before else 0o644)
+        real_open = os.open
+
+        def hook(name, flags, *args, **kwargs):
+            module_open = name == "reduced_status.py" and kwargs.get("dir_fd") is not None
+            if module_open and before:
+                os.replace(evil, path)
+            descriptor = real_open(name, flags, *args, **kwargs)
+            if module_open and not before:
+                os.replace(evil, path)
+            return descriptor
+
+        with mock.patch.object(foc.os, "open", hook):
+            module = self.installed(folder)
+        return module, marker.exists()
+
+    def test_a_file_swapped_in_before_the_open_is_judged_by_what_was_opened(self):
+        folder, path = self.build()
+        module, ran = self.swap(folder, path, before=True, text=GOOD_MODULE)
+        self.assertIsNone(module)
+        self.assertFalse(ran)
+
+    def test_a_file_swapped_in_after_the_open_is_never_read(self):
+        folder, path = self.build()
+        module, ran = self.swap(
+            folder, path, before=False, text=GOOD_MODULE.replace("good", "evil")
+        )
+        self.assertEqual(module.reduce_status(None, 0, "x")["from"], "good")
+        self.assertFalse(ran)
+        self.assertIn("evil", path.read_text(), "the swap did happen")
+
+    def test_a_checkout_accepts_the_calling_accounts_files_and_still_no_group_or_other_write(self):
+        self.not_root()
+        folder, path = self.build()
+        self.assertIsNotNone(self.checkout(folder))
+        for file_mode, dir_mode in ((0o664, 0o755), (0o646, 0o755), (0o644, 0o775), (0o644, 0o757)):
+            with self.subTest(file=oct(file_mode), folder=oct(dir_mode)):
+                path.chmod(file_mode)
+                folder.chmod(dir_mode)
+                self.assertIsNone(self.checkout(folder))
+        path.chmod(0o644)
+        folder.chmod(0o755)
+        self.assertIsNotNone(self.checkout(folder))
+
+    def test_the_real_module_loads_through_the_loader(self):
+        real = Path(HERE) / "reduced_status.py"
+        folder, path = self.build(text=real.read_text(encoding="utf-8"))
+        module = self.installed(folder)
+        out = module.reduce_status(
+            {"updated": NOW, "instance": "server", "seats": {}}, NOW, "server"
+        )
+        self.assertEqual((out["schema"], out["instance"], out["seats"]), (1, "server", []))
+        self.assertFalse((folder / "__pycache__").exists())
+
+    def test_the_reducer_sits_beside_the_helper_and_there_is_one_place(self):
+        self.assertTrue((foc.HELPER_DIR / foc.REDUCED_STATUS_NAME).is_file())
+        self.assertFalse((foc.HELPER_DIR / "simple_tools" / foc.REDUCED_STATUS_NAME).exists())
+        self.assertFalse(hasattr(foc, "REDUCED_STATUS_LAYOUTS"))
+        self.assertEqual(foc.TRUSTED_MODULE_UID, 0)
+
+
+class BoundedReadTests(unittest.TestCase):
+    """`run_bounded_read` against real child processes (small Python scripts of their own)."""
+
+    def child(self, body):
+        return [sys.executable, "-c", body]
+
+    ENV = {"PATH": "/usr/bin:/bin"}
+
+    def run_child(self, body, timeout=20, max_bytes=1024, **kwargs):
+        return foc.run_bounded_read(self.child(body), timeout, self.ENV, max_bytes, **kwargs)
+
+    def test_it_returns_status_stdout_and_stderr(self):
+        body = "import sys; sys.stdout.write('ok'); sys.stderr.write('warn'); sys.exit(3)"
+        self.assertEqual(self.run_child(body), (3, b"ok", b"warn", False))
+
+    def test_stdout_of_exactly_the_limit_is_kept_and_one_byte_more_is_over(self):
+        body = "import sys; sys.stdout.buffer.write(b'x' * %d)"
+        status, out, err, over = self.run_child(body % 1024, max_bytes=1024)
+        self.assertEqual((status, len(out), over), (0, 1024, False))
+        status, out, err, over = self.run_child(body % 1025, max_bytes=1024)
+        self.assertEqual((out, over), (b"", True))
+
+    def test_going_over_the_limit_kills_the_child_at_once(self):
+        body = (
+            "import os, sys, time\n"
+            "sys.stderr.write(str(os.getpid())); sys.stderr.flush()\n"
+            "time.sleep(0.3)\n"
+            "sys.stdout.buffer.write(b'x' * 3000000); sys.stdout.flush()\n"
+            "time.sleep(60)\n"
+        )
+        started = time.monotonic()
+        status, out, err, over = self.run_child(body, timeout=30)
+        self.assertLess(time.monotonic() - started, 15)
+        self.assertEqual((out, over), (b"", True))
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(err), 0)
+
+    def test_a_timeout_is_124_and_kills_the_child(self):
+        body = (
+            "import os, sys, time\n"
+            "sys.stderr.write(str(os.getpid())); sys.stderr.flush()\n"
+            "time.sleep(60)\n"
+        )
+        started = time.monotonic()
+        status, out, err, over = self.run_child(body, timeout=1)
+        self.assertLess(time.monotonic() - started, 15)
+        self.assertEqual((status, out, over), (124, b"", False))
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(err), 0)
+
+    def test_a_child_that_closes_its_pipes_but_keeps_running_still_times_out(self):
+        body = "import os, time; os.close(1); os.close(2); time.sleep(60)"
+        started = time.monotonic()
+        status, out, err, over = self.run_child(body, timeout=1)
+        self.assertLess(time.monotonic() - started, 15)
+        self.assertEqual((status, over), (124, False))
+
+    def test_stderr_is_read_alongside_and_only_its_start_is_kept(self):
+        body = "import sys; sys.stderr.write('e' * 1000000); sys.exit(1)"
+        started = time.monotonic()
+        status, out, err, over = self.run_child(body)
+        self.assertLess(time.monotonic() - started, 15)
+        self.assertEqual((status, out, over), (1, b"", False))
+        self.assertEqual(err, b"e" * foc.DOCKER_STDERR_MAX)
+
+    def test_a_program_that_cannot_start_is_127(self):
+        argv = [str(Path(tempfile.gettempdir()) / "no-such-program-for-this-test")]
+        self.assertEqual(foc.run_bounded_read(argv, 5, self.ENV, 10), (127, b"", b"", False))
+
+    def test_the_environment_the_directory_and_the_arguments_are_exact(self):
+        body = (
+            "import json, os, sys\n"
+            "print(json.dumps({'a': os.environ.get('A_ONE'), 'secret': os.environ.get('SECRET_X'),\n"
+            "                  'cwd': os.getcwd(), 'argv': sys.argv[1:]}))\n"
+        )
+        argv = self.child(body) + ["a; echo injected", "$(id)"]
+        with mock.patch.dict(os.environ, {"SECRET_X": "from-the-parent"}):
+            status, out, err, over = foc.run_bounded_read(argv, 20, {"A_ONE": "1"}, 4096)
+        seen = json.loads(out)
+        self.assertEqual(
+            seen,
+            {"a": "1", "secret": None, "cwd": "/", "argv": ["a; echo injected", "$(id)"]},
+        )
+
+    def test_a_non_argv_is_refused(self):
+        for argv in ("echo hi", [], [1], None):
+            with self.assertRaises(foc.Refused):
+                foc.run_bounded_read(argv, 1, {}, 1)
+
+    def stubborn(self):
+        """A child that never answers and never dies: wait() with no timeout would hang."""
+        read_out, write_out = os.pipe()
+        read_err, write_err = os.pipe()
+
+        class Stubborn:
+            returncode = None
+            stdout = os.fdopen(read_out, "rb", buffering=0)
+            stderr = os.fdopen(read_err, "rb", buffering=0)
+            killed = False
+            waits = []
+
+            def kill(self):
+                self.killed = True
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout=None):
+                self.waits.append(timeout)
+                if timeout is None:
+                    raise AssertionError("wait() without a timeout")
+                raise foc.subprocess.TimeoutExpired("stubborn", timeout)
+
+        proc = Stubborn()
+        self.addCleanup(os.close, write_out)
+        self.addCleanup(os.close, write_err)
+        self.addCleanup(proc.stdout.close)
+        self.addCleanup(proc.stderr.close)
+        return proc
+
+    def test_the_wait_after_a_kill_is_bounded_in_the_bounded_reader(self):
+        proc = self.stubborn()
+        with mock.patch.object(foc.subprocess, "Popen", lambda *a, **k: proc):
+            result = foc.run_bounded_read(["x"], 0.2, {}, 10)
+        self.assertEqual(result, (124, b"", b"", False))
+        self.assertTrue(proc.killed)
+        self.assertTrue(proc.waits and all(t is not None for t in proc.waits), proc.waits)
+
+    def test_the_wait_after_a_kill_is_bounded_in_the_capped_runner_too(self):
+        proc = self.stubborn()
+        with mock.patch.object(foc.subprocess, "Popen", lambda *a, **k: proc):
+            result = foc._run_capped(["x"], 0.2, {}, 10)
+        self.assertEqual(result, (124, b""))
+        self.assertTrue(proc.killed)
+        self.assertTrue(proc.waits and all(t is not None for t in proc.waits), proc.waits)
+
+    def test_an_interrupt_kills_the_child_with_a_bounded_wait_and_propagates(self):
+        class Interrupting:
+            def register(self, *args, **kwargs):
+                pass
+
+            def get_map(self):
+                return {"open": True}
+
+            def select(self, timeout=None):
+                raise KeyboardInterrupt
+
+            def close(self):
+                pass
+
+        for call in (
+            lambda: foc.run_bounded_read(["x"], 5, {}, 10),
+            lambda: foc._run_capped(["x"], 5, {}, 10),
+        ):
+            proc = self.stubborn()
+            with (
+                mock.patch.object(foc.subprocess, "Popen", lambda *a, **k: proc),
+                mock.patch.object(foc.selectors, "DefaultSelector", Interrupting),
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                call()
+            self.assertTrue(proc.killed)
+            self.assertTrue(proc.waits and all(t is not None for t in proc.waits), proc.waits)
+
+
 class LogsAndPm2Tests(Base):
     def test_logs_plan_refuses_non_allowlisted_unit_and_carries_no_log_text(self):
         code, ans = self.run_main(
@@ -1787,9 +4093,10 @@ class LogsAndPm2Tests(Base):
         self.assertEqual((code, ans["result"]), (0, "done"), ans)
         ((argv, _env),) = self.runner.calls
         self.assertTrue(argv[0].endswith("journalctl"), argv)
+        # A timer's own journal holds only Started and Stopped, so the service it starts is read.
         self.assertEqual(
             argv[1:],
-            ["--user", "-u", "fleet-server-status.timer", "-n", "200", "--no-pager"],
+            ["--user", "-u", "fleet-server-status.service", "-n", "200", "--no-pager"],
         )
         self.assertEqual(ans["output"], "line one\nline two\n")
         self.assertEqual(ans["lines"], 2)
@@ -1809,7 +4116,9 @@ class LogsAndPm2Tests(Base):
         )
         self.assertEqual(code, 0, ans)
         ((argv, _env),) = self.runner.calls
-        self.assertEqual(argv[1:], ["-u", "fleet-cli-git-update.timer", "-n", "200", "--no-pager"])
+        self.assertEqual(
+            argv[1:], ["-u", "fleet-cli-git-update.service", "-n", "200", "--no-pager"]
+        )
         self.assertIn("truncated", ans["output"])
         self.assertLessEqual(ans["lines"], 200)
         self.assertNotIn("row 0\n", ans["output"])
@@ -2066,6 +4375,215 @@ class LogsAndPm2Tests(Base):
         json_out = io.StringIO()
         foc.emit(answer, True, json_out)
         self.assertEqual(json.loads(json_out.getvalue())["output"], dirty)
+
+
+class LogsUnitTests(Base):
+    """`server logs` reads the journal of the entry's `logsUnit`: a timer's own journal holds only
+    Started and Stopped, so a timer reads the service it starts unless the entry says otherwise."""
+
+    @staticmethod
+    def document(**extra):
+        row = {"unit": "x.timer", "scope": "user", "actions": ["stop"]}
+        return {"schemaVersion": 1, "server": {"units": [dict(row, **extra)]}}
+
+    def test_a_logs_unit_defaults_to_the_service_a_timer_starts_and_otherwise_to_itself(self):
+        def entry(unit, scope, **extra):
+            return dict({"unit": unit, "scope": scope, "actions": ["stop"]}, **extra)
+
+        document = {
+            "schemaVersion": 1,
+            "server": {
+                "units": [
+                    entry("a.timer", "user"),
+                    entry("b.service", "system"),
+                    entry("c.timer", "system", logsUnit="other.service"),
+                    entry("d.service", "user", logsUnit="d-worker.service"),
+                    entry("e.timer", "user", logsUnit="e.timer"),
+                    entry("x.y.timer", "user"),
+                    entry("f" * 121 + ".timer", "user"),
+                ]
+            },
+        }
+        units = foc.validate_config(document)["units"]
+        self.assertEqual(
+            {name: row["logsUnit"] for name, row in units.items()},
+            {
+                "a.timer": "a.service",
+                "b.service": "b.service",
+                "c.timer": "other.service",
+                "d.service": "d-worker.service",
+                "e.timer": "e.timer",
+                "x.y.timer": "x.y.service",
+                "f" * 121 + ".timer": "f" * 121 + ".service",
+            },
+        )
+        self.assertEqual(units["a.timer"]["scope"], "user")
+        self.assertEqual(units["a.timer"]["actions"], ("stop",))
+
+    def test_a_bad_logs_unit_refuses_the_whole_file(self):
+        for value in (
+            1,
+            None,
+            True,
+            [],
+            ["a.service"],
+            {},
+            "",
+            " ",
+            "../x.service",
+            "/etc/x.service",
+            "x.mount",
+            "x.target",
+            "x.socket",
+            "x@y.service",
+            "x.service\n",
+            "x.service ",
+            "-x.service",
+            "a b.service",
+            "x;id.service",
+            "café.service",
+            "x" * 122 + ".service",
+            "service",
+        ):
+            with self.subTest(value=value), self.assertRaises(foc.Refused) as caught:
+                foc.validate_config(self.document(logsUnit=value))
+            self.assertIn("logsUnit", str(caught.exception))
+
+    def test_the_repo_allowlists_timers_read_the_service_each_one_starts(self):
+        config = foc.load_config()
+        timers = [unit for unit in config["units"] if unit.endswith(".timer")]
+        self.assertEqual(set(timers), {"fleet-server-status.timer", "fleet-cli-git-update.timer"})
+        document = json.loads(Path(HERE, "fleet-ops-control.json").read_text())
+        self.assertFalse([row for row in document["server"]["units"] if "logsUnit" in row])
+        for unit in timers:
+            with self.subTest(unit=unit):
+                shipped = Path(HERE, "systemd", unit).read_text()
+                # The service a timer starts is the one of its name unless it says `Unit=`.
+                self.assertNotIn("Unit=", shipped)
+                expected = unit[: -len(".timer")] + ".service"
+                self.assertEqual(config["units"][unit]["logsUnit"], expected)
+                self.assertTrue(Path(HERE, "systemd", expected).is_file())
+        self.assertEqual(
+            config["units"]["fleet-server-status.timer"]["logsUnit"], "fleet-server-status.service"
+        )
+        self.assertEqual(
+            config["units"]["fleet-cli-git-update.timer"]["logsUnit"],
+            "fleet-cli-git-update.service",
+        )
+
+    def configure(self, *units):
+        rows = [dict({"actions": ["restart"]}, **unit) for unit in units]
+        self.config_path.write_text(json.dumps({"schemaVersion": 1, "server": {"units": rows}}))
+
+    def logs(self, unit, mode="--plan", runner=None):
+        return self.run_main(["server", "logs", unit, mode, "--json"], self.ctx(runner=runner))
+
+    def test_a_timer_plans_the_journal_of_its_service_in_both_scopes(self):
+        self.configure({"unit": "a.timer", "scope": "user"}, {"unit": "b.timer", "scope": "system"})
+        for unit, user in (("a.timer", True), ("b.timer", False)):
+            with self.subTest(unit=unit):
+                code, answer = self.logs(unit)
+                self.assertEqual((code, answer["result"]), (0, "planned"))
+                (argv,) = answer["commands"]
+                self.assertTrue(argv[0].endswith("journalctl"))
+                expected = unit.replace(".timer", ".service")
+                self.assertEqual(
+                    argv[1:],
+                    (["--user"] if user else []) + ["-u", expected, "-n", "200", "--no-pager"],
+                )
+                self.assertEqual(answer["logsUnit"], expected)
+                self.assertEqual(answer["target"], unit)
+                self.assertEqual(self.runner.calls, [])
+                self.assertEqual(self.audit_rows(), [])
+
+    def test_a_service_reads_its_own_journal(self):
+        self.configure({"unit": "docker.service", "scope": "system"})
+        code, answer = self.logs("docker.service")
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            answer["commands"][0][1:], ["-u", "docker.service", "-n", "200", "--no-pager"]
+        )
+        self.assertEqual(answer["logsUnit"], "docker.service")
+
+    def test_an_entry_may_name_another_unit_and_the_scope_stays_the_entrys(self):
+        self.configure(
+            {"unit": "a.timer", "scope": "user", "logsUnit": "a-worker.service"},
+            {"unit": "b.service", "scope": "system", "logsUnit": "b-helper.service"},
+        )
+        code, answer = self.logs("a.timer")
+        self.assertEqual(
+            answer["commands"][0][1:],
+            ["--user", "-u", "a-worker.service", "-n", "200", "--no-pager"],
+        )
+        self.assertEqual(answer["logsUnit"], "a-worker.service")
+        code, answer = self.logs("b.service")
+        self.assertEqual(
+            answer["commands"][0][1:], ["-u", "b-helper.service", "-n", "200", "--no-pager"]
+        )
+
+    def test_the_yes_run_reads_that_journal_and_the_audit_names_the_requested_unit(self):
+        self.configure({"unit": "a.timer", "scope": "user"})
+        runner = FakeRunner()
+        code, answer = self.logs("a.timer", "--yes", runner)
+        self.assertEqual((code, answer["result"]), (0, "done"))
+        ((argv, _env),) = runner.calls
+        self.assertEqual(argv[1:], ["--user", "-u", "a.service", "-n", "200", "--no-pager"])
+        self.assertEqual(answer["logsUnit"], "a.service")
+        self.assertEqual(answer["output"], "line one\nline two\n")
+        (row,) = self.audit_rows()
+        self.assertEqual((row["verb"], row["target"], row["lines"]), ("server logs", "a.timer", 2))
+        self.assertNotIn("a.service", json.dumps(row))
+
+    def test_a_failed_read_still_names_the_unit_it_tried(self):
+        self.configure({"unit": "a.timer", "scope": "user"})
+        code, answer = self.logs("a.timer", "--yes", FakeRunner(status=1))
+        self.assertEqual((code, answer["result"], answer["logsUnit"]), (1, "failed", "a.service"))
+
+    def test_a_refused_logs_request_has_no_logs_unit(self):
+        self.configure({"unit": "a.timer", "scope": "user"})
+        for unit in ("b.timer", "a.service", "../x.service", "a.timer\n"):
+            code, answer = self.logs(unit)
+            self.assertEqual((code, answer["result"]), (2, "refused"), unit)
+            self.assertNotIn("logsUnit", answer)
+
+    def test_the_other_verbs_are_not_changed_by_a_logs_unit(self):
+        self.configure({"unit": "a.timer", "scope": "user", "logsUnit": "other.service"})
+        code, answer = self.run_main(
+            ["server", "restart", "a.timer", "--plan", "--json"], self.ctx()
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(answer["commands"][0][1:], ["--user", "restart", "a.timer"])
+        self.assertEqual(set(answer), {"ok", "verb", "target", "commands", "result", "detail"})
+
+    def test_the_signed_plan_of_logs_changes_only_in_its_commands(self):
+        ctx = self.ctx()
+        config = foc.load_config(ctx.config_path)
+        commands, _note, audit_target = foc.plan_request(
+            ctx, config, "server", "logs", "fleet-server-status.timer"
+        )
+        self.assertEqual(audit_target, "fleet-server-status.timer")
+        plan = foc.plan_object(
+            "server", "logs", "fleet-server-status.timer", commands, audit_target
+        )
+        self.assertEqual(
+            set(plan), {"contract", "scope", "action", "target", "commands", "auditTarget"}
+        )
+        self.assertEqual(plan["target"], "fleet-server-status.timer")
+        self.assertEqual(plan["auditTarget"], "fleet-server-status.timer")
+        (argv,) = plan["commands"]
+        self.assertEqual(
+            argv[1:], ["--user", "-u", "fleet-server-status.service", "-n", "200", "--no-pager"]
+        )
+
+    def test_the_logs_unit_of_a_timer_is_not_the_timer_so_the_plan_hash_moved(self):
+        # Before this change a timer's plan read `-u <timer>`; the old argv is no longer planned
+        # for either repo timer, so a plan signed before the helper was replaced cannot be run.
+        ctx = self.ctx()
+        for timer in ("fleet-server-status.timer", "fleet-cli-git-update.timer"):
+            commands, _, _ = foc.plan_request(
+                ctx, foc.load_config(ctx.config_path), "server", "logs", timer
+            )
+            self.assertNotIn(timer, commands[0], timer)
 
 
 class SourceTests(unittest.TestCase):
