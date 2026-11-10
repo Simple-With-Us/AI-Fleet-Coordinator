@@ -70,6 +70,107 @@ export function decide(pr, context = {}) {
   return 'prompt';
 }
 
+// Failure classification for the prompter's GitHub calls. Only the status and a
+// fixed allowlist of response headers are ever used or logged: request id,
+// rate-limit counters, and retry-after. The response body (which can carry
+// private content) and the request (which carries the token) are never read.
+export const SAFE_ERROR_HEADERS = [
+  'x-github-request-id',
+  'x-ratelimit-limit',
+  'x-ratelimit-remaining',
+  'x-ratelimit-reset',
+  'retry-after',
+];
+
+// 'rate-limited' only on positive rate-limit evidence; a bare 403/401 is a
+// terminal 'forbidden' (policy/authorization), everything else is 'unknown'.
+export function classifyHttpError(status, headers = {}) {
+  if (status === 429) return 'rate-limited';
+  if (status === 403) {
+    if (headers['retry-after'] != null || headers['x-ratelimit-remaining'] === '0') {
+      return 'rate-limited';
+    }
+    return 'forbidden';
+  }
+  if (status === 401) return 'forbidden';
+  return 'unknown';
+}
+
+// Log-safe one-line failure detail: status, class, allowlisted headers only.
+export function safeErrorDetails(status, headers = {}) {
+  const parts = [`status=${status}`, `class=${classifyHttpError(status, headers)}`];
+  for (const name of SAFE_ERROR_HEADERS) {
+    const value = headers[name];
+    if (value != null) parts.push(`${name}=${String(value).slice(0, 64)}`);
+  }
+  return parts.join(' ');
+}
+
+// The prompt sweep. verdictFor(pr) returns the decide() verdict (and logs it);
+// postTrigger(pr) posts the trigger comment. A post failure classified
+// 'forbidden' or 'rate-limited' (on a verdictFor read or a POST) is terminal for the run: workers stop picking up
+// new PRs (no further reads), and prompt POSTs are serialized through a shared
+// chain that re-checks the terminal flag under the lock, so at most one refused
+// write fires. Blocked prompts and unprocessed PRs are counted separately so the
+// uncompleted obligations stay explicit for the caller.
+export async function sweepPrompts(prs, { verdictFor, postTrigger, concurrency = 4, log = () => {}, logError = () => {} }) {
+  let prompted = 0;
+  let failed = 0;
+  let blocked = 0;
+  let processed = 0;
+  let terminalClassification = null;
+  let next = 0;
+  let postChain = Promise.resolve();
+  // Any classified forbidden or rate-limited failure, read or write, is terminal.
+  const markTerminal = (error) => {
+    if (!terminalClassification && (error.classification === 'forbidden' || error.classification === 'rate-limited')) {
+      terminalClassification = error.classification;
+      logError(`terminal ${error.classification} failure classified; further reads and prompt POSTs are blocked this run`);
+    }
+  };
+  const postSerialized = (pr) => {
+    const run = postChain.then(async () => {
+      if (terminalClassification) {
+        blocked += 1;
+        log(`#${pr.number} prompt blocked: terminal ${terminalClassification} failure already classified this run`);
+        return;
+      }
+      try {
+        await postTrigger(pr);
+        prompted += 1;
+      } catch (error) {
+        failed += 1;
+        logError(`#${pr.number} error: ${error.message}`);
+        markTerminal(error);
+      }
+    });
+    postChain = run.catch(() => {});
+    return run;
+  };
+  async function worker() {
+    while (next < prs.length) {
+      if (terminalClassification) return;
+      const pr = prs[next];
+      next += 1;
+      let verdict;
+      try {
+        verdict = await verdictFor(pr);
+      } catch (error) {
+        failed += 1;
+        processed += 1;
+        logError(`#${pr.number} error: ${error.message}`);
+        markTerminal(error);
+        continue;
+      }
+      processed += 1;
+      if (verdict !== 'prompt') continue;
+      await postSerialized(pr);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, prs.length)) }, worker));
+  return { prompted, failed, blocked, unprocessed: prs.length - processed, terminalClassification };
+}
+
 // A bounded, non-secret reason for a failed GitHub API call. The log used to carry
 // only the status, so a 403 could not be told apart (permission, ruleset, rate limit).
 // Only GitHub's own short message, its public documentation_url and a fixed set of

@@ -6,7 +6,7 @@
 //   GITHUB_TOKEN  required, provided by the workflow (permissions: issues: write)
 //   GITHUB_REPOSITORY  owner/name, set by Actions
 //   DRY_RUN  'true' to list decisions without commenting
-import { decide, describeApiError, TRIGGER_TEXT } from './lib.mjs';
+import { classifyHttpError, decide, describeApiError, SAFE_ERROR_HEADERS, sweepPrompts, TRIGGER_TEXT } from './lib.mjs';
 
 const API = 'https://api.github.com';
 const token = process.env.GITHUB_TOKEN;
@@ -29,10 +29,20 @@ async function api(path, options = {}) {
     },
   });
   if (!res.ok) {
+    // Status plus allowlisted response headers classify the failure; the bounded,
+    // redacted diagnostic from describeApiError carries GitHub's own reason.
+    const headers = {};
+    for (const name of SAFE_ERROR_HEADERS) {
+      const value = res.headers.get(name);
+      if (value != null) headers[name] = value;
+    }
     const bodyText = await res.text().catch(() => '');
-    throw new Error(
+    const error = new Error(
       describeApiError({ method: options.method || 'GET', path, status: res.status, headers: res.headers, bodyText }),
     );
+    error.status = res.status;
+    error.classification = classifyHttpError(res.status, headers);
+    throw error;
   }
   return res.status === 204 ? null : res.json();
 }
@@ -52,48 +62,47 @@ async function listAll(path, maxPages = 20) {
 // Every open PR, drafts included (owner asked for drafts too).
 const listOpenPrs = () => listAll(`/repos/${repo}/pulls?state=open`, 5);
 
-// One PR: fetch every comment and review page, decide, and post if needed. Returns
-// true when it prompted (or would have, in a dry run).
-async function handle(pr) {
+// One PR: fetch every comment and review page and return the decision (logged).
+async function verdictFor(pr) {
   const [issueComments, reviews] = await Promise.all([
     listAll(`/repos/${repo}/issues/${pr.number}/comments`),
     listAll(`/repos/${repo}/pulls/${pr.number}/reviews`),
   ]);
   const verdict = decide(pr, { issueComments, reviews, now: Date.now() });
   console.log(`#${pr.number} ${pr.draft ? 'draft ' : ''}${verdict}`);
-  if (verdict !== 'prompt') return false;
+  return verdict;
+}
+
+async function postTrigger(pr) {
   if (!dryRun) {
     await api(`/repos/${repo}/issues/${pr.number}/comments`, {
       method: 'POST',
       body: JSON.stringify({ body: TRIGGER_TEXT }),
     });
   }
-  return true;
 }
 
 // A few PRs at a time keeps the run well inside the job timeout without bursting the
-// API. One PR's failure is logged and the sweep moves on; the run still exits non-zero
-// so a failing tick is visible in Actions.
+// API. One PR's failure is logged and the sweep moves on; a classified terminal
+// failure blocks the remaining prompt POSTs instead of repeating identical refused
+// writes. Blocked prompts keep the run non-zero with the count explicit, so
+// uncompleted obligations stay visible in Actions.
 const CONCURRENCY = 4;
 const prs = await listOpenPrs();
-let prompted = 0;
-let failed = 0;
-let next = 0;
-async function worker() {
-  while (next < prs.length) {
-    const pr = prs[next];
-    next += 1;
-    try {
-      if (await handle(pr)) prompted += 1;
-    } catch (error) {
-      failed += 1;
-      console.error(`#${pr.number} error: ${error.message}`);
-    }
-  }
-}
-await Promise.all(Array.from({ length: Math.min(CONCURRENCY, prs.length) }, worker));
+const { prompted, failed, blocked, unprocessed, terminalClassification } = await sweepPrompts(prs, {
+  concurrency: CONCURRENCY,
+  log: (...args) => console.log(...args),
+  logError: (...args) => console.error(...args),
+  verdictFor,
+  postTrigger,
+});
 console.log(dryRun ? `dry-run complete, ${prompted} would prompt` : `prompted ${prompted}`);
+if (blocked > 0 || unprocessed > 0) {
+  console.error(`${blocked} prompt(s) blocked and ${unprocessed} PR(s) unprocessed after terminal ${terminalClassification} failure; obligations NOT completed this run`);
+}
 if (failed > 0) {
   console.error(`${failed} PR(s) failed`);
+}
+if (failed > 0 || blocked > 0 || unprocessed > 0) {
   process.exitCode = 1;
 }
