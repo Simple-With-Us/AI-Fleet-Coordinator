@@ -29,6 +29,9 @@ from .secret_scan import find_secret
 # main27801add source, five safe rename/import/env edits and whole credential-
 # line origin proof are recorded in preservation-pending-manifest.json. All
 # credential-shaped spans are unchanged; provider/loaded guards are NOT waived.
+# The gr-workflow-v1.test.mjs row was refreshed 2026-11-10 to the exact bytes under
+# review in PR #1707 (source blob 804d547cb96bba4cade20a058e76ec32c1fa7022), not the
+# 81d8bb0c checkpoint bytes, which never landed on main; provenance in the README.
 _REVIEWED_FIXTURES = frozenset(
     {
         (
