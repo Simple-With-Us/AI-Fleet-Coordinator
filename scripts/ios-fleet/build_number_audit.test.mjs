@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  BUILD_NUMBER_MIN,
   BUILD_NUMBER_RE,
+  EXIT_FAILED,
   EXIT_OK,
   EXIT_STRICT,
-  FLEET_TIMESTAMP_SCHEME_START_MS,
+  LEGACY_TIMESTAMP_BUILD_RE,
   auditAppBuilds,
   auditBuildFormat,
   auditIosMacPair,
@@ -17,6 +19,9 @@ import {
   effectiveExpectedMarketing,
   exitCodeForReport,
   expectedMarketingBase,
+  fetchApprovedVersion,
+  invalidBuildDetail,
+  isFleetBuildNumber,
   maxApprovedMarketingVersion,
   normalizeAscBuilds,
   parseAuditArgs,
@@ -28,8 +33,9 @@ import {
 
 import { loadRegistry } from "./ios_testflight_freshness.mjs";
 
-const VALID = "202611091430";
-const VALID_OLD = "202611081200";
+const VALID = "2320";
+const VALID_OLD = "2310";
+const TIMESTAMP = "202611091430";
 
 function buildRow(build, marketing, uploaded, platform = "IOS") {
   return {
@@ -51,6 +57,11 @@ test("parseAuditArgs", () => {
   assert.equal(o.limit, 5);
 });
 
+test("parseAuditArgs rejects empty --app", () => {
+  assert.throws(() => parseAuditArgs(["--app", ""]), /--app needs at least one app key/);
+  assert.throws(() => parseAuditArgs(["--app", "  ,  "]), /--app needs at least one app key/);
+});
+
 test("productGroupKey pairs Mac suffix", () => {
   assert.equal(productGroupKey("contactlogo-mac"), "contactlogo");
   assert.equal(productGroupKey("congress"), "congress");
@@ -69,20 +80,33 @@ test("compareSemver", () => {
   assert.ok(compareSemver("0.0.9", "0.1.0") < 0);
 });
 
-test("BUILD_NUMBER_RE", () => {
-  assert.ok(BUILD_NUMBER_RE.test("202611091430"));
-  assert.ok(!BUILD_NUMBER_RE.test("113"));
-  assert.ok(!BUILD_NUMBER_RE.test("192611091430"));
+test("fleet build number format", () => {
+  assert.ok(isFleetBuildNumber("2320"));
+  assert.ok(isFleetBuildNumber(String(BUILD_NUMBER_MIN)));
+  assert.ok(!isFleetBuildNumber("235"));
+  assert.ok(!isFleetBuildNumber(TIMESTAMP));
+  assert.ok(!isFleetBuildNumber(""));
+  assert.ok(!isFleetBuildNumber(null));
+  assert.ok(BUILD_NUMBER_RE.test("2320"));
+  assert.ok(LEGACY_TIMESTAMP_BUILD_RE.test(TIMESTAMP));
 });
 
 test("finding: invalid build format", () => {
-  const builds = [buildRow("113", "0.1.0", "2026-11-09T20:00:00Z")];
-  const f = auditBuildFormat(builds, "demo", "IOS");
-  assert.equal(f.length, 1);
-  assert.equal(f[0].type, "invalid_build_number");
+  assert.equal(auditBuildFormat([buildRow("235", "0.1.0", "2026-11-09T20:00:00Z")], "demo", "IOS").length, 1);
+  assert.equal(
+    auditBuildFormat([buildRow(TIMESTAMP, "0.1.0", "2026-11-09T20:00:00Z")], "demo", "IOS").length,
+    1,
+  );
+  assert.match(invalidBuildDetail(TIMESTAMP), /retired UTC timestamp/);
 });
 
-test("finding: non-monotonic uploads", () => {
+test("finding: missing build number", () => {
+  const f = auditBuildFormat([buildRow("", "0.1.0", "2026-11-09T20:00:00Z")], "demo", "IOS");
+  assert.equal(f.length, 1);
+  assert.match(f[0].detail, /missing/);
+});
+
+test("finding: non-monotonic uploads (adjacent only)", () => {
   const builds = [
     buildRow(VALID, "0.1.0", "2026-11-09T22:00:00Z"),
     buildRow(VALID_OLD, "0.1.0", "2026-11-08T12:00:00Z"),
@@ -98,12 +122,22 @@ test("finding: non-monotonic uploads", () => {
 
 test("finding: ios/mac mismatch", () => {
   const platformBuilds = {
-    IOS: [buildRow("202611091500", "0.1.0", "2026-11-09T21:00:00Z", "IOS")],
-    MAC_OS: [buildRow("202611091430", "0.1.0", "2026-11-09T20:00:00Z", "MAC_OS")],
+    IOS: [buildRow("2321", "0.1.0", "2026-11-09T21:00:00Z", "IOS")],
+    MAC_OS: [buildRow("2320", "0.1.0", "2026-11-09T20:00:00Z", "MAC_OS")],
   };
   const f = auditIosMacPair("contactlogo", platformBuilds);
   assert.equal(f.length, 1);
   assert.equal(f[0].type, "ios_mac_build_mismatch");
+});
+
+test("finding: missing train counterpart on current-only pair", () => {
+  const platformBuilds = {
+    IOS: [buildRow(VALID, "0.1.0", "2026-11-09T21:00:00Z", "IOS")],
+    MAC_OS: [buildRow(VALID_OLD, "0.0.9", "2026-10-01T12:00:00Z", "MAC_OS")],
+  };
+  const f = auditIosMacPair("contactlogo", platformBuilds);
+  assert.equal(f.length, 1);
+  assert.match(f[0].detail, /missing/);
 });
 
 test("finding: marketing drift", () => {
@@ -113,8 +147,19 @@ test("finding: marketing drift", () => {
   assert.equal(f[0].type, "marketing_version_drift");
   const ok = auditMarketing([buildRow(VALID, "0.1.0", "2026-11-09T20:00:00Z")], "botfleet", "IOS", null);
   assert.equal(ok.length, 0);
-  const congress = auditMarketing([buildRow(VALID, "1.1.2", "2026-11-09T20:00:00Z")], "congress", "IOS", null);
-  assert.equal(congress.length, 0);
+});
+
+test("marketing drift skipped when approved store fetch failed", () => {
+  const builds = [buildRow(VALID, "0.2.0", "2026-11-09T20:00:00Z")];
+  const findings = auditAppBuilds({
+    appKey: "botfleet",
+    platform: "IOS",
+    builds,
+    approvedStoreVersion: null,
+    approvedStoreError: "App Store Connect timeout",
+    allHistory: false,
+  });
+  assert.ok(!findings.some((f) => f.type === "marketing_version_drift"));
 });
 
 test("clean app: no findings", () => {
@@ -126,17 +171,15 @@ test("clean app: no findings", () => {
   assert.deepEqual(findings, []);
 });
 
-test("current-only scope ignores pre-scheme and stale trains", () => {
+test("current-only scope ignores old-scheme history", () => {
   const builds = [
     buildRow(VALID, "0.1.0", "2026-11-09T22:00:00Z"),
     buildRow("235", "1.0.50", "2026-10-28T18:00:00Z"),
-    buildRow("99", "0.0.9", "2026-09-01T12:00:00Z"),
+    buildRow(TIMESTAMP, "0.0.9", "2026-09-01T12:00:00Z"),
   ];
   const scoped = scopeBuildsForAudit(builds, { allHistory: false });
   assert.equal(scoped.scope, "current");
-  assert.equal(scoped.formatBuilds.length, 1);
   assert.equal(scoped.formatBuilds[0].build, VALID);
-  assert.equal(scoped.monotonicBuilds.length, 1);
 
   const current = auditAppBuilds({
     appKey: "codecaps-mac",
@@ -156,18 +199,13 @@ test("current-only scope ignores pre-scheme and stale trains", () => {
   });
   assert.ok(historical.length > 0);
   assert.ok(historical.some((f) => f.type === "invalid_build_number"));
-  assert.ok(historical.some((f) => f.type === "marketing_version_drift"));
-});
-
-test("scheme start constant is 2026-10-29 CT midnight", () => {
-  assert.equal(FLEET_TIMESTAMP_SCHEME_START_MS, Date.parse("2026-10-29T05:00:00.000Z"));
 });
 
 test("exitCodeForReport strict flag", () => {
   const report = { findings: [{ type: "x" }], errors: [] };
   assert.equal(exitCodeForReport(report), EXIT_OK);
   assert.equal(exitCodeForReport(report, { strict: true }), EXIT_STRICT);
-  assert.equal(exitCodeForReport({ findings: [], errors: ["boom"] }), 2);
+  assert.equal(exitCodeForReport({ findings: [], errors: ["boom"] }), EXIT_FAILED);
 });
 
 test("normalizeAscBuilds and maxApprovedMarketingVersion", () => {
@@ -189,6 +227,16 @@ test("normalizeAscBuilds and maxApprovedMarketingVersion", () => {
     ],
   };
   assert.equal(maxApprovedMarketingVersion(store), "0.2.0");
+});
+
+test("fetchApprovedVersion surfaces errors", async () => {
+  const bad = await fetchApprovedVersion({
+    asc: async () => {
+      throw new Error("HTTP 503");
+    },
+  }, "1");
+  assert.equal(bad.version, null);
+  assert.match(bad.error, /503/);
 });
 
 test("runAudit integration with stubbed ASC", async () => {
@@ -237,4 +285,10 @@ test("runAudit integration with stubbed ASC", async () => {
   const report = await runAudit({ apps: ["clean"], limit: 5 }, deps, only);
   assert.equal(report.findings.length, 0);
   assert.match(renderAuditTable(report), /No findings/);
+});
+
+test("main rejects empty --app via parseAuditArgs path", async () => {
+  const { main } = await import("./build_number_audit.mjs");
+  const code = await main(["--app", ""], { now: () => new Date() });
+  assert.equal(code, EXIT_FAILED);
 });

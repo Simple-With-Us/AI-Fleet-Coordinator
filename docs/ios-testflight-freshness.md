@@ -16,7 +16,7 @@ fleet's TestFlight guards.
 | `scripts/ios-fleet/ios_testflight_freshness.mjs` | The check, the remedy and the alerts.  Node, no dependencies. |
 | `scripts/ios-fleet/testflight-apps.json` | The registry:  one row per App Store Connect record.  **Edit this** when an app, a repo path, a ship workflow or a compile check changes. |
 | `scripts/ios-fleet/ios_testflight_freshness.test.mjs` | Tests (`node --test`, everything stubbed, run in CI). |
-| `scripts/ios-fleet/build_number_audit.mjs` | Read-only build-number audit (AFC-675):  by default audits each app's **current** train only (newest build, monotonicity since 2026-10-29 CT on that train).  `node scripts/ios-fleet/build_number_audit.mjs --json`;  `--strict` exits non-zero on findings;  `--all-history` includes retired trains. |
+| `scripts/ios-fleet/build_number_audit.mjs` | Read-only build-number audit (AFC-675):  checks `FLEET-PROTOCOL.md` § App Version and Build Numbers (1000-series builds from 1000 upward, marketing `0.1.0` / CT `1.1.2`).  Default scope is each app's **current** train only;  `--json`;  `--strict` exits non-zero on findings;  `--all-history` includes retired trains. |
 | `scripts/ios-fleet/build_number_audit.test.mjs` | Audit tests (`node --test`, ASC stubbed). |
 | `scripts/ios-fleet/install-testflight-freshness.sh` | Copies the check and the registry into `~/apps/ios-fleet` and loads the LaunchAgent. |
 | `scripts/launchd/com.jay.ios-testflight-freshness.plist` | The LaunchAgent:  every two hours at :20. |
