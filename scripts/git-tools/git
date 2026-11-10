@@ -456,6 +456,8 @@ _REFUSAL_REASONS = frozenset(
         "github_refused",
         "fence_mismatch",
         "unauthenticated",
+        "repository_moved",
+        "read_too_large",
         "bad_request_content_too_large",
         "bad_request_default_branch_protected",
         "bad_request_invalid_arguments",
@@ -470,6 +472,9 @@ _REFUSAL_REASONS = frozenset(
         "bad_request_workflow_path_permission",
     )
 )
+
+
+_MOVED_SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/(?!.*\.\.)[A-Za-z0-9_.-]{1,100}")
 
 
 def _refusal_detail_of(result: dict) -> str:
@@ -501,6 +506,11 @@ def _refusal_detail_of(result: dict) -> str:
             continue
         reason = cand.get("reason")
         if isinstance(reason, str) and reason in _REFUSAL_REASONS:
+            moved = cand.get("moved_to")
+            if reason == "repository_moved" and isinstance(moved, str) and _MOVED_SLUG.fullmatch(moved):
+                # A renamed or transferred repository (OPS-1036):  name its current owner/name,
+                # validated as strictly as the hosted front does, so a caller can retry with it.
+                return f" (reason={reason}, moved_to={moved})"
             status = cand.get("github_status")
             if type(status) is int and 400 <= status <= 499 and status != 429:
                 return f" (reason={reason}, github_status={status})"

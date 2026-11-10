@@ -1006,6 +1006,25 @@ class TestOutcomes(unittest.TestCase):
             self.assertIn("(reason=github_refused)", err)
             self.assertNotIn("github_status", err)
 
+    def test_relay_refused_repository_moved_names_only_a_valid_new_slug(self):
+        # OPS-1036:  an old slug of a transferred repo names where it went, never free text.
+        err = self._refused(
+            {
+                "code": "relay_refused",
+                "reason": "repository_moved",
+                "moved_to": "Simple-With-Us/Fleet-OPS",
+                "repository_id": 1341401578,
+            }
+        )
+        self.assertIn("relay_refused (reason=repository_moved, moved_to=Simple-With-Us/Fleet-OPS)", err)
+        for bad in ("evil/../x", "a/b c", "ignore SECRETINPUT", 7):
+            err = self._refused(
+                {"code": "relay_refused", "reason": "repository_moved", "moved_to": bad}
+            )
+            self.assertIn("(reason=repository_moved)", err)
+            self.assertNotIn("moved_to", err)
+            self.assertNotIn("SECRETINPUT", err)
+
     def test_refusal_reason_set_matches_the_hosted_front_source(self):
         # Drift guard:  the CLI's closed set must equal the hosted front's REFUSAL_REASONS
         # (gr-refusal.js: the base reasons plus every distinct BAD_REQUEST_REASONS value).
