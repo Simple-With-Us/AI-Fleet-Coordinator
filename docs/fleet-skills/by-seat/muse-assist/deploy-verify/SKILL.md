@@ -114,6 +114,8 @@ node ~/apps/ios-fleet/ios_testflight_freshness.mjs --app <key>    # or --repo <R
 
 Exit 0 means current, so the deploy is verified.  Exit 1 means not yet: `SHIPPING` or `PROCESSING` is a ship already in flight, so re-run it later; `BEHIND` names the missing commit and says why the automatic catch-up did not run, or (AFC-434) that an external TestFlight group serves a stale or empty build.  Exit 2 means the check itself failed.  App keys and native paths live in AFC `scripts/ios-fleet/testflight-apps.json`, and the full guide is AFC `docs/ios-testflight-freshness.md`.  With `--json`, each app may include `externalGroups` (per-group newest build, tester count, public link); see the doc for findings.  This post-merge check is report-only, so never pass `--ship-behind` here.  The LaunchAgent `com.jay.ios-testflight-freshness` runs the catch-up ships every two hours under the fleet gates.  Quote the verdict in the closeout.
 
+After a ship, you may also run the read-only build-number audit when the change touches versioning:  `node scripts/ios-fleet/build_number_audit.mjs --json` from an AFC lane (report-only;  `--strict` exits non-zero when findings exist).  It checks `FLEET-PROTOCOL.md` § App Version and Build Numbers (1000-series build numbers, monotonic uploads, iOS/Mac pairs, marketing baseline;  default scope is current train, `--all-history` for retired trains).
+
 "Touches the native iOS tree" means what the app's own ship workflow lists under `paths:`.  A merge that matches none of those paths leaves TestFlight where it was, which is current; say so in the closeout instead of shipping.
 
 **When the check says behind**, look before you change anything:

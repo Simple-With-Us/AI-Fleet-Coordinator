@@ -32,6 +32,22 @@ class MessageCommandTests(Harness):
         self.assertEqual(changed.code, 0, changed.err)
         self.assertEqual(self.fake.scheduled[sid]["content"], "[CLAUDE·%s] [MA 📁OPS] quoted" % TAG)
 
+    def test_own_folder_intro_without_an_ascii_space_is_not_tagged_twice(self) -> None:
+        # AFC-676:  `[SEAT📁AFC]` and `[SEAT<NBSP>📁AFC]` went out as `[SEAT] [SEAT📁AFC]`.
+        for text, want in (
+            ("[CLAUDE📁AFC → ECHO] status", "[CLAUDE·%s 📁AFC → ECHO] status" % TAG),
+            ("👀 [CLAUDE\u00a0📁OPS] look", "👀 [CLAUDE·%s 📁OPS] look" % TAG),
+            ("[CLAUDEX📁OPS] lookalike", "[CLAUDE·%s] [CLAUDEX📁OPS] lookalike" % TAG),
+        ):
+            with self.subTest(text=text):
+                made = self.run_cli("post", "--topic", "t", text, "--json")
+                self.assertEqual(made.code, 0, made.err)
+                self.assertEqual(self.fake._find(json.loads(made.out)["id"])["content"], want)
+        posted = json.loads(self.run_cli("post", "--topic", "t", "first", "--json").out)["id"]
+        edited = self.run_cli("edit", "--id", str(posted), "[CLAUDE\u2002📁OPS] edited")
+        self.assertEqual(edited.code, 0, edited.err)
+        self.assertEqual(self.fake._find(posted)["content"], "[CLAUDE·%s 📁OPS] edited" % TAG)
+
     def test_edit_never_double_tags_an_already_tagged_body(self) -> None:
         # AFC-666:  the edit path follows the post path's intro rule.  An already-tagged
         # body keeps its single intro (a foreign compact intro is preserved as post

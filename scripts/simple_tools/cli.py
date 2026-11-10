@@ -1673,15 +1673,21 @@ def _compose(
     start = len(leading)
     seat_end = start + 1 + len(agent.seat)
     end = text.find("]", start)
+    # A folder intro typed with no space or a non-ASCII space before 📁 is still this
+    # seat's own intro (AFC-676), as in the hosted composeBody transport.
+    folder = re.match(r"\s*📁", text[seat_end:]) is not None
     own = (
         not no_tag
         and text.startswith("[" + agent.seat, start)
-        and text[seat_end : seat_end + 1] in ("]", " ", ":", "·", "→", "\t")
+        and (folder or text[seat_end : seat_end + 1] in ("]", " ", ":", "·", "→", "\t"))
         and end >= 0
         and not re.search(r"[\r\n\[]", text[start + 1 : end])
     )
     if own:
         intro = text[:end]
+        if folder:
+            # Exactly one ASCII space before 📁, the Policy shape the router parses.
+            intro = intro[:seat_end] + " " + intro[seat_end:].lstrip()
         if "·" in agent.tag_prefix:
             suffix = re.sub(r"^·[^\s:→\]]*", "", intro[seat_end:])
             intro = intro[:seat_end] + agent.tag_prefix[agent.tag_prefix.index("·") :] + suffix

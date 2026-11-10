@@ -14,7 +14,7 @@ Your session carries a letter from the Operator registry.  Name this thread `<L
 
 ### Land Your Work
 
-After each finished unit: commit, push the branch, open a PR, arm auto-merge (`gh pr merge <n> --squash --auto`) and drive it to merged.  Pause only for a destructive operation such as a force-push, a production data wipe or a secret revoke.
+After each finished unit: commit, push, open a PR, arm relay auto-merge (`gr_wf_automerge_enable`, squash) and drive it to merged.  `gh` is a logged backup only (Fleet GitOPS deficiencies doc).  Pause only for a destructive operation such as a force-push, a production data wipe or a secret revoke.
 
 ### Secrets
 

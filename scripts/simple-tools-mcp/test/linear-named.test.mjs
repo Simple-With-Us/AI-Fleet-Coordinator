@@ -32,13 +32,45 @@ const argsFor = (entry) => Object.fromEntries(Object.entries(entry.args).filter(
   a.schema.type === 'object' ? {} : a.schema.type === 'boolean' ? true : a.schema.type === 'integer' ? 1 : 'resource',
 ]));
 
-test('document reads default to the 64,000 response budget (AFC-664 item 8)', () => {
-  assert.equal(NAMED_DEFAULT_MAX_CHARS.linear_get_document, 64000);
+test('document reads default to the 1,000,000 response budget (AFC-664 items 8 + 2026-11-08 raise)', () => {
+  assert.equal(NAMED_DEFAULT_MAX_CHARS.linear_get_document, 1000000);
   assert.deepEqual(Object.keys(NAMED_DEFAULT_MAX_CHARS), ['linear_get_document']);
   const tool = LINEAR_NAMED_TOOLS.find((t) => t.name === 'linear_get_document');
-  assert.equal(tool.inputSchema.properties.max_chars.default, 64000);
+  assert.equal(tool.inputSchema.properties.max_chars.default, 1000000);
+  assert.equal(tool.inputSchema.properties.max_chars.maximum, 1000000);
+  assert.equal(tool.inputSchema.properties.content_offset.type, 'integer');
+  assert.equal(tool.inputSchema.properties.content_length.maximum, 1000000);
   const other = LINEAR_NAMED_TOOLS.find((t) => t.name === 'linear_get_issue');
   assert.equal(other.inputSchema.properties.max_chars.default, 24000);
+  assert.equal(other.inputSchema.properties.max_chars.maximum, 1000000);
+});
+
+test('a document past the old 64,000 ceiling reads back in full, whole and sliced', async () => {
+  const { tools, linear } = fixture();
+  const content = 'abcdefghij'.repeat(15000); // 150,000 chars
+  linear.result = { document: { id: 'doc-big', title: 'Big', content, url: 'https://linear.app/doc-big' } };
+  const { callNamedLinear } = await import('../src/linear-named.js');
+  const whole = await callNamedLinear(tools, 'linear_get_document', { id: 'doc-big' });
+  const wholeText = whole.content.map((c) => c.text ?? '').join('');
+  assert.ok(wholeText.includes(content), 'whole read returns all 150,000 chars with no max_chars');
+  const slice = await callNamedLinear(tools, 'linear_get_document', { id: 'doc-big', content_offset: 100000, content_length: 50000 });
+  const sliceText = slice.content.map((c) => c.text ?? '').join('');
+  assert.ok(sliceText.includes(content.slice(100000)), 'slice returns the requested window');
+  assert.ok(sliceText.includes('"content_total":150000'), 'slice reports the full content length');
+  assert.ok(!sliceText.includes(content.slice(0, 50000) + content.slice(50000, 100000).slice(0, 10)) || sliceText.length < wholeText.length);
+});
+
+test('a sliced document read scans the whole document, so a secret across a slice boundary stays redacted', async () => {
+  const { tools, linear } = fixture();
+  const token = 'ghp_' + 'A1b2C3d4E5'.repeat(4);
+  const content = 'x'.repeat(999) + ' ' + token + ' ' + 'y'.repeat(1000);
+  linear.result = { document: { id: 'doc-secret', title: 'S', content, url: 'https://linear.app/doc-secret' } };
+  const { callNamedLinear } = await import('../src/linear-named.js');
+  for (const [offset, length] of [[0, 1010], [1010, 2000]]) {
+    const res = await callNamedLinear(tools, 'linear_get_document', { id: 'doc-secret', content_offset: offset, content_length: length });
+    const text = res.content.map((c) => c.text ?? '').join('');
+    assert.ok(!text.includes(token.slice(0, 10)) && !text.includes(token.slice(10)), `slice ${offset} leaks part of the token`);
+  }
 });
 
 test('named tool catalog is unique, discoverable, closed and bound to the seat', () => {

@@ -54,7 +54,9 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # simple_tools/cursor_cloud_letters.py (the Cursor Cloud letter sweep).
 # The 162nd is scripts/ag-wake-bridge, the AG seat's wake webhook receiver and deliverer (AFC-665;  its systemd
 # unit template stays repo-only under simple_tools/server/).
-MAX_FILES = 162
+# The 163rd is simple_tools/platform_letter_clutch.py (the Clutch session-letter adapter) and the 164th is
+# simple_tools/platform_letter_fx.py (the Fx session-letter adapter, which registers from the fx session store).
+MAX_FILES = 164
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,

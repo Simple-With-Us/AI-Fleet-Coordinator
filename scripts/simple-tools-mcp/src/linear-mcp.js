@@ -42,7 +42,7 @@ function validateInput(schema, value) {
   }
 }
 
-function safeText(tools, text, limit = 64000) {
+function safeText(tools, text, limit = 1000000) {
   const scrubbed = tools.scrub(text);
   return scanSecret(scrubbed, tools.known) ? "[redacted secret]" : linearClean(scrubbed, limit)[0];
 }
@@ -63,7 +63,7 @@ function normalizeResult(tools, result) {
   for (const block of result.content) {
     if (block?.type === "text" && typeof block.text === "string") {
       textSize += block.text.length;
-      if (textSize > 64000) throw new ToolError("response_too_large", "Linear MCP text exceeds 64,000 characters.  Narrow the request or use pagination.");
+      if (textSize > 1000000) throw new ToolError("response_too_large", "Linear MCP text exceeds 1,000,000 characters.  Narrow the request or use pagination.");
       texts.push(safeText(tools, block.text));
     } else if (block?.type === "image") {
       const data = block.data;
