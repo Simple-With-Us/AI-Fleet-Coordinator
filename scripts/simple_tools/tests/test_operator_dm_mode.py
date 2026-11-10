@@ -7,8 +7,10 @@ about a wake.  `SIMPLE_TOOLS_OPERATOR_DM_MODE` stages that for `operator_post.O
   * `clarify` refuses every `direct` message unless the caller passes `clarify=True`.
 
 Stream posts are never affected, a refusal sends nothing and builds no client, and it carries no message
-text anywhere.  The daemon itself is not changed here:  its five direct-message sites still send in
-`legacy` mode, which is the point of the staging.
+text anywhere.  An edit cannot rewrite a direct message the voice itself posted: the voice remembers the
+ids of those (a bounded memory, ids only) and refuses `edit` of one in `clarify` mode unless the caller
+passes `clarify=True`.  The daemon's five direct-message sites still send in `legacy` mode, which is the
+point of the staging, and its two choke points are tested in test_operator_voice.py.
 
 The voice is driven on its own (a fake client, no network), exactly as in test_operator_voice.py.
 """
@@ -17,7 +19,9 @@ from __future__ import annotations
 
 import contextlib
 import io
+import itertools
 import unittest
+from collections.abc import Callable
 from typing import Any
 
 from simple_tools import operator_post as OPV
@@ -30,6 +34,7 @@ PINS = {"OPERATOR_ZULIP_USER_ID": str(OPERATOR_USER_ID), "OPERATOR_ZULIP_EMAIL":
 
 # Distinctive on purpose: a refusal that leaks the message shows up as one of these strings somewhere.
 BODY_MARK = "ZXQ-body-7731-do-not-leak"
+EDIT_MARK = "QQX-edit-4410-do-not-leak"
 RECIPIENT_MARK = 424242
 DM: dict[str, Any] = {
     "type": "direct",
@@ -39,13 +44,30 @@ DM: dict[str, Any] = {
 STREAM: dict[str, Any] = {"type": "stream", "to": "7", "topic": "wakes", "content": "hello stream"}
 
 
+class AnsweringClient(FakeOperatorClient):
+    """A fake client whose answer to a post the test chooses (the shared fake always answers id 77)."""
+
+    def __init__(self, me: dict[str, Any], answer: Callable[[Any], Any]) -> None:
+        super().__init__(me)
+        self.answer = answer
+
+    def post(self, path: str, params: Any = None, **kw: Any) -> Any:
+        super().post(path, params, **kw)
+        return self.answer(params)
+
+
 class OperatorDmModeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.built: list[FakeOperatorClient] = []
         self.logged: list[tuple[str, dict[str, Any]]] = []
+        self.answer: Callable[[Any], Any] | None = None
 
     def factory(self, owner: int) -> Any:
-        client = FakeOperatorClient(operator_me())
+        client: FakeOperatorClient = (
+            AnsweringClient(operator_me(), self.answer)
+            if self.answer is not None
+            else FakeOperatorClient(operator_me())
+        )
         self.built.append(client)
         return client
 
@@ -205,6 +227,144 @@ class OperatorDmModeTests(unittest.TestCase):
         voice.update_env(dict(PINS, **{MODE: "nonsense"}))
         self.assertEqual(voice.post(DM), {"id": 77})
         self.assertEqual(len(self.warnings()), 1, "the reload is told about the bad value")
+
+    # ---- an edit cannot rewrite a direct message the voice sent -----------------------------------
+    def spy_on_client(self, voice: OPV.OperatorVoice) -> list[bool]:
+        """Count every `client()` call, so a test can say a refusal built nothing."""
+        calls: list[bool] = []
+        real = voice.client
+
+        def counting(*args: Any, **kwargs: Any) -> Any:
+            calls.append(True)
+            return real(*args, **kwargs)
+
+        voice.client = counting  # type: ignore[method-assign]
+        return calls
+
+    def patches(self) -> list[tuple[str, str, Any]]:
+        """Every edit that reached a Zulip client."""
+        return [call for call in self.sent() if call[0] == "PATCH"]
+
+    def test_an_edit_of_a_dm_the_voice_posted_is_refused_in_clarify(self) -> None:
+        voice = self.voice("clarify")
+        self.assertEqual(voice.post(DM, clarify=True), {"id": 77})
+        calls = self.spy_on_client(voice)
+        for wait in (True, False):
+            with self.subTest(wait=wait), self.assertRaises(OPV.OperatorRefused) as caught:
+                voice.edit(77, "rewritten " + EDIT_MARK, wait=wait)
+            exc = caught.exception
+            self.assertEqual(exc.code, OPV.CODE_DM_CLARIFY_ONLY, "the same token as a refused post")
+            self.assertEqual(exc.exit_code, 3)
+            seen = " ".join([str(exc), repr(exc), exc.reason, repr(self.logged)])
+            self.assertNotIn(EDIT_MARK, seen, "the new text must not leave through a refusal")
+            self.assertNotIn(BODY_MARK, seen, "nor the text of the message it would have rewritten")
+        with self.assertRaises(OPV.OperatorRefused):
+            voice.edit("77", "x")  # the edit itself reads this id as 77, so the gate must too
+        self.assertEqual(calls, [], "the refusal built no client")
+        self.assertEqual(self.patches(), [], "nothing was edited")
+
+    def test_clarify_true_lets_an_edit_of_a_dm_through_and_is_not_sent_to_zulip(self) -> None:
+        voice = self.voice("clarify")
+        voice.post(DM, clarify=True)
+        voice.edit(77, "kept", clarify=True)
+        self.assertEqual(self.patches(), [("PATCH", "messages/77", {"content": "kept"})])
+
+    def test_only_the_value_true_opens_the_edit_gate(self) -> None:
+        voice = self.voice("clarify")
+        voice.post(DM, clarify=True)
+        for value in (False, None, 0, 1, "yes", "true", [True]):
+            with self.subTest(value=value), self.assertRaises(OPV.OperatorRefused):
+                voice.edit(77, "x", clarify=value)
+        self.assertEqual(self.patches(), [])
+
+    def test_in_legacy_an_edit_of_a_dm_goes_through_as_it_does_today(self) -> None:
+        for value in (None, "legacy", "", "nonsense"):
+            with self.subTest(value=value):
+                self.built.clear()
+                voice = self.voice(value)
+                voice.post(DM)
+                voice.edit(77, "kept")
+                self.assertEqual(self.patches(), [("PATCH", "messages/77", {"content": "kept"})])
+
+    def test_the_memory_outlives_a_mode_change(self) -> None:
+        voice = self.voice("legacy")
+        voice.post(DM)  # sent, and remembered, while the mode is legacy
+        voice.edit(77, "fine")
+        voice.update_env(dict(PINS, **{MODE: "clarify"}))
+        with self.assertRaises(OPV.OperatorRefused):
+            voice.edit(77, "no")
+        voice.update_env(dict(PINS))
+        voice.edit(77, "again")
+        self.assertEqual([call[2]["content"] for call in self.patches()], ["fine", "again"])
+
+    def test_an_edit_of_anything_else_is_allowed_in_clarify(self) -> None:
+        # A stream post's id (the held-wake digest is one) and an id the voice never saw, such as a
+        # direct message sent before a restart.
+        self.answer = lambda params: {"id": 78 if params["type"] == "stream" else 77}
+        voice = self.voice("clarify")
+        voice.post(STREAM)
+        voice.post(DM, clarify=True)
+        voice.edit(78, "digest")
+        voice.edit(901, "digest")
+        self.assertEqual([call[1] for call in self.patches()], ["messages/78", "messages/901"])
+        with self.assertRaises(OPV.OperatorRefused):
+            voice.edit(77, "the direct message, as a control")
+
+    def test_the_memory_is_bounded_and_holds_ids_only(self) -> None:
+        self.assertEqual(OPV.DM_ID_MEMORY, 256)
+        counter = itertools.count(1)
+        self.answer = lambda params: {"id": next(counter)}
+        voice = self.voice("clarify")
+        for _ in range(OPV.DM_ID_MEMORY + 44):
+            voice.post(DM, clarify=True)  # ids 1 to 300
+        for forgotten in (1, 44):
+            voice.edit(forgotten, "ok")  # the oldest are forgotten first
+        for kept in (45, 300):
+            with self.subTest(kept=kept), self.assertRaises(OPV.OperatorRefused):
+                voice.edit(kept, "x")
+        self.assertEqual(len(voice._dm_ids), OPV.DM_ID_MEMORY)
+        self.assertTrue(all(isinstance(k, int) and v is None for k, v in voice._dm_ids.items()))
+        self.assertNotIn(BODY_MARK, repr(vars(voice)), "ids only, no message text is kept")
+
+    def test_an_answer_without_an_id_is_tolerated_and_remembers_nothing(self) -> None:
+        for answer in (
+            {},
+            {"id": None},
+            {"id": True},
+            {"id": "77"},
+            {"result": "success"},
+            None,
+            ["id"],
+        ):
+            with self.subTest(answer=answer):
+                self.built.clear()
+                self.answer = lambda params, answer=answer: answer
+                voice = self.voice("clarify")
+                self.assertEqual(voice.post(DM, clarify=True), answer)
+                self.assertEqual(len(voice._dm_ids), 0)
+                for message_id in (1, 77):
+                    voice.edit(message_id, "fine")
+
+    def test_a_post_that_failed_remembers_nothing(self) -> None:
+        voice = self.voice("clarify")
+        voice.client().post_error = Z.ApiError("no", code="BAD_REQUEST", status=400)
+        with self.assertRaises(Z.ApiError):
+            voice.post(DM, clarify=True)
+        voice.edit(77, "fine")
+        self.assertEqual(self.patches(), [("PATCH", "messages/77", {"content": "fine"})])
+
+    def test_the_refusal_methods_are_public_and_cost_nothing(self) -> None:
+        voice = self.voice("clarify")
+        with self.assertRaises(OPV.OperatorRefused):
+            voice.refuse_unclarified_dm(DM)
+        voice.refuse_unclarified_dm(DM, clarify=True)
+        voice.refuse_unclarified_dm(STREAM)
+        voice.refuse_unclarified_edit(77)  # nothing is remembered yet
+        voice.refuse_unclarified_edit("not an id")  # the edit itself fails on it, as before
+        voice.refuse_unclarified_edit(None)
+        self.assertEqual(self.built, [], "no client was built, no vault was read")
+        self.assertEqual(self.logged, [])
+        self.voice("legacy").refuse_unclarified_dm(DM)
 
     # ---- no message content anywhere ---------------------------------------------------------------
     def test_a_refusal_carries_and_logs_no_message_content(self) -> None:

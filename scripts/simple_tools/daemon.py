@@ -663,7 +663,22 @@ def merge_routine_env(seats, env, home, *, fetch=None):
         return []
     if fetch is None:
         fetch = lambda ns: Z._fetch_from_fleet_secrets(ns, env, home)
-    for name, value in dict(fetch(tuple(names))).items():
+    try:
+        got = dict(fetch(tuple(names)))
+    except Z.CredentialError as exc:
+        # One batched `--only` read fails whole when any name is absent, and a routine's
+        # URL legitimately lives in the daemon environment (the plist) rather than the
+        # store while its key does not (OPS-1048):  fall back to one read per name, so
+        # the names the store holds still land.  An outage fails the same way it did.
+        if "key-absent" not in str(exc):
+            raise
+        got = {}
+        for name in names:
+            try:
+                got.update(dict(fetch((name,))))
+            except Z.CredentialError:
+                continue
+    for name, value in got.items():
         if value:
             env[name] = value
     return names
@@ -1189,6 +1204,44 @@ class Daemon:
             principals[name] = (value, seats[name])
         return principals
 
+    def _note_link_hook(self, seat: str, session_id: str, note_id: str) -> None:
+        """Record a finished note's Apple Notes link on its session's registry row (OPS-1048).
+
+        The queue hands over (seat, session id, note id) when a write created a note for a
+        named session;  the row is found by the session id across the platforms (a session id
+        belongs to one platform in practice), and the link is the notes:// URL the note's id
+        completes.  Every failure is swallowed and logged as an event name only:  the note
+        exists and the request finished whether or not its link was recorded."""
+        service = getattr(self, "registry_service", None)
+        if service is None:
+            return
+        try:
+            matches = OR.SessionRegistry(service.db_path, read_only=True).session_rows_for_id(
+                session_id
+            )
+        except (OSError, ValueError):
+            return
+        link = NQ.NotesQueue.NOTE_LINK_FORM.format(note_id=note_id)
+        for identity in matches:
+            status, _answer = service._op_update(
+                LREG.OPERATOR,
+                {
+                    "platform": identity["platform"],
+                    "location": identity["verified_host"],
+                    "scope": identity["profile_scope"],
+                    "session_id": session_id,
+                    "apple_note_link": link,
+                },
+            )
+            if status == 200:
+                self.log.write(
+                    "notes-link-recorded",
+                    seat=seat,
+                    platform=identity["platform"],
+                )
+                return
+        self.log.write("notes-link-no-session", seat=seat)
+
     def _configure_notes_queue(self) -> NQ.NotesQueue | None:
         """The Operator's Apple Notes queue (AFC-486) for the listener API to serve under /notes/v1/, or None:  off
         unless [notes_queue] enabled is true (the server instance only, config.py) and at least one principal has a
@@ -1223,7 +1276,12 @@ class Daemon:
         else:
             try:
                 queue = NQ.NotesQueue(
-                    self.root, principals, env=self.env, clock=self.clock.time, log=self.log.write
+                    self.root,
+                    principals,
+                    env=self.env,
+                    clock=self.clock.time,
+                    log=self.log.write,
+                    note_link_hook=self._note_link_hook,
                 )
             except OSError as exc:
                 self.log.write("notes-queue-error", error=type(exc).__name__)
@@ -8508,6 +8566,8 @@ class Daemon:
         stands in a build of the client, which reads the vault and can take a minute.  With no client
         ready it raises OperatorUnavailable (code `operator_building`) and the build goes on in the
         background, so the post is skipped this time and tried again."""
+        # First, before the scan, the client build and the pacing wait: a refused DM costs nothing.
+        self.operator_voice.refuse_unclarified_dm(params)
         found = secretscan.scan(str(params.get("content") or ""), self.hidden)
         if found:
             raise OPV.OperatorRefused("secret scanner: %s" % found)
@@ -8517,6 +8577,7 @@ class Daemon:
 
     def _operator_edit(self, message_id: int, content: str, *, wait: bool = True) -> dict[str, Any]:
         """Edit one of the Operator's own messages, with the same scan and no other client."""
+        self.operator_voice.refuse_unclarified_edit(message_id)  # first: costs nothing when refused
         found = secretscan.scan(str(content or ""), self.hidden)
         if found:
             raise OPV.OperatorRefused("secret scanner: %s" % found)

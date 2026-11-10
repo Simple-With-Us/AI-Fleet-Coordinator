@@ -357,6 +357,55 @@ class TitleWriter(Base):
         rows = dict((r[0], (r[1], r[2])) for r in self.rows())
         self.assertEqual(rows[sid], ("AA: Words the prompt gave", "custom"))
 
+    def test_a_titled_chat_records_its_thread_link(self) -> None:
+        import secrets
+
+        from simple_tools import listener_api as API
+        from simple_tools import listener_registry as RG
+
+        operator_key = secrets.token_hex(24)
+        service = RG.RegistryService(self.db, {"OPERATOR": operator_key})
+        server = API.ListenerReadApi("127.0.0.1", 0, self.state, {}, registry=service)
+        server.start()
+        self.addCleanup(server.close)
+        host, port = server.address
+        OR.register_session(
+            self.db,
+            platform="zcode",
+            verified_host="server",
+            profile_scope="default",
+            native_session_id=sess(26),
+            seat="ZC",
+            source="thread link test",
+            issuer=OR.ISSUER_OPERATOR,
+        )
+        self.add_session(sess(26), title="Words")
+        env = self.env(
+            SESSION_LETTER_LOCATION="server",
+            SIMPLE_TOOLS_OPERATOR_REGISTRY_URL="http://%s:%d" % (host, port),
+            SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL="OPERATOR",
+            SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY=operator_key,
+        )
+        request = PL.TitleRequest(
+            platform=Z.PLATFORM,
+            session_id=sess(26),
+            label="AA",
+            title="AA: Words",
+            words="Words",
+            current="Words",
+            reason="start",
+            data={},
+            env=env,
+        )
+        self.assertTrue(Z.zcode_rename(request))
+        conn = sqlite3.connect(self.db)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT thread_link FROM sessions WHERE native_session_id = ?", (sess(26),)
+        ).fetchone()
+        conn.close()
+        self.assertEqual(row["thread_link"], "zcode://session/%s" % sess(26))
+
     def test_the_write_is_custom_so_the_app_keeps_its_hands_off(self) -> None:
         # The app model-retitles a `generated` thread and wipes the letter prefix (seen
         # live); a `custom` title is a user rename it leaves alone.  The hook's lettered
