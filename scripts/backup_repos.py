@@ -29,19 +29,32 @@ import shutil
 import subprocess
 import sys
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # Exclusions mirror the former inline `zip -x` list:  dependency/build noise
 # and anything shaped like a secret never enters an offsite archive.
 EXCLUDE_PATTERNS = [
-    "*/node_modules/*", "*/.git/*", "*/dist/*", "*/build/*",
-    ".env*", "*/.env*",
-    "*.key", "*/*.key", "*.pem", "*/*.pem",
-    "*.p12", "*/*.p12", "*.pfx", "*/*.pfx",
-    "id_*", "*/id_*",
-    "*credential*", "*/*credential*",
-    "*service-account*", "*/*service-account*",
+    "*/node_modules/*",
+    "*/.git/*",
+    "*/dist/*",
+    "*/build/*",
+    ".env*",
+    "*/.env*",
+    "*.key",
+    "*/*.key",
+    "*.pem",
+    "*/*.pem",
+    "*.p12",
+    "*/*.p12",
+    "*.pfx",
+    "*/*.pfx",
+    "id_*",
+    "*/id_*",
+    "*credential*",
+    "*/*credential*",
+    "*service-account*",
+    "*/*service-account*",
 ]
 
 DEFAULT_CLONE_CMD = "gh repo clone Simple-With-Us/{repo} {dest}"
@@ -94,21 +107,22 @@ def write_summary(outdir, date_str, succeeded, failed, zip_count):
     status = "COMPLETE" if not failed else "PARTIAL"
     lines = [
         f"Fleet repo backup {date_str}: {status}",
-        f"generated: {datetime.now(timezone.utc).isoformat(timespec='seconds')}",
+        f"generated: {datetime.now(UTC).isoformat(timespec='seconds')}",
         f"archives: {zip_count}",
         f"succeeded ({len(succeeded)}): {', '.join(succeeded) or '-'}",
         f"failed ({len(failed)}): {', '.join(failed) or '-'}",
     ]
     if failed:
-        lines.append("WARNING: this artifact set is incomplete; "
-                     "the failed repositories have no archive in this run.")
+        lines.append(
+            "WARNING: this artifact set is incomplete; "
+            "the failed repositories have no archive in this run."
+        )
     (outdir / SUMMARY_NAME).write_text("\n".join(lines) + "\n", encoding="utf-8")
     return status
 
 
 def run_backup(repo_list_path, outdir, date_str):
-    repos = [line.strip() for line in Path(repo_list_path).read_text().splitlines()
-             if line.strip()]
+    repos = [line.strip() for line in Path(repo_list_path).read_text().splitlines() if line.strip()]
     outdir.mkdir(parents=True, exist_ok=True)
     succeeded, failed = [], []
     for repo in repos:
@@ -129,31 +143,32 @@ def run_backup(repo_list_path, outdir, date_str):
     zips = sorted(outdir.glob("*.zip"))
     status = write_summary(outdir, date_str, succeeded, failed, len(zips))
     suffix = "-PARTIAL" if failed else ""
-    append_env_file(os.environ.get("GITHUB_ENV"),
-                    f"BACKUP_ARTIFACT_SUFFIX={suffix}\n")
-    append_env_file(os.environ.get("GITHUB_STEP_SUMMARY"),
-                    f"## Fleet repo backup: {status}\n\n"
-                    f"- archives: {len(zips)}\n"
-                    f"- failed: {', '.join(failed) or 'none'}\n")
+    append_env_file(os.environ.get("GITHUB_ENV"), f"BACKUP_ARTIFACT_SUFFIX={suffix}\n")
+    append_env_file(
+        os.environ.get("GITHUB_STEP_SUMMARY"),
+        f"## Fleet repo backup: {status}\n\n"
+        f"- archives: {len(zips)}\n"
+        f"- failed: {', '.join(failed) or 'none'}\n",
+    )
 
     # The count guard stays:  a silent drop must read as an error, not as a
     # complete offsite.
     expected = len(repos)
     if len(zips) != expected - len(failed):
-        print(f"::error::expected {expected - len(failed)} archives "
-              f"({expected} repos, {len(failed)} failed), found {len(zips)}")
+        print(
+            f"::error::expected {expected - len(failed)} archives "
+            f"({expected} repos, {len(failed)} failed), found {len(zips)}"
+        )
         return 1
     if failed:
-        print(f"::error::{len(failed)} repositories failed to clone: "
-              f"{', '.join(failed)}")
+        print(f"::error::{len(failed)} repositories failed to clone: {', '.join(failed)}")
         return 1
     return 0
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo-list", required=True,
-                        help="file with one repo name per line")
+    parser.add_argument("--repo-list", required=True, help="file with one repo name per line")
     parser.add_argument("--outdir", required=True, help="output directory")
     parser.add_argument("--date", required=True, help="YYYY-MM-DD stamp")
     args = parser.parse_args(argv)

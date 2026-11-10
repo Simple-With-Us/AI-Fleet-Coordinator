@@ -18,7 +18,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "backup_repos.py"
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
-import backup_repos  # noqa: E402
+import backup_repos
 
 STUB = """\
 import shutil, sys
@@ -74,15 +74,25 @@ class BackupReposTest(unittest.TestCase):
     def run_script(self, repos):
         self.repo_list.write_text("\n".join(repos) + "\n")
         env = dict(os.environ)
-        env["BACKUP_REPOS_CLONE_CMD"] = (
-            f"{sys.executable} {self.stub} {{repo}} {{dest}}")
+        env["BACKUP_REPOS_CLONE_CMD"] = f"{sys.executable} {self.stub} {{repo}} {{dest}}"
         env["GITHUB_ENV"] = str(self.env_file)
         env["GITHUB_STEP_SUMMARY"] = str(self.step_summary)
         env.pop("GH_TOKEN", None)
         return subprocess.run(
-            [sys.executable, str(SCRIPT), "--repo-list", str(self.repo_list),
-             "--outdir", str(self.outdir), "--date", "2026-11-10"],
-            env=env, capture_output=True, text=True)
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--repo-list",
+                str(self.repo_list),
+                "--outdir",
+                str(self.outdir),
+                "--date",
+                "2026-11-10",
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
 
     def zip_names(self, zip_path):
         with zipfile.ZipFile(zip_path) as zf:
@@ -106,17 +116,14 @@ class BackupReposTest(unittest.TestCase):
         # The failure did not discard the archives that succeeded.
         self.assertTrue((self.outdir / "Alpha-backup-2026-11-10.zip").exists())
         self.assertTrue((self.outdir / "Beta-backup-2026-11-10.zip").exists())
-        self.assertFalse(
-            (self.outdir / "Ghost-missing-backup-2026-11-10.zip").exists())
+        self.assertFalse((self.outdir / "Ghost-missing-backup-2026-11-10.zip").exists())
         summary = (self.outdir / "BACKUP-SUMMARY.txt").read_text()
         self.assertIn("PARTIAL", summary)
         self.assertIn("failed (1): Ghost-missing", summary)
         self.assertIn("incomplete", summary)
-        self.assertIn("BACKUP_ARTIFACT_SUFFIX=-PARTIAL\n",
-                      self.env_file.read_text())
+        self.assertIn("BACKUP_ARTIFACT_SUFFIX=-PARTIAL\n", self.env_file.read_text())
         self.assertIn("PARTIAL", self.step_summary.read_text())
-        self.assertIn("::error::could not clone Simple-With-Us/Ghost-missing",
-                      proc.stdout)
+        self.assertIn("::error::could not clone Simple-With-Us/Ghost-missing", proc.stdout)
 
     def test_secret_and_noise_exclusions(self):
         # Actual archive content, root and nested:  a fixture shaped like a
@@ -132,15 +139,28 @@ class BackupReposTest(unittest.TestCase):
             self.assertNotIn(needle, blob)
 
     def test_exclusion_matcher(self):
-        for excluded in (".env", ".env.production", "sub/.env",
-                         ".git/config", "a/.git/HEAD", "node_modules/x/y.js",
-                         "a/node_modules/x/y.js", "dist/out.js", "a/b.key",
-                         "c.pem", "d.p12", "e.pfx", "id_rsa", "sub/id_ed25519",
-                         "credentials.json", "sub/my-credential.txt",
-                         "service-account.json", "sub/svc-service-account.json"):
+        for excluded in (
+            ".env",
+            ".env.production",
+            "sub/.env",
+            ".git/config",
+            "a/.git/HEAD",
+            "node_modules/x/y.js",
+            "a/node_modules/x/y.js",
+            "dist/out.js",
+            "a/b.key",
+            "c.pem",
+            "d.p12",
+            "e.pfx",
+            "id_rsa",
+            "sub/id_ed25519",
+            "credentials.json",
+            "sub/my-credential.txt",
+            "service-account.json",
+            "sub/svc-service-account.json",
+        ):
             self.assertTrue(backup_repos.is_excluded(excluded), excluded)
-        for kept in ("app.py", "src/keep.txt", "README.md", "keys.txt",
-                     "src/identity.py"):
+        for kept in ("app.py", "src/keep.txt", "README.md", "keys.txt", "src/identity.py"):
             self.assertFalse(backup_repos.is_excluded(kept), kept)
 
     def test_count_guard_catches_count_mismatch(self):
