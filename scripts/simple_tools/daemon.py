@@ -1189,6 +1189,44 @@ class Daemon:
             principals[name] = (value, seats[name])
         return principals
 
+    def _note_link_hook(self, seat: str, session_id: str, note_id: str) -> None:
+        """Record a finished note's Apple Notes link on its session's registry row (OPS-1048).
+
+        The queue hands over (seat, session id, note id) when a write created a note for a
+        named session;  the row is found by the session id across the platforms (a session id
+        belongs to one platform in practice), and the link is the notes:// URL the note's id
+        completes.  Every failure is swallowed and logged as an event name only:  the note
+        exists and the request finished whether or not its link was recorded."""
+        service = getattr(self, "registry_service", None)
+        if service is None:
+            return
+        try:
+            matches = OR.SessionRegistry(service.db_path, read_only=True).session_rows_for_id(
+                session_id
+            )
+        except (OSError, ValueError):
+            return
+        link = NQ.NotesQueue.NOTE_LINK_FORM.format(note_id=note_id)
+        for identity in matches:
+            status, _answer = service._op_update(
+                LREG.OPERATOR,
+                {
+                    "platform": identity["platform"],
+                    "location": identity["verified_host"],
+                    "scope": identity["profile_scope"],
+                    "session_id": session_id,
+                    "apple_note_link": link,
+                },
+            )
+            if status == 200:
+                self.log.write(
+                    "notes-link-recorded",
+                    seat=seat,
+                    platform=identity["platform"],
+                )
+                return
+        self.log.write("notes-link-no-session", seat=seat)
+
     def _configure_notes_queue(self) -> NQ.NotesQueue | None:
         """The Operator's Apple Notes queue (AFC-486) for the listener API to serve under /notes/v1/, or None:  off
         unless [notes_queue] enabled is true (the server instance only, config.py) and at least one principal has a
@@ -1223,7 +1261,12 @@ class Daemon:
         else:
             try:
                 queue = NQ.NotesQueue(
-                    self.root, principals, env=self.env, clock=self.clock.time, log=self.log.write
+                    self.root,
+                    principals,
+                    env=self.env,
+                    clock=self.clock.time,
+                    log=self.log.write,
+                    note_link_hook=self._note_link_hook,
                 )
             except OSError as exc:
                 self.log.write("notes-queue-error", error=type(exc).__name__)

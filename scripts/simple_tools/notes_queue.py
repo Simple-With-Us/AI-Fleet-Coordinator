@@ -40,6 +40,8 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping
+
+from . import session_ids as SI
 from pathlib import Path
 from typing import Any, NamedTuple
 from urllib.parse import parse_qsl, urlsplit
@@ -123,7 +125,14 @@ class NotesQueue:
         env: Mapping[str, str] | None = None,
         clock: Callable[[], float] = time.time,
         log: Callable[..., None] | None = None,
+        note_link_hook: Callable[[str, str, str], None] | None = None,
     ) -> None:
+        #: note_link_hook(seat, session_id, note_id) fires when a write finishes with a
+        #: note id and the note carried a Session: line (OPS-1048):  the host wires it to the
+        #: registry update that records apple_note_link on the session's row, and the Sheets
+        #: drain exports it.  Failures inside the hook are the hook's to swallow;  the queue
+        #: never lets one touch the request's own result.
+        self.note_link_hook = note_link_hook
         self.dir = Path(root) / QUEUE_DIR
         self.requests_dir = self.dir / REQUESTS_DIR
         self.action_log = self.dir / ACTION_LOG
@@ -314,9 +323,6 @@ class NotesQueue:
     ) -> None:
         record["state"] = state
         record["finished_at"] = now
-        record.pop(
-            "request", None
-        )  # the body (and a read's format) is not kept past the request's run
         record.pop("lease_until", None)
         if result is not None:
             record["result"] = dict(result)
@@ -327,11 +333,52 @@ class NotesQueue:
                 "code": str(error.get("code"))[:40],
                 "message": str(error.get("message") or "")[:400],
             }
+        # the offer runs after the result lands and before the request body is dropped:
+        # it reads both (the note id from the result, the session from the request)
+        self._offer_note_link(record)
+        record.pop(
+            "request", None
+        )  # the body (and a read's format) is not kept past the request's run
         self.active.pop((record["seat"], record["request_id"]), None)
         self._save(record)
         self.log(
             "notes-queue-finished", seat=record["seat"], action=record.get("action"), state=state
         )
+
+    # Apple Notes' own URL form;  the note id the runner reports is the identifier it takes.
+    NOTE_LINK_FORM = "notes://showNote?identifier={note_id}"
+    SESSION_LINE_RE = re.compile(r"Session:\s*([A-Za-z0-9._-]{1,128})", re.IGNORECASE)
+
+    def _offer_note_link(self, record: dict[str, Any]) -> None:
+        """Hand (seat, session id, note id) to the host's link hook when a finished write
+        created a note for a named session.  The Session: line is the note's own record of
+        which chat it belongs to (the runner requires it), so the mapping needs nothing the
+        request does not already carry.  Any failure is swallowed:  the note exists and the
+        request is done whether or not its link was recorded."""
+        if self.note_link_hook is None:
+            return
+        try:
+            if record.get("state") != "done" or record.get("action") not in N.WRITE_ACTIONS:
+                return
+            note_id = str(((record.get("result") or {}).get("note_id")) or "")
+            if not note_id:
+                return
+            request = record.get("request") or {}
+            session = str(request.get("session") or "").strip()
+            try:
+                SI.check(session)
+            except ValueError:
+                # the structured field is the record;  the Session: line the note's own copy
+                hay = " ".join(
+                    str(request.get(name) or "") for name in ("title", "body") if request.get(name)
+                )
+                match = self.SESSION_LINE_RE.search(hay)
+                session = match.group(1) if match else ""
+            if not session:
+                return
+            self.note_link_hook(str(record.get("seat") or ""), session, note_id)
+        except Exception:  # noqa: BLE001 - a link offer never disturbs the request's own finish
+            return
 
     # ---- authentication --------------------------------------------------------------------------
     def authenticate(
