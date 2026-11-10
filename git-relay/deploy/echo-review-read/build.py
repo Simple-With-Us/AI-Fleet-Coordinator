@@ -12,6 +12,8 @@ import os
 import sys
 from pathlib import Path
 
+# Canonical before-image digest of state/seats.json, corroborated by the
+# accepted historical execution receipt (hash-only provenance, AFC-680).
 BEFORE = "640d8554e0098c374dd3f7f1952593c4ebfc65f36fce2c1666a9b67fed678cb2"
 AFTER = "30aaa6b107e241499435bc797c9d0ed40fe6bba6973f56174514b9e2ee7248e4"
 CONFIG = "af09bf3b8e0679ec50c7bf3808fb11e203a46ac2ab32e8652961182f38c9e29b"
@@ -37,12 +39,11 @@ def digest(raw):
 def image(before):
     if digest(before) != BEFORE:
         raise ValueError("live ECHO policy baseline drift")
-    from git_relay.echo_review_read import digest as policy_digest
     from git_relay.echo_review_read import prepare
 
     policy = json.loads(before)
     after = (
-        json.dumps(prepare(policy, policy_digest(policy)), sort_keys=True, indent=2) + "\n"
+        json.dumps(prepare(policy), sort_keys=True, indent=2) + "\n"
     ).encode()
     if digest(after) != AFTER:
         raise ValueError("exact ECHO-only candidate drift")
