@@ -97,8 +97,13 @@ sets that row's `lookupWarning` without clearing the rest.
 
 The app is **`behind`** (same exit class as code staleness) when any external group's newest build
 is older than the app's newest **VALID** processed build, when a group has **no builds**, or when a
-group has **zero testers**.  The NOTE column and `reason` string name the groups.  The existing
-build-level fields are unchanged; consumers that ignore `externalGroups` keep working.
+group has **zero testers**.  The NOTE column and `reason` string name the groups.  When the
+build-level check was `current` and only external groups caused `behind`, the JSON row sets
+`externalGroupsOnly: true` and `behindReason: "externalGroups"`.  `--ship-behind` does **not**
+dispatch a catch-up ship in that case (remedy `blocked`), because uploading a new build does not add
+testers or assign builds to a group.  When the app was already behind on native code, external
+group issues are appended to `reason` and normal auto-remedy still applies.  The existing build-level
+fields are unchanged; consumers that ignore `externalGroups` keep working.
 
 ## Statuses
 

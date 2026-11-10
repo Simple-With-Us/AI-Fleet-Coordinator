@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   EXIT_BEHIND, EXIT_CURRENT, EXIT_FAILED, SENTENCE_GAP,
-  acquireLockDir, annotateExternalGroups, attachPreReleaseVersions, betaTesterCountFromJson, buildCutTime, buildsFilterForBetaGroupPath, buildsRelationshipForBetaGroupPath, externalBetaGroupsListPath, oldestRun, preReleaseVersionsBulkPath, correlateRun, dispatchCommand, evaluateApp, exitCodeFor, loadRegistry,
+  acquireLockDir, annotateExternalGroups, attachPreReleaseVersions, betaTesterCountFromJson, buildCutTime, buildsFilterForBetaGroupPath, buildsRelationshipForBetaGroupPath, externalBetaGroupsListPath, oldestRun, preReleaseVersionsBulkPath, correlateRun, dispatchCommand, evaluateApp, exitCodeFor, loadRegistry, shouldRemedyApp,
   ascFailureText, ascRequest, main, makeAscGuard, makeContext, makeGate, matchCheckName, ownerTime, parseArgs, planAlerts, runRemedies, sentences,
 } from "./ios_testflight_freshness.mjs";
 
@@ -270,8 +270,62 @@ test("external beta groups: stale group raises behind even when the app build is
   const { r } = await evalOne(botfleetLike(), BOTFLEET_BUILDS, {}, { betaGroups: beta });
   assert.equal(r.externalGroups?.length, 1);
   assert.equal(r.status, "behind", r.reason);
+  assert.equal(r.externalGroupsOnly, true);
+  assert.equal(r.behindReason, "externalGroups");
+  assert.ok(!shouldRemedyApp(r));
   assert.match(r.reason, /Public Beta.*older than the valid build/);
   assert.deepEqual(r.externalGroups[0].findings, ["staleBuild"]);
+});
+
+test("group-only behind: ship-behind is blocked and does not dispatch", async () => {
+  const beta = {
+    111: [{
+      id: "bg-public",
+      name: "Public Beta",
+      builds: [STALE_GROUP_BUILD],
+      testerTotal: 12,
+      publicLinkEnabled: true,
+    }],
+  };
+  const reg = registry({ demo: app() });
+  const { deps, calls } = fakeDeps({
+    repos: { Demo: botfleetLike() },
+    builds: BOTFLEET_BUILDS,
+    betaGroups: beta,
+  });
+  const r = await evaluateApp(makeContext(deps, reg), "demo", reg.apps.demo, NOW);
+  assert.equal(r.externalGroupsOnly, true);
+  await runRemedies([r], { apps: {} }, deps, reg, { now: NOW, maxShips: 1 });
+  assert.equal(r.remedy.action, "blocked");
+  assert.match(r.remedy.reason, /external beta groups/);
+  assert.equal(calls.dispatch.length, 0);
+  assert.equal(exitCodeFor([r]), EXIT_BEHIND);
+});
+
+test("build-level behind with stale external groups stays remediable", async () => {
+  const w = botfleetLike({ natives: { ios: { sha: "nat2", date: "2026-10-17T20:15:00Z" } } });
+  const beta = {
+    111: [{
+      id: "bg-public",
+      name: "Public Beta",
+      builds: [STALE_GROUP_BUILD],
+      testerTotal: 12,
+      publicLinkEnabled: true,
+    }],
+  };
+  const reg = registry({ demo: app() });
+  const { deps, calls } = fakeDeps({
+    repos: { Demo: w },
+    builds: BOTFLEET_BUILDS,
+    betaGroups: beta,
+  });
+  const r = await evaluateApp(makeContext(deps, reg), "demo", reg.apps.demo, NOW);
+  assert.equal(r.status, "behind");
+  assert.notEqual(r.externalGroupsOnly, true);
+  assert.ok(shouldRemedyApp(r));
+  await runRemedies([r], { apps: {} }, deps, reg, { now: NOW, maxShips: 1, dryRun: true });
+  assert.equal(r.remedy.action, "would-dispatch");
+  assert.equal(calls.dispatch.length, 0);
 });
 
 test("external beta groups: empty group (no builds, no testers)", async () => {

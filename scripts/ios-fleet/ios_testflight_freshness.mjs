@@ -678,6 +678,13 @@ async function loadExternalBetaGroups(ctx, appleId, platform) {
   return rows;
 }
 
+/** True when `--ship-behind` may dispatch a workflow for this result. */
+export function shouldRemedyApp(r) {
+  if (!REMEDIABLE.has(r.status)) return false;
+  if (r.externalGroupsOnly) return false;
+  return true;
+}
+
 /** Raise BEHIND (or extend the reason) when an external beta group is stale or empty. */
 function applyExternalGroupStaleness(r, validNorm, externalRows) {
   const { groups, reason } = annotateExternalGroups(validNorm, externalRows);
@@ -685,6 +692,8 @@ function applyExternalGroupStaleness(r, validNorm, externalRows) {
   if (!reason) return;
   if (r.status === "current") {
     r.status = "behind";
+    r.externalGroupsOnly = true;
+    r.behindReason = "externalGroups";
     r.reason = reason;
   } else if (r.status && r.status !== "skipped" && r.status !== "error") {
     r.reason = r.reason ? `${r.reason};  ${reason}` : reason;
@@ -969,7 +978,14 @@ export async function runRemedies(results, state, deps, registry, { dryRun = fal
   state.apps = state.apps || {};
   const fleetInflight = [...results.filter((r) => r.pipeline?.inflight?.length).map((r) => r.key), ...extraInflight];
   let dispatched = 0;
-  const candidates = results.filter((r) => REMEDIABLE.has(r.status)).sort((a, b) => (b.gapHours || 0) - (a.gapHours || 0));
+  const GROUP_ONLY_BLOCK =
+    "behind only from external beta groups; a ship workflow cannot fix group membership or testers";
+  for (const r of results) {
+    if (REMEDIABLE.has(r.status) && r.externalGroupsOnly) {
+      r.remedy = { action: "blocked", reason: GROUP_ONLY_BLOCK };
+    }
+  }
+  const candidates = results.filter((r) => shouldRemedyApp(r)).sort((a, b) => (b.gapHours || 0) - (a.gapHours || 0));
   for (const r of candidates) {
     const app = registry.apps[r.key];
     const s = (state.apps[r.key] = state.apps[r.key] || {});
