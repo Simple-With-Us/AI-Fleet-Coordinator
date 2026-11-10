@@ -258,7 +258,10 @@ def fetch_api_key(token: str, *, http: HttpFn | None = None) -> str:
         }
     )
     raw = _infisical_get(
-        request, INFISICAL_API + "/v3/secrets/raw?" + query, token, "read the Linear developer token"
+        request,
+        INFISICAL_API + "/v3/secrets/raw?" + query,
+        token,
+        "read the Linear developer token",
     )
     items: Any = raw.get("secrets", raw) if isinstance(raw, dict) else raw
     if isinstance(items, list):
@@ -343,9 +346,7 @@ def fetch_topic_history(
             raise ValueError("a Zulip message page must be a list of messages")
         # Only ids never seen count:  a page the API repeats (an anchor it did not
         # honour) must neither duplicate messages into the comment nor page forever.
-        fresh = [
-            m for m in page if isinstance(m.get("id"), int) and int(m["id"]) not in seen
-        ]
+        fresh = [m for m in page if isinstance(m.get("id"), int) and int(m["id"]) not in seen]
         if not fresh:
             break
         seen.update(int(m["id"]) for m in fresh)

@@ -656,9 +656,7 @@ class LinearClient:
                 method="POST",
                 headers={
                     "Authorization": (
-                        self._token
-                        if self.auth_scheme == "api_key"
-                        else "Bearer " + self._token
+                        self._token if self.auth_scheme == "api_key" else "Bearer " + self._token
                     ),
                     "Content-Type": "application/json",
                     "User-Agent": USER_AGENT,

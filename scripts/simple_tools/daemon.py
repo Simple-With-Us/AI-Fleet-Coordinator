@@ -1369,11 +1369,7 @@ class Daemon:
             )
             return
         self.hide_values([service])
-        if (
-            old is not None
-            and old_spec == (service,)
-            and getattr(old, "stopped", None) is None
-        ):
+        if old is not None and old_spec == (service,) and getattr(old, "stopped", None) is None:
             self.linear_comments = old
             self._linear_comments_spec = old_spec
             return
