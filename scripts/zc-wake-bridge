@@ -62,6 +62,10 @@ SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 # A delivery target is a ZCode session id, which begins `sess_`;  the prefix keeps a crafted
 # registry row from ever steering an argv token that a child could read as a flag.
 TARGET_RE = re.compile(r"^sess_[A-Za-z0-9._-]{1,123}$")
+#: ZCode has no public thread URL today (no share links are minted, and the app has no URI
+#: scheme), so a thread's link is the stable locator convention the registry records.  The
+#: day the app grows a real link, this one form is replaced and rows rewrite from session ids.
+THREAD_LINK_FORM = "zcode://session/{sid}"
 WAKE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{2,}")
 STOP_WORDS = frozenset(
@@ -208,17 +212,75 @@ def registry_history(env: dict[str, str], limit: int = 50) -> list[dict[str, Any
     return rows if isinstance(rows, list) else []
 
 
+#: How a letter is read out of a wake:  the mention forms first (the daemon escapes the
+#: display copy, so both the @**ZCode** AA form and a plain "ZCode AA" are accepted), and an
+#: explicit payload field wins over both when a later daemon sends one.
+LETTER_RE = re.compile(r"@\*\*ZCode\*\*\s*([A-Z]{2})\b|\bZCode[ \t]+([A-Z]{2})\b")
+
+
+def letter_of(payload: Mapping[str, Any]) -> str:
+    """The session letter a sender addressed this wake to, or "".  An explicit field wins;
+    else the first letter-shaped pair in the excerpt's mention forms."""
+    explicit = str(payload.get("letter") or "").strip()
+    if re.fullmatch(r"[A-Z]{2}", explicit):
+        return explicit
+    match = LETTER_RE.search(str(payload.get("excerpt") or ""))
+    if not match:
+        return ""
+    return match.group(1) or match.group(2) or ""
+
+
+def resolve_letter(env: dict[str, str], letter: str) -> str:
+    """The live native session id a letter resolves to on this platform, or "".
+
+    The Operator's registry is the one allocator, so the bridge never guesses:  a letter
+    that resolves to nothing (never issued, retired, or its registration closed) delivers
+    nowhere, and the caller says so in its receipt."""
+    url = (env.get(ENV_URL) or "").strip()
+    key = (env.get(ENV_KEY) or "").strip()
+    if not url or not key or not re.fullmatch(r"[A-Z]{2}", letter):
+        return ""
+    from simple_tools import listener_registry as RG
+
+    path = RG.PREFIX + "resolve"
+    query = "platform=zcode&letter=%s" % letter
+    principal = (env.get(ENV_PRINCIPAL) or "").strip() or "OPERATOR"
+    try:
+        request = urllib.request.Request(url.rstrip("/") + path + "?" + query, method="GET")
+        for name, value in RG.headers(key, "GET", path, query, principal, b"", time.time()).items():
+            request.add_header(name, value)
+        with urllib.request.urlopen(request, timeout=10) as response:
+            answer = json.loads(response.read().decode("utf-8"))
+    except (OSError, ValueError, KeyError):
+        return ""
+    if not answer.get("found"):
+        return ""
+    sid = str(answer.get("native_session_id") or "")
+    return sid if TARGET_RE.fullmatch(sid) else ""
+
+
 def _words(text: str) -> set[str]:
     return {w for w in WORD_RE.findall(text or "") if w.lower() not in STOP_WORDS}
 
 
 def pick_target(
-    rows: list[dict[str, Any]], topic: str, store: Path, target_host: str
+    rows: list[dict[str, Any]],
+    topic: str,
+    store: Path,
+    target_host: str,
+    letter_sid: str = "",
 ) -> tuple[str, str]:
-    """(native session id, why) for the best live row, or ("", reason).  Rows that resolve to a
-    session the store calls a subagent, or that live on another host, never win.  The store is
-    opened once for the whole scan, and a target id always begins `sess_`:  a crafted row can
-    never steer an argv token a child would read as a flag."""
+    """(native session id, why) for the best live row, or ("", reason).  A letter the sender
+    addressed wins outright (the registry already resolved it to one live session), passing
+    only the same safety filter as every other candidate:  the store must not call it a
+    sub-agent.  Otherwise rows are ranked by topic words over titles, else recency, and rows
+    that live on another host never win.  The store is opened once for the whole scan, and a
+    target id always begins `sess_`:  a crafted row can never steer an argv token a child
+    would read as a flag."""
+    if letter_sid:
+        if letter_sid in _subagent_ids(store, [letter_sid]):
+            return "", "letter-target-is-subagent"
+        return letter_sid, "letter"
     topic_words = _words(topic)
     best: tuple[float, float, str] = (0.0, 0.0, "")
     fallback: tuple[float, str] = (0.0, "")
@@ -331,20 +393,29 @@ def deliver(
     topic: str,
     channel: str,
     link: str,
+    letter: str = "",
     log_path: Path | None = None,
 ) -> dict[str, Any]:
     """Resolve the target and run the delivery command.  The answer is the receipt:  delivered
-    true or false, with the reason either way.  Never raises."""
+    true or false, with the reason either way.  Never raises.
+
+    A letter the sender addressed is resolved through the Operator's registry and wins the
+    target choice; without one, the topic-words and recency rules stand."""
     if not config.get("delivery_enabled"):
         return {"delivered": False, "reason": "delivery-disabled"}
     store = Path(env.get("ZC_WAKE_STORE") or os.path.join(
         str(env.get("HOME") or os.path.expanduser("~")), ".zcode", "cli", "db", "db.sqlite"
     ))
+    letter_sid = resolve_letter(env, letter) if letter else ""
+    if letter and not letter_sid:
+        return {"delivered": False, "reason": "letter-not-live", "letter": letter}
     try:
         rows = registry_history(env)
     except Exception:  # noqa: BLE001 - an unreadable registry is an undelivered wake, never a crash
         rows = []
-    sid, why = pick_target(rows, topic, store, str(config.get("target_host") or "server"))
+    if letter_sid:
+        rows = []  # the letter said which chat this is; nothing else may override it
+    sid, why = pick_target(rows, topic, store, str(config.get("target_host") or "server"), letter_sid)
     if not sid:
         return {"delivered": False, "reason": why}
     text = WAKE_TEXT.format(
@@ -392,7 +463,9 @@ def deliver(
         "at": time.time(),
         "wake_id": wake_id,
         "session_id": sid,
+        "thread_link": THREAD_LINK_FORM.format(sid=sid),
         "picked": why,
+        "letter": letter or "",
         "delivered": delivered,
         "reason": reason,
     }
@@ -490,6 +563,7 @@ def make_handler(env: dict[str, str], config: dict[str, Any], receipts: list[dic
                     topic=str(payload.get("topic") or ""),
                     channel=str(payload.get("channel") or ""),
                     link=str(payload.get("zulip_link") or ""),
+                    letter=letter_of(payload),
                 )
                 # The wake is handled:  delivered, or the owner has delivery switched off and
                 # the receipt is the record of it.  Anything else answers 503 so the
@@ -554,6 +628,7 @@ def main(argv: list[str] | None = None) -> int:
     p_deliver.add_argument("--topic", default="")
     p_deliver.add_argument("--channel", default="")
     p_deliver.add_argument("--link", default="")
+    p_deliver.add_argument("--letter", default="")
     for p in (p_serve, p_deliver):
         p.add_argument("--config", default="")
     args = parser.parse_args(argv)
@@ -572,6 +647,7 @@ def main(argv: list[str] | None = None) -> int:
         topic=args.topic,
         channel=args.channel,
         link=args.link,
+        letter=args.letter,
     )
     print(json.dumps(receipt, sort_keys=True))
     return 0 if receipt.get("delivered") else 1

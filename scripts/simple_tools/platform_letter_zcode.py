@@ -59,6 +59,11 @@ SOURCE = "the ZC seat's session-letter hook"
 ENV_OFF = "ZCODE_LETTER"
 
 STORE_SUBPATH = os.path.join(".zcode", "cli", "db", "db.sqlite")
+
+#: ZCode has no public thread URL today, so the link the registry records is the stable
+#: locator convention the fleet reads:  the session id under the platform's own scheme.
+#: One form, replaced wholesale the day the app grows a real link.
+THREAD_LINK_FORM = "zcode://session/{sid}"
 WRAPPER_SUBPATH = os.path.join(".local", "bin", "zc-letter", "platform-letter")
 
 #: ZCode has no SessionEnd:  Stop ends a turn, not a chat, so it never closes a registration.
@@ -256,14 +261,51 @@ def zcode_rename(request: Any) -> bool:
                         " time_title_updated = ? WHERE id = ?",
                         (title, int(time.time()), sid),
                     )
-                    return cur.rowcount == 1
+                    done = cur.rowcount == 1
             finally:
                 conn.close()
+            if done:
+                _record_thread_link(env, sid)
+                return True
+            return False
         except sqlite3.Error:
             if attempt == 0:
                 time.sleep(0.25)
                 continue
     return False
+
+
+def _record_thread_link(env: Mapping[str, str], sid: str) -> None:
+    """Put this chat's thread link on its registry row (one update op, failures swallowed).
+
+    The registry's Sessions tab carries a Thread Link column and the Sheets drain exports
+    it, so the row is where a reader looks;  the link is the locator convention because
+    ZCode mints no share URLs and has no URI scheme (checked live:  zero share_url values
+    in the store).  The location is the install's own rule read from the environment
+    (SESSION_LETTER_LOCATION, else the platform), the same way the hook command carries it."""
+    from . import registry_api as RA
+
+    if not RA.base_url(env):
+        return
+    location = (
+        str(env.get("SESSION_LETTER_LOCATION") or "").strip()
+        or ("mac" if sys.platform == "darwin" else "server")
+    )
+    try:
+        RA.call(
+            env,
+            "update",
+            {
+                "platform": PLATFORM,
+                "location": location,
+                "scope": "default",
+                "session_id": sid,
+                "thread_link": THREAD_LINK_FORM.format(sid=sid),
+            },
+            timeout=6,
+        )
+    except Exception:  # noqa: BLE001 - a link that cannot be recorded never blocks a chat
+        return
 
 
 def _hook_owned_title(env: Mapping[str, str], sid: str, current: str) -> bool:

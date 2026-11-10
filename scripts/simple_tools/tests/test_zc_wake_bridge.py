@@ -321,6 +321,57 @@ class ConfigLoad(Base):
             B.load_config(bad)
 
 
+class LetterAddress(Base):
+    """A wake that carries a letter addresses one chat:  the registry resolves it, and the
+    letter wins the target outright.  A letter that resolves to nothing delivers nowhere."""
+
+    def test_letter_extraction_from_mention_forms(self) -> None:
+        cases = {
+            "@**ZCode** AA please look": "AA",
+            "hey ZCode BB, status?": "BB",
+            "no letter here at all": "",
+            "ZCode 123 not a letter": "",
+            "@**ZCode**  ZZ  double space": "ZZ",
+        }
+        for text, want in cases.items():
+            self.assertEqual(B.letter_of({"excerpt": text}), want, text)
+        self.assertEqual(B.letter_of({"letter": "QQ", "excerpt": "ZCode AA"}), "QQ")
+
+    def test_a_letter_beats_topic_and_recency(self) -> None:
+        rows = self.rows(
+            {"native_session_id": "sess_topic", "title": "Letters letters", "verified_host": "server",
+             "state": "open", "assigned_at": 50, "retired_at": None, "closed_at": None},
+        )
+        sid, why = B.pick_target(
+            rows, "Letters letters", Path(self.store), "server", letter_sid="sess_by_letter"
+        )
+        self.assertEqual((sid, why), ("sess_by_letter", "letter"))
+
+    def test_a_letter_on_a_subagent_session_refuses(self) -> None:
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(
+                "INSERT INTO session (id, task_type) VALUES (?, 'subagent_child')", ("sess_sub2",)
+            )
+        conn.close()
+        sid, why = B.pick_target([], "anything", Path(self.store), "server", letter_sid="sess_sub2")
+        self.assertEqual((sid, why), ("", "letter-target-is-subagent"))
+
+    def test_a_dead_letter_delivers_nowhere(self) -> None:
+        env = self.env()  # no registry URL:  resolve_letter answers "" (nothing live)
+        receipt = B.deliver(
+            env,
+            self.config,
+            wake_id="w-dead",
+            topic="anything",
+            channel="c",
+            link="",
+            letter="ZZ",
+        )
+        self.assertFalse(receipt["delivered"])
+        self.assertEqual(receipt["reason"], "letter-not-live")
+
+
 class TargetPick(Base):
     def test_topic_match_beats_recency(self) -> None:
         from zc_wake_bridge_stub import pick_target
