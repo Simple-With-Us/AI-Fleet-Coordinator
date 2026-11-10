@@ -209,6 +209,61 @@ class ProofTests(unittest.TestCase):
             p.call = lambda *args, replies=replies: next(replies)
             self.assertFalse(p({}, {"code/workflow_verbs.py": p.CANDIDATE}))
 
+    def test_selector_invalid_pid_denies_before_any_file_read(self):
+        p = proof.RuntimeProof("test-only")
+        for value in ("../1", "/tmp", "1\0", "1", 0, -1, True, None, 1.0):
+            with (
+                self.subTest(pid=value),
+                patch.object(proof.Path, "read_bytes") as read,
+            ):
+                self.assertFalse(p.selector({"pid": value}))
+                read.assert_not_called()
+        with patch.object(proof.Path, "read_bytes", side_effect=ValueError("bad path")):
+            self.assertFalse(p.selector({"pid": 1}))
+
+    def test_issue_complete_requires_exact_json_boolean_false(self):
+        p = proof.RuntimeProof("test-only")
+        p.selector = lambda identity: True
+        for value in (False, 0, 0.0, None, True, 1, "false"):
+
+            def call(action, args, value=value):
+                if action == "wf_repo_get":
+                    return 200, {"repository": {"full_name": p.REPO, "default_branch": "main"}}
+                return 200, {"issues": [], "complete": value}
+
+            p.call = call
+            with self.subTest(value=value):
+                self.assertEqual(p({}, {"code/workflow_verbs.py": p.CANDIDATE}), value is False)
+
+    def test_transport_open_and_body_read_failures_return_denial(self):
+        from urllib.error import URLError
+
+        for error in (
+            URLError("offline"),
+            TimeoutError("timeout"),
+            ConnectionError("lost"),
+        ):
+            with self.subTest(error=type(error).__name__):
+                opener = unittest.mock.Mock()
+                opener.open.side_effect = error
+                self.assertEqual(
+                    proof.RuntimeProof("test-only", opener).call("wf_repo_get", {}),
+                    (None, None),
+                )
+
+        class BrokenRead(io.BytesIO):
+            status = 200
+
+            def read(self, size=-1):
+                raise OSError("read interrupted")
+
+        opener = unittest.mock.Mock()
+        opener.open.return_value = BrokenRead()
+        self.assertEqual(
+            proof.RuntimeProof("test-only", opener).call("wf_repo_get", {}),
+            (None, None),
+        )
+
     def test_transport_json_status_and_size_bounds(self):
         class Response(io.BytesIO):
             status = 200

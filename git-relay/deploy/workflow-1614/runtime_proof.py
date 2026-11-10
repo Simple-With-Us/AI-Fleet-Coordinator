@@ -35,14 +35,17 @@ class RuntimeProof:
             },
         )
         try:
-            response = self.opener.open(request, timeout=15)
-        except HTTPError as response:
-            status = response.code
-            with response:
-                raw = response.read(65537)
-        else:
-            with response:
-                status, raw = response.status, response.read(65537)
+            try:
+                response = self.opener.open(request, timeout=15)
+            except HTTPError as response:
+                status = response.code
+                with response:
+                    raw = response.read(65537)
+            else:
+                with response:
+                    status, raw = response.status, response.read(65537)
+        except OSError:
+            return None, None
         if len(raw) > 65536:
             return None, None
         try:
@@ -52,7 +55,10 @@ class RuntimeProof:
 
     def selector(self, identity):
         try:
-            env = (Path("/proc") / str(identity["pid"]) / "environ").read_bytes()
+            pid = identity["pid"]
+            if type(pid) is not int or pid <= 0:
+                return False
+            env = (Path("/proc") / str(pid) / "environ").read_bytes()
             selectors = [
                 v
                 for v in env.split(b"\0")
@@ -74,7 +80,7 @@ class RuntimeProof:
                 ).hexdigest()
                 == self.POLICY
             )
-        except (OSError, KeyError, TypeError):
+        except (OSError, KeyError, TypeError, ValueError):
             return False
 
     def __call__(self, identity, hashes):
