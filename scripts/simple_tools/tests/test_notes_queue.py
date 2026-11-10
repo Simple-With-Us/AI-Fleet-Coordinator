@@ -71,6 +71,7 @@ class QueueHarness(unittest.TestCase):
         self.queue = self.make_queue()
 
     def make_queue(self, **overrides: Any) -> NQ.NotesQueue:
+        note_link_hook = overrides.pop("note_link_hook", None)
         principals = {
             W.WORKER: (self.keys[W.WORKER], WORKER_SEATS),
             W.SERVER: (self.keys[W.SERVER], SERVER_SEATS),
@@ -78,7 +79,12 @@ class QueueHarness(unittest.TestCase):
         }
         principals.update(overrides)
         return NQ.NotesQueue(
-            self.root, principals, env={}, clock=self.clock, log=lambda event, **f: self.events.append((event, f))
+            self.root,
+            principals,
+            env={},
+            clock=self.clock,
+            log=lambda event, **f: self.events.append((event, f)),
+            note_link_hook=note_link_hook,
         )
 
     def call(
@@ -114,10 +120,10 @@ class QueueHarness(unittest.TestCase):
     def claim(self, wait: float = 0, **kwargs: Any) -> NQ.Answer:
         return self.call("POST", "/notes/v1/runner/claim", {"wait": wait}, principal=W.RUNNER, **kwargs)
 
-    def report(self, claimed: dict, **outcome: Any) -> NQ.Answer:
+    def report(self, claimed: dict, queue: NQ.NotesQueue | None = None, **outcome: Any) -> NQ.Answer:
         payload = {"seat": claimed["seat"], "request_id": claimed["request_id"], "claim": claimed["claim"]}
         payload.update(outcome)
-        return self.call("POST", "/notes/v1/runner/result", payload, principal=W.RUNNER)
+        return self.call("POST", "/notes/v1/runner/result", payload, principal=W.RUNNER, queue=queue)
 
     def assert_answer(self, answer: NQ.Answer, status: int, code: str | None = None) -> dict:
         self.assertEqual(answer.status, status, answer.body)
@@ -763,6 +769,143 @@ class DaemonWiringTests(unittest.TestCase):
         d._configure_listener_api()
         self.assertIsNone(d.notes_queue)
         self.assertIsNone(d.listener_api_server, "no seat key and no queue:  nothing to serve")
+
+
+class NoteLinkHookTests(QueueHarness):
+    """_offer_note_link (OPS-1048):  a finished write that created a note for a named
+    session hands (seat, session id, note id) to the host's hook, which records
+    apple_note_link on the registry row.  Nothing else fires it, and a hook that raises
+    never disturbs the request's own finish."""
+
+    def make_hook_queue(self):
+        seen = []
+        queue = self.make_queue(note_link_hook=lambda seat, sid, nid: seen.append((seat, sid, nid)))
+        return queue, seen
+
+    def test_a_write_with_a_session_and_note_id_fires_the_hook(self) -> None:
+        queue, seen = self.make_hook_queue()
+        request = N.make_request(
+            "create",
+            "CLAUDE",
+            request_id="link-0001",
+            title="[AFC, Claude] t",
+            markdown="x",
+            session="sess_link_0001",
+        )
+        self.assert_answer(self.enqueue(request, queue=queue), 202)
+        claimed = self.assert_answer(self.claim(queue=queue), 200)
+        self.assert_answer(
+            self.report(claimed, queue=queue, result={"status": "done", "note_id": "NOTE-UUID-1"}), 200
+        )
+        self.assertEqual(seen, [("CLAUDE", "sess_link_0001", "NOTE-UUID-1")])
+
+    def test_done_without_a_note_id_never_fires(self) -> None:
+        queue, seen = self.make_hook_queue()
+        with_note = N.make_request(
+            "create",
+            "CLAUDE",
+            request_id="link-0006",
+            title="[AFC, Claude] t",
+            markdown="x",
+            session="sess_link_0006",
+        )
+        self.assert_answer(self.enqueue(with_note, queue=queue), 202)
+        claimed = self.assert_answer(self.claim(queue=queue), 200)
+        self.assert_answer(self.report(claimed, queue=queue, result={"status": "done"}), 200)
+        self.assertEqual(seen, [])
+
+    def test_a_raising_hook_never_breaks_the_finish(self) -> None:
+        queue = self.make_queue(note_link_hook=lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
+        request = N.make_request(
+            "create",
+            "CLAUDE",
+            request_id="link-0004",
+            title="[AFC, Claude] t",
+            markdown="x",
+            session="sess_link_0004",
+        )
+        self.assert_answer(self.enqueue(request, queue=queue), 202)
+        claimed = self.assert_answer(self.claim(queue=queue), 200)
+        body = self.assert_answer(
+            self.report(claimed, queue=queue, result={"status": "done", "note_id": "NOTE-UUID-4"}), 200
+        )
+        self.assertEqual(body["state"], "done")
+
+
+class NoteLinkRegistryTests(QueueHarness):
+    """The daemon-side hook (OPS-1048):  the triple the queue hands over becomes an
+    apple_note_link update on the matching live registry row, through the same
+    RegistryService the listener serves."""
+
+    def test_the_hook_records_the_link_on_the_matching_row(self) -> None:
+        import os
+        import secrets
+        import sqlite3
+
+        from simple_tools import listener_registry as LREG
+        from simple_tools import operator_registry as OR
+
+        db = os.path.join(self.root, "operator", "registry.sqlite3")
+        OR.SessionRegistry(db).close_db()
+        OR.register_session(
+            db,
+            platform="zcode",
+            verified_host="server",
+            profile_scope="default",
+            native_session_id="sess_link_0001",
+            seat="ZC",
+            source="link test",
+            issuer=OR.ISSUER_OPERATOR,
+        )
+        operator_key = secrets.token_hex(24)
+        service = LREG.RegistryService(db, {LREG.OPERATOR: operator_key}, clock=self.clock)
+
+        hook = daemon_note_link_hook(service)
+        hook("ZC", "sess_link_0001", "NOTE-UUID-9")
+
+        conn = sqlite3.connect(db)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT apple_note_link FROM sessions WHERE native_session_id = ?", ("sess_link_0001",)
+        ).fetchone()
+        conn.close()
+        self.assertEqual(
+            row["apple_note_link"], "notes://showNote?identifier=NOTE-UUID-9"
+        )
+
+    def test_an_unknown_session_records_nothing_and_raises_nothing(self) -> None:
+        import os
+        import secrets
+        import sqlite3
+
+        from simple_tools import listener_registry as LREG
+        from simple_tools import operator_registry as OR
+
+        db = os.path.join(self.root, "operator", "registry.sqlite3")
+        OR.SessionRegistry(db).close_db()
+        operator_key = secrets.token_hex(24)
+        service = LREG.RegistryService(db, {LREG.OPERATOR: operator_key}, clock=self.clock)
+        hook = daemon_note_link_hook(service)
+        hook("ZC", "sess_never_registered", "NOTE-UUID-10")  # swallowed: no row, no raise
+
+
+def daemon_note_link_hook(service):
+    """Build the daemon's hook against a real RegistryService, mirroring
+    Daemon._note_link_hook without constructing a whole daemon."""
+    import simple_tools.daemon as D
+
+    class _Carrier:
+        pass
+
+    carrier = _Carrier()
+    carrier.registry_service = service
+
+    class _Log:
+        def write(self, *a, **k):
+            pass
+
+    carrier.log = _Log()
+    return lambda seat, sid, nid: D.Daemon._note_link_hook(carrier, seat, sid, nid)
 
 
 if __name__ == "__main__":  # pragma: no cover
