@@ -277,11 +277,6 @@ def run_file(args, io: Streams) -> int:
         raise Refusal(
             "--again and --mirror-of do not go together:  a mirrored item is one persona request"
         )
-    # The owner bar (bar.py).  A Grok Bot mirror is exempt:  the persona already opened its own OWNER topic.
-    policy = bar.Policy() if mirror else bar.read_policy(io.knobs)
-    fields.why_owner, class_warning = bar.check_class(policy.mode, getattr(args, "why_owner", None))
-    if class_warning:
-        io.warn(class_warning)
     runner = Runner(seat, io.environ)
     runner.require_board()
     parent = resolve_parent(runner, seat, args.parent)
@@ -339,13 +334,25 @@ def run_file(args, io: Streams) -> int:
                 )
             )
 
-    # An item about to be filed counts against the seat's daily cap;  a rerun does not.
-    if existing is None:
-        cap_warning = bar.check_cap(policy, io.environ, seat, bar.wall(io.clock))
-        if cap_warning:
-            io.warn(cap_warning)
+    # The owner bar (bar.py) meets only a NEW filing, so it comes after the lookup of the item a rerun would find:
+    # an item that already exists behaves exactly as in off (no class needed, nothing counted, no knob read).  A Grok
+    # Bot mirror is exempt too:  the persona already opened its own OWNER topic.
+    if existing is None and not mirror:
+        policy = bar.read_policy(io.knobs)
+        fields.why_owner, class_warning = bar.check_class(
+            policy.mode, getattr(args, "why_owner", None)
+        )
+        if class_warning:
+            io.warn(class_warning)
+        wanted.why_owner = fields.why_owner
+    else:
+        policy = bar.Policy()
 
     if args.dry_run:
+        if existing is None:  # a look at the cap, with nothing held or recorded
+            cap_warning = bar.check_cap(policy, io.environ, seat, bar.wall(io.clock))
+            if cap_warning:
+                io.warn(cap_warning)
         plan = {
             "dry_run": True,
             "uid": wanted.uid,
@@ -368,11 +375,17 @@ def run_file(args, io: Streams) -> int:
     new = existing is None
     item = existing
     if new:
-        item, new = file_new(
-            io, runner, seat, app, fields, scope, parent, mirror, wanted, args.again
-        )
-        if new and policy.on:
-            bar.record_filing(io.environ, seat, item.identifier, bar.wall(io.clock))
+        # The cap check, the Linear filing and the record are one critical section (bar.Slot):  two filings racing
+        # for the last slot cannot both pass, and a filing that fails records nothing.
+        with bar.Slot(policy, io.environ, seat, io.clock, io.warn) as slot:
+            cap_warning = slot.check()
+            if cap_warning:
+                io.warn(cap_warning)
+            item, new = file_new(
+                io, runner, seat, app, fields, scope, parent, mirror, wanted, args.again
+            )
+            if new:
+                slot.record(item.identifier)
         if parent and new:
             comment_on_parent(io, runner, parent, item.identifier)
     others = [i for i in items if i.identifier != item.identifier]

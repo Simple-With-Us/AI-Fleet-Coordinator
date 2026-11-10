@@ -6,18 +6,27 @@ Side-Chats, or posts to Pending-for-Jay.  The filing seat names which of the six
 the class is stored in the block (`Why owner:`) and the knobs decide how hard the bar is:
 
   NEEDS_OWNER_BAR              off (the default, today's behaviour exactly), warn (file it, record the class,
-                               print one warning line) or enforce (refuse a filing without a class)
+                               print one warning line) or enforce (refuse a new filing without a class)
   NEEDS_OWNER_SEAT_DAILY_MAX   most filings one seat may make in 24 hours (0, the default, means no cap);
                                it applies in warn (a warning) and enforce (a refusal), never in off
 
 Both knobs are read once, through `fleet_knobs` (the tests pass a fake reader).  A knob that cannot be read, or
 holds anything but one of the three modes, is `off`:  the bar never stops a filing it cannot be sure about.
 A Grok Bot mirror (`--mirror-of`) is exempt:  the persona already opened its own OWNER topic, so there is
-nothing left to keep from Jay.
+nothing left to keep from Jay.  So is an item that already exists:  a rerun of it is looked up first and behaves
+exactly as in `off` (it needs no class and is never counted), so only a NEW filing meets the bar.
 
 The cap counts this host's own filings, kept in `~/apps/needs-owner/filings/filings.json` (mode 0600, seat
 names, times and identifiers only).  A closed item still counts, because the filer removes the label when it
 closes one and Linear alone would forget it.  A rerun that files nothing new is never counted or refused.
+
+The count is a read-modify-write, so a `Slot` makes the check, the Linear filing and the record one critical
+section under an exclusive advisory lock (`flock` on `filings.lock` beside the ledger, mode 0600), and two
+filings racing for the last slot cannot both pass.  The lock dies with its process, so nothing is left to expire,
+and a filing that fails records nothing.  A lock that cannot be taken (no `fcntl`, the file cannot be opened, or
+the wait of 60 seconds runs out) fails OPEN in warn (the filing goes ahead, with one warning line) and CLOSED in
+enforce when a cap is set (nothing is filed, and the refusal says why).  With no cap there is nothing the lock
+would protect, so enforce fails open too.  Off never takes it.
 """
 
 from __future__ import annotations
@@ -25,8 +34,13 @@ from __future__ import annotations
 import json
 import os
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+
+try:
+    import fcntl
+except ImportError:  # not POSIX:  every lock is then a lock failure
+    fcntl = None
 
 from . import ledger
 from .block import WHY_RE
@@ -50,6 +64,11 @@ KEEP_SECONDS = 2 * 24 * 3600
 MAX_ROWS = 500
 FILINGS_DIR = "filings"
 FILINGS_FILE = "filings.json"
+LOCK_FILE = "filings.lock"
+LOCK_WAIT_SECONDS = (
+    60.0  # how long a filing waits for another one on this host (a filing is a few seconds)
+)
+LOCK_POLL_SECONDS = 0.05
 SCHEMA = 1
 
 POINTER = (
@@ -194,3 +213,118 @@ def wall(clock: object | None) -> float:
     if callable(clock):
         return float(clock().timestamp())
     return time.time()
+
+
+# ---- the lock ---------------------------------------------------------------------------------------------
+
+
+def _lock_path(environ: Mapping[str, str]) -> str:
+    return os.path.join(os.path.dirname(_path(environ)), LOCK_FILE)
+
+
+class FilingsLock:
+    """An exclusive advisory `flock` on the lock file beside the ledger (mode 0600).
+
+    `acquire` returns None when it holds the lock, else a reason word (`no_flock`, `cannot_open`, `flock_failed` or
+    `timeout`) and holds nothing.  It waits up to LOCK_WAIT_SECONDS for another holder, polling, so a holder that
+    dies releases it by dying."""
+
+    def __init__(self, environ: Mapping[str, str]) -> None:
+        self.environ = environ
+        self.fd: int | None = None
+
+    def acquire(self) -> str | None:
+        if fcntl is None:
+            return "no_flock"
+        path = _lock_path(self.environ)
+        try:
+            ledger.private_dir(os.path.dirname(path))
+            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError:
+            return "cannot_open"
+        try:
+            os.fchmod(fd, 0o600)  # a file made earlier under another umask is brought to 0600
+        except OSError:
+            pass
+        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    os.close(fd)
+                    return "timeout"
+                time.sleep(LOCK_POLL_SECONDS)
+            except OSError:
+                os.close(fd)
+                return "flock_failed"
+            else:
+                self.fd = fd
+                return None
+
+    def release(self) -> None:
+        fd, self.fd = self.fd, None
+        if fd is None:
+            return
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(fd)  # closing the descriptor drops the lock whatever the unlock said
+
+
+class Slot:
+    """One new filing's place in the seat's daily count:  the lock, the cap check and the record in one section.
+
+        with Slot(policy, environ, seat, clock, warn) as slot:
+            line = slot.check()          # a warning line (warn), or a Refusal (enforce), when the seat is at its cap
+            ... file the item ...
+            slot.record(identifier)      # only when the item was really filed
+
+    Nothing is held in off.  See the module docstring for what a lock that cannot be taken does."""
+
+    def __init__(
+        self,
+        policy: Policy,
+        environ: Mapping[str, str],
+        seat: str,
+        clock: object | None,
+        warn: Callable[[str], None],
+    ) -> None:
+        self.policy = policy
+        self.environ = environ
+        self.seat = seat
+        self.clock = clock
+        self.warn = warn
+        self.lock: FilingsLock | None = None
+
+    def __enter__(self) -> Slot:
+        if not self.policy.on:
+            return self
+        lock = FilingsLock(self.environ)
+        reason = lock.acquire()
+        if reason is None:
+            self.lock = lock
+            return self
+        if self.policy.mode == ENFORCE and self.policy.cap > 0:
+            raise Refusal(
+                "the daily cap cannot be checked safely (could not take the filings lock: %s), so nothing was "
+                "filed;  try again in a moment, or post it to Pending-for-Jay" % reason
+            )
+        self.warn(
+            "could not take the filings lock (%s);  filing without it, so this filing may not be counted exactly"
+            % reason
+        )
+        return self
+
+    def check(self) -> str | None:
+        return check_cap(self.policy, self.environ, self.seat, wall(self.clock))
+
+    def record(self, identifier: str) -> None:
+        if self.policy.on:
+            record_filing(self.environ, self.seat, identifier, wall(self.clock))
+
+    def __exit__(self, *exc: object) -> None:
+        if self.lock is not None:
+            self.lock.release()
+            self.lock = None

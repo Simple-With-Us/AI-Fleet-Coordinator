@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import subprocess
+import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from needs_owner import bar
+from needs_owner import bar, verbs
 from needs_owner.errors import Refusal
 
 from .test_mirror import MirrorCase, request_text
@@ -279,6 +283,20 @@ class EnforceTests(BarCase):
         self.assertEqual(again.code, 0, again.err)
         self.assertEqual(len(self.w.board_state()["issues"]), 2)
 
+    def test_a_new_version_that_had_to_be_retried_keeps_its_class(self) -> None:
+        """Both earlier versions are closed, so the board says `already filed` for the second version's uid and the block
+        is built again for a third:  the class must come through that second build too."""
+        w = self.world("enforce")
+        first = self.file(why="money", w=w)
+        w.close(first.json()["identifier"])
+        second = self.file(why="money", w=w, extra=("--again",))
+        w.close(second.json()["identifier"])
+        third = self.file(why="legal", w=w, extra=("--again",))
+        self.assertEqual(third.code, 0, third.err)
+        text = self.block_text(w)
+        self.assertIn("Version: 3", text)
+        self.assertIn("\nWhy owner: legal\n", text)
+
     def test_a_dry_run_is_held_to_the_bar_too(self) -> None:
         refused = self.file(extra=("--dry-run",))
         self.assertEqual(refused.code, 2)
@@ -375,10 +393,337 @@ class CapTests(BarCase):
 
     def test_a_count_that_cannot_be_written_never_blocks_a_filing(self) -> None:
         w = self.world("enforce", 5)
-        with mock.patch.object(bar, "_path", return_value="/proc/self/no-such-folder/filings.json"):
+        self.filings_file(w).mkdir(parents=True)  # the ledger path is a folder:  it can be neither read nor replaced
+        r = self.file(why="money", w=w)
+        self.assertEqual(r.code, 0, r.err)
+        self.assertEqual(r.err, "", "the lock was fine, so there is nothing to warn about")
+        self.assertEqual(len(w.board_state()["issues"]), 1)
+
+
+# ---- an item that already exists is not a new filing -------------------------------------------------
+
+
+class ExistingItemTests(BarCase):
+    """The bar meets only a NEW filing:  a rerun finds its item first and behaves exactly as in off."""
+
+    PLAIN_PLAN = ["dry_run", "existing", "options", "severity", "title", "uid"]
+
+    def test_an_existing_item_is_refiled_in_enforce_without_a_class(self) -> None:
+        w = self.world("enforce", 1)
+        first = self.file(why="money", w=w)
+        self.assertEqual(first.code, 0, first.err)
+        reads = list(w.knobs.reads)
+        again = self.file(w=w)  # no class, and the cap is full
+        self.assertEqual(again.code, 0, again.err)
+        self.assertEqual(again.err, "", "no warning either")
+        got = again.json()
+        self.assertTrue(got["already_filed"])
+        self.assertEqual(got["identifier"], first.json()["identifier"])
+        self.assertNotIn("bar", got)
+        self.assertNotIn("why_owner", got)
+        self.assertEqual(w.knobs.reads, reads, "an existing item never reads the bar knobs, as in off")
+        self.assertEqual(len(bar._rows(w.env())), 1, "and is not counted")
+        self.assertEqual(len(w.board_state()["issues"]), 1)
+        self.assertEqual(len(w.calls("simple-chat")), 1, "nothing was posted twice")
+
+    def test_a_new_filing_without_a_class_still_refuses(self) -> None:
+        w = self.world("enforce", 1)
+        self.assertEqual(self.file(why="money", w=w).code, 0)
+        self.assertEqual(self.file(w=w).code, 0, "the rerun")
+        new = self.file("A new question?", w=w)
+        self.assertEqual(new.code, 2)
+        self.assertIn("no --why-owner class was given", new.err)
+        self.assertEqual(len(w.board_state()["issues"]), 1)
+
+    def test_an_item_filed_before_the_bar_is_not_counted_when_it_is_refiled(self) -> None:
+        w = self.world("off")
+        before = self.file(w=w)
+        self.assertEqual(before.code, 0, before.err)
+        w.knobs.values["NEEDS_OWNER_BAR"] = "enforce"
+        w.knobs.values["NEEDS_OWNER_SEAT_DAILY_MAX"] = 1
+        rerun = self.file(w=w)
+        self.assertEqual(rerun.code, 0, rerun.err)
+        self.assertTrue(rerun.json()["already_filed"])
+        self.assertFalse(self.filings_file(w).exists(), "a rerun is never counted")
+        self.assertEqual(self.file("Another question?", why="money", w=w).code, 0, "the one slot was still free")
+        self.assertEqual(self.file("A third question?", why="money", w=w).code, 2)
+
+    def test_warn_says_nothing_about_an_existing_item(self) -> None:
+        w = self.world("warn", 1)
+        self.assertEqual(self.file(why="money", w=w).code, 0)
+        again = self.file(w=w)  # no class, and the cap is full
+        self.assertEqual((again.code, again.err), (0, ""))
+
+    def test_a_dry_run_of_an_existing_item_is_the_old_plan(self) -> None:
+        w = self.world("enforce", 1)
+        self.assertEqual(self.file(why="money", w=w).code, 0)
+        r = self.file(w=w, extra=("--dry-run",))
+        self.assertEqual(r.code, 0, r.err)
+        self.assertEqual(sorted(r.json()), self.PLAIN_PLAN)
+        self.assertEqual(r.json()["existing"], "AFC-300")
+
+    def test_the_same_re_ask_run_twice_is_an_existing_item(self) -> None:
+        w = self.world("enforce")
+        first = self.file(why="money", w=w, options=("Maybe", "No"), extra=("--again",))
+        self.assertEqual(first.code, 0, first.err)
+        second = self.file(w=w, options=("Maybe", "No"), extra=("--again",))
+        self.assertEqual(second.code, 0, second.err)
+        self.assertTrue(second.json()["already_filed"])
+        self.assertEqual(len(w.board_state()["issues"]), 1)
+
+
+# ---- the lock ----------------------------------------------------------------------------------------------
+
+
+class LockTests(BarCase):
+    """The check, the Linear filing and the record are one critical section under an exclusive advisory lock."""
+
+    def lock_file(self, w: World) -> Path:
+        return w.home / "apps" / "needs-owner" / "filings" / "filings.lock"
+
+    def can_take(self, w: World) -> bool:
+        lock = bar.FilingsLock(w.env())
+        with mock.patch.object(bar, "LOCK_WAIT_SECONDS", 0.2):
+            reason = lock.acquire()
+        lock.release()
+        return reason is None
+
+    def test_the_lock_file_is_private_and_beside_the_ledger(self) -> None:
+        w = self.world("warn", 5)
+        self.assertEqual(self.file(why="money", w=w).code, 0)
+        lock = self.lock_file(w)
+        self.assertTrue(lock.is_file())
+        self.assertEqual(lock.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(lock.parent, self.filings_file(w).parent)
+        self.assertEqual(lock.parent.stat().st_mode & 0o777, 0o700)
+
+    def test_a_lock_file_made_earlier_with_a_wider_mode_is_brought_to_0600(self) -> None:
+        w = self.world("warn", 5)
+        lock = self.lock_file(w)
+        lock.parent.mkdir(parents=True)
+        lock.write_text("", encoding="utf-8")
+        lock.chmod(0o666)
+        self.assertEqual(self.file(why="money", w=w).code, 0)
+        self.assertEqual(lock.stat().st_mode & 0o777, 0o600)
+
+    def test_the_lock_is_held_across_the_linear_filing_and_freed_after(self) -> None:
+        w = self.world("enforce", 5)
+        seen: dict = {}
+        real = verbs.file_new
+
+        def spy(*args, **kwargs):
+            seen["free_during"] = self.can_take(w)
+            return real(*args, **kwargs)
+
+        with mock.patch.object(verbs, "file_new", spy):
             r = self.file(why="money", w=w)
         self.assertEqual(r.code, 0, r.err)
-        self.assertEqual(len(w.board_state()["issues"]), 1)
+        self.assertIs(seen["free_during"], False, "another filing cannot slip in while this one is filed")
+        self.assertTrue(self.can_take(w), "and it is freed once the filing is recorded")
+
+    def test_a_failed_filing_records_nothing_and_frees_the_slot_and_the_lock(self) -> None:
+        w = self.world("enforce", 1)
+        failed = w.file(Q, "Yes", "No", extra=("--why-owner", "money"), env=w.env(FAKE_BOARD_FAIL="file"))
+        self.assertEqual(failed.code, 1, failed.err)
+        self.assertFalse(self.filings_file(w).exists(), "nothing was reserved")
+        self.assertTrue(self.can_take(w))
+        ok = self.file(why="money", w=w)
+        self.assertEqual(ok.code, 0, "the one slot was not used up by the failure:  " + ok.err)
+        refused = self.file("A second question?", why="money", w=w)
+        self.assertEqual(refused.code, 2)
+        self.assertTrue(self.can_take(w), "a refusal frees it too")
+
+    def test_a_refusal_for_a_missing_class_never_takes_the_lock(self) -> None:
+        w = self.world("enforce", 1)
+        self.assertEqual(self.file(w=w).code, 2)
+        self.assertFalse(self.lock_file(w).exists())
+
+    def test_a_holder_on_this_host_is_waited_for(self) -> None:
+        w = self.world("warn", 5)
+        holder = bar.FilingsLock(w.env())
+        self.assertIsNone(holder.acquire())
+        timer = threading.Timer(0.6, holder.release)
+        timer.start()
+        started = time.monotonic()
+        with mock.patch.object(bar, "LOCK_WAIT_SECONDS", 30.0):
+            r = self.file(why="money", w=w)
+        waited = time.monotonic() - started
+        timer.join()
+        self.assertEqual(r.code, 0, r.err)
+        self.assertNotIn("filings lock", r.err)
+        self.assertGreaterEqual(waited, 0.5, "the filing waited for the holder")
+
+    def test_off_never_takes_the_lock(self) -> None:
+        w = self.world("off", 1)
+        holder = bar.FilingsLock(w.env())
+        self.assertIsNone(holder.acquire())
+        self.addCleanup(holder.release)
+        with mock.patch.object(bar, "LOCK_WAIT_SECONDS", 0.2):
+            r = self.file(w=w)
+        self.assertEqual((r.code, r.err), (0, ""), "off does not even look at the lock")
+        w2 = self.world("off", 1)
+        self.assertEqual(self.file(w=w2).code, 0)
+        self.assertFalse(self.lock_file(w2).exists())
+
+    def broken(self, w: World, kind: str):
+        """A context in which the lock cannot be taken, and the reason word `acquire` gives for it."""
+        if kind == "timeout":
+            holder = bar.FilingsLock(w.env())
+            self.assertIsNone(holder.acquire())
+            self.addCleanup(holder.release)
+            patch = mock.patch.object(bar, "LOCK_WAIT_SECONDS", 0.2)
+        elif kind == "cannot_open":
+            patch = mock.patch.object(bar, "_lock_path", return_value="/proc/self/no-such-folder/filings.lock")
+        else:
+            patch = mock.patch.object(bar, "fcntl", None)
+        return patch
+
+    KINDS = ("timeout", "cannot_open", "no_flock")
+
+    def test_a_lock_that_cannot_be_taken_fails_closed_in_enforce_with_a_cap(self) -> None:
+        for kind in self.KINDS:
+            with self.subTest(kind=kind):
+                w = self.world("enforce", 1)
+                with self.broken(w, kind):
+                    r = self.file(why="money", w=w)
+                self.assertEqual(r.code, 2, r.err)
+                (line,) = r.err.splitlines()
+                self.assertIn("could not take the filings lock: %s" % kind, line)
+                self.assertIn("nothing was filed", line)
+                self.assertIn("Pending-for-Jay", line)
+                self.refused_before_anything(w)
+
+    def test_a_lock_that_cannot_be_taken_fails_open_in_warn(self) -> None:
+        for kind in self.KINDS:
+            with self.subTest(kind=kind):
+                w = self.world("warn", 1)
+                with self.broken(w, kind):
+                    r = self.file(why="money", w=w)
+                self.assertEqual(r.code, 0, r.err)
+                (line,) = r.err.splitlines()
+                self.assertIn("could not take the filings lock (%s)" % kind, line)
+                self.assertEqual(len(w.board_state()["issues"]), 1, "it was filed")
+
+    def test_with_no_cap_there_is_nothing_to_protect_so_enforce_fails_open_too(self) -> None:
+        for kind in self.KINDS:
+            with self.subTest(kind=kind):
+                w = self.world("enforce", 0)
+                with self.broken(w, kind):
+                    r = self.file(why="money", w=w)
+                self.assertEqual(r.code, 0, r.err)
+                self.assertIn("could not take the filings lock (%s)" % kind, r.err)
+
+    def test_a_lock_failure_does_not_touch_an_existing_item(self) -> None:
+        w = self.world("enforce", 1)
+        self.assertEqual(self.file(why="money", w=w).code, 0)
+        with self.broken(w, "cannot_open"):
+            r = self.file(w=w)
+        self.assertEqual((r.code, r.err), (0, ""))
+
+
+class SlotTests(unittest.TestCase):
+    """Two filings racing for the last slot of a cap:  exactly one wins, in threads and in separate processes."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.env = {"HOME": tmp.name}
+        self.policy = bar.Policy("enforce", 1)
+
+    def attempt(self, results: dict, index: int, delay: float) -> None:
+        try:
+            with bar.Slot(self.policy, self.env, "CLAUDE", None, lambda line: None) as slot:
+                slot.check()
+                time.sleep(delay)  # the Linear filing
+                slot.record("AFC-%d" % index)
+            results[index] = "won"
+        except Refusal:
+            results[index] = "refused"
+
+    def test_threads_racing_for_the_last_slot_have_one_winner(self) -> None:
+        results: dict = {}
+        start = threading.Barrier(6)
+
+        def run(index: int) -> None:
+            start.wait()
+            self.attempt(results, index, 0.1)
+
+        threads = [threading.Thread(target=run, args=(n,)) for n in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(60)
+        self.assertEqual(sorted(results.values()), ["refused"] * 5 + ["won"])
+        self.assertEqual(len(bar._rows(self.env)), 1)
+
+    def test_processes_racing_for_the_last_slot_have_one_winner(self) -> None:
+        scripts = str(Path(__file__).resolve().parents[2])
+        code = (
+            "import sys, time\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "from needs_owner import bar\n"
+            "from needs_owner.errors import Refusal\n"
+            "try:\n"
+            "    with bar.Slot(bar.Policy('enforce', 1), {'HOME': sys.argv[2]}, 'CLAUDE', None, lambda line: None) as slot:\n"
+            "        slot.check()\n"
+            "        time.sleep(0.8)\n"
+            "        slot.record('AFC-' + sys.argv[3])\n"
+            "    print('won')\n"
+            "except Refusal:\n"
+            "    print('refused')\n"
+        )
+        procs = [
+            subprocess.Popen(
+                [sys.executable, "-I", "-c", code, scripts, self.env["HOME"], str(n)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            for n in range(4)
+        ]
+        outputs = []
+        for proc in procs:
+            out, err = proc.communicate(timeout=120)
+            self.assertEqual(proc.returncode, 0, err)
+            outputs.append(out.strip())
+        self.assertEqual(sorted(outputs), ["refused"] * 3 + ["won"])
+        self.assertEqual(len(bar._rows(self.env)), 1)
+
+    def test_a_slot_that_fails_inside_records_nothing_and_frees_the_lock(self) -> None:
+        with self.assertRaises(RuntimeError):
+            with bar.Slot(self.policy, self.env, "CLAUDE", None, lambda line: None) as slot:
+                slot.check()
+                raise RuntimeError("the filing failed")
+        self.assertEqual(bar._rows(self.env), [])
+        results: dict = {}
+        self.attempt(results, 1, 0)
+        self.assertEqual(results, {1: "won"}, "the reservation did not survive the failure")
+
+    def test_a_dead_holder_does_not_keep_the_lock(self) -> None:
+        scripts = str(Path(__file__).resolve().parents[2])
+        code = (
+            "import os, sys\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "from needs_owner import bar\n"
+            "lock = bar.FilingsLock({'HOME': sys.argv[2]})\n"
+            "assert lock.acquire() is None\n"
+            "os._exit(0)\n"  # dies holding the lock
+        )
+        done = subprocess.run(
+            [sys.executable, "-I", "-c", code, scripts, self.env["HOME"]], capture_output=True, text=True, timeout=60
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        results: dict = {}
+        with mock.patch.object(bar, "LOCK_WAIT_SECONDS", 5.0):
+            self.attempt(results, 1, 0)
+        self.assertEqual(results, {1: "won"})
+
+    def test_off_holds_nothing_and_records_nothing(self) -> None:
+        with bar.Slot(bar.Policy(), self.env, "CLAUDE", None, lambda line: None) as slot:
+            self.assertIsNone(slot.check())
+            slot.record("AFC-1")
+        self.assertEqual(bar._rows(self.env), [])
+        self.assertFalse(Path(bar._lock_path(self.env)).exists())
 
 
 # ---- what the bar leaves alone ---------------------------------------------------------------------
