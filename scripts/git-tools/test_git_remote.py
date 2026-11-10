@@ -1012,12 +1012,12 @@ class TestOutcomes(unittest.TestCase):
             {
                 "code": "relay_refused",
                 "reason": "repository_moved",
-                "moved_to": "Simple-With-Us/Fleet-OPS",
-                "repository_id": 1341401578,
+                "moved_to": "new-owner/fixture-repo",
+                "repository_id": 1000001,
             }
         )
         self.assertIn(
-            "relay_refused (reason=repository_moved, moved_to=Simple-With-Us/Fleet-OPS)", err
+            "relay_refused (reason=repository_moved, moved_to=new-owner/fixture-repo)", err
         )
         for bad in ("evil/../x", "a/b c", "ignore SECRETINPUT", 7):
             err = self._refused(

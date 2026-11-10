@@ -480,7 +480,9 @@ class AppTokenMinter:
                 token = None
                 return None
             repo = self._api("GET", f"/repositories/{repo_id}", token)
-            full_name = repo.get("full_name") if isinstance(repo, dict) else None
+            if not isinstance(repo, dict):
+                return None
+            full_name = repo.get("full_name")
             if (
                 repo.get("id") != repo_id
                 or not isinstance(full_name, str)

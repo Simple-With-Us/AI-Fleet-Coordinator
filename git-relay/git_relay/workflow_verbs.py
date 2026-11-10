@@ -581,12 +581,17 @@ def _fit_comparison(comparison):
         fitted["files_omitted"] = True
     commits = fitted.get("commits")
     if isinstance(commits, list):
-        keep = len(commits)
-        while (
-            keep
-            and _read_size({"comparison": {**fitted, "commits": commits[:keep]}}) > READ_MAX_BYTES
-        ):
-            keep //= 2
+        # Serialize the envelope once and each commit once, not the whole answer per step:
+        # k commits cost the empty-list envelope (with the truncation flag), their own bytes
+        # and k-1 commas.
+        base = _read_size({"comparison": {**fitted, "commits": [], "commits_truncated": True}})
+        keep = total = 0
+        for item in commits:
+            extra = _read_size(item) + (1 if keep else 0)
+            if base + total + extra > READ_MAX_BYTES:
+                break
+            total += extra
+            keep += 1
         if keep < len(commits):
             fitted["commits"] = commits[:keep]
             fitted["commits_truncated"] = True

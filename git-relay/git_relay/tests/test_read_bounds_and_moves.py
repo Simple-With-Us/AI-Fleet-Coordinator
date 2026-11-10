@@ -222,13 +222,13 @@ class MovedRepository(unittest.TestCase):
         for status, path in ((301, ""), (301, "/pulls/183"), (307, "/issues/183/comments")):
             client = GitHubClient(
                 "fixture",
-                opener=redirect(status, f"https://api.github.com/repositories/1341401578{path}"),
+                opener=redirect(status, f"https://api.github.com/repositories/1000001{path}"),
             )
             with self.assertRaises(RelayGitHubError) as ctx:
-                client._call("GET", f"/repos/jaywedgeworth22/Fleet-OPS{path}")
+                client._call("GET", f"/repos/old-owner/fixture-repo{path}")
             self.assertEqual(ctx.exception.code, "repository_moved")
             self.assertEqual(ctx.exception.status, status)
-            self.assertEqual(ctx.exception.moved_repository_id, 1341401578)
+            self.assertEqual(ctx.exception.moved_repository_id, 1000001)
 
     def test_other_redirects_are_not_a_move(self):
         base = "https://api.github.com"
@@ -248,9 +248,9 @@ class MovedRepository(unittest.TestCase):
 
 
 TOKEN = "t" * 32
-OLD = "jaywedgeworth22/Fleet-OPS"
-NEW = "Simple-With-Us/Fleet-OPS"
-REPO_ID = 1341401578
+OLD = "old-owner/fixture-repo"
+NEW = "new-owner/fixture-repo"
+REPO_ID = 1000001
 # Split so this fake GitHub is not counted as a second mint site by the repo-wide
 # minting-owner scan (scripts/simple_tools/tests/test_github_relay_minting_owner.py).
 MINT_PATH = "/app/installations/7/" + "access_" + "tokens"
@@ -318,7 +318,7 @@ class MovedThroughTheRelay(unittest.TestCase):
     def test_old_slug_names_the_new_one(self):
         api = FakeGitHub()
         with tempfile.TemporaryDirectory() as tmp:
-            status, body = self.relay(tmp, ["jaywedgeworth22/*", "Simple-With-Us/*"], api).handle(
+            status, body = self.relay(tmp, ["old-owner/*", "new-owner/*"], api).handle(
                 TOKEN, "wf_pr_get", {"repo": OLD, "number": 183}
             )
         self.assertEqual(status, 400)
@@ -349,7 +349,7 @@ class MovedThroughTheRelay(unittest.TestCase):
 
     def test_new_slug_outside_the_seat_policy_is_withheld(self):
         with tempfile.TemporaryDirectory() as tmp:
-            status, body = self.relay(tmp, ["jaywedgeworth22/*"], FakeGitHub()).handle(
+            status, body = self.relay(tmp, ["old-owner/*"], FakeGitHub()).handle(
                 TOKEN, "wf_repo_get", {"repo": OLD}
             )
         self.assertEqual(status, 400)
@@ -360,7 +360,7 @@ class MovedThroughTheRelay(unittest.TestCase):
     def test_unresolvable_new_name_still_reports_the_move(self):
         with tempfile.TemporaryDirectory() as tmp:
             status, body = self.relay(
-                tmp, ["jaywedgeworth22/*", "Simple-With-Us/*"], FakeGitHub(False)
+                tmp, ["old-owner/*", "new-owner/*"], FakeGitHub(False)
             ).handle(TOKEN, "wf_repo_get", {"repo": OLD})
         self.assertEqual(
             (status, body["error"], body["retryable"]), (400, "repository moved", False)
