@@ -389,12 +389,17 @@ class Ledger:
         self.dirty = True
 
     def close(self) -> None:
-        """Release the ledger flock.  The file itself is already durable (every save is
-        atomic and fsynced), so closing loses nothing;  a host that rebuilds its worker
-        on a credential change closes the old ledger before opening the new one."""
+        """Release the ledger flock.  Entries dirtied since the last save are saved
+        first (every save is atomic and fsynced), so closing loses nothing;  a host
+        that rebuilds its worker on a credential change closes the old ledger before
+        opening the new one."""
         fh, self._lock_fh = self._lock_fh, None
         if fh is not None:
-            fh.close()
+            try:
+                if self.dirty:
+                    self.save()
+            finally:
+                fh.close()
 
     def save(self) -> None:
         text = self._render()
@@ -574,8 +579,15 @@ class LinearClient:
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
         opener: Any = None,
+        auth_scheme: str = "bearer",
     ) -> None:
+        # "bearer" sends `Authorization: Bearer <token>` (an OAuth access token, the
+        # standalone relay's form);  "api_key" sends the token bare, Linear's form for
+        # a personal API key (the Operator-hosted engine's developer token).
+        if auth_scheme not in ("bearer", "api_key"):
+            raise ValueError("unknown Linear auth scheme %r" % (auth_scheme,))
         self._token = token
+        self.auth_scheme = auth_scheme
         self.dry_run = dry_run
         self.sleep = sleep
         self.monotonic = monotonic
@@ -643,7 +655,11 @@ class LinearClient:
                 data=body,
                 method="POST",
                 headers={
-                    "Authorization": "Bearer " + self._token,
+                    "Authorization": (
+                        self._token
+                        if self.auth_scheme == "api_key"
+                        else "Bearer " + self._token
+                    ),
                     "Content-Type": "application/json",
                     "User-Agent": USER_AGENT,
                 },

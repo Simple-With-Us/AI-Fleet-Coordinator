@@ -467,8 +467,9 @@ class Config:
         # the server instance only, so two instances can never stack comments.
         self.linear_comments_enabled = False
         # [linear_comments] infisical_token_file:  where the scoped read-only Infisical
-        # service token for the Operator's Linear pair lives, when the host does not
-        # bind OPERATOR_LINEAR_INFISICAL_TOKEN.  "" means operator_linear's default.
+        # service token for the Operator's Linear developer token lives, when the host
+        # does not bind OPERATOR_LINEAR_INFISICAL_TOKEN.  "" means operator_linear's
+        # default.
         self.linear_comments_infisical_token_file = ""
         self.listener_api_bind = "127.0.0.1"
         self.listener_api_port = LISTENER_API_DEFAULT_PORT
