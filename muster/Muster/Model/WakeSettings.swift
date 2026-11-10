@@ -131,9 +131,35 @@ enum WakeRoutineForm: Equatable {
 }
 
 extension ListenerConfigDocument {
+    /// The spellings this file gives a seat in its headers, `[seat.X]` and any table inside it
+    /// such as `[seat.X.routine]`, matched as the listener matches them:  it upper-cases a seat's
+    /// name (`simple_tools/config.py`, `seat_name = str(name).upper()`), so `[seat.mm]` is the MM
+    /// seat.  Two spellings are two headers the listener folds into one seat.
+    func spellings(ofSeat tag: String) -> [String] {
+        let wanted = tag.uppercased()
+        return seatTags.filter { $0.uppercased() == wanted }
+    }
+
+    /// The spelling the file already gives a seat, so a read finds `[seat.mm]` for MM and a write
+    /// keeps that header as the file has it.  With no header it is the tag itself;  with two, the
+    /// first, and the seat is Not Known and is not written.
+    func spelling(ofSeat tag: String) -> String {
+        spellings(ofSeat: tag).first ?? tag
+    }
+
+    /// The name of a seat's own section in this file:  `seat.` and the file's spelling.
+    func seatSection(_ tag: String) -> String {
+        "seat.\(spelling(ofSeat: tag))"
+    }
+
+    /// Every section of a seat, under every spelling the listener folds to it.
+    func sections(matchingSeat tag: String) -> [Section] {
+        spellings(ofSeat: tag).flatMap { sections(ofSeat: $0) }
+    }
+
     /// How a seat's section holds its routine table.
     func routineForm(seat tag: String) -> WakeRoutineForm {
-        let section = "seat.\(tag)"
+        let section = seatSection(tag)
         let header = sections.contains { $0.name == "\(section).routine" }
         guard let line = assignment(section: section, key: "routine") else {
             return header ? .subTable : .absent
@@ -149,8 +175,13 @@ extension ListenerConfigDocument {
 
     /// The routine table a seat's section holds, or nil when it holds none Muster can read.
     func routineTable(seat tag: String) -> [String: ListenerConfigValue]? {
-        let section = "seat.\(tag)"
-        switch routineForm(seat: tag) {
+        routineTable(seat: tag, form: routineForm(seat: tag))
+    }
+
+    /// The routine table a seat's section holds, for a form already looked up.
+    func routineTable(seat tag: String, form: WakeRoutineForm) -> [String: ListenerConfigValue]? {
+        let section = seatSection(tag)
+        switch form {
         case .inline:
             if case .table(let entries)? = value(section: section, key: "routine") { return entries }
             return nil
@@ -166,10 +197,11 @@ extension ListenerConfigDocument {
         }
     }
 
-    /// The `wake` line a seat's section still holds from the old wake types, as text.  It is
-    /// shown so the owner knows it is there, and nothing is ever decided by it.
+    /// The `wake` line a seat's section still holds from the old wake types, as the file holds it,
+    /// with nothing trimmed:  the listener compares it exactly, so `" http"` is not `http`.  It is
+    /// shown, and read only to say what today's listener does with the seat.
     func leftoverWake(seat tag: String) -> String? {
-        value(section: "seat.\(tag)", key: "wake")?.displayText
+        value(section: seatSection(tag), key: "wake")?.displayText
     }
 }
 
@@ -291,7 +323,8 @@ enum WakeRoutineRules {
     /// Everything `_routine` would say is wrong with a seat's routine table, in its own words.
     static func problems(seat: String, routine given: [String: ListenerConfigValue]) -> [String] {
         var problems: [String] = []
-        let prefix = "seat.\(seat).routine"
+        // The listener names a seat by its upper-cased name, so its messages do too.
+        let prefix = "seat.\(seat.uppercased()).routine"
         for key in given.keys.sorted() where !knownKeys.contains(key) {
             problems.append("\(prefix).\(key) is not a known routine setting")
         }
@@ -541,7 +574,7 @@ struct ListenerPartition: Equatable {
     func host(of seat: String, in config: ListenerConfigDocument) -> ListenerSeatHost {
         let host = self.host(of: seat)
         guard host.isTheMac,
-              case .text("server")? = config.value(section: "seat.\(seat)", key: "instance") else {
+              case .text("server")? = config.value(section: config.seatSection(seat), key: "instance") else {
             return host
         }
         return .markedForTheServer
@@ -668,8 +701,16 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
     /// in place, and every other setting lives in the seat's own section, so a write keeps the form
     /// the file already has.  A table written both ways at once is left to the seat's own section,
     /// where the writer refuses it.
-    func location(seat tag: String, in config: ListenerConfigDocument) -> (section: String, key: String, subPath: [String]) {
-        let section = "seat.\(tag)"
+    ///
+    /// The seat's section is found under the spelling the file already gives it, as the listener
+    /// finds it.  A caller that has looked that spelling up passes it, so it is not looked up again
+    /// for every setting.
+    func location(
+        seat tag: String,
+        in config: ListenerConfigDocument,
+        spelling: String? = nil
+    ) -> (section: String, key: String, subPath: [String]) {
+        let section = "seat.\(spelling ?? config.spelling(ofSeat: tag))"
         let location = configLocation
         let table = "\(section).\(location.key)"
         if location.subPath.count == 1, let inner = location.subPath.first,
@@ -1395,7 +1436,8 @@ enum WakeSettingsBuilder {
         host: ListenerSeatHost = .mac,
         hasSection: Bool = true,
         lineProblems: [String] = [],
-        leftoverWake: String? = nil
+        leftoverWake: String? = nil,
+        foldedHeaders: [String] = []
     ) -> WakeSeatKind {
         if configProblem != nil {
             return .notKnown("The configuration file was not read, so whether this seat has a routine table is not known.")
@@ -1406,11 +1448,17 @@ enum WakeSettingsBuilder {
         if !hasSection {
             return .notKnown("The Mac's file has no section for this seat, so the Mac's eavesdropper does not run it and whether it Wakes is not known here.")
         }
+        if !foldedHeaders.isEmpty {
+            let named = foldedHeaders.map { "[\($0)]" }.joined(separator: " and ")
+            return .notKnown("The file holds \(named), which spell this seat differently, and the listener folds them into one seat and merges them unpredictably, so whether it Wakes is not known.\u{00A0} Keep one spelling.")
+        }
         if !lineProblems.isEmpty {
             return .notKnown("This seat's section holds a line Muster can't read, which may be its routine, so whether it Wakes is not known.\u{00A0} " + lineProblems.joined(separator: " "))
         }
-        // `section.get("wake", "inbox")`:  no wake line is an inbox wake.
-        let wake = leftoverWake?.trimmingCharacters(in: .whitespaces)
+        // `section.get("wake", "inbox")`:  no wake line is an inbox wake.  The listener compares
+        // the value exactly, with no trimming and no case folding, so neither does Muster:
+        // `" http"`, `"HTTP"` and `"Claude"` are words it does not know.
+        let wake = leftoverWake
         switch form {
         case .unreadable(let why):
             return .notKnown(why)
@@ -1448,7 +1496,12 @@ enum WakeSettingsBuilder {
             && sources.status?.status?.disabled?.contains(published) == true
         let current = statusIsCurrent(sources)
         let staleText = Self.staleNote(sources)
-        let hasSection = !sources.config.sections(ofSeat: tag).isEmpty
+        // The seat's sections are found as the listener finds them, by the upper-cased name, and
+        // the spelling, the form and the routine are looked up once for the seat.
+        let seatSections = sources.config.sections(matchingSeat: tag)
+        let spellings = sources.config.spellings(ofSeat: tag)
+        let spelling = spellings.first ?? tag
+        let hasSection = !seatSections.isEmpty
         let form = sources.config.routineForm(seat: tag)
         let leftoverWake = sources.config.leftoverWake(seat: tag)
         let kind = Self.kind(
@@ -1456,13 +1509,14 @@ enum WakeSettingsBuilder {
             configProblem: sources.configProblem,
             host: host,
             hasSection: hasSection,
-            lineProblems: sources.config.sections(ofSeat: tag).flatMap(\.problems),
-            leftoverWake: leftoverWake
+            lineProblems: seatSections.flatMap(\.problems),
+            leftoverWake: leftoverWake,
+            foldedHeaders: spellings.count > 1 ? seatSections.map(\.name) : []
         )
-        let routine = sources.config.routineTable(seat: tag) ?? [:]
+        let routine = sources.config.routineTable(seat: tag, form: form) ?? [:]
         let settings = WakeSettingKey.seatKeys.map { key -> WakeSetting in
             if host.isElsewhere {
-                let location = key.location(seat: tag, in: sources.config)
+                let location = key.location(seat: tag, in: sources.config, spelling: spelling)
                 return WakeSetting(
                     seat: tag,
                     key: key,
@@ -1480,7 +1534,10 @@ enum WakeSettingsBuilder {
                     note: "The file has no section for this seat, so the Mac's eavesdropper does not run it."
                 )
             }
-            let row = setting(for: key, seat: tag, live: live, seatOff: seatOff, config: sources.config, routine: routine)
+            let row = setting(
+                for: key, seat: tag, live: live, seatOff: seatOff, config: sources.config,
+                spelling: spelling, form: form, routine: routine
+            )
             // A file that was not read says nothing about what it holds, so no row is DEFAULT,
             // PASS or DRIFT for want of a read:  it is not known, beside whatever the eavesdropper
             // reports.  The problem box above the seats says why the file was not read.
@@ -1508,7 +1565,7 @@ enum WakeSettingsBuilder {
             seat: tag,
             host: host,
             hasSection: hasSection,
-            bot: live?.bot ?? sources.config.value(section: "seat.\(tag)", key: "bot")?.scalarText,
+            bot: live?.bot ?? sources.config.value(section: "seat.\(spelling)", key: "bot")?.scalarText,
             kind: kind,
             settings: settings,
             usage: host.isElsewhere ? WakeUsage() : (sources.usage[tag] ?? WakeUsage()),
@@ -1671,9 +1728,12 @@ enum WakeSettingsBuilder {
         live: ListenerStatus.Seat?,
         seatOff: Bool,
         config: ListenerConfigDocument,
+        spelling: String,
+        form: WakeRoutineForm,
         routine: [String: ListenerConfigValue]
     ) -> WakeSetting {
-        let location = key.location(seat: seat, in: config)
+        // The seat's spelling, routine form and routine table were looked up once for the seat.
+        let location = key.location(seat: seat, in: config, spelling: spelling)
         let configured = config.value(section: location.section, key: location.key, subPath: location.subPath)
         let liveValue = liveValue(for: key, live: live)
         let state = state(
@@ -1686,7 +1746,7 @@ enum WakeSettingsBuilder {
         // The contract is checked only for a seat with a routine table:  a seat without one has
         // no router to reach.
         let difference: String?
-        if key.isFixedByContract, let name = key.routineKey, config.routineForm(seat: seat).hasTable {
+        if key.isFixedByContract, let name = key.routineKey, form.hasTable {
             difference = WakeRoutineRules.contractDifference(name, in: routine)
         } else {
             difference = nil

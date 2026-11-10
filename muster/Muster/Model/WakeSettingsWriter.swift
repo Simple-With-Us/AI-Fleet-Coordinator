@@ -15,8 +15,9 @@ import Foundation
 //     define the key, and TOML refuses a duplicate
 //   * a file that changed since the panel read it is not written, so another writer's change is
 //     not overwritten
-//   * a seat the file spells differently is not written:  the eavesdropper folds both spellings to one
-//     seat, and one section would silently replace the other
+//   * a seat is found as the eavesdropper finds it, by its upper-cased name, and written under the
+//     spelling the file already gives it;  a seat the file spells two ways is not written, because the
+//     eavesdropper folds both to one seat and merges them unpredictably
 //   * a routine setting is written only into a routine table the seat already has, in the form the
 //     file already uses (`routine = { … }` or `[seat.X.routine]`), and never so as to take the table
 //     out:  Muster does not turn a seat that Wakes into one that Captures Only, or the other way
@@ -72,7 +73,7 @@ struct WakeSettingsWriter {
         case changedSinceRead(String)
         case unreadableLines(seat: String, problems: [String])
         case noSectionToRemove(String)
-        case spelledDifferently(seat: String, inFile: String)
+        case spelledTwice(seat: String, headers: [String])
         case anotherWritersTextMoved(path: String, keptAt: String)
         case noRoutineTable(String)
         case unreadableRoutine(seat: String, reason: String)
@@ -98,8 +99,9 @@ struct WakeSettingsWriter {
                 return "The \(seat) section holds a line Muster cannot read, so nothing was written.\u{00A0} \(lines)"
             case .noSectionToRemove(let seat):
                 return "The file holds no section for \(seat), or the seat partition gives it to the Mac, so nothing was removed."
-            case .spelledDifferently(let seat, let inFile):
-                return "The file spells this seat [seat.\(inFile)], and the eavesdropper reads that as \(seat), so a [seat.\(seat)] section would replace it.\u{00A0} Nothing was written."
+            case .spelledTwice(let seat, let headers):
+                let named = headers.map { "[\($0)]" }.joined(separator: " and ")
+                return "The file holds \(named), which the eavesdropper folds into one seat, \(seat.uppercased()), and merges unpredictably, so nothing was written.\u{00A0} Keep one spelling, then apply again."
             case .anotherWritersTextMoved(let path, let keptAt):
                 return "Another writer changed the configuration file at \(path) during the write, and Muster could not put its text back.\u{00A0} That text is at \(keptAt), and the file now holds Muster's edit."
             case .noRoutineTable(let seat):
@@ -152,10 +154,13 @@ struct WakeSettingsWriter {
         let base = ListenerConfigDocument(text: text)
         try requireHeldByTheMac(seats, in: base)
         for seat in seats {
-            if let other = base.seatTags.first(where: { $0 != seat && $0.uppercased() == seat.uppercased() }) {
-                throw WriteError.spelledDifferently(seat: seat, inFile: other)
+            // The eavesdropper folds a seat's name to upper case, so a seat is found under the
+            // spelling the file already gives it, and written there.  Two spellings of one seat are
+            // two headers it merges unpredictably, so neither is written.
+            if base.spellings(ofSeat: seat).count > 1 {
+                throw WriteError.spelledTwice(seat: seat, headers: base.sections(matchingSeat: seat).map(\.name))
             }
-            let problems = base.sections(ofSeat: seat).flatMap(\.problems)
+            let problems = base.sections(matchingSeat: seat).flatMap(\.problems)
             guard problems.isEmpty else {
                 throw WriteError.unreadableLines(seat: seat, problems: problems)
             }
@@ -211,12 +216,17 @@ struct WakeSettingsWriter {
         try requireUnchanged(text, expected: expected)
         let document = ListenerConfigDocument(text: text)
         let host = ListenerPartition.load(from: partitionURL).host(of: seat, in: document)
-        guard host.isElsewhere, !document.sections(ofSeat: seat).isEmpty else {
+        guard host.isElsewhere, !document.sections(matchingSeat: seat).isEmpty else {
             throw WriteError.noSectionToRemove(seat)
+        }
+        // Every spelling the eavesdropper folds to this seat is a section it refuses, so each goes.
+        var candidate = text
+        for spelling in document.spellings(ofSeat: seat) {
+            candidate = ListenerConfigDocument(text: candidate).removingSeat(spelling)
         }
         return PreparedWrite(
             original: text,
-            candidate: document.removingSeat(seat),
+            candidate: candidate,
             seats: [],
             repairedSeat: seat
         )
@@ -269,7 +279,7 @@ struct WakeSettingsWriter {
             return
         case .inline:
             guard edit.value == nil,
-                  let entries = document.assignment(section: "seat.\(edit.seat)", key: "routine")?.node.tableEntries,
+                  let entries = document.assignment(section: document.seatSection(edit.seat), key: "routine")?.node.tableEntries,
                   entries.count == 1,
                   entries.first?.key == location.subPath.first else { return }
             throw WriteError.lastRoutineSetting(edit.seat)

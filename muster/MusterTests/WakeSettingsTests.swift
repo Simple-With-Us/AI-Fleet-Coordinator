@@ -564,16 +564,37 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(try bytes(space.config), before)
     }
 
-    /// The eavesdropper folds `[seat.mm]` and `[seat.MM]` to one seat,  and one silently replaces the
-    /// other,  so a second spelling is never added.
-    func test_a_seat_the_file_spells_differently_is_not_written() throws {
-        let config = "[seat.mm]\nbot = \"MM\"\nwake = \"muse\"\n"
+    /// The eavesdropper folds `[seat.mm]` to the MM seat, so Muster writes MM's settings into that
+    /// section, under the spelling the file already has, and never adds a second `[seat.MM]`.  A
+    /// routine table under `[seat.mm.routine]` is written there too.
+    func test_a_seat_the_file_spells_in_lower_case_is_written_in_place() throws {
+        let config = "[seat.mm]\nbot = \"MM\"\nwake = \"http\"\n\n[seat.mm.routine]\nurl_env = \"MM_ROUTINE_URL\"\n"
+        let space = try makeWorkspace(config: config)
+        let writer = WakeSettingsWriter(configURL: space.config, partitionURL: space.partition)
+        try writer.apply([
+            WakeSettingsWriter.Edit(seat: "MM", key: .wakesPerHour, value: .number(9)),
+            WakeSettingsWriter.Edit(seat: "MM", key: .routineKeyEnv, value: .text("MM_SIGNING_KEY")),
+        ])
+        let written = try String(contentsOf: space.config, encoding: .utf8)
+        let document = ListenerConfigDocument(text: written)
+        XCTAssertEqual(document.seatTags, ["mm"])
+        XCTAssertFalse(written.contains("[seat.MM"))
+        XCTAssertEqual(document.value(section: "seat.mm", key: "budget", subPath: ["wakes_per_hour"]), .number(9))
+        XCTAssertEqual(document.value(section: "seat.mm.routine", key: "key_env"), .text("MM_SIGNING_KEY"))
+        XCTAssertEqual(document.problems, [])
+    }
+
+    /// A file that spells one seat two ways holds two headers the eavesdropper folds into one seat
+    /// and merges unpredictably, so nothing is written, and the refusal names both headers.
+    func test_a_seat_the_file_spells_two_ways_is_not_written() throws {
+        let config = "[seat.MM]\nbot = \"MM\"\n\n[seat.mm]\nbudget = { wakes_per_hour = 5 }\n"
         let space = try makeWorkspace(config: config)
         let writer = WakeSettingsWriter(configURL: space.config, partitionURL: space.partition)
         XCTAssertThrowsError(try writer.apply([
             WakeSettingsWriter.Edit(seat: "MM", key: .wakesPerHour, value: .number(9)),
         ])) { error in
-            XCTAssertEqual(error as? WakeSettingsWriter.WriteError, .spelledDifferently(seat: "MM", inFile: "mm"))
+            XCTAssertEqual(error as? WakeSettingsWriter.WriteError, .spelledTwice(seat: "MM", headers: ["seat.MM", "seat.mm"]))
+            XCTAssertTrue(error.localizedDescription.contains("[seat.MM] and [seat.mm]"), error.localizedDescription)
         }
         XCTAssertEqual(try String(contentsOf: space.config, encoding: .utf8), config)
     }

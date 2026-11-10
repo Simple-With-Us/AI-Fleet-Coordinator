@@ -381,6 +381,78 @@ final class WakePanelTruthTests: XCTestCase {
         )
         XCTAssertEqual(WakeSettingsBuilder.kind(form: .inline, configProblem: nil, hasSection: false).title, "Not Known")
     }
+    /// The listener upper-cases a seat's section name, so `[seat.mm]` and `[seat.mm.routine]` are
+    /// the MM seat's, whatever case the roster uses, and a seat the file spells two ways is Not
+    /// Known, with a note naming both headers.  The reader does not show `[seat.mm]` again as a
+    /// seat beside the roster's MM.
+    func test_a_seat_section_is_matched_without_regard_to_case() {
+        var input = sources(status: nil)
+        input.config = ListenerConfigDocument(text: """
+        [seat.mm]
+        bot = "MM"
+        wake = "http"
+
+        [seat.mm.routine]
+        url_env = "MM_ROUTINE_URL"
+
+        [seat.mm.budget]
+        wakes_per_hour = 4
+
+        [seat.Claude]
+        bot = "CLAUDE"
+        wake = "muse"
+
+        [seat.CLAUDE]
+        live = { per_day = 3 }
+        """)
+        input.seats = ["MM", "CLAUDE"]
+        let model = WakeSettingsBuilder.build(input)
+        let mm = seat("MM", in: model)
+        XCTAssertTrue(mm.hasSection)
+        XCTAssertEqual(mm.bot, "MM")
+        XCTAssertEqual(mm.routineForm, .subTable)
+        XCTAssertEqual(mm.kind, .wakes)
+        XCTAssertEqual(mm.leftoverWake, "http")
+        XCTAssertEqual(setting(.routineURLEnv, of: mm).configured, .text("MM_ROUTINE_URL"))
+        XCTAssertEqual(setting(.wakesPerHour, of: mm).configured, .number(4))
+        XCTAssertEqual(input.config.seatSection("MM"), "seat.mm")
+        XCTAssertEqual(WakeSettingKey.wakesPerHour.location(seat: "MM", in: input.config).section, "seat.mm.budget")
+
+        let claude = seat("CLAUDE", in: model)
+        guard case .notKnown(let why) = claude.kind else {
+            return XCTFail("a seat spelled two ways is Not Known, got \(claude.kind)")
+        }
+        XCTAssertTrue(why.contains("[seat.Claude] and [seat.CLAUDE]"), why)
+        XCTAssertTrue(claude.needsAttention)
+        XCTAssertEqual(input.config.spellings(ofSeat: "claude"), ["Claude", "CLAUDE"])
+    }
+
+    /// The listener compares the wake exactly, with no trimming and no case folding, so `"HTTP"`,
+    /// `" http"` and `"Claude"` are words it does not know:  refused with no routine, and with a
+    /// routine an Old Wake Setting that only captures.  Only `"http"` with a routine Wakes.
+    func test_the_wake_value_is_compared_exactly() {
+        for wake in ["HTTP", " http", "http ", "Claude", " claude"] {
+            XCTAssertEqual(
+                WakeSettingsBuilder.kind(form: .absent, configProblem: nil, leftoverWake: wake),
+                .oldWakeSetting(.refused(wake)),
+                "[\(wake)]"
+            )
+            XCTAssertEqual(
+                WakeSettingsBuilder.kind(form: .inline, configProblem: nil, leftoverWake: wake),
+                .oldWakeSetting(.routineNeedsHTTP(wake: wake)),
+                "[\(wake)]"
+            )
+        }
+        // The file's own value is read as written, spaces included.
+        let spaced = ListenerConfigDocument(text: "[seat.MM]\nwake = \" http\"\nroutine = { url_env = \"MM_ROUTINE_URL\" }\n")
+        XCTAssertEqual(spaced.leftoverWake(seat: "MM"), " http")
+        XCTAssertEqual(
+            WakeSettingsBuilder.kind(form: spaced.routineForm(seat: "MM"), configProblem: nil, leftoverWake: spaced.leftoverWake(seat: "MM")),
+            .oldWakeSetting(.routineNeedsHTTP(wake: " http"))
+        )
+        XCTAssertEqual(WakeSettingsBuilder.kind(form: .inline, configProblem: nil, leftoverWake: "http"), .wakes)
+    }
+
     /// A routine Muster cannot read is not known, never Captures Only, and needs a look:  a
     /// routine line that is not a table, or both forms at once.  A file that was not read leaves
     /// every seat's kind not known.

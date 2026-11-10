@@ -229,10 +229,12 @@ struct WakeSettingsReader {
 
         // The seats to show:  the roster,  then every seat the file or the eavesdropper knows.
         var tags = roster
-        for tag in sources.config.seatTags where !tags.contains(tag) {
+        // The listener folds a section's name to upper case, so `[seat.mm]` is the roster's MM and
+        // is not shown again as a seat of its own.
+        for tag in sources.config.seatTags where !tags.contains(where: { $0.uppercased() == tag.uppercased() }) {
             tags.append(tag)
         }
-        for tag in status?.seatTags ?? [] where !tags.contains(tag) {
+        for tag in status?.seatTags ?? [] where !tags.contains(where: { $0.uppercased() == tag.uppercased() }) {
             tags.append(tag)
         }
         sources.seats = tags
