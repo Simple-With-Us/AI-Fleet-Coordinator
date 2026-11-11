@@ -715,15 +715,17 @@ def proof_key(args) -> int:
                 pass
             print(f"refusing:  {path} is not root-owned 0600 after creation")
             return 2
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        try:
+            fh = os.fdopen(fd, "w", encoding="utf-8")
+        except OSError:
+            # fdopen never took ownership:  the raw fd is still ours to close.
+            os.close(fd)
+            raise
+        with fh:
             fh.write(material)
             fh.flush()
             os.fsync(fh.fileno())
     except OSError:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
         try:
             os.unlink(path)
         except OSError:
