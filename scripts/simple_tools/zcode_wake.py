@@ -265,7 +265,9 @@ def deliver_request(
         except subprocess.TimeoutExpired:
             return answer(WR.Delivery("refused", route="zcode", code="command-timeout"))
         except OSError as exc:
-            return answer(WR.Delivery("failed", route="zcode", code="deliver-%s" % type(exc).__name__))
+            return answer(
+                WR.Delivery("failed", route="zcode", code="deliver-%s" % type(exc).__name__)
+            )
         if proc.returncode == 0:
             # Exit 0 is only `sent`.  The bridge's four resume attempts with failed turns all
             # exited 1 (command-failed-1);  the one run that seemed to exit 0 was a fresh

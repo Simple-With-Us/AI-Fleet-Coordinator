@@ -44,7 +44,9 @@ def _request(letter: str = "BB", generation: int = 3, wake_id: str = "w1-abcdef"
             "letter": letter,
             "picked": "letter",
             "reason": "letter",
-            "link_note": "The router linked this wake to this chat because the sender addressed its letter.",
+            "link_note": (
+                "The router linked this wake to this chat because the sender addressed its letter."
+            ),
         },
     }
 
@@ -301,13 +303,18 @@ class StoreFailClosedTests(unittest.TestCase):
         con = sqlite3.connect(index)
         con.execute("CREATE TABLE tasks (task_id TEXT, workspace_path TEXT)")
         con.execute("INSERT INTO tasks VALUES (?, ?)", (SID, WORKSPACE))
-        con.execute("INSERT INTO tasks VALUES (?, ?)", ("sess_other-1111-2222-3333-444455556666", "/other"))
+        con.execute(
+            "INSERT INTO tasks VALUES (?, ?)", ("sess_other-1111-2222-3333-444455556666", "/other")
+        )
         con.commit()
         con.close()
         cli = self.tmp / "cli.sqlite"
         con = sqlite3.connect(cli)
         con.execute("CREATE TABLE session (id TEXT, task_type TEXT)")
-        con.execute("INSERT INTO session VALUES (?, 'subagent_child')", ("sess_sub-1111-2222-3333-444455556666",))
+        con.execute(
+            "INSERT INTO session VALUES (?, 'subagent_child')",
+            ("sess_sub-1111-2222-3333-444455556666",),
+        )
         con.commit()
         con.close()
         platform = zcode_wake.build_platform(
@@ -318,8 +325,12 @@ class StoreFailClosedTests(unittest.TestCase):
         )
         excluded = platform.exclude([
             WR.Target(session_id=SID, letter="BB", generation=3),
-            WR.Target(session_id="sess_other-1111-2222-3333-444455556666", letter="BB", generation=3),
-            WR.Target(session_id="sess_sub-1111-2222-3333-444455556666", letter="BB", generation=3),
+            WR.Target(
+                session_id="sess_other-1111-2222-3333-444455556666", letter="BB", generation=3
+            ),
+            WR.Target(
+                session_id="sess_sub-1111-2222-3333-444455556666", letter="BB", generation=3
+            ),
         ])
         self.assertEqual(excluded, {"sess_other-1111-2222-3333-444455556666",
                                     "sess_sub-1111-2222-3333-444455556666"})
