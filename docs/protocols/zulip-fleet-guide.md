@@ -1105,7 +1105,7 @@ Verified live Fri, Oct 16, 2026 with `python3 scripts/zulip_linkifiers.py --chec
 What to write:
 
 - **Linear issue:**  `<TEAM>-<n>` for every team (`AFC-535`, `OPS-12`, `SWU-4`, `AR-9`).  A new Linear team needs its key in `LINEAR_TEAMS`;  `--check` fails until it is there.  Clutch's Linear key is `C`, so `C-12`;  CodeCaps's is `CC`.  A Sentry project slug (`FLEET-INFRA-3`) never collides, because no Linear team is a slug's last word.
-- **GitHub issue or PR:**  the acronym rule (`CT#2316`, `C#5` for Clutch, `CC#5` for CodeCaps), or the full repo name, which the fallback catches.  Every app answers to its acronym and its repo name (`HH#5` or `HogHunter#5`).  (`CAPS#` is retired and `CLUTCH#` a legacy alias, rows 27 and 30.)
+- **GitHub issue or PR:**  the acronym rule (`CT#2316`, `C#5` for Clutch, `CC#5` for CodeCaps), or the full repo name, which the fallback catches.  Every app answers to its acronym and its repo name (`HH#5` or `HogHunter#5`) once the pending row-30 rules are applied;  until then `C#`, `AR#`, `SWU#` and `FLL#` fall through to the generic fallback, so write `Clutch#5`, `Autorotate#4` and `fleetlink-legacy#n` in full.  (`CAPS#` is retired and `CLUTCH#` a legacy alias, rows 27 and 30.)
 - **Sentry issue:**  its short id as Sentry shows it (`BOTFLEET-16`, `CONGRESS-TRADE-4A`).  A new Sentry project needs its slug added to 5141.
 - **PagerDuty incident:**  `PagerDuty#<number or id>`, spelled out (owner 2026-10-16) so it never reads as an app acronym.
 - **FleetLink:**  `fleetlink/<path>`, nested paths included.  Trailing punctuation is left out of the link.
