@@ -55,7 +55,7 @@ struct ControlsView: View {
                     writeBanner(registry)
                     summary(registry)
                     table(registry)
-                    SecretNamesPanel()
+                    SecretNamesPanel(knobFolders: registry.folders)
                     RecallSettingsPanel()
                 } else {
                     problemBanner
@@ -818,8 +818,17 @@ private struct KnobEditSheet: View {
 
 /// Secret names only,  grouped by path,  plus the doctor's checks.  No value can appear
 /// here:  the only verbs run are `names` and `doctor`.
+///
+/// The knobs live in another Infisical project from the fleet-ops root this panel lists
+/// first,  so their folders are listed on their own,  from the knobs' project,  one folder
+/// at a time:  a folder this Mac cannot read says why and hides no other folder.
 private struct SecretNamesPanel: View {
+    /// Every folder the knob registry names,  the root first (`KnobRegistry.folders`).
+    let knobFolders: [String]
+
     @State private var groups: [SecretNameGroup] = []
+    @State private var knobGroups: [SecretNameGroup] = []
+    @State private var knobProblems: [String] = []
     @State private var doctor: [String: String] = [:]
     @State private var problem: String?
     @State private var doctorProblem: String?
@@ -851,6 +860,27 @@ private struct SecretNamesPanel: View {
                 }
             }
             if let problem { Text(problem).font(.caption).foregroundStyle(.orange) }
+            Text("Knob Folders").font(.subheadline.weight(.semibold))
+            Text("Names only, from each folder the knob registry names, in the AI Fleet Coordinator project in Infisical, where the knobs live.\(ApplyCopy.sentenceGap)A folder this Mac's fleet-secrets cannot read says why.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(knobGroups, id: \.path) { group in
+                DisclosureGroup {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(group.names, id: \.self) { name in
+                            Text(name)
+                                .font(.system(size: 11, design: .monospaced))
+                                .textSelection(.enabled)
+                        }
+                    }
+                } label: {
+                    Text(group.names.count == 1 ? "1 name at \(group.path)" : "\(group.names.count) names at \(group.path)")
+                        .font(.callout)
+                }
+            }
+            ForEach(knobProblems, id: \.self) { line in
+                Text(line).font(.caption).foregroundStyle(.orange)
+            }
             Text("Doctor:  This Mac's fleet-secrets Setup").font(.subheadline.weight(.semibold))
             if let doctorProblem {
                 Text(doctorProblem).font(.caption).foregroundStyle(.orange)
@@ -874,7 +904,8 @@ private struct SecretNamesPanel: View {
                 .accessibilityElement(children: .combine)
             }
         }
-        .task { await load() }
+        // Read again when the registry names another set of folders.
+        .task(id: knobFolders) { await load() }
     }
 
     private func load() async {
@@ -884,6 +915,25 @@ private struct SecretNamesPanel: View {
             groups = try await awaitOffThePool { try secrets.secretNamesGrouped(paths: ["/"]) }
             problem = nil
         } catch { problem = error.localizedDescription }
+        // One folder at a time,  so a folder this Mac's reader is not granted is reported
+        // and the folders it can read are still listed.
+        var readGroups: [SecretNameGroup] = []
+        var readProblems: [String] = []
+        for folder in knobFolders {
+            do {
+                let found = try await awaitOffThePool {
+                    try secrets.secretNamesGrouped(paths: [folder], project: FleetSecrets.knobProject)
+                }
+                readGroups.append(contentsOf: found)
+            } catch {
+                // Each line names its folder,  so the owner can tell which folder was refused.
+                // The lines are keyed by their text,  and each folder is read once.
+                let line = "\(folder):  \(error.localizedDescription)"
+                if !readProblems.contains(line) { readProblems.append(line) }
+            }
+        }
+        knobGroups = readGroups
+        knobProblems = readProblems
         // The doctor is asked on its own, and its failure is shown rather than hidden.
         do {
             doctor = try await awaitOffThePool { try secrets.doctorReport() }
