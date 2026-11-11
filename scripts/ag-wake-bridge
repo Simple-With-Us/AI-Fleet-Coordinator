@@ -1,9 +1,27 @@
 #!/usr/bin/env python3
 """The Antigravity platform's ONLY unique part:  its delivery mechanism (owner ruling, Nov 10-11).
 
+<<<<<<< HEAD
 Everything else is the ONE shared router, simple_tools/wake_router.py.  Antigravity wakes
 a chat with a headless agy run on the picked conversation;  the command template below is
 this platform's entire contribution.
+=======
+The chain.  A message that tags @AG or DMs the seat lands in the seat's inbox on the listener
+that holds it.  When the seat's section carries wake = "http", the listener POSTs the fixed
+simple-tools-wake/1 contract to the seat's routine URL, signed with the routine key.  This bridge
+is that routine's receiver:  it answers the POST, remembers the wake id, resolves which lettered
+Antigravity conversation the wake belongs to, and runs the delivery command in that conversation.
+
+It holds no Zulip key and no listener state.  Its one secret is the routine key, read from a
+0600 file on every request.  Its registry access is the Operator's read API, signed as the
+OPERATOR principal from the environment (or loaded from ~/.local/bin/operator-registry-env on both the
+server and the Mac).  Message bodies never pass through it:  the wake payload carries metadata
+and a bounded excerpt, and the delivered prompt names the thread, never quotes it.
+
+Usage:
+  ag-wake-bridge serve [--bind ADDR] [--port N] [--config FILE] [--state DIR]
+  ag-wake-bridge deliver --wake-id ID [--topic T] [--channel C] [--link URL] [--config FILE]
+>>>>>>> 1351e8c09 (The Operator's registry env is operator-registry-env, never an MM name (Refs OPS-1048))
 
 Python 3.11+, standard library only.
 """
