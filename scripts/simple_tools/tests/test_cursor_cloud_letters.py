@@ -166,18 +166,30 @@ class SweepTests(unittest.TestCase):
         self.assertNotIn("javascript", text)
         self.assertIn(A1, text)
 
-    def test_a_gone_agent_is_forgotten(self) -> None:
+    def test_a_gone_agent_is_forgotten_and_its_letter_returns_to_the_operator(self) -> None:
         self.run_sweep()
+        held = self.label(A1)
         self.agents = [self.agents[1]]
         self.run_sweep()
         self.assertNotIn(A1, CCL.read_state(self.env))
+        reg = OR.SessionRegistry(self.db)
+        try:
+            closed = reg.lookup("cursor", "cloud", PL.SCOPE, A1)
+            self.assertEqual(closed["state"], "closed")
+            self.assertEqual(closed["label"], "")
+            self.assertNotEqual(closed["label"], held)
+        finally:
+            reg.close_db()
+        self.assertRegex(self.label(A2), r"^[A-Z]{2}$")
 
     def test_a_partial_discovery_forgets_nothing_and_tells_no_bot_twice(self) -> None:
         self.run_sweep()
         everyone = list(self.agents)
         self.agents = [self.agents[1]]
+        held = self.label(A1)
         self.run_sweep(complete=lambda: False)
         self.assertIn(A1, CCL.read_state(self.env))
+        self.assertEqual(self.label(A1), held)
         self.agents = everyone
         self.run_sweep()
         self.assertEqual(len(self.steer.calls), 2)
