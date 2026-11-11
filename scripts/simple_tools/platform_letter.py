@@ -1433,7 +1433,9 @@ class Chat:
             argv.append("--issues=" + issues)
         return argv
 
-    def registry(self, op: str, title: str = "", parent: str = "", issues: str = "") -> dict[str, Any]:
+    def registry(
+        self, op: str, title: str = "", parent: str = "", issues: str = ""
+    ) -> dict[str, Any]:
         """One call to the registry side, answered as its JSON.  Whatever goes wrong, on the way or in the registry
         side, is an error answer: a hook never blocks a chat, and never stops on a call that failed."""
         try:
@@ -1687,8 +1689,8 @@ def relabeled(prior: str, label: str) -> str:
 #
 # At the start of each turn the hook looks at what the turn before touched (the transcript lines
 # since its last look, the git branch of the chat's folder, and the Zulip topics it posted to),
-# folds the issue ids it finds into the note, and tells the registry when the set of ids changed. 
-# The registry keeps the list for the wake router (operator_registry.normalize_issues has the rule). 
+# folds the issue ids it finds into the note, and tells the registry when the set of ids changed.
+# The registry keeps the list for the wake router (operator_registry.normalize_issues has the rule).
 # Nothing here may block or break a prompt: every read is bounded and every failure is silent.
 
 #: The most transcript one turn reads: only its newest lines, so a huge transcript never slows a prompt.
@@ -1732,7 +1734,9 @@ def _topic_issue_ids(text: str) -> set[str]:
     return found
 
 
-def _transcript_strings(value: Any, own: list[str], quoted: list[str], inside: bool, depth: int = 0) -> None:
+def _transcript_strings(
+    value: Any, own: list[str], quoted: list[str], inside: bool, depth: int = 0
+) -> None:
     if depth > 40:
         return
     if isinstance(value, str):
@@ -1771,7 +1775,7 @@ def read_new_lines(path: object, root: str, scan: object) -> tuple[list[str], di
     """The complete lines a transcript gained since `scan` (the {"path", "offset"} the last call
     returned), and the scan to keep for the next call.
 
-    Only a regular file under `root` is read, so a stray path in hook data cannot point anywhere else. 
+    Only a regular file under `root` is read, so a stray path in hook data cannot point anywhere else.
     At most ISSUE_SCAN_BYTES are read: a first scan, and a transcript that shrank or grew by more than
     that, take only its tail, from the first whole line in it.  A line still being written waits for
     the next turn.  Raises OSError or ValueError for anything that cannot be read."""
@@ -1846,7 +1850,7 @@ def collect_issue_ids(
             pass
     try:
         found |= branch_issue_ids(data.get("cwd"), run)
-    except Exception: # noqa: BLE001 - a hook never stops for this
+    except Exception:  # noqa: BLE001 - a hook never stops for this
         pass
     return found
 
@@ -1887,7 +1891,7 @@ def sync_issues(
         taken = answer.get("issues")
         note["issues_sent"] = sorted(OR.issue_ids(taken)) if isinstance(taken, list) else wanted
         note.pop("issues_failed_at", None)
-    except Exception: # noqa: BLE001 - a hook never stops for this
+    except Exception:  # noqa: BLE001 - a hook never stops for this
         return
 
 
@@ -1895,7 +1899,11 @@ def _issues_answer(out: Mapping[str, Any]) -> dict[str, Any]:
     """The registry side's answer to an `issues` call, from the registry's update answer."""
     if out.get("outcome") == "closed":
         return {"retired": True, "record_id": out.get("record_id", "")}
-    return {"ok": True, "record_id": out.get("record_id", ""), "issues": list(out.get("issues") or [])}
+    return {
+        "ok": True,
+        "record_id": out.get("record_id", ""),
+        "issues": list(out.get("issues") or []),
+    }
 
 
 def _issues_value(text: str) -> Any:
@@ -1905,9 +1913,7 @@ def _issues_value(text: str) -> Any:
         return text  # refused by the registry as any value that is not a list is
 
 
-def record_issues_local(
-    OR: Any, db: str, identity: Mapping[str, Any], text: str
-) -> dict[str, Any]:
+def record_issues_local(OR: Any, db: str, identity: Mapping[str, Any], text: str) -> dict[str, Any]:
     """The `issues` op on a registry file: the session's update with the list it carries."""
     out = OR.update_session(
         db,
@@ -1920,7 +1926,9 @@ def record_issues_local(
     return _issues_answer(out)
 
 
-def record_issues_api(env: Mapping[str, str], identity: Mapping[str, Any], text: str) -> dict[str, Any]:
+def record_issues_api(
+    env: Mapping[str, str], identity: Mapping[str, Any], text: str
+) -> dict[str, Any]:
     """The `issues` op through the registry API: its update, with the list it carries."""
     out = _call_api(env, "update", {**identity, "issues": _issues_value(text)})
     error = _api_error(out)

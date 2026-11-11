@@ -1654,11 +1654,17 @@ class SessionIssuesTest(unittest.TestCase):
         self.db = os.path.join(self.tmp.name, "registry.sqlite3")
         reg = R.SessionRegistry(self.db)
         try:
-            self.made = reg.resolve_or_register(ident(platform="minimax", host="mac-1", native="mvs_issues_1"))
+            self.made = reg.resolve_or_register(
+                ident(platform="minimax", host="mac-1", native="mvs_issues_1")
+            )
         finally:
             reg.close_db()
-        self.where = {"platform": "minimax", "verified_host": "mac-1", "profile_scope": "simplewithus",
-                      "native_session_id": "mvs_issues_1"}
+        self.where = {
+            "platform": "minimax",
+            "verified_host": "mac-1",
+            "profile_scope": "simplewithus",
+            "native_session_id": "mvs_issues_1",
+        }
 
     def update(self, **fields):
         return R.update_session(self.db, **self.where, **fields)
@@ -1687,7 +1693,9 @@ class SessionIssuesTest(unittest.TestCase):
         conn = sqlite3.connect(self.db)
         try:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0], 1)
-            self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 3)
+            self.assertEqual(
+                conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 3
+            )
         finally:
             conn.close()
 
@@ -1730,7 +1738,9 @@ class SessionIssuesTest(unittest.TestCase):
         out = self.update(issues=given)
         ids = [i["id"] for i in out["issues"]]
         self.assertEqual(len(ids), R.MAX_ISSUES)
-        self.assertEqual(ids, ["OPS-9", "OPS-8", "OPS-7", "OPS-6", "OPS-5", "OPS-4", "OPS-3", "OPS-2"])
+        self.assertEqual(
+            ids, ["OPS-9", "OPS-8", "OPS-7", "OPS-6", "OPS-5", "OPS-4", "OPS-3", "OPS-2"]
+        )
         out = self.update(issues=given[:9])
         self.assertEqual(out["issues"], [{"id": "AFC-7", "seen_at": stamp % 9}])
 
@@ -1739,7 +1749,9 @@ class SessionIssuesTest(unittest.TestCase):
         with conn:
             conn.execute("UPDATE sessions SET last_seen_at = '2026-01-01T00:00:00.000Z'")
         conn.close()
-        self.assertEqual(R.letter_history(self.db, "minimax")[0]["last_seen_at"], "2026-01-01T00:00:00.000Z")
+        self.assertEqual(
+            R.letter_history(self.db, "minimax")[0]["last_seen_at"], "2026-01-01T00:00:00.000Z"
+        )
         R.touch_session(self.db, **self.where)
         after = R.letter_history(self.db, "minimax")[0]["last_seen_at"]
         self.assertGreater(after, "2026-01-01T00:00:00.000Z")
@@ -1758,17 +1770,35 @@ class SessionIssuesTest(unittest.TestCase):
         out = self.update(issues=[{"id": "OPS-1", "seen_at": "2026-11-10T16:00:00Z"}])
         self.assertEqual(out["outcome"], "closed")
         self.assertEqual([i["id"] for i in out["issues"]], ["AFC-694"])
-        self.assertEqual(R.touch_session(self.db, **self.where), {"record_id": self.made["record_id"],
-                                                                   "outcome": "closed"})
+        self.assertEqual(
+            R.touch_session(self.db, **self.where),
+            {"record_id": self.made["record_id"], "outcome": "closed"},
+        )
 
     def test_the_cli_update_takes_issues_as_json(self):
-        argv = ["update", "--db", self.db, "--platform", "minimax", "--location", "mac-1",
-                "--scope", "simplewithus", "--session-id", "mvs_issues_1"]
+        argv = [
+            "update",
+            "--db",
+            self.db,
+            "--platform",
+            "minimax",
+            "--location",
+            "mac-1",
+            "--scope",
+            "simplewithus",
+            "--session-id",
+            "mvs_issues_1",
+        ]
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            code = R.main(argv + ["--issues", '[{"id": "CT-7", "seen_at": "2026-11-10T15:00:00Z"}]'], env={})
+            code = R.main(
+                argv + ["--issues", '[{"id": "CT-7", "seen_at": "2026-11-10T15:00:00Z"}]'], env={}
+            )
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(out.getvalue())["issues"], [{"id": "CT-7", "seen_at": "2026-11-10T15:00:00Z"}])
+        self.assertEqual(
+            json.loads(out.getvalue())["issues"],
+            [{"id": "CT-7", "seen_at": "2026-11-10T15:00:00Z"}],
+        )
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             code = R.main(argv + ["--issues", "CT-7"], env={})

@@ -692,7 +692,12 @@ def _on_record(OR: Any, db: str, args: Any, sid: str) -> dict[str, Any]:
         elif args.op == "issues":
             from . import platform_letter as PL
 
-            identity = {"platform": PLATFORM, "location": args.location, "scope": SCOPE, "session_id": sid}
+            identity = {
+                "platform": PLATFORM,
+                "location": args.location,
+                "scope": SCOPE,
+                "session_id": sid,
+            }
             return PL.record_issues_local(OR, db, identity, args.issues)
         return {
             "ok": True,
