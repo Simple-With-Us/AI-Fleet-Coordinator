@@ -833,6 +833,9 @@ private struct SecretNamesPanel: View {
     @State private var problem: String?
     @State private var doctorProblem: String?
     @State private var loading = false
+    /// Counts the loads started,  so only the newest one shows its results:  the reload when
+    /// the folders change can start while a Refresh is still reading.
+    @State private var loadGeneration = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -909,12 +912,22 @@ private struct SecretNamesPanel: View {
     }
 
     private func load() async {
-        loading = true; defer { loading = false }
+        loadGeneration += 1
+        let generation = loadGeneration
+        // A load a newer one has replaced shows nothing and leaves `loading` to the newer one.
+        func isCurrent() -> Bool { generation == loadGeneration && !Task.isCancelled }
+        loading = true
+        defer { if generation == loadGeneration { loading = false } }
         let secrets = FleetSecrets()
         do {
-            groups = try await awaitOffThePool { try secrets.secretNamesGrouped(paths: ["/"]) }
+            let found = try await awaitOffThePool { try secrets.secretNamesGrouped(paths: ["/"]) }
+            guard isCurrent() else { return }
+            groups = found
             problem = nil
-        } catch { problem = error.localizedDescription }
+        } catch {
+            guard isCurrent() else { return }
+            problem = error.localizedDescription
+        }
         // One folder at a time,  so a folder this Mac's reader is not granted is reported
         // and the folders it can read are still listed.
         var readGroups: [SecretNameGroup] = []
@@ -932,13 +945,17 @@ private struct SecretNamesPanel: View {
                 if !readProblems.contains(line) { readProblems.append(line) }
             }
         }
+        guard isCurrent() else { return }
         knobGroups = readGroups
         knobProblems = readProblems
         // The doctor is asked on its own, and its failure is shown rather than hidden.
         do {
-            doctor = try await awaitOffThePool { try secrets.doctorReport() }
+            let report = try await awaitOffThePool { try secrets.doctorReport() }
+            guard isCurrent() else { return }
+            doctor = report
             doctorProblem = nil
         } catch {
+            guard isCurrent() else { return }
             doctor = [:]
             doctorProblem = error.localizedDescription
         }
