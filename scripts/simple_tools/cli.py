@@ -1625,9 +1625,7 @@ def _mentions_missing_from(text: str, mentions: Sequence[str]) -> list[str]:
     only whitespace or opening punctuation before the @.  Same rule as contract.js mentionsMissingFrom.
     """
     visible = "\n".join(
-        line
-        for line in ROUTER.outside_code(text).split("\n")
-        if not line.lstrip().startswith(">")
+        line for line in ROUTER.outside_code(text).split("\n") if not line.lstrip().startswith(">")
     )
     present = [_mention_identity(found) for found in _LIVE_MENTION_RE.findall(visible)]
     missing: list[str] = []
