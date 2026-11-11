@@ -12,6 +12,7 @@ import io
 import json
 import os
 import secrets
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -104,6 +105,46 @@ class ApiSide(unittest.TestCase):
         self.assertEqual(code, 0, again)
         self.assertTrue(again["retired"])  # a closed chat's second close is the local path's retired answer
 
+    def test_a_touch_names_the_letter_the_server_holds_now(self) -> None:
+        _, made = self.registry("register", "--location", "mac", "--session-id", SID)
+        code, touched = self.registry("touch", "--location", "mac", "--session-id", SID)
+        self.assertEqual(code, 0, touched)
+        self.assertEqual((touched["label"], touched["generation"]), (made["label"], made["generation"]))
+        # The registry moves the letter in place (a relabel, or a restore):  the next touch names the new one.
+        conn = sqlite3.connect(self.db)
+        with conn:
+            conn.execute("UPDATE alias_assignments SET letter = 'QX' WHERE retired_at IS NULL")
+        conn.close()
+        code, moved = self.registry("touch", "--location", "mac", "--session-id", SID)
+        self.assertEqual(code, 0, moved)
+        self.assertEqual(moved["label"], "QX")
+        code, titled = self.registry("title", "--location", "mac", "--session-id", SID, "--title=New words")
+        self.assertEqual(code, 0, titled)
+        self.assertEqual((titled["label"], titled["record_id"]), ("QX", made["record_id"]))
+
+    def test_a_server_chat_retitles_when_the_server_moved_its_letter(self) -> None:
+        env = dict(self.api_env, CLAUDE_LETTER_LOCATION="server", CLAUDE_CODE_ENTRYPOINT="cli")
+        start = time.time()
+
+        def hook(payload: dict, now: float) -> dict | None:
+            out = io.StringIO()
+            CL.hook(env, io.StringIO(json.dumps(payload)), out, runner=no_runner, now=now, platform="linux")
+            text = out.getvalue().strip()
+            return json.loads(text)["hookSpecificOutput"] if text else None
+
+        first = hook({"hook_event_name": "SessionStart", "session_id": SID, "source": "startup"}, start)
+        old = first["sessionTitle"].split(":")[0]
+        hook({"hook_event_name": "UserPromptSubmit", "session_id": SID, "prompt": "fix the build",
+              "session_title": first["sessionTitle"]}, start + 1)
+        conn = sqlite3.connect(self.db)
+        with conn:
+            conn.execute("UPDATE alias_assignments SET letter = 'QX' WHERE retired_at IS NULL")
+        conn.close()
+        out = hook({"hook_event_name": "UserPromptSubmit", "session_id": SID, "prompt": "more",
+                    "session_title": "%s: Fix the Build" % old}, start + CL.TOUCH_SECONDS + 5)
+        self.assertEqual(out["sessionTitle"], "QX: Fix the Build")
+        self.assertIn("letter changed from %s to QX" % old, out["additionalContext"])
+
     def test_a_chat_that_comes_back_after_close_reopens(self) -> None:
         _, first = self.registry("register", "--location", "mac", "--session-id", SID)
         self.registry("close", "--location", "mac", "--session-id", SID)
@@ -150,6 +191,62 @@ class ApiSide(unittest.TestCase):
         # Every other op needs no lineage, so it calls the API in process.
         in_process = CL.Chat(env, "CLAUDE", "server", SID, runner=no_runner, now=time.time())
         self.assertEqual(in_process.registry("touch").get("error"), "this chat has no registration")
+
+    # ---- the archive sweep over the API (AFC-694) ----
+
+    def app_record(self, cli: str, archived: bool) -> None:
+        from simple_tools import claude_app_lineage as AL
+
+        folder = os.path.join(AL.store_root(self.home), "acct", "org")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "local_%s.json" % cli[:8]), "w", encoding="utf-8") as fh:
+            json.dump({"cliSessionId": cli, "isArchived": archived, "title": "Private"}, fh)
+
+    def sweep(self, *argv: str) -> tuple[int, str]:
+        out = io.StringIO()
+        code = CL.main(["sweep-archived", *argv], env=self.api_env, stdout=out)
+        return code, out.getvalue()
+
+    def test_the_archive_sweep_closes_through_the_api(self) -> None:
+        kept = "d-0002-0000-0000-0000-000000000000"
+        _, made = self.registry("register", "--location", "mac", "--session-id", SID)
+        self.registry("register", "--location", "mac", "--session-id", kept)
+        self.app_record(SID, archived=True)
+        self.app_record(kept, archived=False)
+        code, out = self.sweep("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertIn("closed %s (%s, mac)" % (made["label"], SID[:8]), out)
+        self.assertNotIn("Private", out)
+        self.assertEqual(self.record()["state"], "closed")
+        self.assertEqual(self.record(kept)["state"], "active")
+        self.assertFalse(os.path.exists(os.path.join(self.hook_state, "operator", "registry.sqlite3")))
+        code, again = self.sweep("--apply")  # idempotent:  the closed chat is no longer open
+        self.assertEqual(code, 0, again)
+        self.assertIn("0 archived", again)
+
+    def test_a_dry_run_sends_only_the_history_read(self) -> None:
+        from unittest import mock
+
+        from simple_tools import registry_api
+
+        self.registry("register", "--location", "mac", "--session-id", SID)
+        self.app_record(SID, archived=True)
+        real = registry_api.call
+        ops: list = []
+
+        def call(env, op, params=None, **kwargs):
+            ops.append(op)
+            return real(env, op, params, **kwargs)
+
+        with mock.patch.object(registry_api, "call", side_effect=call):
+            code, out = self.sweep()
+        self.assertEqual(code, 0, out)
+        self.assertIn("would close", out)
+        # The API drops other seats' rows after its window is cut, so a short answer is read once more with a
+        # wider window to be sure the history ended;  every call is still a read.
+        self.assertEqual(set(ops), {"history"})
+        self.assertLessEqual(len(ops), 2)
+        self.assertEqual(self.record()["state"], "active")
 
 
 if __name__ == "__main__":

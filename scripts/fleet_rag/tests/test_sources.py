@@ -14,7 +14,7 @@ import time
 import unittest
 from unittest import mock
 
-from fleet_rag import notes_export, sources
+from fleet_rag import ingest, linear_board, notes_export, sources
 from fleet_rag.notes_export import html_to_text, strip_title_line
 
 FINDINGS_DDL = """
@@ -1475,7 +1475,7 @@ class ChatLogTests(unittest.TestCase):
 
     def test_retired_sources_are_explicit_only_and_linear_refreshes_by_default(self) -> None:
         self.assertEqual(
-            sources.NIGHTLY_SOURCES, ("linear", "doc", "skill", "memory", "apple-note")
+            sources.NIGHTLY_SOURCES, ("linear", "doc", "skill", "memory")
         )
         self.assertIn("linear", sources.SOURCES)
         from fleet_rag.ingest import _resolve_names, _attests_health
@@ -1894,37 +1894,37 @@ class LinearSourceTests(unittest.TestCase):
 
     def test_scan_and_fetch_fail_closed(self) -> None:
         with mock.patch.object(
-            sources.subprocess,
-            "run",
+            sources.linear_board,
+            "query",
             side_effect=OSError("no simple-board here"),
         ):
             with self.assertRaises(sources.LinearSourceError):
                 sources._linear_light_scan()
 
-        def ok_proc(*a, **k):
-            return subprocess.CompletedProcess(a, 0, stdout='{"errors": [{"message": "boom"}]}', stderr="")
+        def gql_err(seat, cid, sec, q, *, max_chars):
+            return {"errors": [{"message": "boom"}]}
 
-        with mock.patch.object(sources.subprocess, "run", side_effect=ok_proc):
+        with mock.patch.object(sources.linear_board, "query", side_effect=gql_err):
             with self.assertRaises(sources.LinearSourceError):
                 sources._linear_query("query { x }")
 
-        def bad_rc(*a, **k):
-            return subprocess.CompletedProcess(a, 4, stdout="", stderr="no Fleet credentials")
+        def bad_rc(seat, cid, sec, q, *, max_chars):
+            raise linear_board.BoardCliFailure(4, "no Fleet credentials")
 
-        with mock.patch.object(sources.subprocess, "run", side_effect=bad_rc):
+        with mock.patch.object(sources.linear_board, "query", side_effect=bad_rc):
             with self.assertRaises(sources.LinearSourceError):
                 sources._linear_query("query { x }")
 
     def test_missing_linear_identity_is_named_without_echoing_stderr(self) -> None:
         """AFC-677:  the retired shared app makes simple-board exit 4;  the error says why."""
 
-        def no_identity(*a, **k):
-            return subprocess.CompletedProcess(
-                a, 4, stdout="",
-                stderr="simple-board: no Linear app credentials: LINEAR_CLIENT_ID ... secret-ish-tail",
+        def no_identity(seat, cid, sec, q, *, max_chars):
+            raise linear_board.BoardCliFailure(
+                4,
+                "simple-board: no Linear app credentials: LINEAR_CLIENT_ID ... secret-ish-tail",
             )
 
-        with mock.patch.object(sources.subprocess, "run", side_effect=no_identity):
+        with mock.patch.object(sources.linear_board, "query", side_effect=no_identity):
             with self.assertRaises(sources.LinearSourceError) as ctx:
                 sources._linear_query("query { x }")
         msg = str(ctx.exception)
@@ -1939,16 +1939,16 @@ class LinearSourceTests(unittest.TestCase):
         }
         calls = []
 
-        def fake(argv, **k):
-            calls.append(k["env"]["LINEAR_CLIENT_ID"])
-            if k["env"]["LINEAR_CLIENT_ID"] == "bf-id" and bf_fails:
-                return subprocess.CompletedProcess(argv, 1, stdout="", stderr="invalid_client")
-            return subprocess.CompletedProcess(argv, 0, stdout='{"viewer": {}}', stderr="")
+        def fake(seat, cid, sec, q, *, max_chars):
+            calls.append(cid)
+            if cid == "bf-id" and bf_fails:
+                raise linear_board.BoardCliFailure(1, "invalid_client")
+            return {"viewer": {}}
 
         for bf_fails, want in ((False, ["bf-id"]), (True, ["bf-id", "gb-id"])):
             calls.clear()
             with mock.patch.dict(os.environ, env, clear=False), \
-                    mock.patch.object(sources.subprocess, "run", side_effect=fake):
+                    mock.patch.object(sources.linear_board, "query", side_effect=fake):
                 os.environ.pop("LINEAR_CLIENT_ID", None)
                 os.environ.pop("LINEAR_CLIENT_SECRET", None)
                 os.environ.pop(sources.LINEAR_SEATS_ENV, None)
@@ -1960,6 +1960,45 @@ class LinearSourceTests(unittest.TestCase):
                     sources._linear_query("query { y }")
                     self.assertEqual(calls, ["gb-id"])
         sources.take_warnings()
+
+    def test_linear_reuses_one_board_client_per_seat_per_run(self) -> None:
+        """AFC-688:  many queries in one ingest share one in-process Auth client (one mint)."""
+        linear_board.reset_sessions()
+        lin = mock.Mock()
+        lin.call.return_value = {"n": 1}
+        B = mock.Mock()
+        B.endpoint.return_value = "http://127.0.0.1/mock"
+        B.ENV_PAIR = "env"
+        B.seat_app_names.return_value = ()
+        B.Identity = mock.Mock(side_effect=lambda *a, **k: mock.Mock())
+        B.Auth = mock.Mock()
+        B.Linear = mock.Mock(return_value=lin)
+        B.clean_data.side_effect = lambda data: data
+        B.output_limited.return_value = None
+        B.GqlError = Exception
+        with mock.patch.object(linear_board, "load_board", return_value=B):
+            linear_board.query("BF-ORACLE", "bf-id", "bf-sec", "query { a }", max_chars=100)
+            linear_board.query("BF-ORACLE", "bf-id", "bf-sec", "query { b }", max_chars=100)
+        self.assertEqual(B.Auth.call_count, 1)
+        self.assertEqual(B.Linear.call_count, 1)
+        self.assertEqual(lin.call.call_count, 2)
+
+    def test_missing_board_cli_is_a_board_failure_not_an_unbound_local(self) -> None:
+        from fleet_rag import linear_board as LB
+
+        with (mock.patch.object(LB, "_board_mod", None), mock.patch.object(LB, "_BOARD_PATH", pathlib.Path("/nonexistent/board"))):
+            with self.assertRaises(LB.BoardCliFailure) as ctx:
+                LB.query("BF-ORACLE", "id", "secret", "{ viewer { id } }", max_chars=100)
+        self.assertEqual(ctx.exception.code, 4)
+
+    def test_linear_board_auth_failure_detection(self) -> None:
+        err401 = linear_board.BoardCliFailure(1, "HTTP 401 from token endpoint")
+        err403 = linear_board.BoardCliFailure(1, "403 Forbidden")
+        err_misc = linear_board.BoardCliFailure(1, "timeout")
+        self.assertTrue(sources._linear_is_auth_failure_board(err401))
+        self.assertTrue(sources._linear_is_auth_failure_board(err403))
+        self.assertTrue(sources._linear_is_auth_failure_board(linear_board.BoardCliFailure(4, "")))
+        self.assertFalse(sources._linear_is_auth_failure_board(err_misc))
 
     def test_linear_non_auth_errors_never_fall_back(self) -> None:
         def proc(rc, err):
@@ -2307,19 +2346,17 @@ class LinearSourceTests(unittest.TestCase):
         self.assertIn("map.tsv", str(ctx.exception))
 
     def test_empty_scan_is_a_broken_read_not_an_empty_board(self) -> None:
-        def empty_page(*a, **k):
-            return subprocess.CompletedProcess(
-                a, 0, stdout='{"issues": {"nodes": [], "pageInfo": {"hasNextPage": false}}}', stderr=""
-            )
+        def empty_page(seat, cid, sec, q, *, max_chars):
+            return {"issues": {"nodes": [], "pageInfo": {"hasNextPage": False}}}
 
-        with mock.patch.object(sources.subprocess, "run", side_effect=empty_page):
+        with mock.patch.object(sources.linear_board, "query", side_effect=empty_page):
             with self.assertRaises(sources.LinearSourceError):
                 sources._linear_light_scan()
 
-        def no_connection(*a, **k):
-            return subprocess.CompletedProcess(a, 0, stdout="{}", stderr="")
+        def no_connection(seat, cid, sec, q, *, max_chars):
+            return {}
 
-        with mock.patch.object(sources.subprocess, "run", side_effect=no_connection):
+        with mock.patch.object(sources.linear_board, "query", side_effect=no_connection):
             with self.assertRaises(sources.LinearSourceError):
                 sources._linear_light_scan()
 
@@ -2430,3 +2467,81 @@ class LinearSourceTests(unittest.TestCase):
         self.assertEqual(first[0].doc_id, second[0].doc_id)
         self.assertNotEqual(first[0].text_markdown, second[0].text_markdown)
         self.assertLess(first[0].updated_at_ms, second[0].updated_at_ms)
+
+
+class ServerNightlySources(unittest.TestCase):
+    def test_the_server_set_attests_and_a_truncated_run_does_not(self) -> None:
+        names = list(sources.SERVER_NIGHTLY_SOURCES)
+        self.assertEqual(names, ["linear", "doc", "skill", "memory"])
+        self.assertNotIn("apple-note", names)
+        self.assertTrue(ingest._attests_health(names, True, None, None))
+        self.assertTrue(ingest._attests_health(list(sources.NIGHTLY_SOURCES), True, None, None))
+        self.assertFalse(ingest._attests_health(names, True, None, 5))
+        self.assertFalse(ingest._attests_health(names, False, None, None))
+        self.assertFalse(ingest._attests_health(names, True, None, None, dry_run=True))
+        self.assertFalse(ingest._attests_health(["linear", "doc"], True, None, None))
+
+    def test_default_checkouts_follow_the_code_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            code = root / "server-code"
+            repo = code / "AI-Fleet-Coordinator"
+            repo.mkdir(parents=True)
+            (repo / "README.md").write_text("# Fleet\n\nThe server clone.\n")
+            ops = code / "fleet-ops"
+            ops.mkdir()
+            (ops / "HANDBOOK.md").write_text("# Handbook\n\nThe server handbook.\n")
+            decoy = root / "home-code" / "AI-Fleet-Coordinator"
+            decoy.mkdir(parents=True)
+            (decoy / "README.md").write_text("# Decoy\n\nNot the server clone.\n")
+            with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": str(code)}):
+                seen = list(sources.iter_docs(extra=[], code_dir=None, apps_dir=None, grok_home=None))
+                pinned = list(
+                    sources.iter_docs(decoy, root / "missing-ops", [], code_dir=None, apps_dir=None, grok_home=None)
+                )
+            paths = [d.path for d in seen]
+            self.assertTrue(any(path.endswith("server-code/AI-Fleet-Coordinator/README.md") for path in paths))
+            self.assertTrue(any(path.endswith("server-code/fleet-ops/HANDBOOK.md") for path in paths))
+            self.assertFalse(any("home-code" in path for path in paths))
+            self.assertTrue(any("home-code" in d.path for d in pinned))
+            self.assertFalse(any("server-code" in d.path for d in pinned))
+
+    def test_omitted_code_dir_reads_the_env_and_none_skips_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            code = root / "code"
+            repo = code / "DealDex"
+            repo.mkdir(parents=True)
+            (repo / "README.md").write_text("# DealDex\n\nHello from the configured root.\n")
+            empty = root / "empty"
+            with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": str(code)}):
+                skipped = list(
+                    sources.iter_docs(empty, empty, [], code_dir=None, apps_dir=None, grok_home=None)
+                )
+                seen = list(sources.iter_docs(empty, empty, [], apps_dir=None, grok_home=None))
+            self.assertFalse(any("DealDex" in d.path for d in skipped))
+            self.assertTrue(any("DealDex" in d.path and d.path.endswith("README.md") for d in seen))
+
+    def test_skills_and_memory_read_the_mirror_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            skill = root / "skills" / "claude" / "afc687-mirror-skill"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("---\nname: Mirror skill\n---\n# Mirror skill\n")
+            memory = root / "memory" / "claude-projects" / "-Users-jay-DealDex" / "memory"
+            memory.mkdir(parents=True)
+            (memory / "MEMORY.md").write_text("# index\n")
+            (memory / "note.md").write_text("# Note\n\nA lesson.\n")
+            codex = root / "memory" / "codex"
+            codex.mkdir()
+            (codex / "keep.md").write_text("# Keep\n")
+            with mock.patch.dict(os.environ, {"FLEET_RAG_MIRROR": str(root)}):
+                skills = {d.doc_id for d in sources.iter_skills()}
+                memories = {d.doc_id for d in sources.iter_memory()}
+            self.assertIn("skill/claude/afc687-mirror-skill", skills)
+            self.assertIn("memory/claude/dealdex/note.md", memories)
+            self.assertNotIn("memory/claude/dealdex/MEMORY.md", memories)
+            self.assertIn("memory/codex/keep.md", memories)
+            without = {d.doc_id for d in sources.iter_skills()}
+            self.assertNotIn("skill/claude/afc687-mirror-skill", without)
+

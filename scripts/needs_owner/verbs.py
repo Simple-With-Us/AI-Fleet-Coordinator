@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TextIO
 
-from . import f3, records, safety
+from . import bar, f3, records, safety
 from . import items as itemsmod
 from . import links as linkmod
 from . import notify as notifymod
@@ -41,6 +41,8 @@ class Fields:
     recommend: int | None
     context: str | None
     urgent: bool
+    # The reason class the bar recorded (bar.py);  None when the bar is off or none was given.
+    why_owner: str | None = None
 
 
 @dataclass
@@ -131,6 +133,7 @@ def make_block(
         version=version,
         again_of=again_of,
         mirror_of=mirror.url if mirror else None,
+        why_owner=f.why_owner,
     )
 
 
@@ -331,7 +334,25 @@ def run_file(args, io: Streams) -> int:
                 )
             )
 
+    # The owner bar (bar.py) meets only a NEW filing, so it comes after the lookup of the item a rerun would find:
+    # an item that already exists behaves exactly as in off (no class needed, nothing counted, no knob read).  A Grok
+    # Bot mirror is exempt too:  the Grok bot already opened its own OWNER topic.
+    if existing is None and not mirror:
+        policy = bar.read_policy(io.knobs)
+        fields.why_owner, class_warning = bar.check_class(
+            policy.mode, getattr(args, "why_owner", None)
+        )
+        if class_warning:
+            io.warn(class_warning)
+        wanted.why_owner = fields.why_owner
+    else:
+        policy = bar.Policy()
+
     if args.dry_run:
+        if existing is None:  # a look at the cap, with nothing held or recorded
+            cap_warning = bar.check_cap(policy, io.environ, seat, bar.wall(io.clock))
+            if cap_warning:
+                io.warn(cap_warning)
         plan = {
             "dry_run": True,
             "uid": wanted.uid,
@@ -340,6 +361,8 @@ def run_file(args, io: Streams) -> int:
             "existing": existing.identifier if existing else None,
             "options": len(fields.options),
         }
+        if policy.on:
+            plan.update({"bar": policy.mode, "why_owner": fields.why_owner})
         if args.json:
             emit_json(io, plan)
         else:
@@ -352,12 +375,23 @@ def run_file(args, io: Streams) -> int:
     new = existing is None
     item = existing
     if new:
-        item, new = file_new(
-            io, runner, seat, app, fields, scope, parent, mirror, wanted, args.again
-        )
+        # Reserve a cap place under the lock, then release the lock before board I/O.
+        # An ambiguous write keeps its reservation counting rather than risking a cap breach.
+        with bar.Slot(policy, io.environ, seat, io.clock, io.warn) as slot:
+            cap_warning = slot.check()
+            if cap_warning:
+                io.warn(cap_warning)
+            item, new = file_new(
+                io, runner, seat, app, fields, scope, parent, mirror, wanted, args.again
+            )
+            if new:
+                slot.record(item.identifier)
         if parent and new:
             comment_on_parent(io, runner, parent, item.identifier)
     others = [i for i in items if i.identifier != item.identifier]
+    extra = {"already_filed": not new, "again": bool(args.again)}
+    if policy.on:
+        extra.update({"bar": policy.mode, "why_owner": fields.why_owner})
     return finish(
         io,
         runner,
@@ -368,7 +402,7 @@ def run_file(args, io: Streams) -> int:
         new=new,
         rescan=not new,
         words=("filed", "already filed"),
-        extra={"already_filed": not new, "again": bool(args.again)},
+        extra=extra,
     )
 
 
@@ -412,16 +446,26 @@ def file_new(
             raise BoardFailed(
                 "board file failed:  %s" % (first_line(result.err) or "exit %d" % result.code),
                 result.code,
+                outcome_unknown=result.timed_out
+                or bool(_FILED_RE.search(result.out))
+                or result.code not in (4, 5, 6),
             )
         match = _FILED_RE.search(result.out)
         if not match:
-            raise BoardFailed("board file answered with a line I cannot read")
-        item = itemsmod.fetch(runner, match.group(3))
+            raise BoardFailed("board file answered with a line I cannot read", outcome_unknown=True)
+        unchanged = "already filed" in match.group(4)
+        try:
+            item = itemsmod.fetch(runner, match.group(3))
+        except BoardFailed as exc:
+            if not unchanged:
+                exc.outcome_unknown = True
+            raise
         if item is None:
             raise BoardFailed(
-                "%s was filed but cannot be read back;  run the same command again" % match.group(3)
+                "%s was filed but cannot be read back;  run the same command again"
+                % match.group(3),
+                outcome_unknown=not unchanged,
             )
-        unchanged = "already filed" in match.group(4)
         if unchanged and item.status in CLOSED_STATUSES:
             # An issue with this uid exists that the open list did not show (it is closed).
             if not again:
@@ -440,7 +484,14 @@ def file_new(
             )
             continue
         if item.block is None:
-            item = repair_block(io, runner, item, block)
+            try:
+                item = repair_block(io, runner, item, block)
+            except BoardFailed as exc:
+                # A definite COMMENT failure says nothing about the issue that
+                # FILE already created. Keep its cap reservation on this path.
+                if not unchanged:
+                    exc.outcome_unknown = True
+                raise
         return item, not unchanged
     raise BoardFailed(
         "could not find an unused version of this question after %d tries" % _MAX_VERSION_TRIES

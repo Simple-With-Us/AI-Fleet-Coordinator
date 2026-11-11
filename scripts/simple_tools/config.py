@@ -64,12 +64,21 @@ ENV_PARTITION = "SIMPLE_TOOLS_PARTITION"  # tests point it elsewhere; production
 PARTITION_RELPATH = os.path.join("docs", "protocols", "simple-tools-partition.toml")
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEFAULT_OWNER_CLIENTS = ["website", "ZulipMobile", "ZulipFlutter", "ZulipElectron", "ZulipDesktop"]
+# The five wake count caps (owner, Nov 10, 2026:  "remove budget limits for wakes for now but have it
+# remain as option in Muster").  They have NO default:  a cap that is absent from a seat's `budget`
+# table is no limit at all, a positive number is a cap, and `0` still means no wake is allowed (a
+# pause).  wakes.budget_block skips an unset cap, so a seat is never held back by a number nobody
+# wrote down.  The old defaults were 6 an hour, 40 a day, 2 per topic an hour, and for the owner 20
+# a day and 6 per topic an hour;  a seat that wants one of them writes it in its own `budget`.
+WAKE_CAP_KEYS: tuple[str, ...] = (
+    "wakes_per_hour",
+    "wakes_per_day",
+    "per_topic_per_hour",
+    "owner_per_day",
+    "owner_per_topic_per_hour",
+)
+# The rest of a seat's `budget` table keeps its defaults.
 BUDGET_DEFAULTS: dict[str, float] = {
-    "wakes_per_hour": 6,
-    "wakes_per_day": 40,
-    "per_topic_per_hour": 2,
-    "owner_per_day": 20,
-    "owner_per_topic_per_hour": 6,
     "usd_per_day": 2.0,
     "board_per_day": 0,
     # Route suggestions (owner 2026-10-10):  what one routing seat (today only CLAUDE, the one claude
@@ -79,6 +88,53 @@ BUDGET_DEFAULTS: dict[str, float] = {
     "routes_per_day": 10,
     "route_topic_minutes": 30,
 }
+# The `[seat.X]` keys (step 1 of the one wake path, owner Nov 10, 2026:  a seat either has a `routine`,
+# an HTTP POST to a router that decides, delivers and wakes, or it only captures into its inbox).
+# SEAT_KEYS is the schema going forward.  `email_env`, `key_env` and `site_env` belong with `creds`:
+# they name the environment variables a `creds = "env"` seat reads, so they are part of it.
+SEAT_KEYS: frozenset[str] = frozenset(
+    {
+        "instance",
+        "enabled",
+        "creds",
+        "bot",
+        "bearer_file",
+        "muse_bridge",
+        "budget",
+        "held_back",
+        "live",
+        "routine",
+        "email_env",
+        "key_env",
+        "site_env",
+    }
+)
+# The per-platform wake settings the one wake path removes.  Each still works exactly as before
+# while seats migrate, and each adds a deprecation warning (never an error, never a downgrade).
+SEAT_KEYS_LEGACY: frozenset[str] = frozenset(
+    {
+        "wake",
+        "model",
+        "claude",
+        "muse",
+        "mcode",
+        "mcode_model",
+        "provider",
+        "fallback",
+        "fallback_model",
+        "fallback_uncontained_ok",
+        "typing_indicator",
+        "route_enabled",
+    }
+)
+# Keys the parser already refuses with their own message (`bearer_locator` downgrades a seat's wake,
+# `allow_admin` stops the seat), so the schema adds nothing to say about them.
+SEAT_KEYS_RETIRED: frozenset[str] = frozenset({"bearer_locator", "allow_admin"})
+# Settings inside a seat's `budget` table that go away with the wake types (route suggestions and the
+# per-seat board filing cap).  Still read, still enforced, and a warning when a seat sets one.
+BUDGET_KEYS_LEGACY: frozenset[str] = frozenset(
+    {"board_per_day", "routes_per_hour", "routes_per_day", "route_topic_minutes"}
+)
 WAKE_MAX_BUDGET_USD = 0.25
 # The muse seat's default model (AFC-291).  The catalog carries three muse-spark-1.3 variants and
 # the plain `muse-spark-1.3` is 15x dearer than the contributor tier, so the default names the
@@ -334,6 +390,14 @@ class SeatConfig:
         )
 
     @property
+    def mode(self) -> str:
+        """The one wake path's two shapes:  "routine" when the seat has a `routine` (an HTTP POST to a
+        router that decides, delivers and wakes), else "capture" (it only fills its inbox).  Derived
+        from the routine alone, so no setting can disagree with it.  `wake` stays as the older name
+        for the per-platform wake type while seats migrate;  every existing caller still reads it."""
+        return "routine" if self.routine is not None else "capture"
+
+    @property
     def wake_max_usd(self) -> float:
         """What one wake may cost, reserved against usd_per_day:  the claude run's maximum, a
         routine's configured cost (default 0:  the daemon spends nothing; the routine's platform
@@ -351,11 +415,12 @@ class SeatConfig:
             not spamming the fleet and not causing downstream cost by fanning one wake into many.
 
         So the dollar axis carries no signal for a muse seat and the COUNT caps do the bounding:
-        wakes_per_hour 6, wakes_per_day 40, per_topic_per_hour 2, owner_per_day 20 and
-        owner_per_topic_per_hour 6 (BUDGET_DEFAULTS) are unchanged and still enforced first, exactly
-        as they are for a claude seat.  usd_per_day still exists in the config and is still read, so
-        an operator who sets it sees it enforced as a plain ceiling of $0 spent against $0 spent:  it
-        never blocks, which is correct, because the run it would have blocked was never paid for.
+        wakes_per_hour, wakes_per_day, per_topic_per_hour, owner_per_day and owner_per_topic_per_hour
+        (WAKE_CAP_KEYS) are enforced first, exactly as they are for a claude seat, whenever the seat
+        sets them (since Nov 10, 2026 a cap the seat leaves unset is no limit).  usd_per_day still
+        exists in the config and is still read, so an operator who sets it sees it enforced as a
+        plain ceiling of $0 spent against $0 spent:  it never blocks, which is correct, because the
+        run it would have blocked was never paid for.
 
         The consequence to be explicit about:  the held-back machinery (heldback.py) and its
         eviction reserve `reserve_usd` from this value to decide what a wake might still spend.  At
@@ -393,6 +458,10 @@ class Config:
         self.muse_bridge_remote_app = ""
         self.muse_bridge_consult_backup: dict[str, Any] | None = None
         self.errors: list[str] = []
+        # Things worth fixing that change nothing today:  a deprecated seat setting that still works, and
+        # a seat key nothing reads.  They never raise, never downgrade a seat and never turn status red;
+        # `simple-chat daemon check-config` prints them and still exits 0 when warnings are all it has.
+        self.warnings: list[str] = []
         # Seats a config problem kept out entirely (AFC-358):  seat -> why.  They have no runner, so
         # status shows them as a red row instead of letting them vanish.
         self.skipped_seats: dict[str, list[str]] = {}
@@ -462,6 +531,15 @@ class Config:
         # The Linear project webhook (AFC-565, linear_projects_hook.py), served under
         # /linear/v1/ by the listener API.  Off by default;  the server instance only.
         self.linear_projects_enabled = False
+        # The Operator's Zulip -> Linear living comments (operator_linear.py), hosted by
+        # the daemon in place of the retired standalone relay process.  Off by default;
+        # the server instance only, so two instances can never stack comments.
+        self.linear_comments_enabled = False
+        # [linear_comments] infisical_token_file:  where the scoped read-only Infisical
+        # service token for the Operator's Linear developer token lives, when the host
+        # does not bind OPERATOR_LINEAR_INFISICAL_TOKEN.  "" means operator_linear's
+        # default.
+        self.linear_comments_infisical_token_file = ""
         self.listener_api_bind = "127.0.0.1"
         self.listener_api_port = LISTENER_API_DEFAULT_PORT
         # Mac-only wake backpressure during host saturation (OPS-950).  Peer wakes are held back
@@ -633,6 +711,33 @@ def _routine(seat: str, given: Any, problems: list[str]) -> RoutineConfig | None
         cost_usd=cost,
         signature_prefix=prefix,
     )
+
+
+def seat_key_warnings(seat: str, section: Mapping[str, Any]) -> list[str]:
+    """What is worth saying about the keys of one `[seat.X]` section, in a stable order.  Warnings only:
+    a deprecated key keeps working exactly as before, and an unknown key is ignored as it always was.
+    Neither one may downgrade the seat or drop its `routine`, so the caller puts these in
+    `Config.warnings` and nowhere else (a wake problem would rewrite the seat to inbox)."""
+    found: list[str] = []
+    for key in sorted(section, key=str):
+        if key in SEAT_KEYS or key in SEAT_KEYS_RETIRED:
+            continue
+        if key in SEAT_KEYS_LEGACY or key.startswith("routes_"):
+            found.append(
+                "seat.%s.%s is deprecated:  it still works as before, and goes away when seats move "
+                "to the one wake path (a routine, or capture only)" % (seat, key)
+            )
+        else:
+            found.append("seat.%s.%s is not a known seat setting and is ignored" % (seat, key))
+    budget = section.get("budget")
+    if isinstance(budget, dict):
+        for key in sorted(budget, key=str):
+            if key in BUDGET_KEYS_LEGACY:
+                found.append(
+                    "seat.%s.budget.%s is deprecated:  it still works as before, and goes away with "
+                    "the wake types it belongs to" % (seat, key)
+                )
+    return found
 
 
 def from_dict(raw: Mapping[str, Any]) -> Config:
@@ -950,6 +1055,33 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         cfg.linear_projects_enabled = linear_section.get("enabled", False)
     if len(errors) > linear_errors_before:
         cfg.linear_projects_enabled = False  # a section with a problem never turns the hook on
+    comments_errors_before = len(errors)
+    comments_section = raw.get("linear_comments", {})
+    if not isinstance(comments_section, dict):
+        errors.append("[linear_comments] must be a table")
+        comments_section = {}
+    unknown_comments = set(comments_section) - {"enabled", "infisical_token_file"}
+    if unknown_comments:
+        errors.append(
+            "[linear_comments] has unknown setting(s): %s" % ", ".join(sorted(unknown_comments))
+        )
+    if not isinstance(comments_section.get("enabled", False), bool):
+        errors.append("linear_comments.enabled must be true or false")
+    else:
+        cfg.linear_comments_enabled = comments_section.get("enabled", False)
+    token_file = comments_section.get("infisical_token_file", "")
+    if not isinstance(token_file, str):
+        errors.append("linear_comments.infisical_token_file must be a string")
+    else:
+        cfg.linear_comments_infisical_token_file = token_file.strip()
+    if len(errors) > comments_errors_before:
+        cfg.linear_comments_enabled = False  # a section with a problem never turns the engine on
+    if cfg.linear_comments_enabled and cfg.instance != "server":
+        errors.append(
+            "linear_comments.enabled applies to the server instance only:  one instance "
+            "writes the topics' Linear comments, so they can never be stacked"
+        )
+        cfg.linear_comments_enabled = False
     cfg.presence = L.presence_topics(raw)
     platform = (
         ((raw.get("platform") or {}).get("claude-code") or {})
@@ -986,6 +1118,8 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         # its wake drops to inbox.  A typo in a wake key once cost a seat 41 minutes of mentions.
         problems: list[str] = []
         wake_problems: list[str] = []
+        # Schema notes for this section (warnings only:  nothing below reads them back).
+        cfg.warnings.extend(seat_key_warnings(seat_name, section))
         seat_instance = section.get("instance")
         if seat_instance is not None and seat_instance not in INSTANCES:
             problems.append(
@@ -1210,7 +1344,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             wake_problems.append("seat.%s.budget must be a table" % seat_name)
             given = {}
         for key, value in given.items():
-            if key not in BUDGET_DEFAULTS:
+            if key not in BUDGET_DEFAULTS and key not in WAKE_CAP_KEYS:
                 wake_problems.append("seat.%s.budget.%s is not a known budget" % (seat_name, key))
                 continue
             number = _number(value, "seat.%s.budget.%s" % (seat_name, key), wake_problems)

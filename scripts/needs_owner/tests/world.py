@@ -40,7 +40,9 @@ class FakeKnobs:
     def __init__(self) -> None:
         self.values: dict = {"NEEDS_OWNER_NOTIFY_PAUSED": False,
                              "NEEDS_OWNER_CAPS": {"urgent_per_hour": 3, "per_hour": 6, "per_day": 30},
-                             "OWNER_LINEAR_USER_ID": ""}
+                             "OWNER_LINEAR_USER_ID": "",
+                             # the owner bar's knobs (bar.py, read by `file`):  off and no cap are the registry defaults
+                             "NEEDS_OWNER_BAR": "off", "NEEDS_OWNER_SEAT_DAILY_MAX": 0}
         self.stale_copy = False
         self.fail: Exception | None = None
         self.reads: list = []

@@ -7,60 +7,403 @@ import Foundation
 // holds what is actually in effect.  A setting where the two disagree is DRIFT,  and it is
 // never shown as a quiet green.
 //
-// MARK: - The wake types
+// MARK: - Wakes or Captures Only
 
-/// The wake types the eavesdropper knows.
-enum WakeType: String, CaseIterable {
-    case inbox
-    case claude
-    case http
-    case muse
-    case openrouter
+/// What a seat is, by its own section of the configuration file.
+///
+/// The owner's ruling of Nov 10, 2026:  a seat has one wake path, a signed wake the eavesdropper
+/// sends to the seat's routine, which wakes the right chat and delivers the message to it.  On a
+/// seat with several chats the routine picks one by letter, topic words or recency;  on a
+/// single-threaded seat it wakes the one thread.  A seat with no routine has no wake at all:  its
+/// mentions are kept in its inbox.  The one mechanism is the `routine` table.  Muster never
+/// writes a `wake` line.
+///
+/// Until the listener change lands, today's listener (`simple_tools/config.py`) still decides by
+/// the old `wake` line:  it defaults to inbox, reads a routine only with `wake = "http"`, still
+/// runs `claude`, `muse` and `openrouter`, and drops every other mismatch to inbox, which only
+/// captures.  So a seat Wakes with a routine and `wake = "http"`, or with a routine and no wake
+/// line, which is how the one-wake-path schema reads every seat once the line is gone.  It
+/// Captures Only with no routine and no wake line or `wake = "inbox"`.  Every other mix is an Old
+/// Wake Setting, and the panel says what today's listener does with it rather than call it either.
+enum WakeSeatKind: Equatable {
+    /// The seat's section holds a routine table, with `wake = "http"` or no wake line, so each
+    /// mention wakes the right chat.
+    case wakes
+    /// The seat's section holds no routine and no wake line, or `wake = "inbox"`, so mentions are
+    /// kept in its inbox and nothing is woken.
+    case capturesOnly
+    /// The seat's section mixes a routine and an old wake line in a way the one wake path does not.
+    case oldWakeSetting(WakeOldSetting)
+    /// Muster cannot say.  The text says why.
+    case notKnown(String)
 
+    /// The kind, as the panel labels it.
     var title: String {
         switch self {
-        case .inbox: return "Inbox"
-        case .claude: return "Claude"
-        case .http: return "HTTP"
-        case .muse: return "Muse"
-        case .openrouter: return "OpenRouter"
+        case .wakes: return "Wakes"
+        case .capturesOnly: return "Captures Only"
+        case .oldWakeSetting: return "Old Wake Setting"
+        case .notKnown: return "Not Known"
         }
     }
 
-    /// Only these start a worker.  `inbox` captures the message and runs nothing.
-    var runsWorker: Bool { self != .inbox }
+    /// Whether the seat Wakes through its routine, so its routine applies.
+    var hasRoutine: Bool { self == .wakes }
 
-    /// The runtime `daemon test-wake --runtime` names for this wake, or nil when the eavesdropper
-    /// runs nothing on this Mac to test:  `cmd_test_wake` refuses any seat whose wake is not
-    /// claude, muse or openrouter.
-    var testRuntime: String? {
+    /// Whether today's listener wakes the seat at all, by its routine or by an old wake it still
+    /// runs, so its caps apply.  A seat the listener drops to inbox is not woken.
+    var isWoken: Bool {
         switch self {
-        case .claude, .muse, .openrouter: return rawValue
-        case .inbox, .http: return nil
+        case .wakes: return true
+        case .oldWakeSetting(let old): return old.isWoken
+        case .capturesOnly, .notKnown: return false
         }
     }
 
-    /// The pin file a wake of this type is proved by, by the reader's runtime key, or nil when
-    /// the wake needs no pin.
-    var pinKey: String? { testRuntime }
-
-    /// Why a wake of this type needs no pin and has no test wake.
-    var noPinReason: String? {
+    /// What the label means, for its help text.
+    var help: String {
         switch self {
-        case .inbox: return "An inbox wake captures the message and runs no worker, so there is nothing to test or pin."
-        case .http: return "An HTTP wake calls a remote routine and runs no worker on this Mac, so there is nothing to test or pin."
-        case .claude, .muse, .openrouter: return nil
+        case .wakes:
+            return "Each mention goes to this seat's routine, which wakes the right chat:  it picks among the seat's chats by letter, topic words or recency, or wakes the seat's only thread."
+        case .capturesOnly:
+            return "Mentions are kept in the seat's inbox, and nothing is woken."
+        case .oldWakeSetting(let old):
+            return old.note
+        case .notKnown(let why):
+            return why
         }
     }
 
-    /// The pin file a fallback runtime is proved by.  The OpenRouter fallback has a pin of its own,
-    /// apart from an OpenRouter wake's (`wake-pin-openrouter-fallback.json`).
-    static func fallbackPinKey(_ fallback: String) -> String {
-        fallback == "openrouter" ? "openrouter-fallback" : fallback
+    /// Why a seat that Captures Only is not offered a routine here.
+    static let routineWaitsOnTheListener = "Giving this seat a routine waits on the listener change that drops the old wake line, so Muster does not offer it yet."
+
+    /// Why Test Wake is not offered yet.
+    static let testWakeWaits = "Test Wake waits on the listener's new dry run, which shows the chat a wake would reach and why, without waking it."
+}
+
+/// What today's listener does with a seat whose routine and old wake line do not make one wake
+/// path, by `simple_tools/config.py`'s own rules.
+enum WakeOldSetting: Equatable {
+    /// No routine, and an old wake the listener still runs:  claude, muse or openrouter.
+    case stillWakes(String)
+    /// No routine, and an old wake line the listener refuses:  `http` without a routine, or a word
+    /// it does not know.  It drops the seat to inbox.
+    case refused(String)
+    /// A routine beside a wake line other than `http`.  Today's listener reads a routine only with
+    /// `wake = "http"`, so it drops the seat to inbox.  A routine with no wake line is not this
+    /// case:  it Wakes, as the one-wake-path schema reads it.
+    case routineNeedsHTTP(wake: String?)
+
+    /// The old wakes today's listener still runs without a routine.
+    static let stillRun: Set<String> = ["claude", "muse", "openrouter"]
+
+    /// Whether today's listener wakes the seat.
+    var isWoken: Bool {
+        if case .stillWakes = self { return true }
+        return false
     }
 
-    /// The runtimes the reader reads a pin file for.
-    static let pinKeys = ["claude", "muse", "mcode", "openrouter", "openrouter-fallback"]
+    /// What the panel says about it.
+    var note: String {
+        switch self {
+        case .stillWakes(let wake):
+            return "The listener still wakes this seat through its old wake = \"\(wake)\" setting until the listener change lands.\u{00A0} Muster no longer edits it."
+        case .refused(let wake):
+            return "The listener refuses this old wake = \"\(wake)\" line, so this seat only captures until it is removed."
+        case .routineNeedsHTTP(let wake):
+            let line = wake.map { "has wake = \"\($0)\"" } ?? "has no wake line"
+            return "This seat has a routine and \(line).\u{00A0} Today's listener uses a routine only with wake = \"http\", so this seat only captures until the listener change lands."
+        }
+    }
+}
+/// How a seat's section holds its routine table.
+enum WakeRoutineForm: Equatable {
+    /// No routine table:  the seat Captures Only.
+    case absent
+    /// `routine = { … }` in the seat's own section.
+    case inline
+    /// A `[seat.X.routine]` header of its own.
+    case subTable
+    /// A routine Muster cannot model:  a `routine` line that is not a table, or both forms at
+    /// once.  The text says which.
+    case unreadable(String)
+
+    /// Whether the seat holds a routine table Muster can read.
+    var hasTable: Bool { self == .inline || self == .subTable }
+}
+
+extension ListenerConfigDocument {
+    /// The spellings this file gives a seat in its headers, `[seat.X]` and any table inside it
+    /// such as `[seat.X.routine]`, matched as the listener matches them:  it upper-cases a seat's
+    /// name (`simple_tools/config.py`, `seat_name = str(name).upper()`), so `[seat.mm]` is the MM
+    /// seat.  Two spellings are two headers the listener folds into one seat.
+    func spellings(ofSeat tag: String) -> [String] {
+        let wanted = tag.uppercased()
+        return seatTags.filter { $0.uppercased() == wanted }
+    }
+
+    /// The spelling the file already gives a seat, so a read finds `[seat.mm]` for MM and a write
+    /// keeps that header as the file has it.  With no header it is the tag itself;  with two, the
+    /// first, and the seat is Not Known and is not written.
+    func spelling(ofSeat tag: String) -> String {
+        spellings(ofSeat: tag).first ?? tag
+    }
+
+    /// The name of a seat's own section in this file:  `seat.` and the file's spelling.
+    func seatSection(_ tag: String) -> String {
+        "seat.\(spelling(ofSeat: tag))"
+    }
+
+    /// Every section of a seat, under every spelling the listener folds to it.
+    func sections(matchingSeat tag: String) -> [Section] {
+        spellings(ofSeat: tag).flatMap { sections(ofSeat: $0) }
+    }
+
+    /// How a seat's section holds its routine table.
+    func routineForm(seat tag: String) -> WakeRoutineForm {
+        let section = seatSection(tag)
+        let header = sections.contains { $0.name == "\(section).routine" }
+        guard let line = assignment(section: section, key: "routine") else {
+            return header ? .subTable : .absent
+        }
+        if header {
+            return .unreadable("The [\(section)] section holds a routine line and a [\(section).routine] header, which TOML refuses, so Muster cannot read the routine.")
+        }
+        guard line.node.tableEntries != nil else {
+            return .unreadable("The routine line in [\(section)] is not a table, so Muster cannot read it.")
+        }
+        return .inline
+    }
+
+    /// The routine table a seat's section holds, or nil when it holds none Muster can read.
+    func routineTable(seat tag: String) -> [String: ListenerConfigValue]? {
+        routineTable(seat: tag, form: routineForm(seat: tag))
+    }
+
+    /// The routine table a seat's section holds, for a form already looked up.
+    func routineTable(seat tag: String, form: WakeRoutineForm) -> [String: ListenerConfigValue]? {
+        let section = seatSection(tag)
+        switch form {
+        case .inline:
+            if case .table(let entries)? = value(section: section, key: "routine") { return entries }
+            return nil
+        case .subTable:
+            guard let table = sections.first(where: { $0.name == "\(section).routine" }) else { return nil }
+            var entries: [String: ListenerConfigValue] = [:]
+            for line in table.assignments {
+                entries[line.key] = line.node.value
+            }
+            return entries
+        case .absent, .unreadable:
+            return nil
+        }
+    }
+
+    /// The `wake` line a seat's section still holds from the old wake types, as the file holds it,
+    /// with nothing trimmed:  the listener compares it exactly, so `" http"` is not `http`.  It is
+    /// shown, and read only to say what today's listener does with the seat.
+    func leftoverWake(seat tag: String) -> String? {
+        value(section: seatSection(tag), key: "wake")?.displayText
+    }
+}
+
+// MARK: - The routine rules
+
+/// The eavesdropper's own rules for a routine table, as `_routine` in `simple_tools/config.py`
+/// applies them, so Muster refuses what `daemon check-config` would refuse.  The names of the
+/// environment variables are names, never values:  Muster never reads a secret.
+enum WakeRoutineRules {
+    /// `ROUTINE_METHODS`.
+    static let methods = ["POST", "PUT", "PATCH"]
+    /// `ROUTINE_AUTH`.
+    static let auths = ["header", "bearer", "hmac-sha256"]
+    /// `ROUTINE_DEFAULT_HEADER`.
+    static let defaultHeaders: [String: String] = [
+        "header": "X-Routine-Key",
+        "bearer": "Authorization",
+        "hmac-sha256": "X-Simple-Tools-Signature",
+    ]
+    /// `ROUTINE_RESERVED_HEADERS`.
+    static let reservedHeaders: Set<String> = [
+        "host", "content-length", "content-type", "transfer-encoding",
+        "connection", "user-agent", "idempotency-key", "cookie",
+    ]
+    /// `GENERIC_ENV`:  the CLI's single-seat variables, which two seats would alias.
+    static let genericEnv: Set<String> = ["ZULIP_EMAIL", "ZULIP_API_KEY", "ZULIP_RC"]
+    /// The keys `_routine` knows.
+    static let knownKeys: Set<String> = [
+        "url_env", "key_env", "method", "header", "auth", "timeout_seconds", "cost_usd", "signature_prefix",
+    ]
+    /// `ROUTINE_TIMEOUT_DEFAULT`, and the most `_routine` allows.
+    static let defaultTimeout: Double = 15
+    static let minimumTimeout: Double = 1
+    static let maximumTimeout: Double = 60
+
+    /// The router contract on PR #1702:  every router's routine line is `routine = { url_env,
+    /// key_env, method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`,
+    /// so each takes a POST, signed with a bearer key in the Authorization header.  Muster shows these and never offers
+    /// them as choices.
+    static let contract: [String: String] = [
+        "method": "POST",
+        "auth": "bearer",
+        "header": "Authorization",
+    ]
+
+    /// `env_code`:  GB-COMPILER is GB_COMPILER.
+    static func envCode(_ seat: String) -> String {
+        var code = ""
+        for scalar in seat.uppercased().unicodeScalars {
+            if isUpper(scalar) || isDigit(scalar) {
+                code.unicodeScalars.append(scalar)
+            } else {
+                code += "_"
+            }
+        }
+        return code
+    }
+
+    /// The variable `_routine` reads a seat's router address from when the table names none.
+    static func defaultURLEnv(seat: String) -> String { envCode(seat) + "_ROUTINE_URL" }
+    /// The variable `_routine` reads a seat's sender key from when the table names none.
+    static func defaultKeyEnv(seat: String) -> String { envCode(seat) + "_ROUTINE_KEY" }
+
+    private static func isUpper(_ scalar: Unicode.Scalar) -> Bool { (65...90).contains(scalar.value) }
+    private static func isLower(_ scalar: Unicode.Scalar) -> Bool { (97...122).contains(scalar.value) }
+    private static func isDigit(_ scalar: Unicode.Scalar) -> Bool { (48...57).contains(scalar.value) }
+
+    /// `_ENV_NAME_RE`:  `^[A-Z_][A-Z0-9_]{0,127}$`.
+    static func isEnvName(_ value: String) -> Bool {
+        let scalars = Array(value.unicodeScalars)
+        guard (1...128).contains(scalars.count), let first = scalars.first,
+              isUpper(first) || first == "_" else { return false }
+        return scalars.allSatisfy { isUpper($0) || isDigit($0) || $0 == "_" }
+    }
+
+    /// `_HEADER_RE`:  `^[A-Za-z0-9][A-Za-z0-9-]{0,63}$`.
+    static func isHeaderName(_ value: String) -> Bool {
+        let scalars = Array(value.unicodeScalars)
+        guard (1...64).contains(scalars.count), let first = scalars.first,
+              isUpper(first) || isLower(first) || isDigit(first) else { return false }
+        return scalars.allSatisfy { isUpper($0) || isLower($0) || isDigit($0) || $0 == "-" }
+    }
+
+    /// `_PREFIX_RE`:  `^[A-Za-z0-9=:_.-]{0,32}$`.
+    static func isSignaturePrefix(_ value: String) -> Bool {
+        let scalars = Array(value.unicodeScalars)
+        guard scalars.count <= 32 else { return false }
+        return scalars.allSatisfy {
+            isUpper($0) || isLower($0) || isDigit($0) || "=:_.-".unicodeScalars.contains($0)
+        }
+    }
+
+    /// `_env_name`:  the problem with a variable name, or nil when there is none.
+    static func envNameProblem(_ value: ListenerConfigValue, name: String) -> String? {
+        guard case .text(let text) = value, isEnvName(text) else {
+            return "\(name) must be an environment variable name (upper case letters, digits and _)"
+        }
+        if genericEnv.contains(text) {
+            return "\(name) may not be \(text): that is the CLI's single-seat variable, and two seats reading it would alias one bot"
+        }
+        return nil
+    }
+
+    /// `_number`:  a number of at least `minimum`, and never a yes or a no.
+    private static func number(_ value: ListenerConfigValue) -> Double? {
+        if case .number(let number) = value { return number }
+        return nil
+    }
+
+    /// Python's `str()` of a value, for the method, which `_routine` reads as text whatever it is.
+    private static func pythonText(_ value: ListenerConfigValue) -> String {
+        switch value {
+        case .text(let text): return text
+        case .bool(let flag): return flag ? "True" : "False"
+        default: return value.displayText
+        }
+    }
+
+    /// Everything `_routine` would say is wrong with a seat's routine table, in its own words.
+    static func problems(seat: String, routine given: [String: ListenerConfigValue]) -> [String] {
+        var problems: [String] = []
+        // The listener names a seat by its upper-cased name, so its messages do too.
+        let prefix = "seat.\(seat.uppercased()).routine"
+        for key in given.keys.sorted() where !knownKeys.contains(key) {
+            problems.append("\(prefix).\(key) is not a known routine setting")
+        }
+        let urlValue = given["url_env"] ?? .text(defaultURLEnv(seat: seat))
+        let keyValue = given["key_env"] ?? .text(defaultKeyEnv(seat: seat))
+        let urlProblem = envNameProblem(urlValue, name: "\(prefix).url_env")
+        let keyProblem = envNameProblem(keyValue, name: "\(prefix).key_env")
+        if let urlProblem { problems.append(urlProblem) }
+        if let keyProblem { problems.append(keyProblem) }
+        let method = pythonText(given["method"] ?? .text("POST")).uppercased()
+        if !methods.contains(method) {
+            problems.append("\(prefix).method must be one of \(methods.joined(separator: ", "))")
+        }
+        var auth = "bearer"
+        if let value = given["auth"] {
+            if case .text(let text) = value, auths.contains(text) {
+                auth = text
+            } else {
+                problems.append("\(prefix).auth must be one of \(auths.joined(separator: ", "))")
+            }
+        }
+        let header = given["header"] ?? .text(defaultHeaders[auth] ?? "Authorization")
+        var headerIsGood = false
+        if case .text(let text) = header, isHeaderName(text), !reservedHeaders.contains(text.lowercased()) {
+            headerIsGood = true
+        }
+        if !headerIsGood {
+            problems.append("\(prefix).header must be an HTTP header name (letters, digits and -) other than \(reservedHeaders.sorted().joined(separator: ", "))")
+        }
+        let signature = given["signature_prefix"] ?? .text("")
+        if case .text(let text) = signature, isSignaturePrefix(text) {
+            if !text.isEmpty, auth != "hmac-sha256" {
+                problems.append("\(prefix).signature_prefix applies only to auth = \"hmac-sha256\"")
+            }
+        } else {
+            problems.append("\(prefix).signature_prefix must be up to 32 letters, digits or =:_.-")
+        }
+        let timeout = number(given["timeout_seconds"] ?? .number(defaultTimeout))
+        if let timeout, timeout >= minimumTimeout {
+            if timeout > maximumTimeout {
+                problems.append("\(prefix).timeout_seconds must be 60 or less")
+            }
+        } else {
+            problems.append("\(prefix).timeout_seconds must be a number of at least 1")
+        }
+        let cost = number(given["cost_usd"] ?? .number(0))
+        if cost == nil || (cost ?? 0) < 0 {
+            problems.append("\(prefix).cost_usd must be a number of at least 0")
+        }
+        if urlProblem == nil, keyProblem == nil, urlValue == keyValue {
+            problems.append("\(prefix).url_env and key_env must be different variables")
+        }
+        return problems
+    }
+
+    /// What a contract key's value is in effect for a routine table:  the file's, or the
+    /// eavesdropper's default when the file holds none.
+    static func effective(_ key: String, in routine: [String: ListenerConfigValue]) -> String {
+        if let value = routine[key] { return value.displayText }
+        switch key {
+        case "method": return "POST"
+        case "auth": return "bearer"
+        case "header":
+            let auth = routine["auth"]?.displayText ?? "bearer"
+            return defaultHeaders[auth] ?? "Authorization"
+        default: return ""
+        }
+    }
+
+    /// How a contract key differs from the router contract, in words, or nil when it does not.
+    static func contractDifference(_ key: String, in routine: [String: ListenerConfigValue]) -> String? {
+        guard let wanted = contract[key] else { return nil }
+        let value = effective(key, in: routine)
+        let same = key == "method" ? value.uppercased() == wanted : value == wanted
+        guard !same else { return nil }
+        return "Differs from the router contract:  \(key) is \(value), and the contract says \(wanted).\u{00A0} Muster offers no control for it."
+    }
 }
 
 // MARK: - Which eavesdropper holds a seat
@@ -233,7 +576,7 @@ struct ListenerPartition: Equatable {
     func host(of seat: String, in config: ListenerConfigDocument) -> ListenerSeatHost {
         let host = self.host(of: seat)
         guard host.isTheMac,
-              case .text("server")? = config.value(section: "seat.\(seat)", key: "instance") else {
+              case .text("server")? = config.value(section: config.seatSection(seat), key: "instance") else {
             return host
         }
         return .markedForTheServer
@@ -255,12 +598,15 @@ struct ListenerPartition: Equatable {
 
 /// One setting of one seat.
 enum WakeSettingKey: String, CaseIterable, Identifiable {
-    case wakeType
-    case model
-    case musePath
-    case mcodePath
-    case fallback
-    case fallbackUncontained
+    /// The routine table's keys.  The first three are a waking seat's own;  the method, the
+    /// signing and the header are fixed by the router contract, so they are shown and never
+    /// offered as choices.
+    case routineURLEnv
+    case routineKeyEnv
+    case routineTimeout
+    case routineMethod
+    case routineAuth
+    case routineHeader
     case wakesPerHour
     case wakesPerDay
     case perTopicPerHour
@@ -281,12 +627,12 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .wakeType: return "Wake type"
-        case .model: return "Model"
-        case .musePath: return "Muse binary"
-        case .mcodePath: return "Mcode binary"
-        case .fallback: return "Fallback"
-        case .fallbackUncontained: return "Fallback may answer outside its container"
+        case .routineURLEnv: return "Routine address variable"
+        case .routineKeyEnv: return "Routine key variable"
+        case .routineTimeout: return "Routine timeout seconds"
+        case .routineMethod: return "Routine method"
+        case .routineAuth: return "Routine signing"
+        case .routineHeader: return "Routine key header"
         case .wakesPerHour: return "Wakes per hour"
         case .wakesPerDay: return "Wakes per day"
         case .perTopicPerHour: return "Wakes per topic per hour"
@@ -302,15 +648,38 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Where the setting lives in the seat's section of the configuration file.
-    var configLocation: (key: String, subPath: [String]) {
+    /// The key inside the routine table, for a routine setting.
+    var routineKey: String? {
         switch self {
-        case .wakeType: return ("wake", [])
-        case .model: return ("model", [])
-        case .musePath: return ("muse", [])
-        case .mcodePath: return ("mcode", [])
-        case .fallback: return ("fallback", [])
-        case .fallbackUncontained: return ("fallback_uncontained_ok", [])
+        case .routineURLEnv: return "url_env"
+        case .routineKeyEnv: return "key_env"
+        case .routineTimeout: return "timeout_seconds"
+        case .routineMethod: return "method"
+        case .routineAuth: return "auth"
+        case .routineHeader: return "header"
+        default: return nil
+        }
+    }
+
+    /// Whether the setting is one of the routine table's.
+    var isRoutine: Bool { routineKey != nil }
+
+    /// Whether the router contract fixes this setting, so Muster shows it and offers no control.
+    var isFixedByContract: Bool {
+        routineKey.map { WakeRoutineRules.contract[$0] != nil } ?? false
+    }
+
+    /// Whether a change to this setting needs the owner's Touch ID:  the variables name where a
+    /// seat's wakes go and the key that signs them.
+    var needsOwnerCheck: Bool {
+        self == .routineURLEnv || self == .routineKeyEnv
+    }
+
+    /// Where the setting lives in the seat's section of the configuration file, with the routine
+    /// table written inline.  `location(seat:in:)` says where it is in a given file.
+    var configLocation: (key: String, subPath: [String]) {
+        if let routineKey { return ("routine", [routineKey]) }
+        switch self {
         case .wakesPerHour: return ("budget", ["wakes_per_hour"])
         case .wakesPerDay: return ("budget", ["wakes_per_day"])
         case .perTopicPerHour: return ("budget", ["per_topic_per_hour"])
@@ -323,6 +692,75 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
         case .liveOwnerPerDay: return ("live", ["owner_per_day"])
         case .liveLoopTurns: return ("live", ["loop_turns"])
         case .hostLoadGate: return ("host_wake_load_per_core", [])
+        case .routineURLEnv, .routineKeyEnv, .routineTimeout, .routineMethod, .routineAuth, .routineHeader:
+            // Answered above, by the routine key.
+            return ("routine", [])
+        }
+    }
+
+    /// Where the setting lives for one seat in this file.  A table the file keeps under its own
+    /// header (`[seat.X.routine]`, `[seat.X.budget]` or `[seat.X.live]`) is read and written there,
+    /// in place, and every other setting lives in the seat's own section, so a write keeps the form
+    /// the file already has.  A table written both ways at once is left to the seat's own section,
+    /// where the writer refuses it.
+    ///
+    /// The seat's section is found under the spelling the file already gives it, as the listener
+    /// finds it.  A caller that has looked that spelling up passes it, so it is not looked up again
+    /// for every setting.
+    func location(
+        seat tag: String,
+        in config: ListenerConfigDocument,
+        spelling: String? = nil
+    ) -> (section: String, key: String, subPath: [String]) {
+        let section = "seat.\(spelling ?? config.spelling(ofSeat: tag))"
+        let location = configLocation
+        let table = "\(section).\(location.key)"
+        if location.subPath.count == 1, let inner = location.subPath.first,
+           config.sections.contains(where: { $0.name == table }),
+           config.assignment(section: section, key: location.key) == nil {
+            return (table, inner, [])
+        }
+        return (section, location.key, location.subPath)
+    }
+
+    /// The five wake count caps in a seat's `budget` (`config.py` `WAKE_CAP_KEYS`).  Since #1735
+    /// they have no default (owner, Nov 10, 2026:  "remove budget limits for wakes for now but have
+    /// it remain as option in Muster"):  a cap the seat's `budget` does not hold is No Limit, `0` is
+    /// Paused, because `wakes.py` `at_cap` is reached at once, and a positive number is a cap.
+    var isWakeCap: Bool {
+        switch self {
+        case .wakesPerHour, .wakesPerDay, .perTopicPerHour, .ownerPerDay, .ownerPerTopicPerHour:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// What a wake cap with no value reads.
+    static let noLimitText = "No Limit"
+    /// What a wake cap of 0 reads.
+    static let pausedText = "Paused"
+
+    /// How a wake cap's value reads:  No Limit when the seat holds none, Paused at 0, and the
+    /// number otherwise.
+    static func wakeCapText(_ value: ListenerConfigValue?) -> String {
+        WakeCapLimit(value).text
+    }
+
+    /// What a wake cap's field says about its three kinds of value.
+    static let wakeCapHelp = "Clear the field for No Limit, which is the plain way to choose it.\u{00A0} 0 is Paused:  no wake of this kind is allowed while it is 0.\u{00A0} A positive number is a cap."
+
+    /// Whether a value of 0 stops every wake:  `live.py` refuses a live turn once its count is at
+    /// or over these caps, and keeps its defaults, so a 0 there refuses every wake, never "no
+    /// limit".  The live loop turns treat 0 as off, and live minutes per topic as no spacing, so 0
+    /// is a real setting for those two.  The five wake caps take 0 as Paused (`isWakeCap`), and the
+    /// dollar cap is refused outright.
+    var zeroStopsEveryWake: Bool {
+        switch self {
+        case .livePerHour, .livePerDay, .liveOwnerPerDay:
+            return true
+        default:
+            return false
         }
     }
 
@@ -336,31 +774,15 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Whether the setting means anything for a seat with this wake and fallback, by the rules
-    /// `simple_tools/config.py` applies:  the muse binary only for a muse wake, the mcode binary only
-    /// for a claude or muse wake, a fallback only for a wake that runs a turn, the container rule
-    /// only for the mcode fallback, and no cap for an inbox seat, which never runs a wake.  A nil
-    /// wake is the file's own default, inbox.
-    func applies(toWake wake: String?, fallback: String?) -> Bool {
-        let wake = wake ?? WakeType.inbox.rawValue
+    /// Whether the setting means anything for a seat of this kind:  the routine table for a seat
+    /// that Wakes, the caps for any seat the listener wakes today (by its routine or by an old wake
+    /// line), and none of them for one that Captures Only, which never wakes.
+    func applies(to kind: WakeSeatKind) -> Bool {
         switch self {
-        case .wakeType:
-            return true
-        case .model:
-            return ["claude", "muse", "openrouter"].contains(wake)
-        case .musePath:
-            return wake == "muse"
-        case .mcodePath:
-            return ["claude", "muse"].contains(wake)
-        case .fallback:
-            // `WORKER_WAKES` in `simple_tools/config.py`:  every wake that runs a turn, HTTP included.
-            return ["claude", "http", "muse", "openrouter"].contains(wake)
-        case .fallbackUncontained:
-            return fallback == "mcode"
         case .hostLoadGate:
             return true
         default:
-            return wake != WakeType.inbox.rawValue
+            return isRoutine ? kind.hasRoutine : kind.isWoken
         }
     }
 
@@ -381,6 +803,8 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
             return "The eavesdropper counts wakes and not dollars,  so this cap is never enforced and Muster will not write it."
         case .hostLoadGate:
             return "The owner ruled the host load gate stays off,  so Muster will not turn it on."
+        case .routineMethod, .routineAuth, .routineHeader:
+            return "The router contract fixes this (POST, signed with a bearer key in the Authorization header), so Muster shows it and offers no control for it."
         default:
             return nil
         }
@@ -395,8 +819,6 @@ enum WakeSettingState: String, Equatable {
     case match
     /// The eavesdropper is using something else.
     case drift
-    /// The setting is configured,  but nobody ever proved it works.
-    case unproven
     /// The eavesdropper does not report this setting,  so the panel can only show the file.
     case notOwned
     /// The engine owns this setting,  but the eavesdropper does not publish it:  Muster can
@@ -422,7 +844,6 @@ enum WakeSettingState: String, Equatable {
         // state means one thing only, that the eavesdropper is using the value the file holds.
         case .match: return "MATCHES"
         case .drift: return "DRIFT"
-        case .unproven: return "UNPROVEN"
         case .notOwned: return "NOT ENFORCED"
         case .unpublished: return "NOT REPORTED"
         case .unset: return "DEFAULT"
@@ -437,7 +858,7 @@ enum WakeSettingState: String, Equatable {
     /// Whether the state is a problem the owner should see first.
     var isProblem: Bool {
         switch self {
-        case .drift, .unproven, .unknown, .stale: return true
+        case .drift, .unknown, .stale: return true
         case .match, .notOwned, .unpublished, .unset, .off, .heldElsewhere, .seatOff: return false
         }
     }
@@ -467,6 +888,69 @@ enum ListenerRunState: Equatable {
 
 // MARK: - The rows
 
+/// The limit a wake cap holds a seat to.  The grid's two columns, the drift note and the usage
+/// line all read it from here, so they never say different things about one cap.
+enum WakeCapLimit: Equatable {
+    /// No cap:  the seat's budget holds none, so any number of wakes of this kind is allowed.
+    case noLimit
+    /// 0:  no wake of this kind is allowed.
+    case paused
+    /// A cap.
+    case cap(ListenerConfigValue)
+    /// Nothing read says what the limit is, such as a file that was not read beside a status with
+    /// no budget.  It is never shown as No Limit.
+    case notKnown
+
+    /// The limit a wake cap's value sets:  none is No Limit, 0 is Paused, and any other value is a
+    /// cap.
+    init(_ value: ListenerConfigValue?) {
+        guard let value else {
+            self = .noLimit
+            return
+        }
+        if case .number(let number) = value, number == 0 {
+            self = .paused
+            return
+        }
+        self = .cap(value)
+    }
+
+    /// The limit in the panel's words.
+    var text: String {
+        switch self {
+        case .noLimit: return WakeSettingKey.noLimitText
+        case .paused: return WakeSettingKey.pausedText
+        case .cap(let value): return value.displayText
+        case .notKnown: return "not known"
+        }
+    }
+
+    /// What follows a count of wakes on the usage line:  " of 6", " of 0 (Paused)", " (No Limit)",
+    /// or " (limit not known)".
+    var usageSuffix: String {
+        switch self {
+        case .noLimit: return " (\(WakeSettingKey.noLimitText))"
+        case .paused: return " of 0 (\(WakeSettingKey.pausedText))"
+        case .cap(let value): return " of \(value.displayText)"
+        case .notKnown: return " (limit not known)"
+        }
+    }
+
+    /// Whether a count has reached the limit.  Paused is always reached, and No Limit, or a limit
+    /// that is not known, never is.
+    func isReached(by count: Int) -> Bool {
+        switch self {
+        case .paused:
+            return true
+        case .cap(let value):
+            guard case .number(let number) = value else { return false }
+            return Double(count) >= number
+        case .noLimit, .notKnown:
+            return false
+        }
+    }
+}
+
 /// One setting of one seat,  as the panel shows it.
 struct WakeSetting: Identifiable, Equatable {
     /// What a field shows for a setting the file does not hold.
@@ -481,100 +965,62 @@ struct WakeSetting: Identifiable, Equatable {
     let state: WakeSettingState
     /// A line about the setting,  in words.
     let note: String
+    /// How the setting differs from the router contract, for one the contract fixes, or nil when
+    /// it does not differ.
+    var contractDifference: String? = nil
 
     var id: String { "\(seat).\(key.rawValue)" }
     var title: String { key.title }
     var configuredText: String { configured?.displayText ?? WakeSetting.unsetText }
     var liveText: String { live?.displayText ?? WakeSetting.unsetText }
-}
+    /// Whether the eavesdropper reported this seat's budget without this wake cap, which since #1735
+    /// is No Limit in effect.
+    var liveNoLimit: Bool = false
 
-/// The pin that proves a binary works.
-struct PinEvidence: Equatable {
-    /// The runtime the pin is for:  "claude", "muse", "mcode", "openrouter" or
-    /// "openrouter-fallback".
-    let runtime: String
-    /// The binary the pin proves.  An OpenRouter pin proves a model and a request, not a binary.
-    let binary: String?
-    /// The model the pin proved.
-    let model: String?
-    /// When the pin was made.
-    let verifiedAt: Date?
-    /// Whether the pin holds:  the eavesdropper's own verdict when it published one, and
-    /// otherwise only that the file exists.
-    let pinned: Bool
-    /// The eavesdropper's own reason when the pin does not hold, such as `pin_stale`.
-    let why: String?
-
-    /// How old the pin is,  in words.
-    var age: String? {
-        guard let verifiedAt else { return nil }
-        let seconds = Date().timeIntervalSince(verifiedAt)
-        if seconds < 0 { return "in the future" }
-        if seconds < 3600 { return "\(Int(seconds / 60))m old" }
-        if seconds < 86400 { return "\(Int(seconds / 3600))h old" }
-        return "\(Int(seconds / 86400))d old"
-    }
-
-    /// The same evidence, with the eavesdropper's verdict on it.
-    func judged(pinned: Bool, why: String?) -> PinEvidence {
-        PinEvidence(runtime: runtime, binary: binary, model: model, verifiedAt: verifiedAt, pinned: pinned, why: why)
-    }
-
-    /// The runtime, in words.
-    static func runtimeTitle(_ runtime: String) -> String {
-        switch runtime {
-        case "claude": return "Claude"
-        case "muse": return "Muse"
-        case "mcode": return "Mcode fallback"
-        case "openrouter": return "OpenRouter"
-        case "openrouter-fallback": return "OpenRouter fallback"
-        default: return runtime
+    /// The limit the file sets for a wake cap.  A file that was read and holds none is No Limit,
+    /// whether the eavesdropper agrees (`unset`), publishes a cap (`drift`), or did so in a status
+    /// that is not current (`stale`).  A file that was not read (`unknown`), a seat the Mac's
+    /// eavesdropper does not run (`seatOff`) and one held elsewhere make no claim.
+    var fileLimit: WakeCapLimit {
+        if let configured { return WakeCapLimit(configured) }
+        switch state {
+        case .unset, .drift, .stale:
+            return .noLimit
+        case .match, .notOwned, .unpublished, .off, .unknown, .heldElsewhere, .seatOff:
+            return .notKnown
         }
     }
 
-    /// The eavesdropper's reason a pin does not hold, in words.
-    static func words(forWhy why: String) -> String {
-        switch why {
-        case "not_pinned": return "No passing test wake has been pinned yet."
-        case "pin_stale": return "The pin is stale:  the binary, model or request moved since it was pinned.\u{00A0} Run a test wake, read it, then pin again."
-        case "pin_unverified": return "The pin is from before the eavesdropper recorded what it proves, so it vouches for nothing about the current command.\u{00A0} Run a test wake, then pin again."
-        case "pin_unreadable": return "The wake contract or schema could not be read, so no pin can be checked.\u{00A0} Pinning again will not fix this."
-        case "no_claude": return "No claude binary was found to pin."
-        case "no_muse": return "No muse binary was found to pin."
-        default: return "The eavesdropper says the pin does not hold:  \(why.replacingOccurrences(of: "_", with: " "))."
-        }
+    /// The limit the eavesdropper published for a wake cap:  the cap its budget holds, No Limit
+    /// when its budget leaves the cap out, and not known when it published no budget.
+    var liveLimit: WakeCapLimit {
+        if let live { return WakeCapLimit(live) }
+        return liveNoLimit ? .noLimit : .notKnown
     }
-}
 
-/// What the panel can say about the pin a seat's own wake needs.
-enum SeatPinState: Equatable {
-    /// The wake runs nothing that a pin proves.  The text says why.
-    case notNeeded(String)
-    /// The pin holds.
-    case pinned(PinEvidence)
-    /// A pin file is there, and the eavesdropper says it does not hold.
-    case notHolding(PinEvidence, why: String)
-    /// A pin file is there, and no current word from the eavesdropper says whether it holds:  its
-    /// status could not be read, is old, or carries no pin verdict for the seat.  A file that is
-    /// there is never shown as a pin that holds.  The text says why nothing is known, and
-    /// `needsLook` is false only when a current status reported the seat with no verdict.
-    case fileOnly(PinEvidence, why: String, needsLook: Bool)
-    /// No pin file, with the eavesdropper's reason when it gave one.
-    case missing(runtime: String, why: String?)
-    /// The pin file is there and could not be read.
-    case unreadable(runtime: String, problem: String)
-    /// The seat's wake is not known, so neither is the pin it needs.
-    case unknownWake
+    /// The limit a wake cap holds the seat to, the way the grid reads it:  what the eavesdropper
+    /// published when it reported a budget, and otherwise what a file that was read holds.  A file
+    /// that was not read beside a status with no budget leaves it not known, never No Limit.
+    var effectiveLimit: WakeCapLimit {
+        let published = liveLimit
+        return published == .notKnown ? fileLimit : published
+    }
 
-    /// Whether the owner should look at this.
-    var isProblem: Bool {
-        switch self {
-        case .notNeeded, .pinned: return false
-        // A wake this app does not know leaves the pin it needs unknown, which the panel draws as
-        // a problem, so the summary and the Problems Only filter count it as one too.
-        case .notHolding, .missing, .unreadable, .unknownWake: return true
-        case .fileOnly(_, _, let needsLook): return needsLook
+    /// What the file's column shows when it is not a field:  a wake cap reads No Limit when the
+    /// file was read and holds none, and Paused at 0.  A file that was not read is never No Limit.
+    var fileWords: String {
+        if key.isWakeCap, fileLimit != .notKnown {
+            return fileLimit.text
         }
+        return configured?.displayText ?? "not set"
+    }
+
+    /// What the eavesdropper's column shows.
+    var liveWords: String {
+        if key.isWakeCap, liveLimit != .notKnown {
+            return liveLimit.text
+        }
+        return live?.displayText ?? "not reported"
     }
 }
 
@@ -662,20 +1108,14 @@ struct WakeSeat: Identifiable, Equatable {
     let hasSection: Bool
     /// The seat's name as the Operator knows it.
     let bot: String?
-    /// The wake type the configuration file holds.
-    let configuredWake: WakeType?
-    /// The wake type the Operator is running.
-    let liveWake: WakeType?
+    /// Wakes or Captures Only, from whether the seat's section holds a routine table.
+    let kind: WakeSeatKind
     /// The settings,  in the order the panel shows them.
     let settings: [WakeSetting]
     /// How much of the budget the seat has used.
     let usage: WakeUsage
     /// The seat's last few wakes,  newest first.
     let recentWakes: [WakeLedger.Outcome]
-    /// The pin that proves the seat's own binary works.
-    let pin: PinEvidence?
-    /// The pin for the configured fallback.
-    let fallbackPin: PinEvidence?
     /// Whether the kill switch covers this seat.
     let paused: Bool
     /// Whether the kill switch stops this seat's wakes,  and leaves the rest alone.
@@ -684,6 +1124,13 @@ struct WakeSeat: Identifiable, Equatable {
     let pauseScope: String?
     /// Whether the Operator is connected for this seat.
     let connected: Bool?
+    /// How the seat's section holds its routine table.
+    var routineForm: WakeRoutineForm = .absent
+    /// The `wake` line the seat's section still holds from the old wake types, shown and never
+    /// read for meaning.
+    var leftoverWake: String? = nil
+    /// Whether the Mac's eavesdropper reported this seat in its status.
+    var reported: Bool = false
     /// Whether a pause on every seat is in force, whatever else names this seat.
     var everySeatPaused: Bool = false
     /// Active red warnings the Operator reports for this seat.
@@ -710,32 +1157,14 @@ struct WakeSeat: Identifiable, Equatable {
     var skippedReasons: [String] = []
     /// Whether the file turns this seat off.
     var disabledInFile: Bool = false
-    /// The wake word the eavesdropper published, as it wrote it, so a wake this app does not know
-    /// is shown by its own name and never as no wake at all.
-    var liveWakeText: String? = nil
-    /// The pin the seat's own wake needs, and what is known about it.
-    var pinState: SeatPinState = .unknownWake
-    /// The fallback the file names, if any.
-    var fallbackRuntime: String? = nil
-    /// What is known about the fallback's own pin, or nil when the file names no fallback.  A pin
-    /// file that is there and could not be read is unreadable, never missing.
-    var fallbackPinState: SeatPinState? = nil
-    /// When the last passing test wake left a pin candidate, by pin key.  The eavesdropper pins
-    /// only a candidate under a day old.
-    var candidates: [String: Date] = [:]
-    /// Pin candidates that are there and could not be read, by pin key, with why.  Such a
-    /// candidate is not known, and never the same as none.
-    var unreadableCandidates: [String: String] = [:]
     /// Why the ledger could not be read, when it could not.  The usage is then not known, and is
     /// never shown as zero.
     var usageProblem: String? = nil
     /// Ledger rows inside the last day that could not be read.
     var tornRecentRows: Int = 0
-    /// The claude binary the eavesdropper resolved for this seat.
-    var claudeBinary: String? = nil
     /// The provider the seat talks to.
     var provider: String? = nil
-    /// Whether an http seat's routine can be reached, and why not.
+    /// Whether the seat's routine can be reached, and why not, as the eavesdropper says.
     var routine: ListenerStatus.Routine? = nil
     /// Why the quota is what it is, as the eavesdropper says.
     var quotaReason: String? = nil
@@ -752,8 +1181,8 @@ struct WakeSeat: Identifiable, Equatable {
     /// pause file itself, and a file that cannot be read leaves them not known, never unpaused.
     var pauseSource: WakePauseSource = .currentStatus
     /// Whether this seat's live facts (held-back wakes, red warnings, chat nudges, quota and the
-    /// fallback) come from a current status.  When they do not, they are the eavesdropper's last
-    /// word as of `liveAsOf`, and the panel says so and never calls them "now".
+    /// routine's readiness) come from a current status.  When they do not, they are the
+    /// eavesdropper's last word as of `liveAsOf`, and the panel says so and never calls them "now".
     var liveIsCurrent: Bool = true
     /// When the status those live facts come from was published.
     var liveAsOf: Date? = nil
@@ -765,41 +1194,75 @@ struct WakeSeat: Identifiable, Equatable {
     var heldBackExpiredTotal: Int = 0
     /// Held-back wakes lost past both caps, since the eavesdropper started counting.
     var heldBackEvictedTotal: Int = 0
-    /// Whether the OpenRouter fallback is answering in the seat's place, because its own wake
-    /// cannot run.
-    var fallbackStandsIn: Bool = false
-    /// Why the seat's own wake cannot run, as the eavesdropper says, while the fallback answers.
-    var fallbackPrimaryHold: String? = nil
 
     var id: String { seat }
-
-    /// Whether the fallback is answering for this seat, as a current status says.
-    var fallbackIsAnswering: Bool {
-        fallbackStandsIn && liveIsCurrent
-    }
 
     /// The settings that are not a plain pass.
     var problems: [WakeSetting] {
         settings.filter { $0.state.isProblem }
     }
 
-    /// The pin key of a test wake of the seat's own wake, or nil when there is nothing to test.
-    /// It goes by the file, because `daemon test-wake` reads the seat's wake from the file.
-    var testRuntime: String? {
-        configuredWake?.testRuntime
+    /// The settings the router contract fixes and the file holds otherwise.
+    var contractDifferences: [WakeSetting] {
+        settings.filter { $0.contractDifference != nil }
     }
 
-    /// The value a cap is held at:  the eavesdropper's when it published one, else the file's.
-    func cap(_ key: WakeSettingKey) -> String? {
-        guard let setting = settings.first(where: { $0.key == key }) else { return nil }
-        return setting.live?.displayText ?? setting.configured?.displayText
+    /// The limit a wake cap holds the seat to, read the way its row reads it
+    /// (`WakeSetting.effectiveLimit`), or not known for a seat with no such row.
+    func capLimit(_ key: WakeSettingKey) -> WakeCapLimit {
+        guard key.isWakeCap, let setting = settings.first(where: { $0.key == key }) else { return .notKnown }
+        return setting.effectiveLimit
     }
 
-    /// Whether a passing test wake of this runtime left a candidate young enough to pin.
-    func hasPinnableCandidate(_ pinKey: String, now: Date = Date()) -> Bool {
-        guard let at = candidates[pinKey] else { return false }
-        let age = now.timeIntervalSince(at)
-        return age >= 0 && age <= 86_400
+    /// The wake counts beside the limits their caps hold the seat to, and the failed wakes.  A
+    /// count that has reached its limit is emphasised, and one under No Limit, or under a limit
+    /// that is not known, never is.  The windows are rolling:  the last hour and the last 24 hours,
+    /// counted the way the runtime counts them.
+    var usageFacts: [WakeFact] {
+        let floor = usage.atLeast ? "at least " : ""
+        func of(_ count: Int, _ key: WakeSettingKey, _ what: String) -> WakeFact {
+            let held = capLimit(key)
+            return WakeFact(text: "\(floor)\(count)\(held.usageSuffix) \(what)", emphasised: held.isReached(by: count))
+        }
+        var facts = [
+            of(usage.wakesThisHour, .wakesPerHour, "wakes in the last hour"),
+            of(usage.wakesThisDay, .wakesPerDay, "wakes in the last 24 hours"),
+            of(usage.ownerThisDay, .ownerPerDay, "owner wakes in the last 24 hours"),
+            of(usage.worstTopicThisHour, .perTopicPerHour, "on the busiest topic, last hour"),
+            of(usage.worstOwnerTopicThisHour, .ownerPerTopicPerHour, "on the busiest owner topic, last hour"),
+        ]
+        if usage.failedThisDay > 0 {
+            facts.append(WakeFact(text: "\(floor)\(usage.failedThisDay) failed in the last 24 hours", emphasised: true))
+        }
+        return facts
+    }
+
+    /// Whether a current status says the seat's routine cannot be reached.
+    var routineNotReady: Bool {
+        kind.hasRoutine && liveIsCurrent && routine?.ready == false
+    }
+
+    /// What the panel says about the routine's readiness, or nil for a seat with no routine.  A
+    /// seat with a routine the eavesdropper reports with none is said to be so, since the
+    /// eavesdropper then has no routine for it.
+    var routineReadiness: WakeFact? {
+        guard kind.hasRoutine else { return nil }
+        let suffix = liveIsCurrent ? "" : " (not current)"
+        guard let routine else {
+            guard reported else { return nil }
+            return WakeFact(
+                text: "The eavesdropper reports no routine for this seat, so it may still be keeping its mentions in the inbox only." + suffix,
+                emphasised: liveIsCurrent
+            )
+        }
+        if routine.ready == true {
+            return WakeFact(text: "Routine ready\(routine.host.map { " at \($0)" } ?? "")" + suffix, emphasised: false)
+        }
+        if routine.ready == false {
+            let why = routine.detail ?? routine.why ?? "no reason given"
+            return WakeFact(text: "Routine not ready:  \(why)" + suffix, emphasised: liveIsCurrent)
+        }
+        return WakeFact(text: "The eavesdropper does not say whether the routine is ready." + suffix, emphasised: false)
     }
 
     /// Whether the Mac's file holds a section the eavesdropper refuses to run with.
@@ -825,21 +1288,29 @@ struct WakeSeat: Identifiable, Equatable {
 
     /// Whether the seat belongs under the Problems Only filter.
     ///
-    /// An exhausted quota is not one while a current status says the fallback answers in the
-    /// seat's place:  its wakes are still answered.  Wakes lost past the caps and still owed are.
+    /// Wakes lost past the caps and still owed are, and so are a routine a current status says
+    /// cannot be reached, a routine Muster cannot read, and a setting that differs from the
+    /// router contract.
     var needsAttention: Bool {
         // In parts, so the type checker never meets one long chain.
         let settingsOrWarnings = !problems.isEmpty || !redWarnings.isEmpty
-        let quota = quotaExhausted && !fallbackIsAnswering
+        let quota = quotaExhausted
         let section = hasRefusedSection || !skippedReasons.isEmpty
-        let pinOrUse = pinState.isProblem || usageProblem != nil || tornRecentRows > 0
+        let use = usageProblem != nil || tornRecentRows > 0
         let lost: Bool = heldBackEvicted > 0
         let pauseNotKnown: Bool = pauseSource.notKnownReason != nil
         let disconnected: Bool = connected == false
-        return settingsOrWarnings || quota || section || pinOrUse || lost || pauseNotKnown || disconnected
+        let routineLooks: Bool = routineNotReady || !contractDifferences.isEmpty
+        let unreadable: Bool
+        if case .unreadable = routineForm { unreadable = true } else { unreadable = false }
+        // A seat whose section is there and whose kind Muster cannot say, such as one holding a
+        // line Muster cannot read, needs a look, and never reads "No problem found".
+        let kindNotKnown: Bool
+        if case .notKnown = kind, hasSection { kindNotKnown = true } else { kindNotKnown = false }
+        return settingsOrWarnings || quota || section || use || lost || pauseNotKnown || disconnected
+            || routineLooks || unreadable || kindNotKnown
     }
 }
-
 /// One fact the panel shows about a seat, and whether it is a problem.
 struct WakeFact: Equatable {
     let text: String
@@ -893,8 +1364,7 @@ extension WakeSeat {
         return "\(what)\(scope)\(by)\(at)\(source)"
     }
 
-    /// The held-back wakes, the chat nudges, the quota and the fallback, as the eavesdropper
-    /// published them.  Under a status that is not current each one says so, and none says "now".
+    /// The held-back wakes, the chat nudges and the quota, as the eavesdropper published them.  Under a status that is not current each one says so, and none says "now".
     func liveFacts(now: Date = Date()) -> [WakeFact] {
         var facts: [WakeFact] = []
         let suffix = notCurrentSuffix(now: now)
@@ -936,13 +1406,7 @@ extension WakeSeat {
             if let source = quotaSource { text += ", from \(source)" }
             if let reason = quotaReason, !reason.isEmpty { text += ":  \(reason)" }
             if let reset = quotaResetAt { text += ", resets \(FleetTime.when(reset, now: now))" }
-            facts.append(WakeFact(text: text + suffix, emphasised: quotaExhausted && !fallbackIsAnswering))
-        }
-        if fallbackStandsIn {
-            let verb = liveIsCurrent ? "is answering" : "was answering"
-            var text = "the OpenRouter fallback \(verb) in this seat's place"
-            if let hold = fallbackPrimaryHold, !hold.isEmpty { text += ":  \(hold)" }
-            facts.append(WakeFact(text: text + suffix, emphasised: false))
+            facts.append(WakeFact(text: text + suffix, emphasised: quotaExhausted))
         }
         return facts
     }
@@ -1025,8 +1489,6 @@ struct WakeSettingsSources {
     var partitionURL: URL?
     /// The eavesdropper's own published state,  when it could be read.
     var status: ListenerStatus?
-    /// The pins that prove a seat's binaries work:  seat -> runtime -> evidence.
-    var pins: [String: [String: PinEvidence]] = [:]
     /// How much of each seat's budget it has used.
     var usage: [String: WakeUsage] = [:]
     /// The last few wakes of each seat,  newest first.
@@ -1043,12 +1505,6 @@ struct WakeSettingsSources {
     var statusProblem: String?
     /// Why the configuration file was not read, when it was not.
     var configProblem: String?
-    /// When each seat's pin candidates were left:  seat -> pin key -> time.
-    var candidates: [String: [String: Date]] = [:]
-    /// Pin candidates that are there and could not be read:  seat -> pin key -> why.
-    var unreadableCandidates: [String: [String: String]] = [:]
-    /// Pin files that are there and could not be read:  seat -> pin key -> why.
-    var unreadablePins: [String: [String: String]] = [:]
     /// Ledgers that are there and could not be read:  seat -> why.
     var usageProblems: [String: String] = [:]
     /// Ledger rows inside the last day that could not be read, by seat.
@@ -1129,6 +1585,68 @@ enum WakeSettingsBuilder {
         return model
     }
 
+    /// What a seat is, by its own section of the Mac's file, as today's listener reads it.
+    ///
+    /// A routine table with `wake = "http"` makes it a seat that Wakes, and no routine with no
+    /// wake line or `wake = "inbox"` one that Captures Only.  Every other mix is an Old Wake
+    /// Setting:  an old wake the listener still runs (claude, muse, openrouter), one it refuses
+    /// (`http` with no routine, or a word it does not know), or a routine it ignores because the
+    /// wake is not `http`.  The wake line is read for that purpose and never written.  Muster cannot say what a seat is
+    /// when the file was not read, when another eavesdropper holds the seat (the Mac's file does not
+    /// describe it), when the Mac's file has no section for it, or when its section holds a line
+    /// Muster cannot read, which may be the routine itself.
+    static func kind(
+        form: WakeRoutineForm,
+        configProblem: String?,
+        host: ListenerSeatHost = .mac,
+        hasSection: Bool = true,
+        lineProblems: [String] = [],
+        leftoverWake: String? = nil,
+        foldedHeaders: [String] = []
+    ) -> WakeSeatKind {
+        if configProblem != nil {
+            return .notKnown("The configuration file was not read, so whether this seat has a routine table is not known.")
+        }
+        if host.isElsewhere {
+            return .notKnown("Another eavesdropper holds this seat, and Muster does not read its file, so whether it Wakes is not known here.")
+        }
+        if !hasSection {
+            return .notKnown("The Mac's file has no section for this seat, so the Mac's eavesdropper does not run it and whether it Wakes is not known here.")
+        }
+        if !foldedHeaders.isEmpty {
+            let named = foldedHeaders.map { "[\($0)]" }.joined(separator: " and ")
+            return .notKnown("The file holds \(named), which spell this seat differently, and the listener folds them into one seat and merges them unpredictably, so whether it Wakes is not known.\u{00A0} Keep one spelling.")
+        }
+        if !lineProblems.isEmpty {
+            return .notKnown("This seat's section holds a line Muster can't read, which may be its routine, so whether it Wakes is not known.\u{00A0} " + lineProblems.joined(separator: " "))
+        }
+        // `section.get("wake", "inbox")`:  no wake line is an inbox wake.  The listener compares
+        // the value exactly, with no trimming and no case folding, so neither does Muster:
+        // `" http"`, `"HTTP"` and `"Claude"` are words it does not know.
+        let wake = leftoverWake
+        switch form {
+        case .unreadable(let why):
+            return .notKnown(why)
+        case .inline, .subTable:
+            // A routine with no wake line Wakes:  in the one-wake-path schema `wake` is gone and a
+            // routine alone means the seat wakes, so the panel must not turn every working seat
+            // into "only captures" the day the live files drop the line.  Only a wake line that
+            // names something other than `http` beside a routine is today's dropped-to-inbox case.
+            if wake == nil || wake == "http" {
+                return .wakes
+            }
+            return .oldWakeSetting(.routineNeedsHTTP(wake: wake))
+        case .absent:
+            guard let line = wake, line != "inbox" else {
+                return .capturesOnly
+            }
+            if WakeOldSetting.stillRun.contains(line) {
+                return .oldWakeSetting(.stillWakes(line))
+            }
+            return .oldWakeSetting(.refused(line))
+        }
+    }
+
     /// One seat's rows.
     private static func seat(for tag: String, sources: WakeSettingsSources) -> WakeSeat {
         let host = host(of: tag, sources: sources)
@@ -1138,7 +1656,6 @@ enum WakeSettingsBuilder {
         // The Mac's eavesdropper and the Mac's ledgers say nothing about a seat another eavesdropper holds,
         // so nothing from them is shown for it:  no zero, no default and no pause.
         let live = host.isElsewhere ? nil : sources.status?.seat(published)
-        let pins: [String: PinEvidence] = host.isElsewhere ? [:] : (sources.pins[tag] ?? [:])
         // A seat the file turns off is reported under `disabled` and not under `seats`, so a running
         // eavesdropper has told Muster about it.  An old status from a stopped one has not, and nor
         // has one another instance wrote:  its list is about its own file, not the Mac's.
@@ -1146,20 +1663,34 @@ enum WakeSettingsBuilder {
         let seatOff = sources.status?.running == true
             && statusIsTheMacs
             && sources.status?.status?.disabled?.contains(published) == true
-        let section = "seat.\(tag)"
         let current = statusIsCurrent(sources)
         let staleText = Self.staleNote(sources)
-        let configuredWakeText = sources.config.value(section: section, key: "wake")?.scalarText
-        let hasSection = !sources.config.sections(ofSeat: tag).isEmpty
-        // The wake the seat runs:  the eavesdropper's word when it published one, else the file's.
-        let wake = live?.wake ?? configuredWakeText
+        // The seat's sections are found as the listener finds them, by the upper-cased name, and
+        // the spelling, the form and the routine are looked up once for the seat.
+        let seatSections = sources.config.sections(matchingSeat: tag)
+        let spellings = sources.config.spellings(ofSeat: tag)
+        let spelling = spellings.first ?? tag
+        let hasSection = !seatSections.isEmpty
+        let form = sources.config.routineForm(seat: tag)
+        let leftoverWake = sources.config.leftoverWake(seat: tag)
+        let kind = Self.kind(
+            form: form,
+            configProblem: sources.configProblem,
+            host: host,
+            hasSection: hasSection,
+            lineProblems: seatSections.flatMap(\.problems),
+            leftoverWake: leftoverWake,
+            // Only the seat headers are spellings:  a `routine`, `budget` or `live` sub-table is not.
+            foldedHeaders: spellings.count > 1 ? spellings.map { "seat.\($0)" } : []
+        )
+        let routine = sources.config.routineTable(seat: tag, form: form) ?? [:]
         let settings = WakeSettingKey.seatKeys.map { key -> WakeSetting in
             if host.isElsewhere {
-                let location = key.configLocation
+                let location = key.location(seat: tag, in: sources.config, spelling: spelling)
                 return WakeSetting(
                     seat: tag,
                     key: key,
-                    configured: sources.config.value(section: section, key: location.key, subPath: location.subPath),
+                    configured: sources.config.value(section: location.section, key: location.key, subPath: location.subPath),
                     live: nil,
                     state: .heldElsewhere,
                     note: host.readOnlyReason ?? ""
@@ -1174,8 +1705,8 @@ enum WakeSettingsBuilder {
                 )
             }
             let row = setting(
-                for: key, seat: tag, section: section, wake: wake, live: live,
-                seatOff: seatOff, pins: pins, config: sources.config
+                for: key, seat: tag, live: live, seatOff: seatOff, config: sources.config,
+                spelling: spelling, form: form, routine: routine
             )
             // A file that was not read says nothing about what it holds, so no row is DEFAULT,
             // PASS or DRIFT for want of a read:  it is not known, beside whatever the eavesdropper
@@ -1183,75 +1714,43 @@ enum WakeSettingsBuilder {
             if sources.configProblem != nil {
                 return WakeSetting(
                     seat: tag, key: key, configured: nil, live: row.live, state: .unknown,
-                    note: "The configuration file was not read, so what it holds for this setting is not known."
+                    note: "The configuration file was not read, so what it holds for this setting is not known.",
+                    liveNoLimit: row.liveNoLimit
                 )
             }
             // A pass or a drift is a claim about what a running eavesdropper uses now.  An old
-            // status, or one a stopped eavesdropper left, cannot make it.  A row whose value Muster
-            // read from a pin file itself is not the eavesdropper's word, so the status's age says
-            // nothing about it.
-            guard !current, sources.status != nil, row.state == .match || row.state == .drift,
-                  Self.liveComesFromStatus(
-                    key, wake: wake,
-                    fallback: sources.config.value(section: section, key: "fallback")?.scalarText
-                  ) else {
+            // status, or one a stopped eavesdropper left, cannot make it.
+            guard !current, sources.status != nil, row.state == .match || row.state == .drift else {
                 return row
             }
             return WakeSetting(
                 seat: row.seat, key: row.key, configured: row.configured, live: row.live,
-                state: .stale, note: staleText
+                state: .stale, note: staleText, contractDifference: row.contractDifference,
+                liveNoLimit: row.liveNoLimit
             )
         }
-        let fallback = sources.config.value(section: section, key: "fallback")?.scalarText
-        let seatPin: SeatPinState
-        if host.isElsewhere {
-            seatPin = .notNeeded(host.readOnlyReason ?? "")
-        } else {
-            seatPin = Self.pinState(
-                wake: wake, live: live, pins: pins,
-                unreadable: sources.unreadablePins[tag] ?? [:],
-                statusIsCurrent: current,
-                statusRead: sources.status != nil
-            )
-        }
-        let ownPin: PinEvidence?
-        switch seatPin {
-        case .pinned(let evidence), .notHolding(let evidence, _), .fileOnly(let evidence, _, _): ownPin = evidence
-        default: ownPin = nil
-        }
-        let fallbackPinState = host.isElsewhere
-            ? nil
-            : Self.fallbackPinState(
-                fallback: fallback, live: live, pins: pins,
-                unreadable: sources.unreadablePins[tag] ?? [:],
-                statusIsCurrent: current,
-                statusRead: sources.status != nil
-            )
         let pause = host.isElsewhere
             ? WakePauseFacts()
             : pauseFacts(seat: published, live: live, sources: sources, current: current)
         let heldBack = live?.heldBack
-        // The fallback answers in the seat's place only while its own wake cannot run, and the
-        // eavesdropper then leaves the quota out of the seat's red warnings on purpose.
-        let fallbackStandsIn = live?.fallback?.stands_in == true
         return WakeSeat(
             seat: tag,
             host: host,
             hasSection: hasSection,
-            bot: live?.bot ?? sources.config.value(section: section, key: "bot")?.scalarText,
-            configuredWake: configuredWakeText.flatMap(WakeType.init(rawValue:)),
-            liveWake: live?.wake.flatMap(WakeType.init(rawValue:)),
+            bot: live?.bot ?? sources.config.value(section: "seat.\(spelling)", key: "bot")?.scalarText,
+            kind: kind,
             settings: settings,
             usage: host.isElsewhere ? WakeUsage() : (sources.usage[tag] ?? WakeUsage()),
             recentWakes: host.isElsewhere ? [] : (sources.recentWakes[tag] ?? []),
-            pin: ownPin,
-            fallbackPin: fallbackPin(fallback: fallback, live: live, pins: pins),
             paused: pause.paused,
             wakesPaused: pause.wakesPaused,
             pauseScope: pause.scope,
             // A last-known value is not a current success:  an old status, or one a stopped
             // eavesdropper left, does not say the seat is connected now.
             connected: current ? live?.connected : nil,
+            routineForm: form,
+            leftoverWake: leftoverWake,
+            reported: live != nil,
             everySeatPaused: pause.everySeat,
             redWarnings: live?.red ?? [],
             heldBackQueueCount: heldBack?.count ?? 0,
@@ -1267,15 +1766,8 @@ enum WakeSettingsBuilder {
             // As for the settings rows' SEAT OFF:  only a running eavesdropper has told Muster the
             // file turns the seat off.  A stopped one's old list is not that word.
             disabledInFile: seatOff && !host.isElsewhere,
-            liveWakeText: live?.wake,
-            pinState: seatPin,
-            fallbackRuntime: fallback,
-            fallbackPinState: fallbackPinState,
-            candidates: host.isElsewhere ? [:] : (sources.candidates[tag] ?? [:]),
-            unreadableCandidates: host.isElsewhere ? [:] : (sources.unreadableCandidates[tag] ?? [:]),
             usageProblem: host.isElsewhere ? nil : sources.usageProblems[tag],
             tornRecentRows: host.isElsewhere ? 0 : (sources.tornRows[tag] ?? 0),
-            claudeBinary: live?.claude,
             provider: live?.provider,
             routine: live?.routine,
             quotaReason: live?.quota?.reason,
@@ -1290,12 +1782,9 @@ enum WakeSettingsBuilder {
             heldBackEvicted: heldBack?.evicted ?? 0,
             heldBackOverflow: heldBack?.overflow ?? 0,
             heldBackExpiredTotal: heldBack?.totals?.expired ?? 0,
-            heldBackEvictedTotal: heldBack?.totals?.evicted ?? 0,
-            fallbackStandsIn: fallbackStandsIn,
-            fallbackPrimaryHold: fallbackStandsIn ? live?.fallback?.primary_hold : nil
+            heldBackEvictedTotal: heldBack?.totals?.evicted ?? 0
         )
     }
-
     /// The pause a seat is under, and where it was read.
     ///
     /// A current status says it.  Otherwise the pause file itself does, because the status is old,
@@ -1376,60 +1865,6 @@ enum WakeSettingsBuilder {
         return "The eavesdropper last published \(age), so this may not be what it uses now."
     }
 
-    /// Whether a row's live value is the eavesdropper's own word, rather than one Muster read from
-    /// a pin file:  the muse model, the mcode binary and a non-OpenRouter fallback come from pin
-    /// files.  An OpenRouter fallback's verdict is the eavesdropper's published one, so it is not
-    /// a pin-file row.
-    static func liveComesFromStatus(_ key: WakeSettingKey, wake: String?, fallback: String? = nil) -> Bool {
-        switch key {
-        case .mcodePath: return false
-        case .fallback: return fallback == "openrouter"
-        case .model: return wake != "muse"
-        default: return true
-        }
-    }
-
-    /// The pin a seat's own wake needs, judged by the eavesdropper's own current verdict.
-    ///
-    /// The pin is chosen by the seat's wake and nothing else:  a leftover muse pin on a Claude
-    /// seat proves nothing about it, and the mcode fallback's pin is not the seat's own.  A pin
-    /// file with no current verdict on it is only a file:  it is never called a pin that holds.
-    static func pinState(
-        wake: String?,
-        live: ListenerStatus.Seat?,
-        pins: [String: PinEvidence],
-        unreadable: [String: String],
-        statusIsCurrent: Bool = true,
-        statusRead: Bool = true
-    ) -> SeatPinState {
-        let type = WakeType(rawValue: wake ?? WakeType.inbox.rawValue)
-        guard let type else { return .unknownWake }
-        guard let key = type.pinKey else { return .notNeeded(type.noPinReason ?? "") }
-        if let problem = unreadable[key] {
-            return .unreadable(runtime: key, problem: problem)
-        }
-        guard let evidence = pins[key] else {
-            return .missing(runtime: key, why: live?.pin?.why)
-        }
-        guard statusRead else {
-            return .fileOnly(evidence, why: "Muster could not read the eavesdropper's status, so it cannot say whether the pin holds.", needsLook: true)
-        }
-        guard statusIsCurrent else {
-            return .fileOnly(evidence, why: "The eavesdropper's status is not current, so it cannot say whether the pin holds now.", needsLook: true)
-        }
-        guard let live else {
-            return .fileOnly(evidence, why: "The eavesdropper did not report this seat, so it did not say whether the pin holds.", needsLook: true)
-        }
-        guard let verdict = live.pin, verdict.pinned != nil || verdict.why != nil else {
-            return .fileOnly(evidence, why: "The eavesdropper did not say whether it holds.", needsLook: false)
-        }
-        if verdict.pinned == true {
-            return .pinned(evidence.judged(pinned: true, why: nil))
-        }
-        let why = verdict.why ?? "not_pinned"
-        return .notHolding(evidence.judged(pinned: false, why: why), why: why)
-    }
-
     /// Who holds a seat, as far as Muster can say.
     ///
     /// An eavesdropper from before `partition_file` does not say which partition it reads, so the copy
@@ -1462,29 +1897,36 @@ enum WakeSettingsBuilder {
     private static func setting(
         for key: WakeSettingKey,
         seat: String,
-        section: String,
-        wake: String?,
         live: ListenerStatus.Seat?,
         seatOff: Bool,
-        pins: [String: PinEvidence],
-        config: ListenerConfigDocument
+        config: ListenerConfigDocument,
+        spelling: String,
+        form: WakeRoutineForm,
+        routine: [String: ListenerConfigValue]
     ) -> WakeSetting {
-        let location = key.configLocation
-        let configured = config.value(section: section, key: location.key, subPath: location.subPath)
-        let fallback = fallbackRuntime(section: section, config: config)
-        let liveValue = liveValue(for: key, wake: wake, fallback: fallback, live: live, pins: pins)
+        // The seat's spelling, routine form and routine table were looked up once for the seat.
+        let location = key.location(seat: seat, in: config, spelling: spelling)
+        let configured = config.value(section: location.section, key: location.key, subPath: location.subPath)
+        let liveValue = liveValue(for: key, live: live)
+        // Since #1735 the eavesdropper publishes only the wake caps a seat holds, so a budget it
+        // published without one says that cap is No Limit.  A status with no budget says nothing.
+        let liveNoLimit = key.isWakeCap && liveValue == nil && live?.budget != nil
         let state = state(
             for: key,
-            wake: wake,
-            fallback: fallback,
             configured: configured,
             live: liveValue,
+            liveNoLimit: liveNoLimit,
             seatReported: live != nil,
-            seatOff: seatOff,
-            publishedFallback: live?.fallback,
-            publishedPin: live?.pin,
-            pins: pins
+            seatOff: seatOff
         )
+        // The contract is checked only for a seat with a routine table:  a seat without one has
+        // no router to reach.
+        let difference: String?
+        if key.isFixedByContract, let name = key.routineKey, form.hasTable {
+            difference = WakeRoutineRules.contractDifference(name, in: routine)
+        } else {
+            difference = nil
+        }
         return WakeSetting(
             seat: seat,
             key: key,
@@ -1492,46 +1934,40 @@ enum WakeSettingsBuilder {
             live: liveValue,
             state: state,
             note: note(
-                for: key, state: state, wake: wake, fallback: fallback,
-                configured: configured, live: liveValue,
-                publishedFallback: live?.fallback, publishedPin: live?.pin, pins: pins
-            )
+                for: key, state: state, configured: configured, live: liveValue,
+                liveNoLimit: liveNoLimit,
+                defaultText: defaultText(for: key, seat: seat, routine: routine)
+            ),
+            contractDifference: difference,
+            liveNoLimit: liveNoLimit
         )
     }
 
-    /// The value the running eavesdropper is using.
+    /// What the eavesdropper uses for a routine setting the file does not hold.
+    static func defaultText(
+        for key: WakeSettingKey,
+        seat: String,
+        routine: [String: ListenerConfigValue]
+    ) -> String? {
+        switch key {
+        case .routineURLEnv: return WakeRoutineRules.defaultURLEnv(seat: seat.uppercased())
+        case .routineKeyEnv: return WakeRoutineRules.defaultKeyEnv(seat: seat.uppercased())
+        case .routineTimeout: return ListenerConfigValue.format(number: WakeRoutineRules.defaultTimeout)
+        case .routineMethod: return "POST"
+        case .routineAuth: return "bearer"
+        case .routineHeader: return WakeRoutineRules.effective("header", in: routine)
+        default: return nil
+        }
+    }
+
+    /// The value the running eavesdropper is using.  It publishes the caps it holds, and none of
+    /// the routine's settings, only whether the routine can be reached.
     private static func liveValue(
         for key: WakeSettingKey,
-        wake: String?,
-        fallback: String?,
-        live: ListenerStatus.Seat?,
-        pins: [String: PinEvidence]
+        live: ListenerStatus.Seat?
     ) -> ListenerConfigValue? {
         switch key {
-        case .wakeType:
-            return live?.wake.map { .text($0) }
-        case .model:
-            // Only the seat's own runtime can say which model it runs.  An OpenRouter wake's model
-            // is published by the eavesdropper;  a muse wake's is the one its pin proved;  nothing
-            // reports a Claude wake's model.  The mcode fallback's model is the fallback's, never
-            // the seat's.
-            switch wake {
-            case "muse": return pins["muse"]?.model.map { .text($0) }
-            case "openrouter": return live?.model.map { .text($0) }
-            default: return nil
-            }
-        case .musePath:
-            return live?.muse.map { .text($0) }
-        case .mcodePath:
-            return pins["mcode"]?.binary.map { .text($0) }
-        case .fallback:
-            // Only an OpenRouter fallback has a verdict the eavesdropper publishes.  Any other
-            // fallback's pin file is one Muster reads itself, so it is in the note, not in the
-            // eavesdropper's column.
-            guard fallback == "openrouter", let pinned = live?.fallback?.pinned else { return nil }
-            return pinned ? .text("pinned") : nil
-        case .fallbackUncontained:
-            // The eavesdropper does not publish this,  so the panel has nothing live to compare.
+        case .routineURLEnv, .routineKeyEnv, .routineTimeout, .routineMethod, .routineAuth, .routineHeader:
             return nil
         case .wakesPerHour:
             return live?.budget?["wakes_per_hour"]?.configValue
@@ -1564,29 +2000,23 @@ enum WakeSettingsBuilder {
     ///
     /// The rule,  in order:
     ///
-    ///   * the file holds nothing:  the live value is the default
+    ///   * a setting the engine does not enforce:  never a pass
     ///   * the eavesdropper says the file turns this seat off:  it is using nothing,  and that is the
     ///     file's own choice,  not a problem
+    ///   * the file holds nothing:  the live value is the default, except for a wake cap, which is
+    ///     then No Limit, so a cap the eavesdropper published differs from it:  DRIFT
     ///   * the eavesdropper reported nothing for this seat:  what it is using is unknown,  and that is
     ///     a problem,  because its status could not be read or it is not running the seat
     ///   * the eavesdropper reported the seat and not this setting:  it does not publish it
     ///   * the two agree:  a pass
     ///   * the two differ:  DRIFT
-    ///
-    /// A configured fallback with no pin is never a pass:  unless the seat is off,  it is
-    /// unproven,  because nobody ever showed that it works.  A model is compared only with what
-    /// the seat's own runtime reports, and a runtime that reports none leaves it not reported.
     private static func state(
         for key: WakeSettingKey,
-        wake: String?,
-        fallback: String?,
         configured: ListenerConfigValue?,
         live: ListenerConfigValue?,
+        liveNoLimit: Bool = false,
         seatReported: Bool,
-        seatOff: Bool,
-        publishedFallback: ListenerStatus.Fallback?,
-        publishedPin: ListenerStatus.Pin? = nil,
-        pins: [String: PinEvidence]
+        seatOff: Bool
     ) -> WakeSettingState {
         // A setting the engine does not enforce is never a pass,  whatever the two values
         // say:  the number in the file would not bind anything.
@@ -1596,115 +2026,62 @@ enum WakeSettingsBuilder {
         if seatOff, configured != nil, live == nil {
             return .seatOff
         }
-        switch key {
-        case .model:
-            guard configured != nil else { return .unset }
-            switch wake {
-            case "muse":
-                guard let pin = pins["muse"] else { return .unproven }
-                // The eavesdropper says the muse pin no longer holds, so the model it recorded
-                // proves nothing now, whatever it says.
-                if publishedPin?.pinned == false { return .unproven }
-                guard pin.model != nil else { return .unpublished }
-            case "openrouter":
-                guard live != nil else { return seatReported ? .unpublished : .unknown }
-            default:
-                return seatReported || wake != nil ? .unpublished : .unknown
-            }
-        case .fallback:
-            guard let fallback else { return configured == nil ? .unset : .unproven }
-            if fallback == "openrouter", let pinned = publishedFallback?.pinned {
-                return pinned ? .match : .unproven
-            }
-            // A pin file the eavesdropper gives no verdict on proves only that it is there:  the
-            // eavesdropper warns about a stale one elsewhere, so it is never a pass here.
-            return pins[WakeType.fallbackPinKey(fallback)] == nil ? .unproven : .unpublished
-        case .mcodePath:
-            guard configured != nil else { return .unset }
-            guard live != nil else { return .unproven }
-        case .fallbackUncontained:
-            // The engine reads this one,  but the eavesdropper does not publish it.
-            return configured == nil ? .unset : .unpublished
-        default:
-            break
-        }
         // The file first:  a setting nobody holds is the eavesdropper's default,  and a
         // setting only the file holds is one the eavesdropper does not publish.
-        guard let configured else { return .unset }
+        guard let configured else {
+            // Since #1735 a wake cap the file holds none of is No Limit, so a cap the eavesdropper
+            // published is not what the file chooses:  the two differ.  Every other setting the
+            // file leaves out is the eavesdropper's default.
+            if key.isWakeCap, live != nil { return .drift }
+            return .unset
+        }
         guard let live else {
+            // A wake cap the eavesdropper's budget leaves out is No Limit in effect, so a cap the
+            // file holds is not what it uses.
+            if liveNoLimit { return .drift }
             return seatReported ? .unpublished : .unknown
         }
-        if configured.matches(live) { return .match }
-        if key == .musePath || key == .mcodePath {
-            if pathsMatch(configured: configured, live: live) { return .match }
-        }
-        return .drift
-    }
-
-    /// Whether a configured path and a live path are the same binary.
-    ///
-    /// The file may name a binary on the wake PATH instead of a full path,  so a name is
-    /// compared with the last part of the live path.
-    private static func pathsMatch(configured: ListenerConfigValue, live: ListenerConfigValue) -> Bool {
-        guard let left = configured.scalarText, let right = live.scalarText else { return false }
-        let expanded = (left as NSString).expandingTildeInPath
-        if expanded.contains("/") {
-            return expanded == (right as NSString).expandingTildeInPath
-        }
-        return (right as NSString).lastPathComponent == left
+        return configured.matches(live) ? .match : .drift
     }
 
     /// A line about the setting,  in words.
     private static func note(
         for key: WakeSettingKey,
         state: WakeSettingState,
-        wake: String?,
-        fallback: String?,
         configured: ListenerConfigValue?,
         live: ListenerConfigValue?,
-        publishedFallback: ListenerStatus.Fallback?,
-        publishedPin: ListenerStatus.Pin? = nil,
-        pins: [String: PinEvidence]
+        liveNoLimit: Bool = false,
+        defaultText: String?
     ) -> String {
-        let file = configured?.displayText ?? "nothing"
+        let file = key.isWakeCap ? WakeSettingKey.wakeCapText(configured) : (configured?.displayText ?? "nothing")
         switch state {
         case .drift:
-            if key == .model, wake == "muse" {
-                return "The muse pin proved \(live?.displayText ?? "another model"), and the file holds \(file).\u{00A0} Run a test wake and pin it to prove this model."
+            let using: String
+            if key.isWakeCap, live != nil || liveNoLimit {
+                using = WakeSettingKey.wakeCapText(live)
+            } else {
+                using = live?.displayText ?? "something else"
             }
-            return "The eavesdropper is using \(live?.displayText ?? "something else"),  and the file holds \(file)."
-        case .unproven:
-            if key == .model {
-                if wake == "muse", pins["muse"] != nil, publishedPin?.pinned == false {
-                    return "The eavesdropper says the muse pin does not hold, so it proves no model now.\u{00A0} \(PinEvidence.words(forWhy: publishedPin?.why ?? "not_pinned"))"
-                }
-                return "No muse pin proves this model yet."
+            // A wake cap the file leaves out is No Limit, and the note says so in those words.
+            if key.isWakeCap, configured == nil {
+                return "The eavesdropper is using \(using),  and the file holds no cap, so it says No Limit."
             }
-            if key == .fallback {
-                if fallback == "openrouter", let why = publishedFallback?.pin?.why {
-                    return PinEvidence.words(forWhy: why)
-                }
-                return "This fallback is configured, and no pin has proved it works.\u{00A0} Test the fallback, read the result, then pin it."
-            }
-            return "This is configured,  but no pin has ever proved it works."
+            return "The eavesdropper is using \(using),  and the file holds \(file)."
         case .notOwned:
             if let reason = key.refusalReason { return reason }
             return "The eavesdropper does not enforce this setting."
         case .unpublished:
-            if key == .model {
-                let runtime = WakeType(rawValue: wake ?? "")?.title ?? "this"
-                return "Neither the eavesdropper nor the \(runtime) pin reports the model, so only the file's value can be shown."
-            }
-            if key == .fallbackUncontained {
-                return "The eavesdropper reads this one,  but does not publish it,  so only the file can be shown."
-            }
-            if key == .fallback {
-                let title = fallback.map { PinEvidence.runtimeTitle(WakeType.fallbackPinKey($0)) } ?? "fallback"
-                let age = fallback.flatMap { pins[WakeType.fallbackPinKey($0)]?.age }.map { ", \($0)" } ?? ""
-                return "The \(title) pin file is there\(age).\u{00A0} The eavesdropper does not publish whether it still holds, so a stale one shows only in its warnings."
+            if key.isRoutine {
+                return "The eavesdropper reads this routine setting and does not publish it, so only the file's value can be shown."
             }
             return "The eavesdropper reports this seat and does not publish this setting, so only the file's value can be shown."
         case .unset:
+            if key.isWakeCap {
+                return "No Limit:  the file holds no cap, and the eavesdropper sets none of its own.\u{00A0} Clearing the field is how to choose No Limit."
+            }
+            if let defaultText {
+                return "The file holds nothing,  so the eavesdropper's default is in effect:  \(defaultText)."
+            }
             return "The file holds nothing,  so the eavesdropper's default is in effect."
         case .off:
             return "Off:  the eavesdropper never holds a wake for load."
@@ -1717,78 +2094,8 @@ enum WakeSettingsBuilder {
         case .stale:
             return "The eavesdropper's status is not current, so this may not be what it uses now."
         case .match:
-            if key == .model, wake == "muse", let age = pins["muse"]?.age {
-                return "Proved by the muse pin,  \(age)."
-            }
-            if key == .fallback {
-                return "The eavesdropper says the OpenRouter fallback's pin holds."
-            }
             return ""
         }
-    }
-
-    /// The runtime the file names as the seat's fallback.
-    private static func fallbackRuntime(section: String, config: ListenerConfigDocument) -> String? {
-        config.value(section: section, key: "fallback")?.scalarText
-    }
-
-    /// The pin for the fallback the file names, or nil when the file names none.
-    private static func fallbackPin(
-        fallback: String?,
-        live: ListenerStatus.Seat?,
-        pins: [String: PinEvidence]
-    ) -> PinEvidence? {
-        guard let fallback, let evidence = pins[WakeType.fallbackPinKey(fallback)] else { return nil }
-        if fallback == "openrouter", let pinned = live?.fallback?.pinned {
-            return evidence.judged(pinned: pinned, why: pinned ? nil : live?.fallback?.pin?.why)
-        }
-        return evidence
-    }
-
-    /// What is known about the fallback's own pin.
-    ///
-    /// Only an OpenRouter fallback has a verdict the eavesdropper publishes.  Any other fallback's
-    /// pin file proves only that it is there:  the eavesdropper warns about a stale one elsewhere,
-    /// so it is never shown as a pin that holds.
-    static func fallbackPinState(
-        fallback: String?,
-        live: ListenerStatus.Seat?,
-        pins: [String: PinEvidence],
-        unreadable: [String: String],
-        statusIsCurrent: Bool = true,
-        statusRead: Bool = true
-    ) -> SeatPinState? {
-        guard let fallback else { return nil }
-        let key = WakeType.fallbackPinKey(fallback)
-        if let problem = unreadable[key] {
-            return .unreadable(runtime: key, problem: problem)
-        }
-        let isOpenRouter = fallback == "openrouter"
-        let verdict = isOpenRouter ? live?.fallback : nil
-        guard let evidence = pins[key] else {
-            return .missing(runtime: key, why: verdict?.pin?.why)
-        }
-        guard isOpenRouter else {
-            return .fileOnly(
-                evidence,
-                why: "The eavesdropper does not publish whether this pin still holds, so a stale one shows only in its warnings.",
-                needsLook: false
-            )
-        }
-        guard statusRead else {
-            return .fileOnly(evidence, why: "Muster could not read the eavesdropper's status, so it cannot say whether the pin holds.", needsLook: true)
-        }
-        guard statusIsCurrent else {
-            return .fileOnly(evidence, why: "The eavesdropper's status is not current, so it cannot say whether the pin holds now.", needsLook: true)
-        }
-        guard let pinned = verdict?.pinned else {
-            return .fileOnly(evidence, why: "The eavesdropper did not say whether it holds.", needsLook: live == nil)
-        }
-        if pinned {
-            return .pinned(evidence.judged(pinned: true, why: nil))
-        }
-        let why = verdict?.pin?.why ?? "not_pinned"
-        return .notHolding(evidence.judged(pinned: false, why: why), why: why)
     }
 
     /// The daemon-wide settings.

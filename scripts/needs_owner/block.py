@@ -15,7 +15,7 @@ It sits in a fenced code block, because Linear re-serializes Markdown (it escape
     Context: none
     ```
 
-`Version`, `Again of` and `Mirror of` lines appear only when they apply.  Every value is one line
+`Version`, `Again of`, `Mirror of` and `Why owner` lines appear only when they apply.  Every value is one line
 (`text.clean_text`), so a value can neither start a new field nor close the fence.  `render_block`
 writes it;  `parse_block` is the strict reader (unknown or repeated keys, gaps in the option numbers,
 a bad uid or a seat that is not a token are all errors).  An item with no valid block is "unadopted".
@@ -39,6 +39,8 @@ _OPTION_KEY = re.compile(r"option (?P<n>[1-9])(?: \((?P<mark>low-stakes)\))?")
 _SEAT_RE = re.compile(r"[A-Z][A-Z0-9-]{0,31}")
 _PARENT_RE = re.compile(r"[A-Z]{1,8}-[0-9]{1,9}")
 _AGAIN_RE = re.compile(r"[A-Z]{1,8}-[0-9]{1,9}(?: msg [0-9]{1,12})?")
+# A reason class as stored:  the shape, not the list (bar.py holds the list).
+WHY_RE = re.compile(r"[a-z][a-z-]{0,23}")
 SINGLE_KEYS = (
     "format",
     "uid",
@@ -50,6 +52,7 @@ SINGLE_KEYS = (
     "version",
     "again of",
     "mirror of",
+    "why owner",
 )
 
 
@@ -70,6 +73,8 @@ class Block:
     version: int = 1
     again_of: str | None = None  # "AFC-12 msg 456":  the earlier item this one re-asks
     mirror_of: str | None = None  # the Zulip topic link of a Grok Bot request this item mirrors
+    # The reason class (bar.py) the filer named;  not part of the request, so same_request ignores it.
+    why_owner: str | None = None
 
     @property
     def scope(self) -> str:
@@ -116,6 +121,8 @@ def render_block(b: Block) -> str:
     lines.append("Parent: " + (b.parent or "none"))
     lines.append("Filed by: " + b.filed_by)
     lines.append("Context: " + (b.context or "none"))
+    if b.why_owner:
+        lines.append("Why owner: " + b.why_owner)
     if b.version > 1:
         lines.append("Version: %d" % b.version)
     if b.again_of:
@@ -247,6 +254,9 @@ def parse_block(text: str) -> Block:
         mirror.startswith("https://") and re.search(r"/near/[0-9]+$", mirror)
     ):
         raise BlockError("'Mirror of' is not a Zulip message link")
+    why = singles.get("why owner")
+    if why is not None and not WHY_RE.fullmatch(why):
+        raise BlockError("'Why owner' is not a class word")
     return Block(
         uid=singles["uid"],
         question=singles["question"],
@@ -259,4 +269,5 @@ def parse_block(text: str) -> Block:
         version=version,
         again_of=again,
         mirror_of=mirror,
+        why_owner=why,
     )

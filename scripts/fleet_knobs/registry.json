@@ -479,6 +479,91 @@
    "note": "the owner's Linear user id;  empty means no Linear reply is accepted as the owner's"
   },
   {
+   "name": "NEEDS_OWNER_BAR",
+   "label": "Owner Bar Mode",
+   "group": "Owner Bar",
+   "owner": "C6",
+   "kind": "enum",
+   "kind_text": "enum: off < warn < enforce",
+   "choices": [
+    "off",
+    "warn",
+    "enforce"
+   ],
+   "minimum": null,
+   "maximum": null,
+   "unit": "",
+   "step": 1,
+   "secret": false,
+   "default": "off",
+   "default_text": "off",
+   "cap_names": [],
+   "safe": null,
+   "narrower": null,
+   "local": "deny",
+   "local_rule": "A local file cannot change this.",
+   "hosts": "both",
+   "consumers": [
+    {
+     "name": "the needs-owner filing command",
+     "path": "scripts/needs_owner/bar.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [
+    {
+     "value": "warn",
+     "text": "A needs-owner filing with no reason class still goes through,  with one warning line to the seat."
+    },
+    {
+     "value": "enforce",
+     "text": "A needs-owner filing with no reason class is refused,  so the seat decides it,  asks a peer in Side-Chats or posts to Pending-for-Jay."
+    }
+   ],
+   "pattern": "",
+   "format": "",
+   "example": "",
+   "once": false,
+   "requires_explicit": false,
+   "note": "how hard the bar is on `needs-owner file`;  off changes nothing, warn files the item and warns when --why-owner is missing, enforce refuses a filing with no reason class;  an unreadable or unknown value is off"
+  },
+  {
+   "name": "NEEDS_OWNER_SEAT_DAILY_MAX",
+   "label": "Owner Bar Daily Filing Cap",
+   "group": "Owner Bar",
+   "owner": "C6",
+   "kind": "int",
+   "kind_text": "int 0 to 50",
+   "choices": [],
+   "minimum": 0,
+   "maximum": 50,
+   "unit": "filings a day",
+   "step": 1,
+   "secret": false,
+   "default": "0",
+   "default_text": "0",
+   "cap_names": [],
+   "safe": null,
+   "narrower": "min",
+   "local": "deny",
+   "local_rule": "A local file cannot change this.",
+   "hosts": "both",
+   "consumers": [
+    {
+     "name": "the needs-owner filing command",
+     "path": "scripts/needs_owner/bar.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [],
+   "pattern": "",
+   "format": "",
+   "example": "",
+   "once": false,
+   "requires_explicit": false,
+   "note": "most needs-owner items one seat may file in 24 hours, counted on the host that files them;  0 means no cap;  applies in warn (a warning) and enforce (a refusal) and never in off"
+  },
+  {
    "name": "CLAIM_EXPIRY_MODE",
    "label": "Claim Expiry Mode",
    "group": "Claim Expiry",

@@ -83,6 +83,8 @@ SCRIPT_NAME = "apple-notes-coding.sh"
 #  instead of outliving it by the wait.
 #  scripts/test_apple_notes_timeout.py holds the two together (AFC-436).
 SCRIPT_TIMEOUT_S = 1200.0
+RAG_UPSERT_TIMEOUT_S = 180.0
+_SCRIPTS_ROOT = Path(__file__).resolve().parent.parent
 READ_TIMEOUT_S = 180.0  # a read or a list changes nothing, so it is not held to the write cap
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
 SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,31}$")
@@ -115,6 +117,27 @@ CHILD_ENV_KEYS = (
     #  Not a credential:  where the script writes its action log (AFC-486), or `off`.
     "APPLE_NOTES_ACTION_LOG",
 )
+#  Keys the write-time RAG child may inherit.  Values are never logged here.  On the Mac the
+#  scoped Infisical service-token binding (`FLEET_RECALL_INFISICAL_TOKEN`) is the supported
+#  path;  optional QDRANT/TEI env vars are forwarded only when the parent already holds them
+#  (local dev), never from the notes script allow-list alone.
+RAG_CHILD_ENV_KEYS = (
+    "FLEET_RECALL_INFISICAL_TOKEN",
+    "FLEET_RAG_INFISICAL_API",
+    "FLEET_RAG_INFISICAL_PROJECT",
+    "FLEET_RAG_INFISICAL_ENV",
+    "FLEET_SECRETS_BIN",
+    "QDRANT_URL",
+    "QDRANT_API_KEY",
+    "QDRANT_READONLY_API_KEY",
+    "QDRANT_FLEET_COLLECTION",
+    "TEI_URL",
+    "TEI_API_KEY",
+    "TEI_EMBED_MODEL",
+    "RECALL_HTTP_RETRIES",
+    "RECALL_HTTP_BACKOFF_MAX",
+)
+RAG_UPSERT_LOCK_TIMEOUT_S = 120.0
 
 
 class NotesError(Exception):
@@ -1101,6 +1124,16 @@ def child_env(env: Mapping[str, str], extra: Mapping[str, str]) -> dict[str, str
     return out
 
 
+def rag_subprocess_env(env: Mapping[str, str]) -> dict[str, str]:
+    """Environment for the Fleet RAG upsert child:  the notes allow-list plus recall credentials."""
+    out = child_env(env, {})
+    for key in RAG_CHILD_ENV_KEYS:
+        value = env.get(key)
+        if value:
+            out[key] = value
+    return out
+
+
 PIN_SKIPPED_RE = re.compile(r"^pin skipped:\s*(.+?)\s*$", re.MULTILINE)
 
 
@@ -1117,6 +1150,34 @@ def _pin_skipped(raw_stderr: bytes | None) -> str | None:
 def _note_id(stdout: str) -> str | None:
     match = re.search(r"\bid=(\S+)", stdout)
     return match.group(1)[:200] if match else None
+
+
+def _fleet_rag_upsert(request: Mapping[str, Any], note_id: str, env: Mapping[str, str]) -> None:
+    """Best-effort Fleet RAG upsert after a successful write (AFC-685).  Failures are ignored."""
+    if request.get("action") not in BODY_ACTIONS or not note_id:
+        return
+    payload = json.dumps(
+        {"request": dict(request), "note_id": note_id},
+        ensure_ascii=False,
+    ).encode("utf-8")
+    try:
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "fleet_rag.note_upsert",
+                "--lock-timeout",
+                str(RAG_UPSERT_LOCK_TIMEOUT_S),
+            ],
+            input=payload,
+            capture_output=True,
+            timeout=RAG_UPSERT_TIMEOUT_S,
+            cwd=str(_SCRIPTS_ROOT),
+            env=rag_subprocess_env(env),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
 
 
 def run_direct(
@@ -1242,6 +1303,8 @@ def run_direct(
         note_id = _note_id(stdout)
         if note_id:
             result["note_id"] = note_id
+            if action in BODY_ACTIONS:
+                _fleet_rag_upsert(request, note_id, env)
         skipped = _pin_skipped(proc.stderr)
         if skipped:
             result["pin_skipped"] = skipped

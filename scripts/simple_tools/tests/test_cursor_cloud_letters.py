@@ -1,7 +1,7 @@
-"""The Cursor Cloud letter sweep:  every open Cloud agent takes a letter at location `cloud`, a chat titled for a GB bot
-sends that bot one DM per letter with the title to rename it to, and nothing is sent for a chat that already carries
-its letter, a title that names no GB bot, or a run that only looks.  The registry runs in process against a temporary
-registry;  the Cursor API and `simple-chat dm` are replaced."""
+"""The Cursor Cloud letter sweep:  every open Cloud agent takes a letter at location `cloud` and is steered once to
+put that letter in its title.  A chat that already carries its letter is left alone.  A steer the account refuses
+falls back to one DM for a title that names a GB bot.  A run that only looks sends nothing.  The registry runs in
+process against a temporary registry;  the Cursor API and `simple-chat dm` are replaced."""
 
 from __future__ import annotations
 
@@ -42,6 +42,16 @@ class Fake:
         return subprocess.CompletedProcess(argv, self.code, self.out, "")
 
 
+class Steer:
+    def __init__(self, outcome: str = "sent") -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.outcome = outcome
+
+    def __call__(self, sid: str, text: str) -> str:
+        self.calls.append((sid, text))
+        return self.outcome
+
+
 class SweepTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -52,6 +62,7 @@ class SweepTests(unittest.TestCase):
         self.env = {"HOME": self.tmp.name, "SIMPLE_TOOLS_STATE_DIR": self.state, "AGENT_SEAT": "CLAUDE"}
         self.agents = [agent(A1, "GB-Director: tidy the board"), agent(A2, "fix the login page")]
         self.dm = Fake()
+        self.steer = Steer()
 
     def transport(self, argv: list[str]) -> dict:
         out = io.StringIO()
@@ -59,7 +70,10 @@ class SweepTests(unittest.TestCase):
         return json.loads(out.getvalue())
 
     def run_sweep(self, **kw) -> dict:
-        return CCL.sweep(self.env, discover=lambda: list(self.agents), runner=self.dm, transport=self.transport, **kw)
+        return CCL.sweep(
+            self.env, discover=lambda: list(self.agents), runner=self.dm, steer=self.steer,
+            transport=self.transport, **kw,
+        )
 
     def label(self, sid: str) -> str:
         reg = OR.SessionRegistry(self.db)
@@ -68,18 +82,19 @@ class SweepTests(unittest.TestCase):
         finally:
             reg.close_db()
 
-    def test_every_open_agent_takes_a_letter_and_the_named_bot_is_told_once(self) -> None:
+    def test_every_open_agent_takes_a_letter_and_is_steered_once(self) -> None:
         out = self.run_sweep()
         self.assertEqual(out["agents"], 2)
         l1, l2 = self.label(A1), self.label(A2)
         self.assertRegex(l1, r"^[A-Z]{2}$")
         self.assertNotEqual(l1, l2)
-        (call,) = self.dm.calls
-        self.assertEqual(call[:4], ["simple-chat", "dm", "--to", "GB-Director"])
-        self.assertIn('"%s: GB-Director: tidy the board"' % l1, call[-1])
-        self.assertIn('"@**Cursor** %s"' % l1, call[-1])
-        self.run_sweep()  # the same letter again:  no second DM
-        self.assertEqual(len(self.dm.calls), 1)
+        self.assertEqual([sid for sid, _ in self.steer.calls], [A1, A2])
+        self.assertIn('"%s: GB-Director: tidy the board"' % l1, self.steer.calls[0][1])
+        self.assertIn("Then stop.", self.steer.calls[0][1])
+        self.assertIn("\u00a0 ", self.steer.calls[0][1])
+        self.assertEqual(self.dm.calls, [])
+        self.run_sweep()  # the same letter again, inside the retry window:  no second steer
+        self.assertEqual(len(self.steer.calls), 2)
         self.assertEqual(self.label(A1), l1)
 
     def test_a_chat_that_carries_its_letter_sends_nothing(self) -> None:
@@ -88,13 +103,16 @@ class SweepTests(unittest.TestCase):
         self.dm.calls.clear()
         self.agents[0] = agent(A1, "%s: GB-Director: tidy the board" % l1)
         CCL.write_state(self.env, {})  # even with nothing remembered
+        self.steer.calls.clear()
         self.run_sweep()
+        self.assertEqual([sid for sid, _ in self.steer.calls], [A2])  # A1 already carries its letter
         self.assertEqual(self.dm.calls, [])
         self.assertEqual(self.label(A1), l1)
 
     def test_a_dry_run_registers_and_sends_nothing(self) -> None:
         out = self.run_sweep(dry_run=True)
         self.assertEqual([r.get("bot") for r in out["rows"]], ["GB-Director", None])
+        self.assertEqual(self.steer.calls, [])
         self.assertEqual(self.dm.calls, [])
         reg = OR.SessionRegistry(self.db)
         try:
@@ -102,39 +120,44 @@ class SweepTests(unittest.TestCase):
         finally:
             reg.close_db()
 
-    def test_a_dm_that_could_not_start_is_tried_again(self) -> None:
-        def broken(argv, **kw):
-            raise FileNotFoundError("simple-chat")
-
-        self.dm = broken  # type: ignore[assignment]
+    def test_a_steer_that_could_not_start_is_tried_again(self) -> None:
+        self.steer = Steer("not-started")
         out = self.run_sweep()
-        self.assertEqual(out["rows"][0]["dm"], "not-started")
+        self.assertEqual(out["rows"][0]["steer"], "not-started")
+        self.steer = Steer()
+        self.run_sweep()
+        self.assertEqual(len(self.steer.calls), 2)  # both agents, now that steering can start
+
+    def test_a_refused_steer_asks_the_named_bot_and_a_refused_dm_is_tried_again(self) -> None:
+        self.steer = Steer("unavailable")
+        self.dm = Fake(code=2, out="refused: unknown name GB-Director")
+        row = self.run_sweep()["rows"][0]
+        self.assertEqual(row["steer"], "unavailable")
+        self.assertEqual(row["dm"], "refused")
+        self.assertEqual(len(self.dm.calls), 1)  # the untitled chat names no bot
         self.dm = Fake()
         self.run_sweep()
+        self.assertEqual(len(self.steer.calls), 2)  # the refusal is not steered again
         self.assertEqual(len(self.dm.calls), 1)
 
-    def test_a_refused_name_sent_nothing_so_the_next_run_tries_again(self) -> None:
-        self.dm = Fake(code=2, out="refused: unknown name GB-Director")
-        self.assertEqual(self.run_sweep()["rows"][0]["dm"], "refused")
+    def test_a_steer_that_may_have_landed_is_not_repeated_at_once(self) -> None:
+        self.steer = Steer("unknown")
+        self.assertEqual(self.run_sweep()["rows"][0]["steer"], "unknown")
+        sent = len(self.steer.calls)
         self.run_sweep()
-        self.assertEqual(len(self.dm.calls), 2)
+        self.assertEqual(len(self.steer.calls), sent)
 
-    def test_a_failure_that_names_no_bot_may_have_sent_so_it_is_not_repeated(self) -> None:
-        self.dm = Fake(code=1, out="unknown error after posting")
-        self.assertEqual(self.run_sweep()["rows"][0]["dm"], "unknown")
-        self.run_sweep()
-        self.assertEqual(len(self.dm.calls), 1)
-
-    def test_past_the_budget_a_dm_waits_for_the_next_run(self) -> None:
+    def test_past_the_budget_a_steer_waits_for_the_next_run(self) -> None:
         ticks = iter([0.0, 1000.0, 1000.0])
         out = self.run_sweep(clock=lambda: next(ticks), budget=60)
-        self.assertEqual(out["rows"][0]["dm"], "deferred")
-        self.assertEqual(self.dm.calls, [])
+        self.assertEqual(out["rows"][0]["steer"], "deferred")
+        self.assertEqual(self.steer.calls, [])
         self.assertIn("label", out["rows"][1])  # every agent is still registered
         self.run_sweep()
-        self.assertEqual(len(self.dm.calls), 1)
+        self.assertEqual(len(self.steer.calls), 2)
 
     def test_a_title_cannot_mention_anyone_or_format_the_dm(self) -> None:
+        self.steer = Steer("unavailable")
         self.agents = [dict(agent(A1, "GB-Director: ping @**all** `x` [y](z)"), url="javascript:alert(1)")]
         self.run_sweep()
         text = self.dm.calls[0][-1]
@@ -157,7 +180,7 @@ class SweepTests(unittest.TestCase):
         self.assertIn(A1, CCL.read_state(self.env))
         self.agents = everyone
         self.run_sweep()
-        self.assertEqual(len(self.dm.calls), 1)
+        self.assertEqual(len(self.steer.calls), 2)
 
 
     def test_an_agent_untouched_past_the_window_takes_no_letter_and_wakes_no_bot(self) -> None:
@@ -165,6 +188,7 @@ class SweepTests(unittest.TestCase):
         out = self.run_sweep()
         self.assertEqual((out["agents"], out["stale"]), (1, 1))
         self.assertEqual(self.dm.calls, [])
+        self.assertEqual([sid for sid, _ in self.steer.calls], [A2])
         reg = OR.SessionRegistry(self.db)
         try:
             self.assertIsNone(reg.lookup("cursor", "cloud", PL.SCOPE, A1))
@@ -174,13 +198,25 @@ class SweepTests(unittest.TestCase):
 
     def test_an_agent_that_ages_out_and_wakes_again_is_not_told_twice(self) -> None:
         self.run_sweep()
-        self.assertEqual(len(self.dm.calls), 1)
+        self.assertEqual(len(self.steer.calls), 2)
         self.agents[0] = agent(A1, "GB-Director: tidy the board", hours_ago=40)  # past the window, still open
         self.run_sweep()
         self.assertIn(A1, CCL.read_state(self.env))
         self.agents[0] = agent(A1, "GB-Director: tidy the board")  # it wakes before the registry frees its letter
         self.run_sweep()
+        self.assertEqual(len(self.steer.calls), 2)
+
+    def test_a_busy_agent_is_told_to_continue_and_two_steers_then_ask_the_bot(self) -> None:
+        self.agents[0]["state"] = "busy"
+        self.run_sweep(now=1_000)
+        self.assertIn("continue the work already in progress", self.steer.calls[0][1])
+        self.run_sweep(now=1_000 + CCL.STEER_RETRY)
+        self.assertEqual(len(self.steer.calls), 4)  # the second steer is the last
+        self.assertEqual(self.dm.calls, [])  # that steer is given time to land
+        self.run_sweep(now=1_000 + 2 * CCL.STEER_RETRY)
+        self.assertEqual(len(self.steer.calls), 4)
         self.assertEqual(len(self.dm.calls), 1)
+        self.assertIn("GB-Director", self.dm.calls[0][3])
 
     def test_an_agent_with_no_readable_time_is_skipped(self) -> None:
         no_time = agent(A1, "GB-Director: tidy the board")
@@ -189,6 +225,7 @@ class SweepTests(unittest.TestCase):
         out = self.run_sweep()
         self.assertEqual((out["agents"], out["stale"]), (0, 2))
         self.assertEqual(self.dm.calls, [])
+        self.assertEqual(self.steer.calls, [])
 
 
 class RecentTests(unittest.TestCase):
@@ -233,6 +270,22 @@ class TransportTests(unittest.TestCase):
 
 
 class TitleTests(unittest.TestCase):
+    def test_the_letter_stays_in_front_and_an_old_letter_comes_off(self) -> None:
+        self.assertEqual(CCL.wanted_title("CD", "AB: GB-Director: tidy"), "CD: GB-Director: tidy")
+        self.assertEqual(CCL.wanted_title("AA", ""), "AA: New Chat")
+        long = CCL.wanted_title("AA", "x" * 300)
+        self.assertLessEqual(len(long), CCL.TITLE_LIMIT)
+        self.assertTrue(long.startswith("AA: "))
+
+    def test_an_idle_steer_stops_and_a_busy_one_continues(self) -> None:
+        idle = CCL.rename_prompt("AA: tidy", busy=False)
+        busy = CCL.rename_prompt('AA: say "hi"', busy=True)
+        self.assertIn("Then stop.", idle)
+        self.assertIn("continue the work already in progress", busy)
+        self.assertIn("\"AA: say 'hi'\"", busy)
+        self.assertNotIn('say "hi"', busy)
+        self.assertIn("\u00a0 ", idle)
+
     def test_bot_of(self) -> None:
         self.assertEqual(CCL.bot_of("GB-Director: tidy the board"), ("GB-Director", "tidy the board"))
         self.assertEqual(CCL.bot_of("AB: GB-Fixer: hotfix"), ("GB-Fixer", "hotfix"))

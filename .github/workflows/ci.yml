@@ -711,6 +711,7 @@ jobs:
       timeout-minutes: 10
       run: |
         node --test scripts/ios-fleet/ios_testflight_freshness.test.mjs
+        node --test scripts/ios-fleet/asc_scoped_creds.test.mjs
         node --test scripts/ios-fleet/build_number_audit.test.mjs
         bash -n scripts/ios-fleet/install-testflight-freshness.sh
     # The fleet iOS version manifest publisher (AFC-540).  It publishes as a
@@ -794,6 +795,7 @@ jobs:
         working-directory: muster
         run: |
           xcodegen generate --spec project.yml
+          python3 script/resolve_packages.py --project Muster.xcodeproj --derived-data .build/CI
           # The checked-out commit's own time, in the same UTC form the build scripts write.
           commit_time="$(date -u -r "$(git show -s --format=%ct HEAD)" +%Y-%m-%dT%H:%M:%SZ)"
           xcodebuild -project Muster.xcodeproj -scheme Muster -configuration Debug \

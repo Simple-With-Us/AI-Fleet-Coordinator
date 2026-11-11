@@ -30,7 +30,7 @@ class UnauthAuditor:
     def __init__(self):
         self.count = 0
 
-    def record(self, audit, action):
+    def record(self, audit, action, cause="unauthenticated"):
         self.count += 1
         return True
 
@@ -42,6 +42,10 @@ class Policy:
 
     def authenticate(self, token, proof=None):
         return "CLAUDE" if token == BEARER else None
+
+    def authenticate_with_reason(self, token, proof=None):
+        seat = self.authenticate(token, proof)
+        return (seat, "") if seat else (None, "unauthenticated")
 
     def authorize(self, seat, action, repo, now=None):
         return self.denial

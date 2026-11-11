@@ -35,6 +35,7 @@ import zipfile
 import zlib
 from urllib.parse import quote, urlsplit
 
+from .app_tokens import AppTokenError
 from .github_client import MAX_DOWNLOAD_CHUNK, RelayGitHubError
 from .provider_scan import PROVIDER_PATTERN, provider_token_text
 from .reviewed_fixtures import unreviewed_file_secret
@@ -178,6 +179,7 @@ SPECS = {
     "wf_labels_set": ({"issues": "write"}, True),
     "wf_reviewers_request": ({"pull_requests": "write"}, True),
     "wf_reviewers_remove": ({"pull_requests": "write"}, True),
+    "wf_release_notes_preview": ({"contents": "write"}, True),
     "wf_release_create": ({"contents": "write"}, True),
     "wf_release_update": ({"contents": "write"}, True),
     "wf_environments": ({"actions": "read"}, False),
@@ -186,8 +188,10 @@ SPECS = {
     "wf_issue_list": ({"issues": "read"}, False),
     "wf_issue_get": ({"issues": "read"}, False),
     "wf_issue_create": ({"issues": "write"}, True),
+    "wf_issue_milestone_set": ({"issues": "write"}, True),
     "wf_issue_update": ({"issues": "write"}, True),
     "wf_issue_comment": ({"issues": "write"}, True),
+    "wf_issue_state_set": ({"issues": "write"}, True),
     "wf_issue_comment_update": ({"issues": "write"}, True),
     "wf_issue_comment_delete": ({"issues": "write"}, True),
     "wf_review_comment_update": ({"pull_requests": "write"}, True),
@@ -227,6 +231,11 @@ SPECS = {
     "wf_org_installations": ({"organization_administration": "read"}, False),
     "wf_repo_list": ({"metadata": "read"}, False),
     "wf_pr_search": ({"pull_requests": "read"}, False),
+    # Rulesets that apply to a branch, and the repository's ruleset list:  both are
+    # GitHub metadata reads.  Classic branch protection needs administration:read,
+    # which the fleet ceiling does not hold, so it has no verb here.
+    "wf_branch_rules": ({"metadata": "read"}, False),
+    "wf_rulesets": ({"metadata": "read"}, False),
     "wf_labels": ({"issues": "read"}, False),
     "wf_workflows": ({"actions": "read"}, False),
     "wf_run_get": ({"actions": "read"}, False),
@@ -500,6 +509,8 @@ _NEW_READS = frozenset(
         "wf_org_installations",
         "wf_repo_list",
         "wf_pr_search",
+        "wf_branch_rules",
+        "wf_rulesets",
     }
 )
 
@@ -732,6 +743,42 @@ def _validate_read(action, result):
             "complete": boolean,
             "page": positive,
         },
+        "wf_branch_rules": {
+            "branch": lambda v: text(v) and bool(v),
+            "rules": lambda v: seq(
+                v,
+                lambda x: fields(
+                    x,
+                    {
+                        "type": lambda y: text(y) and bool(y),
+                        "ruleset_id": positive,
+                        "ruleset_source_type": text,
+                        "ruleset_source": text,
+                        "parameters": lambda y: y is None or isinstance(y, dict),
+                    },
+                ),
+            ),
+            "page": positive,
+            "has_more": boolean,
+        },
+        "wf_rulesets": {
+            "rulesets": lambda v: seq(
+                v,
+                lambda x: fields(
+                    x,
+                    {
+                        "id": positive,
+                        "name": lambda y: text(y) and bool(y),
+                        "target": lambda y: y is None or text(y),
+                        "source_type": text,
+                        "source": text,
+                        "enforcement": text,
+                    },
+                ),
+            ),
+            "page": positive,
+            "has_more": boolean,
+        },
         "wf_issue_comments": {
             "comments": lambda v: seq(v, comment),
             "complete": boolean,
@@ -867,6 +914,15 @@ _HOOK_SECRET_HOSTS = (
 )
 _HOOK_TOKEN_SEGMENT = re.compile(r"[A-Za-z0-9_~.-]{20,}")
 
+# The merge settings wf_repo_get copies from its settings-read response, and nothing else.
+_REPO_MERGE_SETTINGS = (
+    "allow_merge_commit",
+    "allow_squash_merge",
+    "allow_rebase_merge",
+    "allow_auto_merge",
+    "delete_branch_on_merge",
+)
+
 
 def _hook_url_carries_secret(url):
     try:
@@ -967,6 +1023,8 @@ class WorkflowVerbs:
             if exc.code == "repository_moved":
                 raise
             raise Unknown("own App credential unavailable") from None
+        except AppTokenError:
+            raise
         except Exception:
             raise Unknown("own App credential unavailable") from None
         handle = cls(client, policy, seat, token, app_slug, action, repo)
@@ -1062,6 +1120,8 @@ class WorkflowVerbs:
             if exc.code == "repository_moved":
                 raise
             raise Unknown("own App credential unavailable") from None
+        except AppTokenError:
+            raise
         except Exception:
             raise Unknown("own App credential unavailable") from None
         return token
@@ -1849,6 +1909,66 @@ class WorkflowVerbs:
             raise
         return self._issue_summary(data)
 
+    def wf_issue_milestone_set(self, repo, args):
+        """Set/remove an issue milestone only after exact issue and milestone pre-reads."""
+        _only(args, ("repo", "number", "milestone_number"))
+        number = _int(args, "number")
+        value = _int(args, "milestone_number", 0, 1000000000000)
+        milestone = None if value == 0 else value
+        try:
+            issue = self._get(f"/repos/{repo}/issues/{number}")
+            if (
+                not isinstance(issue, dict)
+                or "pull_request" in issue
+                or type(issue.get("number")) is not int
+                or issue["number"] != number
+                or type(issue.get("id")) is not int
+                or issue["id"] <= 0
+            ):
+                raise Refused("exact issue identity not matched")
+            if milestone is not None:
+                target = self._get(f"/repos/{repo}/milestones/{milestone}")
+                if (
+                    not isinstance(target, dict)
+                    or type(target.get("number")) is not int
+                    or target["number"] != milestone
+                    or type(target.get("id")) is not int
+                    or target["id"] <= 0
+                ):
+                    raise Refused("exact milestone identity not matched")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "milestone pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        result = self.client._call(
+            "PATCH", f"/repos/{repo}/issues/{number}", {"milestone": milestone}, bearer=self.bearer
+        )
+        if (
+            not isinstance(result, dict)
+            or "pull_request" in result
+            or type(result.get("number")) is not int
+            or result["number"] != number
+            or type(result.get("id")) is not int
+            or result["id"] != issue["id"]
+            or "milestone" not in result
+        ):
+            raise RelayGitHubError(502, "issue milestone receipt unverifiable")
+        actual = result["milestone"]
+        if milestone is None:
+            if actual is not None:
+                raise RelayGitHubError(502, "milestone removal receipt unverifiable")
+        elif (
+            not isinstance(actual, dict)
+            or type(actual.get("number")) is not int
+            or actual["number"] != milestone
+            or type(actual.get("id")) is not int
+            or actual["id"] != target["id"]
+        ):
+            raise RelayGitHubError(502, "milestone assignment receipt unverifiable")
+        return {"issue_number": number, "milestone_number": milestone}
+
     def wf_issue_update(self, repo, args):
         _only(args, ("repo", "number", "title", "body", "state"))
         number = _int(args, "number")
@@ -1876,6 +1996,56 @@ class WorkflowVerbs:
         except (Refused, KeyError, TypeError) as exc:
             raise WriteOutcomeUnknown("issue write outcome unverifiable") from exc
         return {"issue": summary}
+
+    def wf_issue_state_set(self, repo, args):
+        """Set issue lifecycle state/reason with a closed, correlated numeric receipt."""
+        _only(args, ("repo", "number", "state", "reason"))
+        number = _int(args, "number")
+        state = _enum(args, "state", ("open", "closed"))
+        reason = _enum(args, "reason", ("completed", "not_planned", "duplicate", "reopened"))
+        if (state == "open") != (reason == "reopened"):
+            raise Refused("issue state/reason mismatch")
+        try:
+            issue = self._get(f"/repos/{repo}/issues/{number}")
+            if (
+                not isinstance(issue, dict)
+                or "pull_request" in issue
+                or type(issue.get("number")) is not int
+                or issue["number"] != number
+                or type(issue.get("id")) is not int
+                or issue["id"] <= 0
+                or issue.get("state") not in ("open", "closed")
+            ):
+                raise Refused("exact issue identity not matched")
+            if issue["state"] == state:
+                # An issue that was never closed carries a null state_reason, and
+                # "reopened" is the only reason open accepts, so an open issue
+                # already satisfies the request whatever its stored reason is.
+                if state != "open" and issue.get("state_reason") != reason:
+                    raise Refused("provider ignores state_reason unless state changes")
+                return {"issue_number": number, "state": state, "reason": reason}
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable("issue pre-read unavailable; no write attempted") from None
+            raise
+        result = self.client._call(
+            "PATCH",
+            f"/repos/{repo}/issues/{number}",
+            {"state": state, "state_reason": reason},
+            bearer=self.bearer,
+        )
+        if (
+            not isinstance(result, dict)
+            or "pull_request" in result
+            or type(result.get("number")) is not int
+            or result["number"] != number
+            or type(result.get("id")) is not int
+            or result["id"] != issue["id"]
+            or result.get("state") != state
+            or result.get("state_reason") != reason
+        ):
+            raise RelayGitHubError(502, "issue state receipt unverifiable")
+        return {"issue_number": number, "state": state, "reason": reason}
 
     def wf_issue_comment(self, repo, args):
         _only(args, ("repo", "number", "body"))
@@ -3493,6 +3663,47 @@ class WorkflowVerbs:
             raise RelayGitHubError(502, "reviewer receipt membership unverifiable")
         return {"result": result}
 
+    def wf_release_notes_preview(self, repo, args):
+        """GitHub generates text only: no tag or release is saved by this endpoint."""
+        _only(args, ("repo", "tag", "target_sha", "previous_tag"))
+        tag, previous = _ref(args, "tag"), _ref(args, "previous_tag")
+        target = _sha(args, "target_sha")
+        if (
+            tag == previous
+            or tag.startswith("refs/")
+            or previous.startswith("refs/")
+            or find_secret(tag)
+            or find_secret(previous)
+        ):
+            raise Refused("invalid release notes range")
+        value = self.client._call(
+            "POST",
+            f"/repos/{repo}/releases/generate-notes",
+            {"tag_name": tag, "target_commitish": target, "previous_tag_name": previous},
+            bearer=self.bearer,
+        )
+        if not isinstance(value, dict):
+            raise RelayGitHubError(502, "release notes preview unverifiable")
+
+        def text(key, limit):
+            value_text = value.get(key)
+            if not isinstance(value_text, str) or "\x00" in value_text:
+                raise RelayGitHubError(502, "release notes preview unverifiable")
+            try:
+                raw = value_text.encode("utf-8")
+            except UnicodeEncodeError:
+                raise RelayGitHubError(502, "release notes preview unverifiable") from None
+            if len(raw) > limit:
+                raise Refused("release notes preview exceeds supported size")
+            if find_secret(value_text) or re.search(
+                r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
+                value_text,
+            ):
+                raise Refused("credential-shaped release notes withheld")
+            return value_text
+
+        return {"preview": {"name": text("name", 500), "body": text("body", 32768)}, "saved": False}
+
     def wf_release_create(self, repo, args):
         _only(
             args,
@@ -4654,10 +4865,150 @@ class WorkflowVerbs:
         self._get("/installation-metadata-shape-only")
         raise Refused("installation metadata requires authenticated dispatcher")
 
+    def _repo_settings_bearer(self, repo):
+        """Bearer for wf_repo_get that lets GitHub show the merge settings.
+
+        GitHub leaves allow_merge_commit, allow_squash_merge, allow_rebase_merge,
+        allow_auto_merge and delete_branch_on_merge out of GET /repos/{repo} unless the
+        token can read the repository's settings (Administration read).  The least
+        permission for wf_repo_get is metadata:read, so those keys were absent (callers
+        saw null).  When the seat's ceiling already holds administration, mint
+        metadata + administration read for this one call;  otherwise, or when that mint
+        fails, keep the least-permission bearer and the keys stay absent.  This never
+        exceeds the seat's ceiling.
+        """
+        elevation = getattr(self, "_elevation", None)
+        if elevation is None:
+            return self.bearer
+        minter, app_slug, ceiling = elevation
+        required = {"metadata": "read", "administration": "read"}
+        if _perm_within_ceiling(required, ceiling):
+            return self.bearer
+        try:
+            token, _ = minter.token_for(app_slug, repo, required)
+        except Exception:
+            return self.bearer
+        return token or self.bearer
+
     def wf_repo_get(self, repo, args):
         _only(args, ("repo",))
-        data = self._get(f"/repos/{repo}")
-        return {"repository": _obj(data)}
+        # The repository object always comes from the least-permission (metadata:read)
+        # token.  The settings-read token is used for one more read, and only the five
+        # merge settings are copied from it:  any other field GitHub shows only to a
+        # settings reader (security_and_analysis, a filled temp_clone_token, ...) is
+        # discarded with that response.
+        data = dict(_obj(self._get(f"/repos/{repo}")))
+        bearer = self._repo_settings_bearer(repo)
+        if bearer is not self.bearer:
+            try:
+                wide = self.client._call("GET", f"/repos/{repo}", None, bearer=bearer)
+            except RelayGitHubError:
+                wide = None
+            if isinstance(wide, dict) and wide.get("id") == data.get("id"):
+                for key in _REPO_MERGE_SETTINGS:
+                    if type(wide.get(key)) is bool:
+                        data[key] = wide[key]
+        # temp_clone_token is a short-lived clone credential;  it never leaves the relay.
+        if data.get("temp_clone_token"):
+            del data["temp_clone_token"]
+        return {"repository": data}
+
+    def wf_branch_rules(self, repo, args):
+        """Rules from every active ruleset that applies to one branch.
+
+        GET /repos/{repo}/rules/branches/{branch}:  each row names the rule type, its
+        parameters (for a pull_request rule, allowed_merge_methods and the review
+        requirements) and the ruleset that supplies it.  Classic branch protection is
+        not included;  it needs administration:read.
+        """
+        _only(args, ("repo", "branch", "per_page", "page"))
+        name = _ref(args, "branch")
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        branch = quote(name, safe="")
+        data = self._get(f"/repos/{repo}/rules/branches/{branch}?per_page={limit}&page={page}")
+        if not isinstance(data, list) or len(data) > limit:
+            raise RelayGitHubError(502, "branch rules page unverifiable")
+        rules = []
+        for item in data:
+            params = item.get("parameters") if isinstance(item, dict) else None
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("type"), str)
+                or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", item["type"])
+                or type(item.get("ruleset_id")) is not int
+                or item["ruleset_id"] <= 0
+                or not isinstance(item.get("ruleset_source_type"), str)
+                or not re.fullmatch(r"[A-Za-z]{1,32}", item["ruleset_source_type"])
+                or not isinstance(item.get("ruleset_source"), str)
+                or not 1 <= len(item["ruleset_source"]) <= 201
+                or not (params is None or isinstance(params, dict))
+            ):
+                raise RelayGitHubError(502, "branch rule unverifiable")
+            if params is not None:
+                encoded = json.dumps(params, sort_keys=True)
+                if len(encoded) > 16384:
+                    raise RelayGitHubError(502, "branch rule parameters unverifiable")
+                if find_secret(encoded) or self._provider_token_text(encoded):
+                    raise Refused("credential-shaped branch rule parameters refused")
+            rules.append(
+                {
+                    "type": item["type"],
+                    "ruleset_id": item["ruleset_id"],
+                    "ruleset_source_type": item["ruleset_source_type"],
+                    "ruleset_source": item["ruleset_source"],
+                    "parameters": params,
+                }
+            )
+        return {"branch": name, "rules": rules, "page": page, "has_more": len(rules) == limit}
+
+    def wf_rulesets(self, repo, args):
+        """The repository's rulesets (summary rows:  no rules, conditions or bypass list).
+
+        GET /repos/{repo}/rulesets.  includes_parents (default true) also lists the
+        organization rulesets that target this repository.
+        """
+        _only(args, ("repo", "per_page", "page", "includes_parents"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        parents = args.get("includes_parents", True)
+        if type(parents) is not bool:
+            raise Refused("invalid includes_parents")
+        flag = "true" if parents else "false"
+        data = self._get(
+            f"/repos/{repo}/rulesets?per_page={limit}&page={page}&includes_parents={flag}"
+        )
+        if not isinstance(data, list) or len(data) > limit:
+            raise RelayGitHubError(502, "ruleset page unverifiable")
+        rulesets = []
+        for item in data:
+            if (
+                not isinstance(item, dict)
+                or type(item.get("id")) is not int
+                or item["id"] <= 0
+                or not isinstance(item.get("source_type"), str)
+                or not re.fullmatch(r"[A-Za-z]{1,32}", item["source_type"])
+                or not isinstance(item.get("source"), str)
+                or not 1 <= len(item["source"]) <= 201
+                or item.get("enforcement") not in ("disabled", "active", "evaluate")
+                or not (
+                    item.get("target") is None
+                    or isinstance(item["target"], str)
+                    and re.fullmatch(r"[a-z_]{1,32}", item["target"])
+                )
+            ):
+                raise RelayGitHubError(502, "ruleset unverifiable")
+            rulesets.append(
+                {
+                    "id": item["id"],
+                    "name": self._metadata_name(item.get("name"), 255),
+                    "target": item.get("target"),
+                    "source_type": item["source_type"],
+                    "source": item["source"],
+                    "enforcement": item["enforcement"],
+                }
+            )
+        return {"rulesets": rulesets, "page": page, "has_more": len(rulesets) == limit}
 
     def wf_labels(self, repo, args):
         _only(

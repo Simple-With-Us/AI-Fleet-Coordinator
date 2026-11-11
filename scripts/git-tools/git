@@ -121,7 +121,8 @@ wf_run_artifacts wf_release_assets wf_release_asset_get wf_pr_list wf_pr_files w
 wf_commits wf_code_search wf_runs wf_run_jobs wf_checks wf_merge_queue_entry wf_job_get wf_workflow_get
 wf_artifact_get wf_artifacts_page wf_caches_page wf_cache_usage wf_run_attempt_get wf_run_attempt_jobs
 wf_run_pending_deployments wf_repo_variables wf_repo_variable_get wf_issue_events wf_issue_timeline
-wf_git_blob_binary_get wf_repo_list wf_pr_search wf_repo_hooks wf_deploy_keys wf_org_installations""".split()
+wf_git_blob_binary_get wf_repo_list wf_pr_search wf_repo_hooks wf_deploy_keys wf_org_installations
+wf_branch_rules wf_rulesets""".split()
 READ_TOOLS = frozenset(["gr_v1_pr_state", "gr_v1_pr_hold_state"] + ["gr_" + a for a in WF_V1_READ_ACTIONS])
 
 # Per-action input byte limits (gr-workflow-v1.js WF_V1_INPUT_LIMITS; default 64 KiB).
@@ -184,6 +185,15 @@ def prog() -> str:
 def die(msg: str, code: int = EXIT_ERROR) -> "NoReturn":  # noqa: F821
     sys.stderr.write(f"{prog()}: {msg}\n")
     raise SystemExit(code)
+
+
+class HostedToolExit(SystemExit):
+    """A hosted tool error that still exits, and keeps a closed refusal reason."""
+
+    def __init__(self, status: int, tool_code: str, reason: str | None):
+        self.tool_code = tool_code
+        self.reason = reason
+        super().__init__(status)
 
 
 def env(name: str) -> str:
@@ -456,6 +466,10 @@ _REFUSAL_REASONS = frozenset(
         "github_refused",
         "fence_mismatch",
         "unauthenticated",
+        "seat_not_in_policy",
+        "bearer_rejected",
+        "verifier_unavailable",
+        "no_app_credential",
         "repository_moved",
         "read_too_large",
         "bad_request_content_too_large",
@@ -516,6 +530,15 @@ def _refusal_detail_of(result: dict) -> str:
                 return f" (reason={reason}, github_status={status})"
             return f" (reason={reason})"
     return ""
+
+
+def _refusal_reason_of(result: dict) -> str | None:
+    """The closed reason _refusal_detail_of would show, or None."""
+    detail = _refusal_detail_of(result)
+    if not detail.startswith(" (reason="):
+        return None
+    reason = detail[len(" (reason=") :].split(",", 1)[0].rstrip(")")
+    return reason if reason in _REFUSAL_REASONS else None
 
 
 # ----------------------------------------------------------------- answer parsing (mirrors board)
@@ -798,7 +821,11 @@ def remote_call(tool: str, arguments: dict, write: bool, bearer: str, deadline: 
                 retry = value
                 break
         after = f", retry after {int(-(-retry // 1))}s" if retry is not None else ""
-        die(f"{tool} failed on the hosted server: {shown}{detail}{after}{note}", EXIT_ERROR)
+        reason = _refusal_reason_of(result) if code == "relay_refused" else None
+        sys.stderr.write(
+            f"{prog()}: {tool} failed on the hosted server: {shown}{detail}{after}{note}\n"
+        )
+        raise HostedToolExit(EXIT_ERROR, shown, reason)
     parts = [
         c.get("text")
         for c in content or []
@@ -2383,11 +2410,23 @@ def collect_readiness(read, repo, number, expected_head=None, max_pages=20):
             report["unknowns"].append("github_merge_state_not_clean")
         report["complete"] = True
     except ReadinessUnknown as exc:
-        report["unknowns"].append(str(exc))
+        text = str(exc)
+        marker = "relay_reason:"
+        if text.startswith(marker) and text[len(marker) :] in _REFUSAL_REASONS:
+            report["relay_reason"] = text[len(marker) :]
+        else:
+            report["unknowns"].append(text)
     report["limitations"] = ["Observations are not atomic; changes after the final read are possible.",
         "Repository rules, required reviewer identity and owner authority are not evaluated.",
         "GitHub exact block reason is unavailable from these approved reads; never infer a policy waiver."]
-    report["verdict"] = "blocked" if report["blockers"] else "unknown" if report["unknowns"] or not report["complete"] else "observed_checks_passed"
+    if report.get("relay_reason"):
+        report["verdict"] = report["relay_reason"]
+    elif report["blockers"]:
+        report["verdict"] = "blocked"
+    elif report["unknowns"] or not report["complete"]:
+        report["verdict"] = "unknown"
+    else:
+        report["verdict"] = "observed_checks_passed"
     return report
 
 
@@ -2400,6 +2439,10 @@ def cmd_readiness(tools, a, bearer, server_seat, deadline):
             validate_arguments(entry, args, deadline)
             args = resolve_actor(entry, args, bearer, server_seat, deadline)
             out = remote_call(name, args, False, bearer, deadline)
+        except HostedToolExit as exc:
+            if exc.reason in _REFUSAL_REASONS:
+                raise ReadinessUnknown("relay_reason:" + exc.reason) from None
+            raise ReadinessUnknown("required read failed: " + name) from None
         except SystemExit:
             raise ReadinessUnknown("required read failed: " + name) from None
         value = out.get("structured")

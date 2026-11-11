@@ -48,10 +48,15 @@
  * run), or the check itself failing.  One digest post per run, at most one
  * post per app per six hours, and never twice for the same commit and reason.
  *
- * Credentials:  this file never reads one.  App Store Connect calls go through
- * the fleet's asc-api.mjs (which reads the ASC_* env or Infisical /asc through fleet-secrets), and
- * its stderr is never echoed, because a crash there can name the key path.
- * GitHub calls go through the gh CLI;  Zulip through simple-chat.
+ * Credentials:  App Store Connect reads use the owned scoped binding in
+ * asc_scoped_creds.mjs (a read-only Infisical service token for exactly
+ * prod:/asc, verified before any call).  The three ASC_* values are passed to
+ * asc-api.mjs.  A missing binding or a scope that does not match fails the
+ * run and does not fall back to fleet-secrets /asc or a legacy key folder.
+ * --allow-legacy-asc-creds or IOS_TF_ALLOW_LEGACY_ASC_CREDS=1 opts back into
+ * that helper fallback.  asc-api.mjs stderr is never echoed, because a crash
+ * there can name a key path.  GitHub calls go through the gh CLI;  Zulip
+ * through simple-chat.
  */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -59,6 +64,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { ascChildEnv, legacyAscAllowed, resolveFreshnessAscCredentials } from "./asc_scoped_creds.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const EXIT_CURRENT = 0;
@@ -236,8 +242,9 @@ function ghError(err) {
 // ---------------------------------------------------------------------------
 // App Store Connect calls
 //
-// Every asc-api.mjs call signs in to Infisical through fleet-secrets (three `get`s, each a
-// login plus an export), so one call is a handful of process launches.  On 2026-10-20 the Mac
+// Each asc-api.mjs child used to sign in through fleet-secrets (three `get`s, each a login
+// plus an export), so one call was a handful of process launches.  The scoped binding is
+// verified once per run now, and the child receives ASC_* instead.  On 2026-10-20 the Mac
 // was memory-thrashing (load average 100 to 200, kernel_task near 50% system time) and the
 // 2:20pm and 4:20pm runs lost every call to the 120 second kill timeout:  Node reports a killed
 // child as `code: null`, which the report printed as "asc-api.mjs exit ?" with nothing to say
@@ -326,9 +333,27 @@ export async function ascRequest(run, apiPath, guard = makeAscGuard(), { timeout
   });
 }
 
-export function makeDeps(env = process.env) {
+export function makeDeps(env = process.env, options = {}) {
   const sdir = stateDir(env);
   const ascGuard = makeAscGuard();
+  const allowLegacy = legacyAscAllowed(env, options.allowLegacyAsc === true);
+  const run = options.runCmd || runCmd;
+  let prepared = null;
+  const ascEnvironment = () => {
+    if (allowLegacy) return Promise.resolve(env);
+    if (!prepared) {
+      prepared = resolveFreshnessAscCredentials({
+        env,
+        fetchImpl: options.fetchImpl,
+        readFileImpl: options.readFileImpl,
+        statImpl: options.statImpl,
+        execFileImpl: options.execFileImpl,
+        home: options.home,
+        nowMs: options.nowMs,
+      }).then((creds) => ascChildEnv(env, creds));
+    }
+    return prepared;
+  };
   const deps = {
     now: () => new Date(),
     async gh(apiPath) {
@@ -350,10 +375,14 @@ export function makeDeps(env = process.env) {
         throw new Error(`gh workflow run ${workflow}: ${ghError(err)}`);
       }
     },
+    async prepareAsc() {
+      await ascEnvironment();
+    },
     async asc(apiPath) {
       const script = resolveFleetFile("asc-api.mjs", env);
       if (!script) throw new Error("asc-api.mjs not found (set IOS_FLEET_DIR or install ~/apps/ios-fleet)");
-      return ascRequest((opts) => runCmd(process.execPath, [script, "GET", apiPath], { env, ...opts }), apiPath, ascGuard);
+      const childEnv = await ascEnvironment();
+      return ascRequest((opts) => run(process.execPath, [script, "GET", apiPath], { env: childEnv, ...opts }), apiPath, ascGuard);
     },
     async buildWindow(appKey) {
       const script = resolveFleetFile("build-window.sh", env);
@@ -1169,7 +1198,10 @@ export function renderTable(report) {
 // ---------------------------------------------------------------------------
 
 export function parseArgs(argv) {
-  const opts = { apps: null, repos: null, json: false, shipBehind: false, dryRun: false, alert: false, maxShips: 1, registry: null, concurrency: 4, help: false };
+  const opts = {
+    apps: null, repos: null, json: false, shipBehind: false, dryRun: false, alert: false,
+    maxShips: 1, registry: null, concurrency: 4, help: false, allowLegacyAsc: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const val = () => {
@@ -1185,6 +1217,7 @@ export function parseArgs(argv) {
     else if (a === "--max-ships") opts.maxShips = Math.max(0, parseInt(val(), 10) || 0);
     else if (a === "--registry") opts.registry = val();
     else if (a === "--concurrency") opts.concurrency = Math.max(1, parseInt(val(), 10) || 1);
+    else if (a === "--allow-legacy-asc-creds") opts.allowLegacyAsc = true;
     else if (a === "-h" || a === "--help") opts.help = true;
     else throw new Error(`unknown argument: ${a}`);
   }
@@ -1207,6 +1240,23 @@ export function loadRegistry(file) {
 export async function runCheck(opts, deps, registry) {
   const now = deps.now();
   const errors = [];
+  if (typeof deps.prepareAsc === "function") {
+    try {
+      await deps.prepareAsc();
+    } catch (err) {
+      errors.push(String(err.message || err).slice(0, 500));
+      return {
+        schemaVersion: 1,
+        generatedAt: now.toISOString(),
+        mode: { shipBehind: opts.shipBehind, dryRun: opts.dryRun, alert: opts.alert, apps: opts.apps, repos: opts.repos },
+        exitCode: exitCodeFor([], errors),
+        summary: summarize([]),
+        apps: [],
+        unmapped: [],
+        errors,
+      };
+    }
+  }
   let keys = Object.keys(registry.apps);
   if (opts.apps) {
     const unknown = opts.apps.filter((k) => !registry.apps[k]);
@@ -1311,11 +1361,15 @@ async function findUnmapped(ctx, registry) {
 const HELP = `usage: ios_testflight_freshness.mjs [--app KEY[,KEY]] [--repo REPO] [--json]
                                    [--ship-behind [--dry-run] [--max-ships N]] [--alert]
                                    [--registry PATH] [--concurrency N]
+                                   [--allow-legacy-asc-creds]
 
 Exit 0 every checked app is current, 1 something is behind, 2 the check failed.
+App Store Connect reads need the scoped ios-testflight-freshness-ro binding.
+--allow-legacy-asc-creds (or IOS_TF_ALLOW_LEGACY_ASC_CREDS=1) opts into the
+asc-api.mjs fleet-secrets /asc and legacy key-folder fallback.
 See docs/ios-testflight-freshness.md in AI-Fleet-Coordinator.`;
 
-export async function main(argv = process.argv.slice(2), deps = makeDeps(), out = process.stdout) {
+export async function main(argv = process.argv.slice(2), deps = undefined, out = process.stdout) {
   let opts;
   try {
     opts = parseArgs(argv);
@@ -1323,6 +1377,7 @@ export async function main(argv = process.argv.slice(2), deps = makeDeps(), out 
     out.write(`${err.message}\n${HELP}\n`);
     return EXIT_FAILED;
   }
+  if (deps === undefined) deps = makeDeps(process.env, { allowLegacyAsc: opts.allowLegacyAsc });
   if (opts.help) {
     out.write(`${HELP}\n`);
     return EXIT_CURRENT;

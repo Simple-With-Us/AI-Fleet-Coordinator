@@ -9,9 +9,11 @@ inside a body signed with the same X-Simple-Tools-Signature scheme as the wake l
 is read through the fleet-secrets CLI only, like every other credential this service
 touches - never from the process environment.
 
-Failure shape:  fail closed.  A malformed token, an unreachable Worker, a bad answer,
-an expired or paused identity - all resolve to None (the caller answers 401).  Neither
-the bearer nor its hash is ever logged or included in an error string.
+Failure shape:  fail closed.  resolve() returns None for a malformed token, an
+unreachable Worker, a bad answer, or an expired or paused identity.  resolve_detail()
+names which of those it was (bearer_rejected or verifier_unavailable) so the caller
+can say so without logging the bearer or its hash.  Neither the bearer nor its hash
+is ever logged or included in an error string.
 
 A live positive answer is reused for up to an hour by default (owner ruling 2026-11-06:
 a checked token may work for an hour, because a seat is never cut off through the
@@ -147,16 +149,28 @@ class SharedBearerVerifier:
 
     def resolve(self, token: str) -> str | None:
         """The verified identity for a presented bearer, or None.  Never raises."""
+        identity, _reason = self.resolve_detail(token)
+        return identity
+
+    def resolve_detail(self, token: str) -> tuple[str | None, str]:
+        """(identity, "") when confirmed, else (None, reason).  Never raises.
+
+        reason is unauthenticated (not a bearer), bearer_rejected (the Worker
+        refused, including a cached refusal), or verifier_unavailable (the
+        Worker could not be asked).  An outage is not cached.
+        """
         try:
             identity = self.parse_identity(token)
             if identity is None:
-                return None
+                return None, "unauthenticated"
             digest = hashlib.sha256(token.strip().encode()).hexdigest()
             with self._lock:
                 cached = self._cache.get(digest)
             now = time.time()
             if cached and cached[1] > now:
-                return cached[0]
+                if cached[0] is None:
+                    return None, "bearer_rejected"
+                return cached[0], ""
             resolved = self._verify_remote(identity, digest, now)
             # Positive answers cache for the TTL above, never past the bearer's
             # own expiry, and never more than the TTL after the Worker's own
@@ -184,12 +198,12 @@ class SharedBearerVerifier:
                 else:
                     self._cache[digest] = (None, now + NEGATIVE_CACHE_S, now)
             if resolved is not None:
-                return identity_name
-            return None
+                return identity_name, ""
+            return None, "bearer_rejected"
         except _VerifyUnavailable:
-            return None  # fail closed, and let the next call ask again
+            return None, "verifier_unavailable"  # fail closed, and let the next call ask again
         except Exception:
-            return None  # fail closed, always
+            return None, "bearer_rejected"  # fail closed, always
 
     def _verify_remote(self, identity: str, digest: str, now: float):
         body = json.dumps(
