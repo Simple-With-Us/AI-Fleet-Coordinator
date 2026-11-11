@@ -351,6 +351,8 @@ class PaneExceptionTests(unittest.TestCase):
                     "MiniMax Code", text, "%s does not name the MiniMax Code chat pane" % rel
                 )
                 self.assertIn("`&nbsp;`", text, "%s does not name the entity" % rel)
+                # The 2026-11-11 owner ruling added the Z Code chat pane as the third.
+                self.assertIn("Z Code", text, "%s does not name the Z Code chat pane" % rel)
                 self.assertIn("U+00A0", text, "%s does not state the real U+00A0 rule" % rel)
                 self.assertTrue(
                     _states_the_exception(text),
