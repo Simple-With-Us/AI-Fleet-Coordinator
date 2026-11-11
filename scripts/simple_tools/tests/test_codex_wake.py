@@ -109,7 +109,7 @@ class CodexWakeTests(unittest.TestCase):
             self.transport,
             {"HOME": self.tmp.name},
             metadata,
-            hostname=lambda: "jay-mac.local",
+            hostname=lambda: "mac.example.test",
             registry_lookup=registry,
         )
         self.target = TargetWithGeneration(
@@ -146,7 +146,7 @@ class CodexWakeTests(unittest.TestCase):
         binding = self.transport.calls[0][1]
         self.assertEqual(binding, {
             "platform": "codex",
-            "host": "jay-mac.local",
+            "host": "mac.example.test",
             "session_id": SID,
             "cwd": self.meta["cwd"],
         })
@@ -465,7 +465,7 @@ class CodexWakeTests(unittest.TestCase):
     def test_factory_declares_codex_platform_and_canonical_target_pattern(self):
         platform = CW.make_platform(
             {}, {"local_host": "mac"}, transport=self.transport,
-            metadata_lookup=lambda env, sid: self.meta, hostname=lambda: "jay-mac.local"
+            metadata_lookup=lambda env, sid: self.meta, hostname=lambda: "mac.example.test"
         )
         self.assertEqual((platform.seat, platform.platform, platform.mention), ("CODEX", "codex", "Codex"))
         self.assertRegex(SID, platform.target_re)
@@ -487,7 +487,7 @@ class CodexWakeTests(unittest.TestCase):
                 transport=self.transport,
                 metadata_lookup=lambda env, sid: self.meta,
                 registry_lookup=lambda env, letter: self.registry_result,
-                hostname=lambda: "jay-mac.local",
+                hostname=lambda: "mac.example.test",
             )
         self.assertEqual(
             (result["wake_id"], result["session_id"], result["generation"]),
@@ -517,7 +517,7 @@ class CodexWakeTests(unittest.TestCase):
                 transport=self.transport,
                 metadata_lookup=lambda env, sid: self.meta,
                 registry_lookup=lambda env, letter: self.registry_result,
-                hostname=lambda: "jay-mac.local",
+                hostname=lambda: "mac.example.test",
             )
         self.assertEqual(result["delivery"]["code"], "queued")
         self.assertGreater(len(stream.requested), 1)
@@ -572,7 +572,7 @@ class CodexWakeTests(unittest.TestCase):
                 transport=self.transport,
                 metadata_lookup=lambda env, sid: self.meta,
                 registry_lookup=lambda env, letter: self.registry_result,
-                hostname=lambda: "jay-mac.local",
+                hostname=lambda: "mac.example.test",
             )
         self.assertEqual(result["delivery"]["code"], "queued")
         self.assertNotIn("untrusted display title", self.transport.calls[-1][2])
@@ -586,7 +586,7 @@ class CodexWakeTests(unittest.TestCase):
                 transport=self.transport,
                 metadata_lookup=lambda env, sid: self.meta,
                 registry_lookup=lambda env, letter: self.registry_result,
-                hostname=lambda: "jay-mac.local",
+                hostname=lambda: "mac.example.test",
             )
         self.assertEqual(result["delivery"]["code"], "queued")
 
@@ -601,7 +601,7 @@ class CodexWakeTests(unittest.TestCase):
                 transport=self.transport,
                 metadata_lookup=lambda env, sid: self.meta,
                 registry_lookup=lambda env, letter: self.registry_result,
-                hostname=lambda: "jay-mac.local",
+                hostname=lambda: "mac.example.test",
             )
         self.assertEqual(result["delivery"]["code"], "queued")
 
@@ -626,7 +626,7 @@ class CodexWakeTests(unittest.TestCase):
                     transport=self.transport,
                     metadata_lookup=lambda env, sid: self.meta,
                     registry_lookup=lambda env, letter: self.registry_result,
-                    hostname=lambda: "jay-mac.local",
+                    hostname=lambda: "mac.example.test",
                 )
                 self.assertEqual(result["delivery"]["outcome"], "refused")
                 self.assertEqual(self.transport.calls, [])
