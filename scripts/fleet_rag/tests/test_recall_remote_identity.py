@@ -26,17 +26,29 @@ class RemoteIdentityTests(unittest.TestCase):
                          self.principal(default_identity=[]), self.principal(identities=[]),
                          self.principal(identities=[{'identity': 'ECHO'}]),
                          self.principal(identities=[{'identity': 'ZC'}, None]),
+                         # A missing authenticated_seat is never covered by the default alone.
+                         self.principal(default_identity=None),
+                         self.principal(authenticated_seat=None),
                          self.principal(authenticated_seat=None, default_identity=None)):
                 with self.subTest(data=data), self.assertRaises(recall.FleetRagError):
                     recall._remote_principal({'structuredContent': data})
-            self.assertEqual(recall._remote_principal({'structuredContent': self.principal(default_identity=None)}), 'ZC')
+            # Server-valid seat tags (canonical recall_api._SEAT_RE shape) are accepted.
+            tagged = self.principal(authenticated_seat='ZC_2', default_identity='ZC_2',
+                                    identities=[{'identity': 'ZC_2'}])
+            self.assertEqual(recall._remote_principal({'structuredContent': tagged}), 'ZC_2')
 
     def test_declared_identity_must_match_and_launcher_must_be_bound(self):
         for env in ({'AGENT_SEAT': 'ECHO'}, {'AGENT_TAG': 'ECHO'},
-                    {'AGENT_LAUNCHER': 'zcode'}, {'AGENT_LAUNCH_SEAT': 'ZC'},
+                    {'AGENT_LAUNCHER': 'zcode'},
                     {'AGENT_LAUNCHER': 'zcode', 'AGENT_LAUNCH_SEAT': 'ECHO'}):
             with self.subTest(env=env), mock.patch.dict(os.environ, env, clear=True), self.assertRaises(recall.FleetRagError):
                 recall._remote_principal({'structuredContent': self.principal()})
+
+    def test_launch_seat_alone_is_the_valid_launched_assignment(self):
+        # Established file_guard/fleet_bearer behavior: AGENT_LAUNCH_SEAT names the seat
+        # even without AGENT_LAUNCHER; only launcher-without-seat is refused.
+        with mock.patch.dict(os.environ, {'AGENT_LAUNCH_SEAT': 'ZC'}, clear=True):
+            self.assertEqual(recall._remote_principal({'structuredContent': self.principal()}), 'ZC')
 
     def test_same_captured_bearer_and_injected_identity_for_every_write(self):
         bearer = 'sbt_zc_' + 'x' * 43

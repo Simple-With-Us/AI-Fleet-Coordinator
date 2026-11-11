@@ -993,22 +993,25 @@ def _remote_principal(result: dict) -> str:
     sc = result.get("structuredContent")
     if not isinstance(sc, dict):
         raise FleetRagError("the hosted server sent no structured identities result")
+    # Same tag shape as recall_api._SEAT_RE (underscores allowed);  a seat the server
+    # accepts must never be refused client-side as malformed.
+    seat_re = r"[A-Z][A-Z0-9_-]{0,31}"
     usable = []
     for key in ("authenticated_seat", "default_identity"):
         value = sc.get(key)
-        if value is None:
-            continue
-        if not isinstance(value, str) or re.fullmatch(r"[A-Z][A-Z0-9-]{1,30}", value) is None:
+        # Both fields are required:  a missing authenticated_seat must never be covered
+        # by the server's default alone, exactly the git-tools strict check.
+        if not isinstance(value, str) or re.fullmatch(seat_re, value) is None:
             raise FleetRagError("the hosted server reported a malformed seat field")
         usable.append(value)
-    if not usable or len(set(usable)) != 1:
+    if len(set(usable)) != 1:
         raise FleetRagError("the hosted server reported missing or contradictory seats")
     seat = usable[0]
     advertised = sc.get("identities")
     if not isinstance(advertised, list) or not advertised or not all(
         isinstance(entry, dict)
         and isinstance(entry.get("identity"), str)
-        and re.fullmatch(r"[A-Z][A-Z0-9-]{1,30}", entry["identity"])
+        and re.fullmatch(seat_re, entry["identity"])
         for entry in advertised
     ):
         raise FleetRagError("the hosted server advertised no usable identities")
@@ -1016,8 +1019,10 @@ def _remote_principal(result: dict) -> str:
         raise FleetRagError("the advertised identities omit the authenticated seat")
     launcher = os.environ.get("AGENT_LAUNCHER", "").strip()
     launch_seat = os.environ.get("AGENT_LAUNCH_SEAT", "").strip().upper()
-    if bool(launcher) != bool(launch_seat):
-        raise FleetRagError("launcher and bound seat must both be set or both be absent")
+    # Established rule (fleet_bearer.py / seat_auth.py):  AGENT_LAUNCH_SEAT alone is the
+    # valid launched assignment;  only a launcher WITHOUT a bound seat is refused.
+    if launcher and not launch_seat:
+        raise FleetRagError("launcher has no assigned seat")
     for name in ("AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG"):
         hint = os.environ.get(name, "").strip().upper()
         if hint and hint != seat:
