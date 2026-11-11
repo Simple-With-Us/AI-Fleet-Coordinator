@@ -513,6 +513,11 @@ class _TimeoutApp:
         raise AppTokenError("fleet-secrets lookup timed out for GH_APP_SWU_ZC_ID")
 
 
+class _SuspendedApp:
+    def token_for(self, slug, repo, perms):
+        raise AppTokenError("app installation is missing, suspended, or on another account")
+
+
 class ZcAuthReasonTests(unittest.TestCase):
     """A seat ST-MCP accepts (ZC) must not collapse to a bare unauthenticated."""
 
@@ -604,3 +609,12 @@ class ZcAuthReasonTests(unittest.TestCase):
         self.assertEqual(status, 503)
         self.assertNotEqual(body.get("error"), "no_app_credential")
         self.assertTrue(body["error"].startswith("app-token minting failed:"))
+
+    def test_a_suspended_installation_is_not_called_a_missing_credential(self):
+        relay = self.relay(SEATS, _Verifier(), _SuspendedApp())
+        status, body = relay.handle(bearer_for("ZC"), "comment_pr", self.ARGS)
+        self.assertEqual(status, 503)
+        self.assertEqual(
+            body["error"],
+            "app-token minting failed: app installation is missing, suspended, or on another account",
+        )
