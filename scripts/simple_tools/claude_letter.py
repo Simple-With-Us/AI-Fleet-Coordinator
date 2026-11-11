@@ -5,6 +5,7 @@ on the Mac and on the server (AFC-564, owner request Oct 28, 2026).
     letter show [--session-id S]       this chat's letter from its local note;  no network
     letter install [--location L]      add the hooks to ~/.claude/settings.json (--check, --remove)
     letter registry OP ...             the registry side:  register, title, touch or close one chat
+    letter sweep-archived [--apply]    close the registrations of chats the desktop app has archived (dry run by default)
 
 Where the letter comes from.  The Operator's session registry (`operator_registry`, AFC-412) is one SQLite file on the
 Mac, the one allocator for every host.  A chat on the Mac reaches it in process.  A chat on the server reaches it over
@@ -29,8 +30,15 @@ What the hook does.
   reaches the title), retries a registration or a title the registry did not take (at most every ten minutes), and marks
   the chat seen at most every half hour, whatever the title did.  When the Operator reissues a different pair, the model is
   told the new one as well as the title.
-- SessionEnd closes the registration when the chat is archived (reason `other`), replaced by `/clear`, or logged out,
-  which frees its letter (CLOSE_REASONS).  An exit at the prompt or a `/resume` keeps the letter.
+- SessionEnd closes the registration when the chat is replaced by `/clear` or logged out, which frees its letter
+  (CLOSE_REASONS).  Any other end keeps the letter:  an exit at the prompt, a `/resume`, and `other`, which Claude Code
+  sends for an archive but also when the app quits or an ssh connection drops, so it cannot tell an archive apart.
+
+Archives.  The desktop app marks an archived chat in its own record of the chat (`isArchived`, beside `cliSessionId`,
+the chat's session UUID).  `letter sweep-archived` reads those records on the Mac (`claude_app_lineage.archive_states`)
+and closes the open Claude registration of each archived chat through the same registry side SessionEnd uses, which
+frees its letter.  A chat whose record is unarchived, unreadable or missing (a terminal chat) keeps its letter.  It is
+a dry run unless given --apply, and a host with no app store (the server) has nothing to sweep.
 
 Pair letters (owner, Oct 29, 2026).  A Claude chat takes a pair of letters (AA to ZZ, 676 of them), not one.  Measured
 over 30 days on the Mac and the server together:  121 interactive chats, 40 of them started inside one 72 hours, and
@@ -125,13 +133,13 @@ TITLE_SOURCES = (
     "resume",
     "fork",
 )  # the SessionStart sources whose sessionTitle Claude Code applies
-# SessionEnd reasons that close a chat's registration and free its letter (owner, Oct 28, 2026:  archiving closes).
-# Archiving a chat in the desktop app ends its process, and the docs name no archive reason, so it arrives as `other`,
-# Claude Code's reason for any end it does not name;  `/clear` replaces the chat;  `logout` ends every chat.  An exit
-# at the prompt and `/resume` keep the letter.  A chat that `other` closed by some other end gets its letter back when
-# it reopens, because reopen prefers the letter it held while that letter is free.  A host can name its own list in
-# CLAUDE_LETTER_CLOSE_ON (comma-separated).
-CLOSE_REASONS = ("clear", "logout", "other")
+# SessionEnd reasons that close a chat's registration and free its letter:  `/clear` replaces the chat, and `logout`
+# ends every chat.  An exit at the prompt and `/resume` keep the letter, and so does `other` (AFC-694):  it is Claude
+# Code's reason for any end it does not name, an archive among them, but also the app quitting or an ssh connection
+# dropping, and closing on it took the letters of chats that were still running.  An archive is found instead from the
+# app's own `isArchived` flag, by `letter sweep-archived` (owner, Oct 28, 2026:  archiving closes).  A host can name
+# its own list in CLAUDE_LETTER_CLOSE_ON (comma-separated).
+CLOSE_REASONS = ("clear", "logout")
 ENV_CLOSE_ON = "CLAUDE_LETTER_CLOSE_ON"
 
 ENV_OFF = "CLAUDE_LETTER"
@@ -922,6 +930,148 @@ def _emit(stdout: TextIO, payload: Mapping[str, Any], code: int) -> int:
 
 
 # --------------------------------------------------------------------------------------------
+# The archive sweep (runs where the desktop app's records are:  the Mac)
+# --------------------------------------------------------------------------------------------
+
+ARCHIVE_SOURCE = "claude-letter-archive-sweep"
+#: The most letter rows one sweep reads from the registry's history, newest first (as the Z Code sweep reads it).
+HISTORY_LIMIT = 1000
+
+
+def _open_registrations(OR: Any, env: Mapping[str, str], db: str) -> list[dict[str, str]] | str:
+    """The open CLAUDE-seat Claude registrations that hold a letter, as {location, session_id, letter}, or the reason
+    they could not be read.  Read from the registry's letter history, over the API when its URL is configured and
+    from the local file otherwise, the same choice `registry_main` makes."""
+    from . import registry_api
+
+    if registry_api.base_url(env):
+        answer = registry_api.call(env, "history", {"platform": PLATFORM, "limit": HISTORY_LIMIT})
+        rows = answer.get("items") if isinstance(answer, dict) else None
+        if not isinstance(rows, list):
+            return str((answer or {}).get("error") or "the registry gave no history")[:200]
+    else:
+        try:
+            rows = OR.letter_history(db, PLATFORM, HISTORY_LIMIT)
+        except (sqlite3.Error, OR.RegistryUnavailable) as exc:
+            return type(exc).__name__
+    out: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        if not isinstance(row, Mapping) or not row.get("live") or row.get("closed_at"):
+            continue
+        if str(row.get("state") or "") == "closed":
+            continue
+        if I.canonical_seat(str(row.get("seat") or "")) != SEAT_DEFAULT:
+            continue
+        where = str(row.get("verified_host") or "")
+        try:
+            sid = SI.check(str(row.get("native_session_id") or ""), "the session id")
+        except ValueError:
+            continue
+        if where not in LOCATIONS or (where, sid) in seen:
+            continue
+        seen.add((where, sid))
+        out.append({"location": where, "session_id": sid, "letter": str(row.get("letter") or "")})
+    return out
+
+
+def sweep_archived(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
+    """`letter sweep-archived [--apply]`:  close the open Claude registration of every chat the desktop app has
+    archived, which frees its letter (AFC-694).
+
+    Archiving a chat fires no SessionEnd reason of its own (it arrives as `other`, which an app quit or a dropped ssh
+    connection also sends), so the app's own record is the sign:  a record whose `isArchived` is true names the chat
+    by `cliSessionId`, the session UUID the registry keys on.  The registrations come from the registry's history (only
+    CLAUDE's, only open ones), and each is closed through `registry_main`'s close, the call SessionEnd makes, so the API
+    path and the local path both apply.  A chat whose record is unarchived, unreadable or missing keeps its letter;  a
+    chat on the server that the Mac's app runs over ssh has its record on the Mac, so it is swept here too.  Without
+    --apply nothing is sent.  One line per chat names its letter and the first 8 characters of its session id, never a
+    title.  A host with no app store (the server, a terminal-only Mac) has nothing to sweep and exits 0."""
+    import argparse
+
+    from . import operator_registry as OR
+    from . import platform_letter as PL
+    from . import registry_api
+
+    parser = argparse.ArgumentParser(prog="simple-chat letter sweep-archived")
+    parser.add_argument("--apply", action="store_true", help="close them (without it, only say what would close)")
+    args = parser.parse_args(argv)
+    home = str(env.get("HOME") or os.path.expanduser("~"))
+    if not os.path.isdir(AL.store_root(home)):
+        stdout.write("archive sweep:  no app store here, nothing to sweep\n")
+        return 0
+    db = OR.registry_db_path(L.state_root(env), env)
+    reg_env = env
+    if not registry_api.base_url(env) and not os.path.isfile(db):
+        reg_env = PL.with_registry_env(env)
+    if not registry_api.base_url(reg_env) and not os.path.isfile(db):
+        stdout.write("archive sweep:  no Operator registry on this host\n")
+        return 3
+    rows = _open_registrations(OR, reg_env, db)
+    if isinstance(rows, str):
+        stdout.write("archive sweep:  could not read the registrations (%s)\n" % rows)
+        return 5
+    states = AL.archive_states(home, {r["session_id"] for r in rows}) or {}
+    counts = {"archived": 0, "closed": 0, "already": 0, "failed": 0}
+    for row in sorted(rows, key=lambda r: (r["letter"], r["session_id"])):
+        if states.get(row["session_id"]) != AL.ARCHIVED:
+            continue
+        counts["archived"] += 1
+        tag = "%s (%s, %s)" % (row["letter"] or "-", row["session_id"][:8], row["location"])
+        if not args.apply:
+            stdout.write("would close %s\n" % tag)
+            continue
+        buf = io.StringIO()
+        registry_main(
+            [
+                "close",
+                "--location",
+                row["location"],
+                "--session-id",
+                row["session_id"],
+                "--seat",
+                SEAT_DEFAULT,
+                "--source",
+                ARCHIVE_SOURCE,
+            ],
+            env=env,
+            stdout=buf,
+        )
+        answer = _last_json(buf.getvalue()) or {}
+        if answer.get("closed"):
+            counts["closed"] += 1
+            stdout.write("closed %s\n" % tag)
+        elif answer.get("retired") or answer.get("error") == NO_REGISTRATION:
+            counts["already"] += 1
+            stdout.write("already closed %s\n" % tag)
+        else:
+            counts["failed"] += 1
+            stdout.write(
+                "could not close %s:  %s\n" % (tag, str(answer.get("error") or "no answer")[:120])
+            )
+    kept = {
+        s: sum(1 for r in rows if states.get(r["session_id"]) == s)
+        for s in (AL.UNARCHIVED, AL.UNREADABLE)
+    }
+    stdout.write(
+        "archive sweep:  %d open, %d archived, %d closed, %d already closed, %d failed;  kept %d unarchived,"
+        " %d unreadable, %d with no record%s\n"
+        % (
+            len(rows),
+            counts["archived"],
+            counts["closed"],
+            counts["already"],
+            counts["failed"],
+            kept[AL.UNARCHIVED],
+            kept[AL.UNREADABLE],
+            sum(1 for r in rows if r["session_id"] not in states),
+            "" if args.apply else "  (dry run:  nothing sent;  --apply closes them)",
+        )
+    )
+    return 1 if counts["failed"] else 0
+
+
+# --------------------------------------------------------------------------------------------
 # The hook side (runs in every chat, on the Mac and on the server)
 # --------------------------------------------------------------------------------------------
 
@@ -1535,9 +1685,9 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
 
 
 def on_end(chat: Chat, data: Mapping[str, Any]) -> int:
-    """Close the registration when the chat ends for good (CLOSE_REASONS:  an archive, `/clear` or logout), which frees
-    its letter;  any other end keeps it for a resume.  Every end reason is kept in the note, so the close rule can be
-    checked against what the app really sends."""
+    """Close the registration when the chat ends for good (CLOSE_REASONS:  `/clear` or logout), which frees its letter;
+    any other end keeps it for a resume (an archive is the archive sweep's to find).  Every end reason is kept in the
+    note, so the close rule can be checked against what the app really sends."""
     note = chat.read()
     if not note:
         return 0
@@ -1741,7 +1891,8 @@ def install(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
 
 
 USAGE = (
-    "usage: simple-chat letter {hook | show [--session-id S] | install [...] | registry OP ...}\n"
+    "usage: simple-chat letter {hook | show [--session-id S] | install [...] | registry OP ..."
+    " | sweep-archived [--apply]}\n"
 )
 
 
@@ -1822,6 +1973,8 @@ def main(
         return show(argv[1:], env, stdout)
     if argv[0] == "install":
         return install(argv[1:], env, stdout)
+    if argv[0] == "sweep-archived":
+        return sweep_archived(argv[1:], env, stdout)
     stderr.write(USAGE)
     return 2
 

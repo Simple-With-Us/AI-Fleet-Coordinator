@@ -1000,14 +1000,25 @@ class HookTests(Base):
             self.assertEqual(self.lookup("s-0001")["state"], "active")
         self.assertEqual(self.note("s-0001")["ended"]["reason"], "resume")
 
-    def test_archive_closes_and_a_host_can_name_its_reasons(self) -> None:
+    def test_other_keeps_the_letter_and_a_host_can_name_its_reasons(self) -> None:
+        # `other` comes for an archive, but also for an app quit or a dropped ssh connection (AFC-694).
         self.start("s-0001")
         self.hook({"hook_event_name": "SessionEnd", "session_id": "s-0001", "reason": "other"})
-        self.assertEqual(self.lookup("s-0001")["state"], "closed")
+        self.assertEqual(self.lookup("s-0001")["state"], "active")
+        self.assertEqual(self.note("s-0001")["ended"]["reason"], "other")  # still recorded
+        self.assertEqual(self.note("s-0001")["state"], "open")
         self.start("s-0002")
-        env = self.server_env(CLAUDE_LETTER_CLOSE_ON="clear")
+        env = self.server_env(CLAUDE_LETTER_CLOSE_ON="other")
         self.hook({"hook_event_name": "SessionEnd", "session_id": "s-0002", "reason": "other"}, env=env)
-        self.assertEqual(self.lookup("s-0002")["state"], "active")
+        self.assertEqual(self.lookup("s-0002")["state"], "closed")
+
+    def test_clear_and_logout_still_close(self) -> None:
+        self.assertEqual(CL.CLOSE_REASONS, ("clear", "logout"))
+        for sid, reason in (("s-0001", "clear"), ("s-0002", "logout")):
+            self.start(sid)
+            self.hook({"hook_event_name": "SessionEnd", "session_id": sid, "reason": reason})
+            self.assertEqual(self.lookup(sid)["state"], "closed", reason)
+            self.assertEqual(self.note(sid)["state"], "closed", reason)
 
     def test_clear_start_ignores_the_inherited_name(self) -> None:
         out = self.start("s-0001", source="clear", session_title="ZZ: Previous Chat")
@@ -2152,3 +2163,121 @@ class RegistryModuleDispatchTest(Base):
         self.assertEqual(code, 0)
         self.assertEqual(answer["outcome"], "reopened")
         self.assertEqual(answer["label"], made["label"])
+
+
+class ArchiveSweepTests(Base):
+    """`letter sweep-archived` frees the letter of a chat the desktop app has archived, read from the app's own
+    `isArchived` flag, and leaves every other chat alone (AFC-694).  The store and the registry are this test's own."""
+
+    def archived_record(self, host: str, cli: str, archived: bool = True, title: str = "Secret Title") -> str:
+        folder = os.path.join(AL.store_root(self.home), "acct", "org")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, host + ".json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"sessionId": host, "cliSessionId": cli, "isArchived": archived, "title": title}, fh)
+        return path
+
+    def sweep(self, *argv: str, env: dict | None = None) -> tuple[int, str]:
+        out = io.StringIO()
+        code = CL.main(["sweep-archived", *argv], env=env or self.env(), stdout=out)
+        return code, out.getvalue()
+
+    def test_an_archived_open_chat_is_closed_and_its_letter_freed(self) -> None:
+        made = self.register("s-0001", location="mac")
+        self.archived_record("local_aaaaaaaa-0001", "s-0001")
+        code, out = self.sweep("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertIn("closed %s (s-0001, mac)" % made["label"], out)
+        self.assertNotIn("Secret Title", out)
+        self.assertEqual(self.lookup("s-0001", "mac")["state"], "closed")
+
+    def test_a_server_chat_the_mac_app_runs_is_swept_too(self) -> None:
+        self.register("s-0002", location="server")
+        self.archived_record("local_aaaaaaaa-0002", "s-0002")
+        code, out = self.sweep("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.lookup("s-0002", "server")["state"], "closed")
+
+    def test_the_default_is_a_dry_run_that_closes_nothing(self) -> None:
+        made = self.register("s-0001", location="mac")
+        self.archived_record("local_aaaaaaaa-0001", "s-0001")
+        code, out = self.sweep()
+        self.assertEqual(code, 0, out)
+        self.assertIn("would close %s (s-0001, mac)" % made["label"], out)
+        self.assertIn("dry run", out)
+        self.assertEqual(self.lookup("s-0001", "mac")["state"], "active")
+
+    def test_unarchived_missing_and_unreadable_records_keep_their_letters(self) -> None:
+        for sid in ("s-0001", "s-0002", "s-0003"):
+            self.register(sid, location="mac")
+        self.archived_record("local_aaaaaaaa-0001", "s-0001", archived=False)
+        # s-0002 has no record at all:  a terminal chat.
+        broken = os.path.join(AL.store_root(self.home), "acct", "org", "local_aaaaaaaa-0003.json")
+        with open(broken, "w", encoding="utf-8") as fh:
+            fh.write('{"cliSessionId": "s-0003", "isArchived": tr')  # never finished
+        with mock.patch.object(AL, "RETRY_PAUSE", 0):
+            code, out = self.sweep("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertIn("kept 1 unarchived, 1 unreadable, 1 with no record", out)
+        for sid in ("s-0001", "s-0002", "s-0003"):
+            self.assertEqual(self.lookup(sid, "mac")["state"], "active", sid)
+
+    def test_one_unarchived_record_of_two_keeps_the_letter(self) -> None:
+        self.register("s-0001", location="mac")
+        self.archived_record("local_aaaaaaaa-0001", "s-0001")
+        self.archived_record("local_aaaaaaaa-0009", "s-0001", archived=False)
+        self.sweep("--apply")
+        self.assertEqual(self.lookup("s-0001", "mac")["state"], "active")
+
+    def test_a_record_caught_mid_write_is_read_again(self) -> None:
+        self.register("s-0001", location="mac")
+        path = self.archived_record("local_aaaaaaaa-0001", "s-0001")
+        with open(path, encoding="utf-8") as fh:
+            whole = fh.read()
+        reads = [whole[: whole.index('"isArchived"') + 5]]  # the id is written, the flag is not yet
+        real = AL._read
+
+        def read(p: str):
+            return reads.pop(0) if reads and p == path else real(p)
+
+        with mock.patch.object(AL, "_read", side_effect=read), mock.patch.object(AL, "RETRY_PAUSE", 0):
+            code, out = self.sweep("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.lookup("s-0001", "mac")["state"], "closed")
+
+    def test_no_app_store_means_nothing_to_sweep(self) -> None:
+        self.register("s-0001", location="mac")
+        code, out = self.sweep("--apply")
+        self.assertEqual(code, 0)
+        self.assertIn("no app store here", out)
+        self.assertEqual(self.lookup("s-0001", "mac")["state"], "active")
+
+    def test_it_is_idempotent(self) -> None:
+        self.register("s-0001", location="mac")
+        self.archived_record("local_aaaaaaaa-0001", "s-0001")
+        self.assertEqual(self.sweep("--apply")[0], 0)
+        code, out = self.sweep("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertIn("0 open, 0 archived, 0 closed", out)
+        self.assertEqual(self.lookup("s-0001", "mac")["state"], "closed")
+
+    def test_a_close_the_registry_already_made_is_a_no_op(self) -> None:
+        self.register("s-0001", location="mac")
+        self.archived_record("local_aaaaaaaa-0001", "s-0001")
+        rows = CL._open_registrations(OR, self.env(), self.db)
+        reg = OR.SessionRegistry(self.db)
+        try:
+            reg.close(self.lookup("s-0001", "mac")["record_id"], source="test")
+        finally:
+            reg.close_db()
+        with mock.patch.object(CL, "_open_registrations", return_value=rows):  # read before the close landed
+            code, out = self.sweep("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertIn("already closed", out)
+
+    def test_another_seat_is_never_closed(self) -> None:
+        self.registry("register", "--location", "mac", "--session-id", "s-0001", "--seat", "MM")
+        self.archived_record("local_aaaaaaaa-0001", "s-0001")
+        code, out = self.sweep("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.lookup("s-0001", "mac")["state"], "active")

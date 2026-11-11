@@ -192,6 +192,59 @@ class ApiSide(unittest.TestCase):
         in_process = CL.Chat(env, "CLAUDE", "server", SID, runner=no_runner, now=time.time())
         self.assertEqual(in_process.registry("touch").get("error"), "this chat has no registration")
 
+    # ---- the archive sweep over the API (AFC-694) ----
+
+    def app_record(self, cli: str, archived: bool) -> None:
+        from simple_tools import claude_app_lineage as AL
+
+        folder = os.path.join(AL.store_root(self.home), "acct", "org")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "local_%s.json" % cli[:8]), "w", encoding="utf-8") as fh:
+            json.dump({"cliSessionId": cli, "isArchived": archived, "title": "Private"}, fh)
+
+    def sweep(self, *argv: str) -> tuple[int, str]:
+        out = io.StringIO()
+        code = CL.main(["sweep-archived", *argv], env=self.api_env, stdout=out)
+        return code, out.getvalue()
+
+    def test_the_archive_sweep_closes_through_the_api(self) -> None:
+        kept = "d-0002-0000-0000-0000-000000000000"
+        _, made = self.registry("register", "--location", "mac", "--session-id", SID)
+        self.registry("register", "--location", "mac", "--session-id", kept)
+        self.app_record(SID, archived=True)
+        self.app_record(kept, archived=False)
+        code, out = self.sweep("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertIn("closed %s (%s, mac)" % (made["label"], SID[:8]), out)
+        self.assertNotIn("Private", out)
+        self.assertEqual(self.record()["state"], "closed")
+        self.assertEqual(self.record(kept)["state"], "active")
+        self.assertFalse(os.path.exists(os.path.join(self.hook_state, "operator", "registry.sqlite3")))
+        code, again = self.sweep("--apply")  # idempotent:  the closed chat is no longer open
+        self.assertEqual(code, 0, again)
+        self.assertIn("0 archived", again)
+
+    def test_a_dry_run_sends_only_the_history_read(self) -> None:
+        from unittest import mock
+
+        from simple_tools import registry_api
+
+        self.registry("register", "--location", "mac", "--session-id", SID)
+        self.app_record(SID, archived=True)
+        real = registry_api.call
+        ops: list = []
+
+        def call(env, op, params=None, **kwargs):
+            ops.append(op)
+            return real(env, op, params, **kwargs)
+
+        with mock.patch.object(registry_api, "call", side_effect=call):
+            code, out = self.sweep()
+        self.assertEqual(code, 0, out)
+        self.assertIn("would close", out)
+        self.assertEqual(ops, ["history"])
+        self.assertEqual(self.record()["state"], "active")
+
 
 if __name__ == "__main__":
     unittest.main()
