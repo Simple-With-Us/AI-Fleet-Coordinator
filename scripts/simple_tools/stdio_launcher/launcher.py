@@ -258,13 +258,14 @@ def plan(env, config, euid=None):
         problem = exec_custody_problem(key, config[key], euid)
         if problem:
             # The client gets a generic cause;  paths and file metadata stay on stderr.
+            label = "interpreter" if key == "PYTHON" else "transport"
             detail = f"custody check failed: {problem}"
             return (
                 "refuse",
                 seat,
                 (
                     "transport_custody",
-                    "the transport failed a custody check; see the launcher log for detail",
+                    f"the {label} failed a custody check; see the launcher log for detail",
                 ),
                 f"{notice}\n{detail}" if notice else detail,
             )

@@ -202,6 +202,24 @@ class EndToEnd(unittest.TestCase):
         self.assertNotIn("uid", message)
         self.assertIn(self.installed.transport, done.stderr)
 
+    def test_interpreter_custody_failure_names_the_interpreter(self):
+        fake_python = os.path.join(self.installed.tmp.name, "python")
+        with open(fake_python, "w", encoding="utf-8") as target:
+            target.write("#!/bin/sh\n")
+        os.chmod(fake_python, 0o775)
+        config = {
+            "SEAT": "CLAUDE",
+            "BEARER_FILE": self.installed.bearer,
+            "PYTHON": fake_python,
+            "TRANSPORT": self.installed.transport,
+            "HOME": self.installed.tmp.name,
+        }
+        outcome = launcher.plan({}, config)
+        self.assertEqual(outcome[0], "refuse")
+        self.assertEqual(outcome[2][0], "transport_custody")
+        self.assertIn("interpreter", outcome[2][1])
+        self.assertNotIn(fake_python, outcome[2][1])
+
 
 class SeatDecision(unittest.TestCase):
     def test_agent_tag_mismatch_is_ignored_with_one_line(self):
