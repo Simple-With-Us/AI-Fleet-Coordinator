@@ -865,12 +865,13 @@ REGISTRY: tuple[Spec, ...] = (
         default="",
         local="deny",
         pattern=r"^(https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?)?$",
-        note="the Operator registry API's origin (no path) the wake router and the Mac's "
-        "wake-deliver read the registry at;  http only to a loopback address;  empty means not "
-        "configured, so every pick is a bounded retry and /health says so",
+        note="the Operator registry API's origin (no path) the server's wake router reads the "
+        "registry at (the Mac's wake-deliver keeps the shared registry env file);  http only to a "
+        "loopback address;  empty means not configured, so every pick is a bounded retry and "
+        "/health says so",
         group="Wake Router",
         label="Wake Router Registry Address",
-        hosts="both",
+        hosts="server",
         consumers=_WAKE,
         folder=WAKE_ROUTER_FOLDER,
         format="an https origin, with no path",
@@ -882,11 +883,11 @@ REGISTRY: tuple[Spec, ...] = (
         "W2",
         secret=True,
         pattern=r"^[!-~]{16,512}$",
-        note="the key the wake router and the Mac's wake-deliver sign registry calls with;  held "
-        "like the bearer, and without it every registry call answers not configured",
+        note="the key the server's wake router signs registry calls with;  held like the bearer, "
+        "and without it every registry call answers not configured and /health says so",
         group="Wake Router",
         label="Wake Router Registry Key",
-        hosts="both",
+        hosts="server",
         consumers=_WAKE,
         folder=WAKE_ROUTER_FOLDER,
     ),

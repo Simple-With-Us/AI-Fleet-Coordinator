@@ -217,6 +217,9 @@ UNREADABLE_ROW = "registry-row-unreadable"
 NOT_CONFIGURED = "registry-not-configured"
 # A registered seat whose platform module is not on this host yet.
 NOT_INSTALLED = "not-installed"
+# A platform module with no handler of the name its table entry gives:  nothing ran.  It is one
+# code for every platform, not one per platform, so it sits in NEVER_RAN here.
+HANDLER_MISSING = "platform-handler-missing"
 # A seat tag as the fleet writes one (identity._SEAT_RE).  A registry row must name its seat:  a
 # missing one is never read as this platform's.
 SEAT_RE = re.compile(r"[A-Z0-9][A-Z0-9_-]{0,31}")
@@ -240,6 +243,7 @@ NEVER_RAN = frozenset(
         "command-option-shaped-value",
         "no-ssh-destination",
         "no-transcript",
+        "platform-handler-missing",
         "platform-not-installed",
         "session-cwd-gone",
         "unknown-host",
@@ -1428,6 +1432,15 @@ class Router:
         sys.stderr.write("wake-router: %s %s %s\n" % (self.platform.seat, wake_id, code))
 
 
+def registry_configured(env: Mapping[str, str]) -> bool:
+    """Whether this env lets registry_api sign a call:  an address and a key, read the way
+    registry_api reads them (the key under the name KEY_REF_ENV gives, else KEY_ENV)."""
+    if not registry_api.base_url(env):
+        return False
+    key_name = str(env.get(registry_api.KEY_REF_ENV) or "").strip() or registry_api.KEY_ENV
+    return bool(str(env.get(key_name) or "").strip())
+
+
 def registry_trouble(answer: object) -> str:
     """The retry code for a registry answer that is not a reading:  `registry-not-configured`
     when this host has no registry address or key (registry_api's `not_configured`), else
@@ -1673,8 +1686,9 @@ class Seats:
         if not key:
             reason = "routine-key-unavailable:" + why
             return 503, {**answer, "healthy": False, "reason": reason}
-        if not registry_api.base_url(router.env):
-            # A router with no registry can pick nothing, so it must not look healthy.
+        if not registry_configured(router.env):
+            # A router with no registry address or key can pick nothing, so it must not look
+            # healthy.
             return 503, {**answer, "healthy": False, "reason": NOT_CONFIGURED}
         return 200, {**answer, "healthy": True}
 

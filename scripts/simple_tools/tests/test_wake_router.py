@@ -5,6 +5,8 @@ chat, the live registry or a real `claude`."""
 from __future__ import annotations
 
 import contextlib
+import importlib
+import importlib.util
 import io
 import json
 import os
@@ -27,7 +29,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from fleet_knobs import knobs
 from simple_tools import claude_wake as CW
+from simple_tools import platform_letter as PL
 from simple_tools import wake_router as WR
 from simple_tools import wake_service as SVC
 
@@ -160,7 +164,11 @@ class Base(unittest.TestCase):
     def router_env(self) -> dict:
         """A router's env:  a registry address, as the service's RegistryEnv gives one (the
         registry itself is the fake, so it is never dialled)."""
-        return {"HOME": self.tmp, WR.registry_api.URL_ENV: REGISTRY_URL}
+        return {
+            "HOME": self.tmp,
+            WR.registry_api.URL_ENV: REGISTRY_URL,
+            WR.registry_api.KEY_ENV: "registry-" + "0" * 16,
+        }
 
     def wake(self, wake_id: str = "w-1", **over) -> WR.Wake:
         base = {"wake_id": wake_id, "seat": "CLAUDE", "topic": "unrelated", "channel": "wip"}
@@ -2087,6 +2095,7 @@ class Receipts(Base):
                 "command-option-shaped-value",
                 "no-ssh-destination",
                 "no-transcript",
+                "platform-handler-missing",
                 "platform-not-installed",
                 "session-cwd-gone",
                 "unknown-host",
@@ -4718,6 +4727,23 @@ class RegistryNotConfigured(Base):
         status, answer = WR.Seats([router]).seat_health("CLAUDE")
         self.assertEqual((status, answer["reason"]), (503, WR.NOT_CONFIGURED))
 
+    def test_health_needs_the_key_as_well_as_the_address(self) -> None:
+        router = self.router()
+        url, key = WR.registry_api.URL_ENV, WR.registry_api.KEY_ENV
+        ref = WR.registry_api.KEY_REF_ENV
+        cases = {
+            "address only": ({"HOME": self.tmp, url: REGISTRY_URL}, 503),
+            "key only": ({"HOME": self.tmp, key: "k" * 20}, 503),
+            "blank key": ({url: REGISTRY_URL, key: "  "}, 503),
+            "key under another name, not set": ({url: REGISTRY_URL, ref: "OTHER"}, 503),
+            "key under another name": ({url: REGISTRY_URL, ref: "OTHER", "OTHER": "k" * 20}, 200),
+            "both": (self.router_env(), 200),
+        }
+        for label, (env, status) in cases.items():
+            with self.subTest(label):
+                router.env = env
+                self.assertEqual(WR.Seats([router]).seat_health("CLAUDE")[0], status)
+
     def test_serve_starts_without_it(self) -> None:
         # Infisical may be down at start:  the router starts and says so on /health instead.
         self.assertNotIn("registry API URL is not set", Path(WR.__file__).read_text())
@@ -4842,10 +4868,149 @@ class OnePlatformTable(RemoteBase):
         self.assertEqual((result.outcome, result.code), ("refused", "no-ssh-destination"))
         self.assertEqual(self.runs, [])
 
-    def test_the_mac_reads_no_registry_env_file(self) -> None:
+    def test_the_mac_reads_no_old_remote_variable(self) -> None:
+        self.assertNotIn("CLAUDE_LETTER_REMOTE", Path(CW.__file__).read_text(encoding="utf-8"))
+
+    def test_a_module_without_its_handler_has_run_nothing(self) -> None:
+        module = SimpleNamespace(not_the_handler=lambda request, *, env: {})
+        with mock.patch.dict(sys.modules, {SVC.BUILDERS["MC"].module: module}):
+            code, answer = self.run_main(self.muse_request())
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            (answer["delivery"]["outcome"], answer["delivery"]["code"]),
+            ("refused", WR.HANDLER_MISSING),
+        )
+        self.assertEqual(answer["session_id"], SID_A, "correlated, so the sender reads it")
+        self.assertIn(WR.HANDLER_MISSING, WR.NEVER_RAN, "a receipt says delivered: false")
+
+    def test_a_handler_that_is_not_callable_has_run_nothing(self) -> None:
+        module = SimpleNamespace(deliver_request="not a function")
+        with mock.patch.dict(sys.modules, {SVC.BUILDERS["MC"].module: module}):
+            _, answer = self.run_main(self.muse_request())
+        self.assertEqual(answer["delivery"]["code"], WR.HANDLER_MISSING)
+
+
+class MacRegistryEnv(Base):
+    """On the Mac the registry env comes from the shared loader every Mac registry client uses,
+    never from the /wake-router knobs:  a Mac able to read that folder would hold the bearer."""
+
+    def test_the_mac_path_uses_the_shared_loader_and_never_the_knobs(self) -> None:
+        loaded ={"HOME": self.tmp, WR.registry_api.URL_ENV: REGISTRY_URL}
+        with (
+            mock.patch.object(PL, "with_registry_env", return_value=loaded) as loader,
+            mock.patch.object(knobs, "resolve", side_effect=AssertionError("a knob was read")),
+            mock.patch.object(knobs, "get", side_effect=AssertionError("a knob was read")),
+        ):
+            env = CW._registry_env({"HOME": self.tmp})
+        loader.assert_called_once_with({"HOME": self.tmp})
+        self.assertEqual(env, loaded)
+
+    def test_a_platform_handler_gets_the_shared_loaders_env(self) -> None:
+        seen = {}
+        ids = {"wake_id": "w-1", "session_id": SID_A, "generation": 3}
+
+        def deliver_request(request, *, env):
+            seen["env"] = env
+            return {**ids, "delivery": {"outcome": "sent"}}
+
+        request = {
+            "platform": "muse",
+            "target": {"session_id": SID_A, "letter": "AA", "host": "mac", "generation": 3},
+            "wake": WR.asdict(self.wake()),
+        }
+        marked = {"HOME": self.tmp, "LOADED": "yes"}
+        with (
+            mock.patch.object(PL, "with_registry_env", return_value=marked),
+            mock.patch.dict(
+                sys.modules,
+                {SVC.BUILDERS["MC"].module: SimpleNamespace(deliver_request=deliver_request)},
+            ),
+        ):
+            out = io.StringIO()
+            CW.wake_deliver_main(io.StringIO(json.dumps(request)), out, {"HOME": self.tmp})
+        self.assertEqual(seen["env"], marked)
+        self.assertEqual(json.loads(out.getvalue())["delivery"]["outcome"], "sent")
+
+
+def isolated_claude_wake():
+    """A fresh copy of claude_wake, loaded by the caller while BLOCKED cannot be imported, as on a
+    Mac where fleet_knobs (and so the platform table) will not import.  The copy has its own name,
+    so the module every other test uses is untouched."""
+    name = "simple_tools.claude_wake_isolated"
+    spec = importlib.util.spec_from_file_location(name, CW.__file__)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module  # dataclasses look the module up;  the caller's patch removes it
+    spec.loader.exec_module(module)
+    return module
+
+
+BLOCKED = ("fleet_knobs", "fleet_knobs.knobs", "simple_tools.wake_service", "simple_tools.wake_settings")
+
+
+class GateWithoutTheTable(Base):
+    """The gate's preflight and refusals never need fleet_knobs, and a delivery that cannot import
+    the platform table answers JSON with a never-ran `failed`, never nothing."""
+
+    @contextlib.contextmanager
+    def blocked(self):
+        """BLOCKED cannot be imported, and the package holds none of them as an attribute, as on a
+        Mac where those imports never succeeded (`from . import x` reads the attribute first)."""
+        package = sys.modules["simple_tools"]
+        with (
+            mock.patch.dict(sys.modules, {name: None for name in BLOCKED}),
+            mock.patch.dict(package.__dict__),
+        ):
+            for name in BLOCKED:
+                if name.startswith("simple_tools."):
+                    package.__dict__.pop(name.split(".", 1)[1], None)
+            yield
+
+    def test_the_preflight_and_a_refusal_need_nothing_more(self) -> None:
+        with self.blocked():
+            gate = isolated_claude_wake()
+            out, err = io.StringIO(), io.StringIO()
+            self.assertEqual(
+                gate.wake_ssh_gate_main(io.StringIO(""), out, err, {gate.ENV_SSH_COMMAND: "true"}), 0
+            )
+            refused = gate.wake_ssh_gate_main(
+                io.StringIO(""), out, err, {gate.ENV_SSH_COMMAND: "rm -rf /"}
+            )
+            self.assertEqual(refused, gate.GATE_REFUSED)
+            with self.assertRaises(ImportError):
+                importlib.import_module("fleet_knobs")
+
+    def test_a_delivery_without_the_table_answers_failed(self) -> None:
+        request = {
+            "platform": "claude",
+            "target": {"session_id": SID_A, "letter": "AA", "host": "mac", "generation": 3},
+            "wake": WR.asdict(self.wake()),
+        }
+        with self.blocked():
+            gate = isolated_claude_wake()
+            out = io.StringIO()
+            code = gate.wake_ssh_gate_main(
+                io.StringIO(json.dumps(request)),
+                out,
+                io.StringIO(),
+                {gate.ENV_SSH_COMMAND: gate.REMOTE_COMMAND},
+            )
+        answer = json.loads(out.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            (answer["delivery"]["outcome"], answer["delivery"]["code"]),
+            ("failed", "platform-table-unavailable"),
+        )
+        # Correlated, so the sender takes it as a bounded retry and not as a mismatch.
+        self.assertEqual(
+            (answer["wake_id"], answer["session_id"], answer["generation"]),
+            ("w-1", SID_A, 3),
+        )
+
+    def test_the_module_does_not_import_the_table_at_the_top(self) -> None:
         source = Path(CW.__file__).read_text(encoding="utf-8")
-        self.assertNotIn("with_registry_env", source)
-        self.assertNotIn("CLAUDE_LETTER_REMOTE", source)
+        top = source.split("\ndef ", 1)[0]
+        self.assertNotIn("\nfrom . import wake_service", top)
+        self.assertIn("if TYPE_CHECKING:", top)
 
 
 if __name__ == "__main__":

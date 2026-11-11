@@ -21,6 +21,7 @@ from fleet_knobs import values as knob_values
 from fleet_knobs.registry import BY_NAME
 from fleet_knobs.tests._fake import KnobTestCase
 from simple_tools import claude_wake as CW
+from simple_tools import platform_letter as PL
 from simple_tools import registry_api
 from simple_tools import wake_router as WR
 from simple_tools import wake_service as SVC
@@ -863,20 +864,22 @@ class Registry(Settings):
         self.assertTrue(settings.refresh())
         self.assertEqual(settings.registry(), (REGISTRY_URL, ""))
 
-    def test_the_mac_reads_it_once_from_the_knobs(self) -> None:
-        self.fake.set(secrets=REGISTRY)
-        env = WS.registry_env_once({"HOME": str(self.home), **INHERITED})
-        self.assertEqual(
-            (env[registry_api.URL_ENV], env[registry_api.KEY_ENV]), (REGISTRY_URL, REGISTRY_KEY)
-        )
-        # In an outage the address may come from the last-known-good copy, but the key is a
-        # secret and fails closed, and nothing inherited stands in for it:  not configured.
-        self.new_process()
-        self.fake.set(mode="fail")
-        env = WS.registry_env_once({"HOME": str(self.home), **INHERITED})
-        self.assertNotIn(registry_api.KEY_ENV, env)
-        self.assertNotEqual(env.get(registry_api.URL_ENV), INHERITED[registry_api.URL_ENV])
-        self.assertEqual(registry_api.call(env, "history", {})["code"], "not_configured")
+    def test_the_server_router_reads_it_from_the_knobs_and_never_the_shared_loader(self) -> None:
+        self.fake.set(secrets={KEY_KNOB: KEY, **REGISTRY})
+        with (
+            mock.patch.object(CW, "state_dir", return_value=self.state),
+            mock.patch.object(WS, "read_registry", wraps=WS.read_registry) as from_knobs,
+            mock.patch.object(PL, "with_registry_env", side_effect=AssertionError("env file")),
+        ):
+            served = SVC.build({"HOME": str(self.home), **INHERITED})
+        self.assertTrue(from_knobs.called)
+        router = served.seats.routers[CW.SEAT]
+        self.assertIsInstance(router.env, WS.RegistryEnv)
+        self.assertEqual(registry_api.base_url(router.env), REGISTRY_URL)
+        self.assertEqual(router.env[registry_api.KEY_ENV], REGISTRY_KEY)
+
+    def test_the_mac_side_has_no_knob_reader_for_it(self) -> None:
+        self.assertFalse(hasattr(WS, "registry_env_once"))
 
     def test_the_registry_key_is_never_logged(self) -> None:
         settings = self.loaded(**REGISTRY)
@@ -1103,6 +1106,36 @@ class OneService(Settings):
                 self.shared_file.write_text(text, encoding="utf-8")
                 served = self.two_seats()
                 self.assertEqual(served.seats.down, {"CLAUDE": "settings-refused", "ZC": "settings-refused"})
+
+    def test_a_broken_file_does_not_freeze_the_fetch(self) -> None:
+        # Delivery turned off in Infisical still takes effect while the local file is broken.
+        self.fake.set(secrets={**ARMED, WS.DELIVERY_SEATS: "CLAUDE,ZC"})
+        served = self.two_seats()
+        self.local_file()
+        self.shared_file.write_text("{not json", encoding="utf-8")
+        self.fake.set(secrets={WS.DELIVERY_ENABLED: "false", WS.DELIVERY_SEATS: "CLAUDE,ZC"})
+        before = len(self.fake.calls())
+        self.assertFalse(served.settings.refresh(), "the file could not be read")
+        self.assertEqual(len(self.fake.calls()), before + 1, "the fetch ran")
+        for router in served.seats.routers.values():
+            self.assertIs(router.config["delivery_enabled"], False)
+        self.assertIn("local-file-unreadable", self.stderr.getvalue())
+
+    def test_a_broken_file_keeps_the_last_narrowing_that_worked(self) -> None:
+        self.fake.set(secrets={**ARMED, WS.DELIVERY_SEATS: "CLAUDE,ZC"})
+        self.local_file(delivery_enabled=False, max_deliveries=2)
+        served = self.two_seats()
+        self.shared_file.write_text("{not json", encoding="utf-8")
+        self.fake.set(secrets={**ARMED, WS.DELIVERY_SEATS: "CLAUDE,ZC", "WAKE_ROUTER_MAX_DELIVERIES": "9"})
+        served.settings.refresh()
+        for router in served.seats.routers.values():
+            self.assertIs(router.config["delivery_enabled"], False, "never widened by the break")
+            self.assertEqual(router.config["max_deliveries"], 2)
+        self.local_file()  # mended, and with no narrowing:  the fetch's values now stand
+        self.assertTrue(served.settings.refresh())
+        for router in served.seats.routers.values():
+            self.assertIs(router.config["delivery_enabled"], True)
+            self.assertEqual(router.config["max_deliveries"], 9)
 
     def test_a_file_broken_later_holds_what_every_seat_had(self) -> None:
         self.fake.set(secrets={**ARMED, WS.DELIVERY_SEATS: "CLAUDE,ZC"})

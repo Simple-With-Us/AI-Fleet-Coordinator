@@ -28,8 +28,11 @@ One local file, and it only narrows.  The service reads one file, `<state root>/
 off, and whatever would widen is ignored and named on stderr.  `delivery_seats`, a list of seat
 tags, can only remove seats:  a seat it leaves out does not deliver, and naming a seat the knob
 does not name adds nothing.  A key no seat knows, or a value of the wrong type, refuses the file,
-as before.  It is applied to the held values on every refresh before the fetch, so it works as a
-brake during an outage too, and taking it away restores them.  `local_host` and `claude_bin` are
+as before at start.  It is applied to the held values on every refresh before the fetch, so it
+works as a brake during an outage too, and taking it away restores them.  A file that cannot be
+read at a refresh keeps the last narrowing that worked in force (none, if there never was one) and
+is logged, and the fetch still runs and is applied through that narrowing:  a broken file never
+widens anything and never freezes the settings.  `local_host` and `claude_bin` are
 not settings but facts about one host, which one Infisical value cannot hold, so they are still
 read from the file, by the seats that have them.
 
@@ -62,14 +65,16 @@ already held in memory and logs the failure, so an Infisical outage does not tur
 With no key at all (none read since start, or one revoked), every seat refuses its requests with
 503 and says why on /health until a refresh reads one.  There is no key file.
 
-The registry's address and key.  The router reads the Operator's registry over its API
-(registry_api), and the address and signing key come from this folder too:  the setting
-WAKE_ROUTER_REGISTRY_URL and the secret WAKE_ROUTER_REGISTRY_KEY, held by the same rule as the
-routine key.  `RegistryEnv` hands them to registry_api under the names it reads
+The registry's address and key, on the server.  The router reads the Operator's registry over its
+API (registry_api), and on the server the address and signing key come from this folder too:  the
+setting WAKE_ROUTER_REGISTRY_URL and the secret WAKE_ROUTER_REGISTRY_KEY, held by the same rule as
+the routine key.  `RegistryEnv` hands them to registry_api under the names it reads
 (SIMPLE_TOOLS_OPERATOR_REGISTRY_URL and _KEY) and drops any registry address or key the process
 inherited, so no env file and no ssh remote is ever a fallback.  With no address or no key, every
-registry call answers `not_configured`:  a pick is a bounded retry, a delivery's recheck is
-`failed` with the code `registry-not-configured`, and /health says so.
+registry call answers `not_configured`:  a pick is a bounded retry, and /health says so.  Only the
+server reads these knobs.  `wake-deliver` on the Mac keeps the shared registry env loader every Mac
+registry client uses (claude_wake._registry_env):  a Mac token for this folder would also read the
+router's bearer, which no Mac may hold.
 
 Python 3.11+, standard library only (fleet_knobs is too).
 """
@@ -179,17 +184,6 @@ def registry_overlay(env: Mapping[str, str], url: str, key: str) -> dict[str, st
     if key:
         out[registry_api.KEY_ENV] = key
     return out
-
-
-def registry_env_once(env: Mapping[str, str]) -> dict[str, str]:
-    """The registry env for one short-lived process, as `wake-deliver` on the Mac is.  A process
-    that may not read the knobs, or cannot reach them, gets no address and no key, so its
-    registry calls answer `not_configured`."""
-    try:
-        url, key, _why = read_registry()
-    except Exception:  # noqa: BLE001 - not configured, never a crash
-        url, key = "", ""
-    return registry_overlay(env, url, key)
 
 
 class RegistryEnv(Mapping[str, str]):
@@ -372,6 +366,8 @@ class WakeSettings(_Refresher, Mapping[str, Any]):
         # (key, why) and (address, key), each swapped whole, so a request never sees half of one.
         self._key: tuple[str, str] = ("", "not-read")
         self._registry: tuple[str, str] = ("", "")
+        # The last local file that could be read:  what a broken one leaves in force.
+        self._last_local: dict[str, Any] = {}
 
     def __getitem__(self, key: str) -> Any:
         return self._values[key]
@@ -431,6 +427,7 @@ class WakeSettings(_Refresher, Mapping[str, Any]):
             raise SystemExit("wake-router: %s" % exc) from None
         self._confirmed = _fetched()
         self._base = base
+        self._last_local = local
         self._values, ignored = narrowed(base, local, self.seat)
         self._take_key()
         if not self._confirmed:
@@ -438,17 +435,20 @@ class WakeSettings(_Refresher, Mapping[str, Any]):
         for knob in ignored:
             _log("local-ignored %s seat=%s" % (knob, self.seat))
 
-    def _brake(self) -> dict[str, Any] | None:
+    def _brake(self) -> tuple[dict[str, Any], bool]:
         """Apply the local file to the values held, before any fetch and whatever it does:  this is
-        the brake that works in an outage.  None when the file cannot be read, and then nothing
-        held changes."""
+        the brake that works in an outage.  Answers the narrowing to use and whether the file was
+        read.  A file that cannot be read keeps the last narrowing that worked (none if there
+        never was one), so a broken file never widens anything and never stops the fetch."""
         try:
             local = self._local()
         except (Exception, SystemExit) as exc:  # noqa: BLE001 - staleness beats a dead thread
-            _log("refresh-error %s seat=%s" % (type(exc).__name__, self.seat))
-            return None
+            _log("local-file-unreadable %s seat=%s kept-last-good" % (type(exc).__name__, self.seat))
+            local, read = self._last_local, False
+        else:
+            self._last_local, read = local, True
         self._values = narrowed(self._base, local, self.seat)[0]
-        return local
+        return local, read
 
     def _apply(self, local: Mapping[str, Any], fetched: bool, interval: float) -> bool:
         """Take what the shared fetch gave.  Only a good fetch replaces the values held:  a failed
@@ -481,12 +481,14 @@ class WakeSettings(_Refresher, Mapping[str, Any]):
 
 def refresh_together(members: Sequence[WakeSettings]) -> bool:
     """Refresh these seats' settings with one fetch of the folder, and answer whether every one of
-    them took it.  Each seat's local brake goes first.  A seat whose local file cannot be read
-    keeps what it held and is left out, and only that seat;  the fetch happens once for the rest,
-    because `fleet_knobs` keeps one cache per process."""
-    held = [(member, local) for member in members if (local := member._brake()) is not None]
-    if not held:
+    them took it and every local file could be read.  Each seat's local brake goes first.  A
+    local file that cannot be read keeps its last good narrowing in force, and the fetch still
+    happens and is applied through it:  a broken file never widens anything and never freezes
+    the fetch.  The fetch happens once for every seat, because `fleet_knobs` keeps one cache per
+    process."""
+    if not members:
         return False
+    held = [(member, *member._brake()) for member in members]
     try:
         knobs.refresh()
         interval = float(knobs.resolve(REFRESH_SECONDS).value)
@@ -494,13 +496,13 @@ def refresh_together(members: Sequence[WakeSettings]) -> bool:
         reason = _fetch_reason()
     except Exception as exc:  # noqa: BLE001 - staleness beats a dead thread
         _log("refresh-error %s" % type(exc).__name__)
-        for member, _local in held:
+        for member, _local, _read in held:
             member._keep_key("refresh-error")  # no fetch worked, so nothing held changes
         return False
     if not fetched:
         _log("refresh-kept-last-good %s" % reason)
-    took = [member._apply(local, fetched, interval) for member, local in held]
-    return len(held) == len(members) and all(took)
+    took = [member._apply(local, fetched, interval) for member, local, _read in held]
+    return all(took) and all(read for _member, _local, read in held)
 
 
 class SettingsGroup(_Refresher):

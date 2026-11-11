@@ -63,10 +63,15 @@ The Mac asks the registry again immediately before delivering, as the router did
 letter that no longer holds that session at that generation, or is closed, is `refused`.  A registry
 that cannot be read is `failed`, since nothing has run, and so a bounded retry, never a blind
 delivery.  So is a live row that does not name a well-formed Claude chat (no seat, a malformed one
-or another seat's):  it is not proof that the letter was released.  The registry's address and
-signing key come from the /wake-router knobs (WAKE_ROUTER_REGISTRY_URL and _KEY), never from an
-env file:  with either missing the recheck is `failed` with `registry-not-configured`.  The knob
-WAKE_ROUTER_MAC_SSH alone names where the Mac is reached.  A router from before this
+or another seat's):  it is not proof that the letter was released.  On the Mac the registry's
+address and signing key come from the shared registry env loader every Mac registry client uses
+(platform_letter.with_registry_env), as before;  only the server's router reads them from the
+/wake-router knobs, since a Mac able to read that folder would also hold the router's bearer.
+With either missing the recheck is `failed` with `registry-not-configured`.  The knob
+WAKE_ROUTER_MAC_SSH alone names where the Mac is reached.  The Mac imports the platform table
+(wake_service, and fleet_knobs under it) only for a delivery:  the gate's preflight and its
+refusals never need it, and a delivery that cannot import it answers `failed` with
+`platform-table-unavailable`.  A router from before this
 envelope sends `{"session_id", "wake"}` and reads a flat answer.
 It has no generation to check, so it is delivered to on the router's own check, as it always was.
 
@@ -97,10 +102,12 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, TextIO
+from typing import TYPE_CHECKING, Any, TextIO
 
 from . import wake_router as WR
-from . import wake_service as SVC
+
+if TYPE_CHECKING:  # imported where it is used, so the ssh gate never depends on fleet_knobs
+    from . import wake_service as SVC
 
 SEAT = "CLAUDE"
 PLATFORM = "claude"
@@ -126,6 +133,8 @@ BAD_REQUEST = "bad-request"
 BAD_REQUEST_EXIT = 2
 UNKNOWN_PLATFORM = "unknown-platform"
 NOT_INSTALLED = "platform-not-installed"
+# The platform table (wake_service, and fleet_knobs under it) cannot be imported on this host.
+TABLE_UNAVAILABLE = "platform-table-unavailable"
 # Claude's refusals that can only come before anything ran (wake_service, The one platform
 # table).  The router adds them to its own NEVER_RAN, which lists them already today.
 NEVER_RAN = frozenset(
@@ -137,6 +146,7 @@ NEVER_RAN = frozenset(
         "unknown-host",
         UNKNOWN_PLATFORM,
         NOT_INSTALLED,
+        WR.HANDLER_MISSING,
     }
 )
 # All that a `wake-deliver` from before the envelope can say to one, before it has done anything.
@@ -552,6 +562,8 @@ def deliver_remote(
 ) -> WR.Delivery:
     """Deliver one wake to a chat on the Mac, through the one fixed command over ssh.  The
     destination is the setting `mac_ssh` (WAKE_ROUTER_MAC_SSH) alone."""
+    from . import wake_service as SVC  # the router's own host, where it is always there
+
     entry = SVC.by_platform(platform)
     if entry is None:
         return WR.Delivery("refused", "ssh", code=UNKNOWN_PLATFORM)
@@ -743,11 +755,33 @@ def _target_from(data: object) -> WR.Target:
     return WR.Target(session_id=session_id, letter=letter, host=host, generation=generation)
 
 
+def _table() -> Any:
+    """The platform table's module, or None when it cannot be imported on this host (it pulls in
+    fleet_knobs).  Imported here, not at the top, so the ssh gate's preflight and its refusals
+    never depend on it."""
+    try:
+        from . import wake_service as SVC
+    except Exception:  # noqa: BLE001 - an import that fails is answered, never a crash
+        return None
+    return SVC
+
+
 def _platform_of(request: object) -> SVC.Builder | None:
     """The `wake_service.BUILDERS` entry a request names by platform, or None.  A request that
     names none is Claude's."""
     body = request if isinstance(request, Mapping) else {}
-    return SVC.by_platform(body.get("platform", PLATFORM))
+    table = _table()
+    return table.by_platform(body.get("platform", PLATFORM)) if table is not None else None
+
+
+def _session_pattern(body: Mapping[str, Any]) -> re.Pattern[str] | None:
+    """The session pattern of the platform a request names.  Claude's is this module's own, the
+    same as its table entry (a test keeps them equal), so a Claude answer correlates even when
+    the table cannot be imported."""
+    if body.get("platform", PLATFORM) == PLATFORM:
+        return SESSION_RE
+    entry = _platform_of(body)
+    return entry.session_pattern if entry is not None else None
 
 
 def _correlation(request: object) -> dict[str, Any]:
@@ -759,12 +793,10 @@ def _correlation(request: object) -> dict[str, Any]:
     wake = body.get("wake") if isinstance(body.get("wake"), Mapping) else {}
     wake_id, session_id = wake.get("wake_id"), target.get("session_id")
     generation = target.get("generation")
-    entry = _platform_of(body)
+    pattern = _session_pattern(body)
     good_wake = isinstance(wake_id, str) and WR.WAKE_ID_RE.fullmatch(wake_id)
     good_session = (
-        entry is not None
-        and isinstance(session_id, str)
-        and entry.session_pattern.fullmatch(session_id)
+        pattern is not None and isinstance(session_id, str) and pattern.fullmatch(session_id)
     )
     return {
         "wake_id": wake_id if good_wake else "",
@@ -778,12 +810,14 @@ def _answer(request: object, delivery: WR.Delivery) -> dict[str, Any]:
 
 
 def _registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
-    """`env` with the registry's address and key from the /wake-router knobs, and none inherited:
-    no env file and no ssh remote is ever a fallback.  Without them every registry call answers
+    """`env` with the registry's address and key on this host, the Mac, from the shared registry
+    env loader every Mac registry client uses (a forced ssh command has no login profile).  Only
+    the server's router reads them from the /wake-router knobs:  a Mac that could read that folder
+    would also hold the router's bearer.  Without them every registry call answers
     `not_configured`."""
-    from . import wake_settings as WS
+    from . import platform_letter as PL
 
-    return WS.registry_env_once(env)
+    return PL.with_registry_env(dict(env))
 
 
 def _remote_config(env: Mapping[str, str]) -> Mapping[str, Any]:
@@ -852,8 +886,12 @@ def _module_delivery(
         module = importlib.import_module(entry.module)
     except ImportError:
         return _answer(request, WR.Delivery("refused", code=NOT_INSTALLED))
+    # Resolved before anything runs:  a module without its handler has run nothing.
+    handler = getattr(module, entry.handler, None)
+    if not callable(handler):
+        return _answer(request, WR.Delivery("refused", code=WR.HANDLER_MISSING))
     try:
-        answer = getattr(module, entry.handler)(request, env=_registry_env(env))
+        answer = handler(request, env=_registry_env(env))
     except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
         return _answer(
             request, WR.Delivery("refused", code="platform-error-%s" % type(exc).__name__)
@@ -902,6 +940,10 @@ def _deliver_legacy(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[
 def _handle(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
     if "platform" not in request and "target" not in request and "session_id" in request:
         return _deliver_legacy(request, env)
+    if _table() is None:
+        # The platform table cannot be imported here, so nothing can be looked up and nothing has
+        # run:  `failed`, a bounded retry, and an answer the sender can read.
+        return _answer(request, WR.Delivery("failed", code=TABLE_UNAVAILABLE))
     entry = _platform_of(request)
     if entry is None:
         return _answer(request, WR.Delivery("refused", code=UNKNOWN_PLATFORM))

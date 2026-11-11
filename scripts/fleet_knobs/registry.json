@@ -1828,7 +1828,7 @@
    "narrower": null,
    "local": "deny",
    "local_rule": "A local file cannot change this.",
-   "hosts": "both",
+   "hosts": "server",
    "consumers": [
     {
      "name": "the wake router",
@@ -1842,7 +1842,7 @@
    "example": "https://registry.example.com",
    "once": false,
    "requires_explicit": false,
-   "note": "the Operator registry API's origin (no path) the wake router and the Mac's wake-deliver read the registry at;  http only to a loopback address;  empty means not configured, so every pick is a bounded retry and /health says so",
+   "note": "the Operator registry API's origin (no path) the server's wake router reads the registry at (the Mac's wake-deliver keeps the shared registry env file);  http only to a loopback address;  empty means not configured, so every pick is a bounded retry and /health says so",
    "folder": "/wake-router"
   },
   {
@@ -1865,7 +1865,7 @@
    "narrower": null,
    "local": "narrow",
    "local_rule": "A local file cannot change this.",
-   "hosts": "both",
+   "hosts": "server",
    "consumers": [
     {
      "name": "the wake router",
@@ -1879,7 +1879,7 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "the key the wake router and the Mac's wake-deliver sign registry calls with;  held like the bearer, and without it every registry call answers not configured",
+   "note": "the key the server's wake router signs registry calls with;  held like the bearer, and without it every registry call answers not configured and /health says so",
    "folder": "/wake-router"
   }
  ]
