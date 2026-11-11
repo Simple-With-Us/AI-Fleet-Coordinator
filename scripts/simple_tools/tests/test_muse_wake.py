@@ -347,11 +347,6 @@ class MuseRunnerSchemaTest(unittest.TestCase):
         sent = self._capture_schema()
         self.assertEqual(set(sent["required"]), set(sent["properties"]))
 
-    def test_the_mac_muse_bridge_sends_the_strict_schema(self) -> None:
-        from simple_tools import muse_bridge_mac as MBM
-
-        self.assertNotIn("schema_text()", inspect.getsource(MBM), "a muse caller left the loose schema")
-
 
 class MuseRunnerPromptTest(unittest.TestCase):
     def test_private_prompt_file_starts_with_contract_before_supplied_prompt(self) -> None:

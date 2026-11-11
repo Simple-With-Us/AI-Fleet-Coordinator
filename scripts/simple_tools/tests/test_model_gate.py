@@ -1,6 +1,6 @@
 """The model gate, phase 1 (record only):  every model start records why a model was needed, and nothing
 else about the start changes.  The pure verdict table, the ledger fields and their restore, the counts,
-the daemon starts (primary, fallback, chat inspection, routine), the Mac bridge decisions, a gate that
+the daemon starts (primary, fallback, chat inspection, routine), a gate that
 fails, and a replay showing the same message sequence decides the same with the gate, without it and
 with it broken.
 """
@@ -23,15 +23,11 @@ from typing import Any
 from unittest import mock
 
 from simple_tools import adapters as A
-from simple_tools import config as C
 from simple_tools import daemon as D
 from simple_tools import listener_cli as LC
 from simple_tools import live as L
-from simple_tools import muse_bridge as MB
-from simple_tools import muse_bridge_mac as MBM
 from simple_tools import router as R
 from simple_tools import wakes as W
-from simple_tools.tests import test_bridge_backup as BB
 from simple_tools.tests.harness import write_rc
 from simple_tools.tests.listener_harness import ListenerHarness, reply_output
 from simple_tools.tests.test_chat_inspection import (
@@ -43,7 +39,6 @@ from simple_tools.tests.test_chat_inspection import (
     offered,
 )
 from simple_tools.tests.test_daemon import MENTION, DaemonHarness
-from simple_tools.tests.test_muse_bridge import _mac_config
 from simple_tools.tests.test_openrouter_daemon import FALLBACK, OpenRouterHarness
 from simple_tools.tests.test_openrouter_wake import FALLBACK_MODEL
 from simple_tools.tests.test_server import SEAT as ROUTINE_SEAT
@@ -90,20 +85,6 @@ TABLE = [
         "select_destination",
         {"exact_chat_ids": 1, "risk_screen_needed": False},
         "det_exact_chat_id",
-        True,
-    ),
-    (
-        "native only, no risk answer needed",
-        "bridge_consult",
-        {"native_only": True, "risk_screen_needed": False},
-        "det_native_only",
-        True,
-    ),
-    (
-        "private dm, no resource",
-        "bridge_consult",
-        {"private_dm": True, "same_seat_wake_resources": 0},
-        "det_private_dm_no_resource",
         True,
     ),
     ("a routine forward is a delivery", "routine", {}, "det_routine_forward", False),
@@ -158,20 +139,6 @@ TABLE = [
         False,
     ),
     (
-        "native only, but a risk answer is needed (a non-owner)",
-        "bridge_consult",
-        {"native_only": True, "risk_screen_needed": True},
-        "model_bridge_consult",
-        False,
-    ),
-    (
-        "native only, risk need not known",
-        "bridge_consult",
-        {"native_only": True},
-        "model_bridge_consult",
-        False,
-    ),
-    (
         "two exact ids",
         "select_destination",
         {"exact_chat_ids": 2, "risk_screen_needed": False},
@@ -181,27 +148,12 @@ TABLE = [
     ("a seat reply", "compose_reply", {}, "model_compose_reply", False),
     ("an unresolved addressee", "select_destination", {}, "model_select_destination", False),
     ("a chat inspection", "inspect", {}, "model_select_destination", False),
-    ("a bridge consult", "bridge_consult", {}, "model_bridge_consult", False),
-    (
-        "a private dm with a resource",
-        "bridge_consult",
-        {"private_dm": True, "same_seat_wake_resources": 1},
-        "model_bridge_consult",
-        False,
-    ),
-    (
-        "a private dm, resources not known",
-        "bridge_consult",
-        {"private_dm": True},
-        "model_bridge_consult",
-        False,
-    ),
     ("a fallback", "fallback", {}, "model_fallback", False),
     # A fact that is not exactly True, or a count that is not an int, is not known.
     (
         "truthy but not True",
         "compose_reply",
-        {"eyes": "yes", "live_lease": 1, "bound_chat": "x", "native_only": 1},
+        {"eyes": "yes", "live_lease": 1, "bound_chat": "x"},
         "model_compose_reply",
         False,
     ),
@@ -260,7 +212,9 @@ class VerdictTableTests(unittest.TestCase):
         seen = {row[3] for row in TABLE}
         every = {c for c in W.GATE_CODES if c.startswith(("det_", "model_"))}
         self.assertEqual(seen, every)
-        self.assertEqual(set(W.GATE_CODES) - every, {"no_model", "gate_error"})
+        self.assertEqual(set(W.GATE_CODES) - every, {"gate_error"})
+        for gone in ("bridge_consult", "model_bridge_consult", "no_model", "det_native_only"):
+            self.assertNotIn(gone, set(W.GATE_CODES) | set(W.GATE_PURPOSES), "the Muse inbox bridge was deleted")
 
     def test_every_purpose_is_accepted_and_nothing_else_is(self) -> None:
         for purpose in W.GATE_PURPOSES:
@@ -279,9 +233,6 @@ class VerdictTableTests(unittest.TestCase):
             "letter_holder_on_seat": True,
             "exact_chat_ids": 1,
             "risk_screen_needed": False,
-            "native_only": True,
-            "private_dm": True,
-            "same_seat_wake_resources": 0,
         }
         order = [
             (("eyes",), "det_eyes"),
@@ -289,15 +240,13 @@ class VerdictTableTests(unittest.TestCase):
             (("bound_chat",), "det_bound_chat"),
             (("letter", "letter_candidates", "letter_holder_on_seat"), "det_tagged_letter_single"),
             (("exact_chat_ids",), "det_exact_chat_id"),
-            (("native_only", "risk_screen_needed"), "det_native_only"),
-            (("private_dm", "same_seat_wake_resources"), "det_private_dm_no_resource"),
         ]
         facts = dict(everything)
         for names, code in order:
-            self.assertEqual(W.model_gate_verdict("bridge_consult", facts).code, code)
+            self.assertEqual(W.model_gate_verdict("select_destination", facts).code, code)
             for name in names:
                 facts.pop(name)
-        self.assertEqual(W.model_gate_verdict("bridge_consult", facts).code, "model_bridge_consult")
+        self.assertEqual(W.model_gate_verdict("select_destination", facts).code, "model_select_destination")
 
     def test_the_facts_are_not_changed_and_none_or_junk_facts_are_not_known(self) -> None:
         facts = {"eyes": True, "letter": "Z"}
@@ -885,21 +834,6 @@ class GateCountsTests(unittest.TestCase):
         counts = W.gate_counts(rows, NOW)["CLAUDE"]
         self.assertEqual((counts["starts"], counts["fallbacks"], counts["inspects"]), (2, 1, 1))
 
-    def test_a_bridge_decision_counts_only_when_a_model_was_attempted(self) -> None:
-        decisions = [
-            {"kind": "native", "model_attempted": True, "gate": "det_native_only", "gate_avoidable": True, "at": NOW - 5, "source_seat": "JET"},
-            {"kind": "hold", "reason": "loop_guard", "gate": "no_model", "gate_avoidable": False, "at": NOW - 5, "source_seat": "JET"},
-            {"kind": "hold", "model_attempted": True, "gate": "no_model", "at": NOW - 5, "source_seat": "JET"},
-            {"kind": "hold", "model_attempted": True, "at": NOW - 5, "source_seat": "JET"},  # no gate:  old record
-            {"kind": "hold", "gate": "model_bridge_consult", "gate_avoidable": False, "at": NOW - 5, "source_seat": "JET"},  # a gate but no model ran
-            {"kind": "chat", "model_attempted": True, "gate": "model_bridge_consult", "gate_avoidable": False, "at": NOW - 9, "source_seat": "MM"},
-            {"kind": "chat", "model_attempted": True, "gate": "model_bridge_consult", "at": NOW - W.DAY - 9, "source_seat": "MM"},
-        ]
-        counts = W.gate_counts(decisions, NOW)
-        self.assertEqual(counts["JET"]["codes"], {"det_native_only": 1})
-        self.assertEqual((counts["JET"]["starts"], counts["JET"]["avoidable"]), (1, 1))
-        self.assertEqual(counts["MM"]["codes"], {"model_bridge_consult": 1})
-
     def test_the_status_line_reads_like_the_other_counts(self) -> None:
         self.assertEqual(W.gate_line(None), "model starts 24h 0 (avoidable 0)")
         self.assertEqual(
@@ -908,10 +842,6 @@ class GateCountsTests(unittest.TestCase):
         self.assertEqual(
             W.gate_line({"starts": 5, "avoidable": 2, "fallbacks": 1, "inspects": 3, "forwards": 7}),
             "model starts 24h 5 (avoidable 2), fallbacks 1, inspections 3, routine forwards 7",
-        )
-        self.assertEqual(W.bridge_line(None), "bridge consults 24h 0 (avoidable 0)")
-        self.assertEqual(
-            W.bridge_line({"starts": 4, "avoidable": 1}), "bridge consults 24h 4 (avoidable 1)"
         )
 
     def test_a_routine_forward_is_a_delivery_counted_apart_from_the_model_starts(self) -> None:
@@ -928,20 +858,11 @@ class GateCountsTests(unittest.TestCase):
         self.assertEqual((counts["starts"], counts["avoidable"]), (1, 1))
         self.assertEqual(counts["codes"], {"det_eyes": 1}, "forwards are not in the start codes")
 
-    def test_a_bridge_native_message_is_one_start_and_one_forward_never_two_starts(self) -> None:
-        # The Mac's consult record and the server's routine row are two rows in two files for one
-        # message.  Read together they count once as a model start, and the routine row as a forward.
-        decision = {
-            "kind": "native",
-            "model_attempted": True,
-            "gate": "det_native_only",
-            "gate_avoidable": True,
-            "at": NOW - 20,
-            "source_seat": "JET",
-        }
-        routine_row = started("JET", 10, "det_routine_forward", False, adapter="http")
-        counts = W.gate_counts([decision, routine_row], NOW)["JET"]
-        self.assertEqual((counts["starts"], counts["forwards"]), (1, 1))
+    def test_a_row_with_no_state_is_not_counted(self) -> None:
+        # The deleted Mac bridge's decision records had no `state`;  such a row is never a start now.
+        stateless = {"kind": "chat", "model_attempted": True, "gate": "model_compose_reply", "at": NOW - 5,
+                     "ts": NOW - 5, "seat": "JET", "source_seat": "JET"}
+        self.assertEqual(W.gate_counts([stateless], NOW), {})
 
     def test_a_fallback_is_counted_in_the_window_of_its_closing_row_not_its_start(self) -> None:
         rows = [
@@ -978,10 +899,7 @@ class GateCountsTests(unittest.TestCase):
         for bad in (10**400, -(10**400), float("nan"), float("inf"), -float("inf"), "5", True, None, [1]):
             with self.subTest(bad=repr(bad)[:20]):
                 self.assertIsNone(W._gate_number(bad))
-                rows = [
-                    started("A", 1, "model_compose_reply", False, ts=bad),
-                    {"kind": "chat", "model_attempted": True, "gate": "model_bridge_consult", "at": bad, "source_seat": "A"},
-                ]
+                rows = [started("A", 1, "model_compose_reply", False, ts=bad)]
                 self.assertEqual(W.gate_counts(rows, NOW), {})
         self.assertEqual(W._gate_number(5), 5.0)
         self.assertEqual(W._gate_number(2.5), 2.5)
@@ -1132,7 +1050,7 @@ class BigLedgerStatusTests(unittest.TestCase):
 
             started_at = time.perf_counter()
             with mock.patch.object(W.os, "pread", counting):
-                lines = LC._gate_status_lines(root, "CLAUDE", {}, now, ledger=True, bridged=False)
+                lines = LC._gate_status_lines(root, "CLAUDE", now, ledger=True)
             elapsed = time.perf_counter() - started_at
             in_day = [n for n in range(self.ROWS) if (self.ROWS - n) * step < 86400 and n % 3 == 2]
             self.assertEqual(
@@ -1148,7 +1066,7 @@ class BigLedgerStatusTests(unittest.TestCase):
 
 
 class StatusLineTests(unittest.TestCase):
-    def test_the_lines_come_from_the_seat_ledger_and_the_bridge_counts(self) -> None:
+    def test_the_line_comes_from_the_seat_ledger(self) -> None:
         now = time.time()
         with tempfile.TemporaryDirectory() as root:
             paths = L.SeatPaths(root, "CLAUDE")
@@ -1160,34 +1078,23 @@ class StatusLineTests(unittest.TestCase):
                     {"ts": now - 40, "wake_id": "c", "seat": "CLAUDE", "state": "started"},
                 ],
             )
-            bridge = W.gate_counts(
-                [{"kind": "chat", "model_attempted": True, "gate": "model_bridge_consult", "gate_avoidable": False, "at": now - 5, "source_seat": "CLAUDE"}],
-                now,
-            )
-            both = LC._gate_status_lines(root, "CLAUDE", bridge, now, ledger=True, bridged=True)
-            self.assertEqual(both, ["model starts 24h 2 (avoidable 1)", "bridge consults 24h 1 (avoidable 0)"])
-            alone = LC._gate_status_lines(root, "CLAUDE", {}, now, ledger=True, bridged=False)
+            alone = LC._gate_status_lines(root, "CLAUDE", now, ledger=True)
             self.assertEqual(alone, ["model starts 24h 2 (avoidable 1)"])
-            nothing = LC._gate_status_lines(root, "NOSEAT", {}, now, ledger=True, bridged=False)
+            nothing = LC._gate_status_lines(root, "NOSEAT", now, ledger=True)
             self.assertEqual(nothing, ["model starts 24h 0 (avoidable 0)"])
-            self.assertEqual(LC._gate_status_lines(root, "X", {}, now, ledger=False, bridged=False), [])
-            self.assertEqual(
-                LC._gate_status_lines(root, "X", {"X": {"starts": 3, "avoidable": 1}}, now, ledger=False, bridged=False),
-                ["bridge consults 24h 3 (avoidable 1)"],
-                "a seat the bridge consulted for is shown even when this listener does not flag it",
-            )
+            self.assertEqual(LC._gate_status_lines(root, "X", now, ledger=False), [])
 
     def test_a_ledger_that_cannot_be_read_leaves_the_line_out_and_never_raises(self) -> None:
         now = time.time()
         with tempfile.TemporaryDirectory() as root:
             with mock.patch.object(W, "rows_since", side_effect=OSError("unreadable")):
                 self.assertEqual(
-                    LC._gate_status_lines(root, "CLAUDE", {}, now, ledger=True, bridged=False), []
+                    LC._gate_status_lines(root, "CLAUDE", now, ledger=True), []
                 )
 
 
 class StatusCommandTests(ListenerHarness):
-    """`simple-chat status` end to end: the real command over a status file, ledgers and a bridge file."""
+    """`simple-chat status` end to end: the real command over a status file and ledgers."""
 
     def seat(self, **extra: Any) -> dict[str, Any]:
         return dict({"bot": "x", "connected": True, "wake": "inbox", "budget": {}}, **extra)
@@ -1211,19 +1118,6 @@ class StatusCommandTests(ListenerHarness):
     def write_ledger(self, seat: str, rows: list) -> None:
         L.append_jsonl(L.SeatPaths(self.root, seat).wakes, rows)
 
-    def consult(self, seat: str, n: int, gate: str, avoidable: bool) -> dict[str, Any]:
-        return {"kind": "chat", "model_attempted": True, "gate": gate, "gate_avoidable": avoidable, "at": time.time() - 10 - n, "source_seat": seat, "id": n}
-
-    def bridge_path(self) -> str:
-        return os.path.join(L.listener_dir(self.root), "muse-bridge-mac.json")
-
-    def write_bridge(self, decisions: dict | None = None, raw: str | None = None) -> None:
-        if raw is not None:
-            with open(self.bridge_path(), "w", encoding="utf-8") as fh:
-                fh.write(raw)
-        else:
-            L.write_json(self.bridge_path(), {"cursors": {}, "decisions": decisions or {}})
-
     def status_lines(self) -> list[str]:
         result = self.run_cli("status")
         self.assertEqual(result.code, 0, result.err)
@@ -1240,7 +1134,7 @@ class StatusCommandTests(ListenerHarness):
         return tail
 
     def gate_lines(self, lines: list[str], seat: str) -> list[str]:
-        return [ln for ln in self.under(lines, seat) if "model starts" in ln or "bridge consults" in ln]
+        return [ln for ln in self.under(lines, seat) if "model starts" in ln]
 
     def no_permission(self, path: str) -> None:
         if os.geteuid() == 0:
@@ -1249,84 +1143,32 @@ class StatusCommandTests(ListenerHarness):
         self.addCleanup(lambda: os.path.exists(path) and os.chmod(path, 0o600))
 
     # ---- the whole picture -------------------------------------------------------------------
-    def test_status_prints_the_starts_the_bridge_consults_and_the_remote_seats_it_can_see(self) -> None:
+    def test_status_prints_the_starts_and_the_forwards(self) -> None:
         self.write_status(
             {
                 "CLAUDE": self.seat(wake="claude"),
-                "BRIDGED": self.seat(muse_bridge=True),
                 "PLAIN": self.seat(),
                 "ROUTINE": self.seat(wake="http", routine={"ready": True, "host": "routine.test"}),
             }
         )
         self.write_ledger("CLAUDE", self.started_rows("CLAUDE", [("model_compose_reply", False), ("det_tagged_letter_single", True)]))
         self.write_ledger("ROUTINE", self.started_rows("ROUTINE", [("det_routine_forward", False)] * 2, adapter="http"))
-        decisions = {"b%d" % n: self.consult("BRIDGED", n, "det_native_only" if n == 0 else "model_bridge_consult", n == 0) for n in range(2)}
-        decisions.update({"e%d" % n: self.consult("ECHO", n, "model_bridge_consult", False) for n in range(3)})
-        self.write_bridge(decisions)
         lines = self.status_lines()
         self.assertIn("  model starts 24h 2 (avoidable 1)", self.under(lines, "CLAUDE"))
-        self.assertFalse([ln for ln in self.under(lines, "CLAUDE") if "bridge consults" in ln])
-        # A bridged inbox seat never starts a model itself, and its consults are the whole story.
-        self.assertEqual(
-            self.gate_lines(lines, "BRIDGED"),
-            ["  model starts 24h 0 (avoidable 0)", "  bridge consults 24h 2 (avoidable 1)"],
-        )
-        self.assertEqual(self.gate_lines(lines, "PLAIN"), [])
+        self.assertEqual(self.gate_lines(lines, "PLAIN"), [], "an inbox seat starts no model")
         self.assertIn("  model starts 24h 0 (avoidable 0), routine forwards 2", self.under(lines, "ROUTINE"))
-        # Only a seat that is not in this listener's own status gets the line that says so.
-        remote = [ln for ln in lines if "not a seat of this listener" in ln]
-        self.assertEqual(len(remote), 1)
-        self.assertTrue(remote[0].startswith("ECHO "))
-        self.assertIn("bridge consults 24h 3 (avoidable 0)", remote[0])
+        self.assertFalse([ln for ln in lines if "bridge" in ln.lower()])
 
-    def test_status_with_nothing_to_read_still_prints_and_a_missing_bridge_file_is_a_real_zero(self) -> None:
-        self.write_status({"CLAUDE": self.seat(wake="claude"), "BRIDGED": self.seat(muse_bridge=True)})
+    def test_a_status_file_from_an_older_listener_with_the_bridge_keys_still_prints(self) -> None:
+        # A listener that has not restarted onto this build still writes the bridge keys.
+        self.write_status({"CLAUDE": self.seat(wake="claude", muse_bridge=True)})
+        path = os.path.join(L.listener_dir(self.root), "status.json")
+        status = L.read_json(path)
+        status["muse_bridge"] = {"enabled": True, "remote_seats": ["ECHO"], "pin": "ok"}
+        L.write_json(path, status)
         lines = self.status_lines()
         self.assertEqual(self.gate_lines(lines, "CLAUDE"), ["  model starts 24h 0 (avoidable 0)"])
-        self.assertEqual(
-            self.gate_lines(lines, "BRIDGED"),
-            ["  model starts 24h 0 (avoidable 0)", "  bridge consults 24h 0 (avoidable 0)"],
-            "no bridge file on a Mac is a bridge that has not consulted yet:  a real zero",
-        )
-
-    # ---- what it cannot see or cannot read is no line, never a false zero ---------------------
-    def test_a_server_listener_prints_no_bridge_line_even_beside_a_stray_bridge_file(self) -> None:
-        self.write_status({"ECHO": self.seat(wake="http", muse_bridge=True, routine={"ready": True, "host": "h"})}, instance="server")
-        self.write_ledger("ECHO", self.started_rows("ECHO", [("det_routine_forward", False)] * 2, adapter="http"))
-        for decisions in (None, {"e0": self.consult("ECHO", 0, "model_bridge_consult", False)}):
-            if decisions is not None:
-                self.write_bridge(decisions)  # a file that cannot exist on a server, and must not be read
-            lines = self.status_lines()
-            self.assertEqual(
-                self.gate_lines(lines, "ECHO"),
-                ["  model starts 24h 0 (avoidable 0), routine forwards 2"],
-                "the seat's own ledger is real, and there is no bridge line from the Mac's file",
-            )
-            self.assertFalse([ln for ln in lines if "bridge consults" in ln])
-
-    def test_a_bridge_file_that_cannot_be_trusted_prints_no_bridge_line_at_all(self) -> None:
-        self.write_status({"BRIDGED": self.seat(muse_bridge=True), "CLAUDE": self.seat(wake="claude")})
-        good = {"b0": self.consult("BRIDGED", 0, "model_bridge_consult", False), "e0": self.consult("ECHO", 0, "model_bridge_consult", False)}
-        for label, raw in (
-            ("not json", "{ not json"),
-            ("empty", ""),
-            ("a list", "[1, 2]"),
-            ("no decisions", '{"cursors": {}}'),
-            ("decisions a list", '{"cursors": {}, "decisions": []}'),
-            ("decisions a string", '{"cursors": {}, "decisions": "x"}'),
-            ("too deeply nested", "[" * 100_000),
-        ):
-            with self.subTest(label):
-                self.write_bridge(raw=raw)
-                lines = self.status_lines()
-                self.assertEqual(self.gate_lines(lines, "BRIDGED"), ["  model starts 24h 0 (avoidable 0)"])
-                self.assertFalse([ln for ln in lines if "bridge consults" in ln or "not a seat of this listener" in ln])
-        with self.subTest("no permission"):
-            self.write_bridge(good)
-            self.no_permission(self.bridge_path())
-            lines = self.status_lines()
-            self.assertEqual(self.gate_lines(lines, "BRIDGED"), ["  model starts 24h 0 (avoidable 0)"])
-            self.assertFalse([ln for ln in lines if "bridge consults" in ln or "not a seat of this listener" in ln])
+        self.assertFalse([ln for ln in lines if "bridge" in ln.lower()])
 
     def test_a_ledger_that_cannot_be_read_leaves_that_seats_line_out_and_the_others_stay(self) -> None:
         self.write_status({"CLAUDE": self.seat(wake="claude"), "OTHER": self.seat(wake="claude")})
@@ -2284,552 +2126,6 @@ class RoutineGateTests(GateLog, ServerHarness):
         self.assertEqual((event["purpose"], event["seat"]), ("routine", ROUTINE_SEAT))
         counts = W.gate_counts(rows, self.clock.time())[ROUTINE_SEAT]
         self.assertEqual((counts["forwards"], counts["starts"]), (1, 0), "a forward is not a model start")
-
-
-# --------------------------------------------------------------------------------------------
-# The Mac bridge
-# --------------------------------------------------------------------------------------------
-
-
-class BackupConsultGateTests(unittest.TestCase):
-    """The bridge's OpenRouter backup consult (the known-cap mode) is a model start like the Muse one:
-    gated once, stamped on its row, and not logged when it fails before any request is made."""
-
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.root = self.tmp.name
-        self.logged: list[tuple[str, dict]] = []
-        logged = self.logged
-
-        class FakeLog:
-            def write(self, event: str, **fields: object) -> None:
-                logged.append((event, dict(fields)))
-
-        class FakeExchange:
-            def request(self, command: str, body: object) -> dict:
-                return {"receipt": "r1"}
-
-        self.now = time.time()
-        self.runner = BB._FakeRunner(BB._result(parsed={"action": "none"}, models=[BB.SERVED]))
-        self.key = BB._FakeKey()
-        bridge = MBM.MacBridge.__new__(MBM.MacBridge)
-        bridge.daemon = types.SimpleNamespace(
-            root=self.root,
-            log=FakeLog(),
-            clock=types.SimpleNamespace(time=lambda: self.now),
-            env={},
-            home=self.root,
-            wake_path=self.root,
-            scrub=lambda text: text,
-            openrouter_key=self.key,
-            openrouter_runner=self.runner,
-            config=BB._cfg(BB._good(self.now)),
-            seats={},
-        )
-        bridge.path = os.path.join(L.listener_dir(self.root), MBM.STATE_NAME)
-        bridge.exchange = FakeExchange()
-        bridge._resources = lambda item: []
-        self.bridge = bridge
-
-    def run_envelope(self) -> dict:
-        state: dict = {"cursors": {}, "decisions": {}}
-        envelope = {
-            "gap": False,
-            "next": 8,
-            "items": [BB._item()],
-            "budget": dict(C.BUDGET_DEFAULTS),
-        }
-        self.bridge._process_envelope(
-            state, state["cursors"], state["decisions"], "ECHO", envelope, remote=True, binary="muse", model="m"
-        )
-        return state
-
-    def gate_events(self) -> list[dict]:
-        return [fields for event, fields in self.logged if event == "model-gate"]
-
-    def test_a_backup_consult_is_a_gated_start_and_its_row_carries_the_gate(self) -> None:
-        state = self.run_envelope()
-        self.assertEqual(len(self.runner.calls), 1, "the backup was asked once, as before")
-        (row,) = state["decisions"].values()
-        self.assertEqual((row["runtime"], row["model_attempted"]), ("openrouter", True))
-        self.assertEqual((row["gate"], row["gate_avoidable"]), ("model_bridge_consult", False))
-        (event,) = self.gate_events()
-        self.assertEqual((event["purpose"], event["code"], event["seat"]), ("bridge_consult", "model_bridge_consult", "ECHO"))
-        counts = W.gate_counts(list(state["decisions"].values()), time.time())["ECHO"]
-        self.assertEqual(counts["starts"], 1)
-
-    def test_a_charged_ambiguous_attempt_is_a_start_and_keeps_its_gate(self) -> None:
-        self.runner.result = BB._result(error="timed out", http_status=None)
-        state = self.run_envelope()
-        (row,) = state["decisions"].values()
-        self.assertEqual((row["reason"], row["review"]), ("backup_consult_charged_ambiguous", "pending"))
-        self.assertEqual((row["gate"], row["gate_avoidable"]), ("model_bridge_consult", False))
-        self.assertEqual(len(self.gate_events()), 1)
-
-    def test_decide_calls_decide_inner_with_the_arguments_it_always_had(self) -> None:
-        # The backup tests stand in for `_decide_inner` with a function of exactly this signature,
-        # so the gate may not add an argument to the call.
-        seen: list[tuple] = []
-
-        def stand_in(item, binary, model, consult_runtime, backup_model=None, backup_expected_models=None):
-            seen.append((consult_runtime, backup_model, backup_expected_models))
-            return {"kind": "hold", "reason": "no_target", "model_attempted": True}
-
-        self.bridge._decide_inner = stand_in
-        state = self.run_envelope()
-        self.assertEqual(len(seen), 1)
-        (row,) = state["decisions"].values()
-        self.assertEqual((row["gate"], row["gate_avoidable"]), ("gate_error", False), "a start with no verdict")
-
-    def test_a_failure_before_any_request_logs_no_start_and_unwinds_the_claim(self) -> None:
-        self.key.exc = A.OpenRouterUnavailable("the Operator's OpenRouter key is unavailable: test")
-        state = self.run_envelope()
-        self.assertEqual(self.runner.calls, [])
-        self.assertEqual(state["decisions"], {}, "the claim, gate fields and all, was unwound")
-        self.assertEqual(self.gate_events(), [], "no request was made, so no start is logged")
-        self.runner.result = BB._result(error="rejected", http_status=401)
-        self.key.exc = None
-        state = self.run_envelope()
-        self.assertEqual(state["decisions"], {}, "a 4xx rejection is a failure before any answer too")
-        self.assertEqual(self.gate_events(), [], "a request that was rejected outright is not a start")
-
-    def run_items(self, items: list[dict], budget: dict | None = None) -> dict:
-        """Several items in one envelope, the way a tick delivers them."""
-        state: dict = {"cursors": {}, "decisions": {}}
-        envelope = {
-            "gap": False,
-            "next": 99,
-            "items": items,
-            "budget": dict(C.BUDGET_DEFAULTS) if budget is None else budget,
-        }
-        self.bridge._process_envelope(
-            state, state["cursors"], state["decisions"], "ECHO", envelope, remote=True, binary="muse", model="m"
-        )
-        return state
-
-    def row(self, state: dict, item: dict) -> dict:
-        return state["decisions"][MBM.MacBridge._key(item)]
-
-    def test_a_pre_check_hold_after_a_consult_in_the_same_envelope_is_no_model(self) -> None:
-        # The verdict and the hand-off dict belong to one item:  the loop guard holds the second item
-        # before any model is needed, so it is `no_model` and not the first item's verdict.
-        first = BB._item(seq=7, message_id=42)
-        second = dict(BB._item(seq=8, message_id=43), blocked=True)
-        state = self.run_items([first, second])
-        self.assertEqual(self.row(state, first)["gate"], "model_bridge_consult")
-        held = self.row(state, second)
-        self.assertEqual(held["reason"], "loop_guard")
-        self.assertEqual((held["gate"], held["gate_avoidable"]), ("no_model", False))
-        self.assertEqual(len(self.gate_events()), 1, "only the consult is a start")
-        self.assertEqual(len(self.runner.calls), 1)
-
-    def test_a_budget_hold_after_a_consult_in_the_same_envelope_is_no_model(self) -> None:
-        first = BB._item(seq=7, message_id=42)
-        second = dict(BB._item(seq=8, message_id=43), topic="other")
-        state = self.run_items([first, second], dict(C.BUDGET_DEFAULTS, wakes_per_hour=1))
-        self.assertEqual(self.row(state, first)["gate"], "model_bridge_consult")
-        held = self.row(state, second)
-        self.assertEqual(held["reason"], "wakes_per_hour")
-        self.assertEqual((held["gate"], held["gate_avoidable"]), ("no_model", False))
-        self.assertEqual(len(self.gate_events()), 1, "only the consult is a start")
-        self.assertEqual(len(self.runner.calls), 1)
-
-    def test_the_logged_code_is_the_stored_code_and_the_backup_reads_the_resources(self) -> None:
-        # A native owner item with nowhere else to go is `det_native_only` on the backup too, and the
-        # log event says what the stored row says (the verdict is made once, from the same facts).
-        item = dict(BB._item(), native=True, owner=True)
-        state = self.run_items([item])
-        row = self.row(state, item)
-        self.assertEqual((row["runtime"], row["gate"], row["gate_avoidable"]), ("openrouter", "det_native_only", True))
-        (event,) = self.gate_events()
-        self.assertEqual((event["code"], event["avoidable"]), (row["gate"], row["gate_avoidable"]))
-
-    def test_the_bridge_holds_no_verdict_between_decisions(self) -> None:
-        self.run_envelope()
-        self.assertIsNone(getattr(self.bridge, "_gate_out", None), "reset once the decision was made")
-
-        def fails(*args: Any, **kwargs: Any) -> dict:
-            raise RuntimeError("the decision failed")
-
-        self.bridge._decide_inner = fails
-        with self.assertRaises(RuntimeError):
-            self.bridge._decide(BB._item(seq=9, message_id=44), "muse", "m", gate={})
-        self.assertIsNone(getattr(self.bridge, "_gate_out", None), "and reset when it failed")
-
-    def test_a_backup_runner_that_raises_after_its_request_is_logged_and_counted(self) -> None:
-        # The claim row counts the consult from the moment it is written (`model_attempted`), so the
-        # start is logged too, as it is for a Muse run that raises.  Nothing else changes:  the
-        # exception goes on, and the claim stays for review.
-        def dies(*args: Any, **kwargs: Any) -> Any:
-            raise RuntimeError("the runner died")
-
-        self.runner.run = dies
-        with self.assertRaises(RuntimeError):
-            self.run_items([BB._item()])
-        state = self.bridge._state()
-        (row,) = state["decisions"].values()
-        self.assertEqual((row["reason"], row["model_attempted"]), ("model_interrupted", True))
-        self.assertEqual((row["gate"], row["gate_avoidable"]), ("model_bridge_consult", False))
-        (event,) = self.gate_events()
-        self.assertEqual((event["purpose"], event["code"], event["seat"]), ("bridge_consult", "model_bridge_consult", "ECHO"))
-        counts = LC._bridge_gate_counts(self.root, time.time())
-        self.assertEqual(
-            LC._gate_status_lines(self.root, "ECHO", counts, time.time(), ledger=False, bridged=True),
-            ["bridge consults 24h 1 (avoidable 0)"],
-            "the status line counts the same consult the log shows",
-        )
-
-class BridgeGateTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.root = self.tmp.name
-        self.logged: list[tuple[str, dict]] = []
-        logged = self.logged
-
-        class FakeLog:
-            def write(self, event: str, **fields: object) -> None:
-                logged.append((event, dict(fields)))
-
-        self.result = A.RunResult()
-        self.runs = 0
-        self.daemon = types.SimpleNamespace(
-            root=self.root,
-            log=FakeLog(),
-            config=_mac_config("MM"),
-            env={},
-            home=self.root,
-            wake_path=self.root,
-            scrub=lambda text: text,
-            muse_runner=types.SimpleNamespace(run=self.run_model),
-            seats={},
-            clock=types.SimpleNamespace(time=lambda: 0.0),
-        )
-        self.bridge = MBM.MacBridge.__new__(MBM.MacBridge)
-        self.bridge.daemon = self.daemon
-        self.bridge.path = os.path.join(L.listener_dir(self.root), MBM.STATE_NAME)
-        self.bridge._resources = lambda item: []
-        self.bridge._budget_reason = lambda *args: None
-        self.bridge._deliver = lambda *args, **kwargs: None
-        self.seq = 0
-
-    def run_model(self, *args: Any, **kwargs: Any) -> Any:
-        self.runs += 1
-        return self.result
-
-    def item(self, **extra: Any) -> dict:
-        self.seq += 1
-        row = {
-            "source_seat": "MM",
-            "id": 100 + self.seq,
-            "seq": self.seq,
-            "type": "stream",
-            "channel": "simple-tools",
-            "topic": "t",
-            "content": "hi",
-            "sender": "peer",
-            "owner": False,
-            "ts": time.time(),
-            "native": False,
-        }
-        row.update(extra)
-        return row
-
-    def process(self, item: dict, budget: Any = None) -> dict:
-        state: dict = {"cursors": {}, "decisions": {}}
-        envelope = {"gap": False, "next": item["seq"], "items": [item], "budget": budget or {}}
-        self.bridge._process_envelope(
-            state, state["cursors"], state["decisions"], "MM", envelope, remote=True, binary="muse", model="m"
-        )
-        return state["decisions"][MBM.MacBridge._key(item)]
-
-    def model_ran(self, valid: dict | None = None) -> None:
-        """What the consult returns:  a run the daemon accepts, answering `valid`."""
-        self.result = A.RunResult()
-        self.result.parsed = valid
-        self.result.result = valid
-        self.result.models = ["m"]
-        self.result.exit = 0
-
-    def events(self) -> list[dict]:
-        return [fields for event, fields in self.logged if event == "model-gate"]
-
-    def test_every_decision_kind_carries_a_gate_and_only_a_consult_is_a_model_start(self) -> None:
-        none = {"action": "none", "reply": None, "board": None, "owner_note": None, "risk": "low"}
-        target = MB.native_target_id("MM")
-        native_row = {
-            "id": target,
-            "seat": "MM",
-            "platform": "native-routine",
-            "host": "server-listener",
-            "cwd": None,
-            "title": "Existing MM routine",
-            "capabilities": {"read": False, "wake": True},
-            "status": "available",
-            "stale": False,
-        }
-        cases: list[tuple] = []
-        # holds no model produced
-        cases.append(("loop guard", self.item(blocked=True), None, [], "hold", "no_model", False))
-        cases.append(("stale", self.item(stale=True), None, [], "hold", "no_model", False))
-        cases.append(("paused", self.item(paused=True), None, [], "hold", "no_model", False))
-        # a consult that failed to run, on an item with no native target and with one
-        cases.append(("consult failed", self.item(), None, [], "hold", "model_bridge_consult", False))
-        cases.append(
-            ("native degrade", self.item(native=True, owner=True), None, [native_row], "native", "det_native_only", True)
-        )
-        # a consult that ran and chose nothing, and one that chose the native routine
-        cases.append(
-            ("no target", self.item(), dict(none, chat_target=None), [], "hold", "model_bridge_consult", False)
-        )
-        cases.append(
-            (
-                "native route",
-                self.item(native=True, owner=True),
-                dict(none, chat_target=target),
-                [native_row],
-                "native",
-                "det_native_only",
-                True,
-            )
-        )
-        # the same native items from a peer:  the model's risk answer still decides, so no deterministic
-        # outcome is claimed, however few targets there are
-        cases.append(
-            ("native degrade, peer", self.item(native=True), None, [native_row], "native", "model_bridge_consult", False)
-        )
-        cases.append(
-            (
-                "native route, peer",
-                self.item(native=True),
-                dict(none, chat_target=target),
-                [native_row],
-                "native",
-                "model_bridge_consult",
-                False,
-            )
-        )
-        # a private message with no resource of its own seat:  knowable without the model
-        cases.append(
-            (
-                "private no resource",
-                self.item(type="private"),
-                dict(none, chat_target=None),
-                [],
-                "hold",
-                "det_private_dm_no_resource",
-                True,
-            )
-        )
-        kinds = set()
-        for label, item, answer, resources, kind, code, avoidable in cases:
-            with self.subTest(label):
-                self.runs = 0
-                self.logged.clear()
-                self.bridge._resources = lambda _item, rows=resources: [dict(r) for r in rows]
-                if answer is None:
-                    self.result = A.RunResult()
-                    self.result.error = "no parseable result"
-                else:
-                    self.model_ran(answer)
-                row = self.process(item)
-                kinds.add(row["kind"])
-                self.assertEqual(row["kind"], kind)
-                self.assertEqual((row["gate"], row["gate_avoidable"]), (code, avoidable))
-                self.assertIn(row["gate"], W.GATE_CODES)
-                if code == "no_model":
-                    self.assertEqual((self.runs, self.events()), (0, []), "no model, so no start is logged")
-                else:
-                    self.assertEqual(self.runs, 1, "the model still ran:  phase 1 changes no decision")
-                    (event,) = self.events()
-                    self.assertEqual(
-                        (event["purpose"], event["code"], event["avoidable"], event["message_id"], event["seat"]),
-                        ("bridge_consult", code, avoidable, item["id"], "MM"),
-                    )
-        self.assertEqual(kinds, {"hold", "native"})
-
-    def test_a_chat_decision_carries_its_gate_and_a_budget_hold_is_no_model(self) -> None:
-        resource = {
-            "id": CHAT_ID,
-            "seat": "CODEX",
-            "platform": "codex",
-            "host": "mac",
-            "session_id": "s1",
-            "cwd": "/tmp",
-            "title": "t",
-            "status": "available",
-            "stale": False,
-            "capabilities": {"read": True, "wake": True},
-        }
-
-        class Catalog:
-            def discover(self, force: bool = False, **kwargs: object) -> list:
-                return [dict(resource)]
-
-            def resolve(self, record_id: object) -> dict | None:
-                return dict(resource) if record_id == CHAT_ID else None
-
-        self.bridge._resources = lambda item: [dict(resource)]
-        self.bridge.catalog = Catalog()
-        self.daemon.seats = {"CODEX": types.SimpleNamespace(cfg=types.SimpleNamespace(enabled=True))}
-        self.model_ran({"action": "none", "reply": None, "board": None, "owner_note": None, "risk": "low", "chat_target": CHAT_ID})
-        chat = self.process(self.item(owner=True))
-        self.assertEqual(
-            (chat["kind"], chat["gate"], chat["gate_avoidable"]), ("chat", "model_bridge_consult", False)
-        )
-        self.bridge._budget_reason = MBM.MacBridge._budget_reason
-        held = self.process(self.item())
-        self.assertEqual((held["kind"], held["reason"]), ("hold", "budget_unavailable"))
-        self.assertEqual((held["gate"], held["gate_avoidable"]), ("no_model", False))
-
-    def test_a_native_item_with_a_legal_chat_to_choose_is_a_real_consult(self) -> None:
-        resource = {"id": "t1", "seat": "CODEX", "platform": "codex", "stale": False, "capabilities": {"wake": True}}
-        self.daemon.seats = {"CODEX": types.SimpleNamespace(cfg=types.SimpleNamespace(enabled=True))}
-        item = self.item(native=True, owner=True)
-        self.assertEqual(self.bridge._gate_verdict(item, [resource]).code, "model_bridge_consult")
-        for broken in (
-            dict(resource, stale=True),
-            dict(resource, capabilities={"wake": False}),
-            dict(resource, seat="MM"),
-            dict(resource, platform="cursor-cloud"),
-        ):
-            self.assertEqual(self.bridge._gate_verdict(item, [broken]).code, "det_native_only", broken)
-        self.daemon.seats["CODEX"].cfg.enabled = False
-        self.assertEqual(self.bridge._gate_verdict(item, [resource]).code, "det_native_only")
-        # a peer's item with no other target still needs the model's risk answer
-        peer = self.item(native=True)
-        self.assertEqual(self.bridge._gate_verdict(peer, []).code, "model_bridge_consult")
-        self.assertEqual(self.bridge._gate_verdict(peer, [dict(resource, stale=True)]).code, "model_bridge_consult")
-
-    def test_a_private_message_may_only_go_to_a_chat_of_its_own_seat(self) -> None:
-        item = self.item(type="private")
-        mine = {"id": "m1", "seat": "MM", "platform": "x", "stale": False, "capabilities": {"wake": True}}
-        other = dict(mine, id="o1", seat="CODEX")
-        self.assertEqual(self.bridge._gate_verdict(item, [other]).code, "det_private_dm_no_resource")
-        self.assertEqual(self.bridge._gate_verdict(item, [mine, other]).code, "model_bridge_consult")
-        self.assertEqual(self.bridge._gate_verdict(item, [dict(mine, stale=True)]).code, "det_private_dm_no_resource")
-
-    def test_the_eyes_marker_is_det_eyes_for_the_bridge_too(self) -> None:
-        self.assertEqual(self.bridge._gate_verdict(self.item(content=":eyes: no")).code, "det_eyes")
-
-    def legal_world(self, *extra_seats: str) -> None:
-        self.daemon.seats = {
-            seat: types.SimpleNamespace(cfg=types.SimpleNamespace(enabled=True))
-            for seat in ("CODEX", "CLAUDE") + extra_seats
-        }
-
-    def test_only_a_native_item_can_be_native_only(self) -> None:
-        # An owner item with no native routine and no chat has no deterministic outcome of this kind.
-        self.assertEqual(self.bridge._gate_verdict(self.item(owner=True), []).code, "model_bridge_consult")
-        self.assertEqual(
-            self.bridge._gate_verdict(self.item(owner=True, native=True), []).code, "det_native_only"
-        )
-
-    def test_only_a_grok_cursor_or_codex_chat_is_a_legal_destination(self) -> None:
-        self.legal_world()
-        claude_chat = {"id": "c1", "seat": "CLAUDE", "platform": "claude", "stale": False, "capabilities": {"wake": True}}
-        codex_chat = dict(claude_chat, id="c2", seat="CODEX", platform="codex")
-        item = self.item(owner=True, native=True)
-        # an enabled CLAUDE chat is not somewhere the bridge can deliver, so the routine is the only target
-        self.assertEqual(self.bridge._gate_verdict(item, [claude_chat]).code, "det_native_only")
-        self.assertEqual(self.bridge._gate_verdict(item, [claude_chat, codex_chat]).code, "model_bridge_consult")
-
-    def test_a_private_native_item_cannot_use_another_seats_chat(self) -> None:
-        self.legal_world()
-        codex_chat = {"id": "c2", "seat": "CODEX", "platform": "codex", "stale": False, "capabilities": {"wake": True}}
-        private = self.item(owner=True, native=True, type="private")
-        public = self.item(owner=True, native=True)
-        self.assertEqual(self.bridge._gate_verdict(private, [codex_chat]).code, "det_native_only")
-        self.assertEqual(self.bridge._gate_verdict(public, [codex_chat]).code, "model_bridge_consult")
-
-    def test_the_native_routine_row_is_never_a_chat_even_for_a_grok_source(self) -> None:
-        self.legal_world("GROK")
-        native_row = {
-            "id": MB.native_target_id("GROK"),
-            "seat": "GROK",
-            "platform": "native-routine",
-            "stale": False,
-            "capabilities": {"wake": True},
-        }
-        item = self.item(source_seat="GROK", owner=True, native=True)
-        self.assertEqual(self.bridge._gate_verdict(item, [native_row]).code, "det_native_only")
-
-    def test_a_bridge_gate_that_fails_never_stops_the_decision(self) -> None:
-        with mock.patch.object(W, "model_gate_verdict", side_effect=RuntimeError("boom")):
-            self.result = A.RunResult()
-            self.result.error = "no parseable result"
-            row = self.process(self.item(native=True))
-        self.assertEqual((row["kind"], row["gate"], row["gate_avoidable"]), ("native", "gate_error", False))
-        self.assertEqual(self.runs, 1)
-        with mock.patch.object(MBM.MacBridge, "_gate_facts", side_effect=RuntimeError("boom")):
-            row = self.process(self.item(native=True))
-        self.assertEqual((row["kind"], row["gate"]), ("native", "gate_error"))
-
-    def test_a_bridge_log_that_cannot_be_written_never_stops_the_decision(self) -> None:
-        def write(event: str, **fields: object) -> None:
-            if event == "model-gate":
-                raise OSError("disk full")
-
-        self.daemon.log = types.SimpleNamespace(write=write)
-        self.result = A.RunResult()
-        self.result.error = "no parseable result"
-        row = self.process(self.item())
-        self.assertEqual((row["kind"], row["gate"]), ("hold", "model_bridge_consult"))
-        self.assertEqual(self.runs, 1)
-
-    def test_the_decision_the_consult_returns_is_unchanged_by_the_gate(self) -> None:
-        # `_decide` itself returns exactly what it did before the gate;  only the stored row is stamped.
-        self.result = A.RunResult()
-        self.result.error = "no parseable result"
-        decision = self.bridge._decide(self.item(native=True, owner=True), "muse", "m")
-        self.assertEqual(
-            decision,
-            {"kind": "native", "target": MB.native_target_id("MM"), "model_attempted": True},
-        )
-        box: dict = {}
-        self.bridge._decide(self.item(native=True, owner=True), "muse", "m", gate=box)
-        self.assertEqual(box["verdict"].code, "det_native_only")
-
-    def test_a_crash_mid_consult_leaves_a_claim_row_with_the_gate(self) -> None:
-        state: dict = {"cursors": {}, "decisions": {}}
-        item = self.item(native=True)
-        seen: list[dict] = []
-
-        def crash(*args: Any, **kwargs: Any) -> Any:
-            seen.append(dict(next(iter(state["decisions"].values()))))
-            raise RuntimeError("the process died here")
-
-        self.bridge._decide = crash
-        envelope = {"gap": False, "next": item["seq"], "items": [item], "budget": {}}
-        with self.assertRaises(RuntimeError):
-            self.bridge._process_envelope(
-                state, state["cursors"], state["decisions"], "MM", envelope, remote=True, binary="muse", model="m"
-            )
-        (claim,) = seen
-        self.assertEqual((claim["reason"], claim["model_attempted"]), ("model_interrupted", True))
-        self.assertEqual((claim["gate"], claim["gate_avoidable"]), ("model_bridge_consult", False))
-        saved = L.read_json(self.bridge.path)["decisions"]
-        self.assertEqual([d["gate"] for d in saved.values()], ["model_bridge_consult"], "the claim was saved")
-
-    def test_a_decision_whose_model_start_left_no_verdict_is_a_gate_error_not_no_model(self) -> None:
-        self.bridge._decide = lambda *args, **kwargs: {"kind": "hold", "reason": "x", "model_attempted": True}
-        row = self.process(self.item())
-        self.assertEqual((row["gate"], row["gate_avoidable"]), ("gate_error", False))
-        self.bridge._decide = lambda *args, **kwargs: {"kind": "hold", "reason": "x"}
-        row = self.process(self.item())
-        self.assertEqual((row["gate"], row["gate_avoidable"]), ("no_model", False))
-
-    def test_a_recorded_decision_is_not_restamped(self) -> None:
-        item = self.item()
-        state: dict = {"cursors": {}, "decisions": {}}
-        key = MBM.MacBridge._key(item)
-        state["decisions"][key] = {"kind": "hold", "reason": "old", "delivery": "done", "model_attempted": True, "at": 1.0}
-        envelope = {"gap": False, "next": item["seq"], "items": [item], "budget": {}}
-        self.bridge._process_envelope(
-            state, state["cursors"], state["decisions"], "MM", envelope, remote=True, binary="muse", model="m"
-        )
-        self.assertNotIn("gate", state["decisions"][key], "an old record stays as it was written")
 
 
 if __name__ == "__main__":
