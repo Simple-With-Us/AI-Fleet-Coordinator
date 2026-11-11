@@ -30,15 +30,14 @@ Python 3.11+, standard library only.
 from __future__ import annotations
 
 import fcntl
-import json
 import os
 import re
 import sqlite3
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from . import wake_router as WR
 
@@ -114,9 +113,7 @@ def _recheck(env: Mapping[str, str], target: WR.Target) -> WR.Delivery | None:
     return None
 
 
-def _tasks_workspace(
-    index_path: Path, session_id: str, runner_ok: bool = True
-) -> tuple[str, str]:
+def _tasks_workspace(index_path: Path, session_id: str, runner_ok: bool = True) -> tuple[str, str]:
     """(`ok`|`missing`|`error`, workspace) from zcode's own tasks index, read only."""
     try:
         con = sqlite3.connect(f"file:{index_path}?mode=ro", uri=True, timeout=2)
@@ -176,7 +173,9 @@ def deliver_request(
         return answer(WR.Delivery("refused", code="workspace-mismatch"))
 
     note = wake.link_note if WR.link_note_ok(wake.link_note) else ""
-    text = WR.COMMAND_TEXT.format(wake_id=wake.wake_id, note=note + "  " if note else "", message_id=wake.message_id)
+    text = WR.COMMAND_TEXT.format(
+        wake_id=wake.wake_id, note=note + "  " if note else "", message_id=wake.message_id
+    )
     argv = [zcode_bin, "--cwd", workspace, "--resume", target.session_id, "-p", text]
     if any(str(part).startswith("-") for part in (target.session_id,)):
         return answer(WR.Delivery("refused", code="command-option-shaped-value"))
@@ -205,10 +204,14 @@ def deliver_request(
         except subprocess.TimeoutExpired:
             return answer(WR.Delivery("refused", route="zcode", code="command-timeout"))
         except OSError as exc:
-            return answer(WR.Delivery("failed", route="zcode", code="deliver-%s" % type(exc).__name__))
+            return answer(
+                WR.Delivery("failed", route="zcode", code="deliver-%s" % type(exc).__name__)
+            )
         if proc.returncode == 0:
             return answer(WR.Delivery("completed", route="zcode", ack="confirmed"))
-        return answer(WR.Delivery("refused", route="zcode", code="command-failed-%d" % proc.returncode))
+        return answer(
+            WR.Delivery("refused", route="zcode", code="command-failed-%d" % proc.returncode)
+        )
     finally:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
