@@ -162,16 +162,27 @@ class NightlyJobTests(unittest.TestCase):
 
     def test_unit_owned_sync_reads_the_result_instead_of_starting_it(self) -> None:
         seen: list[list[str]] = []
+        now = 10_000.0
 
-        def show(out):  # noqa: ANN001
+        def show(result="success", status="0", started_s=now - 60):  # noqa: ANN001
             def run(argv):  # noqa: ANN001
                 seen.append(argv)
-                return out
+                return (
+                    f"Result={result}\nExecMainStatus={status}\n"
+                    f"ExecMainStartTimestampMonotonic={int(started_s * 1_000_000)}\n"
+                )
             return run
 
-        self.assertEqual(nightly_job.unit_sync_result(show("success\n")), 0)
-        self.assertEqual(nightly_job.unit_sync_result(show("exit-code\n")), 1)
-        self.assertEqual(nightly_job.unit_sync_result(show("")), 1)
+        def check(**kw):  # noqa: ANN003
+            return nightly_job.unit_sync_result(show(**kw), now_monotonic=lambda: now)
+
+        self.assertEqual(check(), 0)
+        self.assertEqual(check(result="exit-code"), 1)
+        self.assertEqual(check(status="1"), 1)
+        # A success left over from an earlier run is not tonight's sync.
+        self.assertEqual(check(started_s=now - nightly_job.SYNC_MAX_AGE_S - 1), 1)
+        self.assertEqual(check(started_s=0), 1)
+        self.assertEqual(nightly_job.unit_sync_result(lambda argv: "", now_monotonic=lambda: now), 1)
         self.assertTrue(all("start" not in argv for argv in seen))
         self.assertEqual(seen[0][:3], ["systemctl", "show", "code-main-sync.service"])
 

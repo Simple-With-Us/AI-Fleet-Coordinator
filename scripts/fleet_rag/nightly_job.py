@@ -366,9 +366,24 @@ SYNC_BY_UNIT_ENV = "FLEET_RAG_CODE_SYNC_BY_UNIT"
 SYNC_UNIT = "code-main-sync.service"
 
 
-def unit_sync_result(show: Callable[[list[str]], str] | None = None) -> int:
-    """0 when the last code-main-sync run succeeded, else non-zero.  Read-only."""
-    argv = ["systemctl", "show", SYNC_UNIT, "--property=Result", "--value"]
+SYNC_MAX_AGE_S = 3600  # the sync systemd ran for this start must be this recent
+
+
+def unit_sync_result(
+    show: Callable[[list[str]], str] | None = None,
+    now_monotonic: Callable[[], float] = time.monotonic,
+) -> int:
+    """0 only when code-main-sync's last run succeeded and started within the last hour.
+
+    systemd keeps Result from the previous run, so a skipped start would otherwise look
+    like tonight's success.  The start time is CLOCK_MONOTONIC in microseconds, the clock
+    behind time.monotonic() on Linux.  Read-only;  any doubt fails closed."""
+    argv = [
+        "systemctl",
+        "show",
+        SYNC_UNIT,
+        "--property=Result,ExecMainStatus,ExecMainStartTimestampMonotonic",
+    ]
     try:
         if show is not None:
             out = show(argv)
@@ -380,7 +395,19 @@ def unit_sync_result(show: Callable[[list[str]], str] | None = None) -> int:
         return 124
     except OSError:
         return 127
-    return 0 if out.strip() == "success" else 1
+    props = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    if props.get("Result", "").strip() != "success":
+        return 1
+    if props.get("ExecMainStatus", "").strip() != "0":
+        return 1
+    try:
+        started_us = int(props.get("ExecMainStartTimestampMonotonic", "").strip())
+    except ValueError:
+        return 1
+    age_s = now_monotonic() - started_us / 1_000_000
+    if started_us <= 0 or age_s < 0 or age_s > SYNC_MAX_AGE_S:
+        return 1
+    return 0
 
 
 def code_sync(runner: Callable[[], int] | None = None, env: dict | None = None) -> int:
