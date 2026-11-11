@@ -3058,7 +3058,9 @@ def routine_body(
     id, never by name:  the hosted MCP Worker refuses a channel wake without an allowlisted one.
     `held_back` (heldback.wake_summary) is added only when its count is above 0:  how many wakes
     the seat's budget held back, and the newest as metadata only, never a body (an additive field,
-    so a body without it is unchanged)."""
+    so a body without it is unchanged).  `letter` and `linked_by` are added only when the trigger row is
+    an untagged reply to one of the seat's chats (class `reply`):  the chat's session letter, when it had
+    one, and `"reply"`."""
     dm = row.get("type") == "private"
     message_id = int(row["id"])
     members = sorted(
@@ -3110,6 +3112,17 @@ def routine_body(
     }
     if held_back and int(held_back.get("count") or 0) > 0:
         body["held_back"] = held_back
+    if "reply" in (row.get("classes") or []):
+        # The trigger is an untagged post that answers one of the seat's chats (owner, Nov 10 2026).  The
+        # letter is that chat's, the router honours it like an explicit "@**Seat** AA" (the receiver's
+        # `letter` field), and `linked_by` says the wake was picked by a reply and not by a letter in the
+        # text.  Both are optional additive fields:  a trigger that carries a letter in its own text (an
+        # explicit address) sends neither, and a receiver that ignores them still works.  The letter is
+        # left out when the post the trigger answers carried none.
+        letter = str(row.get("reply_target_letter") or "").strip()
+        if re.fullmatch(r"[A-Za-z0-9]{1,8}", letter):
+            body["letter"] = letter
+        body["linked_by"] = "reply"
     return body
 
 

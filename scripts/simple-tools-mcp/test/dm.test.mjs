@@ -297,8 +297,8 @@ test("dm_send:  the tag with the recipient, the sentence gap, ids only in the an
   const [post] = dmPosts(fake);
   assert.equal(post.params.type, "direct");
   assert.equal(post.params.to, JSON.stringify([jay.user_id]));
-  // Tag with the recipient's label, the gap as U+00A0 plus a space, raw mentions silenced.
-  assert.equal(post.params.content, `[GROK-WEB·sessionf→JAY] First.${NBSP} Second @_**Jay Wedgeworth** and @_**all**.`);
+  // Tag with the recipient's label, the gap as U+00A0 plus a space, typed mentions kept real, wildcards too.
+  assert.equal(post.params.content, `[GROK-WEB·sessionf→JAY] First.${NBSP} Second @**Jay Wedgeworth** and @**all**.`);
   const message = fake.messages.at(-1);
   assert.equal(message.id, data.id);
   assert.equal(message.type, "private");

@@ -360,6 +360,20 @@ class ReplyTextTests(unittest.TestCase):
     """What is left of the reply text helpers:  the mention neutralizer the Operator's notes still
     use, and the secret scanner.  Nothing builds a wake reply any more (`operator_never_answers`)."""
 
+    def test_compose_sanitize_keeps_user_mentions_loud(self) -> None:
+        self.assertEqual(
+            W.sanitize_compose_mentions("ping @**Codex** please"),
+            "ping @**Codex** please",
+        )
+        self.assertEqual(W.sanitize_compose_mentions("heads up @*fleet* now"), "heads up  now")
+        self.assertEqual(W.sanitize_compose_mentions("@@*x***Bob**"), "@**Bob**")
+        self.assertEqual(
+            W.sanitize_compose_mentions("note @**all** and @**topic**"),
+            "note @**all** and @**topic**",
+        )
+        self.assertEqual(W.sanitize_compose_mentions("hi @**everyone**"), "hi @**everyone**")
+        self.assertEqual(W.sanitize_compose_mentions("@@*x***all**"), "@**all**")
+
     def test_mentions_are_neutralized_and_groups_removed(self) -> None:
         body = W.neutralize_mentions(
             "@**Codex** and @**Jay Wedgeworth|12**, ping @*fleet* and @_*ops* @**all**"

@@ -406,6 +406,7 @@ export function basicForms(email, key) {
 const MENTION_RE = /@(?!_)\*\*/g;
 const GROUP_RE = /@_?\*(?!\*)[^*\n]{1,100}\*/g;
 const LOUD_RE = /@(?!_)\*/g;
+const LOUD_SINGLE_STAR_RE = /@(?!_)\*(?!\*)/g;
 
 /** @**X** becomes silent @_**X**;  group mentions are removed, until stable. */
 export function neutralizeMentions(text) {
@@ -415,6 +416,17 @@ export function neutralizeMentions(text) {
     text = changed;
   }
   return text.replace(LOUD_RE, "@_*");
+}
+
+/** Group mentions are removed and stray @* tokens silenced;  every @** mention stays real, wildcards
+ * included (owner, Nov 10 2026, AFC-689). */
+export function sanitizeComposeMentions(text) {
+  for (;;) {
+    const changed = text.replace(GROUP_RE, "");
+    if (changed === text) break;
+    text = changed;
+  }
+  return text.replace(LOUD_SINGLE_STAR_RE, "@_*");
 }
 
 // ---------------------------------------------------------------- seats and tags (cli.py, zulip.py)
@@ -476,8 +488,38 @@ export function ownIntro(prefix, text) {
   return { end, intro, rest: text.slice(end + 1) };
 }
 
+// A body mention counts only where Zulip would notify:  outside code and block quotes, and with
+// only whitespace or opening punctuation before the @.  Same rule as cli.py _mentions_missing_from.
+const CODE_BLOCK_RE = /^(```|~~~)[\s\S]*?(?:^\1\s*$|(?![\s\S]))/gm;
+const CODE_SPAN_RE = /`[^`\n]*`/g;
+const LIVE_MENTION_RE = /(?<![^\s'"({[/<])@\*\*([^*\n]+)\*\*/g;
+
+/** A mention's identity:  its name, any case, and its user id when it carries one. */
+function mentionIdentity(inner) {
+  const match = /^(.*)\|(\d+)$/su.exec(inner);
+  return { name: (match ? match[1] : inner).trim().toLowerCase(), id: match ? match[2] : "" };
+}
+
+function sameMention(a, b) {
+  return a.name === b.name && (!a.id || !b.id || a.id === b.id);
+}
+
+/** The `to` mentions the text does not already make live, each at most once. */
+function mentionsMissingFrom(text, mentions) {
+  const visible = text.replace(CODE_BLOCK_RE, "").replace(CODE_SPAN_RE, "")
+    .split("\n").filter((line) => !/^\s*>/u.test(line)).join("\n");
+  const present = [...visible.matchAll(LIVE_MENTION_RE)].map((match) => mentionIdentity(match[1]));
+  return mentions.filter((mention) => {
+    if (!mention) return false;
+    const wanted = mentionIdentity(mention.slice(3, -2));
+    if (present.some((seen) => sameMention(seen, wanted))) return false;
+    present.push(wanted);
+    return true;
+  });
+}
+
 /** Preserve an existing own-seat intro, adding resolved recipients without a second attribution.
- * Raw mentions have already been neutralized by normalizeText; only resolved mentions can notify.
+ * Body @** mentions are unchanged; only `--to` adds loud mentions not already in the body.
  * Untagged/foreign-seat text retains the generated attribution. */
 export function composeBody(prefix, text, { labels = [], mentions = [] } = {}) {
   const own = ownIntro(prefix, text);
@@ -494,9 +536,10 @@ export function composeBody(prefix, text, { labels = [], mentions = [] } = {}) {
     const added = [...new Set(labels)].filter((label) => !existing.includes(label));
     if (added.length) intro += `${arrow < 0 ? " →" : ","}${added.join(",")}`;
     const tail = own.rest && !/^\s/u.test(own.rest) ? ` ${own.rest}` : own.rest;
-    parts = [`${intro}]${mentions.length ? ` ${mentions.join(" ")}` : ""}${tail}`];
+    const addedMentions = mentionsMissingFrom(tail, mentions);
+    parts = [`${intro}]${addedMentions.length ? ` ${addedMentions.join(" ")}` : ""}${tail}`];
   } else {
-    parts = [`${prefix}${labels.length ? `→${labels.join(",")}` : ""}]`, ...mentions, text];
+    parts = [`${prefix}${labels.length ? `→${labels.join(",")}` : ""}]`, ...mentionsMissingFrom(text, mentions), text];
   }
   const body = parts.filter(Boolean).join(" ");
   const length = codePoints(body).length;
@@ -520,11 +563,11 @@ export function normalizeChannel(value) {
   return channel;
 }
 
-/** tools.py _text:  not a single '-', raw mentions silenced, not empty after. */
+/** tools.py _text:  not a single '-', group mentions removed, not empty after. */
 export function normalizeText(value) {
   if (value.trim() === "-") throw new ToolError("invalid_argument", "argument 'text' must not be a single '-'");
-  const text = neutralizeMentions(value).trim();
-  if (!text) throw new ToolError("invalid_argument", "the message text is empty once raw mentions are silenced");
+  const text = sanitizeComposeMentions(value).trim();
+  if (!text) throw new ToolError("invalid_argument", "the message text is empty once group mentions are removed");
   return text;
 }
 
