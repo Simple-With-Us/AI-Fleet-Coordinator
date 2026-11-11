@@ -27,21 +27,33 @@ fi
 OUTPUT_DIR="${1:-$ROOT_DIR/.build/panel-screenshots}"
 DERIVED_DATA="${MUSTER_PANELS_DERIVED_DATA:-$ROOT_DIR/.build/Panels}"
 
-CREATED=0
-[ -d "$OUTPUT_DIR" ] || CREATED=1
+# Check the folder before anything is created:  resolve its nearest existing parent, so a
+# refused path leaves no folder behind, and refuse a not-yet-made tail that holds "..".
+case "$OUTPUT_DIR" in
+    /*) WANTED="$OUTPUT_DIR" ;;
+    *) WANTED="$PWD/$OUTPUT_DIR" ;;
+esac
+EXISTING="$WANTED"
+TAIL=""
+while [ ! -d "$EXISTING" ]; do
+    TAIL="/$(basename -- "$EXISTING")$TAIL"
+    EXISTING="$(dirname -- "$EXISTING")"
+done
+RESOLVED="$(cd -- "$EXISTING" && pwd -P)$TAIL"
+BUILD_DIR="$(mkdir -p -- "$ROOT_DIR/.build" && cd -- "$ROOT_DIR/.build" && pwd -P)"
+INSIDE=0
+case "$RESOLVED/" in
+    "$BUILD_DIR"/*) INSIDE=1 ;;
+esac
+case "$TAIL/" in
+    */../*|*/./*) INSIDE=0 ;;
+esac
+if [ "$INSIDE" -ne 1 ] && [ "$ANY_FOLDER" -ne 1 ]; then
+    echo "render_panels:  $RESOLVED is outside $BUILD_DIR;  pass --any-folder to use it" >&2
+    exit 2
+fi
 mkdir -p -- "$OUTPUT_DIR"
 OUTPUT_DIR="$(cd -- "$OUTPUT_DIR" && pwd -P)"
-BUILD_DIR="$(mkdir -p -- "$ROOT_DIR/.build" && cd -- "$ROOT_DIR/.build" && pwd -P)"
-case "$OUTPUT_DIR/" in
-    "$BUILD_DIR"/*) ;;
-    *)
-        if [ "$ANY_FOLDER" -ne 1 ]; then
-            echo "render_panels:  $OUTPUT_DIR is outside $BUILD_DIR;  pass --any-folder to use it" >&2
-            if [ "$CREATED" -eq 1 ]; then rmdir -- "$OUTPUT_DIR" 2>/dev/null || true; fi
-            exit 2
-        fi
-        ;;
-esac
 
 cd -- "$ROOT_DIR"
 if [ ! -d Muster.xcodeproj ] || [ project.yml -nt Muster.xcodeproj/project.pbxproj ]; then

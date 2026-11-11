@@ -124,6 +124,19 @@ final class PanelSnapshotTests: XCTestCase {
         }
     }
 
+    /// A flat bitmap is one colour;  one pixel of another colour anywhere makes it a panel.
+    func testOneColourCheckSeesASinglePixel() throws {
+        let rep = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 300, pixelsHigh: 200,
+                                                 bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                                 isPlanar: false, colorSpaceName: .deviceRGB,
+                                                 bytesPerRow: 0, bitsPerPixel: 0))
+        let data = try XCTUnwrap(rep.bitmapData)
+        for i in 0..<(rep.bytesPerRow * rep.pixelsHigh) { data[i] = 0xFF }
+        XCTAssertTrue(Self.isOneColour(rep))
+        data[137 * rep.bytesPerRow + 211 * 4] = 0x00
+        XCTAssertFalse(Self.isOneColour(rep))
+    }
+
     // MARK: The test
 
     func testEveryPanelRendersInBothThemesAtBothSizes() throws {
@@ -275,20 +288,36 @@ final class PanelSnapshotTests: XCTestCase {
         view.subviews.flatMap { [$0] + descendants(of: $0) }
     }
 
-    /// True when every sampled pixel has the same colour:  a blank window, not a panel.
+    /// True when every pixel has the same colour:  a blank window, not a panel.
     ///
-    /// It reads a grid about 200 samples across the short side, and every pixel of the middle
-    /// row and the middle column, so a thin divider or a line of text is not missed.
-    private static func isOneColour(_ rep: NSBitmapImageRep) -> Bool {
+    /// It compares the raw bytes of every row with a row made of the first pixel, one `memcmp`
+    /// per row, so no pixel is skipped (a thin divider or a line of text counts) and no
+    /// `NSColor` is made per pixel.  A bitmap it cannot read that way (planar, or a pixel that
+    /// is not whole bytes) falls back to `colorAt` on a grid about 100 samples across the short
+    /// side plus the middle row and column, sampled every other pixel.
+    static func isOneColour(_ rep: NSBitmapImageRep) -> Bool {
         let width = rep.pixelsWide, height = rep.pixelsHigh
         guard width > 0, height > 0 else { return true }
-        let step = max(1, min(width, height) / 200)
+        let bytesPerPixel = rep.bitsPerPixel / 8
+        if !rep.isPlanar, rep.bitsPerPixel % 8 == 0, bytesPerPixel > 0, let data = rep.bitmapData {
+            let rowBytes = width * bytesPerPixel
+            var reference = [UInt8](repeating: 0, count: rowBytes)
+            for x in 0..<width {
+                for byte in 0..<bytesPerPixel { reference[x * bytesPerPixel + byte] = data[byte] }
+            }
+            return reference.withUnsafeBytes { ref in
+                (0..<height).allSatisfy { y in
+                    memcmp(data + y * rep.bytesPerRow, ref.baseAddress!, rowBytes) == 0
+                }
+            }
+        }
+        let step = max(1, min(width, height) / 100)
         var points: [(Int, Int)] = []
         for y in stride(from: 0, to: height, by: step) {
             for x in stride(from: 0, to: width, by: step) { points.append((x, y)) }
         }
-        for x in 0..<width { points.append((x, height / 2)) }
-        for y in 0..<height { points.append((width / 2, y)) }
+        for x in stride(from: 0, to: width, by: 2) { points.append((x, height / 2)) }
+        for y in stride(from: 0, to: height, by: 2) { points.append((width / 2, y)) }
         var first: NSColor?
         for (x, y) in points {
             guard let colour = rep.colorAt(x: x, y: y) else { continue }
