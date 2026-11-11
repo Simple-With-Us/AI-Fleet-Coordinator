@@ -10,6 +10,8 @@
   python3 scripts/fleet-ops-control.py server unit-status UNIT            --plan [--json]
   python3 scripts/fleet-ops-control.py server redeploy RESOURCE_UUID      (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py server eavesdropper-status server --plan [--json]
+  python3 scripts/fleet-ops-control.py server operator-sessions server --plan [--json]
+  python3 scripts/fleet-ops-control.py server operator-wakes server    --plan [--json]
   python3 scripts/fleet-ops-control.py --from-ssh                         (the forced command)
   python3 scripts/fleet-ops-control.py --from-muster                      (the forced command of muster-exec)
   python3 scripts/fleet-ops-control.py --check-token                      (install check, not over ssh)
@@ -56,6 +58,22 @@ What it promises:
     takes no lock, writes no audit row for a plan and refuses `--yes`.  When the status cannot be
     read the result is `unavailable` with an `errorCode` word (never a path or docker's own
     text) and the exit status is 1, although no command failed.
+  * `server operator-sessions server --plan` and `server operator-wakes server --plan` read the
+    server Operator's session registry and its wake records, each with one fixed `docker exec
+    --user simpletools eavesdropper /usr/local/bin/python3 -I -c PROGRAM PLACE...`, where PROGRAM
+    and every PLACE are constants of this file (no shell, no sudo, no word from the request, the
+    same pinned docker environment, at most 1 MiB, 20 seconds, and the program stops itself
+    after 15, so a slow read is not left running in the container).  The program opens the registry
+    read-only and reads the listener's records through the container's own read-only views, and
+    prints only the columns named here;  this helper then checks every value against a fixed
+    shape and drops what does not fit.  The sessions answer holds letters, seats, platforms,
+    hosts, states, times and Linear issue ids;  the wakes answer holds counts, wake ids, Zulip
+    message ids, state and reason codes and times.  Neither holds a title, a message body, a
+    topic or channel name, a sender, a link, a native session id, a record id or a path.  Like
+    `eavesdropper-status` they take no lock, write no audit row for a plan, refuse `--yes` and
+    any target but `server`, need no allowlist entry, and answer `unavailable` with an
+    `errorCode` word and exit status 1 when the store cannot be read.  The `--from-muster`
+    route does not offer them.
   * `server unit-status UNIT --plan` reads one listed unit (an entry of the allowlist's server `units`
     or its `watch` list, in the scope the entry names) with one fixed `systemctl [--user] show`, no
     sudo, and answers its ActiveState, SubState, Result, last exit time and (for a timer) last
@@ -91,8 +109,8 @@ the one request that stores the trust list, so the route stays inert (every appr
 `no_trust_list`) until a chain has been accepted.
 
 Exit status: 0 planned, submitted or done, 1 a command failed (or, for `server
-eavesdropper-status` alone, the status could not be read: result `unavailable`, with no
-command failed), 2 refused.
+eavesdropper-status`, `server operator-sessions` and `server operator-wakes` alone, the store
+could not be read: result `unavailable`, with no command failed), 2 refused.
 """
 
 from __future__ import annotations
@@ -206,6 +224,279 @@ EAVESDROPPER_UNAVAILABLE = {
     "not_json": "the status file is not a JSON object",
     "module_unavailable": "the status reduction module is not installed beside the helper",
 }
+# `server operator-sessions` and `server operator-wakes` read the server Operator's own stores
+# out of the same container.  The registry is a SQLite database and the wake records are a
+# folder per seat, so neither can be read with `cat`:  each verb runs one constant Python
+# program inside the container, as the container's own unprivileged account, with `-I` (no
+# environment variable, no user site folder and no current folder reaches the interpreter).
+# The program and the places it is given are constants of this file;  no word of a request
+# reaches the argv.  The interpreter is named in full, so no PATH inside the container is used.
+OPERATOR_TARGET = "server"
+OPERATOR_PYTHON = "/usr/local/bin/python3"
+OPERATOR_REGISTRY_PATH = "/data/operator/registry.sqlite3"
+# The daemon's state root (its SIMPLE_TOOLS_STATE_DIR):  one folder per seat sits directly under
+# it (`<SEAT>/wakes.jsonl` and the rest), beside `listener/`, `logs/` and `operator/`.
+OPERATOR_STATE_ROOT = "/data"
+OPERATOR_SCRIPTS_DIR = "/app/scripts"
+OPERATOR_READ_MAX_BYTES = 1024 * 1024
+OPERATOR_READ_TIMEOUT = 20
+# Each program stops itself after this long and answers `timeout`.  It is shorter than the read's
+# own limit on purpose:  when that limit kills the local `docker exec`, the process it started
+# inside the container is not killed with it, so a slow read would otherwise run on beside the
+# daemon after its answer was given up.  The stop does not depend on the answer being written:
+# with nobody left to read it, the program still exits.
+OPERATOR_PROGRAM_SECONDS = 15
+OPERATOR_SCHEMA = 1
+# The caps the programs apply inside the container and the reducers apply again here.
+OPERATOR_MAX_SESSIONS = 300
+OPERATOR_MAX_ISSUES = 8
+OPERATOR_MAX_SEATS = 64
+OPERATOR_MAX_ROWS = 10
+OPERATOR_MAX_KEYS = 32
+OPERATOR_MAX_MESSAGE_IDS = 16
+OPERATOR_WAKE_WINDOW_HOURS = 24
+OPERATOR_COUNT_MAX = 1_000_000_000
+# The sessions program:  argv[1] is the registry file.  It opens the database read-only and
+# selects the columns the answer needs and no others.  The native session id, the title, the
+# project, the links and the profile scope are never selected;  the record id is used for the
+# join inside the query and is never printed.  A registry from before the issues table has no
+# issues, and that is decided by asking the database whether the table is there, never by a
+# failed query, so a locked database is not answered as sessions without issues.  Anything that
+# goes wrong is one fixed word:  `store_busy` when a writer held the lock past the five-second
+# wait, and `store_recovering` when a writer died mid-write and left a journal that a read-only
+# handle may not roll back (the next read-write open of the registry, which the Operator itself
+# makes, clears it).  The handle stays `mode=ro`:  a read-write handle would recover that journal,
+# and it would also give this route write access to the registry.
+OPERATOR_SESSIONS_PROGRAM = r"""
+import json
+import os
+import sqlite3
+import sys
+import threading
+import urllib.parse
+
+LIMIT = __LIMIT__
+SECONDS = __SECONDS__
+COLUMNS = (
+    "s.seat, s.platform, s.verified_host, s.state, s.wake_capability, s.registered_at,"
+    " s.last_seen_at, a.letter, a.generation"
+)
+JOIN = (
+    " FROM sessions s LEFT JOIN alias_assignments a"
+    " ON a.record_id = s.record_id AND a.retired_at IS NULL"
+)
+TAIL = " WHERE s.state = 'active' ORDER BY s.last_seen_at DESC, s.record_id LIMIT ?"
+
+
+def read(path):
+    if not os.path.isfile(path):
+        return {"error": "store_missing"}
+    conn = sqlite3.connect("file:" + urllib.parse.quote(path) + "?mode=ro", uri=True, timeout=5)
+    try:
+        counts = [list(row) for row in conn.execute("SELECT state, COUNT(*) FROM sessions GROUP BY state")]
+        issues = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_issues'"
+        ).fetchone()
+        if issues:
+            rows = conn.execute(
+                "SELECT " + COLUMNS + ", i.issues" + JOIN
+                + " LEFT JOIN session_issues i ON i.record_id = s.record_id" + TAIL,
+                (LIMIT,),
+            ).fetchall()
+        else:
+            rows = [
+                tuple(row) + (None,)
+                for row in conn.execute("SELECT " + COLUMNS + JOIN + TAIL, (LIMIT,))
+            ]
+    finally:
+        conn.close()
+    return {"counts": counts, "rows": [list(row) for row in rows]}
+
+
+def word(error):
+    name = getattr(error, "sqlite_errorname", None) or ""
+    if name in ("SQLITE_READONLY_ROLLBACK", "SQLITE_READONLY_RECOVERY"):
+        return "store_recovering"
+    if name.startswith(("SQLITE_BUSY", "SQLITE_LOCKED")):
+        return "store_busy"
+    return "reader_failed"
+
+
+def late():
+    if once.acquire(False):
+        try:
+            os.write(1, b'{"error": "timeout"}')
+        finally:
+            os._exit(0)
+
+
+once = threading.Lock()
+timer = threading.Timer(SECONDS, late)
+timer.daemon = True
+timer.start()
+try:
+    answer = read(sys.argv[1])
+except sqlite3.Error as error:
+    answer = {"error": word(error)}
+except Exception:
+    answer = {"error": "reader_failed"}
+once.acquire()
+sys.stdout.write(json.dumps(answer))
+""".replace("__LIMIT__", str(OPERATOR_MAX_SESSIONS)).replace(
+    "__SECONDS__", str(OPERATOR_PROGRAM_SECONDS)
+)
+# The wakes program:  argv[1] is the daemon's state root (one folder per seat, named in capitals,
+# so `listener`, `logs` and `operator` are never taken for one) and argv[2] the folder that holds the container's own `simple_tools` package, whose read-only views
+# (`listener_records`, the ones the listener's signed read API answers with) do the reading, so
+# the file formats stay the daemon's.  Those views carry Zulip-authored text;  this program
+# copies out only counts, ids, state and reason words and times, so no body, title, topic,
+# channel, sender or link is ever printed.  A seat whose records cannot be read is named and
+# skipped, and a root with no seat folder at all is `store_missing`, never a count of zero.
+OPERATOR_WAKES_PROGRAM = (
+    r"""
+import json
+import os
+import re
+import sys
+import threading
+
+ROOT, SCRIPTS = sys.argv[1], sys.argv[2]
+SEATS, ROWS, HOURS, SECONDS = __SEATS__, __ROWS__, __HOURS__, __SECONDS__
+SEAT_RE = re.compile(r"[A-Z0-9][A-Z0-9_-]{0,31}")
+
+
+def read():
+    if not os.path.isdir(ROOT):
+        return {"error": "store_missing"}
+    sys.path.insert(0, SCRIPTS)
+    from simple_tools import listener_records as records
+
+    names = sorted(
+        name
+        for name in os.listdir(ROOT)
+        if SEAT_RE.fullmatch(name) and os.path.isdir(os.path.join(ROOT, name))
+    )
+    if not names:
+        return {"error": "store_missing"}
+    answer = {"seat_count": len(names), "seats": [], "unreadable": []}
+    for seat in names[:SEATS]:
+        try:
+            wakes = records.wakes_view(ROOT, seat, since_hours=HOURS, limit=ROWS)
+            held = records.held_back_view(ROOT, seat, limit=ROWS)
+            owner = records.owner_queue_view(ROOT, seat, limit=ROWS)
+            answer["seats"].append(
+                {
+                    "seat": seat,
+                    "recent": {
+                        "total": wakes.get("total"),
+                        "by_state": wakes.get("by_state"),
+                        "rows": [
+                            {
+                                key: item.get(key)
+                                for key in (
+                                    "wake_id", "state", "ts", "dm", "owner", "catch_up",
+                                    "reason", "trigger_ids",
+                                )
+                            }
+                            for item in wakes.get("items") or []
+                        ],
+                    },
+                    "held_back": {
+                        "count": held.get("count"),
+                        "lost": held.get("lost"),
+                        "reasons": held.get("reasons"),
+                        "rows": [
+                            {key: item.get(key) for key in ("message_id", "at", "reason", "dm")}
+                            for item in held.get("items") or []
+                        ],
+                    },
+                    "owner_queue": {
+                        "pending": owner.get("pending"),
+                        "rows": [
+                            {key: item.get(key) for key in ("seq", "ts", "kind", "risk")}
+                            for item in owner.get("items") or []
+                        ],
+                    },
+                }
+            )
+        except Exception:
+            answer["unreadable"].append(seat)
+    return answer
+
+
+def late():
+    if once.acquire(False):
+        try:
+            os.write(1, b'{"error": "timeout"}')
+        finally:
+            os._exit(0)
+
+
+once = threading.Lock()
+timer = threading.Timer(SECONDS, late)
+timer.daemon = True
+timer.start()
+try:
+    answer = read()
+except Exception:
+    answer = {"error": "reader_failed"}
+once.acquire()
+sys.stdout.write(json.dumps(answer))
+""".replace("__SEATS__", str(OPERATOR_MAX_SEATS))
+    .replace("__ROWS__", str(OPERATOR_MAX_ROWS))
+    .replace("__HOURS__", str(OPERATOR_WAKE_WINDOW_HOURS))
+    .replace("__SECONDS__", str(OPERATOR_PROGRAM_SECONDS))
+)
+# verb -> (the program, the constant places it is given, the key of the answer, the detail).
+OPERATOR_READS = {
+    "operator-sessions": (
+        OPERATOR_SESSIONS_PROGRAM,
+        (OPERATOR_REGISTRY_PATH,),
+        "sessions",
+        "read-only list of the server Operator's live sessions",
+    ),
+    "operator-wakes": (
+        OPERATOR_WAKES_PROGRAM,
+        (OPERATOR_STATE_ROOT, OPERATOR_SCRIPTS_DIR),
+        "wakes",
+        "read-only summary of the server Operator's wakes",
+    ),
+}
+# The reason words an unavailable answer of those two verbs may carry.
+OPERATOR_UNAVAILABLE = {
+    "docker_unavailable": "docker could not be run",
+    "timeout": "reading the Operator's store took too long",
+    "container_not_running": "the eavesdropper container is not running",
+    "read_failed": "the eavesdropper container could not be read",
+    "too_large": "the answer is larger than the allowed size",
+    "not_json": "the answer is not a JSON object",
+    "store_missing": "the Operator's store is not in the container",
+    "store_busy": "the Operator's store was locked by a writer",
+    "store_recovering": "the Operator's store is waiting for a writer to recover it",
+    "reader_failed": "the Operator's store could not be read",
+}
+# The words a program may answer for itself;  any other word it prints is `reader_failed`.
+OPERATOR_PROGRAM_WORDS = ("store_missing", "store_busy", "store_recovering", "timeout")
+# The shapes a value must have to reach an answer of those two verbs (always `fullmatch`).  A
+# value that does not fit is dropped to null or its row is left out;  it is never repaired.
+OPERATOR_SEAT_RE = re.compile(r"[A-Z0-9][A-Z0-9_-]{0,31}")
+OPERATOR_PLATFORM_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
+OPERATOR_LETTER_RE = re.compile(r"[A-Z]{1,2}")
+OPERATOR_ISSUE_RE = re.compile(r"[A-Z][A-Z0-9]{0,7}-[0-9]{1,7}")
+OPERATOR_WORD_RE = re.compile(r"[a-z][a-z0-9_]{0,39}")
+OPERATOR_WAKE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}")
+OPERATOR_ISO_RE = re.compile(
+    r"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.[0-9]{1,6})?(?:Z|\+00:00)"
+)
+OPERATOR_HOSTS = {"mac": "M", "server": "S", "cloud": "C"}
+OPERATOR_SESSION_STATES = ("active", "closed")
+OPERATOR_WAKE_CAPABILITIES = ("code-supported", "none", "unknown")
+# The ledger states of a wake that never went to an adapter:  only then is the row's `reason` a
+# fixed code.  A failed wake's reason is free text and is never read.
+OPERATOR_STOP_STATES = ("skipped", "dropped", "held_back", "surfaced", "expired", "evicted")
+# Seconds since 1970 that can be a time the daemon wrote:  2000 to 2100.
+OPERATOR_EPOCH_MIN = 946684800.0
+OPERATOR_EPOCH_MAX = 4102444800.0
 # The `--from-muster` entry (`muster-exec`'s forced command).  The approval engine is the sibling
 # file `muster_approval.py`, loaded by its fixed place (beside this file, in the installed layout and
 # in a checkout alike) and never through sys.path.  The environment of this branch is fixed: nothing
@@ -1100,15 +1391,23 @@ def read_eavesdropper_status(ctx):
     `--user simpletools` runs `cat` as the container's own unprivileged account, which owns the
     0600 file, so the read is no wider than that account's.  The container, the user and the
     path are constants here, so no word from a request can reach docker."""
-    argv = [
-        _docker(),
-        "exec",
-        "--user",
-        EAVESDROPPER_USER,
-        EAVESDROPPER_CONTAINER,
-        EAVESDROPPER_CAT,
-        EAVESDROPPER_STATUS_PATH,
-    ]
+    return _read_container_json(
+        ctx,
+        [EAVESDROPPER_CAT, EAVESDROPPER_STATUS_PATH],
+        EAVESDROPPER_READ_TIMEOUT,
+        EAVESDROPPER_STATUS_MAX_BYTES,
+    )
+
+
+def _read_container_json(ctx, words, timeout, max_bytes):
+    """(the JSON object one fixed command in the eavesdropper container printed, None) or (None, a
+    reason word).  `words` is the command, and every caller passes constants of this file.
+
+    The argv is `docker exec --user simpletools eavesdropper` and then `words`, run without a
+    shell and without sudo, with the pinned environment of `_docker_env` and an empty private
+    temporary directory as the docker config.  The read stops at the first byte past `max_bytes`
+    (`too_large`), and docker's own words are only compared with known phrases, never kept."""
+    argv = [_docker(), "exec", "--user", EAVESDROPPER_USER, EAVESDROPPER_CONTAINER] + list(words)
     try:
         scratch = tempfile.TemporaryDirectory(prefix="fleet-ops-docker-")
     except OSError:
@@ -1116,9 +1415,9 @@ def read_eavesdropper_status(ctx):
     with scratch as config_dir:
         status, out, err, over = ctx.reader(
             argv,
-            timeout=EAVESDROPPER_READ_TIMEOUT,
+            timeout=timeout,
             env=_docker_env(config_dir),
-            max_bytes=EAVESDROPPER_STATUS_MAX_BYTES,
+            max_bytes=max_bytes,
         )
     if over:
         return None, "too_large"
@@ -1135,6 +1434,333 @@ def read_eavesdropper_status(ctx):
     if not isinstance(document, dict):
         return None, "not_json"
     return document, None
+
+
+# MARK: - The server Operator's sessions and wakes (read only)
+
+
+def _operator_stamp(epoch):
+    return datetime.datetime.fromtimestamp(int(epoch), datetime.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+
+
+def _operator_text(value, shape):
+    """`value` when it is a string of exactly that shape, else None."""
+    return value if isinstance(value, str) and shape.fullmatch(value) else None
+
+
+def _operator_choice(value, allowed):
+    return value if isinstance(value, str) and value in allowed else None
+
+
+def _operator_int(value, low=0, high=OPERATOR_COUNT_MAX):
+    """`value` when it is an int in range (never a bool, a float or a string), else None."""
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        return None
+    return value
+
+
+def _operator_flag(value):
+    return value if isinstance(value, bool) else None
+
+
+def _operator_iso(value):
+    """A UTC instant as the registry writes it, cut to whole seconds, else None."""
+    match = OPERATOR_ISO_RE.fullmatch(value) if isinstance(value, str) else None
+    return match.group(1) + "Z" if match else None
+
+
+def _operator_epoch(value):
+    """Seconds since 1970 as a UTC instant, else None (a bool, a string, NaN, infinity and a time
+    outside 2000 to 2100 are all None)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    if not OPERATOR_EPOCH_MIN <= number <= OPERATOR_EPOCH_MAX:
+        return None
+    return _operator_stamp(number)
+
+
+def _operator_list(value):
+    return value if isinstance(value, list) else []
+
+
+def _operator_dict(value):
+    return value if isinstance(value, dict) else {}
+
+
+def _operator_counts(value):
+    """{code word: count} from a counts object: only keys shaped like a code and counts in range,
+    at most OPERATOR_MAX_KEYS of them, in the order of the words."""
+    kept = {}
+    for key in sorted(k for k in _operator_dict(value) if _operator_text(k, OPERATOR_WORD_RE)):
+        count = _operator_int(value[key])
+        if count is not None and len(kept) < OPERATOR_MAX_KEYS:
+            kept[key] = count
+    return kept
+
+
+def _operator_message_id(value):
+    return _operator_int(value, 1, 10**15)
+
+
+def _operator_issues(value):
+    """The Linear issue ids of a session, newest first, from the registry's JSON list of
+    {"id", "seen_at"}.  Anything else is no issues."""
+    if not isinstance(value, str) or len(value) > 8192:
+        return []
+    try:
+        entries = json.loads(value)
+    except (ValueError, RecursionError):
+        return []
+    kept = []
+    for entry in _operator_list(entries):
+        found = _operator_text(_operator_dict(entry).get("id"), OPERATOR_ISSUE_RE)
+        if found and found not in kept and len(kept) < OPERATOR_MAX_ISSUES:
+            kept.append(found)
+    return kept
+
+
+def reduce_operator_sessions(document, now):
+    """The `sessions` object of `server operator-sessions`, from what the sessions program printed.
+
+        {"schema": 1, "generated_at": ISO, "instance": "server",
+         "counts": {"active": int | null, "closed": int | null},
+         "truncated": bool, "dropped": int,
+         "sessions": [{"letter": "A".."ZZ" | null, "generation": int | null, "seat": name,
+                       "platform": token | null, "host": "mac" | "server" | "cloud" | null,
+                       "host_code": "M" | "S" | "C" | null, "status": "active" | "closed" | null,
+                       "wake": "code-supported" | "none" | "unknown" | null,
+                       "registered_at": ISO | null, "last_seen_at": ISO | null,
+                       "issues": [issue id]}]}
+
+    `sessions` lists the live (active) sessions, the one seen last first, at most
+    OPERATOR_MAX_SESSIONS.  `last_seen_at` is the session's last turn as the registry knows it.
+    `truncated` says the registry holds more live sessions than are listed, and `dropped` how
+    many rows were left out because their seat was not a seat name.  Every value is matched
+    against a fixed shape and is null when it does not fit, so a reader decodes each scalar as
+    an optional.  Nothing here raises on a document of the wrong shape."""
+    counts = {"active": None, "closed": None}
+    for pair in _operator_list(document.get("counts")):
+        if isinstance(pair, list) and len(pair) == 2 and pair[0] in counts:
+            counts[pair[0]] = _operator_int(pair[1])
+    rows = _operator_list(document.get("rows"))[:OPERATOR_MAX_SESSIONS]
+    sessions = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) != 10:
+            continue
+        seat = _operator_text(row[0], OPERATOR_SEAT_RE)
+        if seat is None:
+            continue
+        host = _operator_choice(row[2], OPERATOR_HOSTS)
+        sessions.append(
+            {
+                "letter": _operator_text(row[7], OPERATOR_LETTER_RE),
+                "generation": _operator_int(row[8], 1, 1_000_000),
+                "seat": seat,
+                "platform": _operator_text(row[1], OPERATOR_PLATFORM_RE),
+                "host": host,
+                "host_code": OPERATOR_HOSTS.get(host),
+                "status": _operator_choice(row[3], OPERATOR_SESSION_STATES),
+                "wake": _operator_choice(row[4], OPERATOR_WAKE_CAPABILITIES),
+                "registered_at": _operator_iso(row[5]),
+                "last_seen_at": _operator_iso(row[6]),
+                "issues": _operator_issues(row[9]),
+            }
+        )
+    return {
+        "schema": OPERATOR_SCHEMA,
+        "generated_at": _operator_stamp(now),
+        "instance": OPERATOR_TARGET,
+        "counts": counts,
+        "truncated": counts["active"] is not None and counts["active"] > len(rows),
+        "dropped": len(rows) - len(sessions),
+        "sessions": sessions,
+    }
+
+
+def _operator_wake_row(item):
+    item = _operator_dict(item)
+    wake_id = _operator_text(item.get("wake_id"), OPERATOR_WAKE_ID_RE)
+    if wake_id is None:
+        return None
+    state = _operator_text(item.get("state"), OPERATOR_WORD_RE)
+    ids = [_operator_message_id(i) for i in _operator_list(item.get("trigger_ids"))]
+    return {
+        "wake_id": wake_id,
+        "state": state,
+        "at": _operator_epoch(item.get("ts")),
+        # Only a wake that stopped before it ran has a fixed code as its reason.
+        "reason": _operator_text(item.get("reason"), OPERATOR_WORD_RE)
+        if state in OPERATOR_STOP_STATES
+        else None,
+        "dm": _operator_flag(item.get("dm")),
+        "owner": _operator_flag(item.get("owner")),
+        "catch_up": _operator_flag(item.get("catch_up")),
+        "message_ids": [i for i in ids if i is not None][:OPERATOR_MAX_MESSAGE_IDS],
+    }
+
+
+def _operator_held_row(item):
+    item = _operator_dict(item)
+    message_id = _operator_message_id(item.get("message_id"))
+    if message_id is None:
+        return None
+    return {
+        "message_id": message_id,
+        "at": _operator_epoch(item.get("at")),
+        "reason": _operator_text(item.get("reason"), OPERATOR_WORD_RE),
+        "dm": _operator_flag(item.get("dm")),
+    }
+
+
+def _operator_owner_row(item):
+    item = _operator_dict(item)
+    seq = _operator_int(item.get("seq"))
+    if seq is None:
+        return None
+    return {
+        "seq": seq,
+        "at": _operator_epoch(item.get("ts")),
+        "kind": _operator_text(item.get("kind"), OPERATOR_WORD_RE),
+        "risk": _operator_text(item.get("risk"), OPERATOR_WORD_RE),
+    }
+
+
+def _operator_rows(items, reduce_row):
+    rows = (reduce_row(item) for item in _operator_list(items)[:OPERATOR_MAX_ROWS])
+    return [row for row in rows if row is not None]
+
+
+def reduce_operator_wakes(document, now):
+    """The `wakes` object of `server operator-wakes`, from what the wakes program printed.
+
+        {"schema": 1, "generated_at": ISO, "instance": "server", "window_hours": 24,
+         "totals": {"recent": int, "held_back": int, "held_back_lost": int, "owner_queue": int},
+         "truncated": bool,
+         "seats": [{"seat": name,
+                    "recent": {"total": int | null, "by_state": {state: int},
+                               "rows": [{"wake_id": id, "state": word | null, "at": ISO | null,
+                                         "reason": code | null, "dm": bool | null,
+                                         "owner": bool | null, "catch_up": bool | null,
+                                         "message_ids": [int]}]},
+                    "held_back": {"count": int | null, "lost": int | null,
+                                  "reasons": {code: int},
+                                  "rows": [{"message_id": int, "at": ISO | null,
+                                            "reason": code | null, "dm": bool | null}]},
+                    "owner_queue": {"pending": int | null,
+                                    "rows": [{"seq": int, "at": ISO | null, "kind": code | null,
+                                              "risk": code | null}]}}],
+         "unreadable": [name]}
+
+    `recent` is the seat's wakes of the last `window_hours` hours (its newest rows last),
+    `held_back` the wakes held back now and `owner_queue` the notes waiting for the owner.  Each
+    list of rows holds at most OPERATOR_MAX_ROWS;  the counts beside it are of everything.
+    `totals` adds up the seats listed, so with a seat in `unreadable`, or with `truncated` (more
+    seats than OPERATOR_MAX_SEATS), it is a floor and not the whole.  A row carries ids, code
+    words and times only:  there is no key for a body, a title, a topic, a channel, a sender or
+    a link, and a failed wake's free-text reason is never read.  Nothing here raises."""
+    seats = []
+    totals = {"recent": 0, "held_back": 0, "held_back_lost": 0, "owner_queue": 0}
+    for entry in _operator_list(document.get("seats"))[:OPERATOR_MAX_SEATS]:
+        entry = _operator_dict(entry)
+        seat = _operator_text(entry.get("seat"), OPERATOR_SEAT_RE)
+        if seat is None:
+            continue
+        recent = _operator_dict(entry.get("recent"))
+        held = _operator_dict(entry.get("held_back"))
+        owner = _operator_dict(entry.get("owner_queue"))
+        row = {
+            "seat": seat,
+            "recent": {
+                "total": _operator_int(recent.get("total")),
+                "by_state": _operator_counts(recent.get("by_state")),
+                "rows": _operator_rows(recent.get("rows"), _operator_wake_row),
+            },
+            "held_back": {
+                "count": _operator_int(held.get("count")),
+                "lost": _operator_int(held.get("lost")),
+                "reasons": _operator_counts(held.get("reasons")),
+                "rows": _operator_rows(held.get("rows"), _operator_held_row),
+            },
+            "owner_queue": {
+                "pending": _operator_int(owner.get("pending")),
+                "rows": _operator_rows(owner.get("rows"), _operator_owner_row),
+            },
+        }
+        totals["recent"] += row["recent"]["total"] or 0
+        totals["held_back"] += row["held_back"]["count"] or 0
+        totals["held_back_lost"] += row["held_back"]["lost"] or 0
+        totals["owner_queue"] += row["owner_queue"]["pending"] or 0
+        seats.append(row)
+    unreadable = []
+    for name in _operator_list(document.get("unreadable"))[:OPERATOR_MAX_SEATS]:
+        name = _operator_text(name, OPERATOR_SEAT_RE)
+        if name and name not in unreadable:
+            unreadable.append(name)
+    seat_count = _operator_int(document.get("seat_count"))
+    return {
+        "schema": OPERATOR_SCHEMA,
+        "generated_at": _operator_stamp(now),
+        "instance": OPERATOR_TARGET,
+        "window_hours": OPERATOR_WAKE_WINDOW_HOURS,
+        "totals": totals,
+        "truncated": seat_count is not None and seat_count > OPERATOR_MAX_SEATS,
+        "seats": seats,
+        "unreadable": unreadable,
+    }
+
+
+OPERATOR_REDUCERS = {
+    "operator-sessions": reduce_operator_sessions,
+    "operator-wakes": reduce_operator_wakes,
+}
+
+
+def operator_read(ctx, action, target, mode):
+    """(the fields a `server operator-sessions` or `server operator-wakes` answer adds, the exit
+    status), or Refused.
+
+    A read:  no lock, no sudo and no audit row for a plan.  Only `--plan` and only the target
+    `server` are accepted, on the server.  The container is asked once, with one constant
+    program and constant places (`OPERATOR_READS`), and what it prints is reduced here before
+    any of it is answered.  A store that cannot be read is `unavailable` with a reason word and
+    exit status 1:  never a path, docker's text or a byte of the store."""
+    _server_only(ctx)
+    if mode != "plan":
+        raise Refused(f"{action} only reads: pass --plan")
+    if target != OPERATOR_TARGET:
+        raise Refused("only the server's Operator can be read here")
+    program, places, key, detail = OPERATOR_READS[action]
+    document, reason = _read_container_json(
+        ctx,
+        [OPERATOR_PYTHON, "-I", "-c", program] + list(places),
+        OPERATOR_READ_TIMEOUT,
+        OPERATOR_READ_MAX_BYTES,
+    )
+    reduced = None
+    if document is not None and "error" in document:
+        # The program's own word for a store it could not read;  any other word is one answer.
+        word = document.get("error")
+        reason = word if word in OPERATOR_PROGRAM_WORDS else "reader_failed"
+        document = None
+    if document is not None:
+        try:
+            reduced = OPERATOR_REDUCERS[action](document, ctx.now())
+        except Exception:  # noqa: BLE001 - an answer that cannot be reduced is not shown
+            document, reason = None, "reader_failed"
+    if document is None:
+        return {
+            "ok": False,
+            "result": "unavailable",
+            "detail": OPERATOR_UNAVAILABLE[reason],
+            "errorCode": reason,
+        }, 1
+    return {"ok": True, "result": "planned", "detail": detail, key: reduced}, 0
 
 
 def _pm2_prefix(ctx):
@@ -2298,6 +2924,14 @@ def handle(
                 status=reduced,
             )
             return answer, 0
+        if scope == "server" and action in OPERATOR_READS:
+            # A read of the server Operator's session registry or wake records, reduced to
+            # letters, names, counts, ids, code words and times.  Like eavesdropper-status it
+            # takes no lock, asks for no sudo, writes no audit row for a plan and refuses
+            # `--yes` (audited, like every refused `--yes`).
+            fields, code = operator_read(ctx, action, target, mode)
+            answer.update(fields)
+            return answer, code
         if scope == "server" and action in ("resource-status", "resource-policy"):
             if not config["resourcePolicy"]:
                 raise Refused(
@@ -2850,6 +3484,8 @@ def parse_ssh_command(text):
         "resource-policy",
         "seat-inventory",
         "eavesdropper-status",
+        "operator-sessions",
+        "operator-wakes",
     ):
         raise Refused("unknown server verb")
     if words[:3] != plain:
