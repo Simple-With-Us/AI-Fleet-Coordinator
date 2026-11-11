@@ -41,12 +41,12 @@ Export source-message JSON, listener ledger JSONL, the final router receipt JSON
 ```sh
 simple-chat wake-acceptance \
   --wake-id w-example --message-id 12345 \
-  --session-id 11111111-1111-4111-8111-111111111111 \
+  --session-id 11111111-1111-4111-8111-111111111111 --generation 3 \
   --source source.json --listener listener.jsonl \
   --receipt receipt.json --transcript rollout.jsonl
 ```
 
-A proven result requires a real supported mention, the listener's matching source trigger and final `done` state, a real final router handoff to the expected session, and the same wake id plus source message id in actual user input in that session's transcript.  Assistant quotations, a different transcript, a test receipt and queue acceptance alone cannot pass.  The helper emits fixed result codes and identifiers, with no message body, and never sends or replays a wake.
+A proven result requires a real supported mention, the listener's matching source trigger and final `done` state, a real final router handoff to the expected session and generation, and the same wake id plus source message id in actual user input in that session's transcript.  Assistant quotations, a different transcript, a test receipt and queue acceptance alone cannot pass.  The helper emits fixed result codes and identifiers, with no message body, and never sends or replays a wake.
 
 Exit 0 means the input arrived in the expected chat.  Exit 3 means incomplete or rejected evidence, and exit 2 means an invalid snapshot.  This proves prompt arrival; completion of the original requested work is a separate observation.
 
