@@ -213,6 +213,18 @@ class CopyTests(KnobTestCase):
         with self.assertRaises(ValueError):
             lkg.path(folder="/../../etc")
 
+    def test_distinct_folders_never_share_a_file(self):
+        # Kody on #1808:  joining segments with "--" mapped /a/b and /a--b to one file.
+        folders = ("/", "/a", "/a/b", "/a--b", "/a-b", "/a/b/c", "/a/b--c", "/a--b/c", ROUTER)
+        copies = {lkg.path(folder=f) for f in folders}
+        markers = {lkg.failure_path(folder=f) for f in folders}
+        self.assertEqual(len(copies), len(folders))
+        self.assertEqual(len(markers), len(folders))
+        self.assertTrue(lkg.path(folder=ROUTER).endswith("/lkg-wake-router.json"))
+        lkg.write({"WAKE_ROUTER_MAX_ATTEMPTS": "9"}, folder="/a/b")
+        self.assertEqual(lkg.read(folder="/a--b"), (None, "absent"))
+        self.assertEqual(lkg.read(folder="/a/b")[1], "ok")
+
 
 class MarkerTests(KnobTestCase):
     def test_each_folder_has_its_own_failed_fetch_marker(self):

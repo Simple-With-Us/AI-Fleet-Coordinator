@@ -42,10 +42,13 @@ def state_dir() -> str:
 
 
 def _suffix(folder: str) -> str:
-    """The empty string for the root folder, else "-" and the folder's name (``-wake-router``)."""
+    """The empty string for the root folder, else "-" and the folder's name (``-wake-router``).
+
+    Segments are joined with ".", which FOLDER_PATTERN never allows inside a segment, so two
+    folders never share a file:  /a/b is ``-a.b`` and /a--b is ``-a--b``."""
     if not FOLDER_PATTERN.match(folder):
         raise ValueError("not a knob folder")
-    return "" if folder == ROOT_FOLDER else "-" + folder.strip("/").replace("/", "--")
+    return "" if folder == ROOT_FOLDER else "-" + folder.strip("/").replace("/", ".")
 
 
 def path(*, folder: str = ROOT_FOLDER) -> str:
