@@ -21,7 +21,8 @@ What Codex gives a hook (read from the schemas the Codex binary embeds, and from
   none has been for half an hour; it prints nothing, because the SubagentStop output has no `hookSpecificOutput`.
 - SessionEnd carries `reason: "other"` for every end (an exit, an idle unload in the desktop app, an archive), so an
   end says nothing about whether a chat is over, and no SessionEnd hook is installed.  An idle chat's letter is freed
-  by the library's 36 hour sweep, and a resumed chat keeps its letter.
+  by the library's 36 hour sweep, and a resumed chat keeps its letter.  An archive is read from the store instead:
+  `release` (below) frees the letter of each chat the registry holds for Codex whose row Codex has archived.
 
 Naming a thread.  `rename_thread` puts the title in the thread's `name` (what Codex lists, resumes by and shows):
 1. through the local app-server daemon, over `codex app-server proxy` (a WebSocket on stdio): about 0.05 seconds; where
@@ -99,7 +100,9 @@ SKIP_ORIGINATORS = ("botfleet", "minimax-codex-mcp", *DRIVER_ORIGINATORS)
 HEADLESS_SOURCES = ("exec", "mcp")
 # The `thread_source` of a chat someone talks to; an older store has none.  Anything else (an automation, a voice
 # session, a guardian review) is not a chat.
-CHAT_THREAD_SOURCES = ("", "user")
+# `agent_created_thread` is a chat Codex Desktop opened for the user from another chat's tool call (Codex AA on the
+# Mac, Nov 10, 2026, is one):  the user talks to it like any other chat.
+CHAT_THREAD_SOURCES = ("", "user", "agent_created_thread")
 
 STORE_WAIT = 0.5  # seconds to wait for a locked store before reading nothing
 RPC_SECONDS = 6.0  # the whole rename, both routes, inside the hook's own timeout (15 to 20 seconds)
@@ -792,6 +795,268 @@ def trust_main(
     return _emit(stdout, answer, 0 if ok else 1)
 
 
+# --------------------------------------------------------------------------------------------
+# Archive release
+# --------------------------------------------------------------------------------------------
+
+RELEASE_SOURCE = "codex-archive-release"
+# One page of the registry's letter history, newest letter first:  the API pages by limit only and has no live-only
+# filter, so a live registration whose letter is older than the newest HISTORY_LIMIT letters of Codex is missed (the
+# 36 hour sweep still frees it), never wrongly closed.  A full page is reported as `truncated`.
+HISTORY_LIMIT = 5000
+ANCESTOR_DEPTH = 8  # how far up a sub-thread's parents are followed to find an archived chat
+SID_SHAPE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+USAGE = (
+    "usage: python3 -m simple_tools.platform_letter_codex trust [--check]\n"
+    "       python3 -m simple_tools.platform_letter_codex release [--apply] [--location mac|server] [--db FILE]"
+    " [--store FILE]\n"
+)
+
+
+class StoreUnreadable(RuntimeError):
+    """The Codex store could not be read, or has no `archived` column:  nothing may be released on its word."""
+
+
+def _archive_state(conn: sqlite3.Connection, sid: str) -> tuple[bool, str] | None:
+    """(archived, parent) for one thread of the store, or None when the store has no such row."""
+    row = conn.execute("SELECT archived, source FROM threads WHERE id = ?", (sid,)).fetchone()
+    if row is None:
+        return None
+    parent = ""
+    try:
+        hit = conn.execute(
+            "SELECT parent_thread_id FROM thread_spawn_edges WHERE child_thread_id = ?", (sid,)
+        ).fetchone()
+        parent = _s(hit[0]) if hit else ""
+    except sqlite3.OperationalError:
+        pass  # a store from before the spawn edges:  the source's own parent stands in
+    return bool(row[0]), parent or _spawned_by(_s(row[1]))
+
+
+def archive_reason(conn: sqlite3.Connection, sid: str) -> str:
+    """Why the thread `sid` is over, from the store alone:  "archived" when Codex has archived it, "parent archived"
+    when it is a sub-thread one of whose parents Codex has archived, "" when it is not archived (or the store does not
+    show it, which is no evidence of an archive either).  Raises sqlite3.Error for a store that cannot be read."""
+    state = _archive_state(conn, sid)
+    if state is None:
+        return ""
+    archived, parent = state
+    if archived:
+        return "archived"
+    seen = {sid}
+    for _ in range(ANCESTOR_DEPTH):
+        if not parent or parent in seen:
+            return ""
+        seen.add(parent)
+        up = _archive_state(conn, parent)
+        if up is None:
+            return ""
+        if up[0]:
+            return "parent archived"
+        parent = up[1]
+    return ""
+
+
+def open_store(path: str) -> sqlite3.Connection:
+    """The store, read-only, after checking it has the `archived` column the release reads."""
+    if not path or not os.path.isfile(path):
+        raise StoreUnreadable("no Codex store at %s" % (path or "the Codex home"))
+    conn = None
+    try:
+        conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(threads)")}
+    except sqlite3.Error as exc:
+        if conn is not None:
+            conn.close()
+        raise StoreUnreadable(
+            "the Codex store could not be read (%s)" % type(exc).__name__
+        ) from exc
+    if "archived" not in cols:
+        conn.close()
+        raise StoreUnreadable("the Codex store has no archived column")
+    return conn
+
+
+def live_registrations(
+    env: Mapping[str, str], location: str, db: str
+) -> tuple[list[dict[str, Any]], str]:
+    """The live Codex registrations of this host, newest letter first, and "" (or [] and an error).  When the page of
+    history was full, a last row `{"truncated": True}` says older letters were not read.
+
+    The registry API answers when its URL is configured (the server's store, the one store now), else the local
+    registry file;  a host with neither has nothing to release."""
+    from . import operator_registry as OR
+    from . import registry_api as RA
+
+    if RA.base_url(env):
+        answer = RA.call(env, "history", {"platform": PLATFORM, "limit": HISTORY_LIMIT})
+        items = answer.get("items") if isinstance(answer, dict) else None
+        if not isinstance(items, list):
+            code = answer.get("code") if isinstance(answer, dict) else ""
+            return [], "the registry history could not be read (%s)" % (code or "no items")
+    elif os.path.isfile(db):
+        try:
+            items = OR.letter_history(db, PLATFORM, HISTORY_LIMIT)
+        except (sqlite3.Error, OSError, OR.RegistryUnavailable) as exc:
+            return [], "the registry could not be read (%s)" % type(exc).__name__
+    else:
+        return [], "no Operator registry on this host"
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in items:
+        row = row if isinstance(row, dict) else {}
+        sid = _s(row.get("native_session_id"))
+        if (
+            SID_SHAPE.fullmatch(sid)
+            and sid not in seen
+            and _s(row.get("verified_host")) == location
+            and row.get("live", row.get("retired_at") is None)
+            and not row.get("closed_at")
+            and _s(row.get("state")) != "closed"
+        ):
+            seen.add(sid)
+            out.append(row)
+    if len(items) >= HISTORY_LIMIT:
+        out.append({"truncated": True})  # a full page:  older live registrations were not read
+    return out, ""
+
+
+def _close_note(env: Mapping[str, str], sid: str, reason: str) -> None:
+    """Mark the hook's note for a released chat released, so it no longer reads as holding its old letter.  Best effort:  the
+    registry is the record, and the chat's next start or prompt registers it again if it is opened."""
+    path = PL.note_path(env, SEAT, sid)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            note = json.load(fh)
+        if not isinstance(note, dict) or note.get("state") != "open":
+            return
+        # Not "closed":  a closed note makes the hook ignore the chat's prompts, while any state that is not "open"
+        # makes its next prompt (or a sub-agent's next SubagentStop) register it again, which is what a chat that
+        # is unarchived and used again needs.
+        note["state"] = "released"
+        note["released"] = {"reason": reason, "at": time.time()}
+        PL._write_private(path, (json.dumps(note, sort_keys=True) + "\n").encode("utf-8"), 0o600)
+    except (OSError, ValueError):
+        pass
+
+
+def release_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
+    """`release [--apply] [--location mac|server] [--db FILE] [--store FILE]`:  free the letter of each chat the
+    registry holds for Codex on this host whose thread Codex has archived (`threads.archived`), and of each sub-thread
+    one of whose parents it has archived.
+
+    Only the registry's live Codex registrations of this host are looked at, so a thread the registry does not hold
+    is never touched, however many archived rows the store has.  A registration whose thread the store does not show
+    is kept (that is no evidence of an archive), as is every thread that is not archived.  The store is read again
+    right before each close, so a chat unarchived in the meantime keeps its letter.  Without --apply it only reports.
+    A registration already closed is the happy no-op, so a rerun is safe.  Exit 0, 1 when a close failed, 2 when the
+    store or the registry could not be read (nothing is closed then)."""
+    import argparse
+
+    from . import operator_registry as OR
+    from . import registry_api as RA
+
+    parser = argparse.ArgumentParser(prog="platform_letter_codex release", add_help=False)
+    parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--location", default="", choices=("",) + PL.LOCATIONS)
+    parser.add_argument("--db", default="")
+    parser.add_argument("--store", default="")
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit:
+        return _emit(stdout, {"error": "bad arguments"}, 2)
+    location = args.location or PL.location(env) or ""
+    if location not in PL.LOCATIONS:
+        return _emit(stdout, {"error": "no host location (pass --location mac or server)"}, 2)
+    db = args.db or OR.registry_db_path(PL.L.state_root(env), env)
+    if not args.db and not RA.base_url(env) and not os.path.isfile(db):
+        env = PL.with_registry_env(env)  # the hook's own rule:  the host's shared registry env file
+    try:
+        conn = open_store(args.store or store_file(env))
+    except StoreUnreadable as exc:
+        return _emit(stdout, {"error": str(exc)}, 2)
+    try:
+        rows, error = live_registrations(env, location, db)
+        if error:
+            conn.close()
+            return _emit(stdout, {"error": error}, 2)
+        truncated = any(row.get("truncated") for row in rows)
+        rows = [row for row in rows if not row.get("truncated")]
+        due: list[tuple[str, str]] = []
+        for row in rows:
+            sid = _s(row.get("native_session_id"))
+            reason = archive_reason(conn, sid)
+            if reason:
+                due.append((sid, reason))
+    except sqlite3.Error as exc:
+        conn.close()
+        return _emit(
+            stdout, {"error": "the Codex store could not be read (%s)" % type(exc).__name__}, 2
+        )
+    released: list[dict[str, Any]] = []
+    absent: list[str] = []
+    failed: list[str] = []
+    kept: list[str] = []
+    try:
+        for sid, reason in due:
+            if not args.apply:
+                released.append({"session_id": sid, "reason": reason, "would_release": True})
+                continue
+            try:
+                now = archive_reason(conn, sid)
+                if not now:
+                    kept.append(sid)  # unarchived since the first read:  it keeps its letter
+                    continue
+                reason = now  # still archived, perhaps now through a parent:  release with the current reason
+            except sqlite3.Error:
+                failed.append(sid)
+                continue
+            buf = io.StringIO()
+            argv_close = [
+                "close",
+                "--platform",
+                PLATFORM,
+                "--location",
+                location,
+                f"--session-id={sid}",
+                "--source",
+                RELEASE_SOURCE,
+            ]
+            if args.db:
+                argv_close += ["--db", args.db]
+            code = PL.registry_main(argv_close, env=env, stdout=buf)
+            answer = PL._last_json(buf.getvalue()) or {}
+            if code == 0 and answer.get("closed"):
+                released.append(
+                    {
+                        "session_id": sid,
+                        "reason": reason,
+                        "released": True,
+                        "label": _s(answer.get("label")),
+                    }
+                )
+                _close_note(env, sid, reason)
+            elif answer.get("retired") or answer.get("error") == PL.NO_REGISTRATION:
+                absent.append(sid)  # closed already, or never held:  nothing to free
+                _close_note(env, sid, reason)
+            else:
+                failed.append(sid)
+    finally:
+        conn.close()
+    answer = {
+        "platform": PLATFORM,
+        "location": location,
+        "applied": bool(args.apply),
+        "registered": len(rows),
+        "truncated": truncated,
+        "released": released,
+        "kept": kept,
+        "absent": absent,
+        "failed": failed,
+    }
+    return _emit(stdout, answer, 1 if failed else 0)
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -803,7 +1068,9 @@ def main(
     stdout = stdout or sys.stdout
     if argv[:1] == ["trust"]:
         return trust_main(argv[1:], env, stdout)
-    stdout.write("usage: python3 -m simple_tools.platform_letter_codex trust [--check]\n")
+    if argv[:1] == ["release"]:
+        return release_main(argv[1:], env, stdout)
+    stdout.write(USAGE)
     return 2
 
 

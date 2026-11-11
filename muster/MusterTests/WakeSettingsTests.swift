@@ -3,19 +3,16 @@ import XCTest
 /// The wake settings panel:  what it shows,  when it says DRIFT,  and what it refuses to
 /// write.
 final class WakeSettingsTests: XCTestCase {
-    /// A file like the eavesdropper's own.
+    /// A file like the eavesdropper's own.  The wake line is today's, left over from the old wake
+    /// types:  Muster reads the routine table, and leaves that line as it is.
     private let sample = """
     [daemon]
     host_wake_load_per_core = 0
 
     [seat.MM]
     bot = "MM"
-    wake = "muse"
-    model = "muse-spark-1.3-contributor"
-    muse = "/tmp/fixture-apps/muse-bin"
-    mcode = "/tmp/fixture-apps/mcode-bin"
-    fallback = "mcode"
-    fallback_uncontained_ok = true
+    wake = "http"
+    routine = { url_env = "MM_ROUTINE_URL", key_env = "MM_ROUTINE_KEY", timeout_seconds = 15 }
     budget = { wakes_per_hour = 5, wakes_per_day = 80, per_topic_per_hour = 6, owner_per_day = 40, owner_per_topic_per_hour = 12, usd_per_day = 4.0 }
     live = { per_hour = 6, per_day = 30, per_topic_minutes = 5, owner_per_day = 20, loop_turns = 3 }
     """
@@ -29,8 +26,7 @@ final class WakeSettingsTests: XCTestCase {
         "seats": {
           "MM": {
             "bot": "MM",
-            "wake": "muse",
-            "muse": "/tmp/fixture-apps/muse-bin-1.4.11-R6667.1",
+            "routine": {"ready": true, "host": "routines.example"},
             "connected": true,
             "paused": false,
             "wakes_paused": false,
@@ -65,7 +61,6 @@ final class WakeSettingsTests: XCTestCase {
     private func sources(
         config: String? = nil,
         status: String? = nil,
-        pins: [String: [String: PinEvidence]] = [:],
         usage: [String: WakeUsage] = [:]
     ) -> WakeSettingsSources {
         var sources = WakeSettingsSources()
@@ -76,7 +71,6 @@ final class WakeSettingsTests: XCTestCase {
                 from: Data(status.utf8)
             )
         }
-        sources.pins = pins
         sources.usage = usage
         sources.seats = ["MM"]
         sources.partition = ListenerPartition(seats: ["MM": "mac", "MA": "server", "BF-BUILDER": "none"])
@@ -273,7 +267,7 @@ final class WakeSettingsTests: XCTestCase {
         let seat = try XCTUnwrap(WakeSettingsBuilder.build(input).seats.first)
         XCTAssertEqual(seat.skippedReasons, ["seat.MM.bot must be the credential file code"])
         XCTAssertTrue(seat.disabledInFile)
-        XCTAssertEqual(seat.liveWake, .muse)
+        XCTAssertTrue(seat.reported)
         XCTAssertEqual(seat.pauseScope, "MM")
     }
 
@@ -570,18 +564,49 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(try bytes(space.config), before)
     }
 
-    /// The eavesdropper folds `[seat.mm]` and `[seat.MM]` to one seat,  and one silently replaces the
-    /// other,  so a second spelling is never added.
-    func test_a_seat_the_file_spells_differently_is_not_written() throws {
-        let config = "[seat.mm]\nbot = \"MM\"\nwake = \"muse\"\n"
+    /// The eavesdropper folds `[seat.mm]` to the MM seat, so Muster writes MM's settings into that
+    /// section, under the spelling the file already has, and never adds a second `[seat.MM]`.  A
+    /// routine table under `[seat.mm.routine]` is written there too.
+    func test_a_seat_the_file_spells_in_lower_case_is_written_in_place() throws {
+        let config = "[seat.mm]\nbot = \"MM\"\nwake = \"http\"\n\n[seat.mm.routine]\nurl_env = \"MM_ROUTINE_URL\"\n"
+        let space = try makeWorkspace(config: config)
+        let writer = WakeSettingsWriter(configURL: space.config, partitionURL: space.partition)
+        try writer.apply([
+            WakeSettingsWriter.Edit(seat: "MM", key: .wakesPerHour, value: .number(9)),
+            WakeSettingsWriter.Edit(seat: "MM", key: .routineKeyEnv, value: .text("MM_SIGNING_KEY")),
+        ])
+        let written = try String(contentsOf: space.config, encoding: .utf8)
+        let document = ListenerConfigDocument(text: written)
+        XCTAssertEqual(document.seatTags, ["mm"])
+        XCTAssertFalse(written.contains("[seat.MM"))
+        XCTAssertEqual(document.value(section: "seat.mm", key: "budget", subPath: ["wakes_per_hour"]), .number(9))
+        XCTAssertEqual(document.value(section: "seat.mm.routine", key: "key_env"), .text("MM_SIGNING_KEY"))
+        XCTAssertEqual(document.problems, [])
+    }
+
+    /// A file that spells one seat two ways holds two headers the eavesdropper folds into one seat
+    /// and merges unpredictably, so nothing is written, and the refusal names both headers.
+    func test_a_seat_the_file_spells_two_ways_is_not_written() throws {
+        let config = "[seat.MM]\nbot = \"MM\"\n\n[seat.mm]\nbudget = { wakes_per_hour = 5 }\n"
         let space = try makeWorkspace(config: config)
         let writer = WakeSettingsWriter(configURL: space.config, partitionURL: space.partition)
         XCTAssertThrowsError(try writer.apply([
             WakeSettingsWriter.Edit(seat: "MM", key: .wakesPerHour, value: .number(9)),
         ])) { error in
-            XCTAssertEqual(error as? WakeSettingsWriter.WriteError, .spelledDifferently(seat: "MM", inFile: "mm"))
+            XCTAssertEqual(error as? WakeSettingsWriter.WriteError, .spelledTwice(seat: "MM", headers: ["seat.MM", "seat.mm"]))
+            XCTAssertTrue(error.localizedDescription.contains("[seat.MM] and [seat.mm]"), error.localizedDescription)
         }
         XCTAssertEqual(try String(contentsOf: space.config, encoding: .utf8), config)
+
+        // A sub-table is not a spelling:  the refusal names only the two seat headers.
+        let withTables = "[seat.MM]\nbot = \"MM\"\n\n[seat.mm]\nbot = \"MM\"\n\n[seat.mm.routine]\nurl_env = \"MM_ROUTINE_URL\"\n\n[seat.mm.budget]\nwakes_per_hour = 5\n"
+        let tables = try makeWorkspace(config: withTables)
+        let tableWriter = WakeSettingsWriter(configURL: tables.config, partitionURL: tables.partition)
+        XCTAssertThrowsError(try tableWriter.apply([
+            WakeSettingsWriter.Edit(seat: "MM", key: .wakesPerHour, value: .number(9)),
+        ])) { error in
+            XCTAssertEqual(error as? WakeSettingsWriter.WriteError, .spelledTwice(seat: "MM", headers: ["seat.MM", "seat.mm"]))
+        }
     }
 
     /// The gate runs again at the commit,  because the partition can change during the check.
@@ -630,21 +655,55 @@ final class WakeSettingsTests: XCTestCase {
         ]))
     }
 
-    /// A key held under its own header is not written a second time.
-    func test_a_key_under_its_own_header_is_not_written_again() throws {
+    /// Caps the file keeps under a `[seat.X.budget]` or `[seat.X.live]` header are read from there,
+    /// never shown as the default, and written there in place, never as a second `budget` line.
+    func test_caps_under_their_own_header_are_read_and_written_in_place() throws {
         let config = """
         [seat.MM]
         bot = "MM"
+        routine = { url_env = "MM_ROUTINE_URL" }
 
         [seat.MM.budget]
         wakes_per_hour = 5
+        # the owner's own note
+
+        [seat.MM.live]
+        per_day = 30
         """
+        let document = ListenerConfigDocument(text: config)
+        XCTAssertEqual(WakeSettingKey.wakesPerHour.location(seat: "MM", in: document).section, "seat.MM.budget")
+        XCTAssertEqual(WakeSettingKey.livePerDay.location(seat: "MM", in: document).key, "per_day")
+        XCTAssertEqual(WakeSettingKey.wakesPerHour.location(seat: "MC", in: document).section, "seat.MC")
+        let seat = try XCTUnwrap(WakeSettingsBuilder.build(sources(config: config, status: statusJSON)).seats.first)
+        XCTAssertEqual(seat.settings.first(where: { $0.key == .wakesPerHour })?.configured, .number(5))
+        XCTAssertEqual(seat.settings.first(where: { $0.key == .wakesPerHour })?.state, .match)
+        XCTAssertEqual(seat.settings.first(where: { $0.key == .livePerDay })?.configured, .number(30))
+
         let space = try makeWorkspace(config: config)
         let writer = WakeSettingsWriter(configURL: space.config, partitionURL: space.partition)
-        XCTAssertThrowsError(try writer.apply([
+        try writer.apply([
+            WakeSettingsWriter.Edit(seat: "MM", key: .wakesPerHour, value: .number(9)),
+            WakeSettingsWriter.Edit(seat: "MM", key: .wakesPerDay, value: .number(80)),
+            WakeSettingsWriter.Edit(seat: "MM", key: .livePerDay, value: nil),
+        ])
+        let written = try String(contentsOf: space.config, encoding: .utf8)
+        let after = ListenerConfigDocument(text: written)
+        XCTAssertNil(after.assignment(section: "seat.MM", key: "budget"))
+        XCTAssertEqual(after.value(section: "seat.MM.budget", key: "wakes_per_hour"), .number(9))
+        XCTAssertEqual(after.value(section: "seat.MM.budget", key: "wakes_per_day"), .number(80))
+        XCTAssertNil(after.value(section: "seat.MM.live", key: "per_day"))
+        XCTAssertTrue(written.contains("# the owner's own note"))
+        XCTAssertEqual(after.problems, [])
+
+        // A table written both inline and under its own header is one TOML refuses, so nothing is
+        // written to either.
+        let both = "[seat.MM]\nbudget = { wakes_per_hour = 5 }\n\n[seat.MM.budget]\nwakes_per_day = 80\n"
+        let twice = try makeWorkspace(config: both)
+        let refusing = WakeSettingsWriter(configURL: twice.config, partitionURL: twice.partition)
+        XCTAssertThrowsError(try refusing.apply([
             WakeSettingsWriter.Edit(seat: "MM", key: .wakesPerHour, value: .number(9)),
         ]))
-        XCTAssertEqual(try String(contentsOf: space.config, encoding: .utf8), config)
+        XCTAssertEqual(try String(contentsOf: twice.config, encoding: .utf8), both)
     }
 
     /// A file that changed after the panel read it is not overwritten,  at either step.
@@ -763,7 +822,7 @@ final class WakeSettingsTests: XCTestCase {
         try writer.commit(prepared)
         let document = ListenerConfigDocument(text: try String(contentsOf: space.config, encoding: .utf8))
         XCTAssertEqual(document.seatTags, ["MM"])
-        XCTAssertEqual(document.value(section: "seat.MM", key: "wake"), .text("muse"))
+        XCTAssertEqual(document.value(section: "seat.MM", key: "wake"), .text("http"))
     }
 
     /// A section that marks itself for the server can be taken out too,  and the rest stays.
@@ -896,7 +955,7 @@ final class WakeSettingsTests: XCTestCase {
 
     /// The kill switch does not claim a result it cannot have on a seat the Mac does not hold.
     @MainActor
-    func test_pause_resume_test_wake_and_pin_do_not_run_on_a_server_seat() async throws {
+    func test_pause_and_resume_do_not_run_on_a_server_seat() async throws {
         let space = try makeWorkspace()
         let listener = FakeListener()
         let store = await makeStore(listener, space: space)
@@ -906,10 +965,6 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertTrue(store.message?.contains("Nothing was paused for MA") == true)
         XCTAssertEqual(listener.actions, [])
         await store.resume(seat: "MA")
-        XCTAssertTrue(store.messageIsFailure)
-        await store.testWake(seat: "MA", runtime: nil)
-        XCTAssertTrue(store.messageIsFailure)
-        await store.pin(seat: "MA", runtime: nil)
         XCTAssertTrue(store.messageIsFailure)
         XCTAssertTrue(store.message?.contains("Held by the server eavesdropper") == true)
         XCTAssertEqual(listener.actions, [])
@@ -982,10 +1037,6 @@ final class WakeSettingsTests: XCTestCase {
         store.draft["MM", default: [:]][.wakesPerHour] = "9"
         await store.apply(seat: "MM")
         XCTAssertTrue(store.messageIsFailure)
-        await store.testWake(seat: "MM", runtime: nil)
-        XCTAssertTrue(store.messageIsFailure)
-        await store.pin(seat: "MM", runtime: nil)
-        XCTAssertTrue(store.messageIsFailure)
         await store.resume(seat: "MM")
         XCTAssertTrue(store.messageIsFailure)
         XCTAssertTrue(store.message?.contains("Nothing was resumed") == true)
@@ -1006,18 +1057,20 @@ final class WakeSettingsTests: XCTestCase {
         let listener = FakeListener()
         listener.statusAfterReload = answeredStatus()
         let store = await makeStore(listener, space: space)
-        store.draft["MM", default: [:]][.model] = "another-model"
+        store.draft["MM", default: [:]][.routineTimeout] = "20"
         await store.apply(seat: "MM")
 
         XCTAssertEqual(listener.actions, ["check-config", "reload"])
         XCTAssertEqual(listener.configAtCheck, before, "the real file changed before the check")
-        XCTAssertTrue(listener.candidateAtCheck?.contains("another-model") == true)
+        XCTAssertTrue(listener.candidateAtCheck?.contains("timeout_seconds = 20") == true)
         // The check judges by the partition the writer goes by,  not the command line's own copy.
         let check = try XCTUnwrap(listener.invocations.first(where: { $0.contains("check-config") }))
         let flag = try XCTUnwrap(check.firstIndex(of: "--partition"))
         XCTAssertEqual(check[flag + 1], space.partition.path)
         let document = ListenerConfigDocument(text: try String(contentsOf: space.config, encoding: .utf8))
-        XCTAssertEqual(document.value(section: "seat.MM", key: "model"), .text("another-model"))
+        XCTAssertEqual(document.value(section: "seat.MM", key: "routine", subPath: ["timeout_seconds"]), .number(20))
+        // The wake line is left exactly as it was.
+        XCTAssertEqual(document.value(section: "seat.MM", key: "wake"), .text("http"))
         XCTAssertFalse(store.messageIsFailure)
         XCTAssertTrue(store.message?.contains("The eavesdropper accepted it.") == true)
         // The candidate is gone.
@@ -1055,16 +1108,16 @@ final class WakeSettingsTests: XCTestCase {
         let space = try makeWorkspace()
         let before = try bytes(space.config)
         let listener = FakeListener()
-        listener.check = #"{"ok": false, "new_errors": ["seat.MM.model must be a model alias such as sonnet"], "refused": []}"#
+        listener.check = #"{"ok": false, "new_errors": ["seat.MM.routine.key_env names no variable this listener has"], "refused": []}"#
         listener.checkExit = 1
         let store = await makeStore(listener, space: space)
-        store.draft["MM", default: [:]][.model] = "Bad Model"
+        store.draft["MM", default: [:]][.routineKeyEnv] = "MM_OTHER_KEY"
         await store.apply(seat: "MM")
 
         XCTAssertEqual(try bytes(space.config), before)
         XCTAssertEqual(listener.actions, ["check-config"])
         XCTAssertTrue(store.messageIsFailure)
-        XCTAssertTrue(store.message?.contains("seat.MM.model must be") == true)
+        XCTAssertTrue(store.message?.contains("seat.MM.routine.key_env names no variable") == true)
     }
 
     /// A check that cannot answer stops the write:  an older checkout has no such command.
@@ -1076,7 +1129,7 @@ final class WakeSettingsTests: XCTestCase {
         listener.check = ""
         listener.checkExit = 2
         let store = await makeStore(listener, space: space)
-        store.draft["MM", default: [:]][.model] = "another-model"
+        store.draft["MM", default: [:]][.routineTimeout] = "20"
         await store.apply(seat: "MM")
         XCTAssertEqual(try bytes(space.config), before)
         XCTAssertEqual(listener.actions, ["check-config"])
@@ -1092,7 +1145,7 @@ final class WakeSettingsTests: XCTestCase {
         listener.check = #"{"ok": false, "new_errors": [], "refused": ["seat MA is configured here"]}"#
         listener.checkExit = 1
         let store = await makeStore(listener, space: space)
-        store.draft["MM", default: [:]][.model] = "another-model"
+        store.draft["MM", default: [:]][.routineTimeout] = "20"
         await store.apply(seat: "MM")
         XCTAssertEqual(try bytes(space.config), before)
         XCTAssertTrue(store.messageIsFailure)
@@ -1109,7 +1162,7 @@ final class WakeSettingsTests: XCTestCase {
             errors: ["seat MA is configured here"]
         )
         let store = await makeStore(listener, space: space)
-        store.draft["MM", default: [:]][.model] = "another-model"
+        store.draft["MM", default: [:]][.routineTimeout] = "20"
         await store.apply(seat: "MM")
         XCTAssertTrue(store.messageIsFailure)
         XCTAssertTrue(store.message?.contains("refused it") == true)
@@ -1123,7 +1176,7 @@ final class WakeSettingsTests: XCTestCase {
         let space = try makeWorkspace()
         let listener = FakeListener()
         let store = await makeStore(listener, space: space)
-        store.draft["MM", default: [:]][.model] = "another-model"
+        store.draft["MM", default: [:]][.routineTimeout] = "20"
         await store.apply(seat: "MM")
         XCTAssertTrue(store.messageIsFailure)
         XCTAssertTrue(store.message?.contains("No answer from the eavesdropper") == true)
@@ -1137,7 +1190,7 @@ final class WakeSettingsTests: XCTestCase {
         listener.reloadExit = 1
         listener.reloadError = "simple-chat: the listener is not running"
         let store = await makeStore(listener, space: space)
-        store.draft["MM", default: [:]][.model] = "another-model"
+        store.draft["MM", default: [:]][.routineTimeout] = "20"
         await store.apply(seat: "MM")
         XCTAssertTrue(store.messageIsFailure)
         XCTAssertTrue(store.message?.contains("The configuration file was written.") == true)
@@ -1152,7 +1205,7 @@ final class WakeSettingsTests: XCTestCase {
         let store = await makeStore(listener, space: space)
         let changed = sample + "\n# another writer\n"
         try changed.write(to: space.config, atomically: true, encoding: .utf8)
-        store.draft["MM", default: [:]][.model] = "another-model"
+        store.draft["MM", default: [:]][.routineTimeout] = "20"
         await store.apply(seat: "MM")
         XCTAssertEqual(try String(contentsOf: space.config, encoding: .utf8), changed)
         XCTAssertEqual(listener.actions, [])
@@ -1213,7 +1266,7 @@ final class WakeSettingsTests: XCTestCase {
         let missing = space.home.appendingPathComponent("gone.toml").path
         listener.status = #"{"running": true, "status": {"seats": {}, "pause": {}, "partition_file": "\#(missing)"}}"#
         let store = await makeStore(listener, space: space)
-        store.draft["MM", default: [:]][.model] = "another-model"
+        store.draft["MM", default: [:]][.routineTimeout] = "20"
         await store.apply(seat: "MM")
         XCTAssertEqual(try bytes(space.config), before)
         XCTAssertEqual(listener.actions, [])
@@ -1256,17 +1309,17 @@ final class WakeSettingsTests: XCTestCase {
     // MARK: What the reader reads
 
     /// The reader and the builder agree on who holds a seat:  a seat the builder shows live data for
-    /// has its pins and ledger read,  so no empty reading stands in for one Muster never made.
-    func test_the_reader_reads_pins_for_a_seat_the_builder_does_not_call_elsewhere() async throws {
+    /// has its ledger read,  so no empty reading stands in for one Muster never made.
+    func test_the_reader_reads_the_ledger_for_a_seat_the_builder_does_not_call_elsewhere() async throws {
         let space = try makeWorkspace(config: sample + "\n\n[seat.MA]\nbot = \"MA\"\nwake = \"muse\"\n")
         let location = ListenerStateLocation(home: space.home)
-        let pinURL = location.pinURL(seat: "MA", runtime: "muse")
+        let ledgerURL = location.ledgerURL(seat: "MA")
         try FileManager.default.createDirectory(
-            at: pinURL.deletingLastPathComponent(),
+            at: ledgerURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        try #"{"at": 1792535804.0, "muse": "/tmp/fixture-apps/muse-bin", "model": "m"}"#
-            .write(to: pinURL, atomically: true, encoding: .utf8)
+        try "{\"ts\": 1.0, \"wake_id\": \"a\", \"state\": \"accepted\"}\n"
+            .write(to: ledgerURL, atomically: true, encoding: .utf8)
 
         // A running eavesdropper too old to name its partition holds MA,  and this copy gives it away.
         let older = FakeListener()
@@ -1274,10 +1327,12 @@ final class WakeSettingsTests: XCTestCase {
         let held = await WakeSettingsReader(
             location: location, runner: older, roster: ["MA"], partitionURL: space.partition
         ).read()
-        XCTAssertEqual(held.pins["MA"]?["muse"]?.binary, "/tmp/fixture-apps/muse-bin")
+        XCTAssertNotNil(held.usage["MA"])
         let seat = try XCTUnwrap(WakeSettingsBuilder.build(held).seats.first(where: { $0.seat == "MA" }))
         XCTAssertFalse(seat.host.isElsewhere)
-        XCTAssertEqual(seat.pin?.binary, "/tmp/fixture-apps/muse-bin")
+        // An old wake line with no routine is one today's listener still wakes the seat by.
+        XCTAssertEqual(seat.kind, .oldWakeSetting(.stillWakes("muse")))
+        XCTAssertEqual(seat.leftoverWake, "muse")
 
         // Once it names the partition,  that copy gives MA away,  so nothing is read for it.
         let named = FakeListener()
@@ -1285,69 +1340,68 @@ final class WakeSettingsTests: XCTestCase {
         let elsewhere = await WakeSettingsReader(
             location: location, runner: named, roster: ["MA"], partitionURL: space.partition
         ).read()
-        XCTAssertNil(elsewhere.pins["MA"])
+        XCTAssertNil(elsewhere.usage["MA"])
     }
-
     // MARK: What a draft asks for
 
-    /// A dash and an empty field both take the setting out,  and a seat left with no wake line is
-    /// an inbox seat,  so the confirmation warns.
-    func test_clearing_a_setting_removes_it_and_warns_about_the_wake() async {
+    /// A dash and an empty field both take the setting out.
+    func test_clearing_a_setting_removes_it() async {
         let reading = await WakeSettingsStore.readDraft(
             seat: "MM",
-            values: [.wakeType: WakeSetting.unsetText, .model: ""],
-            before: [.wakeType: "muse", .model: "x"]
+            values: [.routineTimeout: WakeSetting.unsetText, .wakesPerHour: ""],
+            before: [.routineTimeout: "15", .wakesPerHour: "5"]
         )
         XCTAssertEqual(reading.edits, [
-            WakeSettingsWriter.Edit(seat: "MM", key: .wakeType, value: nil),
-            WakeSettingsWriter.Edit(seat: "MM", key: .model, value: nil),
+            WakeSettingsWriter.Edit(seat: "MM", key: .routineTimeout, value: nil),
+            WakeSettingsWriter.Edit(seat: "MM", key: .wakesPerHour, value: nil),
         ])
-        XCTAssertTrue(reading.stopsWaking)
         XCTAssertEqual(reading.refusals, [])
     }
 
-    /// A change to inbox is warned about before it happens.
-    @MainActor
-    func test_a_change_to_inbox_is_warned_about() async throws {
-        let space = try makeWorkspace()
-        let store = await makeStore(FakeListener(), space: space)
-        store.draft["MM", default: [:]][.wakeType] = "inbox"
-        let summary = store.applySummary(seat: "MM")
-        XCTAssertTrue(summary.contains("Wake type: muse to inbox"))
-        XCTAssertTrue(summary.contains("will stop waking"))
-        store.draft["MM", default: [:]][.wakeType] = "claude"
-        XCTAssertFalse(store.applySummary(seat: "MM").contains("will stop waking"))
+    /// The routine's variables are names the eavesdropper accepts, never a value and never the
+    /// CLI's own single-seat variable, and its timeout is from 1 to 60 seconds, as `_routine` says.
+    func test_a_routine_field_the_listener_would_refuse_is_refused() async {
+        let good = await WakeSettingsStore.readDraft(
+            seat: "MM",
+            values: [.routineURLEnv: "MM_ROUTER_URL", .routineKeyEnv: "_KEY_2", .routineTimeout: "60"],
+            before: [.routineURLEnv: "MM_ROUTINE_URL", .routineKeyEnv: "MM_ROUTINE_KEY", .routineTimeout: "15"]
+        )
+        XCTAssertEqual(good.refusals, [])
+        XCTAssertEqual(good.edits.count, 3)
+        for bad in ["https://router.example", "mm_routine_url", "1MM", "MM-URL", "ZULIP_API_KEY", "ZULIP_EMAIL"] {
+            let reading = await WakeSettingsStore.readDraft(
+                seat: "MM", values: [.routineURLEnv: bad], before: [.routineURLEnv: "MM_ROUTINE_URL"]
+            )
+            XCTAssertEqual(reading.edits, [], bad)
+            XCTAssertEqual(reading.refusals.count, 1, bad)
+            XCTAssertTrue(reading.refusals.first?.contains("never its value") == true, bad)
+        }
+        for bad in ["0", "0.5", "61", "-1", "soon"] {
+            let reading = await WakeSettingsStore.readDraft(
+                seat: "MM", values: [.routineTimeout: bad], before: [.routineTimeout: "15"]
+            )
+            XCTAssertEqual(reading.edits, [], bad)
+            XCTAssertEqual(reading.refusals.count, 1, bad)
+        }
     }
 
-    /// Every wake the eavesdropper knows is accepted,  and another is refused by name.
-    func test_a_wake_the_listener_does_not_know_is_refused() async {
-        let good = await WakeSettingsStore.readDraft(seat: "MM", values: [.wakeType: "openrouter"], before: [.wakeType: "muse"])
-        XCTAssertEqual(good.edits.count, 1)
-        XCTAssertEqual(good.refusals, [])
-        XCTAssertEqual(WakeType.allCases.map(\.rawValue), ["inbox", "claude", "http", "muse", "openrouter"])
-        let bad = await WakeSettingsStore.readDraft(seat: "MM", values: [.wakeType: "nonsense"], before: [.wakeType: "muse"])
-        XCTAssertEqual(bad.edits, [])
-        XCTAssertTrue(bad.refusals.first?.contains("nonsense") == true)
+    /// The method, the signing and the header are fixed by the router contract, so a draft of them
+    /// is refused by name and never written.
+    func test_the_contract_keys_are_refused() async {
+        let reading = await WakeSettingsStore.readDraft(
+            seat: "MM",
+            values: [.routineMethod: "PUT", .routineAuth: "header", .routineHeader: "X-Key"],
+            before: [.routineMethod: WakeSetting.unsetText, .routineAuth: WakeSetting.unsetText, .routineHeader: WakeSetting.unsetText]
+        )
+        XCTAssertEqual(reading.edits, [])
+        XCTAssertEqual(reading.refusals.count, 3)
+        XCTAssertTrue(reading.refusals.allSatisfy { $0.contains("router contract") })
     }
 
     /// An unchanged value writes nothing.
     func test_an_unchanged_draft_asks_for_nothing() async {
-        let reading = await WakeSettingsStore.readDraft(seat: "MM", values: [.model: "x"], before: [.model: "x"])
+        let reading = await WakeSettingsStore.readDraft(seat: "MM", values: [.routineURLEnv: "X"], before: [.routineURLEnv: "X"])
         XCTAssertEqual(reading, WakeSettingsStore.DraftReading())
-    }
-
-    /// A short fixed list is a picker,  and a value the file already holds stays on it.
-    func test_a_picker_offers_the_listed_values_and_what_the_file_holds() {
-        XCTAssertEqual(
-            WakeSettingKey.fallback.pickerOptions(current: WakeSetting.unsetText),
-            [WakeSetting.unsetText, "mcode", "openrouter"]
-        )
-        XCTAssertEqual(
-            WakeSettingKey.fallback.pickerOptions(current: "hand-written"),
-            [WakeSetting.unsetText, "mcode", "openrouter", "hand-written"]
-        )
-        XCTAssertEqual(WakeSettingKey.wakeType.pickerOptions(current: "muse")?.contains("openrouter"), true)
-        XCTAssertNil(WakeSettingKey.model.pickerOptions(current: "x"))
     }
 
     /// A live cap is a whole number,  because the eavesdropper ignores anything else.
@@ -1355,17 +1409,17 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertNil(WakeSettingKey.livePerHour.value(from: "2.5"))
         XCTAssertEqual(WakeSettingKey.livePerHour.value(from: "2"), .number(2))
         XCTAssertEqual(WakeSettingKey.wakesPerHour.value(from: "2.5"), .number(2.5))
+        XCTAssertEqual(WakeSettingKey.routineTimeout.value(from: "2.5"), .number(2.5))
+        XCTAssertEqual(WakeSettingKey.routineURLEnv.value(from: " MM_URL "), .text("MM_URL"))
     }
-
     /// One seat's row.
     private func row(
         _ key: WakeSettingKey,
         config: String? = nil,
-        status: String? = nil,
-        pins: [String: [String: PinEvidence]] = [:]
+        status: String? = nil
     ) -> WakeSetting {
         let model = WakeSettingsBuilder.build(
-            sources(config: config, status: status, pins: pins)
+            sources(config: config, status: status)
         )
         guard let seat = model.seats.first,
               let setting = seat.settings.first(where: { $0.key == key }) else {
@@ -1406,24 +1460,33 @@ final class WakeSettingsTests: XCTestCase {
     }
 
     /// A setting the file does not hold is the eavesdropper's default,  and says so.
-    func test_a_setting_the_file_does_not_hold_is_the_default() {
+    func test_a_setting_the_file_does_not_hold_is_the_default() throws {
         let without = """
-        [seat.MM]
-        bot = "MM"
-        wake = "muse"
+        [seat.GB-COMPILER]
+        bot = "GB-Compiler"
+        routine = {}
         """
-        let setting = row(.model, config: without, status: statusJSON)
-        XCTAssertEqual(setting.state, .unset)
-        XCTAssertTrue(setting.note.contains("default"))
+        var input = sources(config: without, status: statusJSON)
+        input.seats = ["GB-COMPILER"]
+        input.partition = ListenerPartition(seats: ["GB-COMPILER": "mac"])
+        let seat = try XCTUnwrap(WakeSettingsBuilder.build(input).seats.first)
+        let url = try XCTUnwrap(seat.settings.first(where: { $0.key == .routineURLEnv }))
+        XCTAssertEqual(url.state, .unset)
+        // The eavesdropper's own default, `env_code(seat) + "_ROUTINE_URL"`.
+        XCTAssertTrue(url.note.contains("GB_COMPILER_ROUTINE_URL"), url.note)
+        let header = try XCTUnwrap(seat.settings.first(where: { $0.key == .routineHeader }))
+        XCTAssertTrue(header.note.contains("Authorization"), header.note)
+        XCTAssertNil(header.contractDifference)
     }
 
-    /// The eavesdropper does not publish the fallback's container rule,  so the panel says so
-    /// instead of claiming it is in effect.
+    /// The eavesdropper does not publish the routine's settings,  only whether it can be reached,
+    /// so the panel says so instead of claiming the file's value is in effect.
     func test_a_setting_the_listener_does_not_publish_is_not_reported() {
-        let setting = row(.fallbackUncontained, status: statusJSON)
+        let setting = row(.routineURLEnv, status: statusJSON)
         XCTAssertEqual(setting.state, .unpublished)
         XCTAssertNil(setting.live)
-        XCTAssertEqual(setting.configured, .bool(true))
+        XCTAssertEqual(setting.configured, .text("MM_ROUTINE_URL"))
+        XCTAssertFalse(setting.state.isProblem)
     }
 
     /// The dollar cap is read but never enforced,  so Muster will not write it.
@@ -1433,64 +1496,6 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(WakeSettingKey.usdPerDay.isEnforced, false)
         XCTAssertNotNil(WakeSettingKey.usdPerDay.refusalReason)
         XCTAssertNil(WakeSettingKey.wakesPerHour.refusalReason)
-    }
-
-    /// A configured fallback that no pin proves is unproven,  and never a pass.
-    func test_a_configured_fallback_with_no_pin_is_unproven() {
-        let setting = row(.fallback, status: statusJSON)
-        XCTAssertEqual(setting.state, .unproven)
-        XCTAssertTrue(setting.state.isProblem)
-    }
-
-    /// A fallback pin file the eavesdropper gives no verdict on is not a pass:  it is NOT REPORTED,
-    /// and the note says the file is there.  The mcode binary its pin names still matches.
-    func test_a_pinned_fallback_is_not_reported() {
-        let pins = ["MM": ["mcode": PinEvidence(
-            runtime: "mcode",
-            binary: "/tmp/fixture-apps/mcode-bin",
-            model: "mcode-model",
-            verifiedAt: Date(timeIntervalSince1970: 1_792_535_804),
-            pinned: true,
-            why: nil
-        )]]
-        let setting = row(.fallback, status: statusJSON, pins: pins)
-        XCTAssertEqual(setting.state, .unpublished)
-        XCTAssertNil(setting.live)
-        XCTAssertTrue(setting.note.contains("pin file is there"))
-        let mcode = row(.mcodePath, status: statusJSON, pins: pins)
-        XCTAssertEqual(mcode.state, .match)
-    }
-
-    /// A model no pin proves is unproven.
-    func test_a_model_no_pin_proves_is_unproven() {
-        let setting = row(.model, status: statusJSON)
-        XCTAssertEqual(setting.state, .unproven)
-    }
-
-    /// A model a pin proves is a pass,  and the pin's age comes with it.
-    func test_a_model_a_pin_proves_is_a_pass() {
-        let pins = ["MM": ["muse": PinEvidence(
-            runtime: "muse",
-            binary: "/tmp/fixture-apps/muse-bin",
-            model: "muse-spark-1.3-contributor",
-            verifiedAt: Date(timeIntervalSince1970: 1_792_535_804),
-            pinned: true,
-            why: nil
-        )]]
-        let setting = row(.model, status: statusJSON, pins: pins)
-        XCTAssertEqual(setting.state, .match)
-        XCTAssertTrue(setting.note.contains("pin"))
-    }
-
-    /// A binary the file names on the PATH is the same binary as the resolved live path.
-    func test_a_binary_named_on_the_path_matches_the_resolved_path() {
-        let named = """
-        [seat.MM]
-        wake = "muse"
-        muse = "muse-bin-1.4.11-R6667.1"
-        """
-        let setting = row(.musePath, config: named, status: statusJSON)
-        XCTAssertEqual(setting.state, .match)
     }
 
     /// The host load gate stays off,  and is shown as off.
@@ -1549,15 +1554,14 @@ final class WakeSettingsTests: XCTestCase {
     /// A running eavesdropper lists a seat the file turns off under `disabled` and not under
     /// `seats`,  so its settings are neither unknown nor a problem.  A stopped one has said nothing.
     func test_a_seat_the_file_turns_off_is_not_a_problem() throws {
-        let config = "[seat.MM]\nbot = \"MM\"\nenabled = false\nmodel = \"x\"\nfallback = \"mcode\"\nbudget = { wakes_per_hour = 5 }\n"
+        let config = "[seat.MM]\nbot = \"MM\"\nenabled = false\nroutine = { url_env = \"MM_ROUTINE_URL\" }\nbudget = { wakes_per_hour = 5 }\n"
         let running = #"{"running": true, "status": {"disabled": ["MM"], "seats": {}}}"#
         let setting = row(.wakesPerHour, config: config, status: running)
         XCTAssertEqual(setting.state, .seatOff)
         XCTAssertFalse(setting.state.isProblem)
         XCTAssertFalse(setting.note.contains("not known"))
-        // Nobody needs a pin for a model or a fallback on a seat that is off.
-        XCTAssertEqual(row(.model, config: config, status: running).state, .seatOff)
-        XCTAssertEqual(row(.fallback, config: config, status: running).state, .seatOff)
+        // The routine a seat that is off holds is not in use either.
+        XCTAssertEqual(row(.routineURLEnv, config: config, status: running).state, .seatOff)
         let seat = try XCTUnwrap(WakeSettingsBuilder.build(sources(config: config, status: running)).seats.first)
         XCTAssertTrue(seat.disabledInFile)
         XCTAssertFalse(seat.needsAttention)
@@ -1644,7 +1648,7 @@ final class WakeSettingsTests: XCTestCase {
             document.value(section: "seat.MM", key: "budget", subPath: ["wakes_per_day"]),
             .number(80)
         )
-        XCTAssertEqual(document.value(section: "seat.MM", key: "wake"), .text("muse"))
+        XCTAssertEqual(document.value(section: "seat.MM", key: "wake"), .text("http"))
     }
 
     /// The file the writer leaves behind is one the runtime can read.
@@ -1654,15 +1658,16 @@ final class WakeSettingsTests: XCTestCase {
 
         let writer = WakeSettingsWriter(configURL: url, partitionURL: space.partition)
         try writer.apply([
-            WakeSettingsWriter.Edit(seat: "MM", key: .model, value: .text("another-model")),
-            WakeSettingsWriter.Edit(seat: "MM", key: .fallbackUncontained, value: .bool(false)),
+            WakeSettingsWriter.Edit(seat: "MM", key: .routineURLEnv, value: .text("MM_ROUTER_URL")),
+            WakeSettingsWriter.Edit(seat: "MM", key: .routineTimeout, value: .number(30)),
         ])
 
         let document = ListenerConfigDocument(
             text: try String(contentsOf: url, encoding: .utf8)
         )
-        XCTAssertEqual(document.value(section: "seat.MM", key: "model"), .text("another-model"))
-        XCTAssertEqual(document.value(section: "seat.MM", key: "fallback_uncontained_ok"), .bool(false))
+        XCTAssertEqual(document.value(section: "seat.MM", key: "routine", subPath: ["url_env"]), .text("MM_ROUTER_URL"))
+        XCTAssertEqual(document.value(section: "seat.MM", key: "routine", subPath: ["timeout_seconds"]), .number(30))
+        XCTAssertEqual(document.value(section: "seat.MM", key: "routine", subPath: ["key_env"]), .text("MM_ROUTINE_KEY"))
         XCTAssertEqual(document.problems, [])
     }
 
@@ -1701,24 +1706,6 @@ final class WakeSettingsTests: XCTestCase {
     }
 
     // MARK: The command line
-
-    /// A test wake names a runtime only when the CLI knows that runtime.
-    func test_a_test_wake_names_a_runtime_only_when_the_cli_knows_it() throws {
-        XCTAssertEqual(
-            try SimpleToolsInvocation.testWakeRun(seat: "MM", runtime: "muse").arguments,
-            ["daemon", "test-wake", "--seat", "MM", "--runtime", "muse", "--run"]
-        )
-        // `inbox` and `http` are wake types but not CLI runtimes:  naming one made argparse
-        // exit 2 with "invalid choice",  so both buttons always failed.
-        XCTAssertEqual(
-            try SimpleToolsInvocation.testWakeRun(seat: "MM", runtime: nil).arguments,
-            ["daemon", "test-wake", "--seat", "MM", "--run"]
-        )
-        XCTAssertEqual(
-            try SimpleToolsInvocation.testWakePin(seat: "MM", runtime: nil).arguments,
-            ["daemon", "test-wake", "--seat", "MM", "--pin"]
-        )
-    }
 
     /// The CLI executable and commandLine use `simple-chat`.
     func test_the_command_line_uses_simple_chat() {
@@ -1859,5 +1846,392 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertNil(exhaustedSeat.quotaRemaining)
         XCTAssertTrue(exhaustedSeat.quotaExhausted)
         XCTAssertEqual(exhaustedSeat.quotaSource, "provider_quota")
+    }
+
+    // MARK: The routine table
+
+    /// `_routine`'s own rules, as Muster mirrors them:  every problem the listener names, in its
+    /// own words, and none for a table it accepts.
+    func test_the_routine_rules_match_the_listener() {
+        XCTAssertEqual(WakeRoutineRules.envCode("GB-COMPILER"), "GB_COMPILER")
+        XCTAssertEqual(WakeRoutineRules.envCode("mm"), "MM")
+        XCTAssertEqual(WakeRoutineRules.problems(seat: "MM", routine: [:]), [])
+        XCTAssertEqual(WakeRoutineRules.problems(seat: "MM", routine: [
+            "url_env": .text("MM_ROUTINE_URL"), "key_env": .text("MM_ROUTINE_KEY"),
+            "method": .text("post"), "auth": .text("bearer"), "header": .text("Authorization"),
+            "timeout_seconds": .number(60), "cost_usd": .number(0.5),
+        ]), [])
+        func problems(_ routine: [String: ListenerConfigValue]) -> [String] {
+            WakeRoutineRules.problems(seat: "MM", routine: routine)
+        }
+        XCTAssertEqual(problems(["colour": .text("x")]), ["seat.MM.routine.colour is not a known routine setting"])
+        XCTAssertEqual(problems(["url_env": .text("lower")]), ["seat.MM.routine.url_env must be an environment variable name (upper case letters, digits and _)"])
+        XCTAssertEqual(problems(["key_env": .number(5)]), ["seat.MM.routine.key_env must be an environment variable name (upper case letters, digits and _)"])
+        XCTAssertTrue(problems(["key_env": .text("ZULIP_RC")]).first?.contains("single-seat variable") == true)
+        XCTAssertEqual(problems(["url_env": .text("SAME"), "key_env": .text("SAME")]), ["seat.MM.routine.url_env and key_env must be different variables"])
+        // The defaults count too:  naming the default key variable as the address is a clash.
+        XCTAssertEqual(problems(["url_env": .text("MM_ROUTINE_KEY")]), ["seat.MM.routine.url_env and key_env must be different variables"])
+        XCTAssertEqual(problems(["method": .text("GET")]), ["seat.MM.routine.method must be one of POST, PUT, PATCH"])
+        XCTAssertEqual(problems(["auth": .text("basic")]), ["seat.MM.routine.auth must be one of header, bearer, hmac-sha256"])
+        XCTAssertTrue(problems(["header": .text("Content-Type")]).first?.contains("header must be an HTTP header name") == true)
+        XCTAssertTrue(problems(["header": .text("X Key")]).first?.contains("header must be an HTTP header name") == true)
+        XCTAssertEqual(problems(["signature_prefix": .text("v1=")]), ["seat.MM.routine.signature_prefix applies only to auth = \"hmac-sha256\""])
+        XCTAssertEqual(problems(["signature_prefix": .text("v1="), "auth": .text("hmac-sha256")]), [])
+        XCTAssertEqual(problems(["signature_prefix": .text("a b")]), ["seat.MM.routine.signature_prefix must be up to 32 letters, digits or =:_.-"])
+        XCTAssertEqual(problems(["timeout_seconds": .number(0.5)]), ["seat.MM.routine.timeout_seconds must be a number of at least 1"])
+        XCTAssertEqual(problems(["timeout_seconds": .number(61)]), ["seat.MM.routine.timeout_seconds must be 60 or less"])
+        XCTAssertEqual(problems(["timeout_seconds": .bool(true)]), ["seat.MM.routine.timeout_seconds must be a number of at least 1"])
+        XCTAssertEqual(problems(["cost_usd": .number(-1)]), ["seat.MM.routine.cost_usd must be a number of at least 0"])
+    }
+
+    /// Muster never writes a `wake` line:  no setting it knows lives there, and a write to a seat
+    /// whose section still holds one leaves that line exactly as it was.
+    func test_muster_never_writes_a_wake_key() throws {
+        for key in WakeSettingKey.allCases {
+            XCTAssertNotEqual(key.configLocation.key, "wake", key.rawValue)
+            XCTAssertFalse(key.configLocation.subPath.contains("wake"), key.rawValue)
+        }
+        let config = "[seat.MM]\nbot = \"MM\"\nwake = \"muse\"\nroutine = { url_env = \"MM_ROUTINE_URL\" }\n"
+        let space = try makeWorkspace(config: config)
+        let writer = WakeSettingsWriter(configURL: space.config, partitionURL: space.partition)
+        try writer.apply([
+            WakeSettingsWriter.Edit(seat: "MM", key: .routineKeyEnv, value: .text("MM_SIGNING_KEY")),
+            WakeSettingsWriter.Edit(seat: "MM", key: .wakesPerHour, value: .number(4)),
+        ])
+        let written = try String(contentsOf: space.config, encoding: .utf8)
+        XCTAssertTrue(written.contains("wake = \"muse\"\n"))
+        XCTAssertEqual(written.components(separatedBy: "wake =").count, 2, written)
+        let document = ListenerConfigDocument(text: written)
+        XCTAssertEqual(document.value(section: "seat.MM", key: "routine", subPath: ["key_env"]), .text("MM_SIGNING_KEY"))
+        XCTAssertEqual(document.problems, [])
+    }
+
+    /// A routine under its own `[seat.X.routine]` header is written there, in the form the file
+    /// already has, and never as a second, inline table.
+    func test_a_routine_under_its_own_header_keeps_its_form() throws {
+        let config = """
+        [seat.MM]
+        bot = "MM"
+
+        [seat.MM.routine]
+        url_env = "MM_ROUTINE_URL"
+        # the key the router signs with
+        key_env = "MM_ROUTINE_KEY"
+        """
+        let space = try makeWorkspace(config: config)
+        let writer = WakeSettingsWriter(configURL: space.config, partitionURL: space.partition)
+        try writer.apply([
+            WakeSettingsWriter.Edit(seat: "MM", key: .routineKeyEnv, value: .text("MM_SIGNING_KEY")),
+            WakeSettingsWriter.Edit(seat: "MM", key: .routineTimeout, value: .number(20)),
+        ])
+        let written = try String(contentsOf: space.config, encoding: .utf8)
+        let document = ListenerConfigDocument(text: written)
+        XCTAssertNil(document.assignment(section: "seat.MM", key: "routine"))
+        XCTAssertEqual(document.routineForm(seat: "MM"), .subTable)
+        XCTAssertEqual(document.value(section: "seat.MM.routine", key: "key_env"), .text("MM_SIGNING_KEY"))
+        XCTAssertEqual(document.value(section: "seat.MM.routine", key: "timeout_seconds"), .number(20))
+        XCTAssertTrue(written.contains("# the key the router signs with"))
+
+        // Taking a key out of a table under its own header leaves the header, so the seat still Wakes.
+        try writer.apply([WakeSettingsWriter.Edit(seat: "MM", key: .routineTimeout, value: nil)])
+        let after = ListenerConfigDocument(text: try String(contentsOf: space.config, encoding: .utf8))
+        XCTAssertEqual(after.routineForm(seat: "MM"), .subTable)
+        XCTAssertNil(after.value(section: "seat.MM.routine", key: "timeout_seconds"))
+    }
+
+    /// A seat that Captures Only is never given a routine here, a routine Muster cannot read is
+    /// never written, the last setting of an inline table is never taken out, and a table the
+    /// listener would refuse never reaches the file.
+    func test_the_writer_never_changes_what_a_seat_is() throws {
+        let config = """
+        [seat.MM]
+        bot = "MM"
+        wake = "muse"
+
+        [seat.MC]
+        bot = "MC"
+        routine = { url_env = "MC_ROUTINE_URL" }
+
+        [seat.ZC]
+        bot = "ZC"
+        routine = "https://router.example"
+        """
+        let space = try makeWorkspace(config: config)
+        try "[seats]\nMM = \"mac\"\nMC = \"mac\"\nZC = \"mac\"\n".write(to: space.partition, atomically: true, encoding: .utf8)
+        let writer = WakeSettingsWriter(configURL: space.config, partitionURL: space.partition)
+        XCTAssertThrowsError(try writer.apply([
+            WakeSettingsWriter.Edit(seat: "MM", key: .routineURLEnv, value: .text("MM_ROUTINE_URL")),
+        ])) { error in
+            XCTAssertEqual(error as? WakeSettingsWriter.WriteError, .noRoutineTable("MM"))
+        }
+        XCTAssertThrowsError(try writer.apply([
+            WakeSettingsWriter.Edit(seat: "ZC", key: .routineTimeout, value: .number(20)),
+        ])) { error in
+            guard case WakeSettingsWriter.WriteError.unreadableRoutine(let seat, _) = error else {
+                return XCTFail("the wrong refusal: \(error)")
+            }
+            XCTAssertEqual(seat, "ZC")
+        }
+        XCTAssertThrowsError(try writer.apply([
+            WakeSettingsWriter.Edit(seat: "MC", key: .routineURLEnv, value: nil),
+        ])) { error in
+            XCTAssertEqual(error as? WakeSettingsWriter.WriteError, .lastRoutineSetting("MC"))
+        }
+        XCTAssertThrowsError(try writer.apply([
+            WakeSettingsWriter.Edit(seat: "MC", key: .routineKeyEnv, value: .text("MC_ROUTINE_URL")),
+        ])) { error in
+            XCTAssertEqual(
+                error as? WakeSettingsWriter.WriteError,
+                .routineRefused(seat: "MC", problems: ["seat.MC.routine.url_env and key_env must be different variables"])
+            )
+        }
+        XCTAssertEqual(try String(contentsOf: space.config, encoding: .utf8), config)
+        // A cap on a seat that Captures Only is still written, as it was before.
+        XCTAssertNoThrow(try writer.apply([
+            WakeSettingsWriter.Edit(seat: "MM", key: .wakesPerHour, value: .number(3)),
+        ]))
+        let document = ListenerConfigDocument(text: try String(contentsOf: space.config, encoding: .utf8))
+        XCTAssertEqual(document.routineForm(seat: "MM"), .absent)
+    }
+
+    // MARK: The review round on #1720
+
+    /// The five wake caps take 0 as Paused (#1735:  `wakes.py` `at_cap` is reached at once), so 0
+    /// is written for them and reads Paused.  The live caps `live.py` still compares with `>=`
+    /// (`per_hour`, `per_day`, `owner_per_day`) keep their defaults, so 0 there would stop every
+    /// live turn, and Muster still refuses it.  The live loop turns and minutes per topic treat 0
+    /// as off and as no spacing, so 0 stays a real value for those two.
+    func test_a_zero_cap_is_paused_for_wake_caps_and_refused_where_it_stops_every_wake() async {
+        let wakeCaps: [WakeSettingKey] = [.wakesPerHour, .wakesPerDay, .perTopicPerHour, .ownerPerDay, .ownerPerTopicPerHour]
+        XCTAssertEqual(WakeSettingKey.allCases.filter(\.isWakeCap), wakeCaps)
+        for key in wakeCaps {
+            XCTAssertFalse(key.zeroStopsEveryWake, key.rawValue)
+            XCTAssertNil(key.fieldProblem(.number(0)), key.rawValue)
+            let reading = await WakeSettingsStore.readDraft(seat: "MM", values: [key: "0"], before: [key: "5"])
+            XCTAssertEqual(reading.edits, [WakeSettingsWriter.Edit(seat: "MM", key: key, value: .number(0))], key.rawValue)
+            XCTAssertEqual(reading.refusals, [], key.rawValue)
+            XCTAssertEqual(reading.changes, ["\(key.title): 5 to 0 (Paused)"], key.rawValue)
+            XCTAssertEqual(WakeSettingKey.wakeCapText(.number(0)), "Paused")
+        }
+        for key in [WakeSettingKey.livePerHour, .livePerDay, .liveOwnerPerDay] {
+            XCTAssertTrue(key.zeroStopsEveryWake, key.rawValue)
+            let reading = await WakeSettingsStore.readDraft(seat: "MM", values: [key: "0"], before: [key: "5"])
+            XCTAssertEqual(reading.edits, [], key.rawValue)
+            XCTAssertEqual(reading.refusals, ["\(key.title): 0 would stop every wake.\u{00A0} A no-limit setting waits on the listener change."], key.rawValue)
+            // Any other number is still a cap.
+            let one = await WakeSettingsStore.readDraft(seat: "MM", values: [key: "1"], before: [key: "5"])
+            XCTAssertEqual(one.edits, [WakeSettingsWriter.Edit(seat: "MM", key: key, value: .number(1))], key.rawValue)
+        }
+        for key in [WakeSettingKey.liveLoopTurns, .livePerTopicMinutes] {
+            XCTAssertFalse(key.zeroStopsEveryWake, key.rawValue)
+            let reading = await WakeSettingsStore.readDraft(seat: "MM", values: [key: "0"], before: [key: "3"])
+            XCTAssertEqual(reading.edits, [WakeSettingsWriter.Edit(seat: "MM", key: key, value: .number(0))], key.rawValue)
+        }
+    }
+
+    /// A wake cap the file does not hold reads No Limit in the file's column, and one the
+    /// eavesdropper's published budget leaves out reads No Limit in its column (#1735 publishes only
+    /// the caps a seat holds).  A cap of 0 reads Paused in both.  A status with no budget at all
+    /// says nothing about the caps, and a file that was not read is never No Limit.
+    func test_an_unset_wake_cap_reads_no_limit_and_zero_reads_paused() throws {
+        let config = "[seat.MM]\nbot = \"MM\"\nwake = \"http\"\nroutine = { url_env = \"MM_ROUTINE_URL\" }\nbudget = { wakes_per_day = 0, per_topic_per_hour = 3 }\n"
+        let status = #"{"running": true, "status": {"seats": {"MM": {"bot": "MM", "budget": {"usd_per_day": 2.0, "wakes_per_day": 0, "per_topic_per_hour": 3}}}}}"#
+        let seat = try XCTUnwrap(WakeSettingsBuilder.build(sources(config: config, status: status)).seats.first)
+        func row(_ key: WakeSettingKey) throws -> WakeSetting {
+            try XCTUnwrap(seat.settings.first(where: { $0.key == key }), key.rawValue)
+        }
+
+        let hour = try row(.wakesPerHour)
+        XCTAssertNil(hour.configured)
+        XCTAssertNil(hour.live)
+        XCTAssertTrue(hour.liveNoLimit)
+        XCTAssertEqual(hour.state, .unset)
+        XCTAssertEqual(hour.fileWords, "No Limit")
+        XCTAssertEqual(hour.liveWords, "No Limit")
+        XCTAssertTrue(hour.note.contains("Clearing the field is how to choose No Limit"), hour.note)
+        XCTAssertFalse(hour.state.isProblem)
+
+        let day = try row(.wakesPerDay)
+        XCTAssertEqual(day.state, .match)
+        XCTAssertEqual(day.fileWords, "Paused")
+        XCTAssertEqual(day.liveWords, "Paused")
+
+        let topic = try row(.perTopicPerHour)
+        XCTAssertEqual(topic.fileWords, "3")
+        XCTAssertEqual(topic.liveWords, "3")
+        XCTAssertEqual(topic.state, .match)
+
+        // The owner caps are unset in both, so both read No Limit too.
+        XCTAssertEqual(try row(.ownerPerDay).liveWords, "No Limit")
+        XCTAssertEqual(try row(.ownerPerTopicPerHour).fileWords, "No Limit")
+        // The live caps keep their own words:  nothing about No Limit.
+        XCTAssertEqual(try row(.livePerHour).fileWords, "not set")
+        XCTAssertEqual(try row(.livePerHour).liveWords, "not reported")
+
+        // A cap the file holds and the published budget leaves out is not what the eavesdropper
+        // uses:  it runs with No Limit.
+        let capped = config.replacingOccurrences(of: "per_topic_per_hour = 3", with: "per_topic_per_hour = 3, wakes_per_hour = 6")
+        let drifted = try XCTUnwrap(
+            WakeSettingsBuilder.build(sources(config: capped, status: status)).seats.first?.settings.first(where: { $0.key == .wakesPerHour })
+        )
+        XCTAssertEqual(drifted.state, .drift)
+        XCTAssertEqual(drifted.liveWords, "No Limit")
+        XCTAssertTrue(drifted.note.contains("using No Limit"), drifted.note)
+        XCTAssertTrue(drifted.note.contains("file holds 6"), drifted.note)
+
+        // A status with no budget says nothing, so the eavesdropper's column is not No Limit.
+        let silent = #"{"running": true, "status": {"seats": {"MM": {"bot": "MM"}}}}"#
+        let quiet = try XCTUnwrap(
+            WakeSettingsBuilder.build(sources(config: capped, status: silent)).seats.first?.settings.first(where: { $0.key == .wakesPerHour })
+        )
+        XCTAssertFalse(quiet.liveNoLimit)
+        XCTAssertEqual(quiet.state, .unpublished)
+        XCTAssertEqual(quiet.liveWords, "not reported")
+
+        // A file that was not read is not known, never No Limit.
+        var unread = sources(config: "", status: status)
+        unread.configProblem = "denied"
+        let unknown = try XCTUnwrap(WakeSettingsBuilder.build(unread).seats.first?.settings.first(where: { $0.key == .wakesPerHour }))
+        XCTAssertEqual(unknown.state, .unknown)
+        XCTAssertEqual(unknown.fileWords, "not set")
+    }
+
+    /// Kody on #1760:  a file that holds no wake cap says No Limit, so a cap the eavesdropper
+    /// published beside it is not what the file chooses.  That is DRIFT, never a harmless DEFAULT,
+    /// and the note says what each side holds.  A setting that is not a wake cap and that the file
+    /// leaves out is still the eavesdropper's default.
+    func test_a_file_with_no_wake_cap_beside_a_published_cap_is_drift() throws {
+        let config = "[seat.MM]\nbot = \"MM\"\nwake = \"http\"\nroutine = { url_env = \"MM_ROUTINE_URL\" }\nbudget = { wakes_per_day = 0 }\n"
+        let status = #"{"running": true, "status": {"seats": {"MM": {"bot": "MM", "budget": {"wakes_per_hour": 5, "wakes_per_day": 0}, "live": {"per_hour": 6}}}}}"#
+        let seat = try XCTUnwrap(WakeSettingsBuilder.build(sources(config: config, status: status)).seats.first)
+        let hour = try XCTUnwrap(seat.settings.first(where: { $0.key == .wakesPerHour }))
+        XCTAssertNil(hour.configured)
+        XCTAssertEqual(hour.live, .number(5))
+        XCTAssertEqual(hour.state, .drift)
+        XCTAssertTrue(hour.state.isProblem)
+        XCTAssertTrue(seat.needsAttention)
+        XCTAssertEqual(hour.fileWords, "No Limit")
+        XCTAssertEqual(hour.liveWords, "5")
+        XCTAssertEqual(hour.effectiveLimit, .cap(.number(5)))
+        XCTAssertEqual(hour.note, "The eavesdropper is using 5,  and the file holds no cap, so it says No Limit.")
+        XCTAssertFalse(hour.note.contains("sets none of its own"), hour.note)
+
+        // A wake cap both sides leave out is still No Limit, and no problem.
+        let owner = try XCTUnwrap(seat.settings.first(where: { $0.key == .ownerPerDay }))
+        XCTAssertEqual(owner.state, .unset)
+        XCTAssertEqual(owner.fileWords, "No Limit")
+
+        // A live cap the file leaves out keeps the eavesdropper's default, as before.
+        let live = try XCTUnwrap(seat.settings.first(where: { $0.key == .livePerHour }))
+        XCTAssertNil(live.configured)
+        XCTAssertEqual(live.live, .number(6))
+        XCTAssertEqual(live.state, .unset)
+
+        // From a stopped eavesdropper's status the drift is not current, and the file's column
+        // still says No Limit, since the file was read.
+        let stopped = status.replacingOccurrences(of: "\"running\": true", with: "\"running\": false")
+        let old = try XCTUnwrap(
+            WakeSettingsBuilder.build(sources(config: config, status: stopped)).seats.first?.settings.first(where: { $0.key == .wakesPerHour })
+        )
+        XCTAssertEqual(old.state, .stale)
+        XCTAssertEqual(old.fileWords, "No Limit")
+        XCTAssertEqual(old.liveWords, "5")
+    }
+
+    /// Kody and Sentry on #1760:  the usage line holds each count beside the limit the
+    /// eavesdropper uses, read the way the grid reads it.  A budget it published without a cap is
+    /// No Limit, even when the file holds one, and is never reached.  A cap of 0 is Paused.  With
+    /// no budget published, a file that was read decides, and one that was not read makes no
+    /// claim at all.
+    func test_the_usage_line_reads_the_limit_the_eavesdropper_uses() throws {
+        let usage = ["MM": WakeUsage(wakesThisHour: 7, wakesThisDay: 2, worstTopicThisHour: 3)]
+        let config = "[seat.MM]\nbot = \"MM\"\nwake = \"http\"\nroutine = { url_env = \"MM_ROUTINE_URL\" }\nbudget = { wakes_per_hour = 6, wakes_per_day = 0, per_topic_per_hour = 3 }\n"
+        let status = #"{"running": true, "status": {"seats": {"MM": {"bot": "MM", "budget": {"wakes_per_day": 0, "per_topic_per_hour": 3}}}}}"#
+        func seat(config: String, status: String?, configProblem: String? = nil) throws -> WakeSeat {
+            var input = sources(config: config, status: status, usage: usage)
+            input.configProblem = configProblem
+            return try XCTUnwrap(WakeSettingsBuilder.build(input).seats.first)
+        }
+
+        // The file holds 6 and the published budget holds none:  No Limit, and not reached.
+        let mm = try seat(config: config, status: status)
+        XCTAssertEqual(mm.settings.first(where: { $0.key == .wakesPerHour })?.state, .drift)
+        XCTAssertEqual(mm.capLimit(.wakesPerHour), .noLimit)
+        let facts = mm.usageFacts
+        XCTAssertEqual(facts[0], WakeFact(text: "7 (No Limit) wakes in the last hour", emphasised: false))
+        XCTAssertFalse(facts[0].text.contains("of 6"), facts[0].text)
+        // A published 0 is Paused, and always reached.
+        XCTAssertEqual(mm.capLimit(.wakesPerDay), .paused)
+        XCTAssertEqual(facts[1], WakeFact(text: "2 of 0 (Paused) wakes in the last 24 hours", emphasised: true))
+        // A published cap is a cap, reached at it.
+        XCTAssertEqual(facts[3], WakeFact(text: "3 of 3 on the busiest topic, last hour", emphasised: true))
+        // A cap neither side holds is No Limit.
+        XCTAssertEqual(facts[2], WakeFact(text: "0 (No Limit) owner wakes in the last 24 hours", emphasised: false))
+
+        // With no budget published, the file's 6 decides, and 7 has reached it.
+        let silent = #"{"running": true, "status": {"seats": {"MM": {"bot": "MM"}}}}"#
+        let fileOnly = try seat(config: config, status: silent)
+        XCTAssertEqual(fileOnly.capLimit(.wakesPerHour), .cap(.number(6)))
+        XCTAssertEqual(fileOnly.usageFacts[0], WakeFact(text: "7 of 6 wakes in the last hour", emphasised: true))
+        // And a file that was read and holds no cap is No Limit.
+        XCTAssertEqual(fileOnly.capLimit(.ownerPerDay), .noLimit)
+
+        // A file that was not read, beside a status with no budget or no status at all, says
+        // nothing about the limit:  never No Limit, and never reached.
+        for unread in [silent, nil] {
+            let blind = try seat(config: "", status: unread, configProblem: "denied")
+            XCTAssertEqual(blind.capLimit(.wakesPerHour), .notKnown)
+            let fact = blind.usageFacts[0]
+            XCTAssertEqual(fact, WakeFact(text: "7 (limit not known) wakes in the last hour", emphasised: false))
+            XCTAssertFalse(fact.text.contains(WakeSettingKey.noLimitText), fact.text)
+        }
+
+        // A file that was not read beside a published budget reads the budget.
+        let published = try seat(config: "", status: status, configProblem: "denied")
+        XCTAssertEqual(published.capLimit(.wakesPerHour), .noLimit)
+        XCTAssertEqual(published.capLimit(.wakesPerDay), .paused)
+    }
+
+    /// Clearing a wake cap's field takes the key out of the file, which is how to choose No Limit,
+    /// and the confirmation says so.
+    func test_clearing_a_wake_cap_writes_no_key_and_reads_no_limit() async throws {
+        let reading = await WakeSettingsStore.readDraft(seat: "MM", values: [.wakesPerHour: ""], before: [.wakesPerHour: "5"])
+        XCTAssertEqual(reading.edits, [WakeSettingsWriter.Edit(seat: "MM", key: .wakesPerHour, value: nil)])
+        XCTAssertEqual(reading.changes, ["Wakes per hour: 5 to No Limit"])
+
+        let space = try makeWorkspace()
+        let writer = WakeSettingsWriter(configURL: space.config, partitionURL: space.partition)
+        try writer.apply(reading.edits)
+        let document = ListenerConfigDocument(text: try String(contentsOf: space.config, encoding: .utf8))
+        XCTAssertNil(document.value(section: "seat.MM", key: "budget", subPath: ["wakes_per_hour"]))
+        XCTAssertEqual(document.value(section: "seat.MM", key: "budget", subPath: ["wakes_per_day"]), .number(80))
+        XCTAssertFalse(try String(contentsOf: space.config, encoding: .utf8).contains("wakes_per_hour"))
+        XCTAssertEqual(document.problems, [])
+        XCTAssertTrue(WakeSettingKey.wakeCapHelp.contains("Clear the field for No Limit"))
+        XCTAssertTrue(WakeSettingKey.wakeCapHelp.contains("no wake of this kind is allowed while it is 0"))
+    }
+
+    /// One batch that clears the only key of an inline routine table and sets another is judged on
+    /// the table it leaves:  every set lands before any clear, so the table keeps the new key and is
+    /// never taken out.  Clearing the only key with nothing set beside it is still refused.
+    func test_a_clear_and_a_set_in_one_batch_keep_a_one_key_routine_table() throws {
+        let config = "[seat.MM]\nbot = \"MM\"\nroutine = { url_env = \"MM_ROUTINE_URL\" }\n"
+        let space = try makeWorkspace(config: config)
+        let writer = WakeSettingsWriter(configURL: space.config, partitionURL: space.partition)
+        // The clear is listed first, as the draft lists the keys:  the writer still sets first.
+        try writer.apply([
+            WakeSettingsWriter.Edit(seat: "MM", key: .routineURLEnv, value: nil),
+            WakeSettingsWriter.Edit(seat: "MM", key: .routineKeyEnv, value: .text("MM_SIGNING_KEY")),
+        ])
+        let document = ListenerConfigDocument(text: try String(contentsOf: space.config, encoding: .utf8))
+        XCTAssertEqual(document.routineForm(seat: "MM"), .inline)
+        XCTAssertEqual(document.routineTable(seat: "MM"), ["key_env": .text("MM_SIGNING_KEY")])
+        XCTAssertEqual(document.problems, [])
+
+        XCTAssertThrowsError(try writer.apply([
+            WakeSettingsWriter.Edit(seat: "MM", key: .routineKeyEnv, value: nil),
+        ])) { error in
+            XCTAssertEqual(error as? WakeSettingsWriter.WriteError, .lastRoutineSetting("MM"))
+        }
     }
 }

@@ -5,6 +5,11 @@ on:
     # Every 6 hours (aligned with agent-calendar)
     - cron: "25 1,7,13,19 * * *"
   workflow_dispatch:
+    inputs:
+      reason:
+        description: Optional audit note (avoids duplicate-dispatch dedupe)
+        required: false
+        type: string
   push:
     branches: [main]
     paths:
@@ -20,15 +25,13 @@ permissions:
   id-token: write
 
 concurrency:
-  group: fleet-activity-site
+  # Shared with agent-calendar.yml so data-branch publishes cannot interleave.
+  group: published-fleet-activity
   cancel-in-progress: true
 
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -57,24 +60,32 @@ jobs:
           SITE_BASE_URL: https://simple-with-us.github.io/AI-Fleet-Coordinator
         run: python3 scripts/build-fleet-daily-digest.py
 
-      - name: Commit artifacts if changed
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add calendar/agent-activity.ics calendar/daily-digest.ics site/
-          if git diff --cached --quiet; then
-            echo "No artifact changes."
-          else
-            git commit -m "chore(site): refresh fleet daily digest + calendars [skip ci]"
-            # A rejected push (branch rules) must be a red run, not a silent
-            # frozen site - but it must not stop tonight's Pages deploy of the
-            # artifact this job just built, so record it and fail after deploy.
-            if ! git push; then
-              echo "PUSH_FAILED=1" >> "$GITHUB_ENV"
-              echo "::error::commit-back push rejected; deploying the built artifact, then failing the run"
-            fi
-          fi
+      # main is ruleset-protected (GH013 on direct push).  Publish the snapshot
+      # to published/fleet-activity instead (PS-126 / mirror-site precedent).
+      - name: Publish artifacts to data branch
+        run: bash scripts/publish-fleet-activity-artifacts.sh
+
+      - name: Upload site for GitHub Pages
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fleet-digest-site
+          path: site
+          retention-days: 1
+
+  deploy-github-pages:
+    needs: build-and-publish
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download site artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: fleet-digest-site
+          path: site
 
       - name: Setup Pages
         uses: actions/configure-pages@v6
@@ -88,9 +99,3 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
-
-      - name: Fail the run when the commit-back push was rejected
-        if: env.PUSH_FAILED == '1'
-        run: |
-          echo "::error::artifacts deployed to Pages but could not be committed back to main"
-          exit 1

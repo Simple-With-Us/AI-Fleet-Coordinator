@@ -41,7 +41,6 @@ FIFO_LIMIT = 5
 PROMPT_HISTORY = 15
 PROMPT_BODY_LIMIT = 1500
 LIMITS = {"reply": 1500, "title": 120, "desc": 1500, "owner_note": 500, "route_reason": 200}
-ROUTE_QUOTE_LIMIT = 300  # the owner's ask, quoted in a route post
 ACTIONS = ("none", "reply", "board", "escalate")
 RISKS = (
     "low",
@@ -182,6 +181,15 @@ class Ledger:
         return reload, crashed
 
 
+def at_cap(count: float, budget: Mapping[str, float], name: str) -> bool:
+    """Whether `count` has reached the cap `name` in a seat's budget.  A cap that is absent from the
+    budget is NO LIMIT (owner, Nov 10, 2026) and is never reached;  `0` is reached at once, which is how
+    a seat is paused for wakes;  a positive number is a cap.  The five wake count caps have no
+    default (config.WAKE_CAP_KEYS), so a budget without one is the normal case, not a damaged one."""
+    cap = budget.get(name)
+    return cap is not None and count >= cap
+
+
 def budget_block(
     views: Mapping[str, Mapping[str, Any]],
     budget: Mapping[str, float],
@@ -217,16 +225,16 @@ def budget_block(
     same = [v for v in counted if bool(v.get("owner")) == owner]
     topic = [v for v in same if v.get("topic_key") == key and now - times_of(v) < HOUR]
     if owner:
-        if len(same) >= budget["owner_per_day"]:
+        if at_cap(len(same), budget, "owner_per_day"):
             return "owner_per_day"
-        if len(topic) >= budget["owner_per_topic_per_hour"]:
+        if at_cap(len(topic), budget, "owner_per_topic_per_hour"):
             return "owner_per_topic_per_hour"
         return None
-    if sum(1 for v in same if now - times_of(v) < HOUR) >= budget["wakes_per_hour"]:
+    if at_cap(sum(1 for v in same if now - times_of(v) < HOUR), budget, "wakes_per_hour"):
         return "wakes_per_hour"
-    if len(same) >= budget["wakes_per_day"]:
+    if at_cap(len(same), budget, "wakes_per_day"):
         return "wakes_per_day"
-    if len(topic) >= budget["per_topic_per_hour"]:
+    if at_cap(len(topic), budget, "per_topic_per_hour"):
         return "per_topic_per_hour"
     return None
 
@@ -274,7 +282,7 @@ class Pending:
         self.stream_id = item.get("stream_id")
         self.trigger_ids: list[int] = []
         self.owner_ids: list[int] = []
-        self.sender_id: int | None = None  # who asked first; see add() and daemon._tell_requester
+        self.sender_id: int | None = None  # who asked first; see add()
         self.stale = bool(item.get("stale"))
         self.owner = owner
         self.first = now
@@ -289,9 +297,9 @@ class Pending:
         # A catch-up wake (daemon._catch_up):  built from a held-back record, with no trigger_ts, because
         # the record's TTL bounds its age instead of the stale rule.
         self.catch_up = False
-        # Why the daemon's last post for this wake was not made (daemon.post sets it, and clears it
-        # at the start of the next post): the Operator was unavailable, the text was refused, or the
-        # send failed.  The wake's ledger row carries it as `post_error`.
+        # Why the wake's reply was not posted (daemon.post sets it, and clears it at the start of the
+        # next call):  always OPERATOR_NEVER_ANSWERS, because the Operator never answers on behalf of
+        # a platform (owner ruling, Nov 10 2026).  The wake's ledger row carries it as `post_error`.
         self.post_refusal: str | None = None
         # The model gate's record of this wake's model starts (phase 1, record only:  see the Model
         # gate section below).  Set by the daemon just before the start, so every row written after
@@ -635,14 +643,13 @@ class LoopGuard:
 # own consultant, sometimes, only when the deterministic code cannot decide.  So every model start
 # records WHY it was needed, and the counts show how often the consultant fires and which rule to
 # make deterministic next.  This phase only records:  `model_gate_verdict` is a pure rule table, the
-# daemon and the Mac bridge store its answer next to the start, and nothing is blocked, removed or
+# daemon stores its answer next to the start, and nothing is blocked, removed or
 # rerouted.  The row fields and the code vocabulary are in docs/protocols/simple-tools-listener.md.
 
 GATE_PURPOSES = (
     "select_destination",  # the model is asked which listed chat or session should take the message
     "compose_reply",  # a seat wake:  the model composes the reply the Operator posts
-    "bridge_consult",  # the Mac Muse bridge's one decision per source message
-    "routine",  # an http routine wake (a Grok Bot routine, or the server's bridge-native dispatch)
+    "routine",  # an http routine wake (a Grok Bot routine, for one)
     "fallback",  # the second runtime after the primary failed or could not run
     "inspect",  # the second Muse call that reads one listed chat's excerpt
 )
@@ -650,8 +657,7 @@ GATE_PURPOSES = (
 #: Every token a record can carry, with the rule it names.  `det_*` means the facts the caller held
 #: satisfied a deterministic rule that Phase 2 could act on before a model starts (the exact conditions
 #: are in `model_gate_verdict`, and each says what it proves and what it does not); `model_*` means the
-#: code could not decide; `no_model` marks a bridge record that no model start produced (a pre-check
-#: held it); `gate_error` marks a start whose verdict could not be computed (the wake still ran).
+#: code could not decide; `gate_error` marks a start whose verdict could not be computed (the wake still ran).
 #: `det_routine_forward` is the odd `det_*` one: an `http` routine forward is a deterministic delivery
 #: by design, so it is never `avoidable` and is counted as a forward, never as a model start.
 GATE_RULES: dict[str, str] = {
@@ -660,15 +666,11 @@ GATE_RULES: dict[str, str] = {
     "det_bound_chat": "bound_chat_nudge",
     "det_tagged_letter_single": "tagged_letter_one_candidate",
     "det_exact_chat_id": "exact_chat_id_in_text",
-    "det_native_only": "native_only_one_target",
-    "det_private_dm_no_resource": "private_dm_no_same_seat_resource",
     "det_routine_forward": "routine_forward_is_delivery",
     "model_letter_ambiguous": "tagged_letter_two_or_more_candidates",
     "model_select_destination": "addressee_unresolved",
     "model_compose_reply": "reply_composition_is_the_model_job",
-    "model_bridge_consult": "no_deterministic_outcome",
     "model_fallback": "primary_failed",
-    "no_model": "no_model_started",
     "gate_error": "gate_failed",
 }
 GATE_CODES = tuple(GATE_RULES)
@@ -717,20 +719,14 @@ def model_gate_verdict(purpose: str, facts: Mapping[str, Any] | None = None) -> 
       enabled, and for a private message the same seat) and have their id in the trigger text.
     - `risk_screen_needed`:  the model's risk answer would still decide whether the message may be
       routed (a peer-triggered message).  False only when none is needed.
-    - `native_only`:  a native item whose only legal target is the seat's own routine.
-    - `private_dm` and `same_seat_wake_resources`:  a private message, and how many wake-capable
-      resources the source seat has (the native routine counts).
     - `fallback_reason`:  one of GATE_FALLBACK_REASONS, used by the `fallback` purpose.
 
     The first `det_*` rule that applies wins, in the order above; with none, the purpose decides, in this
-    order: a bridge consult, a routine forward, a fallback, then an ambiguous letter, a reply, a
-    destination.  What each `det_*` proves: `det_eyes` that no wake should have started; `det_live_lease`
+    order: a routine forward, a fallback, then an ambiguous letter, a reply, a destination.  What each `det_*` proves: `det_eyes` that no wake should have started; `det_live_lease`
     that a session was there to take it; `det_bound_chat` that the router's own binding rule applied and
     did not stop the wake; `det_tagged_letter_single` that the address names one live session of the
-    tagged seat (not that routing the request is safe); `det_exact_chat_id` and `det_native_only` that
-    one legal destination exists and no risk answer is needed for it; `det_private_dm_no_resource` that
-    the bridge's own check would refuse the message whatever the model said.  A routine forward is a
-    delivery (`det_routine_forward`, never avoidable).  `avoidable` is true for the `det_*` codes except
+    tagged seat (not that routing the request is safe); `det_exact_chat_id` that one legal destination
+    exists and no risk answer is needed for it.  A routine forward is a delivery (`det_routine_forward`, never avoidable).  `avoidable` is true for the `det_*` codes except
     the delivery."""
     if purpose not in GATE_PURPOSES:
         raise ValueError("unknown model gate purpose")
@@ -749,12 +745,6 @@ def model_gate_verdict(purpose: str, facts: Mapping[str, Any] | None = None) -> 
         code = "det_tagged_letter_single"
     elif _gate_count(f.get("exact_chat_ids")) == 1 and no_risk_screen:
         code = "det_exact_chat_id"
-    elif f.get("native_only") is True and no_risk_screen:
-        code = "det_native_only"
-    elif f.get("private_dm") is True and _gate_count(f.get("same_seat_wake_resources")) == 0:
-        code = "det_private_dm_no_resource"
-    elif purpose == "bridge_consult":
-        code = "model_bridge_consult"
     elif purpose == "routine":
         code = "det_routine_forward"
     elif purpose == "fallback":
@@ -860,12 +850,10 @@ def gate_counts(
 ) -> dict[str, dict[str, Any]]:
     """Model starts per seat over the last `window` seconds, read back from the rows.
 
-    A start is a wake-ledger `started` row that carries `gate`, or a Mac bridge decision with
-    `model_attempted` that carries `gate`; a row without the field (every row from before the gate)
-    is ignored, and so is a bridge record no model produced.  A routine forward (an `http` wake, or the
-    code `det_routine_forward`) is a delivery: it is counted under `forwards`, never under `starts`.  So a
-    bridge-native message counts once as a start, from the Mac's decision record, and its server
-    routine row counts only as a forward.  A fallback and a chat inspection are counted apart, from
+    A start is a wake-ledger `started` row that carries `gate`; a row without the field (every row
+    from before the gate) is ignored, and so is a row with no `state`.  A routine forward (an `http`
+    wake, or the code `det_routine_forward`) is a delivery: it is counted under `forwards`, never under
+    `starts`.  A fallback and a chat inspection are counted apart, from
     the `gate_fallback` and `gate_inspect` fields of the wake's closing row and in the window of THAT
     row's time, so a wake is one start however many runs it took.  Per seat: `starts`, `avoidable`
     (a `det_*` rule applied and the model started anyway), `codes` (a count per gate code), `fallbacks`,
@@ -893,21 +881,14 @@ def gate_counts(
         if not isinstance(row, Mapping):
             continue
         state = row.get("state")
-        forward = False
-        if state is None:  # a bridge decision, not a ledger row
-            if row.get("model_attempted") is not True:
-                continue
-            seat, at = row.get("source_seat"), _gate_number(row.get("at"))
-            code = _gate_token(row.get("gate"))
-        else:
-            seat, at = row.get("seat"), _gate_number(row.get("ts"))
-            code = _gate_token(row.get("gate")) if state == "started" else None
-            forward = code is not None and (
-                code in GATE_DELIVERY_CODES or row.get("adapter") == "http"
-            )
+        if state is None:
+            continue
+        seat, at = row.get("seat"), _gate_number(row.get("ts"))
+        code = _gate_token(row.get("gate")) if state == "started" else None
+        forward = code is not None and (code in GATE_DELIVERY_CODES or row.get("adapter") == "http")
         if not isinstance(seat, str) or not seat or at is None or not 0 <= now_f - at < window_f:
             continue
-        if code is not None and code != "no_model":
+        if code is not None:
             counts = entry(seat)
             if forward:
                 counts["forwards"] += 1
@@ -943,16 +924,6 @@ def gate_line(counts: Mapping[str, Any] | None, hours: int = 24) -> str:
         if counts.get(key)
     ]
     return line + (", " + ", ".join(extra) if extra else "")
-
-
-def bridge_line(counts: Mapping[str, Any] | None, hours: int = 24) -> str:
-    """The Mac bridge's line from one seat's `gate_counts` entry over its decision records."""
-    counts = counts or {}
-    return "bridge consults %dh %d (avoidable %d)" % (
-        hours,
-        int(counts.get("starts") or 0),
-        int(counts.get("avoidable") or 0),
-    )
 
 
 # --------------------------------------------------------------------------------------------
@@ -1333,60 +1304,15 @@ def loud_mention(text: str) -> bool:
     return bool(_LOUD_RE.search(text))
 
 
-def loud_mentions(text: str) -> int:
-    """How many @-mentions in text would notify someone (a route post must hold exactly one)."""
-    return len(_LOUD_RE.findall(text))
-
-
-#: What every post the daemon composes calls itself in its first-line tag (owner ruling, Oct 30 2026:
-#: "I want it to be the operator's", not the seat's or the runtime's).  A wake reply used to read
-#: `[MM·wake]`, which named a seat (and, for a headless Muse run, a MiniMax seat) that did not say it.
-#: The seat the wake was for is in the ledger and in the bodies of the notes and route posts, not in the tag.
+#: What the Operator's own notes call themselves in their first-line tag (owner ruling, Oct 30 2026:
+#: "I want it to be the operator's", not the seat's or the runtime's).  The seat the note is about is in
+#: the ledger and in the body of the note, not in the tag.
 OPERATOR_TAG = "OPERATOR"
 
-
-def compose_reply(trigger_id: int, text: str) -> str:
-    return "[%s·wake] re=%d\n%s" % (OPERATOR_TAG, trigger_id, neutralize_mentions(text.strip()))
-
-
-_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f\u2028\u2029]")
-_NAME_RE = re.compile(r"[*|`\n\r\x00-\x1f]")
-
-
-def _one_line(text: str, limit: int) -> str:
-    """Model or owner text for a route post:  one line, no backticks (a quote block cannot be closed),
-    mentions neutralized, cut to `limit`."""
-    text = " ".join(_CONTROL_RE.sub(" ", str(text)).replace("`", "'").split())
-    text = neutralize_mentions(text)
-    return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
-def compose_route(
-    seat: str,
-    target: str,
-    target_name: str,
-    target_id: int,
-    trigger_id: int,
-    reason: str,
-    owner_text: str,
-    link: str,
-) -> str:
-    """The route post:  `[OPERATOR·route→TARGET] re=<owner trigger>`, then the daemon's single mention of
-    the target bot (`@**Name|id**`, so a duplicate display name cannot redirect it), the model's
-    reason, and the owner's ask quoted, with every mention in the reason and the quote made silent.
-    Kept apart from the `·wake` reply:  a `·wake`-tagged post never wakes anyone, a `·route` post
-    wakes the seat it mentions."""
-    name = _NAME_RE.sub("", target_name).strip() or target
-    lines = [
-        "[%s\u00b7route\u2192%s] re=%d" % (OPERATOR_TAG, target, trigger_id),
-        "@**%s|%d** %s paged you on Jay's behalf:  %s"
-        % (name, int(target_id), seat, _one_line(reason, LIMITS["route_reason"])),
-        "```quote",
-        _one_line(owner_text, ROUTE_QUOTE_LIMIT) or "(the owner's message)",
-        "```",
-        "Owner's message:  %s" % link,
-    ]
-    return "\n".join(lines)
-
-
-OWNER_ACK = "Queued for your confirmation in one of this seat's next sessions."
+#: Why a wake's reply, an owner ack or a route page is never posted (owner ruling, Nov 10 2026:  "The
+#: operator should never be answering on behalf of a platform.").  It is the `post_refusal` reason
+#: `Daemon.post` records, so it lands on the wake's ledger row as `post_error`, and the reason a route
+#: that the checks would have passed is dropped with.  No function here builds the `[OPERATOR·wake]`
+#: reply, the `[OPERATOR·route→SEAT]` page or the owner ack any more:  the only things the Operator
+#: sends are its own alerts and notes (and no question to anyone, owner ruling Nov 10 2026).
+OPERATOR_NEVER_ANSWERS = "operator_never_answers"

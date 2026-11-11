@@ -222,6 +222,16 @@ This service has no per-user settings: seat identity is passed per-request by th
 - `fleet_rag` CLI tools and MCP scripts: per-invocation env; no long-lived process to host a cache.
 - `RECALL_FAKE=1`: local test/smoke switch only; stays an env var.  Bootstrap plumbing (`RECALL_REF`, `GITLEAKS_*`) likewise stays env-only.
 
+## Fleet RAG nightly ingest (AFC-687)
+
+The server nightly job reads Infisical with service tokens only.  The Mac push holds no token.  Paths, key names, and the enable steps are in `docs/RAG-NIGHTLY-INGEST.md`.  This change does not mint a token and does not add a fleet-knobs registry row.  A registry row is an owner follow-up.
+
+- Recall file: `/home/jay/.secrets/fleet-recall-infisical.env` (override `FLEET_RECALL_INFISICAL_TOKEN_FILE`).  The file holds `FLEET_RECALL_INFISICAL_TOKEN`, the same reader file as AFC-677.  Project AI Fleet Coordinator, prod, `/`.  Keys: `QDRANT_URL`, `QDRANT_API_KEY`, `QDRANT_FLEET_COLLECTION`, `TEI_URL`, `TEI_API_KEY`.
+- Linear file: `FLEET_RAG_LINEAR_INFISICAL_TOKEN_FILE`.  Same project, prod, `/linear`.  Read-only token, suggested name `fleet-rag-nightly-linear-read`.  Keys requested: `LINEAR_BF_ORACLE_CLIENT_ID`, `LINEAR_BF_ORACLE_CLIENT_SECRET`, `LINEAR_GB_ORACLE_CLIENT_ID`, `LINEAR_GB_ORACLE_CLIENT_SECRET`.  One complete pair is enough.  The job does not read cache tokens and does not use the automation identity.
+- Zulip file, optional: `FLEET_RAG_ZULIP_INFISICAL_TOKEN_FILE`.  Project id `FLEET_RAG_ZULIP_INFISICAL_PROJECT`.  Folder `FLEET_RAG_ZULIP_INFISICAL_PATH`, preferred `/fleet-rag-nightly`, holding `ZULIP_SITE`, `ZULIP_EMAIL`, and `ZULIP_API_KEY`.
+
+A machine-identity variable in the environment refuses the run before any fetch.
+
 ## Fleet knobs
 
 `scripts/fleet_knobs/` is how the open-loops jobs (LaunchAgents, hooks and CLIs that run for seconds) read their modes, caps and flags.  The values live in this project, `prod`, at the root path, and they are the only place a mode or a cap is set.  A refresh thread does not fit a job that lives a few seconds, so the contract differs from the service above:
