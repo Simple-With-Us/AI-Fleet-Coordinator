@@ -868,6 +868,8 @@ class WakeTests(DaemonHarness):
         self.assertIs(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
 
     def test_peer_budget_per_topic(self) -> None:
+        # No wake cap has a default (owner, Nov 10, 2026), so the seat sets the one under test.
+        self.write_config(budget="per_topic_per_hour = 2")
         daemon = self.started()
         for n in range(3):
             self.fake.add_message("Codex", "simple-tools", "t", MENTION + " %d" % n)
@@ -878,7 +880,32 @@ class WakeTests(DaemonHarness):
         self.assertEqual([r for r in self.ledger() if r["state"] == "dropped"], [])
         self.assertEqual(len(self.dumps()), 2)
 
+    def test_a_seat_that_sets_no_cap_is_never_held_back(self) -> None:
+        """Owner, Nov 10, 2026:  an unset cap is no limit, so a burst in one topic wakes every time."""
+        daemon = self.started()
+        self.assertNotIn("per_topic_per_hour", self.status_budget(daemon))
+        for n in range(3):
+            self.fake.add_message("Codex", "simple-tools", "t", MENTION + " %d" % n)
+            self.pump_until(daemon, lambda n=n: sum(1 for r in self.ledger() if r["state"] == "queued") >= n + 1)
+            self.wake_cycle(daemon, 95)
+        self.assertEqual([r for r in self.ledger() if r["state"] in ("held_back", "dropped")], [])
+        self.assertEqual(len(self.dumps()), 3)
+
+    def status_budget(self, daemon) -> dict:
+        return daemon.status()["seats"]["CLAUDE"]["budget"]
+
+    def test_a_cap_of_zero_pauses_wakes_and_holds_them_back(self) -> None:
+        self.write_config(budget="wakes_per_hour = 0")
+        daemon = self.started()
+        self.fake.add_message("Codex", "simple-tools", "t", MENTION)
+        self.pump_until(daemon, lambda: sum(1 for r in self.ledger() if r["state"] == "queued") >= 1)
+        self.wake_cycle(daemon, 95)
+        reasons = [r.get("reason") for r in self.ledger() if r["state"] == "held_back"]
+        self.assertEqual(reasons, ["wakes_per_hour"], "0 keeps its meaning:  held back, never run")
+        self.assertEqual(len(self.dumps()), 0)
+
     def test_peer_budget_per_topic_with_loop_prevention_off(self) -> None:
+        self.write_config(budget="per_topic_per_hour = 2")
         path = self.state_dir / "listener.toml"
         path.write_text(path.read_text().replace("[daemon]", "[daemon]\nwake_loop_prevention = false", 1))
         daemon = self.started()

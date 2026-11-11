@@ -182,6 +182,15 @@ class Ledger:
         return reload, crashed
 
 
+def at_cap(count: float, budget: Mapping[str, float], name: str) -> bool:
+    """Whether `count` has reached the cap `name` in a seat's budget.  A cap that is absent from the
+    budget is NO LIMIT (owner, Nov 10, 2026) and is never reached;  `0` is reached at once, which is how
+    a seat is paused for wakes;  a positive number is a cap.  The five wake count caps have no
+    default (config.WAKE_CAP_KEYS), so a budget without one is the normal case, not a damaged one."""
+    cap = budget.get(name)
+    return cap is not None and count >= cap
+
+
 def budget_block(
     views: Mapping[str, Mapping[str, Any]],
     budget: Mapping[str, float],
@@ -217,16 +226,16 @@ def budget_block(
     same = [v for v in counted if bool(v.get("owner")) == owner]
     topic = [v for v in same if v.get("topic_key") == key and now - times_of(v) < HOUR]
     if owner:
-        if len(same) >= budget["owner_per_day"]:
+        if at_cap(len(same), budget, "owner_per_day"):
             return "owner_per_day"
-        if len(topic) >= budget["owner_per_topic_per_hour"]:
+        if at_cap(len(topic), budget, "owner_per_topic_per_hour"):
             return "owner_per_topic_per_hour"
         return None
-    if sum(1 for v in same if now - times_of(v) < HOUR) >= budget["wakes_per_hour"]:
+    if at_cap(sum(1 for v in same if now - times_of(v) < HOUR), budget, "wakes_per_hour"):
         return "wakes_per_hour"
-    if len(same) >= budget["wakes_per_day"]:
+    if at_cap(len(same), budget, "wakes_per_day"):
         return "wakes_per_day"
-    if len(topic) >= budget["per_topic_per_hour"]:
+    if at_cap(len(topic), budget, "per_topic_per_hour"):
         return "per_topic_per_hour"
     return None
 
