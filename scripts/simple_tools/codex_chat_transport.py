@@ -455,7 +455,7 @@ class CodexChatTransport:
             if (client_id, digest) in items:
                 return "queued"
             return "absent"
-        except (OSError, ValueError, TimeoutError, subprocess.SubprocessError):
+        except Exception:  # noqa: BLE001 - unreadable receipt evidence is never proof of absence
             return "unavailable"
 
     def receipt(self, binding, text):

@@ -534,6 +534,15 @@ class CodexWakeTests(unittest.TestCase):
         self.assertEqual(oversized.tell(), CW.MAX_REQUEST_BYTES + 1)
         self.assertTrue(all(size <= CW.MAX_REQUEST_BYTES + 1 for size in oversized.requested))
 
+    def test_delivery_entry_closed_stdin_is_unreadable_without_delivery(self):
+        class ClosedStream:
+            def read(self, size=-1):
+                raise ValueError("I/O operation on closed file")
+
+        result = CW.delivery_entry(ClosedStream(), env={"HOME": self.tmp.name}, transport=self.transport)
+        self.assertEqual(result["delivery"]["code"], "request-unreadable")
+        self.assertEqual(self.transport.calls, [])
+
     def test_delivery_entry_bounds_json_depth_and_node_count_and_parsed_cycles(self):
         deep = ("[" * (CW.MAX_REQUEST_DEPTH + 1)) + "0" + ("]" * (CW.MAX_REQUEST_DEPTH + 1))
         fanout = "[" + ",".join("0" for _ in range(CW.MAX_REQUEST_NODES + 1)) + "]"
