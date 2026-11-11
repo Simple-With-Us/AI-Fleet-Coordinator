@@ -8,15 +8,18 @@ What Cursor gives a hook (read from the cursor-agent 2026.10.22 build, Nov 7, 20
 - `sessionStart` sends `conversation_id`, `model`, `is_background_agent` and `composer_mode`;  `beforeSubmitPrompt`
   sends `conversation_id`, `generation_id` and `prompt`;  `sessionEnd` sends `conversation_id` and `reason`.  Each also
   carries `hook_event_name`.  Both of the first two take `additional_context` in the answer, which reaches the model.
-- No hook payload carries a title and no answer sets one, so TITLES ARE NOT SET here:  the chat is told its letter.
+- No hook payload carries a title and no answer sets one.  The chat is told its letter at the start and asked to
+  call rename-chat once, when that tool is available, so the title starts with the letter.
 - A Cloud agent (`is_background_agent` true) runs its hooks on Cursor's own workers, which drop `additional_context`
   from sessionStart and cannot reach the Operator's registry.  Cloud agents take their letters from
   `cursor_cloud_letters` instead, which reads them from the Cursor API, so the hook leaves them alone.
 
 Cursor's chats live in the `cursor` letter namespace, which the registry folds `cursor-local` and `cursor-cloud` into.
 Nothing is closed on an end.  The CLI sends `sessionEnd` when its process exits, and a chat resumed later with
-`--resume` gets no `sessionStart`, so closing on that end would leave a resumed chat with no letter.  The prompt event
-registers a chat the hook has not seen, and the registry's 36 hour sweep frees the letters of idle chats.
+`--resume` gets no `sessionStart`, so closing on that end would leave a resumed chat with no letter.  Archiving a
+Cloud agent is not that end:  `cursor_cloud_letters` closes the registration when the agent leaves the open list, and
+the letter is available again.  The prompt event registers a chat the hook has not seen, and the registry's 36 hour
+sweep still frees the letters of idle chats the archive path did not see.
 
 Python 3.11+, standard library only.
 """
