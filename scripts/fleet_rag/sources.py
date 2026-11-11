@@ -14,9 +14,11 @@ Sources (payload `source` value):
                  FLEET-PROTOCOL.md is ingested:  the public ones are the text of that file),
                  top-level ~/apps/*.md (not effort logs),
                  ~/.claude/CLAUDE.md, ~/.grok/docs/**/*.md, ~/.grok/skills/**/SKILL.md
-  skill          ~/.claude/skills/*/SKILL.md and ~/.cursor/skills/*/SKILL.md
-                 (doc_id skill/<tree>/<name>; byte-identical copies collapse to the first tree)
-  memory         ~/.claude/projects/*/memory/*.md and ~/.codex/memories/*.md
+  skill          ~/.claude/skills/*/SKILL.md, ~/.cursor/skills/*/SKILL.md and ~/.grok/skills/*/SKILL.md
+                 (doc_id skill/<tree>/<name>; byte-identical copies collapse to the first tree).
+                 When FLEET_RAG_MIRROR is set, those three trees are read from that directory.
+  memory         ~/.claude/projects/*/memory/*.md and ~/.codex/memories/*.md.
+                 When FLEET_RAG_MIRROR is set, those trees are read from that directory.
   apple-note     the iCloud "Coding" folder via notes_export (falls back to the on-disk cache
                  when Notes.app is unavailable and records a warning via `take_warnings`)
   chat-log       parsed agent transcripts (user + assistant text only) from Claude, Grok,
@@ -42,7 +44,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 
-from . import linear_board
+from . import linear_board, mirror
 from .core import FleetRagError, now_ms
 
 HOME = pathlib.Path.home()
@@ -145,6 +147,8 @@ SOURCES = ("linear", "doc", "skill", "memory", "apple-note", "chat-log")
 # Their iter_* readers stay for tests until the data is deleted;  they are not registered.
 # apple-note is write-time upsert only (AFC-685); nightly ingest must not read Apple Notes.
 NIGHTLY_SOURCES = ("linear", "doc", "skill", "memory")
+# The Hetzner nightly (AFC-687) is this same set.  It attests health without Apple Notes.
+SERVER_NIGHTLY_SOURCES = NIGHTLY_SOURCES
 
 WARNINGS: list[str] = []
 
@@ -980,23 +984,54 @@ def doc_from_file(
     )
 
 
+# An omitted directory follows the host env at call time.  An explicit None still
+# skips that walk, which is what the tests use to keep a fixture off the code tree.
+_CALLER_DEFAULT = object()
+
+
+def _configured_dir(value: object, env_name: str, fallback: pathlib.Path) -> pathlib.Path | None:
+    if value is None:
+        return None
+    if value is _CALLER_DEFAULT:
+        raw = (os.environ.get(env_name) or "").strip()
+        return pathlib.Path(raw) if raw else fallback
+    return pathlib.Path(str(value))
+
+
+def _default_checkout(name: str) -> pathlib.Path:
+    """A clone under FLEET_CODE_ROOT, or under ~/Code when that root is unset."""
+    root = _configured_dir(_CALLER_DEFAULT, "FLEET_CODE_ROOT", CODE_DIR)
+    if root is None:
+        root = CODE_DIR
+    return root / name
+
+
 def iter_docs(
-    fleet_repo: pathlib.Path | str = FLEET_REPO,
-    fleet_ops: pathlib.Path | str = FLEET_OPS_REPO,
+    fleet_repo: object = _CALLER_DEFAULT,
+    fleet_ops: object = _CALLER_DEFAULT,
     extra: Iterable[pathlib.Path] = EXTRA_DOCS,
     limit: int | None = None,
-    code_dir: pathlib.Path | str | None = CODE_DIR,
-    apps_dir: pathlib.Path | str | None = APPS_DIR,
+    code_dir: object = _CALLER_DEFAULT,
+    apps_dir: object = _CALLER_DEFAULT,
     grok_home: pathlib.Path | str | None = GROK_HOME,
 ) -> Iterator[Doc]:
-    ops = pathlib.Path(fleet_ops)
+    repo = (
+        _default_checkout("AI-Fleet-Coordinator")
+        if fleet_repo is _CALLER_DEFAULT
+        else pathlib.Path(str(fleet_repo))
+    )
+    ops = (
+        _default_checkout("fleet-ops")
+        if fleet_ops is _CALLER_DEFAULT
+        else pathlib.Path(str(fleet_ops))
+    )
     DOC_SKIPS.clear()
     files = _doc_files(
-        pathlib.Path(fleet_repo),
+        repo,
         ops,
         extra,
-        code_dir=None if code_dir is None else pathlib.Path(code_dir),
-        apps_dir=None if apps_dir is None else pathlib.Path(apps_dir),
+        code_dir=_configured_dir(code_dir, "FLEET_CODE_ROOT", CODE_DIR),
+        apps_dir=_configured_dir(apps_dir, "FLEET_APPS_ROOT", APPS_DIR),
         grok_home=None if grok_home is None else pathlib.Path(grok_home),
     )
     _log_doc_skips()
@@ -1038,15 +1073,32 @@ def skill_tree(skill_dir: pathlib.Path) -> str:
     return tree or "local"
 
 
+def resolved_skill_dirs() -> tuple[pathlib.Path, ...]:
+    """Skill trees for this call.  A mirror, when configured, replaces the home trees."""
+    root = mirror.mirror_root()
+    if root is not None:
+        return mirror.skill_dirs(root)
+    return SKILL_DIRS
+
+
+def resolved_memory_dirs() -> tuple[pathlib.Path, pathlib.Path]:
+    """Claude project memories and Codex memories for this call."""
+    root = mirror.mirror_root()
+    if root is not None:
+        return mirror.memory_claude(root), mirror.memory_codex(root)
+    return CLAUDE_PROJECTS, CODEX_MEMORIES
+
+
 def iter_skills(
-    skill_dirs: Iterable[pathlib.Path] = SKILL_DIRS, limit: int | None = None
+    skill_dirs: Iterable[pathlib.Path] | None = None, limit: int | None = None
 ) -> Iterator[Doc]:
     """One Doc per SKILL.md.  doc_id is unique per tree (skill/claude/<name>, skill/cursor/<name>);
     a byte-identical copy in a later tree is skipped (the first tree wins) so the same content is
-    not chunked twice under two ids."""
+    not chunked twice under two ids.  An omitted directory list is resolved at call time."""
+    chosen = resolved_skill_dirs() if skill_dirs is None else skill_dirs
     seen_hash: set[str] = set()
     n = 0
-    for d in skill_dirs:
+    for d in chosen:
         d = pathlib.Path(d)
         if not d.exists():
             continue
@@ -1163,12 +1215,14 @@ def _memory_doc(p: pathlib.Path, seat: str, doc_id: str, app: str) -> Doc:
 
 
 def iter_memory(
-    claude_projects: pathlib.Path | str = CLAUDE_PROJECTS,
-    codex_memories: pathlib.Path | str = CODEX_MEMORIES,
+    claude_projects: pathlib.Path | str | None = None,
+    codex_memories: pathlib.Path | str | None = None,
     limit: int | None = None,
 ) -> Iterator[Doc]:
+    """Memory files.  An omitted path is resolved at call time, including the mirror."""
+    default_claude, default_codex = resolved_memory_dirs()
     n = 0
-    cp = pathlib.Path(claude_projects)
+    cp = pathlib.Path(default_claude if claude_projects is None else claude_projects)
     if cp.exists():
         for mem_dir in sorted(cp.glob("*/memory")):
             slug = project_slug(mem_dir.parent.name)
@@ -1181,7 +1235,7 @@ def iter_memory(
                 yield _memory_doc(
                     p, "CLAUDE", f"memory/claude/{slug}/{p.name}", app_from_project(slug)
                 )
-    cm = pathlib.Path(codex_memories)
+    cm = pathlib.Path(default_codex if codex_memories is None else codex_memories)
     if cm.exists():
         for p in sorted(cm.glob("*.md")):
             if limit and n >= limit:

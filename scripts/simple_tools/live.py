@@ -1015,7 +1015,10 @@ def live_room(
     ]
     day = [t for t in turns if now - t["ts"] < 86400]
     if owner:
-        if sum(1 for t in day if t.get("owner")) >= limits["owner_per_day"]:
+        # A limit the table does not carry is no limit (the live table keeps its defaults today, so
+        # this only matters once a caller passes a table without one);  0 still blocks at once.
+        cap = limits.get("owner_per_day")
+        if cap is not None and sum(1 for t in day if t.get("owner")) >= cap:
             return "owner_per_day"
         return None
     others = [t for t in day if not t.get("owner")]

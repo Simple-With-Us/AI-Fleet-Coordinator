@@ -41,7 +41,6 @@ FIFO_LIMIT = 5
 PROMPT_HISTORY = 15
 PROMPT_BODY_LIMIT = 1500
 LIMITS = {"reply": 1500, "title": 120, "desc": 1500, "owner_note": 500, "route_reason": 200}
-ROUTE_QUOTE_LIMIT = 300  # the owner's ask, quoted in a route post
 ACTIONS = ("none", "reply", "board", "escalate")
 RISKS = (
     "low",
@@ -182,6 +181,15 @@ class Ledger:
         return reload, crashed
 
 
+def at_cap(count: float, budget: Mapping[str, float], name: str) -> bool:
+    """Whether `count` has reached the cap `name` in a seat's budget.  A cap that is absent from the
+    budget is NO LIMIT (owner, Nov 10, 2026) and is never reached;  `0` is reached at once, which is how
+    a seat is paused for wakes;  a positive number is a cap.  The five wake count caps have no
+    default (config.WAKE_CAP_KEYS), so a budget without one is the normal case, not a damaged one."""
+    cap = budget.get(name)
+    return cap is not None and count >= cap
+
+
 def budget_block(
     views: Mapping[str, Mapping[str, Any]],
     budget: Mapping[str, float],
@@ -217,16 +225,16 @@ def budget_block(
     same = [v for v in counted if bool(v.get("owner")) == owner]
     topic = [v for v in same if v.get("topic_key") == key and now - times_of(v) < HOUR]
     if owner:
-        if len(same) >= budget["owner_per_day"]:
+        if at_cap(len(same), budget, "owner_per_day"):
             return "owner_per_day"
-        if len(topic) >= budget["owner_per_topic_per_hour"]:
+        if at_cap(len(topic), budget, "owner_per_topic_per_hour"):
             return "owner_per_topic_per_hour"
         return None
-    if sum(1 for v in same if now - times_of(v) < HOUR) >= budget["wakes_per_hour"]:
+    if at_cap(sum(1 for v in same if now - times_of(v) < HOUR), budget, "wakes_per_hour"):
         return "wakes_per_hour"
-    if len(same) >= budget["wakes_per_day"]:
+    if at_cap(len(same), budget, "wakes_per_day"):
         return "wakes_per_day"
-    if len(topic) >= budget["per_topic_per_hour"]:
+    if at_cap(len(topic), budget, "per_topic_per_hour"):
         return "per_topic_per_hour"
     return None
 
@@ -274,7 +282,7 @@ class Pending:
         self.stream_id = item.get("stream_id")
         self.trigger_ids: list[int] = []
         self.owner_ids: list[int] = []
-        self.sender_id: int | None = None  # who asked first; see add() and daemon._tell_requester
+        self.sender_id: int | None = None  # who asked first; see add()
         self.stale = bool(item.get("stale"))
         self.owner = owner
         self.first = now
@@ -289,9 +297,9 @@ class Pending:
         # A catch-up wake (daemon._catch_up):  built from a held-back record, with no trigger_ts, because
         # the record's TTL bounds its age instead of the stale rule.
         self.catch_up = False
-        # Why the daemon's last post for this wake was not made (daemon.post sets it, and clears it
-        # at the start of the next post): the Operator was unavailable, the text was refused, or the
-        # send failed.  The wake's ledger row carries it as `post_error`.
+        # Why the wake's reply was not posted (daemon.post sets it, and clears it at the start of the
+        # next call):  always OPERATOR_NEVER_ANSWERS, because the Operator never answers on behalf of
+        # a platform (owner ruling, Nov 10 2026).  The wake's ledger row carries it as `post_error`.
         self.post_refusal: str | None = None
         # The model gate's record of this wake's model starts (phase 1, record only:  see the Model
         # gate section below).  Set by the daemon just before the start, so every row written after
@@ -1333,60 +1341,15 @@ def loud_mention(text: str) -> bool:
     return bool(_LOUD_RE.search(text))
 
 
-def loud_mentions(text: str) -> int:
-    """How many @-mentions in text would notify someone (a route post must hold exactly one)."""
-    return len(_LOUD_RE.findall(text))
-
-
-#: What every post the daemon composes calls itself in its first-line tag (owner ruling, Oct 30 2026:
-#: "I want it to be the operator's", not the seat's or the runtime's).  A wake reply used to read
-#: `[MM·wake]`, which named a seat (and, for a headless Muse run, a MiniMax seat) that did not say it.
-#: The seat the wake was for is in the ledger and in the bodies of the notes and route posts, not in the tag.
+#: What the Operator's own notes call themselves in their first-line tag (owner ruling, Oct 30 2026:
+#: "I want it to be the operator's", not the seat's or the runtime's).  The seat the note is about is in
+#: the ledger and in the body of the note, not in the tag.
 OPERATOR_TAG = "OPERATOR"
 
-
-def compose_reply(trigger_id: int, text: str) -> str:
-    return "[%s·wake] re=%d\n%s" % (OPERATOR_TAG, trigger_id, neutralize_mentions(text.strip()))
-
-
-_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f\u2028\u2029]")
-_NAME_RE = re.compile(r"[*|`\n\r\x00-\x1f]")
-
-
-def _one_line(text: str, limit: int) -> str:
-    """Model or owner text for a route post:  one line, no backticks (a quote block cannot be closed),
-    mentions neutralized, cut to `limit`."""
-    text = " ".join(_CONTROL_RE.sub(" ", str(text)).replace("`", "'").split())
-    text = neutralize_mentions(text)
-    return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
-def compose_route(
-    seat: str,
-    target: str,
-    target_name: str,
-    target_id: int,
-    trigger_id: int,
-    reason: str,
-    owner_text: str,
-    link: str,
-) -> str:
-    """The route post:  `[OPERATOR·route→TARGET] re=<owner trigger>`, then the daemon's single mention of
-    the target bot (`@**Name|id**`, so a duplicate display name cannot redirect it), the model's
-    reason, and the owner's ask quoted, with every mention in the reason and the quote made silent.
-    Kept apart from the `·wake` reply:  a `·wake`-tagged post never wakes anyone, a `·route` post
-    wakes the seat it mentions."""
-    name = _NAME_RE.sub("", target_name).strip() or target
-    lines = [
-        "[%s\u00b7route\u2192%s] re=%d" % (OPERATOR_TAG, target, trigger_id),
-        "@**%s|%d** %s paged you on Jay's behalf:  %s"
-        % (name, int(target_id), seat, _one_line(reason, LIMITS["route_reason"])),
-        "```quote",
-        _one_line(owner_text, ROUTE_QUOTE_LIMIT) or "(the owner's message)",
-        "```",
-        "Owner's message:  %s" % link,
-    ]
-    return "\n".join(lines)
-
-
-OWNER_ACK = "Queued for your confirmation in one of this seat's next sessions."
+#: Why a wake's reply, an owner ack or a route page is never posted (owner ruling, Nov 10 2026:  "The
+#: operator should never be answering on behalf of a platform.").  It is the `post_refusal` reason
+#: `Daemon.post` records, so it lands on the wake's ledger row as `post_error`, and the reason a route
+#: that the checks would have passed is dropped with.  No function here builds the `[OPERATOR·wake]`
+#: reply, the `[OPERATOR·route→SEAT]` page or the owner ack any more:  the only things the Operator
+#: sends are its own alerts and notes (and no question to anyone, owner ruling Nov 10 2026).
+OPERATOR_NEVER_ANSWERS = "operator_never_answers"

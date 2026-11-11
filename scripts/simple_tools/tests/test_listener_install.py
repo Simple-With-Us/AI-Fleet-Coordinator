@@ -87,7 +87,9 @@ class InstallTests(ListenerHarness):
         self.assertEqual(sorted(cfg.seats), ["CLAUDE"])
         self.assertEqual(cfg.seats["CLAUDE"].budget["usd_per_day"], 2.0)
         self.assertEqual(cfg.seats["CLAUDE"].budget["board_per_day"], 0)
-        self.assertEqual(cfg.seats["CLAUDE"].budget["owner_per_day"], 20)
+        for cap in C.WAKE_CAP_KEYS:
+            self.assertNotIn(cap, cfg.seats["CLAUDE"].budget, "the sample sets no wake cap")
+        self.assertIn("unset is no limit", sample)
         self.assertEqual(cfg.claude_seat, "CLAUDE")
         self.assertFalse(cfg.rewake_verified)
         again = self.run_cli(

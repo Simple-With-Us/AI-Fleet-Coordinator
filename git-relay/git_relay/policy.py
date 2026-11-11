@@ -14,10 +14,35 @@ import threading
 import time
 
 from .app_tokens import mint_permission_allowed
+from .shared_bearer import SharedBearerVerifier
 
 
 class PolicyError(ValueError):
     """A seat config or request is invalid."""
+
+
+# Closed, non-secret causes for a credential the relay will not treat as a seat.
+# unauthenticated: empty, malformed, or not a credential this relay checks.
+# seat_not_in_policy: the bearer or assertion names an identity no shared seat claims.
+# bearer_rejected: the identity is configured and the checker refused the credential.
+# verifier_unavailable: the identity is configured and the checker could not be asked.
+AUTH_FAILURE_REASONS = frozenset(
+    {
+        "unauthenticated",
+        "seat_not_in_policy",
+        "bearer_rejected",
+        "verifier_unavailable",
+    }
+)
+
+
+def auth_failure_response(reason: str) -> tuple[int, dict]:
+    """HTTP answer for authenticate_with_reason's failure cause. No credential material."""
+    if reason not in AUTH_FAILURE_REASONS:
+        reason = "unauthenticated"
+    if reason == "verifier_unavailable":
+        return 503, {"error": "verifier_unavailable", "retryable": True}
+    return 401, {"error": reason}
 
 
 # Per-seat calls an hour the gateway admits before it refuses.  This is a seat-token blast-radius bound, not a
@@ -190,6 +215,7 @@ class SeatPolicy:
         "wf_labels_set",
         "wf_reviewers_request",
         "wf_reviewers_remove",
+        "wf_release_notes_preview",
         "wf_release_create",
         "wf_release_update",
         "wf_environments",
@@ -407,33 +433,37 @@ class SeatPolicy:
         self._lock = threading.Lock()
 
     def authenticate(self, token: str, proof: dict | None = None) -> str | None:
-        """Return the seat the presented credential resolves to, or None.
+        """Return the seat the presented credential resolves to, or None."""
+        seat, _reason = self.authenticate_with_reason(token, proof)
+        return seat
+
+    def authenticate_with_reason(
+        self, token: str, proof: dict | None = None
+    ) -> tuple[str | None, str]:
+        """(seat, "") or (None, a closed AUTH_FAILURE_REASONS cause).
 
         Static tokens compare constant-time over the seats that have one.
-        With no static match and a shared verifier configured, the bearer is
-        resolved through ST-MCP;  it must land on a seat in "shared" mode
-        whose configured identity the verifier confirmed.
+        With no static match, a shared bearer is resolved through ST-MCP and
+        must land on a seat in "shared" mode whose configured identity the
+        verifier confirmed. A recognizable bearer whose identity is not in
+        the loaded policy is seat_not_in_policy and is not sent to the Worker.
+        That is a real miss when the loaded file lags the reviewed source:
+        ST-MCP accepts the bearer from its own catalog.
 
         `proof` carries {"action", "body_sha256"} of the exact request the
-        token rides on;  only the assertion family binds to it.  Bearers and
-        static tokens are bearer-equivalent credentials and ignore it.
+        token rides on; only the assertion family binds to it. Bearers and
+        static tokens ignore it.
         """
         if not token:
-            return None
+            return None, "unauthenticated"
         candidate = hashlib.sha256(token.encode()).hexdigest()
-        match = None
         for seat, cfg in self._seats.items():
             if cfg["token_hash"] and hmac.compare_digest(candidate, cfg["token_hash"]):
-                match = seat
-        if match is not None:
-            return match
-        # Worker-minted OAuth assertions:  the Worker verifies the HMAC, the
+                return seat, ""
+        # Worker-minted OAuth assertions: the Worker verifies the HMAC, the
         # action/body binding, the live grant state and the one-use jti per
-        # call (git_relay/assertion.py);  the relay holds no mint-capable key.
-        # An assertion-shaped token is refused outright when the callback, the
-        # request binding or the seat flag fails, or when no configured
-        # oauth_assert seat claims the verified identity - it never falls
-        # through to another token family.
+        # call (git_relay/assertion.py); the relay holds no mint-capable key.
+        # An assertion-shaped token never falls through to another family.
         named_assertion = (
             self._assertion_verifier.parse_identity(token)
             if self._assertion_verifier is not None
@@ -441,50 +471,66 @@ class SeatPolicy:
         )
         if named_assertion is not None:
             # Refuse locally when no configured oauth_assert seat claims the
-            # identity the token names, BEFORE the blocking remote verify:
-            # every forged shape then costs no Worker callback (mirrors the
-            # bearer pre-check below).  A valid assertion always names its
-            # flagged seat, so this can never false-refuse one.
+            # identity the token names, BEFORE the blocking remote verify.
             if not any(
                 cfg["auth"] == "shared"
                 and cfg["oauth_assert"]
                 and cfg["identity"] == named_assertion
                 for cfg in self._seats.values()
             ):
-                return None
+                return None, "seat_not_in_policy"
             resolved = self._assertion_verifier.resolve(token, proof)
             if resolved is None:
-                return None
+                return None, "bearer_rejected"
             identity, claims = resolved
-            # Scope authorization is inside the signature:  a grant approved
+            # Scope authorization is inside the signature: a grant approved
             # without zulip:write can mint assertions, but never for a write.
             if self.is_write(proof["action"]) and "zulip:write" not in claims.get("scopes", []):
-                return None
+                return None, "bearer_rejected"
             for seat, cfg in self._seats.items():
                 if cfg["auth"] == "shared" and cfg["oauth_assert"] and cfg["identity"] == identity:
-                    return seat
-            return None
-        if self._verifier is None:
-            return None
+                    return seat, ""
+            return None, "seat_not_in_policy"
         # Refuse locally when no configured shared seat claims the identity the
-        # token names:  otherwise every wrong guess - even for a family the
-        # relay does not serve - costs a blocking Worker verify before any
-        # per-seat rate limit can apply.  A valid bearer always names a
-        # configured identity, so this can never false-refuse one.
-        named = self._verifier.parse_identity(token)
+        # token names: otherwise every wrong guess costs a blocking Worker
+        # verify before any per-seat rate limit can apply. A bearer ST-MCP
+        # accepts can still miss here when the loaded policy file is behind
+        # the reviewed source. That miss is seat_not_in_policy, not a bare
+        # unauthenticated, and the Worker is not asked.
+        named = self._named_bearer(token)
         if named is None:
-            return None
+            return None, "unauthenticated"
         if not any(
             cfg["auth"] == "shared" and cfg["identity"] == named for cfg in self._seats.values()
         ):
-            return None
-        identity = self._verifier.resolve(token)
+            return None, "seat_not_in_policy"
+        if self._verifier is None:
+            return None, "verifier_unavailable"
+        identity, verdict = self._verified_identity(token)
         if identity is None:
-            return None
+            return None, verdict
         for seat, cfg in self._seats.items():
             if cfg["auth"] == "shared" and cfg["identity"] == identity:
-                return seat
-        return None
+                return seat, ""
+        return None, "seat_not_in_policy"
+
+    def _named_bearer(self, token: str) -> str | None:
+        if self._verifier is not None:
+            return self._verifier.parse_identity(token)
+        return SharedBearerVerifier.parse_identity(token)
+
+    def _verified_identity(self, token: str) -> tuple[str | None, str]:
+        detail = getattr(self._verifier, "resolve_detail", None)
+        if callable(detail):
+            identity, reason = detail(token)
+        else:
+            identity = self._verifier.resolve(token)
+            reason = "bearer_rejected"
+        if identity:
+            return identity, ""
+        if reason == "verifier_unavailable":
+            return None, "verifier_unavailable"
+        return None, "bearer_rejected"
 
     def _repo_allowed(self, seat: str, repo: str) -> bool:
         for pattern in self._seats[seat]["repos"]:

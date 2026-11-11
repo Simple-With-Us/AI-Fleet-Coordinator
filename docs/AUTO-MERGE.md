@@ -39,6 +39,9 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write
+  checks: read
+  actions: read
 
 jobs:
   auto-merge:
@@ -91,7 +94,9 @@ jobs:
 - Gate lookups use `merge_token` when the caller passes it, falling back to
   `GITHUB_TOKEN`.  The called workflow's `GITHUB_TOKEN` is capped by the
   caller's permissions, so a caller that wants the fallback to work also
-  grants its workflow `checks: read`, `actions: read` and `issues: read`.
+  grants its workflow `checks: read`, `actions: read` and `issues: read`. 
+  `issues: write` lets the reusable workflow create a missing fleet hold label
+  (`do-not-automerge`, `do-not-auto-merge`, `do-not-merge`, `needs-human-merge`).  A caller that does not grant it still auto-merges: the job warns and changes nothing.
 
 - Review gates.  `require_current_approval` (default `true`) keeps the legacy
   strict contract: the fleet reviewer must have an APPROVED review on the

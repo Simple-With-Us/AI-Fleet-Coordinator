@@ -203,7 +203,11 @@ final class ServerEavesdropperAnswerTests: XCTestCase {
         XCTAssertEqual(claude.bot, "Claude")
         XCTAssertEqual(claude.connection, .connected)
         XCTAssertEqual(claude.runState, .running)
-        XCTAssertEqual(claude.wakeKind, .claude)
+        // The server still sends the old wake words.  Each is read, and one the panel gives no
+        // meaning to is shown as the server wrote it.
+        XCTAssertEqual(claude.wakeKind, .other("claude"))
+        XCTAssertEqual(claude.wakeKind.label, "claude")
+        XCTAssertEqual(claude.wakeKind.rowText, "Wake: claude")
         XCTAssertEqual(claude.pauseState, .notPaused)
         XCTAssertEqual(claude.wakesLastDay, 3)
         XCTAssertEqual(claude.heldBack, 2)
@@ -242,9 +246,13 @@ final class ServerEavesdropperAnswerTests: XCTestCase {
         XCTAssertEqual(down.lastEventLabel(now: try date("2026-11-08T20:00:00Z")), "Not reported")
         XCTAssertEqual(down.quotaReading, .notKnown)
         XCTAssertEqual(try XCTUnwrap(status.seat(named: "HALTED")).pauseState, .paused)
-        XCTAssertEqual(try XCTUnwrap(status.seat(named: "JET")).wakeKind, .http)
+        let jet = try XCTUnwrap(status.seat(named: "JET"))
+        XCTAssertEqual(jet.wake, "http")
+        XCTAssertEqual(jet.wakeKind, .wakes)
+        XCTAssertEqual(jet.wakeKind.label, "Wakes")
+        XCTAssertEqual(jet.wakeKind.rowText, "Wakes")
         XCTAssertEqual(try XCTUnwrap(status.seat(named: "JET")).heldBack, 85)
-        XCTAssertEqual(try XCTUnwrap(status.seat(named: "MM")).wakeKind, .fallback)
+        XCTAssertEqual(try XCTUnwrap(status.seat(named: "MM")).wakeKind, .other("fallback"))
         XCTAssertEqual(try XCTUnwrap(status.seat(named: "MM")).quota?.source, "unknown")
     }
 
@@ -269,13 +277,17 @@ final class ServerEavesdropperAnswerTests: XCTestCase {
             XCTAssertEqual(seat.connection, .connected, seat.seat)
             XCTAssertEqual(seat.runState, .running, seat.seat)
             XCTAssertEqual(seat.quotaReading, .notKnown, seat.seat)
-            XCTAssertNotEqual(seat.wakeKind, .fallback, seat.seat)
+            XCTAssertTrue(seat.wakeKind == .wakes || seat.wakeKind == .capturesOnly, seat.seat)
         }
         let now = try date("2026-11-08T01:22:00Z")
         guard case .read(let compiler) = reading.seat("BF-COMPILER", now: now) else {
             return XCTFail("\(reading.seat("BF-COMPILER", now: now))")
         }
-        XCTAssertEqual(compiler.wakeKind, .inbox)
+        XCTAssertEqual(compiler.wakeKind, .capturesOnly)
+        XCTAssertEqual(compiler.wakeKind.label, "Captures Only")
+        XCTAssertEqual(ServerSeatWake(token: "muse"), .other("muse"))
+        XCTAssertEqual(ServerSeatWake(token: "mcode").label, "mcode")
+        XCTAssertEqual(ServerSeatWake(token: nil).rowText, "Wake: Not reported")
         XCTAssertEqual(compiler.bot, "BF-Compiler")
     }
 

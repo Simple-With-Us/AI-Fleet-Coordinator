@@ -127,6 +127,36 @@ class ClientTests(ApiBase):
         )
         self.assertEqual(found.get("native_session_id"), "mm-1")
 
+    def test_update_takes_issues_and_the_reads_return_them(self) -> None:
+        env = self.api_env()
+        identity = {"platform": "minimax", "location": "server", "scope": "default", "session_id": "mm-issues-1"}
+        made = registry_api.call(env, "register", {**identity, "seat": "MM", "source": "test"})
+        self.assertNotIn("error", made)
+        issues = [{"id": "AFC-1", "seen_at": "2026-11-10T15:00:00Z"}]
+        updated = registry_api.call(env, "update", {**identity, "issues": issues + [{"id": "NOPE-1"}]})
+        self.assertEqual((updated["changed"], updated["issues"]), (["issues"], issues))
+        history = registry_api.call(env, "history", {"platform": "minimax"})
+        self.assertEqual(history["items"][0]["issues"], issues)
+        # The session's last activity rides on history too, and a touch moves it forward.
+        conn = sqlite3.connect(self.server_db)
+        with conn:
+            conn.execute("UPDATE sessions SET last_seen_at = '2026-01-01T00:00:00.000Z'")
+        conn.close()
+        before = registry_api.call(env, "history", {"platform": "minimax"})["items"][0]["last_seen_at"]
+        self.assertEqual(before, "2026-01-01T00:00:00.000Z")
+        registry_api.call(env, "touch", identity)
+        after = registry_api.call(env, "history", {"platform": "minimax"})["items"][0]["last_seen_at"]
+        self.assertGreater(after, before)
+        found = registry_api.call(env, "resolve", {"platform": "minimax", "letter": made["label"]})
+        self.assertEqual(found["issues"], issues)
+        touched = registry_api.call(env, "touch", identity)
+        self.assertEqual((touched["outcome"], touched["issues"]), ("seen", issues))
+        # An update without the field leaves it;  one that is not a list is refused.
+        again = registry_api.call(env, "update", {**identity, "title": "Words"})
+        self.assertEqual(again["issues"], issues)
+        refused = registry_api.call(env, "update", {**identity, "issues": "AFC-1"})
+        self.assertIn("must be a list", refused.get("error", ""))
+
     def test_a_malformed_url_and_a_truncated_answer_are_error_answers(self) -> None:
         env = self.api_env(**{registry_api.URL_ENV: "http://[::1"})
         answer = registry_api.call(env, "resolve", {"platform": "minimax", "letter": "A"})
@@ -354,6 +384,42 @@ class PlatformLetterTests(ApiBase):
         for name, value in flags.items():
             argv.append("--%s=%s" % (name.replace("_", "-"), value))
         return argv
+
+    def test_a_touch_over_the_api_names_the_letter_the_server_holds_now(self) -> None:
+        code, made = self.registry(self.reg_argv("register", "s-0001", letter_pick="lowest"))
+        self.assertEqual(code, 0)
+        # The API's own touch answer keeps its old keys and adds the letter and generation.
+        raw = registry_api.call(
+            self.api_env(),
+            "touch",
+            {"platform": "codex", "location": "server", "scope": PL.SCOPE, "session_id": "s-0001"},
+        )
+        self.assertEqual(
+            raw,
+            {
+                "record_id": made["record_id"],
+                "outcome": "seen",
+                "label": made["label"],
+                "generation": made["generation"],
+            },
+        )
+        conn = sqlite3.connect(self.server_db)
+        with conn:
+            conn.execute("UPDATE alias_assignments SET letter = 'QX' WHERE retired_at IS NULL")
+        conn.close()
+        code, touched = self.registry(self.reg_argv("touch", "s-0001"))
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            touched,
+            {"ok": True, "record_id": made["record_id"], "label": "QX", "generation": made["generation"]},
+        )
+        # A title call's answer names the record too, so a move learned there refreshes the note's id.
+        code, titled = self.registry(self.reg_argv("title", "s-0001", title="New words"))
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            titled,
+            {"ok": True, "record_id": made["record_id"], "label": "QX", "generation": made["generation"]},
+        )
 
     def test_the_whole_letter_life_runs_over_the_api(self) -> None:
         code, made = self.registry(

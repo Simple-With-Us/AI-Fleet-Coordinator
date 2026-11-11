@@ -255,6 +255,8 @@ Three concrete changes carry that:
     status messages, the `@all` reminder, tagged `[OPERATOR·note]`) keep their own tags.  See
     `simple-tools-listener.md`, "The Operator's voice".
 
+    **Nov 10, 2026 supersession.**  The relay above is gone.  The owner ruled that "The operator should never be answering on behalf of a platform", so the Operator posts no wake reply, no owner ack, no route page and no quota notice, in a channel or in a direct message, for any seat and any wake type.  It sends its own alerts and notes and asks no question (owner ruling, Nov 10, 2026:  the Operator does not ask clarifying questions).  `Daemon.post` is a refusal that records `operator_never_answers` on the wake's ledger row.
+
 3.  **The pairing test decides whether the Operator speaks, and the direct message carries what
     it says.**  A message that pairs with a thread gets the Operator's own message, and that
     message travels by direct message to the seat that asked, with a link to the thread, because a
@@ -401,6 +403,50 @@ index needs a separately qualified runner lease and destination-mutation contrac
 *  The registry and the letters:  `scripts/simple_tools/operator_registry.py`, the `sessions` and
   `alias_assignments` tables.
 *  The exporter:  `scripts/simple_tools/operator_sheets_export.mjs`.
+
+### 3.3a: The Linear issues a session works on (AFC-694)
+
+Each session record carries `issues`: the Linear issues the chat has worked on, so the wake
+router can link a wake that names an issue to the chat working on it (contract posted in Zulip,
+AFC-694, message 639354953; Jay approved it Nov 10, 2026).  The field is additive: a record
+from before it has none, and every answer that leaves it out means "no issues known".
+
+**The field.**  A list of at most 8 entries `{"id": "AFC-694", "seen_at": "2026-11-10T15:00:00Z"}`,
+newest `seen_at` first.  It is kept in the `session_issues` side table (schema version 3), so an
+older registry keeps every row and gains the table the next time a writer opens it.
+
+**The id rule.**  An id is a Linear team key, a dash and a number, in capitals.  The keys are
+`LINEAR_TEAM_KEYS` in `scripts/simple_tools/operator_registry.py`, a copy of `TEAM_KEYS` in
+`scripts/linear-board/board` (the board's routing table), and a test keeps the two equal.
+
+**Writing it.**  The registry's `update` op (the API's `POST /registry/v1/update`, and the CLI's
+`update --issues '<JSON list>'`) takes an optional `issues` list that replaces the stored one.  The
+registry normalizes it: an invalid id or an entry with no zoned `seen_at` is dropped without a word,
+one entry is kept per id (its newest `seen_at`), and the list is cut to 8.  An `update` without
+`issues` leaves the list alone, and an empty list clears it.  A closed session's list does not change.
+
+**Reading it.**  The answers that describe a record (`touch`, `update`, `resolve`, and every item of
+`history`) carry `issues` when the session holds any.  `history` items also carry `last_seen_at`,
+the session's last activity (every touch, title and update stamps it): the router ranks sessions by
+it first and falls back to `assigned_at`.
+
+**Who writes it.**  The session-letter hooks, at the start of each turn (`claude_letter` for Claude
+Code, `platform_letter` for the other platforms whose hook data names a transcript or a folder). 
+They read three sources:
+
+*  the transcript lines added since the hook last looked (the note keeps a byte offset, and a turn
+  reads at most the newest 256 KB), taking ids from the chat's own words and tool inputs but not
+  from a tool's output, which can name issues the chat never worked on;
+*  the git branch of the chat's folder (`git rev-parse --abbrev-ref HEAD`, two seconds at most),
+  read in either case, so `claude/afc-694-slug` names AFC-694;
+*  the topic of any `simple-chat post --topic "..."` command or `posted id N to #channel › topic`
+  line, including one in a tool's output.
+
+The ids are merged into the note's list (seen now, newest first, at most 8), and the hook sends the
+whole list through the registry side's `issues` op only when the set of ids changed.  Nothing in
+this path can block or break a prompt: a failure is silent, a registry that refuses the call (one
+too old to know the op) is asked again after ten minutes, and a transcript outside the platform's
+own folder is never read.
 
 ### 3.4: The Linear mirror, one message at a time
 

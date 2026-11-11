@@ -43,6 +43,10 @@ def load_board():
     global _board_mod
     if _board_mod is not None:
         return _board_mod
+    if not _BOARD_PATH.is_file():
+        raise BoardCliFailure(
+            4, f"the board CLI is missing at {_BOARD_DIR.name}/board next to fleet_rag"
+        )
     with _lock:
         if _board_mod is not None:
             return _board_mod
@@ -100,8 +104,10 @@ def query(
 ) -> dict:
     """One read-only GraphQL query through the board stack for this seat's app."""
     err_buf = io.StringIO()
+    # Outside the try:  a board that cannot be loaded raises its own error, instead of the
+    # `except B.GqlError` clause below hiding it behind an UnboundLocalError.
+    B, linear = _client_for(seat, client_id, client_secret)
     try:
-        B, linear = _client_for(seat, client_id, client_secret)
         with redirect_stderr(err_buf):
             data = B.clean_data(linear.call(graphql))
             B.output_limited(data, max_chars)

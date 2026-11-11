@@ -117,6 +117,7 @@ public enum ServicePolicyTable {
         ("com.jay.botfleet-server", handReason),
         ("com.jay.fleet-gdrive-backup", scheduledReason),
         ("com.jay.fleet-mac-services", scheduledReason),
+        ("com.jay.fleet-rag-mirror", scheduledReason),
         ("com.jay.fleet-tools-doctor", scheduledReason),
         ("com.jay.fleet-work-backup", scheduledReason),
         ("com.jay.fleet-worker-health", scheduledReason),

@@ -150,6 +150,7 @@ const SPECS = {
   wf_issue_comment_delete: ['issue comment delete.',obj(['repo', 'comment_id'],{repo:REPO,comment_id:INT})],
   wf_review_comment_update: ['review comment update.',obj(['repo', 'comment_id', 'body'],{repo:REPO,comment_id:INT,body:{type:"string",minLength:1,maxLength:32768}})],
   wf_review_comment_delete: ['review comment delete.',obj(['repo', 'comment_id'],{repo:REPO,comment_id:INT})],
+ wf_release_notes_preview:['Generate bounded untrusted release-note text only; nothing saved. Requires contents:write despite non-mutating preview. GitHub ignores target SHA when tag exists.',obj(['repo','tag','target_sha','previous_tag'],{repo:REPO,tag:REF,target_sha:SHA,previous_tag:REF})],
   wf_release_list: ['release list.',obj(['repo'],{repo:REPO})],
   wf_release_get: ['release get.',obj(['repo', 'release_id'],{repo:REPO,release_id:INT})],
   wf_release_delete: ['release delete.',obj(['repo', 'release_id'],{repo:REPO,release_id:INT})],
@@ -318,6 +319,7 @@ function gitSchema(schema){
 }
 const argSchemas=Object.fromEntries(Object.entries(SPECS).map(([a,s])=>[a,gitSchema(s[1])]));
 const gitArgsOk=(action,args)=>{
+ if(action==='wf_release_notes_preview')return args.tag!==args.previous_tag && !args.tag.startsWith('refs/') && !args.previous_tag.startsWith('refs/') && !releaseNotesCredential.test(args.tag) && !releaseNotesCredential.test(args.previous_tag);
  if(!action.startsWith('wf_git_'))return true;
  if(!gitSchema(SPECS[action][1]).safeParse(args).success)return false;
  if(action==='wf_git_blob_create'){const cap=args.allow_large_text===true?100000:40000;return utfBytes(cap).safeParse(args.text).success && !gitCredential.test(args.text);}
@@ -378,6 +380,7 @@ const RESPONSE_KEYS = {
  wf_git_blob_get:['blob'],wf_git_blob_create:['blob'],wf_git_commit_get:['commit'],wf_git_tree_get:['tree'],
  wf_file_rename:['source_path','destination_path','branch','commit','blob_sha'],
   wf_review_thread_resolve:['thread'],wf_review_thread_unresolve:['thread'],
+ wf_release_notes_preview:['preview','saved'],
   wf_issue_list:['issues','complete'],wf_repo_list:['repositories','total_count','page','has_more'],wf_pr_search:['pull_requests','total_count','complete','page'], wf_branch_rules:['branch','rules','page','has_more'], wf_rulesets:['rulesets','page','has_more'], wf_issue_get:['issue'], wf_issue_create:['issue'], wf_issue_update:['issue'], wf_issue_comment:['comment'],
   wf_issue_comment_update:['result'],
   wf_issue_comment_delete:['deleted'],
@@ -588,6 +591,9 @@ const contextComment=z.object({id:z.number().int().positive().max(Number.MAX_SAF
 const contextCommentsPage=z.object({sha:shaValue,comments:z.array(contextComment).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean(),snapshot:z.literal(false)}).strict();
 const contextCommentGet=z.object({comment:contextComment}).strict();
 const requestedReviewers=z.object({number:z.number().int().positive(),head_sha:shaValue,users:z.array(contextAuthor).max(100),teams:z.array(z.object({id:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),slug:z.string().regex(/^[A-Za-z0-9_-]{1,100}$/).refine(v=>!metadataCredential.test(v))}).strict()).max(100),snapshot:z.literal(false)}).strict();
+const releaseNotesCredential=/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|\bst\.[A-Za-z0-9]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----)/;
+const releaseNotesText=limit=>z.string().refine(v=>!v.includes('\0')&&new TextEncoder().encode(v).length<=limit&&!releaseNotesCredential.test(v));
+const releaseNotesReceipt=z.object({preview:z.object({name:releaseNotesText(500),body:releaseNotesText(32768)}).strict(),saved:z.literal(false)}).strict();
 export function validWfV1Response(action, body, args) {
 
  if(typeof action!=='string')return false;
@@ -762,6 +768,7 @@ export function validWfV1Response(action, body, args) {
  if(historyResponses[action])return historyResponses[action].safeParse(body).success && (!args || body.page===(args.page??1)&&body.events.length<=(args.per_page??30)&&body.has_more===(body.events.length===(args.per_page??30)));
 
  if(['wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking'].includes(action))return (action==='wf_issue_parent'?relationParent:relationPage).safeParse(body).success && (!args || (body.issues??[body.issue]).filter(Boolean).every(v=>typeof v.repo==='string' && v.repo.toLowerCase()===args.repo.toLowerCase()));
+ if(action==='wf_release_notes_preview')return releaseNotesReceipt.safeParse(body).success;
  if(relationResponses[action])return relationResponses[action].safeParse(body).success && (!args || (body.issues??[body.issue]).filter(Boolean).every(v=>v.repo===args.repo));
  if(action==='wf_branch_rules'||action==='wf_rulesets'){
   if(!readResponseSchemas[action].safeParse(body).success)return false;
