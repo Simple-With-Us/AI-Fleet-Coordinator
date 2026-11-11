@@ -27,9 +27,7 @@ class PatchPolicyTests(unittest.TestCase):
         before = copy.deepcopy(policy)
         result = prepare(policy, digest(policy))
         self.assertEqual(policy, before)
-        self.assertEqual(
-            result["seat"]["actions"], ["wf_file_put", "comment_pr", ACTION]
-        )
+        self.assertEqual(result["seat"]["actions"], ["wf_file_put", "comment_pr", ACTION])
         self.assertEqual(result["seat"]["auth"], "shared")
         self.assertEqual(prepare(result, digest(result)), result)
 
