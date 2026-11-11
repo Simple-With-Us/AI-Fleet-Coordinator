@@ -764,8 +764,10 @@ def _inspect(
             f.upstream = up[len("refs/heads/") :]
             if remote_heads is not None:
                 f.upstream_gone = f.upstream not in remote_heads
-    if remote_heads is not None:
+    if remote_heads is not None and (branch or f.upstream):
         f.remote_branch_live = any(n and n in remote_heads for n in (branch, f.upstream))
+    # A lane with no branch or upstream name (detached HEAD) leaves remote_branch_live None (unknown): an open
+    # PR can still match it by commit OID, so the relay-down fallback must keep it.
     # Unpushed means "on no LIVE origin branch": the shas `git ls-remote --heads origin` reported, never a local
     # remote-tracking ref.  Those can be stale (a branch deleted on origin without a `fetch --prune`, the
     # deleted upstream's or any other; a force-pushed branch), and another remote (a peer lane, a scratch bare

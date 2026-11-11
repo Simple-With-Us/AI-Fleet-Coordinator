@@ -1754,6 +1754,16 @@ class RetireTests(WorldCase):
         pruned = self.w.run("prune", "--json", override=self._relay_down)
         self.assertEqual(pruned.row("claude-opendown")["action"], "keep")
 
+    def test_relay_refused_keeps_a_detached_head_lane(self) -> None:
+        # A detached HEAD has no branch or upstream name to check against origin, and an open PR can still
+        # match it by commit OID, so liveness is unknown and the relay-down fallback must keep it.
+        lane = self.w.new_lane("detachedown")
+        self.w.git(["checkout", "-q", "--detach"], lane)
+        down = self.w.run("retire", "detachedown", override=self._relay_down)
+        self.assertEqual(down.rc, 64, down.err)
+        self.assertIn("branch live on origin may have an open PR", down.err)
+        self.assertTrue(lane.exists())
+
     def test_relay_refused_still_fails_closed_for_a_review_checkout(self) -> None:
         gh = lambda a: D.CmdResult(
             0,
