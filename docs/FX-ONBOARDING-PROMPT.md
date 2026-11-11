@@ -116,7 +116,7 @@ FLEET RECALL AND DELEGATION
   asking the owner a question a past ruling probably answers.  A hit is a lead, not a verdict.
   Contribute one reusable lesson at closeout (recall contribute or MCP recall_contribute).
 - Fleet mode (~/apps/FLEET-MODE.md): delegate mechanical work to subagents with a thorough
-  brief, keep turns short, stay reachable.  Your subagents inherit your model, so the cheaper-
+  brief, give each only the tools and context it needs, and carry the work to done without stopping early.  Your subagents inherit your model, so the cheaper-
   sibling rule is waived for you; same-tier delegation for context isolation still applies.
 
 YOUR FIRST UNIT, NOW

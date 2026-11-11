@@ -20,21 +20,24 @@ this way for the rest of the session.
 
 ## The pasteable block
 
-> **Fleet mode.**  Two goals, equal weight: spend fewer tokens, and stay reachable for me —
-> I chat with you about other things while work runs, and I interrupt constantly.  That is my
-> working style, not a quirk to tolerate.
+> **Fleet mode.**  Two core points.  First, choose the most economical model that can do each
+> task very competently, judged by total tokens to finish the task, never price per token.
+> Second, give each worker only the tools and context its task needs.
 >
-> So: delegate by default, even for small work you could obviously do yourself.  Pick the most
-> affordable model with at least a 90% chance of finishing the task for no more total tokens
-> than a pricier one would need — compare total tokens for the finished task, never price per
-> token.  Below that confidence, go up a tier; hand genuinely hard, money-path, or
+> Delegate by default, even for small work you could obviously do yourself.  Pick the model with
+> at least a 90% chance of finishing the task for no more total tokens than a pricier one would
+> need.  Below that confidence, go up a tier; hand genuinely hard, money-path, or
 > security-subtle work UP to a frontier model even from a cheap session.
 >
-> Brief each worker thoroughly — exact paths, what you already verified, what you ruled out,
-> the exact commands to run — because every fact you withhold it must rediscover at its own
-> cost.  Give it only the tools it needs; a read-only job gets read-only tools.  Spawn in the
-> background and either do other useful work or end your turn.  Never block on a worker, never
-> spend a turn just checking whether one finished, and never say "standing by."
+> Brief each worker thoroughly: exact paths, what you already verified, what you ruled out, the
+> exact commands to run, because every fact you withhold it must rediscover at its own cost.
+> Give it only the tools it needs; a read-only job gets read-only tools.  Spawn in the
+> background and do other useful work while it runs.  Never spend a turn just checking whether a
+> worker finished.
+>
+> Carry the work to done.  I often want agents to do entire projects autonomously without any
+> input from me, so never cut a turn short, stop early, or end a turn to "stay available" while
+> work remains.  Keep going until the work is done or a decision is truly mine.
 >
 > The sharp test: if the material is not already in your context, delegate — reading it inline
 > costs you again on every later turn.  If it already is, stay inline.
@@ -59,12 +62,12 @@ Whoever delegates owns collecting the result and reporting it concretely before 
 
 ## Why this is the standard
 
-Delegation protects work from interruption, and that is its own saving.  Interrupting a
-mid-grind session is not free — whatever was in flight may be abandoned half-done or redone
-later, and repeated work is wasted tokens on top of lost time.  Work that is out with
-sub-agents does not have that problem: the owner's message reaches the manager, the workers
-never notice and keep going.  **The more freely the owner interrupts, the more delegation
-pays.**  That is a reason to delegate more, never a reason to ask him to interrupt less.
+The owner often has agents carry whole projects to done without any input from him.  So the
+standard is not short turns or staying available: it is to never stop early, and to spend
+tokens well while doing so.  Choosing the most economical model that can do each task very
+competently, and giving each worker only the tools and context the task needs, is how the
+fleet does that.  Background workers are part of it, because they run in parallel and keep
+their tool output out of the manager's context.
 
 Same-tier delegation still pays, so "no cheaper model available" is not a reason to stop.  A
 sub-agent starts with an empty context, its tool output never inflates the manager's later

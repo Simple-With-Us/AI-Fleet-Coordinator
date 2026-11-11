@@ -1,7 +1,7 @@
 ---
 name: fleet-mode
 description: >-
-  The fleet's standing working style — delegate by default to the cheapest sufficiently competent model, brief workers thoroughly, give them only the tools they need, spawn in the background, and stay reachable for the owner.  Load when the owner types "fleet mode", "/fleet-mode", "delegate hard", "work like Jay", or "spawn and stay free", at the start of any multi-step task, and whenever you catch yourself about to run a long inline grind.  This is the default for every seat on every platform, not an opt-in.
+  The fleet's standing working style — pick the most economical model that can do each task very competently, give each worker only the tools and context its task needs, and carry the work all the way to done without cutting turns short.  Load when the owner types "fleet mode", "/fleet-mode", "delegate hard", "work like Jay", or "spawn and stay free", at the start of any multi-step task, and whenever you catch yourself about to run a long inline grind or stop before the work is finished.  This is the default for every seat on every platform, not an opt-in.
 ---
 
 # Fleet mode
@@ -10,12 +10,14 @@ Fleet mode is not a special mode.  It is how every agent on this fleet is expec
 
 Any of these mean the same thing: **`fleet mode`**, **`/fleet-mode`**, **`delegate hard`**, **`work like Jay`**, **`spawn and stay free`**.  Treat them as identical.
 
-## The two goals, equal weight
+## The two core points
 
-1. **Spend less** — tokens, money, quota.
-2. **Fit how the owner actually works** — they chat with you about many things while workers run, and they interrupt constantly.  That is the working style, not a quirk to tolerate.  Being unavailable or easily derailed is a real cost even when it saves tokens.
+1. **Choose the most economical model able to do each task very competently.**  Judge by total tokens to finish the task, never price per token.
+2. **Give each worker only the tools and context its task needs.**  Nothing it will not use, and everything it would otherwise have to rediscover.
 
-Where the two pull apart, say so rather than silently optimising for cost.
+## Carry the work to done
+
+The owner often wants agents to carry an entire project to done autonomously, without any input from him.  So never cut a turn short, stop early, or end a turn to "stay available" while work remains.  Keep going until the work is done, or until you reach a decision that is truly his, and then say exactly what you need in one sentence.  If he messages you mid-work, answer it and carry on, because earlier asks stay in scope.  Background workers are fine and encouraged, and the point is never to stop delegating, only never to stop early.
 
 ## What to do, concretely
 
@@ -27,15 +29,11 @@ Where the two pull apart, say so rather than silently optimising for cost.
 
 A parent may choose a subagent that is more capable, higher-tier, or more expensive than itself whenever the task warrants it.  The parent model’s tier or price is not a ceiling.  Keep the expensive assignment narrow and provide only the context and tools it needs, where the platform allows.  A smaller context and toolset may reduce total cost, but savings are not guaranteed; the capability the task needs is sufficient reason to escalate.
 
-**Keep turns short.**  Twenty tool calls inline makes you unreachable for the whole grind, and the owner's next message either waits or lands mid-run and derails it.  Spawn workers and return.  End turns often rather than batching into one long one.
-
-**Delegation protects work from interruption — that is its own saving.**  Interrupting a mid-grind session is not free: whatever was in flight may be abandoned half-done or started over later, and repeated work is wasted tokens on top of lost time.  Work that is out with sub-agents does not have that problem — the owner's message reaches you, the workers never notice.  So the more freely they interrupt, the MORE delegation pays.  That is a reason to delegate more, never a reason to ask them to interrupt less.
-
 **Brief thoroughly — that is the whole game.**  A worker starts with none of your context, so every fact you withhold it must rediscover with its own tool calls, more slowly and less reliably than you stating it.  Hand over exact paths and line numbers, what you already verified and how, what you ruled out, the constraint that makes the obvious approach wrong, and the exact commands to run.
 
 **Give it only the tools it needs.**  Every tool schema is re-sent on every turn that agent takes.  A read-only search job wants read tools, not Write, not Edit, not a browser.  Fewer tools is cheaper per turn AND keeps the worker on task.  Where your platform offers restricted agent types, use them: a read-only scout for investigation, a cheap writer for well-specified prose edits.
 
-**Then stay available.**  Spawn in the background and do other useful work, or end your turn.  An idle session costs nothing — tokens flow only when a turn runs — so waiting while workers grind is free, and it is what keeps the owner able to talk to you meanwhile.  Never block the main loop on a worker.
+**Use background workers, and keep working.**  Spawn workers in the background and do other useful work while they run.  When only their results remain, wait for the completion notifications and collect them.  Do not end a turn with work still open, and do not spend a turn only checking whether a worker finished.
 
 **Supervise on evidence, never by polling.**  Never spend a turn whose only purpose is checking whether a worker finished.  Notifications arrive on their own.  Glance at worker state on turns that were already happening anyway.
 
