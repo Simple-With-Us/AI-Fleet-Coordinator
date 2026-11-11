@@ -123,7 +123,7 @@ MAX_ROW_ISSUES = 8
 # A piece of a session id:  lower-case hex, hyphens allowed where the id has them.
 FRAGMENT_RE = re.compile(r"(?<![0-9A-Za-z_-])[0-9a-f]+(?:-[0-9a-f]+)*(?![0-9A-Za-z_-])")
 # A fleet post header's inside:  a seat tag, then its own fragment or one of the marks below.
-HEADER_RE = re.compile(r"[A-Z][A-Z0-9_-]*(·[0-9a-f-]{8,})?(.*)", re.S)
+HEADER_RE = re.compile(r"[A-Z][A-Z0-9_-]*(·[0-9a-f-]{8,})?(.*)", re.DOTALL)
 HEADER_SESSION_RE = re.compile(r":\s*[A-Z]{1,2}\.[0-9]+\.[A-Z]\b")
 FRAGMENT_MIN_HEX = 8
 FRAGMENT_MAX_CHARS = 36
