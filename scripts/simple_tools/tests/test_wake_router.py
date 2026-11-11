@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import socket
 import subprocess
 import tempfile
@@ -77,6 +78,10 @@ class Clock:
 
     def __call__(self) -> float:
         return self.now
+
+
+class Killed(BaseException):
+    """Stands in for an abrupt kill:  no `except Exception` in the router may see it."""
 
 
 class Base(unittest.TestCase):
@@ -223,6 +228,13 @@ class Picking(Base):
         self.assertIsNone(pick.target)
         self.assertEqual((pick.reason, pick.undecided), ("consultant-missing", "ambiguous"))
         self.assertEqual(pick.candidates, ("AA", "BB"))
+
+    def test_a_closed_chat_is_never_picked_by_its_letter(self) -> None:
+        for over in ({"state": "closed"}, {"closed_at": "2026-11-01T00:00:00Z"}):
+            self.registry.letters = {"AA": row(SID_A, "AA", "Other", **over)}
+            pick = self.router().pick(self.wake(letter="AA"))
+            self.assertIsNone(pick.target)
+            self.assertEqual((pick.reason, pick.letter_live), ("no-live-session", False))
 
     def test_no_live_chat(self) -> None:
         self.assertEqual(self.router().pick(self.wake()).reason, "no-live-session")
@@ -404,6 +416,210 @@ class Durability(Base):
         self.assertEqual(len(self.delivered), 1)
         self.assertEqual(self.done()["status"], "delivered")
 
+    def test_a_kill_during_delivery_is_final_and_never_runs_again(self) -> None:
+        marks: list[bool] = []
+
+        def killed(target, wake):
+            self.delivered.append((target.session_id, wake.wake_id))
+            marks.append(json.loads(self.pending().read_text(encoding="utf-8"))["in_flight"])
+            raise Killed
+
+        router = self.router(deliver=killed)
+        router.accept(self.wake())
+        with self.assertRaises(Killed):
+            router.run_once()
+        self.assertEqual(marks, [True])  # durable before the delivery began
+        fresh = self.router()
+        self.assertEqual(fresh.replay(), 1)
+        self.drain(fresh)
+        self.assertEqual(len(self.delivered), 1)
+        receipt = self.done()
+        self.assertEqual((receipt["status"], receipt["code"]), ("dead", WR.INTERRUPTED))
+        self.assertIsNone(receipt["delivered"])  # it may have run:  nobody knows
+        self.assertTrue(receipt["replayed"])
+        self.assertEqual(receipt["session_id"], SID_A)
+        self.assertFalse(self.pending().exists())
+
+    def test_no_durable_mark_means_no_delivery(self) -> None:
+        router = self.router()
+        router.accept(self.wake())
+        with mock.patch.object(WR, "atomic_write", side_effect=OSError):
+            router.run_once()
+        self.assertEqual(self.delivered, [])
+        self.clock.now += 100
+        self.drain(router)
+        self.assertEqual(len(self.delivered), 1)
+        self.assertEqual(self.done()["attempts"], 1)
+
+    def test_a_mark_that_cannot_be_cleared_still_never_runs_again(self) -> None:
+        ran: list[int] = []
+
+        def deliver(target, wake):
+            ran.append(1)
+            patcher.start()  # the disk fails after the delivery, for the outcome and the receipt
+            return WR.Delivery("completed")
+
+        patcher = mock.patch.object(WR, "atomic_write", side_effect=OSError)
+        router = self.router(deliver=deliver)
+        router.accept(self.wake())
+        try:
+            router.run_once()
+        finally:
+            patcher.stop()
+        fresh = self.router(deliver=deliver)
+        fresh.replay()
+        self.drain(fresh)
+        self.assertEqual(ran, [1])
+        self.assertEqual(self.done()["code"], WR.INTERRUPTED)
+
+    def test_a_fault_after_the_delivery_does_not_retry_it(self) -> None:
+        router = self.router()
+        router.accept(self.wake())
+        with mock.patch.object(router, "_settle", side_effect=RuntimeError):
+            router.run_once()
+        self.clock.now += 5000
+        self.drain(router)
+        self.assertEqual(len(self.delivered), 1)
+        self.assertEqual(self.done()["code"], WR.INTERRUPTED)
+
+    def test_a_pending_file_missing_a_field_is_set_aside(self) -> None:
+        router = self.router()
+        router.accept(self.wake("w-good"))
+        router.accept(self.wake("w-bad"))
+        bad = json.loads(self.pending("w-bad").read_text(encoding="utf-8"))
+        del bad["accepted_at"]
+        self.pending("w-bad").write_text(json.dumps(bad), encoding="utf-8")
+        fresh = self.router()
+        self.assertEqual(fresh.replay(), 1)
+        self.drain(fresh)
+        self.assertEqual(self.delivered, [(SID_A, "w-good")])
+        self.assertTrue(self.pending("w-bad").exists())
+        self.assertIn("w-bad pending-unreadable", self.stderr.getvalue())
+
+    def test_a_worker_survives_a_fault_in_its_loop(self) -> None:
+        router = self.router(workers=1)
+        real = router._claim
+        faults: list[int] = []
+
+        def claim_once_broken():
+            if not faults:
+                faults.append(1)
+                raise KeyError("accepted_at")
+            return real()
+
+        router._claim = claim_once_broken
+        router.start()
+        self.addCleanup(router.stop)
+        router.accept(self.wake())
+        deadline = time.time() + 10
+        while time.time() < deadline and not (self.state / "done" / "w-1.json").exists():
+            time.sleep(0.05)
+        self.assertEqual(self.done()["status"], "delivered")
+
+
+class Shutdown(Base):
+    def setUp(self) -> None:
+        super().setUp()
+        self.registry.rows = [row(SID_A, "AA", "Only chat")]
+        self.registry.letters = {"BB": row(SID_B, "BB", "Other")}
+        patcher = mock.patch.object(WR.registry_api, "base_url", return_value="http://r.invalid")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def serve(self, router: WR.Router, port: int = 0) -> int:
+        with contextlib.redirect_stdout(io.StringIO()):
+            return WR.serve(router, "127.0.0.1", port)
+
+    def sigterm_during(self, router: WR.Router, started, then) -> None:
+        """Run `serve` on this thread (a signal handler needs the main thread) and send SIGTERM
+        once a delivery has started, then call `then` while the router is stopping."""
+
+        def driver() -> None:
+            self.assertTrue(started.wait(timeout=20))
+            os.kill(os.getpid(), signal.SIGTERM)
+            deadline = time.time() + 10
+            while time.time() < deadline and not router._stopping:
+                time.sleep(0.02)
+            then()
+
+        thread = threading.Thread(target=driver, daemon=True)
+        thread.start()
+        self.assertEqual(self.serve(router), 0)
+        thread.join(timeout=20)
+
+    def test_sigterm_finishes_the_running_delivery_and_starts_no_more(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+        order: list[str] = []
+
+        def deliver(target, wake):
+            order.append(wake.wake_id)
+            started.set()
+            release.wait(timeout=20)
+            return WR.Delivery("completed")
+
+        router = self.router(deliver=deliver, workers=2, shutdown_wait_seconds=30)
+        router.accept(self.wake("w-1"))
+
+        def while_stopping() -> None:
+            self.clock.now += 1
+            router.accept(self.wake("w-2", letter="BB"))
+            time.sleep(0.4)
+            release.set()
+
+        self.sigterm_during(router, started, while_stopping)
+        self.assertTrue(release.is_set())  # serve did not return before the delivery ended
+        self.assertEqual(order, ["w-1"])
+        self.assertEqual(self.done("w-1")["status"], "delivered")
+        self.assertTrue(self.pending("w-2").exists())
+        fresh = self.router()  # the restart:  what never started is delivered, once
+        self.assertEqual(fresh.replay(), 1)
+        self.drain(fresh)
+        self.assertEqual(self.delivered, [(SID_B, "w-2")])
+
+    def test_a_delivery_outlasting_the_wait_is_closed_by_the_replay(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+
+        def deliver(target, wake):
+            started.set()
+            release.wait(timeout=20)
+            return WR.Delivery("completed")
+
+        router = self.router(deliver=deliver, workers=1, shutdown_wait_seconds=1)
+        router.accept(self.wake())
+        self.sigterm_during(router, started, lambda: None)
+        self.assertFalse(release.is_set())
+        fresh = self.router()
+        fresh.replay()
+        self.drain(fresh)
+        self.assertEqual(self.delivered, [])
+        self.assertEqual(self.done()["code"], WR.INTERRUPTED)
+        release.set()
+        router.stop()
+
+    def test_a_second_instance_touches_no_pending_wake(self) -> None:
+        self.router().accept(self.wake())
+        fresh = self.router()
+        with socket.socket() as taken:
+            taken.bind(("127.0.0.1", 0))
+            taken.listen(1)
+            with self.assertRaises(SystemExit):
+                self.serve(fresh, taken.getsockname()[1])
+        self.assertEqual(fresh._threads, [])
+        self.assertEqual(fresh._entries, {})
+        self.assertEqual(self.delivered, [])
+        self.assertTrue(self.pending().exists())
+
+    def test_the_unit_gives_the_wait_room_and_spares_the_children(self) -> None:
+        unit = (Path(CW.__file__).parent / "server" / "claude-wake-router.service").read_text()
+        stop = int(re.search(r"^TimeoutStopSec=(\d+)$", unit, re.M).group(1))
+        wait = CW.DEFAULTS["shutdown_wait_seconds"]
+        longest = CW.DEFAULTS["resume_timeout_seconds"] + CW.SSH_MARGIN_SECONDS
+        self.assertGreaterEqual(wait, longest + CW.SSH_PREFLIGHT_SECONDS)
+        self.assertGreater(stop, wait)
+        self.assertRegex(unit, r"(?m)^KillMode=mixed$")
+
 
 class Dedupe(Base):
     def setUp(self) -> None:
@@ -526,7 +742,18 @@ class Retries(Base):
         router.accept(self.wake())
         self.run_all(router, 12)
         receipt = self.done()
-        self.assertEqual((receipt["status"], receipt["code"]), ("dead", "ssh-unreachable"))
+        self.assertEqual((receipt["status"], receipt["code"]), ("dead", WR.EXPIRED))
+        self.assertEqual(len(self.delivered), 3)  # tried at 0, 2000 and 4000;  not at 6000
+
+    def test_a_wake_too_old_is_not_delivered_after_an_outage(self) -> None:
+        router = self.router(max_age_seconds=100)
+        router.accept(self.wake())
+        self.clock.now += 101
+        self.drain(router)
+        self.assertEqual(self.delivered, [])
+        receipt = self.done()
+        self.assertEqual((receipt["status"], receipt["code"]), ("dead", WR.EXPIRED))
+        self.assertIs(receipt["delivered"], False)
 
     def test_a_registry_outage_retries_the_pick(self) -> None:
         self.registry.down = True
@@ -605,6 +832,75 @@ class BusySessions(Base):
         self.assertEqual(overlap, [False, False, False])
         self.assertEqual(self.done("w-2")["status"], "delivered")
         self.assertEqual(self.done("w-2")["attempts"], 1)
+
+    def test_a_later_wake_does_not_overtake_one_waiting_for_the_same_chat(self) -> None:
+        self.results = [WR.Delivery("busy", code="session-locked")]
+        router = self.router(busy_retry_seconds=30)
+        router.accept(self.wake("w-1"))
+        self.drain(router)
+        self.clock.now += 1
+        router.accept(self.wake("w-2"))
+        self.drain(router)
+        self.assertEqual(self.delivered, [(SID_A, "w-1")])
+        saved = json.loads(self.pending("w-2").read_text(encoding="utf-8"))
+        self.assertEqual(saved["pick"]["target"]["session_id"], SID_A)  # the pick is kept
+        self.clock.now += 31
+        self.drain(router)
+        self.assertEqual([w for _, w in self.delivered], ["w-1", "w-1", "w-2"])
+
+    def test_the_chat_stays_held_until_the_outcome_is_settled(self) -> None:
+        router = self.router()
+        settling = threading.Event()
+        release = threading.Event()
+        real = router._settle
+
+        def slow(entry, pick, result):
+            settling.set()
+            release.wait(timeout=10)
+            real(entry, pick, result)
+
+        router._settle = slow
+        router.accept(self.wake("w-1"))
+        worker = threading.Thread(target=router.run_once, daemon=True)
+        worker.start()
+        self.assertTrue(settling.wait(timeout=10))
+        self.clock.now += 1
+        router.accept(self.wake("w-2"))
+        router.run_once()  # it picks the chat and goes back behind w-1
+        self.assertEqual(self.delivered, [(SID_A, "w-1")])
+        self.assertIsNone(router._claim())  # and now that its chat is known, it is not claimed
+        release.set()
+        worker.join(timeout=10)
+        self.drain(router)
+        self.assertEqual([w for _, w in self.delivered], ["w-1", "w-2"])
+
+    def test_a_wake_still_being_picked_is_not_overtaken(self) -> None:
+        picking = threading.Event()
+        release = threading.Event()
+        real = self.registry
+        first: list[int] = []
+
+        def call(env, op, params=None, *, timeout=25):
+            if not first:
+                first.append(1)
+                picking.set()
+                release.wait(timeout=10)
+            return real(env, op, params, timeout=timeout)
+
+        router = self.router()
+        router.accept(self.wake("w-1"))
+        with mock.patch.object(WR.registry_api, "call", call):
+            worker = threading.Thread(target=router.run_once, daemon=True)
+            worker.start()
+            self.assertTrue(picking.wait(timeout=10))
+            self.clock.now += 1
+            router.accept(self.wake("w-2"))
+            router.run_once()
+            self.assertEqual(self.delivered, [])
+            release.set()
+            worker.join(timeout=10)
+        self.drain(router)
+        self.assertEqual([w for _, w in self.delivered], ["w-1", "w-2"])
 
     def test_a_held_lock_never_fails_the_wake(self) -> None:
         self.results = [WR.Delivery("busy", "resume", code="session-locked")] * 8
@@ -716,6 +1012,13 @@ class Http(Base):
         status, record = self.request(port, "/receipt/w-1", key=self.key, method="GET")
         self.assertEqual((status, record["status"]), (200, "delivered"))
         self.assertEqual(record["receipt_id"], answer["receipt_id"])
+
+    def test_a_client_that_never_finishes_its_headers_is_cut_off(self) -> None:
+        with mock.patch.object(WR, "REQUEST_TIMEOUT", 0.2):
+            port = self.serve(self.router())
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as client:
+            client.sendall(b"POST /wake/CLAUDE HTTP/1.1\r\nHost: x\r\n")
+            self.assertEqual(client.recv(1024), b"")
 
     def test_a_receipt_needs_the_key(self) -> None:
         port = self.serve(self.router())
@@ -1027,6 +1330,13 @@ class Resume(ClaudeBase):
         )
         self.assertNotIn(self.key, json.dumps(child))
 
+    def test_the_child_gets_the_config_folder_the_chat_was_found_in(self) -> None:
+        config = self.home / ".claude"
+        self.env["CLAUDE_CONFIG_DIR"] = str(config)
+        self.transcript()
+        self.deliver()
+        self.assertEqual(self.runs[0][1]["env"]["CLAUDE_CONFIG_DIR"], str(config))
+
     def test_a_resume_is_refused_while_a_process_holds_the_chat(self) -> None:
         self.holder_file(sock=str(Path(self.tmp) / "absent.sock"))
         self.transcript()
@@ -1082,11 +1392,43 @@ class Resume(ClaudeBase):
         self.assertEqual((result.outcome, result.code), ("busy", "session-locked"))
         self.assertEqual(self.runs, [])
 
-    def test_a_failed_resume_can_retry(self) -> None:
+    def test_a_started_resume_that_exits_non_zero_is_final(self) -> None:
         self.transcript()
-        self.exit_code = 3
-        result = self.deliver()
-        self.assertEqual((result.outcome, result.code), ("failed", "resume-exit-3"))
+        for code in (3, -9):
+            self.exit_code = code
+            result = self.deliver()
+            self.assertEqual((result.outcome, result.code), ("refused", "resume-exit-%d" % code))
+
+    def test_a_resume_that_could_not_start_can_retry(self) -> None:
+        self.transcript()
+
+        def cannot_start(argv, **kwargs):
+            raise FileNotFoundError(argv[0])
+
+        result = CW.deliver_local(self.env, self.cfg, SID_A, self.w, runner=cannot_start)
+        self.assertEqual((result.outcome, result.code), ("failed", "resume-FileNotFoundError"))
+
+    def test_an_unclear_error_from_a_started_resume_is_final(self) -> None:
+        self.transcript()
+
+        def broken(argv, **kwargs):
+            raise RuntimeError("after it started")
+
+        result = CW.deliver_local(self.env, self.cfg, SID_A, self.w, runner=broken)
+        self.assertEqual((result.outcome, result.code), ("refused", "resume-error-RuntimeError"))
+
+    def test_the_router_runs_a_failing_resume_once(self) -> None:
+        self.registry.rows = [row(SID_A, "AA", "OPS-1048 letters")]
+        self.transcript()
+        self.exit_code = 1
+        platform = CW.make_platform(self.env, self.cfg, runner=self.runner, sleep=lambda s: None)
+        router = WR.Router(platform, self.env, self.cfg, self.state, self.key_file, clock=self.clock)
+        router.accept(self.w)
+        for _ in range(8):
+            self.drain(router)
+            self.clock.now += 2000
+        self.assertEqual(len(self.runs), 1)
+        self.assertEqual(self.done("w-claude")["status"], "dead")
 
     def test_a_timed_out_resume_is_not_retried(self) -> None:
         self.transcript()
@@ -1109,6 +1451,81 @@ class Resume(ClaudeBase):
         self.assertEqual(self.runs, [])
 
 
+class HolderFailsClosed(ClaudeBase):
+    """Not being sure that no process holds a chat must never start a resume."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.transcript()
+
+    def assert_busy(self) -> None:
+        result = self.deliver()
+        self.assertEqual((result.outcome, result.code), ("busy", "holder-unknown"))
+        self.assertEqual(self.runs, [])
+
+    def record(self, text: str) -> Path:
+        path = self.sessions / ("%d.json" % os.getpid())
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_a_torn_record_of_a_live_pid(self) -> None:
+        self.record('{"pid": 1, "sessionId": "aaaa')
+        self.assert_busy()
+
+    def test_an_oversized_record_of_a_live_pid(self) -> None:
+        self.record(" " * (CW.SESSION_FILE_BYTES + 1))
+        self.assert_busy()
+
+    def test_a_record_that_cannot_be_read(self) -> None:
+        self.holder_file()
+        with mock.patch.object(Path, "read_text", side_effect=PermissionError):
+            self.assert_busy()
+
+    def test_a_record_with_no_session_id(self) -> None:
+        self.record(json.dumps({"pid": os.getpid()}))
+        self.assert_busy()
+
+    def test_this_chats_record_with_no_usable_pid(self) -> None:
+        self.record(json.dumps({"pid": "x", "sessionId": SID_A}))
+        self.assert_busy()
+
+    def test_an_unlistable_folder(self) -> None:
+        with mock.patch.object(CW.os, "listdir", side_effect=PermissionError):
+            self.assert_busy()
+
+    def test_a_missing_folder(self) -> None:
+        shutil.rmtree(self.sessions)
+        self.assert_busy()
+
+    def test_a_folder_whose_files_cannot_be_examined(self) -> None:
+        self.record("{}")
+        with mock.patch.object(CW.os, "lstat", side_effect=PermissionError):
+            self.assert_busy()
+
+    def test_a_torn_leftover_of_a_dead_pid_blocks_nothing(self) -> None:
+        child = subprocess.Popen(["/bin/true"])
+        child.wait()
+        (self.sessions / ("%d.json" % child.pid)).write_text("{torn", encoding="utf-8")
+        self.assertEqual(self.deliver().route, "resume")
+
+    def test_a_record_gone_while_reading_is_no_doubt(self) -> None:
+        self.record("{}")
+        with mock.patch.object(CW, "_read_record", side_effect=FileNotFoundError):
+            self.assertEqual(self.deliver().route, "resume")
+
+    def test_a_live_holder_is_an_answer_whatever_else_is_torn(self) -> None:
+        inbox = self.inbox()
+        self.holder_file(sock=inbox.path)
+        (self.sessions / ("%d.json" % os.getppid())).write_text("{torn", encoding="utf-8")
+        self.assertEqual(self.deliver().route, "socket")
+
+    def test_a_holder_with_a_socket_is_preferred(self) -> None:
+        for bare, wired in ((os.getpid(), os.getppid()), (os.getppid(), os.getpid())):
+            self.holder_file(pid=bare, sock="")
+            self.holder_file(pid=wired, sock="/tmp/wired.sock")
+            self.assertEqual(CW.find_holder(self.env, SID_A), CW.Holder(wired, "/tmp/wired.sock"))
+
+
 class Remote(ClaudeBase):
     def setUp(self) -> None:
         super().setUp()
@@ -1126,21 +1543,50 @@ class Remote(ClaudeBase):
 
     def test_the_command_is_fixed_and_the_wake_rides_stdin(self) -> None:
         result = self.deliver_remote()
-        argv, kwargs = self.runs[0]
+        self.assertEqual(self.runs[0][0][-2:], ["mac-host", "true"])  # the preflight goes first
+        argv, kwargs = self.runs[1]
         self.assertEqual(argv[-1], CW.REMOTE_COMMAND)
         self.assertEqual(argv[-2], "mac-host")
         self.assertNotIn("OPS-1048", " ".join(argv))
         self.assertEqual(json.loads(kwargs["input"])["session_id"], SID_A)
         self.assertEqual((result.outcome, result.route, result.ack), ("sent", "ssh:socket", "unknown"))
 
-    def test_a_sleeping_mac_is_unreachable(self) -> None:
+    def test_a_sleeping_mac_is_unreachable_and_nothing_is_sent(self) -> None:
         self.answer = SimpleNamespace(returncode=255, stdout="")
         self.assertEqual(self.deliver_remote().outcome, "unreachable")
+        self.assertEqual(len(self.runs), 1)
 
-    def test_a_bad_answer_is_failed(self) -> None:
-        self.answer = SimpleNamespace(returncode=1, stdout="not json\n")
-        result = self.deliver_remote()
-        self.assertEqual((result.outcome, result.code), ("failed", "remote-exit-1"))
+    def scripted(self, *answers):
+        """A runner whose calls answer in turn;  an exception in the list is raised."""
+        queue = list(answers)
+
+        def run(argv, **kwargs):
+            self.runs.append((argv, kwargs))
+            answer = queue.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        return run
+
+    def test_a_255_after_a_good_preflight_is_final(self) -> None:
+        good = SimpleNamespace(returncode=0, stdout="")
+        dropped = SimpleNamespace(returncode=255, stdout="")
+        runner = self.scripted(good, dropped)
+        result = CW.deliver_remote(self.env, self.cfg, SID_A, self.w, runner=runner)
+        self.assertEqual((result.outcome, result.code), ("refused", "ssh-dropped"))
+
+    def test_a_preflight_that_times_out_is_unreachable(self) -> None:
+        runner = self.scripted(subprocess.TimeoutExpired("ssh", 1))
+        result = CW.deliver_remote(self.env, self.cfg, SID_A, self.w, runner=runner)
+        self.assertEqual((result.outcome, len(self.runs)), ("unreachable", 1))
+
+    def test_a_bad_answer_is_final(self) -> None:
+        good = SimpleNamespace(returncode=0, stdout="")
+        bad = SimpleNamespace(returncode=1, stdout="not json\n")
+        runner = self.scripted(good, bad)
+        result = CW.deliver_remote(self.env, self.cfg, SID_A, self.w, runner=runner)
+        self.assertEqual((result.outcome, result.code), ("refused", "remote-exit-1"))
 
     def test_an_unnamed_or_flag_shaped_destination_is_refused(self) -> None:
         for dest in ("", "-oProxyCommand=x"):
@@ -1177,6 +1623,18 @@ class Exclude(ClaudeBase):
         exclude = CW.exclude_non_interactive(self.env, "server")
         self.assertEqual(exclude([WR.Target(SID_A, host="server")]), {SID_A})
         self.assertEqual(exclude([WR.Target(SID_A, host="mac")]), set())
+
+    def test_a_stale_record_excludes_nothing(self) -> None:
+        child = subprocess.Popen(["/bin/true"])
+        child.wait()
+        self.holder_file(pid=child.pid, procStart="1", kind="print")
+        exclude = CW.exclude_non_interactive(self.env, "server")
+        self.assertEqual(exclude([WR.Target(SID_A, host="server")]), set())
+
+    def test_a_reused_pid_excludes_nothing(self) -> None:
+        self.holder_file(procStart="1", kind="print")
+        exclude = CW.exclude_non_interactive(self.env, "server")
+        self.assertEqual(exclude([WR.Target(SID_A, host="server")]), set())
 
 
 class EndToEnd(ClaudeBase):

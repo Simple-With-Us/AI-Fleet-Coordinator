@@ -20,22 +20,32 @@ same `session_id`.  It returns a `Delivery` whose `outcome` is one of:
     completed    the chat ran the wake to the end (a headless resume that exited 0)
     busy         the chat cannot take it yet;  the wake waits, and this uses up no attempt
     unreachable  the chat's host did not answer;  the wake waits, and this uses up no attempt
-    failed       this try failed;  it is retried up to `max_attempts`
+    failed       this try failed and cannot have run the wake;  it is retried up to `max_attempts`
     refused      it can never work, or a retry could run the turn twice;  no retry
 
-Any exception counts as `failed`.  `route`, `code` and `note` are short fixed codes for the receipt,
-never message text and never a credential.
+Any exception counts as `failed`, so a `deliver` that may already have started the turn must catch
+its own errors from that point on and return `refused`.  `route`, `code` and `note` are short fixed
+codes for the receipt, never message text and never a credential.
 
 The answer and the durability.  The listener waits at most its routine timeout, resends with the
 same id, and treats any 2xx as accepted, so it never retries after one.  So the POST only checks
 and reserves:  the accepted wake is written to `pending/<wake_id>.json` and fsynced BEFORE the 202
 goes out, a worker does the pick and the delivery, a restart replays whatever is still pending, and
 the entry is dropped only once the final receipt is written.  An id with a final receipt answers
-that record;  an id still pending answers 202 again and starts nothing.  Delivery is at least once:
-a crash in the middle of a delivery replays it, and the receipt says `replayed`.
+that record;  an id still pending answers 202 again and starts nothing.
 
-A later wake for a chat being delivered to waits for it and runs after it, in order;  it is not
-failed as busy.  A wake that still cannot be delivered ends in a `dead` receipt, visible in the
+A wake that may already have run a turn is never run again:  a duplicate turn is worse than a final,
+visible failure, because the sender can see the receipt and send again.  So an in-flight mark is
+made durable before `deliver` is called (no mark, no delivery) and cleared when the outcome is
+recorded.  A replay that finds the mark writes a `dead` receipt with the code
+`interrupted-during-delivery`, whose `delivered` is null because nobody knows, and does not deliver.
+A wake the router never started is replayed and delivered, and its receipt says `replayed`.  SIGTERM
+stops new work and waits up to `shutdown_wait_seconds` for running deliveries, so a normal restart
+interrupts none of them.
+
+One chat's wakes run in the order they came.  A later wake waits behind an earlier one for the same
+chat until that one is settled;  it is not failed as busy.  A wake that still cannot be delivered,
+or is older than `max_age_seconds` when its turn comes, ends in a `dead` receipt, visible in the
 state directory and at GET /receipt/<id>, and its message is in the seat inbox regardless.
 
 The test flag.  A body with `"test": true` is answered at once with the pick and its reason (the
@@ -58,6 +68,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import sys
 import threading
 import time
@@ -82,7 +93,11 @@ HISTORY_LIMIT = 200
 TEST_REGISTRY_TIMEOUT = 6
 REGISTRY_TIMEOUT = 15
 DONE_KEEP_SECONDS = 30 * 86400
+# Longer than the listener's routine timeout, so only a client that has stalled is cut off.
+REQUEST_TIMEOUT = 30
 OUTCOMES = ("sent", "completed", "busy", "unreachable", "failed", "refused")
+INTERRUPTED = "interrupted-during-delivery"
+EXPIRED = "wake-expired"
 
 ROUTER_DEFAULTS: dict[str, Any] = {
     # Off until someone arms it:  with this false the router picks and receipts, and delivers nothing.
@@ -93,6 +108,10 @@ ROUTER_DEFAULTS: dict[str, Any] = {
     "busy_retry_seconds": 30,
     "unreachable_retry_seconds": 300,
     "max_age_seconds": 86400,
+    # What a SIGTERM waits for running deliveries.  It covers the longest delivery a default config
+    # can start, and the unit's TimeoutStopSec is longer than this.  A delivery still running at the
+    # end of it is closed by the replay as interrupted, never run again.
+    "shutdown_wait_seconds": 1000,
 }
 
 
@@ -359,7 +378,8 @@ class Router:
             )
             if "error" in answer:
                 return Pick(reason="registry-unavailable", retry=True)
-            target = self._valid(answer) if answer.get("found") else None
+            live = answer.get("found") and not _closed(answer)
+            target = self._valid(answer) if live else None
             if target is not None:
                 letter_live = True
                 if target.session_id in self._excluded([target]):
@@ -377,7 +397,7 @@ class Router:
         for row in answer.get("items") or []:
             if not isinstance(row, dict):
                 continue
-            if row.get("retired_at") or row.get("closed_at") or row.get("state") == "closed":
+            if _closed(row):
                 continue
             target = self._valid(row)
             if target is not None and target.session_id not in live:
@@ -507,16 +527,22 @@ class Router:
             thread.start()
             self._threads.append(thread)
 
-    def stop(self) -> None:
+    def stop(self, wait: float = 5.0) -> bool:
+        """Claim nothing more and wait up to `wait` seconds in all for running deliveries.  Answers
+        whether every worker finished."""
         with self._cond:
             self._stopping = True
             self._cond.notify_all()
+        deadline = time.monotonic() + wait
         for thread in self._threads:
-            thread.join(timeout=5)
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        return not any(thread.is_alive() for thread in self._threads)
 
     def replay(self) -> int:
         """Load every pending file.  One with a final receipt finished just before a crash, so it
-        is only removed;  one that cannot be read stays on disk and is named on stderr."""
+        is only removed.  One that is not a whole entry stays on disk, set aside and named on
+        stderr, and is never run.  One still marked in flight may have run its turn, so it is
+        settled as interrupted and only its receipt is left to write."""
         self._prune()
         folder = self.state / "pending"
         loaded = 0
@@ -527,19 +553,26 @@ class Router:
                     path.unlink(missing_ok=True)
                     continue
                 entry = _read_json(path)
-                try:
-                    if entry["wake"]["wake_id"] != wake_id:
-                        raise KeyError(wake_id)
-                    Wake(**entry["wake"])
-                except (KeyError, TypeError):
+                if not _loadable(entry, wake_id):
                     self._log("pending-unreadable", wake_id)
                     continue
+                entry["wake"] = asdict(Wake(**entry["wake"]))
                 entry["replayed"] = True
                 entry["next_at"] = 0.0
+                if entry.get("in_flight") and entry.get("receipt") is None:
+                    self._log(INTERRUPTED, wake_id)
+                    entry["receipt"] = self._interrupted(entry)
                 self._entries[wake_id] = entry
                 loaded += 1
             self._cond.notify_all()
         return loaded
+
+    def _interrupted(self, entry: Mapping[str, Any]) -> dict[str, Any]:
+        """The final receipt of a wake that may have run its turn:  dead, and delivered unknown."""
+        record = entry.get("pick")
+        pick = _pick_from(record) if record else Pick(reason=INTERRUPTED)
+        result = Delivery("failed", code=INTERRUPTED)
+        return self._receipt(entry, pick, status="dead", delivered=None, result=result)
 
     def _prune(self) -> None:
         folder = self.state / "done"
@@ -552,16 +585,19 @@ class Router:
                 pass
 
     def _claim(self) -> dict[str, Any] | None:
-        """The oldest wake that can run now, under the lock.  A wake behind one that is waiting for
-        the same chat stays behind it, so one chat's wakes run in the order they came."""
+        """The oldest wake that can run now, under the lock.  A wake behind one that is running or
+        waiting for the same chat stays behind it, so one chat's wakes run in the order they came.
+        A wake whose outcome is settled has only its receipt left, and holds nobody up."""
         now = self.clock()
         blocked: set[str] = set(self._active)
-        ordered = sorted(self._entries.values(), key=lambda e: e["accepted_at"])
-        for entry in ordered:
-            session = _session_of(entry)
+        blocked.update(_session_of(e) for e in self._entries.values() if e.get("running"))
+        picking = False  # an earlier wake still being picked may turn out to want the same chat
+        for entry in sorted(self._entries.values(), key=_order):
             if entry.get("running"):
+                picking = picking or entry["pick"] is None
                 continue
-            if session and session in blocked:
+            session = "" if entry.get("receipt") is not None else _session_of(entry)
+            if session and (picking or session in blocked):
                 continue
             if entry["next_at"] > now:
                 if session:
@@ -571,16 +607,30 @@ class Router:
             return entry
         return None
 
+    def _behind(self, entry: Mapping[str, Any], session: str) -> bool:
+        """Whether an earlier unsettled wake wants this chat, or is being picked and may."""
+        mine = _order(entry)
+        for other in self._entries.values():
+            if other is entry or other.get("receipt") is not None or _order(other) >= mine:
+                continue
+            if _session_of(other) == session or (other.get("running") and other["pick"] is None):
+                return True
+        return False
+
     def _loop(self) -> None:
         while True:
-            with self._cond:
-                if self._stopping:
-                    return
-                entry = self._claim()
-                if entry is None:
-                    self._cond.wait(timeout=1.0)
-                    continue
-            self._run(entry)
+            try:
+                with self._cond:
+                    if self._stopping:
+                        return
+                    entry = self._claim()
+                    if entry is None:
+                        self._cond.wait(timeout=1.0)
+                        continue
+                self._run(entry)
+            except Exception as exc:  # noqa: BLE001 - a dead worker would still look healthy
+                self._log("worker-loop-error-%s" % type(exc).__name__, "-")
+                time.sleep(1.0)
 
     def run_once(self) -> bool:
         """Run one claimable wake on this thread, or answer False.  The workers' body, for tests."""
@@ -595,12 +645,29 @@ class Router:
         try:
             self._process(entry)
         except Exception as exc:  # noqa: BLE001 - one bad wake must not take a worker with it
-            self._log("worker-error-%s" % type(exc).__name__, entry["wake"]["wake_id"])
-            self._retry(entry, counted=True, code="worker-error-%s" % type(exc).__name__)
+            code = "worker-error-%s" % type(exc).__name__
+            self._log(code, entry["wake"]["wake_id"])
+            try:
+                if entry.get("in_flight") and entry.get("receipt") is None:
+                    # The delivery may have run, and its outcome was lost:  never run it again.
+                    entry["receipt"] = self._interrupted(entry)
+                    entry.pop("in_flight", None)
+                    self._save(entry)
+                    self._write_receipt(entry)
+                else:
+                    self._retry(entry, counted=True, code=code)
+            except Exception as again:  # noqa: BLE001 - it stays claimed, so it cannot run twice
+                self._log("worker-error-%s" % type(again).__name__, entry["wake"]["wake_id"])
 
     def _process(self, entry: dict[str, Any]) -> None:
         if entry.get("receipt") is not None:
             self._write_receipt(entry)  # already settled:  only its receipt is outstanding
+            return
+        if self.clock() - entry["accepted_at"] >= int(self.config["max_age_seconds"]):
+            # An outage can outlast a wake:  nobody is waiting on one this old any more.
+            old = _pick_from(entry["pick"]) if entry["pick"] else Pick(reason=EXPIRED)
+            result = Delivery("failed", code=EXPIRED)
+            self._finish(entry, old, status="dead", delivered=False, result=result)
             return
         wake = Wake(**entry["wake"])
         if entry["pick"] is None:
@@ -620,24 +687,34 @@ class Router:
             return
         session = pick.target.session_id
         with self._cond:
-            if session in self._active:
-                # Another wake is being delivered to this chat:  wait behind it, using no attempt.
+            if self._stopping or session in self._active or self._behind(entry, session):
+                # Shutting down, or another wake has this chat first:  go back with the pick
+                # recorded, using no attempt.  Its place in the order is kept by `_claim`.
                 entry["running"] = False
                 self._cond.notify_all()
                 return
             self._active.add(session)
+        # The chat stays held until the outcome is settled, so a later wake cannot start between
+        # this delivery ending and its result being recorded.
         try:
             entry["attempts"] += 1
-            self._save(entry)
+            entry["in_flight"] = True
+            if not self._save(entry):
+                # Without the durable mark a crash would run this again, so it does not start.
+                entry["attempts"] -= 1
+                entry.pop("in_flight", None)
+                waiting = Delivery("busy", code="in-flight-mark-failed")
+                self._retry(entry, counted=False, code=waiting.code, pick=pick, result=waiting)
+                return
             try:
                 result = self.platform.deliver(pick.target, wake)
             except Exception as exc:  # noqa: BLE001 - a platform's failure is a failed try
                 result = Delivery("failed", code="deliver-error-%s" % type(exc).__name__)
+            self._settle(entry, pick, result)
         finally:
             with self._cond:
                 self._active.discard(session)
                 self._cond.notify_all()
-        self._settle(entry, pick, result)
 
     def _settle(self, entry: dict[str, Any], pick: Pick, result: Delivery) -> None:
         outcome = result.outcome if result.outcome in OUTCOMES else "failed"
@@ -680,6 +757,7 @@ class Router:
         else:
             wait = self.config["unreachable_retry_seconds"]
         entry["next_at"] = now + wait
+        entry.pop("in_flight", None)  # the outcome says this try did not run the wake
         # Saved while this worker still owns the entry:  once it is released another worker may
         # finish it, and a late save would bring its pending file back.
         self._save(entry)
@@ -687,14 +765,18 @@ class Router:
             entry["running"] = False
             self._cond.notify_all()
 
-    def _save(self, entry: Mapping[str, Any]) -> None:
-        """Keep the pending file current, so a replay keeps the pick and the attempt counts.  A
-        failure here costs only those counts:  the wake is already on disk."""
+    def _save(self, entry: Mapping[str, Any]) -> bool:
+        """Keep the pending file current, so a replay keeps the pick, the counts and the in-flight
+        mark, and answer whether it was written.  A failure leaves the previous file in place:  the
+        wake is already on disk.  Only the in-flight mark has to be written before going on;  a
+        mark that cannot then be cleared errs toward a final receipt, never a second delivery."""
         record = {k: v for k, v in entry.items() if k != "running"}
         try:
             atomic_write(self._pending(entry["wake"]["wake_id"]), record)
         except OSError as exc:
             self._log("pending-write-failed-%s" % type(exc).__name__, entry["wake"]["wake_id"])
+            return False
+        return True
 
     # ---- the receipt ------------------------------------------------------------------------
 
@@ -751,9 +833,12 @@ class Router:
         """Write the final receipt, then drop the pending entry, in that order:  a crash between
         the two leaves a pending file that replay removes, never a wake with no record."""
         receipt = self._receipt(entry, pick, status=status, delivered=delivered, result=result)
-        # The outcome is kept on the entry first:  from here on only the receipt is retried, and
-        # the wake is never delivered again, even if the disk is full or the router restarts.
+        # The outcome is kept on the entry first:  while this process lives only the receipt is
+        # retried.  It reaches a restart only if this save lands.  If the save fails too and the
+        # router dies before the receipt is written, the file still has its in-flight mark, so the
+        # replay closes it as interrupted;  a delivery that ran is still never run again.
         entry["receipt"] = receipt
+        entry.pop("in_flight", None)
         self._save(entry)
         self._write_receipt(entry)
 
@@ -793,10 +878,41 @@ class Router:
         sys.stderr.write("wake-router: %s %s\n" % (wake_id, code))
 
 
+def _closed(row: Mapping[str, Any]) -> bool:
+    return bool(row.get("retired_at") or row.get("closed_at") or row.get("state") == "closed")
+
+
 def _session_of(entry: Mapping[str, Any]) -> str:
     pick = entry.get("pick") or {}
     target = pick.get("target") or {}
     return str(target.get("session_id") or "")
+
+
+def _order(entry: Mapping[str, Any]) -> tuple[float, str]:
+    """Arrival order, with the id breaking a tie so every check agrees on who is first."""
+    return entry["accepted_at"], entry["wake"]["wake_id"]
+
+
+def _loadable(entry: object, wake_id: str) -> bool:
+    """Whether a pending file holds a whole entry for this id, with every field a worker reads."""
+    if not isinstance(entry, dict):
+        return False
+    try:
+        if entry["wake"]["wake_id"] != wake_id:
+            return False
+        Wake(**entry["wake"])
+        if entry["pick"] is not None:
+            _pick_from(entry["pick"])
+        return (
+            isinstance(entry["receipt_id"], str)
+            and type(entry["accepted_at"]) in (int, float)
+            and type(entry["next_at"]) in (int, float)
+            and type(entry["attempts"]) is int
+            and type(entry["failures"]) is int
+            and isinstance(entry.get("receipt"), (dict, type(None)))
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def _pick_from(record: Mapping[str, Any]) -> Pick:
@@ -812,6 +928,8 @@ def make_handler(router: Router) -> type[BaseHTTPRequestHandler]:
     wake_path = "/wake/%s" % seat
 
     class Handler(BaseHTTPRequestHandler):
+        timeout = REQUEST_TIMEOUT  # a client that never finishes its request cannot hold a thread
+
         def log_message(self, fmt: str, *args: Any) -> None:  # the default prints paths
             pass
 
@@ -892,23 +1010,39 @@ def make_handler(router: Router) -> type[BaseHTTPRequestHandler]:
 
 def serve(router: Router, bind: str, port: int) -> int:
     """Run the router.  It refuses to start without its registry configuration or its key:  a
-    router missing either would answer every wake and look healthy doing it."""
+    router missing either would answer every wake and look healthy doing it.  The port is bound
+    before anything is replayed, so a second instance stops there and touches no pending wake.
+    SIGTERM closes the port, stops new work and waits for running deliveries."""
     if not registry_api.base_url(router.env):
         raise SystemExit("wake-router: the registry API URL is not set")
     if not read_key(router.key_file):
         raise SystemExit("wake-router: the routine key file is missing, short or group-readable")
-    router.start()
-    server = ThreadingHTTPServer((bind, port), make_handler(router))
-    server.daemon_threads = True
-    print(
-        "wake-router listening on %s:%d for seat %s" % (bind, port, router.platform.seat),
-        flush=True,
-    )
     try:
+        server = ThreadingHTTPServer((bind, port), make_handler(router))
+    except OSError as exc:
+        raise SystemExit(
+            "wake-router: cannot bind %s:%d (%s)" % (bind, port, type(exc).__name__)
+        ) from None
+    server.daemon_threads = True
+
+    def on_term(_signum: int, _frame: object) -> None:
+        # shutdown() waits for serve_forever, which is this same thread, so it needs its own.
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    previous = signal.signal(signal.SIGTERM, on_term)
+    try:
+        router.start()
+        print(
+            "wake-router listening on %s:%d for seat %s" % (bind, port, router.platform.seat),
+            flush=True,
+        )
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
-        router.stop()
+        wait = router.config.get("shutdown_wait_seconds", ROUTER_DEFAULTS["shutdown_wait_seconds"])
+        if not router.stop(float(wait)):
+            router._log("shutdown-left-deliveries-running", "-")
+        signal.signal(signal.SIGTERM, previous)
     return 0

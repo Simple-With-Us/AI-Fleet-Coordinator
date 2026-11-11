@@ -21,6 +21,12 @@ ExecStart=/bin/sh -c '. "$HOME/.local/bin/mm-registry-env" 2>/dev/null; exec /us
 EnvironmentFile=-/etc/claude-wake-router.env
 Restart=always
 RestartSec=10
+# SIGTERM goes only to the router, which stops new work and waits up to shutdown_wait_seconds
+# (1000) for running deliveries:  a resume (900) or a Mac delivery (974).  With the default
+# KillMode the same SIGTERM would reach the `claude` and `ssh` children and end the very turns it
+# is waiting for.  TimeoutStopSec is longer than that wait, so systemd never cuts it short.
+KillMode=mixed
+TimeoutStopSec=1030
 Nice=5
 
 [Install]

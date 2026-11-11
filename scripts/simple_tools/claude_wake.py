@@ -12,7 +12,10 @@ The two routes, and the rule between them.  When a live process holds the chat, 
 to that process's inbox socket as one user-message line, and nothing else is tried:  a resume
 against a chat an open process holds would be a second writer on one transcript, so it is refused
 by construction.  When no process holds the chat, `claude --resume <id> -p` runs in the chat's own
-working directory under a per-session lock, re-checking for a holder once the lock is taken.
+working directory under a per-session lock, re-checking for a holder once the lock is taken.  The
+holder check fails closed:  when the session records cannot be read completely, the answer is
+`busy` and no resume starts.  Once a resume has started, any exit but 0 is final, because it may
+have run the turn.
 
 What the socket post is NOT.  It sends no auth line, never reads CLAUDE_CODE_MESSAGING_TOKEN or a
 `.key` file, and claims no permission class.  Any of those would pose as the session's own child or
@@ -31,8 +34,10 @@ JSON data under a line saying they are data.
 
 A chat on the Mac.  The router runs on the server and reaches the Mac with one fixed command over
 the existing ssh (`simple-chat wake-deliver`), sending the wake as JSON on stdin so nothing
-Zulip-authored reaches a shell or an argv.  A sleeping Mac is `unreachable`:  the worker keeps the
-wake and tries again within `max_age_seconds`.
+Zulip-authored reaches a shell or an argv.  A short `ssh ... true` goes first, because ssh's exit
+255 also means an established connection dropped.  A sleeping Mac fails that preflight and is
+`unreachable`:  the worker keeps the wake and tries again within `max_age_seconds`.  Once the
+preflight has passed the real command may have started, so a 255 or an unreadable answer is final.
 
 Python 3.11+, standard library only.
 """
@@ -71,6 +76,7 @@ SOCKET_HOLD_SECONDS = 1.0
 CONFIRM_POLL_SECONDS = 1.0
 SSH_DEST_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]*")
 SSH_CONNECT_TIMEOUT = 4
+SSH_PREFLIGHT_SECONDS = 14
 SSH_MARGIN_SECONDS = 60
 SSH_UNREACHABLE = 255
 ENV_REMOTE = "CLAUDE_LETTER_REMOTE"
@@ -104,6 +110,10 @@ class Holder:
     socket_path: str
 
 
+class HolderUnknown(Exception):
+    """The session records could not be read well enough to say that no process holds a chat."""
+
+
 def claude_dir(env: Mapping[str, str]) -> Path:
     configured = str(env.get("CLAUDE_CONFIG_DIR") or "").strip()
     if configured:
@@ -123,10 +133,10 @@ def _alive(pid: int, proc_start: object) -> bool:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    except PermissionError:
-        return True
+    except OverflowError:
+        return False  # larger than any pid can be
     except OSError:
-        return False
+        return True  # it exists but is not ours, or the check itself failed:  never risk a resume
     try:
         with open("/proc/%d/stat" % pid, encoding="utf-8", errors="replace") as fh:
             fields = fh.read().rsplit(")", 1)[1].split()
@@ -135,63 +145,94 @@ def _alive(pid: int, proc_start: object) -> bool:
     return proc_start in (None, "") or str(proc_start) == fields[19]
 
 
-def session_files(env: Mapping[str, str]) -> list[dict[str, Any]]:
-    """Every readable session record.  Only `<digits>.json`, only regular files this user owns."""
+def _read_record(path: Path) -> dict[str, Any] | None:
+    """One session record, or None if it is not a whole one this user can trust.  Raises
+    FileNotFoundError when it is gone, which is a fact and not a doubt."""
+    try:
+        info = os.lstat(path)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_size > SESSION_FILE_BYTES
+        ):
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise
+    except (OSError, ValueError, RecursionError):
+        return None
+    return data if isinstance(data, dict) and isinstance(data.get("sessionId"), str) else None
+
+
+def session_files(env: Mapping[str, str]) -> tuple[list[dict[str, Any]], bool]:
+    """Every readable session record, and whether that is all of them.  Only `<digits>.json` files
+    are read.  A file that cannot be read whole could be the very record that says a chat is held,
+    so the second value is False, unless the file is gone or its name's pid is dead."""
     folder = claude_dir(env) / "sessions"
     records: list[dict[str, Any]] = []
     try:
         names = os.listdir(folder)
     except OSError:
-        return records
+        return records, False
+    complete = True
     for name in names:
         if not SESSION_FILE_RE.fullmatch(name):
             continue
-        path = folder / name
         try:
-            info = os.lstat(path)
-            if (
-                not stat.S_ISREG(info.st_mode)
-                or info.st_uid != os.geteuid()
-                or info.st_size > SESSION_FILE_BYTES
-            ):
-                continue
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if isinstance(data, dict):
+            data = _read_record(folder / name)
+        except FileNotFoundError:
+            continue  # its process ended while this was reading
+        if data is not None:
             records.append(data)
-    return records
+        elif _alive(int(name[: -len(".json")]), None):
+            complete = False
+    return records, complete
 
 
 def _live_records(env: Mapping[str, str], session_id: str) -> list[dict[str, Any]]:
+    """The live records for this chat.  Raises HolderUnknown when none was found but one might
+    exist;  a live record found is an answer, whatever else could not be read."""
+    records, complete = session_files(env)
     found = []
-    for data in session_files(env):
+    for data in records:
         pid = data.get("pid")
-        if data.get("sessionId") != session_id or type(pid) is not int or pid <= 0:
+        if data.get("sessionId") != session_id:
             continue
-        if _alive(pid, data.get("procStart")):
+        if type(pid) is not int or pid <= 0:
+            complete = False  # this chat's own record, and it does not say which process
+        elif _alive(pid, data.get("procStart")):
             found.append(data)
+    if not found and not complete:
+        raise HolderUnknown(session_id)
     return found
 
 
 def find_holder(env: Mapping[str, str], session_id: str) -> Holder | None:
-    """The live process holding this chat, or None."""
-    for data in _live_records(env, session_id):
-        return Holder(int(data["pid"]), str(data.get("messagingSocketPath") or ""))
-    return None
+    """The live process holding this chat, or None, preferring one that has an inbox socket.
+    Raises HolderUnknown when that cannot be said."""
+    records = _live_records(env, session_id)
+    if not records:
+        return None
+    data = next((r for r in records if r.get("messagingSocketPath")), records[0])
+    return Holder(int(data["pid"]), str(data.get("messagingSocketPath") or ""))
 
 
 def exclude_non_interactive(
     env: Mapping[str, str], local_host: str
 ) -> Callable[[list[WR.Target]], set[str]]:
-    """Never pick a chat this host's own record says is not an interactive session."""
+    """Never pick a chat this host's own live record says is not an interactive session.  A stale
+    record says nothing:  the process that wrote it is gone."""
+
+    def live(data: Mapping[str, Any]) -> bool:
+        pid = data.get("pid")
+        return type(pid) is int and pid > 0 and _alive(pid, data.get("procStart"))
 
     def exclude(targets: list[WR.Target]) -> set[str]:
         ids = {t.session_id for t in targets if t.host == local_host}
         return {
             str(data.get("sessionId"))
-            for data in session_files(env)
-            if data.get("sessionId") in ids and data.get("kind") != "interactive"
+            for data in session_files(env)[0]
+            if data.get("sessionId") in ids and data.get("kind") != "interactive" and live(data)
         }
 
     return exclude
@@ -335,17 +376,22 @@ def _via_socket(
 
 
 def _child_env(env: Mapping[str, str]) -> dict[str, str]:
-    """What a resumed chat inherits:  HOME, PATH and the launcher mark, and nothing else.  The
-    router's registry key and routine key never reach a woken chat."""
+    """What a resumed chat inherits:  HOME, PATH, the launcher mark and, when one is set, the config
+    folder this router looked the chat up in, and nothing else.  The router's registry key and
+    routine key never reach a woken chat."""
     home = str(env.get("HOME") or os.path.expanduser("~"))
     path = str(env.get("PATH") or "/usr/local/bin:/usr/bin:/bin")
-    return {
+    child = {
         "HOME": home,
         "PATH": os.path.join(home, ".local", "bin") + os.pathsep + path,
         "AGENT_LAUNCHER": "simple-tools-wake",
         "AGENT_LAUNCH_SEAT": SEAT,
         "SIMPLE_TOOLS_ATTACH": "0",
     }
+    configured = str(env.get("CLAUDE_CONFIG_DIR") or "").strip()
+    if configured:
+        child["CLAUDE_CONFIG_DIR"] = configured
+    return child
 
 
 def _via_resume(
@@ -381,10 +427,14 @@ def _via_resume(
         # It may have done real work:  retrying could run the turn twice.
         return WR.Delivery("refused", "resume", code="resume-timeout")
     except OSError as exc:
+        # It never started:  the one failure here that is safe to try again.
         return WR.Delivery("failed", "resume", code="resume-%s" % type(exc).__name__)
+    except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
+        return WR.Delivery("refused", "resume", code="resume-error-%s" % type(exc).__name__)
     if proc.returncode == 0:
         return WR.Delivery("completed", "resume", ack="confirmed")
-    return WR.Delivery("failed", "resume", code="resume-exit-%d" % proc.returncode)
+    # It started, so it may have run the turn before it exited or was killed:  never retried.
+    return WR.Delivery("refused", "resume", code="resume-exit-%d" % proc.returncode)
 
 
 def deliver_local(
@@ -397,25 +447,28 @@ def deliver_local(
     sleep: Callable[[float], None] = time.sleep,
 ) -> WR.Delivery:
     """Deliver one wake to a chat on this host:  the inbox socket when a process holds the chat,
-    else a resume under the per-session lock."""
+    else a resume under the per-session lock.  Not knowing whether a process holds it is `busy`."""
     if not SESSION_RE.fullmatch(session_id):
         return WR.Delivery("refused", code="bad-session-id")
-    holder = find_holder(env, session_id)
-    if holder is not None:
-        return _via_socket(env, config, session_id, holder, wake, sleep)
-    folder = state_dir(env) / "locks"
-    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd = os.open(folder / ("session-%s.lock" % session_id), os.O_CREAT | os.O_RDWR, 0o600)
-    with os.fdopen(fd, "w") as lock:
-        try:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            return WR.Delivery("busy", "resume", code="session-locked")
-        # A chat opened while the lock was being taken makes this a socket delivery after all.
+    try:
         holder = find_holder(env, session_id)
         if holder is not None:
             return _via_socket(env, config, session_id, holder, wake, sleep)
-        return _via_resume(env, config, session_id, wake, runner)
+        folder = state_dir(env) / "locks"
+        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(folder / ("session-%s.lock" % session_id), os.O_CREAT | os.O_RDWR, 0o600)
+        with os.fdopen(fd, "w") as lock:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return WR.Delivery("busy", "resume", code="session-locked")
+            # A chat opened while the lock was being taken makes this a socket delivery after all.
+            holder = find_holder(env, session_id)
+            if holder is not None:
+                return _via_socket(env, config, session_id, holder, wake, sleep)
+            return _via_resume(env, config, session_id, wake, runner)
+    except HolderUnknown:
+        return WR.Delivery("busy", code="holder-unknown")
 
 
 def deliver_remote(
@@ -430,12 +483,30 @@ def deliver_remote(
     dest = str(config.get("mac_ssh") or env.get(ENV_REMOTE) or "").strip()
     if not SSH_DEST_RE.fullmatch(dest):
         return WR.Delivery("refused", "ssh", code="no-ssh-destination")
-    cmd = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=%d" % SSH_CONNECT_TIMEOUT]
-    cmd += ["--", dest, REMOTE_COMMAND]
+    ssh = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=%d" % SSH_CONNECT_TIMEOUT]
+    ssh += ["--", dest]
+    # Nothing can have run yet, so every failure of this preflight is safe to try again.
+    try:
+        check = runner(
+            ssh + ["true"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=SSH_PREFLIGHT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return WR.Delivery("unreachable", "ssh", code="ssh-preflight-timeout")
+    except OSError as exc:
+        return WR.Delivery("failed", "ssh", code="ssh-%s" % type(exc).__name__)
+    if check.returncode == SSH_UNREACHABLE:
+        return WR.Delivery("unreachable", "ssh", code="ssh-unreachable")
+    if check.returncode != 0:
+        return WR.Delivery("failed", "ssh", code="ssh-preflight-exit-%d" % check.returncode)
     request = json.dumps({"session_id": session_id, "wake": asdict(wake)}, ensure_ascii=False)
     try:
         proc = runner(
-            cmd,
+            ssh + [REMOTE_COMMAND],
             input=request,
             capture_output=True,
             text=True,
@@ -446,11 +517,14 @@ def deliver_remote(
         return WR.Delivery("refused", "ssh", code="ssh-timeout")
     except OSError as exc:
         return WR.Delivery("failed", "ssh", code="ssh-%s" % type(exc).__name__)
+    except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
+        return WR.Delivery("refused", "ssh", code="ssh-error-%s" % type(exc).__name__)
+    # From here the remote command may have started, so nothing unclear is ever retried.
     if proc.returncode == SSH_UNREACHABLE:
-        return WR.Delivery("unreachable", "ssh", code="ssh-unreachable")
+        return WR.Delivery("refused", "ssh", code="ssh-dropped")
     answer = _last_json(str(proc.stdout or ""))
     if answer is None or answer.get("outcome") not in WR.OUTCOMES:
-        return WR.Delivery("failed", "ssh", code="remote-exit-%d" % proc.returncode)
+        return WR.Delivery("refused", "ssh", code="remote-exit-%d" % proc.returncode)
     return WR.Delivery(
         str(answer["outcome"]),
         "ssh:%s" % _short(answer.get("route")),
