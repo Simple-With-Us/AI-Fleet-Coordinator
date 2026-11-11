@@ -877,8 +877,6 @@ PLATFORMS: dict[str, DeliveryPlatform] = {
     "codex": DeliveryPlatform(_module_delivery(CODEX_MODULE), CODEX_SESSION_RE),
     "zcode": DeliveryPlatform(_module_delivery(ZCODE_MODULE), ZCODE_SESSION_RE),
 }
->>>>>>> c570e42a9 (zcode_wake: the thin ZC delivery platform for the shared router (OPS-1048))
-}
 
 
 def _deliver_legacy(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[str, Any]:

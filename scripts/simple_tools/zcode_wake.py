@@ -46,7 +46,7 @@ from . import wake_router as WR
 PLATFORM = "zcode"
 SEAT = "ZC"
 # The bridge's real session-id pattern:  zcode accepts more than bare UUIDs.
-ZCODE_SESSION_RE = re.compile(r"sess_[A-Za-z0-9._-]{1,123}\Z")
+ZCODE_SESSION_RE = re.compile(r"^sess_[A-Za-z0-9._-]{1,123}$")
 LETTER_RE = re.compile(r"[A-Z]{1,2}\Z")
 DEFAULT_WORKSPACE = "/mnt/fleet-extra/Code/AI-Fleet-Coordinator"
 DEFAULT_ZCODE = "/home/jay/.local/bin/zcode"
@@ -171,7 +171,9 @@ def deliver_request(
     resort and are this server's."""
 
     def setting(name: str, default: str) -> str:
-        return os.environ.get(name) or default
+        """The delivery env first (the router's registry env carries the deployment's settings),
+        then the process environment, then the built-in default."""
+        return env.get(name) or os.environ.get(name) or default
 
     workspace = workspace or setting("ZCODE_WAKE_WORKSPACE", DEFAULT_WORKSPACE)
     zcode_bin = zcode_bin or setting("ZCODE_WAKE_BIN", DEFAULT_ZCODE)
@@ -258,3 +260,94 @@ def deliver_request(
         except OSError:
             pass
         handle.close()
+
+
+def _excluded_ids(
+    index_path: Path, cli_db: Path, workspace: str, candidates: list[WR.Target]
+) -> set[str]:
+    """The candidate sessions that must never be picked:  a sub-agent child (the CLI store's
+    own marker), a session the tasks index does not know, and one whose recorded workspace is
+    not the configured one (a wake into another project's directory is a wrong-chat delivery).
+    Reads fail open as empty sets:  an unreadable store must not narrow the pick, and the
+    registry recheck plus the delivered prompt still fence the wake."""
+    sids = [t.session_id for t in candidates]
+    if not sids:
+        return set()
+    out: set[str] = set()
+    placeholders = ",".join("?" * len(sids))
+    try:
+        con = sqlite3.connect(f"file:{cli_db}?mode=ro", uri=True, timeout=5)
+        rows = con.execute(
+            "SELECT id FROM session WHERE task_type = 'subagent_child' AND id IN (%s)"
+            % placeholders,
+            sids,
+        ).fetchall()
+        out |= {str(r[0]) for r in rows if r and r[0]}
+        con.close()
+    except sqlite3.Error:
+        pass
+    try:
+        con = sqlite3.connect(f"file:{index_path}?mode=ro", uri=True, timeout=2)
+        for sid in sids:
+            row = con.execute(
+                "SELECT workspace_path FROM tasks WHERE task_id = ?", (sid,)
+            ).fetchone()
+            if not row or not row[0] or os.path.realpath(str(row[0])) != os.path.realpath(
+                workspace
+            ):
+                out.add(sid)
+        con.close()
+    except sqlite3.Error:
+        pass
+    return out
+
+
+def build_platform(
+    env: Mapping[str, str] | None = None,
+    *,
+    workspace: str | None = None,
+    zcode_bin: str | None = None,
+    index_path: str | None = None,
+    cli_db: str | None = None,
+    timeout: int = 900,
+    runner: Callable[..., Any] = subprocess.run,
+) -> WR.Platform:
+    """The server-side `Platform` for the router's table:  the same delivery as
+    `deliver_request`, as a `WR.command_platform` spec, with the sub-agent and
+    wrong-workspace sessions excluded from the pick itself."""
+    def setting(name: str, default: str) -> str:
+        e = env or {}
+        return e.get(name) or os.environ.get(name) or default
+
+    workspace = workspace or setting("ZCODE_WAKE_WORKSPACE", DEFAULT_WORKSPACE)
+    zcode_bin = zcode_bin or setting("ZCODE_WAKE_BIN", DEFAULT_ZCODE)
+    index = Path(os.path.expanduser(index_path or setting(
+        "ZCODE_WAKE_TASKS_INDEX", DEFAULT_TASKS_INDEX
+    )))
+    cli_db = Path(os.path.expanduser(cli_db or setting(
+        "ZCODE_WAKE_CLI_DB", "~/.zcode/cli/db/db.sqlite"
+    )))
+
+    def exclude(candidates: list[WR.Target]) -> set[str]:
+        return _excluded_ids(index, cli_db, workspace, candidates)
+
+    return WR.command_platform(
+        seat=SEAT,
+        platform=PLATFORM,
+        mention="ZCode",
+        target_re=ZCODE_SESSION_RE,
+        argv=[
+            zcode_bin,
+            "--cwd",
+            workspace,
+            "--resume",
+            "{session_id}",
+            "-p",
+            "{wake_text}",
+        ],
+        env={name: env[name] for name in ("HOME", "PATH") if name in (env or {})} or None,
+        cwd=workspace,
+        timeout=timeout,
+        exclude=exclude,
+        runner=runner,
+    )

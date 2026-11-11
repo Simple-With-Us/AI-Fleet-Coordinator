@@ -176,3 +176,115 @@ def subprocess_completed(argv, exit_code):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlatformBuilderTests(unittest.TestCase):
+    """The server-side WR.Platform: the exclude narrows the pick, the deliver runs the command."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+        self.good = "sess_1a2b3c4d-1111-2222-3333-444455556666"
+        self.other = "sess_9999ffff-1111-2222-3333-444455556666"
+        self.subagent = "sess_deadbeef-1111-2222-3333-444455556666"
+        self.index = self.tmp / "tasks-index.sqlite"
+        con = sqlite3.connect(self.index)
+        con.execute("CREATE TABLE tasks (task_id TEXT, workspace_path TEXT)")
+        con.execute("INSERT INTO tasks VALUES (?, ?)", (self.good, WORKSPACE))
+        con.execute("INSERT INTO tasks VALUES (?, ?)", (self.other, "/other/repo"))
+        con.commit()
+        con.close()
+        self.cli_db = self.tmp / "cli.sqlite"
+        con = sqlite3.connect(self.cli_db)
+        con.execute("CREATE TABLE session (id TEXT, task_type TEXT)")
+        con.execute("INSERT INTO session VALUES (?, 'subagent_child')", (self.subagent,))
+        con.commit()
+        con.close()
+
+    def _platform(self, runner):
+        return zcode_wake.build_platform(
+            env={"HOME": str(self.tmp), "PATH": "/usr/bin:/bin"},
+            workspace=WORKSPACE,
+            zcode_bin="/usr/bin/true",
+            index_path=str(self.index),
+            cli_db=str(self.cli_db),
+            runner=runner,
+        )
+
+    def test_exclude_narrows_pick(self):
+        platform = self._platform(lambda argv, **k: None)
+        targets = [
+            WR.Target(session_id=self.good, letter="BB", generation=3),
+            WR.Target(session_id=self.other, letter="BB", generation=3),
+            WR.Target(session_id=self.subagent, letter="BB", generation=3),
+        ]
+        excluded = platform.exclude(targets)
+        self.assertEqual(excluded, {self.other, self.subagent})
+
+    def test_deliver_runs_command_and_reports_sent(self):
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(list(argv))
+            from types import SimpleNamespace
+
+            return SimpleNamespace(returncode=0)
+
+        platform = self._platform(runner)
+        delivery = platform.deliver(
+            WR.Target(session_id=self.good, letter="BB", generation=3),
+            WR.Wake(wake_id="w2-123456", message_id=1, link_note="The router linked this wake to this chat because the sender addressed its letter."),
+        )
+        self.assertEqual(delivery.outcome, "sent")
+        argv = calls[0]
+        self.assertEqual(argv[0], "/usr/bin/true")
+        self.assertIn("--cwd", argv)
+        self.assertIn(WORKSPACE, argv)
+        self.assertIn("--resume", argv)
+        self.assertIn(self.good, argv)
+
+
+class RoundTripTests(unittest.TestCase):
+    """The seam AA's review flagged: a request through the PLATFORMS table reaches the module
+    and the answer's ids correlate with the sess_ pattern."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+        self.env = {
+            "HOME": str(self.tmp),
+            "PATH": "/usr/bin:/bin",
+            # The round trip runs the real command path; /usr/bin/true exits 0 for any argv,
+            # so the test proves the seam without a model call.
+            "ZCODE_WAKE_BIN": "/usr/bin/true",
+        }
+
+    def test_round_trip_through_platforms_table(self):
+        from simple_tools import claude_wake
+
+        entry = claude_wake.PLATFORMS["zcode"]
+        self.assertEqual(entry.session_re.pattern, "^sess_[A-Za-z0-9._-]{1,123}$")
+        request = _request()
+        with patch.object(
+            zcode_wake.WR.registry_api, "call", return_value=_holding_row()
+        ), patch.object(
+            zcode_wake, "_tasks_workspace", return_value=("ok", WORKSPACE)
+        ):
+            answer = entry.deliver(request, self.env)
+        self.assertEqual(answer["wake_id"], "w1-abcdef")
+        self.assertEqual(answer["session_id"], SID)
+        self.assertEqual(answer["generation"], 3)
+        self.assertEqual(answer["delivery"]["outcome"], "sent")
+
+    def test_table_refuses_bad_session_before_deliver(self):
+        from simple_tools import claude_wake
+
+        entry = claude_wake.PLATFORMS["zcode"]
+        request = _request()
+        request["target"]["session_id"] = "not-a-session"
+        with patch.object(zcode_wake.subprocess, "run") as run_mock:
+            answer = entry.deliver(request, self.env)
+        self.assertEqual(answer["delivery"]["outcome"], "refused")
+        run_mock.assert_not_called()
