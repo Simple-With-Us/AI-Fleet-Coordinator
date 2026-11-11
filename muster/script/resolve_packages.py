@@ -56,9 +56,13 @@ def resolve(command, *, attempts=3, delay=15, timeout=300, sleep=time.sleep):
                 INTEGRITY.search(line)
                 and (
                     re.search(
-                        r"\b(?:error|fail\w*|invalid|mismatch|not|unable|denied)\b", line, re.IGNORECASE
+                        r"\b(?:error|fail\w*|invalid|mismatch|not|unable|denied)\b",
+                        line,
+                        re.IGNORECASE,
                     )
-                    or not re.search(r"\b(?:verified|valid|ok|succeeded|successful)\b", line, re.IGNORECASE)
+                    or not re.search(
+                        r"\b(?:verified|valid|ok|succeeded|successful)\b", line, re.IGNORECASE
+                    )
                 )
                 for line in text.splitlines()
             )
