@@ -65,10 +65,12 @@ final class KnobControlsTests: XCTestCase {
         XCTAssertEqual(sweep.hosts, .unknown)
         XCTAssertTrue(sweep.affectsText.hasPrefix("No job in this repository reads this"))
         XCTAssertEqual(try knob(registry, "NEEDS_OWNER_CAPS").editor, .caps(["per_day", "per_hour", "urgent_per_hour"]))
-        // The one secret fails closed and has no editor.
+        // The secrets fail closed and have no editor.
         let secrets = registry.knobs.filter { $0.isSecret }
-        XCTAssertEqual(secrets.map { $0.name }, ["FLEET_FACTS_SIGNING_KEY"])
-        XCTAssertNil(secrets.first?.editor)
+        XCTAssertEqual(secrets.map { $0.name }, ["FLEET_FACTS_SIGNING_KEY", "WAKE_ROUTER_CLAUDE_KEY"])
+        for secret in secrets {
+            XCTAssertNil(secret.editor, secret.name)
+        }
     }
 
     /// The table in INFISICAL.md and the inventory name the same knobs in the same order,

@@ -110,9 +110,8 @@ class Base(unittest.TestCase):
         self.state = Path(self.tmp) / "state"
         self.state.mkdir(mode=0o700)
         self.key = secrets.token_hex(24)
-        self.key_file = self.state / "routine-key"
-        self.key_file.write_text(self.key + "\n", encoding="utf-8")
-        os.chmod(self.key_file, 0o600)
+        # The routine key is injected, as the service injects its settings' secret knob.
+        self.key_answer = (self.key, "")
         self.registry = FakeRegistry()
         patcher = mock.patch.object(WR.registry_api, "call", self.registry)
         patcher.start()
@@ -126,6 +125,10 @@ class Base(unittest.TestCase):
 
     def config(self, **over) -> dict:
         return {**WR.ROUTER_DEFAULTS, "delivery_enabled": True, **over}
+
+    def key_source(self) -> tuple[str, str]:
+        """The router's KeySource:  whatever the test holds now, asked on every request."""
+        return self.key_answer
 
     def fake_deliver(self, target: WR.Target, wake: WR.Wake) -> WR.Delivery:
         self.delivered.append((target.session_id, wake.wake_id))
@@ -146,7 +149,7 @@ class Base(unittest.TestCase):
             {"HOME": self.tmp},
             self.config(**config),
             self.state,
-            self.key_file,
+            self.key_source,
             consult=consult,
             clock=self.clock,
         )
@@ -2411,9 +2414,69 @@ class Http(Base):
         self.assertEqual(self.request(port, body=b"not json", key=self.key)[0], 400)
         self.assertEqual(self.request(port, body=b"x" * (WR.MAX_BODY + 1), key=self.key)[0], 413)
 
-    def test_a_loose_key_file_is_503(self) -> None:
+    def test_with_no_key_every_request_is_refused_and_health_says_why(self) -> None:
+        router = self.router()
+        port = self.serve(router)
+        self.key_answer = ("", "unreachable:scoped-read-failed")
+        # The old key, the empty bearer and no header at all:  nothing is let through unchecked.
+        for key in (self.key, "", None):
+            status, answer = self.request(port, body=self.body(), key=key)
+            self.assertEqual(status, 503, key)
+            self.assertIn("unreachable:scoped-read-failed", answer["error"])
+        status, _ = self.request(port, "/receipt/w-1", key=self.key, method="GET")
+        self.assertEqual(status, 503)
+        status, answer = self.request(port, "/health", method="GET")
+        self.assertEqual(
+            (status, answer),
+            (
+                503,
+                {
+                    "seat": "CLAUDE",
+                    "healthy": False,
+                    "reason": "routine-key-unavailable:unreachable:scoped-read-failed",
+                },
+            ),
+        )
+        self.assertEqual(router._entries, {}, "no wake was taken in")
+        self.assertFalse(self.pending().exists())
+        # The key comes back on a later read, and the same router takes requests again.
+        self.key_answer = (self.key, "")
+        self.assertEqual(self.request(port, "/health", method="GET")[0], 200)
+        self.assertEqual(self.request(port, body=self.body(test=True), key=self.key)[0], 200)
+
+    def test_a_key_shorter_than_16_is_no_key(self) -> None:
         port = self.serve(self.router())
-        os.chmod(self.key_file, 0o644)
+        short = "k" * (WR.KEY_MIN_LENGTH - 1)
+        self.key_answer = (short, "")
+        self.assertEqual(self.request(port, body=self.body(), key=short)[0], 503)
+        _, answer = self.request(port, "/health", method="GET")
+        self.assertEqual(answer["reason"], "routine-key-unavailable:key-short")
+        self.key_answer = ("k" * WR.KEY_MIN_LENGTH, "")
+        status, _ = self.request(port, body=self.body(test=True), key="k" * WR.KEY_MIN_LENGTH)
+        self.assertEqual(status, 200)
+
+    def test_a_key_source_that_fails_is_no_key(self) -> None:
+        def broken() -> tuple[str, str]:
+            raise RuntimeError("the store went away")
+
+        router = self.router()
+        router._key = broken
+        port = self.serve(router)
+        status, answer = self.request(port, body=self.body(), key=self.key)
+        self.assertEqual((status, answer["error"]), (503, "the routine key is unavailable (key-error-RuntimeError)"))
+
+    def test_the_bearer_is_compared_in_constant_time(self) -> None:
+        port = self.serve(self.router())
+        with mock.patch.object(WR.hmac, "compare_digest", wraps=WR.hmac.compare_digest) as compare:
+            self.assertEqual(self.request(port, body=self.body(), key="wrong")[0], 401)
+        compare.assert_called_once_with(b"Bearer wrong", ("Bearer %s" % self.key).encode())
+
+    def test_the_router_reads_no_key_file(self) -> None:
+        self.assertFalse(hasattr(WR, "read_key"))
+        self.assertNotIn("key_file", WR.Router.__init__.__code__.co_varnames)
+        (self.state / "routine-key").write_text(secrets.token_hex(24), encoding="utf-8")
+        self.key_answer = ("", "unset")
+        port = self.serve(self.router())
         self.assertEqual(self.request(port, body=self.body(), key=self.key)[0], 503)
 
     def test_the_linked_by_field_reaches_the_pick(self) -> None:
@@ -2600,7 +2663,7 @@ class Http(Base):
         self.drain(router)
         kept = self.stderr.getvalue()
         for path in self.state.rglob("*"):
-            if path.is_file() and path != self.key_file:
+            if path.is_file():  # there is no key file, so no file may hold the key
                 kept += path.read_text(encoding="utf-8")
         self.assertNotIn(self.key, kept)
         self.assertNotIn(BODY_MARK, kept)
@@ -2729,7 +2792,7 @@ class CommandPlatform(Base):
         self.registry.rows = [row(SID_A, "AA", "Only chat", seat="ZC")]
         platform = self.platform([sys.executable, "-c", "pass", "{session_id}"])
         router = WR.Router(
-            platform, {"HOME": self.tmp}, self.config(), self.state, self.key_file, clock=self.clock
+            platform, {"HOME": self.tmp}, self.config(), self.state, self.key_source, clock=self.clock
         )
         router.accept(self.wake(seat="ZC"))
         self.drain(router)
@@ -2866,7 +2929,7 @@ class CommandPlatform(Base):
     def test_it_runs_through_the_router(self) -> None:
         platform = self.platform([sys.executable, "-c", "raise SystemExit(4)", "{session_id}"])
         router = WR.Router(
-            platform, {"HOME": self.tmp}, self.config(), self.state, self.key_file, clock=self.clock
+            platform, {"HOME": self.tmp}, self.config(), self.state, self.key_source, clock=self.clock
         )
         self.registry.rows = [row(SID_A, "AA", "Only chat", seat="ZC")]
         router.accept(self.wake(seat="ZC"))
@@ -3261,7 +3324,7 @@ class Resume(ClaudeBase):
         self.transcript()
         self.exit_code = 1
         platform = CW.make_platform(self.env, self.cfg, runner=self.runner, sleep=lambda s: None)
-        router = WR.Router(platform, self.env, self.cfg, self.state, self.key_file, clock=self.clock)
+        router = WR.Router(platform, self.env, self.cfg, self.state, self.key_source, clock=self.clock)
         router.accept(self.w)
         for _ in range(8):
             self.drain(router)
@@ -4298,7 +4361,7 @@ class EndToEnd(ClaudeBase):
         self.holder_file(sock=inbox.path)
         self.transcript()
         platform = CW.make_platform(self.env, self.cfg, runner=self.runner, sleep=lambda s: None)
-        router = WR.Router(platform, self.env, self.cfg, self.state, self.key_file, clock=self.clock)
+        router = WR.Router(platform, self.env, self.cfg, self.state, self.key_source, clock=self.clock)
         payload = {
             "wake_id": "w-e2e",
             "seat": "CLAUDE",
