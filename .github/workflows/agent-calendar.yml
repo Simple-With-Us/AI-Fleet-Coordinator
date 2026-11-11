@@ -33,15 +33,15 @@ jobs:
           CALENDAR_OUT: calendar/agent-activity.ics
         run: python3 scripts/build-agent-calendar.py
 
-      - name: Commit feed if changed
+      - name: Restore site tree from published branch for snapshot push
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add calendar/agent-activity.ics
-          if git diff --cached --quiet; then
-            echo "No calendar changes."
-            exit 0
+          git fetch --no-tags origin published/fleet-activity 2>/dev/null || true
+          if git show-ref --verify --quiet refs/remotes/origin/published/fleet-activity; then
+            git archive origin/published/fleet-activity site | tar -x
+          else
+            python3 scripts/build-fleet-daily-digest.py
           fi
-          git commit -m "chore(calendar): refresh agent activity ICS [skip ci]"
-          git push
+
+      - name: Publish artifacts to data branch
+        run: bash scripts/publish-fleet-activity-artifacts.sh
