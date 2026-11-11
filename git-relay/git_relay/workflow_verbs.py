@@ -29,6 +29,8 @@ import io
 import json
 import lzma
 import re
+import threading
+import time
 import zipfile
 import zlib
 from urllib.parse import quote, urlsplit
@@ -220,6 +222,11 @@ SPECS = {
     "wf_branch_get": ({"contents": "read"}, False),
     "wf_repo_get": ({"metadata": "read"}, False),
     "wf_installation_metadata": ({"metadata": "read"}, False),
+    "wf_repo_hooks": ({"repository_hooks": "read"}, False),
+    "wf_deploy_keys": ({"administration": "read"}, False),
+    "wf_org_installations": ({"organization_administration": "read"}, False),
+    "wf_repo_list": ({"metadata": "read"}, False),
+    "wf_pr_search": ({"pull_requests": "read"}, False),
     "wf_labels": ({"issues": "read"}, False),
     "wf_workflows": ({"actions": "read"}, False),
     "wf_run_get": ({"actions": "read"}, False),
@@ -488,36 +495,107 @@ _NEW_READS = frozenset(
         "wf_workflows",
         "wf_run_get",
         "wf_run_artifacts",
+        "wf_repo_hooks",
+        "wf_deploy_keys",
+        "wf_org_installations",
+        "wf_repo_list",
+        "wf_pr_search",
     }
 )
 
 
-def _bound_read_json(result):
+# The bound for one raw-JSON read answer.  It matches the hosted front's own response bound
+# (scripts/simple-tools-mcp/src/gr-workflow-v1.js validWfV1Response:  depth 12, 50,000 nodes,
+# 1,000 keys, 1 MiB), with headroom under the front's 1 MiB stream cap.  The old bound (500 nodes,
+# depth 6, 64 KiB) refused ordinary GitHub objects:  14 reviews, one large pull request or any compare
+# with a handful of commits, and the front showed that refusal as "git-relay answered in a way this
+# server could not read".
+READ_MAX_DEPTH = 12
+READ_MAX_NODES = 50_000
+READ_MAX_KEYS = 1_000
+READ_MAX_BYTES = 900_000
+READ_TOO_LARGE = "workflow read result too large"
+
+
+class ReadTooLarge(Refused):
+    """A well-formed read answer over the size bound:  definite, and retrying will not help."""
+
+    def __init__(self):
+        super().__init__(READ_TOO_LARGE)
+
+
+def _read_size(result) -> int:
+    return len(json.dumps(result, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+
+
+def _bound_read_json(result, max_bytes=READ_MAX_BYTES):
+    """Bound untrusted JSON:  structure first (a wrong shape is unverifiable), then size.
+
+    ``max_bytes`` is the bound on the serialized answer;  None leaves only the structural bound
+    (for a raw GitHub page the relay projects down before answering, already capped by the
+    client's response bound).
+    """
+
     def bad():
         raise RelayGitHubError(502, "workflow read receipt unverifiable")
 
     stack = [(result, 0)]
-    nodes = size = 0
+    nodes = 0
     while stack:
         value, depth = stack.pop()
         nodes += 1
-        if nodes > 500 or depth > 6:
+        if nodes > READ_MAX_NODES:
+            raise ReadTooLarge()
+        if depth > READ_MAX_DEPTH:
             bad()
-        if isinstance(value, str):
-            size += len(value.encode("utf-8"))
-        elif isinstance(value, dict):
-            if len(value) > 100 or not all(isinstance(k, str) for k in value):
+        if isinstance(value, dict):
+            if len(value) > READ_MAX_KEYS or not all(isinstance(k, str) for k in value):
                 bad()
-            size += sum(len(k) for k in value)
             stack.extend((v, depth + 1) for v in value.values())
         elif isinstance(value, list):
-            if len(value) > 250:
+            if len(value) > READ_MAX_KEYS:
                 bad()
             stack.extend((v, depth + 1) for v in value)
-        elif value is not None and type(value) not in (bool, int, float):
+        elif value is not None and type(value) not in (bool, int, float, str):
             bad()
-        if size > 65536:
-            bad()
+        elif type(value) is float and (value != value or value in (float("inf"), float("-inf"))):
+            bad()  # NaN or Infinity is not JSON the front can parse
+    if max_bytes is not None and _read_size(result) > max_bytes:
+        raise ReadTooLarge()
+
+
+def _fit_comparison(comparison):
+    """A compare answer bounded to READ_MAX_BYTES, saying what it left out.
+
+    Far-diverged branches (Congress.Trade, Socratic-Trade) answer with up to 250 full commit
+    objects and 300 files with patches, well over any read bound.  The counts and status are kept;
+    first the file list goes (``files_omitted``), then trailing commits (``commits_truncated``), so
+    the caller still gets ahead_by, behind_by, status and the commits that fit.  The full commit
+    list is paged by gr_wf_compare_commits_page.
+    """
+    if not isinstance(comparison, dict) or _read_size({"comparison": comparison}) <= READ_MAX_BYTES:
+        return comparison
+    fitted = dict(comparison)
+    if "files" in fitted:
+        fitted.pop("files")
+        fitted["files_omitted"] = True
+    commits = fitted.get("commits")
+    if isinstance(commits, list):
+        # Serialize the envelope once and each commit once, not the whole answer per step:
+        # k commits cost the empty-list envelope (with the truncation flag), their own bytes
+        # and k-1 commas.
+        base = _read_size({"comparison": {**fitted, "commits": [], "commits_truncated": True}})
+        keep = total = 0
+        for item in commits:
+            extra = _read_size(item) + (1 if keep else 0)
+            if base + total + extra > READ_MAX_BYTES:
+                break
+            total += extra
+            keep += 1
+        if keep < len(commits):
+            fitted["commits"] = commits[:keep]
+            fitted["commits_truncated"] = True
+    return fitted
 
 
 def _validate_read(action, result):
@@ -552,7 +630,8 @@ def _validate_read(action, result):
             "parents": lambda x: seq(x, lambda y: fields(y, {"sha": sha}), 100),
         },
     )
-    comment = lambda v: fields(v, {"id": positive, "body": lambda x: text(x) and len(x) <= 32768})
+    # GitHub's own comment limit is 65,536 characters;  a long Kody summary is a real comment.
+    comment = lambda v: fields(v, {"id": positive, "body": lambda x: text(x) and len(x) <= 65536})
     schemas = {
         "wf_pr_get": {
             "pull": lambda v: fields(
@@ -574,6 +653,85 @@ def _validate_read(action, result):
             "complete": boolean,
         },
         "wf_pr_comments": {"comments": lambda v: seq(v, comment), "complete": boolean},
+        "wf_repo_hooks": {
+            "hooks": lambda v: seq(
+                v,
+                lambda x: fields(
+                    x,
+                    {
+                        "id": positive,
+                        "name": text,
+                        "active": boolean,
+                        "events": lambda e: seq(e, text),
+                        "url": text,
+                        "url_withheld": boolean,
+                    },
+                ),
+            ),
+            "page": positive,
+            "has_more": boolean,
+        },
+        "wf_deploy_keys": {
+            "deploy_keys": lambda v: seq(
+                v,
+                lambda x: fields(
+                    x,
+                    {
+                        "id": positive,
+                        "title": text,
+                        "verified": boolean,
+                        "read_only": boolean,
+                        "key": text,
+                    },
+                ),
+            ),
+            "page": positive,
+            "has_more": boolean,
+        },
+        "wf_org_installations": {
+            "installations": lambda v: seq(
+                v,
+                lambda x: fields(x, {"id": positive, "app_slug": text, "account": text}),
+            ),
+            "total_count": nonnegative,
+        },
+        "wf_repo_list": {
+            "repositories": lambda v: seq(
+                v,
+                lambda x: fields(
+                    x,
+                    {
+                        "id": positive,
+                        "full_name": text,
+                        "private": boolean,
+                        "default_branch": text,
+                    },
+                ),
+            ),
+            "total_count": nonnegative,
+            "page": positive,
+            "has_more": boolean,
+        },
+        "wf_pr_search": {
+            "pull_requests": lambda v: seq(
+                v,
+                lambda x: fields(
+                    x,
+                    {
+                        "number": positive,
+                        "repo": text,
+                        "title": text,
+                        "state": text,
+                        "draft": boolean,
+                        "updated_at": text,
+                        "html_url": text,
+                    },
+                ),
+            ),
+            "total_count": nonnegative,
+            "complete": boolean,
+            "page": positive,
+        },
         "wf_issue_comments": {
             "comments": lambda v: seq(v, comment),
             "complete": boolean,
@@ -680,6 +838,50 @@ def _validate_read(action, result):
     return result
 
 
+# Short-lived per-installation snapshot of the App installation's repository
+# list: wf_repo_list otherwise pays up to ten sequential upstream page fetches
+# on every call. Keyed by a digest of the installation bearer, never the
+# bearer itself; entries outlive _INSTALLATION_REPOS_TTL_S seconds never. The
+# seat policy filter still runs on every call, so a stale snapshot can never
+# widen what a seat may name.
+_INSTALLATION_REPOS_TTL_S = 60.0
+# The relay serves on a bounded threading server, so every cache access
+# (lookup, sweep, store) is serialized under this lock;  the upstream fetch
+# itself stays outside it.
+_INSTALLATION_REPOS_CACHE = {}
+_INSTALLATION_REPOS_CACHE_LOCK = threading.Lock()
+
+
+# Webhook URLs often carry the credential in the URL itself, which the text scanners do
+# not see: userinfo, a query string or fragment, or a service webhook path. Withhold the
+# whole URL for any of those shapes rather than guess which part is secret.
+_HOOK_SECRET_HOSTS = (
+    "hooks.slack.com",
+    "discord.com",
+    "discordapp.com",
+    "outlook.office.com",
+    "outlook.office365.com",
+    "hooks.zapier.com",
+    "chat.googleapis.com",
+    "api.telegram.org",
+)
+_HOOK_TOKEN_SEGMENT = re.compile(r"[A-Za-z0-9_~.-]{20,}")
+
+
+def _hook_url_carries_secret(url):
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+        has_userinfo = bool(parts.username or parts.password or "@" in parts.netloc)
+    except ValueError:
+        return True
+    if has_userinfo or parts.query or parts.fragment or ";" in parts.path:
+        return True
+    if any(host == h or host.endswith("." + h) for h in _HOOK_SECRET_HOSTS):
+        return True
+    return any(_HOOK_TOKEN_SEGMENT.fullmatch(seg) for seg in parts.path.split("/") if seg)
+
+
 class WorkflowVerbs:
     def __init__(self, client, policy, seat, bearer, app_slug, action, repo):
         expected, _ = policy.app_identity(seat)
@@ -716,9 +918,12 @@ class WorkflowVerbs:
                 return stop
 
         handle = cls.__new__(cls)
+        # Policy is environment too:  a verb that consults it before its first
+        # upstream call (wf_pr_search's seat-scope check) must stop at that
+        # probe like any other, not crash on None.
         handle.client, handle.policy, handle.seat, handle.bearer = (
             _Probe(),
-            None,
+            _Probe(),
             "probe",
             "probe",
         )
@@ -756,6 +961,12 @@ class WorkflowVerbs:
             cls.check_shape(action, args, repo)
         try:
             token, _ = minter.token_for(app_slug, repo, required)
+        except RelayGitHubError as exc:
+            # A renamed or transferred repository is a definite answer about the repo, not a
+            # credential outage:  the server reports where it moved (OPS-1036).
+            if exc.code == "repository_moved":
+                raise
+            raise Unknown("own App credential unavailable") from None
         except Exception:
             raise Unknown("own App credential unavailable") from None
         handle = cls(client, policy, seat, token, app_slug, action, repo)
@@ -847,6 +1058,10 @@ class WorkflowVerbs:
             raise CeilingDenied("seat permission ceiling insufficient")
         try:
             token, _ = minter.token_for(app_slug, repo, required)
+        except RelayGitHubError as exc:
+            if exc.code == "repository_moved":
+                raise
+            raise Unknown("own App credential unavailable") from None
         except Exception:
             raise Unknown("own App credential unavailable") from None
         return token
@@ -1262,10 +1477,307 @@ class WorkflowVerbs:
             raise Refused("credential-shaped outbound text")
         return value
 
-    def wf_issue_list(self, repo, args):
-        _only(args, ("repo", "state", "per_page"))
+    def wf_repo_hooks(self, repo, args):
+        _only(args, ("repo", "per_page", "page"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        data = self._get(f"/repos/{repo}/hooks?per_page={limit}&page={page}")
+        if not isinstance(data, list) or len(data) > limit:
+            raise RelayGitHubError(502, "hook page unverifiable")
+        hooks = []
+        for item in data:
+            config = item.get("config") if isinstance(item, dict) else None
+            url = config.get("url") if isinstance(config, dict) else None
+            events = item.get("events") if isinstance(item, dict) else None
+            if (
+                not isinstance(item, dict)
+                or type(item.get("id")) is not int
+                or item["id"] <= 0
+                or not isinstance(item.get("name"), str)
+                or not 1 <= len(item["name"]) <= 100
+                or type(item.get("active")) is not bool
+                or not isinstance(events, list)
+                or len(events) > 50
+                or not all(isinstance(e, str) and 1 <= len(e) <= 100 for e in events)
+                or not isinstance(url, str)
+                or len(url) > 2000
+            ):
+                raise RelayGitHubError(502, "hook metadata unverifiable")
+            withheld = bool(
+                find_secret(url) or self._provider_token_text(url) or _hook_url_carries_secret(url)
+            )
+            hooks.append(
+                {
+                    "id": item["id"],
+                    "name": item["name"],
+                    "active": item["active"],
+                    "events": events,
+                    "url": "<withheld: credential-shaped text>" if withheld else url,
+                    "url_withheld": withheld,
+                }
+            )
+        return {"hooks": hooks, "page": page, "has_more": len(hooks) == limit}
+
+    def wf_deploy_keys(self, repo, args):
+        _only(args, ("repo", "per_page", "page"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        data = self._get(f"/repos/{repo}/keys?per_page={limit}&page={page}")
+        if not isinstance(data, list) or len(data) > limit:
+            raise RelayGitHubError(502, "deploy key page unverifiable")
+        keys = []
+        for item in data:
+            if (
+                not isinstance(item, dict)
+                or type(item.get("id")) is not int
+                or item["id"] <= 0
+                or not isinstance(item.get("title"), str)
+                or len(item["title"]) > 200
+                or not isinstance(item.get("key"), str)
+                or not re.fullmatch(
+                    r"(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp(?:256|384|521)"
+                    r"|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)"
+                    r" [A-Za-z0-9+/=]{1,800}"
+                    r"( [\x20-\x7e]{1,100})?",
+                    item["key"],
+                )
+                or type(item.get("verified")) is not bool
+                or type(item.get("read_only")) is not bool
+            ):
+                raise RelayGitHubError(502, "deploy key metadata unverifiable")
+            keys.append(
+                {
+                    "id": item["id"],
+                    "title": item["title"],
+                    "verified": item["verified"],
+                    "read_only": item["read_only"],
+                    "key": item["key"],
+                }
+            )
+        return {"deploy_keys": keys, "page": page, "has_more": len(keys) == limit}
+
+    def wf_org_installations(self, repo, args):
+        _only(args, ("repo",))
+        owner = repo.split("/")[0]
+        expected = self.policy.app_identity(self.seat)[0]
+        # The own-App filter must cover the WHOLE organization list, not the
+        # first page: scan bounded upstream pages and refuse when the list is
+        # too large to filter completely, so a filtered count can never hide
+        # an own-App installation on a later page.
+        installs = []
+        page = 0
+        exhausted = False
+        while not exhausted and page < 10:
+            page += 1
+            data = self._get(f"/orgs/{owner}/installations?per_page={MAX_PAGE}&page={page}")
+            if (
+                not isinstance(data, dict)
+                or type(data.get("total_count")) is not int
+                or data["total_count"] < 0
+                or not isinstance(data.get("installations"), list)
+                or len(data["installations"]) > MAX_PAGE
+            ):
+                raise RelayGitHubError(502, "organization installations unverifiable")
+            for item in data["installations"]:
+                account = item.get("account") if isinstance(item, dict) else None
+                if (
+                    not isinstance(item, dict)
+                    or type(item.get("id")) is not int
+                    or item["id"] <= 0
+                    or not isinstance(item.get("app_slug"), str)
+                    or not re.fullmatch(r"[a-z0-9-]{1,100}", item["app_slug"])
+                    or not isinstance(account, dict)
+                    or not isinstance(account.get("login"), str)
+                    or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}(?:\[bot\])?", account["login"])
+                ):
+                    raise RelayGitHubError(502, "organization installation unverifiable")
+                if item["app_slug"] != expected:
+                    continue
+                installs.append(
+                    {"id": item["id"], "app_slug": item["app_slug"], "account": account["login"]}
+                )
+            exhausted = page * MAX_PAGE >= data["total_count"]
+        if not exhausted:
+            raise Refused("organization installation list too large to filter safely")
+        return {"installations": installs, "total_count": len(installs)}
+
+    def _search_scope(self, owner):
+        # Scope an org-wide search to the seat's own allowlist: an Org/* pattern
+        # licenses org:, otherwise bounded repo: qualifiers, so a seat can never
+        # pull results from repositories it may not name.
+        wildcard = False
+        exact = []
+        for pattern in self.policy.repo_patterns(self.seat):
+            if pattern.endswith("/*") and pattern[:-1] == owner + "/":
+                wildcard = True
+            elif pattern.startswith(owner + "/"):
+                exact.append(pattern)
+        if wildcard:
+            return f"org:{owner}"
+        if not exact or len(exact) > 20:
+            raise Refused("seat repository scope cannot be expressed as a bounded search")
+        return " ".join(f"repo:{name}" for name in sorted(exact))
+
+    def _installation_repositories(self):
+        # One bounded scan of the installation's pages, cached briefly per
+        # installation (see _INSTALLATION_REPOS_CACHE). Validation is unchanged
+        # and still fails closed; the seat filter runs per call in wf_repo_list.
+        now = time.monotonic()
+        key = hashlib.sha256(self.bearer.encode("utf-8")).hexdigest()
+        with _INSTALLATION_REPOS_CACHE_LOCK:
+            entry = _INSTALLATION_REPOS_CACHE.get(key)
+        if entry is not None and now - entry[0] < _INSTALLATION_REPOS_TTL_S:
+            return entry[1]
+        rows = []
+        upstream_page = 0
+        exhausted = False
+        while not exhausted and upstream_page < 10:
+            upstream_page += 1
+            data = self._get(f"/installation/repositories?per_page={MAX_PAGE}&page={upstream_page}")
+            if (
+                not isinstance(data, dict)
+                or type(data.get("total_count")) is not int
+                or data["total_count"] < 0
+                or not isinstance(data.get("repositories"), list)
+                or len(data["repositories"]) > MAX_PAGE
+            ):
+                raise RelayGitHubError(502, "repository page unverifiable")
+            for item in data["repositories"]:
+                branch = item.get("default_branch") if isinstance(item, dict) else None
+                if branch is None:
+                    branch = ""
+                if (
+                    not isinstance(item, dict)
+                    or type(item.get("id")) is not int
+                    or item["id"] <= 0
+                    or not isinstance(item.get("full_name"), str)
+                    or not _REPO.fullmatch(item["full_name"])
+                    or type(item.get("private")) is not bool
+                    or not isinstance(branch, str)
+                    or (branch != "" and not _REF.fullmatch(branch))
+                ):
+                    raise RelayGitHubError(502, "repository metadata unverifiable")
+                rows.append(
+                    {
+                        "id": item["id"],
+                        "full_name": item["full_name"],
+                        "private": item["private"],
+                        "default_branch": branch,
+                    }
+                )
+            exhausted = upstream_page * MAX_PAGE >= data["total_count"]
+        if not exhausted:
+            raise Refused("installation too large to filter to the seat's repositories")
+        with _INSTALLATION_REPOS_CACHE_LOCK:
+            stale = [
+                k
+                for k, (at, _) in _INSTALLATION_REPOS_CACHE.items()
+                if now - at >= _INSTALLATION_REPOS_TTL_S
+            ]
+            for k in stale:
+                del _INSTALLATION_REPOS_CACHE[k]
+            _INSTALLATION_REPOS_CACHE[key] = (now, rows)
+        return rows
+
+    def wf_repo_list(self, repo, args):
+        _only(args, ("repo", "per_page", "page"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        # Org-wide read, but the seat sees only repositories its allowlist
+        # names: paginate over the policy-filtered stream, so an installation
+        # covering other repositories discloses nothing about them.
+        allowed = [
+            item
+            for item in self._installation_repositories()
+            if self.policy.repo_allowed(self.seat, item["full_name"])
+        ]
+        items = allowed[(page - 1) * limit : page * limit]
+        return {
+            "repositories": items,
+            "total_count": len(allowed),
+            "page": page,
+            "has_more": page * limit < len(allowed),
+        }
+
+    def wf_pr_search(self, repo, args):
+        _only(args, ("repo", "state", "per_page", "page"))
+        owner = repo.split("/")[0]
         state = _enum(args, "state", ("open", "closed", "all"), "open")
-        data = _arr(self._get(f"/repos/{repo}/issues?state={state}&per_page={_page(args)}"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 20) if "page" in args else 1
+        scope = self._search_scope(owner)
+        q = f"{scope} type:pr" + ("" if state == "all" else f" state:{state}")
+        data = self._get(f"/search/issues?q={quote(q, safe='')}&per_page={limit}&page={page}")
+        if (
+            not isinstance(data, dict)
+            or type(data.get("total_count")) is not int
+            or data["total_count"] < 0
+            or type(data.get("incomplete_results")) is not bool
+            or not isinstance(data.get("items"), list)
+            or len(data["items"]) > limit
+        ):
+            raise RelayGitHubError(502, "pull request search unverifiable")
+        prs = []
+        for item in data["items"]:
+            repo_url = item.get("repository_url") if isinstance(item, dict) else None
+            full = repo_url.rsplit("/repos/", 1)[-1] if isinstance(repo_url, str) else None
+            if (
+                not isinstance(item, dict)
+                or "pull_request" not in item
+                or type(item.get("number")) is not int
+                or item["number"] <= 0
+                or not isinstance(item.get("title"), str)
+                or len(item["title"]) > 512
+                or item.get("state") not in ("open", "closed")
+                or type(item.get("draft")) is not bool
+                or not isinstance(item.get("updated_at"), str)
+                or len(item["updated_at"]) > 40
+                or not isinstance(item.get("html_url"), str)
+                or len(item["html_url"]) > 2000
+                or not full
+                or not _REPO.fullmatch(full)
+            ):
+                raise RelayGitHubError(502, "pull request search item unverifiable")
+            if not self.policy.repo_allowed(self.seat, full):
+                raise RelayGitHubError(502, "pull request search escaped seat scope")
+            prs.append(
+                {
+                    "number": item["number"],
+                    "repo": full,
+                    "title": item["title"],
+                    "state": item["state"],
+                    "draft": item["draft"],
+                    "updated_at": item["updated_at"],
+                    "html_url": item["html_url"],
+                }
+            )
+        return {
+            "pull_requests": prs,
+            "total_count": data["total_count"],
+            "complete": not data["incomplete_results"],
+            "page": page,
+        }
+
+    def wf_issue_list(self, repo, args):
+        _only(args, ("repo", "state", "per_page", "labels"))
+        state = _enum(args, "state", ("open", "closed", "all"), "open")
+        path = f"/repos/{repo}/issues?state={state}&per_page={_page(args)}"
+        if "labels" in args:
+            labels = args["labels"]
+            if not isinstance(labels, str):
+                raise Refused("invalid labels")
+            parts = [p.strip() for p in labels.split(",")]
+            if (
+                not parts
+                or len(parts) > 10
+                or any(
+                    not 1 <= len(p) <= 100 or any(ord(ch) < 32 or ord(ch) == 127 for ch in p)
+                    for p in parts
+                )
+            ):
+                raise Refused("invalid labels")
+            path += "&labels=" + ",".join(quote(p, safe="") for p in parts)
+        data = _arr(self._get(path))
         return {
             "issues": [
                 self._issue_summary(x)
@@ -1278,7 +1790,29 @@ class WorkflowVerbs:
     def wf_issue_get(self, repo, args):
         _only(args, ("repo", "number"))
         number = _int(args, "number")
-        return {"issue": self._issue_summary(self._get(f"/repos/{repo}/issues/{number}"))}
+        data = self._get(f"/repos/{repo}/issues/{number}")
+        issue = self._issue_summary(data)
+        body = data.get("body")
+        if body is None:
+            body = ""
+        if not isinstance(body, str) or "\x00" in body:
+            raise RelayGitHubError(502, "issue body unverifiable")
+        try:
+            body_size = len(body.encode("utf-8"))
+        except UnicodeEncodeError:
+            raise RelayGitHubError(502, "issue body unverifiable") from None
+        if body_size > 65536:
+            raise Refused("issue body exceeds supported text size")
+        withheld = bool(
+            find_secret(body)
+            or re.search(
+                PROVIDER_PATTERN + "|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
+                body,
+            )
+        )
+        issue["body"] = "<withheld: credential-shaped text>" if withheld else body
+        issue["body_withheld"] = withheld
+        return {"issue": issue}
 
     def wf_issue_create(self, repo, args):
         _only(args, ("repo", "title", "body"))
@@ -1686,7 +2220,9 @@ class WorkflowVerbs:
         data = self._get(f"/repos/{repo}/issues/{number}/{suffix}?per_page={limit}&page={page}")
         if not isinstance(data, list):
             raise RelayGitHubError(502, "issue history page unverifiable")
-        _bound_read_json(data)
+        # The raw page is GitHub's (comment bodies, commit objects) and is projected down to
+        # metadata below, so only its structure is bounded here;  the client already capped its bytes.
+        _bound_read_json(data, max_bytes=None)
         return {
             "events": [self._issue_event(x, timeline=timeline) for x in data[:limit]],
             "page": page,
@@ -4047,11 +4583,16 @@ class WorkflowVerbs:
                 "repo",
                 "number",
                 "per_page",
+                "page",
             ),
         )
         number = _int(args, "number")
         per_page = _page(args)
-        data = self._get(f"/repos/{repo}/pulls/{number}/comments?per_page={per_page}")
+        path = f"/repos/{repo}/pulls/{number}/comments?per_page={per_page}"
+        if "page" in args:
+            page = _int(args, "page", 1, 1000)
+            path += f"&page={page}"
+        data = self._get(path)
         return {"comments": _arr(data)[:MAX_PAGE], "complete": False}
 
     def wf_issue_comments(self, repo, args):
@@ -4092,7 +4633,7 @@ class WorkflowVerbs:
         base = quote(_ref(args, "base"), safe="")
         head = quote(_ref(args, "head"), safe="")
         data = self._get(f"/repos/{repo}/compare/{base}...{head}")
-        return {"comparison": _obj(data)}
+        return {"comparison": _fit_comparison(_obj(data))}
 
     def wf_branch_get(self, repo, args):
         _only(
@@ -4781,14 +5322,28 @@ class WorkflowVerbs:
         }
 
     def wf_branches(self, repo, args):
-        _only(args, ("repo", "per_page"))
-        data = _arr(self._get(f"/repos/{repo}/branches?per_page={_page(args)}"))
+        """One page of branches, pageable past the per-page cap.
+
+        Until 2026-11-08 this verb had no page argument, so enumeration
+        stopped at MAX_PAGE (50) rows and repos with more branches could
+        not be listed through the relay at all (the fleet-wide PR sweep
+        found six repos truncated at exactly 50).  Page like
+        wf_pr_list_page:  page + per_page, has_more on a full page, and
+        complete only when page 1 comes back short — the whole inventory
+        in that one page."""
+        _only(args, ("repo", "per_page", "page"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        data = _arr(self._get(f"/repos/{repo}/branches?per_page={limit}&page={page}"))
+        if len(data) > limit or not all(isinstance(b, dict) for b in data):
+            raise RelayGitHubError(502, "branch page unverifiable")
         return {
             "branches": [
-                {"name": b.get("name"), "sha": (b.get("commit") or {}).get("sha")}
-                for b in data[:MAX_PROJECT]
+                {"name": b.get("name"), "sha": (b.get("commit") or {}).get("sha")} for b in data
             ],
-            "complete": False,
+            "page": page,
+            "has_more": len(data) == limit,
+            "complete": page == 1 and len(data) < limit,
         }
 
     def wf_file_history(self, repo, args):

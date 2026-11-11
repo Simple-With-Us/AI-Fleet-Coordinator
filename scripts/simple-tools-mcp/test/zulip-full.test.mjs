@@ -164,6 +164,27 @@ test("post:  a text that already opens with the seat's own intro is never double
 });
 
 
+test("post, reply and edit:  an own folder intro with no space or a non-ASCII space before 📁 is not tagged twice (AFC-676)", async () => {
+  const { fake, tools } = harness();
+  const content = (id) => fake.messages.find((m) => m.id === id).content;
+  // Live shape (Zulip 638830748):  `[GB-DEPLOYER📁AFC → ECHO]` went out as `[GB-DEPLOYER] [GB-DEPLOYER📁AFC → ECHO]`.
+  const tight = ok(await tools.call("zulip_post", { topic: "t", text: "[GROK-WEB📁AFC → ECHO] status" }), "zulip_post").id;
+  assert.equal(content(tight), "[GROK-WEB 📁AFC → ECHO] status");
+  const nbsp = ok(await tools.call("zulip_post", { topic: "t", text: "👀 [GROK-WEB\u00a0📁OPS]\nlook", to: ["CODEX"] }), "zulip_post").id;
+  assert.equal(content(nbsp), "👀 [GROK-WEB 📁OPS →CODEX] @**Codex**\nlook");
+  const reply = ok(await tools.call("zulip_reply", { message_id: tight, text: "[GROK-WEB📁OPS] reply" }), "zulip_reply").id;
+  assert.equal(content(reply), "[GROK-WEB 📁OPS] reply");
+  ok(await tools.call("zulip_edit_message", { message_id: tight, text: "[GROK-WEB\u2002📁OPS] edited" }), "zulip_edit_message");
+  assert.equal(content(tight), "[GROK-WEB 📁OPS] edited");
+  const session = ok(await tools.call("zulip_post", { topic: "t", text: "[GROK-WEB📁OPS] correlated", session: "abcd-1234-9999" }), "zulip_post").id;
+  assert.equal(content(session), "[GROK-WEB·abcd1234 📁OPS] correlated");
+  // Lookalike seats and foreign folder intros are still content, so the caller's own tag stays in front.
+  for (const text of ["[GROK-WEBX📁OPS] lookalike", "[GROK-WEB-2📁OPS] lookalike", "[MA📁OPS] quoted"]) {
+    const row = ok(await tools.call("zulip_post", { topic: "t", text }), "zulip_post").id;
+    assert.equal(content(row), `[GROK-WEB] ${text}`);
+  }
+});
+
 test("own intros preserve recipient semantics on named post, reply and edit entrypoints", async () => {
   const { fake, tools } = harness();
   const id = ok(await tools.call("zulip_post", { topic: "t", text: "👀 [GROK-WEB: HH.1.M 📁AFC, OPS] status", to: ["CODEX"] }), "zulip_post").id;

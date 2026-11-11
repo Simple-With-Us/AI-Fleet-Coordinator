@@ -272,7 +272,7 @@ def run_file(args, io: Streams) -> int:
     mirror = linkmod.parse_topic_link(args.mirror_of, dict(io.environ)) if args.mirror_of else None
     if mirror and args.again:
         raise Refusal(
-            "--again and --mirror-of do not go together:  a mirrored item is one persona request"
+            "--again and --mirror-of do not go together:  a mirrored item is one bot request"
         )
     runner = Runner(seat, io.environ)
     runner.require_board()

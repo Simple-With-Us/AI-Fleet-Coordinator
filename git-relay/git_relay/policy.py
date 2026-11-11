@@ -13,7 +13,7 @@ import json
 import threading
 import time
 
-from .app_tokens import MINT_PERMISSION_CEILING
+from .app_tokens import mint_permission_allowed
 
 
 class PolicyError(ValueError):
@@ -220,6 +220,11 @@ class SeatPolicy:
         "wf_automerge_disable",
         "wf_review_thread_comments",
         "wf_review_threads",
+        "wf_repo_hooks",
+        "wf_deploy_keys",
+        "wf_org_installations",
+        "wf_repo_list",
+        "wf_pr_search",
         "wf_assignees_add",
         "wf_assignees_remove",
         "wf_issue_lock",
@@ -357,7 +362,7 @@ class SeatPolicy:
                     for k, v in mint_perms.items()
                 ):
                     raise PolicyError(f"seat {seat!r}: mint_permissions must be name: read|write")
-                outside = [k for k in mint_perms if k not in MINT_PERMISSION_CEILING]
+                outside = [k for k, v in mint_perms.items() if not mint_permission_allowed(k, v)]
                 if outside:
                     # Config load must refuse names the minter always rejects,
                     # so a bad seat entry cannot pass startup and fail every mint.
@@ -485,6 +490,14 @@ class SeatPolicy:
             elif repo == pattern:
                 return True
         return False
+
+    def repo_allowed(self, seat: str, repo: str) -> bool:
+        """Public read of the seat allowlist: org-wide verbs filter results to it."""
+        return self._repo_allowed(seat, repo)
+
+    def repo_patterns(self, seat: str) -> tuple:
+        """The seat's repository allowlist patterns (read-only copy)."""
+        return tuple(self._seats[seat]["repos"])
 
     @classmethod
     def is_write(cls, action: str) -> bool:

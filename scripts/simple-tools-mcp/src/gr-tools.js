@@ -21,7 +21,7 @@ import { callTypedV1 } from "./gr-typed-v1.js";
 import { ASSERTION_FAMILY_RE } from "./gr-assert.js";
 import { WF_V1_READ_ACTIONS, WF_V1_ACTIONS, workflowInputLimit, validWfV1Args, boundedWorkflowInput, parseWfV1Args, validWfV1Response, utf8Bytes } from "./gr-workflow-v1.js";
 import { resolveSecret } from "./infisical.js";
-import { classifyRelayRefusal } from "./gr-refusal.js";
+import { classifyRelayRefusal, movedRepository } from "./gr-refusal.js";
 
 /** The relay's response envelope (kody discussion_r4372745180):  every body
  * is decoded as UNKNOWN and validated with RelayResponseSchema.parse before
@@ -224,7 +224,10 @@ export class GrRelayClient {
       // github_status only (src/gr-refusal.js):  a closed reason or nothing,
       // never the relay's prose.  An unmatched refusal keeps the flat answer.
       const classified=credentialMarker?{reason:"credential_scan"}:classifyRelayRefusal(parsed.error, body.github_status);
-      return {status:response.status,body:{error:"workflow_request_refused", ...(classified ? classified : {}), ...(parsed.retryable===true ? {retryable:true} : {})}};
+      // A moved repository carries only its validated details (a strict
+      // owner/name and a numeric id), never the relay's prose.
+      const moved=classified?.reason==="repository_moved"?movedRepository(body):{};
+      return {status:response.status,body:{error:"workflow_request_refused", ...(classified ? classified : {}), ...moved, ...(parsed.retryable===true ? {retryable:true} : {})}};
     } catch {return unavailable();}
   }
 
@@ -353,7 +356,7 @@ export const GR_TOOLS = Object.freeze([
     name: "gr_workflow_dispatch",
     title: "Dispatch Workflow",
     description: "Trigger a workflow_dispatch run through git-relay, as your own GitHub App.  inputs is a flat object of scalar values.",
-    inputSchema: obj(["repo", "workflow", "ref"], { repo: REPO, workflow: { type: "string" }, ref: { type: "string" }, inputs: { type: "object" }, intent_id: {type:"string",pattern:"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}$"}, expected_head_sha: {type:"string",pattern:"^[0-9a-f]{40}$"} }),
+    inputSchema: obj(["repo", "workflow", "ref"], { repo: REPO, workflow: { type: "string" }, ref: { type: "string" }, inputs: { type: "object", maxProperties: 32, additionalProperties: { anyOf: [{ type: "string", maxLength: 1024 }, { type: "number" }, { type: "boolean" }] } }, intent_id: {type:"string",pattern:"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}$"}, expected_head_sha: {type:"string",pattern:"^[0-9a-f]{40}$"} }),
   },
   {
     name: "gr_resolve_thread",

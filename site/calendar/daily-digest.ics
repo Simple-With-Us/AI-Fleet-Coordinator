@@ -857,7 +857,7 @@ DESCRIPTION:50 PRs merged · 8 issues opened · 5 issues closed\n\nMerged P
  QLITE_BUSY event-loop pin+yield instead of 60s sleep\n  … +10 more\n\nIs
  sues closed:\n- [Personal-Site#62] 2026-09-02 — IN PROGRESS — Fix verc
  el-ignore-hourly watchargs pathspec for\n- [Personal-Site#71] 2026-09-09 
- — IN PROGRESS — Add Vercel Speed Insights to Personal-Site\n- [Persona
+ — IN PROGRESS — Add Vercel Speed Insights to Personal-Site\n- [Bot
  l-Site#80] 2026-09-17 — COMPLETED — Vercel Speed Insights already on m
  ain (PR #70\n- [Personal-Site#81] 2026-09-17 — COMPLETED — vercel-igno
  re-hourly watchargs :(top) pathspec\n- [congress-trading-shared#304] 2026-

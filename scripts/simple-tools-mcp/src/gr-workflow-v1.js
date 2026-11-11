@@ -132,8 +132,13 @@ const SPECS = {
  wf_file_delete:['Delete exact blob on non-default branch; workflow paths refused. Requires separate execution authority.',obj(['repo','path','branch','message','prior_sha'],{repo:REPO,path:PATH,branch:REF,message:{type:'string',minLength:1,maxLength:500},prior_sha:SHA})],
 
 
-  wf_issue_list: ['List issues (not pull requests).', obj(['repo'], {repo:REPO,state:{type:'string',enum:['open','closed','all']},per_page:PER_PAGE})],
-  wf_issue_get: ['Read issue summary.', obj(['repo','number'], {repo:REPO,number:INT})],
+  wf_issue_list: ['List issues (not pull requests); optional labels is a comma-separated list of up to 10 exact label names.', obj(['repo'], {repo:REPO,state:{type:'string',enum:['open','closed','all']},per_page:PER_PAGE,labels:{type:'string',maxLength:1019}})],
+  wf_repo_hooks: ['List repository webhooks: id, name, active, events, url (credential-shaped urls withheld). Repository Webhooks read.', obj(['repo'], {repo:REPO,page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
+  wf_deploy_keys: ['List repository deploy keys (public keys only). Administration read.', obj(['repo'], {repo:REPO,page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
+  wf_org_installations: ['List the organization installations (id, app_slug, account). Organization Administration read.', obj(['repo'], {repo:REPO})],
+  wf_repo_list: ['List the repositories this installation can access (paged).', obj(['repo'], {repo:REPO,page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
+  wf_pr_search: ['Search pull requests across the repo owner or organization (state open by default; only the first 1000 results are reachable).', obj(['repo'], {repo:REPO,state:{type:'string',enum:['open','closed','all']},page:{type:'integer',minimum:1,maximum:20},per_page:PER_PAGE})],
+  wf_issue_get: ['Read one issue with body (untrusted text; credential-shaped bodies withheld).', obj(['repo','number'], {repo:REPO,number:INT})],
   wf_issue_create: ['Create an issue as your own GitHub App.', obj(['repo','title','body'], {repo:REPO,title:CONTENT,body:CONTENT})],
   wf_issue_update: ['Update issue text or open/closed state.', obj(['repo','number'], {repo:REPO,number:INT,title:CONTENT,body:CONTENT,state:{type:'string',enum:['open','closed']}})],
   wf_issue_comment: ['Comment on an issue as your own GitHub App.', obj(['repo','number','body'], {repo:REPO,number:INT,body:CONTENT})],
@@ -164,7 +169,7 @@ const SPECS = {
   wf_label_delete: ['label delete.',obj(['repo', 'name'],{repo:REPO,name:STR})],
   wf_pr_get: ['Read pr get.', obj(['repo', 'number'], {repo:REPO,number:INT})],
   wf_pr_reviews: ['Read pr reviews.', obj(['repo', 'number'], {repo:REPO,number:INT,per_page:PER_PAGE})],
-  wf_pr_comments: ['Read pr comments.', obj(['repo', 'number'], {repo:REPO,number:INT,per_page:PER_PAGE})],
+  wf_pr_comments: ['Read PR inline review comments (untrusted text); optional page reaches older pages. Issue-conversation comments: wf_pr_comments_page. Per-thread inline paging: review_threads then review_thread_comments (seat permitting).', obj(['repo', 'number'], {repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
   wf_issue_comments: ['Read issue comments.', obj(['repo', 'number'], {repo:REPO,number:INT,per_page:PER_PAGE})],
   wf_commit_get: ['Read commit get.', obj(['repo', 'sha'], {repo:REPO,sha:SHA})],
   wf_compare: ['Read compare.', obj(['repo', 'base', 'head'], {repo:REPO,base:REF,head:REF})],
@@ -196,7 +201,7 @@ const SPECS = {
   wf_pr_files: ['List files of a pull request.', obj(['repo', 'number'], { repo: REPO, number: INT, per_page: PER_PAGE })],
   wf_file_get: ['Read one file.', obj(['repo', 'path', 'ref'], { repo: REPO, path: PATH, ref: REF })],
   wf_tree: ['Read a git tree.', obj(['repo', 'ref'], { repo: REPO, ref: REF })],
-  wf_branches: ['List branches.', obj(['repo'], { repo: REPO, per_page: PER_PAGE })],
+  wf_branches: ['List branches, one page at a time. Page with page + per_page until has_more is false; complete is true only when page 1 returns the whole inventory.', obj(['repo'], { repo: REPO, per_page: PER_PAGE, page: { type: 'integer', minimum: 1, maximum: 1000 } })],
   wf_commits: ['List commits.', obj(['repo', 'ref'], { repo: REPO, ref: REF, path: PATH, per_page: PER_PAGE })],
   wf_code_search: ['Search code in the repository.', obj(['repo', 'term'], { repo: REPO, term: STR, per_page: PER_PAGE })],
   wf_runs: ['List workflow runs.', obj(['repo'], { repo: REPO, branch: REF, head_sha: SHA, status: STR, per_page: PER_PAGE })],
@@ -217,9 +222,16 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head; optional commit title/message validated and secret-scanned, empty message distinct from absent.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA, commit_title: {type:'string',minLength:1,maxLength:256}, commit_message: {type:'string',maxLength:65536} })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_installation_metadata','wf_pr_commits_page','wf_pr_review_get','wf_release_latest','wf_release_by_tag','wf_commit_comments_page','wf_commit_comment_get','wf_pr_requested_reviewers','wf_repo_tags','wf_repo_languages','wf_pr_list_page','wf_compare_commits_page','wf_pr_reviews_page','wf_pr_comments_page','wf_check_runs_page','wf_check_run_get','wf_file_history','wf_runs_page','wf_workflows_page','wf_pr_files_page','wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking','wf_commit_statuses','wf_git_blob_get','wf_git_commit_get','wf_git_tree_get','wf_release_asset_download','wf_job_log','wf_run_logs','wf_artifact_download','wf_milestones','wf_milestone_get','wf_deployments','wf_deployment_get','wf_deployment_statuses','wf_environments','wf_environment_get','wf_release_list','wf_release_get','wf_tag_get','wf_review_thread_comments','wf_review_threads','wf_issue_list','wf_issue_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks','wf_merge_queue_entry','wf_job_get','wf_workflow_get','wf_artifact_get','wf_artifacts_page','wf_caches_page','wf_cache_usage','wf_run_attempt_get','wf_run_attempt_jobs','wf_run_pending_deployments','wf_repo_variables','wf_repo_variable_get','wf_issue_events','wf_issue_timeline','wf_git_blob_binary_get']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_installation_metadata','wf_pr_commits_page','wf_pr_review_get','wf_release_latest','wf_release_by_tag','wf_commit_comments_page','wf_commit_comment_get','wf_pr_requested_reviewers','wf_repo_tags','wf_repo_languages','wf_pr_list_page','wf_compare_commits_page','wf_pr_reviews_page','wf_pr_comments_page','wf_check_runs_page','wf_check_run_get','wf_file_history','wf_runs_page','wf_workflows_page','wf_pr_files_page','wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking','wf_commit_statuses','wf_git_blob_get','wf_git_commit_get','wf_git_tree_get','wf_release_asset_download','wf_job_log','wf_run_logs','wf_artifact_download','wf_milestones','wf_milestone_get','wf_deployments','wf_deployment_get','wf_deployment_statuses','wf_environments','wf_environment_get','wf_release_list','wf_release_get','wf_tag_get','wf_review_thread_comments','wf_review_threads','wf_issue_list','wf_issue_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks','wf_merge_queue_entry','wf_job_get','wf_workflow_get','wf_artifact_get','wf_artifacts_page','wf_caches_page','wf_cache_usage','wf_run_attempt_get','wf_run_attempt_jobs','wf_run_pending_deployments','wf_repo_variables','wf_repo_variable_get','wf_issue_events','wf_issue_timeline','wf_git_blob_binary_get','wf_repo_list','wf_pr_search','wf_repo_hooks','wf_deploy_keys','wf_org_installations']);
+// AFC-683: seat policy grants wf_pr_create / wf_pr_edit to no seat, so the generic
+// candidate note sends seats at a refusal.  Give those two the working routes instead;
+// the note stays for the rest (it predates workflow verbs being enabled).
+const UNGRANTED_GUIDANCE = new Map([
+  ['wf_pr_create', 'UNGRANTED: no seat policy grants this verb.  PR creation runs through gr_open_pr, which opens the PR under the owner\'s account by owner design: review tooling does not review bot-identity PRs (owner 2026-10-21).  On relay failure, gh fallback under your own App is allowed per the owner\'s 2026-11-10 route direction with same-day logging in the Fleet GitOPS deficiencies document - EXCEPT operations whose identity the owner reserved: a seat-App PR is bot-identity and unreviewable, so report the relay failure and hold PR creation instead of substituting gh.'],
+  ['wf_pr_edit', 'UNGRANTED: no seat policy grants this verb.  PR title/body edits run through gr_edit_pr, which the current seat policy grants.  On relay failure, gh fallback under your own App is allowed per the owner\'s 2026-11-10 route direction; log the deficiency the same day in the Fleet GitOPS deficiencies document.'],
+]);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
-  name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
+  name: `gr_${action}`, description: UNGRANTED_GUIDANCE.has(action) ? `${SPECS[action][0]} ${UNGRANTED_GUIDANCE.get(action)}` : `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
 })));
 const typeOk = (schema, v) => schema.type === 'integer' ? Number.isInteger(v) && v >= schema.minimum && v <= schema.maximum
@@ -362,7 +374,7 @@ const RESPONSE_KEYS = {
  wf_git_blob_get:['blob'],wf_git_blob_create:['blob'],wf_git_commit_get:['commit'],wf_git_tree_get:['tree'],
  wf_file_rename:['source_path','destination_path','branch','commit','blob_sha'],
   wf_review_thread_resolve:['thread'],wf_review_thread_unresolve:['thread'],
-  wf_issue_list:['issues','complete'], wf_issue_get:['issue'], wf_issue_create:['issue'], wf_issue_update:['issue'], wf_issue_comment:['comment'],
+  wf_issue_list:['issues','complete'],wf_repo_list:['repositories','total_count','page','has_more'],wf_pr_search:['pull_requests','total_count','complete','page'], wf_issue_get:['issue'], wf_issue_create:['issue'], wf_issue_update:['issue'], wf_issue_comment:['comment'],
   wf_issue_comment_update:['result'],
   wf_issue_comment_delete:['deleted'],
   wf_review_comment_update:['result'],
@@ -408,7 +420,7 @@ const RESPONSE_KEYS = {
   wf_branch_get:['branch'],
   wf_repo_get:['repository'],
   wf_installation_metadata:['installation'],
-  wf_labels:['labels','complete'],
+  wf_labels:['labels','complete'],wf_repo_hooks:['hooks','page','has_more'],wf_deploy_keys:['deploy_keys','page','has_more'],wf_org_installations:['installations','total_count'],
   wf_workflows:['workflows'],
   wf_run_get:['run'],
   wf_run_artifacts:['artifacts'],
@@ -420,7 +432,7 @@ const RESPONSE_KEYS = {
   wf_review_submit:['review'],wf_review_inline:['comment'],wf_branch_create:['ref','sha'],
   wf_pr_list: ['pulls','complete'], wf_pr_files: ['files','complete'],
   wf_file_get: ['path','sha','size','encoding','content'], wf_tree: ['sha','truncated','entries'],
-  wf_branches: ['branches','complete'], wf_commits: ['commits','complete'],
+  wf_branches: ['branches','page','has_more','complete'], wf_commits: ['commits','complete'],
   wf_code_search: ['total','items','complete'], wf_runs: ['runs','complete'],
   wf_run_jobs: ['jobs','complete'], wf_checks: ['checks','complete'],
   wf_update_branch: ['accepted','message'], wf_run_rerun: ['requested','run_id'],
@@ -466,7 +478,8 @@ const artifactObject=objectWith({id:positive,name:z.string(),size_in_bytes:z.num
 const workflowObject=objectWith({id:positive,name:z.string(),path:z.string(),state:z.string()});
 const pullObject=objectWith({id:positive,number:positive,state:z.enum(['open','closed']),head:objectWith({sha:shaValue}),base:objectWith({sha:shaValue})});
 const reviewObject=objectWith({id:positive,state:z.string().max(100),commit_id:shaValue});
-const commentObject=objectWith({id:positive,body:z.string().max(32768)});
+// GitHub's own comment limit is 65,536 characters;  the relay accepts the same (a long Kody summary is real).
+const commentObject=objectWith({id:positive,body:z.string().max(65536)});
 const labelObject=objectWith({id:positive,name:z.string().max(100),color:z.string().regex(/^[0-9a-fA-F]{6}$/)});
 const readResponseSchemas={
  wf_installation_metadata:z.object({installation:z.object({app_slug:z.string().regex(/^swu-[a-z0-9-]{1,90}$/),installation_id:positive.max(Number.MAX_SAFE_INTEGER),account:z.object({id:positive.max(Number.MAX_SAFE_INTEGER),login:z.string().regex(/^[A-Za-z0-9_.-]{1,100}$/)}).strict(),accepted_permissions:z.record(z.string().regex(/^[a-z][a-z0-9_]{0,99}$/),z.enum(["read","write"])).refine(v=>Object.keys(v).length<=256),suspended:z.boolean()}).strict()}).strict(),
@@ -474,6 +487,11 @@ const readResponseSchemas={
  wf_pr_comments:z.object({comments:z.array(commentObject).max(50),complete:z.boolean()}).strict(),
  wf_issue_comments:z.object({comments:z.array(commentObject).max(50),complete:z.boolean()}).strict(),
  wf_labels:z.object({labels:z.array(labelObject).max(50),complete:z.boolean()}).strict(),
+ wf_repo_hooks:z.object({hooks:z.array(objectWith({id:positive,name:z.string().max(100),active:z.boolean(),events:z.array(z.string().max(100)).max(50),url:z.string().max(2000),url_withheld:z.boolean()})).max(50),page:positive,has_more:z.boolean()}).strict(),
+ wf_deploy_keys:z.object({deploy_keys:z.array(objectWith({id:positive,title:z.string().max(200),verified:z.boolean(),read_only:z.boolean(),key:z.string().max(900)})).max(50),page:positive,has_more:z.boolean()}).strict(),
+ wf_org_installations:z.object({installations:z.array(objectWith({id:positive,app_slug:z.string().max(100),account:z.string().max(100)})).max(50),total_count:z.number().int().nonnegative()}).strict(),
+ wf_repo_list:z.object({repositories:z.array(objectWith({id:positive,full_name:z.string().max(201),private:z.boolean(),default_branch:z.string()})).max(50),total_count:z.number().int().nonnegative(),page:positive,has_more:z.boolean()}).strict(),
+ wf_pr_search:z.object({pull_requests:z.array(objectWith({number:positive,repo:z.string().max(201),title:z.string().max(512),state:z.string(),draft:z.boolean(),updated_at:z.string().max(40),html_url:z.string().max(2000)})).max(50),total_count:z.number().int().nonnegative(),complete:z.boolean(),page:positive}).strict(),
  wf_pr_get:z.object({pull:pullObject}).strict(),
  wf_commit_get:z.object({commit:commitObject}).strict(),
  wf_compare:z.object({comparison:objectWith({status:z.string(),ahead_by:z.number().int().nonnegative(),behind_by:z.number().int().nonnegative(),total_commits:z.number().int().nonnegative(),commits:z.array(commitObject)})}).strict(),

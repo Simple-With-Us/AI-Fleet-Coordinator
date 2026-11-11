@@ -6,7 +6,7 @@
 //   GITHUB_TOKEN  required, provided by the workflow (permissions: issues: write)
 //   GITHUB_REPOSITORY  owner/name, set by Actions
 //   DRY_RUN  'true' to list decisions without commenting
-import { classifyHttpError, decide, safeErrorDetails, SAFE_ERROR_HEADERS, sweepPrompts, TRIGGER_TEXT } from './lib.mjs';
+import { classifyHttpError, decide, describeApiError, readBoundedBody, SAFE_ERROR_HEADERS, sweepPrompts, TRIGGER_TEXT } from './lib.mjs';
 
 const API = 'https://api.github.com';
 const token = process.env.GITHUB_TOKEN;
@@ -29,13 +29,17 @@ async function api(path, options = {}) {
     },
   });
   if (!res.ok) {
-    // Status plus allowlisted response headers only; the body is never read.
+    // Status plus allowlisted response headers classify the failure; the bounded,
+    // redacted diagnostic from describeApiError carries GitHub's own reason.
     const headers = {};
     for (const name of SAFE_ERROR_HEADERS) {
       const value = res.headers.get(name);
       if (value != null) headers[name] = value;
     }
-    const error = new Error(`${options.method || 'GET'} ${path} -> ${safeErrorDetails(res.status, headers)}`);
+    const bodyText = await readBoundedBody(res).catch(() => '');
+    const error = new Error(
+      describeApiError({ method: options.method || 'GET', path, status: res.status, headers: res.headers, bodyText }),
+    );
     error.status = res.status;
     error.classification = classifyHttpError(res.status, headers);
     throw error;

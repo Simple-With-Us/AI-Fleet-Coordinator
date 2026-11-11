@@ -1665,7 +1665,7 @@ class BearerTransportSeamTests(unittest.TestCase):
         self.assertIn("SANDBOX OK", p.stdout)
 
     def test_every_verifier_identity_is_already_a_canonical_seat_tag(self):
-        # The verifier can only answer KNOWN_SEATS (ST-MCP config.js) or an enabled GB persona
+        # The verifier can only answer KNOWN_SEATS (ST-MCP config.js) or an enabled GB bot
         # (gb-identities.json), and sbt_/gbb_ bearers are minted for those only.  The CLI refuses a
         # non-canonical answer instead of re-mapping it, so this guards drift:  if the verifier set ever
         # gains an alias spelling, this fails and the contract is revisited rather than silently remapped.

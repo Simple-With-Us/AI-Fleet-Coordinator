@@ -1673,15 +1673,21 @@ def _compose(
     start = len(leading)
     seat_end = start + 1 + len(agent.seat)
     end = text.find("]", start)
+    # A folder intro typed with no space or a non-ASCII space before 📁 is still this
+    # seat's own intro (AFC-676), as in the hosted composeBody transport.
+    folder = re.match(r"\s*📁", text[seat_end:]) is not None
     own = (
         not no_tag
         and text.startswith("[" + agent.seat, start)
-        and text[seat_end : seat_end + 1] in ("]", " ", ":", "·", "→", "\t")
+        and (folder or text[seat_end : seat_end + 1] in ("]", " ", ":", "·", "→", "\t"))
         and end >= 0
         and not re.search(r"[\r\n\[]", text[start + 1 : end])
     )
     if own:
         intro = text[:end]
+        if folder:
+            # Exactly one ASCII space before 📁, the Policy shape the router parses.
+            intro = intro[:seat_end] + " " + intro[seat_end:].lstrip()
         if "·" in agent.tag_prefix:
             suffix = re.sub(r"^·[^\s:→\]]*", "", intro[seat_end:])
             intro = intro[:seat_end] + agent.tag_prefix[agent.tag_prefix.index("·") :] + suffix
@@ -2818,7 +2824,7 @@ READ_ONLY_ACTIONS = frozenset({"list"})  # `scheduled list` and `drafts list` re
 
 def _check_agent_identity(rt: Runtime, agent: Agent, command: str = "") -> None:
     """AFC-331:  the CLI acts only as an agent bot (a live or extra seat, a BF-* bot or an enabled GB-*
-    persona), never as the owner's account or an integration bot, whatever credential files exist.  Without a
+    bot), never as the owner's account or an integration bot, whatever credential files exist.  Without a
     readable registry nothing proves that, so every identity is refused (fail closed), as on the stdio and Notes
     paths.  `whoami` is the one diagnostic that goes on and reports the registry problem."""
     from . import identities as X

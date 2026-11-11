@@ -38,14 +38,14 @@ Allowed sets, as the code builds them:
 
 | Connection | May act as |
 |---|---|
-| Hosted CURSOR grant | `CURSOR`, `GROK-WEB`, and every enabled Grok Bot persona: `GB-DIRECTOR`, `GB-FIXER`, `GB-DESIGNER`, `GB-COMPILER`, `GB-HOUSEKEEPER`, `GB-PUBLISHER`, `GB-DEPLOYER`, `GB-MONITOR`, `GB-PLUMBER`, `GB-ORACLE`, `GB-TRADER` |
+| Hosted CURSOR grant | `CURSOR`, `GROK-WEB`, and every enabled Grok bot: `GB-DIRECTOR`, `GB-FIXER`, `GB-DESIGNER`, `GB-COMPILER`, `GB-HOUSEKEEPER`, `GB-PUBLISHER`, `GB-DEPLOYER`, `GB-MONITOR`, `GB-PLUMBER`, `GB-ORACLE`, `GB-TRADER` |
 | Hosted GROK-WEB grant | The same set, with default `GROK-WEB` |
 | Any other hosted grant (such as JET, ECHO or WISE) | Its own seat only |
-| Stdio or CLI on the Mac | Every agent bot whose `<PREFIX>_ZULIP_*` keys are in Infisical Fleet-OPS `/zulip`: the live seats, `BF-*` and the enabled `GB-*` personas |
+| Stdio or CLI on the Mac | Every agent bot whose `<PREFIX>_ZULIP_*` keys are in Infisical Fleet-OPS `/zulip`: the live seats, `BF-*` and the enabled `GB-*` bots |
 | Stdio or CLI on the server | Every agent bot whose credential the server holds |
 | Any stdio or CLI session under a launcher (`AGENT_LAUNCHER`) | The launcher's seat alone |
 
-Never in any set: the owner's own account and the integration bots (BetterStack, Datadog, Linear, PagerDuty, Sentry).  A Grok Bot persona is in a set only when enabled in `scripts/simple_tools/mcp/gb-identities.json` (the one list both servers read); `GB-ENGINEER` is not enabled yet.
+Never in any set: the owner's own account and the integration bots (BetterStack, Datadog, Linear, PagerDuty, Sentry).  A Grok bot is in a set only when enabled in `scripts/simple_tools/mcp/gb-identities.json` (the one list both servers read); `GB-ENGINEER` is not enabled yet.
 
 What differs on hosted: a read tool needs the grant's `zulip:read` scope and a write tool `zulip:write` (every family, not only Zulip); a paused seat answers `paused`; a seat or family that is not set up answers `not_configured` (Linear is on only for the GROK-WEB and CURSOR groups; FleetLink, recall and the eavesdropper reader need their server secrets).
 
@@ -211,9 +211,11 @@ Hosted only, JET-CHAT (the full Jet login) only, and only while the WhatsApp bri
 
 GitHub work is not a simple-tools family.  It has its own relay and its own MCP server, and a seat reaches them with a bearer token rather than with a bot identity.
 
+**The route rule (owner ruling 2026-11-08).  Every GitHub read or write goes through the relay — the `gr_*` / `gr_wf_*` verbs on the hosted front, the `wf_*` verbs through GR-MCP, or `simple-git` — under the seat's own identity.  `gh` is backup only, for an operation the relay has no verb for, and every `gh` fallback is logged the same day in the Fleet GitOPS deficiencies document (Linear, Part 2: the missing verb, what `gh` did, and why).
+
 **git-relay** is the relay: a CLI (`git-relay serve`) and a small service in front of the GitHub API.  It knows each seat from its bearer token and picks the credential BY TASK.  **GR-MCP** is the MCP wrapper for it (`git-relay mcp`): a stdio server that advertises itself as `GR-MCP`, holds only the seat's own bearer token, and forwards every call over HTTP, so policy, caps and the audit log stay server-side.
 
-A seat reaches these tools with its own bearer token.  ST-MCP shares the same bearer-token arrangement: a Grok Bot's bearer is also accepted on ST-MCP's `/mcp`, and another seat's bearer is accepted there only when it was minted with that acceptance ticked in ST-MCP + GR-MCP Admin; otherwise it is GR-MCP only.  The hosted server fronts the seven actions below as write-only tools named `gr_open_pr`, `gr_edit_pr`, `gr_reply_thread`, `gr_comment_pr`, `gr_merge_pr`, `gr_workflow_dispatch` and `gr_resolve_thread`.  The Worker adds no policy of its own: it passes the caller's bearer to the relay unchanged and the relay enforces the seat's allowlist.  The front is live:  the hosted catalog carries the seven names and the full `gr_wf_*` workflow set (456 tools in total, verified live 2026-11-07), and a call reaches the relay unless the relay itself refuses it.  GR-MCP over stdio (`git-relay mcp`) uses the plain names in the table, and also exposes the relay's workflow verbs under their relay names (`wf_*`);  the five verbs whose bodies cannot fit the stdio line cap (`wf_file_put`, `wf_files_put`, `wf_git_blob_create`, `wf_git_tree_create`, `wf_release_asset_upload_binary`) stay hosted-only.
+A seat reaches these tools with its own bearer token.  ST-MCP shares the same bearer-token arrangement: a Grok Bot's bearer is also accepted on ST-MCP's `/mcp`, and another seat's bearer is accepted there only when it was minted with that acceptance ticked in ST-MCP + GR-MCP Admin; otherwise it is GR-MCP only.  The hosted server fronts the seven actions below as write-only tools named `gr_open_pr`, `gr_edit_pr`, `gr_reply_thread`, `gr_comment_pr`, `gr_merge_pr`, `gr_workflow_dispatch` and `gr_resolve_thread`.  The Worker adds no policy of its own: it passes the caller's bearer to the relay unchanged and the relay enforces the seat's allowlist.  The front is live:  the hosted catalog carries the seven names and the full `gr_wf_*` workflow set (456 tools in total, verified live 2026-11-07), and a call reaches the relay unless the relay itself refuses it.  GR-MCP over stdio (`git-relay mcp`) uses the plain names in the table, and also exposes the relay's workflow verbs under their relay names (`wf_*`) — every verb in the relay's SPECS, with no hosted-only remainder (owner ruling 2026-11-08: "Nothing should stay hosted-only by design, or else what is point of the relay?").  The five verbs whose bodies can exceed the stdio line cap (`wf_file_put`, `wf_files_put`, `wf_git_blob_create`, `wf_git_tree_create`, `wf_release_asset_upload_binary`) are carried by GR-MCP's chunked staging transport: the caller splits the JSON-encoded arguments into `stage_chunk` messages (each under the line cap; `stage_messages` in `git_relay/mcp_server.py` builds them), GR-MCP reassembles them in memory, and the final chunk forwards the whole call to the relay, where shape checks, seat policy, rate caps and the audit log apply exactly as for any other call.  `stage_abort` drops an unfinished stage without forwarding anything.
 
 | Tool | Credential | Purpose |
 |---|---|---|
@@ -330,7 +332,7 @@ Every MCP tool has a command except the hosted-only `whatsapp_read`, which has n
 | FleetLink | `fleetlink` (`fleetlink tool NAME` runs any `fleetlink_*` tool; stdio runs it that way) |
 | WhatsApp | None: `whatsapp_read` is hosted only (the whatsapp section above), so no CLI command or stdio tool serves it |
 | Catalog | None: `catalog` is hosted only (paged names and descriptions;  full schemas come from `tools/list` with the same cursor), so no CLI command or stdio tool serves it |
-| GitHub | `git-relay serve` (the relay) and `git-relay mcp` (GR-MCP over stdio); the relay is not deployed yet, so it is not an available route today |
+| GitHub | `git-relay serve` (the relay) and `git-relay mcp` (GR-MCP over stdio); the relay is deployed and is the fleet's GitHub route (verified live 2026-11-07) |
 
 Long text stays out of `argv`: `--body-file PATH` (a file you own, mode 0600 or 0400, at most 64 KB) or `-` for standard input.
 
@@ -345,7 +347,7 @@ Tool errors come back with `isError: true` and an object `{code, message, retrya
 | `unknown_tool` | A removed name.  Use `replacement` |
 | `invalid_argument` | The arguments broke the schema or a rule (the message names the field) |
 | `not_authorized` | Zulip or Linear refused the credential, a missing OAuth scope on hosted (reconnect and approve `zulip:read` or `zulip:write`), or a Linear write by the wrong app |
-| `not_configured` | This seat or family is not set up: on hosted, on the server (Linear, FleetLink, recall, a persona's credentials); on stdio, FleetLink's CLI or the seat's FleetLink token is missing here |
+| `not_configured` | This seat or family is not set up: on hosted, on the server (Linear, FleetLink, recall, a bot's credentials); on stdio, FleetLink's CLI or the seat's FleetLink token is missing here |
 | `paused` | Hosted only: the owner paused this seat |
 | `rate_limited` | Retry after `retry_after_s` (`retryable: true`) |
 | `outcome_unknown` | The write may or may not have landed.  Check (read the topic) before retrying; never replay blindly |

@@ -155,6 +155,12 @@ jobs:
         python3 scripts/test_fleet_cli_git_update.py
         (cd scripts/git-tools && python3 -m unittest test_git_remote test_simple_git_wrapper test_helper_plan -v)
         bash -n scripts/simple-tools-runtime-sync.sh
+    # backup-repos archive loop (AFC-682):  a failed clone target must keep the
+    # partial archive set, label it, and still fail the run;  plus the secret/noise
+    # zip exclusions.  Stubbed clones only;  no network, no token.
+    - name: backup-repos tests
+      timeout-minutes: 10
+      run: python3 scripts/test_backup_repos.py -v
     # systemd unit templates (the fleet CLI updater unit):  the measured host
     # quirk that %h expands to the root account's home inside a system unit even
     # when User= names another account, the unit's own internal consistency, and
@@ -695,6 +701,7 @@ jobs:
       timeout-minutes: 10
       run: |
         node --test scripts/ios-fleet/ios_testflight_freshness.test.mjs
+        node --test scripts/ios-fleet/build_number_audit.test.mjs
         bash -n scripts/ios-fleet/install-testflight-freshness.sh
     # The fleet iOS version manifest publisher (AFC-540).  It publishes as a
     # branch plus a pull request against this repository, because the ruleset

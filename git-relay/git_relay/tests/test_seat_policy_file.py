@@ -19,7 +19,11 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from git_relay.app_tokens import MINT_PERMISSION_CEILING
+from git_relay.app_tokens import (
+    MINT_PERMISSION_CEILING,
+    MINT_READ_ONLY_PERMISSIONS,
+    mint_permission_allowed,
+)
 from git_relay.policy import SeatPolicy
 from git_relay.server import ACTION_REQUIRED_PERMISSIONS
 from git_relay.shared_bearer import SharedBearerVerifier
@@ -97,8 +101,8 @@ def worker_identities() -> set[str]:
     bearer = (WORKER / "bearer-identities.js").read_text(encoding="utf-8")
     row = r'^\s+"?([A-Z][A-Z0-9-]*)"?: Object\.freeze\(\{ prefix:'
     names |= set(re.findall(row, bearer, re.MULTILINE))
-    personas = ROOT / "scripts" / "simple_tools" / "mcp" / "gb-identities.json"
-    names |= set(json.loads(personas.read_text(encoding="utf-8"))["enabled"])
+    bots = ROOT / "scripts" / "simple_tools" / "mcp" / "gb-identities.json"
+    names |= set(json.loads(bots.read_text(encoding="utf-8"))["enabled"])
     return names
 
 
@@ -202,7 +206,14 @@ class SeatPolicyFile(unittest.TestCase):
         rank = {"read": 1, "write": 2}
         for cfg in SEATS.values():
             ceiling = cfg["mint_permissions"]
-            self.assertTrue(set(ceiling) <= set(MINT_PERMISSION_CEILING))
+            self.assertTrue(
+                set(ceiling) <= set(MINT_PERMISSION_CEILING) | set(MINT_READ_ONLY_PERMISSIONS)
+            )
+            for key, level in ceiling.items():
+                self.assertTrue(
+                    mint_permission_allowed(key, level),
+                    f"seat ceiling {key}:{level} exceeds the mint allowance",
+                )
             for action in cfg["actions"]:
                 if action == "open_pr":
                     continue  # the owner's PR-only token, never the seat's App
@@ -364,11 +375,11 @@ class SeatPolicyFile(unittest.TestCase):
                 "Environment=PATH=/usr/bin GIT_RELAY_HOST=localhost GIT_RELAY_PORT=18080",
             ]
         )
-        cat = "[Service]\nLoadCredential=other-token:/tmp/fixture/other-token\nLoadCredential=git-relay-apps-token:/tmp/fixture/apps-token\n"
+        cat = "[Service]\nLoadCredential=other-token:/tmp/o\nLoadCredential=git-relay-apps-token:/tmp/a\n"
         unit = seat_policy.read_unit("relay.service", show=show, cat=cat)
         self.assertEqual(unit.relay, "/tmp/fixture/relay/code")
         self.assertEqual(unit.config, "/tmp/fixture/relay/relay.env")
-        self.assertEqual(unit.apps_token, "/tmp/fixture/apps-token")
+        self.assertEqual(unit.apps_token, "/tmp/a")
         self.assertEqual(unit.health, "http://localhost:18080/healthz")
         # No assumed bind address:  a unit that sets none cannot be health-checked.
         no_bind = seat_policy.read_unit(
@@ -449,10 +460,7 @@ class SeatPolicyOauthAssertRender(unittest.TestCase):
         # accepts the rendered JSON unchanged, assertions refused everywhere.
         policy = SeatPolicy(seat_policy.compact(SEATS), assertion_verifier=None)
         self.assertIsNone(
-            policy.authenticate(
-                "gra1_codex_1800000000_1800000090_AbCdEfGhIjKlMnOp_"
-                "6c83d4e7a1b73c7c8afcc28641b50e8afe2b53ec21ed554f4c96947ca255f334"
-            )
+            policy.authenticate("gra1_codex_1800000000_1800000090_AbCdEfGhIjKlMnOp_" + "0" * 64)
         )
 
 
