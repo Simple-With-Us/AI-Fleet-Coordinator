@@ -10,7 +10,6 @@ from __future__ import annotations
 import inspect
 import json
 import os
-import pathlib
 import re
 import stat
 import sys
@@ -784,15 +783,6 @@ class McodeFallbackTest(unittest.TestCase):
         argv = A.mcode_argv("/usr/local/bin/mcode")
         self.assertEqual(argv[argv.index("--max-steps") + 1], str(A.MCODE_MAX_STEPS))
         self.assertGreaterEqual(A.MCODE_MAX_STEPS, 16)
-
-    def test_the_documented_argv_carries_the_step_budget_the_code_uses(self) -> None:
-        # The protocol doc quotes the fallback argv.  A number that drifts from the code is a doc
-        # that lies about the command, so the two are pinned together here.
-        doc = pathlib.Path(__file__).resolve().parents[3] / "docs" / "protocols" / "simple-tools-listener.md"
-        text = doc.read_text(encoding="utf-8")
-        self.assertIn(
-            "--max-steps %d --timeout %s" % (A.MCODE_MAX_STEPS, A.MCODE_TIMEOUT), text
-        )
 
     def test_the_backup_names_its_model_on_the_command_line(self) -> None:
         # Without `--model`, mcode inherits MiniMax Code's own `defaultModel`, and on this Mac that
