@@ -345,11 +345,7 @@ class BootstrapProof(RuntimeProof):
             status, result = self.call("wf_repo_get", {"repo": self.REPO})
         except OSError:
             return dict(record, outcome=INCONCLUSIVE, stage="read")
-        if (
-            status != 401
-            or not isinstance(result, dict)
-            or result.get("error") != BOOTSTRAP_CAUSE
-        ):
+        if status != 401 or not isinstance(result, dict) or result.get("error") != BOOTSTRAP_CAUSE:
             return dict(record, outcome=REFUSED, stage="read", status=status)
         # Byte-identical to ExternalProof's negative probe for the same proof
         # id:  the flat wf_file_patch request whose NULL_OID preconditions
@@ -368,11 +364,7 @@ class BootstrapProof(RuntimeProof):
             status, result = self.call("wf_file_patch", probe)
         except OSError:
             return dict(record, outcome=INCONCLUSIVE, stage="probe")
-        if (
-            status == 401
-            and isinstance(result, dict)
-            and result.get("error") == BOOTSTRAP_CAUSE
-        ):
+        if status == 401 and isinstance(result, dict) and result.get("error") == BOOTSTRAP_CAUSE:
             return dict(record, outcome=PROVEN, refusal=BOOTSTRAP_CAUSE)
         return dict(record, outcome=REFUSED, stage="probe", status=status)
 
@@ -551,8 +543,7 @@ def _bootstrap_row_binds(record, rows, identity):
             and row.get("cause") == BOOTSTRAP_CAUSE
             and (
                 row.get("identity") == identity
-                or row.get("identity_sha256")
-                == hashlib.sha256(identity.encode()).hexdigest()
+                or row.get("identity_sha256") == hashlib.sha256(identity.encode()).hexdigest()
             )
             and row.get("action") == "wf_file_patch"
             and row.get("repo") == record["repo"]

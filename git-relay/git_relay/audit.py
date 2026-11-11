@@ -172,7 +172,9 @@ class BootstrapDenialAuditor:
         self._stamps: list[float] = []
         self._lock = threading.Lock()
 
-    def record(self, audit: AuditLog, action: object, repo: object, identity: str, path: object) -> bool:
+    def record(
+        self, audit: AuditLog, action: object, repo: object, identity: str, path: object
+    ) -> bool:
         with self._lock:
             now = self._clock()
             self._stamps = [t for t in self._stamps if now - t < self._window]

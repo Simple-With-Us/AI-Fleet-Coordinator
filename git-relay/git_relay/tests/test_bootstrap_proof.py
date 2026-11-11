@@ -130,7 +130,9 @@ class BootstrapReceiptTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "another proof target"):
             self.verify(receipt=deploy_proof.sign_receipt(KEY, _record(v=2)))
         with self.assertRaisesRegex(ValueError, "another proof target"):
-            self.verify(receipt=deploy_proof.sign_receipt(KEY, _record(url="https://x.example/v1/")))
+            self.verify(
+                receipt=deploy_proof.sign_receipt(KEY, _record(url="https://x.example/v1/"))
+            )
 
     def test_freshness(self):
         with self.assertRaisesRegex(ValueError, "stale"):
@@ -156,7 +158,7 @@ class BootstrapReceiptTests(unittest.TestCase):
         # A hashed identity stand-in binds exactly like the plain value.
         hashed = _boot_row(self.rec)
         del hashed["identity"]
-        hashed["identity_sha256"] = hashlib.sha256("ZC".encode()).hexdigest()
+        hashed["identity_sha256"] = hashlib.sha256(b"ZC").hexdigest()
         self.assertEqual(self.verify(audit_rows=[hashed])["seat"], "swu-zc")
 
 
@@ -192,9 +194,7 @@ class BootstrapProofRunTests(unittest.TestCase):
         def ext_call(action, args):
             captured.append((action, args))
             if action == "wf_repo_get":
-                return 200, {
-                    "repository": {"full_name": ext.REPO, "default_branch": "main"}
-                }
+                return 200, {"repository": {"full_name": ext.REPO, "default_branch": "main"}}
             return 400, {"error": "default branch is not writable"}
 
         ext.call = ext_call
@@ -307,7 +307,10 @@ class BootstrapDenialAuditorTests(unittest.TestCase):
             log = audit_mod.AuditLog(os.path.join(tmp, "audit.log"))
             auditor = audit_mod.BootstrapDenialAuditor(limit=2)
             ok = auditor.record(
-                log, "wf_file_patch", REPO, "ZC",
+                log,
+                "wf_file_patch",
+                REPO,
+                "ZC",
                 "deploy-proof/" + "b" * 32 + ".probe",
             )
             self.assertTrue(ok)
@@ -420,7 +423,9 @@ class BootstrapRelayChainTests(unittest.TestCase):
             status, body = server.handle("bearer-nope", "wf_repo_get", {"repo": REPO})
             self.assertEqual(status, 401)
             rows = deploy_proof.read_audit_rows(log._path)
-            self.assertTrue(all(r.get("cause") != "seat_not_in_policy" or "identity" not in r for r in rows))
+            self.assertTrue(
+                all(r.get("cause") != "seat_not_in_policy" or "identity" not in r for r in rows)
+            )
 
     def test_over_audit_budget_probes_leave_no_bindable_row(self):
         with tempfile.TemporaryDirectory() as tmp:
