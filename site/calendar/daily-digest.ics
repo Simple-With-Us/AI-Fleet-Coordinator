@@ -11,15 +11,34 @@ REFRESH-INTERVAL;VALUE=DURATION:PT6H
 X-PUBLISHED-TTL:PT6H
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-11@AI-Fleet-Coordinator
-DTSTAMP:20261111T060750Z
+DTSTAMP:20261111T075019Z
 DTSTART;VALUE=DATE:20261111
 DTEND;VALUE=DATE:20261112
-SUMMARY:Fleet: 3 merged · 0 opened · 0 closed
-DESCRIPTION:3 PRs merged · 0 issues opened · 0 issues closed\n\nMerged PR
- s:\n- [AI-Fleet-Coordinator#1732] 690: stop committing fleet digest artifa
- cts to protected main\n- [AI-Fleet-Coordinator#1762] Registry: Each Chat R
- ecords The Linear Issues It Works On\n- [Congress.Trade#3050] chore(deps):
-  update non-major dependencies
+SUMMARY:Fleet: 16 merged · 0 opened · 0 closed
+DESCRIPTION:16 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
+ Rs:\n- [AI-Fleet-Coordinator#1730] 689: preserve body @-mentions in the Zu
+ lip composer\n- [AI-Fleet-Coordinator#1732] 690: stop committing fleet dig
+ est artifacts to protected main\n- [AI-Fleet-Coordinator#1739] 691: defini
+ te hold-label refusals and a settled auto-merge read\n- [AI-Fleet-Coordina
+ tor#1742] Review exact Usage-Monitor collector bytes for generic assignmen
+ t attestation\n- [AI-Fleet-Coordinator#1743] (claude) Wake Router: The Sha
+ red Router And 's Delivery (OPS-1048)\n- [AI-Fleet-Coordinator#1762] Regis
+ try: Each Chat Records The Linear Issues It Works On\n- [AI-Fleet-Coordina
+ tor#1765] (codex) release: fix Kody's three findings from PR 1751\n- [AI-F
+ leet-Coordinator#1767] Hardening: mirror durability\, subprocess timeouts\
+ , Linear budget deadline\, argv flag-injection (AFC-697)\n- [AI-Fleet-Coor
+ dinator#1768] (codex\, claude\, cursor) Worker: A Read Key For \, — And 
+ \, So The Hosted Eavesdropper Tools Can Read Their Records\n- [AI-Fleet-Co
+ ordinator#1769] (muse-assist) Listener: Delete The — Inbox Bridge\, Keep
+  The Decider Declaration\n- [AI-Fleet-Coordinator#1770] RAG nightly: read 
+ the Linear seat pairs from AI Fleet Coordinator /linear (AFC-687)\n- [AI-F
+ leet-Coordinator#1771] An Untagged Reply Wakes The Chat It Answers: The Li
+ stener's Liberal Wake Rule\n- [AI-Fleet-Coordinator#1776] RAG mirror: rsyn
+ c — mkpath so the nested incoming trees exist (AFC-687)\n- [Congress.Tra
+ de#3050] chore(deps): update non-major dependencies\n- [Socratic-Trade#513
+ 6] 4602: stop SQLite lock errors from 500ing peer price reads\n- [Socratic
+ -Trade#5139] 4601: classify strategy RAG deadline timeouts and stop per-sy
+ mbol stalls
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-11
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
@@ -27,7 +46,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-10@AI-Fleet-Coordinator
-DTSTAMP:20261111T060750Z
+DTSTAMP:20261111T075019Z
 DTSTART;VALUE=DATE:20261110
 DTEND;VALUE=DATE:20261111
 SUMMARY:Fleet: 116 merged · 0 opened · 0 closed
@@ -91,7 +110,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-09@AI-Fleet-Coordinator
-DTSTAMP:20261111T060750Z
+DTSTAMP:20261111T075019Z
 DTSTART;VALUE=DATE:20261109
 DTEND;VALUE=DATE:20261110
 SUMMARY:Fleet: 97 merged · 0 opened · 0 closed
@@ -153,7 +172,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-08@AI-Fleet-Coordinator
-DTSTAMP:20261111T060750Z
+DTSTAMP:20261111T075019Z
 DTSTART;VALUE=DATE:20261108
 DTEND;VALUE=DATE:20261109
 SUMMARY:Fleet: 96 merged · 0 opened · 0 closed
@@ -223,7 +242,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-07@AI-Fleet-Coordinator
-DTSTAMP:20261111T060750Z
+DTSTAMP:20261111T075019Z
 DTSTART;VALUE=DATE:20261107
 DTEND;VALUE=DATE:20261108
 SUMMARY:Fleet: 123 merged · 0 opened · 0 closed
@@ -290,7 +309,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-06@AI-Fleet-Coordinator
-DTSTAMP:20261111T060750Z
+DTSTAMP:20261111T075019Z
 DTSTART;VALUE=DATE:20261106
 DTEND;VALUE=DATE:20261107
 SUMMARY:Fleet: 87 merged · 0 opened · 0 closed
@@ -349,7 +368,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-05@AI-Fleet-Coordinator
-DTSTAMP:20261111T060750Z
+DTSTAMP:20261111T075019Z
 DTSTART;VALUE=DATE:20261105
 DTEND;VALUE=DATE:20261106
 SUMMARY:Fleet: 78 merged · 0 opened · 0 closed
@@ -409,7 +428,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-04@AI-Fleet-Coordinator
-DTSTAMP:20261111T060750Z
+DTSTAMP:20261111T075019Z
 DTSTART;VALUE=DATE:20261104
 DTEND;VALUE=DATE:20261105
 SUMMARY:Fleet: 65 merged · 0 opened · 0 closed
@@ -468,7 +487,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-03@AI-Fleet-Coordinator
-DTSTAMP:20261111T060750Z
+DTSTAMP:20261111T075019Z
 DTSTART;VALUE=DATE:20261103
 DTEND;VALUE=DATE:20261104
 SUMMARY:Fleet: 147 merged · 0 opened · 0 closed
@@ -531,7 +550,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-02@AI-Fleet-Coordinator
-DTSTAMP:20261111T060750Z
+DTSTAMP:20261111T075019Z
 DTSTART;VALUE=DATE:20261102
 DTEND;VALUE=DATE:20261103
 SUMMARY:Fleet: 102 merged · 0 opened · 0 closed
@@ -591,7 +610,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-01@AI-Fleet-Coordinator
-DTSTAMP:20261111T060750Z
+DTSTAMP:20261111T075019Z
 DTSTART;VALUE=DATE:20261101
 DTEND;VALUE=DATE:20261102
 SUMMARY:Fleet: 78 merged · 0 opened · 0 closed
@@ -651,7 +670,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-31@AI-Fleet-Coordinator
-DTSTAMP:20261111T060750Z
+DTSTAMP:20261111T075019Z
 DTSTART;VALUE=DATE:20261031
 DTEND;VALUE=DATE:20261101
 SUMMARY:Fleet: 47 merged · 0 opened · 0 closed
@@ -709,7 +728,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-30@AI-Fleet-Coordinator
-DTSTAMP:20261111T060750Z
+DTSTAMP:20261111T075019Z
 DTSTART;VALUE=DATE:20261030
 DTEND;VALUE=DATE:20261031
 SUMMARY:Fleet: 103 merged · 0 opened · 0 closed
@@ -773,7 +792,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-29@AI-Fleet-Coordinator
-DTSTAMP:20261111T060750Z
+DTSTAMP:20261111T075019Z
 DTSTART;VALUE=DATE:20261029
 DTEND;VALUE=DATE:20261030
 SUMMARY:Fleet: 165 merged · 0 opened · 0 closed
@@ -840,7 +859,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-28@AI-Fleet-Coordinator
-DTSTAMP:20261111T060750Z
+DTSTAMP:20261111T075019Z
 DTSTART;VALUE=DATE:20261028
 DTEND;VALUE=DATE:20261029
 SUMMARY:Fleet: 100 merged · 0 opened · 0 closed
@@ -904,7 +923,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-27@AI-Fleet-Coordinator
-DTSTAMP:20261111T060750Z
+DTSTAMP:20261111T075019Z
 DTSTART;VALUE=DATE:20261027
 DTEND;VALUE=DATE:20261028
 SUMMARY:Fleet: 91 merged · 0 opened · 0 closed
@@ -971,7 +990,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-26@AI-Fleet-Coordinator
-DTSTAMP:20261111T060750Z
+DTSTAMP:20261111T075019Z
 DTSTART;VALUE=DATE:20261026
 DTEND;VALUE=DATE:20261027
 SUMMARY:Fleet: 92 merged · 0 opened · 0 closed
@@ -1034,7 +1053,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-25@AI-Fleet-Coordinator
-DTSTAMP:20261111T060750Z
+DTSTAMP:20261111T075019Z
 DTSTART;VALUE=DATE:20261025
 DTEND;VALUE=DATE:20261026
 SUMMARY:Fleet: 66 merged · 0 opened · 0 closed
@@ -1097,7 +1116,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-24@AI-Fleet-Coordinator
-DTSTAMP:20261111T060750Z
+DTSTAMP:20261111T075019Z
 DTSTART;VALUE=DATE:20261024
 DTEND;VALUE=DATE:20261025
 SUMMARY:Fleet: 101 merged · 0 opened · 0 closed
@@ -1167,7 +1186,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-23@AI-Fleet-Coordinator
-DTSTAMP:20261111T060750Z
+DTSTAMP:20261111T075019Z
 DTSTART;VALUE=DATE:20261023
 DTEND;VALUE=DATE:20261024
 SUMMARY:Fleet: 80 merged · 0 opened · 0 closed
@@ -1231,7 +1250,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-22@AI-Fleet-Coordinator
-DTSTAMP:20261111T060750Z
+DTSTAMP:20261111T075019Z
 DTSTART;VALUE=DATE:20261022
 DTEND;VALUE=DATE:20261023
 SUMMARY:Fleet: 65 merged · 0 opened · 0 closed
@@ -1295,7 +1314,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-21@AI-Fleet-Coordinator
-DTSTAMP:20261111T060750Z
+DTSTAMP:20261111T075019Z
 DTSTART;VALUE=DATE:20261021
 DTEND;VALUE=DATE:20261022
 SUMMARY:Fleet: 207 merged · 0 opened · 0 closed
