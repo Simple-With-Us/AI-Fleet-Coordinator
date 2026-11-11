@@ -1,6 +1,6 @@
 # Jay's Daily Coding-Related Activities
 
-_Generated 2026-11-11 01:50 CST · timezone America/Chicago_
+_Generated 2026-11-11 11:29 CST · timezone America/Chicago_
 
 Sources: merged PRs and issues opened/closed in verified public repositories.
 Agent names are stripped from titles; HTML site shows logos instead.
@@ -11,15 +11,20 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-11-11
 
-*16 PRs merged · 0 issues opened · 0 issues closed*
+*43 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
+- **AFC** [#1728](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1728): CI: preserve in-progress main runs; deploy the exact CI-proven head (AFC-653) _(by jaywedgeworth22)_
 - **AFC** [#1730](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1730): 689: preserve body @-mentions in the Zulip composer _(by jaywedgeworth22)_
+- **AFC** `Claude` [#1731](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1731): Send fenced ST-MCP reads to — as text (AFC-637) _(by jaywedgeworth22)_
 - **AFC** [#1732](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1732): 690: stop committing fleet digest artifacts to protected main _(by jaywedgeworth22)_
 - **AFC** [#1739](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1739): 691: definite hold-label refusals and a settled auto-merge read _(by jaywedgeworth22)_
 - **AFC** [#1742](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1742): Review exact Usage-Monitor collector bytes for generic assignment attestation _(by jaywedgeworth22)_
 - **AFC** `Claude` [#1743](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1743): Wake Router: The Shared Router And 's Delivery (OPS-1048) _(by jaywedgeworth22)_
+- **AFC** [#1750](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1750): OPS-1016: recall remote writes assert the bearer's authenticated identity _(by jaywedgeworth22)_
+- **AFC** [#1757](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1757): zc-wake-bridge: typed failure classification on delivery receipts (no raw output, no retry) _(by swu-echo[bot])_
+- **AFC** [#1758](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1758): Rename the shared registry env file to operator-registry-env _(by jaywedgeworth22)_
 - **AFC** [#1762](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1762): Registry: Each Chat Records The Linear Issues It Works On _(by jaywedgeworth22)_
 - **AFC** `Codex` [#1765](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1765): release: fix Kody's three findings from PR 1751 _(by jaywedgeworth22)_
 - **AFC** [#1767](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1767): Hardening: mirror durability, subprocess timeouts, Linear budget deadline, argv flag-injection (AFC-697) _(by jaywedgeworth22)_
@@ -27,10 +32,32 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **AFC** `Muse Assist` [#1769](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1769): Listener: Delete The — Inbox Bridge, Keep The Decider Declaration _(by jaywedgeworth22)_
 - **AFC** [#1770](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1770): RAG nightly: read the Linear seat pairs from AI Fleet Coordinator /linear (AFC-687) _(by jaywedgeworth22)_
 - **AFC** [#1771](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1771): An Untagged Reply Wakes The Chat It Answers: The Listener's Liberal Wake Rule _(by jaywedgeworth22)_
+- **AFC** [#1773](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1773): Update GitHub Artifact Actions (major) _(by renovate[bot])_
+- **AFC** [#1774](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1774): 684/OPS-1059: bootstrap proof on current main (replaces #1752) _(by jaywedgeworth22)_
 - **AFC** [#1776](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1776): RAG mirror: rsync — mkpath so the nested incoming trees exist (AFC-687) _(by jaywedgeworth22)_
+- **AFC** [#1777](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1777): Listener: One Listener, On The Server (The Nov 10 Cutover In The Repo) _(by jaywedgeworth22)_
+- **AFC** [#1778](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1778): Wake Router: Platform Dispatch, A Correlated Envelope And Settings From Infisical (OPS-1048) _(by jaywedgeworth22)_
+- **AFC** [#1779](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1779): secretscan: register reviewed generic fixture for linear-board test_board _(by jaywedgeworth22)_
+- **AFC** [#1780](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1780): git-relay: optional intent_id envelope metadata for comment_pr _(by jaywedgeworth22)_
+- **AFC** [#1783](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1783): Wake Router: A Registry Row Must Name Its Seat (OPS-1048) _(by jaywedgeworth22)_
+- **AFC** [#1784](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1784): wf publication route: refuse loaded credentials before fixture attestation _(by jaywedgeworth22)_
+- **AFC** [#1785](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1785): simple-tools-mcp: take the Frankfurt placement pin out (revert of #1734) _(by jaywedgeworth22)_
+- **AFC** [#1787](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1787): Listener: ZC Wakes Through Its Bridge (OPS-1048) _(by jaywedgeworth22)_
+- **AFC** [#1788](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1788): Muster: The Mac Listener Is Retired, The Server Listener Holds Every Seat _(by jaywedgeworth22)_
+- **AFC** [#1790](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1790): Wake Deliver: Each Platform Reads Session Ids With Its Own Pattern (OPS-1048) _(by jaywedgeworth22)_
+- **AFC** [#1792](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1792): RAG nightly: the unit owns code-main-sync; the job reads its result (AFC-687) _(by jaywedgeworth22)_
+- **BF** `Muse Assist` [#1742](https://github.com/Simple-With-Us/BotFleet/pull/1742): 2441: iOS photo previews, drop snippet chips, show — Code subagents _(by jaywedgeworth22)_
+- **BF** [#1745](https://github.com/Simple-With-Us/BotFleet/pull/1745): Update non-major dependencies _(by renovate[bot])_
+- **BF** [#1746](https://github.com/Simple-With-Us/BotFleet/pull/1746): Update dependency typebox to v1.4.5 _(by renovate[bot])_
 - **CT** [#3050](https://github.com/Simple-With-Us/Congress.Trade/pull/3050): chore(deps): update non-major dependencies _(by renovate[bot])_
+- **CT** [#3051](https://github.com/Simple-With-Us/Congress.Trade/pull/3051): fix(deps): update dependency @google/genai to v3 _(by renovate[bot])_
+- **CT** [#3052](https://github.com/Simple-With-Us/Congress.Trade/pull/3052): chore(deps): update non-major dependencies _(by renovate[bot])_
+- **ST** `Grok` [#5097](https://github.com/Simple-With-Us/Socratic-Trade/pull/5097): openrouter-mgmt-credit-monitor _(by jaywedgeworth22)_
+- **ST** `Sentry` [#5127](https://github.com/Simple-With-Us/Socratic-Trade/pull/5127): Telemetry: redact sensitive query params in — URLs (finishes #5046) _(by jaywedgeworth22)_
 - **ST** [#5136](https://github.com/Simple-With-Us/Socratic-Trade/pull/5136): 4602: stop SQLite lock errors from 500ing peer price reads _(by jaywedgeworth22)_
+- **ST** [#5137](https://github.com/Simple-With-Us/Socratic-Trade/pull/5137): 4604: Fix Playwright admin e2e server-only import _(by jaywedgeworth22)_
 - **ST** [#5139](https://github.com/Simple-With-Us/Socratic-Trade/pull/5139): 4601: classify strategy RAG deadline timeouts and stop per-symbol stalls _(by jaywedgeworth22)_
+- **UM** [#1966](https://github.com/Simple-With-Us/Usage-Monitor/pull/1966): 1640: publish the iOS version manifest and assign ships to existing external beta groups _(by jaywedgeworth22)_
 
 ## 2026-11-10
 
@@ -2073,13 +2100,11 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-10-21
 
-*207 PRs merged · 0 issues opened · 0 issues closed*
+*205 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
-- **AFC** `MiniMax` [#712](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/712): Add Native — Shell And File Guards _(by jaywedgeworth22)_
 - **AFC** `Muse Assist` `Codex` [#727](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/727): Deliver — Wakes To Existing Native — Threads _(by jaywedgeworth22)_
-- **AFC** [#746](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/746): Sentence Gap: Collapse the Prose Double Space the One-Pass Recipe Misses _(by jaywedgeworth22)_
 - **AFC** [#755](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/755): Sentence gap: assert the AGENT-SYNC.md mirror instead of exempting it _(by jaywedgeworth22)_
 - **AFC** [#758](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/758): Drop Mistral Vibe as a fleet platform _(by jaywedgeworth22)_
 - **AFC** [#765](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/765): Notes: carry the 900 s AppleEvent timeout in the canonical helper _(by jaywedgeworth22)_
