@@ -2824,7 +2824,7 @@ READ_ONLY_ACTIONS = frozenset({"list"})  # `scheduled list` and `drafts list` re
 
 def _check_agent_identity(rt: Runtime, agent: Agent, command: str = "") -> None:
     """AFC-331:  the CLI acts only as an agent bot (a live or extra seat, a BF-* bot or an enabled GB-*
-    persona), never as the owner's account or an integration bot, whatever credential files exist.  Without a
+    bot), never as the owner's account or an integration bot, whatever credential files exist.  Without a
     readable registry nothing proves that, so every identity is refused (fail closed), as on the stdio and Notes
     paths.  `whoami` is the one diagnostic that goes on and reports the registry problem."""
     from . import identities as X

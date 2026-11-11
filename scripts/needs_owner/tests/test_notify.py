@@ -380,7 +380,7 @@ class NoticeTests(unittest.TestCase):
         self.assertEqual((got["state"], got["notified_msg_id"], got["linkback"]), ("notified", 777, "ok"))
         self.assertEqual(got["topic"], "OWNER AFC-9 Plumber needs a key")
         sends = self.w.calls("simple-chat")
-        self.assertEqual([c["argv"][0] for c in sends], ["reply"], "no post:  the persona's topic is the notice")
+        self.assertEqual([c["argv"][0] for c in sends], ["reply"], "no post:  the bot's topic is the notice")
         self.assertEqual(sends[0]["argv"], ["reply", "--as", "CLAUDE", "--session", "needsown", "--json", "--id", "777", "--", "-"])
         self.assertIn("Filed in Linear as AFC-300", sends[0]["stdin"])
         self.assertIn("https://linear.app/test-fleet/issue/AFC-300", sends[0]["stdin"])

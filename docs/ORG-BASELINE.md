@@ -82,7 +82,7 @@ is an **identifier**, not a credential.  The Infisical data confirms the
 misclassification has spread: `Autorotate` and `ContactLogo` each store four DSN
 keys (`SENTRY_DSN`, `SENTRY_DSN_MACOS`, `SENTRY_DSN_WEB`, `VITE_SENTRY_DSN`) as
 Infisical *secrets*, and `shared-at-ct` holds two more as
-`PERSONAL_SITE_SENTRY_DSN`.
+`BOTL_SITE_SENTRY_DSN`.
 
 So the bootstrap dependency is not real.  It exists **only because DSNs were
 filed as secrets**.  Store a DSN as a GitHub **variable** and the problem
