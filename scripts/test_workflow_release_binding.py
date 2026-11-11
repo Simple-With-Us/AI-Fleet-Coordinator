@@ -34,7 +34,7 @@ class CiMainConcurrency(unittest.TestCase):
         cls.raw = open(os.path.join(WF, "ci.yml")).read()
 
     def _concurrency_block(self):
-        m = re.search(r"^concurrency:\n(?:  .*\n)+", self.raw, re.M)
+        m = re.search(r"^concurrency:\n(?:  .*\n)+", self.raw, re.MULTILINE)
         self.assertIsNotNone(m, "no top-level concurrency block")
         return m.group(0)
 
@@ -72,7 +72,7 @@ class DeployCheckoutBinding(unittest.TestCase):
         )
 
     def test_deploy_concurrency_stays_serial_without_cancel(self):
-        m = re.search(r"^concurrency:\n(?:  .*\n)+", self.raw, re.M)
+        m = re.search(r"^concurrency:\n(?:  .*\n)+", self.raw, re.MULTILINE)
         self.assertIsNotNone(m, "no top-level concurrency block")
         block = m.group(0)
         self.assertIn("group: alert-workers-production", block)
