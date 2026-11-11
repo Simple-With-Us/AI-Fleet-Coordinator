@@ -92,9 +92,9 @@ function protectedRanges(text) {
 /** `text` with every protected range (fences, code spans, math, mentions) masked out, length unchanged. */
 // Mask by UTF-16 index:  every range above is in UTF-16 units, and the mask
 // keeps the length, so match indexes line up with `text`.
-function maskedText(text) {
+function maskedText(text, ranges = protectedRanges(text)) {
   const masked = text.split("");
-  for (const [start, end] of protectedRanges(text)) {
+  for (const [start, end] of ranges) {
     for (let i = start; i < end; i++) {
       if (masked[i] !== "\n" && masked[i] !== "\r") masked[i] = MASK;
     }
@@ -151,7 +151,8 @@ const ABBREVIATIONS = new Set([
 const SINGLE_GAP_RE = /([.!?]["'”’)\]*_]*)( )(?=[A-Z0-9"“(*#\[])/g;
 // Python's `$` also matches before one trailing newline;  singleGaps strips it rather than emulate it.
 const WORD_BEFORE_RE = /([A-Za-z][A-Za-z.]*)$/;
-const ANY_SINGLE_GAP_RE = /[.!?]\S* /;
+// A linear pre-check (AFC-722 review):  the old /[.!?]\S* / rescanned a long space-free run from every dot.
+const mayHaveSentenceEnd = (text) => text.includes(" ") && /[.!?]/.test(text);
 
 // The same rules as the Apple Notes script's date rewrite.  A date is a token of its own:  a name or a query string
 // that merely contains one keeps it, and a dot after the date ends a sentence unless a word character follows.  On
@@ -264,7 +265,7 @@ function offsetMinutes(zone) {
 
 /** [text with each one-space sentence gap widened to U+00A0 plus a space, how many were widened]. */
 export function singleGaps(text) {
-  if (typeof text !== "string" || !ANY_SINGLE_GAP_RE.test(text)) return [text, 0];
+  if (typeof text !== "string" || !mayHaveSentenceEnd(text)) return [text, 0];
   const masked = maskedText(text);
   const pieces = [];
   let last = 0;
@@ -309,18 +310,125 @@ const HOUSE_CLOSERS = "(?:\\]\\([^()\\s]{1,255}\\)|[\"'”’)\\]*_~`])*";
 const HOUSE_NEXT = `(?=[A-Za-z0-9"“‘'(*#@\\[_~\`${MASK}])`;
 const HOUSE_GAP_RE = new RegExp(`([.!?]${HOUSE_CLOSERS})( +)${HOUSE_NEXT}`, "g");
 const HOUSE_ENTITY_RE = new RegExp(`([.!?]${HOUSE_CLOSERS})&nbsp; ?${HOUSE_NEXT}`, "g");
-const ANY_HOUSE_RE = /[.!?]\S* |&nbsp;/;
+
+// A list marker after a bullet, a task box or a heading mark (`- 1. First`, `- [ ] 1. Do it`, `## 1. Intro`) is
+// still a list marker or a heading number:  U+00A0 after it would end the list or change the heading's anchor.
+const HOUSE_LIST_MARKER_PREFIX_RE = /^[ \t>]*(?:[-+*][ \t]+(?:\[[ xX]\][ \t]+)?|#{1,6}[ \t]+)?\d{1,9}$/;
+
+// The house veto list adds month and company abbreviations to the shared one (`Jan. 5`, `Acme Inc. Corp.`).  "no"
+// and "pp" veto only before a digit (`No. 5`, `pp. 4`), since "I said no. Then" ends a sentence.  The shared
+// ABBREVIATIONS set stays as it is, because the Zulip rule must keep matching textfmt.py.
+const HOUSE_ABBREVIATIONS = new Set([
+  ...ABBREVIATIONS, "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec", "inc",
+  "corp", "co", "ltd", "llc", "bros",
+]);
+const HOUSE_BEFORE_DIGIT = new Set(["no", "pp", "nr"]);
+
+// Above this many UTF-16 units the text is sent as written:  a bound on Worker CPU whatever the input.
+export const HOUSE_GAP_MAX = 262144;
+
+// Indented code (four spaces or a tab, after a blank line, outside a list) and HTML code or comments are code as
+// much as a fence is:  a sentence end inside them is a command, a regex or a machine-read marker, never prose.
+const INDENTED_RE = /^(?: {4}|[ ]{0,3}\t)/;
+const LIST_ITEM_RE = /^[ \t>]*(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$)/;
+const BLANK_RE = /^[ \t\r]*$/;
+const HTML_CODE_TAGS = ["pre", "code", "kbd", "samp", "tt"];
+
+/** [start, end) ranges of indented code blocks inside the prose range [start, end). */
+function indentedCodeRanges(text, start, end, out) {
+  let pos = start;
+  let prevBlank = true;
+  let inList = false;
+  let codeStart = -1;
+  for (const line of text.slice(start, end).split("\n")) {
+    const blank = BLANK_RE.test(line);
+    const indented = !blank && INDENTED_RE.test(line);
+    if (codeStart >= 0 && !blank && !indented) {
+      out.push([codeStart, pos]);
+      codeStart = -1;
+    }
+    if (codeStart < 0 && !blank) {
+      if (indented && prevBlank && !inList) codeStart = pos;
+      else if (!indented) inList = LIST_ITEM_RE.test(line) || (inList && !prevBlank);
+    }
+    prevBlank = blank;
+    pos += line.length + 1;
+  }
+  if (codeStart >= 0) out.push([codeStart, end]);
+}
+
+/** [start, end) ranges of HTML comments and <pre>, <code>, <kbd>, <samp>, <tt> elements inside [start, end). */
+function htmlCodeRanges(text, start, end, out) {
+  const lower = text.slice(start, end).toLowerCase();
+  // indexOf from a moving start, so each scan is linear in the chunk.
+  for (let from = 0; ;) {
+    const open = lower.indexOf("<!--", from);
+    if (open < 0) break;
+    const close = lower.indexOf("-->", open + 4);
+    // An unclosed comment hides the rest of the text on GitHub, so it protects the rest.
+    out.push([start + open, close < 0 ? end : start + close + 3]);
+    if (close < 0) break;
+    from = close + 3;
+  }
+  for (const tag of HTML_CODE_TAGS) {
+    for (let from = 0; ;) {
+      const open = lower.indexOf(`<${tag}`, from);
+      if (open < 0) break;
+      const next = lower[open + tag.length + 1];
+      if (next !== ">" && next !== "/" && !/\s/.test(next ?? "")) {
+        from = open + 1;
+        continue;
+      }
+      const close = lower.indexOf(`</${tag}>`, open);
+      if (close < 0) break;
+      out.push([start + open, start + close + tag.length + 3]);
+      from = close + tag.length + 3;
+    }
+  }
+}
+
+/** protectedRanges plus indented code and HTML code and comments:  what houseGap never rewrites. */
+function houseProtectedRanges(text) {
+  const ranges = protectedRanges(text);
+  for (const [start, end] of splitFences(text)[1]) {
+    indentedCodeRanges(text, start, end, ranges);
+    htmlCodeRanges(text, start, end, ranges);
+  }
+  return ranges;
+}
+
+/** Whether houseGap has anything to do:  a linear check, never a backtracking regex (AFC-722 review). */
+function mayNeedHouseGap(text) {
+  return text.includes("&nbsp;") || mayHaveSentenceEnd(text);
+}
+
+/** A lookup of the start of the line holding `index`, linear over ascending indexes. */
+function lineStarts(source) {
+  let scanned = 0;
+  let start = 0;
+  return (index) => {
+    if (index < scanned) return source.lastIndexOf("\n", index - 1) + 1;
+    for (let i = scanned; i < index; i++) if (source.charCodeAt(i) === 10) start = i + 1;
+    scanned = index;
+    return start;
+  };
+}
 
 /** `text` with every sentence gap written as U+00A0 plus one space (the house rule, AFC-722). */
 export function houseGap(text) {
-  if (typeof text !== "string" || !ANY_HOUSE_RE.test(text)) return text;
+  if (typeof text !== "string" || text.length > HOUSE_GAP_MAX || !mayNeedHouseGap(text)) return text;
   // The entity first, on its own pass:  it is not a space run, and it shortens the text, so the second pass
   // works on fresh indexes.
   let out = rewriteGaps(text, HOUSE_ENTITY_RE, () => true);
+  let lineStart = null;
   out = rewriteGaps(out, HOUSE_GAP_RE, (masked, match, source) => {
+    lineStart ??= lineStarts(source);
     // Two or more spaces are the author's own gap;  only a single space is a guess that the abbreviation and
     // initial lists can veto.
     if (match[1].startsWith(".") && match[2].length === 1) {
+      const nextChar = masked[match.index + match[0].length] ?? "";
+      // An ellipsis before a lowercase word is a pause, not a sentence end (`Hmm... maybe`).
+      if (masked[match.index - 1] === "." && /\p{Ll}/u.test(nextChar)) return false;
       const window = masked.slice(Math.max(0, match.index - 40), match.index);
       const before = WORD_BEFORE_RE.exec(window);
       const word = before ? before[1].toLowerCase().replace(/\.+$/, "") : "";
@@ -328,11 +436,12 @@ export function houseGap(text) {
       // initial:  only a word that stands on its own is.
       const lead = before ? window[window.length - before[1].length - 1] : undefined;
       const standalone = lead === undefined || !/[\p{L}\p{N}_/\\:=@#%&-]/u.test(lead);
-      if (before && standalone && (ABBREVIATIONS.has(word) || word.length === 1 || word.includes("."))) return false;
+      if (before && standalone && (HOUSE_ABBREVIATIONS.has(word) || word.length === 1 || word.includes("."))) return false;
+      if (before && standalone && HOUSE_BEFORE_DIGIT.has(word) && /[0-9]/.test(nextChar)) return false;
     }
     if (match[1] === ".") {
-      const lineStart = source.lastIndexOf("\n", match.index - 1) + 1;
-      if (LIST_MARKER_PREFIX_RE.test(source.slice(lineStart, match.index))) return false; // `1. Item` stays a list
+      const start = lineStart(match.index);
+      if (HOUSE_LIST_MARKER_PREFIX_RE.test(source.slice(start, match.index))) return false; // `1. Item` stays a list
     }
     return true;
   });
@@ -341,7 +450,7 @@ export function houseGap(text) {
 
 /** Each unprotected `re` match in `text` whose `keep` says so becomes its group 1 plus GAP. */
 function rewriteGaps(text, re, keep) {
-  const masked = maskedText(text);
+  const masked = maskedText(text, houseProtectedRanges(text));
   const pieces = [];
   let last = 0;
   re.lastIndex = 0;

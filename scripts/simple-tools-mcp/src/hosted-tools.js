@@ -138,7 +138,7 @@ import {
   STATUS_WORDS,
 } from "./linear.js";
 import { GAP, fixOutbound } from "./textfmt.js";
-import { GITHUB_GAP_FIELDS, SENTENCE_GAP_ARG, gapGitHubArgs, githubToolName, outboundGap, runWithGap, withGapOption } from "./outbound-gap.js";
+import { GITHUB_GAP_BYTE_CAP, GITHUB_GAP_FIELDS, SENTENCE_GAP_ARG, capNotice, gapGitHubArgs, githubToolName, noteGapSkipped, outboundGap, runWithGap, withGapOption } from "./outbound-gap.js";
 import { ZULIP_PUBLIC_TOOLS, ZULIP_FULL_PUBLIC_TOOLS, ZULIP_FULL_NAMES, ZULIP_LEGACY_NAMES } from "./zulip-tool-specs.js";
 import { ZULIP_FULL_METHODS, FULL_WRITE_KIND } from "./zulip-full.js";
 import { EAVESDROPPER_TOOLS, EAVESDROPPER_READ_TOOLS, EAVESDROPPER_METHODS } from "./eavesdropper.js";
@@ -580,13 +580,18 @@ export class HostedTools {
         const { [SENTENCE_GAP_ARG]: _choice, ...rest } = preparedArgs;
         preparedArgs = rest;
       }
+      const gapNotices = [];
       result = await runWithGap(gapChoice, () => Object.hasOwn(FLEETLINK_BY_NAME, publicName)
         ? this.fleetlinkTool(publicName, preparedArgs, audit)
         : Object.hasOwn(LINEAR_MCP_BY_NAME, publicName)
         ? callLinearMcp(this, publicName, preparedArgs, audit)
         : Object.hasOwn(LINEAR_NAMED_BY_NAME, publicName)
           ? callNamedLinear(this, publicName, preparedArgs, audit)
-          : this[`tool_${legacyZulipName}`](preparedArgs, audit));
+          : this[`tool_${legacyZulipName}`](preparedArgs, audit), gapNotices);
+      // AFC-722 review:  a gap the server could not write is reported, never dropped silently.
+      if (gapNotices.length && Array.isArray(result?.content)) {
+        result = { ...result, content: [...result.content, ...gapNotices.map((text) => ({ type: "text", text }))] };
+      }
       audit.outcome = "ok";
     } catch (error) {
       const mapped = mapException(error, { write: HOSTED_WRITE_TOOLS.has(publicName) });
@@ -1655,10 +1660,10 @@ export class HostedTools {
     return okResult(JSON.stringify(body), body);
   }
 
-  async tool_gr_open_pr(args) { return this.grCall("open_pr", gapGitHubArgs("open_pr", args)); }
-  async tool_gr_edit_pr(args) { return this.grCall("edit_pr", gapGitHubArgs("edit_pr", args)); }
-  async tool_gr_reply_thread(args) { return this.grCall("reply_thread", gapGitHubArgs("reply_thread", args)); }
-  async tool_gr_comment_pr(args) { return this.grCall("comment_pr", gapGitHubArgs("comment_pr", args)); }
+  async tool_gr_open_pr(args) { return this.grCall("open_pr", gapGitHubArgs("open_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
+  async tool_gr_edit_pr(args) { return this.grCall("edit_pr", gapGitHubArgs("edit_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
+  async tool_gr_reply_thread(args) { return this.grCall("reply_thread", gapGitHubArgs("reply_thread", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
+  async tool_gr_comment_pr(args) { return this.grCall("comment_pr", gapGitHubArgs("comment_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
   async tool_gr_merge_pr(args) { return this.grCall("merge_pr", args); }
   async tool_gr_workflow_dispatch(args) {
     const parsed = parseArgs(GR_DISPATCH_ARGS, args);
@@ -2469,9 +2474,18 @@ for (const action of WF_V1_ACTIONS) {
       throw new ToolError("not_configured", "The git-relay workflow tools are not enabled on this server.  The other tools still work.");
     }
     // AFC-722:  the gap is written before the relay's own checks, so they see the bytes that will land.  A
-    // gapped body that no longer fits a byte cap (U+00A0 is two UTF-8 bytes) is sent as written instead.
+    // gapped body that no longer fits a byte cap (U+00A0 is two UTF-8 bytes) is sent as written instead, and the
+    // result says so.
     const gapped = gapGitHubArgs(action, args);
-    const parsedArgs = parseWfV1Args(action, gapped) ?? (gapped === args ? null : parseWfV1Args(action, args));
+    let parsedArgs = parseWfV1Args(action, gapped);
+    if (parsedArgs === null && gapped !== args) {
+      parsedArgs = parseWfV1Args(action, args);
+      if (parsedArgs !== null) {
+        for (const field of GITHUB_GAP_FIELDS[action] ?? []) {
+          if (gapped[field] !== args[field]) noteGapSkipped(capNotice(`gr_${action}`, field));
+        }
+      }
+    }
     if (parsedArgs === null) throw new ToolError("invalid_argument", `Invalid arguments for gr_${action}.`);
     return this.grCall(action, parsedArgs, {workflow:true});
   };

@@ -514,3 +514,24 @@ test("AFC-722:  gr_* prose reaches git-relay with the house sentence gap, and se
   assert.ok(!already.isError);
   assert.equal(sent.at(-1).body.body, gapped, "text that already has the gap is unchanged");
 });
+
+test("AFC-722 review:  a non-workflow body pushed past the relay cap by the gap is sent as typed, and the result says so", async () => {
+  const sent = [];
+  const tools = grHarness(
+    new GrRelayClient({
+      baseUrl: "https://git-relay.example.test",
+      accessId: "test-access-id", accessSecret: "test-access-secret", bearer: "sbt_jet-chat_testbearer",
+      fetch: async (url, init) => {
+        sent.push(JSON.parse(init.body));
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    }),
+  );
+  const body = "Word. Next ".repeat(2978);
+  const res = await tools.call("gr_comment_pr", { repo: "a/b", number: 1, body });
+  assert.ok(!res.isError, res.content?.[0]?.text);
+  assert.equal(sent.at(-1).body, body);
+  assert.ok(res.content.some((item) => /sent as typed, without the U\+00A0 gap/.test(item.text)), "the notice is in the result");
+  const small = await tools.call("gr_comment_pr", { repo: "a/b", number: 1, body: "One. Two." });
+  assert.equal(small.content.length, 1, "no notice when the gap was written");
+});

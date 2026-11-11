@@ -39,13 +39,32 @@ export const GITHUB_GAP_FIELDS = Object.freeze({
   wf_release_create: ["body"],
   wf_release_update: ["body"],
   wf_merge_guarded: ["commit_message"],
+  // Commit messages, check-run summaries and milestone descriptions are prose too (AFC-722 review).  Label,
+  // deployment and commit-status descriptions are not listed:  they are short machine-facing metadata under a
+  // 100- or 140-byte cap, and titles, names, branches and file content are never touched.
+  wf_git_commit_create: ["message"],
+  wf_file_put: ["message"],
+  wf_files_put: ["message"],
+  wf_file_patch: ["message"],
+  wf_file_rename: ["message"],
+  wf_file_delete: ["message"],
+  wf_check_create: ["summary"],
+  wf_check_update: ["summary"],
+  wf_milestone_create: ["description"],
+  wf_milestone_update: ["description"],
 });
+
+// The non-workflow relay verbs (gr_open_pr, gr_edit_pr, gr_comment_pr, gr_reply_thread) cap a body at 32 KiB.  Each
+// gap the server writes adds a character and two UTF-8 bytes, so a body that fit as typed and no longer fits once
+// gapped is sent as typed, and the result says so.
+export const GITHUB_GAP_BYTE_CAP = 32768;
+const utf8Bytes = (text) => new TextEncoder().encode(text).length;
 
 const OPTION_SCHEMA = Object.freeze({
   type: "boolean",
   default: true,
   description:
-    "The server writes each sentence gap as U+00A0 plus a space (the house rule), since a typed U+00A0 arrives as a plain space.  Pass false to send the text byte for byte.",
+    "The server writes each sentence gap as U+00A0 plus a space (the house rule), since a typed U+00A0 arrives as a plain space.  Fenced, indented and inline code, HTML <pre>/<code>/<kbd>/<samp> and comments are left alone;  fence pasted data (JSON, diffs, commands) or pass false to send the text byte for byte.",
 });
 
 /** The public tool name for a GitHub action. */
@@ -60,10 +79,19 @@ export function withGapOption(tool) {
 
 const storage = new AsyncLocalStorage();
 
-/** Run `fn` with the call's gap choice in scope. */
-export function runWithGap(enabled, fn) {
-  return storage.run({ enabled: enabled !== false }, fn);
+/** Run `fn` with the call's gap choice in scope;  `notices` collects what the caller must be told. */
+export function runWithGap(enabled, fn, notices = []) {
+  return storage.run({ enabled: enabled !== false, notices }, fn);
 }
+
+/** Tell the caller (through the tool result) that the gap was not written. */
+export function noteGapSkipped(text) {
+  storage.getStore()?.notices.push(text);
+}
+
+/** The notice for a field sent as typed because the gapped text no longer fit. */
+export const capNotice = (tool, field) =>
+  `sentence_gap: ${tool} ${field} was sent as typed, without the U+00A0 gap, because the gapped text no longer fit the relay's size cap.`;
 
 /** Whether the current call wants the gap written (true outside any call, as before). */
 export function gapEnabled() {
@@ -75,14 +103,21 @@ export function outboundGap(text) {
   return gapEnabled() ? houseGap(text) : text;
 }
 
-/** A copy of `args` with the house gap written into `action`'s text fields (unless the call opted out). */
-export function gapGitHubArgs(action, args) {
+/**
+ * A copy of `args` with the house gap written into `action`'s text fields (unless the call opted out).  With
+ * `byteCap`, a field that fit the cap as typed and would not once gapped keeps its typed text, with a notice.
+ */
+export function gapGitHubArgs(action, args, { byteCap = null } = {}) {
   const fields = GITHUB_GAP_FIELDS[action];
   if (!fields || !args || typeof args !== "object" || !gapEnabled()) return args;
   let out = args;
   for (const field of fields) {
     if (typeof args[field] !== "string") continue;
     const gapped = houseGap(args[field]);
+    if (byteCap !== null && gapped !== args[field] && utf8Bytes(gapped) > byteCap && utf8Bytes(args[field]) <= byteCap) {
+      noteGapSkipped(capNotice(`gr_${action}`, field));
+      continue;
+    }
     if (gapped !== args[field]) {
       if (out === args) out = { ...args };
       out[field] = gapped;

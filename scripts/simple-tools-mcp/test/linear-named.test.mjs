@@ -194,3 +194,11 @@ test('AFC-722:  named Linear writes put the house gap in body and description, u
   assert.match(requests.at(-1).variables.input.body, /One\. Two\.$/);
   assert.ok(!JSON.stringify(requests.at(-1).variables).includes('sentence_gap'));
 });
+
+test('AFC-722 review:  a Linear document content gets the house gap and no seat tag line', async () => {
+  const { tools, requests } = fixture();
+  const result = await tools.call('linear_create_document', { input: { title: 'Log. One', content: 'Relay failed. gh was used.' }, idempotency_key: 'gap-doc' });
+  assert.notEqual(result.isError, true, result.content?.[0]?.text);
+  assert.equal(requests.at(-1).variables.input.content, 'Relay failed.  gh was used.');
+  assert.equal(requests.at(-1).variables.input.title, 'Log. One', 'the title is untouched');
+});
