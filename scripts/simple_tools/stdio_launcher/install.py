@@ -127,7 +127,14 @@ def main(argv=None, out=None):
     print("apply: writing files" if args.apply else "dry run: nothing is written (pass --apply)", file=out)
     transport = os.path.join(args.dest, TRANSPORT_NAME)
     with open(args.transport_source, encoding="utf-8") as source:
-        write_private(transport, source.read(), stamp, args.apply, out)
+        transport_text = source.read()
+    if os.path.lexists(transport):
+        print(
+            f"shared     {transport} is execed by every seat's launcher in {args.dest}, "
+            "so a change to it applies to all of them, not only --seat",
+            file=out,
+        )
+    write_private(transport, transport_text, stamp, args.apply, out)
     for seat in seats:
         text = render(
             seat, os.path.join(args.secrets_dir, seat.lower()), args.python, transport, args.home

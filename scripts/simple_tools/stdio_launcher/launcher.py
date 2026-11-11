@@ -13,6 +13,9 @@ Seat rules (FLEET-PROTOCOL Identity Rules):
   * With no AGENT_LAUNCHER, a shell-exported AGENT_SEAT or AGENT_TAG that differs
     from this launcher's seat is ignored:  the bearer file alone decides identity,
     and one stderr line says what was ignored.
+  * An AGENT_LAUNCH_SEAT for another seat refuses even with no AGENT_LAUNCHER.
+    Only launchers write that variable, so a lone one means a launcher that lost
+    AGENT_LAUNCHER, and refusing by name is safer than guessing which seat it meant.
 
 A refusal never exits silently.  The launcher stays up and answers every request
 that carries an id, initialize included, with a JSON-RPC error naming the cause,

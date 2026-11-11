@@ -237,6 +237,12 @@ class Installer(unittest.TestCase):
         backups = [n for n in os.listdir(self.dest) if n.startswith("claude-simple-tools.bak-")]
         self.assertEqual(len(backups), 1)
 
+    def test_reinstall_says_the_transport_is_shared_by_every_seat(self):
+        install.main(self.args + ["--apply"], out=io.StringIO())
+        out = io.StringIO()
+        install.main(self.args, out=out)
+        self.assertIn("is execed by every seat's launcher", out.getvalue())
+
     def test_refuses_to_replace_a_symlink(self):
         os.makedirs(self.dest)
         os.symlink("/dev/null", os.path.join(self.dest, "claude-simple-tools"))
