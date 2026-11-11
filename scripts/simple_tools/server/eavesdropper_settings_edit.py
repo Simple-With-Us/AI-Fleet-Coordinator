@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Change allowlisted settings in the server listener's live config, and nothing else.
+"""Change allowlisted settings in the Eavesdropper's live config, and nothing else.
 
-The listener (the Eavesdropper container) reads `/data/listener.toml`.  Until now only a hand
+The Eavesdropper (the server's `eavesdropper` container) reads `/data/listener.toml`.  Until now only a hand
 edit could change it.  This module is the one writer a tool may use:
 
     get     the current value of every allowlisted setting (never the whole file)
     plan    what a set of changes would do:  the settings that change, the changed lines and the
-            listener's own verdict on the result.  Writes nothing beside the file.
+            Eavesdropper's own verdict on the result.  Writes nothing beside the file.
     apply   the same plan, then:  back up, replace atomically, reload, read back, and put the
-            old bytes back if the listener refuses the reload.
+            old bytes back if the Eavesdropper refuses the reload.
 
 What it promises:
 
   * Only a key the allowlist names can change, to a value of the type and range the allowlist
-    gives.  The allowlist is `scripts/fleet-ops-listener-settings.json`;  `fleet-ops-control.py`
+    gives.  The allowlist is `scripts/fleet-ops-eavesdropper-settings.json`;  `fleet-ops-control.py`
     reads it and passes it in with the request.
   * Some keys can never be allowlisted, whatever the allowlist says (HARD_DENY below):  a seat's
     `instance`, `creds`, `bot`, bearer and environment-variable names, the `[daemon]` instance and
@@ -31,9 +31,9 @@ What it promises:
     A candidate it would not take is deleted and the live file is never opened for writing.
   * The write is a temporary file in the same folder, fsync, then one rename.  The old file is
     first copied to `<file>.bak-settings-<UTC stamp>` (mode 600).
-  * After the rename the listener is told to reload (SIGHUP) and its status is read back.  A
+  * After the rename the Eavesdropper is told to reload (SIGHUP) and its status is read back.  A
     refused reload, or a reload that cannot be sent, puts the old bytes back the same atomic way
-    and reloads again.  The file on disk and the config the listener runs then agree.
+    and reloads again.  The file on disk and the config the Eavesdropper runs then agree.
   * One edit at a time:  an exclusive lock on the file's folder, refused at once when held.
   * `apply` is off unless the allowlist says `"applyEnabled": true`.
 
@@ -65,7 +65,7 @@ import time
 import tomllib
 from pathlib import Path
 
-TOOL = "listener-settings"
+TOOL = "eavesdropper-settings"
 SCHEMA_VERSION = 1
 DEFAULT_LIVE = "/data/listener.toml"
 ENV_CONFIG = "SIMPLE_TOOLS_CONFIG"
@@ -162,7 +162,7 @@ class Refusal(Exception):
         super().__init__(detail)
         self.code = code
         self.detail = detail
-        # The listener's verdict, when that is what refused it.
+        # The Eavesdropper's verdict, when that is what refused it.
         self.check = check
 
 
@@ -309,12 +309,12 @@ def split_key(key):
 
 
 def env_code(seat):
-    """GB-COMPILER -> GB_COMPILER, as the listener's config derives it."""
+    """GB-COMPILER -> GB_COMPILER, as the Eavesdropper's config derives it."""
     return re.sub(r"[^A-Z0-9]", "_", seat.upper())
 
 
 def seat_env_names(seat, sub):
-    """The variable names a routine sub-key may take for this seat:  the listener's default and the
+    """The variable names a routine sub-key may take for this seat:  the Eavesdropper's default and the
     webhook name Infisical holds for a Grok or BotFleet bot."""
     code = env_code(seat)
     if sub == "url_env":
@@ -948,7 +948,7 @@ def _cli(scripts_dir, args, env, timeout):
 
 
 def daemon_check(candidate, live_path, scripts_dir=None, environ=None):
-    """The listener's own verdict on a candidate:  `{"ok", "problems", "warnings"}`.
+    """The Eavesdropper's own verdict on a candidate:  `{"ok", "problems", "warnings"}`.
 
     This is `simple-chat daemon check-config --file CANDIDATE --json` with the live file as the
     current one.  `ok` is the daemon's `ok`.  `problems` are its parse error, partition refusals
@@ -987,11 +987,11 @@ def _status_path(environ=None):
 
 
 def daemon_reload(live_path, scripts_dir=None, environ=None, clock=time.time, sleep=time.sleep):
-    """Tell the listener to re-read its config and read back what it made of it.
+    """Tell the Eavesdropper to re-read its config and read back what it made of it.
 
     `{"ok", "confirmed", "code"}`.  `ok` False with `reload_not_sent` when the SIGHUP could not be
-    sent (no listener running), or `reload_refused` when the listener's status says it refused the
-    file.  `confirmed` is True once status.json shows a reload at or after the signal with nothing
+    sent (no Eavesdropper running), or `reload_refused` when the Eavesdropper's status says it refused the
+    file.  `confirmed` is True once status.json shows a reload no earlier than this call with nothing
     refused;  a status that does not move inside the window is ok but not confirmed."""
     started = clock()
     status, _ = _cli(
@@ -1012,7 +1012,9 @@ def daemon_reload(live_path, scripts_dir=None, environ=None, clock=time.time, sl
             document = None
         if isinstance(document, dict):
             at = document.get("reload_at")
-            if isinstance(at, (int, float)) and not isinstance(at, bool) and at >= started - 1:
+            # Only a reload that ran after this call began counts:  an older `reload_at`, however
+            # recent, is some other reload and says nothing about this file.
+            if isinstance(at, (int, float)) and not isinstance(at, bool) and at >= started:
                 if document.get("reload_refused"):
                     return {"ok": False, "confirmed": True, "code": "reload_refused"}
                 return {"ok": True, "confirmed": True, "code": "reloaded"}
@@ -1025,7 +1027,7 @@ def daemon_reload(live_path, scripts_dir=None, environ=None, clock=time.time, sl
 
 
 def _is_daemon_file(path, environ=None):
-    """True when `path` is the file the listener on this machine reads (SIMPLE_TOOLS_CONFIG)."""
+    """True when `path` is the file the Eavesdropper on this machine reads (SIMPLE_TOOLS_CONFIG)."""
     env = os.environ if environ is None else environ
     named = env.get(ENV_CONFIG)
     if not named:
@@ -1091,7 +1093,7 @@ def plan(path, allowlist, requested, checker=None, remove=None):
         answer["result"] = "unchanged"
         return answer
     checker = checker or daemon_check
-    with tempfile.TemporaryDirectory(prefix="listener-settings-") as scratch:
+    with tempfile.TemporaryDirectory(prefix="eavesdropper-settings-") as scratch:
         candidate = os.path.join(scratch, "candidate.toml")
         with open(candidate, "w", encoding="utf-8", newline="") as handle:
             handle.write(new_text)
@@ -1113,7 +1115,7 @@ def apply(
     """Carry the plan out.  See the module text for the order of steps and what each failure leaves.
 
     `expect` is a plan's `planSHA256`:  when given, the plan built here must hash to it.  `reload`
-    is "auto" (reload only when `path` is the listener's own file), "always" or "never"."""
+    is "auto" (reload only when `path` is the Eavesdropper's own file), "always" or "never"."""
     if not allowlist["applyEnabled"]:
         raise Refusal(
             "apply_disabled",
@@ -1152,7 +1154,7 @@ def apply(
             if not check.get("ok"):
                 raise Refusal(
                     "check_failed",
-                    "the listener would not take the result;  nothing was written",
+                    "the Eavesdropper would not take the result;  nothing was written",
                     check=check,
                 )
             stamp = (now or _dt.datetime.now(_dt.timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
@@ -1205,8 +1207,8 @@ def apply(
         if outcome.get("ok"):
             answer["result"] = "applied"
             return answer
-        # The listener did not take it (or could not be told).  The old bytes go back the same
-        # atomic way, and the listener is told again so what it runs is what is on disk.
+        # The Eavesdropper did not take it (or could not be told).  The old bytes go back the same
+        # atomic way, and the Eavesdropper is told again so what it runs is what is on disk.
         _replace(path, data, info)
         try:
             reloader(path)
@@ -1214,7 +1216,7 @@ def apply(
             pass
         raise StepFailed(
             str(outcome.get("code") or "reload_failed"),
-            "the listener did not take the reload;  the old file is back",
+            "the Eavesdropper did not take the reload;  the old file is back",
             True,
         )
 
@@ -1228,7 +1230,7 @@ def run_request(request, path=None, checker=None, reloader=None, reload="auto"):
         {"action": "get" | "plan" | "apply", "allowlist": {...}, "set": {key: value},
          "remove": ["table.key.subkey", ...], "expectPlanSHA256": "..."}
 
-    `path` is the file to act on;  by default the listener's own (SIMPLE_TOOLS_CONFIG, else
+    `path` is the file to act on;  by default the Eavesdropper's own (SIMPLE_TOOLS_CONFIG, else
     /data/listener.toml).  A request never names the file."""
     live = Path(path or os.environ.get(ENV_CONFIG) or DEFAULT_LIVE)
     action = request.get("action") if isinstance(request, dict) else None

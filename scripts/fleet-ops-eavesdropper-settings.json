@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "notes": [
-    "The one allowlist of scripts/simple_tools/server/listener_settings_edit.py: the settings of the server listener's live config (/data/listener.toml) a tool may change, and the type and range each may take.",
+    "The one allowlist of scripts/simple_tools/server/eavesdropper_settings_edit.py: the settings of the Eavesdropper's live config (/data/listener.toml) a tool may change, and the type and range each may take.",
     "applyEnabled is false until the owner turns it on. While it is false, get and plan work and every apply is refused (apply_disabled).",
     "A seat's instance, creds, bot, bearer and environment-variable names, the [daemon] instance and owner pins, and any key that reads as a secret, a token, a path or a URL can never be listed here: the editor refuses the whole file if one is."
   ],

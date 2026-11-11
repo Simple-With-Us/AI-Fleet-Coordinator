@@ -1,10 +1,10 @@
-"""The server listener settings editor (AFC-710):  `server/listener_settings_edit.py`, its allowlist
-`scripts/fleet-ops-listener-settings.json`, and the `listener-settings` verb of `fleet-ops-control.py`.
+"""The server eavesdropper settings editor (AFC-710):  `server/eavesdropper_settings_edit.py`, its allowlist
+`scripts/fleet-ops-eavesdropper-settings.json`, and the `eavesdropper-settings` verb of `fleet-ops-control.py`.
 
 What these hold:  a key that is not allowlisted is refused, a key that reads as a secret or is a pin
 is refused whatever the allowlist says, a plan writes nothing and equals what an apply then does, a
-candidate the listener's check-config would not take leaves the file byte for byte, and a refused
-reload puts the old bytes back.  Fakes only:  no docker, no listener, no network.
+candidate the Eavesdropper's check-config would not take leaves the file byte for byte, and a refused
+reload puts the old bytes back.  Fakes only:  no docker, no Eavesdropper, no network.
 """
 
 from __future__ import annotations
@@ -21,10 +21,10 @@ import tomllib
 import unittest
 from pathlib import Path
 
-from simple_tools.server import listener_settings_edit as M
+from simple_tools.server import eavesdropper_settings_edit as M
 
 SCRIPTS = Path(__file__).resolve().parent.parent.parent
-ALLOWLIST_PATH = SCRIPTS / "fleet-ops-listener-settings.json"
+ALLOWLIST_PATH = SCRIPTS / "fleet-ops-eavesdropper-settings.json"
 SAMPLE = SCRIPTS / "simple_tools" / "server" / "listener.toml"
 
 FIXTURE = """# a comment at the top that must stay
@@ -69,12 +69,27 @@ def shipped_allowlist(apply_enabled: bool = True) -> dict:
     return doc
 
 
+def mixed_run(length: int) -> str:
+    """An unbroken run of upper case, lower case and digits, `length` long.  Built here so that no
+    key-shaped literal is committed:  a scanner should never learn to pass one in this file."""
+    return ("aB3dE5gH7jK9mN1pQ3sT5vW7yZ9" * 8)[:length]
+
+
+def hex_run(length: int) -> str:
+    return ("0123456789abcdef" * 8)[:length]
+
+
+def key_shaped() -> list[str]:
+    """One value for each key prefix the editor knows, plus a bare mixed run."""
+    return [prefix + mixed_run(36) for prefix in M._SECRET_PREFIXES] + [mixed_run(32)]
+
+
 def ok_check(candidate, live):
     return {"ok": True, "problems": [], "warnings": 0}
 
 
 def bad_check(candidate, live):
-    return {"ok": False, "problems": ["seat.JET: something the listener would not take"], "warnings": 0}
+    return {"ok": False, "problems": ["seat.JET: something the Eavesdropper would not take"], "warnings": 0}
 
 
 class Case(unittest.TestCase):
@@ -249,23 +264,14 @@ class RefusalTests(Case):
 
     def test_a_secret_looking_value_is_refused(self) -> None:
         routine = {"url_env": "JET_ROUTINE_URL", "key_env": "JET_ROUTINE_KEY"}
-        for header in (
-            "sk-abcdefghijklmnopqrstuvwxyz0123456789",
-            "crsr_0123456789abcdefABCDEF0123456789",
-            "lin_api_abcdefghij0123456789ABCDEFGHIJ",
-            "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
-            "aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bD1fH",
-            "https://example.com/hook",
-            "/data/secret.key",
-            "~/token",
-        ):
+        for header in key_shaped() + ["https://example.com/hook", "/data/secret.key", "~/token"]:
             with self.subTest(header=header):
                 self.refused({"seat.JET.routine": dict(routine, header=header)}, "secret_like_value")
         self.refused(
             {"daemon.presence_topics": [["alerts", "https://example.com/x"]]}, "secret_like_value"
         )
         self.refused(
-            {"daemon.presence_topics": [["alerts", "aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bD1fH"]]},
+            {"daemon.presence_topics": [["alerts", mixed_run(32)]]},
             "secret_like_value",
         )
 
@@ -275,17 +281,13 @@ class RefusalTests(Case):
             with self.subTest(header=header):
                 answer, status = self.run_request("plan", {"seat.JET.routine": dict(routine, header=header)})
                 self.assertEqual((status, answer["result"]), (0, "planned"), answer)
-        for topic in ("daily-standup-2026-11-11", "release_2026.11.11_candidate_3", "AFC-710 listener settings editor"):
+        for topic in ("daily-standup-2026-11-11", "release_2026.11.11_candidate_3", "AFC-710 eavesdropper settings editor"):
             with self.subTest(topic=topic):
                 answer, status = self.run_request(
                     "plan", {"daemon.presence_topics": [["work-in-progress", topic]]}
                 )
                 self.assertEqual((status, answer["result"]), (0, "planned"), answer)
-        for secret in (
-            "0123456789abcdef0123456789abcdef01234567",
-            "prefix-0123456789abcdefghij-suffix",
-            "Zm9vYmFyMTIzNDU2Nzg5MGFiY2RlZmdoaWprbG1ub3A",
-        ):
+        for secret in (hex_run(40), "prefix-" + mixed_run(20).lower() + "-suffix", mixed_run(43)):
             with self.subTest(secret=secret):
                 self.assertTrue(M._secret_like(secret))
         for name in ("work-in-progress", "roll call", "X-Simple-Tools-Signature", "ZULIP_ALERT_GB_HOUSEKEEPER_ENDPOINT", "*"):
@@ -649,7 +651,7 @@ class GetAndPlanTests(Case):
         self.assertNotIn("owner_user_id", "\n".join(answer["diff"]))
         self.assert_untouched()
 
-    def test_plan_reports_a_result_the_listener_would_not_take(self) -> None:
+    def test_plan_reports_a_result_the_eavesdropper_would_not_take(self) -> None:
         answer, status = self.run_request("plan", {"seat.ZC.enabled": False}, checker=bad_check)
         self.assertEqual(status, 0)
         self.assertIs(answer["check"]["ok"], False)
@@ -718,7 +720,7 @@ class ApplyTests(Case):
         self.assertEqual((status, answer["result"], answer["errorCode"]), (2, "refused", "check_failed"))
         self.assertEqual(seen["live_during"], self.before)
         self.assertFalse(os.path.exists(seen["candidate"]))
-        self.assertEqual(answer["check"]["problems"], ["seat.JET: something the listener would not take"])
+        self.assertEqual(answer["check"]["problems"], ["seat.JET: something the Eavesdropper would not take"])
         self.assertNotIn("backup", answer)
         self.assert_untouched()
 
@@ -753,7 +755,7 @@ class ApplyTests(Case):
 
     def test_a_reload_that_raises_rolls_back_too(self) -> None:
         def reloader(path):
-            raise RuntimeError("no listener")
+            raise RuntimeError("no Eavesdropper")
 
         answer, status = self.run_request(
             "apply", {"seat.ZC.enabled": False}, reloader=reloader, reload="always"
@@ -772,7 +774,7 @@ class ApplyTests(Case):
         self.assertEqual(answer["reload"], {"ok": True, "confirmed": True, "code": "reloaded"})
         self.assertNotEqual(self.live.read_bytes(), self.before)
 
-    def test_reload_auto_only_reloads_the_listeners_own_file(self) -> None:
+    def test_reload_auto_only_reloads_the_eavesdroppers_own_file(self) -> None:
         called = []
         old = os.environ.get(M.ENV_CONFIG)
         self.addCleanup(
@@ -868,9 +870,9 @@ class DaemonCheckTests(Case):
         self.assertIs(answer["check"]["ok"], True)
         self.assert_untouched()
 
-    def test_the_real_check_refuses_a_change_the_listener_would_not_take(self) -> None:
+    def test_the_real_check_refuses_a_change_the_eavesdropper_would_not_take(self) -> None:
         # An http wake with no routine:  inside every allowlist range, and still a config the
-        # listener reports an error for.  Only its own check knows that.
+        # Eavesdropper reports an error for.  Only its own check knows that.
         answer, status = M.run_request(
             self.request("apply", {"seat.CLAUDE.wake": "http", "seat.CLAUDE.budget": {"usd_per_day": 0.5}}),
             path=self.live,
@@ -888,11 +890,12 @@ class DaemonCheckTests(Case):
         (state / "listener").mkdir(parents=True)
         status_file = state / "listener" / "status.json"
         env = {M.ENV_STATE_DIR: str(state)}
-        clock = iter(range(1000, 2000))
         real_cli = M._cli
         self.addCleanup(setattr, M, "_cli", real_cli)
 
         def reload_with(document, exit_status=0):
+            # The call begins at 1000.0 and each later look at the clock is one second on.
+            clock = iter([1000.0 + n for n in range(200)])
             M._cli = lambda *a, **k: (exit_status, "")
             if document is None:
                 status_file.unlink(missing_ok=True)
@@ -900,6 +903,18 @@ class DaemonCheckTests(Case):
                 status_file.write_text(json.dumps(document))
             return M.daemon_reload(self.live, environ=env, clock=lambda: next(clock), sleep=lambda s: None)
 
+        self.assertEqual(reload_with({"reload_at": 1000.0, "reload_refused": []})["code"], "reloaded")
+        # A reload from a moment BEFORE this call is some other reload:  it confirms nothing, and
+        # its refusal is not this file's.
+        for stale in (999.999, 999.5, 999):
+            self.assertEqual(
+                reload_with({"reload_at": stale, "reload_refused": []}),
+                {"ok": True, "confirmed": False, "code": "reload_unconfirmed"},
+            )
+            self.assertEqual(
+                reload_with({"reload_at": stale, "reload_refused": ["an older refusal"]})["code"],
+                "reload_unconfirmed",
+            )
         self.assertEqual(reload_with({"reload_at": 5000, "reload_refused": []})["code"], "reloaded")
         self.assertEqual(
             reload_with({"reload_at": 5000, "reload_refused": ["seat MA is configured here"]}),
@@ -926,7 +941,7 @@ class RequestProtocolTests(Case):
         out = io.StringIO()
         code = M.main(["--request-stdin"], io.BytesIO(json.dumps(self.request("get")).encode()), out)
         answer = json.loads(out.getvalue())
-        self.assertEqual((code, answer["tool"], answer["result"]), (0, "listener-settings", "read"))
+        self.assertEqual((code, answer["tool"], answer["result"]), (0, "eavesdropper-settings", "read"))
         for bad in (b"", b"not json", b"[]", b"x" * (M.REQUEST_MAX_BYTES + 5)):
             out = io.StringIO()
             self.assertEqual(M.main(["--request-stdin"], io.BytesIO(bad), out), 2)
@@ -937,7 +952,7 @@ class RequestProtocolTests(Case):
 
     def test_the_module_imports_nothing_from_simple_tools(self) -> None:
         # fleet-ops-control loads it from its bytes and the container runs it with `python3 -I`.
-        source = (SCRIPTS / "simple_tools" / "server" / "listener_settings_edit.py").read_text()
+        source = (SCRIPTS / "simple_tools" / "server" / "eavesdropper_settings_edit.py").read_text()
         self.assertNotIn("from simple_tools", source.split('"""', 2)[2].split("_CLI_SHIM")[0])
         self.assertNotIn("import simple_tools", source)
         self.assertNotIn("shell=True", source)
@@ -946,7 +961,7 @@ class RequestProtocolTests(Case):
 
 def load_control():
     spec = importlib.util.spec_from_file_location(
-        "fleet_ops_control_for_listener_settings", SCRIPTS / "fleet-ops-control.py"
+        "fleet_ops_control_for_eavesdropper_settings", SCRIPTS / "fleet-ops-control.py"
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -967,7 +982,7 @@ class FakeReader:
 
 
 class ControlVerbTests(Case):
-    """`fleet-ops-control.py listener-settings` and `server listener-settings`."""
+    """`fleet-ops-control.py eavesdropper-settings` and `server eavesdropper-settings`."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -984,7 +999,7 @@ class ControlVerbTests(Case):
             uid=os.getuid(),
             home=self.home,
             environ=environ or {"PATH": "/usr/bin:/bin"},
-            reader=reader or FakeReader({"tool": "listener-settings", "ok": True, "result": "read", "settings": {}}),
+            reader=reader or FakeReader({"tool": "eavesdropper-settings", "ok": True, "result": "read", "settings": {}}),
             stdin=lambda: stdin,
         )
 
@@ -1000,18 +1015,18 @@ class ControlVerbTests(Case):
 
     def allow_apply(self):
         doc = shipped_allowlist(apply_enabled=True)
-        real = self.foc.load_listener_allowlist
-        self.addCleanup(setattr, self.foc, "load_listener_allowlist", real)
-        self.foc.load_listener_allowlist = lambda ctx: copy.deepcopy(doc)
+        real = self.foc.load_eavesdropper_settings_allowlist
+        self.addCleanup(setattr, self.foc, "load_eavesdropper_settings_allowlist", real)
+        self.foc.load_eavesdropper_settings_allowlist = lambda ctx: copy.deepcopy(doc)
 
     # -- the command-line verb, on a file -----------------------------------------------------
 
     def test_plan_on_a_fixture_prints_a_diff_and_writes_nothing(self) -> None:
         code, text = self.run_main(
-            ["listener-settings", "plan", "--set", "seat.ZC.enabled=false", "--file", str(self.live)]
+            ["eavesdropper-settings", "plan", "--set", "seat.ZC.enabled=false", "--file", str(self.live)]
         )
         self.assertEqual(code, 0, text)
-        self.assertIn("planned: listener-settings plan", text)
+        self.assertIn("planned: eavesdropper-settings plan", text)
         self.assertIn("+enabled = false", text)
         self.assertIn("@@", text)
         self.assert_untouched()
@@ -1019,37 +1034,37 @@ class ControlVerbTests(Case):
 
     def test_plan_as_json_carries_the_editors_answer(self) -> None:
         code, answer = self.run_main(
-            ["listener-settings", "plan", "--set", "daemon.coalesce_seconds=33", "--file", str(self.live), "--json"]
+            ["eavesdropper-settings", "plan", "--set", "daemon.coalesce_seconds=33", "--file", str(self.live), "--json"]
         )
         self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "planned"))
-        inner = answer["listenerSettings"]
+        inner = answer["eavesdropperSettings"]
         self.assertEqual(inner["changes"], [{"key": "daemon.coalesce_seconds", "set": True, "from": 20, "to": 33, "removes": []}])
         self.assertEqual(answer["commands"], [])
         self.assert_untouched()
 
     def test_the_shipped_allowlist_refuses_every_apply(self) -> None:
         code, answer = self.run_main(
-            ["listener-settings", "apply", "--set", "seat.ZC.enabled=false", "--file", str(self.live), "--yes", "--json"]
+            ["eavesdropper-settings", "apply", "--set", "seat.ZC.enabled=false", "--file", str(self.live), "--yes", "--json"]
         )
         self.assertEqual((code, answer["result"], answer["errorCode"]), (2, "refused", "apply_disabled"))
         self.assert_untouched()
         rows = self.audit_rows()
         self.assertEqual(len(rows), 1)
-        self.assertEqual((rows[0]["verb"], rows[0]["target"], rows[0]["result"]), ("listener-settings apply", "listener settings", "refused"))
+        self.assertEqual((rows[0]["verb"], rows[0]["target"], rows[0]["result"]), ("eavesdropper-settings apply", "eavesdropper settings", "refused"))
 
     def test_apply_on_a_file_when_the_owner_has_turned_it_on(self) -> None:
         self.allow_apply()
         _, planned = self.run_main(
-            ["listener-settings", "plan", "--set", "seat.ZC.enabled=false", "--file", str(self.live), "--json"]
+            ["eavesdropper-settings", "plan", "--set", "seat.ZC.enabled=false", "--file", str(self.live), "--json"]
         )
         code, answer = self.run_main(
             [
-                "listener-settings", "apply", "--set", "seat.ZC.enabled=false", "--file", str(self.live),
-                "--expect", planned["listenerSettings"]["planSHA256"], "--yes", "--json",
+                "eavesdropper-settings", "apply", "--set", "seat.ZC.enabled=false", "--file", str(self.live),
+                "--expect", planned["eavesdropperSettings"]["planSHA256"], "--yes", "--json",
             ]
         )
         self.assertEqual((code, answer["result"]), (0, "applied"), answer)
-        self.assertEqual(answer["listenerSettings"]["diff"], planned["listenerSettings"]["diff"])
+        self.assertEqual(answer["eavesdropperSettings"]["diff"], planned["eavesdropperSettings"]["diff"])
         self.assertIs(tomllib.loads(self.live.read_text())["seat"]["ZC"]["enabled"], False)
         rows = self.audit_rows()
         self.assertEqual((rows[-1]["result"], rows[-1]["id"]), ("applied", answer["auditID"]))
@@ -1058,13 +1073,13 @@ class ControlVerbTests(Case):
         self.assertNotIn("enabled", json.dumps(rows))
 
     def test_remove_reaches_the_editor_from_the_command_line(self) -> None:
-        argv = ["listener-settings", "plan", "--set", "seat.JET.budget={ usd_per_day = 3.5 }", "--file", str(self.live), "--json"]
+        argv = ["eavesdropper-settings", "plan", "--set", "seat.JET.budget={ usd_per_day = 3.5 }", "--file", str(self.live), "--json"]
         code, answer = self.run_main(argv)
         self.assertEqual((code, answer["errorCode"]), (2, "would_remove_keys"))
         code, answer = self.run_main(argv + ["--remove", "seat.JET.budget.board_per_day"])
         self.assertEqual((code, answer["result"]), (0, "planned"), answer)
         self.assertEqual(
-            answer["listenerSettings"]["changes"][0]["removes"], ["seat.JET.budget.board_per_day"]
+            answer["eavesdropperSettings"]["changes"][0]["removes"], ["seat.JET.budget.board_per_day"]
         )
         self.assertIn("removes: seat.JET.budget.board_per_day", answer["output"])
         self.assert_untouched()
@@ -1072,18 +1087,18 @@ class ControlVerbTests(Case):
     def test_usage_refusals(self) -> None:
         file = str(self.live)
         for argv in (
-            ["listener-settings"],
-            ["listener-settings", "delete", "--file", file],
-            ["listener-settings", "apply", "--set", "seat.ZC.enabled=false", "--file", file],
-            ["listener-settings", "plan", "--file", file],
-            ["listener-settings", "plan", "--set", "seat.ZC.enabled=false", "--file", file, "--yes"],
-            ["listener-settings", "get", "--set", "seat.ZC.enabled=false", "--file", file],
-            ["listener-settings", "plan", "--set", "seat.ZC.enabled", "--file", file],
-            ["listener-settings", "plan", "--set", "seat.ZC.enabled=false", "--set", "seat.ZC.enabled=true", "--file", file],
-            ["listener-settings", "plan", "--set", "seat.ZC.enabled=false", "--file", file, "--shell"],
-            ["listener-settings", "plan", "--set", "seat.ZC.enabled=false"],
-            ["listener-settings", "plan", "--set", "daemon.owner_user_id=1", "--file", file],
-            ["listener-settings", "plan", "--set", "seat.ZC.live=false", "--file", file],
+            ["eavesdropper-settings"],
+            ["eavesdropper-settings", "delete", "--file", file],
+            ["eavesdropper-settings", "apply", "--set", "seat.ZC.enabled=false", "--file", file],
+            ["eavesdropper-settings", "plan", "--file", file],
+            ["eavesdropper-settings", "plan", "--set", "seat.ZC.enabled=false", "--file", file, "--yes"],
+            ["eavesdropper-settings", "get", "--set", "seat.ZC.enabled=false", "--file", file],
+            ["eavesdropper-settings", "plan", "--set", "seat.ZC.enabled", "--file", file],
+            ["eavesdropper-settings", "plan", "--set", "seat.ZC.enabled=false", "--set", "seat.ZC.enabled=true", "--file", file],
+            ["eavesdropper-settings", "plan", "--set", "seat.ZC.enabled=false", "--file", file, "--shell"],
+            ["eavesdropper-settings", "plan", "--set", "seat.ZC.enabled=false"],
+            ["eavesdropper-settings", "plan", "--set", "daemon.owner_user_id=1", "--file", file],
+            ["eavesdropper-settings", "plan", "--set", "seat.ZC.live=false", "--file", file],
         ):
             with self.subTest(argv=argv[1:]):
                 code, answer = self.run_main(argv + ["--json"])
@@ -1091,24 +1106,24 @@ class ControlVerbTests(Case):
         self.assert_untouched()
 
     def test_an_untrusted_or_missing_allowlist_refuses(self) -> None:
-        real = self.foc.LISTENER_ALLOWLIST_NAME
-        self.addCleanup(setattr, self.foc, "LISTENER_ALLOWLIST_NAME", real)
-        self.foc.LISTENER_ALLOWLIST_NAME = "no-such-allowlist.json"
-        code, answer = self.run_main(["listener-settings", "get", "--file", str(self.live), "--json"])
+        real = self.foc.EAVESDROPPER_SETTINGS_ALLOWLIST_NAME
+        self.addCleanup(setattr, self.foc, "EAVESDROPPER_SETTINGS_ALLOWLIST_NAME", real)
+        self.foc.EAVESDROPPER_SETTINGS_ALLOWLIST_NAME = "no-such-allowlist.json"
+        code, answer = self.run_main(["eavesdropper-settings", "get", "--file", str(self.live), "--json"])
         self.assertEqual((code, answer["errorCode"]), (2, "allowlist_unavailable"))
 
     # -- the ssh gate ---------------------------------------------------------------------------
 
     def test_the_ssh_gate_takes_the_server_verb_and_nothing_of_a_request(self) -> None:
-        words = self.foc.parse_ssh_command("server listener-settings server --plan --json")
-        self.assertEqual(words[:3], ["server", "listener-settings", "server"])
+        words = self.foc.parse_ssh_command("server eavesdropper-settings server --plan --json")
+        self.assertEqual(words[:3], ["server", "eavesdropper-settings", "server"])
         for line in (
-            "listener-settings plan --set seat.ZC.enabled=false --file x",
-            "listener-settings get --file x",
-            "server listener-settings server --plan --file x",
-            "server listener-settings server --plan --set seat.ZC.enabled=false",
-            "server listener-settings server --yes --expect abc",
-            "server listener-settings server",
+            "eavesdropper-settings plan --set seat.ZC.enabled=false --file x",
+            "eavesdropper-settings get --file x",
+            "server eavesdropper-settings server --plan --file x",
+            "server eavesdropper-settings server --plan --set seat.ZC.enabled=false",
+            "server eavesdropper-settings server --yes --expect abc",
+            "server eavesdropper-settings server",
         ):
             with self.subTest(line=line):
                 with self.assertRaises(self.foc.Refused):
@@ -1117,24 +1132,24 @@ class ControlVerbTests(Case):
     def test_from_ssh_cannot_reach_the_file_form(self) -> None:
         ctx = self.ctx(
             platform="linux",
-            environ={"SSH_ORIGINAL_COMMAND": "listener-settings get --file " + str(self.live)},
+            environ={"SSH_ORIGINAL_COMMAND": "eavesdropper-settings get --file " + str(self.live)},
         )
         code, answer = self.run_main(["--from-ssh"], ctx)
         self.assertEqual((code, answer["result"]), (2, "refused"))
-        code, answer = self.run_main(["listener-settings", "get", "--from-ssh"], self.ctx())
+        code, answer = self.run_main(["eavesdropper-settings", "get", "--from-ssh"], self.ctx())
         self.assertEqual((code, answer["result"] if isinstance(answer, dict) else "refused"), (2, "refused"))
 
     # -- the server route -----------------------------------------------------------------------
 
     EXPECTED_ARGV_TAIL = [
         "exec", "-i", "--user", "simpletools", "eavesdropper", "/usr/local/bin/python3", "-I",
-        "/app/scripts/simple_tools/server/listener_settings_edit.py", "--request-stdin",
+        "/app/scripts/simple_tools/server/eavesdropper_settings_edit.py", "--request-stdin",
     ]
 
     def server(self, mode, stdin=b"", reader=None, **kw):
-        reader = reader or FakeReader({"tool": "listener-settings", "ok": True, "result": "read", "settings": {"daemon.coalesce_seconds": 20}})
+        reader = reader or FakeReader({"tool": "eavesdropper-settings", "ok": True, "result": "read", "settings": {"daemon.coalesce_seconds": 20}})
         ctx = self.ctx(platform="linux", reader=reader, stdin=stdin)
-        answer, code = self.foc.handle(ctx, "server", "listener-settings", "server", mode, **kw)
+        answer, code = self.foc.handle(ctx, "server", "eavesdropper-settings", "server", mode, **kw)
         return answer, code, reader
 
     def test_a_get_runs_one_fixed_docker_argv_with_the_request_on_stdin(self) -> None:
@@ -1152,7 +1167,7 @@ class ControlVerbTests(Case):
         self.assertEqual(self.audit_rows(), [])
 
     def test_a_plan_sends_the_changes_on_stdin_and_never_in_the_argv(self) -> None:
-        document = {"tool": "listener-settings", "ok": True, "result": "planned", "changes": [{"key": "seat.ZC.enabled"}], "diff": ["+enabled = false"], "check": {"ok": True, "problems": []}}
+        document = {"tool": "eavesdropper-settings", "ok": True, "result": "planned", "changes": [{"key": "seat.ZC.enabled"}], "diff": ["+enabled = false"], "check": {"ok": True, "problems": []}}
         stdin = json.dumps({"set": {"seat.ZC.enabled": False}}).encode()
         answer, code, reader = self.server("plan", stdin, FakeReader(document))
         self.assertEqual((code, answer["result"]), (0, "planned"))
@@ -1161,12 +1176,12 @@ class ControlVerbTests(Case):
         self.assertNotIn("ZC", " ".join(call["argv"]))
         request = json.loads(call["data"])
         self.assertEqual((request["action"], request["set"]), ("plan", {"seat.ZC.enabled": False}))
-        self.assertEqual(answer["listenerSettings"], document)
+        self.assertEqual(answer["eavesdropperSettings"], document)
         self.assertEqual(answer["output"], "+enabled = false\n")
         self.assertEqual(self.audit_rows(), [])
 
     def test_a_remove_list_on_stdin_is_passed_on(self) -> None:
-        document = {"tool": "listener-settings", "ok": True, "result": "planned", "changes": [], "diff": []}
+        document = {"tool": "eavesdropper-settings", "ok": True, "result": "planned", "changes": [], "diff": []}
         stdin = json.dumps(
             {"set": {"seat.JET.budget": {"usd_per_day": 3.5}}, "remove": ["seat.JET.budget.board_per_day"]}
         ).encode()
@@ -1178,7 +1193,7 @@ class ControlVerbTests(Case):
         self.assertEqual((code, answer["result"], reader.calls), (2, "refused", []))
 
     def test_an_apply_is_audited_without_settings_or_values(self) -> None:
-        document = {"tool": "listener-settings", "ok": True, "result": "applied", "changes": [{"key": "seat.ZC.enabled"}], "diff": [], "reload": {"ok": True, "code": "reloaded"}}
+        document = {"tool": "eavesdropper-settings", "ok": True, "result": "applied", "changes": [{"key": "seat.ZC.enabled"}], "diff": [], "reload": {"ok": True, "code": "reloaded"}}
         sha = "a" * 64
         stdin = json.dumps({"set": {"seat.ZC.enabled": False}, "expectPlanSHA256": sha}).encode()
         answer, code, reader = self.server("yes", stdin, FakeReader(document))
@@ -1187,12 +1202,12 @@ class ControlVerbTests(Case):
         self.assertEqual((request["action"], request["expectPlanSHA256"]), ("apply", sha))
         rows = self.audit_rows()
         self.assertEqual(len(rows), 1)
-        self.assertEqual((rows[0]["verb"], rows[0]["target"], rows[0]["result"]), ("server listener-settings", "listener settings", "applied"))
+        self.assertEqual((rows[0]["verb"], rows[0]["target"], rows[0]["result"]), ("server eavesdropper-settings", "eavesdropper settings", "applied"))
         self.assertNotIn("ZC", json.dumps(rows))
         self.assertEqual(answer["auditID"], rows[0]["id"])
 
     def test_the_editors_refusal_comes_back_as_a_refusal(self) -> None:
-        document = {"tool": "listener-settings", "ok": False, "result": "refused", "errorCode": "apply_disabled", "detail": "apply is off"}
+        document = {"tool": "eavesdropper-settings", "ok": False, "result": "refused", "errorCode": "apply_disabled", "detail": "apply is off"}
         stdin = json.dumps({"set": {"seat.ZC.enabled": False}}).encode()
         answer, code, _ = self.server("yes", stdin, FakeReader(document, status=2))
         self.assertEqual((code, answer["ok"], answer["result"], answer["errorCode"]), (2, False, "refused", "apply_disabled"))
@@ -1216,13 +1231,13 @@ class ControlVerbTests(Case):
 
     def test_only_on_the_server_only_its_target_and_not_from_muster(self) -> None:
         ctx = self.ctx(platform="darwin")
-        answer, code = self.foc.handle(ctx, "server", "listener-settings", "server", "plan")
+        answer, code = self.foc.handle(ctx, "server", "eavesdropper-settings", "server", "plan")
         self.assertEqual((code, answer["result"]), (2, "refused"))
         ctx = self.ctx(platform="linux")
-        answer, code = self.foc.handle(ctx, "server", "listener-settings", "mac", "plan")
+        answer, code = self.foc.handle(ctx, "server", "eavesdropper-settings", "mac", "plan")
         self.assertEqual((code, answer["result"]), (2, "refused"))
         answer, code = self.foc.handle(
-            ctx, "server", "listener-settings", "server", "plan", require_approval=True
+            ctx, "server", "eavesdropper-settings", "server", "plan", require_approval=True
         )
         self.assertEqual((code, answer["result"]), (2, "refused"))
         self.assertEqual(ctx.reader.calls, [])
@@ -1235,7 +1250,7 @@ class ControlVerbTests(Case):
             (FakeReader(raw=b"", status=127), "docker_unavailable"),
             (FakeReader(raw=b"", status=124), "timeout"),
             (FakeReader(raw=b"", status=-9, over=True), "too_large"),
-            (FakeReader({"tool": "listener-settings", "ok": True, "result": "exploded"}), "editor_failed"),
+            (FakeReader({"tool": "eavesdropper-settings", "ok": True, "result": "exploded"}), "editor_failed"),
         ):
             with self.subTest(word=word):
                 answer, code, _ = self.server("plan", reader=reader)
