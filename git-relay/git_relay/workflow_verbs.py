@@ -227,6 +227,11 @@ SPECS = {
     "wf_org_installations": ({"organization_administration": "read"}, False),
     "wf_repo_list": ({"metadata": "read"}, False),
     "wf_pr_search": ({"pull_requests": "read"}, False),
+    # Rulesets that apply to a branch, and the repository's ruleset list:  both are
+    # GitHub metadata reads.  Classic branch protection needs administration:read,
+    # which the fleet ceiling does not hold, so it has no verb here.
+    "wf_branch_rules": ({"metadata": "read"}, False),
+    "wf_rulesets": ({"metadata": "read"}, False),
     "wf_labels": ({"issues": "read"}, False),
     "wf_workflows": ({"actions": "read"}, False),
     "wf_run_get": ({"actions": "read"}, False),
@@ -500,6 +505,8 @@ _NEW_READS = frozenset(
         "wf_org_installations",
         "wf_repo_list",
         "wf_pr_search",
+        "wf_branch_rules",
+        "wf_rulesets",
     }
 )
 
@@ -732,6 +739,42 @@ def _validate_read(action, result):
             "complete": boolean,
             "page": positive,
         },
+        "wf_branch_rules": {
+            "branch": lambda v: text(v) and bool(v),
+            "rules": lambda v: seq(
+                v,
+                lambda x: fields(
+                    x,
+                    {
+                        "type": lambda y: text(y) and bool(y),
+                        "ruleset_id": positive,
+                        "ruleset_source_type": text,
+                        "ruleset_source": text,
+                        "parameters": lambda y: y is None or isinstance(y, dict),
+                    },
+                ),
+            ),
+            "page": positive,
+            "has_more": boolean,
+        },
+        "wf_rulesets": {
+            "rulesets": lambda v: seq(
+                v,
+                lambda x: fields(
+                    x,
+                    {
+                        "id": positive,
+                        "name": lambda y: text(y) and bool(y),
+                        "target": lambda y: y is None or text(y),
+                        "source_type": text,
+                        "source": text,
+                        "enforcement": text,
+                    },
+                ),
+            ),
+            "page": positive,
+            "has_more": boolean,
+        },
         "wf_issue_comments": {
             "comments": lambda v: seq(v, comment),
             "complete": boolean,
@@ -866,6 +909,15 @@ _HOOK_SECRET_HOSTS = (
     "api.telegram.org",
 )
 _HOOK_TOKEN_SEGMENT = re.compile(r"[A-Za-z0-9_~.-]{20,}")
+
+# The merge settings wf_repo_get copies from its settings-read response, and nothing else.
+_REPO_MERGE_SETTINGS = (
+    "allow_merge_commit",
+    "allow_squash_merge",
+    "allow_rebase_merge",
+    "allow_auto_merge",
+    "delete_branch_on_merge",
+)
 
 
 def _hook_url_carries_secret(url):
@@ -4654,10 +4706,150 @@ class WorkflowVerbs:
         self._get("/installation-metadata-shape-only")
         raise Refused("installation metadata requires authenticated dispatcher")
 
+    def _repo_settings_bearer(self, repo):
+        """Bearer for wf_repo_get that lets GitHub show the merge settings.
+
+        GitHub leaves allow_merge_commit, allow_squash_merge, allow_rebase_merge,
+        allow_auto_merge and delete_branch_on_merge out of GET /repos/{repo} unless the
+        token can read the repository's settings (Administration read).  The least
+        permission for wf_repo_get is metadata:read, so those keys were absent (callers
+        saw null).  When the seat's ceiling already holds administration, mint
+        metadata + administration read for this one call;  otherwise, or when that mint
+        fails, keep the least-permission bearer and the keys stay absent.  This never
+        exceeds the seat's ceiling.
+        """
+        elevation = getattr(self, "_elevation", None)
+        if elevation is None:
+            return self.bearer
+        minter, app_slug, ceiling = elevation
+        required = {"metadata": "read", "administration": "read"}
+        if _perm_within_ceiling(required, ceiling):
+            return self.bearer
+        try:
+            token, _ = minter.token_for(app_slug, repo, required)
+        except Exception:
+            return self.bearer
+        return token or self.bearer
+
     def wf_repo_get(self, repo, args):
         _only(args, ("repo",))
-        data = self._get(f"/repos/{repo}")
-        return {"repository": _obj(data)}
+        # The repository object always comes from the least-permission (metadata:read)
+        # token.  The settings-read token is used for one more read, and only the five
+        # merge settings are copied from it:  any other field GitHub shows only to a
+        # settings reader (security_and_analysis, a filled temp_clone_token, ...) is
+        # discarded with that response.
+        data = dict(_obj(self._get(f"/repos/{repo}")))
+        bearer = self._repo_settings_bearer(repo)
+        if bearer is not self.bearer:
+            try:
+                wide = self.client._call("GET", f"/repos/{repo}", None, bearer=bearer)
+            except RelayGitHubError:
+                wide = None
+            if isinstance(wide, dict) and wide.get("id") == data.get("id"):
+                for key in _REPO_MERGE_SETTINGS:
+                    if type(wide.get(key)) is bool:
+                        data[key] = wide[key]
+        # temp_clone_token is a short-lived clone credential;  it never leaves the relay.
+        if data.get("temp_clone_token"):
+            del data["temp_clone_token"]
+        return {"repository": data}
+
+    def wf_branch_rules(self, repo, args):
+        """Rules from every active ruleset that applies to one branch.
+
+        GET /repos/{repo}/rules/branches/{branch}:  each row names the rule type, its
+        parameters (for a pull_request rule, allowed_merge_methods and the review
+        requirements) and the ruleset that supplies it.  Classic branch protection is
+        not included;  it needs administration:read.
+        """
+        _only(args, ("repo", "branch", "per_page", "page"))
+        name = _ref(args, "branch")
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        branch = quote(name, safe="")
+        data = self._get(f"/repos/{repo}/rules/branches/{branch}?per_page={limit}&page={page}")
+        if not isinstance(data, list) or len(data) > limit:
+            raise RelayGitHubError(502, "branch rules page unverifiable")
+        rules = []
+        for item in data:
+            params = item.get("parameters") if isinstance(item, dict) else None
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("type"), str)
+                or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", item["type"])
+                or type(item.get("ruleset_id")) is not int
+                or item["ruleset_id"] <= 0
+                or not isinstance(item.get("ruleset_source_type"), str)
+                or not re.fullmatch(r"[A-Za-z]{1,32}", item["ruleset_source_type"])
+                or not isinstance(item.get("ruleset_source"), str)
+                or not 1 <= len(item["ruleset_source"]) <= 201
+                or not (params is None or isinstance(params, dict))
+            ):
+                raise RelayGitHubError(502, "branch rule unverifiable")
+            if params is not None:
+                encoded = json.dumps(params, sort_keys=True)
+                if len(encoded) > 16384:
+                    raise RelayGitHubError(502, "branch rule parameters unverifiable")
+                if find_secret(encoded) or self._provider_token_text(encoded):
+                    raise Refused("credential-shaped branch rule parameters refused")
+            rules.append(
+                {
+                    "type": item["type"],
+                    "ruleset_id": item["ruleset_id"],
+                    "ruleset_source_type": item["ruleset_source_type"],
+                    "ruleset_source": item["ruleset_source"],
+                    "parameters": params,
+                }
+            )
+        return {"branch": name, "rules": rules, "page": page, "has_more": len(rules) == limit}
+
+    def wf_rulesets(self, repo, args):
+        """The repository's rulesets (summary rows:  no rules, conditions or bypass list).
+
+        GET /repos/{repo}/rulesets.  includes_parents (default true) also lists the
+        organization rulesets that target this repository.
+        """
+        _only(args, ("repo", "per_page", "page", "includes_parents"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        parents = args.get("includes_parents", True)
+        if type(parents) is not bool:
+            raise Refused("invalid includes_parents")
+        flag = "true" if parents else "false"
+        data = self._get(
+            f"/repos/{repo}/rulesets?per_page={limit}&page={page}&includes_parents={flag}"
+        )
+        if not isinstance(data, list) or len(data) > limit:
+            raise RelayGitHubError(502, "ruleset page unverifiable")
+        rulesets = []
+        for item in data:
+            if (
+                not isinstance(item, dict)
+                or type(item.get("id")) is not int
+                or item["id"] <= 0
+                or not isinstance(item.get("source_type"), str)
+                or not re.fullmatch(r"[A-Za-z]{1,32}", item["source_type"])
+                or not isinstance(item.get("source"), str)
+                or not 1 <= len(item["source"]) <= 201
+                or item.get("enforcement") not in ("disabled", "active", "evaluate")
+                or not (
+                    item.get("target") is None
+                    or isinstance(item["target"], str)
+                    and re.fullmatch(r"[a-z_]{1,32}", item["target"])
+                )
+            ):
+                raise RelayGitHubError(502, "ruleset unverifiable")
+            rulesets.append(
+                {
+                    "id": item["id"],
+                    "name": self._metadata_name(item.get("name"), 255),
+                    "target": item.get("target"),
+                    "source_type": item["source_type"],
+                    "source": item["source"],
+                    "enforcement": item["enforcement"],
+                }
+            )
+        return {"rulesets": rulesets, "page": page, "has_more": len(rulesets) == limit}
 
     def wf_labels(self, repo, args):
         _only(
