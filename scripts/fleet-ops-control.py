@@ -12,7 +12,8 @@
   python3 scripts/fleet-ops-control.py server eavesdropper-status server --plan [--json]
   python3 scripts/fleet-ops-control.py server listener-settings server    (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py listener-settings get|plan|apply [--set KEY=VALUE ...]
-                                       [--file PATH] [--expect SHA256] [--yes] [--json]
+                                       [--remove KEY.SUBKEY ...] [--file PATH]
+                                       [--expect SHA256] [--yes] [--json]
   python3 scripts/fleet-ops-control.py --from-ssh                         (the forced command)
   python3 scripts/fleet-ops-control.py --from-muster                      (the forced command of muster-exec)
   python3 scripts/fleet-ops-control.py --check-token                      (install check, not over ssh)
@@ -73,7 +74,9 @@ What it promises:
     input, so no word of a request reaches an argv.  Over ssh the verb is
     `server listener-settings server` with `--plan` (a get, or a plan when standard input holds
     `{"set": {...}}`) or `--yes` (the apply, which may carry the plan's hash as
-    `expectPlanSHA256`);  `--file` and `--set` are not offered there.  An apply holds the one
+    `expectPlanSHA256`);  `--file` and `--set` are not offered there.  A table such as a
+    seat's `budget` is set whole, and a value that would drop a sub-key the file has is refused
+    unless the request names it (`--remove`, or `remove` on standard input).  An apply holds the one
     action lock and writes one audit row with the target `listener settings` and no setting or
     value.  The `--from-muster` route does not offer it.
   * `server unit-status UNIT --plan` reads one listed unit (an entry of the allowlist's server `units`
@@ -1343,7 +1346,7 @@ def run_listener_editor_in_container(ctx, request):
     return document, (status if status in (0, 1, 2) else 1)
 
 
-def listener_settings(ctx, action, changes, expect=None, file=None):
+def listener_settings(ctx, action, changes, expect=None, file=None, remove=None):
     """(answer fields, exit status) of one listener-settings request, or Refused / Failed.
 
     `file` runs the editor in this process on that file;  without it the editor runs in the
@@ -1356,6 +1359,8 @@ def listener_settings(ctx, action, changes, expect=None, file=None):
         if not isinstance(changes, dict) or not changes:
             raise Refused("name at least one setting to change", error_code="usage")
         request["set"] = changes
+        if remove:
+            request["remove"] = list(remove)
     if action == "apply" and expect is not None:
         request["expectPlanSHA256"] = expect
     if file is not None:
@@ -1400,6 +1405,11 @@ def listener_settings(ctx, action, changes, expect=None, file=None):
                 str(reload.get("code") or "reload_skipped").replace("_", " "),
             )
         lines = [str(line) for line in document.get("diff") or []]
+        for change in changed:
+            # A sub-key a whole-table value drops is said in words, not left to the diff.
+            removes = change.get("removes") if isinstance(change, dict) else None
+            if isinstance(removes, list) and removes:
+                lines.append("removes: " + ", ".join(str(name) for name in removes))
     else:
         fields["detail"] = str(document.get("detail") or result)[:400]
     lines += ["check: " + str(problem) for problem in check.get("problems") or []]
@@ -1409,10 +1419,11 @@ def listener_settings(ctx, action, changes, expect=None, file=None):
 
 
 def listener_request_from_stdin(ctx, mode):
-    """(action, changes, expected plan hash) of a `server listener-settings` request.
+    """(action, changes, removals, expected plan hash) of a `server listener-settings` request.
 
-    Standard input is empty (a get, with `--plan` only) or one JSON object with `set` and, for
-    an apply, an optional `expectPlanSHA256`.  Anything else is refused."""
+    Standard input is empty (a get, with `--plan` only) or one JSON object with `set`, an
+    optional `remove` list (the sub-keys a whole-table value is meant to drop) and, for an
+    apply, an optional `expectPlanSHA256`.  Anything else is refused."""
     raw = ctx.stdin()
     if raw is None:
         raise Refused(
@@ -1421,16 +1432,17 @@ def listener_request_from_stdin(ctx, mode):
     if not raw.strip():
         if mode != "plan":
             raise Refused("an apply needs the changes on standard input", error_code="usage")
-        return "get", None, None
+        return "get", None, None, None
     try:
         request = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):
         request = None
     if (
         not isinstance(request, dict)
-        or set(request) - {"set", "expectPlanSHA256"}
+        or set(request) - {"set", "remove", "expectPlanSHA256"}
         or not isinstance(request.get("set"), dict)
         or not request["set"]
+        or not isinstance(request.get("remove", []), list)
     ):
         raise Refused(
             "standard input must be one JSON object with a non-empty set", error_code="usage"
@@ -1438,7 +1450,8 @@ def listener_request_from_stdin(ctx, mode):
     expect = request.get("expectPlanSHA256")
     if expect is not None and (mode != "yes" or not isinstance(expect, str)):
         raise Refused("expectPlanSHA256 belongs to an apply", error_code="usage")
-    return ("plan" if mode == "plan" else "apply"), request["set"], expect
+    action = "plan" if mode == "plan" else "apply"
+    return action, request["set"], request.get("remove"), expect
 
 
 def _pm2_prefix(ctx):
@@ -2614,11 +2627,11 @@ def handle(
             _server_only(ctx)
             if target != LISTENER_SETTINGS_TARGET:
                 raise Refused("only the server's listener has settings here")
-            edit_action, changes, expect = listener_request_from_stdin(ctx, mode)
+            edit_action, changes, remove, expect = listener_request_from_stdin(ctx, mode)
             with contextlib.ExitStack() as held:
                 if mode == "yes" and not lock_held:
                     held.enter_context(action_lock(ctx))
-                fields, code = listener_settings(ctx, edit_action, changes, expect)
+                fields, code = listener_settings(ctx, edit_action, changes, expect, remove=remove)
             answer.update(fields)
             if mode == "yes":
                 audit_run(ctx, scope, action, target, audit_target, answer, None, extra)
@@ -3190,7 +3203,8 @@ def parse_ssh_command(text):
 def run_listener_settings(argv, ctx, out):
     """`listener-settings get|plan|apply ...` from a command line (never from ssh):  the exit status.
 
-    `--set KEY=VALUE` (repeatable) names a change, its value read as TOML.  `--file PATH` is the
+    `--set KEY=VALUE` (repeatable) names a change, its value read as TOML.  `--remove
+    KEY.SUBKEY` (repeatable) names a sub-key a whole-table value is meant to drop.  `--file PATH` is the
     file to act on, edited by the module in this process;  without it the server's container is
     used, on the server only.  `apply` needs `--yes`, holds the one action lock and writes one
     audit row.  `--expect` is a plan's `planSHA256`."""
@@ -3209,6 +3223,7 @@ def run_listener_settings(argv, ctx, out):
         parser = _QuietParser(prog=TOOL, add_help=False)
         parser.add_argument("action", choices=LISTENER_SETTINGS_ACTIONS)
         parser.add_argument("--set", action="append", default=[], dest="changes")
+        parser.add_argument("--remove", action="append", default=[])
         parser.add_argument("--file")
         parser.add_argument("--expect")
         parser.add_argument("--yes", action="store_true")
@@ -3217,13 +3232,13 @@ def run_listener_settings(argv, ctx, out):
             args = parser.parse_args(argv)
         except Refused:
             raise Refused(
-                "usage: listener-settings get|plan|apply [--set KEY=VALUE ...] [--file PATH] "
-                "[--expect SHA256] [--yes] [--json]"
+                "usage: listener-settings get|plan|apply [--set KEY=VALUE ...] "
+                "[--remove KEY.SUBKEY ...] [--file PATH] [--expect SHA256] [--yes] [--json]"
             ) from None
         action = args.action
         answer["verb"] = "%s %s" % (LISTENER_SETTINGS_VERB, action)
-        if action == "get" and (args.changes or args.expect or args.yes):
-            raise Refused("get takes no --set, --expect or --yes")
+        if action == "get" and (args.changes or args.remove or args.expect or args.yes):
+            raise Refused("get takes no --set, --remove, --expect or --yes")
         if action == "plan" and (args.expect or args.yes):
             raise Refused("plan takes no --expect or --yes")
         if action == "apply" and not args.yes:
@@ -3245,7 +3260,9 @@ def run_listener_settings(argv, ctx, out):
         with contextlib.ExitStack() as held:
             if action == "apply":
                 held.enter_context(action_lock(ctx))
-            fields, code = listener_settings(ctx, action, changes, args.expect, file=args.file)
+            fields, code = listener_settings(
+                ctx, action, changes, args.expect, file=args.file, remove=args.remove
+            )
         answer.update(fields)
     except Refused as exc:
         answer.update(ok=False, result="refused", detail=str(exc))

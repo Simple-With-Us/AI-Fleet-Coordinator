@@ -21,6 +21,9 @@ What it promises:
     A routine's `url_env` and `key_env` are variable NAMES;  they may only stay as they are or be
     one of the two names the seat's own code derives, so one seat's key can never be pointed at
     another seat's endpoint.  A string value that looks like a secret, a URL or a path is refused.
+  * A table (`budget`, `routine`, `live`) is set whole.  A new value that would drop a sub-key
+    the file has (a cap, a pause, a timeout) is refused unless the request names that sub-key in
+    `remove`, so nothing is dropped silently and a plan lists what goes (`removes`).
   * The edit is made on the text, so comments and every other line stay byte for byte.  The result
     is then parsed and compared with the original:  the settings that differ must be exactly the
     requested ones, with exactly the requested values, or nothing is written (`edit_unsafe`).
@@ -70,6 +73,7 @@ ENV_STATE_DIR = "SIMPLE_TOOLS_STATE_DIR"
 FILE_MAX_BYTES = 1024 * 1024
 REQUEST_MAX_BYTES = 64 * 1024
 MAX_CHANGES = 32
+MAX_REMOVALS = 64
 BACKUP_INFIX = ".bak-settings-"
 BACKUPS_KEPT = 20
 CHECK_TIMEOUT = 60
@@ -92,6 +96,7 @@ NAME_RE = re.compile(r"[a-z][a-z0-9_]{0,47}")
 BARE_KEY_RE = re.compile(r"[A-Za-z0-9_-]+")
 ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]{0,95}")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
+REMOVAL_RE = re.compile(r"[A-Za-z0-9_-]{1,48}(\.[A-Za-z0-9_-]{1,48}){2,3}")
 _ASSIGN_RE = re.compile(r"^(\s*)([A-Za-z0-9_-]+)\s*=")
 _HEADER_LINE_RE = re.compile(r"^\s*\[")
 
@@ -326,11 +331,15 @@ def _secret_like(text):
         return True
     if ENV_NAME_RE.fullmatch(text):
         return False
-    if _TOKENISH_RE.fullmatch(text) and re.search(r"[0-9]", text):
-        # Long, unbroken, with digits and at least two other kinds of character:  a key, not a name.
-        classes = sum(bool(re.search(p, text)) for p in (r"[a-z]", r"[A-Z]", r"[+/=_\-.]"))
-        return classes >= 2
-    return False
+    if not _TOKENISH_RE.fullmatch(text):
+        return False
+    # A key, not a name:  one unbroken run of 20 or more letters and digits that mixes the two, or
+    # a long value that mixes upper case, lower case and digits.  Words joined by `-`, `_` or `.`
+    # (`daily-standup-2026-11-11`, `X-Simple-Tools-Signature-256-V2`) are names.
+    for run in re.findall(r"[A-Za-z0-9]{20,}", text):
+        if re.search(r"[0-9]", run) and re.search(r"[A-Za-z]", run):
+            return True
+    return len(text) >= 32 and all(re.search(p, text) for p in (r"[a-z]", r"[A-Z]", r"[0-9]"))
 
 
 def _check_string(text, where):
@@ -651,17 +660,39 @@ def _key_text(table, name):
     return ".".join(table + (name,))
 
 
-def build_plan(text, allowlist, requested):
+def _removal_names(remove):
+    """The `remove` list of a request as a set of `table.key.subkey` names, or Refusal."""
+    if remove is None:
+        return set()
+    if (
+        not isinstance(remove, list)
+        or len(remove) > MAX_REMOVALS
+        or not all(isinstance(r, str) and REMOVAL_RE.fullmatch(r) for r in remove)
+        or len(set(remove)) != len(remove)
+    ):
+        raise Refusal("usage", "remove is a short list of table.key.subkey names, each once")
+    return set(remove)
+
+
+def build_plan(text, allowlist, requested, remove=None):
     """(new text, changes) for a `{key: value}` request against the file's text.
 
     Every key is checked against the allowlist and every value against its spec first.  Then the
     text is edited, parsed, and compared with the original:  the settings that differ must be
     exactly the requested ones that are not already as asked, each with exactly the asked value.
-    `changes` lists them in key order as {"key", "set" (was it there), "from", "to"}."""
+    `changes` lists them in key order as {"key", "set" (was it there), "from", "to", "removes"}.
+
+    A table (`budget`, `routine`, `live`) is set whole, so a new value that leaves out a sub-key
+    the file has would drop it:  a cap, a pause (`wakes_per_day = 0`), a timeout.  That is never
+    silent.  Each sub-key the new value drops must be named in `remove` as `table.key.subkey`, or
+    the request is refused (`would_remove_keys`);  a name in `remove` that the request does not
+    drop is refused too, so a plan says exactly what goes."""
     if not isinstance(requested, dict) or not requested:
         raise Refusal("usage", "name at least one setting to change")
     if len(requested) > MAX_CHANGES:
         raise Refusal("usage", "at most %d settings in one request" % MAX_CHANGES)
+    removals = _removal_names(remove)
+    dropped = {}
     before = _parse(text, "the live file")
     have = settings_of(before)
     wanted = []
@@ -672,8 +703,24 @@ def build_plan(text, allowlist, requested):
         seat = table[1] if table[0] == "seat" else None
         if seat is not None and not isinstance((before.get("seat") or {}).get(seat), dict):
             raise Refusal("unknown_seat", "the file has no [seat.%s] section" % seat)
-        check_value(spec, value, key, seat=seat, current=have.get((table, name)))
+        current = have.get((table, name))
+        check_value(spec, value, key, seat=seat, current=current)
+        if isinstance(value, dict) and isinstance(current, dict):
+            gone = sorted("%s.%s" % (key, sub) for sub in set(current) - set(value))
+            unnamed = [one for one in gone if one not in removals]
+            if unnamed:
+                raise Refusal(
+                    "would_remove_keys",
+                    "%s is set whole, and this value would drop %s;  send each one, or name it in "
+                    "remove to drop it" % (key, ", ".join(unnamed)),
+                )
+            dropped[(table, name)] = gone
         wanted.append((table, name, value))
+    stray = sorted(removals - {one for names in dropped.values() for one in names})
+    if stray:
+        raise Refusal(
+            "usage", "remove names %s, which this request does not drop" % ", ".join(stray)
+        )
     todo = [w for w in wanted if (w[0], w[1]) not in have or not same(have[(w[0], w[1])], w[2])]
     if not todo:
         return text, []
@@ -696,6 +743,7 @@ def build_plan(text, allowlist, requested):
             "set": (table, name) in have,
             "from": have.get((table, name)),
             "to": value,
+            "removes": dropped.get((table, name), []),
         }
         for table, name, value in todo
     ]
@@ -1031,11 +1079,11 @@ def _planned(action, path, data, new_text, changes, check):
     )
 
 
-def plan(path, allowlist, requested, checker=None):
+def plan(path, allowlist, requested, checker=None, remove=None):
     """What the changes would do.  The candidate the checker reads is written to a private
     temporary folder, never beside the live file, and is gone before this returns."""
     data, _ = read_live(path)
-    new_text, changes = build_plan(_decode(data), allowlist, requested)
+    new_text, changes = build_plan(_decode(data), allowlist, requested, remove)
     if not changes:
         answer = _planned(
             "plan", path, data, new_text, changes, {"ok": True, "problems": [], "warnings": 0}
@@ -1060,6 +1108,7 @@ def apply(
     reloader=None,
     reload="auto",
     now=None,
+    remove=None,
 ):
     """Carry the plan out.  See the module text for the order of steps and what each failure leaves.
 
@@ -1076,7 +1125,7 @@ def apply(
     reloader = reloader or daemon_reload
     with _FolderLock(path.parent):
         data, info = read_live(path)
-        new_text, changes = build_plan(_decode(data), allowlist, requested)
+        new_text, changes = build_plan(_decode(data), allowlist, requested, remove)
         answer = _planned(
             "apply", path, data, new_text, changes, {"ok": True, "problems": [], "warnings": 0}
         )
@@ -1177,7 +1226,7 @@ def run_request(request, path=None, checker=None, reloader=None, reload="auto"):
     """(answer, exit status) for one request document:
 
         {"action": "get" | "plan" | "apply", "allowlist": {...}, "set": {key: value},
-         "expectPlanSHA256": "..."}
+         "remove": ["table.key.subkey", ...], "expectPlanSHA256": "..."}
 
     `path` is the file to act on;  by default the listener's own (SIMPLE_TOOLS_CONFIG, else
     /data/listener.toml).  A request never names the file."""
@@ -1186,20 +1235,32 @@ def run_request(request, path=None, checker=None, reloader=None, reload="auto"):
     try:
         if action not in ("get", "plan", "apply"):
             raise Refusal("usage", "the action is get, plan or apply")
-        unknown = sorted(set(request) - {"action", "allowlist", "set", "expectPlanSHA256"})
+        unknown = sorted(
+            set(request) - {"action", "allowlist", "set", "remove", "expectPlanSHA256"}
+        )
         if unknown:
             raise Refusal("usage", "unknown request field(s): %s" % ", ".join(unknown))
         allowlist = validate_allowlist(request.get("allowlist"))
         if action == "get":
             return get(live, allowlist), 0
         if action == "plan":
-            return plan(live, allowlist, request.get("set"), checker=checker), 0
+            return (
+                plan(
+                    live,
+                    allowlist,
+                    request.get("set"),
+                    checker=checker,
+                    remove=request.get("remove"),
+                ),
+                0,
+            )
         return (
             apply(
                 live,
                 allowlist,
                 request.get("set"),
                 expect=request.get("expectPlanSHA256"),
+                remove=request.get("remove"),
                 checker=checker,
                 reloader=reloader,
                 reload=reload,

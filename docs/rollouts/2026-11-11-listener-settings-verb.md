@@ -12,7 +12,7 @@ AFC-710, work package OP-2 of the Operator plan.  Every listener setting lives 
 
 | Form | Where | What it does |
 |---|---|---|
-| `listener-settings get\|plan\|apply [--set KEY=VALUE ...] --file PATH [--expect SHA256] [--yes] [--json]` | a command line, never ssh | Runs the editor in this process on that file (a copy, a fixture). |
+| `listener-settings get\|plan\|apply [--set KEY=VALUE ...] [--remove KEY.SUBKEY ...] --file PATH [--expect SHA256] [--yes] [--json]` | a command line, never ssh | Runs the editor in this process on that file (a copy, a fixture). |
 | `server listener-settings server --plan\|--yes [--json]` | the `fleet-ops-ctl` forced command, or a shell on the server | Runs the editor inside the container on the live file.  The request is one JSON object on standard input. |
 
 Over ssh, `--plan` with nothing on standard input is a get;  `--plan` with `{"set": {"seat.ZC.enabled": false}}` is a plan;  `--yes` with the same object is the apply, and may carry the plan's hash as `expectPlanSHA256`.  `--file` and `--set` are not offered over ssh, and the `--from-muster` route does not offer the verb at all.
@@ -26,6 +26,8 @@ Over ssh, `--plan` with nothing on standard input is a get;  `--plan` with `{"s
 | `[linear_comments]`, `[linear_projects]`, `[notes_queue]`, `[listener_api]` | `enabled` |
 
 A setting is named `table.key` or `seat.SEAT.key` and is set whole:  a `budget` or a `routine` is one value.  The editor changes settings;  it does not create a seat, and it does not remove a key.
+
+Because a table is set whole, a new value that leaves out a sub-key the file has would drop it:  a cap, a pause (`wakes_per_day = 0`), a timeout.  That is never silent.  Each sub-key the new value drops must be named (`--remove seat.JET.budget.wakes_per_day`, or a `remove` list on standard input), or the request is refused (`would_remove_keys`).  The plan lists what goes as `removes`, and a name the request does not drop is refused too.
 
 ## What Can Never Change
 
@@ -68,7 +70,7 @@ Rollback of steps 2 to 4 restores the two backups.  Rollback of an apply is the
 
 ## Checks
 
-- `cd scripts && python3 -m unittest simple_tools.tests.test_listener_settings_edit -v`:  a key that is not allowlisted is refused, a pin or a secret-looking key is refused whatever the allowlist says, a failed check-config leaves the file byte for byte, a refused reload rolls back byte for byte, and the plan's output equals the applied diff.  One class runs the real `check-config` on the image's sample.
+- `cd scripts && python3 -m unittest simple_tools.tests.test_listener_settings_edit -v`:  a key that is not allowlisted is refused, a pin or a secret-looking key is refused whatever the allowlist says, a failed check-config leaves the file byte for byte, a refused reload rolls back byte for byte, a whole-table value never drops a sub-key unless the request names it, and the plan's output equals the applied diff.  One class runs the real `check-config` on the image's sample.
 - `python3 scripts/fleet-ops-control.py listener-settings plan --set seat.ZC.enabled=false --file <a copy of the sample>` prints the changed lines and writes nothing.
 - `python3 scripts/test_fleet_ops_control.py` and `python3 scripts/check-ci-runner-policy.py` still pass.
 - After activation, from the Mac:  `ssh fleet-ops-ctl -- server listener-settings server --plan --json` answers `result: read` with the allowlisted settings, and after an apply the listener's status shows every seat connected with `reload_refused` and `config_errors` empty.

@@ -269,6 +269,29 @@ class RefusalTests(Case):
             "secret_like_value",
         )
 
+    def test_a_name_made_of_words_is_not_taken_for_a_secret(self) -> None:
+        routine = tomllib.loads(FIXTURE)["seat"]["JET"]["routine"]
+        for header in ("X-Simple-Tools-Signature-256-V2", "X-Hub-Signature-256", "X-Routine-Key-2026-11-11-Rev-2"):
+            with self.subTest(header=header):
+                answer, status = self.run_request("plan", {"seat.JET.routine": dict(routine, header=header)})
+                self.assertEqual((status, answer["result"]), (0, "planned"), answer)
+        for topic in ("daily-standup-2026-11-11", "release_2026.11.11_candidate_3", "AFC-710 listener settings editor"):
+            with self.subTest(topic=topic):
+                answer, status = self.run_request(
+                    "plan", {"daemon.presence_topics": [["work-in-progress", topic]]}
+                )
+                self.assertEqual((status, answer["result"]), (0, "planned"), answer)
+        for secret in (
+            "0123456789abcdef0123456789abcdef01234567",
+            "prefix-0123456789abcdefghij-suffix",
+            "Zm9vYmFyMTIzNDU2Nzg5MGFiY2RlZmdoaWprbG1ub3A",
+        ):
+            with self.subTest(secret=secret):
+                self.assertTrue(M._secret_like(secret))
+        for name in ("work-in-progress", "roll call", "X-Simple-Tools-Signature", "ZULIP_ALERT_GB_HOUSEKEEPER_ENDPOINT", "*"):
+            with self.subTest(name=name):
+                self.assertFalse(M._secret_like(name))
+
     def test_a_routine_env_name_is_bound_to_its_own_seat(self) -> None:
         # Pointing ZC's routine at JET's URL or key variable would send one seat's key to another
         # seat's endpoint.
@@ -379,11 +402,11 @@ class EditTests(Case):
         self.assertEqual(
             differing, [("coalesce_seconds = 20   # how long to wait", "coalesce_seconds = 45   # how long to wait")]
         )
-        self.assertEqual(changes, [{"key": "daemon.coalesce_seconds", "set": True, "from": 20, "to": 45}])
+        self.assertEqual(changes, [{"key": "daemon.coalesce_seconds", "set": True, "from": 20, "to": 45, "removes": []}])
 
     def test_a_missing_key_is_added_inside_its_own_section(self) -> None:
         new, changes = self.plan_text({"seat.ZC.enabled": False})
-        self.assertEqual(changes, [{"key": "seat.ZC.enabled", "set": False, "from": None, "to": False}])
+        self.assertEqual(changes, [{"key": "seat.ZC.enabled", "set": False, "from": None, "to": False, "removes": []}])
         self.assertIn('[seat.ZC]\ninstance = "server"\ncreds = "env"\nwake = "inbox"\nenabled = false\n', new)
         doc = tomllib.loads(new)
         self.assertIs(doc["seat"]["ZC"]["enabled"], False)
@@ -431,7 +454,7 @@ class EditTests(Case):
 
     def test_several_changes_at_once_change_exactly_those(self) -> None:
         wanted = {
-            "seat.JET.budget": {"usd_per_day": 3.5},
+            "seat.JET.budget": {"usd_per_day": 3.5, "board_per_day": 0},
             "seat.GB-FIXER.enabled": False,
             "linear_comments.enabled": True,
             "daemon.coalesce_seconds": 30,
@@ -450,6 +473,91 @@ class EditTests(Case):
         # Pins and credential names are where they were, byte for byte.
         for line in ("owner_user_id = 42                # pinned by daemon init", 'instance = "server"', 'creds = "env"                     # ZULIP_JET_EMAIL, ZULIP_JET_API_KEY'):
             self.assertIn(line, new)
+
+    def test_a_whole_table_value_never_drops_a_sub_key_silently(self) -> None:
+        # JET's budget has usd_per_day and board_per_day.  Sending only one would drop the other:
+        # on a live seat that could be a cap or a pause (wakes_per_day = 0).
+        with self.assertRaises(M.Refusal) as caught:
+            self.plan_text({"seat.JET.budget": {"usd_per_day": 3.5}})
+        self.assertEqual(caught.exception.code, "would_remove_keys")
+        self.assertIn("seat.JET.budget.board_per_day", caught.exception.detail)
+        paused = FIXTURE.replace(
+            "budget = { usd_per_day = 2.0, board_per_day = 0 }",
+            "budget = { usd_per_day = 2.0, wakes_per_day = 0 }",
+        )
+        with self.assertRaises(M.Refusal) as caught:
+            self.plan_text({"seat.JET.budget": {"usd_per_day": 2.0}}, paused)
+        self.assertEqual(caught.exception.code, "would_remove_keys")
+        self.assertIn("seat.JET.budget.wakes_per_day", caught.exception.detail)
+        with self.assertRaises(M.Refusal) as caught:
+            self.plan_text({"seat.JET.routine": {"url_env": "JET_ROUTINE_URL", "key_env": "JET_ROUTINE_KEY"}})
+        self.assertEqual(caught.exception.code, "would_remove_keys")
+
+    def test_a_named_removal_drops_exactly_what_it_names(self) -> None:
+        new, changes = M.build_plan(
+            FIXTURE,
+            M.validate_allowlist(self.allow),
+            {"seat.JET.budget": {"usd_per_day": 3.5}},
+            ["seat.JET.budget.board_per_day"],
+        )
+        self.assertEqual(changes[0]["removes"], ["seat.JET.budget.board_per_day"])
+        self.assertEqual(tomllib.loads(new)["seat"]["JET"]["budget"], {"usd_per_day": 3.5})
+        # A value that keeps every sub-key removes nothing.
+        _, changes = self.plan_text({"seat.JET.budget": {"usd_per_day": 3.5, "board_per_day": 0}})
+        self.assertEqual(changes[0]["removes"], [])
+        # A first value for a seat that had none removes nothing either.
+        _, changes = self.plan_text({"seat.ZC.budget": {"usd_per_day": 1.0}})
+        self.assertEqual(changes[0]["removes"], [])
+
+    def test_a_removal_the_request_does_not_make_is_refused(self) -> None:
+        allow = M.validate_allowlist(self.allow)
+        for remove in (
+            ["seat.JET.budget.usd_per_day"],
+            ["seat.ZC.budget.board_per_day"],
+            ["seat.JET.budget.board_per_day", "seat.JET.budget.nothing"],
+            ["daemon.coalesce_seconds.x"],
+            ["seat.JET.budget.board_per_day", "seat.JET.budget.board_per_day"],
+            ["seat.JET.budget"],
+            ["not a name"],
+            "seat.JET.budget.board_per_day",
+            [5],
+        ):
+            with self.subTest(remove=remove):
+                with self.assertRaises(M.Refusal) as caught:
+                    # This value keeps both of the budget's sub-keys, so it drops nothing.
+                    M.build_plan(
+                        FIXTURE,
+                        allow,
+                        {"seat.JET.budget": {"usd_per_day": 3.5, "board_per_day": 0}},
+                        remove,
+                    )
+                self.assertEqual(caught.exception.code, "usage")
+
+    def test_the_removal_is_part_of_the_plan_and_of_its_hash(self) -> None:
+        wanted = {"seat.JET.budget": {"usd_per_day": 3.5}}
+        refused, status = self.run_request("plan", wanted)
+        self.assertEqual((status, refused["errorCode"]), (2, "would_remove_keys"))
+        self.assert_untouched()
+        planned, status = M.run_request(
+            self.request("plan", wanted, remove=["seat.JET.budget.board_per_day"]),
+            path=self.live,
+            checker=ok_check,
+        )
+        self.assertEqual((status, planned["changes"][0]["removes"]), (0, ["seat.JET.budget.board_per_day"]))
+        applied, status = M.run_request(
+            self.request(
+                "apply",
+                wanted,
+                remove=["seat.JET.budget.board_per_day"],
+                expectPlanSHA256=planned["planSHA256"],
+            ),
+            path=self.live,
+            checker=ok_check,
+        )
+        self.assertEqual((status, applied["result"], applied["changes"]), (0, "applied", planned["changes"]))
+        self.assertEqual(
+            tomllib.loads(self.live.read_text())["seat"]["JET"]["budget"], {"usd_per_day": 3.5}
+        )
 
     def test_a_value_already_as_asked_is_no_change(self) -> None:
         new, changes = self.plan_text({"daemon.coalesce_seconds": 20, "seat.JET.wake": "http"})
@@ -915,7 +1023,7 @@ class ControlVerbTests(Case):
         )
         self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "planned"))
         inner = answer["listenerSettings"]
-        self.assertEqual(inner["changes"], [{"key": "daemon.coalesce_seconds", "set": True, "from": 20, "to": 33}])
+        self.assertEqual(inner["changes"], [{"key": "daemon.coalesce_seconds", "set": True, "from": 20, "to": 33, "removes": []}])
         self.assertEqual(answer["commands"], [])
         self.assert_untouched()
 
@@ -948,6 +1056,18 @@ class ControlVerbTests(Case):
         # The audit names no setting and no value.
         self.assertNotIn("ZC", json.dumps(rows))
         self.assertNotIn("enabled", json.dumps(rows))
+
+    def test_remove_reaches_the_editor_from_the_command_line(self) -> None:
+        argv = ["listener-settings", "plan", "--set", "seat.JET.budget={ usd_per_day = 3.5 }", "--file", str(self.live), "--json"]
+        code, answer = self.run_main(argv)
+        self.assertEqual((code, answer["errorCode"]), (2, "would_remove_keys"))
+        code, answer = self.run_main(argv + ["--remove", "seat.JET.budget.board_per_day"])
+        self.assertEqual((code, answer["result"]), (0, "planned"), answer)
+        self.assertEqual(
+            answer["listenerSettings"]["changes"][0]["removes"], ["seat.JET.budget.board_per_day"]
+        )
+        self.assertIn("removes: seat.JET.budget.board_per_day", answer["output"])
+        self.assert_untouched()
 
     def test_usage_refusals(self) -> None:
         file = str(self.live)
@@ -1044,6 +1164,18 @@ class ControlVerbTests(Case):
         self.assertEqual(answer["listenerSettings"], document)
         self.assertEqual(answer["output"], "+enabled = false\n")
         self.assertEqual(self.audit_rows(), [])
+
+    def test_a_remove_list_on_stdin_is_passed_on(self) -> None:
+        document = {"tool": "listener-settings", "ok": True, "result": "planned", "changes": [], "diff": []}
+        stdin = json.dumps(
+            {"set": {"seat.JET.budget": {"usd_per_day": 3.5}}, "remove": ["seat.JET.budget.board_per_day"]}
+        ).encode()
+        answer, code, reader = self.server("plan", stdin, FakeReader(document))
+        self.assertEqual(code, 0)
+        request = json.loads(reader.calls[0]["data"])
+        self.assertEqual(request["remove"], ["seat.JET.budget.board_per_day"])
+        answer, code, reader = self.server("plan", b'{"set": {"seat.ZC.enabled": false}, "remove": "x"}')
+        self.assertEqual((code, answer["result"], reader.calls), (2, "refused", []))
 
     def test_an_apply_is_audited_without_settings_or_values(self) -> None:
         document = {"tool": "listener-settings", "ok": True, "result": "applied", "changes": [{"key": "seat.ZC.enabled"}], "diff": [], "reload": {"ok": True, "code": "reloaded"}}
