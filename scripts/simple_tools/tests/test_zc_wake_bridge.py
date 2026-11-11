@@ -26,12 +26,20 @@ import importlib.util
 
 from importlib.machinery import SourceFileLoader as _SFL
 
-_loader = _SFL("zc_wake_bridge_stub", str(BRIDGE))
-_spec = importlib.util.spec_from_loader("zc_wake_bridge_stub", _loader)
-assert _spec is not None
-B = importlib.util.module_from_spec(_spec)
+# The one router, loaded directly, with the ZCode spec set:  the thin platform file
+# contributes only its delivery mechanism now, so the suite exercises the shared core.
+from simple_tools import wake_router as _WR
+from simple_tools.wake_router import RouterSpec
+
+_WR.SPEC = RouterSpec(
+    seat="ZC",
+    display="ZCode",
+    delivery_argv=("/bin/true",),
+    delivery_enabled=False,
+    target_host="server",
+)
+B = _WR
 sys.modules["zc_wake_bridge_stub"] = B
-_loader.exec_module(B)
 
 
 SESSION_DDL = (
