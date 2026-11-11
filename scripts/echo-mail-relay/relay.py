@@ -8,6 +8,12 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 OPENER = urllib.request.build_opener(NoRedirect())
 
+# The current wake contract and signature header (FLEET-PROTOCOL; the listener
+# fleet speaks these).  The retired agent-sync names were replaced, not aliased:
+# accepting both would let a stale sender skip the migration.
+WAKE_CONTRACT = 'simple-tools-wake/1'
+SIGNATURE_HEADER = 'X-Simple-Tools-Signature'
+
 REALM = 'https://simplewithus.zulipchat.com'
 DESTINATIONS = {'ECHO':'jaywedgeworth@mail.instinct.com','WISE':'wedgeworth@mail.instinct.com'}
 MAX_BODY = 256 * 1024
@@ -44,7 +50,7 @@ class Relay:
             key = self.env.get(seat+'_LISTENER_HMAC_KEY', '')
             expected = hmac.new(key.encode(), raw, hashlib.sha256).hexdigest()
             if not key or not signature or not hmac.compare_digest(expected, signature): raise PermissionError()
-            if body.get('contract') != 'agent-sync-wake/1' or body.get('seat') != seat: raise ValueError('invalid contract')
+            if body.get('contract') != WAKE_CONTRACT or body.get('seat') != seat: raise ValueError('invalid contract')
             at = body.get('sent_at')
             if not isinstance(at, int) or abs(self.clock() - at) > 300: raise ValueError('stale wake')
             ids = body.get('trigger_ids') or [body.get('message_id')]
@@ -172,7 +178,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length=int(self.headers.get('Content-Length','0'))
             if length<1 or length>MAX_BODY:raise ValueError()
-            data=self.server.relay.accept(self.path,self.rfile.read(length),self.headers.get('X-Agent-Sync-Signature'))
+            data=self.server.relay.accept(self.path,self.rfile.read(length),self.headers.get(SIGNATURE_HEADER))
             self.response(200,data)
         except PermissionError:self.response(401,{'error':'unauthorized'})
         except (ValueError,TypeError,KeyError):self.response(400,{'error':'invalid_request'})
@@ -191,3 +197,4 @@ def main():
     threading.Thread(target=worker,daemon=True).start()
     server=BoundedServer(('0.0.0.0',int(os.environ.get('PORT','8080'))),Handler);server.relay=relay;server.serve_forever()
 if __name__=='__main__':main()
+

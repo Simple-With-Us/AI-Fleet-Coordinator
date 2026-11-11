@@ -1,11 +1,12 @@
 import unittest,tempfile,json,hmac,hashlib
+import relay as R
 from relay import Relay
 class Tests(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.path=self.tmp.name+'/db';self.env={'ECHO_LISTENER_HMAC_KEY':'listener-test','ECHO_ZULIP_WEBHOOK_TOKEN':'webhook-test','ECHO_BOT_EMAIL':'bot@example.test','RELAY_DELIVERY_ENABLED':'true'};self.r=Relay(self.path,self.env,clock=lambda:1000)
  def tearDown(self):self.r.db.close();self.tmp.cleanup()
  def listener(self,mid=7):
-  raw=json.dumps({'contract':'agent-sync-wake/1','seat':'ECHO','message_id':mid,'trigger_ids':[mid],'sent_at':1000}).encode();sig=hmac.new(b'listener-test',raw,hashlib.sha256).hexdigest();return raw,sig
+  raw=json.dumps({'contract':R.WAKE_CONTRACT,'seat':'ECHO','message_id':mid,'trigger_ids':[mid],'sent_at':1000}).encode();sig=hmac.new(b'listener-test',raw,hashlib.sha256).hexdigest();return raw,sig
  def native(self,mid=7):
   return json.dumps({'token':'webhook-test','bot_email':'bot@example.test','trigger':'mention','message':{'id':mid,'type':'stream','content':'hello','timestamp':999,'token':'DO NOT STORE'}}).encode()
  def test_separate_auth(self):
@@ -37,8 +38,36 @@ class Tests(unittest.TestCase):
   self.assertEqual(self.r.health()['pending'],2)
   with self.assertRaises(PermissionError):self.r.accept('/zulip/wise',self.native())
   self.assertEqual(self.r.db.execute('select count(distinct seat) from outbox_v2').fetchone()[0],2)
-  def test_native_form_encoded(self):
-    import urllib.parse as up
-    form=up.urlencode({'token':'webhook-test','bot_email':'bot@example.test','trigger':'direct_message','message':json.dumps({'id':11,'type':'private','content':'hi','timestamp':999})}).encode()
-    self.r.accept('/zulip/echo',form);self.assertEqual(self.r.db.execute('select id from outbox_v2 where id=11').fetchone()[0],11)
+ def test_current_contract_and_header_pinned(self):
+  self.assertEqual(R.WAKE_CONTRACT,'simple-tools-wake/1');self.assertEqual(R.SIGNATURE_HEADER,'X-Simple-Tools-Signature')
+ def test_listener_full_body_compat(self):
+  body={'contract':R.WAKE_CONTRACT,'seat':'ECHO','wake_id':'w1-abc','message_id':7,'trigger_ids':[7,8],'dm':False,'channel':'Work-In-Progress','topic':'t','stream_id':642232,'dm_recipient_ids':[],'sender_user_id':123,'sender_full_name':'A Peer','is_bot':True,'owner':False,'excerpt':'scrubbed','reply_prefix':'[ECHO·wake] re=7','sent_at':1000}
+  raw=json.dumps(body).encode();sig=hmac.new(b'listener-test',raw,hashlib.sha256).hexdigest()
+  self.r.accept('/listener/echo',raw,sig)
+  ids=[row[0] for row in self.r.db.execute('select id from outbox_v2 order by id').fetchall()]
+  self.assertEqual(ids,[7,8])
+  for row in self.r.db.execute('select body from outbox_v2').fetchall():self.assertEqual(json.loads(row[0]),{'fetch':True})
+ def test_hmac_rejects_tampered_bytes_and_missing_signature(self):
+  raw,sig=self.listener()
+  with self.assertRaises(PermissionError):self.r.accept('/listener/echo',raw+b' ',sig)
+  with self.assertRaises(PermissionError):self.r.accept('/listener/echo',raw,None)
+  with self.assertRaises(PermissionError):self.r.accept('/listener/echo',raw,'')
+ def test_replay_window_edges_and_types(self):
+  for at,ok in ((700,True),(699,False),(1300,True),(1301,False)):
+   raw,sig=self.listener();body=json.loads(raw);body['sent_at']=at;raw=json.dumps(body).encode();sig=hmac.new(b'listener-test',raw,hashlib.sha256).hexdigest()
+   if ok:self.r.accept('/listener/echo',raw,sig)
+   else:
+    with self.assertRaises(ValueError):self.r.accept('/listener/echo',raw,sig)
+  raw,sig=self.listener();body=json.loads(raw);body['sent_at']='1000';raw=json.dumps(body).encode();sig=hmac.new(b'listener-test',raw,hashlib.sha256).hexdigest()
+  with self.assertRaises(ValueError):self.r.accept('/listener/echo',raw,sig)
+ def test_trigger_ids_bounds_and_fallback(self):
+  raw,sig=self.listener(mid=9);self.r.accept('/listener/echo',raw,sig)
+  self.assertEqual(self.r.db.execute('select id from outbox_v2').fetchone()[0],9)
+  raw,sig=self.listener();body=json.loads(raw);body['trigger_ids']=list(range(1,102));raw=json.dumps(body).encode();sig=hmac.new(b'listener-test',raw,hashlib.sha256).hexdigest()
+  with self.assertRaises(ValueError):self.r.accept('/listener/echo',raw,sig)
+ def test_native_form_encoded(self):
+  import urllib.parse as up
+  form=up.urlencode({'token':'webhook-test','bot_email':'bot@example.test','trigger':'direct_message','message':json.dumps({'id':11,'type':'private','content':'hi','timestamp':999})}).encode()
+  self.r.accept('/zulip/echo',form);self.assertEqual(self.r.db.execute('select id from outbox_v2 where id=11').fetchone()[0],11)
 if __name__=='__main__':unittest.main()
+
