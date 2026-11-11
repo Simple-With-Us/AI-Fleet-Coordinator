@@ -129,7 +129,7 @@ What the source does NOT carry, and so is null here (or never produced) whatever
     source's own `pause` value is the wrong shape.
 
 Deliberately never read: `config_errors`, `reload_refused`, `reload_at`, `partition_file`,
-`owner_user_id`, `loop_guard`, `chat_nudges`, `muse_bridge`, `pid`, `version`, `started`, each
+`owner_user_id`, `loop_guard`, `chat_nudges`, `pid`, `version`, `started`, each
 seat's `creds`, `cursor` and its `webhook_high_water` (both internal ingestion positions), `claude`, `muse`, `routine`, `pin`, `pinned`, `model`, `red`, `live`,
 `budget`, `routes_24h`, `route_enabled`, `provider` and `fallback` (beyond `stands_in`), and a
 lease's `lease_id`, `session_id` and `title`.  `drain` is not read either:  it is the AFC-652

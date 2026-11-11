@@ -1,5 +1,5 @@
-"""Operator session letters for Cursor Cloud agents, and a DM to the Grok Bot a chat is named for (owner request,
-Nov 7, 2026).
+"""Operator session letters for Cursor Cloud agents, and the letter in each chat's title (owner request,
+Nov 7, 2026; titles set by the sweep, Nov 9, 2026).
 
     python3 -m simple_tools.cursor_cloud_letters sweep [--dry-run] [--remote DEST]
 
@@ -14,12 +14,12 @@ instead.  Each run:
     chats and these never sweep each other.  A registration also marks the agent seen, so a letter stays while the agent
     is open and the registry's 36 hour sweep frees it once the agent is gone.  The title is sent without any letter
     already on it.
-3.  Tells the bot a chat is named for.  An agent whose title is "GB-Director: words" (or "XX: GB-Director: words", once
-    it carries its letter) belongs to that Grok Bot, so the bot gets a Zulip DM with the chat's link, its letter, and the
-    title to rename it to, "XX: GB-Director: words".  The owner allowed the wake (Nov 7, 2026):  the bot renames the
-    chat.  A bot is told once per letter:  again only when the chat's letter or generation changes, never while the
-    title already carries the letter, and never for a name that is not a GB bot's (`simple-chat dm` refuses an unknown
-    name before anything is sent).  A DM whose outcome is unknown counts as sent, so a bot is never told twice.
+3.  Sets the title.  The Cloud Agents API has no rename, so the sweep steers the agent and asks it to call
+    rename-chat with "XX: " in front of the title it already has.  Every recent agent is steered, including one a
+    Grok Bot spawned, and the bot does not have to take part.  A title that already starts with its letter is left
+    alone.  A steer is not repeated for the same letter until half an hour has passed, and never more than twice.
+    When the account refuses a steer, a title that names a Grok Bot still gets the Zulip DM (owner, Nov 7, 2026).
+    A DM whose outcome is unknown counts as sent, so a bot is never told twice.
 
 The registry is reached the way the hooks reach it:  in process where the registry is (the Mac, or wherever the
 registry API URL is configured), else over ssh to the destination in SESSION_LETTER_REMOTE or --remote.  The DM goes
@@ -59,9 +59,17 @@ BOT_TITLE = re.compile(r"^(?:[A-Z]{1,2}: )?(GB-[A-Za-z][A-Za-z0-9]{0,31})\s*:\s*
 MARKUP = re.compile(r"[`*_~@#\[\]<>|$:!\\]")
 # A Cloud agent's link, as the Cursor API gives it.
 CURSOR_LINK = re.compile(r"https://cursor\.com/[A-Za-z0-9/?=&._-]{1,200}")
-# The whole sweep's budget for DMs:  past it, the rest wait for the next run, so one slow `simple-chat` cannot hold the
-# run past the timer's next start.  A registration still happens for every agent.
+# The whole sweep's budget for steers and DMs:  past it, the rest wait for the next run, so one slow call cannot hold
+# the run past the timer's next start.  A registration still happens for every agent.
 DM_BUDGET = 180
+# rename-chat accepts at most 200 characters.  The letter stays at the front; the words are what gets cut.
+TITLE_LIMIT = 200
+# One steer per letter, then one more if the title is still bare after this long.  After that the sweep stops asking.
+MAX_STEERS = 2
+STEER_RETRY = 30 * 60
+STEER_DONE = ("sent", "unknown")
+STEER_RETRY_NOW = ("busy", "not-started")
+STEER_STOP = ("unavailable", "refused")
 # Cursor keeps a finished Cloud agent IDLE until it is archived, so the open list holds agents untouched for weeks.  Only
 # one updated within the registry's own stale window takes a letter (and wakes its bot);  an older one would hold a
 # letter it never uses and wake a bot about a dead chat.  An agent with no readable updated_at is skipped too.
@@ -179,6 +187,63 @@ def plain(text: object) -> str:
     return PL.one_line(MARKUP.sub("", PL.one_line(text)))[:200]
 
 
+def wanted_title(label: str, current: object) -> str:
+    """The title the chat should carry: its letter, then its words, cut to what rename-chat accepts."""
+    title = PL.compose(label, PL.bare(current))
+    if len(title) <= TITLE_LIMIT:
+        return title
+    prefix = "%s: " % label
+    return prefix + title[len(prefix) : TITLE_LIMIT].rstrip()
+
+
+def rename_prompt(title: str, busy: bool) -> str:
+    """The steer that asks the agent to retitle itself.  Rendered copy: a sentence gap is U+00A0 plus a space.
+
+    The title is one line.  A double quote in it becomes a single quote so the title stays inside the quotes the
+    instruction puts around it."""
+    shown = PL.one_line(title).replace('"', "'")[:TITLE_LIMIT]
+    gap = "\u00a0 "
+    if busy:
+        return (
+            'Call the rename-chat tool once with this exact title: "%s".%s'
+            "Then continue the work already in progress.%s"
+            "Do not change that work." % (shown, gap, gap)
+        )
+    return (
+        'Call the rename-chat tool once with this exact title: "%s".%s'
+        "Then stop.%s"
+        "Do not edit files, open a pull request, or do any other work." % (shown, gap, gap)
+    )
+
+
+def _same_letter(told: Mapping[str, Any], label: str, generation: int) -> bool:
+    return told.get("label") == label and int(told.get("generation") or 0) == generation
+
+
+def steer_due(told: Mapping[str, Any], label: str, generation: int, now: float) -> bool:
+    """Whether this letter still needs a steer.  A steer that sent nothing is due at once.  One that was sent is
+    due again once, after STEER_RETRY, and then not again.  A refusal is not retried."""
+    if not _same_letter(told, label, generation):
+        return True
+    outcome = told.get("steer")
+    if outcome in STEER_STOP:
+        return False
+    if outcome in STEER_DONE:
+        if int(told.get("attempts") or 1) >= MAX_STEERS:
+            return False
+        return now - float(told.get("at") or 0) >= STEER_RETRY
+    return True
+
+
+def dm_already(told: Mapping[str, Any], label: str, generation: int) -> bool:
+    """A DM for this letter already went out, including one an older sweep recorded as `outcome`."""
+    if not _same_letter(told, label, generation):
+        return False
+    if told.get("dm") in STEER_DONE:
+        return True
+    return "steer" not in told and told.get("outcome") in STEER_DONE
+
+
 def send_dm(bot: str, text: str, env: Mapping[str, str], runner: Runner) -> str:
     """Send one DM through `simple-chat dm`.  "sent", "refused" (it answered and sent nothing, such as for an unknown
     name), "unknown" (it may have sent), or "not-started" (it could not run, so nothing went out)."""
@@ -214,6 +279,36 @@ def recent(agent: Mapping[str, Any], now: float, max_age_hours: float = MAX_AGE_
     return now - when <= max_age_hours * 3600
 
 
+def _remember(
+    state: dict[str, Any],
+    sid: str,
+    told: Mapping[str, Any],
+    *,
+    bot: str,
+    label: str,
+    generation: int,
+    now: float,
+    steer: str,
+) -> dict[str, Any]:
+    """Record one finished steer, keeping a DM the same letter already sent."""
+    attempts = int(told.get("attempts") or 0) + 1 if _same_letter(told, label, generation) else 1
+    record: dict[str, Any] = {
+        "bot": bot,
+        "label": label,
+        "generation": generation,
+        "steer": steer,
+        "attempts": attempts,
+        "at": now,
+    }
+    if _same_letter(told, label, generation):
+        earlier = told.get("dm") or (told.get("outcome") if "steer" not in told else "")
+        if earlier in STEER_DONE:
+            record["dm"] = earlier
+            record["outcome"] = earlier
+    state[sid] = record
+    return record
+
+
 def sweep(
     env: Mapping[str, str],
     *,
@@ -221,6 +316,7 @@ def sweep(
     complete: Callable[[], bool] | None = None,
     runner: Runner = subprocess.run,
     transport: Transport | None = None,
+    steer: Callable[[str, str], str] | None = None,
     remote: str = "",
     dry_run: bool = False,
     now: float | None = None,
@@ -235,9 +331,15 @@ def sweep(
 
         cloud = CursorCloudTransport(timeout_seconds=API_TIMEOUT)
         discover = cloud.discover
+        if steer is None:
+            steer = cloud.steer
 
         def complete() -> bool:
             return getattr(cloud, "last_discovery_status", "") == "complete"
+    elif steer is None:
+
+        def steer(session_id: str, text: str) -> str:
+            return "not-started"
 
     found = discover()
     # Whether the discovery saw every open agent:  only then is an agent missing from it gone.
@@ -266,22 +368,58 @@ def sweep(
         row["label"] = label
         told = state.get(sid) if isinstance(state.get(sid), dict) else {}
         current = PL.one_line(agent.get("title"))
-        wanted = {"bot": bot, "label": label, "generation": generation}
-        if (
-            bot
-            and not current.startswith(label + ": ")
-            and {k: told.get(k) for k in wanted} != wanted
-        ):
+        if current.startswith(label + ": "):
+            row["title"] = "set"
+            rows.append(row)
+            continue
+        just_steered = False
+        if steer_due(told, label, generation, now):
             if clock() - started > budget:
-                row["dm"] = "deferred"  # the next run sends it
+                row["steer"] = "deferred"  # the next run sends it
+                rows.append(row)
+                continue
+            outcome = steer(
+                sid, rename_prompt(wanted_title(label, current), agent.get("state") == "busy")
+            )
+            row["steer"] = outcome
+            # A sent steer is done for this pass, and so is one whose outcome is unknown: it may have reached the
+            # agent.  A refusal is not asked again.  A steer that sent nothing is retried next run, so it is not
+            # recorded.
+            if outcome in STEER_DONE or outcome in STEER_STOP:
+                told = _remember(
+                    state,
+                    sid,
+                    told,
+                    bot=bot,
+                    label=label,
+                    generation=generation,
+                    now=now,
+                    steer=outcome,
+                )
+                just_steered = True
             else:
-                outcome = send_dm(bot, message(bot, agent, label, generation, words), env, runner)
-                row["dm"] = outcome
-                # A sent DM is done, and so is one whose outcome is unknown:  it may have reached Zulip, and a bot is
-                # never woken twice for one letter.  A refusal or a DM that never started sent nothing, so the next
-                # run tries again.
-                if outcome in ("sent", "unknown"):
-                    state[sid] = dict(wanted, outcome=outcome, at=now)
+                rows.append(row)
+                continue
+        # The title is still bare on a later pass.  Ask the Grok Bot only when steering cannot do it, or both
+        # steers have already been spent.  The pass that spends the second steer waits, so that steer can land.
+        # A bot is never told twice for one letter.
+        spent = told.get("steer") in STEER_STOP or (
+            told.get("steer") in STEER_DONE and int(told.get("attempts") or 0) >= MAX_STEERS
+        )
+        # A steer that was just sent still has this pass to land.  A refusal will not land, so the bot is asked now.
+        wait_for_steer = just_steered and told.get("steer") in STEER_DONE
+        if bot and spent and not wait_for_steer and not dm_already(told, label, generation):
+            if clock() - started > budget:
+                row["dm"] = "deferred"
+            else:
+                dm = send_dm(bot, message(bot, agent, label, generation, words), env, runner)
+                row["dm"] = dm
+                if dm in ("sent", "unknown"):
+                    record = dict(state.get(sid) or {})
+                    record.update(
+                        bot=bot, label=label, generation=generation, dm=dm, outcome=dm, at=now
+                    )
+                    state[sid] = record
         rows.append(row)
     if not dry_run:
         if whole:
@@ -304,7 +442,9 @@ def sweep(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="cursor_cloud_letters")
     sub = parser.add_subparsers(dest="command", required=True)
-    s = sub.add_parser("sweep", help="give open Cursor Cloud agents letters and tell their GB bots")
+    s = sub.add_parser(
+        "sweep", help="give open Cursor Cloud agents letters and put the letter in each title"
+    )
     s.add_argument(
         "--dry-run", action="store_true", help="read the agents and print what it would do"
     )

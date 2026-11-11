@@ -104,3 +104,8 @@ refuses to roll back a finished migration if a later install-seat changed the ba
 journal is protected only by being a root-only file in a 0700 directory: these checks catch corruption
 and mismatches, not someone who can already write as root. A real reboot test on the host is a separate
 released run. Adding a seat stays the proof-gated `install-seat`.
+
+
+## Auth refusals a seat can name
+
+A recognizable seat bearer whose identity is not a shared seat in the loaded policy is refused as `seat_not_in_policy`.  That names the loaded file, which can differ from the reviewed source in `deploy/seat-policy.json`.  Install the reviewed row with `git-relay/deploy/seat_policy.py`.  `install` needs `--unit`, and `--apply` needs the digest the dry run printed.  Adding one seat uses `install-seat` with `--unit`, `--seat`, `--row-json`, `--expect-before`, `--expect-after` and `--receipt`.  The installer restarts the unit.  `bearer_rejected` means the identity is in the loaded policy and the Worker did not confirm the bearer.  `verifier_unavailable` means the Worker could not be asked.  `no_app_credential` means Fleet-OPS prod `/github-apps` has no usable `GH_APP_<SLUG>_ID` or `GH_APP_<SLUG>_PRIVATE_KEY`.  For ZC those names are `GH_APP_SWU_ZC_ID` and `GH_APP_SWU_ZC_PRIVATE_KEY`.  Add the missing key and restart the relay, because an absent name is remembered for the process lifetime.  This document does not install a row or write a secret.

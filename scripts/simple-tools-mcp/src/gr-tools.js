@@ -21,7 +21,7 @@ import { callTypedV1 } from "./gr-typed-v1.js";
 import { ASSERTION_FAMILY_RE } from "./gr-assert.js";
 import { WF_V1_READ_ACTIONS, WF_V1_ACTIONS, workflowInputLimit, validWfV1Args, boundedWorkflowInput, parseWfV1Args, validWfV1Response, utf8Bytes } from "./gr-workflow-v1.js";
 import { resolveSecret } from "./infisical.js";
-import { classifyRelayRefusal, movedRepository } from "./gr-refusal.js";
+import { allowlistedGithubDiagnostics, classifyRelayRefusal, movedRepository } from "./gr-refusal.js";
 
 /** The relay's response envelope (kody discussion_r4372745180):  every body
  * is decoded as UNKNOWN and validated with RelayResponseSchema.parse before
@@ -199,6 +199,9 @@ export class GrRelayClient {
       const outcomeUnknown=()=>({status:502,body:{error:"workflow_outcome_unknown",outcome:"unknown",retryable:false,...(githubCode?{github_code:githubCode}:{})}});
       // Never reflect upstream error prose; a duplicate can be pending/unknown.
       if(response.status===409 && ['pending','unknown'].includes(parsed.outcome)) return outcomeUnknown();
+      if (parsed.error === "verifier_unavailable") {
+        return {status: response.status, body: {error: "workflow_request_refused", reason: "verifier_unavailable", retryable: true}};
+      }
       if(response.status>=500 && parsed.retryable!==true) {
         if (response.status === 502 && parsed.outcome === "unknown" && githubCode) return outcomeUnknown();
         return unavailable();
@@ -227,7 +230,8 @@ export class GrRelayClient {
       // A moved repository carries only its validated details (a strict
       // owner/name and a numeric id), never the relay's prose.
       const moved=classified?.reason==="repository_moved"?movedRepository(body):{};
-      return {status:response.status,body:{error:"workflow_request_refused", ...(classified ? classified : {}), ...moved, ...(parsed.retryable===true ? {retryable:true} : {})}};
+      const diagnostics=write?allowlistedGithubDiagnostics(body.github_diagnostics):null;
+      return {status:response.status,body:{error:"workflow_request_refused", ...(classified ? classified : {}), ...moved, ...(diagnostics ? {github_diagnostics:diagnostics} : {}), ...(parsed.retryable===true ? {retryable:true} : {})}};
     } catch {return unavailable();}
   }
 
