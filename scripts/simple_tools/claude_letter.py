@@ -302,7 +302,11 @@ def own_words(current: object, note: Mapping[str, Any]) -> str:
     leaves the first one on a title the app did not retitle).  The words are kept whole;  only the copy sent to the
     registry is cut and scanned."""
     words = one_line(current)
-    for held in (note.get("label"), note.get("prior_label"), *reversed(note.get("held_labels") or [])):
+    for held in (
+        note.get("label"),
+        note.get("prior_label"),
+        *reversed(note.get("held_labels") or []),
+    ):
         if held:
             words = bare(words, str(held))
     return words
@@ -685,7 +689,12 @@ def _on_record(OR: Any, db: str, args: Any, sid: str) -> dict[str, Any]:
                 "closed": reg.close(rid, actor=args.seat, source=args.source),
                 "label": rec["label"],
             }
-        return {"ok": True, "label": rec["label"], "generation": rec["generation"], "record_id": rid}
+        return {
+            "ok": True,
+            "label": rec["label"],
+            "generation": rec["generation"],
+            "record_id": rid,
+        }
     finally:
         reg.close_db()
 
@@ -829,7 +838,9 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
         return error
     out = {"ok": True, "label": updated.get("label", ""), "generation": updated.get("generation")}
     if updated.get("record_id"):
-        out["record_id"] = updated["record_id"]  # as a touch's answer carries it, for the hook's note
+        out["record_id"] = updated[
+            "record_id"
+        ]  # as a touch's answer carries it, for the hook's note
     return out
 
 

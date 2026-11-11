@@ -866,7 +866,12 @@ def _on_record(OR: Any, db: str, args: Any, sid: str) -> dict[str, Any]:
                 ),
                 "label": rec["label"],
             }
-        return {"ok": True, "label": rec["label"], "generation": rec["generation"], "record_id": rid}
+        return {
+            "ok": True,
+            "label": rec["label"],
+            "generation": rec["generation"],
+            "record_id": rid,
+        }
     finally:
         reg.close_db()
 
@@ -1108,7 +1113,9 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
         "generation": updated.get("generation"),
     }
     if updated.get("record_id"):
-        out["record_id"] = updated["record_id"]  # as a touch's answer carries it, for the hook's note
+        out["record_id"] = updated[
+            "record_id"
+        ]  # as a touch's answer carries it, for the hook's note
     return out
 
 
@@ -2042,7 +2049,9 @@ def on_rename(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     answer: dict[str, Any] = {}
     if words:
         note["title"] = words
-        answer = _push(chat, note, "title", words)  # a failed send is kept in the note for a later prompt
+        answer = _push(
+            chat, note, "title", words
+        )  # a failed send is kept in the note for a later prompt
     elif chat.now - float(note.get("touched_at") or 0) >= TOUCH_SECONDS:
         # Only the letter was dropped, so the Operator needs no words, but the letter put back must be the one the
         # registry holds now, so a touch that is due (TOUCH_SECONDS, as on a prompt) is made here.
