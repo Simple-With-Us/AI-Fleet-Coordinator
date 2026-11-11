@@ -1354,11 +1354,25 @@ class PartitionTests(ServerHarness):
         for seat in MAC_CLI_SEATS:
             seat_cfg = server.seats.get(seat) or server.disabled[seat]
             code = C.env_code(seat)
-            self.assertEqual(
-                (seat_cfg.wake, seat_cfg.creds, seat_cfg.instance, seat_cfg.routine),
-                ("inbox", "env", "server", None),
-                "%s has inbox capture on the server" % seat,
-            )
+            if seat == "ZC":
+                # ZC is woken through its wake bridge (docs/protocols/zcode-wakes.md), with the bridge's
+                # bearer, so it is the one Mac CLI seat with a routine.
+                self.assertEqual(
+                    (seat_cfg.wake, seat_cfg.creds, seat_cfg.instance),
+                    ("http", "env", "server"),
+                    "ZC wakes through its bridge",
+                )
+                routine = seat_cfg.routine
+                self.assertEqual(
+                    (routine.url_env, routine.key_env, routine.auth, routine.header, routine.method),
+                    ("ZC_ROUTINE_URL", "ZC_ROUTINE_KEY", "bearer", "Authorization", "POST"),
+                )
+            else:
+                self.assertEqual(
+                    (seat_cfg.wake, seat_cfg.creds, seat_cfg.instance, seat_cfg.routine),
+                    ("inbox", "env", "server", None),
+                    "%s has inbox capture on the server" % seat,
+                )
             self.assertEqual(
                 (seat_cfg.email_env, seat_cfg.key_env, seat_cfg.site_env),
                 ("ZULIP_%s_EMAIL" % code, "ZULIP_%s_API_KEY" % code, "ZULIP_SITE"),

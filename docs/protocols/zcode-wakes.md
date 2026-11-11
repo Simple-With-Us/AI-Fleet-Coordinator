@@ -10,7 +10,7 @@ one decision still open.
 ## The chain, end to end
 
     Zulip tag @ZC or DM zc-bot
-      -> the listener that holds the seat (partition:  ZC = "mac", the Mac instance today)
+      -> the listener that holds the seat (partition:  ZC = "server", the one server listener since Nov 10)
            records the message in the seat inbox   (works since Nov 6, OPS-1039)
       -> [seat.ZC] wake = "http"  POSTs simple-tools-wake/1, bearer-signed with ZC_ROUTINE_KEY
            -> afc-zc-wake-bridge on jay-server (tailnet address only, port 8791)
@@ -67,6 +67,7 @@ a working key for the MiniMax entry.  Flipping it is one config file:
     http-wake seat's routine names from Infisical at start (the same one fetch as the seat's
     Zulip pair), so a `daemon reload` applies the config and a restart picks the keys up.
     `ZC_ROUTINE_URL` is the bridge's tailnet URL, `http://<jay-server tailnet ip>:8791/wake/ZC`.
+    Since the Nov 10 one-listener cutover the listener that holds `[seat.ZC]` is the server's, not the Mac's:  its sample section carries `wake = "http"` and the routine line above, the key is read from Fleet-OPS `/zulip` through the loader's secondary read (`LISTENER_READ_CODES` in `server/infisical_env.py`) and the URL from AFC `prod` `/zulip`, and both load at the container's start, so a redeploy picks them up and a `daemon reload` does not.
 4.  Server:  install the unit (`/etc/zc-wake-bridge.env` carries `ZC_WAKE_BIND=<tailnet ip>`),
     enable it, `curl -s http://127.0.0.1:8791/health`.
 5.  Prove it:  mention @ZC in a test topic;  the Mac listener's wake ledger records the POST,
