@@ -323,6 +323,14 @@ class SteerTests(unittest.TestCase):
         api.run_error = RuntimeError("Cursor API 400 on POST /v1/agents/bc-one/runs: validation_error")
         self.assertEqual(CursorCloudTransport(api).steer("bc-one", "rename"), "refused")
 
+    def test_transient_statuses_are_deferred_not_refused(self) -> None:
+        api = FakeCursorApi()
+        for status in (408, 425, 429):
+            api.run_error = RuntimeError(
+                "Cursor API %d on POST /v1/agents/bc-one/runs: transient" % status
+            )
+            self.assertEqual(CursorCloudTransport(api).steer("bc-one", "rename"), "deferred")
+
     def test_a_missing_key_sends_nothing_and_a_network_error_is_unknown(self) -> None:
         api = FakeCursorApi()
         api.load_api_key = lambda: ""

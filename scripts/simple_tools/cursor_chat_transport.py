@@ -358,8 +358,9 @@ class CursorCloudTransport:
 
     def steer(self, agent_id: str, text: str) -> str:
         """Steer one existing agent.  "sent" once Cursor accepted it, "unavailable" when the account
-        refuses steering, "busy" on 409, "refused" on any other 4xx, "not-started" when nothing was
-        sent, and "unknown" when a later error may still have delivered the prompt."""
+        refuses steering, "busy" on 409, "deferred" on a transient 408, 425 or 429 (the sweep
+        retries those; they are not refusals), "refused" on any other 4xx, "not-started" when
+        nothing was sent, and "unknown" when a later error may still have delivered the prompt."""
         safe_id = _agent_id(agent_id)
         if safe_id is None or not isinstance(text, str) or not text:
             return "refused"
@@ -377,6 +378,8 @@ class CursorCloudTransport:
                 return "unavailable"
             if exc.status == 409:
                 return "busy"
+            if exc.status in (408, 425, 429):
+                return "deferred"
             if exc.status is not None and 400 <= exc.status < 500:
                 return "refused"
             return "unknown"
