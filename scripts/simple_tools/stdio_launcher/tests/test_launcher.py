@@ -6,6 +6,7 @@ Each end-to-end case installs a launcher into a temporary folder with a fake
 bearer and a fake transport, runs it as a subprocess and speaks MCP over stdio.
 """
 
+import contextlib
 import io
 import json
 import os
@@ -180,6 +181,18 @@ class EndToEnd(unittest.TestCase):
         reply = json.loads(done.stdout)
         self.assertEqual(reply["error"]["data"]["cause"], "launcher_unconfigured")
 
+    def test_group_writable_transport_refuses(self):
+        os.chmod(self.installed.transport, 0o664)
+        _, replies = self.installed.run({})
+        self.assertEqual(replies[0]["error"]["data"]["cause"], "transport_custody")
+
+    def test_symlinked_transport_refuses(self):
+        real = self.installed.transport + ".real"
+        os.rename(self.installed.transport, real)
+        os.symlink(real, self.installed.transport)
+        _, replies = self.installed.run({})
+        self.assertEqual(replies[0]["error"]["data"]["cause"], "transport_custody")
+
 
 class SeatDecision(unittest.TestCase):
     def test_agent_tag_mismatch_is_ignored_with_one_line(self):
@@ -209,6 +222,19 @@ class SeatDecision(unittest.TestCase):
         replies = [json.loads(line) for line in stdout.getvalue().splitlines()]
         self.assertEqual(code, 3)
         self.assertEqual([r["id"] for r in replies], [7, None])
+
+    def test_overlong_frame_tail_is_not_parsed_as_a_request(self):
+        tail = json.dumps({"jsonrpc": "2.0", "id": "spoof", "method": "ping"})
+        stdin = io.BytesIO(b"x" * (launcher.MAX_FRAME + 10) + tail.encode() + b"\n")
+        stdout = io.BytesIO()
+        launcher.serve_refusal("CLAUDE", ("seat_mismatch", "why"), stdin, stdout, io.StringIO())
+        replies = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertEqual([r["id"] for r in replies], [None])
+
+    def test_unconfigured_refusal_never_says_none(self):
+        reply = launcher.refusal_reply(1, None, ("launcher_unconfigured", "why"))
+        self.assertNotIn("None", reply["error"]["message"])
+        self.assertIn("unconfigured", reply["error"]["message"])
 
 
 class Installer(unittest.TestCase):
@@ -272,6 +298,20 @@ class Installer(unittest.TestCase):
         out = io.StringIO()
         install.main(self.args, out=out)
         self.assertIn("is execed by every seat's launcher", out.getvalue())
+
+    def test_secrets_dir_has_no_default(self):
+        args = [a for a in self.args]
+        i = args.index("--secrets-dir")
+        del args[i : i + 2]
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            install.main(args, out=io.StringIO())
+
+    def test_refuses_to_install_into_a_symlinked_dest(self):
+        real = os.path.join(self.tmp.name, "real")
+        os.makedirs(real)
+        os.symlink(real, self.dest)
+        with self.assertRaises(ValueError):
+            install.main(self.args + ["--apply"], out=io.StringIO())
 
     def test_refuses_to_replace_a_symlink(self):
         os.makedirs(self.dest)

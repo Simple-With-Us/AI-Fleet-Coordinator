@@ -134,12 +134,13 @@ def read_bearer(path, seat, euid=None):
 
 def refusal_reply(request_id, seat, cause):
     code, sentence = cause
+    name = seat or "unconfigured"
     return {
         "jsonrpc": "2.0",
         "id": request_id,
         "error": {
             "code": REFUSAL_CODE,
-            "message": f"The {seat} simple-tools launcher refused to start: {sentence}.  "
+            "message": f"The {name} simple-tools launcher refused to start: {sentence}.  "
             "No request reached the hosted server.",
             "data": {"cause": code, "seat": seat},
         },
@@ -157,11 +158,16 @@ def serve_refusal(seat, cause, stdin, stdout, stderr):
         raw = stdin.readline(MAX_FRAME + 1)
         if not raw:
             return 3
-        while len(raw) > MAX_FRAME and not raw.endswith(b"\n"):
-            more = stdin.readline(MAX_FRAME + 1)
-            if not more:
-                break
-            raw = more
+        if len(raw) > MAX_FRAME and not raw.endswith(b"\n"):
+            # Drain the rest of the overlong frame and answer it once as one bad
+            # frame, so its tail is never parsed as a request of its own.
+            while not raw.endswith(b"\n"):
+                raw = stdin.readline(MAX_FRAME + 1)
+                if not raw:
+                    break
+            stdout.write((json.dumps(refusal_reply(None, seat, cause)) + "\n").encode())
+            stdout.flush()
+            continue
         try:
             message = json.loads(raw)
         except ValueError:
@@ -179,6 +185,34 @@ def serve_refusal(seat, cause, stdin, stdout, stderr):
         for reply in replies:
             stdout.write((json.dumps(reply) + "\n").encode())
         stdout.flush()
+
+
+def exec_custody_problem(key, path, euid=None):
+    """Why path is not safe to exec with the bearer in its environment, or None.
+
+    The transport must be a regular file (never a symlink) with one link.  The
+    interpreter may be a symlink, as Homebrew's is, so its resolved target is
+    checked.  Either must be owned by this user or root and writable by no one else.
+    """
+    euid = os.geteuid() if euid is None else euid
+    try:
+        if key == "TRANSPORT":
+            info = os.lstat(path)
+            if stat.S_ISLNK(info.st_mode):
+                return f"transport {path} is a symlink, which is refused"
+            if info.st_nlink != 1:
+                return f"transport {path} has {info.st_nlink} hard links, not 1"
+        else:
+            info = os.stat(os.path.realpath(path))
+    except OSError as error:
+        return f"{key.lower()} {path} could not be checked ({error.__class__.__name__})"
+    if not stat.S_ISREG(info.st_mode):
+        return f"{key.lower()} {path} is not a regular file"
+    if info.st_uid not in (euid, 0):
+        return f"{key.lower()} {path} is owned by uid {info.st_uid}, not {euid} or root"
+    if info.st_mode & 0o022:
+        return f"{key.lower()} {path} is writable by group or others"
+    return None
 
 
 def plan(env, config, euid=None):
@@ -214,6 +248,9 @@ def plan(env, config, euid=None):
                 ),
                 notice,
             )
+        problem = exec_custody_problem(key, config[key], euid)
+        if problem:
+            return ("refuse", seat, ("transport_custody", problem), notice)
     token, refusal = read_bearer(config["BEARER_FILE"], seat, euid)
     if refusal:
         return ("refuse", seat, refusal, notice)

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Install per-seat stdio launchers from launcher.py.  A dry run unless --apply.
 
-    cd scripts && python3 -m simple_tools.stdio_launcher.install --seat CLAUDE
-    cd scripts && python3 -m simple_tools.stdio_launcher.install --seat CLAUDE --apply
+    cd scripts && python3 -m simple_tools.stdio_launcher.install --seat CLAUDE --secrets-dir DIR
+    cd scripts && python3 -m simple_tools.stdio_launcher.install --seat CLAUDE --secrets-dir DIR --apply
 
 For each seat it writes <dest>/<seat>-simple-tools (mode 0700) with the config
 block filled in, and copies scripts/mcp-servers/assigned-hosted-stdio.py to
@@ -82,6 +82,8 @@ def write_private(path, text, stamp, apply, out):
     if not apply:
         return True
     directory = os.path.dirname(path)
+    if os.path.islink(directory):
+        raise ValueError(f"{directory} is a symlink; refusing to install into it")
     os.makedirs(directory, mode=0o700, exist_ok=True)
     if old is not None:
         shutil.copy2(path, f"{path}.bak-{stamp}")
@@ -91,7 +93,14 @@ def write_private(path, text, stamp, apply, out):
         with os.fdopen(fd, "w", encoding="utf-8") as target:
             os.fchmod(target.fileno(), 0o700)
             target.write(text)
+            target.flush()
+            os.fsync(target.fileno())
         os.replace(temp, path)
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
     except BaseException:
         if os.path.exists(temp):
             os.unlink(temp)
@@ -110,8 +119,9 @@ def main(argv=None, out=None):
     parser.add_argument("--home", default=home)
     parser.add_argument(
         "--secrets-dir",
-        default=os.path.join(home, ".secrets", "fleet-tools"),
-        help="folder holding one bearer file per seat, named by the lowercase seat",
+        required=True,
+        help="folder holding one bearer file per seat, named by the lowercase seat "
+        "(required, no default; the installer only names the path and never reads it)",
     )
     parser.add_argument(
         "--python", default=sys.executable, help="interpreter the launcher execs the transport with"
