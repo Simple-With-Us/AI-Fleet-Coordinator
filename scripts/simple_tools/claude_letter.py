@@ -150,6 +150,8 @@ REMOTE_TIMEOUT = 8.0  # the whole ssh round trip, inside every hook's own timeou
 STALE_SECONDS = 36 * 3600
 TOUCH_SECONDS = 1800
 RETRY_SECONDS = 600
+#: The registry's answer for a chat it has no row for, on the local path and the API path alike.
+NO_REGISTRATION = "this chat has no registration"
 PLACEHOLDER = "New Chat"
 TITLE_WORDS = 7
 TITLE_CHARS = 60
@@ -667,7 +669,7 @@ def _on_record(OR: Any, db: str, args: Any, sid: str) -> dict[str, Any]:
     try:
         rec = reg.lookup(PLATFORM, args.location, SCOPE, sid)
         if rec is None:
-            return {"error": "this chat has no registration"}
+            return {"error": NO_REGISTRATION}
         if rec.get("state") == "closed" or not rec.get("label"):
             return {"retired": True, "record_id": rec["record_id"]}
         rid = rec["record_id"]
@@ -1413,7 +1415,11 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
     if not sent and chat.now - float(note.get("touched_at") or 0) >= TOUCH_SECONDS:
         answer = chat.registry("touch")
         note["touched_at"] = chat.now
-    if answer.get("retired"):
+    # A chat that holds a letter in its note but has no row in the registry it now asks is the same case as a retired
+    # letter:  the store moved under it (the registry API took over from the Mac's file, and a chat opened before that
+    # was never copied), so nothing could ever resolve its letter.  It registers again, with the title it has.
+    unknown = answer.get("error") == NO_REGISTRATION and bool(note.get("label"))
+    if answer.get("retired") or unknown:
         # The letter was retired while this chat was open:  check with the Operator again, in case it needs a new one.
         held = str(note.get("label") or "")
         held_generation = int(note.get("generation") or 1)
