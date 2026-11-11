@@ -46,7 +46,7 @@ add a dedicated row.
 **Grok Bot is not onboarded this way.**  `GROK-BOT` is one fleet-wide identity
 that drives Cursor cloud agents.  It is not Mac Grok (GROK, which Grok Build shares), and it
 is **not** a per-app seat.  Do not run this script to create
-per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.  Its `GB-<ROLE>` personas need no
+per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.  Its `GB-<ROLE>` bots need no
 registry row:  `seatApps.patterns` covers them (and the `BF-<ROLE>` bots), and the
 `GROK-BOT` row has no branch prefix because it opens no lanes.  The roles do open
 lanes (AFC-620):  a pattern's `lane` block lists them and renders the lane folder and
@@ -178,7 +178,7 @@ with the top-level `apps` (the acronyms) and `--app`.
      (`~/.minimax/.builtin-skills/mavis/references/skill-management.md` and
      `references/agent.md` § Skill Discovery.)
    - **A custom agent (`~/.minimax/agents/<name>/agent.md`) — always-on, but
-     only for that agent.**  An agent definition's `system_prompt` / `persona`
+     only for that agent.**  An agent definition's `system_prompt` / `bot`
      does load every turn, but only in sessions where the user picked that
      agent.  The shipped definitions under `agents/.builtin/` (`explore`,
      `worker`, `verifier`) are sub-agent roles, so a fleet pointer parked

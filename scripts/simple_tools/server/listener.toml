@@ -10,7 +10,7 @@
 #     Infisical value wins over a Coolify one of the same name;
 #   - environment backfills are accepted for names not stored in Infisical; the scoped token is still required.
 # ZULIP_SITE is never in Infisical:  Coolify sets it.  The Zulip names are the defaults (ZULIP_<CODE>_EMAIL and
-# ZULIP_<CODE>_API_KEY, where CODE is the seat with hyphens as underscores).  A Grok Bot persona's routine reads
+# ZULIP_<CODE>_API_KEY, where CODE is the seat with hyphens as underscores).  A Grok bot's routine reads
 # the webhook names Infisical already holds, ZULIP_ALERT_GB_<ROLE>_ENDPOINT (the https URL) and
 # ZULIP_ALERT_GB_<ROLE>_KEY (the bare crsr_ key, sent as Authorization: Bearer <key>).  The matching
 # ZULIP_ALERT_GB_<ROLE>_HEADER is never read.  Set email_env, key_env or the routine's url_env and key_env to use
@@ -156,9 +156,9 @@ creds = "env"                     # ZULIP_ECHO_EMAIL, ZULIP_ECHO_API_KEY (instin
 wake = "inbox"
 muse_bridge = false               # enable only after the Mac pull, Muse pin and receipt gate pass
 
-# Grok Bot (GB) personas (Sat, Oct 10):  each is woken on an @-mention or a DM through its Grok Bot routine webhook,
+# Grok bots (GB) (Sat, Oct 10):  each is woken on an @-mention or a DM through its Grok Bot routine webhook,
 # POST simple-tools-wake/1 with Authorization: Bearer <ZULIP_ALERT_GB_<ROLE>_KEY>.  The routine replies in Zulip with the
-# persona's own key.  Each section reads five different variables:  the Zulip email, key and site, and the
+# bot's own key.  Each section reads five different variables:  the Zulip email, key and site, and the
 # routine URL and key.  Enabling or disabling one is the `enabled` line, then a restart.
 
 # GB-DIRECTOR (Routing, fleet sync, org help, director-grok-bot@).
@@ -264,7 +264,7 @@ budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner
 # BotFleet has no wake path of its own, so each BF seat holds its queue here with
 # wake = "inbox":  its @-mentions and DMs are captured under /data/<SEAT>/ like the cloud
 # seats', and a seat gets an http wake when BotFleet exposes a routine endpoint for it
-# (the GB personas' pattern).  Each section reads the seat's Zulip pair from Infisical
+# (the GB bots' pattern).  Each section reads the seat's Zulip pair from Infisical
 # (ZULIP_BF_<ROLE>_EMAIL and ZULIP_BF_<ROLE>_API_KEY, both inventoried) and its outgoing
 # token (ZULIP_OUTGOING_BF_<ROLE>_TOKEN, inventoried) delivers its webhook posts here.
 
@@ -356,7 +356,7 @@ creds = "env"                     # ZULIP_BF_TRADER_EMAIL, ZULIP_BF_TRADER_API_K
 wake = "inbox"
 
 # GB-ENGINEER (Engineering seat, engineer-grok-bot@).  Enabled:  the seat's Zulip bot pair, outgoing token and
-# ZULIP_ALERT_GB_ENGINEER_ENDPOINT / _KEY are set on the live container like the other personas'.
+# ZULIP_ALERT_GB_ENGINEER_ENDPOINT / _KEY are set on the live container like the other bots'.
 # apply_live_config.py copies this section to the live volume on the GB- prefix.
 [seat.GB-ENGINEER]
 instance = "server"

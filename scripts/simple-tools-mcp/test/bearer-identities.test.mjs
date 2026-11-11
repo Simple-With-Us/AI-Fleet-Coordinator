@@ -93,7 +93,7 @@ test("new seats resolve only their exact own Infisical names and reject swapped 
   }
 });
 
-test("BotFleet roles are explicit, distinct from GB personas, and never wildcard admitted", () => {
+test("BotFleet roles are explicit, distinct from GB bots, and never wildcard admitted", () => {
   const roles = ["BUILDER", "COMPILER", "DEPLOYER", "DESIGNER", "DIRECTOR", "ENGINEER", "TRADER", "FIXER", "HOUSEKEEPER", "MONITOR", "ORACLE", "PLUMBER", "PUBLISHER"];
   assert.deepEqual(Object.keys(BF_BEARER_SEATS).sort(), roles.map((r) => `BF-${r}`).sort());
   for (const role of roles) {

@@ -97,4 +97,4 @@
 {"case": "a reaction without identity", "kind": "identity", "tool": "zulip_react", "arguments": {"message_id": 1, "emoji": "eyes"}, "expect": "identity_required"}
 {"case": "a read without identity uses the default", "kind": "identity", "tool": "whoami", "arguments": {}, "expect": "ok"}
 {"case": "an integration bot is never an identity", "kind": "identity", "tool": "zulip_topics", "arguments": {"identity": "SENTRY"}, "expect": "identity_not_allowed"}
-{"case": "a disabled persona is never an identity", "kind": "identity", "tool": "zulip_post", "arguments": {"topic": "t", "text": "x", "identity": "GB-ENGINEER"}, "expect": "identity_not_allowed"}
+{"case": "a disabled bot is never an identity", "kind": "identity", "tool": "zulip_post", "arguments": {"topic": "t", "text": "x", "identity": "GB-ENGINEER"}, "expect": "identity_not_allowed"}
