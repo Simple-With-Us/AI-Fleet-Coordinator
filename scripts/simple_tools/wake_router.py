@@ -205,6 +205,8 @@ NEVER_RAN = frozenset(
         "platform-not-installed",
         "workspace-mismatch",
         "workspace-unknown",
+        "subagent-child",
+        "host-not-configured",
         "session-cwd-gone",
         "unknown-host",
         "unknown-platform",

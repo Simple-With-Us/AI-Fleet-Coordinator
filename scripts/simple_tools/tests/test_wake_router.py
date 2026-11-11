@@ -2053,6 +2053,8 @@ class Receipts(Base):
                 "unknown-platform",
                 "workspace-mismatch",
                 "workspace-unknown",
+                "subagent-child",
+                "host-not-configured",
             },
         )
 

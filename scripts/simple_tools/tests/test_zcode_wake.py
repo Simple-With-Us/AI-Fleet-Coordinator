@@ -1,7 +1,7 @@
 """Tests for the zcode wake delivery (OPS-1048):  checks before the spawn, outcomes after.
 
 The late-fence, fail-closed-store and bridge-lock tests are written to fail against the
-pre-fix behavior (AA's re-review 639462267, items 1-3)."""
+pre-fix behavior (AA's reviews 639462267 and 639467391, items 1-3)."""
 
 from __future__ import annotations
 
@@ -16,9 +16,7 @@ from unittest.mock import patch
 from simple_tools import wake_router as WR
 from simple_tools import zcode_wake
 
-WORKSPACE = "/mnt/fleet-extra/Code/AI-Fleet-Coordinator"
 SID = "sess_1a2b3c4d-1111-2222-3333-444455556666"
-LOCK_DIR = "~/.local/state/zc-wake"
 
 
 def _request(letter: str = "BB", generation: int = 3, wake_id: str = "w1-abcdef",
@@ -67,15 +65,17 @@ def _completed(argv, **kwargs):
     return SimpleNamespace(returncode=0)
 
 
-class ZcodeWakeTests(unittest.TestCase):
+class Base(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)
+        self.workspace = self.tmp / "workspace"
+        self.workspace.mkdir()
         self.index = self.tmp / "tasks-index.sqlite"
         con = sqlite3.connect(self.index)
         con.execute("CREATE TABLE tasks (task_id TEXT, workspace_path TEXT)")
-        con.execute("INSERT INTO tasks VALUES (?, ?)", (SID, WORKSPACE))
+        con.execute("INSERT INTO tasks VALUES (?, ?)", (SID, str(self.workspace)))
         con.commit()
         con.close()
         self.registry = patch.object(
@@ -85,28 +85,28 @@ class ZcodeWakeTests(unittest.TestCase):
         self.addCleanup(self.registry.stop)
         self.env = {"HOME": str(self.tmp), "PATH": "/usr/bin:/bin"}
         self.locks = self.tmp / "zc-wake"
+        self.calls: list[list[str]] = []
 
-    def _deliver(self, request=None, exit_code=0, workspace=WORKSPACE, index=None):
+    def _runner(self, exit_code: int = 0):
+        def runner(argv, **kwargs):
+            self.calls.append(list(argv))
+            return SimpleNamespace(returncode=exit_code)
+
+        return runner
+
+    def _deliver(self, request=None, exit_code=0, workspace=None, index=None):
         return zcode_wake.deliver_request(
             request or _request(),
             self.env,
-            workspace=workspace,
+            workspace=workspace or str(self.workspace),
             zcode_bin="/usr/bin/true",
             index_path=str(index or self.index),
             lock_dir=str(self.locks),
             runner=self._runner(exit_code),
         )
 
-    def _runner(self, exit_code: int = 0):
-        calls: list[list[str]] = []
 
-        def runner(argv, **kwargs):
-            calls.append(list(argv))
-            return SimpleNamespace(returncode=exit_code)
-
-        self.calls = calls
-        return runner
-
+class DeliveryTests(Base):
     def test_delivers_sent_when_workspace_matches(self):
         answer = self._deliver()
         self.assertEqual(answer["delivery"]["outcome"], "sent")
@@ -114,13 +114,13 @@ class ZcodeWakeTests(unittest.TestCase):
         self.assertEqual(answer["generation"], 3)
         argv = self.calls[0]
         self.assertIn("--cwd", argv)
-        self.assertIn(WORKSPACE, argv)
+        self.assertIn(str(self.workspace), argv)
         self.assertIn("--resume", argv)
         self.assertTrue(any("the sender addressed its letter" in str(part) for part in argv))
 
     def test_workspace_mismatch_refuses_without_running(self):
         con = sqlite3.connect(self.index)
-        con.execute("UPDATE tasks SET workspace_path = ? WHERE task_id = ?", ("/other/repo", SID))
+        con.execute("UPDATE tasks SET workspace_path = ? WHERE task_id = ?", ("/elsewhere", SID))
         con.commit()
         con.close()
         answer = self._deliver()
@@ -180,6 +180,26 @@ class ZcodeWakeTests(unittest.TestCase):
         self.assertEqual(answer["delivery"]["code"], "host-not-configured")
         self.assertEqual(self.calls, [])
 
+    def test_missing_host_refused_typed(self):
+        answer = self._deliver(_request(host=""))
+        self.assertEqual(answer["delivery"]["outcome"], "refused")
+        self.assertEqual(answer["delivery"]["code"], "host-not-configured")
+        self.assertEqual(self.calls, [])
+
+    def test_settings_missing_fails_and_holds(self):
+        answer = zcode_wake.deliver_request(
+            _request(),
+            self.env,
+            workspace=None,
+            zcode_bin="/usr/bin/true",
+            index_path=str(self.index),
+            lock_dir=str(self.locks),
+            runner=self._runner(0),
+        )
+        self.assertEqual(answer["delivery"]["outcome"], "failed")
+        self.assertEqual(answer["delivery"]["code"], "settings-missing")
+        self.assertEqual(self.calls, [])
+
 
 class LateFenceTests(unittest.TestCase):
     """Item 2: the registry is re-read under the lock, immediately before the spawn."""
@@ -188,10 +208,12 @@ class LateFenceTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)
+        self.workspace = self.tmp / "workspace"
+        self.workspace.mkdir()
         self.index = self.tmp / "tasks-index.sqlite"
         con = sqlite3.connect(self.index)
         con.execute("CREATE TABLE tasks (task_id TEXT, workspace_path TEXT)")
-        con.execute("INSERT INTO tasks VALUES (?, ?)", (SID, WORKSPACE))
+        con.execute("INSERT INTO tasks VALUES (?, ?)", (SID, str(self.workspace)))
         con.commit()
         con.close()
         self.env = {"HOME": str(self.tmp), "PATH": "/usr/bin:/bin"}
@@ -211,7 +233,7 @@ class LateFenceTests(unittest.TestCase):
             answer = zcode_wake.deliver_request(
                 _request(),
                 self.env,
-                workspace=WORKSPACE,
+                workspace=str(self.workspace),
                 zcode_bin="/usr/bin/true",
                 index_path=str(self.index),
                 lock_dir=str(self.locks),
@@ -229,10 +251,12 @@ class BridgeLockTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         tmp_path = Path(tmp.name)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
         index = tmp_path / "tasks-index.sqlite"
         con = sqlite3.connect(index)
         con.execute("CREATE TABLE tasks (task_id TEXT, workspace_path TEXT)")
-        con.execute("INSERT INTO tasks VALUES (?, ?)", (SID, WORKSPACE))
+        con.execute("INSERT INTO tasks VALUES (?, ?)", (SID, str(workspace)))
         con.commit()
         con.close()
         lock_dir = tmp_path / "zc-wake"
@@ -251,7 +275,7 @@ class BridgeLockTests(unittest.TestCase):
                 answer = zcode_wake.deliver_request(
                     _request(),
                     {"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
-                    workspace=WORKSPACE,
+                    workspace=str(workspace),
                     zcode_bin="/usr/bin/true",
                     index_path=str(index),
                     lock_dir=str(lock_dir),
@@ -266,7 +290,7 @@ class BridgeLockTests(unittest.TestCase):
 
 
 class StoreFailClosedTests(unittest.TestCase):
-    """Item 1: an unreadable store holds the wake (`failed`), never widens into a delivery."""
+    """Item 1 (AA third pass): each store failing on its own holds the wake, never runs."""
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -274,91 +298,139 @@ class StoreFailClosedTests(unittest.TestCase):
         self.tmp = Path(tmp.name)
         self.junk = self.tmp / "junk.sqlite"
         self.junk.write_bytes(b"this is not a database\n")
+        self.index = self.tmp / "tasks-index.sqlite"
+        con = sqlite3.connect(self.index)
+        con.execute("CREATE TABLE tasks (task_id TEXT, workspace_path TEXT)")
+        con.execute("INSERT INTO tasks VALUES (?, ?)", (SID, str(self.tmp / "workspace")))
+        con.commit()
+        con.close()
+        self.cli = self.tmp / "cli.sqlite"
+        con = sqlite3.connect(self.cli)
+        con.execute("CREATE TABLE session (id TEXT, task_type TEXT)")
+        con.commit()
+        con.close()
         self.env = {"HOME": str(self.tmp), "PATH": "/usr/bin:/bin"}
+        self.calls: list[list[str]] = []
 
-    def test_unreadable_stores_fail_before_running(self):
-        calls: list[list[str]] = []
-
+    def _platform(self, index=None, cli=None):
         def runner(argv, **kwargs):
-            calls.append(list(argv))
+            self.calls.append(list(argv))
             return SimpleNamespace(returncode=0)
 
-        platform = zcode_wake.build_platform(
+        return zcode_wake.build_platform(
             env=self.env,
-            workspace=WORKSPACE,
+            workspace=str(self.tmp / "workspace"),
             zcode_bin="/usr/bin/true",
-            index_path=str(self.junk),
-            cli_db=str(self.junk),
+            index_path=str(index or self.index),
+            cli_db=str(cli or self.cli),
             runner=runner,
         )
+
+    def test_unreadable_index_fails_before_running(self):
+        platform = self._platform(index=self.junk)
         delivery = platform.deliver(
             WR.Target(session_id=SID, letter="BB", host="server", generation=3),
             WR.Wake(wake_id="w2-123456", message_id=1),
         )
         self.assertEqual(delivery.outcome, "failed")
-        self.assertEqual(calls, [])
+        self.assertEqual(delivery.code, "tasks-index-unavailable")
+        self.assertEqual(self.calls, [])
 
-    def test_exclude_still_narrows_when_stores_read(self):
-        index = self.tmp / "tasks-index.sqlite"
-        con = sqlite3.connect(index)
-        con.execute("CREATE TABLE tasks (task_id TEXT, workspace_path TEXT)")
-        con.execute("INSERT INTO tasks VALUES (?, ?)", (SID, WORKSPACE))
-        con.execute(
-            "INSERT INTO tasks VALUES (?, ?)", ("sess_other-1111-2222-3333-444455556666", "/other")
+    def test_unreadable_cli_store_fails_before_running(self):
+        platform = self._platform(cli=self.junk)
+        delivery = platform.deliver(
+            WR.Target(session_id=SID, letter="BB", host="server", generation=3),
+            WR.Wake(wake_id="w2-123456", message_id=1),
         )
+        self.assertEqual(delivery.outcome, "failed")
+        self.assertEqual(delivery.code, "cli-store-unavailable")
+        self.assertEqual(self.calls, [])
+
+    def test_subagent_child_refused_typed(self):
+        con = sqlite3.connect(self.cli)
+        con.execute("INSERT INTO session VALUES (?, 'subagent_child')", (SID,))
         con.commit()
         con.close()
-        cli = self.tmp / "cli.sqlite"
-        con = sqlite3.connect(cli)
-        con.execute("CREATE TABLE session (id TEXT, task_type TEXT)")
-        con.execute(
-            "INSERT INTO session VALUES (?, 'subagent_child')",
-            ("sess_sub-1111-2222-3333-444455556666",),
+        platform = self._platform()
+        delivery = platform.deliver(
+            WR.Target(session_id=SID, letter="BB", host="server", generation=3),
+            WR.Wake(wake_id="w2-123456", message_id=1),
         )
+        self.assertEqual(delivery.outcome, "refused")
+        self.assertEqual(delivery.code, "subagent-child")
+        self.assertEqual(self.calls, [])
+
+    def test_workspace_mismatch_refused_typed(self):
+        con = sqlite3.connect(self.index)
+        con.execute("UPDATE tasks SET workspace_path = ? WHERE task_id = ?", ("/elsewhere", SID))
         con.commit()
         con.close()
-        platform = zcode_wake.build_platform(
-            env=self.env,
-            workspace=WORKSPACE,
-            index_path=str(index),
-            cli_db=str(cli),
+        platform = self._platform()
+        delivery = platform.deliver(
+            WR.Target(session_id=SID, letter="BB", host="server", generation=3),
+            WR.Wake(wake_id="w2-123456", message_id=1),
         )
+        self.assertEqual(delivery.outcome, "refused")
+        self.assertEqual(delivery.code, "workspace-mismatch")
+        self.assertEqual(self.calls, [])
+
+    def test_exclude_narrows_pick_best_effort(self):
+        platform = self._platform()
         excluded = platform.exclude([
             WR.Target(session_id=SID, letter="BB", generation=3),
-            WR.Target(
-                session_id="sess_other-1111-2222-3333-444455556666", letter="BB", generation=3
-            ),
-            WR.Target(
-                session_id="sess_sub-1111-2222-3333-444455556666", letter="BB", generation=3
-            ),
+            WR.Target(session_id="sess_other-1111-2222-3333-444455556666", letter="BB",
+                      generation=3),
+            WR.Target(session_id="sess_sub-1111-2222-3333-444455556666", letter="BB",
+                      generation=3),
         ])
-        self.assertEqual(excluded, {"sess_other-1111-2222-3333-444455556666",
-                                    "sess_sub-1111-2222-3333-444455556666"})
+        con = sqlite3.connect(self.cli)
+        con.execute("INSERT INTO session VALUES (?, 'subagent_child')",
+                    ("sess_sub-1111-2222-3333-444455556666",))
+        con.commit()
+        con.close()
+        excluded = platform.exclude([
+            WR.Target(session_id=SID, letter="BB", generation=3),
+            WR.Target(session_id="sess_other-1111-2222-3333-444455556666", letter="BB",
+                      generation=3),
+            WR.Target(session_id="sess_sub-1111-2222-3333-444455556666", letter="BB",
+                      generation=3),
+        ])
+        self.assertIn("sess_sub-1111-2222-3333-444455556666", excluded)
+        self.assertIn("sess_other-1111-2222-3333-444455556666", excluded)
+        self.assertNotIn(SID, excluded)
 
 
 class RoundTripTests(unittest.TestCase):
     """The seam AA's review flagged: a request through the PLATFORMS table reaches the module
     and the answer's ids correlate with the sess_ pattern."""
 
-    def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.tmp = Path(tmp.name)
-        self.env = {
-            "HOME": str(self.tmp),
-            "PATH": "/usr/bin:/bin",
-            "ZCODE_WAKE_BIN": "/usr/bin/true",
-        }
-
     def test_round_trip_through_platforms_table(self):
         from simple_tools import claude_wake
 
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        tmp_path = Path(tmp.name)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        index = tmp_path / "tasks-index.sqlite"
+        con = sqlite3.connect(index)
+        con.execute("CREATE TABLE tasks (task_id TEXT, workspace_path TEXT)")
+        con.execute("INSERT INTO tasks VALUES (?, ?)", (SID, str(workspace)))
+        con.commit()
+        con.close()
         entry = claude_wake.PLATFORMS["zcode"]
         self.assertEqual(entry.session_re.pattern, "^sess_[A-Za-z0-9._-]{1,123}$")
+        env = {
+            "HOME": str(tmp_path),
+            "PATH": "/usr/bin:/bin",
+            "ZCODE_WAKE_BIN": "/usr/bin/true",
+            "ZCODE_WAKE_WORKSPACE": str(workspace),
+            "ZCODE_WAKE_TASKS_INDEX": str(index),
+            "ZCODE_WAKE_LOCK_DIR": str(tmp_path / "locks"),
+        }
         request = _request()
-        with patch.object(zcode_wake.WR.registry_api, "call", return_value=_holding_row()), \
-             patch.object(zcode_wake, "_tasks_workspace", return_value=("ok", WORKSPACE)):
-            answer = entry.deliver(request, self.env)
+        with patch.object(zcode_wake.WR.registry_api, "call", return_value=_holding_row()):
+            answer = entry.deliver(request, env)
         self.assertEqual(answer["wake_id"], "w1-abcdef")
         self.assertEqual(answer["session_id"], SID)
         self.assertEqual(answer["generation"], 3)
@@ -367,11 +439,13 @@ class RoundTripTests(unittest.TestCase):
     def test_table_refuses_bad_session_before_deliver(self):
         from simple_tools import claude_wake
 
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
         entry = claude_wake.PLATFORMS["zcode"]
         request = _request()
         request["target"]["session_id"] = "not-a-session"
         with patch.object(zcode_wake.subprocess, "run") as run_mock:
-            answer = entry.deliver(request, self.env)
+            answer = entry.deliver(request, {"HOME": tmp.name})
         self.assertEqual(answer["delivery"]["outcome"], "refused")
         run_mock.assert_not_called()
 

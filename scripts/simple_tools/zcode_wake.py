@@ -4,7 +4,9 @@ The request is the router's envelope (`{"platform": "zcode", "target": ..., "wak
 the answer carries the same three ids plus the `Delivery` (claude_wake.py, "The wire").  The
 command is `zcode --cwd <workspace> --resume <session_id> -p <wake text>`:  the workspace comes
 from the settings and is also the binding, because a resume runs in the given directory and a
-wake into another project's directory is a wrong-chat delivery.
+wake into another project's directory is a wrong-chat delivery.  The settings are required:
+with no workspace configured the delivery fails as `settings-missing` and is retried, and no
+private path is written into this file.
 
 Checks before anything runs (nothing has run until the spawn, so a pre-spawn failure is
 `failed` and retried, while the refusals below are final and are in the router's NEVER_RAN
@@ -17,13 +19,13 @@ set, because they prove nothing ran):
 - zcode's own tasks index records the session in the configured workspace
   (`workspace-mismatch` when it records another one, `workspace-unknown` when it has no row
   for the session — an unknown session would resume into `/`, which the bridge test showed);
-  a target whose host is not this delivery's configured one refuses `host-not-configured`
-  rather than failing on paths it does not have;
+- the CLI store does not mark the session a sub-agent child (`subagent-child` refuses);
+- the target's host is the host this delivery is configured for (`host-not-configured`);
 - no held per-session lock (a second writer on one session is `session-busy` and uses up
-  no attempt).  The lock file is the bridge's own — `~/.local/state/zc-wake/session-<sid>.lock`
-  — so the bridge and this platform contend on one lock for the cutover.  A chat open in the
-  desktop app is still not detected this way;  that needs a zcode liveness signal, which does
-  not exist yet.
+  no attempt).  The lock file is the bridge's own — `<state dir>/session-<sid>.lock` — so
+  the bridge and this platform contend on one lock for the cutover.  A chat open in the
+  desktop app is still not detected this way;  that needs a zcode liveness signal, which
+  does not exist yet.
 
 Then the command.  `zcode -p` exits 0 even when the turn fails (the server's own log shows a
 `project_token_login_failed` turn exiting 0), so exit 0 is only `sent` — handed over, no proof
@@ -42,10 +44,10 @@ import os
 import re
 import sqlite3
 import subprocess
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from . import wake_router as WR
 
@@ -55,13 +57,30 @@ SEAT = "ZC"
 ZCODE_SESSION_RE = re.compile(r"^sess_[A-Za-z0-9._-]{1,123}$")
 LETTER_RE = re.compile(r"[A-Z]{1,2}\Z")
 DEFAULT_HOST = "server"
-DEFAULT_WORKSPACE = "/mnt/fleet-extra/Code/AI-Fleet-Coordinator"
-DEFAULT_ZCODE = "/home/jay/.local/bin/zcode"
-DEFAULT_TASKS_INDEX = "~/.zcode/v2/tasks-index.sqlite"
-# The bridge's own state dir:  the lock file name and directory match the bridge's
-# session_lock, so both delivery paths contend on one lock for the cutover.
+DEFAULT_ZCODE = "zcode"
 DEFAULT_LOCK_DIR = "~/.local/state/zc-wake"
 LOCK_NAME = "session-{session_id}.lock"
+
+
+class _Settings(dict):
+    """The delivery's settings:  the env the router hands the platform first, then the process
+    environment.  Nothing here is a private path - a deployment names its own directories."""
+
+    def path(self, name: str, default: str) -> Path:
+        raw = self.get(name) or os.environ.get(name) or default
+        home = self.get("HOME") or os.environ.get("HOME")
+        if raw.startswith("~") and home:
+            raw = home + raw[1:]
+        return Path(raw)
+
+
+def _settings(env: Mapping[str, str]) -> _Settings:
+    return _Settings(env)
+
+
+def _required_workspace(settings: _Settings) -> str | None:
+    """The configured workspace, or None when the deployment has named none."""
+    return settings.get("ZCODE_WAKE_WORKSPACE") or os.environ.get("ZCODE_WAKE_WORKSPACE") or None
 
 
 def _target_from(value: object) -> WR.Target:
@@ -175,6 +194,31 @@ def _tasks_workspace(index_path: Path, session_id: str) -> tuple[str, str]:
     return "ok", str(row[0])
 
 
+def _cli_subagent_ids(cli_db: Path, sids: list[str]) -> tuple[str, set[str]]:
+    """(`ok`|`error`, sub-agent ids) among `sids`, from the CLI store's own marker."""
+    if not sids:
+        return "ok", set()
+    try:
+        con = sqlite3.connect(f"file:{cli_db}?mode=ro", uri=True, timeout=5)
+    except (OSError, sqlite3.Error):
+        return "error", set()
+    try:
+        placeholders = ",".join("?" * len(sids))
+        rows = con.execute(
+            "SELECT id FROM session WHERE task_type = 'subagent_child' AND id IN (%s)"
+            % placeholders,
+            sids,
+        ).fetchall()
+        return "ok", {str(r[0]) for r in rows if r and r[0]}
+    except sqlite3.Error:
+        return "error", set()
+    finally:
+        try:
+            con.close()
+        except sqlite3.Error:
+            pass
+
+
 def deliver_request(
     request: Mapping[str, Any],
     env: Mapping[str, str],
@@ -188,26 +232,32 @@ def deliver_request(
     timeout: int = 900,
 ) -> dict[str, Any]:
     """One zcode delivery:  checks, then the headless resume.  See the module docstring."""
-
-    def setting(name: str, default: str) -> str:
-        """The delivery env first (the router's registry env carries the deployment's settings),
-        then the process environment, then the built-in default."""
-        return env.get(name) or os.environ.get(name) or default
-
-    workspace = workspace or setting("ZCODE_WAKE_WORKSPACE", DEFAULT_WORKSPACE)
-    zcode_bin = zcode_bin or setting("ZCODE_WAKE_BIN", DEFAULT_ZCODE)
-    index = Path(
-        os.path.expanduser(index_path or setting("ZCODE_WAKE_TASKS_INDEX", DEFAULT_TASKS_INDEX))
-    )
-    locks = Path(os.path.expanduser(lock_dir or setting("ZCODE_WAKE_LOCK_DIR", DEFAULT_LOCK_DIR)))
-    host = host or setting("ZCODE_WAKE_HOST", DEFAULT_HOST)
+    settings = _settings(env)
+    workspace = workspace or _required_workspace(settings)
+    zcode_bin = zcode_bin or settings.get("ZCODE_WAKE_BIN") or DEFAULT_ZCODE
+    index = Path(os.path.expanduser(
+        index_path or settings.path("ZCODE_WAKE_TASKS_INDEX", "~/.zcode/v2/tasks-index.sqlite")
+    ))
+    locks = Path(os.path.expanduser(
+        lock_dir or settings.path("ZCODE_WAKE_LOCK_DIR", "~/.local/state/zc-wake")
+    ))
+    host = host or settings.get("ZCODE_WAKE_HOST") or DEFAULT_HOST
+    if not workspace:
+        # Hold and retry:  the deployment has not named a workspace, and delivering into an
+        # unknown directory is the wrong-chat failure this platform exists to refuse.
+        return {
+            "wake_id": str((request.get("wake") or {}).get("wake_id") or "") or None,
+            "session_id": str((request.get("target") or {}).get("session_id") or "") or None,
+            "delivery": asdict(WR.Delivery("failed", code="settings-missing")),
+        }
     try:
         target = _target_from(request.get("target"))
         wake = _wake_from(request.get("wake"))
     except (ValueError, KeyError, TypeError, AttributeError):
         # The ids go back as the request stated them (the table has already shape-checked the
         # session id), so this surfaces as refused bad-request and never as a mismatch.
-        return {**_raw_ids(request), "delivery": asdict(WR.Delivery("refused", code="bad-request"))}
+        return {**_raw_ids(request),
+                "delivery": asdict(WR.Delivery("refused", code="bad-request"))}
 
     def answer(delivery: WR.Delivery) -> dict[str, Any]:
         return {
@@ -217,7 +267,7 @@ def deliver_request(
             "delivery": asdict(delivery),
         }
 
-    if target.host and target.host != host:
+    if target.host != host:
         return answer(WR.Delivery("refused", code="host-not-configured"))
     if (stale := _recheck(env, target)) is not None:
         return answer(stale)
@@ -286,14 +336,19 @@ def deliver_request(
         handle.close()
 
 
-def _excluded_ids(
-    index_path: Path, cli_db: Path, workspace: str, candidates: list[WR.Target]
+def _subagent_children(cli_db: Path, sids: list[str]) -> tuple[str, set[str]]:
+    """(`ok`|`error`, sub-agent ids) among `sids`, from the CLI store's own marker.
+    Same read as the bridge's sub-agent check, with the error made visible."""
+    return _cli_subagent_ids(cli_db, sids)
+
+
+def _exclude_best_effort(
+    index_path: Path, cli_db: Path, workspace: str | None, candidates: list[WR.Target]
 ) -> set[str]:
-    """The candidate sessions that must never be picked:  a sub-agent child (the CLI store's
-    own marker), a session the tasks index does not know, and one whose recorded workspace is
-    not the configured one.  Best effort on purpose:  an unreadable store narrows nothing
-    here, because `build_platform`'s delivery re-checks both stores fail-closed before any
-    command runs, so a store outage holds the wake instead of widening this set."""
+    """The candidate sessions to narrow out of the pick, best effort on purpose:  an unreadable
+    store narrows nothing here, because the delivery path re-checks both stores fail-closed
+    before any command runs, so a store outage holds the wake instead of hiding it from the
+    pick and delivering it anyway."""
     sids = [t.session_id for t in candidates]
     if not sids:
         return set()
@@ -312,25 +367,30 @@ def _excluded_ids(
         pass
     finally:
         if con is not None:
-            con.close()
+            try:
+                con.close()
+            except sqlite3.Error:
+                pass
     con = None
-    try:
-        con = sqlite3.connect(f"file:{index_path}?mode=ro", uri=True, timeout=2)
-        for sid in sids:
-            row = con.execute(
-                "SELECT workspace_path FROM tasks WHERE task_id = ?", (sid,)
-            ).fetchone()
-            if (
-                not row
-                or not row[0]
-                or os.path.realpath(str(row[0])) != os.path.realpath(workspace)
-            ):
-                out.add(sid)
-    except sqlite3.Error:
-        pass
-    finally:
-        if con is not None:
-            con.close()
+    if workspace:
+        try:
+            con = sqlite3.connect(f"file:{index_path}?mode=ro", uri=True, timeout=2)
+            for sid in sids:
+                row = con.execute(
+                    "SELECT workspace_path FROM tasks WHERE task_id = ?", (sid,)
+                ).fetchone()
+                if not row or not row[0] or os.path.realpath(str(row[0])) != os.path.realpath(
+                    workspace
+                ):
+                    out.add(sid)
+        except sqlite3.Error:
+            pass
+        finally:
+            if con is not None:
+                try:
+                    con.close()
+                except sqlite3.Error:
+                    pass
     return out
 
 
@@ -345,30 +405,48 @@ def build_platform(
     timeout: int = 900,
     runner: Callable[..., Any] = subprocess.run,
 ) -> WR.Platform:
-    """The server-side `Platform` for the router's table:  the same delivery as
-    `deliver_request`, as a `WR.command_platform` spec, with the sub-agent and
-    wrong-workspace sessions excluded from the pick itself and both stores re-checked
-    fail-closed at delivery time (an unreadable store holds the wake as `failed`, so a store
-    outage can never widen the pick into a delivery)."""
-
-    def setting(name: str, default: str) -> str:
+    """The server-side `Platform` for the router's table:  the same checks as
+    `deliver_request`, re-run fail-closed at delivery time (an unreadable store holds the
+    wake as `failed`, a wrong-workspace or sub-agent session refuses with its own typed
+    code, and nothing runs), plus the sub-agent and wrong-workspace sessions excluded from
+    the pick itself.  Without a configured workspace nothing is built - call this only from
+    a deployment that has named one, or the router will refuse every zcode wake as
+    `settings-missing`, which is the safe direction."""
+    def setting(name: str, default: str | None = None) -> str | None:
         e = env or {}
         return e.get(name) or os.environ.get(name) or default
 
-    workspace = workspace or setting("ZCODE_WAKE_WORKSPACE", DEFAULT_WORKSPACE)
-    zcode_bin = zcode_bin or setting("ZCODE_WAKE_BIN", DEFAULT_ZCODE)
-    index = Path(
-        os.path.expanduser(index_path or setting("ZCODE_WAKE_TASKS_INDEX", DEFAULT_TASKS_INDEX))
-    )
-    cli_db = Path(
-        os.path.expanduser(cli_db or setting("ZCODE_WAKE_CLI_DB", "~/.zcode/cli/db/db.sqlite"))
-    )
-    host = host or setting("ZCODE_WAKE_HOST", DEFAULT_HOST)
+    workspace = workspace or setting("ZCODE_WAKE_WORKSPACE")
+    zcode_bin = zcode_bin or setting("ZCODE_WAKE_BIN") or DEFAULT_ZCODE
+    index = Path(os.path.expanduser(
+        index_path or setting("ZCODE_WAKE_TASKS_INDEX", "~/.zcode/v2/tasks-index.sqlite")
+    ))
+    cli_db_path = Path(os.path.expanduser(
+        cli_db or setting("ZCODE_WAKE_CLI_DB", "~/.zcode/cli/db/db.sqlite")
+    ))
+    host = host or setting("ZCODE_WAKE_HOST") or DEFAULT_HOST
 
     def exclude(candidates: list[WR.Target]) -> set[str]:
-        return _excluded_ids(index, cli_db, workspace, candidates)
+        return _exclude_best_effort(index, cli_db_path, workspace, candidates)
 
-    inner = WR.command_platform(
+    def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
+        if target.host != host:
+            return WR.Delivery("refused", code="host-not-configured")
+        status, recorded = _tasks_workspace(index, target.session_id)
+        if status == "error":
+            return WR.Delivery("failed", code="tasks-index-unavailable")
+        if status == "missing":
+            return WR.Delivery("refused", code="workspace-unknown")
+        if os.path.realpath(recorded) != os.path.realpath(workspace):
+            return WR.Delivery("refused", code="workspace-mismatch")
+        status, subagents = _subagent_children(cli_db_path, [target.session_id])
+        if status == "error":
+            return WR.Delivery("failed", code="cli-store-unavailable")
+        if target.session_id in subagents:
+            return WR.Delivery("refused", code="subagent-child")
+        return inner.deliver(target, wake)
+
+    inner_platform = WR.command_platform(
         seat=SEAT,
         platform=PLATFORM,
         mention="ZCode",
@@ -388,19 +466,8 @@ def build_platform(
         exclude=exclude,
         runner=runner,
     )
-
-    def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
-        # Fail-closed store checks:  an unreadable index or CLI store is `failed` (the wake is
-        # held and retried), never a delivery of a chat the stores could not vet.
-        status, _ = _tasks_workspace(index, target.session_id)
-        if status == "error":
-            return WR.Delivery("failed", code="tasks-index-unavailable")
-        subagents = _excluded_ids(index, cli_db, workspace, [target])
-        if target.session_id in subagents:
-            return WR.Delivery("refused", code="subagent-child")
-        return inner.deliver(target, wake)
-
-    platform = WR.Platform(
+    inner = inner_platform.deliver
+    return WR.Platform(
         seat=SEAT,
         platform=PLATFORM,
         mention="ZCode",
@@ -408,4 +475,13 @@ def build_platform(
         deliver=deliver,
         exclude=exclude,
     )
-    return platform
+
+
+def settings_path(env: Mapping[str, str] | None, name: str, default: str) -> Path:
+    """A settings path with `~` resolved against the delivery env's HOME, then the process's."""
+    e = env or {}
+    raw = e.get(name) or os.environ.get(name) or default
+    home = e.get("HOME") or os.environ.get("HOME")
+    if raw.startswith("~") and home:
+        raw = home + raw[1:]
+    return Path(raw)
