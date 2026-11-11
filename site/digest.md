@@ -1,6 +1,6 @@
 # Jay's Daily Coding-Related Activities
 
-_Generated 2026-11-11 11:29 CST · timezone America/Chicago_
+_Generated 2026-11-11 14:15 CST · timezone America/Chicago_
 
 Sources: merged PRs and issues opened/closed in verified public repositories.
 Agent names are stripped from titles; HTML site shows logos instead.
@@ -11,7 +11,7 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-11-11
 
-*43 PRs merged · 0 issues opened · 0 issues closed*
+*47 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
@@ -32,6 +32,7 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **AFC** `Muse Assist` [#1769](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1769): Listener: Delete The — Inbox Bridge, Keep The Decider Declaration _(by jaywedgeworth22)_
 - **AFC** [#1770](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1770): RAG nightly: read the Linear seat pairs from AI Fleet Coordinator /linear (AFC-687) _(by jaywedgeworth22)_
 - **AFC** [#1771](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1771): An Untagged Reply Wakes The Chat It Answers: The Listener's Liberal Wake Rule _(by jaywedgeworth22)_
+- **AFC** [#1772](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1772): Add the fleet-id-links skill and link every app by acronym and repo name _(by jaywedgeworth22)_
 - **AFC** [#1773](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1773): Update GitHub Artifact Actions (major) _(by renovate[bot])_
 - **AFC** [#1774](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1774): 684/OPS-1059: bootstrap proof on current main (replaces #1752) _(by jaywedgeworth22)_
 - **AFC** [#1776](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1776): RAG mirror: rsync — mkpath so the nested incoming trees exist (AFC-687) _(by jaywedgeworth22)_
@@ -42,13 +43,16 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **AFC** [#1783](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1783): Wake Router: A Registry Row Must Name Its Seat (OPS-1048) _(by jaywedgeworth22)_
 - **AFC** [#1784](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1784): wf publication route: refuse loaded credentials before fixture attestation _(by jaywedgeworth22)_
 - **AFC** [#1785](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1785): simple-tools-mcp: take the Frankfurt placement pin out (revert of #1734) _(by jaywedgeworth22)_
+- **AFC** [#1786](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1786): Relay: verify large update-branch base changes with a complete two-tree diff _(by jaywedgeworth22)_
 - **AFC** [#1787](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1787): Listener: ZC Wakes Through Its Bridge (OPS-1048) _(by jaywedgeworth22)_
 - **AFC** [#1788](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1788): Muster: The Mac Listener Is Retired, The Server Listener Holds Every Seat _(by jaywedgeworth22)_
 - **AFC** [#1790](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1790): Wake Deliver: Each Platform Reads Session Ids With Its Own Pattern (OPS-1048) _(by jaywedgeworth22)_
 - **AFC** [#1792](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1792): RAG nightly: the unit owns code-main-sync; the job reads its result (AFC-687) _(by jaywedgeworth22)_
+- **AFC** [#1794](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1794): kody-first-review: grant pull-requests:write so PR trigger comments stop 403ing (AFC-681) _(by jaywedgeworth22)_
 - **BF** `Muse Assist` [#1742](https://github.com/Simple-With-Us/BotFleet/pull/1742): 2441: iOS photo previews, drop snippet chips, show — Code subagents _(by jaywedgeworth22)_
 - **BF** [#1745](https://github.com/Simple-With-Us/BotFleet/pull/1745): Update non-major dependencies _(by renovate[bot])_
 - **BF** [#1746](https://github.com/Simple-With-Us/BotFleet/pull/1746): Update dependency typebox to v1.4.5 _(by renovate[bot])_
+- **BF** [#1747](https://github.com/Simple-With-Us/BotFleet/pull/1747): Update non-major dependencies _(by renovate[bot])_
 - **CT** [#3050](https://github.com/Simple-With-Us/Congress.Trade/pull/3050): chore(deps): update non-major dependencies _(by renovate[bot])_
 - **CT** [#3051](https://github.com/Simple-With-Us/Congress.Trade/pull/3051): fix(deps): update dependency @google/genai to v3 _(by renovate[bot])_
 - **CT** [#3052](https://github.com/Simple-With-Us/Congress.Trade/pull/3052): chore(deps): update non-major dependencies _(by renovate[bot])_
@@ -2100,15 +2104,11 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-10-21
 
-*205 PRs merged · 0 issues opened · 0 issues closed*
+*201 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
-- **AFC** `Muse Assist` `Codex` [#727](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/727): Deliver — Wakes To Existing Native — Threads _(by jaywedgeworth22)_
 - **AFC** [#755](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/755): Sentence gap: assert the AGENT-SYNC.md mirror instead of exempting it _(by jaywedgeworth22)_
-- **AFC** [#758](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/758): Drop Mistral Vibe as a fleet platform _(by jaywedgeworth22)_
-- **AFC** [#765](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/765): Notes: carry the 900 s AppleEvent timeout in the canonical helper _(by jaywedgeworth22)_
-- **AFC** [#771](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/771): notes: one vocabulary for the title rule (AFC-422 follow-up) _(by jaywedgeworth22)_
 - **AFC** [#781](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/781): autofix: org-variable model switch for all fixers (owner 2026-10-21) _(by jaywedgeworth22)_
 - **AFC** [#782](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/782): Drop the last Vibe row from the onboarding table _(by jaywedgeworth22)_
 - **AFC** [#785](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/785): Record the Wake Settings Change in the Process List _(by jaywedgeworth22)_
