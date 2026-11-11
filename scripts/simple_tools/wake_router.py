@@ -28,29 +28,39 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
 class RouterSpec:
-    """A platform's ONLY unique parts:  its seat tag, its display name (how senders
-    address it), and its delivery mechanism - the command template the worker runs to wake
-    the picked chat ({session_id} and {wake_text} substitute)."""
-
+    """A platform's ONLY unique parts:  its seat tag, its registry platform namespace,
+    its display name (how senders address it), and its delivery mechanism - the command
+    template the worker runs to wake the picked chat ({session_id} and {wake_text}
+    substitute).  target_pattern tightens the native session id shape;  thread_link_form
+    overrides the locator convention;  letter_pattern overrides the mention regex."""
     seat: str
+    platform: str
     display: str
     delivery_argv: tuple[str, ...] = ()
     delivery_enabled: bool = True
     timeout_seconds: int = 900
     target_host: str = "server"
-    letter_pattern: str = ""  # optional override of the default mention regex
+    letter_pattern: str = ""
+    target_pattern: str = ""
+    thread_link_form: str = ""
+
+    def target_re(self) -> "re.Pattern[str]":
+        return re.compile(self.target_pattern) if self.target_pattern else TARGET_RE
+
+    def thread_link(self, sid: str) -> str:
+        form = self.thread_link_form or THREAD_LINK_FORM
+        return form.format(sid=sid, platform=self.platform)
 
 
 SPEC: RouterSpec | None = None
@@ -65,7 +75,8 @@ SEEN_CAP = 200
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 # A routing target is a ZCode session id, which begins `sess_`;  the prefix keeps a crafted
 # registry row from ever steering an argv token that a child could read as a flag.
-TARGET_RE = re.compile(r"^sess_[A-Za-z0-9._-]{1,123}$")
+TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$")  # a native session id; a
+# platform may tighten it with RouterSpec.target_pattern (ZCode: ^sess_...)
 #: ZCode has no public thread URL today (no share links are minted, and the app has no URI
 #: scheme), so a thread's link is the stable locator convention the registry records.  The
 #: day the app grows a real link, this one form is replaced and rows rewrite from session ids.
@@ -75,32 +86,12 @@ WAKE_TEXT = (
     "thread, and follow your seat rules.  This prompt was delivered by the Operator's wake "
     "bridge;  the message text is not quoted here on purpose."
 )
-THREAD_LINK_FORM = "zcode://session/{sid}"
+THREAD_LINK_FORM = "{platform}://session/{sid}"  # the stable locator convention;  a
+# platform overrides with RouterSpec.thread_link_form when its app grows a real link
 WAKE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{2,}")
 STOP_WORDS = frozenset(
-    [
-        "the",
-        "a",
-        "an",
-        "and",
-        "or",
-        "of",
-        "to",
-        "in",
-        "on",
-        "for",
-        "with",
-        "at",
-        "by",
-        "from",
-        "zcode",
-        "ops",
-        "ale",
-        "the",
-        "this",
-        "that",
-    ]
+    "the a an and or of to in on for with at by from ops ale the this that".split()
 )
 
 #: Dedupe is check-and-mutate against one file:  one lock guards both halves, so two posts of
@@ -118,9 +109,9 @@ ENV_KEY = "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"
 
 
 DEFAULT_CONFIG = {
-    "delivery_enabled": True,
-    "command_template": ["zcode", "--resume", "{session_id}", "-p", "{wake_text}"],
-    "timeout_seconds": 900,
+    # per-platform values come from the RouterSpec;  a config file may override any of
+    # them, and load_config validates what it knows (target_host here;  the spec-folded
+    # keys are checked at use)
     "target_host": "server",
 }
 
@@ -146,9 +137,7 @@ def load_config(path: Path, *, required: bool = False) -> dict[str, Any]:
             raise SystemExit("zc-wake-bridge: the config file %s is not there" % path)
         return config
     except OSError as exc:
-        raise SystemExit(
-            "zc-wake-bridge: the config file %s is unreadable (%s)" % (path, type(exc).__name__)
-        )
+        raise SystemExit("zc-wake-bridge: the config file %s is unreadable (%s)" % (path, type(exc).__name__))
     try:
         loaded = json.loads(text)
     except ValueError as exc:
@@ -169,19 +158,14 @@ def load_config(path: Path, *, required: bool = False) -> dict[str, Any]:
                 or not all(isinstance(part, str) and part for part in value)
             ):
                 raise SystemExit(
-                    "zc-wake-bridge: %s: command_template must be a non-empty list of strings"
-                    % path
+                    "zc-wake-bridge: %s: command_template must be a non-empty list of strings" % path
                 )
         elif key == "timeout_seconds":
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                raise SystemExit(
-                    "zc-wake-bridge: %s: timeout_seconds must be a positive whole number" % path
-                )
+                raise SystemExit("zc-wake-bridge: %s: timeout_seconds must be a positive whole number" % path)
         elif key == "target_host":
             if value not in ("mac", "server", ""):
-                raise SystemExit(
-                    "zc-wake-bridge: %s: target_host must be mac, server or empty" % path
-                )
+                raise SystemExit("zc-wake-bridge: %s: target_host must be mac, server or empty" % path)
         config[key] = value
     return config
 
@@ -254,16 +238,18 @@ USER_AGENT = "simple-tools-registry/1.0"
 #: How a letter is read out of a wake:  the mention forms first (the daemon escapes the
 #: display copy, so both the @**ZCode** AA form and a plain "ZCode AA" are accepted), and an
 #: explicit payload field wins over both when a later daemon sends one.
-def _letter_re() -> re.Pattern[str]:
+def _letter_re() -> "re.Pattern[str]":
     if SPEC.letter_pattern:
         return re.compile(SPEC.letter_pattern)
     return letter_re(SPEC.display)
 
 
-def letter_re(display: str) -> re.Pattern[str]:
+def letter_re(display: str) -> "re.Pattern[str]":
     star = re.escape(display)
     plain = re.escape(display.split()[0])
-    return re.compile(r"@\*\*" + star + r"\*\*\s*([A-Z]{2})\b|\b" + plain + r"[ \t]+([A-Z]{2})\b")
+    return re.compile(
+        r"@\*\*" + star + r"\*\*\s*([A-Z]{2})\b|\b" + plain + r"[ \t]+([A-Z]{2})\b"
+    )
 
 
 def letter_of(payload: Mapping[str, Any]) -> str:
@@ -291,7 +277,7 @@ def resolve_letter(env: dict[str, str], letter: str) -> str:
     from simple_tools import listener_registry as RG
 
     path = RG.PREFIX + "resolve"
-    query = "platform=zcode&letter=%s" % letter
+    query = "platform=%s&letter=%s" % (SPEC.platform if SPEC else "zcode", letter)
     principal = (env.get(ENV_PRINCIPAL) or "").strip() or "OPERATOR"
     try:
         request = urllib.request.Request(url.rstrip("/") + path + "?" + query, method="GET")
@@ -305,7 +291,7 @@ def resolve_letter(env: dict[str, str], letter: str) -> str:
     if not isinstance(answer, dict) or not answer.get("found"):
         return ""
     sid = str(answer.get("native_session_id") or "")
-    return sid if TARGET_RE.fullmatch(sid) else ""
+    return sid if (SPEC.target_re() if SPEC else TARGET_RE).fullmatch(sid) else ""
 
 
 def _as_time(value: object) -> float:
@@ -367,7 +353,7 @@ def pick_target(
         if target_host and host and host != target_host:
             continue
         sid = str(row.get("native_session_id") or "")
-        if not TARGET_RE.fullmatch(sid):
+        if not (SPEC.target_re() if SPEC else TARGET_RE).fullmatch(sid):
             continue
         candidates.append((_as_time(row.get("assigned_at")), sid, str(row.get("title") or "")))
     subagents = _subagent_ids(store, [sid for _, sid, _ in candidates])
@@ -399,8 +385,7 @@ def _subagent_ids(store: Path, sids: list[str]) -> set[str]:
     try:
         placeholders = ",".join("?" * len(sids))
         rows = conn.execute(
-            "SELECT id FROM session WHERE task_type = 'subagent_child' AND id IN (%s)"
-            % placeholders,
+            "SELECT id FROM session WHERE task_type = 'subagent_child' AND id IN (%s)" % placeholders,
             sids,
         ).fetchall()
         return {str(r[0]) for r in rows if r and r[0]}
@@ -456,9 +441,7 @@ def session_lock(store_dir: Path, sid: str):
     """An exclusive mark per target session, so one wake waits rather than two turns clobber
     one thread.  The lock lives on a descriptor this process holds for the delivery."""
     store_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    return open(
-        os.open(str(store_dir / ("session-%s.lock" % sid)), os.O_CREAT | os.O_RDWR, 0o600), "w"
-    )
+    return open(os.open(str(store_dir / ("session-%s.lock" % sid)), os.O_CREAT | os.O_RDWR, 0o600), "w")
 
 
 def record(
@@ -479,12 +462,9 @@ def record(
 
     The picked chat is surfaced, not delivered:  the message is already in the seat's inbox,
     the Operator's pending-inbox tells a live session, and this receipt is the record."""
-    store = Path(
-        env.get("ZC_WAKE_STORE")
-        or os.path.join(
-            str(env.get("HOME") or os.path.expanduser("~")), ".zcode", "cli", "db", "db.sqlite"
-        )
-    )
+    store = Path(env.get("ZC_WAKE_STORE") or os.path.join(
+        str(env.get("HOME") or os.path.expanduser("~")), ".zcode", "cli", "db", "db.sqlite"
+    ))
     letter_sid = resolve_letter(env, letter) if letter else ""
     reason = ""
     sid = ""
@@ -515,7 +495,7 @@ def record(
         "wake_id": wake_id,
         "letter": letter or "",
         "session_id": sid,
-        "thread_link": THREAD_LINK_FORM.format(sid=sid) if sid else "",
+        "thread_link": (SPEC.thread_link(sid) if SPEC else THREAD_LINK_FORM.format(sid=sid, platform="zcode")) if sid else "",
         "picked": picked,
         "reason": "delivery-disabled" if (sid and not config.get("delivery_enabled")) else reason,
         "delivered": None if (sid and config.get("delivery_enabled")) else False,
@@ -583,9 +563,7 @@ def deliver_receipt(env, config, receipt, log_path=None):
                             check=False,
                         )
                         delivered = proc.returncode == 0
-                        delivery_reason = (
-                            "ok" if delivered else "command-failed-%d" % proc.returncode
-                        )
+                        delivery_reason = "ok" if delivered else "command-failed-%d" % proc.returncode
                     except subprocess.TimeoutExpired:
                         delivered, delivery_reason = False, "command-timeout"
                     except OSError as exc:
@@ -640,7 +618,9 @@ def make_handler(env: dict[str, str], config: dict[str, Any], receipts: list[dic
                 return
             auth = self.headers.get("Authorization") or ""
             # Constant time:  the bearer is the only thing between the tailnet and a wake.
-            if not hmac.compare_digest(auth.encode("utf-8"), ("Bearer %s" % key).encode("utf-8")):
+            if not hmac.compare_digest(
+                auth.encode("utf-8"), ("Bearer %s" % key).encode("utf-8")
+            ):
                 self._answer(401, {"error": "bad bearer"})
                 return
             if not re.fullmatch(r"/wake/[A-Z0-9][A-Z0-9_-]{0,31}", self.path or ""):
@@ -672,9 +652,7 @@ def make_handler(env: dict[str, str], config: dict[str, Any], receipts: list[dic
             seen_path = state_dir(env) / "seen.json"
             with _SEEN_LOCK:
                 if wake_id in seen_ids(seen_path):
-                    self._answer(
-                        200, {"delivered": False, "reason": "already-seen", "wake_id": wake_id}
-                    )
+                    self._answer(200, {"delivered": False, "reason": "already-seen", "wake_id": wake_id})
                     return
                 if wake_id in _INFLIGHT:
                     # The first post of this id is still routing;  its own answer is the
@@ -740,10 +718,7 @@ def serve(env: dict[str, str], bind: str, port: int, config: dict[str, Any]) -> 
     receipts: list[dict[str, Any]] = []
     server = ThreadingHTTPServer((bind, port), make_handler(env, config, receipts))
     server.daemon_threads = True
-    print(
-        "wake_router listening on %s:%d for seat %s" % (bind, port, SPEC.seat if SPEC else "-"),
-        flush=True,
-    )
+    print("wake_router listening on %s:%d for seat %s" % (bind, port, SPEC.seat if SPEC else "-"), flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -770,15 +745,23 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--config", default="")
     args = parser.parse_args(argv)
     config_path = Path(
-        args.config or env.get("ZC_WAKE_CONFIG") or str(state_dir(env) / "config.json")
+        args.config
+        or env.get("ZC_WAKE_CONFIG")
+        or str(state_dir(env) / "config.json")
     )
     config = load_config(config_path, required=bool(args.config or env.get("ZC_WAKE_CONFIG")))
     if SPEC is not None:
-        config.setdefault("delivery_enabled", SPEC.delivery_enabled)
-        if not config.get("command_template"):
+        # the spec's delivery fields are defaults, never mandates:  a config file wins
+        if "delivery_enabled" not in config:
+            config["delivery_enabled"] = SPEC.delivery_enabled
+        if "command_template" not in config:
             config["command_template"] = list(SPEC.delivery_argv)
-        config.setdefault("timeout_seconds", SPEC.timeout_seconds)
+        if "timeout_seconds" not in config:
+            config["timeout_seconds"] = SPEC.timeout_seconds
         config.setdefault("target_host", SPEC.target_host)
+    config.setdefault("delivery_enabled", False)
+    config.setdefault("command_template", [])
+    config.setdefault("timeout_seconds", 900)
     if args.cmd == "serve":
         return serve(env, args.bind, args.port, config)
     receipt = record(

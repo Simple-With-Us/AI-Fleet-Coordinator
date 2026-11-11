@@ -33,7 +33,10 @@ from simple_tools.wake_router import RouterSpec
 
 _WR.SPEC = RouterSpec(
     seat="ZC",
+    platform="zcode",
     display="ZCode",
+    target_pattern=r"^sess_[A-Za-z0-9._-]{1,123}$",
+    thread_link_form="zcode://session/{sid}",
     delivery_argv=("/bin/true",),
     delivery_enabled=False,
     target_host="server",

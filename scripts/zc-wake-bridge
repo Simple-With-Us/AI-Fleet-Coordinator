@@ -20,7 +20,10 @@ from simple_tools.wake_router import RouterSpec, serve_with
 
 SPEC = RouterSpec(
     seat="ZC",
+    platform="zcode",
     display="ZCode",
+    target_pattern=r"^sess_[A-Za-z0-9._-]{1,123}$",
+    thread_link_form="zcode://session/{sid}",
     delivery_argv=(
         "/home/jay/.local/bin/zcode",
         "--resume",

@@ -19,6 +19,7 @@ from simple_tools.wake_router import RouterSpec, serve_with
 
 SPEC = RouterSpec(
     seat="AG",
+    platform="antigravity",
     display="Antigravity",
     delivery_argv=(
         "/mnt/fleet-extra/apps/cli/agy/bin/agy",
