@@ -41,6 +41,7 @@ import {
   SEAT_SECRETS,
   SEAT_LABELS,
   WAKE_SECRETS,
+  LISTENER_KEY_SECRET_NAMES,
   KNOWN_SEATS,
   GRANT_MAX_AGE_MS,
 } from "./config.js";
@@ -848,8 +849,8 @@ async function serveSpike(request, env, ctx, config) {
   const wakeKey = await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat], optional: true });
   const key = spikeKey(env.SPIKE_HMAC_KEY);
   if (!wakeKey || !key) return notFound();
-  // SPIKE_HMAC_KEY must never equal any seat's wake key, not only this seat's.
-  const wakeKeys = await resolveWakeKeys(env, Object.values(WAKE_SECRETS));
+  // SPIKE_HMAC_KEY must never equal any seat's wake or read key, not only this seat's.
+  const wakeKeys = await resolveWakeKeys(env, LISTENER_KEY_SECRET_NAMES);
   if (wakeKeys.includes(key)) {
     console.log(JSON.stringify({ event: "spike_refused", seat, reason: "key_reused" }));
     return notFound();
@@ -900,8 +901,8 @@ async function serveLinearHealth(request, env, config) {
   if (!key) return notFound();
   // Every wake key Infisical serves, as serveSpike reads them (sentry
   // 4364275301):  in required mode the wake bindings may be gone, and an env
-  // read would miss a health key equal to a wake key.
-  const wakeKeys = await resolveWakeKeys(env, Object.values(WAKE_SECRETS));
+  // read would miss a health key equal to a wake key (or a read key).
+  const wakeKeys = await resolveWakeKeys(env, LISTENER_KEY_SECRET_NAMES);
   const spikeKeyRaw = typeof env.SPIKE_HMAC_KEY === "string" ? env.SPIKE_HMAC_KEY.trim() : "";
   if (wakeKeys.includes(key) || (spikeKeyRaw && spikeKeyRaw === key)) {
     console.log(JSON.stringify({ event: "health_refused", reason: "key_reused" }));

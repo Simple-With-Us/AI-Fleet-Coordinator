@@ -152,6 +152,11 @@ export const LISTENER_READ_SECRETS = Object.freeze({
   CURSOR: "WAKE_HMAC_KEY_CURSOR",
 });
 
+// Every secret name that holds a seat's listener key, wake or read-only.  The spike, health and WhatsApp keys must never equal
+// any of them (key separation), so their reuse guards compare against this list and not against WAKE_SECRETS alone (kody on
+// #1768:  a read key reused as one of those keys would otherwise pass silently).
+export const LISTENER_KEY_SECRET_NAMES = Object.freeze([...Object.values(WAKE_SECRETS), ...Object.values(LISTENER_READ_SECRETS)]);
+
 // The Operator notes API key (AFC-486, docs/protocols/operator-notes.md):  the Worker signs every notes_* request
 // to <LISTENER_API_URL>/notes/v1/ as the principal WORKER with this secret, the Infisical key
 // OPERATOR_NOTES_WORKER_KEY (AI Fleet Coordinator, prod, /operator).  One key for every seat:  the seat comes only
