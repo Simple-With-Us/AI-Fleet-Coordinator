@@ -55,6 +55,15 @@ def row(sid: str, letter: str, title: str, host: str = "server", **over) -> dict
     return base
 
 
+def seatless(sid: str, letter: str, title: str, **over) -> dict:
+    """A row that names no seat at all."""
+    return {k: v for k, v in row(sid, letter, title, **over).items() if k != "seat"}
+
+
+# Seats a registry row may not be read as CLAUDE's by:  none at all, or one that is not CLAUDE.
+NOT_CLAUDE = (None, "", 7, ["CLAUDE"], "CODEX", "CLAUDE ", "CL AUDE", "сLAUDE")
+
+
 class FakeRegistry:
     """Stands in for registry_api.call."""
 
@@ -296,6 +305,28 @@ class Picking(Base):
             row(SID_C, "DD", "unrelated", closed_at="2026-11-01T00:00:00Z"),
         ]
         self.assertEqual(self.router().pick(self.wake()).reason, "no-live-session")
+
+    def test_a_row_must_name_this_seat_itself(self) -> None:
+        self.assertIsNotNone(WR.target_from_row(row(SID_A, "AA", "x"), "CLAUDE", CW.SESSION_RE))
+        self.assertIsNotNone(
+            WR.target_from_row(row(SID_A, "AA", "x", seat="claude"), "CLAUDE", CW.SESSION_RE)
+        )
+        self.assertIsNone(WR.target_from_row(seatless(SID_A, "AA", "x"), "CLAUDE", CW.SESSION_RE))
+        for seat in NOT_CLAUDE:
+            bad = row(SID_A, "AA", "x", seat=seat)
+            self.assertIsNone(WR.target_from_row(bad, "CLAUDE", CW.SESSION_RE), repr(seat))
+        self.assertIsNone(WR.target_from_row(seatless(SID_A, "AA", "x"), "", CW.SESSION_RE))
+
+    def test_a_row_with_no_seat_is_never_picked(self) -> None:
+        self.registry.rows = [seatless(SID_A, "AA", "Wake router")]
+        self.registry.rows += [row(SID_B, "BB", "x", seat=seat) for seat in NOT_CLAUDE]
+        self.assertEqual(self.router().pick(self.wake(topic="wake router")).reason, "no-live-session")
+
+    def test_a_letter_whose_row_names_no_seat_is_not_live(self) -> None:
+        self.registry.letters = {"AA": seatless(SID_A, "AA", "Other")}
+        self.registry.rows = [row(SID_B, "BB", "Two")]
+        pick = self.router().pick(self.wake(letter="AA"))
+        self.assertEqual((pick.target.session_id, pick.letter_live), (SID_B, False))
 
     def test_an_excluded_chat_is_never_picked(self) -> None:
         self.registry.rows = [row(SID_A, "AA", "One"), row(SID_B, "BB", "Two")]
@@ -1458,6 +1489,13 @@ class Shutdown(Base):
         self.assertGreater(stop, wait)
         self.assertRegex(unit, r"(?m)^KillMode=mixed$")
 
+    def test_the_unit_keeps_off_the_port_zc_already_uses(self) -> None:
+        unit = (Path(CW.__file__).parent / "server" / "claude-wake-router.service").read_text()
+        start = re.search(r"(?m)^ExecStart=(.*)$", unit).group(1)
+        self.assertIn('--port "${CLAUDE_WAKE_PORT:-8794}"', start)
+        self.assertNotIn("8793", start)
+        self.assertIn('. "$HOME/.local/bin/operator-registry-env"', start)
+
 
 class Generations(Base):
     """A pick can go stale while its wake waits.  Each test picks, waits on a busy answer, changes
@@ -1568,6 +1606,179 @@ class Generations(Base):
         router = self.lettered()
         self.registry.letters = {"AA": row(SID_B, "AA", "x", generation=3)}
         self.assert_released(router)
+
+    def assert_unreadable_then_delivered(self, router: WR.Router) -> None:
+        """The check found a live row it cannot read as this seat's:  a counted retry with the pick
+        kept and nothing delivered, then a delivery once the row reads again."""
+        self.drain(router)
+        self.assertEqual(len(self.delivered), 1)
+        saved = json.loads(self.pending().read_text(encoding="utf-8"))
+        self.assertNotIn("in_flight", saved)
+        self.assertEqual((saved["failures"], saved.get("repicks", 0)), (1, 0))
+        self.assertEqual(saved["pick"]["target"]["session_id"], SID_A)
+        self.registry.letters = {"AA": row(SID_A, "AA", "Only chat", generation=3)}
+        self.clock.now += 2000
+        self.drain(router)
+        self.assertEqual(len(self.delivered), 2)
+        self.assertEqual(self.done()["status"], "delivered")
+
+    def test_a_row_that_names_no_seat_is_not_a_release(self) -> None:
+        router = self.lettered()
+        self.registry.letters = {"AA": seatless(SID_A, "AA", "Only chat", generation=3)}
+        self.assert_unreadable_then_delivered(router)
+
+    def test_a_row_with_a_malformed_seat_is_not_a_release(self) -> None:
+        router = self.lettered()
+        self.registry.letters = {"AA": row(SID_A, "AA", "Only chat", generation=3, seat=["x"])}
+        self.assert_unreadable_then_delivered(router)
+
+    def test_a_letterless_wake_is_not_picked_again_on_a_row_with_no_seat(self) -> None:
+        router = self.queued()
+        self.registry.letters = {"AA": seatless(SID_B, "AA", "Elsewhere", generation=4)}
+        self.assert_unreadable_then_delivered(router)
+
+    def test_a_row_with_no_seat_is_bounded_and_never_delivered(self) -> None:
+        router = self.lettered(max_attempts=2)
+        self.registry.letters = {"AA": seatless(SID_A, "AA", "Only chat", generation=3)}
+        for _ in range(6):
+            self.drain(router)
+            self.clock.now += 2000
+        self.assertEqual(len(self.delivered), 1)
+        receipt = self.done()
+        self.assertEqual((receipt["status"], receipt["code"]), ("dead", WR.UNREADABLE_ROW))
+        self.assertIs(receipt["delivered"], False)
+
+    def test_a_resolve_answer_that_is_not_a_mapping_is_a_retry_and_no_delivery(self) -> None:
+        for odd in (None, [], ["found"], "error", 7):
+            with self.subTest(answer=odd):
+                self.delivered.clear()
+                for leftover in (self.state / "pending", self.state / "done"):
+                    shutil.rmtree(leftover, ignore_errors=True)
+                router = self.lettered()
+                real = self.registry
+
+                def call(env, op, params=None, *, timeout=25, odd=odd, real=real):
+                    return odd if op == "resolve" else real(env, op, params, timeout=timeout)
+
+                with mock.patch.object(WR.registry_api, "call", call):
+                    self.drain(router)
+                self.assertEqual(len(self.delivered), 1)
+                saved = json.loads(self.pending().read_text(encoding="utf-8"))
+                self.assertNotIn("in_flight", saved)
+                self.assertEqual((saved["failures"], saved.get("repicks", 0)), (1, 0))
+                self.assertEqual(saved["pick"]["target"]["session_id"], SID_A)
+                self.clock.now += 2000
+                self.drain(router)
+                self.assertEqual(len(self.delivered), 2)
+                self.assertEqual(self.done()["status"], "delivered")
+
+    def test_a_resolve_answer_that_is_not_a_mapping_is_bounded(self) -> None:
+        router = self.lettered(max_attempts=2)
+        real = self.registry
+
+        def call(env, op, params=None, *, timeout=25):
+            return None if op == "resolve" else real(env, op, params, timeout=timeout)
+
+        with mock.patch.object(WR.registry_api, "call", call):
+            for _ in range(6):
+                self.drain(router)
+                self.clock.now += 2000
+        self.assertEqual(len(self.delivered), 1)
+        receipt = self.done()
+        self.assertEqual((receipt["status"], receipt["code"]), ("dead", "registry-unavailable"))
+        self.assertIs(receipt["delivered"], False)
+
+    def test_a_pick_on_an_answer_that_is_not_a_mapping_is_a_retry(self) -> None:
+        for op_odd in ("resolve", "history"):
+            for odd in (None, [], "error", 7):
+                with self.subTest(op=op_odd, answer=odd):
+                    real = self.registry
+
+                    def call(env, op, params=None, *, timeout=25, odd=odd, op_odd=op_odd):
+                        return odd if op == op_odd else real(env, op, params, timeout=timeout)
+
+                    wake = self.wake(letter="AA") if op_odd == "resolve" else self.wake()
+                    with mock.patch.object(WR.registry_api, "call", call):
+                        pick = self.router().pick(wake)
+                    self.assertEqual((pick.reason, pick.retry), ("registry-unavailable", True))
+
+    # `found` values that are not the registry's own True or False.  "absent" drops the key.
+    ODD_FOUND = ("absent", None, 0, 1, 1.0, "", "true", "false", [True])
+
+    def resolve_with_found(self, odd):
+        """A registry whose `resolve` gives a valid row for AA with `found` replaced by `odd`."""
+        real = self.registry
+        valid = row(SID_A, "AA", "Only chat", generation=3)
+
+        def call(env, op, params=None, *, timeout=25):
+            if op != "resolve":
+                return real(env, op, params, timeout=timeout)
+            return valid if odd == "absent" else {**valid, "found": odd}
+
+        return mock.patch.object(WR.registry_api, "call", call)
+
+    def test_a_found_that_is_not_a_boolean_is_a_retry_not_a_release(self) -> None:
+        for odd in self.ODD_FOUND:
+            with self.subTest(found=odd):
+                self.delivered.clear()
+                for leftover in (self.state / "pending", self.state / "done"):
+                    shutil.rmtree(leftover, ignore_errors=True)
+                router = self.lettered()
+                with self.resolve_with_found(odd):
+                    self.drain(router)
+                self.assertEqual(len(self.delivered), 1)
+                saved = json.loads(self.pending().read_text(encoding="utf-8"))
+                self.assertNotIn("in_flight", saved)
+                self.assertEqual((saved["failures"], saved.get("repicks", 0)), (1, 0))
+                self.clock.now += 2000
+                self.drain(router)
+                self.assertEqual(len(self.delivered), 2)
+                self.assertEqual(self.done()["status"], "delivered")
+
+    def test_a_found_that_is_not_a_boolean_is_bounded_and_never_delivered(self) -> None:
+        router = self.lettered(max_attempts=2)
+        with self.resolve_with_found(1):
+            for _ in range(6):
+                self.drain(router)
+                self.clock.now += 2000
+        self.assertEqual(len(self.delivered), 1)
+        receipt = self.done()
+        self.assertEqual((receipt["status"], receipt["code"]), ("dead", WR.UNREADABLE_ROW))
+        self.assertIs(receipt["delivered"], False)
+
+    def test_a_letter_pick_on_a_found_that_is_not_a_boolean_is_a_retry(self) -> None:
+        for odd in self.ODD_FOUND:
+            with self.subTest(found=odd), self.resolve_with_found(odd):
+                pick = self.router().pick(self.wake(letter="AA"))
+                self.assertEqual((pick.reason, pick.retry), ("registry-unavailable", True))
+
+    def test_holds_needs_found_to_be_exactly_a_boolean(self) -> None:
+        target = WR.Target(SID_A, letter="AA", generation=3)
+        valid = row(SID_A, "AA", "x", generation=3)
+        self.assertIs(WR.holds({**valid, "found": True}, target, "CLAUDE", CW.SESSION_RE), True)
+        self.assertIs(WR.holds({**valid, "found": False}, target, "CLAUDE", CW.SESSION_RE), False)
+        for odd in self.ODD_FOUND:
+            answer = valid if odd == "absent" else {**valid, "found": odd}
+            self.assertIsNone(WR.holds(answer, target, "CLAUDE", CW.SESSION_RE), repr(odd))
+
+    def test_holds_tells_a_release_from_a_row_it_cannot_read(self) -> None:
+        target = WR.Target(SID_A, letter="AA", generation=3)
+
+        def held(answer: dict) -> bool | None:
+            return WR.holds(answer, target, "CLAUDE", CW.SESSION_RE)
+
+        live = {**row(SID_A, "AA", "x", generation=3), "found": True}
+        self.assertIs(held(live), True)
+        self.assertIs(held({"label": "AA", "found": False}), False)
+        self.assertIs(held({**live, "state": "closed"}), False)
+        self.assertIs(held({**live, "generation": 4}), False)
+        self.assertIs(held({**live, "native_session_id": SID_B}), False)
+        self.assertIsNone(held({**seatless(SID_A, "AA", "x", generation=3), "found": True}))
+        for seat in NOT_CLAUDE:
+            self.assertIsNone(held({**live, "seat": seat}), repr(seat))
+        self.assertIsNone(held({**live, "native_session_id": "-p"}))
+        for odd in (None, [], ["found"], "found", 7):
+            self.assertIsNone(held(odd), repr(odd))
 
     def test_a_letterless_wake_on_a_closed_chat_is_picked_again(self) -> None:
         router = self.queued()
@@ -3639,6 +3850,22 @@ class Remote(RemoteBase):
         self.registry.rows = []
         self.assert_released()
 
+    def test_a_row_that_is_not_a_claude_chat_is_a_retry_and_no_delivery(self) -> None:
+        rows = [seatless(SID_A, "AA", "letters", host="mac", generation=3)]
+        rows += [row(SID_A, "AA", "letters", host="mac", generation=3, seat=s) for s in NOT_CLAUDE]
+        for found in rows:
+            with self.subTest(seat=found.get("seat", "<none>")):
+                self.registry.letters = {"AA": found}
+                with mock.patch.object(CW, "deliver_local") as spy:
+                    code, answer = self.run_main(self.envelope())
+                self.assertEqual(code, 0)
+                self.assertEqual(
+                    (answer["delivery"]["outcome"], answer["delivery"]["code"]),
+                    ("failed", WR.UNREADABLE_ROW),
+                )
+                self.assertEqual((answer["wake_id"], answer["generation"]), (self.w.wake_id, 3))
+                spy.assert_not_called()
+
     def test_a_registry_that_cannot_be_read_is_a_retry_and_no_delivery(self) -> None:
         self.registry.down = True
         with mock.patch.object(CW, "deliver_local") as spy:
@@ -3650,6 +3877,20 @@ class Remote(RemoteBase):
         )
         self.assertEqual(answer["wake_id"], self.w.wake_id)
         spy.assert_not_called()
+
+    def test_a_registry_answer_that_is_not_a_mapping_is_a_retry_and_no_delivery(self) -> None:
+        for odd in (None, [], ["found"], "error", 7):
+            with self.subTest(answer=odd):
+                with (
+                    mock.patch.object(WR.registry_api, "call", return_value=odd),
+                    mock.patch.object(CW, "deliver_local") as spy,
+                ):
+                    _, answer = self.run_main(self.envelope())
+                self.assertEqual(
+                    (answer["delivery"]["outcome"], answer["delivery"]["code"]),
+                    ("failed", "registry-unavailable"),
+                )
+                spy.assert_not_called()
 
     def test_a_registry_call_that_raises_is_a_retry_and_no_delivery(self) -> None:
         with (
