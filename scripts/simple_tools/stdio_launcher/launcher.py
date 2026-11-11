@@ -148,7 +148,11 @@ def refusal_reply(request_id, seat, cause):
 
 def serve_refusal(seat, cause, stdin, stdout, stderr):
     """Answer every request with the refusal until stdin closes.  Returns 3."""
-    print(f"{(seat or 'unconfigured').lower()}-simple-tools: refused: {cause[1]}", file=stderr, flush=True)
+    print(
+        f"{(seat or 'unconfigured').lower()}-simple-tools: refused: {cause[1]}",
+        file=stderr,
+        flush=True,
+    )
     while True:
         raw = stdin.readline(MAX_FRAME + 1)
         if not raw:
@@ -180,21 +184,36 @@ def serve_refusal(seat, cause, stdin, stdout, stderr):
 def plan(env, config, euid=None):
     """Return ("exec", argv, child_env, notice) or ("refuse", seat, cause, notice)."""
     seat = norm(config.get("SEAT"))
-    missing = [k for k in ("SEAT", "BEARER_FILE", "PYTHON", "TRANSPORT", "HOME") if not config.get(k)]
+    missing = [
+        k for k in ("SEAT", "BEARER_FILE", "PYTHON", "TRANSPORT", "HOME") if not config.get(k)
+    ]
     if missing or not SEAT_RE.fullmatch(seat):
-        return ("refuse", seat or None, (
-            "launcher_unconfigured",
-            "this launcher copy has no installed config (" + ", ".join(missing or ["SEAT"]) + "); "
-            "install it with scripts/simple_tools/stdio_launcher/install.py",
-        ), None)
+        return (
+            "refuse",
+            seat or None,
+            (
+                "launcher_unconfigured",
+                "this launcher copy has no installed config ("
+                + ", ".join(missing or ["SEAT"])
+                + "); "
+                "install it with scripts/simple_tools/stdio_launcher/install.py",
+            ),
+            None,
+        )
     refusal, notice = decide_seat(env, seat)
     if refusal:
         return ("refuse", seat, refusal, None)
     for key in ("PYTHON", "TRANSPORT"):
         if not os.path.isfile(config[key]):
-            return ("refuse", seat, (
-                "transport_missing", f"{key.lower()} {config[key]} does not exist",
-            ), notice)
+            return (
+                "refuse",
+                seat,
+                (
+                    "transport_missing",
+                    f"{key.lower()} {config[key]} does not exist",
+                ),
+                notice,
+            )
     token, refusal = read_bearer(config["BEARER_FILE"], seat, euid)
     if refusal:
         return ("refuse", seat, refusal, notice)
@@ -205,22 +224,34 @@ def plan(env, config, euid=None):
 def main(env=None, config=None):
     env = os.environ if env is None else env
     config = config or {
-        "SEAT": SEAT, "BEARER_FILE": BEARER_FILE, "PYTHON": PYTHON,
-        "TRANSPORT": TRANSPORT, "HOME": HOME,
+        "SEAT": SEAT,
+        "BEARER_FILE": BEARER_FILE,
+        "PYTHON": PYTHON,
+        "TRANSPORT": TRANSPORT,
+        "HOME": HOME,
     }
     outcome = plan(env, config)
     if outcome[3]:
         print(outcome[3], file=sys.stderr, flush=True)
     if outcome[0] == "refuse":
-        return serve_refusal(outcome[1], outcome[2], sys.stdin.buffer, sys.stdout.buffer, sys.stderr)
+        return serve_refusal(
+            outcome[1], outcome[2], sys.stdin.buffer, sys.stdout.buffer, sys.stderr
+        )
     _, argv, child_env, _ = outcome
     try:
         os.execve(argv[0], argv, child_env)
     except OSError as error:
         seat = norm(config["SEAT"])
-        return serve_refusal(seat, (
-            "transport_exec", f"the transport could not start ({error.__class__.__name__})",
-        ), sys.stdin.buffer, sys.stdout.buffer, sys.stderr)
+        return serve_refusal(
+            seat,
+            (
+                "transport_exec",
+                f"the transport could not start ({error.__class__.__name__})",
+            ),
+            sys.stdin.buffer,
+            sys.stdout.buffer,
+            sys.stderr,
+        )
     return 3  # pragma: no cover - execve does not return
 
 

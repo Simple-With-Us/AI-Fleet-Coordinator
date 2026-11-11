@@ -27,9 +27,7 @@ TRANSPORT_SOURCE = os.path.normpath(
 )
 TRANSPORT_NAME = "assigned-hosted-stdio.py"
 SEAT_RE = re.compile(r"[A-Z][A-Z0-9-]{1,19}")
-BLOCK_RE = re.compile(
-    r"(# BEGIN LAUNCHER CONFIG[^\n]*\n)(.*?)(# END LAUNCHER CONFIG\n)", re.DOTALL
-)
+BLOCK_RE = re.compile(r"(# BEGIN LAUNCHER CONFIG[^\n]*\n)(.*?)(# END LAUNCHER CONFIG\n)", re.DOTALL)
 
 
 def render(seat, bearer_file, python, transport, home, template_text=None):
@@ -38,8 +36,11 @@ def render(seat, bearer_file, python, transport, home, template_text=None):
             template_text = source.read()
     text = template_text
     values = {
-        "SEAT": seat, "BEARER_FILE": bearer_file, "PYTHON": python,
-        "TRANSPORT": transport, "HOME": home,
+        "SEAT": seat,
+        "BEARER_FILE": bearer_file,
+        "PYTHON": python,
+        "TRANSPORT": transport,
+        "HOME": home,
     }
     for key, value in values.items():
         if not isinstance(value, str) or not value or "\n" in value:
@@ -75,7 +76,9 @@ def write_private(path, text, stamp, apply, out):
         diff = difflib.unified_diff(
             old.splitlines(True), text.splitlines(True), f"{path} (installed)", f"{path} (new)", n=1
         )
-        out.writelines("    " + line if line.endswith("\n") else "    " + line + "\n" for line in diff)
+        out.writelines(
+            "    " + line if line.endswith("\n") else "    " + line + "\n" for line in diff
+        )
     if not apply:
         return True
     directory = os.path.dirname(path)
@@ -100,15 +103,23 @@ def main(argv=None, out=None):
     out = out or sys.stdout
     home = os.path.expanduser("~")
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--seat", action="append", required=True, help="seat tag, such as CLAUDE; repeatable")
+    parser.add_argument(
+        "--seat", action="append", required=True, help="seat tag, such as CLAUDE; repeatable"
+    )
     parser.add_argument("--dest", default=os.path.join(home, ".local", "libexec"))
     parser.add_argument("--home", default=home)
-    parser.add_argument("--secrets-dir", default=os.path.join(home, ".secrets", "fleet-tools"),
-                        help="folder holding one bearer file per seat, named by the lowercase seat")
-    parser.add_argument("--python", default=sys.executable,
-                        help="interpreter the launcher execs the transport with")
+    parser.add_argument(
+        "--secrets-dir",
+        default=os.path.join(home, ".secrets", "fleet-tools"),
+        help="folder holding one bearer file per seat, named by the lowercase seat",
+    )
+    parser.add_argument(
+        "--python", default=sys.executable, help="interpreter the launcher execs the transport with"
+    )
     parser.add_argument("--transport-source", default=TRANSPORT_SOURCE)
-    parser.add_argument("--apply", action="store_true", help="write the files; without it nothing changes")
+    parser.add_argument(
+        "--apply", action="store_true", help="write the files; without it nothing changes"
+    )
     args = parser.parse_args(argv)
 
     seats = []
@@ -124,7 +135,10 @@ def main(argv=None, out=None):
         parser.error(f"transport source {args.transport_source} does not exist")
 
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    print("apply: writing files" if args.apply else "dry run: nothing is written (pass --apply)", file=out)
+    print(
+        "apply: writing files" if args.apply else "dry run: nothing is written (pass --apply)",
+        file=out,
+    )
     transport = os.path.join(args.dest, TRANSPORT_NAME)
     with open(args.transport_source, encoding="utf-8") as source:
         transport_text = source.read()

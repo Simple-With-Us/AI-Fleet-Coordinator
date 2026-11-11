@@ -68,8 +68,12 @@ class Installed:
         child_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": self.tmp.name, **env}
         stdin = "".join(json.dumps(m) + "\n" for m in messages)
         done = subprocess.run(
-            [sys.executable, "-I", self.path], input=stdin, capture_output=True, text=True,
-            env=child_env, timeout=30,
+            [sys.executable, "-I", self.path],
+            input=stdin,
+            capture_output=True,
+            text=True,
+            env=child_env,
+            timeout=30,
         )
         replies = [json.loads(line) for line in done.stdout.splitlines() if line.strip()]
         return done, replies
@@ -96,7 +100,9 @@ class EndToEnd(unittest.TestCase):
         _, replies = self.installed.run({"AGENT_SEAT": "ZC", "UNRELATED": "x"})
         keys = set(replies[0]["result"]["env_keys"])
         # The interpreter may add its own locale variable on some hosts.
-        self.assertEqual(keys - {"__CF_USER_TEXT_ENCODING", "LC_CTYPE"}, {"PATH", "HOME", "ASSIGNED_MCP_BEARER"})
+        self.assertEqual(
+            keys - {"__CF_USER_TEXT_ENCODING", "LC_CTYPE"}, {"PATH", "HOME", "ASSIGNED_MCP_BEARER"}
+        )
 
     def test_clean_environment_initializes_with_no_notice(self):
         done, replies = self.installed.run({})
@@ -105,9 +111,16 @@ class EndToEnd(unittest.TestCase):
 
     def test_launcher_assigning_another_seat_answers_initialize_with_named_error(self):
         done, replies = self.installed.run(
-            {"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "BF-PLUMBER", "AGENT_SEAT": "BF-PLUMBER"},
-            messages=(INITIALIZE, {"jsonrpc": "2.0", "method": "notifications/initialized"},
-                      {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+            {
+                "AGENT_LAUNCHER": "botfleet",
+                "AGENT_LAUNCH_SEAT": "BF-PLUMBER",
+                "AGENT_SEAT": "BF-PLUMBER",
+            },
+            messages=(
+                INITIALIZE,
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+            ),
         )
         self.assertEqual([r["id"] for r in replies], [1, 2])
         error = replies[0]["error"]
@@ -157,8 +170,12 @@ class EndToEnd(unittest.TestCase):
 
     def test_unconfigured_template_refuses_instead_of_exiting(self):
         done = subprocess.run(
-            [sys.executable, "-I", launcher.__file__], input=json.dumps(INITIALIZE) + "\n",
-            capture_output=True, text=True, timeout=30, env={"PATH": "/usr/bin:/bin"},
+            [sys.executable, "-I", launcher.__file__],
+            input=json.dumps(INITIALIZE) + "\n",
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={"PATH": "/usr/bin:/bin"},
         )
         reply = json.loads(done.stdout)
         self.assertEqual(reply["error"]["data"]["cause"], "launcher_unconfigured")
@@ -186,7 +203,9 @@ class SeatDecision(unittest.TestCase):
             b'[{"jsonrpc":"2.0","id":7,"method":"ping"},{"jsonrpc":"2.0","method":"n"}]\nnot json\n\n'
         )
         stdout = io.BytesIO()
-        code = launcher.serve_refusal("CLAUDE", ("seat_mismatch", "why"), stdin, stdout, io.StringIO())
+        code = launcher.serve_refusal(
+            "CLAUDE", ("seat_mismatch", "why"), stdin, stdout, io.StringIO()
+        )
         replies = [json.loads(line) for line in stdout.getvalue().splitlines()]
         self.assertEqual(code, 3)
         self.assertEqual([r["id"] for r in replies], [7, None])
@@ -198,8 +217,18 @@ class Installer(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.dest = os.path.join(self.tmp.name, "libexec")
         self.args = [
-            "--seat", "claude", "--seat", "AG", "--dest", self.dest, "--home", self.tmp.name,
-            "--secrets-dir", os.path.join(self.tmp.name, "secrets"), "--python", sys.executable,
+            "--seat",
+            "claude",
+            "--seat",
+            "AG",
+            "--dest",
+            self.dest,
+            "--home",
+            self.tmp.name,
+            "--secrets-dir",
+            os.path.join(self.tmp.name, "secrets"),
+            "--python",
+            sys.executable,
         ]
 
     def test_dry_run_writes_nothing(self):
@@ -218,9 +247,10 @@ class Installer(unittest.TestCase):
             text = source.read()
         self.assertIn("SEAT = 'AG'", text)
         self.assertIn(repr(os.path.join(self.tmp.name, "secrets", "ag")), text)
-        with open(install.TRANSPORT_SOURCE, encoding="utf-8") as a, open(
-            os.path.join(self.dest, install.TRANSPORT_NAME), encoding="utf-8"
-        ) as b:
+        with (
+            open(install.TRANSPORT_SOURCE, encoding="utf-8") as a,
+            open(os.path.join(self.dest, install.TRANSPORT_NAME), encoding="utf-8") as b,
+        ):
             self.assertEqual(a.read(), b.read())
 
     def test_reinstall_is_unchanged_and_replacement_keeps_backup(self):
