@@ -51,6 +51,26 @@ class ReviewedFixturesTests(TestCase):
                 self.assertEqual(unreviewed_file_secret(repo, path, raw), "github_token")
         self.assertIsNone(unreviewed_file_secret(REPO, self.path, b"ordinary source"))
 
+    def test_loaded_credentials_refused_before_attestation(self):
+        loaded = "loaded-value-" + "x" * 20
+        tainted = self.raw + ("token = '" + loaded + "'" + chr(10)).encode()
+        entry = (REPO, self.path, sha256(tainted).hexdigest())
+        with patch("git_relay.reviewed_fixtures._REVIEWED_FIXTURES", frozenset({entry})):
+            self.assertEqual(
+                unreviewed_file_secret(REPO, self.path, tainted, known=[loaded]),
+                "a loaded credential",
+            )
+            self.assertIsNone(unreviewed_file_secret(REPO, self.path, tainted, known=[]))
+        self.assertEqual(
+            unreviewed_file_secret(
+                REPO, self.path, b"ordinary source " + loaded.encode(), known=[loaded]
+            ),
+            "a loaded credential",
+        )
+        self.assertIsNone(
+            unreviewed_file_secret(REPO, self.path, b"ordinary source short", known=["short"])
+        )
+
     def args(self):
         return {
             "repo": REPO,

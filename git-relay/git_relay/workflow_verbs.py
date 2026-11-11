@@ -6941,7 +6941,7 @@ class WorkflowVerbs:
                     validated_blobs[sha] = decoded_raw
                 decoded_raw = validated_blobs[sha]
                 # Cache verified bytes only, not path-dependent scan approvals.
-                if unreviewed_file_secret(repo, path, decoded_raw):
+                if unreviewed_file_secret(repo, path, decoded_raw, known=[self.bearer]):
                     raise Refused("credential-shaped content refused")
                 try:
                     decoded = decoded_raw.decode("utf-8")
@@ -7505,7 +7505,7 @@ class WorkflowVerbs:
             raise Refused("invalid content") from None
         if len(raw) > MAX_FILE_RAW:
             raise Refused("file too large")
-        if find_secret(message) or unreviewed_file_secret(repo, path, raw):
+        if find_secret(message) or unreviewed_file_secret(repo, path, raw, known=[self.bearer]):
             raise Refused("credential-shaped content refused")
         payload = {"message": message, "content": content, "branch": branch}
         if "prior_sha" in args:
@@ -7811,7 +7811,7 @@ class WorkflowVerbs:
             total_raw += len(raw)
             if len(raw) > MAX_FILE_RAW or total_raw > MAX_FILES_RAW:
                 raise Refused("files too large")
-            if unreviewed_file_secret(repo, path, raw):
+            if unreviewed_file_secret(repo, path, raw, known=[self.bearer]):
                 raise Refused("credential-shaped content refused")
             plan.append((path, content))
         if find_secret(message):

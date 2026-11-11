@@ -5,6 +5,7 @@ normal code review of the full fixture, provenance and intended destination.
 No prefix/path exemption, caller override, baseline inference or diff-only scan.
 """
 
+from collections.abc import Iterable
 from hashlib import sha256
 
 from .secret_scan import find_secret
@@ -104,14 +105,22 @@ _REVIEWED_FIXTURES = frozenset(
 )
 
 
-def unreviewed_file_secret(repo: str, path: str, raw: bytes) -> str | None:
+def unreviewed_file_secret(
+    repo: str, path: str, raw: bytes, known: Iterable[str] = ()
+) -> str | None:
     """Scan all bytes; accept a match only for an exact reviewed attestation.
 
-    The ordinary scanner is unchanged for messages, titles, binary assets and
-    every unattested file. A byte change, new secret, different repo or moved
-    destination invalidates the attestation and is refused before any write.
+    Loaded credential values are absolute: they refuse before the shape scan
+    and an attestation never waives them. The ordinary scanner is unchanged
+    for messages, titles, binary assets and every unattested file. A byte
+    change, new secret, different repo or moved destination invalidates the
+    attestation and is refused before any write.
     """
-    category = find_secret(raw.decode("utf-8", "replace"))
+    text = raw.decode("utf-8", "replace")
+    for value in known:
+        if value and len(value) >= 8 and value in text:
+            return "a loaded credential"
+    category = find_secret(text)
     if category is None:
         return None
     if (repo, path, sha256(raw).hexdigest()) in _REVIEWED_FIXTURES:
