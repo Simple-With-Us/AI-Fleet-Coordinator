@@ -217,6 +217,7 @@ class ThreadRegistryStore:
         self.path = path
         self._lock = threading.RLock()
         self._data: dict[str, Any] | None = None
+        self._processed_set: set[int] = set()
 
     # ---- persistence ------------------------------------------------------------------
 
@@ -230,6 +231,7 @@ class ThreadRegistryStore:
                 "threads": threads if isinstance(threads, dict) else {},
                 "processed_ids": processed if isinstance(processed, list) else [],
             }
+            self._processed_set = set(self._data["processed_ids"])
         return self._data
 
     def _flush(self) -> None:
@@ -259,11 +261,14 @@ class ThreadRegistryStore:
         with self._lock:
             data = self._load()
             processed: list[int] = data["processed_ids"]
-            if message_id in set(processed):
+            if message_id in self._processed_set:
                 return False
             processed.append(message_id)
+            self._processed_set.add(message_id)
             if len(processed) > PROCESSED_ID_CAP:
-                del processed[: len(processed) - PROCESSED_ID_CAP]
+                excess = len(processed) - PROCESSED_ID_CAP
+                self._processed_set.difference_update(processed[:excess])
+                del processed[:excess]
             key = thread_key(stream_id, topic)
             threads: dict[str, Any] = data["threads"]
             record = threads.get(key)
@@ -291,9 +296,17 @@ class ThreadRegistryStore:
             record["participants"] = sorted(participants)
             record["message_count"] = int(record.get("message_count") or 0) + 1
             record["first_seen"] = min(float(record.get("first_seen") or ts), ts)
-            if ts >= float(record.get("last_activity") or 0):
+            last_activity = float(record.get("last_activity") or 0)
+            if ts > last_activity:
+                # The id at the latest timestamp, not the largest id ever seen:  an
+                # out-of-order delivery carrying a newer timestamp and an older id
+                # (an edit, a backfill) is still the thread's latest message.
                 record["last_activity"] = ts
-                record["last_message_id"] = max(int(record.get("last_message_id") or 0), message_id)
+                record["last_message_id"] = message_id
+            elif ts == last_activity:
+                record["last_message_id"] = max(
+                    int(record.get("last_message_id") or 0), message_id
+                )
             # Linear Issues contract:  keys mentioned in the topic name or in any message
             # body join the thread's set, deduplicated;  the union only ever grows, so a
             # key once added is never removed by a later, quieter message.

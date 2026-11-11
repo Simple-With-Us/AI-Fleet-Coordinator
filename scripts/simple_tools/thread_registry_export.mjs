@@ -89,7 +89,17 @@ async function getGoogleAccessToken() {
     body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`,
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(`Google OAuth error: ${JSON.stringify(data)}`);
+  if (!res.ok) throw new Error(`Google OAuth error: HTTP ${res.status}`);
+  // Shape-check before use, the way operator_sheets_google.mjs validates its
+  // token response:  an unexpected body must fail here, not downstream as an
+  // auth header.  (This drain runs under bare node with no zod available.)
+  if (
+    !data || typeof data !== "object" ||
+    typeof data.access_token !== "string" || !data.access_token ||
+    /[\r\n]/.test(data.access_token)
+  ) {
+    throw new Error("Google OAuth error: token response shape invalid");
+  }
   return data.access_token;
 }
 
@@ -100,7 +110,7 @@ export function makeSheetsAdapter(token, spreadsheetId = SPREADSHEET_ID, tab = S
   const base = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`;
   async function call(path, init = {}) {
     const res = await fetch(`${base}${path}`, { ...init, headers: { ...auth, ...(init.headers || {}) } });
-    if (!res.ok) throw new Error(`Sheets API ${init.method || "GET"} ${path} -> ${res.status}: ${JSON.stringify(await res.json())}`);
+    if (!res.ok) throw new Error(`Sheets API ${init.method || "GET"} ${path} -> ${res.status}`);
     return res.json();
   }
   return {
@@ -205,6 +215,30 @@ export async function drainThreadRows({ adapter, desired, dryRun = false, log = 
   return result;
 }
 
+// The payload contract thread_registry.py's export-rows writes:  an object
+// whose rows are arrays of THREAD_HEADERS.length string cells, key first.
+// A malformed file aborts here with the exact row, before any Google call,
+// instead of producing partial or corrupt sheet writes mid-drain.
+export function validatePayload(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("thread-rows payload is not an object; refusing to drain");
+  }
+  if (!Array.isArray(payload.rows)) {
+    throw new Error("thread-rows payload rows is not an array; refusing to drain");
+  }
+  payload.rows.forEach((row, i) => {
+    if (!Array.isArray(row) || row.length !== THREAD_HEADERS.length) {
+      throw new Error(`thread-rows row ${i} is not ${THREAD_HEADERS.length} cells; refusing to drain`);
+    }
+    if (row.some((cell) => typeof cell !== "string")) {
+      throw new Error(`thread-rows row ${i} holds a non-string cell; refusing to drain`);
+    }
+    if (!row[COL_KEY]) {
+      throw new Error(`thread-rows row ${i} has an empty Thread Key; refusing to drain`);
+    }
+  });
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const dryRun = args.includes("--dry-run");
@@ -217,6 +251,7 @@ async function main() {
   if (payload.spreadsheetId !== SPREADSHEET_ID || payload.tab !== SHEET_TAB) {
     throw new Error("thread-rows payload names a different workbook or tab; refusing to drain");
   }
+  validatePayload(payload);
   const token = await getGoogleAccessToken();
   const adapter = makeSheetsAdapter(token);
   const result = await drainThreadRows({ adapter, desired: payload.rows, dryRun, log: (m) => console.error(m) });

@@ -114,6 +114,18 @@ class StoreTest(unittest.TestCase):
         row = self.store.rows(now=T0 + 60)[0]
         self.assertEqual(row[5], "ZC")
 
+    def test_last_message_id_is_the_id_at_the_latest_timestamp(self):
+        # An out-of-order delivery with a newer timestamp and an older id (an
+        # edit, a backfill) is the thread's latest message; an older-timestamp
+        # delivery never moves it back, and equal timestamps take the larger id.
+        self.store.observe(message(50, ts=T0 + 100))
+        self.store.observe(message(40, ts=T0 + 200))
+        self.assertEqual(self.store.records()[0]["last_message_id"], 40)
+        self.store.observe(message(60, ts=T0 + 150))
+        self.assertEqual(self.store.records()[0]["last_message_id"], 40)
+        self.store.observe(message(45, ts=T0 + 200))
+        self.assertEqual(self.store.records()[0]["last_message_id"], 45)
+
     def test_first_last_and_last_id_track_the_extremes(self):
         self.store.observe(message(5, ts=T0 + 500))
         self.store.observe(message(3, ts=T0 + 100))  # out-of-order delivery

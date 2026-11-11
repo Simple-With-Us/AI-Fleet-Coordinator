@@ -739,6 +739,7 @@ class Daemon:
         self.secrets_dir = Z.override_secrets_dir(self.env)
         self.hidden: list[str] = []
         self.hidden_lock = threading.Lock()
+        self._thread_store_lock = threading.Lock()
         self.stdout = stdout or sys.stdout
         tee = (
             self.stdout
@@ -2001,8 +2002,14 @@ class Daemon:
     def _thread_registry_store(self) -> TR.ThreadRegistryStore:
         store = getattr(self, "_thread_store", None)
         if store is None:
-            store = TR.ThreadRegistryStore(TR.thread_store_path(self.root, self.env))
-            self._thread_store = store
+            # Double-checked under a lock:  two routing threads racing the lazy
+            # creation must not build two stores whose cached data clobber each
+            # other's flushes.
+            with self._thread_store_lock:
+                store = getattr(self, "_thread_store", None)
+                if store is None:
+                    store = TR.ThreadRegistryStore(TR.thread_store_path(self.root, self.env))
+                    self._thread_store = store
         return store
 
     def _observe_thread(self, runner: SeatRunner, message: Mapping[str, Any]) -> None:
