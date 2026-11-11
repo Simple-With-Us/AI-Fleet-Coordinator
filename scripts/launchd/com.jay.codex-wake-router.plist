@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jay.codex-wake-router</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__RUNTIME__/scripts/simple-chat</string>
+    <string>codex-wake-router</string>
+    <string>serve</string>
+    <string>--bind</string>
+    <string>127.0.0.1</string>
+    <string>--port</string>
+    <string>8795</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__RUNTIME__/scripts</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>__HOME__</string>
+    <key>PATH</key>
+    <string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>ProcessType</key>
+  <string>Standard</string>
+  <key>ExitTimeOut</key>
+  <integer>1100</integer>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/codex-wake-router/stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/codex-wake-router/stderr.log</string>
+</dict>
+</plist>
