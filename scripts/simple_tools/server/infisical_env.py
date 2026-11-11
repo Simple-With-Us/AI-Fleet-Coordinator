@@ -376,6 +376,9 @@ LISTENER_READ_PROJECT = "INFISICAL_LISTENER_READ_PROJECT_ID"
 LISTENER_READ_CODES = frozenset(
     {
         "MA",
+        # ZC's wake bridge key is kept in Fleet-OPS /zulip (docs/protocols/zcode-wakes.md);  the
+        # listener reads it here, so nothing is copied between projects.
+        "ZC",
         "GB_DIRECTOR",
         "GB_FIXER",
         "GB_DESIGNER",

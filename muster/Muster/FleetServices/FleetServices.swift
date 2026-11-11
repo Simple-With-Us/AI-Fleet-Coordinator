@@ -30,9 +30,13 @@ public enum FleetServiceKind: Equatable {
 ///
 /// Every other fleet service reads from its own state:  one that is running or that
 /// failed should be running, and one that is stopped is not asking to be anything else.
+///
+/// A retired service is never wanted:  stopped is its normal state,  and running is the thing
+/// to say.
 public enum FleetServiceWantedPolicy: Equatable {
     case whileServerRuns
     case alwaysOn
+    case retired
 }
 
 /// One fleet service the Control app knows about.
@@ -83,16 +87,21 @@ public enum FleetServiceRegistry {
         kind: .launchAgent(label: "app.botfleet.companion"),
         policy: .alwaysOn)
 
-    /// The Mac's eavesdropper,  which runs the Operator and every seat the Mac holds,  and is
-    /// supervised by launchd (`com.jay.operator`).  Its state is launchd's,  and a change goes
-    /// through the same LaunchAgent route as any other.  Its restart always asks first
-    /// (`FleetServices.restartAlwaysAsksBody`),  because it drops every Mac seat at once.  The
-    /// wake alerter (`com.jay.operator-wake-alerter`) is a separate agent and is not on this list.
+    /// The Mac's eavesdropper (`com.jay.operator`),  retired at the one-listener cutover of
+    /// Nov 10:  launchd booted it out,  and the server listener holds every seat.  It stays on
+    /// the list so a copy that is running again is seen and said plainly,  and so a stopped one
+    /// reads as retired,  never as a service that is down.  Its state is still launchd's.  Muster
+    /// never starts it,  and only a running copy offers a Stop.  Its restart,  where the router
+    /// is asked for one,  always asks first (`FleetServices.restartAlwaysAsksBody`).  The wake
+    /// alerter (`com.jay.operator-wake-alerter`) is a separate agent and is not on this list.
     public static let operatorEavesdropper = FleetServiceDescriptor(
         id: "com.jay.operator",
         title: "Operator Eavesdropper",
         kind: .launchAgent(label: "com.jay.operator"),
-        policy: .alwaysOn)
+        policy: .retired)
+
+    /// When the retired Mac listener was retired,  in the words its row uses.
+    public static let retiredSince = "the Nov 10 one-listener cutover"
 
     /// Every fleet service, in the order the menu shows them.
     public static let all: [FleetServiceDescriptor] = [
@@ -236,14 +245,33 @@ public struct FleetServiceEntry: Equatable {
     }
 
     /// What the row says about the service's state,  beyond the state itself:  the owner's
-    /// stop first,  then what Muster did.  Nil when there is nothing to add.
+    /// stop first,  then why a retired service is where it is,  then what Muster did.  Nil when
+    /// there is nothing to add.
     public var stateNote: String? {
+        if isRetired {
+            var lines = [ownerStopLine, retiredLine].compactMap { $0 }
+            // A problem Muster saw (what it tried that did not hold) is what makes a retired row
+            // need attention, so it is shown too, never hidden behind the retired sentence.
+            if reconcileNote?.isProblem == true, let problem = reconcileNote?.line {
+                lines.append(problem)
+            }
+            return lines.joined(separator: "\u{00A0} ")
+        }
         if let line = ownerStopLine { return line }
         return reconcileNote?.line
     }
 
+    /// True when the state note is a warning:  something Muster tried that did not hold,  or a
+    /// retired service that is not stopped.
+    public var stateNoteIsWarning: Bool {
+        if isRetired { return isRetiredButLive || needsAttention }
+        return reconcileNote?.isProblem == true && !stoppedByOwner
+    }
+
     /// The same note in a few words,  for a menu row.
     public var menuNote: String? {
+        // A retired listener found running is the most important thing to say, owner stop or not.
+        if isRetiredButLive { return "running, but retired:  the server listener holds every seat" }
         if stoppedByOwner {
             switch state {
             case .running, .unknown: return "you asked for it to stop"
@@ -251,14 +279,48 @@ public struct FleetServiceEntry: Equatable {
                 return stoppedAt.map { "stopped by you at \(FleetTime.clock($0))" } ?? "stopped by you"
             }
         }
+        if isRetired {
+            return isRetiredAndDown ? "since \(FleetServiceRegistry.retiredSince)" : nil
+        }
         return reconcileNote?.shortLine
     }
 
     /// True when the row is something to look at:  a failure,  a state nobody can read,  or
-    /// a service Muster gave up on.
+    /// a service Muster gave up on.  A retired service that is stopped is where it should be,
+    /// so it is never counted;  one found running says so on its own row,  in plain words.
     public var needsAttention: Bool {
         if state == .failed || state == .unknown { return true }
         return reconcileNote?.isProblem == true
+    }
+
+    // MARK: A retired service
+
+    /// True for a service that was retired,  so stopped is its normal state.
+    public var isRetired: Bool { policy == .retired }
+
+    /// True for a retired service that is stopped or gone,  as it should be.
+    public var isRetiredAndDown: Bool {
+        isRetired && (state == .stopped || state == .notInstalled)
+    }
+
+    /// True for a retired service that was found running.
+    public var isRetiredButLive: Bool {
+        isRetired && state == .running
+    }
+
+    /// Why a retired service is where it is,  in plain words,  or nil for a service that was not
+    /// retired.
+    public var retiredLine: String? {
+        guard isRetired else { return nil }
+        let since = FleetServiceRegistry.retiredSince
+        switch state {
+        case .stopped, .notInstalled:
+            return "Retired since \(since).\u{00A0} The server listener holds every seat, so this Mac listener is expected to be stopped."
+        case .running:
+            return "It is running, but it was retired at \(since) and should hold no seat.\u{00A0} The server listener holds every seat."
+        case .failed, .notInPM2, .unknown:
+            return "It was retired at \(since), and the server listener holds every seat."
+        }
     }
 
     public var id: String { descriptor.id }
@@ -274,6 +336,8 @@ public struct FleetServiceEntry: Equatable {
     /// when its state already says why.
     public var whyNoActions: String? {
         guard availableActions.isEmpty else { return nil }
+        // A retired service's own line already says why nothing starts it.
+        if isRetired { return nil }
         if state == .notInstalled { return nil }
         if state == .notInPM2 { return "pm2 on the Mac has no record of it, so it is not started from here" }
         if !canChangeStartupPolicy { return "BotFleet on the Mac is too old to start it from here" }
@@ -281,9 +345,12 @@ public struct FleetServiceEntry: Equatable {
         return nil
     }
 
-    /// A short description of the entry for the menu.
+    /// A short description of the entry for the menu.  A retired service that is stopped is
+    /// retired,  never "stopped, should be running".
     public var summary: String {
-        ManagedServices.summary(wanted: wanted, state: state)
+        if isRetiredAndDown { return "retired" }
+        if isRetiredButLive { return "running, but it is retired and should hold no seat" }
+        return ManagedServices.summary(wanted: wanted, state: state)
     }
 
     /// The actions the owner may pick for this service right now.
@@ -376,6 +443,8 @@ public struct FleetServices: Equatable {
             case .stopped: return false
             case .unknown: return nil
             }
+        case .retired:
+            return false
         case .alwaysOn:
             switch states[descriptor.id] {
             case .some(.running): return true
@@ -482,9 +551,10 @@ public struct FleetServices: Equatable {
         return operatorRestartBody
     }
 
-    /// What restarting the Mac's eavesdropper does.
+    /// What restarting the Mac's eavesdropper does.  It was retired,  so a restart brings back a
+    /// listener that should not be running.
     public static let operatorRestartBody =
-        "A restart of the Operator Eavesdropper on the Mac drops every Mac seat's connection at once and ends any wake running now.\u{00A0} The Operator is away until it is back."
+        "The Operator Eavesdropper on the Mac was retired at \(FleetServiceRegistry.retiredSince), and the server listener holds every seat.\u{00A0} A restart starts it again on the Mac, where it should hold no seat."
 
     /// What stopping a LaunchAgent does.
     public static let launchAgentStopBody =
@@ -509,10 +579,16 @@ public struct FleetServices: Equatable {
     /// serve while the one it follows is down,  so a stopped one is not offered a start then.
     /// A running one can always be stopped.  A service the owner stopped on purpose can
     /// always be started again.  `FleetServiceEntry.whyNoActions` says why a row is empty.
+    ///
+    /// A retired service is never offered a start or a restart:  only a copy found running can
+    /// be stopped.
     public static func availableActions(for state: ManagedServiceState,
                                         wanted: Bool?,
                                         policy: FleetServiceWantedPolicy,
                                         stoppedByOwner: Bool = false) -> [ManagedServiceAction] {
+        if policy == .retired {
+            return state == .running ? [.stop] : []
+        }
         if policy == .whileServerRuns {
             // A service the owner stopped on purpose can always be started
             // again, because that is how the owner says they want it.
@@ -548,8 +624,21 @@ public struct ServiceStateMarker: Equatable {
     public let symbol: String
     public let tone: Tone
 
-    /// The marker for a state.  A service the owner stopped on purpose says so in its word.
-    public static func make(state: ManagedServiceState, stoppedByOwner: Bool = false) -> ServiceStateMarker {
+    /// The marker for a state.  A service the owner stopped on purpose says so in its word.  A
+    /// retired service that is stopped or gone reads Retired,  in a neutral tone,  and one that is
+    /// running is a warning.
+    public static func make(state: ManagedServiceState, stoppedByOwner: Bool = false,
+                            retired: Bool = false) -> ServiceStateMarker {
+        if retired {
+            switch state {
+            case .stopped, .notInstalled:
+                return ServiceStateMarker(word: "Retired", symbol: "archivebox", tone: .neutral)
+            case .running:
+                return ServiceStateMarker(word: "Running", symbol: "exclamationmark.triangle.fill", tone: .warning)
+            case .failed, .notInPM2, .unknown:
+                break
+            }
+        }
         switch state {
         case .running:
             // A stop the owner asked for that does not read as landed is not a running service
@@ -576,6 +665,6 @@ public struct ServiceStateMarker: Equatable {
 extension FleetServiceEntry {
     /// The marker for this row.
     public var marker: ServiceStateMarker {
-        ServiceStateMarker.make(state: state, stoppedByOwner: stoppedByOwner)
+        ServiceStateMarker.make(state: state, stoppedByOwner: stoppedByOwner, retired: isRetired)
     }
 }

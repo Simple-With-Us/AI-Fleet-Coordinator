@@ -93,7 +93,7 @@ class StateReapply(unittest.TestCase):
             calls = []
             fail = [False]
 
-            def dispatch(seat, action, args, repo):
+            def dispatch(seat, action, args, repo, caller_token=None):
                 calls.append(args["state"])
                 if fail[0]:
                     raise RelayGitHubError(502, "unknown")

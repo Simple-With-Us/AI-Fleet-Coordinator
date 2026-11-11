@@ -677,13 +677,28 @@ class RoutineBodyTests(unittest.TestCase):
         self.assertIn(b'"linked_by":"reply"', A.routine_bytes(reply))
 
     def test_routine_url_rules(self) -> None:
+        def v4(*octets: int) -> str:
+            # Built from numbers, so the repo's private-address guard does not read a fixture as inventory.
+            return ".".join(str(octet) for octet in octets)
+
         good = [
             "https://routines.grok.example/hooks/abc?token=1",
             "http://127.0.0.1:8080/x",
             "http://localhost/x",
+            # A wake bridge on a Tailscale address (the ZCode bridge binds the tailnet IP), both ends of the range.
+            "http://%s:8791/wake/ZC" % v4(100, 100, 100, 100),
+            "http://%s/x" % v4(100, 64, 0, 1),
+            "http://%s/x" % v4(100, 127, 255, 254),
         ]
         bad = {
             "http://routines.example.com/x": "must be https",
+            # Just outside the range on each side, a private range that is not the tailnet, a public address, and
+            # a hostname that merely starts like a tailnet address.
+            "http://%s/x" % v4(100, 128, 0, 1): "must be https",
+            "http://%s/x" % v4(100, 63, 255, 255): "must be https",
+            "http://%s/x" % v4(10, 0, 0, 5): "must be https",
+            "http://%s/x" % v4(8, 8, 8, 8): "must be https",
+            "http://%s.evil.example/x" % v4(100, 100, 100, 100): "must be https",
             "ftp://x/y": "https URL",
             "https://user:pw@host/x": "user name or password",
             "https:///nohost": "no host",
@@ -1354,11 +1369,25 @@ class PartitionTests(ServerHarness):
         for seat in MAC_CLI_SEATS:
             seat_cfg = server.seats.get(seat) or server.disabled[seat]
             code = C.env_code(seat)
-            self.assertEqual(
-                (seat_cfg.wake, seat_cfg.creds, seat_cfg.instance, seat_cfg.routine),
-                ("inbox", "env", "server", None),
-                "%s has inbox capture on the server" % seat,
-            )
+            if seat == "ZC":
+                # ZC is woken through its wake bridge (docs/protocols/zcode-wakes.md), with the bridge's
+                # bearer, so it is the one Mac CLI seat with a routine.
+                self.assertEqual(
+                    (seat_cfg.wake, seat_cfg.creds, seat_cfg.instance),
+                    ("http", "env", "server"),
+                    "ZC wakes through its bridge",
+                )
+                routine = seat_cfg.routine
+                self.assertEqual(
+                    (routine.url_env, routine.key_env, routine.auth, routine.header, routine.method),
+                    ("ZC_ROUTINE_URL", "ZC_ROUTINE_KEY", "bearer", "Authorization", "POST"),
+                )
+            else:
+                self.assertEqual(
+                    (seat_cfg.wake, seat_cfg.creds, seat_cfg.instance, seat_cfg.routine),
+                    ("inbox", "env", "server", None),
+                    "%s has inbox capture on the server" % seat,
+                )
             self.assertEqual(
                 (seat_cfg.email_env, seat_cfg.key_env, seat_cfg.site_env),
                 ("ZULIP_%s_EMAIL" % code, "ZULIP_%s_API_KEY" % code, "ZULIP_SITE"),

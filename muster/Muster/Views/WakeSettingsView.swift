@@ -207,16 +207,22 @@ struct WakeSettingsView: View {
         let model = store.model
         return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Image(systemName: runStateSymbol(model.runState))
-                    .foregroundStyle(runStateTint(model.runState))
+                Image(systemName: runStateSymbol(model))
+                    .foregroundStyle(runStateTint(model))
                     .accessibilityHidden(true)
-                Text(model.runState.title)
+                Text(model.listenerTitle)
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 if let pid = model.pid, model.runState == .running {
                     Text("pid \(pid)")
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
+            }
+            if let note = model.retiredNote {
+                Text(note)
+                    .font(.system(size: 10))
+                    .foregroundStyle(model.runState == .running ? Color.orange : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if case .unknown(let why) = model.runState {
                 Text(why)
@@ -225,7 +231,15 @@ struct WakeSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 14) {
-                if let updated = model.updated {
+                if let updated = model.updated, model.macListenerRetired, !model.statusIsCurrent {
+                    // A retired eavesdropper's last status is history, not a fault:  its time is
+                    // said as the last one, and never as current.
+                    Label(
+                        "Last published \(FleetTime.clock(updated)), \(SeatActivityReader.ageText((model.readAt ?? Date()).timeIntervalSince(updated))), not current",
+                        systemImage: "clock"
+                    )
+                    .foregroundStyle(.secondary)
+                } else if let updated = model.updated {
                     Label(
                         "Eavesdropper published \(FleetTime.clock(updated)), \(SeatActivityReader.ageText((model.readAt ?? Date()).timeIntervalSince(updated)))",
                         systemImage: model.statusIsCurrent ? "clock" : "clock.badge.exclamationmark"
@@ -264,7 +278,7 @@ struct WakeSettingsView: View {
                     .foregroundStyle(rewake.isProblem ? Color.orange : Color.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Text("The server's eavesdropper is not read by this panel.\u{00A0} Seats it holds are listed as On The Server, read only, with nothing from the Mac's files.")
+            Text(WakeSettingsModel.serverPointer)
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -277,16 +291,24 @@ struct WakeSettingsView: View {
         }
     }
 
-    private func runStateSymbol(_ state: ListenerRunState) -> String {
-        switch state {
+    /// The headline's symbol.  A retired eavesdropper that is not running is where it should be,
+    /// so it is never drawn as a failure;  one that is running is a warning.
+    private func runStateSymbol(_ model: WakeSettingsModel) -> String {
+        if model.macListenerRetired {
+            return model.runState == .running ? "exclamationmark.triangle.fill" : "archivebox"
+        }
+        switch model.runState {
         case .running: return "checkmark.circle.fill"
         case .stopped: return "xmark.octagon.fill"
         case .unknown: return "questionmark.circle.fill"
         }
     }
 
-    private func runStateTint(_ state: ListenerRunState) -> Color {
-        switch state {
+    private func runStateTint(_ model: WakeSettingsModel) -> Color {
+        if model.macListenerRetired {
+            return model.runState == .running ? .orange : .secondary
+        }
+        switch model.runState {
         case .running: return .green
         case .stopped: return .red
         case .unknown: return .gray
@@ -692,7 +714,7 @@ struct WakeSettingsView: View {
             usageLine(seat)
             deferredAndQuotaLine(seat)
             recentWakes(seat)
-            if seat.host.isTheMac {
+            if seat.settingsEditable {
                 actionButtons(seat, changed: changed)
             }
         }
@@ -812,7 +834,7 @@ struct WakeSettingsView: View {
             ForEach(shown) { setting in
                 WakeSettingRow(
                     setting: setting,
-                    editable: seat.host.isTheMac && setting.key.refusalReason == nil
+                    editable: seat.settingsEditable && setting.key.refusalReason == nil
                         && (!setting.key.isRoutine || seat.kind.hasRoutine),
                     changed: changed.contains(setting.key),
                     moved: moved.contains(setting.key),

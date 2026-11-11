@@ -45,7 +45,8 @@ The wire.  The request is
 and the answer is `{"wake_id", "session_id", "generation", "delivery": {"outcome", "route", "ack",
 "code", "note"}}`.  `platform` is looked up in `PLATFORMS`, a fixed table:  it arrives over the wire,
 so it never names a module or a path, and an unknown one is refused.  With no `platform` the request
-is Claude's.  The sender takes an answer only if its three ids are exactly what it sent:  anything
+is Claude's.  Each entry carries its platform's session-id pattern:  an id that does not match it is
+refused on both hosts before anything runs, and the ids an answer repeats are read with it.  The sender takes an answer only if its three ids are exactly what it sent:  anything
 else is final, because the turn may have run.  The one exception is a Mac the runtime sync has not
 reached yet.  Its older `wake-deliver` rejects the envelope before it does anything, with exactly
 `OLD_MAC_REFUSAL` and exit 2, so that is `failed`, a bounded retry.  The sender never falls back to
@@ -97,6 +98,8 @@ PLATFORM = "claude"
 MENTION = "Claude"
 DEFAULT_PORT = 8793
 SESSION_RE = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
+# A Codex thread id is a bare UUID too:  the same shape `codex_wake.SESSION_RE` checks.
+CODEX_SESSION_RE = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
 SESSION_FILE_RE = re.compile(r"^[0-9]+\.json$")
 SESSION_FILE_BYTES = 64 * 1024
 TAIL_BYTES = 256 * 1024
@@ -141,6 +144,7 @@ WAKE_TEXT = (
 )
 
 Runner = Callable[..., Any]
+Handler = Callable[[Mapping[str, Any], Mapping[str, str]], dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -497,7 +501,7 @@ def deliver_local(
 ) -> WR.Delivery:
     """Deliver one wake to a chat on this host:  the inbox socket when a process holds the chat,
     else a resume under the per-session lock.  Not knowing whether a process holds it is `busy`."""
-    if not SESSION_RE.fullmatch(session_id):
+    if not isinstance(session_id, str) or not SESSION_RE.fullmatch(session_id):
         return WR.Delivery("refused", code="bad-session-id")
     try:
         holder = find_holder(env, session_id)
@@ -530,6 +534,12 @@ def deliver_remote(
     runner: Runner = subprocess.run,
 ) -> WR.Delivery:
     """Deliver one wake to a chat on the Mac, through the one fixed command over ssh."""
+    entry = PLATFORMS.get(platform)
+    if entry is None:
+        return WR.Delivery("refused", "ssh", code=UNKNOWN_PLATFORM)
+    session_id = target.session_id
+    if not isinstance(session_id, str) or not entry.session_re.fullmatch(session_id):
+        return WR.Delivery("refused", "ssh", code="bad-session-id")
     dest = str(config.get("mac_ssh") or env.get(ENV_REMOTE) or "").strip()
     if not SSH_DEST_RE.fullmatch(dest):
         return WR.Delivery("refused", "ssh", code="no-ssh-destination")
@@ -715,16 +725,27 @@ def _target_from(data: object) -> WR.Target:
     return WR.Target(session_id=session_id, letter=letter, host=host, generation=generation)
 
 
+def _platform_of(request: object) -> DeliveryPlatform | None:
+    """The `PLATFORMS` entry a request names, or None.  A request that names none is Claude's."""
+    body = request if isinstance(request, Mapping) else {}
+    name = body.get("platform", PLATFORM)
+    return PLATFORMS.get(name) if isinstance(name, str) else None
+
+
 def _correlation(request: object) -> dict[str, Any]:
     """The ids an answer repeats back.  One that is not validly shaped comes back blank, so a bad
-    request is never mistaken for an answer to a good one."""
+    request is never mistaken for an answer to a good one.  The session id is read with the named
+    platform's own pattern, since a chat id on one platform need not look like one on another."""
     body = request if isinstance(request, Mapping) else {}
     target = body.get("target") if isinstance(body.get("target"), Mapping) else {}
     wake = body.get("wake") if isinstance(body.get("wake"), Mapping) else {}
     wake_id, session_id = wake.get("wake_id"), target.get("session_id")
     generation = target.get("generation")
+    entry = _platform_of(body)
     good_wake = isinstance(wake_id, str) and WR.WAKE_ID_RE.fullmatch(wake_id)
-    good_session = isinstance(session_id, str) and SESSION_RE.fullmatch(session_id)
+    good_session = (
+        entry is not None and isinstance(session_id, str) and entry.session_re.fullmatch(session_id)
+    )
     return {
         "wake_id": wake_id if good_wake else "",
         "session_id": session_id if good_session else "",
@@ -798,42 +819,59 @@ def _deliver_claude(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[
     return _answer(request, _deliver_here(env, target.session_id, wake, target))
 
 
-def _deliver_codex(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
-    """Codex's delivery, loaded only when a request names it.  The module's name is this file's
-    constant:  nothing from the request reaches the import."""
-    try:
-        module = importlib.import_module(CODEX_MODULE)
-    except ImportError:
-        return _answer(request, WR.Delivery("refused", code="platform-not-installed"))
-    try:
-        answer = module.deliver_request(request, env=_registry_env(env))
-    except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
+def _module_delivery(module_name: str) -> Handler:
+    """A platform's delivery by its own module's `deliver_request`, loaded only when a request
+    names that platform.  The module's name is a constant of this file's table:  nothing from the
+    request reaches the import."""
+
+    def deliver(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            return _answer(request, WR.Delivery("refused", code="platform-not-installed"))
+        try:
+            answer = module.deliver_request(request, env=_registry_env(env))
+        except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
+            return _answer(
+                request, WR.Delivery("refused", code="platform-error-%s" % type(exc).__name__)
+            )
+        delivery = answer.get("delivery") if isinstance(answer, Mapping) else None
+        if not isinstance(delivery, Mapping) or delivery.get("outcome") not in WR.OUTCOMES:
+            return _answer(request, WR.Delivery("refused", code="platform-bad-answer"))
+        # Not just re-stamped with this request's ids:  an answer about something else says
+        # nothing about whether this wake ran, so even one that reads as retryable is final.
+        if not _same_ids(answer, _correlation(request)):
+            return _answer(request, WR.Delivery("refused", code="platform-mismatch"))
         return _answer(
-            request, WR.Delivery("refused", code="platform-error-%s" % type(exc).__name__)
+            request,
+            WR.Delivery(
+                str(delivery["outcome"]),
+                _short(delivery.get("route")),
+                ack=_short(delivery.get("ack")) or "unknown",
+                code=_short(delivery.get("code")),
+                note=_short(delivery.get("note")),
+            ),
         )
-    delivery = answer.get("delivery") if isinstance(answer, Mapping) else None
-    if not isinstance(delivery, Mapping) or delivery.get("outcome") not in WR.OUTCOMES:
-        return _answer(request, WR.Delivery("refused", code="platform-bad-answer"))
-    # Not just re-stamped with this request's ids:  an answer about something else says nothing
-    # about whether this wake ran, so even one that reads as retryable is final.
-    if not _same_ids(answer, _correlation(request)):
-        return _answer(request, WR.Delivery("refused", code="platform-mismatch"))
-    return _answer(
-        request,
-        WR.Delivery(
-            str(delivery["outcome"]),
-            _short(delivery.get("route")),
-            ack=_short(delivery.get("ack")) or "unknown",
-            code=_short(delivery.get("code")),
-            note=_short(delivery.get("note")),
-        ),
-    )
+
+    return deliver
 
 
-#: Every platform a request may name.  Only a key of this table is ever acted on.
-PLATFORMS: dict[str, Callable[[Mapping[str, Any], Mapping[str, str]], dict[str, Any]]] = {
-    PLATFORM: _deliver_claude,
-    "codex": _deliver_codex,
+@dataclass(frozen=True)
+class DeliveryPlatform:
+    """One platform a request may name:  its delivery, and the shape of its chats' session ids.
+    A request whose session id does not match `session_re` is refused before `deliver` runs, and
+    the ids an answer repeats are read with the same pattern on both hosts."""
+
+    deliver: Handler
+    session_re: re.Pattern[str]
+
+
+#: Every platform a request may name.  Only a key of this table is ever acted on.  A platform with
+#: a module of its own registers one line:
+#: `"name": DeliveryPlatform(_module_delivery("simple_tools.name_wake"), NAME_SESSION_RE)`.
+PLATFORMS: dict[str, DeliveryPlatform] = {
+    PLATFORM: DeliveryPlatform(_deliver_claude, SESSION_RE),
+    "codex": DeliveryPlatform(_module_delivery(CODEX_MODULE), CODEX_SESSION_RE),
 }
 
 
@@ -852,11 +890,14 @@ def _deliver_legacy(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[
 def _handle(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
     if "platform" not in request and "target" not in request and "session_id" in request:
         return _deliver_legacy(request, env)
-    name = request.get("platform", PLATFORM)
-    handler = PLATFORMS.get(name) if isinstance(name, str) else None
-    if handler is None:
+    entry = _platform_of(request)
+    if entry is None:
         return _answer(request, WR.Delivery("refused", code=UNKNOWN_PLATFORM))
-    return handler(request, env)
+    target = request.get("target")
+    session_id = target.get("session_id") if isinstance(target, Mapping) else None
+    if not isinstance(session_id, str) or not entry.session_re.fullmatch(session_id):
+        return _answer(request, WR.Delivery("refused", code=BAD_REQUEST))  # nothing has run
+    return entry.deliver(request, env)
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
