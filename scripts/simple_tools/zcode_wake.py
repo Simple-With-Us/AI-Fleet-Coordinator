@@ -42,10 +42,10 @@ import os
 import re
 import sqlite3
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from . import wake_router as WR
 
@@ -188,6 +188,7 @@ def deliver_request(
     timeout: int = 900,
 ) -> dict[str, Any]:
     """One zcode delivery:  checks, then the headless resume.  See the module docstring."""
+
     def setting(name: str, default: str) -> str:
         """The delivery env first (the router's registry env carries the deployment's settings),
         then the process environment, then the built-in default."""
@@ -195,9 +196,9 @@ def deliver_request(
 
     workspace = workspace or setting("ZCODE_WAKE_WORKSPACE", DEFAULT_WORKSPACE)
     zcode_bin = zcode_bin or setting("ZCODE_WAKE_BIN", DEFAULT_ZCODE)
-    index = Path(os.path.expanduser(index_path or setting(
-        "ZCODE_WAKE_TASKS_INDEX", DEFAULT_TASKS_INDEX
-    )))
+    index = Path(
+        os.path.expanduser(index_path or setting("ZCODE_WAKE_TASKS_INDEX", DEFAULT_TASKS_INDEX))
+    )
     locks = Path(os.path.expanduser(lock_dir or setting("ZCODE_WAKE_LOCK_DIR", DEFAULT_LOCK_DIR)))
     host = host or setting("ZCODE_WAKE_HOST", DEFAULT_HOST)
     try:
@@ -206,8 +207,7 @@ def deliver_request(
     except (ValueError, KeyError, TypeError, AttributeError):
         # The ids go back as the request stated them (the table has already shape-checked the
         # session id), so this surfaces as refused bad-request and never as a mismatch.
-        return {**_raw_ids(request),
-                "delivery": asdict(WR.Delivery("refused", code="bad-request"))}
+        return {**_raw_ids(request), "delivery": asdict(WR.Delivery("refused", code="bad-request"))}
 
     def answer(delivery: WR.Delivery) -> dict[str, Any]:
         return {
@@ -320,8 +320,10 @@ def _excluded_ids(
             row = con.execute(
                 "SELECT workspace_path FROM tasks WHERE task_id = ?", (sid,)
             ).fetchone()
-            if not row or not row[0] or os.path.realpath(str(row[0])) != os.path.realpath(
-                workspace
+            if (
+                not row
+                or not row[0]
+                or os.path.realpath(str(row[0])) != os.path.realpath(workspace)
             ):
                 out.add(sid)
     except sqlite3.Error:
@@ -348,18 +350,19 @@ def build_platform(
     wrong-workspace sessions excluded from the pick itself and both stores re-checked
     fail-closed at delivery time (an unreadable store holds the wake as `failed`, so a store
     outage can never widen the pick into a delivery)."""
+
     def setting(name: str, default: str) -> str:
         e = env or {}
         return e.get(name) or os.environ.get(name) or default
 
     workspace = workspace or setting("ZCODE_WAKE_WORKSPACE", DEFAULT_WORKSPACE)
     zcode_bin = zcode_bin or setting("ZCODE_WAKE_BIN", DEFAULT_ZCODE)
-    index = Path(os.path.expanduser(index_path or setting(
-        "ZCODE_WAKE_TASKS_INDEX", DEFAULT_TASKS_INDEX
-    )))
-    cli_db = Path(os.path.expanduser(cli_db or setting(
-        "ZCODE_WAKE_CLI_DB", "~/.zcode/cli/db/db.sqlite"
-    )))
+    index = Path(
+        os.path.expanduser(index_path or setting("ZCODE_WAKE_TASKS_INDEX", DEFAULT_TASKS_INDEX))
+    )
+    cli_db = Path(
+        os.path.expanduser(cli_db or setting("ZCODE_WAKE_CLI_DB", "~/.zcode/cli/db/db.sqlite"))
+    )
     host = host or setting("ZCODE_WAKE_HOST", DEFAULT_HOST)
 
     def exclude(candidates: list[WR.Target]) -> set[str]:
