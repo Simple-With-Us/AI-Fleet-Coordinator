@@ -460,7 +460,8 @@ def file_new(
             raise
         if item is None:
             raise BoardFailed(
-                "%s was filed but cannot be read back;  run the same command again" % match.group(3),
+                "%s was filed but cannot be read back;  run the same command again"
+                % match.group(3),
                 outcome_unknown=True,
             )
         if unchanged and item.status in CLOSED_STATUSES:

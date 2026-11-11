@@ -37,7 +37,7 @@ import json
 import os
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 try:
@@ -183,13 +183,18 @@ def _bounded_rows(rows: list[dict], now: float) -> list[dict]:
     Never evict a live row to make room for another filing. An oversized existing
     ledger remains untouched until enough rows age out. Older history is optional.
     """
-    valid = [r for r in rows if isinstance(r.get("t"), (int, float))
-             and not isinstance(r["t"], bool) and now-r["t"] < KEEP_SECONDS]
-    live = [r for r in valid if now-r["t"] < WINDOW_SECONDS]
+    valid = [
+        r
+        for r in rows
+        if isinstance(r.get("t"), (int, float))
+        and not isinstance(r["t"], bool)
+        and now - r["t"] < KEEP_SECONDS
+    ]
+    live = [r for r in valid if now - r["t"] < WINDOW_SECONDS]
     if len(live) > MAX_ROWS:
         raise OSError("live daily cap ledger is full")
-    older = [r for r in valid if now-r["t"] >= WINDOW_SECONDS]
-    remaining = MAX_ROWS-len(live)
+    older = [r for r in valid if now - r["t"] >= WINDOW_SECONDS]
+    remaining = MAX_ROWS - len(live)
     return live + (older[-remaining:] if remaining else [])
 
 
@@ -199,7 +204,9 @@ def record_filing(environ: Mapping[str, str], seat: str, identifier: str, now: f
         rows = _bounded_rows(_rows(environ) + [{"seat": seat, "t": now, "id": identifier}], now)
         path = _path(environ)
         ledger.private_dir(os.path.dirname(path))
-        ledger.write_private(path, json.dumps({"schema": SCHEMA, "rows": rows}, sort_keys=True), durable=True)
+        ledger.write_private(
+            path, json.dumps({"schema": SCHEMA, "rows": rows}, sort_keys=True), durable=True
+        )
     except OSError:
         pass
 
@@ -311,7 +318,10 @@ class Slot:
                 "the daily cap cannot be checked safely (could not take the filings lock: %s), so nothing was "
                 "filed;  try again in a moment, or post it to Pending-for-Jay" % reason
             )
-        self.warn("could not take the filings lock (%s); filing without it, so this filing may not be counted exactly" % reason)
+        self.warn(
+            "could not take the filings lock (%s); filing without it, so this filing may not be counted exactly"
+            % reason
+        )
         return False
 
     def _release_lock(self):
@@ -322,7 +332,13 @@ class Slot:
     def _save(self, rows):
         path = _path(self.environ)
         ledger.private_dir(os.path.dirname(path))
-        ledger.write_private(path, json.dumps({"schema": SCHEMA, "rows": _bounded_rows(rows, wall(self.clock))}, sort_keys=True), durable=True)
+        ledger.write_private(
+            path,
+            json.dumps(
+                {"schema": SCHEMA, "rows": _bounded_rows(rows, wall(self.clock))}, sort_keys=True
+            ),
+            durable=True,
+        )
 
     def __enter__(self):
         if self.policy.on:
@@ -341,8 +357,12 @@ class Slot:
                     self._save(rows)
                 except OSError:
                     if self.policy.mode == ENFORCE and self.policy.cap > 0:
-                        raise Refusal("the daily cap place cannot be reserved safely, so nothing was filed") from None
-                    self.warn("could not reserve a daily cap place; this filing may not be counted exactly")
+                        raise Refusal(
+                            "the daily cap place cannot be reserved safely, so nothing was filed"
+                        ) from None
+                    self.warn(
+                        "could not reserve a daily cap place; this filing may not be counted exactly"
+                    )
                 else:
                     self.reservation = reservation
             return warning
@@ -391,6 +411,8 @@ class Slot:
             if self.write_succeeded:
                 pass  # _finish already reported the finalization failure.
             elif exc is not None and getattr(exc, "outcome_unknown", not isinstance(exc, Refusal)):
-                self.warn("the board write outcome is unknown; its daily cap reservation still counts")
+                self.warn(
+                    "the board write outcome is unknown; its daily cap reservation still counts"
+                )
             else:
                 self._finish()
