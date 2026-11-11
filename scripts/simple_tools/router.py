@@ -703,7 +703,12 @@ def route(
     # must reach its chat whoever follows the topic, and only the routine's router can honour it, so
     # the message falls through to the seat inbox and the wake.  The leases on the topic still get a
     # passive item, as for any message that does not interrupt.  A seat without a routine is unchanged.
-    routine_mention = ctx.seat_has_routine and mention_class
+    # A presence topic (a roll call) never wakes:  with leases on it, it stays passive for every seat.
+    routine_mention = (
+        ctx.seat_has_routine
+        and mention_class
+        and not (on_topic and is_presence(c.channel, c.topic, ctx.presence))
+    )
     if on_topic:
         presence = is_presence(c.channel, c.topic, ctx.presence)
         for lease in on_topic:

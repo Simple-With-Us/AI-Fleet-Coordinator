@@ -586,12 +586,20 @@ class RoutineSeatTests(unittest.TestCase):
                 self.assertFalse(d.seat_inbox)
                 self.assertEqual(d.describe(), R.route(message, ME, ctx(), self.followers(message))[1].describe())
 
-    def test_a_mention_in_a_presence_topic_reaches_a_routine_seats_inbox_like_an_unleased_one(self) -> None:
+    def test_a_mention_in_a_presence_topic_stays_passive_for_a_routine_seat_with_leases(self) -> None:
+        # A presence topic (a roll call) never wakes:  a routine seat gets what every seat gets, passive items
+        # for the leases and no seat-inbox row, no wake and no router call.
         message = msg(content=DIRECT[0], flags=DIRECT[1], topic="roll call")
         plain = R.route(message, ME, ctx(), self.followers(message))[1]
-        self.assertEqual(([k for _, k, _ in plain.lease_items], plain.seat_inbox), (["passive", "passive"], False))
+        self.assertEqual(
+            ([k for _, k, _ in plain.lease_items], plain.seat_inbox, plain.wake), (["passive", "passive"], False, None)
+        )
         c, d = R.route(message, ME, ctx(seat_has_routine=True), self.followers(message))
-        self.assertEqual(([k for _, k, _ in d.lease_items], d.seat_inbox, d.wake), (["passive", "passive"], True, "peer"))
+        self.assertEqual(
+            ([k for _, k, _ in d.lease_items], d.seat_inbox, d.wake), (["passive", "passive"], False, None)
+        )
+        self.assertEqual(d.describe(), plain.describe())
+        # With no lease on the topic nothing changes from before this branch:  the message reaches the inbox and wakes.
         unleased = R.route(message, ME, ctx(seat_has_routine=True), [])[1]
         self.assertEqual((unleased.seat_inbox, unleased.wake), (True, "peer"))
 
