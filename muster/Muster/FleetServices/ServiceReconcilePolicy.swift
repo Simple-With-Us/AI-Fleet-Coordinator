@@ -130,6 +130,7 @@ public enum ServicePolicyTable {
         ("com.jay.mac-resource-watch", scheduledReason),
         ("com.jay.mac-seat-watch", handReason),
         ("com.jay.needs-owner-notify", scheduledReason),
+        ("com.jay.operator-archive-sweep", scheduledReason),
         ("com.jay.operator-notes-runner", keepAliveReason),
         ("com.jay.operator-wake-alerter", handReason),
         ("com.jay.sim-idle-reaper", scheduledReason),

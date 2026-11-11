@@ -45,7 +45,13 @@ class PlistTests(unittest.TestCase):
         self.assertIn(LABEL, [row["label"] for row in config["mac"]["agents"]])
 
     def test_label_does_not_take_the_installed_stale_sweep_name(self):
-        self.assertNotEqual(LABEL, "com.jay.operator-letter-sweep")
+        stale = "com.jay.operator-letter-sweep"
+        self.assertNotEqual(self.data["Label"], stale)
+        self.assertNotEqual(self.data["Label"] + ".plist", stale + ".plist")
+        self.assertIn("LABEL=" + LABEL + "\n", INSTALLER.read_text())
+        self.assertNotIn(stale, INSTALLER.read_text().replace("# ", ""))
+        config = json.loads((SCRIPTS / "fleet-ops-control.json").read_text())
+        self.assertEqual([r for r in config["mac"]["agents"] if r["label"] == stale], [])
 
 
 class InstallerTests(unittest.TestCase):
@@ -104,8 +110,34 @@ class WrapperTests(unittest.TestCase):
             self.DRY, apply_output="closed A (1a2b3c4d, mac)", OPERATOR_ARCHIVE_SWEEP_APPLY="1"
         )
         self.assertEqual(code, 0)
-        self.assertEqual(calls, ["letter sweep-archived", "letter sweep-archived --apply"])
+        self.assertEqual(
+            calls, ["letter sweep-archived", "letter sweep-archived", "letter sweep-archived --apply"]
+        )
         self.assertIn("closed A", log)
+
+    def test_cap_is_rechecked_on_a_fresh_count_before_apply(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            counter = Path(tmp, "n")
+            stub = Path(tmp, "simple-chat")
+            stub.write_text(
+                "#!/bin/sh\n"
+                'case "$*" in *--apply*) echo applied >> "%s.applied"; exit 0 ;; esac\n'
+                'n=$(cat "%s" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "%s"\n'
+                'if [ "$n" -eq 1 ]; then echo "would close A (1a2b3c4d, mac)"; '
+                'else echo "would close A (1a2b3c4d, mac)"; echo "would close B (5e6f7a8b, mac)"; fi\n'
+                % (counter, counter, counter)
+            )
+            stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+            log = Path(tmp, "state", "sweep.log")
+            env = {
+                "PATH": os.environ["PATH"], "HOME": tmp, "SIMPLE_CHAT_BIN": str(stub),
+                "OPERATOR_ARCHIVE_SWEEP_LOG": str(log), "OPERATOR_ARCHIVE_SWEEP_APPLY": "1",
+                "OPERATOR_ARCHIVE_SWEEP_MAX": "1",
+            }
+            proc = subprocess.run(["/bin/sh", str(WRAPPER)], env=env, capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 4)
+            self.assertFalse(Path(tmp, "n.applied").exists())
+            self.assertIn("re-check names 2 chats", log.read_text())
 
     def test_cap_refuses_a_runaway_count(self):
         code, calls, log = self.run_wrapper(
@@ -136,7 +168,7 @@ class WrapperTests(unittest.TestCase):
             self.DRY, OPERATOR_ARCHIVE_SWEEP_APPLY="1", OPERATOR_ARCHIVE_SWEEP_MAX="lots"
         )
         self.assertEqual(code, 0)
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 3)
 
 
 class ServerUnitTests(unittest.TestCase):
@@ -146,9 +178,10 @@ class ServerUnitTests(unittest.TestCase):
     def exec_line(self, text):
         return [l for l in text.splitlines() if l.startswith("ExecStart=")][0]
 
-    def test_zcode_sweep_applies(self):
+    def test_zcode_sweep_stays_dry_run(self):
         line = self.exec_line(self.read("afc-zc-letter-sweep.service"))
-        self.assertIn("simple_tools.platform_letter_zcode sweep --apply", line)
+        self.assertIn("simple_tools.platform_letter_zcode sweep", line)
+        self.assertNotIn("--apply", line)
 
     def test_antigravity_sweep_stays_dry_run(self):
         line = self.exec_line(self.read("afc-ag-letter-sweep.service"))

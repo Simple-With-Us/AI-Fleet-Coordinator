@@ -3,8 +3,10 @@
 # afc-zc-letter-sweep.timer to /etc/systemd/system/, `systemctl daemon-reload`,
 # `systemctl enable --now afc-zc-letter-sweep.timer`.  Install the fleet-cli checkout first:  the
 # unit resolves its `current` link at start, like the wake bridges.  Root install is owner-gated.
-# The apply pass is on:  the ZCode store's archived and deleted flags are explicit, and the sweep's
-# not-registered answer is the happy no-op.  Dry run by hand first:  remove --apply from ExecStart.
+# DRY RUN ONLY until the owner has inspected one run:  the sweep also closes every open ZCode
+# registration whose id is missing from the store's session table, and this unit has no count cap,
+# so a reset or replaced store would close them all in one pass.  Read the journal of one run
+# (`journalctl -u afc-zc-letter-sweep`), then add --apply to ExecStart if the list is right.
 [Unit]
 Description=ZCode letter sweep: free the letters of archived or deleted sessions (AFC-694)
 After=network-online.target
@@ -19,6 +21,6 @@ Environment=PYTHONPATH=/home/jay/.local/share/fleet-cli/current/scripts
 # The shared registry env file is sourced first, exactly as the letter hooks and the wake bridges
 # source it:  the sweep signs its registry reads and closes as the OPERATOR principal.  No -I:  it
 # would drop PYTHONPATH, and the package is found through it.
-ExecStart=/bin/sh -c '. "$HOME/.local/bin/operator-registry-env" 2>/dev/null; exec /usr/bin/python3 -m simple_tools.platform_letter_zcode sweep --apply --location server'
+ExecStart=/bin/sh -c '. "$HOME/.local/bin/operator-registry-env" 2>/dev/null; exec /usr/bin/python3 -m simple_tools.platform_letter_zcode sweep --location server'
 TimeoutStartSec=5min
 Nice=10

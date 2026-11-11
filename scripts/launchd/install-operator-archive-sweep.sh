@@ -44,6 +44,8 @@ case "$MODE" in
     plutil -lint "$DEST.new" >/dev/null
     mv "$DEST.new" "$DEST"
     launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-    launchctl bootstrap "gui/$(id -u)" "$DEST"
+    # launchd can still hold the label for a moment after bootout, so wait, and retry once.
+    sleep 1
+    launchctl bootstrap "gui/$(id -u)" "$DEST" || { sleep 2; launchctl bootstrap "gui/$(id -u)" "$DEST"; }
     echo "installed $LABEL (apply=$APPLY);  check:  launchctl print gui/$(id -u)/$LABEL" ;;
 esac

@@ -55,6 +55,24 @@ if [ "$would" -eq 0 ]; then
   exit 0
 fi
 
+# The apply pass has no cap of its own, so re-run the dry run right before it and re-check the cap
+# on that fresh count:  chats archived since the first dry run must not slip past the refusal.
+recheck=$("$BIN" letter sweep-archived 2>&1)
+rcode=$?
+if [ "$rcode" -ne 0 ]; then
+  log "re-check dry run failed with exit $rcode"
+  exit "$rcode"
+fi
+would=$(printf '%s\n' "$recheck" | grep -c '^would close ')
+if [ "$would" -gt "$MAX" ]; then
+  log "refusing to apply:  re-check names $would chats, more than the cap of $MAX"
+  exit 4
+fi
+if [ "$would" -eq 0 ]; then
+  log "nothing archived on re-check:  no apply needed"
+  exit 0
+fi
+
 log "apply"
 out=$("$BIN" letter sweep-archived --apply 2>&1)
 code=$?
