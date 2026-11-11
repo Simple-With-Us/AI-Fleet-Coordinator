@@ -58,9 +58,7 @@ class RegisteredGenericFixtureTests(unittest.TestCase):
         self.assertTrue(scanner._zulip_shaped(token))
         payload = FIXTURE + token + "\n"
         entry = (REPO, PATH, hashlib.sha256(payload.encode()).hexdigest())
-        self.assertEqual(
-            self.run_scan(payload, entry=entry), "a Zulip-shaped API key"
-        )
+        self.assertEqual(self.run_scan(payload, entry=entry), "a Zulip-shaped API key")
 
     def test_loaded_credentials_stay_absolute(self):
         self.assertEqual(
