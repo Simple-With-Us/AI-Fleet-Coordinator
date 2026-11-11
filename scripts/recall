@@ -1044,9 +1044,11 @@ def remote_call(tool: str, arguments: dict, write: bool = False, *, _bearer: str
     hit = _remote_scan_arguments(_remote_scanner(), arguments, bearer)
     if hit:
         raise FleetRagError(f"refused before sending: {hit}")
-    if write:
+    if write and tool.startswith("recall_"):
         # Capture one bearer for both calls. A failed discovery never reaches a
-        # mutation and never falls back to direct/public credentials.
+        # mutation and never falls back to direct/public credentials.  Scoped to
+        # this client's own mutation tools:  a generic write=True call (no recall
+        # tool exists for it) must keep the plain transport-outcome contract.
         seat = _remote_principal(remote_call("identities", {}, _bearer=bearer))
         if "identity" in arguments and arguments["identity"] != seat:
             raise FleetRagError("the requested identity differs from the authenticated seat")
