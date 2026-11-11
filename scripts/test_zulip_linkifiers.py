@@ -199,8 +199,8 @@ class FakeZulip:
 class ApplyTest(unittest.TestCase):
     def two_missing(self):
         live = [
-            {"id": i, "pattern": p, "url_template": u}
-            for i, p, u in L.TARGET
+            {"id": i if i is not None else 9000 + n, "pattern": p, "url_template": u}
+            for n, (i, p, u) in enumerate(L.TARGET)
             if i not in (5142, 5143)
         ]
         return FakeZulip(live, fail_post=2), live
