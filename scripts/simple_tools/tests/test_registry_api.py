@@ -727,12 +727,24 @@ class HardCutTests(unittest.TestCase):
             for _ in range(3):
                 self.assertEqual(registry_api.base_url(), "")
             answer = registry_api.call(None, "resolve", {"platform": "codex"})
-        self.assertEqual(answer.get("code"), "not_configured", answer)
-        self.assertIn("service-token-required", answer["error"])
-        self.assertIn(registry_api.URL_ENV, answer["error"])
-        self.assertNotIn("secret-value-must-not-appear", answer["error"])
-        # One knob read per name per process, however often base_url() is asked.
-        self.assertEqual(calls, [registry_api.URL_KNOB])
+            self.assertEqual(answer.get("code"), "not_configured", answer)
+            self.assertIn("service-token-required", answer["error"])
+            self.assertIn(registry_api.URL_ENV, answer["error"])
+            self.assertNotIn("secret-value-must-not-appear", answer["error"])
+            # One knob read per name per retry window, however often base_url() is asked.
+            self.assertEqual(calls, [registry_api.URL_KNOB])
+            # A miss is not pinned for the process's life:  after the retry window the
+            # knob is asked again, and a value that now answers is used and kept.
+            answers = {registry_api.URL_KNOB: "https://knob.example.invalid"}
+            fake_knobs.get = lambda name: (calls.append(name), answers[name])[1]
+            with mock.patch.object(
+                registry_api.time,
+                "monotonic",
+                return_value=time.monotonic() + registry_api.KNOB_MISS_RETRY_S + 1,
+            ):
+                self.assertEqual(registry_api.base_url(), "https://knob.example.invalid")
+                self.assertEqual(registry_api.base_url(), "https://knob.example.invalid")
+            self.assertEqual(calls, [registry_api.URL_KNOB, registry_api.URL_KNOB])
 
     def test_an_unregistered_knob_reads_as_unset(self) -> None:
         real = _ORIGINAL_KNOB_VALUE

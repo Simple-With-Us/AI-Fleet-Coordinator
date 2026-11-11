@@ -74,18 +74,26 @@ _ARG_ALIASES = {
 }
 
 
-#: Knob answers already read in this process, and why a knob read as unset.  One read per
-#: name per process:  base_url() is called several times per hook as a branch predicate,
-#: and a hook must not pay an Infisical round trip for each.  Values never leave this
+#: Knob answers already read in this process, and why a knob read as unset.  A value is
+#: read once per process and a miss once per retry window:  base_url() is called several
+#: times per hook as a branch predicate, and a hook must not pay an Infisical round trip
+#: for each.  Values never leave this
 #: module;  only the reasons (names and fleet_knobs reason codes) are ever reported.
 _KNOB_CACHE: dict[str, str] = {}
 _KNOB_REASONS: dict[str, str] = {}
+#: A knob that read as unset is asked again after this many seconds, so a long-lived
+#: process (the router, a bridge) that started during an outage or before the name was
+#: registered is not pinned to not_configured for its lifetime.  A short-lived hook never
+#: lives this long, so it still pays at most one read per name.
+KNOB_MISS_RETRY_S = 60.0
+_KNOB_MISS_UNTIL: dict[str, float] = {}
 
 
 def reset_knob_cache() -> None:
     """Forget every knob read (for tests, and for a long-lived process after a reload)."""
     _KNOB_CACHE.clear()
     _KNOB_REASONS.clear()
+    _KNOB_MISS_UNTIL.clear()
 
 
 def _knob_value(name: str) -> str:
@@ -99,6 +107,8 @@ def _knob_value(name: str) -> str:
     Infisical."""
     if name in _KNOB_CACHE:
         return _KNOB_CACHE[name]
+    if time.monotonic() < _KNOB_MISS_UNTIL.get(name, 0.0):
+        return ""
     value, reason = "", ""
     try:
         from fleet_knobs import knobs  # absent on a host that does not ship it
@@ -118,9 +128,13 @@ def _knob_value(name: str) -> str:
                 )
             else:
                 reason = "" if value else "knob empty"
-    _KNOB_CACHE[name] = value
-    if reason:
-        _KNOB_REASONS[name] = reason
+    if value:
+        _KNOB_CACHE[name] = value
+        _KNOB_REASONS.pop(name, None)
+        _KNOB_MISS_UNTIL.pop(name, None)
+    else:
+        _KNOB_REASONS[name] = reason or "knob empty"
+        _KNOB_MISS_UNTIL[name] = time.monotonic() + KNOB_MISS_RETRY_S
     return value
 
 
