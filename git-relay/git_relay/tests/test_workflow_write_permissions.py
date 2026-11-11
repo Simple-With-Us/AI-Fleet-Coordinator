@@ -325,12 +325,20 @@ class WorkflowPrElevation(unittest.TestCase):
         pr = {"head": {"sha": SHA}, "base": {"ref": "main", "sha": base_sha}}
         compare = {"files": files}
         head_tree = {
+            "sha": "c" * 40,
             "truncated": False,
-            "tree": [{"type": "blob", "path": "src/a.py", "sha": "1" * 40}, *head_rows],
+            "tree": [
+                {"type": "blob", "path": "src/a.py", "sha": "1" * 40, "mode": "100644"},
+                *head_rows,
+            ],
         }
         base_tree = {
+            "sha": "d" * 40,
             "truncated": False,
-            "tree": [{"type": "blob", "path": "src/a.py", "sha": "1" * 40}, *base_rows],
+            "tree": [
+                {"type": "blob", "path": "src/a.py", "sha": "1" * 40, "mode": "100644"},
+                *base_rows,
+            ],
         }
         client = Client(pr, compare, head_tree, base_tree, {"message": "ok"})
         args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
@@ -358,7 +366,7 @@ class WorkflowPrElevation(unittest.TestCase):
 
     def test_update_branch_trees_fallback_detects_added_workflow_file(self):
         files = [{"filename": f"src/f{i}.py"} for i in range(300)]
-        added = {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "2" * 40}
+        added = {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "2" * 40, "mode": "100644"}
         client, minter, handle, args = self.update_branch_trees(files, head_rows=[added])
         handle.run("wf_update_branch", args)
         self.assertEqual(len(minter.calls), 2)
@@ -367,7 +375,7 @@ class WorkflowPrElevation(unittest.TestCase):
 
     def test_update_branch_trees_fallback_detects_removed_workflow_file(self):
         files = [{"filename": f"src/f{i}.py"} for i in range(300)]
-        removed = {"type": "blob", "path": ".github/workflows/old.yml", "sha": "3" * 40}
+        removed = {"type": "blob", "path": ".github/workflows/old.yml", "sha": "3" * 40, "mode": "100644"}
         client, minter, handle, args = self.update_branch_trees(files, base_rows=[removed])
         handle.run("wf_update_branch", args)
         self.assertEqual(len(minter.calls), 2)
@@ -375,8 +383,8 @@ class WorkflowPrElevation(unittest.TestCase):
 
     def test_update_branch_trees_fallback_detects_changed_workflow_blob(self):
         files = [{"filename": f"src/f{i}.py"} for i in range(300)]
-        head_row = {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "2" * 40}
-        base_row = {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "3" * 40}
+        head_row = {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "2" * 40, "mode": "100644"}
+        base_row = {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "3" * 40, "mode": "100644"}
         client, minter, handle, args = self.update_branch_trees(
             files, head_rows=[head_row], base_rows=[base_row]
         )
@@ -387,7 +395,7 @@ class WorkflowPrElevation(unittest.TestCase):
     def test_update_branch_trees_fallback_refuses_truncated_tree(self):
         files = [{"filename": f"src/f{i}.py"} for i in range(300)]
         client, minter, handle, args = self.update_branch_trees(files)
-        client.replies[2] = {"truncated": True, "tree": []}
+        client.replies[2] = {"sha": "c" * 40, "truncated": True, "tree": []}
         with self.assertRaises(Refused):
             handle.run("wf_update_branch", args)
         self.assertNotIn("PUT", [c[0] for c in client.calls])
@@ -400,10 +408,65 @@ class WorkflowPrElevation(unittest.TestCase):
             handle.run("wf_update_branch", args)
         self.assertNotIn("PUT", [c[0] for c in client.calls])
 
+    def test_update_branch_trees_fallback_refuses_malformed_workflow_row(self):
+        files = [{"filename": f"src/f{i}.py"} for i in range(300)]
+        bad = {"type": "blob", "path": ".github/workflows/ci.yml", "sha": None, "mode": "100644"}
+        client, minter, handle, args = self.update_branch_trees(files, head_rows=[bad])
+        with self.assertRaises(Refused):
+            handle.run("wf_update_branch", args)
+        self.assertNotIn("PUT", [c[0] for c in client.calls])
+
+    def test_update_branch_trees_fallback_refuses_invalid_blob_sha(self):
+        files = [{"filename": f"src/f{i}.py"} for i in range(300)]
+        bad = {"type": "blob", "path": "src/b.py", "sha": "not-a-sha", "mode": "100644"}
+        client, minter, handle, args = self.update_branch_trees(files, head_rows=[bad])
+        with self.assertRaises(Refused):
+            handle.run("wf_update_branch", args)
+        self.assertNotIn("PUT", [c[0] for c in client.calls])
+
+    def test_update_branch_trees_fallback_refuses_duplicate_path(self):
+        files = [{"filename": f"src/f{i}.py"} for i in range(300)]
+        dup = {"type": "blob", "path": "src/a.py", "sha": "9" * 40, "mode": "100644"}
+        client, minter, handle, args = self.update_branch_trees(files, head_rows=[dup])
+        with self.assertRaises(Refused):
+            handle.run("wf_update_branch", args)
+        self.assertNotIn("PUT", [c[0] for c in client.calls])
+
+    def test_update_branch_trees_fallback_refuses_duplicate_tree_blob_path(self):
+        files = [{"filename": f"src/f{i}.py"} for i in range(300)]
+        dup = {"type": "tree", "path": "src/a.py", "sha": "9" * 40, "mode": "040000"}
+        client, minter, handle, args = self.update_branch_trees(files, head_rows=[dup])
+        with self.assertRaises(Refused):
+            handle.run("wf_update_branch", args)
+        self.assertNotIn("PUT", [c[0] for c in client.calls])
+
+    def test_update_branch_trees_fallback_refuses_missing_tree_identity(self):
+        files = [{"filename": f"src/f{i}.py"} for i in range(300)]
+        client, minter, handle, args = self.update_branch_trees(files)
+        del client.replies[2]["sha"]
+        with self.assertRaises(Refused):
+            handle.run("wf_update_branch", args)
+        self.assertNotIn("PUT", [c[0] for c in client.calls])
+
+    def test_update_branch_trees_fallback_detects_mode_only_workflow_change(self):
+        files = [{"filename": f"src/f{i}.py"} for i in range(300)]
+        head_row = {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "2" * 40, "mode": "100755"}
+        base_row = {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "2" * 40, "mode": "100644"}
+        client, minter, handle, args = self.update_branch_trees(
+            files, head_rows=[head_row], base_rows=[base_row]
+        )
+        handle.run("wf_update_branch", args)
+        self.assertEqual(len(minter.calls), 2)
+        self.assertEqual(minter.calls[1][2].get("workflows"), "write")
+
     def test_update_branch_compare_without_files_falls_back_to_trees(self):
         minter = Minter()
         pr = {"head": {"sha": SHA}, "base": {"ref": "main", "sha": "b" * 40}}
-        tree = {"truncated": False, "tree": [{"type": "blob", "path": "a.py", "sha": "1" * 40}]}
+        tree = {
+            "sha": "c" * 40,
+            "truncated": False,
+            "tree": [{"type": "blob", "path": "a.py", "sha": "1" * 40, "mode": "100644"}],
+        }
         client = Client(pr, {"total_commits": 5}, tree, tree, {"message": "ok"})
         args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
         handle = WorkflowVerbs.for_action(
@@ -472,15 +535,17 @@ class WorkflowPrElevation(unittest.TestCase):
 
         pr = {"head": {"sha": SHA}, "base": {"ref": "main", "sha": "b" * 40}}
         head_tree = {
+            "sha": "c" * 40,
             "truncated": False,
             "tree": [
-                {"type": "blob", "path": "src/a.py", "sha": "1" * 40},
-                {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "2" * 40},
+                {"type": "blob", "path": "src/a.py", "sha": "1" * 40, "mode": "100644"},
+                {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "2" * 40, "mode": "100644"},
             ],
         }
         base_tree = {
+            "sha": "d" * 40,
             "truncated": False,
-            "tree": [{"type": "blob", "path": "src/a.py", "sha": "1" * 40}],
+            "tree": [{"type": "blob", "path": "src/a.py", "sha": "1" * 40, "mode": "100644"}],
         }
         minter, client = Minter(), Big(pr, head_tree, base_tree, {"message": "ok"})
         args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
@@ -510,7 +575,11 @@ class WorkflowPrElevation(unittest.TestCase):
                 return self.replies.pop(0) if self.replies else {}
 
         pr = {"head": {"sha": SHA}, "base": {"ref": "main", "sha": "b" * 40}}
-        tree = {"truncated": False, "tree": [{"type": "blob", "path": "a.py", "sha": "1" * 40}]}
+        tree = {
+            "sha": "c" * 40,
+            "truncated": False,
+            "tree": [{"type": "blob", "path": "a.py", "sha": "1" * 40, "mode": "100644"}],
+        }
         minter, client = Minter(), Big(pr, tree, tree, {"message": "ok"})
         args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
         handle = WorkflowVerbs.for_action(
