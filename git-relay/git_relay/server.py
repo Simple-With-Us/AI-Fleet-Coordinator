@@ -454,6 +454,26 @@ class Relay:
             except RelayGitHubError as exc:
                 # Audit only allow-listed scalar fields:  an upstream error message
                 # can carry response-body content, so it is never logged.
+                if exc.code == "repository_moved":
+                    # GitHub redirected the slug (renamed or transferred repo).  The
+                    # redirect was not followed, so nothing ran upstream:  a definite
+                    # refusal that names where the repo went, never an outage (OPS-1036).
+                    self._release(key, "refused")
+                    outcome = "github_terminal"
+                    payload = {
+                        "error": "repository moved",
+                        "github_status": exc.status,
+                        "retryable": False,
+                    }
+                    detail = {"status": exc.status, "github_code": "repository_moved"}
+                    if exc.moved_repository_id is not None:
+                        payload["repository_id"] = exc.moved_repository_id
+                        detail["repository_id"] = exc.moved_repository_id
+                        moved_to = self._moved_repository(seat, exc.moved_repository_id)
+                        if moved_to:
+                            payload["moved_to"] = moved_to
+                            detail["moved_to"] = moved_to
+                    return 400, payload
                 if exc.code == "invalid_grant":
                     # A definite credential-grant refusal:  nothing was written,
                     # the key is released, and a fixed credential may retry.  The
@@ -579,6 +599,26 @@ class Relay:
             # error and write still records exactly one.
             if SeatPolicy.audits(action, outcome):
                 self.audit.record(seat, action, repo, outcome, detail)
+
+    def _moved_repository(self, seat: str, repo_id: int) -> str | None:
+        """Where a moved repository lives now, named only when this seat's policy allows it.
+
+        Read as the seat's own App (src: AppTokenMinter.moved_repository_name).  A slug outside
+        the seat's repo allowlist is withheld:  the seat learns the repo moved, not a name its
+        policy does not cover.  Any failure answers None.
+        """
+        if self.app_minter is None or not hasattr(self.app_minter, "moved_repository_name"):
+            return None
+        try:
+            app_slug, _ = self.policy.app_identity(seat)
+            if not app_slug:
+                return None
+            name = self.app_minter.moved_repository_name(app_slug, repo_id)
+            if not name or find_secret(name) or not self.policy.repo_allowed(seat, name):
+                return None
+            return name
+        except Exception:
+            return None
 
     def _release(self, key: str | None, state: str) -> None:
         if key is not None:

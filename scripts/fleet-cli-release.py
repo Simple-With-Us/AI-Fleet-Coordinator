@@ -113,7 +113,7 @@ EXACT = frozenset(
         "scripts/simple_tools/mcp/tools.json",
         "scripts/simple_tools/mcp/fixtures.jsonl",
         # AFC-331:  the stdio server reads these beside tools.json (the listener tools, the removed-name map
-        # and the enabled Grok Bot personas).
+        # and the enabled Grok bots).
         "scripts/simple_tools/mcp/eavesdropper-tools.json",
         "scripts/simple_tools/mcp/renamed-tools.json",
         "scripts/simple_tools/mcp/gb-identities.json",

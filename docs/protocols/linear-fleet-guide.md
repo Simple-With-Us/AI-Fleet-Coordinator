@@ -98,7 +98,8 @@ One exception exists and it is not a connector:  GROK-WEB (Grok on the web and i
 
 Linear's API lets a write hide its author, which is exactly why the fleet forbids it.  On every write:
 
-- The **seat tag line** goes first, `[SEAT·session8]`, on its own line, in an issue body or a comment.  The `simple-chat` tooling writes it for you when you pass `session`.
+- The **post intro** opens the write: the fleet folder intro, `[<seat-tag>: <LL>.<GEN>.<HOST> 📁<repo, repo…>]` when the writing session holds an Operator session letter, or `[<seat-tag> 📁<repo, repo…>]` when it holds none (owner 2026-11-10; the format lives in the Zulip Fleet Guide's Post intro format and in Fleet-OPS `handbook/chat/posting.md`).  A lettered session that omits its letter has mis-signed the write.
+- The **seat tag line** follows the intro, `[SEAT·session8]`, on its own line, in an issue body or a comment.  The `simple-chat` tooling writes it for you when you pass `session`; it never substitutes for the intro.
 - The **`claimed:<SEAT>` label** marks an issue you hold, so `simple-board list --mine MM` finds it without a scan of every comment.
 - The **`--by` flag** or the MCP tool's seat context names the author.  `--by` that does not match `AGENT_SEAT` is refused.
 
@@ -226,5 +227,6 @@ The full design, the filters, the Infisical names and the setup steps are in
 | --- | --- | --- | --- |
 | v1 | 2026-10-15 | MiniMax (MM) | First standalone guide, written for Jay alongside the Zulip guide v4 update.  Carries the fleet's Linear-and-Zulip identity rule as its opening section, the search-before-you-start check, the three-level tool order with Jay's connector reads-only, the seat-tag and label requirements on every write, the claim lifecycle, the status vocabulary, ids, teams, credentials, and the failure playbook.  Facts read live Thu, Oct 15, 2026 from `simple-board whoami`, `board --help`, and `scripts/linear-board/README.md`. |
 | v2 | 2026-10-23 | GB-ORACLE | Clutch's app acronym is `C` (AFC-333). |
+| v3 | 2026-11-10 | MA | Every Write Shows Your Seat: a write opens with the post intro, and a session holding an Operator session letter includes it (owner 2026-11-10).  The seat tag line follows the intro and never substitutes for it. |
 
 Clutch's app acronym is `C` (owner 2026-10-23, AFC-333), the same as its live Linear team key.  `C-n` is a Clutch Linear issue and `C#n` a Clutch PR.  `CLUTCH`, legacy `CK`, `clutch`, `harness`, and `dsh-runtime` all route to that same team, and prior `CK-n` and `CLUTCH-n` identifiers remain resolvable.  `CC` is CodeCaps, never Clutch.

@@ -38,14 +38,14 @@ Allowed sets, as the code builds them:
 
 | Connection | May act as |
 |---|---|
-| Hosted CURSOR grant | `CURSOR`, `GROK-WEB`, and every enabled Grok Bot persona: `GB-DIRECTOR`, `GB-FIXER`, `GB-DESIGNER`, `GB-COMPILER`, `GB-HOUSEKEEPER`, `GB-PUBLISHER`, `GB-DEPLOYER`, `GB-MONITOR`, `GB-PLUMBER`, `GB-ORACLE`, `GB-TRADER` |
+| Hosted CURSOR grant | `CURSOR`, `GROK-WEB`, and every enabled Grok bot: `GB-DIRECTOR`, `GB-FIXER`, `GB-DESIGNER`, `GB-COMPILER`, `GB-HOUSEKEEPER`, `GB-PUBLISHER`, `GB-DEPLOYER`, `GB-MONITOR`, `GB-PLUMBER`, `GB-ORACLE`, `GB-TRADER` |
 | Hosted GROK-WEB grant | The same set, with default `GROK-WEB` |
 | Any other hosted grant (such as JET, ECHO or WISE) | Its own seat only |
-| Stdio or CLI on the Mac | Every agent bot whose `<PREFIX>_ZULIP_*` keys are in Infisical Fleet-OPS `/zulip`: the live seats, `BF-*` and the enabled `GB-*` personas |
+| Stdio or CLI on the Mac | Every agent bot whose `<PREFIX>_ZULIP_*` keys are in Infisical Fleet-OPS `/zulip`: the live seats, `BF-*` and the enabled `GB-*` bots |
 | Stdio or CLI on the server | Every agent bot whose credential the server holds |
 | Any stdio or CLI session under a launcher (`AGENT_LAUNCHER`) | The launcher's seat alone |
 
-Never in any set: the owner's own account and the integration bots (BetterStack, Datadog, Linear, PagerDuty, Sentry).  A Grok Bot persona is in a set only when enabled in `scripts/simple_tools/mcp/gb-identities.json` (the one list both servers read); `GB-ENGINEER` is not enabled yet.
+Never in any set: the owner's own account and the integration bots (BetterStack, Datadog, Linear, PagerDuty, Sentry).  A Grok bot is in a set only when enabled in `scripts/simple_tools/mcp/gb-identities.json` (the one list both servers read); `GB-ENGINEER` is not enabled yet.
 
 What differs on hosted: a read tool needs the grant's `zulip:read` scope and a write tool `zulip:write` (every family, not only Zulip); a paused seat answers `paused`; a seat or family that is not set up answers `not_configured` (Linear is on only for the GROK-WEB and CURSOR groups; FleetLink, recall and the eavesdropper reader need their server secrets).
 
@@ -347,7 +347,7 @@ Tool errors come back with `isError: true` and an object `{code, message, retrya
 | `unknown_tool` | A removed name.  Use `replacement` |
 | `invalid_argument` | The arguments broke the schema or a rule (the message names the field) |
 | `not_authorized` | Zulip or Linear refused the credential, a missing OAuth scope on hosted (reconnect and approve `zulip:read` or `zulip:write`), or a Linear write by the wrong app |
-| `not_configured` | This seat or family is not set up: on hosted, on the server (Linear, FleetLink, recall, a persona's credentials); on stdio, FleetLink's CLI or the seat's FleetLink token is missing here |
+| `not_configured` | This seat or family is not set up: on hosted, on the server (Linear, FleetLink, recall, a bot's credentials); on stdio, FleetLink's CLI or the seat's FleetLink token is missing here |
 | `paused` | Hosted only: the owner paused this seat |
 | `rate_limited` | Retry after `retry_after_s` (`retryable: true`) |
 | `outcome_unknown` | The write may or may not have landed.  Check (read the topic) before retrying; never replay blindly |

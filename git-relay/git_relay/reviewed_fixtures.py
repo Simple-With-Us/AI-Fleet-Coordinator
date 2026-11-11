@@ -12,8 +12,9 @@ from .secret_scan import find_secret
 # Source of truth: the corrected rename checkpoint
 # 81d8bb0cd4f5a63d3dc330b8f42be4a3e93e87a3 (tree
 # b548e1a81d4fd18d72206f8c1f22cb41a6d19bcf, built on main
-# ac6d5d44500937274aeddfc794a05fb427158f8c); all 13 triples verify byte-exact
-# against that tree. The first checkpoint
+# ac6d5d44500937274aeddfc794a05fb427158f8c); 12 of the 13 triples verify
+# byte-exact against that tree. The thirteenth, gr-workflow-v1.test.mjs, is the
+# PR #1707 exception recorded below and is not part of that tree. The first checkpoint
 # 4977e6a7970dc0a25638181600137fe06167dcec is retained as original evidence
 # only, never as a shipping target. Ten rows are unchanged from that first
 # re-attestation; three rows (test_install_mcp.py, integration.workerd.mjs,
@@ -29,6 +30,9 @@ from .secret_scan import find_secret
 # main27801add source, five safe rename/import/env edits and whole credential-
 # line origin proof are recorded in preservation-pending-manifest.json. All
 # credential-shaped spans are unchanged; provider/loaded guards are NOT waived.
+# The gr-workflow-v1.test.mjs row was refreshed 2026-11-10 to the exact bytes under
+# review in PR #1707 (source blob 804d547cb96bba4cade20a058e76ec32c1fa7022), not the
+# 81d8bb0c checkpoint bytes, which never landed on main; provenance in the README.
 _REVIEWED_FIXTURES = frozenset(
     {
         (
@@ -54,7 +58,7 @@ _REVIEWED_FIXTURES = frozenset(
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
             "scripts/simple-tools-mcp/test/gr-workflow-v1.test.mjs",
-            "1caec47629a7a4592051b25efcfd229cfe662471027c13eb3c5d812952816e95",
+            "8a0cf816252c39f32202429861483d0d128d4a30a7ff92e6cbbbad988ee7dad2",
         ),
         (
             "Simple-With-Us/AI-Fleet-Coordinator",

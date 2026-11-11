@@ -1,4 +1,4 @@
-"""The listener's server instance:  environment credentials, DM capture for a Grok Bot persona,
+"""The listener's server instance:  environment credentials, DM capture for a Grok bot,
 the remote routine (`http`) wake, the seat partition, and the container pieces.
 
 Everything runs against the fake Zulip server, a fake routine webhook, a fake clock and temp
@@ -43,7 +43,7 @@ GB_EMAIL = "compiler-grok-bot@zulip.test"
 DIRECTOR_EMAIL = "director-grok-bot@zulip.test"
 SEAT = "GB-COMPILER"
 MENTION = "@**GB-Compiler** the build is red on main, can you look?"
-# The cloud seats the partition gives the server instance besides the GB personas, with the bot email
+# The cloud seats the partition gives the server instance besides the GB bots, with the bot email
 # whose local part derives each seat tag (identity.EMAIL_TAG_OVERRIDES) and a display name to @-mention.
 CLOUD_SEATS = {
     "MA": ("muse-assist-bot@zulip.test", "Muse Assist"),
@@ -369,7 +369,7 @@ class AdminRefusalTests(ServerHarness):
         self.assertEqual(
             [r["user_id"] for r in self.fake.registrations],
             [self.gb["user_id"]],
-            "only the member persona holds a queue",
+            "only the member bot holds a queue",
         )
         self.fake.add_message(
             "Codex", "simple-tools", "t", "@**GB-Director** and @**GB-Compiler** look"
@@ -1137,7 +1137,7 @@ class PartitionTests(ServerHarness):
         err = self.refused(self.env())
         self.assertIn("seat GBC is configured here", err)
         self.assertIn("seat GBC reads bot = 'GB-Compiler'", err)
-        # The server:  a listed persona pointed at another persona's default variables.
+        # The server:  a listed bot pointed at another bot's default variables.
         self.config_file.write_text(
             textwrap.dedent("""\
             [daemon]
@@ -1177,7 +1177,7 @@ class PartitionTests(ServerHarness):
         )
         self.assertTrue(daemon.seats["GB-FIXER"].fatal)
         self.assertEqual(self.fake.registrations, [], "the aliased key never registers a queue")
-        self.assertTrue(daemon.connect_seat(SEAT), "the persona's own seat still connects")
+        self.assertTrue(daemon.connect_seat(SEAT), "the bot's own seat still connects")
         log = (self.state_dir / "logs" / "listener.log").read_text()
         self.assertIn('"seat-refused"', log)
 
@@ -1278,7 +1278,7 @@ class PartitionTests(ServerHarness):
         self.assertEqual(
             sorted(server.seats),
             sorted(list(gb) + list(CLOUD_SEATS) + [s for s, v in bf.items() if v == "server"]),
-            "the enabled seats are every GB persona, the five cloud seats and every live BF seat",
+            "the enabled seats are every GB bot, the five cloud seats and every live BF seat",
         )
         for seat in [s for s, v in bf.items() if v == "server"]:
             seat_cfg = server.seats[seat]
@@ -1411,7 +1411,7 @@ class CloudSeatTests(CloudSeatHarness):
         self.assertEqual(
             sorted(r["user_id"] for r in self.fake.registrations),
             sorted(bot["user_id"] for bot in self.cloud.values()),
-            "five queues, one per bot, and none for a persona that was not started",
+            "five queues, one per bot, and none for a bot that was not started",
         )
         self.assertEqual(len({r["user_id"] for r in self.fake.registrations}), 5)
 
@@ -1551,7 +1551,7 @@ class ServerInitTests(ServerHarness):
         self.config_file.unlink()
         # Without --seat the reader is the first enabled seat in name order, which is ECHO now that the
         # sample holds the cloud seats, so the runbook always names one.
-        # GB-COMPILER is the reader here, and like GB-FIXER an enabled persona whose credentials init checks.
+        # GB-COMPILER is the reader here, and like GB-FIXER an enabled bot whose credentials init checks.
         fixer_key = secrets.token_hex(16)
         self.extra_keys.append(("fixer-grok-bot@zulip.test", fixer_key))
         self.fake.add_bot("fixer-grok-bot@zulip.test", "GB-Fixer", fixer_key)

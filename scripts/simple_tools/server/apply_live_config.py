@@ -23,7 +23,7 @@ then replaces it atomically with the same mode and owner.  A second run changes 
 backup.  The file holds variable names, never values, so the diff prints the keys as they are.
 
 Afterwards restart the app if a section names a variable the container did not start with (always the
-case for a newly enabled persona); otherwise `simple-chat daemon reload` is enough.
+case for a newly enabled bot); otherwise `simple-chat daemon reload` is enough.
 
 Exit codes:  0 done (or nothing to do), 1 a file is missing or unreadable, 2 the result would be refused.
 """

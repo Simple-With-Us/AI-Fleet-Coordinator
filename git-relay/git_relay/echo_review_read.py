@@ -1,22 +1,14 @@
 """Pure exact existing-seat read restoration. No host I/O or activation."""
 
 import copy
-import hashlib
-import json
 
 ACTION = "wf_review_thread_comments"
 SEAT = "swu-echo"
 
 
-def digest(policy):
-    return hashlib.sha256(
-        json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-
-
-def prepare(policy, expected_digest):
-    if not isinstance(policy, dict) or not policy or digest(policy) != expected_digest:
-        raise ValueError("policy shape or digest mismatch")
+def prepare(policy):
+    if not isinstance(policy, dict) or not policy:
+        raise ValueError("policy shape mismatch")
     row = policy.get(SEAT)
     if not isinstance(row, dict) or row.get("app_slug") != SEAT or row.get("auth") != "shared":
         raise ValueError("existing own-App seat required")

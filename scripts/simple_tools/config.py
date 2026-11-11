@@ -7,7 +7,7 @@ notify-owner and keeps running with what it could read (a seat with a bad sectio
 
 Two instances of this package run the listener (owner decision, Thu, Oct 8):  `mac` holds
 the nine Mac seats (AG, CLAUDE, CLUTCH, CODEX, CURSOR, FX, GROK, MC and MM), and `server`
-(a container on the Coolify box) holds the Grok Bot personas and the other cloud seats.  The
+(a container on the Coolify box) holds the Grok bots and the other cloud seats.  The
 one exception to "never stops" is the seat partition (docs/protocols/simple-tools-partition.toml,
 required on both instances).  It fails closed:  a daemon whose config holds a seat, enabled or
 not, that the partition does not give to its own instance (a seat of the other instance, a
@@ -158,7 +158,7 @@ PEER_BROADCAST_LIMITS: dict[str, tuple[float, float]] = {
 }
 # Seat tags whose bots are always eligible senders, on top of every tag the seat partition lists
 # (fleet_tags).  Owner 2026-10-09:  "everyone should be able to DM to wake anyone else or tag to wake
-# anyone else", so every fleet bot (Mac and cloud seats, GB personas, BF role bots) is eligible.
+# anyone else", so every fleet bot (Mac and cloud seats, GB bots, BF role bots) is eligible.
 FLEET_SEATS = (
     "CLAUDE",
     "CODEX",

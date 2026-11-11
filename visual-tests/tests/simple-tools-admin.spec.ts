@@ -73,7 +73,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         status: { active: true, expired: false, created_at: stamp - 86400000, expires_at: stamp + 86400000, mcp_accept: false },
         mismatches: { count: 1234567, last_at: stamp - 30000 } },
       { identity: 'CURSOR', kind: 'seat', credentials: true, status: null, mismatchesUnavailable: true },
-      { identity: 'GB-FIXER', kind: 'persona', credentials: true, status: { active: false, expired: false }, mismatches: null },
+      { identity: 'GB-FIXER', kind: 'bot', credentials: true, status: { active: false, expired: false }, mismatches: null },
     ] });
     const html = await response.text();
     await page.route('https://visual-tests.invalid/admin', route => route.fulfill({ status: 200, contentType: 'text/html', body: html, headers: Object.fromEntries(response.headers) }));

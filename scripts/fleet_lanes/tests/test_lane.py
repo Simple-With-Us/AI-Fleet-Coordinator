@@ -1114,7 +1114,7 @@ class ResolveTests(unittest.TestCase):
                     K.branch_for(seat, "x"), seat.primary_branch_prefix() + "/x"
                 )
         # Only seats the listener partition gives to the server may go without a prefix, plus GROK-BOT:  one
-        # fleet-wide identity that opens no lanes (its GB-<ROLE> personas are the server seats), which had
+        # fleet-wide identity that opens no lanes (its GB-<ROLE> bots are the server seats), which had
         # CURSOR's cursor/ until F2 (2026-10-11) and so put one prefix on two seats.
         partition = tomllib.loads(
             (

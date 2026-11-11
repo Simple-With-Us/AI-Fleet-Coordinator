@@ -57,7 +57,7 @@ export { EVENTS_ONLY_SEATS } from "./seats.js";
 import { EVENTS_ONLY_SEATS as DEFAULT_EVENTS_ONLY_SEATS } from "./seats.js";
 
 // AFC-331 (docs/protocols/per-call-identity.md section 3):  a grant for one of these seats may act as
-// either of them and as every enabled Grok Bot persona (GB_IDENTITIES);  every other grant acts only
+// either of them and as every enabled Grok bot (GB_IDENTITIES);  every other grant acts only
 // as its own seat.  One shared group, so a GROK-WEB grant and a CURSOR grant see the same set.
 export const SHARED_IDENTITY_SEATS = Object.freeze(["CURSOR", "GROK-WEB"]);
 

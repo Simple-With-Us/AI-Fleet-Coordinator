@@ -1,10 +1,10 @@
-// Per-bot MCP bearers for the Grok Bot personas.  A bearer lets one GB persona
+// Per-bot MCP bearers for the Grok bots.  A bearer lets one GB bot
 // reach /mcp without the OAuth consent flow, and ONLY as itself:  the router is
 // built with no other identity, so there is nothing to switch to.
 //
 //   token   gbb_<role>_<43 base64url chars>   (role is the lower-case GB role,
 //           for example gbb_fixer_...), 256 random bits.
-//   stored  only its SHA-256 (hex) in that persona's own SeatGate, with created,
+//   stored  only its SHA-256 (hex) in that bot's own SeatGate, with created,
 //           expires and last-used times.  The Worker never keeps a copy it could
 //           show again:  /admin shows the plaintext once, on the mint response.
 //           Rotating mints a new token and replaces the old one.

@@ -31,7 +31,11 @@ A lane is removable only when ALL of these hold (each is a reason in the table w
     on today's origin/<default>, is no evidence), or HEAD is merged into origin/<default>, or its upstream
     branch no longer exists on origin.  A MERGED PR that used the branch name also counts when HEAD's tree is
     exactly the tree of a commit on origin/<default>: a squash merge rewrites the commits, so the head can
-    never hold HEAD, but the tree it landed is identical (AFC-647).
+    never hold HEAD, but the tree it landed is identical (AFC-647).  It also counts when every path the lane
+    changed since its merge base with origin/<default> is byte-identical in a commit of that MERGED PR (its head
+    or one of its own commits):  a lane published through the GitHub API never pushes its own commits, and the
+    PR may be revised on GitHub or squash-merged onto a moved origin/<default>.  That PR head is fetched from
+    refs/pull/<n>/head into the object store only (no ref, no FETCH_HEAD) when it is not already here.
     A review checkout (review-pr-<n>) is done when PR <n> is MERGED or CLOSED; prune keeps one of an OPEN PR,
     and an explicit `lane retire` may remove it (it is read-only by design).
 
@@ -104,6 +108,10 @@ RELAY_HEAD_PAGE = 20
 RELAY_BULK_LIMIT = RELAY_PAGE * RELAY_MAX_PAGES
 # How far back along origin/<default> the squash-merge tree comparison looks.
 TREE_LANDED_COMMITS = 100
+# How many commits of a merged PR (those not on origin/<default>) the content comparison reads.
+PR_CONTENT_COMMITS = 50
+# How many MERGED PRs on a reused branch name (newest first) that comparison tries.
+PR_CONTENT_PRS = 2
 WORKERS = 8
 
 _CAPS = {"git": 30.0, "remove": 600.0, "net": 90.0, "relay": 90.0, "lsof": 30.0}
@@ -112,6 +120,7 @@ _GH_REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _REVIEW = re.compile(r"^review-pr-([0-9]{1,9})(?:-([a-z0-9]+(?:-[a-z0-9]+)*))?$")
 _BRANCH_KEY = re.compile(r"^branch\.(.+)\.(merge|remote)$")
 _ORIGIN_BLOB = re.compile(r"^refs/remotes/origin/([^:]+):(.+)$")
+_PULL_HEAD = re.compile(r"^refs/pull/[1-9][0-9]{0,8}/head$")
 _REVPARSE_SOLO = frozenset(
     {"--absolute-git-dir", "--git-common-dir", "--show-toplevel"}
 )
@@ -194,6 +203,45 @@ def _git_key(
         return "git" if _rel_path_ok(a[2]) else None
     if a == ["ls-remote", "--heads", "origin"]:
         return "net"
+    # The one fetch: a merged PR's head commits, into the object store only (no ref, no FETCH_HEAD, no tags).
+    if (
+        len(a) == 7
+        and a[:6]
+        == [
+            "fetch",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "--no-recurse-submodules",
+            "--quiet",
+            "origin",
+        ]
+        and _PULL_HEAD.match(a[6])
+    ):
+        return "net"
+    if len(a) == 3 and a[:2] == ["merge-base", "HEAD"]:
+        ref = a[2]
+        return (
+            "git"
+            if (ref.startswith("refs/remotes/origin/") and K.valid_ref_name(ref))
+            else None
+        )
+    if (
+        len(a) == 6
+        and a[:4] == ["diff", "--name-only", "-z", "--no-renames"]
+        and _SHA.match(a[4])
+        and a[5] == "HEAD"
+    ):
+        return "git"
+    if (
+        len(a) == 5
+        and a[0] == "rev-list"
+        and a[1] == f"--max-count={PR_CONTENT_COMMITS}"
+        and _SHA.match(a[2])
+        and a[3] == "--not"
+        and a[4].startswith("refs/remotes/origin/")
+        and K.valid_ref_name(a[4])
+    ):
+        return "git"
     if (
         len(a) == 4
         and a[0] == "rev-list"
@@ -249,8 +297,11 @@ def check_allowed(
     --not <sha> | rev-list --count --ignore-missing HEAD --not <sha>... | rev-list --max-count=100
     --format=%T refs/remotes/origin/<ref> | rev-parse (--absolute-git-dir | --git-common-dir | --show-toplevel | --verify -q
     HEAD-or-sha[^{commit}|^{tree}]) | config --get (remote.origin.url | branch.<ref>.merge | branch.<ref>.remote) | merge-base
-    --is-ancestor HEAD refs/remotes/origin/<ref> | symbolic-ref -q --short refs/remotes/origin/HEAD | ls-remote
-    --heads origin.  simple-git: call gr_wf_pr_list_page --args-json <the two bounded shapes> --json.
+    --is-ancestor HEAD refs/remotes/origin/<ref> | merge-base HEAD refs/remotes/origin/<ref> | diff --name-only -z
+    --no-renames <sha> HEAD | rev-list --max-count=50 <sha> --not refs/remotes/origin/<ref> | symbolic-ref -q --short
+    refs/remotes/origin/HEAD | ls-remote --heads origin | fetch --no-tags --no-write-fetch-head --no-recurse-submodules
+    --quiet origin refs/pull/<n>/head (objects only: no ref and no FETCH_HEAD is written).  simple-git: call
+    gr_wf_pr_list_page --args-json <the two bounded shapes> --json.
     lsof: -d cwd -Fpcn."""
     if (
         not argv
@@ -324,6 +375,7 @@ class PrView:
     done_state: str = ""
     covers_head: bool = False  # that PR's head is HEAD or contains it (or HEAD's tree landed: see below)
     tree_landed: bool = False  # covers_head came from tree equality with origin/<default>, not the PR head
+    content_landed: bool = False  # covers_head came from the lane's own paths matching a commit of the merged PR
     review_state: str = ""  # review checkouts: the state of PR <n>
     # a MERGED or CLOSED PR that used this branch name but whose head does not hold HEAD (a reused slug, or new
     # commits after the merge): it is not evidence that this lane's work is done
@@ -457,6 +509,8 @@ def decide(f: Facts, *, prune: bool) -> tuple[str, str]:
     safe = (
         f"HEAD's tree is on origin/{f.default_branch} (squash-merged)"
         if f.pr.tree_landed
+        else f"every path the lane changed is byte-identical in a commit of PR #{f.pr.done_number}"
+        if f.pr.content_landed
         else "HEAD is the PR head"
         if f.pr.covers_head and f.unpushed != 0
         else "HEAD on a remote ref"
@@ -687,7 +741,8 @@ def _inspect(
     # Unpushed means "on no LIVE origin branch": the shas `git ls-remote --heads origin` reported, never a local
     # remote-tracking ref.  Those can be stale (a branch deleted on origin without a `fetch --prune`, the
     # deleted upstream's or any other; a force-pushed branch), and another remote (a peer lane, a scratch bare
-    # repo) never vouches for a push.  This tool never fetches.  --ignore-missing drops a live sha that was
+    # repo) never vouches for a push.  This tool never fetches a ref (its one fetch, of a merged PR's head,
+    # writes objects only; see _pr_content_landed).  --ignore-missing drops a live sha that was
     # never fetched here, which can only overcount (the safe side).  Without ls-remote nothing vouches (None),
     # and only a PR that holds HEAD can.
     if remote_heads is not None:
@@ -852,6 +907,70 @@ def _tree_landed(run: Runner, path: str, default_branch: str) -> bool:
     return False
 
 
+def _paths_differing(run: Runner, path: str, oid: str) -> set[str] | None:
+    """The paths whose content differs between commit `oid` and HEAD, or None when git could not say."""
+    res = run(["git", "diff", "--name-only", "-z", "--no-renames", oid, "HEAD"], cwd=path)
+    if not res.ok:
+        return None
+    return {p for p in res.out.split("\x00") if p}
+
+
+def _pr_content_landed(
+    run: Runner, path: str, default_branch: str, number: int, head_oid: str
+) -> bool:
+    """Every path the lane changed since its merge base with origin/<default> is byte-identical in a commit of
+    merged PR `number` (its head `head_oid` or one of the PR's own commits behind it, at most PR_CONTENT_COMMITS).
+
+    This is the publish-through-the-API case:  the lane's commits never reach GitHub (the API makes new ones),
+    the PR may be revised there afterwards, and the squash merge lands on a moved origin/<default>, so neither
+    ancestry nor whole-tree equality can see it.  The PR head is fetched from refs/pull/<n>/head into the object
+    store only when it is not already here; no ref and no FETCH_HEAD is written.  A lane with no change of its
+    own, or any failed read, answers False:  this gate only ever adds evidence, never guesses it."""
+    # The same bound the fetch allowlist holds (refs/pull/<1-9 digits>/head), so no refusal is ever raised here.
+    if not _SHA.match(head_oid or "") or not _PULL_HEAD.match(f"refs/pull/{number}/head"):
+        return False
+    have = ["git", "rev-parse", "--verify", "-q", f"{head_oid}^{{commit}}"]
+    if not run(have, cwd=path).ok:
+        run(
+            [
+                "git",
+                "fetch",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "--no-recurse-submodules",
+                "--quiet",
+                "origin",
+                f"refs/pull/{number}/head",
+            ],
+            cwd=path,
+        )
+        if not run(have, cwd=path).ok:
+            return False
+    base_ref = f"refs/remotes/origin/{default_branch}"
+    mb = run(["git", "merge-base", "HEAD", base_ref], cwd=path)
+    base = mb.out.strip() if mb.ok else ""
+    if not _SHA.match(base):
+        return False
+    mine = _paths_differing(run, path, base)
+    if not mine:
+        return False
+    cands = run(
+        ["git", "rev-list", f"--max-count={PR_CONTENT_COMMITS}", head_oid, "--not", base_ref],
+        cwd=path,
+    )
+    if not cands.ok:
+        return False
+    for oid in cands.out.split():
+        if not _SHA.match(oid):
+            return False
+        differ = _paths_differing(run, path, oid)
+        if differ is None:
+            return False
+        if not (mine & differ):
+            return True
+    return False
+
+
 def _pr_view(
     run: Runner,
     lane: _Lane,
@@ -940,6 +1059,22 @@ def _pr_view(
             view.covers_head = True
             view.tree_landed = True
             return view
+        # The tree check fails when origin/<default> moved between the lane's last merge of it and the
+        # squash merge, or when the PR was revised after the lane's last commit (published through the
+        # GitHub API, which makes new commits, then fixed on GitHub).  The lane's own changes still sit,
+        # byte for byte, in a commit of that merged PR: that commit is on GitHub for good.
+        if merged and own_work:
+            newest = sorted(merged, key=lambda p: int(p.get("number") or 0), reverse=True)
+            for pick in newest[:PR_CONTENT_PRS]:
+                number = int(pick.get("number") or 0)
+                if number and _pr_content_landed(
+                    run, rec.path, default_branch, number, str(pick.get("headRefOid") or "")
+                ):
+                    view.done_number = number
+                    view.done_state = "MERGED"
+                    view.covers_head = True
+                    view.content_landed = True
+                    return view
         view.stale_number = max(int(p.get("number") or 0) for p in done) or None
         return view
     pick = max(

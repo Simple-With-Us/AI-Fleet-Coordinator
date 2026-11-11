@@ -6,7 +6,7 @@ import unittest
 from git_relay.app_tokens import AppTokenError, AppTokenMinter
 
 ORG = "Simple-With-Us/AI-Fleet-Coordinator"
-PERSONAL = "jaywedgeworth22/Fleet-OPS"
+BOTL = "jaywedgeworth22/Fleet-OPS"
 # The mint endpoint name is owned by the minter; this offline test matches only the shape of
 # an installation-scoped POST, so it carries no endpoint literal and the repo-wide mint-site
 # scan stays unmodified and still sees the one real minter.
@@ -47,7 +47,7 @@ class InstallationOwnerTests(unittest.TestCase):
     def test_org_and_personal_use_different_installations_same_own_app(self):
         minter, calls = self.build()
         perms = {"pull_requests": "write", "issues": "read"}
-        for repo in (ORG, PERSONAL):
+        for repo in (ORG, BOTL):
             minter.token_for("swu-wise", repo, perms)
         writes = [call for call in calls if call[0] == "POST"]
         self.assertEqual(
@@ -63,11 +63,11 @@ class InstallationOwnerTests(unittest.TestCase):
         )
         self.assertEqual(
             [c[1] for c in calls if c[1].endswith("/installation")],
-            ["/repos/" + ORG + "/installation", "/repos/" + PERSONAL + "/installation"],
+            ["/repos/" + ORG + "/installation", "/repos/" + BOTL + "/installation"],
         )
 
     def test_cross_account_installation_is_refused_before_token_post(self):
-        for repo in (ORG, PERSONAL):
+        for repo in (ORG, BOTL):
             with self.subTest(repo=repo):
                 minter, calls = self.build(wrong_owner=True)
                 with self.assertRaisesRegex(AppTokenError, "missing, suspended, or on another"):
@@ -78,8 +78,8 @@ class InstallationOwnerTests(unittest.TestCase):
     def test_suspended_installation_is_refused_before_token_post(self):
         minter, calls = self.build(suspended=True)
         with self.assertRaisesRegex(AppTokenError, "missing, suspended, or on another"):
-            minter.token_for("swu-wise", PERSONAL, {"pull_requests": "write"})
-        self.assertIn(("GET", "/repos/" + PERSONAL + "/installation", None), calls)
+            minter.token_for("swu-wise", BOTL, {"pull_requests": "write"})
+        self.assertIn(("GET", "/repos/" + BOTL + "/installation", None), calls)
         self.assertFalse(any(c[0] == "POST" for c in calls))
 
     def test_actions_variables_mints_under_githubs_real_permission_key(self):
@@ -103,5 +103,5 @@ class InstallationOwnerTests(unittest.TestCase):
     def test_permission_ceiling_still_refuses_admin(self):
         minter, calls = self.build()
         with self.assertRaisesRegex(AppTokenError, "outside the mint ceiling"):
-            minter.token_for("swu-wise", PERSONAL, {"administration": "write"})
+            minter.token_for("swu-wise", BOTL, {"administration": "write"})
         self.assertEqual(calls, [])
