@@ -61,9 +61,7 @@ class _Client:
 
 
 def _blob(raw):
-    sha = sha1(
-        b"blob " + str(len(raw)).encode() + b"\0" + raw, usedforsecurity=False
-    ).hexdigest()
+    sha = sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw, usedforsecurity=False).hexdigest()
     return sha, {
         "sha": sha,
         "encoding": "base64",
@@ -96,7 +94,10 @@ class RealIngressLoadedTests(unittest.TestCase):
         for token in (CALLER, INSTALL):
             content_b64 = base64.b64encode(("x = " + repr(token) + chr(10)).encode()).decode()
             for action in ("wf_file_put", "wf_files_put"):
-                with self.subTest(token=token[:8], action=action), tempfile.TemporaryDirectory() as td:
+                with (
+                    self.subTest(token=token[:8], action=action),
+                    tempfile.TemporaryDirectory() as td,
+                ):
                     log = os.path.join(td, "audit.jsonl")
                     client = _Client()
                     status, _payload = self._relay(client, log).handle(
