@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from simple_tools import claude_app_lineage as AL
 from simple_tools import claude_letter as CL
 from simple_tools import operator_registry as OR
+from simple_tools import platform_letter as PL
 
 
 class Base(unittest.TestCase):
@@ -1618,12 +1619,17 @@ class HookTests(Base):
         path = self.transcript(
             {"type": "user", "message": {"role": "user", "content": "please look at AFC-1"}},
             {"type": "assistant", "message": {"content": [
-                {"type": "tool_use", "name": "Bash",
+                {"type": "tool_use", "id": "t1", "name": "Bash",
                  "input": {"command": 'simple-chat post --topic "OPS-7 wake tests" --body x'}},
-                {"type": "tool_use", "name": "mcp__fleet__zulip_reply",
-                 "input": {"channel": "Work-In-Progress", "topic": "Operator plan", "content": "x"}}]}},
-            {"type": "user", "message": {"content": [{"type": "tool_result",
-                                                      "content": "posted id 9 to #Work-In-Progress › OPS-7 wake tests"}]}},
+                {"type": "tool_use", "id": "t2", "name": "mcp__fleet__zulip_reply",
+                 "input": {"channel": "Work-In-Progress", "topic": "Operator plan", "content": "x"}},
+                {"type": "tool_use", "id": "t3", "name": "Bash",
+                 "input": {"command": 'simple-chat read --topic "Not mine"'}}]}},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "t1",
+                 "content": "posted id 9 to #Work-In-Progress › OPS-7 wake tests"},
+                {"type": "tool_result", "tool_use_id": "t2", "content": "{\"id\": 10}"},
+                {"type": "tool_result", "tool_use_id": "t3", "content": "posted id 4 to #Work-In-Progress › Peer"}]}},
         )
         ssh = FakeSsh(self)
         self.assertIsNone(self.stop(ssh, transcript_path=path))  # a Stop prints nothing:  the turn ends as it would
@@ -1657,7 +1663,10 @@ class HookTests(Base):
         began = time.monotonic()
         self.assertIsNone(self.stop(down, now=start, transcript_path=path))
         self.assertLess(time.monotonic() - began, CL.HOOK_TIMEOUTS["Stop"])
-        self.assertLess(CL.REMOTE_TIMEOUT, CL.HOOK_TIMEOUTS["Stop"])  # the one call it makes fits its budget
+        # The worst case, by arithmetic (the fake above fails at once):  the branch read, then the one registry call
+        # Stop makes, over ssh or the registry API, all inside the hook's own budget.
+        worst = PL.ISSUE_GIT_TIMEOUT + max(CL.REMOTE_TIMEOUT, PL._API_TIMEOUT)
+        self.assertLess(worst, CL.HOOK_TIMEOUTS["Stop"])
         self.assertEqual(self.registry_ops(down), ["issues"])
         note = self.note("s-0001")
         self.assertEqual([i["id"] for i in note["issues"]], ["AFC-1"])
@@ -1681,6 +1690,26 @@ class HookTests(Base):
         ssh = FakeSsh(self)
         self.stop(ssh, transcript_path=path)  # closed:  nothing to report to
         self.assertEqual(ssh.calls, [])
+
+    def test_a_chat_closed_while_its_stop_waits_on_the_registry_stays_closed(self) -> None:
+        self.titled()
+        path = self.transcript({"type": "user", "message": {"content": "AFC-1"}})
+        test = self
+
+        class ClosedMeanwhile(FakeSsh):
+            """The registry answers slowly, and the chat's SessionEnd (a `/clear`) runs before it does."""
+
+            def __call__(self, cmd, **kwargs):
+                answer = super().__call__(cmd, **kwargs)
+                if shlex.split(cmd[8])[3] == "issues":
+                    test.hook({"hook_event_name": "SessionEnd", "session_id": "s-0001", "reason": "clear"})
+                return answer
+
+        self.stop(ClosedMeanwhile(self), transcript_path=path)
+        note = self.note("s-0001")
+        self.assertNotEqual(note["state"], "open")  # the stale copy Stop read never reopens the chat
+        self.assertIn("ended", note)
+        self.assertEqual([i["id"] for i in note["issues"]], ["AFC-1"])  # and the report's own keys are kept
 
     def replace_the_registry(self) -> None:
         """The store moves under the chats:  a registry that has never heard of any of them (the API's, after the cutover)."""

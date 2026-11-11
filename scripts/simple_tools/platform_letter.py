@@ -1844,68 +1844,134 @@ TOPIC_KEEP = 20
 TOPIC_CHARS = 60
 # The hosted Zulip tools a chat posts with (`zulip_post`, `zulip_reply`, under any MCP server prefix).
 _POST_TOOLS = re.compile(r"(?:^|__)zulip_(?:post|reply)$")
+# The programs and verbs that post, the flags they take before the verb with a value, and the line `simple-chat post`
+# prints for each post it made (cli.py `cmd_post`), read only from the output of that same command.
+_POST_PROGRAMS = frozenset({"simple-chat", "agent-sync"})
+_POST_VERBS = frozenset({"post", "reply"})
+_GLOBAL_VALUE_FLAGS = frozenset({"--as", "--default-seat", "--rc", "--session"})
+_POSTED_LINE = re.compile("^posted id [0-9]+ to #[^\\n]*? › ([^\\n]+)$", re.MULTILINE)
+_SHELL_PUNCTUATION = ";&|()\n"
 
 
 def _clean_topic(text: object) -> str:
     if not isinstance(text, str):
         return ""
-    return " ".join(text.split())[:TOPIC_CHARS].strip()
+    topic = " ".join(text.split())[:TOPIC_CHARS].strip()
+    # A shell variable or a substitution is not the topic the command posted to:  only the printed line says that.
+    return "" if any(mark in topic for mark in ("$", "`")) else topic
 
 
-def _text_topics(text: str, quoted: bool, found: list[str]) -> None:
-    """The topics one string of a transcript posted to, in the order it names them."""
-    hits = [(m.start(), m.group(1)) for m in _POSTED_TOPIC.finditer(text)]
-    if not quoted:
-        hits += [
-            (m.start(), next(g for g in m.groups() if g is not None))
-            for m in _TOPIC_FLAG.finditer(text)
-        ]
-    found.extend(_clean_topic(topic) for _, topic in sorted(hits, key=lambda hit: hit[0]))
+def _command_posts(command: object) -> list[str] | None:
+    """The literal `--topic` of each `simple-chat` (or `agent-sync`) `post` or `reply` in one shell command, or None
+    when the command posts nothing.  A topic that is not literal (a `$VAR`) is kept as "" so the printed line can
+    name it.  `read --topic`, another program's `--topic` and a command that does not parse are not posts."""
+    if not isinstance(command, str):
+        return None
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=_SHELL_PUNCTUATION)
+    lexer.whitespace = " \t\r"  # a newline ends a command, as `;` does
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        if token and all(ch in _SHELL_PUNCTUATION for ch in token):
+            segments.append([])
+        else:
+            segments[-1].append(token)
+    posts: list[str] = []
+    for words in segments:
+        for at, word in enumerate(words):
+            if os.path.basename(word) not in _POST_PROGRAMS:
+                continue
+            rest = words[at + 1 :]
+            i = 0
+            while i < len(rest) and rest[i].startswith("-"):
+                i += 2 if rest[i] in _GLOBAL_VALUE_FLAGS else 1
+            if i >= len(rest) or rest[i] not in _POST_VERBS:
+                break
+            topic = ""
+            args = rest[i + 1 :]
+            for j, arg in enumerate(args):
+                if arg == "--topic" and j + 1 < len(args):
+                    topic = args[j + 1]
+                elif arg.startswith("--topic="):
+                    topic = arg[len("--topic=") :]
+            posts.append(_clean_topic(topic))
+            break
+    return posts or None
 
 
-def _walk_topics(value: Any, found: list[str], inside: bool, depth: int = 0) -> None:
-    """The topics a transcript entry posted to, in the order the entry holds them (the same walk, and the same rule
-    for what is a tool's output, as `_transcript_strings`), plus the `topic` of a hosted Zulip post or reply call."""
+def _result_text(value: Any, depth: int = 0) -> str:
+    """The text of a tool result's content (a string, or a list of text parts)."""
+    if depth > 8:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "\n".join(_result_text(item, depth + 1) for item in value)
+    if isinstance(value, Mapping):
+        return _result_text(value.get("text") if "text" in value else value.get("content"), depth + 1)
+    return ""
+
+
+def _walk_topics(
+    value: Any, pending: dict[str, tuple[str, list[str]]], found: list[str], depth: int = 0
+) -> None:
+    """One transcript entry's part in the topic count:  a post call (a Bash `simple-chat post` or `reply`, or a hosted
+    `zulip_post` or `zulip_reply`) waits in `pending` under its tool_use id, and counts only when its own tool_result
+    comes back without an error."""
     if depth > 40:
         return
-    if isinstance(value, str):
-        _text_topics(value, inside, found)
-    elif isinstance(value, Mapping):
-        kind = value.get("type")
-        name = value.get("name")
-        args = value.get("input")
-        if (
-            kind == "tool_use"
-            and isinstance(name, str)
-            and _POST_TOOLS.search(name)
-            and isinstance(args, Mapping)
-        ):
-            found.append(_clean_topic(args.get("topic")))
-        hidden = (
-            inside
-            or (isinstance(kind, str) and kind in _QUOTED_TYPES)
-            or value.get("isMeta") is True
-        )
-        for key, item in value.items():
-            _walk_topics(item, found, hidden or key in _QUOTED_KEYS, depth + 1)
-    elif isinstance(value, list):
+    if isinstance(value, list):
         for item in value:
-            _walk_topics(item, found, inside, depth + 1)
+            _walk_topics(item, pending, found, depth + 1)
+        return
+    if not isinstance(value, Mapping):
+        return
+    kind = value.get("type")
+    if kind == "tool_use":
+        call_id, name, args = value.get("id"), value.get("name"), value.get("input")
+        if not (isinstance(call_id, str) and call_id and isinstance(name, str) and isinstance(args, Mapping)):
+            return
+        if _POST_TOOLS.search(name):
+            pending[call_id] = ("hosted", [_clean_topic(args.get("topic"))])
+        else:
+            posts = _command_posts(args.get("command"))
+            if posts is not None:
+                pending[call_id] = ("command", posts)
+        return
+    if kind == "tool_result":
+        call = pending.pop(value.get("tool_use_id"), None) if isinstance(value.get("tool_use_id"), str) else None
+        if call is None or value.get("is_error") is True:
+            return
+        how, topics = call
+        if how == "command":
+            printed = [m.group(1) for m in _POSTED_LINE.finditer(_result_text(value.get("content")))]
+            topics = [_clean_topic(t) for t in printed] if printed else topics
+        found.extend(topics)
+        return
+    for item in value.values():
+        if isinstance(item, (list, Mapping)):
+            _walk_topics(item, pending, found, depth + 1)
 
 
 def topics_in_lines(lines: list[str]) -> list[str]:
-    """The Zulip topics a stretch of transcript posted to, oldest first, each once:  a `simple-chat post --topic`
-    command the chat wrote, the `posted id N to #channel › topic` line `simple-chat` prints (in the chat's words or a
-    tool's output), and the topic of a hosted `zulip_post` or `zulip_reply` call.  A `--topic` inside a tool's output
-    (a file the turn read) is not a post, so only the printed line counts there."""
+    """The Zulip topics a stretch of a Claude Code transcript posted to, in the order the posts came back, each once:
+    a Bash `simple-chat post` or `reply` command the chat ran (the topic its printed `posted id N to #channel › topic`
+    line names, else its literal `--topic`), and a hosted `zulip_post` or `zulip_reply` call.  Either counts only when
+    its own tool result comes back without an error.  Nothing else is a post:  not a `--topic` in a prompt, a reply or
+    another command (`simple-chat read --topic`), and not a `posted id` line in some other tool's output (a log the
+    turn read).  A call whose result is not in these lines is not counted.  Other platforms' transcripts give none."""
     found: list[str] = []
+    pending: dict[str, tuple[str, list[str]]] = {}
     for line in lines:
         try:
             entry = json.loads(line)
         except ValueError:
-            _text_topics(line, False, found)  # a line that is not JSON is the chat's own words
             continue
-        _walk_topics(entry, found, False)
+        _walk_topics(entry, pending, found)
     seen: set[str] = set()
     out: list[str] = []
     for topic in found:
@@ -2024,11 +2090,34 @@ def end_of_turn(
     sync_issues(note, data, root, now, send, run=run)
 
 
+#: The note keys the end-of-turn report owns.  Only these go back into the note after the registry call.
+TURN_KEYS = ("issues", "issues_scan", "issues_sent", "issues_failed_at", "topics")
+
+
+def turn_note(
+    before: Mapping[str, Any], after: Mapping[str, Any], fresh: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """The note to save after an end-of-turn report:  the note as it is on disk now (`fresh`, read again after the
+    registry call, which can take seconds), with only TURN_KEYS taken from the report's copy (`after`;  a key the
+    report removed from `before` is removed).  So a SessionEnd or a prompt hook that wrote the note meanwhile (a
+    close, a new title) is never undone by a stale copy.  None when the note is gone:  nothing is saved."""
+    if not fresh:
+        return None
+    out = dict(fresh)
+    for key in TURN_KEYS:
+        if key in after:
+            out[key] = after[key]
+        elif key in before:
+            out.pop(key, None)
+    return out
+
+
 def on_turn(chat: Chat, data: Mapping[str, Any]) -> int:
     """A turn ended (a spec that maps its turn-end event to `turn`):  report it, print nothing, close nothing."""
     note = chat.read()
     if not note:
         return 0
+    before = copy.deepcopy(note)
     end_of_turn(
         note,
         data,
@@ -2036,7 +2125,9 @@ def on_turn(chat: Chat, data: Mapping[str, Any]) -> int:
         chat.now,
         lambda text: chat.registry("issues", issues=text),
     )
-    chat.write(note)
+    merged = turn_note(before, note, chat.read())
+    if merged is not None:
+        chat.write(merged)
     return 0
 
 

@@ -1306,8 +1306,10 @@ class HookTests(Base):
         path = self.transcript(
             {"type": "user", "message": {"content": "start on AFC-1"}},
             {"type": "assistant", "message": {"content": [
-                {"type": "tool_use", "name": "Bash",
+                {"type": "tool_use", "id": "t1", "name": "Bash",
                  "input": {"command": 'simple-chat post --topic "AFC-1 plan" --body x'}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1",
+                                                      "content": "posted id 3 to #Work-In-Progress › AFC-1 plan"}]}},
         )
         ssh = FakeSsh(self)
         out = self.hook({"hook_event_name": "Stop", "session_id": "s-0001", "transcript_path": path},
@@ -1355,23 +1357,84 @@ class HookTests(Base):
         self.assertEqual(PL.canonical_event(self.turn_spec(), {"hook_event_name": "Stop"}), "turn")
         self.assertEqual(PL.canonical_event(make_spec(), {"hook_event_name": "Stop"}), "")  # none by default
 
-    def test_topics_in_lines_reads_posts_in_order_and_not_a_topic_a_tool_read(self) -> None:
+    @staticmethod
+    def calls(*uses: tuple[str, str, dict]) -> str:
+        return json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": cid, "name": name, "input": args} for cid, name, args in uses]}})
+
+    @staticmethod
+    def results(*outs: tuple[str, object, bool]) -> str:
+        return json.dumps({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": cid, "content": content, "is_error": err}
+            for cid, content, err in outs]}})
+
+    def test_topics_in_lines_counts_a_post_only_when_its_own_result_comes_back(self) -> None:
         lines = [
-            json.dumps({"type": "assistant", "message": {"content": [
-                {"type": "tool_use", "name": "Bash", "input": {"command": "simple-chat post --topic 'First one' -b x"}},
-                {"type": "tool_use", "name": "mcp__26a3__zulip_post",
-                 "input": {"channel": "Work-In-Progress", "topic": "  Second   one  ", "content": "x"}},
-                {"type": "tool_use", "name": "mcp__26a3__zulip_read_topic", "input": {"topic": "Only read"}}]}}),
-            json.dumps({"type": "user", "message": {"content": [{"type": "tool_result", "content":
-                        "a doc says simple-chat post --topic \"Not posted\"; posted id 7 to #WIP › Third one"}]}}),
-            "plain words: simple-chat post --topic=First",
-            json.dumps({"type": "assistant", "message": {"content": "simple-chat post --topic \"Second one\""}}),
+            self.calls(
+                ("a", "Bash", {"command": "cd x && simple-chat --as CLAUDE post --topic 'First one' -b 'a; b'"}),
+                ("b", "mcp__26a3__zulip_post", {"channel": "Work-In-Progress", "topic": "  Second   one  "}),
+                ("c", "mcp__26a3__zulip_read_topic", {"topic": "Only read"}),
+                ("d", "Bash", {"command": 'TOPIC="Third one"; simple-chat post --topic "$TOPIC" --body x'}),
+            ),
+            self.results(
+                ("a", "posted id 5 to #Work-In-Progress › First one", False),
+                ("b", [{"type": "text", "text": "{\"id\": 6}"}], False),
+                ("c", "a topic someone else posted", False),
+                ("d", "posted id 7 to #Work-In-Progress › Third one", False),
+            ),
             "{not json",
         ]
-        self.assertEqual(PL.topics_in_lines(lines), ["First one", "Second one", "Third one", "First"])
+        self.assertEqual(PL.topics_in_lines(lines), ["First one", "Second one", "Third one"])
         self.assertEqual(PL.topics_in_lines(["x" * 10, json.dumps(5), json.dumps([{"name": 3}])]), [])
         long = "T" * 90
-        self.assertEqual(PL.topics_in_lines(["simple-chat post --topic %s" % long]), ["T" * PL.TOPIC_CHARS])
+        cmd = self.calls(("a", "Bash", {"command": "simple-chat post --topic=%s -b x" % long}))
+        self.assertEqual(PL.topics_in_lines([cmd, self.results(("a", "", False))]), ["T" * PL.TOPIC_CHARS])
+
+    def test_topics_in_lines_refuses_what_is_not_a_post_this_chat_made(self) -> None:
+        cases = {
+            "a read": [self.calls(("a", "Bash", {"command": 'simple-chat read --topic "AFC-9 someone elses"'})),
+                       self.results(("a", "posted id 1 to #x › AFC-9 someone elses", False))],
+            "another program": [self.calls(("a", "Bash", {"command": "kafka-topics --describe --topic orders"})),
+                                self.results(("a", "ok", False))],
+            "a variable with no printed line": [
+                self.calls(("a", "Bash", {"command": 'simple-chat post --topic "$TOPIC" --json -b x'})),
+                self.results(("a", '{"id": 4}', False))],
+            "user prose": [json.dumps({"type": "user", "message": {"content":
+                                                                    "never post with --topic fleet unless told"}}),
+                           "plain words: simple-chat post --topic=First"],
+            "a reply's words": [json.dumps({"type": "assistant", "message": {"content":
+                                                                             'simple-chat post --topic "Said"'}})],
+            "a peer's log line": [self.calls(("a", "Bash", {"command": "tail -5 listener.log"})),
+                                  self.results(("a", "posted id 7 to #Work-In-Progress › BF-3 peer topic", False))],
+            "an error result": [self.calls(("a", "mcp__f__zulip_post", {"topic": "Denied"}),
+                                           ("b", "Bash", {"command": "simple-chat post --topic Failed -b x"})),
+                                self.results(("a", "permission denied", True), ("b", "error", True))],
+            "no result": [self.calls(("a", "mcp__f__zulip_reply", {"topic": "Pending"}))],
+            "no id": [json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "mcp__f__zulip_post", "input": {"topic": "No id"}}]}})],
+        }
+        for name, lines in cases.items():
+            with self.subTest(name):
+                self.assertEqual(PL.topics_in_lines(lines), [])
+        # A body that quotes a printed line names no topic:  only the command's own output line counts.
+        quoted = [self.calls(("a", "Bash", {"command": "simple-chat post --topic Real -b 'posted id 5 to #x › y'"})),
+                  self.results(("a", "posted id 8 to #Work-In-Progress › Real", False))]
+        self.assertEqual(PL.topics_in_lines(quoted), ["Real"])
+
+    def test_turn_note_keeps_what_another_hook_wrote_meanwhile(self) -> None:
+        before = {"state": "open", "label": "AA", "issues_failed_at": 1.0, "title": "Old"}
+        after = dict(before, issues=[{"id": "AFC-1"}], topics=[{"topic": "T", "at": 2.0}])
+        after.pop("issues_failed_at")
+        fresh = {"state": "closed", "label": "AA", "ended": {"reason": "clear"}, "issues_failed_at": 1.0,
+                 "title": "New"}
+        merged = PL.turn_note(before, after, fresh)
+        self.assertEqual(merged["state"], "closed")
+        self.assertEqual(merged["ended"], {"reason": "clear"})
+        self.assertEqual(merged["title"], "New")
+        self.assertEqual(merged["issues"], [{"id": "AFC-1"}])
+        self.assertEqual(merged["topics"], [{"topic": "T", "at": 2.0}])
+        self.assertNotIn("issues_failed_at", merged)
+        self.assertIsNone(PL.turn_note(before, after, {}))
 
     def test_merge_topics_keeps_each_once_newest_last_and_bounded(self) -> None:
         old = [{"topic": "A", "at": 1.0}, {"topic": "B", "at": 2.0}, {"topic": "", "at": 3.0}, "junk",

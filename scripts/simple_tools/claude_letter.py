@@ -104,6 +104,7 @@ Python 3.11+, standard library only.
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 import os
@@ -1753,6 +1754,7 @@ def on_stop(chat: Chat, data: Mapping[str, Any]) -> int:
     from . import platform_letter as PL
 
     home = str(chat.env.get("HOME") or os.path.expanduser("~"))
+    before = copy.deepcopy(note)
     PL.end_of_turn(
         note,
         data,
@@ -1760,7 +1762,11 @@ def on_stop(chat: Chat, data: Mapping[str, Any]) -> int:
         chat.now,
         lambda text: chat.registry("issues", issues=text),
     )
-    chat.write(note)
+    # The registry call can take seconds:  only the report's own keys go back, onto the note as it is now, so a
+    # SessionEnd or a prompt that wrote it meanwhile is never undone by this stale copy.
+    merged = PL.turn_note(before, note, chat.read())
+    if merged is not None:
+        chat.write(merged)
     return 0
 
 
