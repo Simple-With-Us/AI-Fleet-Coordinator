@@ -17,7 +17,7 @@ from fleet_knobs.registry import BY_NAME, FOLDERS, REGISTRY, Spec, names_in
 from ._fake import SIGNING, KnobTestCase, ScopedReadAPI
 
 ROUTER = "/wake-router"
-ROUTER_KEY = "WAKE_ROUTER_CLAUDE_KEY"
+ROUTER_KEY = "WAKE_ROUTER_KEY"
 KEY = "k3y-" + "0123456789abcdef" * 2
 ROOT_VALUES = {"LANE_SWEEP_MODE": "act", "FLEET_FACTS_SIGNING_KEY": SIGNING}
 ROUTER_VALUES = {"WAKE_ROUTER_MAX_ATTEMPTS": "9", ROUTER_KEY: KEY}

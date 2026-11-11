@@ -75,19 +75,12 @@ PLAN_KEYS = {
     "WAKE_ROUTER_CONFIRM_SECONDS",
     "WAKE_ROUTER_SETTINGS_REFRESH_SECONDS",
     "WAKE_ROUTER_MAC_SSH",
-    "WAKE_ROUTER_CLAUDE_KEY",
-    "WAKE_ROUTER_CODEX_KEY",
-    "WAKE_ROUTER_MC_KEY",
-    "WAKE_ROUTER_ZC_KEY",
+    "WAKE_ROUTER_KEY",
+    "WAKE_ROUTER_REGISTRY_URL",
+    "WAKE_ROUTER_REGISTRY_KEY",
 }
-# The signing key and one wake router bearer per seat the router serves.
-SECRETS = [
-    "FLEET_FACTS_SIGNING_KEY",
-    "WAKE_ROUTER_CLAUDE_KEY",
-    "WAKE_ROUTER_CODEX_KEY",
-    "WAKE_ROUTER_MC_KEY",
-    "WAKE_ROUTER_ZC_KEY",
-]
+# The signing key, the wake router's one bearer and its registry signing key.
+SECRETS = ["FLEET_FACTS_SIGNING_KEY", "WAKE_ROUTER_KEY", "WAKE_ROUTER_REGISTRY_KEY"]
 
 
 class InventoryTests(unittest.TestCase):

@@ -35,6 +35,8 @@ SID_A = "aaaaaaaa-0000-4000-8000-000000000001"
 SID_B = "bbbbbbbb-0000-4000-8000-000000000002"
 SID_C = "cccccccc-0000-4000-8000-000000000003"
 BODY_MARK = "THE-MESSAGE-BODY-MUST-NOT-TRAVEL"
+REGISTRY_URL = "http://127.0.0.1:9"  # never dialled:  registry_api.call is the fake
+CODEX_MODULE = SVC.BUILDERS["CODEX"].module
 OLDER = "2026-11-01T00:00:00Z"
 NEWER = "2026-11-05T00:00:00Z"
 NEWEST = "2026-11-09T00:00:00Z"
@@ -147,13 +149,18 @@ class Base(unittest.TestCase):
         )
         return WR.Router(
             platform,
-            {"HOME": self.tmp},
+            self.router_env(),
             self.config(**config),
             self.state,
             self.key_source,
             consult=consult,
             clock=self.clock,
         )
+
+    def router_env(self) -> dict:
+        """A router's env:  a registry address, as the service's RegistryEnv gives one (the
+        registry itself is the fake, so it is never dialled)."""
+        return {"HOME": self.tmp, WR.registry_api.URL_ENV: REGISTRY_URL}
 
     def wake(self, wake_id: str = "w-1", **over) -> WR.Wake:
         base = {"wake_id": wake_id, "seat": "CLAUDE", "topic": "unrelated", "channel": "wip"}
@@ -1498,10 +1505,18 @@ class Shutdown(Base):
 
     def test_the_unit_serves_loopback_8794_and_keeps_off_the_port_zc_uses(self) -> None:
         start = re.search(r"(?m)^ExecStart=(.*)$", self.unit()).group(1)
-        self.assertIn("wake-router serve --bind 127.0.0.1 --port 8794'", start)
+        self.assertTrue(start.endswith("simple-chat wake-router serve --bind 127.0.0.1 --port 8794"))
         self.assertNotIn("8793", start)
-        self.assertIn('. "$HOME/.local/bin/operator-registry-env"', start)
         self.assertEqual((SVC.DEFAULT_BIND, SVC.DEFAULT_PORT), ("127.0.0.1", 8794))
+
+    def test_the_unit_reads_no_registry_env_file(self) -> None:
+        # The registry's address and key are /wake-router knobs, never an env file.
+        settings = [line for line in self.unit().splitlines() if not line.startswith("#")]
+        self.assertNotIn("operator-registry-env", "\n".join(settings))
+        self.assertNotIn("CLAUDE_LETTER_REMOTE", self.unit())
+        self.assertNotIn("/bin/sh", "\n".join(settings))
+        self.assertIn("WAKE_ROUTER_REGISTRY_URL", self.unit())
+        self.assertIn("WAKE_ROUTER_KEY", self.unit())
 
     def test_the_old_claude_only_unit_is_gone(self) -> None:
         old = Path(CW.__file__).parent / "server" / "claude-wake-router.service"
@@ -2737,7 +2752,7 @@ class ManySeats(Base):
         )
         return WR.Router(
             platform,
-            {"HOME": self.tmp},
+            self.router_env(),
             self.config(**config),
             self.zc_state,
             lambda: self.zc_key_answer,
@@ -2923,6 +2938,36 @@ class ManySeats(Base):
             WR.Seats([self.router()], {"CLAUDE": "builder-error-RuntimeError"})
         with self.assertRaises(ValueError):
             WR.Seats([], {"not a seat": "x"})
+
+    def test_a_seat_not_installed_shows_so_and_leaves_health_alone(self) -> None:
+        port = self.serve(WR.Seats([self.router()], not_installed=["MC"]))
+        status, answer = self.get(port, "/health")
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            answer["seats"]["MC"], {"healthy": False, "reason": WR.NOT_INSTALLED}
+        )
+        self.assertIs(answer["seats"]["CLAUDE"]["healthy"], True)
+        status, answer = self.get(port, "/health/MC")
+        self.assertEqual((status, answer["reason"]), (503, "not-installed"))
+        status, answer = self.request(port, "/wake/MC", self.body(seat="MC"), self.key)
+        self.assertEqual(status, 503)
+        self.assertIn("not-installed", answer["error"])
+        self.assertEqual(self.request(port, "/wake/CLAUDE", self.body(), self.key)[0], 202)
+
+    def test_a_broken_seat_still_fails_health_beside_one_not_installed(self) -> None:
+        seats = WR.Seats(
+            [self.router()], {"ZC": "builder-error-RuntimeError"}, not_installed=["MC"]
+        )
+        status, answer = seats.health()
+        self.assertEqual(status, 503)
+        self.assertEqual(sorted(answer["seats"]), ["CLAUDE", "MC", "ZC"])
+        self.assertEqual(WR.Seats([], not_installed=["MC"]).health()[0], 503, "nothing served")
+
+    def test_a_seat_is_served_down_or_not_installed_only_once(self) -> None:
+        with self.assertRaises(ValueError):
+            WR.Seats([self.router()], not_installed=["CLAUDE"])
+        with self.assertRaises(ValueError):
+            WR.Seats([], {"MC": "x"}, not_installed=["MC"])
 
     def test_each_seat_logs_under_its_own_name(self) -> None:
         zc = self.zc_router()
@@ -3747,9 +3792,14 @@ class RemoteBase(ClaudeBase):
         self.target = WR.Target(SID_A, letter="AA", host="mac", generation=3)
         self.registry.rows = [row(SID_A, "AA", "letters", host="mac", generation=3)]
         self.answer = SimpleNamespace(returncode=0, stdout=self.reply() + "\n")
-        patcher = mock.patch.object(CW, "_remote_config", return_value=self.cfg)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for patcher in (
+            mock.patch.object(CW, "_remote_config", return_value=self.cfg),
+            # The registry is the fake, so the Mac's registry env is the env as it is:  no knob is
+            # read here (WakeSettings.registry_env_once has its own tests).
+            mock.patch.object(CW, "_registry_env", side_effect=dict),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def reply(self, outcome: str = "sent", **over) -> str:
         """The Mac's answer to this test's wake;  `over` replaces or, as None, removes an id."""
@@ -4027,7 +4077,7 @@ class Remote(RemoteBase):
 
     def test_codex_is_refused_clearly_until_its_module_is_there(self) -> None:
         with (
-            mock.patch.dict(sys.modules, {CW.CODEX_MODULE: None}),
+            mock.patch.dict(sys.modules, {CODEX_MODULE: None}),
             mock.patch.object(CW, "deliver_local") as spy,
         ):
             code, answer = self.run_main(self.envelope(platform="codex"))
@@ -4053,7 +4103,7 @@ class Remote(RemoteBase):
 
         request = self.envelope(platform="codex")
         with (
-            mock.patch.dict(sys.modules, {CW.CODEX_MODULE: self.codex_module(deliver_request)}),
+            mock.patch.dict(sys.modules, {CODEX_MODULE: self.codex_module(deliver_request)}),
             mock.patch.object(CW, "deliver_local") as spy,
         ):
             code, answer = self.run_main(request)
@@ -4066,7 +4116,7 @@ class Remote(RemoteBase):
         def broken(request, *, env):
             raise RuntimeError("after it may have started")
 
-        with mock.patch.dict(sys.modules, {CW.CODEX_MODULE: self.codex_module(broken)}):
+        with mock.patch.dict(sys.modules, {CODEX_MODULE: self.codex_module(broken)}):
             _, answer = self.run_main(self.envelope(platform="codex"))
         self.assertEqual(
             (answer["delivery"]["outcome"], answer["delivery"]["code"]),
@@ -4084,7 +4134,7 @@ class Remote(RemoteBase):
 
     def codex_answer(self, reply) -> dict:
         module = self.codex_module(lambda request, *, env: reply)
-        with mock.patch.dict(sys.modules, {CW.CODEX_MODULE: module}):
+        with mock.patch.dict(sys.modules, {CODEX_MODULE: module}):
             return self.run_main(self.envelope(platform="codex"))[1]
 
     def test_a_codex_answer_about_anything_else_is_final(self) -> None:
@@ -4118,7 +4168,7 @@ class Remote(RemoteBase):
         reply = {"wake_id": self.w.wake_id, "session_id": SID_A, "generation": True,
                  "delivery": {"outcome": "failed"}}
         module = self.codex_module(lambda request, *, env: reply)
-        with mock.patch.dict(sys.modules, {CW.CODEX_MODULE: module}):
+        with mock.patch.dict(sys.modules, {CODEX_MODULE: module}):
             _, answer = self.run_main(request)
         self.assertEqual(answer["delivery"]["code"], "platform-mismatch")
 
@@ -4348,18 +4398,19 @@ SESS_MODULE = "simple_tools.tests.no_such_sess_wake"  # only ever the fake put i
 
 
 class PlatformSessionPatterns(RemoteBase):
-    """Each `PLATFORMS` entry carries its own session-id pattern, and both hosts read the ids with
-    it:  an id that is not Claude's shape is neither blanked nor refused when it is its platform's."""
+    """Each `wake_service.BUILDERS` entry carries its own session-id pattern, and both hosts read
+    the ids with it:  an id that is not Claude's shape is neither blanked nor refused when it is
+    its platform's."""
 
     def setUp(self) -> None:
         super().setUp()
         self.target = WR.Target(SESS_SID, letter="AA", host="mac", generation=3)
         self.seen: list[dict] = []
         self.delivery = {"outcome": "sent", "route": "sess-desktop", "ack": "unknown", "code": "", "note": ""}
-        entry = CW.DeliveryPlatform(CW._module_delivery(SESS_MODULE), SESS_RE)
+        entry = SVC.Builder("sessplat", SESS_MODULE, session_re=SESS_RE.pattern)
         module = SimpleNamespace(deliver_request=self.platform_delivers)
         for patcher in (
-            mock.patch.dict(CW.PLATFORMS, {"sessplat": entry}),
+            mock.patch.dict(SVC.BUILDERS, {"SESS": entry}),
             mock.patch.dict(sys.modules, {SESS_MODULE: module}),
         ):
             patcher.start()
@@ -4636,6 +4687,165 @@ class EndToEnd(ClaudeBase):
         receipt = self.done("w-e2e")
         self.assertEqual((receipt["route"], receipt["delivered"]), ("socket", None))
         self.assertIsNotNone(re.search("w-e2e", inbox.received.decode("utf-8")))
+
+
+NOT_CONFIGURED = {"error": "no registry API URL is configured", "code": "not_configured"}
+
+
+class RegistryNotConfigured(Base):
+    """With no registry address or key every registry call answers `not_configured`:  a clean,
+    bounded retry with its own code, never a fallback and never a delivery."""
+
+    def test_a_pick_is_a_retry_named_not_configured(self) -> None:
+        with mock.patch.object(WR.registry_api, "call", return_value=NOT_CONFIGURED):
+            pick = self.router().pick(self.wake())
+            self.assertEqual((pick.retry, pick.reason), (True, WR.NOT_CONFIGURED))
+            pick = self.router().pick(self.wake(letter="AA"))
+            self.assertEqual((pick.retry, pick.reason), (True, WR.NOT_CONFIGURED))
+
+    def test_the_check_before_delivery_is_a_retry_named_not_configured(self) -> None:
+        router = self.router()
+        with mock.patch.object(WR.registry_api, "call", return_value=NOT_CONFIGURED):
+            self.assertEqual(router._stale(WR.Target(SID_A, "AA", generation=1)), WR.NOT_CONFIGURED)
+
+    def test_an_outage_is_still_unavailable(self) -> None:
+        self.assertEqual(WR.registry_trouble({"error": "x", "code": "timeout"}), "registry-unavailable")
+        self.assertEqual(WR.registry_trouble(None), "registry-unavailable")
+
+    def test_health_says_so(self) -> None:
+        router = self.router()
+        router.env = {"HOME": self.tmp}
+        status, answer = WR.Seats([router]).seat_health("CLAUDE")
+        self.assertEqual((status, answer["reason"]), (503, WR.NOT_CONFIGURED))
+
+    def test_serve_starts_without_it(self) -> None:
+        # Infisical may be down at start:  the router starts and says so on /health instead.
+        self.assertNotIn("registry API URL is not set", Path(WR.__file__).read_text())
+
+
+class SeatNeverRan(Base):
+    """A platform's own codes that can only come before anything ran, added per seat."""
+
+    def test_a_seats_own_code_is_known_not_to_have_run(self) -> None:
+        self.assertNotIn("workspace-mismatch", WR.NEVER_RAN)
+        self.registry.rows = [row(SID_A, "AA", "Only chat")]
+        for never_ran, delivered in (((), None), (("workspace-mismatch",), False)):
+            with self.subTest(never_ran=never_ran):
+                self.results = [WR.Delivery("refused", code="workspace-mismatch")]
+                router = self.router()
+                router.never_ran = WR.NEVER_RAN | frozenset(never_ran)
+                wake_id = "w-%d" % len(never_ran)
+                router.accept(self.wake(wake_id))
+                self.drain(router)
+                self.assertIs(self.done(wake_id)["delivered"], delivered)
+
+    def test_the_router_takes_them_at_construction(self) -> None:
+        platform = WR.Platform("ZC", "zcode", "ZCode", ZC_RE, self.fake_deliver)
+        router = WR.Router(
+            platform, {}, self.config(), self.state, self.key_source, never_ran={"subagent-child"}
+        )
+        self.assertEqual(router.never_ran, WR.NEVER_RAN | {"subagent-child"})
+
+    def test_claude_exports_its_own(self) -> None:
+        self.assertLessEqual({"no-transcript", "session-cwd-gone", "unknown-host"}, CW.NEVER_RAN)
+
+
+class OneLocalFile(Base):
+    """The service's one narrowing file may name `delivery_seats`, a list of seat tags."""
+
+    def write(self, text: str) -> Path:
+        path = self.state / "config.json"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_a_seat_list_is_read(self) -> None:
+        local = WR.read_local_config(
+            self.write('{"delivery_seats": ["CLAUDE"], "workers": 2}'),
+            WR.ROUTER_DEFAULTS,
+            seat_lists=("delivery_seats",),
+        )
+        self.assertEqual(local, {"delivery_seats": ["CLAUDE"], "workers": 2})
+
+    def test_a_bad_seat_list_refuses_the_file(self) -> None:
+        for bad in ('"CLAUDE"', '["claude"]', "[7]", '{"CLAUDE": 1}'):
+            with self.subTest(bad=bad), self.assertRaises(SystemExit):
+                WR.read_local_config(
+                    self.write('{"delivery_seats": %s}' % bad),
+                    WR.ROUTER_DEFAULTS,
+                    seat_lists=("delivery_seats",),
+                )
+
+    def test_without_the_seat_list_the_key_is_unknown(self) -> None:
+        with self.assertRaises(SystemExit):
+            WR.read_local_config(self.write('{"delivery_seats": []}'), WR.ROUTER_DEFAULTS)
+
+
+class OnePlatformTable(RemoteBase):
+    """`wake_service.BUILDERS` is the only platform table, on the Mac as on the server."""
+
+    def test_the_old_table_is_gone(self) -> None:
+        for name in ("PLATFORMS", "DeliveryPlatform", "CODEX_MODULE", "CODEX_SESSION_RE", "ENV_REMOTE"):
+            self.assertFalse(hasattr(CW, name), name)
+
+    def test_a_request_names_a_platform_never_a_seat_or_a_module(self) -> None:
+        for platform in ("claude", "codex", "muse", "zcode"):
+            self.assertEqual(SVC.by_platform(platform).platform, platform)
+        for name in ("CLAUDE", "MC", "simple_tools.muse_wake", "Claude", "", None, 1):
+            self.assertIsNone(SVC.by_platform(name), name)
+
+    def muse_request(self) -> dict:
+        return self.envelope(platform="muse")
+
+    def test_muse_is_refused_clearly_until_its_module_is_there(self) -> None:
+        with (
+            mock.patch.dict(sys.modules, {SVC.BUILDERS["MC"].module: None}),
+            mock.patch.object(CW, "deliver_local") as spy,
+        ):
+            code, answer = self.run_main(self.muse_request())
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            (answer["delivery"]["outcome"], answer["delivery"]["code"]),
+            ("refused", "platform-not-installed"),
+        )
+        self.assertEqual(answer["session_id"], SID_A)
+        spy.assert_not_called()
+
+    def test_the_handler_named_in_the_table_runs(self) -> None:
+        ids = {"wake_id": self.w.wake_id, "session_id": SID_A, "generation": 3}
+        module = SimpleNamespace(deliver_request=lambda request, *, env: {**ids, "delivery": {"outcome": "sent"}})
+        with mock.patch.dict(sys.modules, {SVC.BUILDERS["MC"].module: module}):
+            _, answer = self.run_main(self.muse_request())
+        self.assertEqual(answer["delivery"]["outcome"], "sent")
+
+    def test_a_zcode_request_with_a_uuid_is_refused_before_its_module_loads(self) -> None:
+        with mock.patch.object(CW.importlib, "import_module") as importing:
+            code, answer = self.run_main(self.envelope(platform="zcode"))
+        self.assertEqual((code, answer["delivery"]["code"]), (2, "bad-request"))
+        importing.assert_not_called()
+
+    def test_the_mac_recheck_without_a_registry_is_failed_not_configured(self) -> None:
+        with (
+            mock.patch.object(WR.registry_api, "call", return_value=NOT_CONFIGURED),
+            mock.patch.object(CW, "deliver_local") as spy,
+        ):
+            _, answer = self.run_main(self.envelope())
+        self.assertEqual(
+            (answer["delivery"]["outcome"], answer["delivery"]["code"]),
+            ("failed", WR.NOT_CONFIGURED),
+        )
+        spy.assert_not_called()
+
+    def test_the_old_remote_variable_is_not_a_destination(self) -> None:
+        self.cfg["mac_ssh"] = ""
+        env = {**self.env, "CLAUDE_LETTER_REMOTE": "mac-host"}
+        result = CW.deliver_remote(env, self.cfg, self.target, self.w, runner=self.remote)
+        self.assertEqual((result.outcome, result.code), ("refused", "no-ssh-destination"))
+        self.assertEqual(self.runs, [])
+
+    def test_the_mac_reads_no_registry_env_file(self) -> None:
+        source = Path(CW.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("with_registry_env", source)
+        self.assertNotIn("CLAUDE_LETTER_REMOTE", source)
 
 
 if __name__ == "__main__":

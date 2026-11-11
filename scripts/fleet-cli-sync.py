@@ -56,7 +56,9 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # The 169th and 170th are simple_tools/thread_registry.py and thread_registry_export.mjs (the Operator
 # chat-thread registry and its Google drain);  fleet-cli-release.py carries the same ledger.
 # The 171st is simple_tools/wake_service.py (OPS-1048, the one wake router service for every platform).
-MAX_FILES = 171
+# From here the cap is 180, set once (Nov 11, 2026) with room for the wake router's platform modules;
+# fleet-cli-release.py carries the same number and the reason.
+MAX_FILES = 180
 MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65

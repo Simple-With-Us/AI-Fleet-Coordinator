@@ -146,28 +146,6 @@ _COMPLIANCE = (("the fleet-config compliance rules", "scripts/fleet_config/seed_
 _WATCHDOG = (("the Cloudflare usage watchdog", "scripts/cf-usage-watchdog/watchdog.py"),)
 _WAKE = (("the wake router", "scripts/simple_tools/wake_settings.py"),)
 
-
-def _router_key(name: str, seat: str, label: str) -> Spec:
-    """One seat's wake router bearer:  a secret, the same value as the listener's routine key."""
-    return _S(
-        name,
-        "str",
-        "W2",
-        secret=True,
-        pattern=r"^[!-~]{16,512}$",
-        note="the bearer the wake router checks on every %s request, the same value as the "
-        "listener's %s_ROUTINE_KEY;  never written to disk, held in memory through a failed "
-        "refresh and changed only by a fetch that worked, and while the router holds none it "
-        "refuses that seat's requests and says why on /health, and every other seat goes on"
-        % (seat, seat),
-        group="Wake Router",
-        label="%s Wake Router Bearer" % label,
-        hosts="server",
-        consumers=_WAKE,
-        folder=WAKE_ROUTER_FOLDER,
-    )
-
-
 REGISTRY: tuple[Spec, ...] = (
     # C1 fleet-autopush
     _S(
@@ -641,7 +619,8 @@ REGISTRY: tuple[Spec, ...] = (
     # W2 the wake router (scripts/simple_tools/wake_settings.py, OPS-1048).  The one long-running
     # reader:  it loads these at startup and refreshes them in the background.  A test keeps the
     # defaults equal to wake_router.ROUTER_DEFAULTS and claude_wake.DEFAULTS.  Every one is in
-    # /wake-router, so the router's read token is scoped to that folder and reads nothing else.
+    # /wake-router, so the router's read token is scoped to that folder and reads nothing else,
+    # including its one bearer and the registry's address and key.
     _S(
         "WAKE_ROUTER_DELIVERY_ENABLED",
         "bool",
@@ -855,7 +834,8 @@ REGISTRY: tuple[Spec, ...] = (
         default="",
         local="deny",
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._@-]*$",
-        note="the ssh destination of the Mac for wakes to its chats;  empty falls back to CLAUDE_LETTER_REMOTE",
+        note="the ssh destination of the Mac for wakes to its chats, and the only one;  empty means "
+        "a wake to a Mac chat is refused as no-ssh-destination",
         group="Wake Router",
         label="Wake Router Mac Destination",
         hosts="server",
@@ -863,11 +843,53 @@ REGISTRY: tuple[Spec, ...] = (
         folder=WAKE_ROUTER_FOLDER,
         format="an ssh destination, with no options",
     ),
-    # One bearer per seat the router serves (wake_settings.KEY_KNOBS), never one shared across seats.
-    _router_key("WAKE_ROUTER_CLAUDE_KEY", "CLAUDE", "Claude"),
-    _router_key("WAKE_ROUTER_CODEX_KEY", "CODEX", "Codex"),
-    _router_key("WAKE_ROUTER_MC_KEY", "MC", "Muse Code"),
-    _router_key("WAKE_ROUTER_ZC_KEY", "ZC", "ZCode"),
+    _S(
+        "WAKE_ROUTER_KEY",
+        "str",
+        "W2",
+        secret=True,
+        pattern=r"^[!-~]{16,512}$",
+        note="the one bearer the wake router checks on every request, for every seat;  never "
+        "written to disk, held in memory through a failed refresh and changed only by a fetch that "
+        "worked, and while the router holds none it refuses every request and says why on /health",
+        group="Wake Router",
+        label="Wake Router Bearer",
+        hosts="server",
+        consumers=_WAKE,
+        folder=WAKE_ROUTER_FOLDER,
+    ),
+    _S(
+        "WAKE_ROUTER_REGISTRY_URL",
+        "str",
+        "W2",
+        default="",
+        local="deny",
+        pattern=r"^(https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?)?$",
+        note="the Operator registry API's origin (no path) the wake router and the Mac's "
+        "wake-deliver read the registry at;  http only to a loopback address;  empty means not "
+        "configured, so every pick is a bounded retry and /health says so",
+        group="Wake Router",
+        label="Wake Router Registry Address",
+        hosts="both",
+        consumers=_WAKE,
+        folder=WAKE_ROUTER_FOLDER,
+        format="an https origin, with no path",
+        example="https://registry.example.com",
+    ),
+    _S(
+        "WAKE_ROUTER_REGISTRY_KEY",
+        "str",
+        "W2",
+        secret=True,
+        pattern=r"^[!-~]{16,512}$",
+        note="the key the wake router and the Mac's wake-deliver sign registry calls with;  held "
+        "like the bearer, and without it every registry call answers not configured",
+        group="Wake Router",
+        label="Wake Router Registry Key",
+        hosts="both",
+        consumers=_WAKE,
+        folder=WAKE_ROUTER_FOLDER,
+    ),
 )
 
 BY_NAME: dict[str, Spec] = {s.name: s for s in REGISTRY}
