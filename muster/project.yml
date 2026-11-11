@@ -194,3 +194,45 @@ targets:
         CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: NO
         OTHER_CODE_SIGN_FLAGS: ""
+  # The panel screenshots (AFC-707).  Unlike MusterTests, which compiles only the views that
+  # take plain values, this bundle compiles the whole app, less its `@main` entry point, so
+  # it can host the real window root (FleetOverviewView) on every MusterDestination with
+  # fixture stores, in light and dark, and write one PNG per panel per theme per size.
+  # No pixel baselines, but a layout gate (size, flat colour, split view inside the window).
+  # MusterPanelTests/InertProcess.swift shadows Process in this bundle only, so no panel's
+  # reader starts a process here.  It runs from its own scheme:
+  #   xcodebuild -scheme MusterPanels test -only-testing:MusterPanelTests/PanelSnapshotTests
+  # (script/render_panels.sh), so `-scheme Muster test` and the MusterTests bundle are unchanged.
+  MusterPanelTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: MusterPanelTests
+      - path: Muster
+        excludes:
+          - MusterApp.swift
+      # The engine's recorded output the fixture stores answer with.
+      - path: MusterTests/Fixtures
+        buildPhase: resources
+    dependencies:
+      - package: Sparkle
+        product: Sparkle
+    settings:
+      base:
+        PRODUCT_NAME: MusterPanelTests
+        PRODUCT_BUNDLE_IDENTIFIER: services.jays.Muster.panel-tests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_HARDENED_RUNTIME: NO
+        OTHER_CODE_SIGN_FLAGS: ""
+schemes:
+  MusterPanels:
+    build:
+      targets:
+        MusterPanelTests: [test]
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - MusterPanelTests

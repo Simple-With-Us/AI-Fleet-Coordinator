@@ -80,9 +80,24 @@ class RegistryFactsTests(KnobTestCase):
     def test_the_json_never_carries_a_secret_default(self):
         doc = json.loads(inventory.json_text())
         secret = [k for k in doc["knobs"] if k["secret"]]
-        self.assertEqual([k["name"] for k in secret], ["FLEET_FACTS_SIGNING_KEY"])
-        self.assertIsNone(secret[0]["default"])
-        self.assertEqual(secret[0]["local_rule"], "A local file cannot change this.")
+        self.assertEqual(
+            [k["name"] for k in secret], ["FLEET_FACTS_SIGNING_KEY", "WAKE_ROUTER_CLAUDE_KEY"]
+        )
+        for entry in secret:
+            self.assertIsNone(entry["default"])
+            self.assertEqual(entry["pattern"], "")
+            self.assertEqual(entry["local_rule"], "A local file cannot change this.")
+
+    def test_the_json_names_each_knobs_folder(self):
+        doc = json.loads(inventory.json_text())
+        self.assertEqual(doc["schema"], 1, "an added key an older Muster ignores keeps the schema")
+        folders = {k["name"]: k["folder"] for k in doc["knobs"]}
+        self.assertEqual(folders, {s.name: s.folder for s in REGISTRY})
+        self.assertEqual(folders["LANE_SWEEP_MODE"], "/")
+        self.assertEqual(
+            {n for n, f in folders.items() if f == "/wake-router"},
+            {n for n in folders if n.startswith("WAKE_ROUTER_")},
+        )
 
 
 class DirectionTests(KnobTestCase):
