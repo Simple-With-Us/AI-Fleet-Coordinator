@@ -3,6 +3,7 @@
 import json
 import os
 import socket
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -501,6 +502,13 @@ class TransportTests(unittest.TestCase):
             self.assertTrue(self.adapter.receipt(self.binding, "two"))
             self.assertFalse(self.adapter.receipt(self.binding, "one"))
             self.assertEqual(factory.call_count, 2)
+
+    def test_unexpected_receipt_store_error_is_unavailable_without_enqueue(self):
+        with patch.object(
+            self.adapter, "_receipt_snapshot", side_effect=sqlite3.DatabaseError("store failed")
+        ):
+            self.assertEqual(self.adapter.receipt_state(self.binding, "nudge"), "unavailable")
+        self.assertNotIn("thread/queue/add", [method for method, _ in self.calls])
 
     def test_receipt_finds_last_page_and_bounds_requests(self):
         self.queued = [{} for _ in range(module.QUEUE_CAPACITY - 1)] + [

@@ -542,7 +542,7 @@ def delivery_entry(
             chunks.extend(chunk)
             if len(chunks) > MAX_REQUEST_BYTES:
                 return _entry_failure("request-too-large")
-    except OSError:
+    except Exception:  # noqa: BLE001 - unreadable request input cannot enter delivery
         return _entry_failure("request-unreadable")
     try:
         request = json.loads(bytes(chunks), object_pairs_hook=_unique_object)
