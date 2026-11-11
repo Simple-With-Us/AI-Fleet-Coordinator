@@ -39,12 +39,23 @@ def resolve(command, *, attempts=3, delay=15, timeout=300, sleep=time.sleep):
                 sys.stdout.write(log.read())
                 print("error: package resolution exceeded its time bound", file=sys.stderr)
                 return 124
+            except BaseException:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+                raise
             log.seek(0)
             text = log.read()
             sys.stdout.write(text)
         if status == 0:
             return 0
-        if attempt == attempts or not TRANSIENT.search(text) or INTEGRITY.search(text):
+        if attempt == attempts or not TRANSIENT.search(text) or any(
+            INTEGRITY.search(line) and (
+                re.search(r"\b(?:error|fail\w*|invalid|mismatch|not|unable|denied)\b", line, re.I)
+                or not re.search(r"\b(?:verified|valid|ok|succeeded|successful)\b", line, re.I)
+            )
+            for line in text.splitlines()
+        ):
             return status if status > 0 else 1
         print(
             "warning: transient package download failure; retrying resolution (%d/%d)"
@@ -60,18 +71,28 @@ def main():
     parser.add_argument("--project", required=True)
     parser.add_argument("--derived-data", required=True)
     args = parser.parse_args()
-    return resolve(
-        [
-            "/usr/bin/xcodebuild",
-            "-resolvePackageDependencies",
-            "-project",
-            args.project,
-            "-scheme",
-            "Muster",
-            "-derivedDataPath",
-            args.derived_data,
-        ]
-    )
+    for value in (args.project, args.derived_data):
+        if not value or value.startswith("-"):
+            parser.error("paths must be nonempty and must not start with a dash")
+    previous = signal.getsignal(signal.SIGTERM)
+    def terminate(signum, frame):
+        raise SystemExit(128 + signum)
+    signal.signal(signal.SIGTERM, terminate)
+    try:
+        return resolve(
+            [
+                "/usr/bin/xcodebuild",
+                "-resolvePackageDependencies",
+                "-project",
+                args.project,
+                "-scheme",
+                "Muster",
+                "-derivedDataPath",
+                args.derived_data,
+            ]
+        )
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 if __name__ == "__main__":

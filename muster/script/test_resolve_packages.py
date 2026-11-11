@@ -102,3 +102,36 @@ class ResolutionTests(unittest.TestCase):
             74,
         )
         self.assertEqual(sleeps, [0, 0])
+
+    def test_leading_dash_paths_are_rejected_before_launch(self):
+        from unittest import mock
+        for argv in [["resolve", "--project=-evil", "--derived-data=ok"], ["resolve", "--project=ok", "--derived-data=-evil"]]:
+            with mock.patch.object(sys,"argv",argv), mock.patch.object(m.subprocess,"Popen") as launch:
+                with self.assertRaises(SystemExit):m.main()
+                launch.assert_not_called()
+    def test_interrupt_kills_and_reaps_detached_group(self):
+        from unittest import mock
+        child=mock.Mock();child.pid=12345;child.wait.side_effect=[KeyboardInterrupt,0]
+        with mock.patch.object(m.subprocess,"Popen",return_value=child),mock.patch.object(m.os,"killpg") as kill:
+            with self.assertRaises(KeyboardInterrupt):m.resolve(["fake"])
+            kill.assert_called_once_with(12345,m.signal.SIGKILL)
+        self.assertEqual(child.wait.call_count,2)
+    def test_verified_checksum_note_does_not_veto_transient_retry(self):
+        sleeps=[]
+        self.assertEqual(self.run_fake('import sys;print("checksum verified successfully\\nbadResponseStatusCode(504)");sys.exit(74)',attempts=2,sleep=sleeps.append),74)
+        self.assertEqual(sleeps,[0])
+
+    def test_invalid_certificate_is_not_excused_by_valid_word(self):
+        sleeps=[]
+        self.assertEqual(self.run_fake('import sys;print("certificate not valid\\nbadResponseStatusCode(504)");sys.exit(74)',sleep=sleeps.append),74)
+        self.assertEqual(sleeps,[])
+    def test_sigterm_handler_enters_cleanup_and_restores_previous_handler(self):
+        from unittest import mock
+        previous=m.signal.getsignal(m.signal.SIGTERM)
+        def interrupted(command):
+            handler=m.signal.getsignal(m.signal.SIGTERM)
+            handler(m.signal.SIGTERM,None)
+        with mock.patch.object(sys,"argv",["resolve","--project=ok","--derived-data=ok"]),mock.patch.object(m,"resolve",side_effect=interrupted):
+            with self.assertRaises(SystemExit) as exc:m.main()
+        self.assertEqual(exc.exception.code,128+m.signal.SIGTERM)
+        self.assertIs(m.signal.getsignal(m.signal.SIGTERM),previous)
