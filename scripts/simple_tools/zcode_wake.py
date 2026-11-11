@@ -44,10 +44,10 @@ import os
 import re
 import sqlite3
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from . import wake_router as WR
 
@@ -235,12 +235,16 @@ def deliver_request(
     settings = _settings(env)
     workspace = workspace or _required_workspace(settings)
     zcode_bin = zcode_bin or settings.get("ZCODE_WAKE_BIN") or DEFAULT_ZCODE
-    index = Path(os.path.expanduser(
-        index_path or settings.path("ZCODE_WAKE_TASKS_INDEX", "~/.zcode/v2/tasks-index.sqlite")
-    ))
-    locks = Path(os.path.expanduser(
-        lock_dir or settings.path("ZCODE_WAKE_LOCK_DIR", "~/.local/state/zc-wake")
-    ))
+    index = Path(
+        os.path.expanduser(
+            index_path or settings.path("ZCODE_WAKE_TASKS_INDEX", "~/.zcode/v2/tasks-index.sqlite")
+        )
+    )
+    locks = Path(
+        os.path.expanduser(
+            lock_dir or settings.path("ZCODE_WAKE_LOCK_DIR", "~/.local/state/zc-wake")
+        )
+    )
     host = host or settings.get("ZCODE_WAKE_HOST") or DEFAULT_HOST
     if not workspace:
         # Hold and retry:  the deployment has not named a workspace, and delivering into an
@@ -256,8 +260,7 @@ def deliver_request(
     except (ValueError, KeyError, TypeError, AttributeError):
         # The ids go back as the request stated them (the table has already shape-checked the
         # session id), so this surfaces as refused bad-request and never as a mismatch.
-        return {**_raw_ids(request),
-                "delivery": asdict(WR.Delivery("refused", code="bad-request"))}
+        return {**_raw_ids(request), "delivery": asdict(WR.Delivery("refused", code="bad-request"))}
 
     def answer(delivery: WR.Delivery) -> dict[str, Any]:
         return {
@@ -379,8 +382,10 @@ def _exclude_best_effort(
                 row = con.execute(
                     "SELECT workspace_path FROM tasks WHERE task_id = ?", (sid,)
                 ).fetchone()
-                if not row or not row[0] or os.path.realpath(str(row[0])) != os.path.realpath(
-                    workspace
+                if (
+                    not row
+                    or not row[0]
+                    or os.path.realpath(str(row[0])) != os.path.realpath(workspace)
                 ):
                     out.add(sid)
         except sqlite3.Error:
@@ -412,18 +417,21 @@ def build_platform(
     the pick itself.  Without a configured workspace nothing is built - call this only from
     a deployment that has named one, or the router will refuse every zcode wake as
     `settings-missing`, which is the safe direction."""
+
     def setting(name: str, default: str | None = None) -> str | None:
         e = env or {}
         return e.get(name) or os.environ.get(name) or default
 
     workspace = workspace or setting("ZCODE_WAKE_WORKSPACE")
     zcode_bin = zcode_bin or setting("ZCODE_WAKE_BIN") or DEFAULT_ZCODE
-    index = Path(os.path.expanduser(
-        index_path or setting("ZCODE_WAKE_TASKS_INDEX", "~/.zcode/v2/tasks-index.sqlite")
-    ))
-    cli_db_path = Path(os.path.expanduser(
-        cli_db or setting("ZCODE_WAKE_CLI_DB", "~/.zcode/cli/db/db.sqlite")
-    ))
+    index = Path(
+        os.path.expanduser(
+            index_path or setting("ZCODE_WAKE_TASKS_INDEX", "~/.zcode/v2/tasks-index.sqlite")
+        )
+    )
+    cli_db_path = Path(
+        os.path.expanduser(cli_db or setting("ZCODE_WAKE_CLI_DB", "~/.zcode/cli/db/db.sqlite"))
+    )
     host = host or setting("ZCODE_WAKE_HOST") or DEFAULT_HOST
 
     def exclude(candidates: list[WR.Target]) -> set[str]:
