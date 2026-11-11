@@ -80,6 +80,11 @@ chat until that one is settled;  it is not failed as busy.  A wake that still ca
 or is older than `max_age_seconds` when its turn comes, ends in a `dead` receipt, visible in the
 state directory and at GET /receipt/<id>, and its message is in the seat inbox regardless.
 
+A delivery can run for many minutes, so it does not keep a place in the worker pool:  a worker that
+starts one hands its place to a fresh thread and ends once that wake is settled, and a chat that
+hangs cannot starve another chat.  `max_deliveries` caps how many run at once, because each may be a
+whole headless turn;  a wake over the cap waits and uses up no attempt.
+
 The test flag.  A body with `"test": true` is answered at once with the whole pick and its note (the
 fields in `test_answer`), writes a receipt marked as a test and delivers nothing.  It never calls
 the decider and never reserves its id.
@@ -194,6 +199,7 @@ ROUTER_DEFAULTS: dict[str, Any] = {
     # Off until someone arms it:  with this false the router picks and receipts, and delivers nothing.
     "delivery_enabled": False,
     "workers": 4,
+    "max_deliveries": 16,
     "max_attempts": 5,
     "retry_backoff": [30, 120, 300, 900],
     "busy_retry_seconds": 30,
@@ -505,9 +511,11 @@ def command_platform(
 ) -> Platform:
     """A `Platform` whose delivery is one command, run without a shell.  `argv` may name the
     `COMMAND_FIELDS` as {session_id} and so on, anywhere but its first item;  any other name in
-    braces is a ValueError here, at startup.  Exit 0 is `completed`.  A non-zero exit or a timeout
-    is `refused`, because the turn may have started;  an OSError at start is `failed`.  The child
-    gets `env`, or else only HOME and PATH:  the router's own environment holds its keys."""
+    braces is a ValueError here, at startup.  A value that could read as an option is `refused`
+    before anything runs.  Exit 0 is `sent` with `ack` unknown, because it proves only that the
+    command ran.  A non-zero exit or a timeout is `refused`, because the turn may have started;  an
+    OSError at start is `failed`.  The child gets `env`, or else only HOME and PATH:  the router's
+    own environment holds its keys."""
     template = [argv] if isinstance(argv, str) else list(argv)
     named = {name for part in template for name in COMMAND_FIELD_RE.findall(part)}
     if len(template) < 2 or COMMAND_FIELD_RE.search(template[0]) or named - set(COMMAND_FIELDS):
@@ -529,6 +537,9 @@ def command_platform(
                 wake_id=wake.wake_id, note=note + "  " if note else "", message_id=wake.message_id
             ),
         }
+        # `target_re` is the platform's own and may allow it, so this does not rely on that.
+        if any(values[name].startswith("-") for name in named):
+            return Delivery("refused", "command", code="command-option-shaped-value")
         # One pass per item, so a value is never read again as a field.
         command = [COMMAND_FIELD_RE.sub(lambda m: values[m.group(1)], part) for part in template]
         try:
@@ -549,7 +560,7 @@ def command_platform(
         except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
             return Delivery("refused", "command", code="command-error-%s" % type(exc).__name__)
         if proc.returncode == 0:
-            return Delivery("completed", "command", ack="confirmed")
+            return Delivery("sent", "command")
         return Delivery("refused", "command", code="command-exit-%d" % proc.returncode)
 
     return Platform(seat, platform, mention, target_re, deliver, exclude, stop_words)
@@ -580,6 +591,7 @@ class Router:
         self._cond = threading.Condition()
         self._stopping = False
         self._threads: list[threading.Thread] = []
+        self._retiring: set[threading.Thread] = set()
 
     # ---- the pick ---------------------------------------------------------------------------
 
@@ -824,10 +836,29 @@ class Router:
     def start(self) -> None:
         """Replay what a restart left pending, then start the workers."""
         self.replay()
-        for _ in range(int(self.config["workers"])):
-            thread = threading.Thread(target=self._loop, daemon=True)
-            thread.start()
-            self._threads.append(thread)
+        with self._cond:
+            for _ in range(int(self.config["workers"])):
+                self._add_worker()
+
+    def _add_worker(self) -> None:
+        thread = threading.Thread(target=self._loop, daemon=True)
+        thread.start()
+        self._threads.append(thread)
+
+    def _give_up_slot(self) -> None:
+        """A delivery may run for many minutes and must not cost another chat a worker, so this
+        thread's place in the pool goes to a fresh one, and this thread ends once its wake is
+        settled.  One delivery per chat and `max_deliveries` bound what that can start."""
+        current = threading.current_thread()
+        with self._cond:
+            if self._stopping or current not in self._threads:
+                return  # no new work is wanted, or this is `run_once` on a caller's own thread
+            self._threads = [thread for thread in self._threads if thread.is_alive()]
+            try:
+                self._add_worker()
+            except RuntimeError:
+                return  # no thread to be had:  this worker just stays busy, as it would have
+            self._retiring.add(current)
 
     def stop(self, wait: float = 5.0) -> bool:
         """Claim nothing more and wait up to `wait` seconds in all for running deliveries.  Answers
@@ -893,13 +924,14 @@ class Router:
         now = self.clock()
         blocked: set[str] = set(self._active)
         blocked.update(_session_of(e) for e in self._entries.values() if e.get("running"))
+        full = self._full()
         picking = False  # an earlier wake still being picked may turn out to want the same chat
         for entry in sorted(self._entries.values(), key=_order):
             if entry.get("running"):
                 picking = picking or entry["pick"] is None
                 continue
             session = "" if entry.get("receipt") is not None else _session_of(entry)
-            if session and (picking or session in blocked):
+            if session and (picking or full or session in blocked):
                 continue
             if entry["next_at"] > now:
                 if session:
@@ -908,6 +940,10 @@ class Router:
             entry["running"] = True
             return entry
         return None
+
+    def _full(self) -> bool:
+        """Whether as many deliveries are running as may run at once."""
+        return len(self._active) >= int(self.config["max_deliveries"])
 
     def _behind(self, entry: Mapping[str, Any], session: str) -> bool:
         """Whether an earlier unsettled wake wants this chat, or is being picked and may."""
@@ -923,7 +959,9 @@ class Router:
         while True:
             try:
                 with self._cond:
-                    if self._stopping:
+                    current = threading.current_thread()
+                    if self._stopping or current in self._retiring:
+                        self._retiring.discard(current)
                         return
                     entry = self._claim()
                     if entry is None:
@@ -989,9 +1027,14 @@ class Router:
             return
         session = pick.target.session_id
         with self._cond:
-            if self._stopping or session in self._active or self._behind(entry, session):
-                # Shutting down, or another wake has this chat first:  go back with the pick
-                # recorded, using no attempt.  Its place in the order is kept by `_claim`.
+            if (
+                self._stopping
+                or self._full()
+                or session in self._active
+                or self._behind(entry, session)
+            ):
+                # Shutting down, at the cap, or another wake has this chat first:  go back with the
+                # pick recorded, using no attempt.  Its place in the order is kept by `_claim`.
                 entry["running"] = False
                 self._cond.notify_all()
                 return
@@ -1016,6 +1059,7 @@ class Router:
                 self._retry(entry, counted=False, code=waiting.code, pick=pick, result=waiting)
                 return
             told = replace(wake, picked=pick.picked, reason=pick.reason, link_note=pick.link_note)
+            self._give_up_slot()
             try:
                 result = self.platform.deliver(pick.target, told)
             except Exception as exc:  # noqa: BLE001 - a platform's failure is a failed try
