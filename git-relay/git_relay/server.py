@@ -664,6 +664,7 @@ _REAPPLY_STATE_ACTIONS = frozenset(
         "wf_labels_set",
         "wf_reviewers_request",
         "wf_reviewers_remove",
+        "wf_release_notes_preview",
         "wf_release_update",
         "wf_issue_state_set",
         "wf_issue_comment_update",
