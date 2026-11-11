@@ -164,8 +164,9 @@ def sample_config(secrets_dir: str | None, env: Mapping[str, str] | None = None)
         ),
         'wake = "claude"                   # runs only after `simple-chat daemon test-wake --seat CLAUDE --run`, then --pin',
         'model = "sonnet"',
-        "budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, "
-        "owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }",
+        "# The wake count caps (wakes_per_hour, wakes_per_day, per_topic_per_hour, owner_per_day,",
+        "# owner_per_topic_per_hour) have no default:  unset is no limit.  Add one to cap it, or 0 to pause wakes.",
+        "budget = { usd_per_day = 2.0, board_per_day = 0 }",
         "live = { per_hour = 6, per_day = 30, per_topic_minutes = 5, owner_per_day = 20, loop_turns = 3 }",
         "",
         "# The muse wake (docs/protocols/simple-tools-listener.md 3.3a) is verified and available, and",
