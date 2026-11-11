@@ -254,7 +254,10 @@ class CodexDelivery:
             return WR.Delivery("busy", route="codex-desktop", code="registry-unavailable")
         if not isinstance(current, Mapping) or "error" in current:
             return WR.Delivery("busy", route="codex-desktop", code="registry-unavailable")
-        if current.get("found") is not True or WR._closed(current):
+        found = current.get("found")
+        if type(found) is not bool:
+            return WR.Delivery("busy", route="codex-desktop", code="registry-unavailable")
+        if not found or WR._closed(current):
             return WR.Delivery("refused", route="codex-desktop", code="target-released")
 
         session_id = current.get("native_session_id")
