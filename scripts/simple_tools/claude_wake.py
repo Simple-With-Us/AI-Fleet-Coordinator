@@ -181,7 +181,9 @@ def find_holder(env: Mapping[str, str], session_id: str) -> Holder | None:
     return None
 
 
-def exclude_non_interactive(env: Mapping[str, str], local_host: str) -> Callable[[list[WR.Target]], set[str]]:
+def exclude_non_interactive(
+    env: Mapping[str, str], local_host: str
+) -> Callable[[list[WR.Target]], set[str]]:
     """Never pick a chat this host's own record says is not an interactive session."""
 
     def exclude(targets: list[WR.Target]) -> set[str]:
@@ -329,11 +331,11 @@ def _via_socket(
         post_to_socket(holder.socket_path, wake_text(wake))
     except OSError as exc:
         return WR.Delivery("failed", "socket", code="socket-%s" % type(exc).__name__)
-    if seen_in_transcript(transcript, offset, wake.wake_id, int(config["confirm_seconds"]), sleep=sleep):
+    if seen_in_transcript(
+        transcript, offset, wake.wake_id, int(config["confirm_seconds"]), sleep=sleep
+    ):
         return WR.Delivery("sent", "socket", ack="confirmed")
-    may_hold = (
-        receiver_mode(transcript) == "bypassPermissions" and inbound_setting(env) != "accept"
-    )
+    may_hold = receiver_mode(transcript) == "bypassPermissions" and inbound_setting(env) != "accept"
     return WR.Delivery("sent", "socket", ack="unknown", note=BYPASS_NOTE if may_hold else "")
 
 

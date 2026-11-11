@@ -74,7 +74,7 @@ CONTRACT = "simple-tools-wake/1"
 MAX_BODY = 64 * 1024
 WAKE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{2,}")
-STOP_WORDS = frozenset("the and for with from this that ops afc".split())
+STOP_WORDS = frozenset(["the", "and", "for", "with", "from", "this", "that", "ops", "afc"])
 NAME_CHARS = 200
 QUESTION_CHARS = 500
 HISTORY_LIMIT = 200
@@ -241,7 +241,9 @@ def _read_json(path: Path) -> Any:
         return None
 
 
-def load_config(path: Path, defaults: Mapping[str, Any], *, required: bool = False) -> dict[str, Any]:
+def load_config(
+    path: Path, defaults: Mapping[str, Any], *, required: bool = False
+) -> dict[str, Any]:
     """The defaults overlaid with a JSON file.  A file named explicitly must exist.  A file that is
     there must parse, name only known keys and match each default's type:  an unreadable or mistyped
     config is a refusal that names the path, never a quiet run on defaults."""
@@ -823,7 +825,7 @@ def make_handler(router: Router) -> type[BaseHTTPRequestHandler]:
                 return False
             return True
 
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             if self.path == "/health":
                 self._answer(200, {"seat": seat, "healthy": True})
                 return
@@ -839,7 +841,7 @@ def make_handler(router: Router) -> type[BaseHTTPRequestHandler]:
             else:
                 self._answer(200, record)
 
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             if not self._authorized():
                 return
             if self.path != wake_path:
@@ -887,7 +889,10 @@ def serve(router: Router, bind: str, port: int) -> int:
     router.start()
     server = ThreadingHTTPServer((bind, port), make_handler(router))
     server.daemon_threads = True
-    print("wake-router listening on %s:%d for seat %s" % (bind, port, router.platform.seat), flush=True)
+    print(
+        "wake-router listening on %s:%d for seat %s" % (bind, port, router.platform.seat),
+        flush=True,
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
