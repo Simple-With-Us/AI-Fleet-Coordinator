@@ -62,11 +62,15 @@ URL:  `https://github.com/<owner>/<repo>/pull/n`
 | CC | Simple-With-Us/CodeCaps |
 | C | Simple-With-Us/Clutch |
 | CTS | Simple-With-Us/congress-trading-shared |
-| OPS | jaywedgeworth22/Fleet-OPS |
+| OPS | Simple-With-Us/Fleet-OPS |
+| AR | Simple-With-Us/Autorotate |
+| FL | Simple-With-Us/FleetLink |
+| FLL | Simple-With-Us/fleetlink-legacy |
+| SWU | Simple-With-Us/Simple-With-Us |
 
 Any other `Repo#n`, for example `Autorotate#4`:  `https://github.com/Simple-With-Us/Repo/pull/n`.
 
-`C#n` is always a Clutch PR, on every surface, Zulip included.  Write `FleetLink#n`, never `FL#n`.
+Every app answers to its acronym and its repo name:  `HH#n` or `HogHunter#n`, `C#n` or `Clutch#n`, `CC#n` or `CodeCaps#n`.  `C-n` is a Clutch Linear issue.
 
 ### Linear projects:  `P-KEY-n`
 
