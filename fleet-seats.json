@@ -540,10 +540,10 @@
               "file"
             ],
             "names": [
-              "lane-guard-hook"
+              "claude-file-guard-hook"
             ],
             "present": true,
-            "timeoutSeconds": 5
+            "timeoutSeconds": 10
           },
           "id": "claude-hooks-file-guard",
           "kind": "hooks",
@@ -709,6 +709,10 @@
           "source": "",
           "ttlSeconds": 900
         }
+      ],
+      "runsOn": [
+        "mac",
+        "server"
       ]
     },
     "CLUTCH": {
@@ -744,7 +748,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.clutch/dsh/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "bbf8d661fc7f1d388c4b9ac82f1e212c424b95acbc3d82445b1c332aa1035257"
+            "sha256": "52560c6a335d6a613812be6b88c283b7248ddc773f64a0adaf7dcd12b68549de"
           },
           "id": "clutch-instructions-lane-map",
           "kind": "instructions",
@@ -1882,36 +1886,39 @@
         {
           "kind": "instructions",
           "platforms": [],
-          "reason": "The Grok Bot personas run as Cursor cloud agents, so this Mac holds no rules file for it."
+          "reason": "Grok Bot runs as Cursor cloud agents, so this Mac holds no rules file for it."
         },
         {
           "kind": "hooks",
           "platforms": [],
-          "reason": "The Grok Bot personas run as Cursor cloud agents, so this Mac holds no hook config for it."
+          "reason": "Grok Bot runs as Cursor cloud agents, so this Mac holds no hook config for it."
         },
         {
           "kind": "mcp",
           "platforms": [],
-          "reason": "The Grok Bot personas run as Cursor cloud agents, so this Mac holds no MCP config for it."
+          "reason": "Grok Bot runs as Cursor cloud agents, so this Mac holds no MCP config for it."
         },
         {
           "kind": "skills",
           "platforms": [],
-          "reason": "The Grok Bot personas run as Cursor cloud agents, so this Mac holds no skills home for it."
+          "reason": "Grok Bot runs as Cursor cloud agents, so this Mac holds no skills home for it."
         },
         {
           "kind": "subagents",
           "platforms": [],
-          "reason": "The Grok Bot personas run as Cursor cloud agents, so this Mac holds no sub-agent definitions for it."
+          "reason": "Grok Bot runs as Cursor cloud agents, so this Mac holds no sub-agent definitions for it."
         },
         {
           "kind": "permissions",
           "platforms": [],
-          "reason": "Grok Bot has no Zulip credential of its own:  its GB-<ROLE> personas are owner-managed and hold no zuliprc."
+          "reason": "Grok Bot has no Zulip credential of its own:  its GB-<ROLE> bots are owner-managed and hold no zuliprc."
         }
       ],
       "platforms": [],
-      "rules": []
+      "rules": [],
+      "runsOn": [
+        "cloud"
+      ]
     },
     "GROK-WEB": {
       "notApplicable": [
@@ -1975,7 +1982,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.kimi-code/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "8ff9548c9298d9007d8efa36ed7a60236b633bfba515cec7dbacaa0128077284"
+            "sha256": "1c2074cdb136cf8d767900e92b20e226a73c7893fe7451ca2b37c7f70fe91dfb"
           },
           "id": "kimi-instructions-lane-map",
           "kind": "instructions",
@@ -2310,6 +2317,9 @@
           "source": "",
           "ttlSeconds": 900
         }
+      ],
+      "runsOn": [
+        "vm"
       ]
     },
     "MC": {
@@ -2961,7 +2971,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.zcode/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "4c0f1c988069778ce258e0448fb66cb66848aefaeefc34227601e018b012cf04"
+            "sha256": "09c778453deca7c519e10a69dd66396b04e5dc3a84cd3a99231d1c67d61e3894"
           },
           "id": "zc-instructions-lane-map",
           "kind": "instructions",
@@ -3161,6 +3171,10 @@
           "source": "",
           "ttlSeconds": 900
         }
+      ],
+      "runsOn": [
+        "mac",
+        "server"
       ]
     }
   }

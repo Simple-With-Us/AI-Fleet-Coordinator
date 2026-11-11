@@ -59,6 +59,7 @@ WF_V1_READ_ACTIONS = [
     "wf_release_list",
     "wf_release_get",
     "wf_tag_get",
+    "wf_review_thread_comments",
     "wf_review_threads",
     "wf_issue_list",
     "wf_issue_get",
@@ -101,6 +102,13 @@ WF_V1_READ_ACTIONS = [
     "wf_issue_events",
     "wf_issue_timeline",
     "wf_git_blob_binary_get",
+    "wf_repo_list",
+    "wf_pr_search",
+    "wf_repo_hooks",
+    "wf_deploy_keys",
+    "wf_org_installations",
+    "wf_branch_rules",
+    "wf_rulesets",
 ]
 READ_TOOLS = frozenset(
     ["gr_v1_pr_state", "gr_v1_pr_hold_state"] + ["gr_" + a for a in WF_V1_READ_ACTIONS]

@@ -36,6 +36,8 @@ PLAN_KEYS = {
     "NEEDS_OWNER_NOTIFY_PAUSED",
     "NEEDS_OWNER_CAPS",
     "OWNER_LINEAR_USER_ID",
+    "NEEDS_OWNER_BAR",  # the owner bar:  off, warn or enforce on `needs-owner file --why-owner`
+    "NEEDS_OWNER_SEAT_DAILY_MAX",  # the most filings one seat may make in 24 hours (0 means no cap)
     "CLAIM_EXPIRY_MODE",
     "CLAIM_EXPIRY_CAPS",
     "CLAIM_EXPIRY_LAUNCH_AT",

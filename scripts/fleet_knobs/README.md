@@ -94,7 +94,7 @@ in this process, such as when no write token is present, so a plan that succeeds
 project, prod root folder and read/write grant verified first; without one the answer is `no write token`. 
 After a write the last-known-good copy is refreshed (or, when the re-read fails, patched for
 that key with its age kept), and every `--yes` appends a row to
-`~/.agent-sync/listener/knobs.jsonl` (0600): time, seat, key, old and new value, result.  Exit 0
+`~/.simple-tools/listener/knobs.jsonl` (0600): time, seat, key, old and new value, result.  Exit 0
 planned or done, 1 failed, 2 refused.
 
 ## Packaging

@@ -3190,9 +3190,9 @@ UID:1ca3c99161b510c99ed9448d88fe0dab8f8a73d4-AI-Fleet-Coordinator@AI-Fleet-
 DTSTAMP:20260927T002535Z
 DTSTART:20260923T231335Z
 DTEND:20260923T233335Z
-SUMMARY:[AI-Fleet-Coordinator] docs(agent-sync): no merge while Codex revie
+SUMMARY:[AI-Fleet-Coordinator] docs(simple-tools): no merge while Codex revie
  w is pending (owner ruling 2026-09-23) (#281)
-DESCRIPTION:Repo: AI-Fleet-Coordinator\nCommit: 1ca3c991\ndocs(agent-sync):
+DESCRIPTION:Repo: AI-Fleet-Coordinator\nCommit: 1ca3c991\ndocs(simple-tools):
   no merge while Codex review is pending (owner ruling 2026-09-23) (#281)\n
  https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/commit/1ca3c99161b
  510c99ed9448d88fe0dab8f8a73d4

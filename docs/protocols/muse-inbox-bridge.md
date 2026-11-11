@@ -14,7 +14,7 @@ explicitly cut over.  Deploying this code alone does not change CLAUDE's Muse pi
 2. The Mac bridge reads Mac inboxes directly.  For server seats it uses the existing ssh path to
    the target its own module resolves, which is private deployment inventory tracked under
    AFC-505 and not the `HOUSEKEEPER_SSH_ALIAS` knob the other tools use, and the one fixed Coolify
-   application ID to call `agent_sync.muse_bridge export` inside the listener container.  That ID is
+   application ID to call `simple_tools.muse_bridge export` inside the listener container.  That ID is
    operator-owned runtime configuration:  the operator's own listener config carries it as
    `muse_bridge.remote_app`, and the bridge refuses to run without it.  Export
    sends at most eight classified rows per seat, with content capped at
@@ -26,7 +26,7 @@ explicitly cut over.  Deploying this code alone does not change CLAUDE's Muse pi
    nudge and checks the same seat for a private DM, low risk for a peer, source pause, exact host,
    platform, workspace, and wake capability.  A model cannot choose a command, endpoint, host, bot
    key, or arbitrary role.  Unknown, stale, read-only, and ambiguous destinations are held.
-4. The Mac returns a source-qualified decision through `agent_sync.muse_bridge submit` over the same
+4. The Mac returns a source-qualified decision through `simple_tools.muse_bridge submit` over the same
    SSH path.  The server reopens its own inbox row, checks the seat, message ID, sequence, pause,
    loop guard, and configured routine.  A native approval is claimed durably before its original
    `SeatRunner` invokes the original routine with that seat's credentials and existing budget gate.
@@ -44,6 +44,8 @@ metadata in a bounded prompt, while its subprocess has no launcher seat and no t
 does the original seat's write.  A source-qualified key prevents the same Zulip message addressed
 to two bots from collapsing into one decision or chat nudge.
 
+**The consult under the owner's ruling (owner, Nov 7, 2026).**  "Wake agent should use operator for headless agent when needed only if unable to determine with deterministic code, and then should use a preset I made on openrouter."  The bridge consult is a model start of that kind.  Today it is the pinned Muse call above, or, while an operator has declared the AFC-649 known-cap mode (`[muse_bridge] consult_backup`, absent by default, with no expiry unless the operator gives an optional `review_by` time, past which every consult holds), one tool-less OpenRouter call to the declared model or `@preset/` reference.  A declaration needs `runtime = "openrouter"`, `model`, `reason` and `declared_at`;  an `@preset/` model also needs a non-empty `expected_models` list of plain `provider/name` ids, compared exactly with the models the preset serves.  A declaration without them, or with a preset reference inside `expected_models`, is misconfigured and holds every consult.  PR #1506 stamps every bridge decision with a record-only gate verdict (`gate`, `gate_avoidable`) and logs one `model-gate` event per consult that starts a model;  it changes no decision.  Making the owner's preset the consult's standing runtime is pending Phase 2:  it is one of AA's readings of the owner's lines that PR #1506 lists, not a ruling.  ECHO's candidate, `@preset/operator-inbox-router` version 3, was held when this was written.  The Mac's `listener.toml` declares it as the bridge consult backup (`[muse_bridge] consult_backup`, the AFC-649 known-cap mode) since Nov 7, 2026, 10:14 PM, with the owner's Nov 6 line as the reason and no `review_by`.  That is the only place it is applied;  making it the consult's standing runtime is still pending Phase 2, and no release by ECHO's coordinator is recorded in the repository.
+
 ## Activation Gate
 
 Configuration is local and remains off in the shipped sample.  On the Mac, set
@@ -60,9 +62,9 @@ operator must run the bridge canary and inspect the result, then pin the fresh c
 
 ```sh
 cd scripts
-python3 -m agent_sync.muse_bridge_mac probe
-python3 -m agent_sync.muse_bridge_mac pin
-python3 -m agent_sync.muse_bridge_mac status
+python3 -m simple_tools.muse_bridge_mac probe
+python3 -m simple_tools.muse_bridge_mac pin
+python3 -m simple_tools.muse_bridge_mac status
 ```
 
 These commands are **not** part of deployment and were not run for this change.  If the binary,
@@ -120,12 +122,12 @@ Echo-owned wake-capable chat.  The DM ownership gate therefore produces a visibl
 it cannot be redirected to a GROK or CURSOR chat.  A public Echo mention may choose a listed,
 fresh chat of another seat.  Adding an Echo-owned adapter is a separate delivery task.
 
-The protocol is source-generic for the configured Mac and server seats.  Grok Bot personas can
+The protocol is source-generic for the configured Mac and server seats.  Grok Bot seats can
 offer their existing HTTP routine as a fixed delivery resource when explicitly cut over, keeping
 their original role credentials, routine and listener budget.  JET, the remaining server cloud
 seats, and other Mac seats require separate activation evidence.  The existing CLAUDE Muse path
 continues as is unless deliberately moved.  BotFleet is a separate listener: its native
 `ZulipSession.poll` → `hub.handleMessage` → persisted per-role queue → `dispatchNext/startTurn`
 path needs a separate Muse admission adapter after classification and before `startTurn`.  This
-change creates no second BotFleet Agent-Sync queue and does not use outgoing callbacks as its
+change creates no second BotFleet Simple-Tools queue and does not use outgoing callbacks as its
 primary intake.

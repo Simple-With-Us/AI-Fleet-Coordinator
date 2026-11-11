@@ -23,7 +23,7 @@ No token is read into this process: the simple-chat CLI resolves each seat's own
 Zulip credential, and the read side takes either an explicit --rc file of the caller's own or
 the fleet reader bot's key from Infisical Fleet-OPS /zulip (`fleet-secrets get`, AFC-359).
 State (last comment id, Zulip message-id cursor) lives in
-~/.agent-sync/outbox-bridge-<SEAT>.json.
+~/.simple-tools/outbox-bridge-<SEAT>.json.
 Config: ~/apps/github-outbox-bridge.json
     {"seats": [{"seat": "INSTINCT", "repo": "Simple-With-Us/fleet-ops", "issue": 12}]}
 or one seat from the CLI (--seat --repo --issue).  --once for a launchd
@@ -58,14 +58,14 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None
 
-CHANNEL_DEFAULT = "work-in-progress"  # the channel the owner renamed #agent-sync to on 2026-10-22
+CHANNEL_DEFAULT = "work-in-progress"
 TOPIC_DEFAULT = "outbox"
 READ_AS_DEFAULT = "CLAUDE"  # Infisical /zulip keys <BOT>_ZULIP_EMAIL / _KEY / _SITE
 FLEET_SECRETS_BIN = os.environ.get("FLEET_SECRETS_BIN") or str(
     Path.home() / ".local" / "bin" / "fleet-secrets"
 )
 CONFIG_DEFAULT = Path.home() / "apps" / "github-outbox-bridge.json"
-STATE_DIR_DEFAULT = Path.home() / ".agent-sync"
+STATE_DIR_DEFAULT = Path.home() / ".simple-tools"
 BRIDGE_MARKER = "<!-- outbox-bridge:"
 URGENT = ("OBJECTION", "HALT", "PROD DOWN", "URGENT", "HEADS-UP", "DEPLOY CLAIM")
 MAX_OUTBOUND_CHARS = 12000  # keep the post well inside Zulip's message limit
@@ -111,9 +111,9 @@ def load_env_tokens(path: Path) -> dict:
 def _own_intro_re(seat: str):
     """Legacy [SEAT]/[SEAT->]/[SEAT·...] or folder-tag intros for this seat (Policy 2026-11-05)."""
     s = re.escape(seat)
-    # Optional leading 👀, then either a tight legacy tag or a spaced folder-tag intro.
+    # Optional leading 👀 or :eyes:, then a tight legacy tag or a folder-tag intro.
     return re.compile(
-        r"^(?:👀\s*)?(?:"
+        r"^(?:(?:👀|:eyes:)\s*)?(?:"
         r"\[" + s + r"(?:\]|->|·)"
         r"|"
         r"\[\s*" + s + r"(?:\s*:\s*[A-Za-z0-9]+(?:[.-]\d+[.-][MSC]|-\d+-[MSC]))?\s+📁"
@@ -126,6 +126,35 @@ def _first_content_line(text: str) -> str:
         if line.strip():
             return line.strip()
     return ""
+
+
+# A folder code is a repo token.  FLEET is never one (it is the fleet wake);
+# OPS is Fleet-OPS and counts.  Empty segments and non-tokens are malformed.
+_FOLDER_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+
+
+def _folder_repo_codes(intro_span: str):
+    """Real repo codes inside a closed intro, or None when the tag has no 📁.
+
+    An empty list means 📁 is present but the list is empty or malformed.
+    A body `repo:` line must not salvage that.  FLEET is dropped and does
+    not count; at least one other code is required.
+    """
+    if "📁" not in intro_span:
+        return None
+    after = intro_span.split("📁", 1)[1]
+    after = re.split(r"\s*(?:→|->)", after, maxsplit=1)[0]
+    after = after.split("]", 1)[0].strip()
+    if not after:
+        return []
+    real = []
+    for part in (piece.strip() for piece in after.split(",")):
+        if not _FOLDER_TOKEN_RE.match(part):
+            return []
+        if part.upper() == "FLEET":
+            continue
+        real.append(part)
+    return real
 
 
 def header_error(text: str, seat: str):
@@ -143,12 +172,15 @@ def header_error(text: str, seat: str):
     has_folder_repos = False
     # Folder-tag intros: only treat 📁 inside the matched intro span as a folder list
     # (a 📁 later on the first line, e.g. in a legacy-tag subject, must not trigger this).
+    # They must close with ] on the first line; a body repo: must not salvage.
     if intro and "📁" in intro.group():
         if first.find("]", intro.start()) < 0:
             return "folder-tag intro must close with ] on the first line"
         tag_end = first.find("]", intro.start())
         intro_span = first[intro.start() : tag_end + 1]
-        if not _folder_list_ok(intro_span):
+        # Empty or malformed 📁 (including FLEET-only) is rejected even when a
+        # later line carries repo:.  That line does not repair the intro.
+        if not _folder_repo_codes(intro_span):
             return "repo: <project> must be the first body line"
         has_folder_repos = True
     has_repo_line = any(re.match(r"^\s*repo:\s*\S", line) for line in lines[1:6])
@@ -161,21 +193,6 @@ def header_error(text: str, seat: str):
     if len(text) > MAX_OUTBOUND_CHARS:
         return "longer than %d characters" % MAX_OUTBOUND_CHARS
     return None
-
-
-def _folder_list_ok(intro_span: str) -> bool:
-    """True when a closed intro tag's 📁 list has ≥1 real repo token and no empty commas.
-
-    Tokens are taken after 📁 and before → / -> / ]. Each comma-separated piece must be
-    non-empty and start with a letter or digit (rejects empty 📁, 📁→peers, 📁,, trailing ,).
-    """
-    m = re.search(r"📁(.*?)(?:→|->|\])", intro_span)
-    if not m:
-        return False
-    tokens = [t.strip() for t in m.group(1).split(",")]
-    if not tokens or any(t == "" for t in tokens):
-        return False
-    return all(re.match(r"^[A-Za-z0-9]", t) for t in tokens)
 
 
 def _looks_like_status_body(first_line: str, body_lines) -> bool:
@@ -810,7 +827,6 @@ def main(argv=None) -> int:
     seats = load_seats(args)
     # The simple-chat CLI resolves each seat's own Zulip credential for posting;  the read client
     # takes an explicit --rc file or the --read-as bot's key from Infisical /zulip (AFC-359).
-    # The old AGENT_SYNC_ENV / SLACK_BOT_TOKEN route is retired.
     zulip_read = ZulipClient(args.rc, bot=args.read_as) if args.read_history else None
     if args.read_history and zulip_read is None and not args.dry_run:
         log(

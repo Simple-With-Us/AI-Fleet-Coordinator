@@ -19,6 +19,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -83,7 +84,7 @@ DEFAULT_PAGE = [
 
 
 class FakeScanner:
-    """Stands in for scripts/agent_sync/secretscan.py:  flags any string containing a known token."""
+    """Stands in for scripts/simple_tools/secretscan.py:  flags any string containing a known token."""
 
     def scan(self, value, known=()):
         for token in known:
@@ -825,9 +826,9 @@ class TestValidationAndScanning(unittest.TestCase):
         self.assertEqual([c[0] for c in t.calls], ["identities"])  # the target call never left
 
     def test_scanner_missing_fails_closed(self):
-        # The real scripts/agent_sync/secretscan.py is not in this repository:  loading must fail closed.
+        # The real scripts/simple_tools/secretscan.py is not in this repository:  loading must fail closed.
         scanner_path = (
-            Path(os.path.realpath(str(IMPL))).parent.parent / "agent_sync" / "secretscan.py"
+            Path(os.path.realpath(str(IMPL))).parent.parent / "simple_tools" / "secretscan.py"
         )
         if scanner_path.is_file():
             self.skipTest("the real scanner is present here; the fail-closed path is unreachable")
@@ -959,6 +960,125 @@ class TestOutcomes(unittest.TestCase):
         self.assertIn("outcome_unknown", err)
         self.assertNotIn("may or may not have been applied", err)
 
+    def _refused(self, sc):
+        t = FakeTransport(
+            call_results={
+                "gr_wf_issue_create": {
+                    "isError": True,
+                    "structuredContent": sc,
+                    "content": [{"type": "text", "text": "x"}],
+                }
+            }
+        )
+        code, out, err = run_cli(
+            ["call", "gr_wf_issue_create", "--args-json", '{"title":"t"}'],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=t,
+        )
+        self.assertEqual(code, 1, err)
+        return err
+
+    def test_relay_refused_shows_closed_reason_and_github_status(self):
+        err = self._refused(
+            {
+                "code": "relay_refused",
+                "reason": "github_refused",
+                "github_status": 404,
+                "message": "SECRETBODY",
+            }
+        )
+        self.assertIn("relay_refused (reason=github_refused, github_status=404)", err)
+        self.assertNotIn("SECRETBODY", err)
+
+    def test_relay_refused_seat_policy_reason_without_status(self):
+        err = self._refused({"code": "relay_refused", "reason": "seat_policy"})
+        self.assertIn("relay_refused (reason=seat_policy)", err)
+        self.assertNotIn("github_status", err)
+
+    def test_relay_refused_unknown_reason_and_bad_status_are_not_shown(self):
+        err = self._refused({"code": "relay_refused", "reason": "echo SECRETINPUT"})
+        self.assertNotIn("SECRETINPUT", err)
+        self.assertNotIn("reason=", err)
+        for bad in (200, 429, 500, True, "404", 99999):
+            err = self._refused(
+                {"code": "relay_refused", "reason": "github_refused", "github_status": bad}
+            )
+            self.assertIn("(reason=github_refused)", err)
+            self.assertNotIn("github_status", err)
+
+    def test_relay_refused_repository_moved_names_only_a_valid_new_slug(self):
+        # OPS-1036:  an old slug of a transferred repo names where it went, never free text.
+        err = self._refused(
+            {
+                "code": "relay_refused",
+                "reason": "repository_moved",
+                "moved_to": "new-owner/fixture-repo",
+                "repository_id": 1000001,
+            }
+        )
+        self.assertIn(
+            "relay_refused (reason=repository_moved, moved_to=new-owner/fixture-repo)", err
+        )
+        for bad in ("evil/../x", "a/b c", "ignore SECRETINPUT", 7):
+            err = self._refused(
+                {"code": "relay_refused", "reason": "repository_moved", "moved_to": bad}
+            )
+            self.assertIn("(reason=repository_moved)", err)
+            self.assertNotIn("moved_to", err)
+            self.assertNotIn("SECRETINPUT", err)
+
+    def test_refusal_reason_set_matches_the_hosted_front_source(self):
+        # Drift guard:  the CLI's closed set must equal the hosted front's REFUSAL_REASONS
+        # (gr-refusal.js: the base reasons plus every distinct BAD_REQUEST_REASONS value).
+        import re
+
+        root = Path(__file__).resolve().parent.parent
+        src_path = root / "simple-tools-mcp" / "src" / "gr-refusal.js"
+        if not src_path.exists():
+            self.skipTest("hosted front source not in this checkout")
+        src = src_path.read_text(encoding="utf-8")
+        base = re.search(r"REFUSAL_BASE_REASONS = Object\.freeze\(\[(.*?)\]\)", src, re.DOTALL)
+        bad = re.search(r"BAD_REQUEST_REASONS = new Map\(\[(.*?)\]\);", src, re.DOTALL)
+        self.assertTrue(base and bad)
+        want = set(re.findall(r'"([a-z_]+)"', base.group(1)))
+        want |= set(re.findall(r'"[^"]+",\s*"(bad_request_[a-z_]+)"', bad.group(1)))
+        self.assertEqual(set(git._REFUSAL_REASONS), want)
+
+    def test_relay_refused_without_reason_is_unchanged(self):
+        err = self._refused({"code": "relay_refused"})
+        self.assertIn("failed on the hosted server: relay_refused", err)
+        self.assertNotIn("reason=", err)
+
+    def test_reason_from_another_candidate_is_not_attributed(self):
+        # structuredContent says relay_refused with no reason;  a reason in a different object
+        # (the first text part) must not be shown as this refusal's cause.
+        t = FakeTransport(
+            call_results={
+                "gr_wf_issue_create": {
+                    "isError": True,
+                    "structuredContent": {"code": "relay_refused"},
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps({"code": "upstream_error", "reason": "seat_policy"}),
+                        }
+                    ],
+                }
+            }
+        )
+        code, out, err = run_cli(
+            ["call", "gr_wf_issue_create", "--args-json", '{"title":"t"}'],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=t,
+        )
+        self.assertEqual(code, 1, err)
+        self.assertIn("relay_refused", err)
+        self.assertNotIn("reason=", err)
+
+    def test_reason_is_shown_only_for_relay_refused(self):
+        err = self._refused({"code": "upstream_error", "reason": "seat_policy"})
+        self.assertNotIn("reason=", err)
+
     def test_rate_limited_shows_bounded_retry_after(self):
         t = FakeTransport(
             call_results={
@@ -1062,6 +1182,77 @@ class TestOutcomes(unittest.TestCase):
         parsed = json.loads(out)
         self.assertIn("structured", parsed)
         self.assertIn("text", parsed)
+
+    def test_pinned_read_set_matches_worker_read_actions(self):
+        # Drift guard:  the pinned reviewed read set must equal the Worker's WF_V1_READ_ACTIONS
+        # (gr-workflow-v1.js).  1629 and 1638 shipped read verbs this set did not name, and the
+        # mismatch was only caught by hand.
+        src = (IMPL.parent.parent / "simple-tools-mcp" / "src" / "gr-workflow-v1.js").read_text()
+        m = re.search(r"WF_V1_READ_ACTIONS\s*=\s*Object\.freeze\(\[([^\]]*)\]\)", src)
+        self.assertIsNotNone(m, "gr-workflow-v1.js WF_V1_READ_ACTIONS export not found")
+        worker = set(re.findall(r"'([a-z0-9_]+)'", m.group(1)))
+        self.assertTrue(worker)
+        self.assertEqual(
+            set(git.WF_V1_READ_ACTIONS),
+            worker,
+            "client pinned read set drifted from gr-workflow-v1.js WF_V1_READ_ACTIONS",
+        )
+        # The catalog exporter pins the same set for its read/write tags;  it drifts too.
+        src = (IMPL.parent / "export_catalog.py").read_text()
+        m = re.search(r"WF_V1_READ_ACTIONS\s*=\s*\[([^\]]*)\]", src)
+        self.assertIsNotNone(m, "export_catalog.py WF_V1_READ_ACTIONS list not found")
+        exporter = set(re.findall(r'"([a-z0-9_]+)"', m.group(1)))
+        self.assertEqual(
+            set(git.WF_V1_READ_ACTIONS),
+            exporter,
+            "export_catalog.py pinned read set drifted from the client reviewed read set",
+        )
+
+    def test_new_read_verbs_classify_as_reads(self):
+        for name in (
+            "gr_wf_repo_list",
+            "gr_wf_pr_search",
+            "gr_wf_repo_hooks",
+            "gr_wf_deploy_keys",
+            "gr_wf_org_installations",
+            "gr_wf_branch_rules",
+            "gr_wf_rulesets",
+        ):
+            self.assertIn(name, git.READ_TOOLS, name)
+
+    def test_read_verb_near_misses_stay_writes(self):
+        # Boundary:  look-alike names that are not the reviewed verbs must not classify as reads.
+        for name in (
+            "gr_wf_repo_hook",  # singular of a pinned verb
+            "gr_wf_repo_hooks_write",  # pinned name as a prefix
+            "gr_wf_repo_hooks_page",
+            "gr_wf_deploy_key",
+            "gr_wf_org_installation",
+            "gr_wf_pr_search_page",
+            "gr_wf_repo_lists",
+        ):
+            self.assertNotIn(name, git.READ_TOOLS, name)
+
+    def test_pinned_read_verb_failure_has_no_write_uncertainty(self):
+        # gr_wf_repo_hooks IS in the reviewed read set:  its failures are plain read failures,
+        # never write-uncertainty wording.
+        t = FakeTransport(
+            pages=[[make_tool("gr_wf_repo_hooks", None, "list repository webhooks")]],
+            call_results={
+                "gr_wf_repo_hooks": {
+                    "isError": True,
+                    "structuredContent": {"code": "outcome_unknown"},
+                    "content": [{"type": "text", "text": "lost"}],
+                }
+            },
+        )
+        code, out, err = run_cli(
+            ["call", "gr_wf_repo_hooks", "--args-json", "{}"],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=t,
+        )
+        self.assertEqual(code, 1)
+        self.assertNotIn("may or may not have been applied", err)
 
 
 class TestNoCallerEcho(unittest.TestCase):
@@ -1539,6 +1730,34 @@ class TestReview1199(unittest.TestCase):
         for pattern, value in positive.items():
             self.assertTrue(git._patterns_match([(pattern, value)], time.monotonic() + 5), pattern)
 
+    def test_the_typed_tools_repo_pattern_is_reviewed_and_runs_in_the_child(self):
+        # gr_v1_pr_state, gr_v1_pr_hold_state and gr_v1_pr_automerge_disable (listed only when GR_TYPED_TOOLS is on) carry this
+        # repo pattern, whose repeats are unbounded.  It is in the reviewed set because it is linear:  one character class, a
+        # literal slash neither class holds, one character class.  This runs it through the same child as every pattern.
+        pattern = r"^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$"
+        self.assertTrue(git._pattern_known(pattern))
+        for good in ("acme/widgets", "Example-Org/Example-Repo", "a.b/c_d-e"):
+            self.assertTrue(git._patterns_match([(pattern, good)], time.monotonic() + 5), good)
+        for bad in ("acme", "acme/", "/widgets", "acme/wid gets", "a/b/c", "acme/widgéts", ""):
+            self.assertFalse(git._patterns_match([(pattern, bad)], time.monotonic() + 5), repr(bad))
+        # the worst input the client accepts (its input limit is 65,536 characters) stays far inside the bound
+        start = time.monotonic()
+        worst = "A" * 32767 + "/" + "A" * 32766 + "!"
+        self.assertFalse(git._patterns_match([(pattern, worst)], start + 5))
+        self.assertLess(time.monotonic() - start, 2)
+        # and the input schema those tools advertise is one simple-git reads
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["repo", "number", "expected_head"],
+            "properties": {
+                "repo": {"type": "string", "pattern": pattern},
+                "number": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+                "expected_head": {"type": "string", "pattern": r"^[0-9a-f]{40}$"},
+            },
+        }
+        self.assertTrue(git._schema_ok(schema))
+
     def test_call_with_an_unrecognized_pattern_never_reaches_the_child(self):
         # an unreviewed pattern makes the schema unreadable at discovery: no fork, no target call
         schema = {
@@ -1919,6 +2138,77 @@ class TestReview1199(unittest.TestCase):
         )
         self.assertIn(git._REMOTE_UNKNOWN, git._failure(exc, True))
 
+    # AFC-638:  a response that arrived without an exposed raw socket must be
+    # read, not discarded, and a sent request whose answer is lost must not be
+    # reported as "could not be reached".
+    def _remote_post_without_sock(self, chunks, headers, fp="raw-none"):
+        chunks = list(chunks)
+
+        class Response:
+            status = 200
+
+            def __init__(self):
+                self.headers = headers
+                self.chunked = False
+                if fp == "raw-none":
+                    self.fp = types.SimpleNamespace(raw=types.SimpleNamespace(_sock=None))
+                elif fp == "no-raw":
+                    self.fp = types.SimpleNamespace()
+                else:
+                    self.fp = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read1(self, size):
+                if chunks:
+                    return chunks.pop(0)
+                return b""
+
+        class FakeOpener:
+            def open(self, req, timeout=None):
+                return Response()
+
+        with mock.patch.object(git.urllib.request, "build_opener", lambda *handlers: FakeOpener()):
+            return git._remote_post(git.REMOTE_MCP_URL, {}, b"{}", 5)
+
+    def test_response_without_a_socket_returns_its_body(self):
+        body = b'{"jsonrpc":"2.0","id":1,"result":{}}'
+        for fp in ("raw-none", "no-raw", "none"):
+            (status, ctype, raw) = self._remote_post_without_sock(
+                [body[:10], body[10:], b""],
+                {
+                    "Content-Type": "application/json",
+                    "Content-Length": str(len(body)),
+                    "Connection": "close",
+                },
+                fp=fp,
+            )
+            self.assertEqual((status, raw), (200, body), fp)
+
+    def test_response_without_a_socket_unknown_length_reads_to_eof(self):
+        (status, ctype, raw) = self._remote_post_without_sock(
+            [b"abc", b""], {"Content-Type": "application/json", "Connection": "close"}
+        )
+        self.assertEqual((status, ctype, raw), (200, "application/json", b"abc"))
+
+    def test_sent_failure_says_the_answer_was_lost_not_unreachable(self):
+        for reason in ("transport", "deadline", "unreachable"):
+            read_msg = git._failure(git._TransportError(True, reason), False)
+            self.assertIn("answer was lost", read_msg, reason)
+            self.assertNotIn("could not be reached", read_msg, reason)
+            write_msg = git._failure(git._TransportError(True, reason), True)
+            self.assertIn("answer was lost", write_msg, reason)
+            self.assertIn(git._REMOTE_UNKNOWN, write_msg, reason)
+
+    def test_unsent_failure_still_says_could_not_be_reached(self):
+        msg = git._failure(git._TransportError(False, "unreachable"), True)
+        self.assertIn("could not be reached", msg)
+        self.assertNotIn("may or may not have been applied", msg)
+
     # 5. The program name cannot carry newline/tab into stderr lines.
     def test_prog_escapes_newline_and_tab(self):
         with mock.patch.dict(os.environ, {"SIMPLE_GIT_ARGV0": "evil\nname\there"}):
@@ -1957,10 +2247,12 @@ class TestReview1199(unittest.TestCase):
         self.assertTrue(git._type_ok({"type": "array", "minItems": 0, "maxItems": 2}, [1]))
 
 
-REAL_SCANNER = Path(os.path.realpath(str(IMPL))).parent.parent / "agent_sync" / "secretscan.py"
+REAL_SCANNER = Path(os.path.realpath(str(IMPL))).parent.parent / "simple_tools" / "secretscan.py"
 
 
-@unittest.skipUnless(REAL_SCANNER.is_file(), "scripts/agent_sync/secretscan.py not available here")
+@unittest.skipUnless(
+    REAL_SCANNER.is_file(), "scripts/simple_tools/secretscan.py not available here"
+)
 class TestRealSharedScanner(unittest.TestCase):
     """The actual fleet scanner, loaded exactly the way the implementation loads it."""
 
@@ -1999,6 +2291,272 @@ class TestRealSharedScanner(unittest.TestCase):
             scanner="real",
         )
         self.assertEqual(code, 0, err)
+
+
+class TestReadiness(unittest.TestCase):
+    def fixture(self):
+        self.head = "a" * 40
+        self.base = "b" * 40
+        self.calls = []
+        self.data = {
+            "gr_wf_pr_get": {
+                "pull": {
+                    "number": 1,
+                    "head": {"sha": self.head},
+                    "base": {"sha": self.base},
+                    "state": "open",
+                    "merged": False,
+                    "draft": False,
+                    "mergeable": True,
+                    "mergeable_state": "clean",
+                }
+            },
+            "gr_wf_review_threads": {
+                "threads": {"nodes": [], "pageInfo": {"hasNextPage": False, "endCursor": None}}
+            },
+            "gr_wf_checks": {
+                "checks": [
+                    {
+                        "id": 1,
+                        "name": "ci",
+                        "head_sha": self.head,
+                        "status": "completed",
+                        "conclusion": "success",
+                    }
+                ],
+                "complete": True,
+            },
+            "gr_wf_commit_statuses": {"statuses": [], "complete": True},
+            "gr_wf_pr_reviews_page": {
+                "number": 1,
+                "head_sha": self.head,
+                "page": 1,
+                "has_more": False,
+                "reviews": [
+                    {"id": 1, "author": {"id": 9}, "state": "APPROVED", "commit_id": self.head}
+                ],
+            },
+        }
+
+        def read(name, args):
+            self.calls.append((name, args))
+            value = self.data[name]
+            if callable(value):
+                return value(args)
+            return value
+
+        self.read = read
+        return self
+
+    def run_report(self):
+        return git.collect_readiness(self.read, "Owner/Repo", 1)
+
+    def test_clean_report_is_not_merge_authority(self):
+        self.fixture()
+        r = self.run_report()
+        self.assertEqual(r["verdict"], "observed_checks_passed")
+        self.assertTrue(r["complete"])
+        self.assertFalse(r["merge_authorized"])
+        self.assertEqual(r["github_block_reason"], "unknown")
+        self.assertTrue(all(name in git.READ_TOOLS for name, _ in self.calls))
+
+    def test_issue_comments_cannot_be_threads(self):
+        self.fixture()
+        self.data["gr_wf_review_threads"] = {"comments": []}
+        r = self.run_report()
+        self.assertEqual(r["verdict"], "unknown")
+        self.assertNotIn("review_threads", r)
+
+    def test_exhausts_review_thread_connection_and_counts_outdated_open(self):
+        self.fixture()
+
+        def threads(args):
+            second = args.get("cursor") == "next"
+            return {
+                "threads": {
+                    "nodes": [
+                        {
+                            "id": "t2" if second else "t1",
+                            "isResolved": not second,
+                            "isOutdated": second,
+                        }
+                    ],
+                    "pageInfo": {
+                        "hasNextPage": not second,
+                        "endCursor": None if second else "next",
+                    },
+                }
+            }
+
+        self.data["gr_wf_review_threads"] = threads
+        r = self.run_report()
+        self.assertEqual(r["review_threads"]["total"], 2)
+        self.assertEqual(r["review_threads"]["unresolved"][0]["id"], "t2")
+        self.assertEqual(r["verdict"], "blocked")
+
+    def test_duplicate_thread_and_cursor_fail_closed(self):
+        self.fixture()
+        self.data["gr_wf_review_threads"] = {
+            "threads": {"nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": "loop"}}
+        }
+        self.assertEqual(self.run_report()["verdict"], "unknown")
+        self.data["gr_wf_review_threads"]["threads"]["nodes"] = [
+            {"id": "t", "isResolved": True, "isOutdated": False}
+        ] * 2
+        self.assertEqual(self.run_report()["verdict"], "unknown")
+
+    def test_page_bound_fails_closed(self):
+        self.fixture()
+
+        def threads(args):
+            return {
+                "threads": {
+                    "nodes": [],
+                    "pageInfo": {
+                        "hasNextPage": True,
+                        "endCursor": (args.get("cursor") or "") + "x",
+                    },
+                }
+            }
+
+        self.data["gr_wf_review_threads"] = threads
+        r = git.collect_readiness(self.read, "Owner/Repo", 1, max_pages=2)
+        self.assertFalse(r["complete"])
+        self.assertIn("review-thread page bound reached", r["unknowns"])
+
+    def test_checks_incomplete_unknown_wrong_head_and_empty(self):
+        for value in (False, "unknown", 1):
+            self.fixture()
+            self.data["gr_wf_checks"]["complete"] = value
+            self.assertEqual(self.run_report()["verdict"], "unknown")
+        self.fixture()
+        self.data["gr_wf_checks"]["checks"][0]["head_sha"] = self.base
+        self.assertEqual(self.run_report()["verdict"], "unknown")
+        self.fixture()
+        self.data["gr_wf_checks"]["checks"] = []
+        self.assertEqual(self.run_report()["verdict"], "unknown")
+
+    def test_pending_and_failure_checks_block(self):
+        for status, conclusion in [("in_progress", None), ("completed", "failure")]:
+            self.fixture()
+            self.data["gr_wf_checks"]["checks"][0].update(status=status, conclusion=conclusion)
+            self.assertEqual(self.run_report()["verdict"], "blocked")
+
+    def test_head_or_base_change_requires_new_report(self):
+        import copy
+
+        for side in ("head", "base"):
+            self.fixture()
+            count = [0]
+            original = self.data["gr_wf_pr_get"]
+
+            def pull(args):
+                count[0] += 1
+                value = copy.deepcopy(original)
+                if count[0] > 1:
+                    value["pull"][side]["sha"] = "c" * 40
+                return value
+
+            self.data["gr_wf_pr_get"] = pull
+            self.assertEqual(self.run_report()["verdict"], "unknown")
+
+    def test_expected_head_mismatch_stops_before_threads(self):
+        self.fixture()
+        r = git.collect_readiness(self.read, "Owner/Repo", 1, "c" * 40)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(r["verdict"], "unknown")
+
+    def test_reviews_paginate_and_changes_requested_block(self):
+        self.fixture()
+
+        def reviews(args):
+            p = args["page"]
+            return {
+                "number": 1,
+                "head_sha": self.head,
+                "page": p,
+                "has_more": p == 1,
+                "reviews": [
+                    {
+                        "id": p,
+                        "author": {"id": p},
+                        "commit_id": self.head,
+                        "state": "APPROVED" if p == 1 else "CHANGES_REQUESTED",
+                    }
+                ],
+            }
+
+        self.data["gr_wf_pr_reviews_page"] = reviews
+        self.assertEqual(self.run_report()["verdict"], "blocked")
+
+    def test_no_current_review_and_truncated_statuses_unknown(self):
+        self.fixture()
+        self.data["gr_wf_pr_reviews_page"]["reviews"][0]["commit_id"] = self.base
+        self.assertEqual(self.run_report()["verdict"], "unknown")
+        self.fixture()
+        self.data["gr_wf_commit_statuses"]["complete"] = False
+        self.assertEqual(self.run_report()["verdict"], "unknown")
+
+    def test_newest_status_context_wins(self):
+        self.fixture()
+        self.data["gr_wf_commit_statuses"]["statuses"] = [
+            {"context": "ci", "state": "success"},
+            {"context": "ci", "state": "failure"},
+        ]
+        self.assertEqual(self.run_report()["verdict"], "observed_checks_passed")
+
+    def test_github_blocked_does_not_invent_specific_reason(self):
+        self.fixture()
+        self.data["gr_wf_pr_get"]["pull"]["mergeable_state"] = "blocked"
+        r = self.run_report()
+        self.assertEqual(r["verdict"], "blocked")
+        self.assertEqual(r["github_block_reason"], "unknown")
+
+    def test_closed_and_draft_block(self):
+        for field, value in [("state", "closed"), ("draft", True), ("merged", True)]:
+            self.fixture()
+            self.data["gr_wf_pr_get"]["pull"][field] = value
+            self.assertEqual(self.run_report()["verdict"], "blocked")
+
+    def test_decisive_review_uses_id_not_fetch_order(self):
+        for reverse in (True, False):
+            self.fixture()
+            rows = [
+                dict(id=10, author={"id": 9}, state="APPROVED", commit_id=self.head),
+                dict(id=20, author={"id": 9}, state="CHANGES_REQUESTED", commit_id=self.head),
+            ]
+            self.data["gr_wf_pr_reviews_page"]["reviews"] = (
+                list(reversed(rows)) if reverse else rows
+            )
+            self.assertEqual(self.run_report()["verdict"], "blocked")
+
+    def test_validation_and_actor_refusals_produce_unknown_json(self):
+        from types import SimpleNamespace
+
+        for failed in ("validate_arguments", "resolve_actor", "remote_call"):
+            with (
+                mock.patch.object(git, "validate_arguments"),
+                mock.patch.object(git, "resolve_actor", side_effect=lambda e, a, *x: a),
+                mock.patch.object(git, "remote_call"),
+                mock.patch.object(git, failed, side_effect=SystemExit(1)),
+            ):
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    status = git.cmd_readiness(
+                        {"gr_wf_pr_get": {"read": True}},
+                        SimpleNamespace(repo="Owner/Repo", number=1, expected_head=None),
+                        "bearer",
+                        "WISE",
+                        None,
+                    )
+                self.assertEqual(status, 1)
+                self.assertEqual(json.loads(output.getvalue())["verdict"], "unknown")
+
+    def test_parser_report_only(self):
+        a = git.build_parser().parse_args(
+            ["readiness", "Owner/Repo", "1", "--expected-head", "a" * 40]
+        )
+        self.assertEqual(a.cmd, "readiness")
 
 
 if __name__ == "__main__":
@@ -2130,3 +2688,181 @@ class TestPublishRerunTrustsLiveTree(unittest.TestCase):
         puts = [args for name, args in transport.calls if name == "gr_wf_files_put"]
         self.assertEqual(puts, [], transport.calls)
         self.assertIn("already committed by an earlier run", out)
+
+
+DISPATCH_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["repo", "workflow", "ref", "identity"],
+    "properties": {
+        "repo": {"type": "string"},
+        "workflow": {"type": "string"},
+        "ref": {"type": "string"},
+        "inputs": {
+            "type": "object",
+            "maxProperties": 32,
+            "additionalProperties": {
+                "anyOf": [
+                    {"type": "string", "maxLength": 1024},
+                    {"type": "number"},
+                    {"type": "boolean"},
+                ]
+            },
+        },
+        "intent_id": {"type": "string", "pattern": r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}$"},
+        "expected_head_sha": {"type": "string", "pattern": r"^[0-9a-f]{40}$"},
+        "identity": {"type": "string", "enum": ["ECHO"]},
+    },
+}
+
+
+def dispatch_entry():
+    return {
+        "name": "gr_workflow_dispatch",
+        "read": False,
+        "input_bytes": 65536,
+        "schema": json.loads(json.dumps(DISPATCH_SCHEMA)),
+    }
+
+
+DISPATCH_BASE = {"repo": "o/r", "workflow": "w.yml", "ref": "main", "identity": "ECHO"}
+
+
+class TestLeafAnyOf(unittest.TestCase):
+    """Fail-closed leaf-union semantics in _type_ok:  a recognized anyOf never falls through to a
+    looser reading, a malformed union (non-list, empty, non-dict variant) refuses, and sibling
+    constraints still apply to a matched variant - they intersect, never replace."""
+
+    def test_empty_any_of_refuses(self):
+        self.assertFalse(git._type_ok({"anyOf": []}, "x"))
+
+    def test_non_list_any_of_refuses(self):
+        self.assertFalse(git._type_ok({"anyOf": "string"}, "x"))
+
+    def test_non_dict_variant_refuses(self):
+        self.assertFalse(git._type_ok({"anyOf": [{"type": "string"}, 42]}, "x"))
+
+    def test_no_matching_variant_refuses(self):
+        self.assertFalse(git._type_ok({"anyOf": [{"type": "string"}]}, 5))
+
+    def test_bool_is_not_a_number_variant(self):
+        self.assertFalse(git._type_ok({"anyOf": [{"type": "number"}]}, True))
+
+    def test_sibling_type_still_applies(self):
+        self.assertFalse(git._type_ok({"type": "number", "anyOf": [{"type": "string"}]}, "abc"))
+        self.assertTrue(git._type_ok({"type": "string", "anyOf": [{"type": "string"}]}, "abc"))
+
+    def test_sibling_scalar_constraints_still_apply(self):
+        schema = {"anyOf": [{"type": "string"}], "maxLength": 3}
+        self.assertFalse(git._type_ok(schema, "abcd"))
+        self.assertTrue(git._type_ok(schema, "abc"))
+
+    def test_union_without_siblings_still_accepts(self):
+        schema = {
+            "anyOf": [
+                {"type": "string", "maxLength": 1024},
+                {"type": "number"},
+                {"type": "boolean"},
+            ]
+        }
+        self.assertTrue(git._type_ok(schema, "v"))
+        self.assertTrue(git._type_ok(schema, 1.5))
+        self.assertTrue(git._type_ok(schema, False))
+        self.assertFalse(git._type_ok(schema, None))
+
+    def test_annotation_only_siblings_add_no_check(self):
+        schema = {
+            "description": "an input value",
+            "anyOf": [{"type": "string"}, {"type": "number"}, {"type": "boolean"}],
+        }
+        self.assertTrue(git._type_ok(schema, 5))
+        self.assertTrue(git._type_ok(schema, True))
+        self.assertTrue(git._type_ok(schema, "v"))
+        self.assertFalse(git._type_ok(schema, None))
+
+    def test_a_definite_later_variant_wins_over_a_deferred_pattern(self):
+        schema = {
+            "anyOf": [
+                {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+                {"type": "string", "maxLength": 8},
+            ]
+        }
+        checks: list = []
+        self.assertTrue(git._type_ok(schema, "main", checks))
+        self.assertEqual(checks, [])  # settled by the second variant;  nothing deferred
+
+    def test_one_deferred_variant_defers_its_pattern(self):
+        schema = {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{40}$"}, {"type": "number"}]}
+        checks: list = []
+        self.assertTrue(git._type_ok(schema, "abc", checks))
+        self.assertEqual(checks, [("^[0-9a-f]{40}$", "abc")])
+
+    def test_two_deferred_variants_refuse(self):
+        schema = {
+            "anyOf": [{"type": "string", "pattern": "^a"}, {"type": "string", "pattern": "^b"}]
+        }
+        self.assertFalse(git._type_ok(schema, "bc", []))
+
+
+class TestDispatchInputs(unittest.TestCase):
+    """gr_workflow_dispatch advertises flat scalar `inputs` (additionalProperties + maxProperties):  the
+    client validates representative values pre-network instead of refusing every non-empty object, and
+    strictness is unchanged for schemas that do not declare additionalProperties."""
+
+    BASE = DISPATCH_BASE
+
+    def test_scalar_inputs_validate(self):
+        args = dict(
+            self.BASE,
+            inputs={"expected_source_sha": "a" * 40, "dry": True, "count": 2, "ratio": 1.5},
+        )
+        git.validate_arguments(dispatch_entry(), args)
+
+    def test_nested_object_value_is_refused(self):
+        with self.assertRaises(SystemExit):
+            git.validate_arguments(dispatch_entry(), dict(self.BASE, inputs={"bad": {"nested": 1}}))
+
+    def test_array_and_null_values_are_refused(self):
+        for bad in (["x"], None):
+            with self.assertRaises(SystemExit):
+                git.validate_arguments(dispatch_entry(), dict(self.BASE, inputs={"bad": bad}))
+
+    def test_inputs_past_the_key_cap_are_refused(self):
+        with self.assertRaises(SystemExit):
+            git.validate_arguments(
+                dispatch_entry(), dict(self.BASE, inputs={f"k{i}": "v" for i in range(33)})
+            )
+
+    def test_string_values_past_the_length_cap_are_refused(self):
+        with self.assertRaises(SystemExit):
+            git.validate_arguments(dispatch_entry(), dict(self.BASE, inputs={"long": "x" * 1025}))
+
+    def test_strict_object_still_refuses_unknown_keys(self):
+        entry = {"name": "gr_wf_issue_create", "read": False, "schema": dict(WRITE_SCHEMA)}
+        with self.assertRaises(SystemExit):
+            git.validate_arguments(entry, {"title": "t", "identity": "ECHO", "extra": 1})
+
+    def test_bare_object_still_refuses_unknown_keys(self):
+        entry = {
+            "name": "gr_x",
+            "read": False,
+            "schema": {"type": "object", "properties": {"inputs": {"type": "object"}}},
+        }
+        with self.assertRaises(SystemExit):
+            git.validate_arguments(entry, {"inputs": {"k": "v"}})
+
+    def test_a_refused_inputs_write_is_never_sent(self):
+        t = FakeTransport([[make_tool("gr_workflow_dispatch", DISPATCH_SCHEMA)]])
+        code, _out, err = run_cli(
+            [
+                "call",
+                "gr_workflow_dispatch",
+                "--args-json",
+                json.dumps(dict(self.BASE, inputs={"bad": {"nested": 1}})),
+            ],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=t,
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("do not match", err)
+        self.assertNotIn("gr_workflow_dispatch", [c[0] for c in t.calls])

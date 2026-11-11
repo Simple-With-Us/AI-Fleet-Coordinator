@@ -406,5 +406,83 @@ class Source(unittest.TestCase):
             self.assertNotIn(mark, text)
 
 
+class DirtyAlertTests(unittest.TestCase):
+    """AFC-677:  dirty or failing Code clones are posted to Zulip, once per change or per day."""
+
+    ENV = {"ZULIP_SITE": "https://z.example", "ZULIP_EMAIL": "bot@z.example", "ZULIP_API_KEY": "k" * 32,
+           "FLEET_SYNC_ALERT_STREAM": "s", "FLEET_SYNC_ALERT_TOPIC": "t"}
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.state = Path(self.tmp.name)
+        self.posts: list[dict] = []
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _alert(self, problems, now, env=None):
+        def post(site, email, key, fields):
+            self.posts.append(dict(fields))
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return S.alert_problems(problems, self.ENV if env is None else env, self.state, now=now, post=post)
+
+    def test_posts_on_change_and_daily_repeat_only(self) -> None:
+        p = [("Clutch", "dirty (2 paths)")]
+        self.assertTrue(self._alert(p, 1000))
+        self.assertTrue(self.posts[0]["content"].startswith("[GB-ORACLE \U0001f4c1OPS]\n"))
+        self.assertIn("`Clutch`: dirty (2 paths)", self.posts[0]["content"])
+        self.assertIn("\u00a0 ", self.posts[0]["content"])
+        self.assertEqual((self.posts[0]["to"], self.posts[0]["topic"]), ("s", "t"))
+        self.assertFalse(self._alert(p, 2000))                      # same set, same day:  quiet
+        self.assertTrue(self._alert(p + [("AI-Fleet-Coordinator", "dirty (1 path)")], 3000))  # set changed
+        self.assertTrue(self._alert(p + [("AI-Fleet-Coordinator", "dirty (1 path)")], 3000 + S.ALERT_REPEAT_S))
+        self.assertFalse(self._alert([], 4000 + S.ALERT_REPEAT_S))   # all clean:  nothing posted
+        self.assertEqual(len(self.posts), 3)
+
+    def test_unconfigured_or_failing_zulip_never_raises(self) -> None:
+        self.assertFalse(self._alert([("X", "dirty (1 path)")], 1, env={}))
+        def boom(*a):
+            raise OSError("down")
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertFalse(S.alert_problems([("X", "dirty (1 path)")], self.ENV, self.state, now=1, post=boom))
+
+    def test_bad_state_file_or_unwritable_state_never_raises(self) -> None:
+        for raw in ("null", "[1]", '{"problems": ["X"], "at": "soon"}', "{"):
+            (self.state / S.ALERT_STATE).write_text(raw)
+            self.assertTrue(self._alert([("X", "dirty (1 path)")], S.ALERT_REPEAT_S + 10))
+        self.state = self.state / "missing" / "deeper"
+        self.state.parent.mkdir()
+        self.state.parent.chmod(0o500)
+        try:
+            self.assertTrue(self._alert([("Y", "dirty (1 path)")], 20))
+        finally:
+            self.state.parent.chmod(0o700)
+
+    def test_zulip_post_refuses_redirects_and_plain_http(self) -> None:
+        import urllib.error
+        import urllib.request
+
+        with self.assertRaises(ValueError):
+            S._zulip_post("http://z.example", "e", "k", {})
+        seen = []
+
+        class Opener:
+            def __init__(self, *handlers):
+                seen.extend(handlers)
+
+            def open(self, req, timeout=None):
+                raise urllib.error.URLError("stop")
+
+        orig = urllib.request.build_opener
+        urllib.request.build_opener = lambda *h: Opener(*h)
+        try:
+            with self.assertRaises(urllib.error.URLError):
+                S._zulip_post("https://z.example", "e", "k", {"a": "b"})
+        finally:
+            urllib.request.build_opener = orig
+        handler = seen[0]()
+        self.assertIsNone(handler.redirect_request(None, None, 302, "Found", {}, "https://evil.example/"))
+
+
 if __name__ == "__main__":
     unittest.main()

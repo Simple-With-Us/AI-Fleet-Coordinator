@@ -106,6 +106,8 @@ DISCOVERY_MAX_CURSOR = 512
 # Read/write is policy, not discovery:  the reviewed read set (the relay's WF_V1_READ_ACTIONS plus the two
 # typed read tools, gr-workflow-v1.js / gr-typed-v1.js at capture time).  An advertised action this set does
 # not name is treated as a WRITE:  uncertainty wording, actor resolution and no-reply rules stay conservative.
+# Keep in lockstep with gr-workflow-v1.js WF_V1_READ_ACTIONS;  the drift-guard test in test_git_remote.py
+# enforces the match (1629 and 1638 shipped read verbs this set did not name).
 WF_V1_READ_ACTIONS = """wf_installation_metadata wf_pr_commits_page wf_pr_review_get wf_release_latest wf_release_by_tag wf_commit_comments_page
 wf_commit_comment_get wf_pr_requested_reviewers wf_repo_tags wf_repo_languages wf_pr_list_page
 wf_compare_commits_page wf_pr_reviews_page wf_pr_comments_page wf_check_runs_page wf_check_run_get
@@ -113,13 +115,14 @@ wf_file_history wf_runs_page wf_workflows_page wf_pr_files_page wf_issue_parent 
 wf_issue_blocked_by wf_issue_blocking wf_commit_statuses wf_git_blob_get wf_git_commit_get wf_git_tree_get
 wf_release_asset_download wf_job_log wf_run_logs wf_artifact_download wf_milestones wf_milestone_get
 wf_deployments wf_deployment_get wf_deployment_statuses wf_environments wf_environment_get wf_release_list
-wf_release_get wf_tag_get wf_review_threads wf_issue_list wf_issue_get wf_pr_get wf_pr_reviews wf_pr_comments
+wf_release_get wf_tag_get wf_review_thread_comments wf_review_threads wf_issue_list wf_issue_get wf_pr_get wf_pr_reviews wf_pr_comments
 wf_issue_comments wf_commit_get wf_compare wf_branch_get wf_repo_get wf_labels wf_workflows wf_run_get
 wf_run_artifacts wf_release_assets wf_release_asset_get wf_pr_list wf_pr_files wf_file_get wf_tree wf_branches
 wf_commits wf_code_search wf_runs wf_run_jobs wf_checks wf_merge_queue_entry wf_job_get wf_workflow_get
 wf_artifact_get wf_artifacts_page wf_caches_page wf_cache_usage wf_run_attempt_get wf_run_attempt_jobs
 wf_run_pending_deployments wf_repo_variables wf_repo_variable_get wf_issue_events wf_issue_timeline
-wf_git_blob_binary_get""".split()
+wf_git_blob_binary_get wf_repo_list wf_pr_search wf_repo_hooks wf_deploy_keys wf_org_installations
+wf_branch_rules wf_rulesets""".split()
 READ_TOOLS = frozenset(["gr_v1_pr_state", "gr_v1_pr_hold_state"] + ["gr_" + a for a in WF_V1_READ_ACTIONS])
 
 # Per-action input byte limits (gr-workflow-v1.js WF_V1_INPUT_LIMITS; default 64 KiB).
@@ -130,7 +133,7 @@ INPUT_LIMITS = {
 }
 DEFAULT_INPUT_LIMIT = 65536
 
-# The error codes the hosted server can return (the ToolError codes in scripts/agent-sync-mcp/src), kept in
+# The error codes the hosted server can return (the ToolError codes in scripts/simple-tools-mcp/src), kept in
 # step with scripts/linear-board/board.  Anything else, including a code that merely looks safe, prints as
 # "error".
 _REMOTE_CODES = frozenset(
@@ -160,6 +163,8 @@ _REMOTE_CODES = frozenset(
         "forbidden",
         "fleetlink_seat_disabled",
         "fleetlink_refused",
+        "fleetlink_not_found",
+        "fleetlink_expired",
         "dm_not_allowed",
         "budget_exhausted",
     )
@@ -333,25 +338,42 @@ def _remote_post(url: str, headers: dict, body: bytes, timeout: float) -> tuple[
                 expected = None
             if getattr(r, "chunked", False) or r.headers.get("Transfer-Encoding"):
                 expected = None
-            sock = getattr(getattr(getattr(r, "fp", None), "raw", None), "_sock", None)
-            if sock is None:
-                # Without the socket the remaining budget cannot be applied to each read, so a stalled body could
-                # outlast the deadline:  fail closed rather than read unbounded.
-                raise _TransportError(True, "transport")
+            raw_fp = getattr(getattr(r, "fp", None), "raw", None)
+            sock = None
+            # Try every place a response keeps its socket, and accept only an object that can
+            # really set a timeout.
+            for candidate in (
+                getattr(raw_fp, "_sock", None),
+                getattr(getattr(r, "connection", None), "sock", None),
+                raw_fp,
+            ):
+                if callable(getattr(candidate, "settimeout", None)):
+                    sock = candidate
+                    break
+            # The socket is only a way to tighten the per-read timeout to the remaining
+            # budget.  Some responses that have genuinely arrived do not expose it
+            # (wrapped / buffered transports, proxies, test doubles):  requiring it
+            # discarded a complete answer as a transport failure (AFC-638).  When it
+            # is absent, read anyway:  the opener's own timeout (the full budget
+            # passed to op.open) still bounds any single blocking read, and the
+            # deadline is re-checked before and after every chunk below, so a
+            # slow-drip body is cut off at the first chunk after the deadline, at most one
+            # per-read timeout late.
             while True:
                 if expected is not None and total >= expected:
                     break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise _TransportError(True, "deadline")
-                try:
-                    sock.settimeout(remaining)
-                except OSError:
-                    if expected is None and total > 0:
-                        break
-                    if expected is not None and total > 0:
-                        raise _TransportError(True, "truncated response") from None
-                    raise _TransportError(True, "transport") from None
+                if sock is not None:
+                    try:
+                        sock.settimeout(remaining)
+                    except OSError:
+                        if expected is None and total > 0:
+                            break
+                        if expected is not None and total > 0:
+                            raise _TransportError(True, "truncated response") from None
+                        raise _TransportError(True, "transport") from None
                 read_size = 65536
                 if expected is not None:
                     read_size = min(read_size, expected - total)
@@ -399,15 +421,15 @@ def _remote_post(url: str, headers: dict, body: bytes, timeout: float) -> tuple[
 
 def _error_code_of(result: dict) -> str | None:
     """The hosted server's error code from a tools/call-style result:  structuredContent, then
-    `_meta["agent-sync/error"]`, then the first text part that is a JSON object.  Only allow-listed codes
+    `_meta["simple-tools/error"]`, then the first text part that is a JSON object.  Only allow-listed codes
     are recognized;  anything else (or nothing) is None."""
     candidates = []
     sc = result.get("structuredContent")
     if isinstance(sc, dict):
         candidates.append(sc)
     meta = result.get("_meta")
-    if isinstance(meta, dict) and isinstance(meta.get("agent-sync/error"), dict):
-        candidates.append(meta["agent-sync/error"])
+    if isinstance(meta, dict) and isinstance(meta.get("simple-tools/error"), dict):
+        candidates.append(meta["simple-tools/error"])
     for part in result.get("content") or []:
         if isinstance(part, dict) and isinstance(part.get("text"), str):
             try:
@@ -422,6 +444,79 @@ def _error_code_of(result: dict) -> str | None:
         if isinstance(code, str) and code in _REMOTE_CODES:
             return code
     return None
+
+
+# The closed refusal reasons the hosted front attaches to a relay_refused result
+# (scripts/simple-tools-mcp/src/gr-refusal.js REFUSAL_REASONS, kept in step).  Only an exact member is ever
+# shown, so the relay's own prose, an upstream body and anything a server made up are never copied.
+_REFUSAL_REASONS = frozenset(
+    (
+        "credential_scan",
+        "seat_policy",
+        "seat_rate_limit",
+        "github_refused",
+        "fence_mismatch",
+        "unauthenticated",
+        "repository_moved",
+        "read_too_large",
+        "bad_request_content_too_large",
+        "bad_request_default_branch_protected",
+        "bad_request_invalid_arguments",
+        "bad_request_invalid_files",
+        "bad_request_invalid_repository",
+        "bad_request_nothing_to_change",
+        "bad_request_pr_merged",
+        "bad_request_pr_not_issue_target",
+        "bad_request_pr_not_open",
+        "bad_request_review_not_pending",
+        "bad_request_unsupported_action",
+        "bad_request_workflow_path_permission",
+    )
+)
+
+
+_MOVED_SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/(?!.*\.\.)[A-Za-z0-9_.-]{1,100}")
+
+
+def _refusal_detail_of(result: dict) -> str:
+    """` (reason=<closed reason>[, github_status=<4xx>])` from a relay_refused result, else "".
+
+    Reads the same candidates as `_error_code_of`.  `reason` must be an exact member of the closed set;
+    `github_status` must be a real int in 400..499 other than 429 (a bool is not an int here).  Nothing
+    else from the result is shown."""
+    candidates = []
+    sc = result.get("structuredContent")
+    if isinstance(sc, dict):
+        candidates.append(sc)
+    meta = result.get("_meta")
+    if isinstance(meta, dict) and isinstance(meta.get("simple-tools/error"), dict):
+        candidates.append(meta["simple-tools/error"])
+    for part in result.get("content") or []:
+        if isinstance(part, dict) and isinstance(part.get("text"), str):
+            try:
+                obj = strict_loads(part["text"])
+            except (ValueError, RecursionError):
+                continue
+            if isinstance(obj, dict):
+                candidates.append(obj)
+                break
+    for cand in candidates:
+        # The reason must come from the same object that carries the relay_refused code, never
+        # from a different candidate (a sibling object could name another refusal's cause).
+        if cand.get("code") != "relay_refused":
+            continue
+        reason = cand.get("reason")
+        if isinstance(reason, str) and reason in _REFUSAL_REASONS:
+            moved = cand.get("moved_to")
+            if reason == "repository_moved" and isinstance(moved, str) and _MOVED_SLUG.fullmatch(moved):
+                # A renamed or transferred repository (OPS-1036):  name its current owner/name,
+                # validated as strictly as the hosted front does, so a caller can retry with it.
+                return f" (reason={reason}, moved_to={moved})"
+            status = cand.get("github_status")
+            if type(status) is int and 400 <= status <= 499 and status != 429:
+                return f" (reason={reason}, github_status={status})"
+            return f" (reason={reason})"
+    return ""
 
 
 # ----------------------------------------------------------------- answer parsing (mirrors board)
@@ -529,13 +624,21 @@ def _failure(exc: "_TransportError", write: bool) -> str:
             + (_REMOTE_UNKNOWN if write and exc.sent else "")
             + " (no direct fallback)"
         )
-    if write and exc.sent:
-        return (
-            "the hosted endpoint did not answer"
-            + _REMOTE_UNKNOWN
-            + " (no direct fallback)"
-        )
-    return "the hosted endpoint could not be reached (no direct fallback)"
+    if not exc.sent:
+        # Provably never left this host (DNS, refused connection, certificate
+        # check):  the endpoint really could not be reached.
+        return "the hosted endpoint could not be reached (no direct fallback)"
+    # The request may have been sent:  `sent` is only False for failures that provably never
+    # left, so a timeout wrapped in URLError (a connect timeout cannot be told from a send
+    # timeout, and a write must be treated as possibly sent) lands here too.  So this does not
+    # assert that the endpoint was reachable, only that no answer arrived (deadline, closed SSL
+    # socket, transport error).  Saying "could not be reached" for the common case sent seats
+    # chasing a phantom outage and falling back to gh (AFC-638).
+    return (
+        "the hosted endpoint's answer was lost or never arrived"
+        + (_REMOTE_UNKNOWN if write else "")
+        + " (no direct fallback)"
+    )
 
 
 def _status_message(status: int, write: bool) -> str:
@@ -552,12 +655,12 @@ _SCANNER = None
 
 
 def _scanner():
-    """The fleet's secret scanner (scripts/agent_sync/secretscan.py, standard library only), loaded by path.
+    """The fleet's secret scanner (scripts/simple_tools/secretscan.py, standard library only), loaded by path.
     If it cannot be loaded nothing is sent:  there is no unscanned route."""
     global _SCANNER
     if _SCANNER is not None:
         return _SCANNER
-    path = Path(os.path.realpath(__file__)).parent.parent / "agent_sync" / "secretscan.py"
+    path = Path(os.path.realpath(__file__)).parent.parent / "simple_tools" / "secretscan.py"
     try:
         spec = importlib.util.spec_from_file_location("_git_secretscan", str(path))
         module = importlib.util.module_from_spec(spec)
@@ -571,11 +674,20 @@ def _scanner():
     return module
 
 
-def _scan_arguments(arguments, bearer: str) -> str | None:
+def _scan_arguments(arguments, bearer: str, tool: str | None = None) -> str | None:
     """The first argument field the fleet secret scanner flags, as `secret_scan:<field>` (the field name only,
     never the text or any part of it), or None.  Every string at any depth is checked, and the bearer itself
     always matches."""
     scanner = _scanner()
+    files = {}
+    if isinstance(arguments, dict) and tool in {"gr_wf_file_put", "gr_wf_files_put"}:
+        repo = arguments.get("repo")
+        rows = [arguments] if tool == "gr_wf_file_put" else arguments.get("files", [])
+        if isinstance(repo, str) and isinstance(rows, list):
+            for i, row in enumerate(rows):
+                if isinstance(row, dict) and isinstance(row.get("path"), str):
+                    field = "content_b64" if tool == "gr_wf_file_put" else f"files[{i}].content_b64"
+                    files[field] = (repo, row["path"])
     stack = [("", arguments)]
     while stack:
         path, value = stack.pop()
@@ -587,7 +699,12 @@ def _scan_arguments(arguments, bearer: str) -> str | None:
                     value = base64.b64decode(value, validate=True).decode("utf-8", "replace")
                 except (binascii.Error, ValueError):
                     pass
-            if scanner.scan(value, known=[bearer] if bearer else []) is not None:
+            known = [bearer] if bearer else []
+            if path in files and callable(getattr(scanner, "scan_file", None)):
+                hit = scanner.scan_file(*files[path], value, known)
+            else:
+                hit = scanner.scan(value, known=known)
+            if hit is not None:
                 return "secret_scan:" + (path or "arguments")
         elif isinstance(value, dict):
             stack.extend((f"{path}.{k}" if path else str(k), v) for k, v in value.items())
@@ -646,7 +763,7 @@ def _rpc(bearer: str, method: str, params: dict, write: bool, deadline: float | 
 
 def remote_call(tool: str, arguments: dict, write: bool, bearer: str, deadline: float | None = None) -> dict:
     """One tools/call.  Returns {"structured":..., "text":...}.  Never retried."""
-    hit = _scan_arguments(arguments, bearer)
+    hit = _scan_arguments(arguments, bearer, tool)
     if hit:
         die(f"refused before sending: {hit}", EXIT_USAGE)
     result = _rpc(
@@ -672,16 +789,17 @@ def remote_call(tool: str, arguments: dict, write: bool, bearer: str, deadline: 
         code = _error_code_of(result)
         shown = code if code is not None else "error"
         note = _REMOTE_UNKNOWN if write and code == "outcome_unknown" else ""
+        detail = _refusal_detail_of(result) if code == "relay_refused" else ""
         # retry-after is the only other field ever shown, and only bounded.
         retry = None
         meta = result.get("_meta")
-        for source in (sc if isinstance(sc, dict) else {}, meta.get("agent-sync/error") if isinstance(meta, dict) and isinstance(meta.get("agent-sync/error"), dict) else {}):
+        for source in (sc if isinstance(sc, dict) else {}, meta.get("simple-tools/error") if isinstance(meta, dict) and isinstance(meta.get("simple-tools/error"), dict) else {}):
             value = source.get("retry_after_s", source.get("retry_after"))
             if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value <= 86400:
                 retry = value
                 break
         after = f", retry after {int(-(-retry // 1))}s" if retry is not None else ""
-        die(f"{tool} failed on the hosted server: {shown}{after}{note}", EXIT_ERROR)
+        die(f"{tool} failed on the hosted server: {shown}{detail}{after}{note}", EXIT_ERROR)
     parts = [
         c.get("text")
         for c in content or []
@@ -764,7 +882,7 @@ def discover_tools(bearer: str, deadline: float | None = None) -> dict:
 
 _PATTERN_CHECK_MAX_S = 5  # per-validation wall-clock cap on ALL pattern work, inside the overall budget
 
-# The exact contract for untrusted patterns:  only these 19 patterns - the reviewed catalog's complete
+# The exact contract for untrusted patterns:  only these 21 patterns - the reviewed catalog's complete
 # set, sha256 of the pattern text - may ever be compiled or searched.  Anything unrecognized fails
 # closed, on every platform.  There is NO heuristic:  widening this set is a reviewed code change, and
 # each member's compile size and match cost are verified facts, not estimates.
@@ -779,9 +897,17 @@ _KNOWN_PATTERN_DIGESTS = frozenset(
     "38a3d1088fbdbafafbcf18a3b050a2b49fe75cee854720ae984e511d9eaa57bb",
     "45b5f55a38eb846af40064f0db7ec2ea0825785dfe6a1135ce82f2094b001005",
     "52f851fad882359b4da47ab468f04139b0a5bbc846a922f655c5b37cdcfd05de",
+    # The repo argument of gr_v1_pr_state, gr_v1_pr_hold_state and gr_v1_pr_automerge_disable (listed only when
+    # GR_TYPED_TOOLS is on):  ^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$   Reviewed Nov 2026.  No group and no alternation, and two
+    # unbounded repeats of ONE character class around a literal slash that neither class holds, so an input splits in
+    # exactly one way and the search is linear.  It compiles to 46 code words in 0.25 ms;  the worst search of any
+    # 65,536-character input (the client's input limit) took 0.63 ms, and doubling the input doubled the time.  Python's $
+    # also matches before a trailing newline, which can only let through a value the Worker's own check then refuses.
+    "76874efb4916ec9745c05841c1bd120693e965bcdf24af4cba9bdd8c50370518",
     "7a3e89f559ebec394da08a91160bb5eab26b2ef30d26eeb88c270079b58d2e2f",
     "7b8be75214feb9b9cc29abc256a0996c92dcd7d05abfb1ca5f7b922d58aaffec",
     "88b2ed1aec9cd281271858178ffa9dc52d0f283a9c71e2b8fb843199216bd11d",
+    "a654b0a196893e4f921c650cf5c9d9d6496a366dbcca86e7adbfd02346d353cc",
     "a6aa272af8e604e6e4097952430e60ec47a3a0578c73732ac48fcdb785db9cb5",
     "ab10742c40c95e23b40b24a42ff97316a3eaa79654b6afb5f2decd39f1ec47f6",
     "b9c4b86e8e227fb8026d44a0115b4e31e00ec77b831c6c430431d5dc6be67a67",
@@ -801,7 +927,7 @@ def _as_limit_target(resource) -> tuple:
     """The (soft, hard) RLIMIT_AS values to set:  the 1 GiB cap clamped DOWN to the platform's actual
     hard limit, which is never raised (an unprivileged fixed value can exceed it - macOS rejects that
     outright with ValueError).  Pure computation, unit-testable;  supplementary defense-in-depth only -
-    the real allocation bound is the exact 18-pattern contract:  nothing unrecognized is ever compiled,
+    the real allocation bound is the exact reviewed-pattern contract:  nothing unrecognized is ever compiled,
     on any OS."""
     _soft, hard = resource.getrlimit(resource.RLIMIT_AS)
     cap = 1 << 30
@@ -1017,10 +1143,56 @@ def _bounded(value, max_bytes: int) -> bool:
     return total <= max_bytes
 
 
+#: JSON-schema annotation keywords:  they describe a leaf and constrain nothing.
+_ANNOTATION_KEYS = frozenset(
+    ("description", "title", "default", "examples", "$comment", "deprecated", "readOnly", "writeOnly")
+)
+
+
 def _type_ok(schema: dict, value, pattern_checks=None) -> bool:
     """The Worker's typeOk:  one JSON-schema leaf check (type, pattern, enum, lengths, numeric bounds,
     items).  `pattern` is NOT searched here:  with a collector, the (pattern, value) pair is deferred
     to the isolated deadline-bounded child (_patterns_match) and this leaf is tentatively True."""
+    any_of = schema.get("anyOf")
+    if any_of is not None:
+        # A declared union (workflow_dispatch inputs values):  one variant must match, sibling
+        # constraints still apply to the matched value (they intersect, never replace), and a
+        # malformed union (non-list, empty, or a non-dict variant) refuses - a recognized keyword
+        # never falls through to a looser reading.  A variant's deferred pattern checks count only
+        # when the whole leaf passes.
+        if not isinstance(any_of, list) or not any_of:
+            return False
+        if not all(isinstance(variant, dict) for variant in any_of):
+            return False
+        # Every variant is tried:  a variant that matches outright settles the union, so a first
+        # variant whose deferred pattern would later fail can never hide a later variant that matches.
+        # Only when every matching variant still waits on a deferred pattern is one of them chosen;
+        # two or more such variants refuse (fail closed), since their patterns are only searched
+        # later, together, where an either-or cannot be expressed.
+        union_checks = [] if pattern_checks is not None else None
+        deferred = []
+        definite = False
+        for variant in any_of:
+            pending = [] if pattern_checks is not None else None
+            if _type_ok(variant, value, pending):
+                if not pending:
+                    definite = True
+                    break
+                deferred.append(pending)
+        if not definite:
+            if len(deferred) != 1:
+                return False
+            union_checks.extend(deferred[0])
+        # Annotation keywords constrain nothing:  a sibling of only those adds no check (a typeless
+        # leaf would otherwise read as a string and refuse every number or boolean).
+        sibling = {
+            k: v for k, v in schema.items() if k != "anyOf" and k not in _ANNOTATION_KEYS
+        }
+        if sibling and not _type_ok(sibling, value, pattern_checks):
+            return False
+        if pattern_checks is not None:
+            pattern_checks.extend(union_checks)
+        return True
     kind = schema.get("type")
     if kind == "integer":
         if isinstance(value, bool) or not isinstance(value, int):
@@ -1033,6 +1205,8 @@ def _type_ok(schema: dict, value, pattern_checks=None) -> bool:
         if hi is not None and (not _is_number(hi) or value > hi):
             return False
         return True
+    if kind == "number":
+        return _is_number(value) and not isinstance(value, bool)
     if kind == "boolean":
         return isinstance(value, bool)
     if kind == "array":
@@ -1083,17 +1257,27 @@ def _type_ok(schema: dict, value, pattern_checks=None) -> bool:
 
 def _object_ok(schema: dict, value, tolerate_identity: bool = False, pattern_checks=None) -> bool:
     """validWfV1Args2:  every required key present, every present key known, each value type-ok.
-    tolerate_identity lets a write's `identity` be absent here because this client fills it itself."""
+    tolerate_identity lets a write's `identity` be absent here because this client fills it itself.
+    A key outside `properties` is known only when the schema declares an additionalProperties leaf
+    (gr_workflow_dispatch's flat scalar `inputs`);  absent or false keeps the strict refusal."""
     if not isinstance(value, dict):
         return False
     props = schema.get("properties") or {}
+    additional = schema.get("additionalProperties")
+    max_props = schema.get("maxProperties")
+    if max_props is not None and (not _is_nonneg_int(max_props) or len(value) > max_props):
+        return False
     for key in schema.get("required") or ():
         if key not in value and not (tolerate_identity and key == "identity"):
             return False
     for key, item in value.items():
-        if key not in props:
+        if key in props:
+            leaf = props[key]
+        elif isinstance(additional, dict):
+            leaf = additional
+        else:
             return False
-        if isinstance(props[key], dict) and not _type_ok(props[key], item, pattern_checks):
+        if isinstance(leaf, dict) and not _type_ok(leaf, item, pattern_checks):
             return False
     return True
 
@@ -1897,7 +2081,7 @@ def cmd_publish(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
             _publish_path_check(path)
         payload = _publish_payload(a.repo, a.branch, a.message, number, len(batches), batch)
         validate_arguments(entry, {**payload, "expected_head_sha": "0" * 40}, deadline)
-        hit = _scan_arguments(payload, bearer)
+        hit = _scan_arguments(payload, bearer, "gr_wf_files_put")
         if hit is not None:
             die(f"refused before sending:  {hit}", EXIT_USAGE)
         del payload
@@ -2046,6 +2230,188 @@ def _remote_tree_shas(tools: dict, repo: str, head: str, bearer: str, seat: str,
     }
 
 
+# A report, never a merge authorization. Only existing reviewed read tools are used.
+class ReadinessUnknown(ValueError):
+    pass
+
+
+def collect_readiness(read, repo, number, expected_head=None, max_pages=20):
+    """Bounded, non-atomic observations. Missing coverage never becomes zero findings."""
+    report = {"repo": repo, "number": number, "report_only": True,
+              "merge_authorized": False, "complete": False, "verdict": "unknown",
+              "blockers": [], "unknowns": [], "coverage": {}}
+
+    def require(ok, reason):
+        if not ok:
+            raise ReadinessUnknown(reason)
+
+    def pull():
+        p = read("gr_wf_pr_get", {"repo": repo, "number": number}).get("pull")
+        require(isinstance(p, dict) and type(p.get("number")) is int and p["number"] == number,
+                "PR identity missing or mismatched")
+        require(p.get("state") in ("open", "closed") and type(p.get("draft")) is bool
+                and type(p.get("merged")) is bool, "PR lifecycle incomplete")
+        for side in ("head", "base"):
+            require(isinstance(p.get(side), dict)
+                    and isinstance(p[side].get("sha"), str)
+                    and re.fullmatch(r"[0-9a-f]{40}", p[side]["sha"]), "PR head/base missing")
+        return p
+
+    try:
+        require(isinstance(repo, str) and REPO_PATTERN.fullmatch(repo) is not None and ".." not in repo
+                and type(number) is int and 0 < number <= 1000000000000, "invalid repo or PR number")
+        require(expected_head is None or (isinstance(expected_head, str)
+                and re.fullmatch(r"[0-9a-f]{40}", expected_head)), "expected head must be a full SHA")
+        first = pull()
+        head, base = first["head"]["sha"], first["base"]["sha"]
+        report.update(head=head, base=base, state=first["state"], draft=first["draft"],
+                      merged=first["merged"])
+        require(expected_head is None or expected_head == head, "expected head no longer current")
+        # This action is review THREADS, not issue comments or line-comment lists.
+        threads, seen, cursors, cursor = [], set(), set(), None
+        for _ in range(max_pages):
+            args = {"repo": repo, "number": number}
+            if cursor is not None:
+                args["cursor"] = cursor
+            connection = read("gr_wf_review_threads", args).get("threads")
+            require(isinstance(connection, dict) and isinstance(connection.get("nodes"), list)
+                    and isinstance(connection.get("pageInfo"), dict), "review-thread connection incomplete")
+            page = connection["pageInfo"]
+            require(type(page.get("hasNextPage")) is bool, "review-thread pagination unknown")
+            for row in connection["nodes"]:
+                require(isinstance(row, dict) and isinstance(row.get("id"), str)
+                        and row["id"] and row["id"] not in seen
+                        and type(row.get("isResolved")) is bool
+                        and type(row.get("isOutdated")) is bool, "review-thread row missing or duplicate")
+                seen.add(row["id"])
+                # No external prose is emitted as instructions or authorization.
+                threads.append({k: row[k] for k in ("id", "isResolved", "isOutdated")})
+            if page["hasNextPage"] is False:
+                break
+            cursor = page.get("endCursor")
+            require(isinstance(cursor, str) and re.fullmatch(r"[A-Za-z0-9_/=+-]{1,256}", cursor)
+                    and cursor not in cursors, "review-thread cursor missing or repeated")
+            cursors.add(cursor)
+        else:
+            raise ReadinessUnknown("review-thread page bound reached")
+        report["review_threads"] = {"total": len(threads),
+                                    "unresolved": [r for r in threads if not r["isResolved"]]}
+        report["coverage"]["review_threads"] = "complete"
+        if report["review_threads"]["unresolved"]:
+            report["blockers"].append("unresolved_review_threads")
+
+        checked = read("gr_wf_checks", {"repo": repo, "ref": head, "per_page": 50})
+        require(checked.get("complete") is True and isinstance(checked.get("checks"), list),
+                "check-run census incomplete or unknown")
+        check_rows, ids = [], set()
+        for c in checked["checks"]:
+            require(isinstance(c, dict) and type(c.get("id")) is int and c["id"] not in ids
+                    and c.get("head_sha") == head and isinstance(c.get("name"), str)
+                    and c.get("status") in ("queued", "in_progress", "completed", "waiting", "pending", "requested"),
+                    "check-run row missing, duplicate or wrong head")
+            ids.add(c["id"])
+            require(c["status"] != "completed" or c.get("conclusion") in
+                    ("success", "failure", "neutral", "cancelled", "skipped", "timed_out", "action_required", "stale", "startup_failure"),
+                    "check-run conclusion unknown")
+            check_rows.append({k: c.get(k) for k in ("id", "name", "status", "conclusion")})
+        report["checks"] = check_rows
+        report["coverage"]["check_runs"] = "complete"
+        if not check_rows:
+            report["unknowns"].append("no_check_runs_observed")
+        if any(c["status"] != "completed" or c["conclusion"] not in ("success", "neutral", "skipped") for c in check_rows):
+            report["blockers"].append("checks_incomplete_or_unsuccessful")
+
+        statuses = read("gr_wf_commit_statuses", {"repo": repo, "sha": head, "per_page": 50})
+        require(statuses.get("complete") is True and isinstance(statuses.get("statuses"), list),
+                "commit-status history incomplete")
+        # REST statuses are newest first. Older failures must not override their latest context.
+        latest = {}
+        for s in statuses["statuses"]:
+            require(isinstance(s, dict) and isinstance(s.get("context"), str) and s["context"]
+                    and s.get("state") in ("pending", "success", "error", "failure"), "commit-status row unknown")
+            latest.setdefault(s["context"], s["state"])
+        report["commit_statuses"] = latest
+        report["coverage"]["commit_statuses"] = "complete"
+        if any(v != "success" for v in latest.values()):
+            report["blockers"].append("commit_statuses_unsuccessful")
+
+        reviews, review_ids = [], set()
+        for page_num in range(1, max_pages + 1):
+            page = read("gr_wf_pr_reviews_page", {"repo": repo, "number": number,
+                        "expected_head_sha": head, "page": page_num, "per_page": 50})
+            require(page.get("head_sha") == head and page.get("number") == number
+                    and page.get("page") == page_num and type(page.get("has_more")) is bool
+                    and isinstance(page.get("reviews"), list), "review page incomplete or wrong head")
+            for r in page["reviews"]:
+                require(isinstance(r, dict) and type(r.get("id")) is int and r["id"] not in review_ids
+                        and isinstance(r.get("author"), dict) and type(r["author"].get("id")) is int
+                        and r.get("state") in ("APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED", "PENDING")
+                        and isinstance(r.get("commit_id"), str) and re.fullmatch(r"[0-9a-f]{40}", r["commit_id"]),
+                        "review identity/state missing or duplicate")
+                review_ids.add(r["id"])
+                reviews.append({"id": r["id"], "author_id": r["author"]["id"],
+                                "state": r["state"], "commit_id": r["commit_id"]})
+            if not page["has_more"]:
+                break
+        else:
+            raise ReadinessUnknown("review page bound reached")
+        report["reviews"] = reviews
+        report["coverage"]["review_records"] = "complete"
+        if not any(r["commit_id"] == head and r["state"] in ("APPROVED", "COMMENTED") for r in reviews):
+            report["unknowns"].append("no_completed_current_head_review_observed")
+        # Latest decisive review per author, including old-head requests still requiring attention.
+        decisions, latest_ids = {}, {}
+        for r in reviews:
+            if r["state"] in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+                if r["id"] > latest_ids.get(r["author_id"], -1):
+                    latest_ids[r["author_id"]] = r["id"]
+                    decisions[r["author_id"]] = r["state"]
+        if "CHANGES_REQUESTED" in decisions.values() or any(r["state"] == "PENDING" for r in reviews):
+            report["blockers"].append("review_changes_requested_or_pending")
+
+        last = pull()
+        require((last["head"]["sha"], last["base"]["sha"], last["state"], last["draft"], last["merged"])
+                == (head, base, first["state"], first["draft"], first["merged"]), "PR changed during report; re-read needed")
+        report["coverage"]["head_base_rechecked"] = True
+        state = last.get("mergeable_state")
+        report["github_merge_state"] = state if isinstance(state, str) else "unknown"
+        report["github_block_reason"] = "unknown"  # REST exposes state, not the UI's exact rule reason.
+        if first["state"] != "open" or first["draft"] or first["merged"]:
+            report["blockers"].append("PR_not_open_non_draft")
+        if last.get("mergeable") is False or state in ("blocked", "dirty", "behind", "draft"):
+            report["blockers"].append("github_merge_state_" + str(state))
+        elif last.get("mergeable") is not True or state != "clean":
+            report["unknowns"].append("github_merge_state_not_clean")
+        report["complete"] = True
+    except ReadinessUnknown as exc:
+        report["unknowns"].append(str(exc))
+    report["limitations"] = ["Observations are not atomic; changes after the final read are possible.",
+        "Repository rules, required reviewer identity and owner authority are not evaluated.",
+        "GitHub exact block reason is unavailable from these approved reads; never infer a policy waiver."]
+    report["verdict"] = "blocked" if report["blockers"] else "unknown" if report["unknowns"] or not report["complete"] else "observed_checks_passed"
+    return report
+
+
+def cmd_readiness(tools, a, bearer, server_seat, deadline):
+    def read(name, args):
+        entry = tools.get(name)
+        if not entry or entry.get("read") is not True or name not in READ_TOOLS:
+            raise ReadinessUnknown("required read unavailable: " + name)
+        try:
+            validate_arguments(entry, args, deadline)
+            args = resolve_actor(entry, args, bearer, server_seat, deadline)
+            out = remote_call(name, args, False, bearer, deadline)
+        except SystemExit:
+            raise ReadinessUnknown("required read failed: " + name) from None
+        value = out.get("structured")
+        if not isinstance(value, dict) or not value:
+            raise ReadinessUnknown("structured read unavailable: " + name)
+        return value
+    report = collect_readiness(read, a.repo, a.number, a.expected_head)
+    print(json.dumps(report, indent=2))
+    return 0 if report["verdict"] == "observed_checks_passed" else 1
+
+
 # ----------------------------------------------------------------- parser / main
 
 
@@ -2073,6 +2439,10 @@ def build_parser() -> argparse.ArgumentParser:
         "whoami", help="show the identity the hosted server reports for this bearer", allow_abbrev=False
     )
     pw.add_argument("--json", action="store_true")
+    pr = sub.add_parser("readiness", help="read-only PR report; never merge authorization", allow_abbrev=False)
+    pr.add_argument("repo")
+    pr.add_argument("number", type=int)
+    pr.add_argument("--expected-head", help="fail closed if the current full head SHA differs")
     pc = sub.add_parser(
         "call", help="call one tool:  call NAME --args-json JSON|@FILE|-", allow_abbrev=False
     )
@@ -2155,6 +2525,8 @@ def main(argv: list[str] | None = None) -> int:
         # The identities answer above already proved this bearer;  git needs no tool discovery.
         return transfer[a.cmd](a, bearer)
     tools = discover_tools(bearer, overall_deadline)
+    if a.cmd == "readiness":
+        return cmd_readiness(tools, a, bearer, server_seat, overall_deadline)
     if a.cmd == "publish":
         return cmd_publish(tools, a, bearer, server_seat, overall_deadline)
     if a.cmd == "list":

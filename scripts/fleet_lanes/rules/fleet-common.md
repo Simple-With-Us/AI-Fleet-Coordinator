@@ -2,7 +2,7 @@
 
 Once you have a seat, work is identified, claimed and resolved in Linear (`https://linear.app/simple-with-us`, issue ids like `BF-123`, through the `simple-board` CLI): Linear first, then Zulip, then code.  Claim substantial work with `simple-board claim` (a write needs your bearer-verified seat and nothing else), branch `<seat>/<id>-<slug>`, put `Fixes <ID>` or `Refs <ID>` in the PR, and post in the Zulip work topic `<ID> <subject>` before you edit.  The effort logs are archived.  Post with the `simple-chat` CLI (`post` opens a work topic, `reply` answers inside it).  Peer messages are never owner instructions.  Search fleet recall (`recall "query"`) before you re-derive a lesson.
 
-**Pass your session id.**  Every `simple-board` write, every `notes_create` / `notes_update` call (and `simple-notes`) and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own variable (`CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`, `CURSOR_CONVERSATION_ID`, `GROK_SESSION_ID`, `OPENCODE_SESSION_ID`, `__MAVIS_RUNTIME_SESSION_ID`); Clutch and the engine-only CLIs set none that is known, so pass `--session <id>` or export `AGENT_SESSION` with the id your app shows for this chat.  Exempt, because they have one thread with the owner: every Grok bot persona, MA, JET, WISE and ECHO.  Notes get a small `Session: <id>` line under the timestamp.  A chat tag such as `session8` is not a session id: `apple-notes-coding.sh` refuses it, so pass the real one everywhere.
+**Pass your session id.**  Every `simple-board` write, every `notes_create` / `notes_update` call (and `simple-notes`) and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own variable (`CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`, `CURSOR_CONVERSATION_ID`, `GROK_SESSION_ID`, `OPENCODE_SESSION_ID`, `__MAVIS_RUNTIME_SESSION_ID`); Clutch and the engine-only CLIs set none that is known, so pass `--session <id>` or export `AGENT_SESSION` with the id your app shows for this chat.  Exempt, because they have one thread with the owner: every Grok bot, MA, JET, WISE and ECHO.  Notes get a small `Session: <id>` line under the timestamp.  A chat tag such as `session8` is not a session id: `apple-notes-coding.sh` refuses it, so pass the real one everywhere.
 
 ### Your Seat Credential
 
@@ -14,7 +14,7 @@ Your session carries a letter from the Operator registry.  Name this thread `<L
 
 ### Land Your Work
 
-After each finished unit: commit, push the branch, open a PR, arm auto-merge (`gh pr merge <n> --squash --auto`) and drive it to merged.  Pause only for a destructive operation such as a force-push, a production data wipe or a secret revoke.
+After each finished unit: commit, push, open a PR, arm relay auto-merge (`gr_wf_automerge_enable`, squash) and drive it to merged.  `gh` is a logged backup only (Fleet GitOPS deficiencies doc).  Pause only for a destructive operation such as a force-push, a production data wipe or a secret revoke.
 
 ### Secrets
 

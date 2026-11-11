@@ -23,7 +23,7 @@ Usage:
   board stats
   board whoami
 
-Agent-Sync parity (the hosted server's Linear tools, from catalog/*.json):
+Simple-Tools parity (the hosted server's Linear tools, from catalog/*.json):
   board commands [--search WORD] [--kind read|write] [--json]
   board commands show NAME [--json]
   board run NAME [--arg KEY=VALUE ...] [--args-json JSON|@FILE|-] [--selection FIELDS]
@@ -34,7 +34,7 @@ Agent-Sync parity (the hosted server's Linear tools, from catalog/*.json):
   board mcp list|show TOOL [--json]
   board mcp call TOOL [--args-json JSON|@FILE|-] [--idempotency-key KEY] [--max-chars N] [--json]
 
-`run` builds the same `AgentSyncNamed` document the hosted server builds and applies its guards:  one
+`run` builds the same `SimpleToolsNamed` document the hosted server builds and applies its guards:  one
 operation, depth 16, 500 fields, no protected or batch mutation roots, only public input fields, and
 no edits of claimed:, seat: or stale-claim labels (`board claim` owns those).  A write (a write
 command, `api mutation`, or a write `mcp call`) needs a bearer-verified seat and
@@ -161,7 +161,7 @@ EXIT_AUTH = 6  # no verified seat, token refused, mint refused, or whoami check 
 # Linear's client-credentials tokens last 30 days.  A cached token is re-minted
 # early once it is this old (and still used while that early mint fails), so a
 # seat never depends on minting during its token's last day.  Same value as
-# LINEAR_REMINT_AFTER_S in scripts/agent-sync-mcp/src/linear.js.
+# LINEAR_REMINT_AFTER_S in scripts/simple-tools-mcp/src/linear.js.
 REMINT_AFTER = 28 * 86400
 WRITE_VERBS = ("file", "claim", "status", "comment", "label")
 SESSION_ENV_VAR = "CLAUDE_CODE_SESSION_ID"
@@ -174,6 +174,7 @@ SESSION_GENERIC_ENV = "AGENT_SESSION"
 SESSION_EXEMPT_SEATS = frozenset(("ECHO", "GROK-BOT", "JET", "JET-CHAT", "MA", "WISE"))
 SESSION_EXEMPT_PATTERNS = ("GB-*",)
 SESSION_ENV_BY_SEAT = {
+    "AG": ("ANTIGRAVITY_CONVERSATION_ID",),
     "CLAUDE": ("CLAUDE_CODE_SESSION_ID",),
     "CODEX": ("CODEX_THREAD_ID",),
     "CURSOR": ("CURSOR_CONVERSATION_ID", "CURSOR_AGENT_CHAT_ID"),
@@ -182,6 +183,7 @@ SESSION_ENV_BY_SEAT = {
     "OPENCODE": ("OPENCODE_SESSION_ID",),
 }
 SESSION_FALLBACK_ENV = (
+    "ANTIGRAVITY_CONVERSATION_ID",
     "CLAUDE_CODE_SESSION_ID",
     "CODEX_THREAD_ID",
     "CURSOR_CONVERSATION_ID",
@@ -199,7 +201,7 @@ SEAT_PREFIX = "seat:"
 # Imported claims that have no marker yet are read from the provenance footer's
 # "addressed by" line, normalized as the importer did (lm_common.normalize_seat,
 # design section 6; roster and aliases copied, read Sat, Oct 10, 2026).
-# The GB-* personas are listed so a seat name is recognized wherever a roster is
+# The GB-* bots are listed so a seat name is recognized wherever a roster is
 # enumerated (footer parsing, --by, label filters).  They call the Linear API
 # directly rather than through this CLI, so they have no SEAT_APP_NAMES entry and
 # no credentials here; adding a name costs nothing and keeps them in the set.
@@ -241,9 +243,12 @@ SEAT_ROSTER = {
     "BF-DEPLOYER",
     "BF-BUILDER",
     "BF-PRODUCER",
+    "BF-ENGINEER",
+    "BF-TRADER",
 }
-# The eleven BotFleet role seats are the ten role seats plus BF-DIRECTOR (FLEET-PROTOCOL.md, owner
-# 2026-10-09).  BF-PRODUCER is not one of those eleven and has no Zulip bot.  It stays on this
+# The BotFleet role seats are the eleven of FLEET-PROTOCOL.md (owner 2026-10-09) with
+# BF-ENGINEER in place of BF-BUILDER (owner 2026-11-01), plus BF-TRADER:  twelve live roles.
+# BF-PRODUCER is not one of those twelve and has no Zulip bot.  It stays on this
 # roster so its Linear app signs its own writes (board #531).
 BF_ROLES = {
     "DIRECTOR",
@@ -258,6 +263,8 @@ BF_ROLES = {
     "ORACLE",
     "BUILDER",
     "PRODUCER",
+    "ENGINEER",
+    "TRADER",
 }
 SEAT_ALIASES = {
     "MINIMAX": "MM",
@@ -312,6 +319,10 @@ SEAT_APP_NAMES = {
     # BotFleet seats in SEAT_ROSTER.  FLEET-PROTOCOL.md (owner 2026-10-09) names the ten role seats
     # plus BF-DIRECTOR.  BF-PRODUCER is on that same roster (BF_ROLES turns a bare PRODUCER into
     # it), so it has an app too:  a write from that seat signs as its own app, never another's.
+    # BF-ENGINEER (in place of BF-BUILDER since owner 2026-11-01) and BF-TRADER hold their own
+    # Linear apps too (their OAuth client pairs are in Infisical AFC prod /linear, and the hosted
+    # MCP's linear.js already carries both as own-app seats); they were missing here until
+    # OPS-1039 (owner, Fri, Nov 6) reconciled the roster.
     # Each app is named for its seat tag, which app_name_ok accepts directly, so a rename in
     # Linear to BF-Fixer, BF-Compiler or any casing still matches its seat.
     "BF-BUILDER": "BF-Builder",
@@ -319,6 +330,7 @@ SEAT_APP_NAMES = {
     "BF-DEPLOYER": "BF-Deployer",
     "BF-DESIGNER": "BF-Designer",
     "BF-DIRECTOR": "BF-Director",
+    "BF-ENGINEER": "BF-Engineer",
     "BF-FIXER": "BF-Fixer",
     "BF-HOUSEKEEPER": "BF-Housekeeper",
     "BF-MONITOR": "BF-Monitor",
@@ -326,6 +338,7 @@ SEAT_APP_NAMES = {
     "BF-PLUMBER": "BF-Plumber",
     "BF-PRODUCER": "BF-Producer",
     "BF-PUBLISHER": "BF-Publisher",
+    "BF-TRADER": "BF-Trader",
 }
 # Other names the owner may give a seat's app (the seat tag and the credentials key names stay as they are).
 # The swapped-credentials check accepts the primary name above, any alias here, or the seat tag itself, and
@@ -340,7 +353,7 @@ SEAT_APP_ALIASES = {
     "MA": ("Muse Assist (MA)", "Muse-Assist", "Rob", "Rob-Muse"),
     "JET": ("Jet (OpenAI dot)",),
     # Deliberate JET/JET-CHAT share (owner, Oct 23 2026):  two logins, one Linear
-    # app, mirroring the Worker tables in scripts/agent-sync-mcp/src/linear.js.
+    # app, mirroring the Worker tables in scripts/simple-tools-mcp/src/linear.js.
     "JET-CHAT": ("Jet (OpenAI dot)",),
     "GROK": ("Grok (Build)", "Grok Build"),
     "GROK-WEB": ("Grok (Web/iOS)", "Grok Web/iOS"),
@@ -986,7 +999,7 @@ BEARER_FILE_ENV = "SIMPLE_BOARD_BEARER_FILE"
 # the answer - the very identity picker the bearer removes.
 BEARER_VERIFY_URL = "https://agents.simplewithus.com/internal/gr-bearer-verify"
 BEARER_VERIFY_CONTRACT = "gr-bearer-verify/1"
-BEARER_SIGNATURE_HEADER = "X-Agent-Sync-Signature"
+BEARER_SIGNATURE_HEADER = "X-Simple-Tools-Signature"
 BEARER_VERIFY_KEY_NAME = "GR_BEARER_VERIFY_KEY"
 BEARER_TOOLS_FOLDER = "/tools"
 # The run's own read-scoped service token for the verify key lives in a private
@@ -3724,16 +3737,16 @@ def cmd_whoami(L: Linear, auth: Auth, seat: str) -> int:
     return EXIT_AUTH if problems else 0
 
 
-# ----------------------------------------------------------------- Agent-Sync parity:  catalogs
-# The hosted ST-MCP server (scripts/agent-sync-mcp) serves Linear as 175 named commands,
+# ----------------------------------------------------------------- Simple-Tools parity:  catalogs
+# The hosted ST-MCP server (scripts/simple-tools-mcp) serves Linear as 175 named commands,
 # general linear_schema/linear_query/linear_mutation tools and 11 proxied official Linear MCP tools.
 # `board commands`, `board run`, `board api` and `board mcp` give a seat the same tools from a shell.
 # The catalogs are JSON exported from the server's own JavaScript, never retyped here:
-# scripts/agent-sync-mcp/scripts/export-linear-catalog.mjs writes catalog/*.json, and
+# scripts/simple-tools-mcp/scripts/export-linear-catalog.mjs writes catalog/*.json, and
 # test/linear-catalog-parity.test.mjs fails CI when the committed JSON is stale.
 
 CATALOG_DIR = Path(__file__).resolve().parent / "catalog"
-REGENERATE_CATALOG = "cd scripts/agent-sync-mcp && node scripts/export-linear-catalog.mjs"
+REGENERATE_CATALOG = "cd scripts/simple-tools-mcp && node scripts/export-linear-catalog.mjs"
 _CATALOGS: dict = {}
 
 
@@ -3745,13 +3758,13 @@ def load_catalog(name: str) -> dict:
             data = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             die(
-                f"the Agent-Sync catalog {path} is missing.  It ships next to board;  in a checkout, "
+                f"the Simple-Tools catalog {path} is missing.  It ships next to board;  in a checkout, "
                 f"regenerate it with:  {REGENERATE_CATALOG}"
             )
         except (OSError, ValueError) as e:
-            die(f"cannot read the Agent-Sync catalog {path} ({type(e).__name__})")
+            die(f"cannot read the Simple-Tools catalog {path} ({type(e).__name__})")
         if not isinstance(data, dict):
-            die(f"the Agent-Sync catalog {path} is not a JSON object")
+            die(f"the Simple-Tools catalog {path} is not a JSON object")
         _CATALOGS[name] = data
     return _CATALOGS[name]
 
@@ -3895,7 +3908,7 @@ def with_defaults(schema: dict, args: dict) -> dict:
 GQL_DOCUMENT_LIMIT = 24000
 # Raised from 24000 (AFC-646):  the shared deficiency log passed 26,729 characters and no seat
 # could update it in place.  Still a guard against pathological requests, far under Linear's own
-# request-size limits.  Keep in sync with VARIABLES_LIMIT in scripts/agent-sync-mcp/src/linear-graphql.js.
+# request-size limits.  Keep in sync with VARIABLES_LIMIT in scripts/simple-tools-mcp/src/linear-graphql.js.
 GQL_VARIABLES_LIMIT = 100000  # Unicode code points (str len); linear-graphql.js counts the same
 GQL_MAX_DEPTH = 16
 GQL_MAX_FIELDS = 500
@@ -4479,7 +4492,7 @@ def selected_fields(value: str) -> str:
 
 def build_named_operation(entry: dict, args: dict) -> tuple[str, dict]:
     """The document and variables the hosted server builds for a named command:  only the supplied
-    arguments, in catalog order, under `query|mutation AgentSyncNamed`."""
+    arguments, in catalog order, under `query|mutation SimpleToolsNamed`."""
     variants = entry.get("variants")
     command = (variants["update"] if "id" in args else variants["create"]) if variants else entry
     if variants:
@@ -4504,7 +4517,7 @@ def build_named_operation(entry: dict, args: dict) -> tuple[str, dict]:
     fields = args.get("selection") or command.get("selection")
     op = "mutation" if entry["kind"] == "write" else "query"
     doc = (
-        f"{op} AgentSyncNamed{'(' + ', '.join(definitions) + ')' if definitions else ''} {{ {command['root']}"
+        f"{op} SimpleToolsNamed{'(' + ', '.join(definitions) + ')' if definitions else ''} {{ {command['root']}"
         f"{'(' + ', '.join(parameters) + ')' if parameters else ''}"
         f"{' { ' + selected_fields(fields) + ' }' if fields else ''} }}"
     )
@@ -4586,7 +4599,7 @@ LABEL_ADMIN_OK = (
     "issueLabelRetire",
     "issueLabelRestore",
 )
-Q_LABEL_ONE = "query AgentSyncLabel($id: String!) { issueLabel(id: $id) { id name } }"
+Q_LABEL_ONE = "query SimpleToolsLabel($id: String!) { issueLabel(id: $id) { id name } }"
 
 
 def protect_labels(L: "Linear", prepared: dict) -> None:
@@ -5448,7 +5461,7 @@ def _type_ref(depth: int) -> str:
     return "kind name" + (f" ofType {{ {_type_ref(depth - 1)} }}" if depth else "")
 
 
-Q_SCHEMA_TYPE = f"""query AgentSyncSchema($name: String!) {{
+Q_SCHEMA_TYPE = f"""query SimpleToolsSchema($name: String!) {{
   __type(name: $name) {{
     name kind description
     fields(includeDeprecated: true) {{
@@ -5782,11 +5795,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("stats", help="aggregate counts")
     sub.add_parser("whoami", help="the Linear identity this CLI acts as")
 
-    # Agent-Sync parity:  the hosted server's Linear tools, from catalog/*.json.
+    # Simple-Tools parity:  the hosted server's Linear tools, from catalog/*.json.
     session_flag = dict(
         dest="session_ids", action="append", help=session_help + ", for the seat tag line"
     )
-    cmd_p = sub.add_parser("commands", help="the named Linear commands Agent-Sync serves (175)")
+    cmd_p = sub.add_parser("commands", help="the named Linear commands Simple-Tools serves (175)")
     cmd_p.add_argument(
         "action", nargs="?", choices=("show",), help="show NAME:  one command's arguments"
     )
@@ -5830,7 +5843,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     api_p = sub.add_parser(
-        "api", help="Linear GraphQL with the Agent-Sync guards:  schema, query, mutation"
+        "api", help="Linear GraphQL with the Simple-Tools guards:  schema, query, mutation"
     )
     api_sub = api_p.add_subparsers(dest="api_cmd", required=True)
     sch = api_sub.add_parser("schema", help="discover a type's fields, arguments or enum values")
@@ -5911,7 +5924,7 @@ def remote_selected() -> bool:
 REMOTE_MAX_BYTES = 4_000_000
 REMOTE_MAX_DEPTH = 64
 REMOTE_MAX_NODES = 100_000
-# The error codes the hosted server can return (the ToolError codes in scripts/agent-sync-mcp/src);  a test keeps
+# The error codes the hosted server can return (the ToolError codes in scripts/simple-tools-mcp/src);  a test keeps
 # this list in step with that source.  Anything else, including a code that merely looks safe, prints as "error".
 _REMOTE_CODES = frozenset(
     (
@@ -5941,6 +5954,8 @@ _REMOTE_CODES = frozenset(
         "forbidden",
         "fleetlink_seat_disabled",
         "fleetlink_refused",
+        "fleetlink_not_found",
+        "fleetlink_expired",
         "dm_not_allowed",
         "budget_exhausted",
     )
@@ -6082,13 +6097,13 @@ def _remote_code(value) -> str:
 
 def _remote_error_object(result: dict, sc) -> dict:
     """The hosted server's error object.  The server answers a tool error with isError and NO structuredContent: the
-    object (code, retry_after_s, ...) is in `_meta["agent-sync/error"]` and, as JSON, in the first text part that is a JSON object.  A
+    object (code, retry_after_s, ...) is in `_meta["simple-tools/error"]` and, as JSON, in the first text part that is a JSON object.  A
     structuredContent that carries a code still wins.  Only the code and the retry-after are ever shown, and
     the code only when it is allow-listed, so nothing the server wrote is copied."""
     if isinstance(sc, dict) and "code" in sc:
         return sc
     meta = result.get("_meta")
-    cand = meta.get("agent-sync/error") if isinstance(meta, dict) else None
+    cand = meta.get("simple-tools/error") if isinstance(meta, dict) else None
     if not isinstance(cand, dict):
         cand = None
         for part in result.get("content") or []:
@@ -6296,11 +6311,11 @@ def remote_bearer() -> str:
 
 
 def _remote_scanner():
-    """The fleet's secret scanner (scripts/agent_sync/secretscan.py, standard library only), loaded by path.  If it
+    """The fleet's secret scanner (scripts/simple_tools/secretscan.py, standard library only), loaded by path.  If it
     cannot be loaded nothing is sent:  remote mode has no unscanned route."""
     import importlib.util
 
-    path = Path(os.path.realpath(__file__)).parent.parent / "agent_sync" / "secretscan.py"
+    path = Path(os.path.realpath(__file__)).parent.parent / "simple_tools" / "secretscan.py"
     try:
         spec = importlib.util.spec_from_file_location("_remote_secretscan", str(path))
         module = importlib.util.module_from_spec(spec)

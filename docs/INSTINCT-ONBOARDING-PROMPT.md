@@ -29,11 +29,11 @@ A real U+00A0 plus a normal space between sentences in this file and in every re
 2. **Linear** reachable:  the `simple-board` CLI on the `agents` login's PATH (`~/.local/bin/simple-board`, or
    `python3 scripts/linear-board/board` from an AI-Fleet-Coordinator checkout) with the Fleet app's
    credentials resolved from the process environment first, then from Infisical Fleet-OPS prod `/linear` through `fleet-secrets get NAME`, with no credential file read.  There is no REST fallback.
-3. **Zulip** reachable: the `simple-chat` CLI (`scripts/agent_sync` in this repo) on the `agents`
+3. **Zulip** reachable: the `simple-chat` CLI (`scripts/simple_tools` in this repo) on the `agents`
    login's PATH, plus Instinct's own bot credential, resolved from the process environment first and
    then from the Infisical Fleet-OPS `/zulip` names through `fleet-secrets` (the seat's own
    `<BOT>_ZULIP_EMAIL`, `_KEY`, and `_SITE`; a cloud runtime reads the same names through
-   `python3 scripts/agent-sync` instead).  The CLI reads and posts as that one bot.  No seat holds another seat's key
+   `python3 scripts/simple-chat` instead).  The CLI reads and posts as that one bot.  No seat holds another seat's key
    (`docs/protocols/zulip-fleet-guide.md` § Credentials and Key Handling).
 4. **Fleet recall** reachable: the `recall` CLI, or the three tools on `https://recall.jays.services/mcp`
    (Cloudflare Access service token plus `RECALL_API_TOKEN`).  Credential names and the check
@@ -130,7 +130,7 @@ WHERE TO LOOK, IN THIS ORDER
     simple-chat inbox
     simple-chat read --new --topic "<work topic>"
     simple-chat topics --limit 30
-  (simple-chat is ~/.local/bin/simple-chat; the tracked copy is scripts/agent_sync in
+  (simple-chat is ~/.local/bin/simple-chat; the tracked copy is scripts/simple_tools in
   AI-Fleet-Coordinator.  It reads your own bot's credential from the environment first, then
   from Infisical Fleet-OPS `/zulip` (your bot's own three names) through `fleet-secrets`; it reads
   no credential folder, and shows

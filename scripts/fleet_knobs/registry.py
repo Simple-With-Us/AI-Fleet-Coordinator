@@ -120,10 +120,11 @@ _S = Spec
 
 # The readers this repository holds, named once so every knob of a job says the same thing.
 _NOTIFIER = (("the owner notifier", "scripts/needs_owner/notifier.py"),)
+_BAR = (("the needs-owner filing command", "scripts/needs_owner/bar.py"),)
 _PUBLISHER = (("the facts publisher", "scripts/fleet_facts/publish.py"),)
 _SIGNER = (("the facts publisher", "scripts/fleet_facts/signing.py"),)
 _NOTES = (
-    ("simple-notes, the stdio MCP and the notes runner", "scripts/agent_sync/notes_client.py"),
+    ("simple-notes, the stdio MCP and the notes runner", "scripts/simple_tools/notes_client.py"),
 )
 _PIN = (("the Apple Notes helper", "scripts/apple-notes-coding.sh"),)
 _SHEET = (("the reference sheet sync", "scripts/fleet-apps-sheet-sync.mjs"),)
@@ -307,6 +308,49 @@ REGISTRY: tuple[Spec, ...] = (
         consumers=_NOTIFIER,
         format="a Linear user id, which is a UUID",
         example="00000000-0000-4000-8000-000000000000",
+    ),
+    # C6 the owner bar:  what may reach Jay through `needs-owner file` (docs/protocols/needs-owner.md, What May Reach Jay)
+    _S(
+        "NEEDS_OWNER_BAR",
+        "enum",
+        "C6",
+        default="off",
+        choices=("off", "warn", "enforce"),
+        local="deny",
+        note="how hard the bar is on `needs-owner file`;  off changes nothing, warn files the item and warns when "
+        "--why-owner is missing, enforce refuses a filing with no reason class;  an unreadable or unknown value is off",
+        group="Owner Bar",
+        label="Owner Bar Mode",
+        hosts="both",
+        consumers=_BAR,
+        consequences=(
+            (
+                "warn",
+                "A needs-owner filing with no reason class still goes through,  with one warning line to the seat.",
+            ),
+            (
+                "enforce",
+                "A needs-owner filing with no reason class is refused,  so the seat decides it,  asks a peer in "
+                "Side-Chats or posts to Pending-for-Jay.",
+            ),
+        ),
+    ),
+    _S(
+        "NEEDS_OWNER_SEAT_DAILY_MAX",
+        "int",
+        "C6",
+        default=0,
+        narrower="min",
+        local="deny",
+        minimum=0,
+        maximum=50,
+        note="most needs-owner items one seat may file in 24 hours, counted on the host that files them;  0 means no cap;  "
+        "applies in warn (a warning) and enforce (a refusal) and never in off",
+        group="Owner Bar",
+        label="Owner Bar Daily Filing Cap",
+        hosts="both",
+        consumers=_BAR,
+        unit="filings a day",
     ),
     # C4 claim-expiry
     _S(

@@ -4,7 +4,7 @@ The one guide to the simple-tools on every transport: the stdio server (`simple-
 
 The collection is **simple-tools**.  The hosted server is **ST-MCP** and its admin is **ST-MCP + GR-MCP Admin**.  Use `simple-chat` for Zulip, `simple-board` for Linear, `simple-notes` for Apple Notes, and the FleetLink CLI for shares.  Fleet coordination is in **#Work-In-Progress**.  Use these component names in instructions and tool descriptions.
 
-At a glance: every tool is `<family>_<verb>`; every call may carry `identity`; a write must.  The stdio server serves 273 tools and the hosted server 280 (counted from the release source, which adds the seven `gr_*` tools and the hosted-only `catalog`; the deployed server lists 272 until that release ships): `eavesdropper_ack` is stdio only, and the hosted-only `whatsapp_read` is listed only to JET-CHAT, the full Jet login, while the WhatsApp bridge is on (it is default-off), which makes JET-CHAT's hosted list 281 (Tools by Family).
+At a glance: every tool is `<family>_<verb>`; every call may carry `identity`; a write must.  The stdio server serves 274 tools and the hosted server 281 (counted from the release source, which adds the seven `gr_*` tools and the hosted-only `catalog`; the deployed server lists 272 until that release ships): `eavesdropper_ack` is stdio only, and the hosted-only `whatsapp_read` is listed only to JET-CHAT, the full Jet login, while the WhatsApp bridge is on (it is default-off), which makes JET-CHAT's hosted list 282 (Tools by Family).
 
 ## How to Pass Identity
 
@@ -16,7 +16,7 @@ One connection can act as several bots, so the connection says who **may** act a
 4. The identity must be in the connection's allowed set (next section), or the call is refused with `identity_not_allowed`, which names the set in `allowed`.
 5. The server uses **that identity's own** credential and keeps every check against it (Zulip `users/me` must be that bot; a Linear write must come from that identity's own app).  Naming a bot never borrows another bot's key.  A launcher pin (`AGENT_LAUNCH_SEAT`) still wins: the only valid `identity` is the pinned seat.
 6. Old tool names are gone, not aliased.  A call to one answers `unknown_tool` with the new name in `replacement`.
-7. Every write is audited with the connection, the claimed identity and the tool (hosted: the seat-gate audit log; stdio and CLI: `~/.agent-sync/logs/identity.jsonl`, ids only).  Posts carry the tag `[IDENTITY·session]` built from the claimed identity.
+7. Every write is audited with the connection, the claimed identity and the tool (hosted: the seat-gate audit log; stdio and CLI: `~/.simple-tools/logs/identity.jsonl`, ids only).  Posts must begin with the required fleet header (the "Fleet post headers" section of `AGENTS.md` in AI-Fleet-Coordinator), built from the claimed identity and relevant repo acronyms.  The legacy formatter emits `[IDENTITY·session]`; formatter rollout has not been verified by this documentation update.
 
 Three tools stand alone and need no identity:
 
@@ -32,20 +32,20 @@ Call `identities` first when a client is new, then `whoami` with an `identity` t
 ## Which Connection a Client Gets
 
 - **A Mac or server app that can run a local command** uses the **stdio** server: `{"command": "simple-chat", "args": ["mcp"]}` in its MCP config.  No OAuth, no arming, no `--as` needed (pass `--as` or `--default-seat` only to give reads a default).  Never put a Zulip key in the config.
-- **A client that only speaks remote MCP** (a web app, a phone, a Mac app with no local command support) uses **ST-MCP**, the hosted server, at `https://agents.simplewithus.com/mcp` with OAuth.  The owner arms the seat in `https://agents.simplewithus.com/admin` first, then the client starts its sign-in and the owner approves it; steps per app are in `scripts/agent-sync-mcp/ARMING-JAY.md`.  The armed seat becomes the grant's default identity.
+- **A client that only speaks remote MCP** (a web app, a phone, a Mac app with no local command support) uses **ST-MCP**, the hosted server, at `https://agents.simplewithus.com/mcp` with OAuth.  The owner arms the seat in `https://agents.simplewithus.com/admin` first, then the client starts its sign-in and the owner approves it; steps per app are in `scripts/simple-tools-mcp/ARMING-JAY.md`.  The armed seat becomes the grant's default identity.
 
 Allowed sets, as the code builds them:
 
 | Connection | May act as |
 |---|---|
-| Hosted CURSOR grant | `CURSOR`, `GROK-WEB`, and every enabled Grok Bot persona: `GB-DIRECTOR`, `GB-FIXER`, `GB-DESIGNER`, `GB-COMPILER`, `GB-HOUSEKEEPER`, `GB-PUBLISHER`, `GB-DEPLOYER`, `GB-MONITOR`, `GB-PLUMBER`, `GB-ORACLE`, `GB-TRADER` |
+| Hosted CURSOR grant | `CURSOR`, `GROK-WEB`, and every enabled Grok bot: `GB-DIRECTOR`, `GB-FIXER`, `GB-DESIGNER`, `GB-COMPILER`, `GB-HOUSEKEEPER`, `GB-PUBLISHER`, `GB-DEPLOYER`, `GB-MONITOR`, `GB-PLUMBER`, `GB-ORACLE`, `GB-TRADER` |
 | Hosted GROK-WEB grant | The same set, with default `GROK-WEB` |
 | Any other hosted grant (such as JET, ECHO or WISE) | Its own seat only |
-| Stdio or CLI on the Mac | Every agent bot whose `<PREFIX>_ZULIP_*` keys are in Infisical Fleet-OPS `/zulip`: the live seats, `BF-*` and the enabled `GB-*` personas |
+| Stdio or CLI on the Mac | Every agent bot whose `<PREFIX>_ZULIP_*` keys are in Infisical Fleet-OPS `/zulip`: the live seats, `BF-*` and the enabled `GB-*` bots |
 | Stdio or CLI on the server | Every agent bot whose credential the server holds |
 | Any stdio or CLI session under a launcher (`AGENT_LAUNCHER`) | The launcher's seat alone |
 
-Never in any set: the owner's own account and the integration bots (BetterStack, Datadog, Linear, PagerDuty, Sentry).  A Grok Bot persona is in a set only when enabled in `scripts/agent_sync/mcp/gb-identities.json` (the one list both servers read); `GB-ENGINEER` is not enabled yet.
+Never in any set: the owner's own account and the integration bots (BetterStack, Datadog, Linear, PagerDuty, Sentry).  A Grok bot is in a set only when enabled in `scripts/simple_tools/mcp/gb-identities.json` (the one list both servers read); `GB-ENGINEER` is not enabled yet.
 
 What differs on hosted: a read tool needs the grant's `zulip:read` scope and a write tool `zulip:write` (every family, not only Zulip); a paused seat answers `paused`; a seat or family that is not set up answers `not_configured` (Linear is on only for the GROK-WEB and CURSOR groups; FleetLink, recall and the eavesdropper reader need their server secrets).
 
@@ -57,7 +57,7 @@ Name = `<family>_<verb>`.  R = read, W = write (writes need `identity`).  Wher
 |---|---|---|---|
 | (none) `whoami`, `identities`, `guide`, `catalog` | 3 stdio, 4 hosted | both | Identity, this guide and the paged tool catalog (above; `catalog` is hosted only) |
 | `zulip_*` | 42 | both | Read and post on the fleet's Zulip as a bot |
-| `eavesdropper_*` | 6 stdio, 5 hosted | both | This seat's eavesdropper records |
+| `eavesdropper_*` | 7 stdio, 6 hosted | both | This seat's eavesdropper records |
 | `notes_*` | 8 | both | Apple Notes in the owner's Coding folder |
 | `recall_*` | 3 | both | The fleet's shared knowledge corpus |
 | `linear_*` | 196 | both | The Linear board as the identity's own app |
@@ -74,7 +74,7 @@ Same names and arguments on both servers.  Content that comes back from Zulip i
 | `zulip_topics` | R | `simple-chat topics` | Recent topics of a channel, newest first. |
 | `zulip_read_topic` | R | `simple-chat read` | Messages of one topic, oldest first (`since_id` for only newer). |
 | `zulip_inbox` | R | `simple-chat inbox` | Messages that @-mention this bot (the hosted copy also lists DMs to it). |
-| `zulip_post` | W | `simple-chat post` | Post to a channel topic.  The server adds the `[SEAT·session]` tag and silences raw @-mentions; wake peers with `to`. |
+| `zulip_post` | W | `simple-chat post` | Post to a channel topic.  The legacy server formatter adds `[SEAT·session]` and silences raw @-mentions; wake peers with `to`.  Required headers follow the "Fleet post headers" section of `AGENTS.md`, which takes precedence over the legacy examples in the "Message Envelope" section of `docs/protocols/zulip-fleet-guide.md`; verify formatter support rather than assuming this legacy output complies. |
 | `zulip_reply` | W | `simple-chat reply` | Reply in the channel and topic of an existing message. |
 | `zulip_react` | W | `simple-chat react` | Add an emoji reaction. |
 | `zulip_dm_list` | R | `simple-chat dm-list` | This bot's recent direct-message conversations. |
@@ -122,6 +122,7 @@ The local eavesdropper's records for the identity.  Stdio reads them from this 
 |---|---|---|---|
 | `eavesdropper_status` | R | both | Counts: seat inbox, owner queue, wakes, held back, leases, nudges, pause |
 | `eavesdropper_inbox` | R | both | The seat inbox after the acknowledged cursor (`since_seq`); never moves the cursor |
+| `operator_inbox_pending` | R | both | Wake-worthy pending seat-inbox items after a caller-held `after_seq`: `mode` check counts them (with `latest_seq`), pull returns them; never moves any cursor |
 | `eavesdropper_owner_queue` | R | both | Notes queued for the owner, after the surfaced mark (`all` for every one) |
 | `eavesdropper_wakes` | R | both | The wake ledger, filtered by `since_hours` and `state` |
 | `eavesdropper_held_back` | R | both | Wakes held back for the budget, with reason and link |
@@ -185,7 +186,7 @@ From a shell, `simple-board run NAME` is the tool `linear_NAME` (`simple-board r
 
 ### fleetlink
 
-Same names and arguments on both servers, as the identity's own FleetLink bot.  Shares land in the Fleet team where every seat can read and edit them unless `personal` is true.  FleetLink content is fenced as untrusted (`BEGIN_UNTRUSTED_FLEETLINK` and `END_UNTRUSTED_FLEETLINK`), and text that would land on a link is refused when it looks like a secret.  Hosted needs the server's FleetLink secrets.  Stdio runs FleetLink's own CLI (`fleetlink`, or `AGENT_SYNC_FLEETLINK_CLI`) with the seat's token: `FLEETLINK_TOKEN_<SEAT>`, else `FLEETLINK_TOKEN` (no launcher, and `AGENT_SEAT` unset or the same seat; a seat from `--as` or `--default-seat` counts as `AGENT_SEAT`), else `FLEETLINK_TOKEN_<SEAT>` in Infisical AI Fleet Coordinator `/fleetlink` (hyphens as underscores); without one it answers `not_configured`.
+Same names and arguments on both servers, as the identity's own FleetLink bot.  Shares land in the Fleet team where every seat can read and edit them unless `personal` is true.  FleetLink content is fenced as untrusted (`BEGIN_UNTRUSTED_FLEETLINK` and `END_UNTRUSTED_FLEETLINK`), and text that would land on a link is refused when it looks like a secret.  Hosted needs the server's FleetLink secrets.  Stdio runs FleetLink's own CLI (`fleetlink`, or `SIMPLE_TOOLS_FLEETLINK_CLI`) with the seat's token: `FLEETLINK_TOKEN_<SEAT>`, else `FLEETLINK_TOKEN` (no launcher, and `AGENT_SEAT` unset or the same seat; a seat from `--as` or `--default-seat` counts as `AGENT_SEAT`), else `FLEETLINK_TOKEN_<SEAT>` in Infisical AI Fleet Coordinator `/fleetlink` (hyphens as underscores); without one it answers `not_configured`.
 
 | Tool | R/W | Purpose |
 |---|---|---|
@@ -210,9 +211,11 @@ Hosted only, JET-CHAT (the full Jet login) only, and only while the WhatsApp bri
 
 GitHub work is not a simple-tools family.  It has its own relay and its own MCP server, and a seat reaches them with a bearer token rather than with a bot identity.
 
+**The route rule (owner ruling 2026-11-08).  Every GitHub read or write goes through the relay — the `gr_*` / `gr_wf_*` verbs on the hosted front, the `wf_*` verbs through GR-MCP, or `simple-git` — under the seat's own identity.  `gh` is backup only, for an operation the relay has no verb for, and every `gh` fallback is logged the same day in the Fleet GitOPS deficiencies document (Linear, Part 2: the missing verb, what `gh` did, and why).
+
 **git-relay** is the relay: a CLI (`git-relay serve`) and a small service in front of the GitHub API.  It knows each seat from its bearer token and picks the credential BY TASK.  **GR-MCP** is the MCP wrapper for it (`git-relay mcp`): a stdio server that advertises itself as `GR-MCP`, holds only the seat's own bearer token, and forwards every call over HTTP, so policy, caps and the audit log stay server-side.
 
-A seat reaches these tools with its own bearer token.  ST-MCP shares the same bearer-token arrangement: a Grok Bot's bearer is also accepted on ST-MCP's `/mcp`, and another seat's bearer is accepted there only when it was minted with that acceptance ticked in ST-MCP + GR-MCP Admin; otherwise it is GR-MCP only.  The hosted server fronts the seven actions below as write-only tools named `gr_open_pr`, `gr_edit_pr`, `gr_reply_thread`, `gr_comment_pr`, `gr_merge_pr`, `gr_workflow_dispatch` and `gr_resolve_thread`.  The Worker adds no policy of its own: it passes the caller's bearer to the relay unchanged and the relay enforces the seat's allowlist.  Rollout is staged.  Today, before the Worker half ships, ST-MCP's live tool list does not carry them and a call there answers `Unknown tool`.  Once the Worker half ships, the seven names are always listed, and a call answers `not_configured` until the relay's upstream URL and its Access credential are set (it fails closed, with no fallback), then reaches the relay; nothing here says either step has happened.  GR-MCP over stdio (`git-relay mcp`) uses the plain names in the table.
+A seat reaches these tools with its own bearer token.  ST-MCP shares the same bearer-token arrangement: a Grok Bot's bearer is also accepted on ST-MCP's `/mcp`, and another seat's bearer is accepted there only when it was minted with that acceptance ticked in ST-MCP + GR-MCP Admin; otherwise it is GR-MCP only.  The hosted server fronts the seven actions below as write-only tools named `gr_open_pr`, `gr_edit_pr`, `gr_reply_thread`, `gr_comment_pr`, `gr_merge_pr`, `gr_workflow_dispatch` and `gr_resolve_thread`.  The Worker adds no policy of its own: it passes the caller's bearer to the relay unchanged and the relay enforces the seat's allowlist.  The front is live:  the hosted catalog carries the seven names and the full `gr_wf_*` workflow set (456 tools in total, verified live 2026-11-07), and a call reaches the relay unless the relay itself refuses it.  GR-MCP over stdio (`git-relay mcp`) uses the plain names in the table, and also exposes the relay's workflow verbs under their relay names (`wf_*`) — every verb in the relay's SPECS, with no hosted-only remainder (owner ruling 2026-11-08: "Nothing should stay hosted-only by design, or else what is point of the relay?").  The five verbs whose bodies can exceed the stdio line cap (`wf_file_put`, `wf_files_put`, `wf_git_blob_create`, `wf_git_tree_create`, `wf_release_asset_upload_binary`) are carried by GR-MCP's chunked staging transport: the caller splits the JSON-encoded arguments into `stage_chunk` messages (each under the line cap; `stage_messages` in `git_relay/mcp_server.py` builds them), GR-MCP reassembles them in memory, and the final chunk forwards the whole call to the relay, where shape checks, seat policy, rate caps and the audit log apply exactly as for any other call.  `stage_abort` drops an unfinished stage without forwarding anything.
 
 | Tool | Credential | Purpose |
 |---|---|---|
@@ -226,11 +229,13 @@ A seat reaches these tools with its own bearer token.  ST-MCP shares the same b
 
 PR-write authoring runs under the owner's scoped PR-only token on purpose: a pull request is authored as the owner, so the review bots read it the way they expect.  Everything else runs under the seat's own GitHub App token, which the relay mints and refreshes itself.  git-relay is the only path in the fleet that mints per-bot GitHub App tokens, so the GR-MCP tool surface never hands a seat an App id, a private key or a token with an expiry to manage.  What a minted token can do is the seat's own policy: the mint is capped at that seat's allowed repos and at its mint-permission ceiling (`contents`, `pull_requests`, `issues`, `actions` or `metadata`, each read or write as the policy says), so a seat pushes only where its own policy gives that ceiling `contents: write`.
 
-Per-seat policy is an allowlist layer over that credential: allowed actions, allowed repos, a mint-permission ceiling and an hourly call cap.  It can only narrow what the credential allows, never exceed it.  Every call, allowed or denied, is written to the audit log, and a non-idempotent write is gated by an outcome record, so a replay never lands twice.
+Per-seat policy is an allowlist layer over that credential: allowed actions, allowed repos, a mint-permission ceiling and an hourly call cap.  It can only narrow what the credential allows, never exceed it.  Every denial, failure and write is written to the audit log (a successful read is not), and a non-idempotent write is gated by an outcome record, so a replay never lands twice.
 
-**Status.** git-relay and GR-MCP are implemented, policy-checked and tested, but **not deployed**: no seat is pointed at it and no running service has been verified.  The owner has chosen the host and the rollout is staged; until the owner decides the cutover, the relay is not an available route: do not plan work that assumes it is live, and do not assume any other GitHub path or credential is available to a seat either.  What a seat may use today is whatever its own environment and owner have set up and verified.
+**Status.**  git-relay is deployed and is the fleet's GitHub route:  the hosted front serves the `gr_*` and `gr_wf_*` tools live (verified 2026-11-07, including PR create, edit, close and reopen, branch and file writes on org repos such as CodeCaps and Usage-Monitor), and seats reach it with their own bearer through ST-MCP or `simple-git call`.  A seat host still cannot reach the relay's own HTTP address directly (the edge refuses it), so the hosted front and `simple-git` are the routes; GR-MCP is the seat-local stdio wrapper over the same relay where a seat runs it.
 
 **Closing a pull request.**  `gr_wf_pr_close` closes an open PR without merging it and never deletes its branch.  It requires `expected_head_sha` and `expected_base_ref`, and it returns a receipt.  `gr_wf_pr_reopen` reopens a closed PR, with `expected_head_sha` optional, and a PR already open answers with no write.  A merged PR is refused by both.  Those checks read the PR just before the write, so they narrow a race and do not close it.  `simple-git call` reaches both.  Who may close whose PR is the superseded-PR rule in `AGENTS.md`.
+
+**Rules, rulesets and merge settings.**  `gr_wf_branch_rules` (`repo`, `branch`, optional `page` and `per_page`) lists the rules from every active ruleset that applies to that branch, with each rule's parameters (a `pull_request` rule carries `allowed_merge_methods`) and the ruleset that supplies it.  `gr_wf_rulesets` lists the repository's rulesets (id, name, target, source, enforcement), and with `includes_parents` (default true) the organization rulesets that target it.  Both are metadata reads.  Classic branch protection needs Administration read, which the fleet ceiling does not hold, so no verb reads it.  `gr_wf_repo_get` carries `allow_merge_commit`, `allow_squash_merge`, `allow_rebase_merge`, `allow_auto_merge` and `delete_branch_on_merge` only when GitHub returns them, and GitHub returns them only to a token that can read the repository's settings:  the relay asks for that when the seat's ceiling holds Administration, and otherwise those keys stay absent (absent means unknown, not false).
 
 `mint_token` is deliberately not exposed over GR-MCP or fronted by ST-MCP: it returns a raw credential, and a stdio transcript is too easy to capture.  A seat that needs a token for git-over-HTTPS calls the relay's HTTP API directly, where the answer goes only to that caller and the mint is capped the same way.
 
@@ -242,7 +247,7 @@ A relay refusal arrives as a tool error carrying the relay's own HTTP status, ne
 
 ## Old Names and New Names
 
-Removed names are not aliased.  Calling one returns `unknown_tool` with the replacement (below).  Generated from `scripts/agent_sync/mcp/renamed-tools.json`.
+Removed names are not aliased.  Calling one returns `unknown_tool` with the replacement (below).  Generated from `scripts/simple_tools/mcp/renamed-tools.json`.
 
 | Old name | Use now |
 |---|---|
@@ -288,7 +293,7 @@ Removed names are not aliased.  Calling one returns `unknown_tool` with the rep
 | `draft_edit` | `zulip_draft_edit` |
 | `draft_delete` | `zulip_draft_delete` |
 | `typing` | `zulip_typing` |
-| `agent_sync_identities` | `identities` |
+| `simple_tools_identities` | `identities` |
 | `listener_status` | `eavesdropper_status` |
 | `listener_inbox` | `eavesdropper_inbox` |
 | `listener_owner_queue` | `eavesdropper_owner_queue` |
@@ -329,13 +334,13 @@ Every MCP tool has a command except the hosted-only `whatsapp_read`, which has n
 | FleetLink | `fleetlink` (`fleetlink tool NAME` runs any `fleetlink_*` tool; stdio runs it that way) |
 | WhatsApp | None: `whatsapp_read` is hosted only (the whatsapp section above), so no CLI command or stdio tool serves it |
 | Catalog | None: `catalog` is hosted only (paged names and descriptions;  full schemas come from `tools/list` with the same cursor), so no CLI command or stdio tool serves it |
-| GitHub | `git-relay serve` (the relay) and `git-relay mcp` (GR-MCP over stdio); the relay is not deployed yet, so it is not an available route today |
+| GitHub | `git-relay serve` (the relay) and `git-relay mcp` (GR-MCP over stdio); the relay is deployed and is the fleet's GitHub route (verified live 2026-11-07) |
 
 Long text stays out of `argv`: `--body-file PATH` (a file you own, mode 0600 or 0400, at most 64 KB) or `-` for standard input.
 
 ## Errors and Exit Codes
 
-Tool errors come back with `isError: true` and an object `{code, message, retryable, …}` (also in `_meta["agent-sync/error"]`).
+Tool errors come back with `isError: true` and an object `{code, message, retryable, …}` (also in `_meta["simple-tools/error"]`).
 
 | Code | Meaning and what to do |
 |---|---|
@@ -344,7 +349,7 @@ Tool errors come back with `isError: true` and an object `{code, message, retrya
 | `unknown_tool` | A removed name.  Use `replacement` |
 | `invalid_argument` | The arguments broke the schema or a rule (the message names the field) |
 | `not_authorized` | Zulip or Linear refused the credential, a missing OAuth scope on hosted (reconnect and approve `zulip:read` or `zulip:write`), or a Linear write by the wrong app |
-| `not_configured` | This seat or family is not set up: on hosted, on the server (Linear, FleetLink, recall, a persona's credentials); on stdio, FleetLink's CLI or the seat's FleetLink token is missing here |
+| `not_configured` | This seat or family is not set up: on hosted, on the server (Linear, FleetLink, recall, a bot's credentials); on stdio, FleetLink's CLI or the seat's FleetLink token is missing here |
 | `paused` | Hosted only: the owner paused this seat |
 | `rate_limited` | Retry after `retry_after_s` (`retryable: true`) |
 | `outcome_unknown` | The write may or may not have landed.  Check (read the topic) before retrying; never replay blindly |
@@ -353,6 +358,53 @@ Tool errors come back with `isError: true` and an object `{code, message, retrya
 | `forbidden` | The Operator does not let this host act for that seat (its `[notes_queue]` seat lists) |
 | `claim_held` | Linear: another seat holds the claim |
 | `zulip_error`, `unavailable`, `internal` | Upstream failure.  `unavailable` may be retryable (check `retryable`) |
+| `relay_refused` | The hosted `gr_*` tools: git-relay refused the call (definite, nothing written).  The answer carries a `reason` when the cause is known; see "Why a `gr_*` Call Was Refused" below.  No `reason` means the relay's verdict was not one it recognises: read `message` |
 | `relay` (HTTP status) | git-relay and GR-MCP do not use the codes above: a refusal arrives as a tool error carrying the relay's own HTTP status.  See the GitHub section |
 
+### Why a `gr_*` Call Was Refused
+
+A hosted `gr_*` refusal (`code: "relay_refused"`) names its cause in a `reason` field.  The reason comes from a closed list, mapped from the relay's own fixed refusal strings and its numeric GitHub status, so it is never the relay's or GitHub's prose.  A refusal the list does not cover keeps the plain answer with no `reason`.
+
+| `reason` | What it means and what to do |
+|---|---|
+| `seat_policy` | The relay's allowlist for this seat does not permit the action or repository (or the seat's App ceiling is too low).  Retrying will not help; the seat's relay policy has to change |
+| `seat_rate_limit` | The seat used its hourly call or write quota.  Wait, then retry |
+| `github_refused` | GitHub itself refused it. `github_status` is the numeric status: 403 is permission or a branch rule, 405 is a merge block, 422 is a rejected change.  Fix the cause on GitHub; the seat policy is not the problem |
+| `fence_mismatch` | The head, base, ref or state the call expected is no longer what the relay read just before the write.  Read the current state and send the call again with the fresh value |
+| `credential_scan` | The content looked like a credential.  The code is `refused_secret` instead; nothing was written |
+| `unauthenticated` | The relay did not accept the seat's credential |
+| `bad_request_<id>` | A fixed relay verdict on the request itself: `bad_request_pr_not_issue_target` (a pull request sent to an issue tool), `bad_request_default_branch_protected`, `bad_request_pr_not_open`, `bad_request_pr_merged`, `bad_request_workflow_path_permission`, `bad_request_review_not_pending`, `bad_request_nothing_to_change`, `bad_request_invalid_files`, `bad_request_invalid_arguments`, `bad_request_unsupported_action`, `bad_request_invalid_repository`, `bad_request_content_too_large` |
+
+A `seat_policy` or `bad_request_*` reason is a refusal by the relay itself, so no GitHub call was made.  Only `github_refused` means GitHub was asked and said no.
+
 Exit codes of the `simple-chat` CLI: 0 ok, 2 usage, 3 credentials, realm or identity refused, 4 wait timeout, 5 Zulip API error, 6 network error, 7 `verify-owner-msg` did not verify.  `simple-board` exits 1 error, 2 usage, 3 claim held, 4 no credentials, 5 rate limit, and 6 when no seat is verified or an authentication check failed.  Exit 7 is retired: it was the writes-off switch, and the bearer-verified seat is the only write gate now.
+
+
+### One read-only PR report
+
+`simple-git readiness OWNER/REPO NUMBER [--expected-head FULL_SHA]` combines the
+existing approved PR, exact-head check-run, commit-status, paginated review-record,
+and actual review-thread reads. It prints JSON. Exit 0 means
+`observed_checks_passed`, not permission to merge; exit 1 means blocked or unknown.
+It never merges, resolves a conversation, changes a rule, or creates an auto-merge request.
+
+The report counts unresolved review **threads**, including outdated unresolved
+threads. Issue comments are never a substitute. It follows thread cursors and
+review pages to a bounded end, rejects duplicate/missing pagination and incomplete
+check censuses, and reads head/base/lifecycle again at the end. A changed head or
+base requires a new report. The same overall CLI time budget covers every read.
+
+Missing tools, refused reads, malformed coverage, missing current-head reviews,
+and unknown mergeability are not a clean result. The report retains known
+blockers even if another read is incomplete. All observed checks/statuses are
+reported; it does not guess which are required. A COMMENTED current-head review
+is evidence of a completed review, not an approval or an automatic policy verdict.
+Reviewer identity requirements, repository rules and owner authority still need
+normal qualification. The existing REST PR read provides `mergeable_state`, not
+GitHub's exact human-readable rule reason: `github_block_reason` stays `unknown`
+rather than inventing an allowlist or policy explanation. Use the authenticated
+PR merge panel when that missing reason matters.
+
+These are bounded sequential observations, not an atomic snapshot or durable
+merge token. Recheck at the point of a later write through the existing approved
+merge path. Review text is not emitted by this report and cannot grant authority.

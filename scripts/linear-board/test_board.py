@@ -1400,7 +1400,7 @@ def make_verify_handler(store):
         def do_POST(self):
             n = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(n)
-            sig = self.headers.get("X-Agent-Sync-Signature") or ""
+            sig = self.headers.get("X-Simple-Tools-Signature") or ""
             good = hmac.new(store["key"].encode(), body, hashlib.sha256).hexdigest()
             if not hmac.compare_digest(sig, good):
                 self._answer(401, {"ok": False, "reason": "bad_signature"})
@@ -1665,16 +1665,18 @@ class BearerTransportSeamTests(unittest.TestCase):
         self.assertIn("SANDBOX OK", p.stdout)
 
     def test_every_verifier_identity_is_already_a_canonical_seat_tag(self):
-        # The verifier can only answer KNOWN_SEATS (ST-MCP config.js) or an enabled GB persona
+        # The verifier can only answer KNOWN_SEATS (ST-MCP config.js) or an enabled GB bot
         # (gb-identities.json), and sbt_/gbb_ bearers are minted for those only.  The CLI refuses a
         # non-canonical answer instead of re-mapping it, so this guards drift:  if the verifier set ever
         # gains an alias spelling, this fails and the contract is revisited rather than silently remapped.
         root = Path(__file__).resolve().parents[1]
-        cfg = (root / "agent-sync-mcp" / "src" / "config.js").read_text()
+        cfg = (root / "simple-tools-mcp" / "src" / "config.js").read_text()
         m = re.search(r"KNOWN_SEATS = Object\.freeze\(\[([^\]]+)\]\)", cfg)
         self.assertIsNotNone(m)
         seats = re.findall(r'"([A-Z][A-Z0-9-]*)"', m.group(1))
-        gb = json.loads((root / "agent_sync" / "mcp" / "gb-identities.json").read_text())["enabled"]
+        gb = json.loads((root / "simple_tools" / "mcp" / "gb-identities.json").read_text())[
+            "enabled"
+        ]
         # This pins only what the hosted verifier answers TODAY.  It is not the fleet roster:  other active
         # tags (AG, CLUTCH, FX, GROK, MC, MM, OPENCODE, BotFleet roles) have no verifier identity yet and
         # need verifier/admin work, not an alias map here.
@@ -3655,7 +3657,7 @@ class SeatAppTests(BoardTest):
         )
 
     # The one deliberate share:  two Jet logins, one Linear app (owner,
-    # Oct 23 2026 - scripts/agent-sync-mcp/src/linear.js).  JET is wake-only
+    # Oct 23 2026 - scripts/simple-tools-mcp/src/linear.js).  JET is wake-only
     # with no tool surface, so no credential can swap unseen.
     SHARED_APP_NAME_SEATS = (frozenset({"JET", "JET-CHAT"}),)
 

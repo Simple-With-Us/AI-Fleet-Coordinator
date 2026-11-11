@@ -91,7 +91,11 @@ targets:
       - path: Muster/FleetViewService.swift
       - path: Muster/ApplyPlanModel.swift
       - path: Muster/ApplyCoordinator.swift
+      # The Settings panes and their words.  They take bindings and plain values, not the
+      # store, so the test bundle compiles them (MusterSettingsLayoutTests, SettingsFoldersTests).
+      - path: Muster/Views/MusterSettingsPanes.swift
       - path: Muster/Model/ConfigFileReader.swift
+      - path: Muster/Model/PlatformVariants.swift
       - path: Muster/Model/DriftAlerts.swift
       - path: Muster/Model/DriftHistory.swift
       - path: Muster/Model/DriftMonitor.swift
@@ -101,21 +105,32 @@ targets:
       - path: Muster/Model/EngineRunner.swift
       - path: Muster/Model/FleetAdmin.swift
       - path: Muster/Model/FleetConfigContract.swift
+      # The fleet-wide compliance rules' results, their states and their alerts (GRID-18,
+      # ComplianceResultsTests).
+      - path: Muster/Model/ComplianceResults.swift
       - path: Muster/Model/FleetGrid.swift
+      # The grid's words:  scope, state spellings, the legend, where a seat and a rule are
+      # read, the watch line and the panel's selection key (GridPresentationTests).
+      - path: Muster/Model/GridPresentation.swift
       - path: Muster/Model/FleetRegistry.swift
       - path: Muster/Model/FleetStore.swift
       - path: Muster/Model/MusterNavigation.swift
       - path: Muster/Model/ResourcePolicy.swift
       - path: Muster/Model/FleetToolsReport.swift
+      - path: Muster/Model/ToolVersionColumns.swift
       - path: Muster/Model/ServerStatusReport.swift
       - path: Muster/Model/VmStatusReport.swift
+      - path: Muster/Model/AppProcessesReport.swift
       - path: Muster/Model/WorkerHealthReport.swift
       - path: Muster/Model/MacServicesReport.swift
       - path: Muster/Model/HogHunterMacReport.swift
       - path: Muster/Model/OpsAuditLog.swift
       - path: Muster/Model/OpsControl.swift
+      - path: Muster/Model/ServerUnitStatus.swift
       - path: Muster/Model/KnobRegistry.swift
       - path: Muster/Model/MachineStatus.swift
+      # Report age and verdict at a moment, and the words for them (ReportFreshnessTests).
+      - path: Muster/Model/ReportFreshness.swift
       - path: Muster/Model/PlaceWatch.swift
       - path: Muster/Model/ServiceActionRouter.swift
       - path: Muster/Model/BuildIdentity.swift
@@ -123,13 +138,26 @@ targets:
       - path: Muster/Model/ServiceReconciler.swift
       - path: Muster/Model/MiniMaxSurface.swift
       - path: Muster/Model/SeatManifest.swift
+      - path: Muster/Model/SeatSetup.swift
+      - path: Muster/Model/SeatInventory.swift
+      # When Seat Setup reads an inventory again and when a polling page reads while the app
+      # is not in front (ReadCadenceTests, in the MusterTests directory above).
+      - path: Muster/Model/ReadCadence.swift
+      - path: Muster/Model/TrustedCheckout.swift
       - path: Muster/Model/ThemeChoice.swift
+      - path: Muster/Model/FailureReason.swift
       - path: Muster/Model/ListenerConfigFile.swift
       - path: Muster/Model/ListenerStatus.swift
+      # The server eavesdropper's reduced status, read over `server eavesdropper-status`
+      # (ServerEavesdropperStatusTests).
+      - path: Muster/Model/ServerEavesdropperStatus.swift
       - path: Muster/Model/OperatorOptions.swift
       - path: Muster/Model/SeatActivity.swift
       - path: Muster/Model/SeatActivityReader.swift
       - path: Muster/Model/SeatActivityStore.swift
+      # What a server seat's row shows from the server eavesdropper's reading (ServerSeatRowTests).
+      - path: Muster/Model/ServerSeatRow.swift
+      - path: Muster/Model/FleetViewStore.swift
       - path: Muster/Model/WakeLedger.swift
       - path: Muster/Model/WakeSettings.swift
       - path: Muster/Model/WakeSettingsReader.swift
@@ -147,6 +175,16 @@ targets:
       - path: Muster/FleetServices/ServiceReconcilePolicy.swift
       - path: Muster/FleetServices/ServerPresence.swift
       - path: Muster/FleetServices/StartupPolicy.swift
+      # The window's layout sizes, the column cap (the fix for AFC-616) and the stale
+      # split-view frame check.  No environment objects, so the test bundle compiles it
+      # (MusterWindowLayoutTests).
+      - path: Muster/Views/MusterWindowLayout.swift
+      # The place strip, so MusterWindowLayoutTests checks the app's own strip.  It needs only
+      # FleetHost, MachineStatus and MusterNavigation, which are compiled above.
+      - path: Muster/Views/PlaceBadge.swift
+      # Apps & Work's filter row.  It takes a binding and no store, so FleetViewFilterBarTests
+      # hosts the row itself at the narrowest pane.
+      - path: Muster/Views/FleetViewFilterBar.swift
     settings:
       base:
         PRODUCT_NAME: MusterTests

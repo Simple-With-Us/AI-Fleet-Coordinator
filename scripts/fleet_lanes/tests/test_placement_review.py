@@ -1239,7 +1239,11 @@ class ShellOptions(ShimReview):
         # Running as sh turns posix on, and an exported SHELLOPTS would hand that to a #!/bin/bash hook.
         folder = self.home / "external"
         folder.mkdir()
-        (folder / "git-shows").symlink_to(shutil.which("printenv"))
+        # A #!/bin/bash hook that prints its environment.  Not a symlink to printenv:  a multi-call coreutils (uutils)
+        # refuses to run under another name ("Requested utility git-shows does not match executable name").
+        hook = folder / "git-shows"
+        hook.write_text('#!/bin/bash\nexec printenv "$@"\n', encoding="utf-8")
+        hook.chmod(0o755)
         res = self.git("shows", "SHELLOPTS", SHELLOPTS="errexit", PATH=f"{self.bin}:{folder}:/usr/bin:/bin")
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertIn("errexit", res.stdout)
@@ -1761,7 +1765,7 @@ class CliExits(WatchRoundTwo):
         self.assertEqual(len(run.named("simple-chat", "dm")), 2)
 
     def test_the_words_this_relies_on_are_in_the_clis(self) -> None:
-        text = (REPO / "scripts" / "agent_sync" / "cli.py").read_text(encoding="utf-8")
+        text = (REPO / "scripts" / "simple_tools" / "cli.py").read_text(encoding="utf-8")
         self.assertGreaterEqual(text.count(W.CHAT_MAYBE_SENT), 2)
         self.assertIn("(already filed; unchanged)", (REPO / "scripts" / "linear-board" / "board").read_text(encoding="utf-8"))
 

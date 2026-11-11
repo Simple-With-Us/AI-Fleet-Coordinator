@@ -1,0 +1,30 @@
+# The Antigravity wake bridge (AFC-665):  the webhook the Operator's http wake reaches, and the
+# deliverer that turns one wake into a prompt in a specific Antigravity conversation.  Template:
+# copy to /etc/systemd/system/afc-ag-wake-bridge.service, `systemctl daemon-reload`,
+# `systemctl enable --now afc-ag-wake-bridge.service`.  Install the checkout first (the fleet-cli
+# current link moves on every release, and this unit resolves it at start), mint the routine key
+# into Fleet-OPS /zulip as AG_ROUTINE_KEY, and put the same value in the 0600 file
+# ~/.local/state/ag-wake/routine-key -- that file is the one secret here, and a key shorter than
+# 16 characters or a group-readable one refuses every wake with 503.  Bind the tailnet address
+# only:  the listener reaches this host over Tailscale or loopback, and the public interface must
+# never see a wake.
+[Unit]
+Description=AG wake bridge: the Operator's wake webhook for the Antigravity seat (AFC-665)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jay
+Group=jay
+Environment=HOME=/home/jay
+# The shared registry env file is sourced first, and ag-wake-bridge also loads it directly when
+# invoked standalone on either the server or the Mac.
+ExecStart=/bin/sh -c '. "$HOME/.local/bin/mm-registry-env" 2>/dev/null; exec /usr/bin/python3 -I /home/jay/.local/share/fleet-cli/current/scripts/ag-wake-bridge serve --bind "${AG_WAKE_BIND:-127.0.0.1}" --port 8792'
+EnvironmentFile=-/etc/ag-wake-bridge.env
+Restart=always
+RestartSec=10
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

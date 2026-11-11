@@ -9,15 +9,15 @@ import {
 const read = (rel) => readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
 const fleetApps = JSON.parse(read("fleet-apps.json"));
 const facts = JSON.parse(read("scripts/fleet-apps-sheet-facts.json"));
-const partition = parsePartition(read("docs/protocols/agent-sync-partition.toml"));
-const serverSeats = parseServerListener(read("scripts/agent_sync/server/listener.toml"));
+const partition = parsePartition(read("docs/protocols/simple-tools-partition.toml"));
+const serverSeats = parseServerListener(read("scripts/simple_tools/server/listener.toml"));
 const { seatAppNames, teamKeys } = parseBoardCli(read("scripts/linear-board/board"));
 const seatsRows = buildSeatsTab({ fleetApps, partition, serverSeats, seatAppNames, facts }, "NOW");
 
 test("the three readers find their data in the real files", () => {
   assert.equal(partition.CLAUDE, "mac");
   assert.equal(partition.JET, "server");
-  assert.equal(partition["BF-PLUMBER"], "none");
+  assert.equal(partition["BF-PLUMBER"], "server");
   assert.equal(serverSeats.JET.wake, "http");
   assert.equal(serverSeats.JET.routineUrlEnv, "JET_ROUTINE_URL");
   assert.equal(serverSeats["GB-FIXER"].routineKeyEnv, "ZULIP_ALERT_GB_FIXER_KEY");
@@ -39,7 +39,7 @@ test("Fleet Apps lists every fleet-apps.json app, FleetLink included", () => {
   assert.match(fll[6], /No team/);
 });
 
-test("a BotFleet seat with a Linear app shows that name, and a persona without one stays an em dash", () => {
+test("a BotFleet seat with a Linear app shows that name, and a bot without one stays an em dash", () => {
   const col = seatsRows[0].indexOf("Linear App");
   assert.ok(col > 0);
   const bf = seatsRows.slice(1).filter(r => r.length > 1 && String(r[0]).startsWith("BF-"));
@@ -56,8 +56,10 @@ test("Seats and Bots covers every partition seat and every fleet-apps.json seat"
   const tags = new Set(seatsRows.slice(1).filter(r => r.length > 1).map(r => r[0]));
   for (const s of fleetApps.seats.filter(s => !["GROK-BOT", "GROK-BUILD"].includes(s.tag))) assert.ok(tags.has(s.tag), `missing ${s.tag}`);
   for (const t of Object.keys(partition).filter(t => !["GROK-BOT", "GROK-BUILD"].includes(t))) assert.ok(tags.has(t), `missing ${t}`);
-  // Eleven BF seats:  the ten role seats plus BF-DIRECTOR.  Twelve GB personas, GB-ENGINEER included.
-  assert.equal([...tags].filter(t => t.startsWith("BF-")).length, 11);
+  // Thirteen BF names on the partition:  the twelve live role seats (BF-ENGINEER in place of
+  // BF-BUILDER since 2026-11-01, BF-TRADER included) plus the retired BF-BUILDER, which keeps
+  // its row like every retired seat.  Twelve GB bots, GB-ENGINEER included.
+  assert.equal([...tags].filter(t => t.startsWith("BF-")).length, 13);
   assert.equal([...tags].filter(t => t.startsWith("GB-")).length, 12);
 });
 
