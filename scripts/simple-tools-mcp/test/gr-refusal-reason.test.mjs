@@ -84,6 +84,12 @@ const MAPPED = [
   ["PR head not matched", 400, "fence_mismatch"],
   ["branch head moved", 400, "fence_mismatch"],
   ["ref changed", 400, "fence_mismatch"],
+  ["additive label does not exist", 400, "bad_request_label_not_found"],
+  ["additive label target not found", 400, "bad_request_label_target_not_found"],
+  ["additive label was not applied", 400, "bad_request_label_not_applied"],
+  ["auto-merge is not armed", 400, "bad_request_auto_merge_not_armed"],
+  ["auto-merge enable was refused", 400, "bad_request_auto_merge_refused"],
+  ["auto-merge is armed with a different method", 400, "bad_request_auto_merge_method_mismatch"],
 ];
 
 test("every mapped relay string classifies, on the workflow path and the seven-action path", async () => {

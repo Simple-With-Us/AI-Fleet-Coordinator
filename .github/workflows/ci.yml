@@ -683,6 +683,11 @@ jobs:
     - name: Auto-merge reusable workflow contract
       timeout-minutes: 10
       run: python3 scripts/test_auto_merge_reusable.py
+    # Idempotent fleet hold-label provisioning (AFC-691).  No network:  the
+    # transport is injected, and the workflow job is checked by reading the file.
+    - name: Fleet hold label provisioning
+      timeout-minutes: 10
+      run: python3 -m unittest discover -s scripts/hold_labels -p 'test_*.py' -t scripts/hold_labels
     # Pure builders and readers of the Fleet Reference Sheet registry sync.  No
     # network:  the tests import the script, which runs main() only as an entry point.
     - name: Fleet Reference Sheet registry sync tests

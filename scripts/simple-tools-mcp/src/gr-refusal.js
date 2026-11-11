@@ -40,6 +40,12 @@ const BAD_REQUEST_REASONS = new Map([
   ["files too large", "bad_request_content_too_large"],
   ["file too large", "bad_request_content_too_large"],
   ["file content budget exceeded", "bad_request_content_too_large"],
+  ["additive label does not exist", "bad_request_label_not_found"],
+  ["additive label target not found", "bad_request_label_target_not_found"],
+  ["additive label was not applied", "bad_request_label_not_applied"],
+  ["auto-merge is not armed", "bad_request_auto_merge_not_armed"],
+  ["auto-merge enable was refused", "bad_request_auto_merge_refused"],
+  ["auto-merge is armed with a different method", "bad_request_auto_merge_method_mismatch"],
 ]);
 
 /** The relay's fixed head, ref and identity fences:  the caller's expected
@@ -198,6 +204,12 @@ const REASON_TEXT = Object.freeze({
   bad_request_unsupported_action: "The relay does not support this workflow action.",
   bad_request_invalid_repository: "The repository is not a valid owner/name.",
   bad_request_content_too_large: "The content is over the relay's size or budget limit.  Send less per call.",
+  bad_request_label_not_found: "That label is not in the repository yet.  Create the fleet hold label, then send the call again.",
+  bad_request_label_target_not_found: "That number is not a pull request this call can label.",
+  bad_request_label_not_applied: "The label is still absent after the pull-request path.  Nothing further was written.",
+  bad_request_auto_merge_not_armed: "A follow-up read shows squash, merge, or rebase auto-merge is off.  Sending the call again is safe.",
+  bad_request_auto_merge_refused: "GitHub refused the enable, and a follow-up read shows auto-merge is off.",
+  bad_request_auto_merge_method_mismatch: "A follow-up read shows auto-merge is on with a different merge method.  Read the pull request before enabling again.",
 });
 
 /** Fixed caller-facing text for a reason id, or null when there is none. */
