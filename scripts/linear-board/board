@@ -201,7 +201,7 @@ SEAT_PREFIX = "seat:"
 # Imported claims that have no marker yet are read from the provenance footer's
 # "addressed by" line, normalized as the importer did (lm_common.normalize_seat,
 # design section 6; roster and aliases copied, read Sat, Oct 10, 2026).
-# The GB-* personas are listed so a seat name is recognized wherever a roster is
+# The GB-* bots are listed so a seat name is recognized wherever a roster is
 # enumerated (footer parsing, --by, label filters).  They call the Linear API
 # directly rather than through this CLI, so they have no SEAT_APP_NAMES entry and
 # no credentials here; adding a name costs nothing and keeps them in the set.

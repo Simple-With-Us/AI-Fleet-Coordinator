@@ -6,7 +6,7 @@ The allowed set is every agent bot whose Zulip credentials this host can read:
     seats        every live row of fleet-apps.json `seats` and every `seatApps.extraSeats` key
     BF-*         every BF_<ROLE>_ZULIP_KEY name in Infisical Fleet-OPS /zulip (or BF-<Role>-zuliprc in
                  the explicit SIMPLE_TOOLS_SECRETS_DIR override) whose seat matches the BF-* pattern
-    GB-*         every persona enabled in mcp/gb-identities.json, the one list the hosted Worker
+    GB-*         every bot enabled in mcp/gb-identities.json, the one list the hosted Worker
                  imports as GB_IDENTITIES
 
 each kept only when its credentials are reachable:  its three Infisical /zulip names (<BOT>_ZULIP_EMAIL,
@@ -42,7 +42,7 @@ GB_IDENTITIES_PATH = os.path.join(HERE, "mcp", "gb-identities.json")
 
 
 def gb_identities() -> tuple[str, ...]:
-    """The enabled Grok Bot personas, in table order."""
+    """The enabled Grok bots, in table order."""
     with open(GB_IDENTITIES_PATH, encoding="utf-8") as fh:
         data = json.load(fh)
     enabled = data.get("enabled") if isinstance(data, dict) else None
@@ -67,10 +67,7 @@ def agent_identity_problem(name: str, *, registry: I.SeatRegistry | None = None)
     except I.SeatRegistryError as exc:
         return "the seat registry cannot be read:  %s" % exc
     if seat.startswith("GB-") and seat not in gb_identities():
-        return (
-            "%s is not an enabled Grok Bot persona (scripts/simple_tools/mcp/gb-identities.json)"
-            % seat
-        )
+        return "%s is not an enabled Grok bot (scripts/simple_tools/mcp/gb-identities.json)" % seat
     return None
 
 

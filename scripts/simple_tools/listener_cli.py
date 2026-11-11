@@ -36,7 +36,7 @@ from . import zulip as Z
 
 # Seat tags (from seat_tag_for, which reads the bot's email) whose bots `daemon init` pins.  The pins are
 # an optional extra:  since the owner ruling of 2026-10-09 the daemon treats every fleet bot as eligible
-# at runtime (router.fleet_bot_ids over config.fleet_tags:  every partition seat, GB personas and BF role
+# at runtime (router.fleet_bot_ids over config.fleet_tags:  every partition seat, GB bots and BF role
 # bots included), so a new seat needs no re-init.  Webhook bots and unknown senders stay out.
 FLEET_SEATS = C.FLEET_SEATS
 SERVER_SAMPLE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server", "listener.toml")

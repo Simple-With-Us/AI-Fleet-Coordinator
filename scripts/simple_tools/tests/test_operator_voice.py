@@ -829,6 +829,122 @@ class SiteTests(OperatorHarness):
         self.assertEqual(self.dumps(), [], "and the wake itself was not run")
 
 
+class DmModeChokePointTests(OperatorHarness):
+    """`SIMPLE_TOOLS_OPERATOR_DM_MODE=clarify` is enforced at the daemon's two choke points before they spend anything.
+
+    `_operator_send` and `_operator_edit` used to build the Operator client (a vault read) and wait out
+    the pacing before `OperatorVoice.post` refused, so a refused direct message still cost both.  Each
+    now asks the voice first.  A spy on `client()` and on `_operator_pace_ready` says nothing was spent,
+    and in `legacy` mode both choke points behave exactly as before.
+    """
+
+    MODE = "SIMPLE_TOOLS_OPERATOR_DM_MODE"
+    DM = {"type": "direct", "to": [OWNER], "content": "a note for the owner"}
+    STREAM = {"type": "stream", "to": "simple-tools", "topic": "t", "content": "hello"}
+
+    def mode(self, daemon: D.Daemon, value: str | None) -> None:
+        """Set the DM mode the way a reload does: in the daemon's environment, then told to the voice."""
+        if value is None:
+            daemon.env.pop(self.MODE, None)
+        else:
+            daemon.env[self.MODE] = value
+        daemon.operator_voice.update_env(daemon.env)
+
+    def spy(self, daemon: D.Daemon) -> dict[str, int]:
+        """Count the client builds asked for and the pacing waits taken from here on."""
+        spent = {"client": 0, "pace": 0}
+        real_client, real_pace = daemon.operator_voice.client, daemon._operator_pace_ready
+
+        def client(*args: Any, **kwargs: Any) -> Any:
+            spent["client"] += 1
+            return real_client(*args, **kwargs)
+
+        def pace() -> None:
+            spent["pace"] += 1
+            real_pace()
+
+        daemon.operator_voice.client = client
+        daemon._operator_pace_ready = pace
+        return spent
+
+    def content_of(self, message_id: int) -> str:
+        return next(m for m in self.operator_posts() if m["id"] == message_id)["content"]
+
+    def test_a_refused_dm_costs_no_client_build_and_no_pacing_at_the_send_choke_point(self) -> None:
+        daemon = self.started()
+        self.mode(daemon, "clarify")
+        spent = self.spy(daemon)
+        builds = self.operator_builds
+        for wait in (True, False):
+            with self.subTest(wait=wait), self.assertRaises(OPV.OperatorRefused) as caught:
+                daemon._operator_send(self.DM, wait=wait)
+            self.assertEqual(caught.exception.code, OPV.CODE_DM_CLARIFY_ONLY)
+        self.assertEqual(spent, {"client": 0, "pace": 0}, "the refusal came first")
+        self.assertEqual(self.operator_builds, builds, "the vault was not read")
+        self.assertEqual(self.operator_posts(), [])
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
+
+    def test_the_refusal_comes_before_the_secret_scan(self) -> None:
+        daemon = self.started()
+        daemon.operator_voice.client()  # the key is hidden from here on, so the scanner would catch it
+        self.mode(daemon, "clarify")
+        text = "key %s" % self.operator_key
+        with self.assertRaises(OPV.OperatorRefused) as caught:
+            daemon._operator_send(dict(self.DM, content=text))
+        self.assertEqual(caught.exception.code, OPV.CODE_DM_CLARIFY_ONLY, "not the scanner's code")
+        with self.assertRaises(OPV.OperatorRefused) as scanned:
+            daemon._operator_send(dict(self.STREAM, content=text))
+        self.assertEqual(scanned.exception.code, OPV.CODE_SECRET, "control: the scanner does see it")
+
+    def test_a_refused_edit_costs_no_client_build_and_no_pacing_at_the_edit_choke_point(self) -> None:
+        daemon = self.started()
+        sent = daemon._operator_send(self.DM)  # legacy:  it goes out, and the voice remembers its id
+        self.mode(daemon, "clarify")
+        spent = self.spy(daemon)
+        builds = self.operator_builds
+        for wait in (True, False):
+            with self.subTest(wait=wait), self.assertRaises(OPV.OperatorRefused) as caught:
+                daemon._operator_edit(sent["id"], "rewritten", wait=wait)
+            self.assertEqual(caught.exception.code, OPV.CODE_DM_CLARIFY_ONLY)
+        self.assertEqual(spent, {"client": 0, "pace": 0}, "the refusal came first")
+        self.assertEqual(self.operator_builds, builds, "the vault was not read")
+        self.assertEqual(self.content_of(sent["id"]), self.DM["content"], "the message was not rewritten")
+
+    def test_stream_posts_and_stream_edits_are_unchanged_in_clarify(self) -> None:
+        daemon = self.started()
+        self.mode(daemon, "clarify")
+        spent = self.spy(daemon)
+        sent = daemon._operator_send(self.STREAM)
+        daemon._operator_edit(sent["id"], "edited")
+        self.assertEqual(spent["pace"], 2, "a post and an edit, each paced as before")
+        self.assertGreaterEqual(spent["client"], 2)
+        self.assertEqual(self.content_of(sent["id"]), "edited")
+
+    def test_legacy_is_unchanged_at_both_choke_points(self) -> None:
+        daemon = self.started()
+        spent = self.spy(daemon)
+        for value in (None, "legacy", "not a mode"):
+            with self.subTest(value=value):
+                self.mode(daemon, value)
+                before = dict(spent)
+                sent = daemon._operator_send(self.DM)
+                daemon._operator_edit(sent["id"], "edited %s" % value)
+                self.assertEqual(spent["pace"] - before["pace"], 2, "a post and an edit, each paced")
+                self.assertGreaterEqual(spent["client"] - before["client"], 2)
+                self.assertEqual(self.content_of(sent["id"]), "edited %s" % value)
+
+    def test_the_two_choke_points_ask_the_voice_before_anything_else(self) -> None:
+        """Source order, so a later edit cannot slide the check behind the scan, the build or the wait."""
+        for method, check in (
+            (D.Daemon._operator_send, "refuse_unclarified_dm"),
+            (D.Daemon._operator_edit, "refuse_unclarified_edit"),
+        ):
+            body = inspect.getsource(method).split('"""')[2]  # after the docstring
+            first = body.index(check)
+            for later in ("secretscan.scan", ".client(", "_operator_pace_ready"):
+                self.assertLess(first, body.index(later), (method.__name__, later))
+
+
 class StructureTests(unittest.TestCase):
     """A tripwire in the source: the daemon no longer writes through a seat's client anywhere."""
 

@@ -93,7 +93,7 @@ scans the transcript once: a session with 25+ tool uses that never called `recal
 contribute or say `no lesson`; a per-session marker under `~/apps/fleet-rag/state/hook-nudged/`
 prevents repeats and `FLEET_RECALL_HOOKS=0` disables both hooks.
 
-Cloud seats (Cursor cloud, Codex cloud, Claude cloud, Grok Bot personas) reach the same three
+Cloud seats (Cursor cloud, Codex cloud, Claude cloud, Grok bots) reach the same three
 tools through the fleet MCP gateway (`docs/RECALL-ACCESS-CHECK.md` names the URL; Cloudflare Access +
 bearer, see `docs/fleet-skills/drive-grok-tui`).  Nothing else on the internet can reach the
 corpus; both services bind to the Tailscale mesh only.
