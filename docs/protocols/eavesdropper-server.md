@@ -265,13 +265,13 @@ Added Sat, Oct 10;  rewritten Wed, Nov 11 for the service-tokens-only rule.  `e
 3. lets an Infisical value win over a container variable of the same name, so a stale Coolify copy cannot mask a rotation;
 4. removes every Infisical credential name (the tokens and the retired universal-auth names) from the environment, then execs `simple-chat`, which stays PID 1.
 
-It logs one line:  `simple-chat: loaded N variables from Infisical (prod /zulip; ...)`.  A missing or invalid token or project id, a refused scope or a failed primary fetch stops startup with a stage-and-status error (never a body or a value) and the listener does not start on container copies.  A failed secondary read (the notes-queue keys, the extra project, the Operator voice) is logged and the listener starts without those names.  No value is ever printed.
+It logs one line:  `simple-chat: loaded N variables from Infisical (prod /zulip; ...)`.  A missing or invalid token or project id, a refused scope or a failed primary fetch stops startup with a `simple-chat: ERROR: <stage>: HTTP <status>` line (never a body or a value) and the listener does not start on container copies.  A failed secondary read (the notes-queue keys, the extra project, the Operator voice) is logged and the listener starts without those names.  No value is ever printed.
 
 It talks to the Infisical API directly, with the Python standard library, rather than installing the Infisical CLI and running `infisical run`.  That way nothing is downloaded at build time (no binary or checksum to maintain), and `simple-chat` stays PID 1, which the redeploy lock handover and queue cleanup depend on (Coolify Setup, step 8).
 
 **Which credential (owner rule, Nov 11, 2026).**  Service tokens only.  The earlier choice of the fleet automation identity for this app (Sat, Oct 10) and the dedicated machine identity procedure that followed it are retired and removed from this page.  The primary token must be one narrow grant, read-only on prod, covering exactly the folders above, with an expiry.  Mint it with the Infisical CLI under the `service-tokens` skill (agents may do this themselves), put the value only into the Coolify runtime-only variable `INFISICAL_TOKEN` (untick **Available during build**), restart the app, and log the grant on the service-tokens tab of the fleet references workbook.  The first log line names how many variables came from Infisical.
 
-To revoke:  revoke the service token in Infisical.  The next restart then fails with an `Infisical load failed` stage-and-status line and the listener does not start, because there is no container-copy fallback.
+To revoke:  revoke the service token in Infisical.  The next restart then fails with a `simple-chat: ERROR: <stage>: HTTP <status>` line (for example `login: HTTP 401`) and the listener does not start, because there is no container-copy fallback.
 
 ## Activation Checklist (One Restart)
 
