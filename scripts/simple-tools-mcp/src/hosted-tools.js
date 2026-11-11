@@ -1551,7 +1551,8 @@ export class HostedTools {
       // The verifier being unreachable is a definite pre-write answer, not a
       // mint failure and not an unknown GitHub outcome.  It must be named
       // before the generic retryable-5xx mint message.
-      if (body && typeof body === "object" && (body.error === "verifier_unavailable" || body.reason === "verifier_unavailable")) {
+      const verifierShape = z.object({ error: z.string().optional(), reason: z.string().optional() }).safeParse(body);
+      if (verifierShape.success && (verifierShape.data.error === "verifier_unavailable" || verifierShape.data.reason === "verifier_unavailable")) {
         throw new ToolError("relay_refused", refusalReasonText("verifier_unavailable"), {
           retryable: true,
           extra: { reason: "verifier_unavailable" },
