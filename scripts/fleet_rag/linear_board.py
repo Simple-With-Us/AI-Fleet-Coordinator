@@ -44,7 +44,9 @@ def load_board():
     if _board_mod is not None:
         return _board_mod
     if not _BOARD_PATH.is_file():
-        raise BoardCliFailure(4, f"the board CLI is missing at {_BOARD_DIR.name}/board next to fleet_rag")
+        raise BoardCliFailure(
+            4, f"the board CLI is missing at {_BOARD_DIR.name}/board next to fleet_rag"
+        )
     with _lock:
         if _board_mod is not None:
             return _board_mod
