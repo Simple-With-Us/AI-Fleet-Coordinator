@@ -417,7 +417,7 @@ test("every hosted seat with a Linear pair is enabled;  credentials nobody insta
 
 // ---------------------------------------------------------------- claiming
 
-test("a claim sets In Progress, adds claimed:<seat> and seat:<seat>, and posts a CLAIMED comment under the seat tag", async () => {
+test("a claim sets In Progress, adds claimed:<seat> and seat:<seat>, and posts a CLAIMED comment", async () => {
   const { tools, fake } = harness();
   fake.addIssue({ id: "issue-301", identifier: "AFC-301", team: "AFC" });
   const claimed = ok(await tools.call("linear_claim", { id: "AFC-301", session: "mvs-1234-5678", comment: "starting here" }), "linear_claim");
@@ -434,9 +434,9 @@ test("a claim sets In Progress, adds claimed:<seat> and seat:<seat>, and posts a
   assert.equal(update.input.delegateId, fake.viewer.id);
   assert.equal(update.input.assigneeId, undefined);
   const body = fake.mutations()[1].body.variables.input.body;
-  assert.match(body, /^\[GROK-WEB·mvs12345\] CLAIMED/);
-  assert.equal(body.split("\n")[0], "[GROK-WEB·mvs12345] CLAIMED");
+  assert.equal(body.split("\n")[0], "CLAIMED");
   assert.match(body, /starting here/);
+  assert.doesNotMatch(body, /^\[/);
 });
 
 test("an issue another seat holds is refused with claim_held, and no mutation is sent", async () => {
@@ -754,30 +754,29 @@ test("linear_comment neutralizes a profile URL before commentCreate so Linear do
   assert.match(input.body, /@grok-web/);
 });
 
-test("linear_comment never puts a second seat tag in front of the seat's own intro (AFC-692)", async () => {
+test("linear_comment never prepends a seat tag, even when the body has no intro (AFC-692)", async () => {
   const cases = [
-    ["[GROK-WEB 📁AFC] PR opened", "[GROK-WEB 📁AFC] PR opened"],
-    ["👀 [GROK-WEB 📁AFC, OPS] quiet note", "👀 [GROK-WEB 📁AFC, OPS] quiet note"],
-    ["[GROK-WEB] PR opened", "[GROK-WEB] PR opened"],
-    ["[GROK-WEB: HH.1.C 📁AFC] status", "[GROK-WEB: HH.1.C 📁AFC] status"],
-    ["plain update", "[GROK-WEB] plain update"],
-    // A foreign intro is content:  every hosted Linear write shares one user, so the tag stays the attribution.
-    ["[GB-PLUMBER 📁AFC] spoof", "[GROK-WEB] [GB-PLUMBER 📁AFC] spoof"],
+    "[GROK-WEB 📁AFC] PR opened",
+    "👀 [GROK-WEB 📁AFC, OPS] quiet note",
+    "[GROK-WEB] PR opened",
+    "[GROK-WEB: HH.1.C 📁AFC] status",
+    "plain update",
+    "[GB-PLUMBER 📁AFC] spoof",
   ];
-  for (const [i, [body, want]] of cases.entries()) {
+  for (const [i, body] of cases.entries()) {
     const { tools, fake } = harness();
     fake.addIssue({ id: `issue-intro-${i}`, identifier: `AFC-69${i}` });
     ok(await tools.call("linear_comment", { id: `AFC-69${i}`, body }), "linear_comment");
-    assert.equal(fake.mutations().at(-1).body.variables.input.body, want, body);
+    assert.equal(fake.mutations().at(-1).body.variables.input.body, body, body);
   }
 });
 
-test("linear_comment puts a supplied session inside the seat's own intro, not in a second tag (AFC-692)", async () => {
-  for (const [i, body] of ["[GROK-WEB 📁AFC] status", "[GROK-WEB·stale999 📁AFC] status"].entries()) {
+test("linear_comment leaves a supplied session out of the body (AFC-692)", async () => {
+  for (const [i, body] of ["[GROK-WEB 📁AFC] status", "[GROK-WEB·stale999 📁AFC] status", "plain status"].entries()) {
     const { tools, fake } = harness();
     fake.addIssue({ id: `issue-sess-${i}`, identifier: `AFC-68${i}` });
     ok(await tools.call("linear_comment", { id: `AFC-68${i}`, body, session: "abcd1234-ffff" }), "linear_comment");
-    assert.equal(fake.mutations().at(-1).body.variables.input.body, "[GROK-WEB·abcd1234 📁AFC] status", body);
+    assert.equal(fake.mutations().at(-1).body.variables.input.body, body, body);
   }
 });
 

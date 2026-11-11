@@ -116,7 +116,7 @@ test('save aliases route to create/update and preserve body attribution and idem
   const create = await tools.call('linear_save_project', { input, idempotency_key: 'save-new' });
   assert.notEqual(create.isError, true);
   assert.match(requests[0].query, /projectCreate/);
-  assert.match(requests[0].variables.input.description, /^\[GROK-WEB/);
+  assert.equal(requests[0].variables.input.description, "Details");
   assert.equal(input.description, 'Details');
   await tools.call('linear_save_project', { input, idempotency_key: 'save-new' });
   assert.equal(requests.length, 1, 'the same mutation is not sent twice');

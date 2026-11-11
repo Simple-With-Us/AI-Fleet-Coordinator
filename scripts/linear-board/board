@@ -72,8 +72,8 @@ signs as "Claude"), when its <SEAT>_LINEAR_CLIENT_ID and _SECRET are in Infisica
 a seat with no app yet, and every read without a bearer, uses the shared
 "Fleet" app.  Each app has its own token, stored in Infisical (CACHE_<SEAT>).  The seat comes only from the
 verified bearer, which the five write verbs require and the read verbs do not.
-The shared app cannot tell seats apart, so every issue and comment this CLI writes
-starts with a seat tag line ([CLAUDE·6db9ee77]), with a seat app too.  A seat
+Writes do not prepend a seat tag line:  attribution is the Linear app identity
+(Jay, 2026-11-10, AFC-692).  A seat
 app's writes are refused when Linear names another app as the viewer
 (swapped credentials).  A claim is a claimed:<TAG> label on the issue;
 seat:<TAG> labels only say who reported or touched it (the import put them on
@@ -1314,16 +1314,10 @@ def opens_with_own_intro(seat: str, text: str) -> bool:
 
 
 def tagged(seat: str, sessions: list[str] | None, text: str) -> str:
-    """The seat tag in front of `text`, unless the seat already wrote its own intro (AFC-692).  As the
-    hosted composeBody, a supplied session replaces a stale one inside that intro."""
-    if not opens_with_own_intro(seat, text):
-        return f"{seat_tag(seat, sessions)} {text}"
-    tag = seat_tag(seat, sessions)
-    if "·" not in tag:
-        return text
-    start = text.index("[" + seat) + 1 + len(seat)
-    rest = re.sub(r"^·[^\s:→\]]*", "", text[start:])
-    return text[:start] + tag[len(seat) + 1 : -1] + rest
+    """The body as it will be posted.  No seat tag is prepended and a supplied session is not
+    injected (AFC-692, Jay 2026-11-10).  Attribution is the Linear app identity.  `seat` and
+    `sessions` stay on the signature because comment_body and parity_tagger still pass them."""
+    return text
 
 
 # ----------------------------------------------------------------- input files and flat labels
@@ -2759,6 +2753,22 @@ def split_description(desc: str | None) -> dict:
     return out
 
 
+def _where_sessions(body: str) -> tuple[str, str, str]:
+    """Strip trailing Where/Sessions footer lines.  Returns (body, where, sessions)."""
+    lines = body.rstrip().split("\n")
+    where = ""
+    sessions = ""
+    while lines and (not lines[-1].strip() or re.match(r"^(Where|Sessions): ", lines[-1])):
+        k, _, v = lines.pop().partition(": ")
+        if not v:
+            continue
+        if k == "Where":
+            where = v.strip()
+        else:
+            sessions = v.strip()
+    return "\n".join(lines).strip(), where, sessions
+
+
 def parse_comment(c: dict) -> dict:
     body = md_unescape((c.get("body") or "").replace("\r\n", "\n"))
     author = ((c.get("user") or {}).get("name")) or "unknown"
@@ -2768,21 +2778,13 @@ def parse_comment(c: dict) -> dict:
     mm = MIGRATED_COMMENT_RE.match(body)
     if tm:
         author = tm.group(1)
-        body = body[tm.end() :]
-        lines = body.rstrip().split("\n")
-        while lines and (not lines[-1].strip() or re.match(r"^(Where|Sessions): ", lines[-1])):
-            k, _, v = lines.pop().partition(": ")
-            if not v:
-                continue
-            if k == "Where":
-                where = v.strip()
-            else:
-                sessions = v.strip()
-        body = "\n".join(lines).strip()
+        body, where, sessions = _where_sessions(body[tm.end() :])
     elif mm:
         author = mm.group(1)
         where = mm.group(3) or ""
         body = body[mm.end() :]
+    else:
+        body, where, sessions = _where_sessions(body)
     body = HTML_COMMENT_RE.sub("\n", body).strip()
     # `author` is the name a reader shows and the seat a tag line claims;  anyone who can write a comment can type a
     # tag line, so a consumer that has to know WHO wrote it (the needs-owner notifier, for the owner's reply) reads
@@ -3158,7 +3160,7 @@ def cmd_file(L: Linear, a, seat: str) -> int:
                 f"  (already filed; unchanged)"
             )
             return 0
-    lines = [f"{seat_tag(by, sessions)} Filed with the board CLI.", ""]
+    lines = []
     full_title = title
     if len(title) > 250:
         title = title[:247] + "..."
@@ -4707,9 +4709,9 @@ def protect_labels(L: "Linear", prepared: dict) -> None:
 
 
 def tag_inputs(prepared: dict, tag) -> str:
-    """The seat tag line on every body and description a mutation's `input` writes, as the hosted
-    tagInputs does:  in the variables it references, and in string literals spliced in place.
-    Returns the document to send."""
+    """Run the same body transform the hosted tagInputs runs on every body and description a
+    mutation's `input` writes:  in the variables it references, and in string literals spliced
+    in place.  Returns the document to send.  The transform no longer prepends a seat tag."""
     variables = prepared["variables"]
     tagged: set = set()
     splices: list = []
@@ -5425,7 +5427,7 @@ def parity_tagger(seat: str, a):
 
 
 def run_mutation(L: "Linear", auth: "Auth", seat: str, a, prepared: dict, label: str):
-    """The hosted apiMutation:  label protection, seat tags, then one idempotent send."""
+    """The hosted apiMutation:  label protection, the body transform, then one idempotent send."""
     try:
         protect_labels(L, prepared)
     except ParityError as e:
@@ -5826,7 +5828,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Simple-Tools parity:  the hosted server's Linear tools, from catalog/*.json.
     session_flag = dict(
-        dest="session_ids", action="append", help=session_help + ", for the seat tag line"
+        dest="session_ids", action="append", help=session_help + ", recorded on the write"
     )
     cmd_p = sub.add_parser("commands", help="the named Linear commands Simple-Tools serves (175)")
     cmd_p.add_argument(
@@ -5991,7 +5993,7 @@ _REMOTE_CODES = frozenset(
 )
 _REMOTE_HINTS = {
     "identity_required": "hint: a write must name its seat identity\u00a0 retry with the identity the hosted identities answer names",
-    "session_required": "hint: pass a session id with --session\u00a0 the hosted server needs it for the seat tag line",
+    "session_required": "hint: pass a session id with --session\u00a0 the hosted server records it on the write",
     "writes_disabled": "hint: writes are off on the hosted server\u00a0 retry after its write switch is enabled",
     "not_configured": "hint: this seat or tool family is not configured on the hosted server\u00a0 check the hosted configuration before retrying",
 }

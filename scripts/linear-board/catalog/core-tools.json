@@ -214,7 +214,7 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "File a new issue.  The body starts with your seat tag line.  Writes need the server's write switch on, which the owner sets at deploy.",
+      "description": "File a new issue.  The body is posted as given;  attribution is the Linear app identity.  Writes need the server's write switch on, which the owner sets at deploy.",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -259,7 +259,7 @@
             "type": "array"
           },
           "session": {
-            "description": "Your session id, for the seat tag line.",
+            "description": "Your session id, recorded on the write.",
             "maxLength": 100,
             "type": "string"
           },
@@ -333,7 +333,7 @@
             "type": "string"
           },
           "session": {
-            "description": "Your session id, for the seat tag line.",
+            "description": "Your session id, recorded on the write.",
             "maxLength": 100,
             "type": "string"
           }
@@ -390,7 +390,7 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Add a comment to an issue.  The body starts with your seat tag line.  Writes need the server's write switch on.",
+      "description": "Add a comment to an issue.  The body is posted as given;  attribution is the Linear app identity.  Writes need the server's write switch on.",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -407,7 +407,7 @@
             "type": "string"
           },
           "session": {
-            "description": "Your session id, for the seat tag line.",
+            "description": "Your session id, recorded on the write.",
             "maxLength": 100,
             "type": "string"
           }
@@ -465,7 +465,7 @@
             "type": "string"
           },
           "session": {
-            "description": "Your session id, for the seat tag line.",
+            "description": "Your session id, recorded on the write.",
             "maxLength": 100,
             "type": "string"
           },
@@ -627,7 +627,7 @@
             "type": "string"
           },
           "session": {
-            "description": "Your session id, for the seat tag line.",
+            "description": "Your session id, recorded on the write.",
             "maxLength": 100,
             "type": "string"
           },

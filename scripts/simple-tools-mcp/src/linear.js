@@ -737,9 +737,9 @@ const ISSUE_ID = {
   description: "The issue id or identifier, such as fc9e1ab6 or AFC-289.",
 };
 
-// The same optional session id the Zulip tools take, so the seat tag line on a
-// Linear body is written the same way in both places.
-const SESSION = { type: "string", maxLength: 100, description: "Your session id, for the seat tag line." };
+// The same optional session id the Zulip tools take.  Linear writes record it
+// for idempotency and (on the board CLI) a Sessions footer;  they do not inject it into the body.
+const SESSION = { type: "string", maxLength: 100, description: "Your session id, recorded on the write." };
 
 export const LINEAR_TOOLS = Object.freeze([
   {
@@ -811,7 +811,7 @@ export const LINEAR_TOOLS = Object.freeze([
   {
     name: "linear_file",
     title: "Linear File",
-    description: "File a new issue.  The body starts with your seat tag line.  Writes need the server's write switch on, which the owner sets at deploy.",
+    description: "File a new issue.  The body is posted as given;  attribution is the Linear app identity.  Writes need the server's write switch on, which the owner sets at deploy.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -854,7 +854,7 @@ export const LINEAR_TOOLS = Object.freeze([
   {
     name: "linear_comment",
     title: "Linear Comment",
-    description: "Add a comment to an issue.  The body starts with your seat tag line.  Writes need the server's write switch on.",
+    description: "Add a comment to an issue.  The body is posted as given;  attribution is the Linear app identity.  Writes need the server's write switch on.",
     inputSchema: {
       type: "object",
       additionalProperties: false,

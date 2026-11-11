@@ -558,7 +558,7 @@ class RunCliTests(ParityCliTest):
         self.assertIn("--idempotency-key", p.stderr)
         self.assertEqual(self.mock.ops, [])
 
-    def test_run_write_tags_the_body_and_never_sends_a_key_twice(self):
+    def test_run_write_leaves_the_body_and_never_sends_a_key_twice(self):
         args = (
             "run",
             "create_comment",
@@ -572,7 +572,7 @@ class RunCliTests(ParityCliTest):
         first = self.board(*args)
         ((op, q, v),) = self.mock.api_requests
         self.assertTrue(q.startswith("mutation SimpleToolsNamed($input: CommentCreateInput!)"))
-        self.assertEqual(v["input"]["body"], "[CLAUDE·6db9ee77] hello")
+        self.assertEqual(v["input"]["body"], "hello")
         second = self.board(*args)
         self.assertEqual(
             len(self.mock.api_requests), 1, "a retry with the same key sent the write again"
@@ -731,11 +731,11 @@ class ApiCliTests(ParityCliTest):
         self.board(*args)
         self.board(*args)
         self.assertEqual(self.parity_ops(), ["M"])
-        self.assertEqual(self.mock.api_requests[0][2]["input"]["body"], "[CLAUDE·5e55105a] hey")
+        self.assertEqual(self.mock.api_requests[0][2]["input"]["body"], "hey")
         literal = 'mutation { commentCreate(input: { issueId: "i", body: "inline \\"quoted\\"" }) { success } }'
         self.board("api", "mutation", literal, "--idempotency-key", "m2")
         sent = self.mock.api_requests[-1][1]
-        self.assertIn('body: "[CLAUDE\\u00b75e55105a] inline \\"quoted\\""', sent)
+        self.assertIn('body: "inline \\"quoted\\""', sent)
 
     def test_api_schema(self):
         p = self.board(
@@ -869,7 +869,7 @@ class McpCliTests(ParityCliTest):
                 self.assertIn(msg, p.stderr)
         self.assertEqual(self.mock.mcp_requests, [])
 
-    def test_write_tool_is_gated_tagged_and_idempotent(self):
+    def test_write_tool_is_gated_and_idempotent(self):
         body = json.dumps({"urlOrId": "AFC-1", "decision": "commented", "body": "Looks good."})
         args = ("mcp", "call", "submit_diff_review", "--args-json", body, "--idempotency-key", "r1")
         # The same gate as a read-free write:  no bearer-verified seat, no write.
@@ -881,7 +881,7 @@ class McpCliTests(ParityCliTest):
         sent = self.mock.mcp_requests[2][1]["params"]["arguments"]
         self.assertEqual(
             sent,
-            {"urlOrId": "AFC-1", "decision": "commented", "body": "[CLAUDE·5e55105a] Looks good."},
+            {"urlOrId": "AFC-1", "decision": "commented", "body": "Looks good."},
         )
         p = self.board(*args)
         self.assertIn("Review submitted.", p.stdout)
@@ -918,9 +918,7 @@ class ConvenienceTests(BoardTest):
     def test_claim_with_a_comment(self):
         self.board("claim", "OPS-10", "--by", "CLAUDE", "--comment", "Taking the digest fix.")
         body = self.comments_of(self.issue_by_ident("OPS-10"))[-1]
-        self.assertTrue(
-            body.startswith("[CLAUDE·5e55105a] CLAIMED\n\nTaking the digest fix."), body
-        )
+        self.assertTrue(body.startswith("CLAIMED\n\nTaking the digest fix."), body)
 
 
 if __name__ == "__main__":

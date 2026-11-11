@@ -42,7 +42,6 @@ import {
   sessionTag,
   tagPrefix,
   composeBody,
-  ownIntro,
   seatTagFor,
   SEAT_TAG_EXPECTATIONS,
   formatTime,
@@ -1974,23 +1973,14 @@ export class HostedTools {
     }
   }
 
-  /** The seat tag line that opens every body it writes, unless the body already opens with this seat's own intro
-   * (Policy › Post intro format, AFC-692):  a second `[SEAT]` / `[SEAT·session]` in front of `[SEAT 📁repos]` is the
-   * double tag Jay asked to stop.  A foreign-seat intro is still content and still gets this seat's tag, since every
-   * hosted Linear write shares one user and the tag is the attribution. */
+  /** The caller's Linear body as posted:  no seat tag is prepended and a supplied session is not
+   * injected (AFC-692, Jay 2026-11-10).  Attribution is the Linear app identity.  `session` stays on
+   * the signature because callers and idempotency keys still pass it. */
   linearBody(text, session) {
-    const prefix = tagPrefix(this.seat, sessionTag(session));
-    const own = ownIntro(prefix, text);
-    let body = own ? text : `${prefix}] ${text}`;
-    if (own && prefix.includes("·")) {
-      // As composeBody:  the supplied session is operational attribution and replaces a stale one in the intro.
-      const seatEnd = own.intro.indexOf("[") + 1 + this.seat.length;
-      const suffix = own.intro.slice(seatEnd).replace(/^·[^\s:→\]]*/u, "");
-      body = `${own.intro.slice(0, seatEnd)}${prefix.slice(prefix.indexOf("·"))}${suffix}]${own.rest}`;
-    }
+    void session;
     // Linear records keep their ISO dates:  only the sentence gap is fixed here.  The fleet date format is a Zulip
     // rule, and a Linear issue that says "Blocked until 2026-11-02" means that date there, not "Mon, Nov 2".
-    return neutralizeLinearMentions(sentenceGap(body));
+    return neutralizeLinearMentions(sentenceGap(text));
   }
 
   /** The secret scan on everything the caller wrote, before any request. */
@@ -2177,8 +2167,8 @@ export class HostedTools {
    *
    * Unlike a Zulip post there is no reconcile step:  Linear offers no way to
    * search a comment by its body, so an outcome this server cannot confirm
-   * drops the row and lets the retry send.  Every body therefore opens with the
-   * seat tag line, which is what makes a human able to see a duplicate.
+   * drops the row and lets the retry send.  A human judging a duplicate reads
+   * the body as the seat wrote it, plus the Linear app identity that posted it.
    */
   async linearWrite(idem, fields, send) {
     const begun = await this.gate.idemBegin({ key: idem.key, ttlMs: idem.ttlMs, fields });

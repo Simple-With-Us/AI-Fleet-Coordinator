@@ -1180,7 +1180,7 @@ try {
       assert.equal(linear.mutations().length, 1);
       const sent = linear.mutations()[0];
       assert.equal(sent.authorization, linear.calls()[0].authorization);
-      assert.match(sent.body.variables.input.description, /^\[GROK-WEB\]/);
+      assert.equal(sent.body.variables.input.description, "Updated through hosted Simple Tools.");
 
       const replay = await call(t.body.access_token, "linear_mutation", mutationArgs);
       assert.equal(replay.status, 200, JSON.stringify(replay.json));
@@ -1198,7 +1198,7 @@ try {
       const created = await call(t.body.access_token, "linear_save_project", args);
       assert.equal(created.json.result.isError, undefined, JSON.stringify(created.json));
       assert.equal(linear.mutations().length, before + 1);
-      assert.match(linear.mutations().at(-1).body.variables.input.description, /^\[GROK-WEB\]/);
+      assert.equal(linear.mutations().at(-1).body.variables.input.description, "Created using a named command.");
       const replay = await call(t.body.access_token, "linear_save_project", args);
       assert.equal(replay.json.result.isError, undefined);
       assert.equal(linear.mutations().length, before + 1);
