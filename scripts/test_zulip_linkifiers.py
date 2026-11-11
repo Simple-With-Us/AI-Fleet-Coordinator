@@ -124,7 +124,9 @@ class LinearTeamKeysTest(unittest.TestCase):
 class PlanTest(unittest.TestCase):
     def live(self, **overrides):
         rules = [
-            {"id": i, "pattern": p, "url_template": u} for i, p, u in L.TARGET if i is not None
+            #  A row with no id yet is a rule Zulip has numbered once it exists, so give it one here.
+            {"id": i if i is not None else 9000 + n, "pattern": p, "url_template": u}
+            for n, (i, p, u) in enumerate(L.TARGET)
         ]
         for rule in rules:
             rule.update(overrides.get(str(rule["id"]), {}))
@@ -161,10 +163,11 @@ class PlanTest(unittest.TestCase):
 
     def test_row_without_an_id_is_matched_by_pattern_not_added_again(self):
         row = (None, "NEW#(?P<id>[0-9]+)", "https://example.invalid/{id}")
-        live = self.live() + [{"id": 8000, "pattern": row[1], "url_template": row[2]}]
+        before = self.live()
+        live = before + [{"id": 8000, "pattern": row[1], "url_template": row[2]}]
         with mock.patch.object(L, "TARGET", [*L.TARGET, row]):
             self.assertEqual(L.plan(live), ([], []))
-            self.assertEqual([s[0] for s in L.plan(self.live())[0]], ["add"])
+            self.assertEqual([s[0] for s in L.plan(before)[0]], ["add"])
 
 
 class FakeZulip:
