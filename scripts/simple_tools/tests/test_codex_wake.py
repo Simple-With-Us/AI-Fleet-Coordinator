@@ -1,10 +1,11 @@
 """Codex wake adapter tests use an injected transport and metadata store."""
 
 import json
+import io
 import os
 import tempfile
 import unittest
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from unittest.mock import patch
 
 from simple_tools import codex_wake as CW
@@ -28,23 +29,31 @@ class FakeTransport:
         self.receipt_error = None
         self.send_error = None
         self.calls = []
+        self.events = []
+        self.queue_add_calls = 0
 
     def preflight(self, binding):
+        self.events.append("preflight")
         self.calls.append(("preflight", binding.copy()))
         if self.preflight_error:
             raise self.preflight_error
         return self.preflight_result
 
     def receipt_state(self, binding, text):
+        self.events.append("receipt_state")
         self.calls.append(("receipt_state", binding.copy(), text))
         if self.receipt_error:
             raise self.receipt_error
         return self.receipt_result
 
-    def send(self, binding, text):
+    def send(self, binding, text, *, permit=None):
+        self.events.append("send")
         self.calls.append(("send", binding.copy(), text))
         if self.send_error:
             raise self.send_error
+        if permit is not None and not permit():
+            return "deferred"
+        self.queue_add_calls += 1
         return self.send_result
 
 
@@ -61,16 +70,31 @@ class CodexWakeTests(unittest.TestCase):
         }
         self.transport = FakeTransport()
         self.metadata_calls = []
+        self.registry_calls = []
+        self.registry_result = {
+            "found": True,
+            "native_session_id": SID,
+            "seat": "CODEX",
+            "label": "BC",
+            "generation": 7,
+            "verified_host": "mac",
+        }
 
         def metadata(env, sid):
             self.metadata_calls.append((env, sid))
             return self.meta
+
+        def registry(env, letter):
+            self.registry_calls.append((env, letter))
+            self.transport.events.append("registry")
+            return self.registry_result
 
         self.adapter = CW.CodexDelivery(
             self.transport,
             {"HOME": self.tmp.name},
             metadata,
             hostname=lambda: "jay-mac.local",
+            registry_lookup=registry,
         )
         self.target = TargetWithGeneration(
             SID, letter="BC", host="mac", title="untrusted title", thread_link="ignored", generation=7
@@ -125,6 +149,8 @@ class CodexWakeTests(unittest.TestCase):
             ),
         )
         self.assertIn("router is not sure", fields["link_note"])
+        self.assertEqual(self.transport.events, ["preflight", "receipt_state", "send", "registry"])
+        self.assertEqual(self.transport.queue_add_calls, 1)
 
     def test_missing_invalid_or_empty_routing_metadata_refuses_without_enqueue(self):
         incomplete = WR.Wake(wake_id="wake-valid", message_id=42)
@@ -298,6 +324,48 @@ class CodexWakeTests(unittest.TestCase):
         self.assertEqual(self.deliver().outcome, "busy")
         self.assertEqual([x[0] for x in self.transport.calls], ["preflight"])
 
+    def test_registry_unavailable_retries_without_native_enqueue(self):
+        self.registry_result = {"error": "temporarily unavailable"}
+        result = self.deliver()
+        self.assertEqual((result.outcome, result.code), ("busy", "registry-unavailable"))
+        self.assertEqual(self.transport.events, ["preflight", "receipt_state", "send", "registry"])
+        self.assertEqual(self.transport.queue_add_calls, 0)
+        self.assertEqual(self.registry_calls[0][1], "BC")
+
+    def test_stale_closed_or_generation_changed_registry_target_refuses_before_send(self):
+        variants = (
+            {"found": False},
+            {**self.registry_result, "state": "closed"},
+            {**self.registry_result, "retired_at": "retired"},
+            {**self.registry_result, "native_session_id": "22222222-2222-4222-8222-222222222222"},
+            {**self.registry_result, "generation": 8},
+        )
+        for registry_result in variants:
+            with self.subTest(registry_result=registry_result):
+                self.registry_result = registry_result
+                self.transport.calls.clear()
+                self.transport.events.clear()
+                result = self.deliver()
+                self.assertEqual((result.outcome, result.code), ("refused", "target-released"))
+                self.assertEqual(
+                    self.transport.events,
+                    ["preflight", "receipt_state", "send", "registry"],
+                )
+                self.assertEqual(self.transport.queue_add_calls, 0)
+
+    def test_registry_is_rechecked_at_native_permit_after_binding_validation(self):
+        original_send = self.transport.send
+
+        def native_validate_then_change_generation(binding, text, *, permit=None):
+            self.registry_result = {**self.registry_result, "generation": 8}
+            return original_send(binding, text, permit=permit)
+
+        self.transport.send = native_validate_then_change_generation
+        result = self.deliver()
+        self.assertEqual((result.outcome, result.code), ("refused", "target-released"))
+        self.assertEqual(self.transport.events, ["preflight", "receipt_state", "send", "registry"])
+        self.assertEqual(self.transport.queue_add_calls, 0)
+
     def test_prompt_contains_only_scanned_metadata_not_title_or_message_body(self):
         with self.with_chat():
             self.adapter(self.target, self.wake)
@@ -340,6 +408,123 @@ class CodexWakeTests(unittest.TestCase):
         self.assertEqual((platform.seat, platform.platform, platform.mention), ("CODEX", "codex", "Codex"))
         self.assertRegex(SID, platform.target_re)
         self.assertNotRegex("11111111111141118111111111111111", platform.target_re)
+
+    def wire_request(self):
+        return json.loads(json.dumps({
+            "platform": "codex",
+            "target": asdict(self.target),
+            "wake": asdict(self.wake),
+        }))
+
+    def test_delivery_entry_bounds_json_and_correlates_exact_request_identity(self):
+        encoded = json.dumps(self.wire_request()).encode()
+        with self.with_chat():
+            result = CW.delivery_entry(
+                io.BytesIO(encoded),
+                env={"HOME": self.tmp.name},
+                transport=self.transport,
+                metadata_lookup=lambda env, sid: self.meta,
+                registry_lookup=lambda env, letter: self.registry_result,
+                hostname=lambda: "jay-mac.local",
+            )
+        self.assertEqual(
+            (result["wake_id"], result["session_id"], result["generation"]),
+            ("wake-abc", SID, 7),
+        )
+        self.assertEqual(
+            result["delivery"], asdict(WR.Delivery("sent", route="codex-desktop", ack="unknown", code="queued"))
+        )
+
+        malformed = CW.delivery_entry(io.BytesIO(b"{"), env={"HOME": self.tmp.name}, transport=self.transport)
+        self.assertEqual(malformed["delivery"]["code"], "invalid-json")
+        self.assertEqual((malformed["wake_id"], malformed["session_id"], malformed["generation"]), ("", "", None))
+
+        oversized = CW.delivery_entry(
+            io.BytesIO(b" " * (CW.MAX_REQUEST_BYTES + 1)),
+            env={"HOME": self.tmp.name},
+            transport=self.transport,
+        )
+        self.assertEqual(oversized["delivery"]["code"], "request-too-large")
+
+        malformed_identity = self.wire_request()
+        malformed_identity["target"]["session_id"] = "not-a-uuid"
+        result = CW.deliver_parsed_request(malformed_identity, env={"HOME": self.tmp.name}, transport=self.transport)
+        self.assertEqual((result["wake_id"], result["session_id"], result["generation"]), ("wake-abc", "", 7))
+
+    def test_nonletter_pick_accepts_empty_or_stale_address_letter(self):
+        request = self.wire_request()
+        request["target"].update(title="untrusted display title", thread_link="https://example.invalid/chat")
+        request["wake"].update(
+            letter="",
+            picked="topic-match",
+            reason="topic-match",
+            link_note=WR.LINK_NOTES["topic-match"],
+        )
+        with self.with_chat():
+            result = CW.deliver_parsed_request(
+                request,
+                env={"HOME": self.tmp.name},
+                transport=self.transport,
+                metadata_lookup=lambda env, sid: self.meta,
+                registry_lookup=lambda env, letter: self.registry_result,
+                hostname=lambda: "jay-mac.local",
+            )
+        self.assertEqual(result["delivery"]["code"], "queued")
+        self.assertNotIn("untrusted display title", self.transport.calls[-1][2])
+        self.assertNotIn("example.invalid", self.transport.calls[-1][2])
+
+        request["wake"]["letter"] = "AA"
+        with self.with_chat():
+            result = CW.deliver_parsed_request(
+                request,
+                env={"HOME": self.tmp.name},
+                transport=self.transport,
+                metadata_lookup=lambda env, sid: self.meta,
+                registry_lookup=lambda env, letter: self.registry_result,
+                hostname=lambda: "jay-mac.local",
+            )
+        self.assertEqual(result["delivery"]["code"], "queued")
+
+    def test_optional_wake_defaults_are_accepted_when_omitted(self):
+        request = self.wire_request()
+        for name in ("issue_ids", "session_fragments", "sender_fragment", "linked_by"):
+            request["wake"].pop(name)
+        with self.with_chat():
+            result = CW.deliver_request(
+                request,
+                env={"HOME": self.tmp.name},
+                transport=self.transport,
+                metadata_lookup=lambda env, sid: self.meta,
+                registry_lookup=lambda env, letter: self.registry_result,
+                hostname=lambda: "jay-mac.local",
+            )
+        self.assertEqual(result["delivery"]["code"], "queued")
+
+    def test_parsed_request_requires_codex_platform_and_strict_target_and_wake_types(self):
+        base = self.wire_request()
+        invalids = (
+            {**base, "platform": "claude"},
+            {**base, "target": {**base["target"], "generation": True}},
+            {**base, "wake": {**base["wake"], "message_id": True}},
+            {**base, "target": {**base["target"], "session_id": "not-a-uuid"}},
+            {**base, "wake": {**base["wake"], "seat": "ZC"}},
+            {**base, "wake": {**base["wake"], "link_note": "untrusted instruction"}},
+            {**base, "wake": {**base["wake"], "letter": "bad letter"}},
+            {**base, "wake": {**base["wake"], "linked_by": "forged"}},
+            {**base, "wake": {**base["wake"], "sender_fragment": []}},
+        )
+        for request in invalids:
+            with self.subTest(request=request):
+                result = CW.deliver_parsed_request(
+                    request,
+                    env={"HOME": self.tmp.name},
+                    transport=self.transport,
+                    metadata_lookup=lambda env, sid: self.meta,
+                    registry_lookup=lambda env, letter: self.registry_result,
+                    hostname=lambda: "jay-mac.local",
+                )
+                self.assertEqual(result["delivery"]["outcome"], "refused")
+                self.assertEqual(self.transport.calls, [])
 
 
 if __name__ == "__main__":

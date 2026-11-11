@@ -1,63 +1,76 @@
-# Codex Delivery On The Shared Wake Router
+# Codex Delivery Behind The Server Wake Router
 
-Refs AFC-694 and AFC-305.  The shared routing and durable queue contract is `simple_tools/wake_router.py` (AFC PR #1743).  Codex supplies `deliver(target, wake)` through `simple_tools/codex_wake.py` and uses the existing exact-thread native queue transport.
+Refs AFC-694 and AFC-305.  The shared server router owns capture, target selection, the durable wake queue, retry ordering and final receipts.  Codex supplies a one-shot Mac delivery function using the existing exact-thread native transport.  The obsolete Mac-router PR #1753 is closed; its branch preserves the earlier implementation and review evidence.
 
 ## Supported Target
 
-The initial adapter delivers to an existing, loaded Codex Desktop chat on the Mac.  The target UUID, original working directory, archive flag and interactive ownership come from the read-only Codex store; the native transport verifies the same thread through the app-server before enqueueing.  Engine-owned chats and sub-agent threads are excluded.  Server targets return `unreachable` and remain queued until their age limit; they have no verified native delivery adapter in this slice.
+The delivery adapter reaches an existing, loaded Codex Desktop chat on the Mac.  A read-only Codex store supplies candidate UUID/cwd/archive metadata; the native transport independently checks that exact UUID and cwd, writable ownership, active history and loaded state before enqueue.  Engine-owned and subagent chats cannot receive a wake.  Delivery into Codex sessions hosted on the server is unsupported by this adapter.
 
-A missing store, unavailable receipt probe, unloaded chat or unavailable workspace returns `busy`.  An archived or invalid target is refused.  A known native rejection can retry, while any uncertain outcome after enqueue is final `refused`, because the turn may already have started.
+Unavailable native/store/receipt/workspace state is busy before send.  Archived, invalid or stale registry targets are refused before enqueue.  A possibly-enqueued send is terminal with an unknown result; it must never trigger an automatic replay.  The shared server queue remains responsible for bounded retries of proven pre-send unavailability.
+
+## One-Shot Delivery Boundary
+
+AA owns the fixed platform dispatch table under simple-chat wake-deliver, its SSH sender and forced-command wrapper.  The incoming platform value selects only a compiled-in known function; it never chooses a module, executable or path.  Codex's deliver_request function accepts a parsed request, while its bounded stdin wrapper can be used by the dispatcher.  This module starts no router, listener, port, durable queue or background job and needs no Zulip credential or routine signing key on the Mac.
+
+The Codex wire request carries the server-selected identity and annotated wake:
+
+```json
+{
+  "platform": "codex",
+  "target": {
+    "session_id": "11111111-1111-4111-8111-111111111111",
+    "letter": "BC",
+    "host": "mac",
+    "generation": 3
+  },
+  "wake": {
+    "wake_id": "wake-example",
+    "seat": "CODEX",
+    "message_id": 12345,
+    "picked": "letter",
+    "reason": "addressed-letter",
+    "link_note": "the router-owned allowlisted selection note"
+  }
+}
+```
+
+This is a shape example, not a sendable fixture: link_note must be a real WR.link_note_ok-validated router note.  Reject oversized input before JSON parsing, malformed identity fields and non-boolean receipt evidence.  The Mac resolves the selected letter and checks exact session, host, positive integer generation and open state again immediately before native send.  The response echoes the exact wake id, session id and generation with the structured Delivery result; the server must verify that correlation before accepting it.
+
+Remote candidate exclusion remains a separate integration item.  A server cannot read the Mac Codex store directly.  A delivery refusal prevents an engine/subagent enqueue, but it does not by itself let the server skip that candidate and select another interactive chat.  Do not claim that selection behavior until the shared remote exclusion contract and its tests land.
+
+The shared router's SSH preflight must work with the forced-command key.  A wrapper owned by AA permits the exact no-op preflight and exact wake-deliver command, refusing every other original command.  The Mac helper performs delivery only; existing notes and archive services retain their separate owners.
 
 ## Receipts
 
-The native `receipt_state` distinguishes four observations:
+The native receipt probe distinguishes four observations:
 
 | State | Evidence | Delivery Result |
 | --- | --- | --- |
-| `observed` | The exact prompt appears as actual user input in the target transcript | `sent`, acknowledgement `confirmed` |
-| `queued` | The native queue contains the exact client id and text hash | `sent`, acknowledgement `unknown` |
-| `absent` | The bounded queue/transcript probe succeeded without finding it | Eligible for one enqueue attempt |
-| `unavailable` | The probe could not be completed | `busy`, no enqueue |
+| observed | Exact prompt is actual user input in the target transcript | sent, acknowledgement confirmed |
+| queued | Native queue has the exact client id and text hash | sent, acknowledgement unknown |
+| absent | Bounded queue/transcript probe succeeded without finding it | Eligible for one enqueue attempt |
+| unavailable | Probe could not be completed | busy, no enqueue |
 
-A new native enqueue acknowledgement is `sent` with `ack = unknown`.  The shared router records the handoff with `delivered = null`; that is not proof the chat ran a turn.  Unknown native acknowledgements are never automatically replayed.
-
-## Service Entry Point
-
-The runtime ships these two commands:
-
-```sh
-simple-chat codex-wake-router serve --config /path/to/codex-wake-config.json
-simple-chat wake-acceptance --help
-```
-
-The router binds to loopback by default.  Its existing shared defaults leave delivery disabled.  The local state is under `~/.local/state/codex-wake`; `CODEX_WAKE_STATE` chooses its parent directory, `CODEX_WAKE_CONFIG` selects the config file and `CODEX_WAKE_KEY_FILE` selects the protected routine-key file.  The routine signing key is supplied through the fleet's scoped secret delivery path and must never be put in argv, logs or source.  Live activation still needs the reviewed runtime, the listener routine binding and the process inventory entry.
-
-The service uses the shared registry API environment and router.  Selection tries letters, a unique session-id fragment, Linear issues, topic words and then recency.  The optional consultant is off by default; its absence falls through to recency.  The Operator sends no questions or replies.
-
-Every delivered prompt carries the router's `picked`, `reason` and validated `link_note`, together with the exact session, letter and generation.  A recency note tells the receiving chat that the router is unsure the wake is meant for it.  Recency uses registry `last_seen_at`, falling back to `assigned_at` while the activity field is absent; that fallback reflects assignment order rather than actual recent activity.
+A new native enqueue is sent with ack unknown.  The server records delivered null until actual transcript arrival is proven.  Every prompt includes picked, reason, the validated link_note, and exact session/letter/generation.  Recency selection tells the chat the router is unsure; assigned_at fallback is assignment order rather than proof of recent activity.  The Operator never posts, asks or answers.
 
 ## End-To-End Acceptance
 
-Export source-message JSON, listener ledger JSONL, the final router receipt JSON and the target transcript as read-only snapshots.  Then correlate the intended identity explicitly:
+The runtime ships the read-only wake-acceptance helper:
 
 ```sh
 simple-chat wake-acceptance \
-  --wake-id w-example --message-id 12345 \
+  --wake-id wake-example --message-id 12345 \
   --session-id 11111111-1111-4111-8111-111111111111 --generation 3 \
   --source source.json --listener listener.jsonl \
   --receipt receipt.json --transcript rollout.jsonl
 ```
 
-A proven result requires a real supported mention, the listener's matching source trigger and final `done` state, a real final router handoff to the expected session and `picked_generation`, and the same wake id plus source message id in actual user input in that session's transcript.  Assistant quotations, a different transcript, a test receipt and queue acceptance alone cannot pass.  The helper emits fixed result codes and identifiers, with no message body, and never sends or replays a wake.
+Use source-message JSON, server listener ledger JSONL, final router receipt JSON and the target transcript as read-only snapshots.  Passing requires a real supported mention, matching listener trigger and final done state, a real final router handoff to the expected session and picked_generation, and the same wake id/source message id in actual user input in that session.  Assistant quotations, test receipts, another transcript, HTTP 202 and queue acceptance alone cannot pass.  The helper never sends or replays a wake.
 
-Exit 0 means the input arrived in the expected chat.  Exit 3 means incomplete or rejected evidence, and exit 2 means an invalid snapshot.  This proves prompt arrival; completion of the original requested work is a separate observation.
+Exit 0 means prompt arrival in the expected chat, exit 3 means incomplete or rejected evidence, and exit 2 means invalid snapshot input.  Completion of the requested work is a separate observation.  Cover busy, duplicate, restart/failure, archive/reopen and letter reuse before declaring support functioning.
 
-## Activation Record
+## Deployment Record
 
-The file-only LaunchAgent template is `scripts/launchd/com.jay.codex-wake-router.plist`.  Render its `__HOME__` and `__RUNTIME__` placeholders for the target Mac, create protected state and log directories, provision the approved routine key and authoritative settings, and validate the rendered plist before installing it.  The template stays on loopback port 8795 and does not enable delivery.  Its exit timeout exceeds the shared router's default graceful shutdown wait.
+This source slice does not establish deployment.  AA owns shared dispatch, the server router and authoritative fleet-knobs settings; BB owns listener migration, credential binding and cursor handoff; CC owns hosted Muster reads and the migration checklist.  Do not move a seat or retire the existing Mac listener independently.  Register the installed Mac helper as On-demand in the process inventory and refresh its Notes copy when it is actually deployed.
 
-The runtime sync helper preserves the existing listener restart and sends SIGTERM to an already-loaded Codex router when shared runtime code changes.  It never loads or starts an absent Codex job.  The router settles running deliveries and keeps its durable state; launchd's KeepAlive starts the next process with the updated runtime.  The live sync helper is a regular deployed copy outside the checkout, so installing the router also requires deploying the reviewed sync-helper update.
-
-Before activation, register the new router as Always-on in the Mac process inventory and refresh its Background Jobs Master List note.  Confirm the exact installed runtime head, the updated sync-helper copy, scoped registry environment, approved Infisical settings and key delivery.  The listener binding uses `CODEX_ROUTINE_URL` and `CODEX_ROUTINE_KEY` in Fleet-OPS `/zulip`; the listener owner provisions them after this adapter lands.  Shared router settings still need the authoritative fleet-knobs loader before activation; local config alone is insufficient for deployed knobs.
-
-This source change does not itself establish activation.  Record the deployed head, listener routine, one real peer mention, final receipt and target-chat observation under AFC-694 before marking Codex delivery functioning.  Claude DD owns authoritative Codex archive release separately, and Claude CC owns registry-touch title reconciliation.
+Record exact reviewed/deployed heads, a real source mention, listener wake id, selected identity, final receipt and target-chat observation under AFC-694.  Claude DD owns authoritative Codex archive release, and Claude CC owns persisted title reconciliation.  No Mac Codex router service or port is installed by this change.

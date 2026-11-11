@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import re
@@ -10,8 +9,9 @@ import socket
 import sqlite3
 import uuid
 from collections.abc import Callable, Mapping
+from dataclasses import MISSING, asdict, fields
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from . import codex_chat_transport as CT
 from . import platform_letter_codex as PLC
@@ -21,7 +21,8 @@ SEAT = "CODEX"
 PLATFORM = "codex"
 MENTION = "Codex"
 SESSION_RE = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
-DEFAULT_PORT = 8795
+MAX_REQUEST_BYTES = 64 * 1024
+LETTER_RE = re.compile(r"^[A-Z]{1,2}$")
 WAKE_TEXT = (
     "[CODEX·wake] You were tagged in Zulip.\u00a0 Read the message identified in the data below "
     "before you act, using zulip_get_message.\u00a0 "
@@ -91,6 +92,16 @@ def wake_text(target: WR.Target, wake: WR.Wake, *, routing: Mapping[str, str] | 
     return WAKE_TEXT.format(fields=json.dumps(fields, ensure_ascii=False, sort_keys=True))
 
 
+def resolve_registry_target(env: Mapping[str, str], letter: str) -> Mapping[str, Any] | None:
+    """Resolve one letter from the shared registry using the adapter's host environment."""
+    return WR.registry_api.call(
+        env,
+        "resolve",
+        {"platform": PLATFORM, "letter": letter},
+        timeout=WR.REGISTRY_TIMEOUT,
+    )
+
+
 class CodexDelivery:
     def __init__(
         self,
@@ -102,12 +113,14 @@ class CodexDelivery:
         *,
         local_host: str = "mac",
         hostname: Callable[[], str] = socket.gethostname,
+        registry_lookup: Callable[[Mapping[str, str], str], Mapping[str, Any] | None] | None = None,
     ):
         self.transport = transport
         self.env = env
         self.metadata_lookup = metadata_lookup
         self.local_host = local_host
         self.hostname = hostname
+        self.registry_lookup = registry_lookup or resolve_registry_target
 
     def __call__(self, target: WR.Target, wake: WR.Wake) -> WR.Delivery:
         if self.local_host != "mac" or target.host != self.local_host:
@@ -202,10 +215,23 @@ class CodexDelivery:
         if receipt != "absent":
             return WR.Delivery("busy", route="codex-desktop", code="receipt-unavailable")
 
+        permit_result: list[WR.Delivery] = []
+
+        def permit() -> bool:
+            registry_result = self._still_registered(target)
+            if registry_result is not None:
+                permit_result.append(registry_result)
+                return False
+            return True
+
         try:
-            outcome = self.transport.send(binding, text)
+            outcome = self.transport.send(binding, text, permit=permit)
         except Exception:  # noqa: BLE001 - plugin errors must keep a safe delivery outcome
+            if permit_result:
+                return permit_result[0]
             return WR.Delivery("refused", route="codex-desktop", code="delivery-unknown")
+        if permit_result:
+            return permit_result[0]
         if outcome == "accepted":
             return WR.Delivery("sent", route="codex-desktop", ack="unknown", code="queued")
         if outcome == "deferred":
@@ -216,6 +242,40 @@ class CodexDelivery:
             return WR.Delivery("refused", route="codex-desktop", code="held")
         # Unknown acknowledgments are final: the native add may have succeeded.
         return WR.Delivery("refused", route="codex-desktop", code="delivery-unknown")
+
+    def _still_registered(self, target: WR.Target) -> WR.Delivery | None:
+        """Recheck the picked identity immediately before the native enqueue."""
+        try:
+            current = self.registry_lookup(self.env, target.letter)
+        except Exception:  # noqa: BLE001 - no enqueue without a readable identity check
+            return WR.Delivery("busy", route="codex-desktop", code="registry-unavailable")
+        if not isinstance(current, Mapping) or "error" in current:
+            return WR.Delivery("busy", route="codex-desktop", code="registry-unavailable")
+        if current.get("found") is not True or WR._closed(current):
+            return WR.Delivery("refused", route="codex-desktop", code="target-released")
+
+        session_id = current.get("native_session_id")
+        letter = current.get("label") or current.get("letter")
+        generation = current.get("generation")
+        host = current.get("verified_host")
+        seat = str(current.get("seat") or SEAT).upper()
+        if (
+            not isinstance(session_id, str)
+            or not isinstance(letter, str)
+            or type(generation) is not int
+            or generation <= 0
+            or not isinstance(host, str)
+        ):
+            return WR.Delivery("busy", route="codex-desktop", code="registry-unavailable")
+        if (
+            session_id != target.session_id
+            or letter != target.letter
+            or generation != target.generation
+            or host != target.host
+            or seat != SEAT
+        ):
+            return WR.Delivery("refused", route="codex-desktop", code="target-released")
+        return None
 
 
 def make_platform(
@@ -260,36 +320,248 @@ def exclude_non_interactive(env: Mapping[str, str]):
     return exclude
 
 
-def state_dir(env: Mapping[str, str]) -> Path:
-    return (
-        Path(env.get("CODEX_WAKE_STATE") or Path(env.get("HOME") or Path.home()) / ".local/state")
-        / "codex-wake"
+def _correlation(request: object) -> dict[str, Any]:
+    target = request.get("target") if isinstance(request, Mapping) else None
+    wake = request.get("wake") if isinstance(request, Mapping) else None
+    target = target if isinstance(target, Mapping) else {}
+    wake = wake if isinstance(wake, Mapping) else {}
+    return {
+        "wake_id": wake.get("wake_id")
+        if isinstance(wake.get("wake_id"), str) and WR.WAKE_ID_RE.fullmatch(wake["wake_id"])
+        else "",
+        "session_id": target.get("session_id")
+        if isinstance(target.get("session_id"), str)
+        and SESSION_RE.fullmatch(target["session_id"])
+        and str(uuid.UUID(target["session_id"])) == target["session_id"]
+        else "",
+        "generation": target.get("generation")
+        if type(target.get("generation")) is int and target["generation"] > 0
+        else None,
+    }
+
+
+def _request_objects(request: object) -> tuple[WR.Target | None, WR.Wake | None, str]:
+    """Validate the fixed wire envelope and materialize only known router metadata."""
+    if not isinstance(request, Mapping) or set(request) != {"platform", "target", "wake"}:
+        return None, None, "invalid-request"
+    if request.get("platform") != PLATFORM:
+        return None, None, "invalid-platform"
+
+    target_data = request.get("target")
+    target_fields = {item.name for item in fields(WR.Target)}
+    required_target_fields = {"session_id", "letter", "host", "generation"}
+    if (
+        not isinstance(target_data, Mapping)
+        or not required_target_fields <= set(target_data)
+        or not set(target_data) <= target_fields
+    ):
+        return None, None, "invalid-target"
+    if any(
+        name in target_data
+        and (not isinstance(target_data[name], str) or len(target_data[name]) > 500)
+        for name in ("title", "thread_link")
+    ):
+        return None, None, "invalid-target"
+    sid = target_data.get("session_id")
+    letter = target_data.get("letter")
+    host = target_data.get("host")
+    generation = target_data.get("generation")
+    if (
+        not isinstance(sid, str)
+        or not SESSION_RE.fullmatch(sid)
+        or str(uuid.UUID(sid)) != sid
+        or not isinstance(letter, str)
+        or not LETTER_RE.fullmatch(letter)
+        or host != "mac"
+        or type(generation) is not int
+        or generation <= 0
+    ):
+        return None, None, "invalid-target"
+
+    wake_data = request.get("wake")
+    wake_names = {item.name for item in fields(WR.Wake)}
+    if not isinstance(wake_data, Mapping) or not set(wake_data) <= wake_names:
+        return None, None, "invalid-wake"
+    wake_fields = {item.name: item for item in fields(WR.Wake)}
+    required_wake_fields = {
+        "wake_id",
+        "seat",
+        "message_id",
+        "channel",
+        "topic",
+        "zulip_link",
+        "sender",
+        "dm",
+        "letter",
+        "picked",
+        "reason",
+        "link_note",
+    }
+    if not required_wake_fields <= set(wake_data):
+        return None, None, "invalid-wake"
+    if wake_data.get("seat") != SEAT:
+        return None, None, "invalid-seat"
+    message_id = wake_data.get("message_id")
+    if type(message_id) is not int or message_id <= 0:
+        return None, None, "invalid-message-id"
+    wake_id = wake_data.get("wake_id")
+    if not isinstance(wake_id, str) or not WR.WAKE_ID_RE.fullmatch(wake_id):
+        return None, None, "invalid-wake-id"
+    string_fields = (
+        "channel",
+        "topic",
+        "zulip_link",
+        "sender",
+        "letter",
+        "picked",
+        "reason",
+        "link_note",
+        "sender_fragment",
+        "linked_by",
+    )
+    for name in string_fields:
+        if name in wake_data and not isinstance(wake_data[name], str):
+            return None, None, "invalid-wake"
+    if wake_data.get("letter") and not LETTER_RE.fullmatch(wake_data["letter"]):
+        return None, None, "invalid-wake"
+    if wake_data.get("picked") in ("letter", "reply") and wake_data.get("letter") != letter:
+        return None, None, "invalid-wake"
+    if wake_data.get("linked_by", "") not in ("", "reply"):
+        return None, None, "invalid-wake"
+    if type(wake_data.get("dm")) is not bool:
+        return None, None, "invalid-wake"
+    for name in ("issue_ids", "session_fragments"):
+        values = wake_data.get(name, [])
+        if name in wake_data and (
+            not isinstance(values, list) or any(not isinstance(item, str) for item in values)
+        ):
+            return None, None, "invalid-wake"
+    values = {}
+    for name, field in wake_fields.items():
+        if name not in wake_data:
+            if field.default is not MISSING:
+                values[name] = field.default
+                continue
+            if field.default_factory is not MISSING:
+                values[name] = field.default_factory()
+                continue
+            return None, None, "invalid-wake"
+        value = wake_data[name]
+        if name in ("issue_ids", "session_fragments"):
+            if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+                return None, None, "invalid-wake"
+            value = tuple(value)
+        elif isinstance(field.default, bool):
+            if type(value) is not bool:
+                return None, None, "invalid-wake"
+        elif isinstance(field.default, int):
+            if type(value) is not int:
+                return None, None, "invalid-wake"
+        elif (isinstance(field.default, str) or name == "wake_id") and not isinstance(value, str):
+            return None, None, "invalid-wake"
+        values[name] = value
+    target = WR.Target(
+        session_id=sid,
+        letter=letter,
+        host=host,
+        generation=generation,
+    )
+    try:
+        wake = WR.Wake(**values)
+    except (TypeError, ValueError):
+        return None, None, "invalid-wake"
+    if cleaned_routing_metadata(wake) is None:
+        return None, None, "invalid-routing-metadata"
+    return target, wake, ""
+
+
+def deliver_request(
+    request: object,
+    *,
+    env: Mapping[str, str],
+    transport: Any | None = None,
+    metadata_lookup: Callable[[Mapping[str, str], str], Mapping[str, Any] | None] = thread_metadata,
+    registry_lookup: Callable[[Mapping[str, str], str], Mapping[str, Any] | None] | None = None,
+    hostname: Callable[[], str] = socket.gethostname,
+) -> dict[str, Any]:
+    """Deliver one already-parsed, fixed-schema CODEX request and return its correlated result."""
+    correlation = _correlation(request)
+    target, wake, error = _request_objects(request)
+    if error:
+        delivery = WR.Delivery("refused", route="codex-desktop", code=error)
+    else:
+        native = (
+            transport
+            if transport is not None
+            else CT.CodexChatTransport(home=env.get("HOME") or None)
+        )
+        delivery = CodexDelivery(
+            native,
+            env,
+            metadata_lookup,
+            local_host="mac",
+            hostname=hostname,
+            registry_lookup=registry_lookup,
+        )(target, wake)
+    return {**correlation, "delivery": asdict(delivery)}
+
+
+deliver_parsed_request = deliver_request
+
+
+def delivery_entry(
+    stdin: BinaryIO,
+    *,
+    env: Mapping[str, str],
+    transport: Any | None = None,
+    metadata_lookup: Callable[[Mapping[str, str], str], Mapping[str, Any] | None] = thread_metadata,
+    registry_lookup: Callable[[Mapping[str, str], str], Mapping[str, Any] | None] | None = None,
+    hostname: Callable[[], str] = socket.gethostname,
+) -> dict[str, Any]:
+    """Read at most MAX_REQUEST_BYTES plus one sentinel byte, then handle one JSON request."""
+    try:
+        raw = stdin.read(MAX_REQUEST_BYTES + 1)
+    except OSError:
+        return {
+            "wake_id": "",
+            "session_id": "",
+            "generation": None,
+            "delivery": asdict(
+                WR.Delivery("refused", route="codex-desktop", code="request-unreadable")
+            ),
+        }
+    if not isinstance(raw, bytes) or len(raw) > MAX_REQUEST_BYTES:
+        return {
+            "wake_id": "",
+            "session_id": "",
+            "generation": None,
+            "delivery": asdict(
+                WR.Delivery("refused", route="codex-desktop", code="request-too-large")
+            ),
+        }
+    try:
+        request = json.loads(raw, object_pairs_hook=_unique_object)
+    except (ValueError, RecursionError):
+        return {
+            "wake_id": "",
+            "session_id": "",
+            "generation": None,
+            "delivery": asdict(WR.Delivery("refused", route="codex-desktop", code="invalid-json")),
+        }
+    return deliver_request(
+        request,
+        env=env,
+        transport=transport,
+        metadata_lookup=metadata_lookup,
+        registry_lookup=registry_lookup,
+        hostname=hostname,
     )
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Run the shared router on the Mac, with the native Codex queue as its delivery seam."""
-    from . import platform_letter as PL
-
-    parser = argparse.ArgumentParser(prog="simple-chat codex-wake-router")
-    sub = parser.add_subparsers(dest="command", required=True)
-    serve = sub.add_parser("serve")
-    serve.add_argument("--bind", default="127.0.0.1")
-    serve.add_argument("--port", type=int, default=DEFAULT_PORT)
-    serve.add_argument("--config", default="")
-    args = parser.parse_args(argv)
-    env = dict(PL.with_registry_env(dict(os.environ)))
-    state = state_dir(env)
-    named = args.config or env.get("CODEX_WAKE_CONFIG") or ""
-    config = WR.load_config(
-        Path(named or state / "config.json"),
-        {**WR.ROUTER_DEFAULTS, "local_host": "mac"},
-        required=bool(named),
-    )
-    key_file = Path(env.get("CODEX_WAKE_KEY_FILE") or state / "routine-key")
-    router = WR.Router(make_platform(env, config), env, config, state, key_file, consult=None)
-    return WR.serve(router, args.bind, args.port)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result

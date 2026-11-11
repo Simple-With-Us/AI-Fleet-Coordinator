@@ -13,8 +13,7 @@
 #   3. smoke-tests the new code (`simple-chat --version`); on failure it goes back to the old commit and
 #      remembers the bad commit so it is not retried until origin/main moves again;
 #   4. if the change touched scripts/simple_tools/, scripts/simple-chat, plugins/simple-chat/, .claude-plugin/
-#      or docs/protocols/simple-tools-partition.toml, kickstarts the listener and SIGTERMs the router only
-#      when its LaunchAgent is already loaded, so each process reloads the new code safely.
+#      or docs/protocols/simple-tools-partition.toml, kickstarts the listener so it loads the new code.
 # A dirty runtime worktree is logged and skipped.  It is never reset, cleaned or stashed.
 #
 # Pause:   touch ~/.simple-tools/runtime-sync.pause   (resume: rm it)
@@ -39,21 +38,6 @@ PLUGIN_RE='^(plugins/simple-chat/|\.claude-plugin/)'
 export PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 
 log() { printf '%s  %s\n' "$(date '+%Y-%m-%d %I:%M:%S%p')" "$*" >> "$LOG"; }
-
-# Signal an already-loaded Codex router to drain; never start an unloaded service.
-signal_codex_wake_router() {
-  local service="gui/$(id -u)/com.jay.codex-wake-router"
-  if ! launchctl print "$service" >/dev/null 2>&1; then
-    log "ROUTER-NOT-LOADED  $service; no signal sent"
-    return 0
-  fi
-  if launchctl kill SIGTERM "$service" >/dev/null 2>&1; then
-    log "ROUTER-SHUTDOWN-SIGTERM  $service"
-    return 0
-  fi
-  log "ROUTER-SHUTDOWN-SIGNAL-FAILED  $service"
-  return 1
-}
 
 # git with a hard time cap:  perl's alarm survives exec and kills a hung git.
 rgit() { perl -e 'alarm shift; exec @ARGV' "$GIT_TIMEOUT" git -C "$RUNTIME" "$@"; }
@@ -140,11 +124,8 @@ main() {
     else
       log "RESTART-FAILED  launchctl kickstart -k $LISTENER_LABEL failed (is it loaded?)"
     fi
-    signal_codex_wake_router || :
   fi
 }
 
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  main "$@"
-  exit $?
-fi
+main "$@"
+exit $?

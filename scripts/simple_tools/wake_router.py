@@ -11,15 +11,26 @@ chat's registry `issues` (newest `seen_at` first) or, for a record with no `issu
 then the topic's words in a chat's title;  then recency.  A tie within a step goes to the most
 recent of the tied chats.  An optional decider (`Consult`, off by default) may choose before
 recency.  Nobody is asked to clarify and an ambiguous wake is never held:  only `no-live-session`
-and an unreadable registry do not deliver.  The receiving chat is always told how it was linked
-(`Wake.link_note`), and for recency that the router is not sure the wake is meant for it.
+and an unreadable registry do not deliver, and both are bounded retries, because a chat may register
+or the registry come back before `max_attempts` or `max_age_seconds` runs out.  The receiving chat
+is always told how it was linked (`Wake.link_note`), and for recency that the router is not sure the
+wake is meant for it.
+
+A reply link.  The listener may add `"linked_by": "reply"` when the message answers one a chat
+posted, with the letter of that chat.  Any other value is ignored.  It changes no step of the pick:
+when that letter picks the chat, the receipt says `picked: "reply"` and `reason: "reply"`, and the
+chat is told it was linked by reply.
+
+A session id may carry a `sess_` prefix, in the registry or in the text.  It is not part of the
+fragment:  a fragment is compared with the id's hex alone.
 
 The sender is never the target.  A fleet post header carries the sender's own fragment, as in
 `[SEAT·4984a346: AA.4.S → OTHER]`.  So a leading header is not searched for a fragment, except the
 text after its arrow, which is an addressee, and no step picks a chat whose session id starts with
 the fragment in that header.
 
-Writing a platform's `deliver`.  It is one plain function:
+A platform whose delivery is just one command needs no `deliver` of its own:  `command_platform`
+builds the whole `Platform` from a short spec.  Otherwise, a `deliver` is one plain function:
 
     def deliver(target: Target, wake: Wake) -> Delivery
 
@@ -94,10 +105,11 @@ import re
 import secrets
 import signal
 import socket
+import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, fields, replace
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -120,10 +132,14 @@ ISSUE_ID = r"[A-Z][A-Z0-9]{1,9}-[0-9]{1,7}"
 ISSUE_RE = re.compile(r"(?<![A-Za-z0-9_-])%s(?![A-Za-z0-9_-])" % ISSUE_ID)
 MAX_WAKE_ISSUES = 8
 MAX_ROW_ISSUES = 8
-# A piece of a session id:  lower-case hex, hyphens allowed where the id has them.
-FRAGMENT_RE = re.compile(r"(?<![0-9A-Za-z_-])[0-9a-f]+(?:-[0-9a-f]+)*(?![0-9A-Za-z_-])")
+# A piece of a session id:  lower-case hex, hyphens allowed where the id has them, after an optional
+# `sess_` prefix that is not kept.
+SESSION_PREFIX = "sess_"
+FRAGMENT_RE = re.compile(
+    r"(?<![0-9A-Za-z_-])(?:%s)?([0-9a-f]+(?:-[0-9a-f]+)*)(?![0-9A-Za-z_-])" % SESSION_PREFIX
+)
 # A fleet post header's inside:  a seat tag, then its own fragment or one of the marks below.
-HEADER_RE = re.compile(r"[A-Z][A-Z0-9_-]*(·[0-9a-f-]{8,})?(.*)", re.DOTALL)
+HEADER_RE = re.compile(r"[A-Z][A-Z0-9_-]*(·(?:%s)?[0-9a-f-]{8,})?(.*)" % SESSION_PREFIX, re.DOTALL)
 HEADER_SESSION_RE = re.compile(r":\s*[A-Z]{1,2}\.[0-9]+\.[A-Z]\b")
 FRAGMENT_MIN_HEX = 8
 FRAGMENT_MAX_CHARS = 36
@@ -148,6 +164,7 @@ RELEASED = "target-released"
 UNSURE = "and the router is not sure this wake is meant for this chat."
 LINK_NOTES = {
     "letter": "The router linked this wake to this chat because the sender addressed its letter.",
+    "reply": "This wake was linked by reply.",
     "session-id": "This wake was linked by session id.",
     "linear-issue": "This wake was linked by Linear issue {issue}.",
     "linear-issue-tie": "This wake was linked by Linear issue {issue}, "
@@ -161,6 +178,17 @@ LINK_NOTES = {
     "most-recent": "The router could not link this wake to any chat and this is the most "
     "recent live one, " + UNSURE,
 }
+
+# What a `command_platform` argv may name.  Each value is the router's own or has been validated;
+# nothing Zulip-authored (topic, sender, channel, link) has a field, so none can reach an argv.
+COMMAND_FIELDS = ("session_id", "wake_id", "message_id", "link_note", "wake_text")
+COMMAND_FIELD_RE = re.compile(r"\{([A-Za-z_]+)\}")
+COMMAND_TIMEOUT = 900
+COMMAND_TEXT = (
+    "You were tagged in Zulip (wake id {wake_id}).  {note}Read the message in Zulip before you "
+    "act:  zulip_get_message with message_id {message_id}.  Answer in that thread under your "
+    "seat's rules."
+)
 
 ROUTER_DEFAULTS: dict[str, Any] = {
     # Off until someone arms it:  with this false the router picks and receipts, and delivers nothing.
@@ -211,6 +239,7 @@ class Wake:
     issue_ids: tuple[str, ...] = ()
     session_fragments: tuple[str, ...] = ()
     sender_fragment: str = ""
+    linked_by: str = ""  # "reply" when the listener says the letter came from a reply, else ""
 
 
 @dataclass(frozen=True)
@@ -247,7 +276,7 @@ Consult = Callable[[list[Target], Wake], Mapping[str, Any] | None]
 @dataclass(frozen=True)
 class Pick:
     target: Target | None = None
-    picked: str = ""  # letter | linear-issue | topic-match | consultant | most-recent | ""
+    picked: str = ""  # letter|reply|session-id|linear-issue|topic-match|consultant|most-recent|""
     reason: str = ""
     letter_live: bool = False
     retry: bool = False
@@ -263,21 +292,25 @@ def clean(value: object, limit: int = NAME_CHARS) -> str:
 
 def letter_of(payload: Mapping[str, Any], mention: str) -> str:
     """The letter the sender addressed, or "".  An explicit field wins, then a real mention anywhere
-    in the excerpt (@**Name** AA, with or without Zulip's |id).  The plain "Name AA" form counts only
-    at the very start of the body:  later in a message it is usually a reference to that chat, not
-    an address.  A silent mention (@_**Name**) addresses nobody."""
+    in the excerpt (@**Name** AA, with or without Zulip's |id, the letter on its line or the next).
+    The plain "Name AA" form counts only at the start of a line:  later in a line it is usually a
+    reference to that chat, not an address.  The seat's own tag is not a letter, though a post often
+    opens with it under the mention ("ZC, can you").  A silent mention (@_**Name**) addresses
+    nobody."""
     explicit = str(payload.get("letter") or "").strip()
     if re.fullmatch(r"[A-Z]{1,2}", explicit):
         return explicit
     excerpt = str(payload.get("excerpt") or "")
     name = re.escape(mention)
-    found = re.search(r"@\*\*%s(?:\|\d+)?\*\*[ \t]*([A-Z]{2})\b" % name, excerpt)
-    if found:
-        return found.group(1)
-    head, _, rest = excerpt.partition("\n")
-    body = rest if head.startswith("BEGIN_UNTRUSTED") else excerpt
-    found = re.match(r"\s*%s[ \t]+([A-Z]{2})\b" % name, body)
-    return found.group(1) if found else ""
+    seat = str(payload.get("seat") or "")
+    for form in (
+        r"@\*\*%s(?:\|\d+)?\*\*\s*([A-Z]{2})\b" % name,
+        r"(?m)^[ \t]*%s[ \t]+([A-Z]{2})\b" % name,
+    ):
+        for found in re.finditer(form, excerpt):
+            if found.group(1) != seat:
+                return found.group(1)
+    return ""
 
 
 def link_note_ok(text: object) -> bool:
@@ -353,6 +386,7 @@ def wake_from_payload(payload: Mapping[str, Any], mention: str) -> Wake:
         issue_ids=tuple(dict.fromkeys(ISSUE_RE.findall(excerpt)))[:MAX_WAKE_ISSUES],
         session_fragments=fragments_in(addressing),
         sender_fragment=next(iter(fragments_in(sender_part)), ""),
+        linked_by="reply" if payload.get("linked_by") == "reply" else "",
     )
 
 
@@ -455,6 +489,72 @@ def read_key(path: Path) -> str:
     return "" if mode & 0o077 or len(key) < 16 else key
 
 
+def command_platform(
+    seat: str,
+    platform: str,
+    mention: str,
+    target_re: Pattern[str],
+    argv: Sequence[str],
+    *,
+    env: Mapping[str, str] | None = None,
+    cwd: str | None = None,
+    timeout: int = COMMAND_TIMEOUT,
+    exclude: Callable[[list[Target]], set[str]] | None = None,
+    stop_words: frozenset[str] = frozenset(),
+    runner: Callable[..., Any] = subprocess.run,
+) -> Platform:
+    """A `Platform` whose delivery is one command, run without a shell.  `argv` may name the
+    `COMMAND_FIELDS` as {session_id} and so on, anywhere but its first item;  any other name in
+    braces is a ValueError here, at startup.  Exit 0 is `completed`.  A non-zero exit or a timeout
+    is `refused`, because the turn may have started;  an OSError at start is `failed`.  The child
+    gets `env`, or else only HOME and PATH:  the router's own environment holds its keys."""
+    template = [argv] if isinstance(argv, str) else list(argv)
+    named = {name for part in template for name in COMMAND_FIELD_RE.findall(part)}
+    if len(template) < 2 or COMMAND_FIELD_RE.search(template[0]) or named - set(COMMAND_FIELDS):
+        raise ValueError("command_platform: a program, its arguments and only known fields")
+    child_env = (
+        dict(env)
+        if env is not None
+        else {name: os.environ[name] for name in ("HOME", "PATH") if name in os.environ}
+    )
+
+    def deliver(target: Target, wake: Wake) -> Delivery:
+        note = wake.link_note if link_note_ok(wake.link_note) else ""
+        values = {
+            "session_id": target.session_id,
+            "wake_id": wake.wake_id,
+            "message_id": str(wake.message_id),
+            "link_note": note,
+            "wake_text": COMMAND_TEXT.format(
+                wake_id=wake.wake_id, note=note + "  " if note else "", message_id=wake.message_id
+            ),
+        }
+        # One pass per item, so a value is never read again as a field.
+        command = [COMMAND_FIELD_RE.sub(lambda m: values[m.group(1)], part) for part in template]
+        try:
+            proc = runner(
+                command,
+                cwd=cwd,
+                env=child_env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return Delivery("refused", "command", code="command-timeout")
+        except OSError as exc:  # it never started:  the one failure that is safe to try again
+            return Delivery("failed", "command", code="command-%s" % type(exc).__name__)
+        except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
+            return Delivery("refused", "command", code="command-error-%s" % type(exc).__name__)
+        if proc.returncode == 0:
+            return Delivery("completed", "command", ack="confirmed")
+        return Delivery("refused", "command", code="command-exit-%d" % proc.returncode)
+
+    return Platform(seat, platform, mention, target_re, deliver, exclude, stop_words)
+
+
 class Router:
     """The pick, the durable queue, the workers and the receipts for one platform."""
 
@@ -513,7 +613,8 @@ class Router:
         """The rules, in order:  an addressed letter;  a session-id fragment;  a Linear issue;  the
         chat whose title best shares the topic's words;  the optional decider;  recency.  A tie goes
         to the most recent of the tied, and no step picks the sender's own chat.  A registry that
-        cannot be read asks for a retry:  it is not "no live chat"."""
+        cannot be read asks for a retry:  it is not "no live chat".  No live chat asks for one too,
+        because a chat may register in time."""
         letter_live = False
 
         def chosen(
@@ -545,7 +646,8 @@ class Router:
                 if target.session_id not in self._excluded([target]) and not _is_sender(
                     target, wake
                 ):
-                    return chosen(target, "letter", "letter")
+                    how = "reply" if wake.linked_by == "reply" else "letter"
+                    return chosen(target, how, how)
         answer = registry_api.call(
             self.env,
             "history",
@@ -572,7 +674,7 @@ class Router:
             t for sid, t in live.items() if sid not in excluded and not _is_sender(t, wake)
         ]
         if not candidates:
-            return Pick(reason="no-live-session", letter_live=letter_live)
+            return Pick(reason="no-live-session", letter_live=letter_live, retry=True)
 
         named = _named_session(wake, live)
         target = next((t for t in candidates if t.session_id == named), None)
@@ -873,7 +975,7 @@ class Router:
         if entry["pick"] is None:
             pick = self.pick(wake)
             if pick.retry:
-                self._retry(entry, counted=True, code=pick.reason)
+                self._retry(entry, counted=True, code=pick.reason, pick=pick)
                 return
             entry["pick"] = asdict(pick)
             self._save(entry)
@@ -1189,9 +1291,14 @@ def _instant(value: object) -> float | None:
     return number / 1000 if number >= 1e11 else number  # milliseconds, from a JavaScript writer
 
 
+def _bare_id(session_id: str) -> str:
+    """A session id or a fragment of one as they are compared:  no `sess_` prefix, no hyphens."""
+    return session_id.removeprefix(SESSION_PREFIX).replace("-", "")
+
+
 def _is_sender(target: Target, wake: Wake) -> bool:
-    bare = wake.sender_fragment.replace("-", "")
-    return bool(bare) and target.session_id.replace("-", "").startswith(bare)
+    bare = _bare_id(wake.sender_fragment)
+    return bool(bare) and _bare_id(target.session_id).startswith(bare)
 
 
 def _named_session(wake: Wake, live: Mapping[str, Target]) -> str:
@@ -1200,8 +1307,8 @@ def _named_session(wake: Wake, live: Mapping[str, Target]) -> str:
     is never the one named."""
     named: set[str] = set()
     for fragment in wake.session_fragments:
-        bare = fragment.replace("-", "")
-        fits = [sid for sid in live if bare in sid.replace("-", "")]
+        bare = _bare_id(fragment)
+        fits = [sid for sid in live if bare in _bare_id(sid)]
         if len(fits) == 1 and not _is_sender(live[fits[0]], wake):
             named.add(fits[0])
     return named.pop() if len(named) == 1 else ""
