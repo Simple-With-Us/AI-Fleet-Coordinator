@@ -126,7 +126,9 @@ TARGET: list[tuple[int | None, str, str]] = [
     (5136, *_gh("CTS", "congress-trading-shared")),
     (5138, *_gh("CLUTCH", "Clutch")),
     # Clutch's acronym since 2026-10-23;  owner 2026-11-10:  C#n links to Clutch everywhere.
-    (None, *_gh("C", "Clutch")),
+    # Anchored with a lookbehind:  unanchored, the one-letter C rule claims the tail of any
+    # word ending in C (MUSIC#5 rendered as Clutch) before the generic fallback runs.
+    (None, "(?<![A-Za-z0-9])C#(?P<id>[0-9]+)", f"{GH}/Clutch/issues/{{id}}"),
     # Every app answers to its acronym and its repo name (owner 2026-11-10).
     (None, *_gh("AR", "Autorotate")),
     (None, *_gh("SWU", "Simple-With-Us")),
@@ -173,6 +175,7 @@ CHECKS: list[tuple[str, str | None]] = [
     ("CC#5", f"{GH}/CodeCaps/issues/5"),
     ("CAPS#12", f"{GH}/CodeCaps/issues/12"),
     ("C#5", f"{GH}/Clutch/issues/5"),
+    ("MUSIC#5", f"{GH}/MUSIC/issues/5"),
     ("Clutch#5", f"{GH}/Clutch/issues/5"),
     ("CodeCaps#5", f"{GH}/CodeCaps/issues/5"),
     ("HH#5", f"{GH}/HogHunter/issues/5"),
