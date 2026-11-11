@@ -39,6 +39,20 @@ CASES = [
         "branch",
     ),
     (
+        "wf_branch_rules",
+        {"branch": "main"},
+        "/rules/branches/main",
+        [
+            {
+                "type": "pull_request",
+                "parameters": {"required_review_thread_resolution": True},
+                "ruleset_id": 9,
+                "ruleset_source": "Organization",
+            }
+        ],
+        "rules",
+    ),
+    (
         "wf_repo_get",
         {},
         "",

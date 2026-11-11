@@ -278,6 +278,9 @@
   "wf_branch_get": [
     "/repos/{...}/branches/{...}"
   ],
+  "wf_branch_rules": [
+    "/repos/{...}/rules/branches/{...}"
+  ],
   "wf_repo_get": [
     "/repos/{...}"
   ],

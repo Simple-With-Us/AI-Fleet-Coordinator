@@ -238,6 +238,7 @@ class SeatPolicy:
         "wf_commit_get",
         "wf_compare",
         "wf_branch_get",
+        "wf_branch_rules",
         "wf_repo_get",
         "wf_installation_metadata",
         "wf_labels",

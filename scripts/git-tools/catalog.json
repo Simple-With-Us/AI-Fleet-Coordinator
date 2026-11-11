@@ -620,6 +620,36 @@
    }
   },
   {
+   "name": "gr_wf_branch_rules",
+   "description": "Read repository rules for one branch: rule type and parameters only. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "branch"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "branch": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
    "name": "gr_wf_branch_update",
    "description": "branch update; expected SHA pre-read is not an atomic ref lock. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
    "read": false,
