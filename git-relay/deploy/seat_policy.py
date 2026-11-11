@@ -706,26 +706,32 @@ def proof_key(args) -> int:
         print(f"refusing:  could not create {path} exclusively")
         return 2
     try:
+        # One ownership rule:  fd stays this process's raw descriptor until a
+        # successful os.fdopen hands it to the file object;  the except path
+        # closes it only while it is still ours, and every failure path
+        # unlinks the partial file this invocation created.
         st = os.fstat(fd)
         if st.st_uid != 0 or st.st_mode & 0o777 != 0o600:
             os.close(fd)
+            fd = None
             try:
                 os.unlink(path)
             except OSError:
                 pass
             print(f"refusing:  {path} is not root-owned 0600 after creation")
             return 2
-        try:
-            fh = os.fdopen(fd, "w", encoding="utf-8")
-        except OSError:
-            # fdopen never took ownership:  the raw fd is still ours to close.
-            os.close(fd)
-            raise
+        fh = os.fdopen(fd, "w", encoding="utf-8")
+        fd = None
         with fh:
             fh.write(material)
             fh.flush()
             os.fsync(fh.fileno())
     except OSError:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         try:
             os.unlink(path)
         except OSError:

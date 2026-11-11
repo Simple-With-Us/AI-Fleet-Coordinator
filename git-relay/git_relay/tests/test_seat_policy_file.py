@@ -644,9 +644,44 @@ class ProofKeyMintFailureTests(unittest.TestCase):
         g1, g2 = self._mint_guards()
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / "proof.key"
-            with g1, g2, mock.patch.object(os, "fdopen", side_effect=OSError("disk full")):
+            with g1, g2, mock.patch.object(os, "fdopen", side_effect=OSError("disk full")), \
+                    mock.patch.object(os, "close", wraps=os.close) as mclose:
                 self.assertEqual(seat_policy.proof_key(self._args(path)), 2)
             self.assertFalse(path.exists())
+            # fdopen never took ownership, so the raw fd is closed exactly once.
+            self.assertEqual(mclose.call_count, 1)
+
+    def test_fstat_failure_closes_fd_and_unlinks_the_partial_file(self):
+        import pathlib
+        from unittest import mock
+
+        g1, g2 = self._mint_guards()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "proof.key"
+            with g1, g2, mock.patch.object(os, "fstat", side_effect=OSError("io")), \
+                    mock.patch.object(os, "close", wraps=os.close) as mclose:
+                self.assertEqual(seat_policy.proof_key(self._args(path)), 2)
+            self.assertFalse(path.exists())
+            # fstat raised before fdopen:  the raw fd is still ours and is
+            # closed exactly once, never leaked.
+            self.assertEqual(mclose.call_count, 1)
+
+    def test_fsync_failure_does_not_double_close_the_owned_fd(self):
+        import pathlib
+        from unittest import mock
+
+        g1, g2 = self._mint_guards()
+        root_owned = os.stat_result((stat.S_IFREG | 0o600, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "proof.key"
+            with g1, g2, mock.patch.object(os, "fstat", return_value=root_owned), \
+                    mock.patch.object(os, "fsync", side_effect=OSError("io")), \
+                    mock.patch.object(os, "close", wraps=os.close) as mclose:
+                self.assertEqual(seat_policy.proof_key(self._args(path)), 2)
+            self.assertFalse(path.exists())
+            # After a successful fdopen the file object owns the descriptor:
+            # the failure path must not close it again at this level.
+            self.assertEqual(mclose.call_count, 0)
 
     def test_post_create_check_failure_unlinks_the_partial_file(self):
         import pathlib
@@ -656,6 +691,8 @@ class ProofKeyMintFailureTests(unittest.TestCase):
         not_root = os.stat_result((stat.S_IFREG | 0o600, 0, 0, 0, 1, 0, 0, 0, 0, 0))
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / "proof.key"
-            with g1, g2, mock.patch.object(os, "fstat", return_value=not_root):
+            with g1, g2, mock.patch.object(os, "fstat", return_value=not_root), \
+                    mock.patch.object(os, "close", wraps=os.close) as mclose:
                 self.assertEqual(seat_policy.proof_key(self._args(path)), 2)
             self.assertFalse(path.exists())
+            self.assertEqual(mclose.call_count, 1)
