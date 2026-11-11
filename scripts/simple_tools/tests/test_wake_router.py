@@ -2422,6 +2422,10 @@ class Config(Base):
         self.assertIs(config["delivery_enabled"], True)
         self.assertEqual(config["workers"], CW.DEFAULTS["workers"])
 
+    def test_reading_a_local_file_gives_only_what_it_sets(self) -> None:
+        local = WR.read_local_config(self.write('{"workers": 2}'), CW.DEFAULTS)
+        self.assertEqual(local, {"workers": 2})
+
 
 class FakeInbox:
     """A real unix socket, standing in for one chat's inbox."""
@@ -2874,21 +2878,53 @@ class HolderFailsClosed(ClaudeBase):
             self.assertEqual(CW.find_holder(self.env, SID_A), CW.Holder(wired, "/tmp/wired.sock"))
 
 
-class Remote(ClaudeBase):
+class RemoteBase(ClaudeBase):
     def setUp(self) -> None:
         super().setUp()
         self.cfg["mac_ssh"] = "mac-host"
-        self.answer = SimpleNamespace(
-            returncode=0, stdout=json.dumps({"outcome": "sent", "route": "socket"}) + "\n"
-        )
+        self.target = WR.Target(SID_A, letter="AA", host="mac", generation=3)
+        self.registry.rows = [row(SID_A, "AA", "letters", host="mac", generation=3)]
+        self.answer = SimpleNamespace(returncode=0, stdout=self.reply() + "\n")
+        patcher = mock.patch.object(CW, "_remote_config", return_value=self.cfg)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def reply(self, outcome: str = "sent", **over) -> str:
+        """The Mac's answer to this test's wake;  `over` replaces or, as None, removes an id."""
+        body = {
+            "wake_id": self.w.wake_id,
+            "session_id": SID_A,
+            "generation": 3,
+            "delivery": {"outcome": outcome, "route": "socket", "ack": "unknown", "code": "", "note": ""},
+        }
+        body.update(over)
+        return json.dumps({name: value for name, value in body.items() if value is not None})
 
     def remote(self, argv, **kwargs):
         self.runs.append((argv, kwargs))
         return self.answer
 
     def deliver_remote(self):
-        return CW.deliver_remote(self.env, self.cfg, SID_A, self.w, runner=self.remote)
+        return CW.deliver_remote(self.env, self.cfg, self.target, self.w, runner=self.remote)
 
+    def envelope(self, **over) -> dict:
+        body = {
+            "platform": "claude",
+            "target": {"session_id": SID_A, "letter": "AA", "host": "mac", "generation": 3},
+            "wake": WR.asdict(self.w),
+        }
+        body.update(over)
+        return body
+
+    def run_main(self, request) -> tuple[int, dict]:
+        """`wake-deliver` on this request (a dict, or text taken as it is)."""
+        text = request if isinstance(request, str) else json.dumps(request)
+        out = io.StringIO()
+        code = CW.wake_deliver_main(io.StringIO(text), out, self.env)
+        return code, json.loads(out.getvalue())
+
+
+class Remote(RemoteBase):
     def test_the_command_is_fixed_and_the_wake_rides_stdin(self) -> None:
         result = self.deliver_remote()
         self.assertEqual(self.runs[0][0][-2:], ["mac-host", "true"])  # the preflight goes first
@@ -2896,11 +2932,74 @@ class Remote(ClaudeBase):
         self.assertEqual(argv[-1], CW.REMOTE_COMMAND)
         self.assertEqual(argv[-2], "mac-host")
         self.assertNotIn("OPS-1048", " ".join(argv))
-        self.assertEqual(json.loads(kwargs["input"])["session_id"], SID_A)
+        self.assertEqual(json.loads(kwargs["input"])["target"]["session_id"], SID_A)
         self.assertEqual((result.outcome, result.route, result.ack), ("sent", "ssh:socket", "unknown"))
 
+    def test_the_request_is_the_envelope_with_the_whole_target(self) -> None:
+        self.deliver_remote()
+        sent = json.loads(self.runs[1][1]["input"])
+        self.assertEqual(set(sent), {"platform", "target", "wake"})
+        self.assertEqual(sent["platform"], "claude")
+        self.assertEqual(
+            sent["target"], {"session_id": SID_A, "letter": "AA", "host": "mac", "generation": 3}
+        )
+        self.assertEqual(sent["wake"]["wake_id"], self.w.wake_id)
+
+    def test_the_platform_goes_on_the_wire_when_named(self) -> None:
+        CW.deliver_remote(self.env, self.cfg, self.target, self.w, platform="codex", runner=self.remote)
+        self.assertEqual(json.loads(self.runs[1][1]["input"])["platform"], "codex")
+
+    def test_an_answer_about_anything_else_is_final(self) -> None:
+        mismatches = {
+            "another wake": {"wake_id": "w-other"},
+            "another chat": {"session_id": SID_B},
+            "another generation": {"generation": 4},
+            "no wake id": {"wake_id": None},
+            "no session id": {"session_id": None},
+            "no generation": {"generation": None},
+            "a string generation": {"generation": "3"},
+            "a float generation": {"generation": 3.0},
+        }
+        for label, over in mismatches.items():
+            # Even an answer saying the wake can be retried:  the turn may have run.
+            for outcome in ("sent", "failed", "busy", "unreachable"):
+                with self.subTest(label, outcome=outcome):
+                    self.answer = SimpleNamespace(returncode=0, stdout=self.reply(outcome, **over))
+                    result = self.deliver_remote()
+                    self.assertEqual((result.outcome, result.code), ("refused", "remote-mismatch"))
+
+    def test_a_bool_is_not_a_generation(self) -> None:
+        self.target = WR.Target(SID_A, letter="AA", host="mac", generation=1)
+        self.answer = SimpleNamespace(returncode=0, stdout=self.reply(generation=True))
+        self.assertEqual(self.deliver_remote().code, "remote-mismatch")
+
+    def test_an_answer_with_no_delivery_is_final(self) -> None:
+        flat = json.dumps({"outcome": "sent", "wake_id": self.w.wake_id})
+        for text in (flat, self.reply(delivery={"outcome": "maybe"}), self.reply(delivery="sent")):
+            with self.subTest(text):
+                self.answer = SimpleNamespace(returncode=0, stdout=text)
+                result = self.deliver_remote()
+                self.assertEqual((result.outcome, result.code), ("refused", "remote-exit-0"))
+
+    def test_a_matching_answer_that_can_be_retried_is_kept(self) -> None:
+        self.answer = SimpleNamespace(returncode=0, stdout=self.reply("failed"))
+        self.assertEqual(self.deliver_remote().outcome, "failed")
+
+    def test_sender_and_receiver_agree(self) -> None:
+        def over_the_wire(argv, **kwargs):
+            if argv[-1] == "true":
+                return SimpleNamespace(returncode=0, stdout="")
+            out = io.StringIO()
+            code = CW.wake_deliver_main(io.StringIO(kwargs["input"]), out, self.env)
+            return SimpleNamespace(returncode=code, stdout=out.getvalue())
+
+        with mock.patch.object(CW, "deliver_local", return_value=WR.Delivery("sent", "socket")) as spy:
+            result = CW.deliver_remote(self.env, self.cfg, self.target, self.w, runner=over_the_wire)
+        self.assertEqual((result.outcome, result.route), ("sent", "ssh:socket"))
+        self.assertEqual(spy.call_args.args[2], SID_A)
+
     def test_a_sleeping_mac_is_unreachable_and_nothing_is_sent(self) -> None:
-        self.answer = SimpleNamespace(returncode=255, stdout="")
+        self.answer = SimpleNamespace(returncode=255, stdout="")  # the setUp answer is not used
         self.assertEqual(self.deliver_remote().outcome, "unreachable")
         self.assertEqual(len(self.runs), 1)
 
@@ -2921,19 +3020,19 @@ class Remote(ClaudeBase):
         good = SimpleNamespace(returncode=0, stdout="")
         dropped = SimpleNamespace(returncode=255, stdout="")
         runner = self.scripted(good, dropped)
-        result = CW.deliver_remote(self.env, self.cfg, SID_A, self.w, runner=runner)
+        result = CW.deliver_remote(self.env, self.cfg, self.target, self.w, runner=runner)
         self.assertEqual((result.outcome, result.code), ("refused", "ssh-dropped"))
 
     def test_a_preflight_that_times_out_is_unreachable(self) -> None:
         runner = self.scripted(subprocess.TimeoutExpired("ssh", 1))
-        result = CW.deliver_remote(self.env, self.cfg, SID_A, self.w, runner=runner)
+        result = CW.deliver_remote(self.env, self.cfg, self.target, self.w, runner=runner)
         self.assertEqual((result.outcome, len(self.runs)), ("unreachable", 1))
 
     def test_a_bad_answer_is_final(self) -> None:
         good = SimpleNamespace(returncode=0, stdout="")
         bad = SimpleNamespace(returncode=1, stdout="not json\n")
         runner = self.scripted(good, bad)
-        result = CW.deliver_remote(self.env, self.cfg, SID_A, self.w, runner=runner)
+        result = CW.deliver_remote(self.env, self.cfg, self.target, self.w, runner=runner)
         self.assertEqual((result.outcome, result.code), ("refused", "remote-exit-1"))
 
     def test_an_unnamed_or_flag_shaped_destination_is_refused(self) -> None:
@@ -2944,26 +3043,209 @@ class Remote(ClaudeBase):
 
     def test_routing_by_host(self) -> None:
         deliver = CW.make_deliver(self.env, self.cfg, runner=self.remote)
-        self.assertEqual(deliver(WR.Target(SID_A, host="mac"), self.w).route, "ssh:socket")
+        self.assertEqual(deliver(self.target, self.w).route, "ssh:socket")
         self.assertEqual(deliver(WR.Target(SID_A, host="cloud"), self.w).code, "unknown-host")
 
     def test_the_remote_side_round_trip(self) -> None:
         self.transcript()
-        request = json.dumps({"session_id": SID_A, "wake": WR.asdict(self.w)})
-        out = io.StringIO()
         with mock.patch.object(subprocess, "run", self.runner):
             with mock.patch.object(CW, "deliver_local", wraps=CW.deliver_local) as spy:
-                code = CW.wake_deliver_main(io.StringIO(request), out, self.env)
+                code, answer = self.run_main(self.envelope())
         self.assertEqual(code, 0)
         self.assertEqual(spy.call_args.args[2], SID_A)
-        self.assertIn(json.loads(out.getvalue())["outcome"], WR.OUTCOMES)
+        self.assertEqual(
+            (answer["wake_id"], answer["session_id"], answer["generation"]), (self.w.wake_id, SID_A, 3)
+        )
+        self.assertEqual(set(answer["delivery"]), {"outcome", "route", "ack", "code", "note"})
+        self.assertIn(answer["delivery"]["outcome"], WR.OUTCOMES)
+
+    def test_a_missing_platform_means_claude(self) -> None:
+        request = self.envelope()
+        del request["platform"]
+        with mock.patch.object(CW, "deliver_local", return_value=WR.Delivery("sent")) as spy:
+            code, answer = self.run_main(request)
+        self.assertEqual((code, answer["delivery"]["outcome"]), (0, "sent"))
+        spy.assert_called_once()
+
+    def test_a_router_from_before_the_envelope_keeps_working(self) -> None:
+        # What a router not yet updated sends and reads:  it has no target and looks for a flat answer.
+        request = {"session_id": SID_A, "wake": WR.asdict(self.w)}
+        self.registry.rows = []  # no generation to recheck, so the registry is not asked
+        with mock.patch.object(CW, "deliver_local", return_value=WR.Delivery("sent", "socket")) as spy:
+            code, answer = self.run_main(request)
+        self.assertEqual(code, 0)
+        self.assertEqual((answer["outcome"], answer["route"]), ("sent", "socket"))
+        self.assertEqual(spy.call_args.args[2], SID_A)
+        self.assertEqual(self.registry.calls, [])
+
+    def test_an_unknown_platform_is_refused_and_nothing_is_imported(self) -> None:
+        names = ("evil", "../codex", "simple_tools.os", "os", "CLAUDE", "__class__", "", None, 3, ["claude"], {})
+        for name in names:
+            with self.subTest(name=name):
+                with (
+                    mock.patch.object(CW, "deliver_local") as spy,
+                    mock.patch.object(CW.importlib, "import_module") as importing,
+                ):
+                    code, answer = self.run_main(self.envelope(platform=name))
+                self.assertEqual((code, answer["delivery"]["outcome"]), (2, "refused"))
+                self.assertEqual(answer["delivery"]["code"], "unknown-platform")
+                self.assertEqual(answer["wake_id"], self.w.wake_id)
+                spy.assert_not_called()
+                importing.assert_not_called()
+
+    def test_codex_is_refused_clearly_until_its_module_is_there(self) -> None:
+        with (
+            mock.patch.dict(sys.modules, {CW.CODEX_MODULE: None}),
+            mock.patch.object(CW, "deliver_local") as spy,
+        ):
+            code, answer = self.run_main(self.envelope(platform="codex"))
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            (answer["delivery"]["outcome"], answer["delivery"]["code"]),
+            ("refused", "platform-not-installed"),
+        )
+        self.assertEqual(answer["session_id"], SID_A)
+        spy.assert_not_called()
+
+    def codex_module(self, deliver_request) -> SimpleNamespace:
+        return SimpleNamespace(deliver_request=deliver_request)
+
+    def test_codex_runs_its_own_delivery(self) -> None:
+        seen = {}
+        reply = {"wake_id": "w-claude", "session_id": SID_A, "generation": 3,
+                 "delivery": {"outcome": "sent", "route": "codex-desktop", "ack": "unknown", "code": "", "note": ""}}
+
+        def deliver_request(request, *, env):
+            seen.update(request=request, env=env)
+            return reply
+
+        request = self.envelope(platform="codex")
+        with (
+            mock.patch.dict(sys.modules, {CW.CODEX_MODULE: self.codex_module(deliver_request)}),
+            mock.patch.object(CW, "deliver_local") as spy,
+        ):
+            code, answer = self.run_main(request)
+        self.assertEqual((code, answer), (0, reply))
+        self.assertEqual(seen["request"], json.loads(json.dumps(request)))  # as it came off the wire
+        self.assertEqual(seen["env"]["HOME"], self.env["HOME"])
+        spy.assert_not_called()
+
+    def test_a_codex_delivery_that_breaks_is_final(self) -> None:
+        def broken(request, *, env):
+            raise RuntimeError("after it may have started")
+
+        with mock.patch.dict(sys.modules, {CW.CODEX_MODULE: self.codex_module(broken)}):
+            _, answer = self.run_main(self.envelope(platform="codex"))
+        self.assertEqual(
+            (answer["delivery"]["outcome"], answer["delivery"]["code"]),
+            ("refused", "platform-error-RuntimeError"),
+        )
+
+    def test_a_codex_answer_of_the_wrong_shape_is_final(self) -> None:
+        for reply in (None, {"outcome": "sent"}, {"delivery": "sent"}):
+            with self.subTest(reply=reply):
+                module = self.codex_module(lambda request, *, env, reply=reply: reply)
+                with mock.patch.dict(sys.modules, {CW.CODEX_MODULE: module}):
+                    _, answer = self.run_main(self.envelope(platform="codex"))
+                self.assertEqual(answer["delivery"]["code"], "platform-bad-answer")
+
+    def test_the_mac_asks_the_registry_just_before_delivering(self) -> None:
+        def deliver(*args, **kwargs):
+            self.assertEqual(self.registry.calls, [("resolve", {"platform": "claude", "letter": "AA"})])
+            return WR.Delivery("sent")
+
+        with mock.patch.object(CW, "deliver_local", side_effect=deliver) as spy:
+            _, answer = self.run_main(self.envelope())
+        self.assertEqual(answer["delivery"]["outcome"], "sent")
+        spy.assert_called_once()
+
+    def assert_released(self) -> None:
+        with mock.patch.object(CW, "deliver_local") as spy:
+            code, answer = self.run_main(self.envelope())
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            (answer["delivery"]["outcome"], answer["delivery"]["code"]), ("refused", WR.RELEASED)
+        )
+        self.assertEqual((answer["wake_id"], answer["generation"]), (self.w.wake_id, 3))
+        spy.assert_not_called()
+
+    def test_a_newer_generation_is_refused(self) -> None:
+        self.registry.rows = [row(SID_A, "AA", "letters", host="mac", generation=4)]
+        self.assert_released()
+
+    def test_another_session_on_the_letter_is_refused(self) -> None:
+        self.registry.rows = [row(SID_B, "AA", "letters", host="mac", generation=3)]
+        self.assert_released()
+
+    def test_a_closed_letter_is_refused(self) -> None:
+        closed = row(SID_A, "AA", "letters", host="mac", generation=3, closed_at=NEWER)
+        self.registry.letters = {"AA": closed}
+        self.assert_released()
+
+    def test_a_letter_the_registry_does_not_know_is_refused(self) -> None:
+        self.registry.rows = []
+        self.assert_released()
+
+    def test_a_registry_that_cannot_be_read_is_a_retry_and_no_delivery(self) -> None:
+        self.registry.down = True
+        with mock.patch.object(CW, "deliver_local") as spy:
+            code, answer = self.run_main(self.envelope())
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            (answer["delivery"]["outcome"], answer["delivery"]["code"]),
+            ("failed", "registry-unavailable"),
+        )
+        self.assertEqual(answer["wake_id"], self.w.wake_id)
+        spy.assert_not_called()
+
+    def test_a_registry_call_that_raises_is_a_retry_and_no_delivery(self) -> None:
+        with (
+            mock.patch.object(WR.registry_api, "call", side_effect=ValueError("broken")),
+            mock.patch.object(CW, "deliver_local") as spy,
+        ):
+            _, answer = self.run_main(self.envelope())
+        self.assertEqual(answer["delivery"]["outcome"], "failed")
+        spy.assert_not_called()
+
+    def test_settings_that_cannot_be_read_are_a_retry_and_no_delivery(self) -> None:
+        for error in (SystemExit("bad file"), RuntimeError("no knobs")):
+            with self.subTest(error=error):
+                with (
+                    mock.patch.object(CW, "_remote_config", side_effect=error),
+                    mock.patch.object(CW, "deliver_local") as spy,
+                ):
+                    _, answer = self.run_main(self.envelope())
+                self.assertEqual(answer["delivery"]["outcome"], "failed")
+                self.assertEqual(answer["delivery"]["code"], "settings-%s" % type(error).__name__)
+                spy.assert_not_called()
+
+    def test_a_bad_target_is_refused(self) -> None:
+        good = self.envelope()["target"]
+        bad = [
+            None,
+            "x",
+            {**good, "session_id": "--help"},
+            {**good, "letter": "aa"},
+            {**good, "letter": "AAA"},
+            {**good, "host": ""},
+            {**good, "generation": 0},
+            {**good, "generation": True},
+            {**good, "generation": "3"},
+            {**good, "extra": "x"},
+            {k: v for k, v in good.items() if k != "generation"},
+        ]
+        for target in bad:
+            with self.subTest(target=target):
+                with mock.patch.object(CW, "deliver_local") as spy:
+                    code, answer = self.run_main(self.envelope(target=target))
+                self.assertEqual((code, answer["delivery"]["code"]), (2, "bad-request"))
+                spy.assert_not_called()
 
     def remote_wake(self, link_note: str) -> WR.Wake:
         self.transcript()
         fields = {**WR.asdict(self.w), "link_note": link_note, "picked": "most-recent"}
-        request = json.dumps({"session_id": SID_A, "wake": fields})
         with mock.patch.object(CW, "deliver_local", return_value=WR.Delivery("sent")) as spy:
-            CW.wake_deliver_main(io.StringIO(request), io.StringIO(), self.env)
+            self.run_main(self.envelope(wake=fields))
         return spy.call_args.args[3]
 
     def test_the_remote_side_keeps_the_routers_note(self) -> None:
@@ -2980,18 +3262,112 @@ class Remote(ClaudeBase):
 
     def test_the_remote_side_refuses_input_over_the_limit(self) -> None:
         # Its first STDIN_LIMIT characters are valid JSON, so a truncate-and-parse would accept it.
-        request = json.dumps({"session_id": SID_A, "wake": WR.asdict(self.w)})
-        out = io.StringIO()
+        request = json.dumps(self.envelope())
         with mock.patch.object(CW, "deliver_local") as spy:
-            code = CW.wake_deliver_main(io.StringIO(request + " " * CW.STDIN_LIMIT), out, self.env)
-        self.assertEqual((code, json.loads(out.getvalue())["code"]), (2, "bad-request"))
+            code, answer = self.run_main(request + " " * CW.STDIN_LIMIT)
+        self.assertEqual((code, answer["delivery"]["code"]), (2, "bad-request"))
         spy.assert_not_called()
 
     def test_the_remote_side_refuses_a_bad_request(self) -> None:
-        for text in ("not json", "{}", json.dumps({"session_id": SID_A, "wake": {"wake_id": "../x"}})):
-            out = io.StringIO()
-            self.assertEqual(CW.wake_deliver_main(io.StringIO(text), out, self.env), 2)
-            self.assertEqual(json.loads(out.getvalue())["code"], "bad-request")
+        bad_wake = self.envelope(wake={"wake_id": "../x"})
+        for text in ("not json", "[]", "{}", json.dumps(bad_wake)):
+            with self.subTest(text):
+                code, answer = self.run_main(text)
+                self.assertEqual((code, answer["delivery"]["code"]), (2, "bad-request"))
+
+    def test_a_bad_request_from_an_old_router_gets_a_flat_refusal(self) -> None:
+        code, answer = self.run_main({"session_id": SID_A, "wake": {"wake_id": "../x"}})
+        self.assertEqual((code, answer["code"]), (2, "bad-request"))
+
+
+class Gate(RemoteBase):
+    """The forced command on the router's ssh key."""
+
+    def gate(self, command, stdin: str = ""):
+        env = dict(self.env)
+        if command is not None:
+            env[CW.ENV_SSH_COMMAND] = command
+        out, err = io.StringIO(), io.StringIO()
+        code = CW.wake_ssh_gate_main(io.StringIO(stdin), out, err, env)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_the_preflight_is_answered_and_delivers_nothing(self) -> None:
+        with mock.patch.object(CW, "wake_deliver_main") as spy:
+            self.assertEqual(self.gate("true")[0], 0)
+        spy.assert_not_called()
+
+    def test_the_fixed_command_runs_one_delivery(self) -> None:
+        request = json.dumps(self.envelope())
+        with mock.patch.object(CW, "deliver_local", return_value=WR.Delivery("sent", "socket")) as spy:
+            code, out, _ = self.gate(CW.REMOTE_COMMAND, request)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["delivery"]["outcome"], "sent")
+        spy.assert_called_once()
+
+    def test_anything_else_is_refused_and_never_evaluated(self) -> None:
+        marker = Path(self.tmp) / "marker"
+        hostile = [
+            None,
+            "",
+            " true",
+            "true ",
+            "TRUE",
+            "/bin/true",
+            "true; touch %s" % marker,
+            "true && touch %s" % marker,
+            "$(touch %s)" % marker,
+            "simple-chat wake-deliver",
+            CW.REMOTE_COMMAND + " ",
+            CW.REMOTE_COMMAND + "; touch %s" % marker,
+            CW.REMOTE_COMMAND + "\n",
+            "sh -c 'touch %s'" % marker,
+            "scp -t /tmp",
+        ]
+        for command in hostile:
+            with self.subTest(command=command):
+                with (
+                    mock.patch.object(CW, "wake_deliver_main") as spy,
+                    mock.patch.object(subprocess, "run") as run,
+                    mock.patch.object(subprocess, "Popen") as popen,
+                    mock.patch.object(os, "system") as system,
+                ):
+                    code, out, err = self.gate(command)
+                self.assertEqual(code, CW.GATE_REFUSED)
+                self.assertEqual(out, "")
+                self.assertIn("not allowed", err)
+                for called in (spy, run, popen, system):
+                    called.assert_not_called()
+                self.assertFalse(marker.exists())
+
+    def test_a_refusal_is_never_read_as_an_unreachable_host(self) -> None:
+        self.assertNotEqual(CW.GATE_REFUSED, CW.SSH_UNREACHABLE)
+
+    def test_the_gate_accepts_exactly_what_the_router_sends(self) -> None:
+        self.deliver_remote()
+        preflight, delivery = self.runs[0][0][-1], self.runs[1][0][-1]
+        self.assertEqual(self.gate(preflight)[0], 0)
+        with mock.patch.object(CW, "wake_deliver_main", return_value=0) as spy:
+            self.assertEqual(self.gate(delivery)[0], 0)
+        spy.assert_called_once()
+
+    def test_simple_chat_dispatches_the_gate(self) -> None:
+        script = Path(CW.__file__).resolve().parents[1] / "simple-chat"
+        for command, want in (("true", 0), ("true; id", CW.GATE_REFUSED)):
+            with self.subTest(command=command):
+                env = {
+                    "HOME": self.tmp,
+                    "PATH": os.environ.get("PATH", ""),
+                    "SSH_ORIGINAL_COMMAND": command,
+                }
+                done = subprocess.run(
+                    [sys.executable, str(script), "wake-ssh-gate"],
+                    env=env,
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    timeout=60,
+                    check=False,
+                )
+                self.assertEqual(done.returncode, want, done.stderr)
 
 
 class Exclude(ClaudeBase):

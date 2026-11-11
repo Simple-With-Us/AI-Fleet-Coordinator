@@ -195,6 +195,9 @@ COMMAND_TEXT = (
     "seat's rules."
 )
 
+# The settings a router reads and what each one is if nothing sets it.  Their values come from
+# Infisical through wake_settings;  fleet_knobs/registry.py holds the same defaults, and a test keeps
+# the two equal.
 ROUTER_DEFAULTS: dict[str, Any] = {
     # Off until someone arms it:  with this false the router picks and receipts, and delivers nothing.
     "delivery_enabled": False,
@@ -443,10 +446,18 @@ def _read_json(path: Path) -> Any:
 def load_config(
     path: Path, defaults: Mapping[str, Any], *, required: bool = False
 ) -> dict[str, Any]:
-    """The defaults overlaid with a JSON file.  A file named explicitly must exist.  A file that is
-    there must parse, name only known keys and match each default's type:  an unreadable or mistyped
-    config is a refusal that names the path, never a quiet run on defaults."""
-    config = dict(defaults)
+    """The defaults overlaid with a JSON file.  It widens as freely as it narrows, so nothing that
+    runs a router reads its settings this way:  wake_settings lets a local file only narrow."""
+    return {**defaults, **read_local_config(path, defaults, required=required)}
+
+
+def read_local_config(
+    path: Path, defaults: Mapping[str, Any], *, required: bool = False
+) -> dict[str, Any]:
+    """Only what a JSON file sets.  A file named explicitly must exist.  A file that is there must
+    parse, name only known keys and match each default's type:  an unreadable or mistyped config is
+    a refusal that names the path, never a quiet run on defaults."""
+    config: dict[str, Any] = {}
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -596,23 +607,7 @@ class Router:
     # ---- the pick ---------------------------------------------------------------------------
 
     def _valid(self, row: Mapping[str, Any]) -> Target | None:
-        sid = str(row.get("native_session_id") or "")
-        if not self.platform.target_re.fullmatch(sid):
-            return None  # a crafted row can never steer an argv token a child reads as a flag
-        if str(row.get("seat") or self.platform.seat).upper() != self.platform.seat:
-            return None
-        letter = str(row.get("label") or row.get("letter") or "")
-        generation = row.get("generation")
-        if not letter or type(generation) is not int or generation < 1:
-            return None  # the check before delivery needs both, so it could never pass
-        return Target(
-            session_id=sid,
-            letter=letter,
-            host=str(row.get("verified_host") or ""),
-            title=str(row.get("title") or ""),
-            thread_link=str(row.get("thread_link") or ""),
-            generation=generation,
-        )
+        return target_from_row(row, self.platform.seat, self.platform.target_re)
 
     def _excluded(self, targets: list[Target]) -> set[str]:
         return self.platform.exclude(targets) if self.platform.exclude and targets else set()
@@ -1081,12 +1076,7 @@ class Router:
         )
         if "error" in answer:
             return None
-        current = self._valid(answer) if answer.get("found") and not _closed(answer) else None
-        return (
-            current is not None
-            and current.session_id == target.session_id
-            and current.generation == target.generation
-        )
+        return holds(answer, target, self.platform.seat, self.platform.target_re)
 
     def _released(self, entry: dict[str, Any], pick: Pick, wake: Wake) -> None:
         """The picked chat is gone or re-registered, and nothing was delivered.  A wake addressed
@@ -1267,6 +1257,39 @@ class Router:
 
 def _closed(row: Mapping[str, Any]) -> bool:
     return bool(row.get("retired_at") or row.get("closed_at") or row.get("state") == "closed")
+
+
+def target_from_row(row: Mapping[str, Any], seat: str, target_re: Pattern[str]) -> Target | None:
+    """The chat a registry row describes, or None if it is not one a wake can go to."""
+    sid = str(row.get("native_session_id") or "")
+    if not target_re.fullmatch(sid):
+        return None  # a crafted row can never steer an argv token a child reads as a flag
+    if str(row.get("seat") or seat).upper() != seat:
+        return None
+    letter = str(row.get("label") or row.get("letter") or "")
+    generation = row.get("generation")
+    if not letter or type(generation) is not int or generation < 1:
+        return None  # the check before delivery needs both, so it could never pass
+    return Target(
+        session_id=sid,
+        letter=letter,
+        host=str(row.get("verified_host") or ""),
+        title=str(row.get("title") or ""),
+        thread_link=str(row.get("thread_link") or ""),
+        generation=generation,
+    )
+
+
+def holds(answer: Mapping[str, Any], target: Target, seat: str, target_re: Pattern[str]) -> bool:
+    """Whether a registry `resolve` answer still has this letter open on this session at this
+    generation.  The caller has already ruled out an answer that is an error."""
+    live = answer.get("found") and not _closed(answer)
+    current = target_from_row(answer, seat, target_re) if live else None
+    return (
+        current is not None
+        and current.session_id == target.session_id
+        and current.generation == target.generation
+    )
 
 
 def _session_of(entry: Mapping[str, Any]) -> str:
