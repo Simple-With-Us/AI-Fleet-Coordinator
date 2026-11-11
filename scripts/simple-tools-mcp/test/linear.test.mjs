@@ -772,6 +772,15 @@ test("linear_comment never puts a second seat tag in front of the seat's own int
   }
 });
 
+test("linear_comment puts a supplied session inside the seat's own intro, not in a second tag (AFC-692)", async () => {
+  for (const [i, body] of ["[GROK-WEB 📁AFC] status", "[GROK-WEB·stale999 📁AFC] status"].entries()) {
+    const { tools, fake } = harness();
+    fake.addIssue({ id: `issue-sess-${i}`, identifier: `AFC-68${i}` });
+    ok(await tools.call("linear_comment", { id: `AFC-68${i}`, body, session: "abcd1234-ffff" }), "linear_comment");
+    assert.equal(fake.mutations().at(-1).body.variables.input.body, "[GROK-WEB·abcd1234 📁AFC] status", body);
+  }
+});
+
 test("linear_comment logs GraphQL metadata when Linear still refuses (scrubbed, no body)", async () => {
   const logs = [];
   const fake = new FakeLinear();

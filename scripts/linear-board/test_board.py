@@ -1734,11 +1734,20 @@ class OwnIntroTagTests(unittest.TestCase):
             "👀 [GB-PLUMBER 📁AFC, OPS] quiet",
             "[GB-PLUMBER] PR opened",
             "[GB-PLUMBER: HH.1.C 📁AFC] status",
-            "[GB-PLUMBER·abcd1234 📁AFC] status",
         ):
             with self.subTest(text=text):
-                self.assertEqual(cli.tagged("GB-PLUMBER", ["abcd-1234-x"], text), text)
+                self.assertEqual(cli.tagged("GB-PLUMBER", None, text), text)
                 self.assertTrue(cli.comment_body("GB-PLUMBER", None, text).startswith(text))
+
+    def test_a_supplied_session_replaces_the_intro_session_without_a_second_tag(self):
+        cli = load_cli()
+        for text, want in (
+            ("[GB-PLUMBER 📁AFC] status", "[GB-PLUMBER·abcd1234 📁AFC] status"),
+            ("[GB-PLUMBER·stale999 📁AFC] status", "[GB-PLUMBER·abcd1234 📁AFC] status"),
+            ("👀 [GB-PLUMBER] note", "👀 [GB-PLUMBER·abcd1234] note"),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(cli.tagged("GB-PLUMBER", ["abcd-1234-ffff"], text), want)
 
     def test_untagged_and_foreign_bodies_keep_the_seat_tag(self):
         cli = load_cli()

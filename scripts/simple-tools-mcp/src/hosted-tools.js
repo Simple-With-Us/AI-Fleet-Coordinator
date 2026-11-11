@@ -1961,7 +1961,14 @@ export class HostedTools {
    * hosted Linear write shares one user and the tag is the attribution. */
   linearBody(text, session) {
     const prefix = tagPrefix(this.seat, sessionTag(session));
-    const body = ownIntro(prefix, text) ? text : `${prefix}] ${text}`;
+    const own = ownIntro(prefix, text);
+    let body = own ? text : `${prefix}] ${text}`;
+    if (own && prefix.includes("·")) {
+      // As composeBody:  the supplied session is operational attribution and replaces a stale one in the intro.
+      const seatEnd = own.intro.indexOf("[") + 1 + this.seat.length;
+      const suffix = own.intro.slice(seatEnd).replace(/^·[^\s:→\]]*/u, "");
+      body = `${own.intro.slice(0, seatEnd)}${prefix.slice(prefix.indexOf("·"))}${suffix}]${own.rest}`;
+    }
     // Linear records keep their ISO dates:  only the sentence gap is fixed here.  The fleet date format is a Zulip
     // rule, and a Linear issue that says "Blocked until 2026-11-02" means that date there, not "Mon, Nov 2".
     return neutralizeLinearMentions(sentenceGap(body));

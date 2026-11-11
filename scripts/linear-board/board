@@ -1314,8 +1314,16 @@ def opens_with_own_intro(seat: str, text: str) -> bool:
 
 
 def tagged(seat: str, sessions: list[str] | None, text: str) -> str:
-    """The seat tag in front of `text`, unless the seat already wrote its own intro (AFC-692)."""
-    return text if opens_with_own_intro(seat, text) else f"{seat_tag(seat, sessions)} {text}"
+    """The seat tag in front of `text`, unless the seat already wrote its own intro (AFC-692).  As the
+    hosted composeBody, a supplied session replaces a stale one inside that intro."""
+    if not opens_with_own_intro(seat, text):
+        return f"{seat_tag(seat, sessions)} {text}"
+    tag = seat_tag(seat, sessions)
+    if "·" not in tag:
+        return text
+    start = text.index("[" + seat) + 1 + len(seat)
+    rest = re.sub(r"^·[^\s:→\]]*", "", text[start:])
+    return text[:start] + tag[len(seat) + 1 : -1] + rest
 
 
 # ----------------------------------------------------------------- input files and flat labels
