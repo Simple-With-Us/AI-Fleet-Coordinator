@@ -281,6 +281,9 @@
   "wf_branch_rules": [
     "/repos/{...}/rules/branches/{...}"
   ],
+  "wf_rulesets": [
+    "/repos/{...}/rulesets"
+  ],
   "wf_repo_get": [
     "/repos/{...}"
   ],

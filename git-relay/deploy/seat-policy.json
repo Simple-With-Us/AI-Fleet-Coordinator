@@ -1,5 +1,5 @@
 {
-  "//": "The reviewed git-relay seat policy (README, Policy).  seat_policy.py renders it into GIT_RELAY_SEATS_JSON and installs it on the relay host.  Every seat signs in with its own admin-minted ST-MCP bearer (auth shared) and acts as its own GitHub App, so no entry holds a token.  The App slug of each identity is the swu- App whose GitHub description names that seat;  five are not swu-<identity>:  MA is swu-rob, GROK is swu-grok-build, MM is swu-minimax, JET-CHAT is swu-jet, AMP is swu-amp-agent (swu-amp is reserved for an account).  JET-CHAT is the full Jet login on swu-jet; the original JET connection is wake-only and has no Git entry (Q7).  AMP signs in with its own bearer and acts as its own swu-amp-agent App.  Repositories: 2026-11-01 every-repo widening:  every active seat reaches Simple-With-Us/* and jaywedgeworth22/* - the two verified namespaces - via the owner/* form the relay engine already matches;  the 18-repo fleet list and Echo's narrower set are retired.  This file is reviewed SOURCE, not live authority: the live seats file can differ (it carries BF-BUILDER and the r2 wf_file_patch grants, which this file omits), so compare against live before any install.  Capabilities follow the reviewed rollout as of the base commit:  each active seat carries a 179-action list (8 relay actions, including git_read, plus 171 workflow actions, including wf_pr_close and wf_pr_reopen) and the live 10-key mint ceiling;  swu-amp-agent and swu-wise keep the host's exact live action ordering through their own pinned profiles (same set, ceiling and repositories as fleet).  BF-BUILDER is dropped (owner 2026-11-01 4:41pm CT:  BF-ENGINEER replaced it):  it has no entry, so the relay authenticates no BF-BUILDER bearer.  Every GB seat and every BF bot (BF-COMPILER, BF-DEPLOYER, BF-DESIGNER, BF-DIRECTOR, BF-ENGINEER, BF-FIXER, BF-HOUSEKEEPER, BF-MONITOR, BF-ORACLE, BF-PLUMBER, BF-PUBLISHER, BF-TRADER) is on the fleet profile.  Identity, rate and review gates are unchanged.",
+  "//": "The reviewed git-relay seat policy (README, Policy).  seat_policy.py renders it into GIT_RELAY_SEATS_JSON and installs it on the relay host.  Every seat signs in with its own admin-minted ST-MCP bearer (auth shared) and acts as its own GitHub App, so no entry holds a token.  The App slug of each identity is the swu- App whose GitHub description names that seat;  five are not swu-<identity>:  MA is swu-rob, GROK is swu-grok-build, MM is swu-minimax, JET-CHAT is swu-jet, AMP is swu-amp-agent (swu-amp is reserved for an account).  JET-CHAT is the full Jet login on swu-jet; the original JET connection is wake-only and has no Git entry (Q7).  AMP signs in with its own bearer and acts as its own swu-amp-agent App.  Repositories: 2026-11-01 every-repo widening:  every active seat reaches Simple-With-Us/* and jaywedgeworth22/* - the two verified namespaces - via the owner/* form the relay engine already matches;  the 18-repo fleet list and Echo's narrower set are retired.  This file is reviewed SOURCE, not live authority: the live seats file can differ (it carries BF-BUILDER and the r2 wf_file_patch grants, which this file omits), so compare against live before any install.  Capabilities follow the reviewed rollout as of the base commit:  each active seat carries a 180-action list (8 relay actions, including git_read, plus 172 workflow actions, including wf_pr_close, wf_pr_reopen and the metadata-read rule reads wf_branch_rules and wf_rulesets) and the live 10-key mint ceiling;  swu-amp-agent and swu-wise keep the host's exact live action ordering through their own pinned profiles (same set, ceiling and repositories as fleet).  BF-BUILDER is dropped (owner 2026-11-01 4:41pm CT:  BF-ENGINEER replaced it):  it has no entry, so the relay authenticates no BF-BUILDER bearer.  Every GB seat and every BF bot (BF-COMPILER, BF-DEPLOYER, BF-DESIGNER, BF-DIRECTOR, BF-ENGINEER, BF-FIXER, BF-HOUSEKEEPER, BF-MONITOR, BF-ORACLE, BF-PLUMBER, BF-PUBLISHER, BF-TRADER) is on the fleet profile.  Identity, rate and review gates are unchanged.",
   "profiles": {
     "fleet": {
       "actions": [
@@ -19,7 +19,6 @@
         "wf_branch_create",
         "wf_branch_delete",
         "wf_branch_get",
-        "wf_branch_rules",
         "wf_branch_update",
         "wf_branches",
         "wf_check_create",
@@ -181,7 +180,9 @@
         "wf_git_commit_create",
         "wf_issue_dependency_add",
         "wf_issue_dependency_remove",
-        "wf_installation_metadata"
+        "wf_installation_metadata",
+        "wf_branch_rules",
+        "wf_rulesets"
       ],
       "mint_permissions": {
         "actions": "write",
@@ -207,7 +208,7 @@
       "repos": "fleet"
     },
     "jet": {
-      "//": "Full Jet login resolves to the fleet set exactly;  the profile survives so the seat entry stays stable.  Its earlier wf_repo_get/wf_pr_get extras are inside the fleet's 179-action list.",
+      "//": "Full Jet login resolves to the fleet set exactly;  the profile survives so the seat entry stays stable.  Its earlier wf_repo_get/wf_pr_get extras are inside the fleet's 180-action list.",
       "actions": "fleet",
       "mint_permissions": "fleet",
       "repos": "fleet"
@@ -373,7 +374,6 @@
         "wf_commit_get",
         "wf_compare",
         "wf_branch_get",
-        "wf_branch_rules",
         "wf_repo_get",
         "wf_installation_metadata",
         "wf_labels",
@@ -393,7 +393,9 @@
         "wf_release_asset_delete",
         "wf_job_log",
         "wf_run_logs",
-        "wf_artifact_download"
+        "wf_artifact_download",
+        "wf_branch_rules",
+        "wf_rulesets"
       ],
       "mint_permissions": "fleet",
       "repos": "fleet"
@@ -417,7 +419,6 @@
         "wf_branch_create",
         "wf_branch_delete",
         "wf_branch_get",
-        "wf_branch_rules",
         "wf_branch_update",
         "wf_branches",
         "wf_check_create",
@@ -579,7 +580,9 @@
         "wf_git_tree_create",
         "wf_git_commit_create",
         "wf_issue_dependency_add",
-        "wf_issue_dependency_remove"
+        "wf_issue_dependency_remove",
+        "wf_branch_rules",
+        "wf_rulesets"
       ],
       "mint_permissions": "fleet",
       "repos": "fleet"

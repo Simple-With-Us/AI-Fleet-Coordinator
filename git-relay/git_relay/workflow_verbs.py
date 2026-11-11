@@ -220,7 +220,6 @@ SPECS = {
     "wf_commit_get": ({"contents": "read"}, False),
     "wf_compare": ({"contents": "read"}, False),
     "wf_branch_get": ({"contents": "read"}, False),
-    "wf_branch_rules": ({"contents": "read"}, False),
     "wf_repo_get": ({"metadata": "read"}, False),
     "wf_installation_metadata": ({"metadata": "read"}, False),
     "wf_repo_hooks": ({"repository_hooks": "read"}, False),
@@ -228,6 +227,11 @@ SPECS = {
     "wf_org_installations": ({"organization_administration": "read"}, False),
     "wf_repo_list": ({"metadata": "read"}, False),
     "wf_pr_search": ({"pull_requests": "read"}, False),
+    # Rulesets that apply to a branch, and the repository's ruleset list:  both are
+    # GitHub metadata reads.  Classic branch protection needs administration:read,
+    # which the fleet ceiling does not hold, so it has no verb here.
+    "wf_branch_rules": ({"metadata": "read"}, False),
+    "wf_rulesets": ({"metadata": "read"}, False),
     "wf_labels": ({"issues": "read"}, False),
     "wf_workflows": ({"actions": "read"}, False),
     "wf_run_get": ({"actions": "read"}, False),
@@ -491,7 +495,6 @@ _NEW_READS = frozenset(
         "wf_commit_get",
         "wf_compare",
         "wf_branch_get",
-        "wf_branch_rules",
         "wf_repo_get",
         "wf_labels",
         "wf_workflows",
@@ -502,348 +505,10 @@ _NEW_READS = frozenset(
         "wf_org_installations",
         "wf_repo_list",
         "wf_pr_search",
+        "wf_branch_rules",
+        "wf_rulesets",
     }
 )
-
-
-# GitHub's branch-rules read (GET /repos/{owner}/{repo}/rules/branches/{branch}).
-# The receipt keeps the rule type and its parameters.  Ruleset ids, sources and
-# any other upstream field stay out.  An unknown type or parameter fails the
-# receipt, so a blocking rule is never dropped to make the list look complete.
-_SAFE_INT = 9007199254740991
-_BRANCH_RULE_TYPES = frozenset(
-    {
-        "creation",
-        "update",
-        "deletion",
-        "required_linear_history",
-        "required_signatures",
-        "non_fast_forward",
-        "pull_request",
-        "required_status_checks",
-        "required_deployments",
-        "merge_queue",
-        "commit_message_pattern",
-        "commit_author_email_pattern",
-        "committer_email_pattern",
-        "branch_name_pattern",
-        "tag_name_pattern",
-        "workflows",
-        "code_scanning",
-        "file_path_restriction",
-        "file_extension_restriction",
-        "max_file_path_length",
-        "max_file_size",
-    }
-)
-_PARAMETERLESS_RULES = frozenset(
-    {
-        "creation",
-        "deletion",
-        "required_linear_history",
-        "required_signatures",
-        "non_fast_forward",
-    }
-)
-_PATTERN_RULES = frozenset(
-    {
-        "commit_message_pattern",
-        "commit_author_email_pattern",
-        "committer_email_pattern",
-        "branch_name_pattern",
-        "tag_name_pattern",
-    }
-)
-_PATTERN_OPERATORS = frozenset({"starts_with", "ends_with", "contains", "regex"})
-_MERGE_METHODS = frozenset({"merge", "squash", "rebase"})
-_QUEUE_METHODS = frozenset({"MERGE", "SQUASH", "REBASE"})
-_QUEUE_GROUPING = frozenset({"ALLGREEN", "HEADGREEN"})
-_SCAN_LEVELS = frozenset({"none", "errors", "errors_and_warnings", "all"})
-_REVIEWER_TYPES = frozenset({"User", "Team"})
-_PULL_KEYS = frozenset(
-    {
-        "required_approving_review_count",
-        "dismiss_stale_reviews_on_push",
-        "require_code_owner_review",
-        "require_last_push_approval",
-        "required_review_thread_resolution",
-        "allowed_merge_methods",
-        "required_reviewers",
-    }
-)
-_STATUS_KEYS = frozenset(
-    {
-        "strict_required_status_checks_policy",
-        "do_not_enforce_on_create",
-        "required_status_checks",
-    }
-)
-_QUEUE_KEYS = frozenset(
-    {
-        "check_response_timeout_minutes",
-        "grouping_strategy",
-        "max_entries_to_build",
-        "max_entries_to_merge",
-        "merge_method",
-        "min_entries_to_merge",
-        "min_entries_to_merge_wait_minutes",
-    }
-)
-
-
-def _rule_unverified():
-    raise RelayGitHubError(502, "branch rule unverifiable")
-
-
-def _rule_text(value, limit):
-    if (
-        not isinstance(value, str)
-        or not value
-        or any(ord(c) < 32 or ord(c) == 127 for c in value)
-    ):
-        _rule_unverified()
-    try:
-        size = len(value.encode("utf-8"))
-    except UnicodeEncodeError:
-        _rule_unverified()
-    if size > limit or find_secret(value) or re.search(PROVIDER_PATTERN, value):
-        _rule_unverified()
-    return value
-
-
-def _rule_bool(value):
-    if type(value) is not bool:
-        _rule_unverified()
-    return value
-
-
-def _rule_int(value, low, high):
-    if type(value) is not int or isinstance(value, bool) or not low <= value <= high:
-        _rule_unverified()
-    return value
-
-
-def _rule_keys(params, allowed, required=()):
-    if not isinstance(params, dict) or set(params) - set(allowed):
-        _rule_unverified()
-    if any(key not in params for key in required):
-        _rule_unverified()
-
-
-def _rule_strings(value, limit):
-    if not isinstance(value, list) or len(value) > 50:
-        _rule_unverified()
-    return [_rule_text(item, limit) for item in value]
-
-
-def _rule_enum(value, allowed):
-    if value not in allowed:
-        _rule_unverified()
-    return value
-
-
-def _project_rule_parameters(rule_type, params):
-    if params is None:
-        params = {}
-    if rule_type in _PARAMETERLESS_RULES:
-        if params != {}:
-            _rule_unverified()
-        return {}
-    if rule_type == "update":
-        _rule_keys(params, {"update_allows_fetch_and_merge"})
-        out = {}
-        if "update_allows_fetch_and_merge" in params:
-            out["update_allows_fetch_and_merge"] = _rule_bool(
-                params["update_allows_fetch_and_merge"]
-            )
-        return out
-    if rule_type == "pull_request":
-        _rule_keys(params, _PULL_KEYS)
-        out = {}
-        if "required_approving_review_count" in params:
-            out["required_approving_review_count"] = _rule_int(
-                params["required_approving_review_count"], 0, 100
-            )
-        for key in (
-            "dismiss_stale_reviews_on_push",
-            "require_code_owner_review",
-            "require_last_push_approval",
-            "required_review_thread_resolution",
-        ):
-            if key in params:
-                out[key] = _rule_bool(params[key])
-        if "allowed_merge_methods" in params:
-            methods = params["allowed_merge_methods"]
-            if (
-                not isinstance(methods, list)
-                or len(methods) > 3
-                or any(method not in _MERGE_METHODS for method in methods)
-            ):
-                _rule_unverified()
-            out["allowed_merge_methods"] = list(methods)
-        if "required_reviewers" in params:
-            reviewers = params["required_reviewers"]
-            if not isinstance(reviewers, list) or len(reviewers) > 50:
-                _rule_unverified()
-            cleaned = []
-            for reviewer in reviewers:
-                if not isinstance(reviewer, dict) or set(reviewer) != {"type", "id"}:
-                    _rule_unverified()
-                cleaned.append(
-                    {
-                        "type": _rule_enum(reviewer["type"], _REVIEWER_TYPES),
-                        "id": _rule_int(reviewer["id"], 1, _SAFE_INT),
-                    }
-                )
-            out["required_reviewers"] = cleaned
-        return out
-    if rule_type == "required_status_checks":
-        _rule_keys(params, _STATUS_KEYS)
-        out = {}
-        for key in ("strict_required_status_checks_policy", "do_not_enforce_on_create"):
-            if key in params:
-                out[key] = _rule_bool(params[key])
-        if "required_status_checks" in params:
-            checks = params["required_status_checks"]
-            if not isinstance(checks, list) or len(checks) > 50:
-                _rule_unverified()
-            cleaned = []
-            for check in checks:
-                if (
-                    not isinstance(check, dict)
-                    or set(check) - {"context", "integration_id"}
-                    or "context" not in check
-                ):
-                    _rule_unverified()
-                row = {"context": _rule_text(check["context"], 255)}
-                if "integration_id" in check and check["integration_id"] is not None:
-                    row["integration_id"] = _rule_int(check["integration_id"], 1, _SAFE_INT)
-                elif "integration_id" in check:
-                    row["integration_id"] = None
-                cleaned.append(row)
-            out["required_status_checks"] = cleaned
-        return out
-    if rule_type == "required_deployments":
-        _rule_keys(params, {"required_deployment_environments"}, ("required_deployment_environments",))
-        return {
-            "required_deployment_environments": _rule_strings(
-                params["required_deployment_environments"], 255
-            )
-        }
-    if rule_type == "merge_queue":
-        _rule_keys(params, _QUEUE_KEYS)
-        out = {}
-        for key in (
-            "check_response_timeout_minutes",
-            "max_entries_to_build",
-            "max_entries_to_merge",
-            "min_entries_to_merge",
-            "min_entries_to_merge_wait_minutes",
-        ):
-            if key in params:
-                out[key] = _rule_int(params[key], 0, 100000)
-        if "grouping_strategy" in params:
-            out["grouping_strategy"] = _rule_enum(params["grouping_strategy"], _QUEUE_GROUPING)
-        if "merge_method" in params:
-            out["merge_method"] = _rule_enum(params["merge_method"], _QUEUE_METHODS)
-        return out
-    if rule_type in _PATTERN_RULES:
-        _rule_keys(params, {"operator", "pattern", "negate", "name"}, ("operator", "pattern"))
-        out = {
-            "operator": _rule_enum(params["operator"], _PATTERN_OPERATORS),
-            "pattern": _rule_text(params["pattern"], 512),
-        }
-        if "negate" in params:
-            out["negate"] = _rule_bool(params["negate"])
-        if "name" in params:
-            out["name"] = _rule_text(params["name"], 256)
-        return out
-    if rule_type == "workflows":
-        _rule_keys(params, {"do_not_enforce_on_create", "workflows"}, ("workflows",))
-        workflows = params["workflows"]
-        if not isinstance(workflows, list) or len(workflows) > 50:
-            _rule_unverified()
-        cleaned = []
-        for workflow in workflows:
-            if (
-                not isinstance(workflow, dict)
-                or set(workflow) - {"path", "repository_id", "ref"}
-                or "path" not in workflow
-            ):
-                _rule_unverified()
-            row = {"path": _rule_text(workflow["path"], 1024)}
-            if "repository_id" in workflow:
-                row["repository_id"] = _rule_int(workflow["repository_id"], 1, _SAFE_INT)
-            if "ref" in workflow:
-                row["ref"] = _rule_text(workflow["ref"], 200)
-            cleaned.append(row)
-        out = {"workflows": cleaned}
-        if "do_not_enforce_on_create" in params:
-            out["do_not_enforce_on_create"] = _rule_bool(params["do_not_enforce_on_create"])
-        return out
-    if rule_type == "code_scanning":
-        _rule_keys(params, {"code_scanning_tools"}, ("code_scanning_tools",))
-        tools = params["code_scanning_tools"]
-        if not isinstance(tools, list) or len(tools) > 50:
-            _rule_unverified()
-        cleaned = []
-        for tool in tools:
-            if (
-                not isinstance(tool, dict)
-                or set(tool) - {"tool", "alerts_threshold", "security_alerts_threshold"}
-                or "tool" not in tool
-            ):
-                _rule_unverified()
-            row = {"tool": _rule_text(tool["tool"], 100)}
-            for key in ("alerts_threshold", "security_alerts_threshold"):
-                if key in tool:
-                    row[key] = _rule_enum(tool[key], _SCAN_LEVELS)
-            cleaned.append(row)
-        return {"code_scanning_tools": cleaned}
-    if rule_type == "file_path_restriction":
-        _rule_keys(params, {"restricted_file_paths"}, ("restricted_file_paths",))
-        return {"restricted_file_paths": _rule_strings(params["restricted_file_paths"], 512)}
-    if rule_type == "file_extension_restriction":
-        _rule_keys(params, {"restricted_file_extensions"}, ("restricted_file_extensions",))
-        return {
-            "restricted_file_extensions": _rule_strings(params["restricted_file_extensions"], 32)
-        }
-    if rule_type == "max_file_path_length":
-        _rule_keys(params, {"max_file_path_length"}, ("max_file_path_length",))
-        return {"max_file_path_length": _rule_int(params["max_file_path_length"], 1, 4096)}
-    if rule_type == "max_file_size":
-        _rule_keys(params, {"max_file_size"}, ("max_file_size",))
-        return {"max_file_size": _rule_int(params["max_file_size"], 1, _SAFE_INT)}
-    _rule_unverified()
-
-
-def project_branch_rules(data):
-    """Type and parameters only.  Extra upstream fields are not copied."""
-    rows = _arr(data)
-    if len(rows) > 50:
-        _rule_unverified()
-    rules = []
-    for row in rows:
-        if not isinstance(row, dict):
-            _rule_unverified()
-        rule_type = row.get("type")
-        if rule_type not in _BRANCH_RULE_TYPES:
-            _rule_unverified()
-        rules.append(
-            {
-                "type": rule_type,
-                "parameters": _project_rule_parameters(rule_type, row.get("parameters")),
-            }
-        )
-    return {"rules": rules}
-
-
-def _stored_branch_rule(rule):
-    if not isinstance(rule, dict) or set(rule) != {"type", "parameters"}:
-        return False
-    if rule["type"] not in _BRANCH_RULE_TYPES:
-        return False
-    return _project_rule_parameters(rule["type"], rule["parameters"]) == rule["parameters"]
 
 
 # The bound for one raw-JSON read answer.  It matches the hosted front's own response bound
@@ -1074,6 +739,42 @@ def _validate_read(action, result):
             "complete": boolean,
             "page": positive,
         },
+        "wf_branch_rules": {
+            "branch": lambda v: text(v) and bool(v),
+            "rules": lambda v: seq(
+                v,
+                lambda x: fields(
+                    x,
+                    {
+                        "type": lambda y: text(y) and bool(y),
+                        "ruleset_id": positive,
+                        "ruleset_source_type": text,
+                        "ruleset_source": text,
+                        "parameters": lambda y: y is None or isinstance(y, dict),
+                    },
+                ),
+            ),
+            "page": positive,
+            "has_more": boolean,
+        },
+        "wf_rulesets": {
+            "rulesets": lambda v: seq(
+                v,
+                lambda x: fields(
+                    x,
+                    {
+                        "id": positive,
+                        "name": lambda y: text(y) and bool(y),
+                        "target": lambda y: y is None or text(y),
+                        "source_type": text,
+                        "source": text,
+                        "enforcement": text,
+                    },
+                ),
+            ),
+            "page": positive,
+            "has_more": boolean,
+        },
         "wf_issue_comments": {
             "comments": lambda v: seq(v, comment),
             "complete": boolean,
@@ -1099,11 +800,6 @@ def _validate_read(action, result):
                     "commit": lambda x: fields(x, {"sha": sha}),
                 },
             )
-        },
-        "wf_branch_rules": {
-            "rules": lambda v: isinstance(v, list)
-            and len(v) <= 50
-            and all(_stored_branch_rule(item) for item in v)
         },
         "wf_repo_get": {
             "repository": lambda v: fields(
@@ -1213,6 +909,15 @@ _HOOK_SECRET_HOSTS = (
     "api.telegram.org",
 )
 _HOOK_TOKEN_SEGMENT = re.compile(r"[A-Za-z0-9_~.-]{20,}")
+
+# The merge settings wf_repo_get copies from its settings-read response, and nothing else.
+_REPO_MERGE_SETTINGS = (
+    "allow_merge_commit",
+    "allow_squash_merge",
+    "allow_rebase_merge",
+    "allow_auto_merge",
+    "delete_branch_on_merge",
+)
 
 
 def _hook_url_carries_secret(url):
@@ -4994,17 +4699,6 @@ class WorkflowVerbs:
         data = self._get(f"/repos/{repo}/branches/{branch}")
         return {"branch": _obj(data)}
 
-    def wf_branch_rules(self, repo, args):
-        _only(
-            args,
-            (
-                "repo",
-                "branch",
-            ),
-        )
-        branch = quote(_ref(args, "branch"), safe="")
-        return project_branch_rules(self._get(f"/repos/{repo}/rules/branches/{branch}"))
-
     def wf_installation_metadata(self, repo, args):
         _only(args, ("repo",))
         # check_shape stops here without credentials. Runtime dispatch uses the
@@ -5012,10 +4706,150 @@ class WorkflowVerbs:
         self._get("/installation-metadata-shape-only")
         raise Refused("installation metadata requires authenticated dispatcher")
 
+    def _repo_settings_bearer(self, repo):
+        """Bearer for wf_repo_get that lets GitHub show the merge settings.
+
+        GitHub leaves allow_merge_commit, allow_squash_merge, allow_rebase_merge,
+        allow_auto_merge and delete_branch_on_merge out of GET /repos/{repo} unless the
+        token can read the repository's settings (Administration read).  The least
+        permission for wf_repo_get is metadata:read, so those keys were absent (callers
+        saw null).  When the seat's ceiling already holds administration, mint
+        metadata + administration read for this one call;  otherwise, or when that mint
+        fails, keep the least-permission bearer and the keys stay absent.  This never
+        exceeds the seat's ceiling.
+        """
+        elevation = getattr(self, "_elevation", None)
+        if elevation is None:
+            return self.bearer
+        minter, app_slug, ceiling = elevation
+        required = {"metadata": "read", "administration": "read"}
+        if _perm_within_ceiling(required, ceiling):
+            return self.bearer
+        try:
+            token, _ = minter.token_for(app_slug, repo, required)
+        except Exception:
+            return self.bearer
+        return token or self.bearer
+
     def wf_repo_get(self, repo, args):
         _only(args, ("repo",))
-        data = self._get(f"/repos/{repo}")
-        return {"repository": _obj(data)}
+        # The repository object always comes from the least-permission (metadata:read)
+        # token.  The settings-read token is used for one more read, and only the five
+        # merge settings are copied from it:  any other field GitHub shows only to a
+        # settings reader (security_and_analysis, a filled temp_clone_token, ...) is
+        # discarded with that response.
+        data = dict(_obj(self._get(f"/repos/{repo}")))
+        bearer = self._repo_settings_bearer(repo)
+        if bearer is not self.bearer:
+            try:
+                wide = self.client._call("GET", f"/repos/{repo}", None, bearer=bearer)
+            except RelayGitHubError:
+                wide = None
+            if isinstance(wide, dict) and wide.get("id") == data.get("id"):
+                for key in _REPO_MERGE_SETTINGS:
+                    if type(wide.get(key)) is bool:
+                        data[key] = wide[key]
+        # temp_clone_token is a short-lived clone credential;  it never leaves the relay.
+        if data.get("temp_clone_token"):
+            del data["temp_clone_token"]
+        return {"repository": data}
+
+    def wf_branch_rules(self, repo, args):
+        """Rules from every active ruleset that applies to one branch.
+
+        GET /repos/{repo}/rules/branches/{branch}:  each row names the rule type, its
+        parameters (for a pull_request rule, allowed_merge_methods and the review
+        requirements) and the ruleset that supplies it.  Classic branch protection is
+        not included;  it needs administration:read.
+        """
+        _only(args, ("repo", "branch", "per_page", "page"))
+        name = _ref(args, "branch")
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        branch = quote(name, safe="")
+        data = self._get(f"/repos/{repo}/rules/branches/{branch}?per_page={limit}&page={page}")
+        if not isinstance(data, list) or len(data) > limit:
+            raise RelayGitHubError(502, "branch rules page unverifiable")
+        rules = []
+        for item in data:
+            params = item.get("parameters") if isinstance(item, dict) else None
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("type"), str)
+                or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", item["type"])
+                or type(item.get("ruleset_id")) is not int
+                or item["ruleset_id"] <= 0
+                or not isinstance(item.get("ruleset_source_type"), str)
+                or not re.fullmatch(r"[A-Za-z]{1,32}", item["ruleset_source_type"])
+                or not isinstance(item.get("ruleset_source"), str)
+                or not 1 <= len(item["ruleset_source"]) <= 201
+                or not (params is None or isinstance(params, dict))
+            ):
+                raise RelayGitHubError(502, "branch rule unverifiable")
+            if params is not None:
+                encoded = json.dumps(params, sort_keys=True)
+                if len(encoded) > 16384:
+                    raise RelayGitHubError(502, "branch rule parameters unverifiable")
+                if find_secret(encoded) or self._provider_token_text(encoded):
+                    raise Refused("credential-shaped branch rule parameters refused")
+            rules.append(
+                {
+                    "type": item["type"],
+                    "ruleset_id": item["ruleset_id"],
+                    "ruleset_source_type": item["ruleset_source_type"],
+                    "ruleset_source": item["ruleset_source"],
+                    "parameters": params,
+                }
+            )
+        return {"branch": name, "rules": rules, "page": page, "has_more": len(rules) == limit}
+
+    def wf_rulesets(self, repo, args):
+        """The repository's rulesets (summary rows:  no rules, conditions or bypass list).
+
+        GET /repos/{repo}/rulesets.  includes_parents (default true) also lists the
+        organization rulesets that target this repository.
+        """
+        _only(args, ("repo", "per_page", "page", "includes_parents"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        parents = args.get("includes_parents", True)
+        if type(parents) is not bool:
+            raise Refused("invalid includes_parents")
+        flag = "true" if parents else "false"
+        data = self._get(
+            f"/repos/{repo}/rulesets?per_page={limit}&page={page}&includes_parents={flag}"
+        )
+        if not isinstance(data, list) or len(data) > limit:
+            raise RelayGitHubError(502, "ruleset page unverifiable")
+        rulesets = []
+        for item in data:
+            if (
+                not isinstance(item, dict)
+                or type(item.get("id")) is not int
+                or item["id"] <= 0
+                or not isinstance(item.get("source_type"), str)
+                or not re.fullmatch(r"[A-Za-z]{1,32}", item["source_type"])
+                or not isinstance(item.get("source"), str)
+                or not 1 <= len(item["source"]) <= 201
+                or item.get("enforcement") not in ("disabled", "active", "evaluate")
+                or not (
+                    item.get("target") is None
+                    or isinstance(item["target"], str)
+                    and re.fullmatch(r"[a-z_]{1,32}", item["target"])
+                )
+            ):
+                raise RelayGitHubError(502, "ruleset unverifiable")
+            rulesets.append(
+                {
+                    "id": item["id"],
+                    "name": self._metadata_name(item.get("name"), 255),
+                    "target": item.get("target"),
+                    "source_type": item["source_type"],
+                    "source": item["source"],
+                    "enforcement": item["enforcement"],
+                }
+            )
+        return {"rulesets": rulesets, "page": page, "has_more": len(rulesets) == limit}
 
     def wf_labels(self, repo, args):
         _only(

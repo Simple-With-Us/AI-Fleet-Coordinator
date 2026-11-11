@@ -138,6 +138,8 @@ const SPECS = {
   wf_org_installations: ['List the organization installations (id, app_slug, account). Organization Administration read.', obj(['repo'], {repo:REPO})],
   wf_repo_list: ['List the repositories this installation can access (paged).', obj(['repo'], {repo:REPO,page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
   wf_pr_search: ['Search pull requests across the repo owner or organization (state open by default; only the first 1000 results are reachable).', obj(['repo'], {repo:REPO,state:{type:'string',enum:['open','closed','all']},page:{type:'integer',minimum:1,maximum:20},per_page:PER_PAGE})],
+  wf_branch_rules: ['List the ruleset rules that apply to one branch (type, parameters such as a pull_request rule\'s allowed_merge_methods, and the ruleset that supplies each). Classic branch protection is not included. Metadata read.', obj(['repo','branch'], {repo:REPO,branch:REF,page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
+  wf_rulesets: ['List the repository rulesets (id, name, target, source, enforcement; no rules or bypass list). includes_parents (default true) adds organization rulesets. Metadata read.', obj(['repo'], {repo:REPO,includes_parents:{type:'boolean'},page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
   wf_issue_get: ['Read one issue with body (untrusted text; credential-shaped bodies withheld).', obj(['repo','number'], {repo:REPO,number:INT})],
   wf_issue_create: ['Create an issue as your own GitHub App.', obj(['repo','title','body'], {repo:REPO,title:CONTENT,body:CONTENT})],
   wf_issue_update: ['Update issue text or open/closed state.', obj(['repo','number'], {repo:REPO,number:INT,title:CONTENT,body:CONTENT,state:{type:'string',enum:['open','closed']}})],
@@ -174,7 +176,6 @@ const SPECS = {
   wf_commit_get: ['Read commit get.', obj(['repo', 'sha'], {repo:REPO,sha:SHA})],
   wf_compare: ['Read compare.', obj(['repo', 'base', 'head'], {repo:REPO,base:REF,head:REF})],
   wf_branch_get: ['Read branch get.', obj(['repo', 'branch'], {repo:REPO,branch:REF})],
-  wf_branch_rules: ['Read repository rules for one branch: rule type and parameters only.', obj(['repo', 'branch'], {repo:REPO,branch:REF})],
   wf_repo_get: ['Read repo get.', obj(['repo'], {repo:REPO})],
   wf_labels: ['Read labels.', obj(['repo'], {repo:REPO,per_page:PER_PAGE})],
   wf_workflows: ['Read workflows.', obj(['repo'], {repo:REPO,per_page:PER_PAGE})],
@@ -223,7 +224,7 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head; optional commit title/message validated and secret-scanned, empty message distinct from absent.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA, commit_title: {type:'string',minLength:1,maxLength:256}, commit_message: {type:'string',maxLength:65536} })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_installation_metadata','wf_pr_commits_page','wf_pr_review_get','wf_release_latest','wf_release_by_tag','wf_commit_comments_page','wf_commit_comment_get','wf_pr_requested_reviewers','wf_repo_tags','wf_repo_languages','wf_pr_list_page','wf_compare_commits_page','wf_pr_reviews_page','wf_pr_comments_page','wf_check_runs_page','wf_check_run_get','wf_file_history','wf_runs_page','wf_workflows_page','wf_pr_files_page','wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking','wf_commit_statuses','wf_git_blob_get','wf_git_commit_get','wf_git_tree_get','wf_release_asset_download','wf_job_log','wf_run_logs','wf_artifact_download','wf_milestones','wf_milestone_get','wf_deployments','wf_deployment_get','wf_deployment_statuses','wf_environments','wf_environment_get','wf_release_list','wf_release_get','wf_tag_get','wf_review_thread_comments','wf_review_threads','wf_issue_list','wf_issue_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_branch_rules','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks','wf_merge_queue_entry','wf_job_get','wf_workflow_get','wf_artifact_get','wf_artifacts_page','wf_caches_page','wf_cache_usage','wf_run_attempt_get','wf_run_attempt_jobs','wf_run_pending_deployments','wf_repo_variables','wf_repo_variable_get','wf_issue_events','wf_issue_timeline','wf_git_blob_binary_get','wf_repo_list','wf_pr_search','wf_repo_hooks','wf_deploy_keys','wf_org_installations']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_installation_metadata','wf_pr_commits_page','wf_pr_review_get','wf_release_latest','wf_release_by_tag','wf_commit_comments_page','wf_commit_comment_get','wf_pr_requested_reviewers','wf_repo_tags','wf_repo_languages','wf_pr_list_page','wf_compare_commits_page','wf_pr_reviews_page','wf_pr_comments_page','wf_check_runs_page','wf_check_run_get','wf_file_history','wf_runs_page','wf_workflows_page','wf_pr_files_page','wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking','wf_commit_statuses','wf_git_blob_get','wf_git_commit_get','wf_git_tree_get','wf_release_asset_download','wf_job_log','wf_run_logs','wf_artifact_download','wf_milestones','wf_milestone_get','wf_deployments','wf_deployment_get','wf_deployment_statuses','wf_environments','wf_environment_get','wf_release_list','wf_release_get','wf_tag_get','wf_review_thread_comments','wf_review_threads','wf_issue_list','wf_issue_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks','wf_merge_queue_entry','wf_job_get','wf_workflow_get','wf_artifact_get','wf_artifacts_page','wf_caches_page','wf_cache_usage','wf_run_attempt_get','wf_run_attempt_jobs','wf_run_pending_deployments','wf_repo_variables','wf_repo_variable_get','wf_issue_events','wf_issue_timeline','wf_git_blob_binary_get','wf_repo_list','wf_pr_search','wf_repo_hooks','wf_deploy_keys','wf_org_installations','wf_branch_rules','wf_rulesets']);
 // AFC-683: seat policy grants wf_pr_create / wf_pr_edit to no seat, so the generic
 // candidate note sends seats at a refusal.  Give those two the working routes instead;
 // the note stays for the rest (it predates workflow verbs being enabled).
@@ -375,7 +376,7 @@ const RESPONSE_KEYS = {
  wf_git_blob_get:['blob'],wf_git_blob_create:['blob'],wf_git_commit_get:['commit'],wf_git_tree_get:['tree'],
  wf_file_rename:['source_path','destination_path','branch','commit','blob_sha'],
   wf_review_thread_resolve:['thread'],wf_review_thread_unresolve:['thread'],
-  wf_issue_list:['issues','complete'],wf_repo_list:['repositories','total_count','page','has_more'],wf_pr_search:['pull_requests','total_count','complete','page'], wf_issue_get:['issue'], wf_issue_create:['issue'], wf_issue_update:['issue'], wf_issue_comment:['comment'],
+  wf_issue_list:['issues','complete'],wf_repo_list:['repositories','total_count','page','has_more'],wf_pr_search:['pull_requests','total_count','complete','page'], wf_branch_rules:['branch','rules','page','has_more'], wf_rulesets:['rulesets','page','has_more'], wf_issue_get:['issue'], wf_issue_create:['issue'], wf_issue_update:['issue'], wf_issue_comment:['comment'],
   wf_issue_comment_update:['result'],
   wf_issue_comment_delete:['deleted'],
   wf_review_comment_update:['result'],
@@ -419,7 +420,6 @@ const RESPONSE_KEYS = {
   wf_commit_get:['commit'],
   wf_compare:['comparison'],
   wf_branch_get:['branch'],
-  wf_branch_rules:['rules'],
   wf_repo_get:['repository'],
   wf_installation_metadata:['installation'],
   wf_labels:['labels','complete'],wf_repo_hooks:['hooks','page','has_more'],wf_deploy_keys:['deploy_keys','page','has_more'],wf_org_installations:['installations','total_count'],
@@ -483,111 +483,6 @@ const reviewObject=objectWith({id:positive,state:z.string().max(100),commit_id:s
 // GitHub's own comment limit is 65,536 characters;  the relay accepts the same (a long Kody summary is real).
 const commentObject=objectWith({id:positive,body:z.string().max(65536)});
 const labelObject=objectWith({id:positive,name:z.string().max(100),color:z.string().regex(/^[0-9a-fA-F]{6}$/)});
-const ruleText = (limit) => z.string().min(1).refine((value) => new TextEncoder().encode(value).length <= limit && !credentialPattern.test(value) && !/[\u0000-\u001f\u007f]/.test(value));
-const ruleBool = z.boolean();
-const patternRule = z.object({
-  operator: z.enum(["starts_with", "ends_with", "contains", "regex"]),
-  pattern: ruleText(512),
-  negate: ruleBool.optional(),
-  name: ruleText(256).optional(),
-}).strict();
-const branchRule = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("creation"), parameters: z.object({}).strict() }).strict(),
-  z.object({ type: z.literal("deletion"), parameters: z.object({}).strict() }).strict(),
-  z.object({ type: z.literal("required_linear_history"), parameters: z.object({}).strict() }).strict(),
-  z.object({ type: z.literal("required_signatures"), parameters: z.object({}).strict() }).strict(),
-  z.object({ type: z.literal("non_fast_forward"), parameters: z.object({}).strict() }).strict(),
-  z.object({
-    type: z.literal("update"),
-    parameters: z.object({ update_allows_fetch_and_merge: ruleBool.optional() }).strict(),
-  }).strict(),
-  z.object({
-    type: z.literal("pull_request"),
-    parameters: z.object({
-      required_approving_review_count: z.number().int().min(0).max(100).optional(),
-      dismiss_stale_reviews_on_push: ruleBool.optional(),
-      require_code_owner_review: ruleBool.optional(),
-      require_last_push_approval: ruleBool.optional(),
-      required_review_thread_resolution: ruleBool.optional(),
-      allowed_merge_methods: z.array(z.enum(["merge", "squash", "rebase"])).max(3).optional(),
-      required_reviewers: z.array(z.object({
-        type: z.enum(["User", "Team"]),
-        id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-      }).strict()).max(50).optional(),
-    }).strict(),
-  }).strict(),
-  z.object({
-    type: z.literal("required_status_checks"),
-    parameters: z.object({
-      strict_required_status_checks_policy: ruleBool.optional(),
-      do_not_enforce_on_create: ruleBool.optional(),
-      required_status_checks: z.array(z.object({
-        context: ruleText(255),
-        integration_id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable().optional(),
-      }).strict()).max(50).optional(),
-    }).strict(),
-  }).strict(),
-  z.object({
-    type: z.literal("required_deployments"),
-    parameters: z.object({
-      required_deployment_environments: z.array(ruleText(255)).max(50),
-    }).strict(),
-  }).strict(),
-  z.object({
-    type: z.literal("merge_queue"),
-    parameters: z.object({
-      check_response_timeout_minutes: z.number().int().min(0).max(100000).optional(),
-      grouping_strategy: z.enum(["ALLGREEN", "HEADGREEN"]).optional(),
-      max_entries_to_build: z.number().int().min(0).max(100000).optional(),
-      max_entries_to_merge: z.number().int().min(0).max(100000).optional(),
-      merge_method: z.enum(["MERGE", "SQUASH", "REBASE"]).optional(),
-      min_entries_to_merge: z.number().int().min(0).max(100000).optional(),
-      min_entries_to_merge_wait_minutes: z.number().int().min(0).max(100000).optional(),
-    }).strict(),
-  }).strict(),
-  z.object({ type: z.literal("commit_message_pattern"), parameters: patternRule }).strict(),
-  z.object({ type: z.literal("commit_author_email_pattern"), parameters: patternRule }).strict(),
-  z.object({ type: z.literal("committer_email_pattern"), parameters: patternRule }).strict(),
-  z.object({ type: z.literal("branch_name_pattern"), parameters: patternRule }).strict(),
-  z.object({ type: z.literal("tag_name_pattern"), parameters: patternRule }).strict(),
-  z.object({
-    type: z.literal("workflows"),
-    parameters: z.object({
-      do_not_enforce_on_create: ruleBool.optional(),
-      workflows: z.array(z.object({
-        path: ruleText(1024),
-        repository_id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
-        ref: ruleText(200).optional(),
-      }).strict()).max(50),
-    }).strict(),
-  }).strict(),
-  z.object({
-    type: z.literal("code_scanning"),
-    parameters: z.object({
-      code_scanning_tools: z.array(z.object({
-        tool: ruleText(100),
-        alerts_threshold: z.enum(["none", "errors", "errors_and_warnings", "all"]).optional(),
-        security_alerts_threshold: z.enum(["none", "errors", "errors_and_warnings", "all"]).optional(),
-      }).strict()).max(50),
-    }).strict(),
-  }).strict(),
-  z.object({
-    type: z.literal("file_path_restriction"),
-    parameters: z.object({ restricted_file_paths: z.array(ruleText(512)).max(50) }).strict(),
-  }).strict(),
-  z.object({
-    type: z.literal("file_extension_restriction"),
-    parameters: z.object({ restricted_file_extensions: z.array(ruleText(32)).max(50) }).strict(),
-  }).strict(),
-  z.object({
-    type: z.literal("max_file_path_length"),
-    parameters: z.object({ max_file_path_length: z.number().int().min(1).max(4096) }).strict(),
-  }).strict(),
-  z.object({
-    type: z.literal("max_file_size"),
-    parameters: z.object({ max_file_size: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) }).strict(),
-  }).strict(),
-]);
 const readResponseSchemas={
  wf_installation_metadata:z.object({installation:z.object({app_slug:z.string().regex(/^swu-[a-z0-9-]{1,90}$/),installation_id:positive.max(Number.MAX_SAFE_INTEGER),account:z.object({id:positive.max(Number.MAX_SAFE_INTEGER),login:z.string().regex(/^[A-Za-z0-9_.-]{1,100}$/)}).strict(),accepted_permissions:z.record(z.string().regex(/^[a-z][a-z0-9_]{0,99}$/),z.enum(["read","write"])).refine(v=>Object.keys(v).length<=256),suspended:z.boolean()}).strict()}).strict(),
  wf_pr_reviews:z.object({reviews:z.array(reviewObject).max(50),complete:z.boolean()}).strict(),
@@ -599,11 +494,12 @@ const readResponseSchemas={
  wf_org_installations:z.object({installations:z.array(objectWith({id:positive,app_slug:z.string().max(100),account:z.string().max(100)})).max(50),total_count:z.number().int().nonnegative()}).strict(),
  wf_repo_list:z.object({repositories:z.array(objectWith({id:positive,full_name:z.string().max(201),private:z.boolean(),default_branch:z.string()})).max(50),total_count:z.number().int().nonnegative(),page:positive,has_more:z.boolean()}).strict(),
  wf_pr_search:z.object({pull_requests:z.array(objectWith({number:positive,repo:z.string().max(201),title:z.string().max(512),state:z.string(),draft:z.boolean(),updated_at:z.string().max(40),html_url:z.string().max(2000)})).max(50),total_count:z.number().int().nonnegative(),complete:z.boolean(),page:positive}).strict(),
+ wf_branch_rules:z.object({branch:z.string().min(1).max(200),rules:z.array(z.object({type:z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),ruleset_id:positive,ruleset_source_type:z.string().regex(/^[A-Za-z]{1,32}$/),ruleset_source:z.string().min(1).max(201),parameters:z.record(z.string(),jsonValue).nullable()}).strict()).max(50),page:positive,has_more:z.boolean()}).strict(),
+ wf_rulesets:z.object({rulesets:z.array(z.object({id:positive,name:z.string().min(1).max(255),target:z.string().regex(/^[a-z_]{1,32}$/).nullable(),source_type:z.string().regex(/^[A-Za-z]{1,32}$/),source:z.string().min(1).max(201),enforcement:z.enum(['disabled','active','evaluate'])}).strict()).max(50),page:positive,has_more:z.boolean()}).strict(),
  wf_pr_get:z.object({pull:pullObject}).strict(),
  wf_commit_get:z.object({commit:commitObject}).strict(),
  wf_compare:z.object({comparison:objectWith({status:z.string(),ahead_by:z.number().int().nonnegative(),behind_by:z.number().int().nonnegative(),total_commits:z.number().int().nonnegative(),commits:z.array(commitObject)})}).strict(),
  wf_branch_get:z.object({branch:branchObject}).strict(),
- wf_branch_rules:z.object({rules:z.array(branchRule).max(50)}).strict(),
  wf_repo_get:z.object({repository:objectWith({id:positive,name:z.string().min(1),full_name:z.string().min(3),default_branch:z.string().min(1),private:z.boolean()})}).strict(),
  wf_workflows:z.object({workflows:objectWith({total_count:z.number().int().nonnegative(),workflows:z.array(workflowObject).max(50)})}).strict(),
  wf_run_get:z.object({run:runObject}).strict(),
@@ -860,6 +756,11 @@ export function validWfV1Response(action, body, args) {
 
  if(['wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking'].includes(action))return (action==='wf_issue_parent'?relationParent:relationPage).safeParse(body).success && (!args || (body.issues??[body.issue]).filter(Boolean).every(v=>typeof v.repo==='string' && v.repo.toLowerCase()===args.repo.toLowerCase()));
  if(relationResponses[action])return relationResponses[action].safeParse(body).success && (!args || (body.issues??[body.issue]).filter(Boolean).every(v=>v.repo===args.repo));
+ if(action==='wf_branch_rules'||action==='wf_rulesets'){
+  if(!readResponseSchemas[action].safeParse(body).success)return false;
+  const rows=action==='wf_branch_rules'?body.rules:body.rulesets, per=args?.per_page??30;
+  return !args||(body.page===(args.page??1)&&rows.length<=per&&body.has_more===(rows.length===per)&&(action!=='wf_branch_rules'||body.branch===args.branch));
+ }
  if(readResponseSchemas[action])return readResponseSchemas[action].safeParse(body).success;
 
  if(environmentResponses[action])return environmentResponses[action].safeParse(body).success;

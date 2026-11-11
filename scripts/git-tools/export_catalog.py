@@ -70,7 +70,6 @@ WF_V1_READ_ACTIONS = [
     "wf_commit_get",
     "wf_compare",
     "wf_branch_get",
-    "wf_branch_rules",
     "wf_repo_get",
     "wf_labels",
     "wf_workflows",
@@ -108,6 +107,8 @@ WF_V1_READ_ACTIONS = [
     "wf_repo_hooks",
     "wf_deploy_keys",
     "wf_org_installations",
+    "wf_branch_rules",
+    "wf_rulesets",
 ]
 READ_TOOLS = frozenset(
     ["gr_v1_pr_state", "gr_v1_pr_hold_state"] + ["gr_" + a for a in WF_V1_READ_ACTIONS]
