@@ -499,6 +499,28 @@ class SessionRegistry:
         """The session row for one identity, or None when this registry has never seen it."""
         return self._get_by_identity(platform, verified_host, profile_scope, native_session_id)
 
+    def session_rows_for_id(self, native_session_id: str) -> list[dict[str, Any]]:
+        """The live identities a native session id holds rows under (OPS-1048):  the note-link
+        hook finds the row to carry a note's link by session id alone, because a session id
+        belongs to one platform in practice and the platform is the row's to say.  Closed rows
+        are skipped:  a link is for a chat that can still answer."""
+        try:
+            rows = self._conn.execute(
+                "SELECT platform, verified_host, profile_scope FROM sessions"
+                " WHERE native_session_id = ? AND closed_at IS NULL",
+                (str(native_session_id),),
+            ).fetchall()
+        except sqlite3.Error:
+            return []
+        return [
+            {
+                "platform": row["platform"],
+                "verified_host": row["verified_host"],
+                "profile_scope": row["profile_scope"],
+            }
+            for row in rows
+        ]
+
     def _active_alias(self, conn: sqlite3.Connection, record_id: str) -> tuple[str, int]:
         row = conn.execute(
             "SELECT letter, generation FROM alias_assignments"

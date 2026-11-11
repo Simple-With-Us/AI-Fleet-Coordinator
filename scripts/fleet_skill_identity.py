@@ -232,9 +232,9 @@ COORDINATOR_SELF_ID = "AFC"
 
 
 def _load_gb_role_tags() -> tuple[str, ...]:
-    """The enabled Grok Bot personas, from the one list the MCP servers use (scripts/simple_tools/mcp/gb-identities.json,
+    """The enabled Grok bots, from the one list the MCP servers use (scripts/simple_tools/mcp/gb-identities.json,
     which the hosted Worker imports as GB_IDENTITIES).  Never a list of its own here, so a skill cannot name a
-    persona the connectors refuse or miss one they accept."""
+    bot the connectors refuse or miss one they accept."""
     path = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "simple_tools", "mcp", "gb-identities.json"
     )

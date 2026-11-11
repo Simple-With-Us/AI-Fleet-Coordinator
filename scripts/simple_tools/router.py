@@ -29,7 +29,7 @@ owner's own message there wakes only the seats it mentions (a human client, as e
 Eligible senders (owner 2026-10-09:  "everyone should be able to DM to wake anyone else or tag to
 wake anyone else"):  the owner, plus every fleet bot, which is an active generic bot in the realm
 user list, owned by the owner (bot_owner_id), whose email maps (seat_tag_for) to a fleet tag:  a seat in the partition file (Mac and
-cloud seats, GB personas, BF role bots, GROK-BUILD) or config.FLEET_SEATS.  The daemon computes the
+cloud seats, GB bots, BF role bots, GROK-BUILD) or config.FLEET_SEATS.  The daemon computes the
 set at runtime (fleet_bot_ids) and adds the optional `eligible_user_ids` pins, so a new seat needs
 no re-init.  Integration and webhook bots (Sentry, PagerDuty, Linear), unknown senders, API posts
 from the owner's account and a seat's own posts are never eligible.  An eligible bot's DM wakes the

@@ -36,7 +36,7 @@ The gate is deterministic and runs on the classification the router already comp
 | Sender class | How it is known | Channel @-mention | DM | Anything else |
 |---|---|---|---|---|
 | **Owner** | `sender_id == owner_user_id`, a human client, and `verify-owner-msg <id> --topic T` (or `--dm-with`) exits 0, run by the daemon just before spawn.  Given P3, this counts as Jay (section 5) | Resume-eligible | Resume-eligible | `fleet` wildcard in #Work-In-Progress › `fleet`:  inbox and today's wake, never a resume (one post would resume every seat) |
-| **Fleet seat bot** (Mac and cloud seats, GB personas, BF roles, JET) | An active bot the owner owns whose email maps to a fleet tag (`router.fleet_bot_ids`) | Resume-eligible when `RESUME_WAKE_SENDERS` is `owner+peers` (the decided setting at `on`), router risk `low` only | Same | Inbox only |
+| **Fleet seat bot** (Mac and cloud seats, GB bots, BF roles, JET) | An active bot the owner owns whose email maps to a fleet tag (`router.fleet_bot_ids`) | Resume-eligible when `RESUME_WAKE_SENDERS` is `owner+peers` (the decided setting at `on`), router risk `low` only | Same | Inbox only |
 | **Integration bot** (Sentry, PagerDuty, Linear, GitHub, any webhook or embedded bot) | Bot type, or not owner-owned | Never | Never | Never |
 | **Unknown sender, or API post from Jay's account** | Not in the user cache as an owner-owned bot, or the owner id from a non-human client | Never (flagged `owner_api` as today) | Never | Never |
 
@@ -255,7 +255,7 @@ With matches on several other seats it lists each, numbered, as the several-cand
 | OPENCODE | opencode | `opencode run --session <id>` | `--model`, `--format json`, `--auto`, agent config files | `--session` also creates a session if the id is missing:  the daemon must check the id exists first.  No tool flags on `run` | Held;  no listener holds OPENCODE today |
 | CLUTCH | Clutch (`dsh`) | Partial:  `--resume` appears for the `tui` profile only | Profile settings files | No headless resume confirmed | Not eligible |
 | AG | Antigravity | None found | — | Desktop only | Not eligible |
-| Cloud seats (MA, JET, GROK-WEB, WISE, ECHO), GB personas, BF roles | Hosted | Not a local resume:  their routines and BotFleet queues are their wake | — | Out of scope;  the router may still pick them, and the pick goes to their existing routine or inbox | Existing paths |
+| Cloud seats (MA, JET, GROK-WEB, WISE, ECHO), GB bots, BF roles | Hosted | Not a local resume:  their routines and BotFleet queues are their wake | — | Out of scope;  the router may still pick them, and the pick goes to their existing routine or inbox | Existing paths |
 
 **Desktop-app sessions** (Claude desktop Code tab, Codex desktop).  A CLI resume can read the same session store while the app is closed:  Claude desktop sessions live in the same `~/.claude/projects` store, and Codex's in `~/.codex/sessions`.  While the app has the session open, two writers would append to one transcript, and the app's in-memory copy would not show the headless turns.  So:  never resume a session that holds a live lease or that the platform lists as running (`claude agents --json`, `codex agents`);  and for a session whose entrypoint was the desktop app, **fork rather than resume in place** (`--fork-session` on Claude, `codex exec fork` on Codex) (decided, Jay, Oct 19).  The fork copies the conversation only:  it makes no copy of the lane, branch or files, and works in the same lane on the same branch.  A fork keeps the full context and does the work;  its posts name the original session so the owner can find it.
 
@@ -376,7 +376,7 @@ Decided (Jay, Oct 19):  on now, not staged.  Three steps:  **off**, then **one s
 
 Jay flips the knobs himself in the Infisical UI, or says "go" in an `OWNER resume-wake` topic (checked with `verify-owner-msg`) and the CLAUDE seat sets them.  A relayed approval from a peer never counts.  Any check that fails in the canary leaves the mode at `canary` or `off` and goes to Jay.  Seats still held in section 6 (MM, FX, OPENCODE) join only when their gaps close and their own pin passes.
 
-**The canary, exactly.**  Setup:  a CLAUDE session in the lane `~/apps/lanes/AI-Fleet-Coordinator/claude-resume-canary` (branch `claude/resume-canary`) attaches to #sandbox › `resume-wake canary`, posts once there, and exits, so its session record binds the topic and no lease is live.  Then JET (through the hosted bridge) or a GB persona posts in #sandbox › `resume-wake canary`:
+**The canary, exactly.**  Setup:  a CLAUDE session in the lane `~/apps/lanes/AI-Fleet-Coordinator/claude-resume-canary` (branch `claude/resume-canary`) attaches to #sandbox › `resume-wake canary`, posts once there, and exits, so its session record binds the topic and no lease is live.  Then JET (through the hosted bridge) or a GB bot posts in #sandbox › `resume-wake canary`:
 
 ```text
 @**Claude** canary <nonce>:  append the line "canary <nonce>" to CANARY.md in your lane, commit it, push the branch, and reply here with the short sha.
@@ -401,7 +401,7 @@ Then these variants:  1 to 5 in the same topic, and 6 to 10 each in a topic of i
 9. **Carried grant, bare route:**  in a fifth canary topic, again one only a canary CODEX session is bound to, Jay asks CLAUDE to force-push that branch back one commit:  the ask names CODEX's lane, branch and `force-push`;  Jay replies with a bare "route", the run gets no grant, and the force-push is refused.
 10. **Carried grant, reconfirmed:**  the same request in a sixth such topic, answered "route force-push":  it runs on the CODEX canary lane's branch only, and `main` and CLAUDE's lane are untouched (checked by their remote tips and the integrity manifest).  Cases 9 and 10 need separate topics because the first valid answer settles an ask, so one ask cannot test both replies.
 
-**The canary configuration, exactly.**  The knob defaults stay as section 7 sets them:  `RESUME_WAKE_SENDERS` is `owner` and `RESUME_WAKE_CANARY_TOPICS` is empty.  The canary triggers come from a peer (JET or a GB persona), so the owner flips these four knobs in Infisical for the window and puts them back afterwards:
+**The canary configuration, exactly.**  The knob defaults stay as section 7 sets them:  `RESUME_WAKE_SENDERS` is `owner` and `RESUME_WAKE_CANARY_TOPICS` is empty.  The canary triggers come from a peer (JET or a GB bot), so the owner flips these four knobs in Infisical for the window and puts them back afterwards:
 
 | Knob | Canary value | Why |
 |---|---|---|

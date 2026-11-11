@@ -59,6 +59,11 @@ SOURCE = "the ZC seat's session-letter hook"
 ENV_OFF = "ZCODE_LETTER"
 
 STORE_SUBPATH = os.path.join(".zcode", "cli", "db", "db.sqlite")
+
+#: ZCode has no public thread URL today, so the link the registry records is the stable
+#: locator convention the fleet reads:  the session id under the platform's own scheme.
+#: One form, replaced wholesale the day the app grows a real link.
+THREAD_LINK_FORM = "zcode://session/{sid}"
 WRAPPER_SUBPATH = os.path.join(".local", "bin", "zc-letter", "platform-letter")
 
 #: ZCode has no SessionEnd:  Stop ends a turn, not a chat, so it never closes a registration.
@@ -213,11 +218,22 @@ def zcode_chat_payload(sid: str) -> Mapping[str, Any]:
 
 
 def zcode_rename(request: Any) -> bool:
-    """Put the lettered title on the chat:  one UPDATE in the store, `title_source` `generated`.
+    """Put the lettered title on the chat:  one UPDATE in the store, `title_source` `custom`.
 
-    A name the user gave (`title_source` `custom`) that does not already carry this letter
-    is never written over:  the chat keeps the user's words, and the registry keeps the
-    letter, so the two say the same chat in different words."""
+    `custom`, not `generated`:  the app model-retitles a thread whose title it considers its
+    own (`generated`) and wipes the letter prefix off it (seen live — a thread titled
+    "DD: work on ..." came back as plain "Merge and Close Draft PRs"), while a custom title
+    is a user rename the app leaves alone.  The letter hook's own rule keeps working on top:
+    a custom title that already carries this letter is updated in place (new words, same
+    letter).  A custom title without the letter is the hook's own earlier write when it is
+    exactly the note's last applied title (label and words) — a later letter, such as a
+    reissue after a recycle, replaces it — and anything else is a name a person chose, so
+    the chat keeps the user's words and the registry keeps the letter.
+
+    The write stays inside the hook's own budget while still beating a busy store:  two
+    short attempts (4 s each, a quarter second apart), not one long one — a busy timeout
+    alone was seen losing title writes under the live app (titles landed hours late, on a
+    much later event's retry)."""
     env = request.env
     sid = request.session_id
     title = str(request.title or "").strip()
@@ -233,21 +249,86 @@ def zcode_rename(request: Any) -> bool:
     if row and row.get("title_source") == "custom":
         current = str(row.get("title") or "")
         if current and not current.startswith(str(request.label or "") + ":"):
-            return True
-    try:
-        conn = sqlite3.connect(path, timeout=5)
+            if not _hook_owned_title(env, sid, current):
+                return True  # a person's rename:  the words stay
+    for attempt in range(2):
         try:
-            with conn:
-                cur = conn.execute(
-                    "UPDATE session SET title = ?, title_source = 'generated',"
-                    " time_title_updated = ? WHERE id = ?",
-                    (title, int(time.time()), sid),
-                )
-                return cur.rowcount == 1
-        finally:
-            conn.close()
-    except sqlite3.Error:
+            conn = sqlite3.connect(path, timeout=4)
+            try:
+                with conn:
+                    cur = conn.execute(
+                        "UPDATE session SET title = ?, title_source = 'custom',"
+                        " time_title_updated = ? WHERE id = ?",
+                        (title, int(time.time()), sid),
+                    )
+                    done = cur.rowcount == 1
+            finally:
+                conn.close()
+            if done:
+                _record_thread_link(env, sid)
+                return True
+            return False
+        except sqlite3.Error:
+            if attempt == 0:
+                time.sleep(0.25)
+                continue
+    return False
+
+
+def _record_thread_link(env: Mapping[str, str], sid: str) -> None:
+    """Put this chat's thread link on its registry row (one update op, failures swallowed).
+
+    The registry's Sessions tab carries a Thread Link column and the Sheets drain exports
+    it, so the row is where a reader looks;  the link is the locator convention because
+    ZCode mints no share URLs and has no URI scheme (checked live:  zero share_url values
+    in the store).  The location is the install's own rule read from the environment
+    (SESSION_LETTER_LOCATION, else the platform), the same way the hook command carries it."""
+    from . import registry_api as RA
+
+    if not RA.base_url(env):
+        return
+    location = str(env.get("SESSION_LETTER_LOCATION") or "").strip() or (
+        "mac" if sys.platform == "darwin" else "server"
+    )
+    try:
+        answer = RA.call(
+            env,
+            "update",
+            {
+                "platform": PLATFORM,
+                "location": location,
+                "scope": "default",
+                "session_id": sid,
+                "thread_link": THREAD_LINK_FORM.format(sid=sid),
+            },
+            timeout=2,
+        )
+    except Exception as exc:  # noqa: BLE001 - a link that cannot be recorded never blocks a chat
+        print(
+            "platform-letter: thread-link update failed (%s)" % type(exc).__name__, file=sys.stderr
+        )
+        return
+    if isinstance(answer, dict) and answer.get("error"):
+        # swallowed no longer:  one stderr line names it, the chat is never blocked
+        print(
+            "platform-letter: thread-link update refused (%s)" % str(answer.get("error"))[:120],
+            file=sys.stderr,
+        )
+
+
+def _hook_owned_title(env: Mapping[str, str], sid: str, current: str) -> bool:
+    """True when `current` is exactly the title the hook last applied to this chat (the
+    note's label and words), so it is the hook's own `custom` write and a later letter may
+    replace it.  A missing or unreadable note answers False:  without proof the name is
+    treated as a person's, which is the safe side."""
+    try:
+        with open(PL.note_path(env, SEAT, sid), encoding="utf-8") as fh:
+            note = json.load(fh)
+    except (OSError, ValueError):
         return False
+    label = str(note.get("label") or "")
+    words = str(note.get("title") or "")
+    return bool(label and words and current == "%s: %s" % (label, words))
 
 
 SPEC = PL.PlatformSpec(

@@ -223,8 +223,15 @@ const SPECS = {
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
 export const WF_V1_READ_ACTIONS = Object.freeze(['wf_installation_metadata','wf_pr_commits_page','wf_pr_review_get','wf_release_latest','wf_release_by_tag','wf_commit_comments_page','wf_commit_comment_get','wf_pr_requested_reviewers','wf_repo_tags','wf_repo_languages','wf_pr_list_page','wf_compare_commits_page','wf_pr_reviews_page','wf_pr_comments_page','wf_check_runs_page','wf_check_run_get','wf_file_history','wf_runs_page','wf_workflows_page','wf_pr_files_page','wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking','wf_commit_statuses','wf_git_blob_get','wf_git_commit_get','wf_git_tree_get','wf_release_asset_download','wf_job_log','wf_run_logs','wf_artifact_download','wf_milestones','wf_milestone_get','wf_deployments','wf_deployment_get','wf_deployment_statuses','wf_environments','wf_environment_get','wf_release_list','wf_release_get','wf_tag_get','wf_review_thread_comments','wf_review_threads','wf_issue_list','wf_issue_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks','wf_merge_queue_entry','wf_job_get','wf_workflow_get','wf_artifact_get','wf_artifacts_page','wf_caches_page','wf_cache_usage','wf_run_attempt_get','wf_run_attempt_jobs','wf_run_pending_deployments','wf_repo_variables','wf_repo_variable_get','wf_issue_events','wf_issue_timeline','wf_git_blob_binary_get','wf_repo_list','wf_pr_search','wf_repo_hooks','wf_deploy_keys','wf_org_installations']);
+// AFC-683: seat policy grants wf_pr_create / wf_pr_edit to no seat, so the generic
+// candidate note sends seats at a refusal.  Give those two the working routes instead;
+// the note stays for the rest (it predates workflow verbs being enabled).
+const UNGRANTED_GUIDANCE = new Map([
+  ['wf_pr_create', 'UNGRANTED: no seat policy grants this verb.  PR creation runs through gr_open_pr, which opens the PR under the owner\'s account by owner design: review tooling does not review bot-identity PRs (owner 2026-10-21).  On relay failure, gh fallback under your own App is allowed per the owner\'s 2026-11-10 route direction with same-day logging in the Fleet GitOPS deficiencies document - EXCEPT operations whose identity the owner reserved: a seat-App PR is bot-identity and unreviewable, so report the relay failure and hold PR creation instead of substituting gh.'],
+  ['wf_pr_edit', 'UNGRANTED: no seat policy grants this verb.  PR title/body edits run through gr_edit_pr, which the current seat policy grants.  On relay failure, gh fallback under your own App is allowed per the owner\'s 2026-11-10 route direction; log the deficiency the same day in the Fleet GitOPS deficiencies document.'],
+]);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
-  name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
+  name: `gr_${action}`, description: UNGRANTED_GUIDANCE.has(action) ? `${SPECS[action][0]} ${UNGRANTED_GUIDANCE.get(action)}` : `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
 })));
 const typeOk = (schema, v) => schema.type === 'integer' ? Number.isInteger(v) && v >= schema.minimum && v <= schema.maximum
@@ -471,7 +478,8 @@ const artifactObject=objectWith({id:positive,name:z.string(),size_in_bytes:z.num
 const workflowObject=objectWith({id:positive,name:z.string(),path:z.string(),state:z.string()});
 const pullObject=objectWith({id:positive,number:positive,state:z.enum(['open','closed']),head:objectWith({sha:shaValue}),base:objectWith({sha:shaValue})});
 const reviewObject=objectWith({id:positive,state:z.string().max(100),commit_id:shaValue});
-const commentObject=objectWith({id:positive,body:z.string().max(32768)});
+// GitHub's own comment limit is 65,536 characters;  the relay accepts the same (a long Kody summary is real).
+const commentObject=objectWith({id:positive,body:z.string().max(65536)});
 const labelObject=objectWith({id:positive,name:z.string().max(100),color:z.string().regex(/^[0-9a-fA-F]{6}$/)});
 const readResponseSchemas={
  wf_installation_metadata:z.object({installation:z.object({app_slug:z.string().regex(/^swu-[a-z0-9-]{1,90}$/),installation_id:positive.max(Number.MAX_SAFE_INTEGER),account:z.object({id:positive.max(Number.MAX_SAFE_INTEGER),login:z.string().regex(/^[A-Za-z0-9_.-]{1,100}$/)}).strict(),accepted_permissions:z.record(z.string().regex(/^[a-z][a-z0-9_]{0,99}$/),z.enum(["read","write"])).refine(v=>Object.keys(v).length<=256),suspended:z.boolean()}).strict()}).strict(),

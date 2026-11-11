@@ -474,6 +474,232 @@ function buildView(b) {
   };
 }
 
+/** Paging total from a betaTesters list response; falls back to the first page length. */
+export function betaTesterCountFromJson(json) {
+  const total = json?.meta?.paging?.total;
+  if (typeof total === "number" && !Number.isNaN(total)) return total;
+  return Array.isArray(json?.data) ? json.data.length : 0;
+}
+
+export const PRERELEASE_BULK_MAX_IDS = 50;
+export const PRERELEASE_FETCH_CONCURRENCY = 5;
+export const PRERELEASE_ATTACH_TIMEOUT_MS = 30_000;
+
+export function preReleaseVersionsBulkPath(ids) {
+  const slice = ids.slice(0, PRERELEASE_BULK_MAX_IDS).map(encodeURIComponent).join(",");
+  return `/v1/preReleaseVersions?limit=200&filter[id]=${slice}&fields[preReleaseVersions]=version,platform`;
+}
+
+/**
+ * Mark each external group with findings and build one reason string when something is wrong.
+ * Read-only inspection:  compares group builds to the app's newest VALID build.
+ */
+export function annotateExternalGroups(validBuild, groups) {
+  const validAt = validBuild?.uploadedAt ?? null;
+  const out = [];
+  const parts = [];
+  for (const g of groups || []) {
+    const row = { ...g };
+    const findings = [];
+    const buildKnown = row.newestBuildKnown === true;
+    const testersKnown = row.testerCountKnown === true;
+    if (!buildKnown || !testersKnown) {
+      findings.push("lookupUnknown");
+    } else if (!row.newestBuild) {
+      findings.push("noBuilds");
+      parts.push(`external group "${row.name}" has no builds`);
+    } else if (validAt != null) {
+      const groupAt = Date.parse(row.newestBuild.uploadedAt || "");
+      if (!Number.isNaN(groupAt) && groupAt < validAt - 1000) {
+        findings.push("staleBuild");
+        const gv = row.newestBuild.marketingVersion || "?";
+        const gb = row.newestBuild.build || "?";
+        const vv = validBuild.marketingVersion || validBuild.build || "?";
+        parts.push(`external group "${row.name}" serves ${gv} (${gb}), older than the valid build ${vv} (${validBuild.build})`);
+      }
+    }
+    if (buildKnown && testersKnown && row.testerCount === 0) {
+      findings.push("noTesters");
+      parts.push(`external group "${row.name}" has zero testers`);
+    }
+    if (findings.length) row.findings = findings;
+    if (findings.includes("lookupUnknown")) row.lookupUnknown = true;
+    out.push(row);
+  }
+  return { groups: out, reason: parts.length ? parts.join(";  ") : null };
+}
+
+const ASC_BUILD_FILTER_FIELDS =
+  "&fields[builds]=version,uploadedDate,processingState,expired" +
+  "&include=preReleaseVersion&fields[preReleaseVersions]=version,platform";
+
+/** Relationship list:  no include or sort (ASC returns PARAMETER_ERROR.ILLEGAL). */
+const ASC_BUILD_RELATIONSHIP_FIELDS = "&fields[builds]=version,uploadedDate,processingState,expired";
+
+/** App Store Connect list path for beta groups (no filter[isInternalGroup] on this relationship). */
+export function externalBetaGroupsListPath(appleId) {
+  return (
+    `/v1/apps/${appleId}/betaGroups?limit=200` +
+    "&fields[betaGroups]=name,isInternalGroup,publicLinkEnabled"
+  );
+}
+
+export function buildsFilterForBetaGroupPath(groupId) {
+  return (
+    `/v1/builds?filter[betaGroups]=${encodeURIComponent(groupId)}&sort=-uploadedDate&limit=10${ASC_BUILD_FILTER_FIELDS}`
+  );
+}
+
+export function buildsRelationshipForBetaGroupPath(groupId) {
+  return `/v1/betaGroups/${groupId}/builds?limit=200${ASC_BUILD_RELATIONSHIP_FIELDS}`;
+}
+
+/**
+ * Fill `included` preReleaseVersions when a relationship response omits include=.
+ * One bulk filter[id] call when possible; otherwise bounded parallel fetches.
+ */
+export async function attachPreReleaseVersions(ctx, json, {
+  concurrency = PRERELEASE_FETCH_CONCURRENCY,
+  timeoutMs = PRERELEASE_ATTACH_TIMEOUT_MS,
+} = {}) {
+  const included = [...(json.included || [])];
+  const have = new Set(included.filter((x) => x.type === "preReleaseVersions").map((x) => x.id));
+  const ids = [...new Set((json.data || [])
+    .map((b) => b.relationships?.preReleaseVersion?.data?.id)
+    .filter((id) => id && !have.has(id)))];
+  if (!ids.length) return { ...json, included };
+
+  const enrich = async () => {
+    try {
+      const bulk = await ctx.asc(preReleaseVersionsBulkPath(ids));
+      for (const entry of bulk.data || []) {
+        if (entry?.id && !have.has(entry.id)) {
+          included.push(entry);
+          have.add(entry.id);
+        }
+      }
+      const missing = ids.filter((id) => !have.has(id));
+      if (!missing.length) return { ...json, included };
+      ids.length = 0;
+      ids.push(...missing);
+    } catch {
+      /* bulk filter unsupported or partial:  fall through per id */
+    }
+    const fetched = await pool(ids, concurrency, async (prId) => {
+      try {
+        const pr = await ctx.asc(`/v1/preReleaseVersions/${prId}?fields[preReleaseVersions]=version,platform`);
+        return pr.data || null;
+      } catch {
+        return null;
+      }
+    });
+    for (const entry of fetched) {
+      if (entry?.id && !have.has(entry.id)) {
+        included.push(entry);
+        have.add(entry.id);
+      }
+    }
+    return { ...json, included };
+  };
+
+  let timer;
+  try {
+    return await Promise.race([
+      enrich(),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`preReleaseVersion enrich timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } catch {
+    return { ...json, included };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Newest build assigned to a beta group; prefers /v1/builds?filter[betaGroups]= for sort support. */
+async function newestBuildInBetaGroup(ctx, groupId, platform) {
+  let filterOk = false;
+  try {
+    const byFilter = await ctx.asc(buildsFilterForBetaGroupPath(groupId));
+    filterOk = true;
+    if (!(byFilter.data || []).length) return null;
+    let normalized = normalizeBuilds(byFilter, platform);
+    if (!normalized.length) normalized = normalizeBuilds(byFilter, null);
+    if (normalized.length) return normalized[0];
+  } catch {
+    /* fall through to the relationship list */
+  }
+  if (filterOk) return null;
+  const byRel = await ctx.asc(buildsRelationshipForBetaGroupPath(groupId));
+  const enriched = await attachPreReleaseVersions(ctx, byRel);
+  let normalized = normalizeBuilds(enriched, platform);
+  if (!normalized.length) normalized = normalizeBuilds(enriched, null);
+  return normalized[0] || null;
+}
+
+async function loadExternalBetaGroups(ctx, appleId, platform) {
+  const list = await ctx.asc(externalBetaGroupsListPath(appleId));
+  const rows = [];
+  for (const g of list.data || []) {
+    const attrs = g.attributes || {};
+    if (attrs.isInternalGroup) continue;
+    const base = {
+      name: attrs.name || g.id,
+      id: g.id,
+      newestBuild: null,
+      newestBuildKnown: false,
+      testerCount: null,
+      testerCountKnown: false,
+      publicLinkEnabled: Boolean(attrs.publicLinkEnabled),
+    };
+    const warnings = [];
+    try {
+      const newest = await newestBuildInBetaGroup(ctx, g.id, platform);
+      base.newestBuildKnown = true;
+      base.newestBuild = buildView(newest);
+    } catch (err) {
+      warnings.push(String(err.message || err).slice(0, 200));
+    }
+    try {
+      const testersJson = await ctx.asc(`/v1/betaGroups/${g.id}/betaTesters?limit=1`);
+      base.testerCountKnown = true;
+      base.testerCount = betaTesterCountFromJson(testersJson);
+    } catch (err) {
+      warnings.push(String(err.message || err).slice(0, 200));
+      base.testerCount = null;
+    }
+    if (warnings.length) base.lookupWarning = warnings.join(";  ");
+    rows.push(base);
+  }
+  return rows;
+}
+
+/** True when `--ship-behind` may dispatch a workflow for this result. */
+export function shouldRemedyApp(r) {
+  if (!REMEDIABLE.has(r.status)) return false;
+  if (r.externalGroupsOnly) return false;
+  return true;
+}
+
+/** Raise BEHIND (or extend the reason) when an external beta group is stale or empty. */
+function applyExternalGroupStaleness(r, validNorm, externalRows) {
+  const { groups, reason } = annotateExternalGroups(validNorm, externalRows);
+  r.externalGroups = groups;
+  if (!reason) return;
+  if (r.status === "current") {
+    r.status = "behind";
+    r.externalGroupsOnly = true;
+    r.behindReason = "externalGroups";
+    r.reason = reason;
+  } else if (r.status && r.status !== "skipped" && r.status !== "error") {
+    r.reason = r.reason ? `${r.reason};  ${reason}` : reason;
+  }
+}
+
 /** Context shared by every app in one run:  caches per repo. */
 export function makeContext(deps, registry) {
   const cache = new Map();
@@ -718,6 +944,14 @@ export async function evaluateApp(ctx, key, app, now) {
         r.reason += `;  a ship run in flight for ${oldest.ageHours}h looks stuck (${oldest.url})`;
       }
     }
+
+    try {
+      const externalRows = await loadExternalBetaGroups(ctx, app.appleId, app.platform);
+      applyExternalGroupStaleness(r, valid, externalRows);
+    } catch (err) {
+      r.externalGroups = [];
+      r.externalGroupsWarning = String(err.message || err).slice(0, 300);
+    }
   } catch (err) {
     r.status = "error";
     r.reason = String(err.message || err).slice(0, 300);
@@ -744,7 +978,14 @@ export async function runRemedies(results, state, deps, registry, { dryRun = fal
   state.apps = state.apps || {};
   const fleetInflight = [...results.filter((r) => r.pipeline?.inflight?.length).map((r) => r.key), ...extraInflight];
   let dispatched = 0;
-  const candidates = results.filter((r) => REMEDIABLE.has(r.status)).sort((a, b) => (b.gapHours || 0) - (a.gapHours || 0));
+  const GROUP_ONLY_BLOCK =
+    "behind only from external beta groups; a ship workflow cannot fix group membership or testers";
+  for (const r of results) {
+    if (REMEDIABLE.has(r.status) && r.externalGroupsOnly) {
+      r.remedy = { action: "blocked", reason: GROUP_ONLY_BLOCK };
+    }
+  }
+  const candidates = results.filter((r) => shouldRemedyApp(r)).sort((a, b) => (b.gapHours || 0) - (a.gapHours || 0));
   for (const r of candidates) {
     const app = registry.apps[r.key];
     const s = (state.apps[r.key] = state.apps[r.key] || {});

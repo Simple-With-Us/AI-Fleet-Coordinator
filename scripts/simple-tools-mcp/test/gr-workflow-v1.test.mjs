@@ -1155,6 +1155,19 @@ test('v2: custody verb arg validation',()=>{
   assert.ok(validWfV1Args('wf_pr_edit',{repo,number:7,title:'n',expected_head_sha:S40,expected_base_ref:'main'}));
   assert.ok(validWfV1Args('wf_pr_edit',{repo,number:7,expected_head_sha:S40,expected_base_ref:'main'}));
   assert.ok(!validWfV1Args('wf_pr_edit',{repo,number:7,title:'n',expected_head_sha:S40}));
+
+  // AFC-683: verbs no seat policy grants carry the working routes, not the candidate note.
+  {
+    const c = WF_V1_TOOLS.find(t=>t.name==='gr_wf_pr_create');
+    const e = WF_V1_TOOLS.find(t=>t.name==='gr_wf_pr_edit');
+    assert.match(c.description, /UNGRANTED: no seat policy grants this verb/);
+    assert.match(c.description, /gr_open_pr/);
+    assert.ok(!c.description.includes('Inactive candidate'));
+    assert.match(e.description, /UNGRANTED: no seat policy grants this verb/);
+    assert.match(e.description, /gr_edit_pr/);
+    assert.ok(!e.description.includes('Inactive candidate'));
+    assert.ok(WF_V1_TOOLS.find(t=>t.name==='gr_wf_pr_close').description.includes('Inactive candidate'));
+  }
   assert.ok(validWfV1Args('wf_pr_close',{repo,number:7,expected_head_sha:S40,expected_base_ref:'main'}));
   assert.ok(!validWfV1Args('wf_pr_close',{repo,number:7,expected_head_sha:S40,expected_base_ref:'main',delete_branch:true}));
 });
