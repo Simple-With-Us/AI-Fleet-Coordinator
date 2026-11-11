@@ -1770,9 +1770,14 @@ class SessionIssuesTest(unittest.TestCase):
         out = self.update(issues=[{"id": "OPS-1", "seen_at": "2026-11-10T16:00:00Z"}])
         self.assertEqual(out["outcome"], "closed")
         self.assertEqual([i["id"] for i in out["issues"]], ["AFC-694"])
+        # A touch on the closed session reports the list it keeps, as update does (Kody on #1762).
         self.assertEqual(
             R.touch_session(self.db, **self.where),
-            {"record_id": self.made["record_id"], "outcome": "closed"},
+            {
+                "record_id": self.made["record_id"],
+                "outcome": "closed",
+                "issues": [{"id": "AFC-694", "seen_at": "2026-11-10T15:00:00Z"}],
+            },
         )
 
     def test_the_cli_update_takes_issues_as_json(self):

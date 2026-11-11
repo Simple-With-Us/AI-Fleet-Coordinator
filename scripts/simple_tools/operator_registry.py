@@ -1741,15 +1741,18 @@ def touch_session(
             profile_scope=profile_scope,
             native_session_id=native_session_id,
         )
+        held_issues = _stored_issues(registry._conn, row["record_id"])
         if row["closed_at"]:
-            return {"record_id": row["record_id"], "outcome": "closed"}
+            closed: dict[str, Any] = {"record_id": row["record_id"], "outcome": "closed"}
+            if held_issues:
+                closed["issues"] = held_issues  # a closed session keeps its list, as update reports it
+            return closed
         registry.mark_seen(row["record_id"])
         out: dict[str, Any] = {"record_id": row["record_id"], "outcome": "seen"}
         letter, generation = registry._active_alias(registry._conn, row["record_id"])
         if letter:
             out["label"] = letter
             out["generation"] = generation
-        held_issues = _stored_issues(registry._conn, row["record_id"])
         if held_issues:
             out["issues"] = held_issues  # AFC-694:  an addition, like the letter
         return out

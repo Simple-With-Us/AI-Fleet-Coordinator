@@ -132,7 +132,7 @@ class ClientTests(ApiBase):
         identity = {"platform": "minimax", "location": "server", "scope": "default", "session_id": "mm-issues-1"}
         made = registry_api.call(env, "register", {**identity, "seat": "MM", "source": "test"})
         self.assertNotIn("error", made)
-        issues = [{"id": "AFC-694", "seen_at": "2026-11-10T15:00:00Z"}]
+        issues = [{"id": "AFC-1", "seen_at": "2026-11-10T15:00:00Z"}]
         updated = registry_api.call(env, "update", {**identity, "issues": issues + [{"id": "NOPE-1"}]})
         self.assertEqual((updated["changed"], updated["issues"]), (["issues"], issues))
         history = registry_api.call(env, "history", {"platform": "minimax"})
@@ -154,7 +154,7 @@ class ClientTests(ApiBase):
         # An update without the field leaves it;  one that is not a list is refused.
         again = registry_api.call(env, "update", {**identity, "title": "Words"})
         self.assertEqual(again["issues"], issues)
-        refused = registry_api.call(env, "update", {**identity, "issues": "AFC-694"})
+        refused = registry_api.call(env, "update", {**identity, "issues": "AFC-1"})
         self.assertIn("must be a list", refused.get("error", ""))
 
     def test_a_malformed_url_and_a_truncated_answer_are_error_answers(self) -> None:
