@@ -449,6 +449,8 @@ class RegistryService:
             name: payload.get(name)
             for name in ("title", "project", "thread_link", "apple_note_link", "wake_capability")
         }
+        # AFC-694:  `issues` replaces the session's Linear issues;  a request without it leaves them.
+        fields["issues"] = payload.get("issues")
         out = OR.update_session(
             self.db_path,
             platform=identity["platform"],

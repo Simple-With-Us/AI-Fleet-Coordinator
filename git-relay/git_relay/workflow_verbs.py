@@ -59,6 +59,19 @@ class Unknown(RuntimeError):
     """Own App credential unavailable."""
 
 
+# Fixed refusal strings.  The hosted front maps each one to a reason;  none of
+# them carries upstream prose.  A missing hold label is a definite pre-write
+# refusal.  An issues-route 404 on a real pull request is retried through
+# GraphQL, and only a confirmed miss becomes LABEL_NOT_APPLIED.
+LABEL_NOT_FOUND = "additive label does not exist"
+LABEL_TARGET_NOT_FOUND = "additive label target not found"
+LABEL_NOT_APPLIED = "additive label was not applied"
+AUTO_MERGE_NOT_ARMED = "auto-merge is not armed"
+AUTO_MERGE_REFUSED = "auto-merge enable was refused"
+AUTO_MERGE_OTHER_METHOD = "auto-merge is armed with a different method"
+_NODE_ID = re.compile(r"[A-Za-z0-9_/=+-]{1,200}")
+
+
 _SHA = re.compile(r"[0-9a-f]{40}")
 _REF = re.compile(r"[A-Za-z0-9._/-]{1,200}")
 _PATH = re.compile(r"[A-Za-z0-9._/+@~-]{1,1024}")
@@ -4303,18 +4316,84 @@ class WorkflowVerbs:
             raise RelayGitHubError(502, "PR mutation outcome unverifiable")
         return {"pull": pull}
 
+    def _automerge_state(self, repo, number, node, method):
+        """Read auto-merge after an uncertain enable.  None means still unreadable.
+
+        False means a matching read showed it off.  "mismatch" means it is armed
+        with a different method.  A dict is the confirmed receipt for `method`.
+        The read is GraphQL: the REST auto_merge field can stay stale.
+        """
+        owner, name = repo.split("/", 1)
+        query = (
+            "query($owner:String!,$name:String!,$number:Int!){"
+            "repository(owner:$owner,name:$name){pullRequest(number:$number){"
+            "id autoMergeRequest{enabledAt mergeMethod}}}}"
+        )
+        try:
+            result = self._fixed_graph(
+                query,
+                {"owner": owner, "name": name, "number": number},
+                "repository",
+                write=False,
+            )
+        except RelayGitHubError:
+            return None
+        pull = _sub(result, "pullRequest")
+        if pull.get("id") != node or "autoMergeRequest" not in pull:
+            return None
+        arm = pull.get("autoMergeRequest")
+        if arm is None:
+            return False
+        if not isinstance(arm, dict):
+            return None
+        seen = arm.get("mergeMethod")
+        enabled = arm.get("enabledAt")
+        if seen not in ("SQUASH", "MERGE", "REBASE") or not isinstance(enabled, str) or not enabled:
+            return None
+        if seen != method:
+            return "mismatch"
+        return {"id": node, "autoMergeRequest": {"enabledAt": enabled}}
+
     def wf_automerge_enable(self, repo, args):
         _only(args, ("repo", "number", "method"))
         method = _enum(args, "method", ("SQUASH", "MERGE", "REBASE"))
-        node = self._pr_node(repo, _int(args, "number"))
-        query = "mutation($id: ID!, $method: PullRequestMergeMethod!) { enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:$method}) { pullRequest { id autoMergeRequest { enabledAt } } } }"
-        result = self._fixed_graph(
-            query, {"id": node, "method": method}, "enablePullRequestAutoMerge"
+        number = _int(args, "number")
+        node = self._pr_node(repo, number)
+        query = (
+            "mutation($id: ID!, $method: PullRequestMergeMethod!) { "
+            "enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:$method}) { "
+            "pullRequest { id autoMergeRequest { enabledAt mergeMethod } } } }"
         )
-        pull = _sub(result, "pullRequest")
-        if pull.get("id") != node or not isinstance(pull.get("autoMergeRequest"), dict):
-            raise RelayGitHubError(502, "auto-merge outcome unverifiable")
-        return {"pull": pull}
+        try:
+            result = self._fixed_graph(
+                query, {"id": node, "method": method}, "enablePullRequestAutoMerge"
+            )
+            pull = _sub(result, "pullRequest")
+            arm = pull.get("autoMergeRequest")
+            if pull.get("id") != node or not isinstance(arm, dict):
+                raise RelayGitHubError(502, "auto-merge outcome unverifiable")
+            seen = arm.get("mergeMethod")
+            if seen is not None and seen != method:
+                raise RelayGitHubError(502, "auto-merge outcome unverifiable")
+            return {"pull": pull}
+        except RelayGitHubError as exc:
+            # A lost response or a GraphQL error is not proof the mutation was
+            # refused.  One read settles it.  The mutation is not sent again.
+            if exc.status not in (0, 408) and exc.status < 500:
+                raise
+            settled = self._automerge_state(repo, number, node, method)
+            if settled is None:
+                raise
+            if settled == "mismatch":
+                raise Refused(AUTO_MERGE_OTHER_METHOD)
+            if settled is False:
+                # A typed GraphQL refusal (forbidden, not found, unprocessable)
+                # is permanent.  A lost response, or a rate limit, can be sent again.
+                code = exc.code if isinstance(exc.code, str) else ""
+                if code in ("graphql_forbidden", "graphql_not_found", "graphql_unprocessable"):
+                    raise Refused(AUTO_MERGE_REFUSED)
+                raise Refused(AUTO_MERGE_NOT_ARMED)
+            return {"pull": settled}
 
     def _review_thread_state(self, repo, args, resolved):
         _only(args, ("repo", "number", "thread_id"))
@@ -5136,6 +5215,107 @@ class WorkflowVerbs:
             }
         }
 
+    def _read_pr_labels(self, owner, name, number):
+        """One GraphQL page of a pull request's labels, or None when unreadable."""
+        query = (
+            "query($owner:String!,$name:String!,$number:Int!){"
+            "repository(owner:$owner,name:$name){pullRequest(number:$number){"
+            "labels(first:100){pageInfo{hasNextPage} nodes{id name color}}}}}"
+        )
+        try:
+            result = self._fixed_graph(
+                query,
+                {"owner": owner, "name": name, "number": number},
+                "repository",
+                write=False,
+            )
+        except RelayGitHubError:
+            return None
+        connection = _sub(result, "pullRequest").get("labels")
+        return connection if isinstance(connection, dict) else None
+
+    def _graphql_label_receipt(self, labels, existing, nodes, connection):
+        """REST-shaped rows for the labels this call asked for, from one GraphQL page."""
+        page = connection.get("pageInfo") if isinstance(connection, dict) else None
+        has_next = page.get("hasNextPage") if isinstance(page, dict) else None
+        items = connection.get("nodes") if isinstance(connection, dict) else None
+        if not isinstance(has_next, bool) or not isinstance(items, list):
+            raise RelayGitHubError(502, "additive label receipt unverifiable")
+        by_node = {}
+        for item in items:
+            if not isinstance(item, dict):
+                raise RelayGitHubError(502, "additive label identity unverifiable")
+            node_id = item.get("id")
+            if isinstance(node_id, str) and _NODE_ID.fullmatch(node_id):
+                by_node[node_id] = item
+        rows = []
+        for name in labels:
+            folded = name.casefold()
+            node_id = nodes.get(folded)
+            item = by_node.get(node_id) if isinstance(node_id, str) else None
+            if item is None:
+                if has_next:
+                    raise RelayGitHubError(502, "added labels not confirmed")
+                raise Refused(LABEL_NOT_APPLIED)
+            color = item.get("color")
+            seen = item.get("name")
+            if (
+                not isinstance(seen, str)
+                or seen.casefold() != folded
+                or not isinstance(color, str)
+                or not re.fullmatch(r"[A-Fa-f0-9]{6}", color)
+            ):
+                raise RelayGitHubError(502, "added label metadata unverifiable")
+            rows.append({"id": existing[folded], "name": seen, "color": color.lower()})
+        return rows
+
+    def _labels_via_graphql(self, repo, number, labels, existing, nodes):
+        """Apply labels on a pull request after the issues route returns 404.
+
+        The issues route 404s when Issues are disabled.  addLabelsToLabelable
+        still works on a pull request and needs the same issues:write token.
+        An uncertain mutation is settled by one read and is not sent again.
+        """
+        try:
+            pull = self._pr_read(repo, number)[0]
+        except RelayGitHubError as exc:
+            if exc.status == 404:
+                raise Refused(LABEL_TARGET_NOT_FOUND) from None
+            raise
+        label_ids = []
+        for name in labels:
+            node_id = nodes.get(name.casefold())
+            if not isinstance(node_id, str):
+                raise Refused(LABEL_NOT_APPLIED)
+            label_ids.append(node_id)
+        owner, repo_name = repo.split("/", 1)
+        mutation = (
+            "mutation($id:ID!,$labelIds:[ID!]!){"
+            "addLabelsToLabelable(input:{labelableId:$id,labelIds:$labelIds}){"
+            "labelable{__typename ... on PullRequest{number labels(first:100){"
+            "pageInfo{hasNextPage} nodes{id name color}}}}}}"
+        )
+        try:
+            result = self._fixed_graph(
+                mutation,
+                {"id": pull["node_id"], "labelIds": label_ids},
+                "addLabelsToLabelable",
+            )
+        except RelayGitHubError as exc:
+            if exc.status not in (0, 408) and exc.status < 500:
+                raise
+            seen = self._read_pr_labels(owner, repo_name, number)
+            if seen is None:
+                raise
+            return self._graphql_label_receipt(labels, existing, nodes, seen)
+        labelable = _sub(result, "labelable")
+        if labelable.get("__typename") != "PullRequest" or labelable.get("number") != number:
+            raise RelayGitHubError(502, "additive label receipt unverifiable")
+        connection = labelable.get("labels")
+        if not isinstance(connection, dict):
+            raise RelayGitHubError(502, "additive label receipt unverifiable")
+        return self._graphql_label_receipt(labels, existing, nodes, connection)
+
     def wf_labels_add(self, repo, args):
         """Add an exact bounded label set without replacing unrelated issue/PR labels."""
         _only(args, ("repo", "number", "labels"))
@@ -5157,7 +5337,10 @@ class WorkflowVerbs:
         if len(set(folded)) != len(folded):
             raise Refused("duplicate additive labels")
         # Existence is observed, not an atomic lock against concurrent deletion.
+        # A missing label is a definite refusal:  the issues route 404s for that
+        # too, and a bare 404 hid which of the two it was.
         existing = {}
+        nodes = {}
         for name in labels:
             try:
                 row = self._get(f"/repos/{repo}/labels/{quote(name, safe='')}")
@@ -5166,19 +5349,36 @@ class WorkflowVerbs:
                     raise PreReadUnavailable(
                         "label pre-read unavailable; no write attempted"
                     ) from None
+                if exc.status == 404:
+                    raise Refused(LABEL_NOT_FOUND) from None
                 raise
+            node_id = row.get("node_id") if isinstance(row, dict) else None
             if (
                 not isinstance(row, dict)
                 or type(row.get("id")) is not int
                 or row["id"] <= 0
                 or not isinstance(row.get("name"), str)
                 or row["name"].casefold() != name.casefold()
+                or (node_id is not None and not isinstance(node_id, str))
+                or (isinstance(node_id, str) and not _NODE_ID.fullmatch(node_id))
             ):
                 raise Refused("additive label does not exist or identity mismatched")
             existing[name.casefold()] = row["id"]
-        data = self.client._call(
-            "POST", f"/repos/{repo}/issues/{number}/labels", {"labels": labels}, bearer=self.bearer
-        )
+            nodes[name.casefold()] = node_id
+        try:
+            data = self.client._call(
+                "POST",
+                f"/repos/{repo}/issues/{number}/labels",
+                {"labels": labels},
+                bearer=self.bearer,
+            )
+        except RelayGitHubError as exc:
+            # Issues disabled:  GitHub 404s this route.  The label exists, so try
+            # the pull-request mutation.  Any other status stays a GitHub refusal
+            # or an unknown write, and is not retried here.
+            if exc.status != 404:
+                raise
+            data = self._labels_via_graphql(repo, number, labels, existing, nodes)
         if not isinstance(data, list) or len(data) > 100:
             raise RelayGitHubError(502, "additive label receipt unverifiable")
         found = {}

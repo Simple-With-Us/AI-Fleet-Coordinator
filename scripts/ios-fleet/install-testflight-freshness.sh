@@ -6,9 +6,10 @@
 #   bash scripts/ios-fleet/install-testflight-freshness.sh --no-launchd   # files only
 #
 # Run it from an AI-Fleet-Coordinator lane at origin/main, never from a stale tree.
-# It copies the tracked check and its registry into ~/apps/ios-fleet (the install
-# target the fleet's TestFlight scripts already live in; asc-api.mjs and
-# build-window.sh stay there and are not touched), and installs the LaunchAgent
+# It copies the tracked check, its scoped-credential module and its registry
+# into ~/apps/ios-fleet (the install target the fleet's TestFlight scripts
+# already live in; asc-api.mjs and build-window.sh stay there and are not
+# touched), and installs the LaunchAgent
 # com.jay.ios-testflight-freshness.  A replaced file is kept as
 # <file>.bak-freshness-<stamp>.  The LaunchAgent is not RunAtLoad, so loading it
 # never dispatches a ship by itself.  Register changes in MAC-LOCAL-PROCESSES.md.
@@ -55,6 +56,7 @@ install_one() {
 }
 
 install_one "$HERE/ios_testflight_freshness.mjs" "$DEST/ios_testflight_freshness.mjs" 755 || true
+install_one "$HERE/asc_scoped_creds.mjs" "$DEST/asc_scoped_creds.mjs" 644 || true
 install_one "$HERE/testflight-apps.json" "$DEST/testflight-apps.json" 644 || true
 
 if [[ "$LAUNCHD" -eq 1 ]]; then

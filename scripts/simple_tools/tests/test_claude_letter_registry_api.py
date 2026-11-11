@@ -145,6 +145,23 @@ class ApiSide(unittest.TestCase):
         self.assertEqual(out["sessionTitle"], "QX: Fix the Build")
         self.assertIn("letter changed from %s to QX" % old, out["additionalContext"])
 
+    def test_the_issues_op_reaches_the_server_registry_through_its_update(self) -> None:
+        self.registry("register", "--location", "mac", "--session-id", SID)
+        issues = [{"id": "AFC-694", "seen_at": "2026-11-10T15:00:00Z"}]
+        code, answer = self.registry(
+            "issues", "--location", "mac", "--session-id", SID, "--issues=" + json.dumps(issues)
+        )
+        self.assertEqual(code, 0, answer)
+        self.assertEqual((answer["ok"], answer["issues"]), (True, issues))
+        code, touched = self.registry("touch", "--location", "mac", "--session-id", SID)
+        self.assertEqual(code, 0, touched)
+        found = OR.resolve_label(self.db, "claude", self.record()["label"])
+        self.assertEqual(found["issues"], issues)
+        # A closed chat's list is not changed:  the answer is the retired one the hook already knows.
+        self.registry("close", "--location", "mac", "--session-id", SID)
+        code, closed = self.registry("issues", "--location", "mac", "--session-id", SID, "--issues=[]")
+        self.assertEqual((code, closed.get("retired")), (0, True))
+
     def test_a_chat_that_comes_back_after_close_reopens(self) -> None:
         _, first = self.registry("register", "--location", "mac", "--session-id", SID)
         self.registry("close", "--location", "mac", "--session-id", SID)

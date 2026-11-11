@@ -861,10 +861,13 @@ def open_store(path: str) -> sqlite3.Connection:
     """The store, read-only, after checking it has the `archived` column the release reads."""
     if not path or not os.path.isfile(path):
         raise StoreUnreadable("no Codex store at %s" % (path or "the Codex home"))
+    conn = None
     try:
         conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
         cols = {r[1] for r in conn.execute("PRAGMA table_info(threads)")}
     except sqlite3.Error as exc:
+        if conn is not None:
+            conn.close()
         raise StoreUnreadable(
             "the Codex store could not be read (%s)" % type(exc).__name__
         ) from exc
@@ -975,6 +978,7 @@ def release_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int
     try:
         rows, error = live_registrations(env, location, db)
         if error:
+            conn.close()
             return _emit(stdout, {"error": error}, 2)
         truncated = any(row.get("truncated") for row in rows)
         rows = [row for row in rows if not row.get("truncated")]
@@ -999,11 +1003,11 @@ def release_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int
                 released.append({"session_id": sid, "reason": reason, "would_release": True})
                 continue
             try:
-                if archive_reason(conn, sid) != reason:
-                    kept.append(
-                        sid
-                    )  # unarchived (or changed) since the first read:  it keeps its letter
+                now = archive_reason(conn, sid)
+                if not now:
+                    kept.append(sid)  # unarchived since the first read:  it keeps its letter
                     continue
+                reason = now  # still archived, perhaps now through a parent:  release with the current reason
             except sqlite3.Error:
                 failed.append(sid)
                 continue
