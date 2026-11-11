@@ -227,7 +227,7 @@ if not m: sys.exit("no [seat.JET] section")
 body = m.group(1)
 if 'wake = "http"' in body: sys.exit("JET already has wake = \"http\"; nothing changed")
 if body.count('wake = "inbox"') != 1: sys.exit("JET section does not hold exactly one wake = \"inbox\" line; edit by hand")
-new = body.replace('wake = "inbox"', 'wake = "http"\nroutine = { url_env = "JET_ROUTINE_URL", key_env = "JET_ROUTINE_KEY", method = "POST", auth = "hmac-sha256", header = "X-Simple-Tools-Signature", timeout_seconds = 15 }\nbudget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 30, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }', 1)
+new = body.replace('wake = "inbox"', 'wake = "http"\nroutine = { url_env = "JET_ROUTINE_URL", key_env = "JET_ROUTINE_KEY", method = "POST", auth = "hmac-sha256", header = "X-Simple-Tools-Signature", timeout_seconds = 15 }\nbudget = { usd_per_day = 2.0, board_per_day = 0 }', 1)
 with open(p, "r+") as f:
     f.seek(0); f.write(s[:m.start(1)] + new + s[m.end(1):]); f.truncate()
 print("JET switched to wake = \"http\"")
