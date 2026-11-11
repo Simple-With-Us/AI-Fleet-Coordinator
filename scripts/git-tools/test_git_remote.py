@@ -1194,8 +1194,6 @@ class TestOutcomes(unittest.TestCase):
             "gr_wf_repo_hooks",
             "gr_wf_deploy_keys",
             "gr_wf_org_installations",
-            "gr_wf_branch_rules",
-            "gr_wf_rulesets",
         ):
             self.assertIn(name, git.READ_TOOLS, name)
 
@@ -1708,6 +1706,34 @@ class TestReview1199(unittest.TestCase):
         }
         for pattern, value in positive.items():
             self.assertTrue(git._patterns_match([(pattern, value)], time.monotonic() + 5), pattern)
+
+    def test_the_typed_tools_repo_pattern_is_reviewed_and_runs_in_the_child(self):
+        # gr_v1_pr_state, gr_v1_pr_hold_state and gr_v1_pr_automerge_disable (listed only when GR_TYPED_TOOLS is on) carry this
+        # repo pattern, whose repeats are unbounded.  It is in the reviewed set because it is linear:  one character class, a
+        # literal slash neither class holds, one character class.  This runs it through the same child as every pattern.
+        pattern = r"^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$"
+        self.assertTrue(git._pattern_known(pattern))
+        for good in ("acme/widgets", "Example-Org/Example-Repo", "a.b/c_d-e"):
+            self.assertTrue(git._patterns_match([(pattern, good)], time.monotonic() + 5), good)
+        for bad in ("acme", "acme/", "/widgets", "acme/wid gets", "a/b/c", "acme/widgéts", ""):
+            self.assertFalse(git._patterns_match([(pattern, bad)], time.monotonic() + 5), repr(bad))
+        # the worst input the client accepts (its input limit is 65,536 characters) stays far inside the bound
+        start = time.monotonic()
+        worst = "A" * 32767 + "/" + "A" * 32766 + "!"
+        self.assertFalse(git._patterns_match([(pattern, worst)], start + 5))
+        self.assertLess(time.monotonic() - start, 2)
+        # and the input schema those tools advertise is one simple-git reads
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["repo", "number", "expected_head"],
+            "properties": {
+                "repo": {"type": "string", "pattern": pattern},
+                "number": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+                "expected_head": {"type": "string", "pattern": r"^[0-9a-f]{40}$"},
+            },
+        }
+        self.assertTrue(git._schema_ok(schema))
 
     def test_call_with_an_unrecognized_pattern_never_reaches_the_child(self):
         # an unreviewed pattern makes the schema unreadable at discovery: no fork, no target call

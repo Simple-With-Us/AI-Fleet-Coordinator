@@ -38,14 +38,14 @@ Allowed sets, as the code builds them:
 
 | Connection | May act as |
 |---|---|
-| Hosted CURSOR grant | `CURSOR`, `GROK-WEB`, and every enabled Grok Bot persona: `GB-DIRECTOR`, `GB-FIXER`, `GB-DESIGNER`, `GB-COMPILER`, `GB-HOUSEKEEPER`, `GB-PUBLISHER`, `GB-DEPLOYER`, `GB-MONITOR`, `GB-PLUMBER`, `GB-ORACLE`, `GB-TRADER` |
+| Hosted CURSOR grant | `CURSOR`, `GROK-WEB`, and every enabled Grok bot: `GB-DIRECTOR`, `GB-FIXER`, `GB-DESIGNER`, `GB-COMPILER`, `GB-HOUSEKEEPER`, `GB-PUBLISHER`, `GB-DEPLOYER`, `GB-MONITOR`, `GB-PLUMBER`, `GB-ORACLE`, `GB-TRADER` |
 | Hosted GROK-WEB grant | The same set, with default `GROK-WEB` |
 | Any other hosted grant (such as JET, ECHO or WISE) | Its own seat only |
-| Stdio or CLI on the Mac | Every agent bot whose `<PREFIX>_ZULIP_*` keys are in Infisical Fleet-OPS `/zulip`: the live seats, `BF-*` and the enabled `GB-*` personas |
+| Stdio or CLI on the Mac | Every agent bot whose `<PREFIX>_ZULIP_*` keys are in Infisical Fleet-OPS `/zulip`: the live seats, `BF-*` and the enabled `GB-*` bots |
 | Stdio or CLI on the server | Every agent bot whose credential the server holds |
 | Any stdio or CLI session under a launcher (`AGENT_LAUNCHER`) | The launcher's seat alone |
 
-Never in any set: the owner's own account and the integration bots (BetterStack, Datadog, Linear, PagerDuty, Sentry).  A Grok Bot persona is in a set only when enabled in `scripts/simple_tools/mcp/gb-identities.json` (the one list both servers read); `GB-ENGINEER` is not enabled yet.
+Never in any set: the owner's own account and the integration bots (BetterStack, Datadog, Linear, PagerDuty, Sentry).  A Grok bot is in a set only when enabled in `scripts/simple_tools/mcp/gb-identities.json` (the one list both servers read); `GB-ENGINEER` is not enabled yet.
 
 What differs on hosted: a read tool needs the grant's `zulip:read` scope and a write tool `zulip:write` (every family, not only Zulip); a paused seat answers `paused`; a seat or family that is not set up answers `not_configured` (Linear is on only for the GROK-WEB and CURSOR groups; FleetLink, recall and the eavesdropper reader need their server secrets).
 
@@ -235,8 +235,6 @@ Per-seat policy is an allowlist layer over that credential: allowed actions, all
 
 **Closing a pull request.**  `gr_wf_pr_close` closes an open PR without merging it and never deletes its branch.  It requires `expected_head_sha` and `expected_base_ref`, and it returns a receipt.  `gr_wf_pr_reopen` reopens a closed PR, with `expected_head_sha` optional, and a PR already open answers with no write.  A merged PR is refused by both.  Those checks read the PR just before the write, so they narrow a race and do not close it.  `simple-git call` reaches both.  Who may close whose PR is the superseded-PR rule in `AGENTS.md`.
 
-**Rules, rulesets and merge settings.**  `gr_wf_branch_rules` (`repo`, `branch`, optional `page` and `per_page`) lists the rules from every active ruleset that applies to that branch, with each rule's parameters (a `pull_request` rule carries `allowed_merge_methods`) and the ruleset that supplies it.  `gr_wf_rulesets` lists the repository's rulesets (id, name, target, source, enforcement), and with `includes_parents` (default true) the organization rulesets that target it.  Both are metadata reads.  Classic branch protection needs Administration read, which the fleet ceiling does not hold, so no verb reads it.  `gr_wf_repo_get` carries `allow_merge_commit`, `allow_squash_merge`, `allow_rebase_merge`, `allow_auto_merge` and `delete_branch_on_merge` only when GitHub returns them, and GitHub returns them only to a token that can read the repository's settings:  the relay asks for that when the seat's ceiling holds Administration, and otherwise those keys stay absent (absent means unknown, not false).
-
 `mint_token` is deliberately not exposed over GR-MCP or fronted by ST-MCP: it returns a raw credential, and a stdio transcript is too easy to capture.  A seat that needs a token for git-over-HTTPS calls the relay's HTTP API directly, where the answer goes only to that caller and the mint is capped the same way.
 
 **Fetch and clone need no token.**  `simple-git clone`, `fetch`, `pull`, `ls-remote`, `bundle` and `archive` run local git over the read-only route at `https://agents.simplewithus.com/git/`, as the seat's own GitHub App.  The relay holds the GitHub token, so the machine needs only `SIMPLE_TOOLS_BEARER`.  The route has no push.
@@ -349,7 +347,7 @@ Tool errors come back with `isError: true` and an object `{code, message, retrya
 | `unknown_tool` | A removed name.  Use `replacement` |
 | `invalid_argument` | The arguments broke the schema or a rule (the message names the field) |
 | `not_authorized` | Zulip or Linear refused the credential, a missing OAuth scope on hosted (reconnect and approve `zulip:read` or `zulip:write`), or a Linear write by the wrong app |
-| `not_configured` | This seat or family is not set up: on hosted, on the server (Linear, FleetLink, recall, a persona's credentials); on stdio, FleetLink's CLI or the seat's FleetLink token is missing here |
+| `not_configured` | This seat or family is not set up: on hosted, on the server (Linear, FleetLink, recall, a bot's credentials); on stdio, FleetLink's CLI or the seat's FleetLink token is missing here |
 | `paused` | Hosted only: the owner paused this seat |
 | `rate_limited` | Retry after `retry_after_s` (`retryable: true`) |
 | `outcome_unknown` | The write may or may not have landed.  Check (read the topic) before retrying; never replay blindly |

@@ -225,8 +225,6 @@ class SeatPolicy:
         "wf_org_installations",
         "wf_repo_list",
         "wf_pr_search",
-        "wf_branch_rules",
-        "wf_rulesets",
         "wf_assignees_add",
         "wf_assignees_remove",
         "wf_issue_lock",

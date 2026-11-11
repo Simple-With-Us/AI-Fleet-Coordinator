@@ -121,8 +121,7 @@ wf_run_artifacts wf_release_assets wf_release_asset_get wf_pr_list wf_pr_files w
 wf_commits wf_code_search wf_runs wf_run_jobs wf_checks wf_merge_queue_entry wf_job_get wf_workflow_get
 wf_artifact_get wf_artifacts_page wf_caches_page wf_cache_usage wf_run_attempt_get wf_run_attempt_jobs
 wf_run_pending_deployments wf_repo_variables wf_repo_variable_get wf_issue_events wf_issue_timeline
-wf_git_blob_binary_get wf_repo_list wf_pr_search wf_repo_hooks wf_deploy_keys wf_org_installations
-wf_branch_rules wf_rulesets""".split()
+wf_git_blob_binary_get wf_repo_list wf_pr_search wf_repo_hooks wf_deploy_keys wf_org_installations""".split()
 READ_TOOLS = frozenset(["gr_v1_pr_state", "gr_v1_pr_hold_state"] + ["gr_" + a for a in WF_V1_READ_ACTIONS])
 
 # Per-action input byte limits (gr-workflow-v1.js WF_V1_INPUT_LIMITS; default 64 KiB).
@@ -872,7 +871,7 @@ def discover_tools(bearer: str, deadline: float | None = None) -> dict:
 
 _PATTERN_CHECK_MAX_S = 5  # per-validation wall-clock cap on ALL pattern work, inside the overall budget
 
-# The exact contract for untrusted patterns:  only these 20 patterns - the reviewed catalog's complete
+# The exact contract for untrusted patterns:  only these 21 patterns - the reviewed catalog's complete
 # set, sha256 of the pattern text - may ever be compiled or searched.  Anything unrecognized fails
 # closed, on every platform.  There is NO heuristic:  widening this set is a reviewed code change, and
 # each member's compile size and match cost are verified facts, not estimates.
@@ -887,6 +886,13 @@ _KNOWN_PATTERN_DIGESTS = frozenset(
     "38a3d1088fbdbafafbcf18a3b050a2b49fe75cee854720ae984e511d9eaa57bb",
     "45b5f55a38eb846af40064f0db7ec2ea0825785dfe6a1135ce82f2094b001005",
     "52f851fad882359b4da47ab468f04139b0a5bbc846a922f655c5b37cdcfd05de",
+    # The repo argument of gr_v1_pr_state, gr_v1_pr_hold_state and gr_v1_pr_automerge_disable (listed only when
+    # GR_TYPED_TOOLS is on):  ^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$   Reviewed Nov 2026.  No group and no alternation, and two
+    # unbounded repeats of ONE character class around a literal slash that neither class holds, so an input splits in
+    # exactly one way and the search is linear.  It compiles to 46 code words in 0.25 ms;  the worst search of any
+    # 65,536-character input (the client's input limit) took 0.63 ms, and doubling the input doubled the time.  Python's $
+    # also matches before a trailing newline, which can only let through a value the Worker's own check then refuses.
+    "76874efb4916ec9745c05841c1bd120693e965bcdf24af4cba9bdd8c50370518",
     "7a3e89f559ebec394da08a91160bb5eab26b2ef30d26eeb88c270079b58d2e2f",
     "7b8be75214feb9b9cc29abc256a0996c92dcd7d05abfb1ca5f7b922d58aaffec",
     "88b2ed1aec9cd281271858178ffa9dc52d0f283a9c71e2b8fb843199216bd11d",
@@ -910,7 +916,7 @@ def _as_limit_target(resource) -> tuple:
     """The (soft, hard) RLIMIT_AS values to set:  the 1 GiB cap clamped DOWN to the platform's actual
     hard limit, which is never raised (an unprivileged fixed value can exceed it - macOS rejects that
     outright with ValueError).  Pure computation, unit-testable;  supplementary defense-in-depth only -
-    the real allocation bound is the exact 18-pattern contract:  nothing unrecognized is ever compiled,
+    the real allocation bound is the exact reviewed-pattern contract:  nothing unrecognized is ever compiled,
     on any OS."""
     _soft, hard = resource.getrlimit(resource.RLIMIT_AS)
     cap = 1 << 30

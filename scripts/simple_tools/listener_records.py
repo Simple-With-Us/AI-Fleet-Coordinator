@@ -18,8 +18,11 @@ surface fences them as untrusted before showing them.  Python 3.11+, standard li
 
 from __future__ import annotations
 
+import json
+import math
 import os
 import re
+import threading
 import time
 from collections.abc import Mapping
 from typing import Any
@@ -136,10 +139,13 @@ def inbox_view(
     }
 
 
-def pending_item(row: Mapping[str, Any]) -> dict[str, Any]:
+def pending_item(
+    row: Mapping[str, Any], receipt: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
     """One pending-inbox item:  the inbox view's fields, plus the router's stored classification
     (`classes`, `wake_worthy`, `wake_owner`) exactly as the daemon wrote the row, so a caller can
-    see why the prefilter marked it wake-worthy without any second classifier."""
+    see why the prefilter marked it wake-worthy without any second classifier, plus the `receipt`
+    (wake_receipts) of how the wake ledger routed it, or None when no ledger wake carries it."""
     item = inbox_item(row)
     classes = row.get("classes")
     item["classes"] = (
@@ -147,7 +153,183 @@ def pending_item(row: Mapping[str, Any]) -> dict[str, Any]:
     )
     item["wake_worthy"] = bool(row.get("wake_worthy"))
     item["wake_owner"] = bool(row.get("wake_owner"))
+    item["receipt"] = dict(receipt) if receipt is not None else None
     return item
+
+
+# The shapes a receipt's words must have.  Every word comes out of the wake ledger, which the
+# daemon writes from fixed codes;  a value that is not shaped like one is dropped, so a receipt can
+# never carry message text, an error string or anything a Zulip author could have written.
+_WAKE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
+_STATE_RE = re.compile(r"^[a-z_]{1,32}$")
+_VIA_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+# The ledger states of a wake that never went to an adapter:  the `reason` row field is then a fixed
+# code (`leased`, `loop_guard`, `wakes_per_hour`, `pin_stale`, ...) and says where the wake went or
+# why it stopped.  A `failed` row's reason is free text, so it is never read for the via.
+_STOP_STATES = ("skipped", "dropped", "held_back", "surfaced", "expired", "evicted")
+
+
+def _number(value: Any) -> float | None:
+    """A finite number for a real timestamp, else None (a bool, a string, NaN and infinity are None)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:  # an integer too large for a float
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _word(value: Any, shape: re.Pattern[str]) -> str | None:
+    return value if isinstance(value, str) and shape.fullmatch(value) else None
+
+
+def _receipt(wake_id: str, view: Mapping[str, Any]) -> dict[str, Any]:
+    """One wake's receipt from its merged ledger view:  `state` is the ledger's latest state word and
+    `at` the time of its latest row.
+
+    `via` is how the wake was or was not carried, in the ledger's own words (the `adapter` that took it, or
+    the `reason` code of a wake that stopped before it ran), else None;  it says nothing of the router's own choice."""
+    state = _word(view.get("state"), _STATE_RE)
+    via = _word(view.get("adapter"), _VIA_RE)
+    if state in _STOP_STATES:
+        via = _word(view.get("reason"), _VIA_RE) or via
+    return {"wake_id": wake_id, "state": state, "via": via, "at": _number(view.get("ts"))}
+
+
+def wake_receipts(paths: L.SeatPaths, message_ids: set[int]) -> dict[int, dict[str, Any]]:
+    """message id -> the receipt of the wake the ledger routed it through, for the ids that have one.
+
+    A seat-inbox row carries no wake id:  the wake ledger names its triggers (`trigger_ids`), and
+    that message-id join is the daemon's own (daemon._wake_already_recorded).  When more than one
+    ledger wake carries a message (a catch-up or a requeue mints a new wake for it, a coalesced wake
+    absorbs another) the newest wake wins, and a `merged` wake only when no other carries the id.
+
+    Only the last TAIL_BYTES of the ledger are read (_ledger_receipts), so a wake older than that window
+    gets no receipt, which the item shows as None (the documented fail-soft behaviour).
+
+    Read-only:  the ledger is read through its own merged view and no file, cursor or ack is
+    written.  An unreadable ledger (open to other users, owned by another user) is refused like
+    every other record here, but it never takes the pending read down with it:  every receipt is
+    then absent, which the item shows as None."""
+    if not message_ids:
+        return {}
+    try:
+        joined = _ledger_receipts(_private(paths.wakes, "wake ledger"))
+    except UsageError:
+        return {}
+    return {m: dict(joined[m]) for m in message_ids if m in joined}
+
+
+# How much of the end of the wake ledger a pending read looks at.  The ledger keeps 90 days and a busy seat
+# writes a row for every state change, so reading all of it on every poll would cost more each day.
+TAIL_BYTES = 1 << 20
+
+
+class _TailRows:
+    """The rows of a ledger's tail, with the ledger's own merge (`Ledger.wakes`) over them."""
+
+    wakes = W.Ledger.wakes
+
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+
+    def rows(self) -> list[dict[str, Any]]:
+        return self._rows
+
+
+def _tail_rows(fd: int, size: int, window: int) -> list[dict[str, Any]]:
+    """The complete rows inside the last `window` bytes of the file behind `fd`, oldest first.
+
+    One bounded read, never the whole file:  the byte before the window is read too, to tell a row
+    that starts exactly at the window's edge (kept) from the end of one that began before it, which is
+    dropped unparsed.  A torn last line or a line that is not a JSON object is skipped, as read_jsonl does."""
+    if size <= 0:
+        return []
+    start = size - window - 1 if size > window else 0
+    data = b""
+    while len(data) < size - start:
+        chunk = os.pread(fd, size - start - len(data), start + len(data))
+        if not chunk:
+            break
+        data += chunk
+    if size > window:
+        newline = data.find(b"\n")  # the first byte read is the one before the window
+        data = data[newline + 1 :] if newline >= 0 else b""
+    rows: list[dict[str, Any]] = []
+    for line in data.split(b"\n"):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except (ValueError, RecursionError):
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _join(rows: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    """message id -> receipt over ledger rows:  the merged views, then the newest wake per message."""
+    best: dict[int, tuple[tuple[bool, float, int], dict[str, Any]]] = {}
+    for order, (wake_id, view) in enumerate(_TailRows(rows).wakes().items()):
+        triggers = view.get("trigger_ids")
+        if not _WAKE_ID_RE.fullmatch(wake_id) or not isinstance(triggers, list):
+            continue
+        born = [t for t in map(_number, (view.get("times") or {}).values()) if t is not None]
+        rank = (view.get("state") != "merged", min(born) if born else float("-inf"), order)
+        receipt = None
+        for message_id in {_int(i) for i in triggers} - {None}:
+            if message_id not in best or rank > best[message_id][0]:
+                receipt = receipt or _receipt(wake_id, view)
+                best[message_id] = (rank, receipt)
+    return {message_id: found[1] for message_id, found in best.items()}
+
+
+# One entry, for the ledger last read:  (path, device, inode, size, mtime in ns, window) -> the joined map.
+# The map holds message ids and receipts (four ledger words each), never a row or any text.  An unchanged
+# ledger is not read again between polls;  an append, a truncate and a replace (a new inode, as the
+# ledger's prune makes) each change the key, so each is read afresh.  The read API is threaded, hence the lock.
+_receipt_cache: tuple[tuple[Any, ...], dict[int, dict[str, Any]]] | None = None
+_receipt_lock = threading.Lock()
+
+
+def _clear_receipt_cache() -> None:
+    global _receipt_cache
+    with _receipt_lock:
+        _receipt_cache = None
+
+
+def _ledger_receipts(path: str) -> dict[int, dict[str, Any]]:
+    """The joined map for the ledger at `path`:  from the cache when the file is unchanged, else from a
+    bounded tail read.  A missing, unreadable or rotated-away ledger is an empty map."""
+    global _receipt_cache
+    window = TAIL_BYTES
+    try:
+        info = os.stat(path)
+    except OSError:
+        _clear_receipt_cache()
+        return {}
+    key = (path, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, window)
+    with _receipt_lock:
+        if _receipt_cache is not None and _receipt_cache[0] == key:
+            return _receipt_cache[1]
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return {}
+    try:
+        # The file read is the one stamped:  it may have grown since the stat above.
+        info = os.fstat(fd)
+        key = (path, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, window)
+        joined = _join(_tail_rows(fd, info.st_size, window))
+    except OSError:
+        return {}
+    finally:
+        os.close(fd)
+    with _receipt_lock:
+        _receipt_cache = (key, joined)
+    return joined
 
 
 def pending_inbox_view(
@@ -161,7 +343,11 @@ def pending_inbox_view(
     just the page shown;  `latest_seq` is the newest seq in the inbox file, pending or not, so a
     check with no pending items still learns how far the inbox has run.  Read-only like every
     view here:  neither the acknowledged cursor (seat-inbox.cursor.json) nor the daemon's own
-    cursor.json or seat-inbox.meta.json is read for a floor or ever moved."""
+    cursor.json or seat-inbox.meta.json is read for a floor or ever moved.
+
+    Each shown item also carries a `receipt` (wake_receipts):  `{wake_id, state, via, at}` joined
+    from the wake ledger by message id, or None when no ledger wake carries the message.  It is
+    read-only like the rest, and a count-only read (limit 0) never opens the ledger."""
     paths = seat_paths(root, seat)
     # Both inbox files, reconciled like the daemon's _seat_inbox_rows:  rotation moves the whole
     # file to seat-inbox.jsonl.1 and starts a fresh one, so a wake-worthy row still waiting for a
@@ -181,12 +367,15 @@ def pending_inbox_view(
         if r["seq"] > after_seq and r.get("wake_worthy") and not r.get("delivered_to")
     ]
     shown = pending[: max(0, limit)]
+    receipts = wake_receipts(
+        paths, {i for i in (_int(r.get("id")) for r in shown) if i is not None}
+    )
     return {
         "seat": seat,
         "after_seq": after_seq,
         "count": len(pending),
         "latest_seq": latest_seq,
-        "items": [pending_item(r) for r in shown],
+        "items": [pending_item(r, receipts.get(_int(r.get("id")))) for r in shown],
         "next_seq": shown[-1]["seq"] if shown else after_seq,
     }
 
