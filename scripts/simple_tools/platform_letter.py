@@ -1757,15 +1757,27 @@ def _transcript_strings(
             _transcript_strings(item, own, quoted, inside, depth + 1)
 
 
-def issue_ids_in_lines(lines: list[str]) -> set[str]:
+_NOT_JSON = object()
+
+
+def parsed_lines(lines: list[str]) -> list[tuple[str, Any]]:
+    """Each transcript line with its JSON (or _NOT_JSON), parsed once for every reader of the same lines."""
+    out: list[tuple[str, Any]] = []
+    for line in lines:
+        try:
+            out.append((line, json.loads(line)))
+        except ValueError:
+            out.append((line, _NOT_JSON))
+    return out
+
+
+def issue_ids_in_lines(lines: list[str], parsed: list[tuple[str, Any]] | None = None) -> set[str]:
     """The issue ids a stretch of transcript names: any id in the chat's own words (its prompts, its
     replies, the commands and tool inputs it wrote), and the topic of any Zulip post, even one a tool's
     output shows.  A line that is not JSON is read as the chat's own words."""
     found: set[str] = set()
-    for line in lines:
-        try:
-            entry = json.loads(line)
-        except ValueError:
+    for line, entry in parsed_lines(lines) if parsed is None else parsed:
+        if entry is _NOT_JSON:
             found |= issue_ids_in(line) | _topic_issue_ids(line)
             continue
         own: list[str] = []
@@ -1957,7 +1969,7 @@ def _walk_topics(
             _walk_topics(item, pending, found, depth + 1)
 
 
-def topics_in_lines(lines: list[str]) -> list[str]:
+def topics_in_lines(lines: list[str], parsed: list[tuple[str, Any]] | None = None) -> list[str]:
     """The Zulip topics a stretch of a Claude Code transcript posted to, in the order the posts came back, each once:
     a Bash `simple-chat post` or `reply` command the chat ran (the topic its printed `posted id N to #channel › topic`
     line names, else its literal `--topic`), and a hosted `zulip_post` or `zulip_reply` call.  Either counts only when
@@ -1966,12 +1978,9 @@ def topics_in_lines(lines: list[str]) -> list[str]:
     turn read).  A call whose result is not in these lines is not counted.  Other platforms' transcripts give none."""
     found: list[str] = []
     pending: dict[str, tuple[str, list[str]]] = {}
-    for line in lines:
-        try:
-            entry = json.loads(line)
-        except ValueError:
-            continue
-        _walk_topics(entry, pending, found)
+    for _, entry in parsed_lines(lines) if parsed is None else parsed:
+        if entry is not _NOT_JSON:
+            _walk_topics(entry, pending, found)
     seen: set[str] = set()
     out: list[str] = []
     for topic in found:
@@ -1992,9 +2001,10 @@ def merge_topics(old: object, seen: list[str], now: float) -> list[dict[str, Any
             if topic and isinstance(at, (int, float)) and not isinstance(at, bool):
                 kept.pop(topic, None)
                 kept[topic] = float(at)
-    for topic in seen:
-        kept.pop(topic, None)
-        kept[topic] = now
+    for topic in (_clean_topic(item) for item in seen):
+        if topic:
+            kept.pop(topic, None)
+            kept[topic] = now
     ordered = sorted(kept.items(), key=lambda kv: kv[1])[-TOPIC_KEEP:]
     return [{"topic": topic, "at": at} for topic, at in ordered]
 
@@ -2014,9 +2024,10 @@ def collect_issue_ids(
     if isinstance(path, str) and path:
         try:
             lines, note["issues_scan"] = read_new_lines(path, root, note.get("issues_scan"))
-            found |= issue_ids_in_lines(lines)
+            parsed = parsed_lines(lines)  # one parse for both readers
+            found |= issue_ids_in_lines(lines, parsed)
             if now is not None:
-                topics = topics_in_lines(lines)
+                topics = topics_in_lines(lines, parsed)
                 if topics:
                     note["topics"] = merge_topics(note.get("topics"), topics, now)
         except (OSError, ValueError, TypeError):

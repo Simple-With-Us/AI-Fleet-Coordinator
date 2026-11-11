@@ -1443,6 +1443,14 @@ class HookTests(Base):
         many = PL.merge_topics([], ["t%d" % i for i in range(PL.TOPIC_KEEP + 5)], 9.0)
         self.assertEqual(len(many), PL.TOPIC_KEEP)
         self.assertEqual(PL.merge_topics("not a list", [], 1.0), [])
+        # What it is given is cleaned the same way:  one entry per topic, never longer than TOPIC_CHARS.
+        merged = PL.merge_topics([{"topic": "A b", "at": 1.0}], ["  A   b ", "X" * 90, "", "$T"], 7.0)
+        self.assertEqual(merged, [{"topic": "A b", "at": 7.0}, {"topic": "X" * PL.TOPIC_CHARS, "at": 7.0}])
+        # One parse serves both readers of the same lines.
+        lines = ["{not json", json.dumps({"type": "user", "message": {"content": "AFC-3"}})]
+        parsed = PL.parsed_lines(lines)
+        self.assertEqual(PL.issue_ids_in_lines(lines, parsed), PL.issue_ids_in_lines(lines))
+        self.assertEqual(PL.topics_in_lines(lines, parsed), [])
 
     def test_a_rename_event(self) -> None:
         spec = make_spec(events={"session.created": "start", "session.renamed": "rename", "session.deleted": "end"},
