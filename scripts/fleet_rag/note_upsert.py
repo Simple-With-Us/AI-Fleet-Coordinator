@@ -19,7 +19,7 @@ from typing import Any
 
 from . import core, ingest, sources
 from .core import FleetRagError, content_hash, eprint, now_ms
-from .ingest import IngestLock, IngestLocked, STATE_PATH, load_state, process_group
+from .ingest import STATE_PATH, IngestLock, IngestLocked, load_state, process_group
 from .notes_export import html_to_text, strip_title_line
 
 MIN_BODY = 20  # matches iter_apple_notes
@@ -103,9 +103,7 @@ def upsert_written_note(
             prev = state.get(doc.doc_id)
             if isinstance(prev, dict) and prev.get("doc_hash") == doc_hash:
                 return {"ok": True, "skipped": True, "reason": "unchanged"}
-            run_id = (
-                f"note-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:6]}"
-            )
+            run_id = f"note-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:6]}"
             writer = ingest.Writer(cfg, qd, dry_run=False, log=log)
             stats = {
                 "docs_seen": 0,
