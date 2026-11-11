@@ -48,6 +48,17 @@ final class PanelSnapshotTests: XCTestCase {
         Size(name: "minimum", width: MusterWindowLayout.minWidth, height: MusterWindowLayout.minHeight),
     ]
 
+    /// Every panel, or only those named in `MUSTER_PANEL_ONLY` (comma separated raw values),
+    /// for a quick local look.  The count checks below still demand every panel, so a filtered
+    /// run fails them on purpose and can never stand in for the whole set.
+    static var destinations: [MusterDestination] {
+        guard let only = ProcessInfo.processInfo.environment["MUSTER_PANEL_ONLY"], !only.isEmpty else {
+            return MusterDestination.allCases
+        }
+        let names = Set(only.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) })
+        return MusterDestination.allCases.filter { names.contains($0.rawValue) }
+    }
+
     /// How long each panel gets to lay out and draw before it is captured.
     static let settle: TimeInterval = 0.6
     /// Far off every screen, so the host's window is never seen.
@@ -94,7 +105,7 @@ final class PanelSnapshotTests: XCTestCase {
             try? FileManager.default.removeItem(at: folder)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             for theme in Theme.allCases {
-                for destination in MusterDestination.allCases {
+                for destination in Self.destinations {
                     let url = folder.appendingPathComponent("\(destination.rawValue)-\(theme.rawValue).png")
                     try render(destination, theme: theme, size: size, stores: stores, to: url)
                     written[size.name, default: []].append(url)
@@ -139,7 +150,15 @@ final class PanelSnapshotTests: XCTestCase {
         window.ignoresMouseEvents = true
         window.hasShadow = false
         window.collectionBehavior = [.transient, .ignoresCycle, .stationary]
-        defer { window.orderOut(nil); window.close() }
+        defer {
+            // Take the root out of the window before the next panel is built:  a root left alive
+            // still follows the saved place (`.onChange(of: storedDestination)`) and writes its
+            // own back, which showed one panel's content in another panel's PNG.
+            window.contentView = nil
+            window.orderOut(nil)
+            window.close()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
         window.contentView = hosting
         window.setContentSize(frame.size)
         hosting.frame = frame
@@ -171,8 +190,8 @@ final class PanelSnapshotTests: XCTestCase {
                           "\(label):  the split view [\(inHost)] leaves the window [\(bounds)]")
         }
 
-        let rep = try XCTUnwrap(hosting.bitmapImageRepForCachingDisplay(in: bounds), "\(label):  no bitmap")
-        hosting.cacheDisplay(in: bounds, to: rep)
+        let rep = try XCTUnwrap(Self.capture(hosting, in: window, appearance: theme.appearance),
+                                "\(label):  no bitmap")
         XCTAssertGreaterThan(rep.pixelsWide, 0, "\(label):  empty render")
         XCTAssertGreaterThan(rep.pixelsHigh, 0, "\(label):  empty render")
         XCTAssertFalse(Self.isOneColour(rep), "\(label):  the render is one flat colour")
@@ -181,6 +200,41 @@ final class PanelSnapshotTests: XCTestCase {
         print("PROBE panel-snapshot \(label) px=\(rep.pixelsWide)x\(rep.pixelsHigh) bytes=\(png.count) "
               + "seconds=\(String(format: "%.1f", Date().timeIntervalSince(started))) "
               + "splits=\(splits.map { NSStringFromRect($0.convert($0.bounds, to: hosting)) })")
+    }
+
+    /// The host drawn by `cacheDisplay` in the theme's appearance, over the theme's window
+    /// background.  The window's background belongs to the window's frame, not its content
+    /// view, so `cacheDisplay` alone leaves it transparent:  dark text then sits on a white
+    /// page in a viewer.  Drawing the layer tree instead (`CALayer.render`) gave tiles out of
+    /// order and no sidebar, so it is not used.  Known gap:  sidebar vibrancy is not drawn by
+    /// `cacheDisplay`, so the sidebar's text reads dimmer in these PNGs than in the window.
+    private static func capture(_ hosting: NSView, in window: NSWindow,
+                                appearance: NSAppearance?) -> NSBitmapImageRep? {
+        let bounds = hosting.bounds
+        let drawing = appearance ?? NSAppearance.currentDrawing()
+        guard let content = hosting.bitmapImageRepForCachingDisplay(in: bounds) else { return nil }
+        drawing.performAsCurrentDrawingAppearance {
+            hosting.cacheDisplay(in: bounds, to: content)
+        }
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil,
+                                         pixelsWide: content.pixelsWide, pixelsHigh: content.pixelsHigh,
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                         isPlanar: false, colorSpaceName: .deviceRGB,
+                                         bytesPerRow: 0, bitsPerPixel: 0) else { return content }
+        // The size in points first, so the context draws in points at the backing scale.
+        rep.size = bounds.size
+        guard let context = NSGraphicsContext(bitmapImageRep: rep) else { return content }
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = context
+        drawing.performAsCurrentDrawingAppearance {
+            NSColor.windowBackgroundColor.setFill()
+            bounds.fill()
+        }
+        content.draw(in: bounds, from: .zero, operation: .sourceOver, fraction: 1,
+                     respectFlipped: false, hints: nil)
+        context.flushGraphics()
+        return rep
     }
 
     private static func descendants(of view: NSView) -> [NSView] {
