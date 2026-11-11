@@ -12,8 +12,8 @@ instead.  Each run:
     within the last 36 hours goes on:  Cursor keeps a finished agent IDLE until it is archived.
 2.  Registers each one in the `cursor` letter namespace at location `cloud`, under its own source, so the hook's local
     chats and these never sweep each other.  A registration also marks the agent seen, so a letter stays while the agent
-    is open and the registry's 36 hour sweep frees it once the agent is gone.  The title is sent without any letter
-    already on it.
+    is open.  When a complete listing no longer includes the agent, the chat has been archived:  this sweep closes that
+    registration, and the letter is available again.  The title is sent without any letter already on it.
 3.  Sets the title.  The Cloud Agents API has no rename, so the sweep steers the agent and asks it to call
     rename-chat with "XX: " in front of the title it already has.  Every recent agent is steered, including one a
     Grok Bot spawned, and the bot does not have to take part.  A title that already starts with its letter is left
@@ -166,6 +166,40 @@ def register(
         seat=PC.SEAT,
     )
     return chat.registry("register", title=PL.bare(agent.get("title") or ""))
+
+
+def release(
+    env: Mapping[str, str],
+    session_id: str,
+    *,
+    runner: Runner,
+    now: float,
+    remote: str,
+    transport: Transport | None,
+) -> dict[str, Any]:
+    """Tell the Operator the chat is archived, so its letter can be issued again.
+
+    `closed` is a letter retired on this call.  `retired` is a registration that was already closed.
+    Anything else, including an error, leaves the local note in place so the next run asks again.
+    """
+    if transport is None and local_registry(env):
+        transport = in_process(env)
+    chat = PL.Chat(
+        SPEC,
+        env,
+        LOCATION,
+        session_id,
+        runner=runner,
+        now=now,
+        remote=remote,
+        transport=transport,
+        seat=PC.SEAT,
+    )
+    return chat.registry("close")
+
+
+def letter_freed(answer: Mapping[str, Any]) -> bool:
+    return bool(answer.get("closed") or answer.get("retired"))
 
 
 def message(bot: str, agent: Mapping[str, Any], label: str, generation: int, words: str) -> str:
@@ -366,7 +400,13 @@ def sweep(
             continue
         generation = int(answer.get("generation") or 1)
         row["label"] = label
-        told = state.get(sid) if isinstance(state.get(sid), dict) else {}
+        # Every open registration is remembered, including one whose title already carries its
+        # letter, so an archive still has a session id to hand back to the Operator.
+        held = state.get(sid) if isinstance(state.get(sid), dict) else {}
+        held["label"] = label
+        held["generation"] = generation
+        state[sid] = held
+        told = held
         current = PL.one_line(agent.get("title"))
         if current.startswith(label + ": "):
             row["title"] = "set"
@@ -425,11 +465,21 @@ def sweep(
         if whole:
             # Only a discovery that saw every open agent says one is gone:  a partial list (a page that failed, or
             # more agents than the cap) would forget what a bot was told, and tell it again next time.
-            # Every open agent counts, the stale ones too:  an agent past the window still holds its letter until the
-            # registry frees it, so forgetting the DM now would tell its bot again if it woke before then.
+            # Every open agent counts, the stale ones too:  an agent past the window still holds its letter.
+            # One missing from a complete list has been archived.  Close it with the Operator so the letter
+            # can be issued again.  A close that does not land keeps the note, and the next run asks again.
             open_ids = {str(a.get("session_id") or "") for a in found}
             for sid in [k for k in state if k not in open_ids]:
-                del state[sid]  # the agent is gone; its letter is the registry's to free
+                answer = release(
+                    env, sid, runner=runner, now=now, remote=remote, transport=transport
+                )
+                gone: dict[str, Any] = {"session_id": sid}
+                if letter_freed(answer):
+                    del state[sid]
+                    gone["registry"] = "closed" if answer.get("closed") else "retired"
+                else:
+                    gone["error"] = str(answer.get("error") or "the letter is still held")[:200]
+                rows.append(gone)
         write_state(env, state)
     return {
         "agents": len(agents),
