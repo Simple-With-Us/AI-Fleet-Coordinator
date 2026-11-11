@@ -2020,11 +2020,26 @@ def _linear_board_failure(err: linear_board.BoardCliFailure) -> LinearSourceErro
     return LinearSourceError(f"linear: simple-board api query exited {err.code}")
 
 
+def _linear_budget_left(deadline: float, timeout_s: int) -> float:
+    """The caller's remaining budget for this read, or a fail-closed budget error.
+
+    Every board attempt is forwarded the remaining budget as its own socket/retry
+    deadline, so the budget binds the blocking read itself on any thread and no
+    process-wide timer is ever touched."""
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise _linear_board_failure(
+            linear_board.BoardCliFailure(124, f"linear: query exceeded {timeout_s}s budget")
+        )
+    return left
+
+
 def _linear_run(query: str, timeout_s: int) -> dict:
     """One board GraphQL read as the first configured seat whose credentials have not failed
     this run, falling back seat by seat on a credential failure (and only on one).  ``timeout_s``
-    is kept for call-site compatibility;  the board client enforces its own HTTP timeouts."""
-    del timeout_s  # board ``Linear`` owns per-request limits
+    is the caller's total budget for the read, seat fallbacks included:  each attempt gets
+    the remaining budget, never the board client's unrelated default."""
+    deadline = time.monotonic() + max(1, timeout_s)
     global LINEAR_SEAT_USED
     candidates = _linear_seat_envs()
     if not candidates:
@@ -2036,7 +2051,12 @@ def _linear_run(query: str, timeout_s: int) -> dict:
             )
         try:
             return linear_board.query(
-                "LINEAR_CLIENT_ID", cid, sec, query, max_chars=LINEAR_MAX_CHARS
+                "LINEAR_CLIENT_ID",
+                cid,
+                sec,
+                query,
+                max_chars=LINEAR_MAX_CHARS,
+                timeout_s=_linear_budget_left(deadline, timeout_s),
             )
         except linear_board.BoardCliFailure as err:
             raise _linear_board_failure(err) from None
@@ -2050,6 +2070,7 @@ def _linear_run(query: str, timeout_s: int) -> dict:
                 env["LINEAR_CLIENT_SECRET"],
                 query,
                 max_chars=LINEAR_MAX_CHARS,
+                timeout_s=_linear_budget_left(deadline, timeout_s),
             )
         except linear_board.BoardCliFailure as err:
             last_err = err

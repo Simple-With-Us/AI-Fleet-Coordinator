@@ -1018,8 +1018,7 @@ def release_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int
                 PLATFORM,
                 "--location",
                 location,
-                "--session-id",
-                sid,
+                f"--session-id={sid}",
                 "--source",
                 RELEASE_SOURCE,
             ]

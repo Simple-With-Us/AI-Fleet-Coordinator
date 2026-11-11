@@ -189,13 +189,28 @@ def mirror_status(root: Path | None, now: float, max_age: int) -> MirrorStatus:
     return MirrorStatus(True, "fresh", at)
 
 
+def _fsync_dir(directory: Path) -> None:
+    """Fsync a directory so a rename or replace inside it survives a crash."""
+    fd = os.open(str(directory), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def write_stamp(directory: Path, now: float, counts: dict[str, int]) -> None:
-    payload = {"complete": True, "at": int(now), "files": counts}
+    payload = json.dumps({"complete": True, "at": int(now), "files": counts}) + "\n"
     tmp = directory / ".complete.tmp"
     path = directory / COMPLETE_NAME
-    tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    try:
+        os.write(fd, payload.encode("utf-8"))
+        os.fsync(fd)  # the stamp's contents must be durable before the rename publishes it
+    finally:
+        os.close(fd)
     os.chmod(tmp, 0o644)
     os.replace(tmp, path)
+    _fsync_dir(directory)
 
 
 def _within(child: Path, parent: Path) -> bool:
@@ -235,13 +250,22 @@ def promote(
     if previous.exists():
         shutil.rmtree(previous)
     moved = False
+    swapped = False
     try:
         if live.exists():
             os.rename(live, previous)
             moved = True
         os.rename(incoming, live)
+        swapped = True
+        _fsync_dir(live.parent)
     except OSError:
-        if moved and previous.exists() and not live.exists():
+        if swapped:
+            # The durability step failed after the swap:  put every directory back,
+            # so a raised promote still leaves live exactly as it was.
+            os.rename(live, incoming)
+            if moved and previous.exists():
+                os.rename(previous, live)
+        elif moved and previous.exists() and not live.exists():
             os.rename(previous, live)
         raise
     if not (live / COMPLETE_NAME).is_file():
@@ -256,7 +280,7 @@ def promote(
 
 
 def _ssh(target: str) -> list[str]:
-    return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", target]
+    return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "--", target]
 
 
 def rsync_argv(
@@ -272,6 +296,7 @@ def rsync_argv(
     if delete:
         argv.append("--delete")
     argv.extend(filters)
+    argv.append("--")
     argv.append(str(local).rstrip("/") + "/")
     argv.append(remote_spec)
     return argv
@@ -307,10 +332,8 @@ def promote_argv(target: str, remote_python: str, remote_script: str, root: str)
             "-I",
             remote_script,
             "promote",
-            "--incoming",
-            f"{base}/{INCOMING_NAME}",
-            "--live",
-            f"{base}/{LIVE_NAME}",
+            f"--incoming={base}/{INCOMING_NAME}",
+            f"--live={base}/{LIVE_NAME}",
         )
     )
     return [*_ssh(target), command]
