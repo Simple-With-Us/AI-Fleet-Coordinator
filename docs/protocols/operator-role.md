@@ -6,8 +6,9 @@ What the Operator is, what already exists, and which parts are still a decision 
 
 These are the owner's rulings.  Where the code does not do one yet, [the listener design, section 9](simple-tools-listener.md#9-not-yet-in-the-code) says so.
 
-1.  **The Operator is the thing that listens.**  It holds the eavesdropper, it runs on the server,
-    and it is the service identity the fleet talks to.
+1.  **The Operator is the thing that listens.**  Its Zulip listener runs on the server and is
+    called the Eavesdropper (the Coolify app of that name, one container).  There is one
+    listener:  the Operator holds it, and it is the service identity the fleet talks to.
 
 2.  **It acts under its own identity.**  It does not reply to a Zulip post directly, it does not
     impersonate the seat it is speaking to, and it never says a seat's wake tag.
@@ -35,6 +36,15 @@ These are the owner's rulings.  Where the code does not do one yet, [the listen
     ([zulip-wake-routing.md](zulip-wake-routing.md)).  The only model is an optional decider, off by
     default, after the router's deterministic steps, and it only picks a chat:  it never writes a
     reply.
+
+9.  **Muster may write the Eavesdropper's settings.**  (Owner, Nov 11, 2026.)  It does so through
+    the existing `fleet-ops-ctl` forced-command route, the one `scripts/fleet-ops-control.py`
+    serves.  That script has only a read verb for the Eavesdropper today (`server
+    eavesdropper-status`), so the write verb is not built.
+
+10. **A change of wake path needs no cutover care.**  (Owner, Nov 11, 2026.)  Missing a few
+    messages while a platform moves to its router is acceptable, so no document asks for a staged
+    switch or a fallback to the old path.
 
 ## 2: What already exists
 
@@ -84,7 +94,7 @@ on WhatsApp at all.
 `platform` and `verified_host` for every session, so the surface a seat is woken on is a property
 of the session rather than a decision the Operator makes per message.
 
-## 3: What does not exist, and the shape it should take
+## 3: What is not built, and the shape it should take
 
 ### 3.0: What WISE and ECHO recommend
 

@@ -4,7 +4,7 @@ The listener is the capture half of the one wake path.  It holds the Zulip queu
 
 ## Summary
 
-One always-on daemon, `simple-chat daemon run`, runs on the server and holds one Zulip event queue for each seat in its config.  It spends no model tokens.  For each message it decides whether the message reaches a live session that follows the topic, the seat inbox, or both, and whether it wakes the seat.  A seat either has a `routine`, an HTTP POST to the seat's router, which picks a chat, delivers and wakes it, or it captures only.  Zulip text that reaches a model is always wrapped as untrusted data.
+One always-on daemon, `simple-chat daemon run`, runs on the server, where it is the Eavesdropper, and holds one Zulip event queue for each seat in its config.  It spends no model tokens.  For each message it decides whether the message reaches a live session that follows the topic, the seat inbox, or both, and whether it wakes the seat.  A seat either has a `routine`, an HTTP POST to the seat's router, which picks a chat, delivers and wakes it, or it captures only.  Zulip text that reaches a model is always wrapped as untrusted data.
 
 ## Goals and Constraints
 
@@ -392,14 +392,7 @@ A multithreaded platform wakes through its router ([zulip-wake-routing.md](zulip
 2. Removed:  the taint guard is not built (decision 8).
 5. **Live Zulip check** in #sandbox (zero tokens):  flags for a direct mention, one in a quote or code span, a wildcard, and `@**all**` in `fleet` (the fleet wake); `update_message` fields on a rename; whether a bot's own post comes back on its queue; `client` values for web, mobile, desktop and API posts (decision 5; adjust `owner_clients`); an API post made with the owner's own key, once with User-Agent `ZulipMobile/1.0` and once with `client=website`, to see whether a claimed client is recorded (the design assumes it is, so owner priority stays a routing hint); and link-preview edits with `apply_markdown=false`.
 
-**Slack retirement (hard cut, later).**  After 24 green hours:  every queue heartbeating, `status --probe` passing for CLAUDE, and one real wake round trip done.  File the BotFleet `zulip` relay-source board item first.  Check each process with `pgrep` before acting; the CODEX and AGY consumers may already be gone.
-
-1. Stop and delete the pm2 Slack relay and `cursor-slack-sync`.  Kill any remaining `consumer.mjs`.
-2. Boot out the Slack consumer LaunchAgent and `com.jay.slack-agent-inbox` (decision 4).  Note the disabled `com.cursor.slack-sync.plist` for removal.
-3. With the owner's OK for each config edit:  remove the SessionStart `slack-sync.sh hook` from `~/.claude/settings.json`, the Slack lines in `~/.claude/monet-sync/session-hook.sh`, and the Slack relay token exports in the zsh startup files, which put relay tokens in every agent's environment.
-4. Mark those rows and the Slack helper scripts Retired in `MAC-LOCAL-PROCESSES.md` and refresh the Note.  Keep the files a week, then remove them in a follow-up.
-
-**Runtime checkout** (once per Mac):  `git -C ~/Code/AI-Fleet-Coordinator fetch -q origin`, then `git -C ~/Code/AI-Fleet-Coordinator worktree add --detach /Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime origin/main` and `git worktree lock` it.  `install.sh` links the CLI there by default.  Install `scripts/simple-tools-runtime-sync.sh` as `~/apps/simple-tools-runtime-sync.sh` (a regular file, never a symlink into the checkout it updates) and bootstrap `scripts/launchd/com.jay.simple-tools-runtime-sync.plist`:  every 120 seconds it fetches, moves the checkout to origin/main when it is clean, smoke-tests it, and kickstarts the listener when `scripts/simple_tools/`, `scripts/simple-chat`, `plugins/simple-chat/`, `.claude-plugin/` or `docs/protocols/simple-tools-partition.toml` changed.  A dirty checkout is skipped and logged to `~/apps/logs/simple-tools-runtime-sync.log`; pause it with `touch ~/.simple-tools/runtime-sync.pause`.
+**Runtime checkout** (once per Mac):  `git -C ~/Code/AI-Fleet-Coordinator fetch -q origin`, then `git -C ~/Code/AI-Fleet-Coordinator worktree add --detach /Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime origin/main` and `git worktree lock` it.  `install.sh` links the CLI there by default.  Install `scripts/simple-tools-runtime-sync.sh` as `~/apps/simple-tools-runtime-sync.sh` (a regular file, never a symlink into the checkout it updates) and bootstrap `scripts/launchd/com.jay.simple-tools-runtime-sync.plist`:  every 120 seconds it fetches, moves the checkout to origin/main when it is clean, smoke-tests it, and kickstarts the listener when `scripts/simple_tools/`, `scripts/simple-chat`, `plugins/simple-chat/`, `.claude-plugin/` or `docs/protocols/simple-tools-partition.toml` changed.  A dirty checkout is skipped and logged to `~/apps/logs/simple-tools-runtime-sync.log`; pause it with `touch ~/.simple-tools/runtime-sync.pause`.
 
 **Install steps** (orchestrator):  `scripts/simple_tools/install.sh`; `simple-chat daemon install`; `simple-chat daemon init`; `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jay.operator.plist`; `claude plugin marketplace add <the runtime checkout path> --scope user` and `claude plugin install simple-chat@afc --scope user`; manual tests 1 (with `rewake_verified = true` for the test, back to `false` if it fails) and 5; `simple-chat status --probe --seat CLAUDE` (after subscribing the Claude bot to #sandbox).
 
@@ -423,13 +416,13 @@ The pick is in [zulip-wake-routing.md](zulip-wake-routing.md).  What follows th
 
 These are the owner's rulings that the code on `main` does not do yet.
 
-- **One listener.**  The package still has a `mac` instance, and `simple-tools-partition.toml` still gives the Mac seats to it.
 - **One way for every multithreaded platform.**  Only Claude uses the shared router.  ZCode and Antigravity keep their own bridges (`scripts/zc-wake-bridge` and `scripts/ag-wake-bridge`), and the other platforms have no router.
 - **Deliver on every path.**  Delivery is off until `WAKE_ROUTER_DELIVERY_ENABLED` is true and `WAKE_ROUTER_DELIVERY_SEATS` names the seat.  Until then the router picks and writes `held` receipts.
 - **A routine on its own.**  The listener still needs `wake = "http"` beside a `routine`.
 - **Remove the other wake types.**  `wake = "claude"`, `"muse"` and `"openrouter"` and their fallbacks still load with a deprecation warning.  A seat set to one still starts a headless model, whose reply is dropped.
 - **No clarifying questions.**  `Daemon.ask_operator_for_candidates` and `operator_registration_ask.py` still ask.
 - **The Operator never DMs.**  The escalation note, the `@all` reminder, the candidate list and the status message are still direct messages.  They belong in Side-Chats.
+- **Muster writes the Eavesdropper's settings.**  The owner ruled it on Nov 11, through the `fleet-ops-ctl` forced-command route.  `scripts/fleet-ops-control.py` has only the read verb `server eavesdropper-status`, so no write verb exists.
 - **Test Wake from the listener.**  The router answers a dry run, and nothing sends one yet.  Muster's Test Wake button stays off until the listener does.
 
 ## Decisions
@@ -437,7 +430,7 @@ These are the owner's rulings that the code on `main` does not do yet.
 Decided by the owner, Wed, Oct 7 (2026-10-07).
 
 3. **Where budgets and the kill switch live.**  Local `~/.simple-tools/listener.toml` (parsed with `tomllib`) and `listener/pause.json`.
-4. **Retire the Slack DM runner** (`com.jay.slack-agent-inbox`) in the later Slack cut, not in this change.
+4. **Retire the Slack DM runner** (`com.jay.slack-agent-inbox`).  Slack was retired in the Zulip hard cut (owner, Oct 7).
 5. **No agent posts, DMs or reacts through Jay's account** (confirmed).  Owner priority goes only to messages from Jay's human user id whose `client` is a human Zulip app; an API post made with Jay's key is non-owner, non-eligible and flagged.
    Review note (same day):  the `client` is what the sending request reports, so the check flags honest API use but cannot stop someone holding Jay's key from claiming a human client.  Owner priority is a routing hint, never authority for a side effect (section 2, manual test 5).
 6. **Seat source for Claude hooks.**  `[platform.claude-code] seat = "CLAUDE"` in `listener.toml` is the Claude Code platform default.  The hooks and the local commands (`status`, `wakes`, `inbox --local`) use it when no launcher started the session and `AGENT_SEAT` is unset.  It never applies to network posting, which needs `--as`, `AGENT_SEAT` or `--default-seat`, and never under a launcher (`AGENT_LAUNCHER`), where `AGENT_LAUNCH_SEAT` is the seat or there is none.  Reworded Fri, Oct 9 for the owner's seat-precedence ruling (FLEET-PROTOCOL § Identity Rules).
