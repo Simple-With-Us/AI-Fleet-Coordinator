@@ -1413,6 +1413,25 @@ class HookTests(Base):
         self.assertEqual(self.lookup("s-0002")["label"], "AA")
         self.assertEqual(self.note("s-0001")["label"], "BB")
 
+    def test_a_chat_the_registry_never_held_and_cannot_be_registered_is_not_told_its_letter_was_retired(self) -> None:
+        with self.small_space("AA"):
+            self.titled()  # AA
+            self.replace_the_registry()
+            OR.register_session(  # the new registry gives its only pair to a chat the hook may never evict
+                self.db, platform=CL.PLATFORM, verified_host="server", profile_scope=CL.SCOPE,
+                native_session_id="op-0001", seat="CLAUDE", source="operator-registration",
+                issuer=OR.ISSUER_OPERATOR, letter_space="double",
+            )
+            later = time.time() + CL.TOUCH_SECONDS + 5
+            out = self.hook(
+                {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more",
+                 "session_title": "AA: Help Get All PR Issues Addressed"},
+                now=later,
+            )
+        self.assertIn("is not in the Operator's registry", out["additionalContext"])
+        self.assertNotIn("was retired", out["additionalContext"])
+        self.assertIsNone(self.lookup("s-0001"))
+
     def test_a_chat_the_registry_never_held_waits_for_the_next_touch(self) -> None:
         self.titled()
         self.replace_the_registry()

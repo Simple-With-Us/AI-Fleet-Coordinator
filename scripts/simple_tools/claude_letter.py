@@ -1458,11 +1458,13 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
         else:
             title = bare(current, held) if held and current.startswith("%s: " % held) else None
             if held:
-                # Retired and not replaced yet:  the model must not go on announcing a letter another chat may hold.
+                # Retired (or never held by this registry) and not replaced yet:  the model must not go on announcing a
+                # letter another chat may hold.
+                what = "is not in the Operator's registry" if unknown else "was retired"
                 context = (
-                    "This chat's Operator letter %s was retired and the Operator could not issue another (%s).  "
+                    "This chat's Operator letter %s %s and the Operator could not issue another (%s).  "
                     "It is not %s any more; a prompt after %d minutes tries again."
-                    % (held, str(note.get("error") or "no answer"), held, RETRY_SECONDS // 60)
+                    % (held, what, str(note.get("error") or "no answer"), held, RETRY_SECONDS // 60)
                 )
     context = _join_context(context, _agent_title_fix(chat, note))
     chat.write(note)
