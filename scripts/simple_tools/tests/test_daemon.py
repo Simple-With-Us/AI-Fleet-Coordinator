@@ -32,7 +32,6 @@ from simple_tools.tests.fake_zulip import EPOCH
 from simple_tools.tests.harness import write_rc
 from simple_tools.tests.listener_harness import (
     BASE_CONFIG,
-    OPERATOR_USER_ID,
     ListenerHarness,
     fake_watcher,
     reply_output,
@@ -586,7 +585,7 @@ class LeaseLifecycleTests(DaemonHarness):
         self.assertEqual(len(L.pending_items(self.seat_paths(), "L1")), 1, "the chatter stays with the lease")
 
 
-    def test_a_deaf_lease_releases_a_mention_once_and_the_headless_wake_answers_it(self) -> None:
+    def test_a_deaf_lease_releases_a_mention_once_and_the_headless_wake_runs_for_it(self) -> None:
         daemon = self.started()
         self.write_lease("deaf", topics=[("simple-tools", "t")])  # no watcher and rewake not verified:  cannot wake
         mid = self.fake.add_message("Codex", "simple-tools", "t", MENTION)
@@ -599,9 +598,7 @@ class LeaseLifecycleTests(DaemonHarness):
         self.assertEqual(len([i for i in self.live_items("deaf") if i.get("id") == mid]), 1, "never copied back")
         self.assertEqual([r["id"] for r in self.inbox()], [mid], "one seat-inbox row")
         self.assertEqual(len(self.dumps()), 1, "the grace release ends in exactly one headless wake")
-        posts = self.bot_posts()
-        self.assertEqual(len(posts), 1)
-        self.assertTrue(posts[0]["content"].startswith("[OPERATOR·wake] re=%d" % mid))
+        self.assertEqual(self.bot_posts(), [], "the Operator never answers on behalf of a platform")
         self.assertEqual([r["state"] for r in self.ledger()], ["queued", "accepted", "started", "done"])
         self.assertEqual(self.ledger()[0]["skip_leases"], ["deaf"])
 
@@ -650,7 +647,8 @@ class LeaseLifecycleTests(DaemonHarness):
 
 
 class WakeTests(DaemonHarness):
-    def test_a_peer_mention_wakes_claude_and_the_daemon_posts_the_reply(self) -> None:
+    def test_a_peer_mention_wakes_claude_and_the_reply_is_dropped_never_posted(self) -> None:
+        # Owner ruling, Nov 10 2026:  "The operator should never be answering on behalf of a platform."
         daemon = self.started()
         mid = self.fake.add_message("Codex", "simple-tools", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
@@ -663,36 +661,36 @@ class WakeTests(DaemonHarness):
         done = self.ledger()[-1]
         self.assertEqual(done["action"], "reply")
         self.assertNotIn("cost_usd", done, "wake rows are no longer costed (owner 2026-10-13)")
-        post = self.bot_posts()[-1]
-        self.assertEqual(post["id"], done["posted_id"])
-        self.assertEqual((post["display_recipient"], post["subject"]), ("simple-tools", "t"))
-        self.assertTrue(post["content"].startswith("[OPERATOR·wake] re=%d\n" % mid))
+        self.assertEqual(self.bot_posts(), [], "the Operator posts nothing for a wake")
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [], "nothing was even attempted")
+        self.assertIsNone(done["posted_id"])
+        self.assertEqual(done["post_error"], "operator_never_answers")
+        self.assertNotIn("posted_by", done)
+        refusals = [e for e in self.log_events("post-refused") if e.get("wake_id") == done["wake_id"]]
+        self.assertEqual([(e["seat"], e["reason"], e["kind"]) for e in refusals],
+                         [("CLAUDE", "operator_never_answers", "reply")])
+        self.assertEqual(self.terminal_wakes()[-1]["trigger_ids"], [mid])
         prompt = self.dumps()[0]["stdin"]
         self.assertIn("Trigger message ids: %d" % mid, prompt)
         self.assertIn("BEGIN_UNTRUSTED_ZULIP nonce=", prompt)
         self.assertIn("can you check", prompt)
 
-    def test_an_owner_dm_is_answered_by_dm_only(self) -> None:
+    def test_an_owner_dm_wake_is_never_answered_in_the_thread(self) -> None:
         daemon = self.started()
-        dm = self.fake.add_direct_message("Jay Wedgeworth", "status of the cutover?", deliver=True)
+        self.fake.add_direct_message("Jay Wedgeworth", "status of the cutover?", deliver=True)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.wake_cycle(daemon, 6)
-        posts = self.bot_posts()
-        self.assertEqual(len(posts), 1)
-        self.assertEqual(posts[0]["type"], "private")
-        #  The Operator sends it (owner ruling, Oct 30 2026), so the thread is the original one plus
-        #  the Operator: the seat stays in it and the owner is in it.
-        self.assertEqual(
-            sorted(r["id"] for r in posts[0]["display_recipient"]), [10, 12, OPERATOR_USER_ID]
-        )
-        self.assertTrue(posts[0]["content"].startswith("[OPERATOR·wake] re=%d" % dm))
+        self.assertEqual(self.bot_posts(), [], "not in the DM thread, and not anywhere else")
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
         self.assertIn("direct message thread", self.dumps()[0]["stdin"])
         self.assertTrue(self.ledger()[0]["owner"])
+        row = self.terminal_wakes()[-1]
+        self.assertEqual((row["state"], row["post_error"]), ("done", "operator_never_answers"))
 
-    def test_a_bot_to_bot_dm_wake_reply_is_refused_and_the_daemon_stays_alive(self) -> None:
-        """AFC-469:  a direct message may go out only when the owner is in the conversation.  A
-        wake reply to a peer's DM has no owner in it, so it is refused:  the answer belongs in a
-        channel.  The refusal is recorded and the daemon keeps running."""
+    def test_a_bot_to_bot_dm_wake_is_dropped_the_same_way_and_the_daemon_stays_alive(self) -> None:
+        """The reply to a peer's DM used to be refused by the owner-in-the-conversation guard
+        (AFC-469) and the wake was `failed`.  The reply is refused before any guard now, by the rule
+        that the Operator never answers on behalf of a platform, and the wake is `done`."""
         daemon = self.started()
         self.fake.add_direct_message("Codex", "status of the cutover?", deliver=True)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
@@ -700,38 +698,31 @@ class WakeTests(DaemonHarness):
         self.assertEqual(self.bot_posts(), [])
         self.assertEqual(self.fake.requests_to("POST", "messages"), [])
         row = self.terminal_wakes()[-1]
-        self.assertEqual(row["state"], "failed", row)
+        self.assertEqual((row["state"], row["post_error"]), ("done", "operator_never_answers"), row)
         self.assertIsNone(row.get("posted_id"))
-        log = (self.state_dir / "logs" / "listener.log").read_text()
-        self.assertIn("post-refused-dm", log)
-        self.assertIn("dm_owner_not_participant", log)
-        #  The daemon is still alive:  the next wake runs and its reply lands.
+        self.assertEqual([e["reason"] for e in self.log_events("post-refused")], ["operator_never_answers"])
+        self.assertEqual(self.log_events("post-refused-dm"), [], "the DM guard never even sees a reply")
+        #  The daemon is still alive:  the next wake runs, and it posts nothing either.
         before = len(self.ledger())
         self.fake.add_message("Codex", "simple-tools", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger()) > before)
         self.wake_cycle(daemon)
-        self.assertEqual(len(self.bot_posts()), 1)
-        self.assertEqual(self.bot_posts()[0]["type"], "stream")
+        self.assertEqual(self.terminal_wakes()[-1]["state"], "done")
+        self.assertEqual(self.bot_posts(), [])
 
-    def test_a_channel_wake_reply_reaches_the_server_with_the_sentence_gap(self) -> None:
+    def test_the_dropped_reply_text_is_kept_nowhere(self) -> None:
         daemon = self.started()
-        mid = self.fake.add_message("Codex", "simple-tools", "t", MENTION)
+        self.fake.add_message("Codex", "simple-tools", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.wake_cycle(daemon)
-        post = self.bot_posts()[-1]
-        self.assertTrue(post["content"].startswith("[OPERATOR·wake] re=%d\n" % mid), post["content"])
-        self.assertIn("On it.\u00a0 The cutover is in review.", post["content"])
-        self.assertNotIn("On it.  ", post["content"])
-        self.assertEqual(self.fake.requests_to("POST", "messages")[-1].form["content"], post["content"])
-
-    def test_a_dm_wake_reply_reaches_the_server_with_the_sentence_gap(self) -> None:
-        daemon = self.started()
-        self.fake.add_direct_message("Jay Wedgeworth", "status of the cutover?", deliver=True)
-        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
-        self.wake_cycle(daemon, 6)
-        post = self.bot_posts()[-1]
-        self.assertEqual(post["type"], "private")
-        self.assertIn("On it.\u00a0 The cutover is in review.", post["content"])
+        self.assertEqual(self.bot_posts(), [])
+        needle = "The cutover is in review"
+        self.assertIn(needle, reply_output()["reply"], "control:  the model did say it")
+        for row in self.ledger():
+            self.assertNotIn(needle, json.dumps(row))
+        self.assertNotIn(needle, (self.state_dir / "logs" / "listener.log").read_text())
+        self.assertNotIn(needle, json.dumps(daemon.status()))
+        self.assertEqual(L.read_jsonl(self.seat_paths().owner_queue), [])
 
     def test_an_unpinned_binary_or_unpinned_owner_never_runs_claude(self) -> None:
         os.unlink(self.seat_paths().wake_pin)
@@ -981,12 +972,13 @@ class WakeTests(DaemonHarness):
         daemon.tick()
         self.wake_cycle(daemon, 2)
         self.assertEqual([r["state"] for r in self.ledger()][-1], "done")
-        self.assertTrue(self.bot_posts(), "a valid wake still posts")
+        self.assertEqual(self.bot_posts(), [], "a valid wake posts nothing either")
 
-    def test_a_wake_act_refuses_does_not_surface(self) -> None:
-        # The second half of AFC-306:  act() can refuse after validation passed (a mention that
-        # survived neutralizing, or the secret scanner).  That must also be failed, and must not
-        # clear the held refs.  The secret sits in the reply, which is what the scanner reads.
+    def test_a_reply_holding_a_secret_is_dropped_like_any_other_and_surfaces(self) -> None:
+        # AFC-306, then the rule of Nov 10 2026.  The reply used to be refused by the secret scanner
+        # and the wake was failed, with the held refs kept.  The reply is never posted now, so there
+        # is nothing to scan and nothing to refuse:  the wake is done, the held refs are surfaced, and
+        # the text, secret and all, is kept nowhere.
         held_id = 900001
         self.write_config(extra_daemon="held_alert_minutes = 0")
         self.set_claude(mode="ok", output={"action": "reply", "reply": "here you go: " + self.key,
@@ -1000,11 +992,15 @@ class WakeTests(DaemonHarness):
         daemon.tick()
         self.wake_cycle(daemon, 2)
         row = self.terminal_wakes()[-1]
-        self.assertEqual(row["state"], "failed", row)
-        self.assertTrue(str(row.get("refused") or "").startswith("secret scanner"), row)
+        self.assertEqual((row["state"], row["post_error"]), ("done", "operator_never_answers"), row)
+        self.assertNotIn("refused", row)
         self.assertEqual(self.bot_posts(), [])
-        self.assertEqual(self.held_ids(), [held_id])
-        self.assertFalse(any(entry["state"] == "surfaced" for entry in self.ledger()))
+        self.assertEqual(self.held_ids(), [])
+        self.assertTrue(any(entry["state"] == "surfaced" for entry in self.ledger()))
+        self.assertNotIn(self.key, json.dumps(self.ledger()))
+        self.assertNotIn(self.key, (self.state_dir / "logs" / "listener.log").read_text())
+        kinds = [item["kind"] for item in L.read_jsonl(self.seat_paths().owner_queue)]
+        self.assertNotIn("wake-secret", kinds, "no secret-scanner banner either")
 
     def test_an_owner_wake_with_no_reply_is_done_and_surfaces_held_items(self) -> None:
         # action none attempts no channel reply.  A missing posted_id is success, and the held
@@ -1047,7 +1043,9 @@ class WakeTests(DaemonHarness):
         kinds = [item["kind"] for item in L.read_jsonl(self.seat_paths().owner_queue)]
         self.assertNotIn("wake-undelivered", kinds)
 
-    def test_a_reply_that_fails_to_post_is_failed_and_keeps_held_items(self) -> None:
+    def test_a_server_that_would_reject_the_reply_changes_nothing_because_none_is_sent(self) -> None:
+        # A rejected reply used to be a failed wake that kept the held refs.  Nothing is sent now, so
+        # the rejection the fake server holds ready is never used, and the wake is done.
         held_id = 900003
         self.write_config(extra_daemon="held_alert_minutes = 0")
         self.set_claude(mode="ok", output=reply_output("this reply will not land"))
@@ -1061,12 +1059,13 @@ class WakeTests(DaemonHarness):
         daemon.tick()
         self.wake_cycle(daemon, 2)
         row = self.terminal_wakes()[-1]
-        self.assertEqual(row["state"], "failed", row)
+        self.assertEqual((row["state"], row["post_error"]), ("done", "operator_never_answers"), row)
         self.assertNotIn("refused", row)
         self.assertIsNone(row.get("posted_id"))
-        self.assertEqual(self.bot_posts(), [])
-        self.assertEqual(self.held_ids(), [held_id])
-        self.assertFalse(any(entry["state"] == "surfaced" for entry in self.ledger()))
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [], "no post was even attempted")
+        self.assertEqual(self.log_events("post-failed"), [])
+        self.assertEqual(self.held_ids(), [])
+        self.assertTrue(any(entry["state"] == "surfaced" for entry in self.ledger()))
 
     def test_single_flight_fifo_overflow(self) -> None:
         daemon = self.started()
@@ -1168,20 +1167,24 @@ class WakeTests(DaemonHarness):
         # held refs.  The validator's reason is preserved on the row.
         self.assertEqual(finals[0]["state"], "failed")
         self.assertIn("keys extra extra", finals[0]["reason"])
-        self.assertEqual(finals[1]["state"], "failed")
-        self.assertTrue(finals[1]["refused"].startswith("secret scanner"))
+        # A reply that holds a secret is dropped like any other reply:  nothing is posted, and the wake
+        # is done, not failed (it used to be refused by the secret scanner).
+        self.assertEqual((finals[1]["state"], finals[1]["post_error"]), ("done", "operator_never_answers"))
+        self.assertNotIn("refused", finals[1])
         self.assertEqual((finals[2]["state"], finals[2]["reason"]), ("failed", "the init event listed tools or MCP servers"))
 
-    def test_escalation_notifies_the_owner_and_acks_an_owner_trigger(self) -> None:
+    def test_escalation_notifies_the_owner_and_posts_no_ack_for_an_owner_trigger(self) -> None:
         daemon = self.started()
         self.set_claude(mode="ok", output={"action": "escalate", "reply": None, "board": None,
                                            "owner_note": "Jay asked for a production deploy.", "risk": None})
         self.fake.add_message(self.fake.user_named("Jay Wedgeworth"), "simple-tools", "t", MENTION + " deploy now")
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.wake_cycle(daemon, 6)
-        posts = self.bot_posts()
-        self.assertEqual(len(posts), 1)
-        self.assertIn(W.OWNER_ACK, posts[0]["content"])
+        self.assertEqual(self.bot_posts(), [], "the fixed one-line ack is gone with the reply")
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
+        row = self.terminal_wakes()[-1]
+        self.assertEqual((row["state"], row["action"], row["note"]), ("done", "escalate", True))
+        self.assertNotIn("post_error", row, "there was no reply to drop")
         queue = L.read_jsonl(self.seat_paths().owner_queue)
         self.assertEqual(queue[-1]["note"], "Jay asked for a production deploy.")
         self.assertTrue(all("production deploy" not in arg for banner in self.banners for arg in banner),
@@ -1329,59 +1332,57 @@ class WakeTests(DaemonHarness):
         self.fake.add_message("Codex", "simple-tools", "t", MENTION + " now")
         self.pump_until(daemon, lambda: len(self.ledger()) >= 2)
 
-    def test_a_quota_hold_dms_the_sender_and_does_not_banner(self) -> None:
-        self.write_config(seats="""\
+    QUOTA_SEAT = """\
 [seat.CLAUDE]
 bot = "Claude"
 wake = "claude"
 model = "sonnet"
 provider = "Claude Code"
-""")
-        daemon = self.started()
-        self.warm_operator(daemon)  # a held wake is finalized on the router thread, which never waits for a build
+"""
+
+    def quota_pending(self, message_id: int) -> W.Pending:
         now = self.clock.time()
-        pending = W.Pending("q1", "CLAUDE", {"channel": "simple-tools", "topic": "t", "type": "stream"},
+        pending = W.Pending("q%d" % message_id, "CLAUDE", {"channel": "simple-tools", "topic": "t", "type": "stream"},
                             owner=False, now=now, due=now)
-        pending.add({"id": 55, "sender_id": 11, "ts": now}, False)
+        pending.add({"id": message_id, "sender_id": 11, "ts": now}, False)
+        return pending
+
+    def test_a_quota_hold_tells_the_owner_and_never_the_sender(self) -> None:
+        # Owner 2026-10-13 had the sender told by DM that the seat cannot answer.  Since Nov 10 2026 the
+        # Operator never answers on behalf of a platform, so nobody is told by DM:  the owner notice and
+        # the Mac banner are the whole of it, and the message waits in the seat inbox.
+        self.write_config(seats=self.QUOTA_SEAT)
+        daemon = self.started()
+        self.warm_operator(daemon)
+        now = self.clock.time()
+        pending = self.quota_pending(55)
         quota = {"known": True, "exhausted": True, "remaining": 0.0, "reset_at": "2026-10-14T18:00:00Z",
                  "reason": "weekly", "source": "codecaps"}
         reason = "Claude Code quota is exhausted until 2026-10-14T18:00:00Z"
         with mock.patch("simple_tools.daemon.A.provider_quota", return_value=quota):
             daemon._drop(daemon.seats["CLAUDE"], pending, reason, now)
             daemon._drop(daemon.seats["CLAUDE"], pending, reason, now)
-        dms = [m for m in self.bot_posts() if m["type"] == "private"]
-        self.assertEqual(len(dms), 1, "one DM per sender per window, and the call must not raise")
-        #  The owner is in the conversation, so this is not a bot to bot direct message (AFC-469).
-        #  The Operator sends it, not the seat (owner ruling, Oct 30 2026).
-        self.assertEqual(
-            sorted(r["id"] for r in dms[0]["display_recipient"]), [11, 12, OPERATOR_USER_ID]
-        )
-        self.assertIn("cannot answer right now", dms[0]["content"])
-        self.assertIn("Claude Code", dms[0]["content"])
-        self.assertEqual([m for m in self.bot_posts() if m["type"] == "stream"], [])
-        self.assertFalse(any("cannot answer right now" in arg for banner in self.banners for arg in banner))
+        self.assertEqual(self.bot_posts(), [], "no DM to the sender, and nothing in the topic")
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
         self.assertTrue(any("was not run" in banner[8] for banner in self.banners))
+        self.assertFalse(any("cannot answer right now" in arg for banner in self.banners for arg in banner))
         kinds = [item["kind"] for item in L.read_jsonl(self.seat_paths().owner_queue)]
-        self.assertIn("wake-quota-hold", kinds)
+        self.assertNotIn("wake-quota-hold", kinds)
+        self.assertFalse(hasattr(D.Daemon, "_tell_requester"), "the notice itself is gone")
 
-    def test_a_quota_worded_hold_stays_silent_unless_the_snapshot_is_exhausted(self) -> None:
-        self.write_config(seats="""\
-[seat.CLAUDE]
-bot = "Claude"
-wake = "claude"
-model = "sonnet"
-provider = "Claude Code"
-""")
+    def test_a_quota_worded_hold_sends_nothing_whatever_the_snapshot_says(self) -> None:
+        self.write_config(seats=self.QUOTA_SEAT)
         daemon = self.started()
+        self.warm_operator(daemon)
         now = self.clock.time()
-        pending = W.Pending("q2", "CLAUDE", {"channel": "simple-tools", "topic": "t", "type": "stream"},
-                            owner=False, now=now, due=now)
-        pending.add({"id": 56, "sender_id": 11, "ts": now}, False)
-        quiet = {"known": True, "exhausted": False, "remaining": 40.0, "reset_at": None,
-                 "reason": None, "source": "codecaps"}
-        with mock.patch("simple_tools.daemon.A.provider_quota", return_value=quiet):
-            daemon._drop(daemon.seats["CLAUDE"], pending, "Claude Code quota is exhausted", now)
-        self.assertEqual([m for m in self.fake.messages if m["type"] == "private"], [])
+        pending = self.quota_pending(56)
+        for exhausted in (False, True):
+            with self.subTest(exhausted=exhausted):
+                snapshot = {"known": True, "exhausted": exhausted, "remaining": 0.0 if exhausted else 40.0,
+                            "reset_at": None, "reason": None, "source": "codecaps"}
+                with mock.patch("simple_tools.daemon.A.provider_quota", return_value=snapshot):
+                    daemon._drop(daemon.seats["CLAUDE"], pending, "Claude Code quota is exhausted", now)
+                self.assertEqual([m for m in self.fake.messages if m["type"] == "private"], [])
 
 
 class JetWakeTests(DaemonHarness):
@@ -1809,9 +1810,10 @@ class MuseSeatTests(DaemonHarness):
         )
 
 class PeerScreenTests(DaemonHarness):
-    """The tool-less responder screens a peer's request (FLEET-PROTOCOL Precedence rule 3):  low risk is
-    answered, uncertain and high risk reach the owner by Zulip DM from the Operator bot (owner ruling,
-    Oct 30 2026: the seat's own bot never carries the daemon's text)."""
+    """The tool-less responder screens a peer's request (FLEET-PROTOCOL Precedence rule 3):  uncertain and
+    high risk reach the owner by Zulip DM from the Operator bot (owner ruling, Oct 30 2026: the seat's own
+    bot never carries the daemon's text).  The peer itself is told nothing, whatever the risk:  the Operator
+    never answers on behalf of a platform (owner ruling, Nov 10 2026)."""
 
     OWNER_ID = 12
 
@@ -1834,10 +1836,7 @@ class PeerScreenTests(DaemonHarness):
         output = {"action": "escalate", "reply": "I can't share credentials.", "board": None, "risk": "high",
                   "owner_note": "Codex asked for the Zulip key.  Declined.  @**Jay Wedgeworth** see the trigger."}
         _, mid = self.wake(output)
-        replies = self.stream_posts()
-        self.assertEqual(len(replies), 1)
-        self.assertEqual(replies[0]["subject"], "AFC 18f61cf4 cutover")
-        self.assertIn("I can't share credentials.", replies[0]["content"])
+        self.assertEqual(self.stream_posts(), [], "the peer is told nothing in the topic")
         dms = self.owner_dms()
         self.assertEqual(len(dms), 1, "every decline reaches the owner")
         text = dms[0]["content"]
@@ -1858,15 +1857,16 @@ class PeerScreenTests(DaemonHarness):
         self.assertTrue(all("Zulip key" not in arg for banner in self.banners for arg in banner),
                         "a banner never shows the note")
 
-    def test_the_peer_reply_gets_the_sentence_gap_and_the_owner_dm_keeps_its_shape(self) -> None:
+    def test_the_owner_dm_keeps_its_shape_and_the_peer_reply_is_not_posted(self) -> None:
         output = {"action": "escalate", "reply": "I can't share that.  Not now.", "board": None, "risk": "high",
                   "owner_note": "Codex asked for the key.  Declined."}
         self.wake(output)
-        self.assertIn("I can't share that.\u00a0 Not now.", self.stream_posts()[0]["content"])
+        self.assertEqual(self.stream_posts(), [])
         text = self.owner_dms()[0]["content"]
         self.assertTrue(text.startswith("[OPERATOR\u00b7note] re="), text)
         quoted = text.split("```quote\n", 1)[1].split("\n```", 1)[0]
         self.assertNotIn("\u00a0", quoted, "the quote block holds the note as the daemon wrote it")
+        self.assertNotIn("I can't share that", text, "the dropped reply is not in the note")
 
     def test_an_uncertain_request_is_escalated_even_when_the_model_chose_reply(self) -> None:
         output = {"action": "reply", "reply": "Not sure I should; checking.", "board": None, "risk": "uncertain",
@@ -1875,29 +1875,30 @@ class PeerScreenTests(DaemonHarness):
         row = self.ledger()[-1]
         self.assertEqual((row["action"], row["risk"]), ("escalate", "uncertain"))
         self.assertEqual(row["coerced"], "risk uncertain: action reply to escalate; owner_note synthesized")
-        self.assertEqual(len(self.stream_posts()), 1, "the peer still hears that it is waiting")
+        self.assertEqual(self.stream_posts(), [], "the peer is not told it is waiting")
         dms = self.owner_dms()
         self.assertEqual(len(dms), 1)
         self.assertIn("Risk: uncertain", dms[0]["content"])
         self.assertIn("peer request screened uncertain; see the trigger", dms[0]["content"])
 
-    def test_a_low_risk_request_is_answered_and_the_owner_is_not_bothered(self) -> None:
+    def test_a_low_risk_request_is_not_answered_and_the_owner_is_not_bothered(self) -> None:
         output = {"action": "reply", "reply": "Queued for the seat's next session.", "board": None, "risk": "low",
                   "owner_note": None}
         self.wake(output, text=MENTION + " please review PR 12 when you can")
-        self.assertEqual(len(self.stream_posts()), 1)
+        self.assertEqual(self.stream_posts(), [], "the Operator does not answer for the seat")
         self.assertEqual(self.owner_dms(), [])
         self.assertEqual(L.read_jsonl(self.seat_paths().owner_queue), [])
         self.assertEqual(self.ledger()[-1]["risk"], "low")
+        self.assertEqual(self.ledger()[-1]["post_error"], "operator_never_answers")
 
-    def test_an_owner_trigger_is_acked_and_not_dmd_back_to_the_owner(self) -> None:
+    def test_an_owner_trigger_is_not_acked_in_the_topic_and_not_dmd_back_to_the_owner(self) -> None:
         output = {"action": "escalate", "reply": None, "board": None, "risk": None,
                   "owner_note": "Jay asked for a production deploy."}
         self.wake(output, sender="Jay Wedgeworth", text=MENTION + " deploy now")
         self.assertEqual(self.owner_dms(), [])
-        posts = self.bot_posts()
-        self.assertEqual(len(posts), 1)
-        self.assertIn(W.OWNER_ACK, posts[0]["content"])
+        self.assertEqual(self.bot_posts(), [], "the fixed ack the Operator used to post is gone")
+        queue = L.read_jsonl(self.seat_paths().owner_queue)
+        self.assertEqual(queue[-1]["note"], "Jay asked for a production deploy.")
 
     def test_an_unscreened_peer_escalation_still_reaches_the_owner(self) -> None:
         output = {"action": "escalate", "reply": None, "board": None, "risk": None, "owner_note": "needs the owner"}
@@ -1940,7 +1941,7 @@ class PeerScreenTests(DaemonHarness):
         row = self.ledger()[-1]
         self.assertEqual((row["state"], row["action"], row["owner_dm"]), ("done", "escalate", None))
         self.assertIn("rate limited", row["owner_dm_error"])
-        self.assertEqual(len(self.stream_posts()), 1, "the decline to the peer was still posted")
+        self.assertEqual(self.stream_posts(), [], "and the decline to the peer was never posted")
         self.assertEqual(L.read_jsonl(self.seat_paths().owner_queue)[-1]["note"], "asked for a key",
                          "the owner queue still holds the note")
 
@@ -2283,7 +2284,7 @@ class ThreadedRunTests(DaemonHarness):
         while not any(r["state"] == "done" for r in self.ledger()) and time.monotonic() < deadline:
             time.sleep(0.1)
         self.assertEqual(self.ledger()[-1]["state"], "done")
-        self.assertEqual(len(self.bot_posts()), 1)
+        self.assertEqual(self.bot_posts(), [])
         second = self.daemon(clock=Clock())
         self.assertEqual(second.run(), 1, "a second listener refuses to start")
         daemon.stop.set()

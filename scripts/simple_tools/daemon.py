@@ -107,10 +107,6 @@ LIVE_DIR_KEEP = 86400.0
 AGENTS_CACHE_SECONDS = 30.0
 LEASE_HEARTBEAT_LIMIT = 15 * 60.0
 POST_SPACING = 3.0
-# How long a sender is left alone after being told this seat's quota is spent.  Without it a hot
-# topic would produce one DM per message for every sender in it, which is the exact spam the caps
-# exist to prevent -- and a seat that cannot answer is the worst possible time to add traffic.
-QUOTA_HOLD_TELL_WINDOW = 3600.0
 HELD_TICK_SECONDS = 30.0  # held-back upkeep:  expiry, the owner digest and the catch-up check
 # AFC-652 F8 (re-drive liveness):  a pass completes probes for at most this many parked ids
 # and spends at most this many synchronous REST attempts overall, each capped at
@@ -797,12 +793,12 @@ class Daemon:
         # either, the voice is refused by name rather than guessed.
         self._pinned_from_config: set[str] = set()
         self._pin_operator_identity()
-        # The Operator's voice (owner ruling, Oct 30 2026): every post the daemon itself composes,
-        # and every edit and typing indicator that goes with it, goes out as the pinned Operator bot
-        # and never as a seat's bot.  Built on first use and checked against the pinned identity;
-        # with no Operator the post is refused and logged, there is no fallback to a seat
-        # (operator_post.py).  The factory is injectable, so a test hands it a client for the fake
-        # server.
+        # The Operator's voice (owner ruling, Oct 30 2026): every post the daemon itself composes (its
+        # alerts, its notes, its session-letter questions;  never an answer to a wake, owner ruling Nov 10
+        # 2026, see `post`) and every edit of one goes out as the pinned Operator bot and never as a
+        # seat's bot.  Built on first use and checked against the pinned identity;  with no Operator the
+        # post is refused and logged, there is no fallback to a seat (operator_post.py).  The factory is
+        # injectable, so a test hands it a client for the fake server.
         self.operator_voice = OPV.OperatorVoice(
             env=self.env,
             owner_user_id=lambda: int(self.config.owner_user_id or 0),
@@ -2990,113 +2986,9 @@ class Daemon:
             kind="wake-" + reason,
             key="wake:%s:%s" % (runner.seat, reason),
         )
-        # A quota hold is the one reason worth telling the SENDER about:  the person or bot who asked
-        # learns why they got no reply instead of watching it disappear.  Every other hold (a stale
-        # pin, a pause, a count cap) is a configuration fact the owner notice above already covers.
-        if "quota" in reason or "exhausted" in reason:
-            self._tell_requester(runner, pending, reason, now)
-
-    def _tell_requester(
-        self, runner: SeatRunner, pending: W.Pending, reason: str, now: float
-    ) -> None:
-        """Tell whoever sent the message that this seat cannot answer right now, and when it can.
-
-        Owner 2026-10-13:  a person or a bot that messages a seat whose provider quota is spent should
-        be told, instead of watching their message go nowhere.  The DM names the reason and the reset
-        time when the provider gave one, so the sender knows whether to wait or re-plan.
-
-        Rules that keep this from becoming noise:  it is a DM to the trigger SENDER and never a post
-        into their topic (a wake that could not run must not add traffic to the conversation that woke
-        it);  it fires once per seat per window, not once per message;  and it stays silent unless the
-        provider snapshot actually says exhausted, so a hold for a pin or a pause is never dressed up
-        as a quota story.
-
-        The notice is the daemon's own deterministic text, so it goes out as the Operator and never as
-        the seat's bot (owner ruling, Oct 30 2026): the seat did not think or say it.  With no Operator
-        the notice is not sent and the refusal is logged; it does not fall back to the seat."""
-        if runner.fatal or runner.me is None:
-            return
-        if not runner.cfg.provider:
-            return
-        quota = A.provider_quota(runner.cfg.provider, now)
-        if not quota["known"] or not quota["exhausted"]:
-            return  # never invent an explanation the provider did not give
-        when = quota.get("reset_at")
-        text = (
-            "%s cannot answer right now: its %s quota is exhausted%s.  Your message is in its inbox and "
-            "will be picked up when the quota resets."
-            % (
-                runner.seat,
-                runner.cfg.provider,
-                " until %s" % A.clean_banner(str(when), 40) if when else "",
-            )
-        )
-        sender = pending.sender_id
-        if not isinstance(sender, int) or sender == runner.me.user_id:
-            return
-        # A direct message may go out only when the owner is in the conversation (AFC-469), so the
-        # quota hold goes to the owner as well as to the sender when the sender is not the owner.
-        # A quota hold is the owner's own spend, so the owner is the party who has to see it, and
-        # with the owner in the conversation the message is a legitimate group direct message
-        # rather than a bot to bot one.
-        owner_id = int(self.config.owner_user_id or 0)
-        if owner_id <= 0:
-            self.log.write(
-                "wake-quota-hold-tell-refused",
-                seat=runner.seat,
-                wake_id=pending.wake_id,
-                sender_id=sender,
-                reason="owner_not_pinned",
-            )
-            return
-        recipients = [sender] if sender == owner_id else [sender, owner_id]
-        key = "quota-hold:%s:%s" % (runner.seat, sender)
-        # The Operator is checked BEFORE the once-per-window gate below spends the window: a notice
-        # that could not be sent has not told the sender anything, so the next held wake tries again.
-        # `wait=False`: a held wake is finalized on the router thread, which never waits for the
-        # Operator client to be built.  A notice that finds none ready is skipped, its window unspent.
-        try:
-            operator_id = self.operator_voice.user_id(wait=False)
-        except OPV.OperatorUnavailable as exc:
-            self._operator_refused(
-                "quota-hold", exc, seat=runner.seat, wake_id=pending.wake_id, sender_id=sender
-            )
-            return
-        if sender == operator_id:
-            return  # the Operator is not told that a seat is busy
-        try:
-            if not self.notifier.notify(
-                runner.seat,
-                "simple-chat %s" % runner.seat,
-                text,
-                kind="wake-quota-hold",
-                key=key,
-                once_per=QUOTA_HOLD_TELL_WINDOW,
-                trigger_ids=pending.trigger_ids,
-                sender_id=sender,
-                banners=False,
-            ):
-                return  # already told this sender recently
-            result = self._operator_send(
-                {"type": "direct", "to": recipients, "content": text}, wait=False
-            )
-            if result.get("id"):
-                self.log.write(
-                    "wake-quota-hold-told",
-                    seat=runner.seat,
-                    wake_id=pending.wake_id,
-                    sender_id=sender,
-                    reset_at=when,
-                    posted_by=OPV.VOICE,
-                )
-        except Z.SimpleToolsError as exc:
-            self.log.write(
-                "wake-quota-hold-tell-failed",
-                seat=runner.seat,
-                wake_id=pending.wake_id,
-                sender_id=sender,
-                error=self.scrub(str(exc)),
-            )
+        # A quota hold is not told to the SENDER any more:  that DM was the Operator saying, on the
+        # seat's behalf, that the seat cannot answer, and the Operator never answers on behalf of a
+        # platform (owner ruling, Nov 10 2026).  The owner notice above is the whole of it.
 
     def _guard_drop(
         self,
@@ -3366,7 +3258,8 @@ class Daemon:
         and answering it elsewhere would be trying to get around a guard that just fired.
 
         There is no `fallback_uncontained_ok` here:  the call offers the model no tool, so nothing the
-        model says can act, and the reply still goes through the validator and the Operator's voice.
+        model says can act, and the reply still goes through the validator (and is then dropped:  the
+        Operator never answers on behalf of a platform).
 
         The fallback is only trusted once a person pinned it (its own pin, one per role), and a hold is
         logged with its reason, never silently skipped."""
@@ -3571,9 +3464,11 @@ class Daemon:
                 # The key could not be read a moment ago (state only, no network):  every call would
                 # fail the same way, so the wake is held rather than run to fail.
                 return "openrouter_unavailable"
-            # The reply goes out as the Operator, so a wake that cannot be answered is not run.  This is
-            # the cheap half of the preflight (no network, no thread, safe on the router thread): it
-            # only knows a build that failed recently.  run_wake does the blocking half.
+            # A wake is still not run while the Operator is known to be unreachable (the cheap half of
+            # the preflight:  no network, no thread, safe on the router thread;  it only knows a build
+            # that failed recently, and run_wake does the blocking half).  Since Nov 10 2026 the wake's
+            # reply is never posted, so the reply no longer needs the Operator;  the guard stays, with the
+            # wake types, until they are deleted.
             if self.operator_voice.known_unavailable():
                 return "operator_unavailable"
         elif runner.cfg.wake == "http":
@@ -3755,42 +3650,21 @@ class Daemon:
         )
 
     def _typing_signal(self, runner: SeatRunner, pending: W.Pending) -> TYPING.TypingSignal | None:
-        """The typing indicator for this wake, shown as the OPERATOR, or None when the seat has it off,
-        the Operator is not available, or the wake has no single conversation to type in.
+        """No typing indicator is raised for a wake, whatever the seat's `typing_indicator` says.
 
-        "<seat> is typing" would be the seat's identity saying something the seat did not think: the
-        consultant is working, and the Operator is the one that will post what it wrote, so "Operator
-        is typing" is the true indicator (owner ruling, Oct 30 2026).  The seat's `typing_indicator`
-        switch still turns it off.  With no Operator there is no indicator at all, never the seat's.
-
-        The conversation is the one the Operator's reply will land in.  A channel wake types in the
-        trigger's topic.  A direct wake types in the original recipient set (the seat included, the
-        Operator excluded), which is where `post` sends the reply, and only when the owner is in it,
-        because a reply into a direct message without the owner is refused and an indicator for a
-        reply that cannot come would be a false promise."""
-        if not runner.cfg.typing_indicator:
-            return None
-        try:
-            # Cosmetic, so it never waits for a build and never holds the run back.
-            client = self.operator_voice.client(wait=False)
-            operator_id = self.operator_voice.user_id(wait=False)
-        except OPV.OperatorUnavailable as exc:
+        "Operator is typing" promised a reply, and none is coming:  the Operator never answers on
+        behalf of a platform (owner ruling, Nov 10 2026).  A seat that still has the switch on gets one
+        `typing-skipped` line per wake saying why.  `typing_signal.py` and the plumbing in `run_wake`
+        that starts and stops the indicator stay until the wake types are deleted;  with this answer
+        they never run."""
+        if runner.cfg.typing_indicator:
             self.log.write(
-                "typing-skipped", seat=runner.seat, wake_id=pending.wake_id, code=exc.code
+                "typing-skipped",
+                seat=runner.seat,
+                wake_id=pending.wake_id,
+                code=W.OPERATOR_NEVER_ANSWERS,
             )
-            return None
-        params = TYPING.target(pending, operator_id)
-        if params is None:
-            return None
-        if params["type"] == "direct" and int(self.config.owner_user_id or 0) not in params["to"]:
-            return None
-        return TYPING.TypingSignal(
-            client,
-            params,
-            on_error=lambda exc: self.log.write(
-                "typing-failed", seat=runner.seat, error=self.scrub(str(exc)), posted_by=OPV.VOICE
-            ),
-        )
+        return None
 
     def _wake_prompt(
         self,
@@ -3820,7 +3694,7 @@ class Daemon:
             owner_of=self.owner_of,
             format_time=format_time,
             board_enabled=board_on,
-            route=self.route_gate(runner, pending),
+            route=self.route_gate(runner, pending) or W.OPERATOR_NEVER_ANSWERS,
             held_back=held,
             chats=chat_context,
             tagged_address=letter or None,
@@ -4073,7 +3947,7 @@ class Daemon:
             self._log_pin_drift(runner, runner.cfg.wake, drift)
         # The other half of the preflight, before any budget is spent or any child exists: this runs
         # on the seat's own wake worker, which may wait for the Operator client to be built (the router
-        # never does).  A wake whose reply could not be posted is not run at all.
+        # never does).  A wake is not run while the Operator cannot be built (see `_wake_block`).
         try:
             self.operator_voice.client()
         except OPV.OperatorUnavailable as exc:
@@ -4163,13 +4037,10 @@ class Daemon:
         schema = W.schema_text(self.fleet_tags)
         # The muse runtime sends its schema to a strict structured-output provider, which wants every key required.
         muse_schema = W.schema_text(self.fleet_tags, strict=True)
-        # The seat says it is typing while it thinks (AFC-515).  The run is silent for its
-        # whole length otherwise:  the adapter takes 30 to 50 seconds to answer and the reply
-        # is posted only after it has, so the person who woke the seat watches an empty
-        # topic the whole time.  The indicator is cosmetic:  it never decides whether the
-        # seat answers, and a failure to post it is logged and ignored.  It is raised for the
-        # whole of the answer's making, the primary run, the fallback and the chat
-        # inspection alike, because the seat is still thinking through all of them.
+        # No typing indicator is raised for a wake:  `_typing_signal` answers None for every seat,
+        # because the Operator never answers on behalf of a platform (owner ruling, Nov 10 2026) and
+        # "Operator is typing" would promise a reply that never comes.  The start and stop below stay
+        # until the wake types are deleted.
         typing = self._typing_signal(runner, pending)
         if typing is not None:
             typing.start()
@@ -4344,10 +4215,8 @@ class Daemon:
                             second.error = "recursive chat inspection rejected"
                         result = second
         finally:
-            # The answer exists now and the reply is posted next, so the indicator goes
-            # down.  The fallback and the chat inspection are inside this block on purpose:
-            # they are part of producing the answer, and the seat is still thinking while
-            # they run, so the indicator stays up for them.
+            # The indicator, if one was raised, goes down once the answer exists.  None is raised any
+            # more (`_typing_signal`).
             if typing is not None:
                 typing.stop()
         # What only an OpenRouter call has (the model asked for, its role, the status, the token counts,
@@ -4480,17 +4349,13 @@ class Daemon:
             return
         outcome = self.act(runner, pending, obj, history=history)
         finished = self.clock.time()
-        # Held refs are surfaced only after the wake handled its triggers.  A refusal (a mention
-        # that survived neutralizing, the secret scanner) and a reply that was attempted but did
-        # not land are failed, and the held refs stay held.  An owner wake that attempted no reply
-        # is delivered:  action none, a board item with no reply text, or a route-only result.
-        refused = outcome.get("refused")
-        attempted = bool(outcome.pop("reply_attempted", False))
-        landed = bool(outcome.get("posted_id") or outcome.get("draft_to"))
-        delivered = not refused and (landed or not attempted)
+        # Held refs are surfaced once the wake handled its triggers.  The wake's reply is never
+        # posted (the Operator does not answer on behalf of a platform, owner ruling Nov 10 2026), so a
+        # wake whose reply was dropped is as done as one that had none;  `post_error` on the row says
+        # the reply was dropped, and the held refs are surfaced either way.
         runner.ledger.append(
             pending.row(
-                "done" if delivered else "failed",
+                "done",
                 finished,
                 exit=result.exit,
                 secs=result.secs,
@@ -4504,18 +4369,6 @@ class Daemon:
                 **outcome,
             )
         )
-        if not delivered:
-            if pending.owner:
-                self.notifier.notify(
-                    runner.seat,
-                    "simple-chat %s" % runner.seat,
-                    "a wake was not delivered: %s"
-                    % A.clean_banner(refused or "the reply was not posted", 60),
-                    kind="wake-undelivered",
-                    key="wake-undelivered:%s" % pending.wake_id,
-                    once_per=0,
-                )
-            return
         self._surface(runner, pending, listed, lost, finished)
 
     @staticmethod
@@ -7702,15 +7555,17 @@ class Daemon:
         *,
         history: Iterable[Mapping[str, Any]] = (),
     ) -> dict[str, Any]:
-        """Carry out a validated result:  post the reply (mentions neutralized, secret-scanned,
-        tagged), file the board item when allowed, and send owner notes through notify-owner.  A
-        note about a peer request, or any request screened uncertain or high, is also sent to the
-        owner as a Zulip DM (`dm_owner`).
+        """Carry out a validated result:  hand the reply to a live session as a draft, file the board
+        item when allowed, send owner notes through notify-owner, and record a route suggestion as
+        dropped.  A note about a peer request, or any request screened uncertain or high, is also sent
+        to the owner as a Zulip DM from the Operator bot (`dm_owner`).
 
-        Every Zulip post here is made by the OPERATOR bot and never by the seat's own bot (owner
-        ruling, Oct 30 2026): the headless consultant wrote the words, not the seat, so the reply
-        keeps its `[OPERATOR·wake]` tag, and the Operator relays it.
-        With no Operator nothing is posted and the refusal is on the ledger row as `post_error`."""
+        The Operator never answers on behalf of a platform (owner ruling, Nov 10 2026), so a reply is
+        posted nowhere:  with a live session on the topic it goes to that session as a draft that says
+        it was not posted, and with none `post` records the refusal and the reply is dropped.  The row
+        carries `post_error = operator_never_answers` and never the reply's text.  The one Zulip message
+        this method can still cause is the owner's `[OPERATOR·note]` DM, which is the Operator's own
+        alert and not an answer."""
         outcome: dict[str, Any] = {"posted_id": None, "board_uid": None, "note": False}
         trigger = pending.trigger_ids[-1] if pending.trigger_ids else 0
         reply = obj.get("reply") if obj.get("action") in ("reply", "board", "escalate") else None
@@ -7740,26 +7595,8 @@ class Daemon:
             outcome["draft_to"] = lease_id
             reply = None
         if reply:
-            text = W.compose_reply(trigger, reply)
-            found = secretscan.scan(text, self.hidden)
-            if W.loud_mention(
-                text
-            ):  # never reached after neutralize_mentions; refuse rather than notify
-                outcome["refused"] = "a mention survived neutralizing"
-            elif found:
-                outcome["refused"] = "secret scanner: %s" % found
-                self.notifier.notify(
-                    runner.seat,
-                    "simple-chat %s" % runner.seat,
-                    "a wake reply was refused by the secret scanner",
-                    kind="wake-secret",
-                    key="secret:%s" % pending.wake_id,
-                    once_per=0,
-                )
-            else:
-                outcome["reply_attempted"] = True
-                outcome["posted_id"] = self.post(runner, pending, text)
-                self._note_post_outcome(outcome, pending)
+            self.post(runner, pending)
+            outcome["post_error"] = pending.post_refusal
         board = obj.get("board")
         if obj.get("action") == "board" and isinstance(board, dict):
             outcome.update(self.file_board(runner, pending, board, trigger))
@@ -7796,14 +7633,7 @@ class Daemon:
                         % (dm_note.strip(), route.get("seat"), gate)
                     ).strip()
                 outcome.update(self.dm_owner(runner, pending, dm_note, risk, history))
-            if pending.owner and not outcome["posted_id"] and not lease_id:
-                outcome["reply_attempted"] = True
-                outcome["posted_id"] = self.post(
-                    runner, pending, W.compose_reply(trigger, W.OWNER_ACK)
-                )
-                self._note_post_outcome(outcome, pending)
-        # The route comes last, after the reply:  two posts, because a `·wake`-tagged post never wakes
-        # anyone and the route post must wake its target.
+        # The route comes last:  `handle_route` records it as dropped, with the reason.
         route = obj.get("route")
         if isinstance(route, dict):
             try:
@@ -7830,7 +7660,12 @@ class Daemon:
         """Why this wake may not route at all, or None.  Known before the run, so the prompt header
         tells the model, and checked again after it.  Only an owner trigger (Jay, from a human Zulip
         app) in a channel topic can route:  a peer-only batch never can, so no peer fans out through
-        the seat, and a DM never can."""
+        the seat, and a DM never can.
+
+        None here still means no more than "the checks may go on":  a route is never carried out,
+        because the Operator never answers on behalf of a platform (owner ruling, Nov 10 2026).  The
+        prompt header says so (`W.OPERATOR_NEVER_ANSWERS`) and `handle_route` drops what the model
+        suggests anyway."""
         if not (self.config.route_enabled and runner.cfg.route_enabled):
             return "disabled"
         if pending.type == "private":
@@ -7955,82 +7790,23 @@ class Daemon:
         history: Iterable[Mapping[str, Any]],
         lease_id: str | None,
     ) -> dict[str, Any]:
-        """Check a route suggestion and, when it passes, post `[OPERATOR·route→TARGET]` in the trigger's
-        topic with one live mention (the daemon's, of the target bot), then tell the owner who was
-        paged and why.  A dropped route is recorded and reaches the owner as a note."""
+        """Record a route suggestion as dropped and put the reason in the owner queue.
+
+        A route used to be posted as `[OPERATOR·route→TARGET]` with one live mention, in the
+        trigger's topic, and the Operator then told the owner who it had paged.  That page is the
+        Operator speaking for a platform on the owner's behalf, and the Operator never does that (owner
+        ruling, Nov 10 2026), so a route the checks would have passed is dropped with
+        `operator_never_answers`.  The checks still run first, so a route that fails one keeps that
+        reason.  A dropped route is an owner-queue note (with a Mac banner), never a Zulip post."""
         seat = str(route.get("seat") or "").upper()
-        reason = str(route.get("reason") or "")
-        info: dict[str, Any] = {"seat": seat, "status": "dropped", "why": None}
-        history = list(history)
-        triggers = self.trigger_messages(runner, pending, history)
-        why, bot, mode = self.route_check(runner, pending, obj, seat, triggers, lease_id)
-        if why is None and bot is not None:
-            owner_trigger = pending.owner_ids[-1]
-            owner_text = str((triggers.get(owner_trigger) or {}).get("content") or "")
-            link = A.zulip_link(
-                self.realm,
-                {
-                    "id": owner_trigger,
-                    "type": pending.type,
-                    "recipients": pending.recipients,
-                    "channel": pending.channel,
-                    "topic": pending.topic,
-                    "stream_id": pending.stream_id,
-                },
-            )
-            text = W.compose_route(
-                runner.seat,
-                seat,
-                str(bot.get("full_name") or seat),
-                int(bot["user_id"]),
-                owner_trigger,
-                reason,
-                owner_text,
-                link,
-            )
-            found = secretscan.scan(text, self.hidden)
-            if W.loud_mentions(text) != 1:
-                why = (
-                    "mention_check"  # never reached:  the composer neutralizes every other mention
-                )
-            elif found:
-                why = "secret_scanner"
-            else:
-                posted = self.post(runner, pending, text)
-                if posted is None:
-                    info.update(status="failed", why="post_failed", mode=mode)
-                    self.log.write(
-                        "route-failed", seat=runner.seat, wake_id=pending.wake_id, target=seat
-                    )
-                    return info
-                info.update(
-                    status="posted",
-                    why=None,
-                    mode=mode,
-                    posted_id=posted,
-                    target_id=int(bot["user_id"]),
-                    re=owner_trigger,
-                )
-                self.log.write(
-                    "route-posted",
-                    seat=runner.seat,
-                    wake_id=pending.wake_id,
-                    target=seat,
-                    mode=mode,
-                    posted_id=posted,
-                )
-                info.update(
-                    self.note_route_posted(
-                        runner, pending, seat, mode or "", reason, owner_trigger, posted
-                    )
-                )
-                return info
-        info["why"] = why
+        triggers = self.trigger_messages(runner, pending, list(history))
+        why = self.route_check(runner, pending, obj, seat, triggers, lease_id)[0]
+        why = why or W.OPERATOR_NEVER_ANSWERS
         self.log.write(
             "route-dropped", seat=runner.seat, wake_id=pending.wake_id, target=seat, reason=why
         )
-        self.note_route_dropped(runner, pending, seat, why or "dropped")
-        return info
+        self.note_route_dropped(runner, pending, seat, why)
+        return {"seat": seat, "status": "dropped", "why": why}
 
     def note_route_dropped(
         self, runner: SeatRunner, pending: W.Pending, seat: str | None, why: str
@@ -8051,109 +7827,6 @@ class Daemon:
             trigger_ids=pending.trigger_ids,
             owner=pending.owner,
         )
-
-    def note_route_posted(
-        self,
-        runner: SeatRunner,
-        pending: W.Pending,
-        seat: str,
-        mode: str,
-        reason: str,
-        owner_trigger: int,
-        posted: int,
-    ) -> dict[str, Any]:
-        """Tell the owner who was paged and why: a `[OPERATOR·note]` DM sent by the Operator (the same
-        channel as escalation notes) and the owner queue.  Never raises; a failure is recorded, because
-        the route post is already out and the wake's `done` row must still be written."""
-        try:
-            return self._note_route_posted(
-                runner, pending, seat, mode, reason, owner_trigger, posted
-            )
-        except Exception as exc:  # noqa: BLE001 - a note failure must never lose the ledger row
-            error = self.scrub(type(exc).__name__ + ": " + str(exc))
-            self.log.write(
-                "route-note-error", seat=runner.seat, wake_id=pending.wake_id, error=error
-            )
-            return {"owner_dm": None, "owner_dm_error": error}
-
-    def _note_route_posted(
-        self,
-        runner: SeatRunner,
-        pending: W.Pending,
-        seat: str,
-        mode: str,
-        reason: str,
-        owner_trigger: int,
-        posted: int,
-    ) -> dict[str, Any]:
-        where = "#%s > %s" % (
-            A.clean_banner(pending.channel, 60),
-            A.clean_banner(pending.topic, 80),
-        )
-        self.notifier.notify(
-            runner.seat,
-            "simple-chat %s" % runner.seat,
-            "paged %s for you in %s" % (seat, where),
-            kind="route",
-            key="route:%s" % pending.wake_id,
-            once_per=0,
-            note="routed to %s (%s): %s"
-            % (seat, mode, A.clean_banner(reason, W.LIMITS["route_reason"])),
-            trigger_ids=pending.trigger_ids,
-            owner=pending.owner,
-        )
-        owner_id = self.config.owner_user_id
-        if owner_id <= 0 or runner.fatal:
-            return {"owner_dm": None, "owner_dm_error": "owner dm skipped"}
-        link = A.zulip_link(
-            self.realm,
-            {
-                "id": posted,
-                "type": pending.type,
-                "recipients": pending.recipients,
-                "channel": pending.channel,
-                "topic": pending.topic,
-                "stream_id": pending.stream_id,
-            },
-        )
-        text = W.neutralize_mentions(
-            "\n".join(
-                [
-                    "[%s\u00b7note] re=%d" % (W.OPERATOR_TAG, owner_trigger),
-                    "Seat: %s" % runner.seat,
-                    "Routed: %s (%s)" % (seat, mode),
-                    "Where: %s" % where,
-                    "```quote",
-                    A.clean_banner(reason.replace("`", "'"), W.LIMITS["route_reason"]),
-                    "```",
-                    "Route post: %s" % link,
-                ]
-            )
-        )
-        if secretscan.scan(text, self.hidden):
-            self.log.write(
-                "owner-dm-refused",
-                seat=runner.seat,
-                wake_id=pending.wake_id,
-                reason="secret scanner",
-            )
-            return {"owner_dm": None, "owner_dm_error": "secret scanner"}
-        try:
-            result = self._operator_send({"type": "direct", "to": [owner_id], "content": text})
-        except OPV.OperatorUnavailable as exc:
-            self._operator_refused("route-note", exc, seat=runner.seat, wake_id=pending.wake_id)
-            return {
-                "owner_dm": None,
-                "owner_dm_error": self.scrub("operator unavailable: " + exc.reason),
-            }
-        except Z.SimpleToolsError as exc:
-            reason_text = self.scrub(str(exc))
-            self.log.write(
-                "owner-dm-failed", seat=runner.seat, wake_id=pending.wake_id, error=reason_text
-            )
-            return {"owner_dm": None, "owner_dm_error": reason_text}
-        message_id = result.get("id")
-        return {"owner_dm": int(message_id) if isinstance(message_id, int) else None}
 
     def owner_dm_text(
         self,
@@ -8287,86 +7960,33 @@ class Daemon:
             sent["owner_dm_note_withheld"] = withheld
         return sent
 
-    def post(self, runner: SeatRunner, pending: W.Pending, text: str) -> int | None:
-        """The wake's reply (and its route page), posted by the OPERATOR.
+    def post(self, runner: SeatRunner, pending: W.Pending, kind: str = "reply") -> None:
+        """Refuse to post a wake's reply:  the Operator never answers on behalf of a platform.
 
-        A channel trigger is answered in its topic; a DM trigger only by DM to the original
-        recipient set, never in a channel.  Posts are about 3 seconds apart.
+        Owner ruling, Nov 10 2026, after the complaint had been made five or six times in a week:
+        "The operator should never be answering on behalf of a platform."  This used to post the
+        headless run's words as `[OPERATOR·wake] re=<trigger id>` in the trigger's topic (or to the
+        original recipients of a DM), and the route page as `[OPERATOR·route→SEAT]`.  Those replies
+        answered questions as if the owner had asked the Operator to, and promised things it never
+        does.  It is a refusal now, for every seat and every wake type:  nothing is sent, no Operator
+        client is built, the text is not kept, and the wake finishes as it would have with nothing to
+        say.  The refusal is logged as `post-refused` and `pending.post_refusal` carries the reason onto
+        the wake's ledger row as `post_error`, as an Operator that could not post used to.
 
-        The Operator posts, not the seat (owner ruling, Oct 30 2026): the headless consultant wrote
-        the words, and the seat's bot would say the seat thought them.  The text keeps its
-        `[OPERATOR·wake]` tag, which names the wake it reports (`re=`) and is what the loop guard reads.  A
-        direct message goes to the original recipient set, the seat included and the Operator
-        excluded (it is the sender), so the seat and everyone who was in the thread see the reply;
-        Zulip makes that one new conversation with the Operator in it, and the owner-in-the-
-        conversation guard still applies, so a thread without the owner is refused as before.
+        What the Operator may still send is its own:  the held-wake digest, the owner's DM notes, the
+        `@all` reminder and the session-letter questions (the owner ruled on Nov 10 2026 that the
+        Operator asks no clarifying questions, so a later change removes the questions).  None of them
+        is an answer to a wake, and none goes through here.
 
-        Never falls back to the seat's bot: with no Operator, or one that cannot post here (not in
-        a private channel, say), nothing is posted, the refusal is logged and `pending.post_refusal`
-        carries the reason onto the ledger row.  Returns the message id, or None."""
-        pending.post_refusal = None
-        if runner.fatal:
-            self.log.write(
-                "post-refused", seat=runner.seat, wake_id=pending.wake_id, reason="seat_refused"
-            )
-            pending.post_refusal = "seat_refused"
-            return None
-        try:
-            operator_id = self.operator_voice.user_id()
-            if pending.type == "private":
-                to = [
-                    i
-                    for i in pending.recipients
-                    if isinstance(i, int) and not isinstance(i, bool) and i != operator_id
-                ]
-                if not to:
-                    return None
-                params: dict[str, Any] = {"type": "direct", "to": to, "content": text}
-            else:
-                params = {
-                    "type": "stream",
-                    "to": pending.channel,
-                    "topic": pending.topic,
-                    "content": text,
-                }
-            result = self._operator_send(params)
-        except Z.DmGuardRefused as exc:
-            # A wake reply into a direct message with no owner in it is refused by the
-            # owner-in-the-conversation guard (AFC-469):  that thread has no owner taking part, so
-            # the answer belongs in a channel.  The refusal is recorded and the daemon keeps
-            # running:  a wake is not worth losing the seat over.
-            self.log.write(
-                "post-refused-dm",
-                seat=runner.seat,
-                wake_id=pending.wake_id,
-                reason=exc.code,
-                error=self.scrub(str(exc)),
-            )
-            pending.post_refusal = exc.code
-            return None
-        except (OPV.OperatorUnavailable, OPV.OperatorRefused) as exc:
-            self._operator_refused("wake-reply", exc, seat=runner.seat, wake_id=pending.wake_id)
-            pending.post_refusal = exc.code
-            return None
-        except Z.SimpleToolsError as exc:
-            self.log.write(
-                "post-failed",
-                seat=runner.seat,
-                wake_id=pending.wake_id,
-                error=self.scrub(str(exc)),
-                posted_by=OPV.VOICE,
-            )
-            pending.post_refusal = "post_failed"
-            return None
-        message_id = result.get("id")
-        if pending.type == "private" and operator_id not in pending.recipients:
-            # The reply is in a NEW conversation (the Operator joined it), so the router counts it
-            # under that thread's key and the trigger thread's loop guard would never move.  Count it
-            # on the thread that woke the seat as well, so three wake replies still stop the thread.
-            self.loopguard.note(
-                pending.key, wake_reply=True, owner=False, rolling=False, now=self.clock.time()
-            )
-        return int(message_id) if isinstance(message_id, int) else None
+        Returns None, always.  `kind` only names what was refused in the log."""
+        pending.post_refusal = W.OPERATOR_NEVER_ANSWERS
+        self.log.write(
+            "post-refused",
+            seat=runner.seat,
+            wake_id=pending.wake_id,
+            reason=W.OPERATOR_NEVER_ANSWERS,
+            kind=kind,
+        )
 
     def file_board(
         self, runner: SeatRunner, pending: W.Pending, board: Mapping[str, Any], trigger: int
@@ -8767,17 +8387,6 @@ class Daemon:
             reason=self.scrub(str(getattr(exc, "reason", None) or exc)),
             **fields,
         )
-
-    @staticmethod
-    def _note_post_outcome(outcome: dict[str, Any], pending: W.Pending) -> None:
-        """Put who posted, or why nothing was posted, on the wake's ledger row."""
-        if outcome.get("posted_id"):
-            outcome["posted_by"] = OPV.VOICE
-            outcome.pop(
-                "post_error", None
-            )  # an earlier post of this wake failed, a later one landed
-        elif pending.post_refusal:
-            outcome["post_error"] = pending.post_refusal
 
     def _catch_up(self, runner: SeatRunner, data: Mapping[str, Any], now: float) -> None:
         """One catch-up wake for a seat whose adapter runs a turn (`http` or `claude`), when its

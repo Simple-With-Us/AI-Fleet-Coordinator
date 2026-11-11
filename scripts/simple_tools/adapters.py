@@ -142,7 +142,8 @@ def claude_env(
     (FLEET-PROTOCOL § Identity Rules › Launcher Contract):  it sets AGENT_LAUNCHER=simple-tools-wake,
     AGENT_LAUNCH_SEAT and AGENT_SEAT to the seat it is waking, and SIMPLE_TOOLS_ATTACH=0, fresh, after
     every inherited identity variable was dropped.  The wake has no tools and posts nothing itself
-    (the daemon posts its validated reply as the seat's bot), so this only keeps the seat explicit."""
+    (the daemon drops its validated reply:  the Operator never answers on behalf of a platform), so
+    this only keeps the seat explicit."""
     user = env.get("USER") or env.get("LOGNAME") or os.path.basename(home)
     out = {
         "HOME": home,
@@ -766,8 +767,8 @@ def muse_env(
     absent or empty value invents nothing -- the run then uses the subscription login as before.
     With `seat` (a wake, or test-wake) the listener is the reference launcher (FLEET-PROTOCOL
     Identity Rules):  it names the seat it is waking and clears every inherited identity variable
-    first.  The wake has no tools and posts nothing itself (the daemon posts its validated reply as
-    the seat's bot), so this only keeps the seat explicit."""
+    first.  The wake has no tools and posts nothing itself (the daemon drops its validated reply:
+    the Operator never answers on behalf of a platform), so this only keeps the seat explicit."""
     user = env.get("USER") or env.get("LOGNAME") or os.path.basename(home)
     out = {
         "HOME": home,

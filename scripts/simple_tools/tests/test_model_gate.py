@@ -1376,13 +1376,13 @@ class GateWakeTests(GateLog, DaemonHarness):
 
     def test_a_seat_wake_runs_once_as_before_and_its_rows_carry_the_gate_through_a_restart(self) -> None:
         daemon = self.started()
-        mid = self.wake(daemon)
+        self.wake(daemon)
         rows = self.ledger()
         self.assertEqual([r["state"] for r in rows], ["queued", "accepted", "started", "done"])
         self.assertEqual(len(self.dumps()), 1, "the model ran exactly once, as it always did")
         self.assertEqual(self.terminal_wakes()[-1]["action"], "reply")
-        self.assertEqual(len(self.bot_posts()), 1)
-        self.assertTrue(self.bot_posts()[0]["content"].startswith("[OPERATOR·wake] re=%d\n" % mid))
+        self.assertEqual(self.bot_posts(), [], "the Operator never answers on behalf of a platform")
+        self.assertEqual(self.terminal_wakes()[-1]["post_error"], "operator_never_answers")
         for row in rows[:2]:
             self.assertFalse([k for k in row if k.startswith("gate")], "decided at the start, not before")
         for row in rows[2:]:
@@ -1508,7 +1508,7 @@ class GateNeverBlocksTests(GateLog, DaemonHarness):
     def assert_the_wake_ran_as_before(self) -> None:
         self.assertEqual([r["state"] for r in self.ledger()], ["queued", "accepted", "started", "done"])
         self.assertEqual(len(self.dumps()), 1)
-        self.assertEqual(len(self.bot_posts()), 1)
+        self.assertEqual(self.bot_posts(), [], "the Operator never answers on behalf of a platform")
 
     def test_a_gate_that_raises_records_gate_error_and_the_wake_runs(self) -> None:
         with mock.patch.object(W, "model_gate_verdict", side_effect=RuntimeError("boom")):
@@ -1882,11 +1882,11 @@ def claude_fallback_setup(case: OpenRouterHarness) -> None:
 #: to the daemon legitimately changes its own pattern, re-measure on the new base: a scratch copy of this
 #: module with `create=True` on `Replay.patch`, one `off` replay per scenario, `calls` printed.
 BASE_CALLS = {
-    "basic": {"append": 19, "append_jsonl": 26, "history": 4, "lease_views": 22, "spawns": 5, "takeover": 12, "zulip_get_messages": 4},
-    "fallback": {"append": 16, "append_jsonl": 20, "history": 4, "lease_views": 21, "spawns": 3, "takeover": 12, "zulip_get_messages": 4},
+    "basic": {"append": 19, "append_jsonl": 25, "history": 4, "lease_views": 20, "spawns": 5, "takeover": 12, "zulip_get_messages": 4},
+    "fallback": {"append": 16, "append_jsonl": 20, "history": 4, "lease_views": 18, "spawns": 3, "takeover": 12, "zulip_get_messages": 4},
     "inspect": {"append": 6, "append_jsonl": 7, "lease_views": 5, "takeover": 5, "zulip_get_messages": 0},
-    "tagged": {"append": 16, "append_jsonl": 20, "history": 4, "lease_views": 21, "operator_candidates": 4, "spawns": 4, "takeover": 12, "zulip_get_messages": 4},
-    "bound": {"append": 8, "append_jsonl": 10, "history": 2, "lease_views": 10, "spawns": 2, "takeover": 6, "zulip_get_messages": 2},
+    "tagged": {"append": 16, "append_jsonl": 20, "history": 4, "lease_views": 18, "operator_candidates": 4, "spawns": 4, "takeover": 12, "zulip_get_messages": 4},
+    "bound": {"append": 8, "append_jsonl": 10, "history": 2, "lease_views": 9, "spawns": 2, "takeover": 6, "zulip_get_messages": 2},
     "routine": {"append": 8, "append_jsonl": 10, "lease_views": 7, "takeover": 4, "zulip_get_messages": 0},
 }
 
@@ -1931,7 +1931,7 @@ class NoBehaviourChangeTests(unittest.TestCase):
         # failed run and a wake a session took.
         states = Counter(r["state"] for r in on["rows"] if r["state"] not in ("queued", "accepted"))
         self.assertEqual(states, Counter({"done": 2, "failed": 2, "skipped": 1, "started": 4}))
-        self.assertEqual(len(on["posts"]), 2)
+        self.assertEqual(on["posts"], [], "the Operator never answers on behalf of a platform")
 
     def test_a_fallback_path_decides_the_same_and_the_gate_adds_no_call(self) -> None:
         on = self.assert_replays_agree(
@@ -1963,7 +1963,7 @@ class NoBehaviourChangeTests(unittest.TestCase):
         on = self.assert_replays_agree(
             replay(BoundChatScenario), ["model_compose_reply", "det_bound_chat"], BASE_CALLS["bound"]
         )
-        self.assertEqual(len(on["posts"]), 2, "the bound wake still ran and was answered")
+        self.assertEqual(on["posts"], [], "the bound wake still ran, and nothing was posted for it")
 
     def test_a_routine_path_decides_the_same_and_the_gate_adds_no_call(self) -> None:
         on = self.assert_replays_agree(
