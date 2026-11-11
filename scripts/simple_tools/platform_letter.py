@@ -1863,14 +1863,27 @@ _POST_VERBS = frozenset({"post", "reply"})
 _GLOBAL_VALUE_FLAGS = frozenset({"--as", "--default-seat", "--rc", "--session"})
 _POSTED_LINE = re.compile("^posted id [0-9]+ to #[^\\n]*? › ([^\\n]+)$", re.MULTILINE)
 _SHELL_PUNCTUATION = ";&|()\n"
+# The words that may stand before the program in the command that runs it:  a wrapper (and its flags and their
+# values) or a shell keyword.  `echo simple-chat post ...` only names the program, so it is not a post.
+_PREFIX_WORDS = frozenset({"sudo", "env", "command", "nohup", "time", "exec", "then", "do", "else", "if", "while", "!"})
+_ASSIGNMENT = re.compile("^[A-Za-z_][A-Za-z0-9_]*=")
 
 
 def _clean_topic(text: object) -> str:
     if not isinstance(text, str):
         return ""
-    topic = " ".join(text.split())[:TOPIC_CHARS].strip()
-    # A shell variable or a substitution is not the topic the command posted to:  only the printed line says that.
-    return "" if any(mark in topic for mark in ("$", "`")) else topic
+    return " ".join(text.split())[:TOPIC_CHARS].strip()
+
+
+def _runs_program(before: list[str]) -> bool:
+    """True when the words before a program name only wrap it (`sudo`, `env A=b`, a shell keyword), so it is run."""
+    for i, word in enumerate(before):
+        if word in _PREFIX_WORDS or _ASSIGNMENT.match(word) or word.startswith("-"):
+            continue
+        if i > 0 and before[i - 1].startswith("-") and "=" not in before[i - 1]:
+            continue  # the value of a wrapper's flag, such as `sudo -u jay`
+        return False
+    return True
 
 
 def _command_posts(command: object) -> list[str] | None:
@@ -1895,7 +1908,7 @@ def _command_posts(command: object) -> list[str] | None:
     posts: list[str] = []
     for words in segments:
         for at, word in enumerate(words):
-            if os.path.basename(word) not in _POST_PROGRAMS:
+            if os.path.basename(word) not in _POST_PROGRAMS or not _runs_program(words[:at]):
                 continue
             rest = words[at + 1 :]
             i = 0
@@ -1910,7 +1923,9 @@ def _command_posts(command: object) -> list[str] | None:
                     topic = args[j + 1]
                 elif arg.startswith("--topic="):
                     topic = arg[len("--topic=") :]
-            posts.append(_clean_topic(topic))
+            # A shell variable or a substitution is not the topic the command posted to:  only the printed line says
+            # that.  (A hosted call's topic and a printed line's never went through a shell, so `$` is just text.)
+            posts.append("" if any(mark in topic for mark in ("$", "`")) else _clean_topic(topic))
             break
     return posts or None
 

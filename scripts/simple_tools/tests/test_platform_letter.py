@@ -1421,6 +1421,34 @@ class HookTests(Base):
                   self.results(("a", "posted id 8 to #Work-In-Progress › Real", False))]
         self.assertEqual(PL.topics_in_lines(quoted), ["Real"])
 
+    def test_a_topic_with_a_dollar_sign_counts_when_no_shell_read_it(self) -> None:
+        lines = [
+            self.calls(("a", "mcp__f__zulip_post", {"topic": "Price $5"}),
+                       ("b", "Bash", {"command": "simple-chat post --topic 'Cost `x`' -b y"}),
+                       ("c", "Bash", {"command": 'simple-chat post --topic "$T" -b y'})),
+            self.results(("a", "{}", False), ("b", "posted id 3 to #Work-In-Progress › Cost `x`", False),
+                         ("c", "posted id 4 to #Work-In-Progress › Price $6", False)),
+        ]
+        self.assertEqual(PL.topics_in_lines(lines), ["Price $5", "Cost `x`", "Price $6"])
+        # A literal `$VAR` in the command is not the topic, and with no printed line it names nothing.
+        bare = [self.calls(("a", "Bash", {"command": 'simple-chat post --topic "$T" -b y'})),
+                self.results(("a", "{}", False))]
+        self.assertEqual(PL.topics_in_lines(bare), [])
+
+    def test_only_a_command_that_runs_the_program_posts(self) -> None:
+        def topics(command: str) -> list[str]:
+            return PL.topics_in_lines([self.calls(("a", "Bash", {"command": command})), self.results(("a", "", False))])
+
+        for command in ("echo simple-chat post --topic Demo -b x", "grep -r 'x' simple-chat post --topic Demo",
+                        "cat agent-sync post --topic Demo"):
+            with self.subTest(command):
+                self.assertEqual(topics(command), [])
+        for command in ("sudo -u jay simple-chat post --topic Demo -b x", "env A=b simple-chat reply --topic Demo -b x",
+                        "A=b ~/.local/bin/simple-chat post --topic Demo -b x",
+                        "if true; then simple-chat post --topic Demo -b x; fi"):
+            with self.subTest(command):
+                self.assertEqual(topics(command), ["Demo"])
+
     def test_turn_note_keeps_what_another_hook_wrote_meanwhile(self) -> None:
         before = {"state": "open", "label": "AA", "issues_failed_at": 1.0, "title": "Old"}
         after = dict(before, issues=[{"id": "AFC-1"}], topics=[{"topic": "T", "at": 2.0}])
@@ -1444,8 +1472,9 @@ class HookTests(Base):
         self.assertEqual(len(many), PL.TOPIC_KEEP)
         self.assertEqual(PL.merge_topics("not a list", [], 1.0), [])
         # What it is given is cleaned the same way:  one entry per topic, never longer than TOPIC_CHARS.
-        merged = PL.merge_topics([{"topic": "A b", "at": 1.0}], ["  A   b ", "X" * 90, "", "$T"], 7.0)
-        self.assertEqual(merged, [{"topic": "A b", "at": 7.0}, {"topic": "X" * PL.TOPIC_CHARS, "at": 7.0}])
+        merged = PL.merge_topics([{"topic": "A b", "at": 1.0}], ["  A   b ", "X" * 90, "", "Price $5"], 7.0)
+        self.assertEqual(merged, [{"topic": "A b", "at": 7.0}, {"topic": "X" * PL.TOPIC_CHARS, "at": 7.0},
+                                  {"topic": "Price $5", "at": 7.0}])
         # One parse serves both readers of the same lines.
         lines = ["{not json", json.dumps({"type": "user", "message": {"content": "AFC-3"}})]
         parsed = PL.parsed_lines(lines)
