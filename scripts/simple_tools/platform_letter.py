@@ -125,8 +125,10 @@ STDIN_LIMIT = 1 << 20
 # or never saw the chat), and what the hook reads as "register again".
 NO_REGISTRATION = "this chat has no registration"
 
-#: The events the library knows, whatever a platform calls them.
-EVENTS = ("start", "prompt", "rename", "end")
+#: The events the library knows, whatever a platform calls them.  `turn` is the end of one turn (Claude Code's and
+#: ZCode's Stop):  it reports what the turn touched (AFC-702) and never closes anything.  A spec maps its own event to
+#: it;  none does by default.
+EVENTS = ("start", "prompt", "rename", "end", "turn")
 #: The event names Claude Code and Codex style hooks use, and the default for a spec.
 DEFAULT_EVENTS = {"SessionStart": "start", "UserPromptSubmit": "prompt", "SessionEnd": "end"}
 #: Timeouts in seconds for those hook entries.  The ssh hop takes up to REMOTE_TIMEOUT, and a SessionEnd budget is
@@ -1837,20 +1839,120 @@ def branch_issue_ids(cwd: object, run: Callable[..., Any] = subprocess.run) -> s
     return issue_ids_in(branch, any_case=True) if branch and branch != "HEAD" else set()
 
 
+#: The most Zulip topics a note keeps for its chat (the newest), and the longest topic it keeps (Zulip's own limit).
+TOPIC_KEEP = 20
+TOPIC_CHARS = 60
+# The hosted Zulip tools a chat posts with (`zulip_post`, `zulip_reply`, under any MCP server prefix).
+_POST_TOOLS = re.compile(r"(?:^|__)zulip_(?:post|reply)$")
+
+
+def _clean_topic(text: object) -> str:
+    if not isinstance(text, str):
+        return ""
+    return " ".join(text.split())[:TOPIC_CHARS].strip()
+
+
+def _text_topics(text: str, quoted: bool, found: list[str]) -> None:
+    """The topics one string of a transcript posted to, in the order it names them."""
+    hits = [(m.start(), m.group(1)) for m in _POSTED_TOPIC.finditer(text)]
+    if not quoted:
+        hits += [
+            (m.start(), next(g for g in m.groups() if g is not None))
+            for m in _TOPIC_FLAG.finditer(text)
+        ]
+    found.extend(_clean_topic(topic) for _, topic in sorted(hits, key=lambda hit: hit[0]))
+
+
+def _walk_topics(value: Any, found: list[str], inside: bool, depth: int = 0) -> None:
+    """The topics a transcript entry posted to, in the order the entry holds them (the same walk, and the same rule
+    for what is a tool's output, as `_transcript_strings`), plus the `topic` of a hosted Zulip post or reply call."""
+    if depth > 40:
+        return
+    if isinstance(value, str):
+        _text_topics(value, inside, found)
+    elif isinstance(value, Mapping):
+        kind = value.get("type")
+        name = value.get("name")
+        args = value.get("input")
+        if (
+            kind == "tool_use"
+            and isinstance(name, str)
+            and _POST_TOOLS.search(name)
+            and isinstance(args, Mapping)
+        ):
+            found.append(_clean_topic(args.get("topic")))
+        hidden = (
+            inside
+            or (isinstance(kind, str) and kind in _QUOTED_TYPES)
+            or value.get("isMeta") is True
+        )
+        for key, item in value.items():
+            _walk_topics(item, found, hidden or key in _QUOTED_KEYS, depth + 1)
+    elif isinstance(value, list):
+        for item in value:
+            _walk_topics(item, found, inside, depth + 1)
+
+
+def topics_in_lines(lines: list[str]) -> list[str]:
+    """The Zulip topics a stretch of transcript posted to, oldest first, each once:  a `simple-chat post --topic`
+    command the chat wrote, the `posted id N to #channel › topic` line `simple-chat` prints (in the chat's words or a
+    tool's output), and the topic of a hosted `zulip_post` or `zulip_reply` call.  A `--topic` inside a tool's output
+    (a file the turn read) is not a post, so only the printed line counts there."""
+    found: list[str] = []
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            _text_topics(line, False, found)  # a line that is not JSON is the chat's own words
+            continue
+        _walk_topics(entry, found, False)
+    seen: set[str] = set()
+    out: list[str] = []
+    for topic in found:
+        if topic and topic not in seen:
+            seen.add(topic)
+            out.append(topic)
+    return out
+
+
+def merge_topics(old: object, seen: list[str], now: float) -> list[dict[str, Any]]:
+    """The note's `topics` list with `seen` folded in:  each topic once, stamped with the last time a turn posted to
+    it, newest last, at most TOPIC_KEEP."""
+    kept: dict[str, float] = {}
+    for item in old if isinstance(old, list) else []:
+        if isinstance(item, Mapping):
+            topic = _clean_topic(item.get("topic"))
+            at = item.get("at")
+            if topic and isinstance(at, (int, float)) and not isinstance(at, bool):
+                kept.pop(topic, None)
+                kept[topic] = float(at)
+    for topic in seen:
+        kept.pop(topic, None)
+        kept[topic] = now
+    ordered = sorted(kept.items(), key=lambda kv: kv[1])[-TOPIC_KEEP:]
+    return [{"topic": topic, "at": at} for topic, at in ordered]
+
+
 def collect_issue_ids(
     note: dict[str, Any],
     data: Mapping[str, Any],
     root: str,
     run: Callable[..., Any] = subprocess.run,
+    now: float | None = None,
 ) -> set[str]:
-    """The ids this turn's start finds, from the hook data's `transcript_path` (only the lines since
-    the scan point the note keeps) and `cwd` (its branch).  A source that fails gives nothing."""
+    """The ids this turn finds, from the hook data's `transcript_path` (only the lines since the scan
+    point the note keeps) and `cwd` (its branch).  A source that fails gives nothing.  Given `now`, the
+    Zulip topics those lines posted to are folded into the note's `topics` as well (AFC-702)."""
     found: set[str] = set()
     path = data.get("transcript_path")
     if isinstance(path, str) and path:
         try:
             lines, note["issues_scan"] = read_new_lines(path, root, note.get("issues_scan"))
             found |= issue_ids_in_lines(lines)
+            if now is not None:
+                topics = topics_in_lines(lines)
+                if topics:
+                    note["topics"] = merge_topics(note.get("topics"), topics, now)
         except (OSError, ValueError, TypeError):
             pass
     try:
@@ -1879,7 +1981,7 @@ def sync_issues(
     try:
         from . import operator_registry as OR
 
-        seen = collect_issue_ids(note, data, root, run)
+        seen = collect_issue_ids(note, data, root, run, now)
         old = note.get("issues")
         issues = OR.merge_issues(old, seen, now) if seen else OR.normalize_issues(old or [])
         if issues:
@@ -1898,6 +2000,44 @@ def sync_issues(
         note.pop("issues_failed_at", None)
     except Exception:  # noqa: BLE001 - a hook never stops for this
         return
+
+
+def end_of_turn(
+    note: dict[str, Any],
+    data: Mapping[str, Any],
+    root: str,
+    now: float,
+    send: Callable[[str], Mapping[str, Any]],
+    *,
+    run: Callable[..., Any] = subprocess.run,
+) -> None:
+    """The end-of-turn report a platform's turn-end hook calls (AFC-702):  the Linear issues and Zulip topics the turn
+    that just ended touched, so the last turn of a chat is recorded without waiting for a next prompt.
+
+    It is the same scan the prompt hook runs (`sync_issues`), from the same scan point, so a turn is read once:  the
+    prompt hook stays the fallback for a turn whose end hook never ran (a platform with no turn-end event, a hook that
+    timed out), and finds nothing new after one that did.  The issues reach the registry;  the topics stay in the
+    chat's own note until the registry has a field for them.  Only an open chat with a letter reports.  Nothing here
+    raises, and a registry that does not answer costs at most one call per RETRY_SECONDS."""
+    if note.get("state") != "open" or not note.get("label"):
+        return
+    sync_issues(note, data, root, now, send, run=run)
+
+
+def on_turn(chat: Chat, data: Mapping[str, Any]) -> int:
+    """A turn ended (a spec that maps its turn-end event to `turn`):  report it, print nothing, close nothing."""
+    note = chat.read()
+    if not note:
+        return 0
+    end_of_turn(
+        note,
+        data,
+        _text(chat.env.get("HOME")) or os.path.expanduser("~"),
+        chat.now,
+        lambda text: chat.registry("issues", issues=text),
+    )
+    chat.write(note)
+    return 0
 
 
 def _issues_answer(out: Mapping[str, Any]) -> dict[str, Any]:
@@ -2466,6 +2606,8 @@ def _run_hook(
         return on_prompt(chat, data, out)
     if event == "rename":
         return on_rename(chat, data, out)
+    if event == "turn":
+        return on_turn(chat, data)
     return on_end(chat, data)
 
 
