@@ -169,6 +169,7 @@ def deliver_request(
     `ZCODE_WAKE_TASKS_INDEX`, `ZCODE_WAKE_LOCK_DIR`) so a deployment on another host or in
     another checkout sets its own without touching this file;  the constants are the last
     resort and are this server's."""
+
     def setting(name: str, default: str) -> str:
         return os.environ.get(name) or default
 
