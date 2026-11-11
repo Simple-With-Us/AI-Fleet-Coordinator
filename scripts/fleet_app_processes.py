@@ -133,6 +133,9 @@ EXPLICIT_RULES = (
     # AFC-665:  the AG seat's wake bridge (the template installs as
     # afc-ag-wake-bridge.service, but the attribution matches the shipped file name).
     ("AFC", "systemd", "ag-wake-bridge.service", True),
+    # Claude's wake router (OPS-1048;  the template installs as
+    # afc-claude-wake-router.service, but the attribution matches the shipped file name).
+    ("AFC", "systemd", "claude-wake-router.service", True),
     # Clutch's browser UI, and Congress.Trade's scanned-PTR worker (docs/MAC-LOCAL-PROCESSES.md).
     ("C", "pm2", "clutch-web", True),
     ("CT", "pm2", "vision-worker", True),
