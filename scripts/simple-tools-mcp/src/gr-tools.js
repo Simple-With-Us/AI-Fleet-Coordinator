@@ -348,7 +348,7 @@ export const GR_TOOLS = Object.freeze([
     name: "gr_comment_pr",
     title: "Comment on Pull Request",
     description: "Add a conversation comment to a pull request through git-relay, as your own GitHub App.",
-    inputSchema: obj(["repo", "number", "body"], { repo: REPO, number: NUMBER, body: { type: "string" } }),
+    inputSchema: obj(["repo", "number", "body"], { repo: REPO, number: NUMBER, body: { type: "string" }, intent_id: {type:"string",pattern:"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}$"} }),
   },
   {
     name: "gr_merge_pr",
