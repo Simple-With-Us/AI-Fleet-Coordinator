@@ -10,10 +10,10 @@ Run it inside the container (the Coolify terminal, or docker exec):
 The entrypoint seeds /data/listener.toml from the sample only once, so a seat section changed in the
 sample never reaches a live volume by itself.  This copies exactly the sample's [seat.JET] and every
 [seat.GB-*] and [seat.BF-*] section into the live file:  a section that differs is replaced where it stands, with the
-comment lines just above it, and a missing one is appended.  [listener_api], [notes_queue] (AFC-486) and
-[linear_projects] (AFC-565) are appended the same way when the live file has none, but one that is there is
+comment lines just above it, and a missing one is appended.  [listener_api], [notes_queue] (AFC-486),
+[linear_projects] (AFC-565) and [linear_comments] are appended the same way when the live file has none, but one that is there is
 never changed:  its `enabled` (and the notes queue's seat lists) are the operator's choice on that volume,
-and the sample ships all three off.  [daemon]
+and the sample ships them all off.  [daemon]
 (owner_user_id and eligible_user_ids, pinned by `simple-chat daemon init`) and every other section stay byte
 for byte.
 
@@ -50,7 +50,7 @@ HERE = Path(__file__).resolve().parent
 
 _HEADER_RE = re.compile(r"^\[([^\[\]]+)\]\s*(#.*)?$")
 # Settings sections copied from the sample only when the live file has none, and never replaced.
-ADD_ONLY = ("listener_api", "notes_queue", "linear_projects")
+ADD_ONLY = ("listener_api", "notes_queue", "linear_projects", "linear_comments")
 
 
 def target(seat: str) -> bool:

@@ -866,7 +866,12 @@ def _on_record(OR: Any, db: str, args: Any, sid: str) -> dict[str, Any]:
                 ),
                 "label": rec["label"],
             }
-        return {"ok": True, "label": rec["label"], "generation": rec["generation"]}
+        return {
+            "ok": True,
+            "label": rec["label"],
+            "generation": rec["generation"],
+            "record_id": rid,
+        }
     finally:
         reg.close_db()
 
@@ -1060,8 +1065,9 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
     and answer in the registry's own words, so this path probes with the touch op where the
     local path reads:  a touch stamps a live session seen, answers outcome "closed" for a
     closed one without writing anything, and refuses a session the registry does not hold.
-    The registry's touch answer carries the stamp, not the letter, so a touch here answers
-    with the record id alone where the local path also names the letter and generation."""
+    A current registry's touch answer also names the letter and generation, and this path
+    passes them on as the local path does (`_touch_answer`); an older registry's names
+    neither, and the answer then carries the record id alone, which the hook reads as no change."""
     identity = _api_identity(args, sid)
     if args.op == "show":
         # The API has no show op:  `held` answers the letter side of the record (its id and
@@ -1096,16 +1102,35 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
         return {"retired": True, "record_id": probe.get("record_id", "")}
     title = clean_title(args.title) if args.op == "title" else ""
     if args.op == "touch" or not title:
-        return {"ok": True, "record_id": probe.get("record_id", "")}
+        return _touch_answer(probe)
     updated = _call_api(env, "update", {**identity, "title": title})
     error = _api_error(updated)
     if error is not None:
         return error
-    return {
+    out = {
         "ok": True,
         "label": updated.get("label", ""),
         "generation": updated.get("generation"),
     }
+    if updated.get("record_id"):
+        out["record_id"] = updated[
+            "record_id"
+        ]  # as a touch's answer carries it, for the hook's note
+    return out
+
+
+def _touch_answer(probe: Mapping[str, Any]) -> dict[str, Any]:
+    """The registry side's answer to a touch that found a live session, from the API's touch answer.
+
+    The letter and generation go on when the registry named a letter, so the hook can follow a letter
+    the registry changed in place.  A registry from before the touch named them answers without
+    them, and so does this answer: the hook reads a missing letter as no change."""
+    out: dict[str, Any] = {"ok": True, "record_id": probe.get("record_id", "")}
+    if probe.get("label"):
+        out["label"] = probe["label"]
+        if probe.get("generation") is not None:
+            out["generation"] = probe["generation"]
+    return out
 
 
 def _make_parser() -> Any:
@@ -1595,6 +1620,62 @@ def _reissued(spec: PlatformSpec, answer: Mapping[str, Any]) -> str:
     return ""
 
 
+def follow_letter(note: dict[str, Any], answer: Mapping[str, Any]) -> str:
+    """Fold the letter a touch or title answer names into an open chat's note.  Returns the letter the chat held
+    before when the registry's is a different one, else "".
+
+    The registry can change a live chat's letter in place (a relabel, or a restore that moves records between
+    letters), and the touch and title answers are where the hook hears of it.  A different letter is the caller's
+    cue to retitle the chat and tell the model.  The same letter under another generation is folded into the note
+    silently, because the title carries no generation and a chat registered by hand can differ from its note by
+    generation alone.  An answer with no letter (an error, a retired letter, or a registry from before the touch
+    named one) changes nothing.  The letter is followed as given: the registry is the allocator, and a restore can
+    hand a chat a letter another chat's note still holds, so nothing here second-guesses it."""
+    if "error" in answer or answer.get("retired") or note.get("state") != "open":
+        return ""
+    label = answer.get("label")
+    held_now = str(note.get("label") or "")
+    if not isinstance(label, str) or not LABEL_RE.fullmatch(label) or not held_now:
+        return ""
+    gen = answer.get("generation")
+    valid = isinstance(gen, int) and not isinstance(gen, bool) and gen >= 1
+    if valid:
+        note["generation"] = gen
+    rid = answer.get("record_id")
+    if isinstance(rid, str) and rid:
+        note["record_id"] = rid
+    if label == held_now:
+        return ""
+    note["label"] = label
+    if not valid:
+        # The old letter's generation says nothing about the new one: it is the first, as `_apply` reads a register
+        # answer that names none.
+        note["generation"] = 1
+    return held_now
+
+
+def _follow_title(note: dict[str, Any], prior: str, shown: str) -> str:
+    """The title for a chat whose letter just moved from `prior` to the note's: the words of `shown` with every letter
+    the chat held taken off (the note's title when that leaves none), under the new letter.  The old letter stays
+    in the note's history, so a later prompt still reads a title that carries it as this chat's own."""
+    label = str(note["label"])
+    note["labels"] = list(held(note, label, prior))[:8]
+    note["placeholder"] = compose(label, "")
+    words = bare(shown, held(note))
+    if not words or words == PLACEHOLDER:
+        words = str(note.get("title") or "")
+    return compose(label, "" if words == PLACEHOLDER else words)
+
+
+def relabeled(prior: str, label: str) -> str:
+    """The context line for a chat whose letter the registry changed in place."""
+    return "This chat's Operator letter changed from %s to %s; it is addressed as %s now.  " % (
+        prior,
+        label,
+        label,
+    )
+
+
 def _write_title(
     chat: Chat,
     note: Mapping[str, Any],
@@ -1915,6 +1996,14 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
             answer = _push(chat, note, "title", str(note["unsent"]))  # an earlier send failed
         elif chat.now - float(note.get("touched_at") or 0) >= TOUCH_SECONDS:
             answer = _push(chat, note, "touch")
+    moved = ""
+    prior = follow_letter(note, answer)
+    if prior:
+        # The registry changed this chat's letter in place: the title takes the new one, over the words the chat
+        # shows (or is about to show) with any letter it held taken off.
+        title = _follow_title(note, prior, title or current)
+        moved = relabeled(prior, str(note["label"]))
+        announce = True
     if _gone(answer):
         # The Operator has no registration for this chat any more (its letter was retired, or the registry was
         # restored from an older copy): check with it again, in case it needs a new one.
@@ -1939,7 +2028,7 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     if announce or (shown and shown != current):
         out.emit(
             "prompt",
-            context=reminder(spec, note) if announce else "",
+            context=moved + reminder(spec, note) if announce else "",
             title=shown,
             label=str(note.get("label") or ""),
         )
@@ -1956,13 +2045,25 @@ def on_rename(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     if not (words or show):
         return 0
     note["seen"] = current
+    moved = ""
+    answer: dict[str, Any] = {}
     if words:
         note["title"] = words
-        _push(chat, note, "title", words)  # a failed send is kept in the note for a later prompt
+        answer = _push(
+            chat, note, "title", words
+        )  # a failed send is kept in the note for a later prompt
+    elif chat.now - float(note.get("touched_at") or 0) >= TOUCH_SECONDS:
+        # Only the letter was dropped, so the Operator needs no words, but the letter put back must be the one the
+        # registry holds now, so a touch that is due (TOUCH_SECONDS, as on a prompt) is made here.
+        answer = _push(chat, note, "touch")
+    prior = follow_letter(note, answer)
+    if prior:
+        show = _follow_title(note, prior, show or current)
+        moved = relabeled(prior, str(note["label"])) + reminder(chat.spec, note)
     shown = present(chat, note, show, current, data, "rename") if show else None
     chat.write(note)
-    if shown:
-        out.emit("rename", title=shown, label=str(note.get("label") or ""))
+    if shown or moved:
+        out.emit("rename", context=moved, title=shown, label=str(note.get("label") or ""))
     return 0
 
 
