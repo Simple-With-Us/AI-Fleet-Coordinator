@@ -1060,7 +1060,12 @@ class WorkflowVerbs:
         the write will change first and mint the extra scope only when that touches the
         directory. Merge: the PR file list. Update-branch: the base changes it pulls in
         (compare head...base, with a complete two-tree diff when the compare itself is
-        unverifiable), after checking the PR head is still the expected sha.
+        unverifiable), after checking the PR head is still the expected sha.  The
+        update-branch write itself always runs under the workflow ceiling:  the
+        provider endpoint fences only the head, so the base tip cannot be fenced
+        atomically and a base that advances after the proof could pull unaudited
+        workflow changes into the merged tree.  A seat whose ceiling lacks
+        workflows:write refuses the update rather than writing unproven.
         Still bounded by the seat ceiling. A handle with no minter keeps its own bearer.
         """
         elevation = getattr(self, "_elevation", None)
@@ -1136,8 +1141,10 @@ class WorkflowVerbs:
                     )
             # The provider update-branch endpoint fences only the head, so the base
             # tip is re-read immediately before the write:  a base that moved after
-            # the proof invalidates it.  A move after this recheck stays possible;
-            # the endpoint gives no stronger fence.
+            # the proof invalidates it and the caller can retry.  A move after this
+            # recheck stays possible - the endpoint gives no stronger fence - which
+            # is exactly why the write below always runs under the workflow ceiling
+            # instead of relying on the provider to refuse unaudited changes.
             tip = read(f"/repos/{repo}/git/ref/heads/{base_ref}")
             tip_sha = tip.get("object", {}).get("sha") if isinstance(tip, dict) else None
             if tip_sha != base_sha:
@@ -1152,7 +1159,9 @@ class WorkflowVerbs:
                     break
             else:
                 raise PreReadUnavailable("PR file list too long to verify; no write attempted")
-        if not touches:
+        # Update-branch never takes the least-permission path (see above); merge
+        # does when its file list proves no workflow change.
+        if not touches and action != "wf_update_branch":
             return self.bearer
         required = dict(SPECS[action][0])
         required["workflows"] = "write"
@@ -1175,9 +1184,10 @@ class WorkflowVerbs:
     def _tree_rows(read, repo, ref_sha):
         """{path: (sha, mode, type)} for every row of one whole-tree read.
 
-        The commit's root tree sha is read first and the tree response must
-        return exactly that sha:  the proof is bound to the requested commit,
-        not to any syntactically valid tree.  recursive=1 is a single response
+        The commit response must itself be the requested commit (matching sha)
+        and its root tree sha is read first;  the tree response must return
+        exactly that sha:  the proof is bound to the requested commit, not to
+        any syntactically valid object.  recursive=1 is a single response
         with an explicit truncation flag, so a truncated or oversized tree is
         as unverifiable as an oversized compare:  same refusal, nothing
         written.  Every row must be well formed, its mode must match its type,
@@ -1190,7 +1200,9 @@ class WorkflowVerbs:
         if not isinstance(ref_sha, str) or not _SHA.fullmatch(ref_sha):
             raise Refused(TOO_LARGE_TO_VERIFY)
         commit = read(f"/repos/{repo}/git/commits/{ref_sha}")
-        tree = commit.get("tree") if isinstance(commit, dict) else None
+        if not isinstance(commit, dict) or commit.get("sha") != ref_sha:
+            raise Refused(TOO_LARGE_TO_VERIFY)
+        tree = commit.get("tree")
         tree_sha = tree.get("sha") if isinstance(tree, dict) else None
         if not isinstance(tree_sha, str) or not _SHA.fullmatch(tree_sha):
             raise Refused(TOO_LARGE_TO_VERIFY)

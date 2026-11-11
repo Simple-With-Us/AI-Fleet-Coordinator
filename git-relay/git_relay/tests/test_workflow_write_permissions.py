@@ -224,12 +224,19 @@ class WorkflowPrElevation(unittest.TestCase):
                 self.assertIn(f"/compare/{SHA}...{'b' * 40}", client.calls[1][1])
 
     def test_ordinary_pr_does_not_elevate(self):
-        for action in ("wf_merge_guarded", "wf_update_branch"):
-            _, minter = self.run_merge(
-                [{"filename": "docs/a.md"}], {**CEILING, "workflows": "write"}, action
-            )
-            self.assertEqual(len(minter.calls), 1, action)
-            self.assertNotIn("workflows", minter.calls[0][2])
+        # Merge stays least-permission on a clean file list; update-branch always
+        # elevates because the provider endpoint cannot fence the base tip.
+        _, minter = self.run_merge(
+            [{"filename": "docs/a.md"}], {**CEILING, "workflows": "write"}, "wf_merge_guarded"
+        )
+        self.assertEqual(len(minter.calls), 1)
+        self.assertNotIn("workflows", minter.calls[0][2])
+        _, minter = self.run_merge(
+            [{"filename": "docs/a.md"}], {**CEILING, "workflows": "write"}, "wf_update_branch"
+        )
+        self.assertEqual(len(minter.calls), 2)
+        self.assertNotIn("workflows", minter.calls[0][2])
+        self.assertEqual(minter.calls[1][2].get("workflows"), "write")
 
     def test_renamed_out_of_workflows_elevates(self):
         _, minter = self.run_merge(
@@ -319,7 +326,8 @@ class WorkflowPrElevation(unittest.TestCase):
         client, minter, handle, args = self.update_branch(files)
         handle.run("wf_update_branch", args)
         self.assertEqual(len(client.calls), 4)
-        self.assertEqual(len(minter.calls), 1)
+        self.assertEqual(len(minter.calls), 2)
+        self.assertEqual(minter.calls[1][2].get("workflows"), "write")
 
     def update_branch_trees(self, files, head_rows=(), base_rows=(), base_sha="b" * 40):
         minter = Minter()
@@ -341,8 +349,8 @@ class WorkflowPrElevation(unittest.TestCase):
                 *base_rows,
             ],
         }
-        head_commit = {"tree": {"sha": "c" * 40}}
-        base_commit = {"tree": {"sha": "d" * 40}}
+        head_commit = {"sha": SHA, "tree": {"sha": "c" * 40}}
+        base_commit = {"sha": "b" * 40, "tree": {"sha": "d" * 40}}
         client = Client(
             pr,
             compare,
@@ -373,8 +381,9 @@ class WorkflowPrElevation(unittest.TestCase):
         self.assertEqual(len(tree_calls), 2)
         self.assertIn("recursive=1", tree_calls[0][1])
         self.assertEqual(client.calls[-1][0], "PUT")
-        self.assertEqual(len(minter.calls), 1)
+        self.assertEqual(len(minter.calls), 2)
         self.assertNotIn("workflows", minter.calls[0][2])
+        self.assertEqual(minter.calls[1][2].get("workflows"), "write")
 
     def test_update_branch_trees_fallback_detects_added_workflow_file(self):
         files = [{"filename": f"src/f{i}.py"} for i in range(300)]
@@ -482,7 +491,15 @@ class WorkflowPrElevation(unittest.TestCase):
     def test_update_branch_trees_fallback_refuses_wrong_commit_identity(self):
         files = [{"filename": f"src/f{i}.py"} for i in range(300)]
         client, minter, handle, args = self.update_branch_trees(files)
-        client.replies[2] = {"message": "not a commit"}
+        client.replies[2] = {"sha": "f" * 40, "tree": {"sha": "c" * 40}}
+        with self.assertRaises(Refused):
+            handle.run("wf_update_branch", args)
+        self.assertNotIn("PUT", [c[0] for c in client.calls])
+
+    def test_update_branch_trees_fallback_refuses_missing_commit_tree(self):
+        files = [{"filename": f"src/f{i}.py"} for i in range(300)]
+        client, minter, handle, args = self.update_branch_trees(files)
+        client.replies[2] = {"sha": SHA, "message": "not a commit"}
         with self.assertRaises(Refused):
             handle.run("wf_update_branch", args)
         self.assertNotIn("PUT", [c[0] for c in client.calls])
@@ -494,7 +511,8 @@ class WorkflowPrElevation(unittest.TestCase):
         client, minter, handle, args = self.update_branch_trees(files, head_rows=[spaced])
         handle.run("wf_update_branch", args)
         self.assertEqual(client.calls[-1][0], "PUT")
-        self.assertEqual(len(minter.calls), 1)
+        self.assertEqual(len(minter.calls), 2)
+        self.assertEqual(minter.calls[1][2].get("workflows"), "write")
 
     def test_update_branch_trees_fallback_detects_workflow_gitlink_change(self):
         files = [{"filename": f"src/f{i}.py"} for i in range(300)]
@@ -531,6 +549,22 @@ class WorkflowPrElevation(unittest.TestCase):
         self.assertNotIn("PUT", [c[0] for c in client.calls])
         self.assertEqual(len(minter.calls), 1)
 
+    def test_update_branch_ordinary_change_still_elevates_unfenced_base(self):
+        client, minter, handle, args = self.update_branch([{"filename": "docs/a.md"}])
+        handle.run("wf_update_branch", args)
+        self.assertEqual(len(minter.calls), 2)
+        self.assertEqual(minter.calls[1][2].get("workflows"), "write")
+        self.assertEqual(client.calls[-1][0], "PUT")
+
+    def test_update_branch_refuses_without_workflows_ceiling(self):
+        client, minter, handle, args = self.update_branch(
+            [{"filename": "docs/a.md"}], ceiling=CEILING
+        )
+        with self.assertRaises(CeilingDenied):
+            handle.run("wf_update_branch", args)
+        self.assertNotIn("PUT", [c[0] for c in client.calls])
+        self.assertEqual(len(minter.calls), 1)
+
     def test_update_branch_compare_without_files_falls_back_to_trees(self):
         minter = Minter()
         pr = {"head": {"sha": SHA}, "base": {"ref": "main", "sha": "b" * 40}}
@@ -539,13 +573,14 @@ class WorkflowPrElevation(unittest.TestCase):
             "truncated": False,
             "tree": [{"type": "blob", "path": "a.py", "sha": "1" * 40, "mode": "100644"}],
         }
-        commit = {"tree": {"sha": "c" * 40}}
+        head_commit = {"sha": SHA, "tree": {"sha": "c" * 40}}
+        base_commit = {"sha": "b" * 40, "tree": {"sha": "c" * 40}}
         client = Client(
             pr,
             {"total_commits": 5},
-            commit,
+            head_commit,
             tree,
-            commit,
+            base_commit,
             tree,
             {"object": {"sha": "b" * 40}},
             {"message": "ok"},
@@ -562,7 +597,8 @@ class WorkflowPrElevation(unittest.TestCase):
         )
         handle.run("wf_update_branch", args)
         self.assertEqual(client.calls[-1][0], "PUT")
-        self.assertEqual(len(minter.calls), 1)
+        self.assertEqual(len(minter.calls), 2)
+        self.assertEqual(minter.calls[1][2].get("workflows"), "write")
 
     def test_update_branch_300_files_with_workflow_still_elevates(self):
         files = [{"filename": f"src/f{i}.py"} for i in range(300)]
@@ -630,8 +666,8 @@ class WorkflowPrElevation(unittest.TestCase):
             "truncated": False,
             "tree": [{"type": "blob", "path": "src/a.py", "sha": "1" * 40, "mode": "100644"}],
         }
-        head_commit = {"tree": {"sha": "c" * 40}}
-        base_commit = {"tree": {"sha": "d" * 40}}
+        head_commit = {"sha": SHA, "tree": {"sha": "c" * 40}}
+        base_commit = {"sha": "b" * 40, "tree": {"sha": "d" * 40}}
         minter, client = Minter(), Big(
             pr,
             head_commit,
@@ -673,9 +709,10 @@ class WorkflowPrElevation(unittest.TestCase):
             "truncated": False,
             "tree": [{"type": "blob", "path": "a.py", "sha": "1" * 40, "mode": "100644"}],
         }
-        commit = {"tree": {"sha": "c" * 40}}
+        head_commit = {"sha": SHA, "tree": {"sha": "c" * 40}}
+        base_commit = {"sha": "b" * 40, "tree": {"sha": "c" * 40}}
         minter, client = Minter(), Big(
-            pr, commit, tree, commit, tree, {"object": {"sha": "b" * 40}}, {"message": "ok"}
+            pr, head_commit, tree, base_commit, tree, {"object": {"sha": "b" * 40}}, {"message": "ok"}
         )
         args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
         handle = WorkflowVerbs.for_action(
@@ -689,8 +726,9 @@ class WorkflowPrElevation(unittest.TestCase):
         )
         handle.run("wf_update_branch", args)
         self.assertEqual(client.calls[-1][0], "PUT")
-        self.assertEqual(len(minter.calls), 1)
+        self.assertEqual(len(minter.calls), 2)
         self.assertNotIn("workflows", minter.calls[0][2])
+        self.assertEqual(minter.calls[1][2].get("workflows"), "write")
 
     def test_transient_compare_failure_is_still_retryable_preread(self):
         from git_relay.github_client import RelayGitHubError
