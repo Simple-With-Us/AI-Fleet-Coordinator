@@ -1,14 +1,15 @@
-# Zulip wake routing: the one way
+# Zulip wake routing:  the one way
 
-Owner rulings, Nov 10, as corrected the same day (verbatim in the OPS-1048 Zulip topic,
-including the corrections relayed by Claude AA):  one wake path for every multithreaded
-platform;  the routing portion simply does not exist for single-threaded platforms;  ONE
-headless decider for all platforms (OpenRouter on the Operator's preset) used only when
-the deterministic rules cannot decide, whose only permitted message is a clarification
-question traveling as the Operator's own DM to the wake's sender or tagger (the only DM
-any party sends;  anything DM-shaped goes to Side-Chats);  and every path then DELIVERS
-AND WAKES the picked chat, each platform using whatever it needs to do that.
-
+Owner rulings, Nov 10, as corrected through the same evening (verbatim in the OPS-1048 and
+AFC-594 Zulip topics):  one wake path for every multithreaded platform;  the routing portion
+simply does not exist for single-threaded platforms;  delivery and wake on every path, each
+platform using whatever it needs to do that;  the Operator never DMs anyone, never posts in
+a thread, and never asks a clarifying question (owner, Nov 10: "forget the operator asking
+clarification since overcomplicates for minimal benefit" — there is no clarification step
+and no destination for one, Side-Chats included);  and when the deterministic rules cannot
+decide, the wake still goes to the most recent live chat, whose delivered prompt says how
+the wake was linked and, for recency, that the router is not sure.  Nobody is ever asked to
+clarify and an ambiguous wake is never held.
 ## The chain
 
     a message tags a seat (any channel;  presence topics never wake), or answers
@@ -18,23 +19,37 @@ AND WAKES the picked chat, each platform using whatever it needs to do that.
       -> the listener (the eavesdropper instance that holds the seat) captures it to the
          seat inbox, always, and fires the seat's routine:  ONE signed POST
          (the simple-tools-wake/1 contract) to the platform's ROUTER
-      -> the ROUTER resolves which chat the wake belongs to, deterministically:
+      -> the ROUTER resolves which chat the wake belongs to, deterministically, in the
+         order below, and every fired rule is named in the receipt and in the delivered
+         prompt's link note (the one shared router is scripts/simple_tools/wake_router.py,
+         merged from #1743 on Nov 11):
            1. a letter the sender addressed ("@**ZCode** AA"), or the body's `letter`
               field (a wake that is an untagged reply to a chat of the seat carries one,
               with `linked_by: "reply"`), resolves through the Operator's registry
               (live holders only;  cross-host by design)
-           2. else the live registration whose title shares the wake topic's words
-           3. else the most recently seen live registration on the host
-           (a sub-agent session is never picked)
+           2. else a fragment of a session id — at least 8 hex characters, compared
+              against the id's hex alone, matching exactly one live chat (transitional,
+              while some seats still send a fragment;  a fleet post header is never
+              searched for a fragment except the sender's own)
+           3. else a Linear issue id from the wake's topic or excerpt, matched against a
+              chat's registry `issues` (newest `seen_at` first;  a record with no
+              `issues` falls back to its title)
+           4. else the topic's words in a chat's title
+           5. else recency:  the most recently seen live registration on the host
+           (a sub-agent session is never picked;  a tie within a step goes to the most
+           recent of the tied chats;  the optional decider below may choose before
+           recency is applied)
       -> the picked chat is DELIVERED TO AND WOKEN - on every path, the deterministic one
          included ("why would I want to route things and not deliver them").  Each platform
          uses whatever it needs to wake its chat (for ZCode, a headless resume of the picked
          session);  the delivery prompt carries metadata and the thread link, never the
-         message body quoted.
-      -> the pick and the delivery are receipted (wakes.jsonl);  a failed delivery retries
-         through the listener.  The message also sits in the seat inbox and the Operator's
-         pending-inbox, so a live session sees it either way.
-
+         message body quoted, and names how the wake was linked (the `link_note`), saying
+         for recency and for a decider pick that the router is not sure.
+      -> the pick and the delivery are receipted (wakes.jsonl) with the fired rule's link
+         note and the picked generation;  a wake addressed to a letter whose holder has
+         changed ends in a dead receipt (`target-released`) and is not delivered.  A failed
+         delivery retries through the listener.  The message also sits in the seat inbox and
+         the Operator's pending-inbox, so a live session sees it either way.
 ## The router contract (what every platform's router implements)
 
 - Transport:  HTTPS POST, bearer auth, the listener's existing routine line
@@ -48,14 +63,19 @@ AND WAKES the picked chat, each platform using whatever it needs to do that.
   works, and may record `linked_by` in its receipt so a wrong pick can be read back.
 - Response:  one JSON object, HTTP 200 once the wake id has been seen (the listener does
   not retry a 200);  the receipt fields are the router's own record:
-  `{wake_id, letter, session_id, thread_link, picked: letter|topic-match|most-recent|"", reason}`.
+  `{wake_id, letter, session_id, thread_link, picked, picked_generation, reason, link_note}`,
+  where `picked` is one of letter | reply | fragment | linear-issue | linear-issue-tie |
+  topic-match | topic-tie | consultant-pick | recency | "" and `link_note` is the fixed
+  sentence the receiving chat is told about the link.
 - Dedupe:  one receipt per wake id, under a lock;  a repeated id answers the record.
-- Determinism first:  the rules above, in order.  ONE headless decider for every platform
+- Determinism first:  the rules above, in order.  ONE headless decider for every platform
   (the Operator's preset, via OpenRouter - the owner's words:  not "a bunch of different
-  headless models on a per platform basis"), called ONLY when the deterministic rules
-  cannot decide.  It DECIDES - its output is a pick (a session id) or ONE clarification
-  question (relayed by the Operator as its own DM to the sender/tagger) - it never writes
-  reply text.  It never answers;  the woken chat answers.
+  headless models on a per platform basis"), optional and off by default, consulted only
+  when the deterministic rules cannot decide and before recency is applied.  It DECIDES -
+  its output is a pick (a session id) and nothing else.  Since the owner's Nov 10 ruling it
+  never asks anything and the Operator never relays a question:  when neither the rules nor
+  the decider can pick, recency does, and the delivered link note says the router is not
+  sure.  It never answers;  the woken chat answers.
 - No secrets in the router's answer, none in its logs;  the signing key never leaves it.
 
 The reference implementation is `scripts/zc-wake-bridge` (ZCode, both hosts lettered) and
@@ -64,7 +84,7 @@ same pattern.
 
 ## The Decider's Declaration
 
-The decider's OpenRouter model is declared in the listener's `listener.toml`, in `[decider.consult_backup]`.  It is the only record of the owner's preset for the decider, so it is kept even while no code calls it:
+The decider's OpenRouter model is declared in the listener's `listener.toml`, in `[decider.consult_backup]`.  It is the only record of the owner's preset for the decider, so it is kept even while Consult sits unarmed and no deployment arms it:
 
 ```toml
 [decider.consult_backup]
