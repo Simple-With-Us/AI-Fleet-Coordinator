@@ -603,6 +603,145 @@ def _restore_file(unit: Unit, wait: int, before: str, path: str, backup: str, st
     return 3
 
 
+def _proof_key_dir_trust(path):
+    """The key's directory chain must be untamperable by anyone but its operator.
+
+    As root - where install-seat and proof-key run in production - the FULL
+    ancestor chain is checked with the same rule require_root_owned applies
+    to the policy file:  every ancestor directory root-owned, writable by
+    root alone, never a symlink (a foreign-owned 0755 parent, or a symlinked
+    one, lets another account substitute the key file).  Non-root is the
+    dev/fixture path:  only the immediate directory is checked, since test
+    trees legitimately live under per-user (and on macOS symlinked) roots.
+    """
+    parent = os.path.dirname(os.path.abspath(path)) or "/"
+    if os.geteuid() == 0:
+        try:
+            require_root_owned([parent])
+        except SystemExit as exc:
+            raise ValueError(f"proof-key directory chain:  {exc}")
+        return
+    try:
+        pst = os.stat(parent)
+    except OSError:
+        raise ValueError("proof-key directory unreadable")
+    if pst.st_mode & 0o022:
+        raise ValueError("proof-key directory must not be group/world-writable")
+
+
+def _load_proof_key(path):
+    """Read the operator proof key from a custody-checked file;  never logs it.
+
+    The directory chain is checked first (_proof_key_dir_trust).  The file
+    itself is opened O_NOFOLLOW | O_NONBLOCK (a FIFO must refuse, not hang)
+    and verified by fstat on the OPENED descriptor - a regular file of at
+    most 64 KiB, owned by the current euid (root-owned in production), 0600
+    when running as root - so a symlink swap or a replace between check and
+    open lands on the descriptor that is actually read, never a second
+    lookup.  Any deviation refuses closed:  a writable or substituted key
+    silently forges every receipt gate downstream of it.
+    """
+    _proof_key_dir_trust(path)
+    try:
+        # O_NONBLOCK with the O_NOFOLLOW:  a FIFO at the path must refuse,
+        # never hang the install transaction on open.
+        fd = os.open(
+            path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        )
+    except OSError:
+        raise ValueError("proof-key file unreadable (missing, or a symlink)")
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError("proof-key file must be a regular file")
+        if st.st_uid != os.geteuid():
+            raise ValueError("proof-key file must be owned by its operator")
+        if os.geteuid() == 0 and st.st_mode & 0o077:
+            raise ValueError("proof-key file must be private (0600)")
+        if st.st_size > 1 << 16:
+            raise ValueError("proof-key file larger than 64 KiB is not a key")
+        data = os.read(fd, 1 << 16)
+    finally:
+        os.close(fd)
+    key = data.strip()
+    if not key:
+        raise ValueError("proof-key file empty")
+    return key
+
+
+def proof_key(args) -> int:
+    """Mint the operator proof key into a root-owned 0600 file;  never prints it.
+
+    Custody rule (a proposal requiring the host owner's approval to enact):
+    one 0600 file owned by root on the relay host, named by
+    GIT_RELAY_PROOF_KEY_FILE, in a root-owned directory that is not group- or
+    world-writable.  Any offline backup - for example the Fleet-OPS
+    /git-relay-owner folder - is a separate, explicitly authorized
+    operational step, never part of this command.  A non-root caller is
+    refused (the file must be root-owned), a symlinked path is refused, and
+    an existing key is never overwritten:  rotating the key would orphan
+    outstanding receipts.
+    """
+    path = os.environ.get(PROOF_KEY_FILE_VAR) or args.key_file
+    if not path:
+        print(f"refusing:  {PROOF_KEY_FILE_VAR} names no proof-key file")
+        return 2
+    if os.geteuid() != 0:
+        print("refusing:  proof-key runs as root so the key file is root-owned 0600")
+        return 2
+    try:
+        _proof_key_dir_trust(path)
+    except ValueError as exc:
+        print(f"refusing:  {exc}")
+        return 2
+    material = os.urandom(32).hex() + "\n"
+    try:
+        fd = os.open(
+            path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600
+        )
+    except FileExistsError:
+        print(f"refusing:  {path} exists;  never overwrite the proof key, receipts bind to it")
+        return 2
+    except OSError:
+        print(f"refusing:  could not create {path} exclusively")
+        return 2
+    try:
+        # One ownership rule:  fd stays this process's raw descriptor until a
+        # successful os.fdopen hands it to the file object;  the except path
+        # closes it only while it is still ours, and every failure path
+        # unlinks the partial file this invocation created.
+        st = os.fstat(fd)
+        if st.st_uid != 0 or st.st_mode & 0o777 != 0o600:
+            os.close(fd)
+            fd = None
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            print(f"refusing:  {path} is not root-owned 0600 after creation")
+            return 2
+        fh = os.fdopen(fd, "w", encoding="utf-8")
+        fd = None
+        with fh:
+            fh.write(material)
+            fh.flush()
+            os.fsync(fh.fileno())
+    except OSError:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        print(f"refusing:  could not write {path}")
+        return 2
+    print(f"proof key written to {path} (root-owned 0600;  the key is never printed)")
+    return 0
+
+
 def install_seat(args, unit: Unit) -> int:
     """Add exactly one seat to a file-backed policy under one exclusive transaction.
 
@@ -705,24 +844,57 @@ def _install_seat_locked(
     if not key_path:
         print(f"refusing:  {PROOF_KEY_FILE_VAR} names no proof-key file;  the proof gate stays on")
         return 2
-    with open(key_path, "rb") as fh:
-        key = fh.read().strip()
-    with open(args.receipt, encoding="utf-8") as fh:
+    try:
+        key = _load_proof_key(key_path)
+    except ValueError as exc:
+        print(f"refusing:  {exc}")
+        return 2
+    bootstrap = getattr(args, "bootstrap_receipt", None)
+    with open(args.receipt or bootstrap, encoding="utf-8") as fh:
         receipt = json.load(fh)
     try:
         audit_rows = deploy_proof.read_audit_rows(_audit_path(unit))
         store = deploy_proof.ReplayStore(os.path.join(unit.relay, REPLAY_STORE))
-        deploy_proof.verify_receipt(
-            key,
-            receipt,
-            seat=args.seat,
-            now=int(time.time()),
-            store=store,
-            policy_before=args.expect_before,
-            policy_after=args.expect_after,
-            audit_rows=audit_rows,
-            store_id=args.apply,
-        )
+        if bootstrap:
+            # First-seat bootstrap:  the receipt must bind the relay's
+            # verifier-confirmed identity to THIS row's configured identity,
+            # so the proven-denied bearer is exactly the seat being added.
+            # A row without an explicit identity cannot make that claim.
+            claimed = row.get("identity")
+            if not isinstance(claimed, str) or not claimed:
+                print("refusing:  the seat row names no identity for a bootstrap receipt to bind")
+                return 2
+            deploy_proof.verify_bootstrap_receipt(
+                key,
+                receipt,
+                # The receipt is verified against the listener it was proven
+                # on:  after operator-listener activation this is the operator
+                # URL, validated to the supported loopback shape;  unset, the
+                # historical default stays.
+                url=deploy_proof.validate_operator_url(os.environ["GIT_RELAY_OPERATOR_URL"])
+                if os.environ.get("GIT_RELAY_OPERATOR_URL")
+                else deploy_proof.BootstrapProof.URL,
+                seat=args.seat,
+                identity=claimed,
+                now=int(time.time()),
+                store=store,
+                policy_before=args.expect_before,
+                policy_after=args.expect_after,
+                audit_rows=audit_rows,
+                store_id=args.apply,
+            )
+        else:
+            deploy_proof.verify_receipt(
+                key,
+                receipt,
+                seat=args.seat,
+                now=int(time.time()),
+                store=store,
+                policy_before=args.expect_before,
+                policy_after=args.expect_after,
+                audit_rows=audit_rows,
+                store_id=args.apply,
+            )
     except ValueError as exc:
         print(f"refusing:  {exc}")
         return 2
@@ -889,7 +1061,8 @@ def verify_inner(args) -> int:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
-        "command", choices=["render", "install", "install-seat", "verify-apps", "verify-inner"]
+        "command",
+        choices=["render", "install", "install-seat", "verify-apps", "verify-inner", "proof-key"],
     )
     parser.add_argument("--policy", default=str(DEFAULT_POLICY))
     parser.add_argument(
@@ -906,6 +1079,11 @@ def main(argv=None) -> int:
         "--expect-after", help="install-seat:  full canonical digest of live-plus-one-seat"
     )
     parser.add_argument("--receipt", help="install-seat:  the signed external-proof receipt")
+    parser.add_argument(
+        "--bootstrap-receipt",
+        help="install-seat:  the signed bootstrap-proof receipt (first seat for an identity)",
+    )
+    parser.add_argument("--key-file", help="proof-key:  key path when the env var is unset")
     parser.add_argument("--seats", help="verify-inner only:  the rendered policy")
     parser.add_argument("--relay", help="verify-inner only:  the deployed relay code")
     parser.add_argument("--secrets-path", default=DEFAULT_SECRETS_PATH, help="verify-inner only")
@@ -917,6 +1095,8 @@ def main(argv=None) -> int:
         return 0
     if args.command == "verify-inner":
         return verify_inner(args)
+    if args.command == "proof-key":
+        return proof_key(args)
     if not args.unit:
         parser.error(f"{args.command} needs --unit, the relay's systemd unit")
     unit = read_unit(args.unit)
@@ -927,11 +1107,13 @@ def main(argv=None) -> int:
     if args.command == "install":
         return install(args, unit)
     if args.command == "install-seat":
-        for flag in ("seat", "row_json", "expect_before", "expect_after", "receipt"):
+        for flag in ("seat", "row_json", "expect_before", "expect_after"):
             if not getattr(args, flag):
                 parser.error(f"install-seat needs --{flag.replace('_', '-')}")
+        if bool(args.receipt) == bool(args.bootstrap_receipt):
+            parser.error("install-seat needs exactly one of --receipt or --bootstrap-receipt")
         if os.geteuid() == 0:
-            require_root_owned([args.row_json, args.receipt])
+            require_root_owned([args.row_json, args.receipt or args.bootstrap_receipt])
         return install_seat(args, unit)
     return verify_apps(args, unit)
 

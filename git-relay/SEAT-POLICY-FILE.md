@@ -109,3 +109,74 @@ released run. Adding a seat stays the proof-gated `install-seat`.
 ## Auth refusals a seat can name
 
 A recognizable seat bearer whose identity is not a shared seat in the loaded policy is refused as `seat_not_in_policy`.  That names the loaded file, which can differ from the reviewed source in `deploy/seat-policy.json`.  Install the reviewed row with `git-relay/deploy/seat_policy.py`.  `install` needs `--unit`, and `--apply` needs the digest the dry run printed.  Adding one seat uses `install-seat` with `--unit`, `--seat`, `--row-json`, `--expect-before`, `--expect-after` and `--receipt`.  The installer restarts the unit.  `bearer_rejected` means the identity is in the loaded policy and the Worker did not confirm the bearer.  `verifier_unavailable` means the Worker could not be asked.  `no_app_credential` means Fleet-OPS prod `/github-apps` has no usable `GH_APP_<SLUG>_ID` or `GH_APP_<SLUG>_PRIVATE_KEY`.  For ZC those names are `GH_APP_SWU_ZC_ID` and `GH_APP_SWU_ZC_PRIVATE_KEY`.  Add the missing key and restart the relay, because an absent name is remembered for the process lifetime.  This document does not install a row or write a secret.
+
+## First-seat bootstrap: proving a seat the policy does not yet name
+
+The external proof (ExternalProof) cannot run for a seat the live policy does
+not configure: its read must answer 200, and an unconfigured seat is refused
+before any read. A first seat for a verified identity is instead activated
+with a bootstrap proof:
+
+1. The candidate runs `git_relay.deploy_proof.BootstrapProof` with its own
+   bearer. The proof passes only when BOTH a read and the NULL_OID negative
+   probe are refused with exactly `seat_not_in_policy`: it certifies the
+   exact pre-activation state (this identity is currently denied, the denial
+   is the audited pre-policy cause, no mutation was possible) and never
+   claims a successful read. Any other answer, including an unexpected 200,
+   is REFUSED.
+2. For a bearer that parses and names an identity no shared seat claims, the
+   relay asks the Worker to confirm the identity under the bootstrap bounds
+   (6 verifier calls per 60s window globally, 8 distinct identities per
+   window, 2 per identity; over budget the probe is refused without a
+   verifier call, and a failed verify still spends its reservation). The
+   denial is audited against the CONFIRMED identity, never the bearer's
+   claim, in a bounded BootstrapDenialAuditor row with its own budget. The
+   request is refused either way; the row names who was refused and grants
+   nothing.
+3. The operator signs the receipt with the proof key and runs
+   `install-seat --bootstrap-receipt`. Every external-path gate remains
+   (HMAC, freshness, both policy digests, replay store, audit binding); in
+   addition the receipt's claimed identity must equal the seat row's
+   configured `identity` AND the audited verifier-confirmed identity, so the
+   proven-denied bearer is exactly the seat being added.
+
+### Proof-key custody (proposal; enacting it needs the host owner's approval)
+
+`seat_policy.py proof-key` mints the operator proof key into a root-owned
+0600 file named by GIT_RELAY_PROOF_KEY_FILE. It never prints the key and
+never overwrites an existing one (rotation would orphan outstanding
+receipts). Any offline backup, for example a Fleet-OPS /git-relay-owner
+folder, is a separate, explicitly authorized operational step and is not
+part of the mint command.
+
+### Bootstrap limits, stated exactly
+
+- The verifier bounds are per relay PROCESS (one SeatPolicy instance's
+  window): a relay restart resets them. That is sufficient only while the
+  relay runs as a single process; a multi-process deployment must move the
+  bound into shared state before relying on it.
+- Replay safety is the install-seat transaction lock plus the durable replay
+  store: receipt verification alone is not serialized, and the receipt is
+  consumed under the same lock that performs the CAS and the write. A
+  receipt verified outside that lock is a dry-run check, not an acceptance.
+- The audit binding requires EXACTLY ONE matching bootstrap row for the
+  proof-id path: none or two both refuse. The bound row budget (4 per
+  minute, separate from the spray-row budget) means an over-budget probe
+  leaves no row and cannot be bound; rerun the proof with a fresh id inside
+  budget.
+- The verifier-confirmed identity is the Worker's answer about the bearer's
+  parsed identity: the Worker is sent the bearer hash inside its signed
+  request, never the raw bearer, and the answer is checked to equal the
+  parsed identity. No App mint or provider write happens in the denial
+  branch; the request is refused either way.
+- Proof-key custody is enforced at both ends. The mint refuses a non-root
+  caller, any existing file (never overwrites), and opens O_NOFOLLOW with an
+  fstat re-check of the created descriptor. The loader checks the directory
+  chain first: as root, the FULL ancestor chain under the same rule
+  require_root_owned applies to the policy file (every ancestor root-owned,
+  writable by root alone, never a symlink - a foreign-owned 0755 parent
+  lets that account substitute the key); non-root dev paths check the
+  immediate directory only. The key file is opened O_NOFOLLOW and verified
+  by fstat on the OPENED descriptor (regular file, operator-owned, 0600 as
+  root, non-empty), so a symlink swap or a replace between check and open
+  lands on the descriptor actually read, not a second lookup.
