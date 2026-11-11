@@ -40,10 +40,10 @@
 {"case": "Zulip-shaped key in the topic", "kind": "secret", "field": "topic", "input": "key $FIXTURE_ZULIP_SHAPED", "expect": "refused_secret"}
 {"case": "loaded key in the channel", "kind": "secret", "field": "channel", "input": "$FIXTURE_KEY", "expect": "refused_secret"}
 {"case": "private key block in the text", "kind": "secret", "field": "text", "input": "\u002d----BEGIN OPENSSH PRIVATE KEY-----", "expect": "refused_secret"}
-{"case": "raw mention made silent", "kind": "mentions", "input": "ping @**Codex** please", "expect": "ping @_**Codex** please"}
+{"case": "body mention kept loud", "kind": "mentions", "input": "ping @**Codex** please", "expect": "ping @**Codex** please"}
 {"case": "group mention removed", "kind": "mentions", "input": "heads up @*fleet* now", "expect": "heads up  now"}
-{"case": "wildcards made silent", "kind": "mentions", "input": "everyone @**all** and @**everyone**", "expect": "everyone @_**all** and @_**everyone**"}
-{"case": "group removal cannot rebuild a mention", "kind": "mentions", "input": "tricky @@*x***Bob**", "expect": "tricky @_**Bob**"}
+{"case": "wildcard mentions kept", "kind": "mentions", "input": "everyone @**all** and @**everyone**", "expect": "everyone @**all** and @**everyone**"}
+{"case": "group removal can leave a loud mention", "kind": "mentions", "input": "tricky @@*x***Bob**", "expect": "tricky @**Bob**"}
 {"case": "seat argument refused", "kind": "schema", "tool": "zulip_post", "arguments": {"topic": "t", "text": "x", "seat": "CODEX"}, "expect": "invalid_argument"}
 {"case": "as argument refused", "kind": "schema", "tool": "zulip_read_topic", "arguments": {"topic": "t", "as": "CODEX"}, "expect": "invalid_argument"}
 {"case": "no_tag argument refused", "kind": "schema", "tool": "zulip_reply", "arguments": {"message_id": 1, "text": "x", "no_tag": true}, "expect": "invalid_argument"}

@@ -943,10 +943,10 @@ class Tools:
     def _text(value: str) -> str:
         if value.strip() == "-":
             raise ToolError("invalid_argument", "argument 'text' must not be a single '-'")
-        text = W.neutralize_mentions(value).strip()
+        text = W.sanitize_compose_mentions(value).strip()
         if not text:
             raise ToolError(
-                "invalid_argument", "the message text is empty once raw mentions are silenced"
+                "invalid_argument", "the message text is empty once group mentions are removed"
             )
         return text
 

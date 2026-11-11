@@ -1699,7 +1699,8 @@ def _compose(
         tail = text[end + 1 :]
         if tail and not tail[0].isspace():
             tail = " " + tail
-        body = intro + "]" + (" " + " ".join(mentions) if mentions else "") + tail
+        added = [m for m in mentions if m and m not in tail]
+        body = intro + "]" + (" " + " ".join(added) if added else "") + tail
         if quiet and not leading.startswith(ROUTER.NO_WAKE_MARKER):
             body = ROUTER.NO_WAKE_MARKER + " " + body
     else:
@@ -1708,7 +1709,7 @@ def _compose(
             parts.append(ROUTER.NO_WAKE_MARKER)
         if not no_tag:
             parts.append(agent.tag_prefix + ("→" + ",".join(labels) if labels else "") + "]")
-        parts.extend(mentions)
+        parts.extend(m for m in mentions if m and m not in text)
         parts.append(text)
         body = " ".join(parts)
     if len(body) > MAX_CONTENT_LENGTH:

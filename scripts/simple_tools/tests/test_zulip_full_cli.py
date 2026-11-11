@@ -48,6 +48,22 @@ class MessageCommandTests(Harness):
         self.assertEqual(edited.code, 0, edited.err)
         self.assertEqual(self.fake._find(posted)["content"], "[CLAUDE·%s 📁OPS] edited" % TAG)
 
+    def test_body_mentions_are_not_doubled_after_own_intro(self) -> None:
+        cases = [
+            ("[CLAUDE 📁AFC] @**Codex** ping", "[CLAUDE·%s 📁AFC] @**Codex** ping" % TAG),
+            ("[CLAUDE 📁AFC] @**Claude** status", "[CLAUDE·%s 📁AFC] @**Claude** status" % TAG),
+            (
+                "[CLAUDE 📁AFC →CODEX] @**Codex** please",
+                "[CLAUDE·%s 📁AFC →CODEX] @**Codex** please" % TAG,
+            ),
+        ]
+        for text, want in cases:
+            with self.subTest(text=text):
+                made = self.run_cli("post", "--topic", "t", text, "--json")
+                self.assertEqual(made.code, 0, made.err)
+                mid = json.loads(made.out)["id"]
+                self.assertEqual(self.fake._find(mid)["content"], want)
+
     def test_edit_never_double_tags_an_already_tagged_body(self) -> None:
         # AFC-666:  the edit path follows the post path's intro rule.  An already-tagged
         # body keeps its single intro (a foreign compact intro is preserved as post

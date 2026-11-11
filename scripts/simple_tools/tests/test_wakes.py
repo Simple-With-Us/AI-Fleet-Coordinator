@@ -356,6 +356,14 @@ class ContractTests(unittest.TestCase):
 
 
 class ReplyTextTests(unittest.TestCase):
+    def test_compose_sanitize_keeps_user_mentions_loud(self) -> None:
+        self.assertEqual(
+            W.sanitize_compose_mentions("ping @**Codex** please"),
+            "ping @**Codex** please",
+        )
+        self.assertEqual(W.sanitize_compose_mentions("heads up @*fleet* now"), "heads up  now")
+        self.assertEqual(W.sanitize_compose_mentions("@@*x***Bob**"), "@**Bob**")
+
     def test_mentions_are_neutralized_and_groups_removed(self) -> None:
         text = W.compose_reply(
             4821,

@@ -1313,6 +1313,7 @@ def build_prompt(
 _MENTION_RE = re.compile(r"@(?!_)\*\*")
 _GROUP_RE = re.compile(r"@_?\*(?!\*)[^*\n]{1,100}\*")
 _LOUD_RE = re.compile(r"@(?!_)\*")
+_LOUD_SINGLE_STAR_RE = re.compile(r"@(?!_)\*(?!\*)")
 
 
 def neutralize_mentions(text: str) -> str:
@@ -1326,6 +1327,16 @@ def neutralize_mentions(text: str) -> str:
             break
         text = changed
     return _LOUD_RE.sub("@_*", text)
+
+
+def sanitize_compose_mentions(text: str) -> str:
+    """Remove group mentions and silence stray @* tokens; leave @** user mentions loud (AFC-689)."""
+    while True:
+        changed = _GROUP_RE.sub("", text)
+        if changed == text:
+            break
+        text = changed
+    return _LOUD_SINGLE_STAR_RE.sub("@_*", text)
 
 
 def loud_mention(text: str) -> bool:

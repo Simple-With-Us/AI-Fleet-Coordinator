@@ -406,6 +406,7 @@ export function basicForms(email, key) {
 const MENTION_RE = /@(?!_)\*\*/g;
 const GROUP_RE = /@_?\*(?!\*)[^*\n]{1,100}\*/g;
 const LOUD_RE = /@(?!_)\*/g;
+const LOUD_SINGLE_STAR_RE = /@(?!_)\*(?!\*)/g;
 
 /** @**X** becomes silent @_**X**;  group mentions are removed, until stable. */
 export function neutralizeMentions(text) {
@@ -415,6 +416,16 @@ export function neutralizeMentions(text) {
     text = changed;
   }
   return text.replace(LOUD_RE, "@_*");
+}
+
+/** Group mentions are removed and stray @* tokens silenced;  @** user mentions stay loud (AFC-689). */
+export function sanitizeComposeMentions(text) {
+  for (;;) {
+    const changed = text.replace(GROUP_RE, "");
+    if (changed === text) break;
+    text = changed;
+  }
+  return text.replace(LOUD_SINGLE_STAR_RE, "@_*");
 }
 
 // ---------------------------------------------------------------- seats and tags (cli.py, zulip.py)
@@ -476,8 +487,12 @@ function ownIntro(prefix, text) {
   return { end, intro, rest: text.slice(end + 1) };
 }
 
+function mentionsMissingFrom(text, mentions) {
+  return mentions.filter((mention) => mention && !text.includes(mention));
+}
+
 /** Preserve an existing own-seat intro, adding resolved recipients without a second attribution.
- * Raw mentions have already been neutralized by normalizeText; only resolved mentions can notify.
+ * Body @** mentions are unchanged; only `--to` adds loud mentions not already in the body.
  * Untagged/foreign-seat text retains the generated attribution. */
 export function composeBody(prefix, text, { labels = [], mentions = [] } = {}) {
   const own = ownIntro(prefix, text);
@@ -494,9 +509,10 @@ export function composeBody(prefix, text, { labels = [], mentions = [] } = {}) {
     const added = [...new Set(labels)].filter((label) => !existing.includes(label));
     if (added.length) intro += `${arrow < 0 ? " →" : ","}${added.join(",")}`;
     const tail = own.rest && !/^\s/u.test(own.rest) ? ` ${own.rest}` : own.rest;
-    parts = [`${intro}]${mentions.length ? ` ${mentions.join(" ")}` : ""}${tail}`];
+    const addedMentions = mentionsMissingFrom(tail, mentions);
+    parts = [`${intro}]${addedMentions.length ? ` ${addedMentions.join(" ")}` : ""}${tail}`];
   } else {
-    parts = [`${prefix}${labels.length ? `→${labels.join(",")}` : ""}]`, ...mentions, text];
+    parts = [`${prefix}${labels.length ? `→${labels.join(",")}` : ""}]`, ...mentionsMissingFrom(text, mentions), text];
   }
   const body = parts.filter(Boolean).join(" ");
   const length = codePoints(body).length;
@@ -520,11 +536,11 @@ export function normalizeChannel(value) {
   return channel;
 }
 
-/** tools.py _text:  not a single '-', raw mentions silenced, not empty after. */
+/** tools.py _text:  not a single '-', group mentions removed, not empty after. */
 export function normalizeText(value) {
   if (value.trim() === "-") throw new ToolError("invalid_argument", "argument 'text' must not be a single '-'");
-  const text = neutralizeMentions(value).trim();
-  if (!text) throw new ToolError("invalid_argument", "the message text is empty once raw mentions are silenced");
+  const text = sanitizeComposeMentions(value).trim();
+  if (!text) throw new ToolError("invalid_argument", "the message text is empty once group mentions are removed");
   return text;
 }
 
