@@ -116,7 +116,10 @@ class RealIngressLoadedTests(unittest.TestCase):
         clean = base64.b64encode(b"x = 1\n").decode()
         for token in (CALLER, INSTALL):
             for action in ("wf_file_put", "wf_files_put"):
-                with self.subTest(token=token[:8], action=action), tempfile.TemporaryDirectory() as td:
+                with (
+                    self.subTest(token=token[:8], action=action),
+                    tempfile.TemporaryDirectory() as td,
+                ):
                     log = os.path.join(td, "audit.jsonl")
                     client = _Client()
                     status, _payload = self._relay(client, log).handle(
