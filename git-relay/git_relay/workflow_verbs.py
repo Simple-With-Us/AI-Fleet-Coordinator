@@ -84,6 +84,12 @@ MAX_FILE_B64 = 4 * ((MAX_FILE_RAW + 2) // 3)
 MAX_REF_BLOB_RAW = 700 * 1024
 MAX_PAGE = 50
 COMPARE_FILES_CAP = 300  # GitHub returns at most 300 files from the compare endpoint
+# Fixed public refusal for an unverifiable workflow-touch pre-read.  The hosted
+# front maps exactly this fixed string to a caller-visible reason, so keep it
+# byte-stable:  rewording it silently returns callers to a bare relay_refused.
+TOO_LARGE_TO_VERIFY = (
+    "PR changes too large to verify for workflow files; no write attempted"
+)
 MAX_PROJECT = 100
 MAX_WORKFLOW_TEXT = 40000
 # Opt-in bounded larger-text class (covers the 83854-byte mirror document class);
@@ -1053,7 +1059,8 @@ class WorkflowVerbs:
         changes .github/workflows/* unless the token also holds workflows:write, so read what
         the write will change first and mint the extra scope only when that touches the
         directory. Merge: the PR file list. Update-branch: the base changes it pulls in
-        (compare head...base), after checking the PR head is still the expected sha.
+        (compare head...base, with a complete two-tree diff when the compare itself is
+        unverifiable), after checking the PR head is still the expected sha.
         Still bounded by the seat ceiling. A handle with no minter keeps its own bearer.
         """
         elevation = getattr(self, "_elevation", None)
@@ -1068,9 +1075,7 @@ class WorkflowVerbs:
                 if exc.code == "response_too_large":
                     # Size will not shrink on retry: a definite, non-retryable refusal,
                     # unlike a transient pre-read failure. Fails closed, nothing written.
-                    raise Refused(
-                        "PR changes too large to verify for workflow files; no write attempted"
-                    ) from None
+                    raise Refused(TOO_LARGE_TO_VERIFY) from None
                 if exc.status in (0, 408) or exc.status >= 500:
                     raise PreReadUnavailable(
                         "PR file pre-read unavailable; no write attempted"
@@ -1104,12 +1109,27 @@ class WorkflowVerbs:
                 raise Refused("PR head not matched")
             # The compare files array is one response capped at 300 files, not paginated:
             # one read, and a full-size array may be truncated so it is unverifiable.
+            # When the compare cannot prove the workflow-touch answer - too large to
+            # read, no files array, or a possibly-truncated full page without a touch -
+            # fall back to a complete two-tree diff instead of refusing the update.
             base_ref = quote(pr["base"]["ref"], safe="/")
-            data = read(f"/repos/{repo}/compare/{head_sha}...{base_ref}")
+            try:
+                data = read(f"/repos/{repo}/compare/{head_sha}...{base_ref}")
+            except Refused as exc:
+                if str(exc) != TOO_LARGE_TO_VERIFY:
+                    raise
+                data = None
             files = data.get("files") if isinstance(data, dict) else None
-            scan(files)
-            if not touches and len(files) >= COMPARE_FILES_CAP:
-                raise PreReadUnavailable("base changes too large to verify; no write attempted")
+            if files is None:
+                touches = self._base_changes_touch_workflows_via_trees(
+                    read, repo, pr, head_sha
+                )
+            else:
+                scan(files)
+                if not touches and len(files) >= COMPARE_FILES_CAP:
+                    touches = self._base_changes_touch_workflows_via_trees(
+                        read, repo, pr, head_sha
+                    )
         else:
             for page in range(1, 31):
                 rows = read(f"/repos/{repo}/pulls/{number}/files?per_page=100&page={page}")
@@ -1138,6 +1158,49 @@ class WorkflowVerbs:
         except Exception:
             raise Unknown("own App credential unavailable") from None
         return token
+
+    @staticmethod
+    def _tree_blob_shas(read, repo, ref_sha):
+        """{path: blob sha} from one whole-tree read, or fail closed.
+
+        recursive=1 is a single response with an explicit truncation flag, so a
+        truncated or oversized tree is as unverifiable as an oversized compare:
+        same refusal, nothing written.
+        """
+        if not isinstance(ref_sha, str) or not _SHA.fullmatch(ref_sha):
+            raise Refused(TOO_LARGE_TO_VERIFY)
+        data = read(f"/repos/{repo}/git/trees/{ref_sha}?recursive=1")
+        if (
+            not isinstance(data, dict)
+            or data.get("truncated") is not False
+            or not isinstance(data.get("tree"), list)
+        ):
+            raise Refused(TOO_LARGE_TO_VERIFY)
+        out = {}
+        for row in data["tree"]:
+            if (
+                isinstance(row, dict)
+                and row.get("type") == "blob"
+                and isinstance(row.get("path"), str)
+                and isinstance(row.get("sha"), str)
+            ):
+                out[row["path"]] = row["sha"]
+        return out
+
+    def _base_changes_touch_workflows_via_trees(self, read, repo, pr, head_sha):
+        """Workflow-touch proof from the two trees when the compare cannot answer.
+
+        The base changes an update pulls in are exactly the blobs whose sha
+        differs between the head tree and the base tip tree, plus the paths
+        present on only one side, so a rename in either direction is covered.
+        Complete enumeration, fail closed on any gap.
+        """
+        base_sha = pr["base"].get("sha")
+        head = self._tree_blob_shas(read, repo, head_sha)
+        base = self._tree_blob_shas(read, repo, base_sha)
+        changed = {path for path, sha in head.items() if base.get(path) != sha}
+        changed |= {path for path in base if path not in head}
+        return any(name.startswith(".github/workflows/") for name in changed)
 
     def _write_path_denied(self, path):
         if path in (".github", ".github/workflows"):

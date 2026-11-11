@@ -1,7 +1,12 @@
 import base64
 import unittest
 
-from git_relay.workflow_verbs import CeilingDenied, Refused, WorkflowVerbs
+from git_relay.workflow_verbs import (
+    TOO_LARGE_TO_VERIFY,
+    CeilingDenied,
+    Refused,
+    WorkflowVerbs,
+)
 
 from .test_workflow_verbs import CEILING, REPO, SHA, Client, Minter, Policy
 
@@ -315,14 +320,104 @@ class WorkflowPrElevation(unittest.TestCase):
         self.assertEqual(len(client.calls), 3)
         self.assertEqual(len(minter.calls), 1)
 
-    def test_update_branch_300_files_without_workflow_is_unverifiable(self):
-        from git_relay.server import PreReadUnavailable
+    def update_branch_trees(self, files, head_rows=(), base_rows=(), base_sha="b" * 40):
+        minter = Minter()
+        pr = {"head": {"sha": SHA}, "base": {"ref": "main", "sha": base_sha}}
+        compare = {"files": files}
+        head_tree = {
+            "truncated": False,
+            "tree": [{"type": "blob", "path": "src/a.py", "sha": "1" * 40}, *head_rows],
+        }
+        base_tree = {
+            "truncated": False,
+            "tree": [{"type": "blob", "path": "src/a.py", "sha": "1" * 40}, *base_rows],
+        }
+        client = Client(pr, compare, head_tree, base_tree, {"message": "ok"})
+        args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
+        handle = WorkflowVerbs.for_action(
+            client,
+            Policy({**CEILING, "workflows": "write"}),
+            minter,
+            "swu-wise",
+            "wf_update_branch",
+            REPO,
+            args=args,
+        )
+        return client, minter, handle, args
 
+    def test_update_branch_300_files_without_workflow_verified_via_trees(self):
         files = [{"filename": f"src/f{i}.py"} for i in range(300)]
-        client, minter, handle, args = self.update_branch(files)
-        with self.assertRaises(PreReadUnavailable):
+        client, minter, handle, args = self.update_branch_trees(files)
+        handle.run("wf_update_branch", args)
+        tree_calls = [c for c in client.calls if "/git/trees/" in c[1]]
+        self.assertEqual(len(tree_calls), 2)
+        self.assertIn("recursive=1", tree_calls[0][1])
+        self.assertEqual(client.calls[-1][0], "PUT")
+        self.assertEqual(len(minter.calls), 1)
+        self.assertNotIn("workflows", minter.calls[0][2])
+
+    def test_update_branch_trees_fallback_detects_added_workflow_file(self):
+        files = [{"filename": f"src/f{i}.py"} for i in range(300)]
+        added = {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "2" * 40}
+        client, minter, handle, args = self.update_branch_trees(files, head_rows=[added])
+        handle.run("wf_update_branch", args)
+        self.assertEqual(len(minter.calls), 2)
+        self.assertEqual(minter.calls[1][2].get("workflows"), "write")
+        self.assertEqual(client.calls[-1][0], "PUT")
+
+    def test_update_branch_trees_fallback_detects_removed_workflow_file(self):
+        files = [{"filename": f"src/f{i}.py"} for i in range(300)]
+        removed = {"type": "blob", "path": ".github/workflows/old.yml", "sha": "3" * 40}
+        client, minter, handle, args = self.update_branch_trees(files, base_rows=[removed])
+        handle.run("wf_update_branch", args)
+        self.assertEqual(len(minter.calls), 2)
+        self.assertEqual(minter.calls[1][2].get("workflows"), "write")
+
+    def test_update_branch_trees_fallback_detects_changed_workflow_blob(self):
+        files = [{"filename": f"src/f{i}.py"} for i in range(300)]
+        head_row = {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "2" * 40}
+        base_row = {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "3" * 40}
+        client, minter, handle, args = self.update_branch_trees(
+            files, head_rows=[head_row], base_rows=[base_row]
+        )
+        handle.run("wf_update_branch", args)
+        self.assertEqual(len(minter.calls), 2)
+        self.assertEqual(minter.calls[1][2].get("workflows"), "write")
+
+    def test_update_branch_trees_fallback_refuses_truncated_tree(self):
+        files = [{"filename": f"src/f{i}.py"} for i in range(300)]
+        client, minter, handle, args = self.update_branch_trees(files)
+        client.replies[2] = {"truncated": True, "tree": []}
+        with self.assertRaises(Refused):
             handle.run("wf_update_branch", args)
         self.assertNotIn("PUT", [c[0] for c in client.calls])
+        self.assertEqual(len(minter.calls), 1)
+
+    def test_update_branch_trees_fallback_refuses_missing_base_sha(self):
+        files = [{"filename": f"src/f{i}.py"} for i in range(300)]
+        client, minter, handle, args = self.update_branch_trees(files, base_sha="main")
+        with self.assertRaises(Refused):
+            handle.run("wf_update_branch", args)
+        self.assertNotIn("PUT", [c[0] for c in client.calls])
+
+    def test_update_branch_compare_without_files_falls_back_to_trees(self):
+        minter = Minter()
+        pr = {"head": {"sha": SHA}, "base": {"ref": "main", "sha": "b" * 40}}
+        tree = {"truncated": False, "tree": [{"type": "blob", "path": "a.py", "sha": "1" * 40}]}
+        client = Client(pr, {"total_commits": 5}, tree, tree, {"message": "ok"})
+        args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
+        handle = WorkflowVerbs.for_action(
+            client,
+            Policy({**CEILING, "workflows": "write"}),
+            minter,
+            "swu-wise",
+            "wf_update_branch",
+            REPO,
+            args=args,
+        )
+        handle.run("wf_update_branch", args)
+        self.assertEqual(client.calls[-1][0], "PUT")
+        self.assertEqual(len(minter.calls), 1)
 
     def test_update_branch_300_files_with_workflow_still_elevates(self):
         files = [{"filename": f"src/f{i}.py"} for i in range(300)]
@@ -343,9 +438,9 @@ class WorkflowPrElevation(unittest.TestCase):
         class Big(Client):
             def _call(self, method, path, *a, **k):
                 self.calls.append((method, path))
-                if "/compare/" in path:
+                if "/compare/" in path or "/git/trees/" in path:
                     raise RelayGitHubError(0, "too large", code="response_too_large")
-                return {"head": {"sha": SHA}, "base": {"ref": "main"}}
+                return {"head": {"sha": SHA}, "base": {"ref": "main", "sha": "b" * 40}}
 
         minter, client = Minter(), Big()
         args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
@@ -361,8 +456,76 @@ class WorkflowPrElevation(unittest.TestCase):
         with self.assertRaises(Refused) as ctx:
             handle.run("wf_update_branch", args)
         self.assertNotIsInstance(ctx.exception, PreReadUnavailable)
+        self.assertEqual(str(ctx.exception), TOO_LARGE_TO_VERIFY)
         self.assertNotIn("PUT", [c[0] for c in client.calls])
         self.assertEqual(len(minter.calls), 1)
+
+    def test_oversized_compare_falls_back_to_trees_and_elevates(self):
+        from git_relay.github_client import RelayGitHubError
+
+        class Big(Client):
+            def _call(self, method, path, *a, **k):
+                self.calls.append((method, path))
+                if "/compare/" in path:
+                    raise RelayGitHubError(0, "too large", code="response_too_large")
+                return self.replies.pop(0) if self.replies else {}
+
+        pr = {"head": {"sha": SHA}, "base": {"ref": "main", "sha": "b" * 40}}
+        head_tree = {
+            "truncated": False,
+            "tree": [
+                {"type": "blob", "path": "src/a.py", "sha": "1" * 40},
+                {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "2" * 40},
+            ],
+        }
+        base_tree = {
+            "truncated": False,
+            "tree": [{"type": "blob", "path": "src/a.py", "sha": "1" * 40}],
+        }
+        minter, client = Minter(), Big(pr, head_tree, base_tree, {"message": "ok"})
+        args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
+        handle = WorkflowVerbs.for_action(
+            client,
+            Policy({**CEILING, "workflows": "write"}),
+            minter,
+            "swu-wise",
+            "wf_update_branch",
+            REPO,
+            args=args,
+        )
+        handle.run("wf_update_branch", args)
+        self.assertEqual(len([c for c in client.calls if "/git/trees/" in c[1]]), 2)
+        self.assertEqual(len(minter.calls), 2)
+        self.assertEqual(minter.calls[1][2].get("workflows"), "write")
+        self.assertEqual(client.calls[-1][0], "PUT")
+
+    def test_oversized_compare_trees_prove_no_workflow_touch(self):
+        from git_relay.github_client import RelayGitHubError
+
+        class Big(Client):
+            def _call(self, method, path, *a, **k):
+                self.calls.append((method, path))
+                if "/compare/" in path:
+                    raise RelayGitHubError(0, "too large", code="response_too_large")
+                return self.replies.pop(0) if self.replies else {}
+
+        pr = {"head": {"sha": SHA}, "base": {"ref": "main", "sha": "b" * 40}}
+        tree = {"truncated": False, "tree": [{"type": "blob", "path": "a.py", "sha": "1" * 40}]}
+        minter, client = Minter(), Big(pr, tree, tree, {"message": "ok"})
+        args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
+        handle = WorkflowVerbs.for_action(
+            client,
+            Policy({**CEILING, "workflows": "write"}),
+            minter,
+            "swu-wise",
+            "wf_update_branch",
+            REPO,
+            args=args,
+        )
+        handle.run("wf_update_branch", args)
+        self.assertEqual(client.calls[-1][0], "PUT")
+        self.assertEqual(len(minter.calls), 1)
+        self.assertNotIn("workflows", minter.calls[0][2])
 
     def test_transient_compare_failure_is_still_retryable_preread(self):
         from git_relay.github_client import RelayGitHubError
