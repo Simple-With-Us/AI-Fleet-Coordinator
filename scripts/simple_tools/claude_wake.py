@@ -67,7 +67,7 @@ SESSION_FILE_BYTES = 64 * 1024
 TAIL_BYTES = 256 * 1024
 STDIN_LIMIT = 16 * 1024
 SOCKET_TIMEOUT = 5.0
-SOCKET_DRAIN_SECONDS = 2.0
+SOCKET_HOLD_SECONDS = 1.0
 CONFIRM_POLL_SECONDS = 1.0
 SSH_DEST_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]*")
 SSH_CONNECT_TIMEOUT = 4
@@ -212,9 +212,10 @@ def wake_text(wake: WR.Wake) -> str:
     )
 
 
-def post_to_socket(path: str, text: str) -> None:
-    """One user-message line to a chat's inbox socket.  Raises OSError when it cannot be handed
-    over.  The peer's reply, if any, is read only to let it finish, and is discarded."""
+def post_to_socket(path: str, text: str, *, sleep: Callable[[float], None] = time.sleep) -> None:
+    """One user-message line to a chat's inbox socket, then a second's hold before closing:  the
+    form the live canary proved (Nov 10, 2026), both during a running turn and into an idle chat.
+    Raises OSError when it cannot be handed over."""
     info = os.lstat(path)
     if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.geteuid():
         raise PermissionError("not this user's socket")
@@ -224,13 +225,7 @@ def post_to_socket(path: str, text: str) -> None:
         sock.settimeout(SOCKET_TIMEOUT)
         sock.connect(path)
         sock.sendall(data)
-        sock.shutdown(socket.SHUT_WR)
-        sock.settimeout(SOCKET_DRAIN_SECONDS)
-        try:
-            while sock.recv(4096):
-                pass
-        except TimeoutError:
-            pass
+        sleep(SOCKET_HOLD_SECONDS)
 
 
 def transcript_path(env: Mapping[str, str], session_id: str) -> Path | None:
@@ -328,7 +323,7 @@ def _via_socket(
     transcript = transcript_path(env, session_id)
     offset = _size(transcript)
     try:
-        post_to_socket(holder.socket_path, wake_text(wake))
+        post_to_socket(holder.socket_path, wake_text(wake), sleep=sleep)
     except OSError as exc:
         return WR.Delivery("failed", "socket", code="socket-%s" % type(exc).__name__)
     if seen_in_transcript(

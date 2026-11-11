@@ -892,6 +892,14 @@ class Socket(ClaudeBase):
         self.assertEqual((result.outcome, result.route, result.ack), ("sent", "socket", "unknown"))
         self.assertEqual(self.runs, [])
 
+    def test_the_connection_is_held_a_second_before_closing(self) -> None:
+        inbox = self.inbox()
+        held: list[float] = []
+        CW.post_to_socket(inbox.path, "hello", sleep=held.append)
+        self.assertEqual(held, [CW.SOCKET_HOLD_SECONDS])
+        self.assertTrue(inbox.done.wait(timeout=5))
+        self.assertTrue(inbox.received.endswith(b"\n"))
+
     def test_the_wake_text_is_metadata_only(self) -> None:
         text = CW.wake_text(self.w)
         self.assertIn("w-claude", text)
