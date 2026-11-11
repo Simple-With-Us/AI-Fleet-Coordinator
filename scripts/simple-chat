@@ -60,6 +60,9 @@ if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "wake-router"
 if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "wake-deliver":
     from simple_tools.claude_wake import deliver_entry
     sys.exit(deliver_entry())
+if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "wake-ssh-gate":
+    from simple_tools.claude_wake import gate_entry
+    sys.exit(gate_entry())
 
 # --- seat remote defaults (host helper, optional) ---
 _SEAT_HELPER_ANCHOR = "/"
