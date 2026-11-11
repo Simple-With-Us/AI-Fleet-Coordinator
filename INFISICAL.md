@@ -155,6 +155,10 @@ The Operator's Linear project webhook keeps Zulip and the repo linkifiers equal 
 
 Each value is never printed, logged or written to a file.
 
+## Linear living comments (the Zulip -> Linear relay, folded into the Operator)
+
+The Operator's Zulip -> Linear living comments (scripts/agent_sync/operator_linear.py, design: docs/operator-linear-comments.md) write with the owner's Linear developer token — a personal API key with Write permission — held in this project, `prod`, folder `/linear`, as `LINEAR_OPERATOR_DEVELOPER_TOKEN`.  (Owner ruling 2026-11-03:  the lane first minted tokens from the Operator app's OAuth pair, but the app's registered scopes are `read` + `comments:create` only, so comment edits fail;  the developer token replaces the pair for this job, and the pair is no longer read by the daemon.)  The daemon reads the key through ONE scoped read-only Infisical service token, `operator-linear-read`, scoped to exactly `prod` `/linear` (registry:  SWU Fleet References, "Infisical Service Tokens" row 61), resolved from the runtime-only variable `OPERATOR_LINEAR_INFISICAL_TOKEN` or the `[linear_comments] infisical_token_file` — never through a machine identity, and no Linear token is bound to the container.  The key is fetched at daemon start and held in memory only.  Nothing reads a seat's Linear credential for this job.
+
 ## Zulip Outgoing Wake Tokens
 
 The existing server listener loads `ZULIP_OUTGOING_<CODE>_TOKEN` from prod `/zulip` at startup for each server seat.  `<CODE>` replaces hyphens in the seat tag with underscores.  These separate Zulip service tokens authenticate outgoing webhook requests; they are neither `ZULIP_<CODE>_API_KEY` nor the routine's bearer/HMAC key.  Missing tokens deny requests for that seat.
@@ -248,6 +252,8 @@ Until a key is set in Infisical, a job runs on the Default column, which is the 
 | `NEEDS_OWNER_NOTIFY_PAUSED` | C6 | bool | `false` | no | only set it to `true` | true pauses the fallback notifier;  an Infisical outage past the 48 hour copy limit reads false and unpauses it |
 | `NEEDS_OWNER_CAPS` | C6 | caps | `per_day=30,per_hour=6,urgent_per_hour=3` | no | only lower a number | notifier post caps |
 | `OWNER_LINEAR_USER_ID` | C6 | str | unset | no | nothing | the owner's Linear user id;  empty means no Linear reply is accepted as the owner's |
+| `NEEDS_OWNER_BAR` | C6 | enum: off < warn < enforce | `off` | no | nothing | how hard the bar is on `needs-owner file`;  off changes nothing, warn files the item and warns when --why-owner is missing, enforce refuses a filing with no reason class;  an unreadable or unknown value is off |
+| `NEEDS_OWNER_SEAT_DAILY_MAX` | C6 | int 0 to 50 | `0` | no | nothing | most needs-owner items one seat may file in 24 hours, counted on the host that files them;  0 means no cap;  applies in warn (a warning) and enforce (a refusal) and never in off |
 | `CLAIM_EXPIRY_MODE` | C4 | enum: dry-run < ping-only < act | `dry-run` | no | only move toward `dry-run` | act also needs CLAIM_EXPIRY_LAUNCH_AT |
 | `CLAIM_EXPIRY_CAPS` | C4 | caps | `pings_per_run=40,releases_per_day=40,releases_per_run=20` | no | only lower a number | code ceilings are the same numbers;  Infisical can lower them |
 | `CLAIM_EXPIRY_LAUNCH_AT` | C4 | str | unset | no | nothing | ISO 8601 time the claim clock starts, set once;  empty means the clock has not started |
