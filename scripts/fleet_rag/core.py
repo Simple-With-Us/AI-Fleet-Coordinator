@@ -327,10 +327,14 @@ def _read_token_file() -> str | None:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
     except FileNotFoundError:
         if named:
-            raise FleetRagError(f"{INFISICAL_READ_TOKEN_FILE} names a file that does not exist") from None
+            raise FleetRagError(
+                f"{INFISICAL_READ_TOKEN_FILE} names a file that does not exist"
+            ) from None
         return None
     except OSError as exc:
-        raise FleetRagError(f"the recall reader token file cannot be opened ({type(exc).__name__})") from None
+        raise FleetRagError(
+            f"the recall reader token file cannot be opened ({type(exc).__name__})"
+        ) from None
     try:
         info = os.fstat(fd)
         owner_ok = not hasattr(os, "getuid") or info.st_uid == os.getuid()
@@ -346,7 +350,7 @@ def _read_token_file() -> str | None:
     for line in data.decode("utf-8", "replace").splitlines():
         line = line.strip()
         if line.startswith("export "):
-            line = line[len("export "):].lstrip()
+            line = line[len("export ") :].lstrip()
         key, sep, value = line.partition("=")
         if sep and key.strip() == INFISICAL_READ_TOKEN:
             value = value.strip()
