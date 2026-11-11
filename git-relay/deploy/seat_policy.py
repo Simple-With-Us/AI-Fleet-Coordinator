@@ -633,16 +633,21 @@ def _load_proof_key(path):
     """Read the operator proof key from a custody-checked file;  never logs it.
 
     The directory chain is checked first (_proof_key_dir_trust).  The file
-    itself is opened O_NOFOLLOW and verified by fstat on the OPENED
-    descriptor - a regular file, owned by the current euid (root-owned in
-    production), 0600 when running as root - so a symlink swap or a
-    replace-between-check-and-open lands on the descriptor that is actually
-    read, never a second lookup.  Any deviation refuses closed:  a writable
-    or substituted key silently forges every receipt gate downstream of it.
+    itself is opened O_NOFOLLOW | O_NONBLOCK (a FIFO must refuse, not hang)
+    and verified by fstat on the OPENED descriptor - a regular file of at
+    most 64 KiB, owned by the current euid (root-owned in production), 0600
+    when running as root - so a symlink swap or a replace between check and
+    open lands on the descriptor that is actually read, never a second
+    lookup.  Any deviation refuses closed:  a writable or substituted key
+    silently forges every receipt gate downstream of it.
     """
     _proof_key_dir_trust(path)
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        # O_NONBLOCK with the O_NOFOLLOW:  a FIFO at the path must refuse,
+        # never hang the install transaction on open.
+        fd = os.open(
+            path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        )
     except OSError:
         raise ValueError("proof-key file unreadable (missing, or a symlink)")
     try:
@@ -653,6 +658,8 @@ def _load_proof_key(path):
             raise ValueError("proof-key file must be owned by its operator")
         if os.geteuid() == 0 and st.st_mode & 0o077:
             raise ValueError("proof-key file must be private (0600)")
+        if st.st_size > 1 << 16:
+            raise ValueError("proof-key file larger than 64 KiB is not a key")
         data = os.read(fd, 1 << 16)
     finally:
         os.close(fd)

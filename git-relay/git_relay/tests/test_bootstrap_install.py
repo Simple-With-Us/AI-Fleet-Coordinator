@@ -272,6 +272,17 @@ class ProofKeyCustodyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "empty"):
             sp._load_proof_key(str(self.key))
 
+    def test_fifo_refused_without_hanging(self):
+        fifo = self.root / "fifo"
+        os.mkfifo(fifo)
+        with self.assertRaisesRegex(ValueError, "regular file"):
+            sp._load_proof_key(str(fifo))
+
+    def test_oversize_key_refused(self):
+        self.key.write_bytes(b"k" * (1 << 16) + b"x")
+        with self.assertRaisesRegex(ValueError, "64 KiB"):
+            sp._load_proof_key(str(self.key))
+
     def test_as_root_the_full_ancestor_chain_is_checked(self):
         # Fixture trees live under /var (a symlink on macOS) or a sticky
         # world-writable /tmp:  as root the require_root_owned-equivalent
