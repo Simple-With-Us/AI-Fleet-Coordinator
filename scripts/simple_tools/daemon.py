@@ -70,7 +70,6 @@ from . import outgoing_webhook as OW
 from . import router as R
 from . import session_ids as SI
 from . import subscribe_all as SUB
-from . import topic_ledger as TL
 from . import typing_signal as TYPING
 from . import wakes as W
 from . import zulip as Z
@@ -874,10 +873,10 @@ class Daemon:
             enabled=self.config.wake_loop_prevention,
         )
         self.global_ring = Ring()
-        # Who posted recently in each topic, as which chat and tagging whom (topic_ledger.py).  It is
+        # Who posted recently in each topic, as which chat and tagging whom (router.TopicLedger).  It is
         # what turns an untagged reply into a wake for the chat it answers (router `reply_to_chat`).
         # In memory only:  a restart empties it, and it fills again as posts arrive.
-        self.topic_ledger = TL.TopicLedger()
+        self.topic_ledger = R.TopicLedger()
         self.agents_cache: tuple[float, dict[int, str] | None] = (-1e9, None)
         self.start_cache: dict[int, tuple[float, int]] = {}
         self.children: set[subprocess.Popen[Any]] = (

@@ -6,7 +6,7 @@ long for the day that I am annoyed by too many wakes", and for the core case "if
 to someone that tagged tehm".  Chat A (seat S, header letter AA) tags seat T in a topic, T's chat answers
 there without tagging anyone, and that wakes chat A:  seat S, letter AA.
 
-Three layers:  the ledger (`topic_ledger.py`), the router (`router.classify`, `prefilter`, `route`), and
+Three layers:  the ledger (`TopicLedger` in `router.py`), the router (`router.classify`, `prefilter`, `route`), and
 the daemon end to end against the fake realm, where the routine seat's wake POST is read off the wire.
 """
 from __future__ import annotations
@@ -27,7 +27,7 @@ from simple_tools.tests.fake_routine import FakeRoutine
 from simple_tools.tests.fake_zulip import EPOCH
 from simple_tools.tests.harness import write_rc
 from simple_tools.tests.test_daemon import DaemonHarness
-from simple_tools.topic_ledger import (
+from simple_tools.router import (
     MAX_TOPICS,
     POSTS_PER_TOPIC,
     ReplyTarget,
