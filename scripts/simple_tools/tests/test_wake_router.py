@@ -14,6 +14,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -1375,7 +1376,7 @@ class Resume(ClaudeBase):
         self.assertEqual(self.runs, [])
 
     def test_a_dead_process_does_not_hold(self) -> None:
-        child = subprocess.Popen(["/bin/true"])
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
         child.wait()
         self.holder_file(pid=child.pid, procStart="1")
         self.transcript()
@@ -1510,7 +1511,7 @@ class HolderFailsClosed(ClaudeBase):
             self.assert_busy()
 
     def test_a_torn_leftover_of_a_dead_pid_blocks_nothing(self) -> None:
-        child = subprocess.Popen(["/bin/true"])
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
         child.wait()
         (self.sessions / ("%d.json" % child.pid)).write_text("{torn", encoding="utf-8")
         self.assertEqual(self.deliver().route, "resume")
@@ -1632,7 +1633,7 @@ class Exclude(ClaudeBase):
         self.assertEqual(exclude([WR.Target(SID_A, host="mac")]), set())
 
     def test_a_stale_record_excludes_nothing(self) -> None:
-        child = subprocess.Popen(["/bin/true"])
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
         child.wait()
         self.holder_file(pid=child.pid, procStart="1", kind="print")
         exclude = CW.exclude_non_interactive(self.env, "server")
