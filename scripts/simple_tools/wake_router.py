@@ -29,6 +29,14 @@ The sender is never the target.  A fleet post header carries the sender's own fr
 text after its arrow, which is an addressee, and no step picks a chat whose session id starts with
 the fragment in that header.
 
+What is searched.  The listener wraps the message in one marker pair, `BEGIN_UNTRUSTED_… nonce=N`
+first and `END_UNTRUSTED_… nonce=N` last (adapters.routine_excerpt), and that frame is unwrapped:
+it counts only when its END is the last line.  Any other marked block, nested in the frame or not, is
+dropped whole, from its BEGIN line to the END line with the same kind and nonce, or to the end of
+the text when it never closes:  nothing inside one is a header, a letter, a fragment or an issue.
+Quoted text addresses nobody:  a ```` ```quote ```` (or `~~~quote`) block and a line starting with
+`>` are left out of the letter and fragment search, though an issue id there still counts.
+
 A platform whose delivery is just one command needs no `deliver` of its own:  `command_platform`
 builds the whole `Platform` from a short spec.  Otherwise, a `deliver` is one plain function:
 
@@ -50,7 +58,9 @@ It returns a `Delivery` whose `outcome` is one of:
 
 Any exception counts as `failed`, so a `deliver` that may already have started the turn must catch
 its own errors from that point on and return `refused`.  `route`, `code` and `note` are short fixed
-codes for the receipt, never message text and never a credential.
+codes for the receipt, never message text and never a credential.  A receipt says `delivered: false`
+for a refusal only when its code is in `NEVER_RAN`:  any other refusal may follow a turn that
+started, so it says `delivered: null`, because nobody knows.
 
 The answer and the durability.  The listener waits at most its routine timeout, resends with the
 same id, and treats any 2xx as accepted, so it never retries after one.  So the POST only checks
@@ -74,6 +84,12 @@ picked, nothing is delivered:  a wake addressed to a letter ends in a `dead` rec
 `target-released`, because the letter's new holder is not who the sender meant, and any other wake
 goes back through the pick.  A registry that cannot be read is a bounded retry, never a blind
 delivery.  Receipts name the selected generation as `picked_generation`.
+
+Settings not yet confirmed.  A router whose settings have not come from a successful read in this
+process does not know whether delivery is on, and "off" would close every pending wake as `held`.
+So until the config says `confirmed`, workers leave wakes pending, use up no attempt and look again;
+`max_age_seconds` still bounds the wait, and only a plain dict of settings is confirmed from the
+start.
 
 One chat's wakes run in the order they came.  A later wake waits behind an earlier one for the same
 chat until that one is settled;  it is not failed as busy.  A wake that still cannot be delivered,
@@ -146,6 +162,10 @@ FRAGMENT_RE = re.compile(
 # A fleet post header's inside:  a seat tag, then its own fragment or one of the marks below.
 HEADER_RE = re.compile(r"[A-Z][A-Z0-9_-]*(·(?:%s)?[0-9a-f-]{8,})?(.*)" % SESSION_PREFIX, re.DOTALL)
 HEADER_SESSION_RE = re.compile(r":\s*[A-Z]{1,2}\.[0-9]+\.[A-Z]\b")
+# An untrusted-text marker line:  BEGIN or END, then the kind (`_ZULIP`, or nothing).
+MARKER_LINE_RE = re.compile(r"(BEGIN|END)_UNTRUSTED([A-Z0-9_]*)\b")
+# The opening fence of a Zulip quote block.
+QUOTE_FENCE_RE = re.compile(r"[ \t]*(`{3,}|~{3,})[ \t]*quote[ \t]*")
 FRAGMENT_MIN_HEX = 8
 FRAGMENT_MAX_CHARS = 36
 # A longer unbroken run of hex is a commit or a key, not a stated session id, and is not kept.
@@ -164,6 +184,23 @@ OUTCOMES = ("sent", "completed", "busy", "unreachable", "failed", "refused")
 INTERRUPTED = "interrupted-during-delivery"
 EXPIRED = "wake-expired"
 RELEASED = "target-released"
+UNCONFIRMED = "settings-unconfirmed"
+# The `refused` codes that can only come before anything ran.  It is a list of what is known safe,
+# so a new code reads as unknown until someone adds it here.
+NEVER_RAN = frozenset(
+    {
+        RELEASED,
+        "bad-request",
+        "bad-session-id",
+        "command-option-shaped-value",
+        "no-ssh-destination",
+        "no-transcript",
+        "platform-not-installed",
+        "session-cwd-gone",
+        "unknown-host",
+        "unknown-platform",
+    }
+)
 # What the receiving chat is told, by pick reason.  Fixed sentences on purpose:  the only thing that
 # can vary is {issue}, and that has matched ISSUE_ID, so no Zulip text reaches a chat's prompt.
 UNSURE = "and the router is not sure this wake is meant for this chat."
@@ -195,6 +232,9 @@ COMMAND_TEXT = (
     "seat's rules."
 )
 
+# The settings a router reads and what each one is if nothing sets it.  Their values come from
+# Infisical through wake_settings;  fleet_knobs/registry.py holds the same defaults, and a test keeps
+# the two equal.
 ROUTER_DEFAULTS: dict[str, Any] = {
     # Off until someone arms it:  with this false the router picks and receipts, and delivers nothing.
     "delivery_enabled": False,
@@ -306,7 +346,7 @@ def letter_of(payload: Mapping[str, Any], mention: str) -> str:
     explicit = str(payload.get("letter") or "").strip()
     if re.fullmatch(r"[A-Z]{1,2}", explicit):
         return explicit
-    excerpt = str(payload.get("excerpt") or "")
+    excerpt = unquoted(trusted_text(str(payload.get("excerpt") or "")))
     name = re.escape(mention)
     seat = str(payload.get("seat") or "")
     for form in (
@@ -343,16 +383,69 @@ def _is_post_header(inner: str) -> bool:
     )
 
 
+def _marker(line: str) -> tuple[str, str, str] | None:
+    """(BEGIN or END, the marker's kind, its nonce) for an untrusted-text marker line, else None."""
+    found = MARKER_LINE_RE.match(line)
+    if found is None:
+        return None
+    nonce = re.search(r"\bnonce=(\S*)", line)
+    return found.group(1), found.group(2), nonce.group(1) if nonce else ""
+
+
+def trusted_text(excerpt: str) -> str:
+    """The excerpt without its listener frame and without any other marked block, whole.  A block
+    that is opened and never closed runs to the end, so it cannot leak either."""
+    lines = excerpt.split("\n")
+    first, last = _marker(lines[0]), _marker(lines[-1])
+    if (
+        len(lines) >= 2
+        and first is not None
+        and last is not None
+        and (first[0], last[0]) == ("BEGIN", "END")
+        and first[1:] == last[1:]
+    ):
+        lines = lines[1:-1]
+    kept: list[str] = []
+    opened: tuple[str, str] | None = None
+    for line in lines:
+        mark = _marker(line)
+        if opened is not None:
+            if mark is not None and mark[0] == "END" and mark[1:] == opened:
+                opened = None
+            continue
+        if mark is not None:
+            if mark[0] == "BEGIN":
+                opened = mark[1:]
+            continue  # a stray END line is dropped too
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def unquoted(text: str) -> str:
+    """The text without Zulip quotes:  ```` ```quote ```` and `~~~quote` blocks (to their closing
+    fence, or to the end when there is none) and lines starting with `>`."""
+    kept: list[str] = []
+    fence: tuple[str, int] | None = None
+    for line in text.split("\n"):
+        if fence is not None:
+            mark, length = fence
+            if re.fullmatch(r"[ \t]*%s{%d,}[ \t]*" % (re.escape(mark), length), line):
+                fence = None
+            continue
+        opening = QUOTE_FENCE_RE.fullmatch(line)
+        if opening is not None:
+            fence = (opening.group(1)[0], len(opening.group(1)))
+            continue
+        if not line.lstrip().startswith(">"):
+            kept.append(line)
+    return "\n".join(kept)
+
+
 def split_excerpt(excerpt: str) -> tuple[str, str]:
-    """(the sender's part of a leading post header, the text that may address a chat).  The
-    untrusted-text marker lines carry a nonce, so they are dropped.  Text after the header's arrow
-    names an addressee, so it stays with the body;  the rest of the header is the sender's."""
-    lines = [
-        line
-        for line in excerpt.split("\n")
-        if not line.startswith(("BEGIN_UNTRUSTED", "END_UNTRUSTED"))
-    ]
-    body = "\n".join(lines).lstrip()
+    """(the sender's part of a leading post header, the text that may address a chat).  Only
+    trusted text is read (`trusted_text`).  Text after the header's arrow names an addressee, so it
+    stays with the body;  the rest of the header is the sender's."""
+    body = trusted_text(excerpt).lstrip()
     header = re.match(r"(?:\U0001F440\s*)?\[([^\]\n]*)\]", body)
     if header is None or not _is_post_header(header.group(1)):
         return "", body
@@ -389,8 +482,8 @@ def wake_from_payload(payload: Mapping[str, Any], mention: str) -> Wake:
         sender=clean(payload.get("sender_full_name")),
         dm=payload.get("dm") is True,
         letter=letter_of(payload, mention),
-        issue_ids=tuple(dict.fromkeys(ISSUE_RE.findall(excerpt)))[:MAX_WAKE_ISSUES],
-        session_fragments=fragments_in(addressing),
+        issue_ids=tuple(dict.fromkeys(ISSUE_RE.findall(trusted_text(excerpt))))[:MAX_WAKE_ISSUES],
+        session_fragments=fragments_in(unquoted(addressing)),
         sender_fragment=next(iter(fragments_in(sender_part)), ""),
         linked_by="reply" if payload.get("linked_by") == "reply" else "",
     )
@@ -443,10 +536,18 @@ def _read_json(path: Path) -> Any:
 def load_config(
     path: Path, defaults: Mapping[str, Any], *, required: bool = False
 ) -> dict[str, Any]:
-    """The defaults overlaid with a JSON file.  A file named explicitly must exist.  A file that is
-    there must parse, name only known keys and match each default's type:  an unreadable or mistyped
-    config is a refusal that names the path, never a quiet run on defaults."""
-    config = dict(defaults)
+    """The defaults overlaid with a JSON file.  It widens as freely as it narrows, so nothing that
+    runs a router reads its settings this way:  wake_settings lets a local file only narrow."""
+    return {**defaults, **read_local_config(path, defaults, required=required)}
+
+
+def read_local_config(
+    path: Path, defaults: Mapping[str, Any], *, required: bool = False
+) -> dict[str, Any]:
+    """Only what a JSON file sets.  A file named explicitly must exist.  A file that is there must
+    parse, name only known keys and match each default's type:  an unreadable or mistyped config is
+    a refusal that names the path, never a quiet run on defaults."""
+    config: dict[str, Any] = {}
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -596,23 +697,7 @@ class Router:
     # ---- the pick ---------------------------------------------------------------------------
 
     def _valid(self, row: Mapping[str, Any]) -> Target | None:
-        sid = str(row.get("native_session_id") or "")
-        if not self.platform.target_re.fullmatch(sid):
-            return None  # a crafted row can never steer an argv token a child reads as a flag
-        if str(row.get("seat") or self.platform.seat).upper() != self.platform.seat:
-            return None
-        letter = str(row.get("label") or row.get("letter") or "")
-        generation = row.get("generation")
-        if not letter or type(generation) is not int or generation < 1:
-            return None  # the check before delivery needs both, so it could never pass
-        return Target(
-            session_id=sid,
-            letter=letter,
-            host=str(row.get("verified_host") or ""),
-            title=str(row.get("title") or ""),
-            thread_link=str(row.get("thread_link") or ""),
-            generation=generation,
-        )
+        return target_from_row(row, self.platform.seat, self.platform.target_re)
 
     def _excluded(self, targets: list[Target]) -> set[str]:
         return self.platform.exclude(targets) if self.platform.exclude and targets else set()
@@ -1009,6 +1094,12 @@ class Router:
             result = Delivery("failed", code=EXPIRED)
             self._finish(entry, old, status="dead", delivered=False, result=result)
             return
+        if not getattr(self.config, "confirmed", True):
+            # Before the pick, so a pick is never kept across an outage and delivered stale.
+            kept = _pick_from(entry["pick"]) if entry["pick"] else None
+            waiting = Delivery("busy", code=UNCONFIRMED)
+            self._retry(entry, counted=False, code=UNCONFIRMED, pick=kept, result=waiting)
+            return
         wake = Wake(**entry["wake"])
         if entry["pick"] is None:
             pick = self.pick(wake)
@@ -1081,12 +1172,7 @@ class Router:
         )
         if "error" in answer:
             return None
-        current = self._valid(answer) if answer.get("found") and not _closed(answer) else None
-        return (
-            current is not None
-            and current.session_id == target.session_id
-            and current.generation == target.generation
-        )
+        return holds(answer, target, self.platform.seat, self.platform.target_re)
 
     def _released(self, entry: dict[str, Any], pick: Pick, wake: Wake) -> None:
         """The picked chat is gone or re-registered, and nothing was delivered.  A wake addressed
@@ -1110,7 +1196,8 @@ class Router:
             delivered = True if outcome == "completed" or result.ack == "confirmed" else None
             self._finish(entry, pick, status="delivered", delivered=delivered, result=result)
         elif outcome == "refused":
-            self._finish(entry, pick, status="dead", delivered=False, result=result)
+            delivered = False if result.code in NEVER_RAN else None
+            self._finish(entry, pick, status="dead", delivered=delivered, result=result)
         elif outcome == "failed":
             self._retry(entry, counted=True, code=result.code or "failed", pick=pick, result=result)
         else:
@@ -1267,6 +1354,39 @@ class Router:
 
 def _closed(row: Mapping[str, Any]) -> bool:
     return bool(row.get("retired_at") or row.get("closed_at") or row.get("state") == "closed")
+
+
+def target_from_row(row: Mapping[str, Any], seat: str, target_re: Pattern[str]) -> Target | None:
+    """The chat a registry row describes, or None if it is not one a wake can go to."""
+    sid = str(row.get("native_session_id") or "")
+    if not target_re.fullmatch(sid):
+        return None  # a crafted row can never steer an argv token a child reads as a flag
+    if str(row.get("seat") or seat).upper() != seat:
+        return None
+    letter = str(row.get("label") or row.get("letter") or "")
+    generation = row.get("generation")
+    if not letter or type(generation) is not int or generation < 1:
+        return None  # the check before delivery needs both, so it could never pass
+    return Target(
+        session_id=sid,
+        letter=letter,
+        host=str(row.get("verified_host") or ""),
+        title=str(row.get("title") or ""),
+        thread_link=str(row.get("thread_link") or ""),
+        generation=generation,
+    )
+
+
+def holds(answer: Mapping[str, Any], target: Target, seat: str, target_re: Pattern[str]) -> bool:
+    """Whether a registry `resolve` answer still has this letter open on this session at this
+    generation.  The caller has already ruled out an answer that is an error."""
+    live = answer.get("found") and not _closed(answer)
+    current = target_from_row(answer, seat, target_re) if live else None
+    return (
+        current is not None
+        and current.session_id == target.session_id
+        and current.generation == target.generation
+    )
 
 
 def _session_of(entry: Mapping[str, Any]) -> str:
