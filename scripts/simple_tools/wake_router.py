@@ -29,6 +29,14 @@ The sender is never the target.  A fleet post header carries the sender's own fr
 text after its arrow, which is an addressee, and no step picks a chat whose session id starts with
 the fragment in that header.
 
+What is searched.  The listener wraps the message in one marker pair, `BEGIN_UNTRUSTED_… nonce=N`
+first and `END_UNTRUSTED_… nonce=N` last (adapters.routine_excerpt), and that frame is unwrapped:
+it counts only when its END is the last line.  Any other marked block, nested in the frame or not, is
+dropped whole, from its BEGIN line to the END line with the same kind and nonce, or to the end of
+the text when it never closes:  nothing inside one is a header, a letter, a fragment or an issue.
+Quoted text addresses nobody:  a ```` ```quote ```` (or `~~~quote`) block and a line starting with
+`>` are left out of the letter and fragment search, though an issue id there still counts.
+
 A platform whose delivery is just one command needs no `deliver` of its own:  `command_platform`
 builds the whole `Platform` from a short spec.  Otherwise, a `deliver` is one plain function:
 
@@ -154,6 +162,10 @@ FRAGMENT_RE = re.compile(
 # A fleet post header's inside:  a seat tag, then its own fragment or one of the marks below.
 HEADER_RE = re.compile(r"[A-Z][A-Z0-9_-]*(·(?:%s)?[0-9a-f-]{8,})?(.*)" % SESSION_PREFIX, re.DOTALL)
 HEADER_SESSION_RE = re.compile(r":\s*[A-Z]{1,2}\.[0-9]+\.[A-Z]\b")
+# An untrusted-text marker line:  BEGIN or END, then the kind (`_ZULIP`, or nothing).
+MARKER_LINE_RE = re.compile(r"(BEGIN|END)_UNTRUSTED([A-Z0-9_]*)\b")
+# The opening fence of a Zulip quote block.
+QUOTE_FENCE_RE = re.compile(r"[ \t]*(`{3,}|~{3,})[ \t]*quote[ \t]*")
 FRAGMENT_MIN_HEX = 8
 FRAGMENT_MAX_CHARS = 36
 # A longer unbroken run of hex is a commit or a key, not a stated session id, and is not kept.
@@ -334,7 +346,7 @@ def letter_of(payload: Mapping[str, Any], mention: str) -> str:
     explicit = str(payload.get("letter") or "").strip()
     if re.fullmatch(r"[A-Z]{1,2}", explicit):
         return explicit
-    excerpt = str(payload.get("excerpt") or "")
+    excerpt = unquoted(trusted_text(str(payload.get("excerpt") or "")))
     name = re.escape(mention)
     seat = str(payload.get("seat") or "")
     for form in (
@@ -371,16 +383,69 @@ def _is_post_header(inner: str) -> bool:
     )
 
 
+def _marker(line: str) -> tuple[str, str, str] | None:
+    """(BEGIN or END, the marker's kind, its nonce) for an untrusted-text marker line, else None."""
+    found = MARKER_LINE_RE.match(line)
+    if found is None:
+        return None
+    nonce = re.search(r"\bnonce=(\S*)", line)
+    return found.group(1), found.group(2), nonce.group(1) if nonce else ""
+
+
+def trusted_text(excerpt: str) -> str:
+    """The excerpt without its listener frame and without any other marked block, whole.  A block
+    that is opened and never closed runs to the end, so it cannot leak either."""
+    lines = excerpt.split("\n")
+    first, last = _marker(lines[0]), _marker(lines[-1])
+    if (
+        len(lines) >= 2
+        and first is not None
+        and last is not None
+        and (first[0], last[0]) == ("BEGIN", "END")
+        and first[1:] == last[1:]
+    ):
+        lines = lines[1:-1]
+    kept: list[str] = []
+    opened: tuple[str, str] | None = None
+    for line in lines:
+        mark = _marker(line)
+        if opened is not None:
+            if mark is not None and mark[0] == "END" and mark[1:] == opened:
+                opened = None
+            continue
+        if mark is not None:
+            if mark[0] == "BEGIN":
+                opened = mark[1:]
+            continue  # a stray END line is dropped too
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def unquoted(text: str) -> str:
+    """The text without Zulip quotes:  ```` ```quote ```` and `~~~quote` blocks (to their closing
+    fence, or to the end when there is none) and lines starting with `>`."""
+    kept: list[str] = []
+    fence: tuple[str, int] | None = None
+    for line in text.split("\n"):
+        if fence is not None:
+            mark, length = fence
+            if re.fullmatch(r"[ \t]*%s{%d,}[ \t]*" % (re.escape(mark), length), line):
+                fence = None
+            continue
+        opening = QUOTE_FENCE_RE.fullmatch(line)
+        if opening is not None:
+            fence = (opening.group(1)[0], len(opening.group(1)))
+            continue
+        if not line.lstrip().startswith(">"):
+            kept.append(line)
+    return "\n".join(kept)
+
+
 def split_excerpt(excerpt: str) -> tuple[str, str]:
-    """(the sender's part of a leading post header, the text that may address a chat).  The
-    untrusted-text marker lines carry a nonce, so they are dropped.  Text after the header's arrow
-    names an addressee, so it stays with the body;  the rest of the header is the sender's."""
-    lines = [
-        line
-        for line in excerpt.split("\n")
-        if not line.startswith(("BEGIN_UNTRUSTED", "END_UNTRUSTED"))
-    ]
-    body = "\n".join(lines).lstrip()
+    """(the sender's part of a leading post header, the text that may address a chat).  Only
+    trusted text is read (`trusted_text`).  Text after the header's arrow names an addressee, so it
+    stays with the body;  the rest of the header is the sender's."""
+    body = trusted_text(excerpt).lstrip()
     header = re.match(r"(?:\U0001F440\s*)?\[([^\]\n]*)\]", body)
     if header is None or not _is_post_header(header.group(1)):
         return "", body
@@ -417,8 +482,8 @@ def wake_from_payload(payload: Mapping[str, Any], mention: str) -> Wake:
         sender=clean(payload.get("sender_full_name")),
         dm=payload.get("dm") is True,
         letter=letter_of(payload, mention),
-        issue_ids=tuple(dict.fromkeys(ISSUE_RE.findall(excerpt)))[:MAX_WAKE_ISSUES],
-        session_fragments=fragments_in(addressing),
+        issue_ids=tuple(dict.fromkeys(ISSUE_RE.findall(trusted_text(excerpt))))[:MAX_WAKE_ISSUES],
+        session_fragments=fragments_in(unquoted(addressing)),
         sender_fragment=next(iter(fragments_in(sender_part)), ""),
         linked_by="reply" if payload.get("linked_by") == "reply" else "",
     )
