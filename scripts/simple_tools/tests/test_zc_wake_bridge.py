@@ -220,6 +220,31 @@ class ConfigLoad(Base):
             B.load_config(bad)
 
 
+class IsoTimes(Base):
+    """The registry writes ISO timestamps for assigned_at; a bare float() on them is the
+    crash Claude AA's read-only pass caught (zc-wake-bridge pick on every letterless wake)."""
+
+    def test_iso_assigned_at_ranks_against_numbers(self) -> None:
+        rows = self.rows(
+            {"native_session_id": "sess_iso", "title": "Letters letters", "verified_host": "server",
+             "state": "open", "assigned_at": "2026-11-10T23:00:00Z", "retired_at": None,
+             "closed_at": None},
+            {"native_session_id": "sess_num", "title": "Letters letters", "verified_host": "server",
+             "state": "open", "assigned_at": 5, "retired_at": None, "closed_at": None},
+        )
+        sid, why = B.pick_target(rows, "Letters letters", Path(self.store), "server")
+        self.assertEqual(sid, "sess_iso")  # 2026 epoch dwarfs 5
+        self.assertEqual(why, "topic-match")
+
+    def test_a_bad_time_is_zero_not_a_crash(self) -> None:
+        rows = self.rows(
+            {"native_session_id": "sess_junk", "title": "Letters", "verified_host": "server",
+             "state": "open", "assigned_at": "not-a-time", "retired_at": None, "closed_at": None},
+        )
+        sid, why = B.pick_target(rows, "Letters", Path(self.store), "server")
+        self.assertEqual((sid, why), ("sess_junk", "topic-match"))
+
+
 class UserAgentHeader(Base):
     """The registry host is Cloudflare-fronted and refuses a bare urllib signature (1010);
     every request the bridge sends carries the explicit agent (found live:  the first real

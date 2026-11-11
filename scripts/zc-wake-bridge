@@ -246,6 +246,25 @@ def resolve_letter(env: dict[str, str], letter: str) -> str:
     return sid if TARGET_RE.fullmatch(sid) else ""
 
 
+def _as_time(value: object) -> float:
+    """A row's assigned_at as a comparable epoch float:  the registry writes ISO timestamps,
+    a test fixture may write a bare number, and both must rank against each other (a bare
+    float() on the ISO string is the crash Claude AA's read-only pass caught before it bit)."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    text = str(value or "").strip()
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    try:
+        from datetime import datetime
+
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
 def _words(text: str) -> set[str]:
     return {w for w in WORD_RE.findall(text or "") if w.lower() not in STOP_WORDS}
 
@@ -288,7 +307,7 @@ def pick_target(
         sid = str(row.get("native_session_id") or "")
         if not TARGET_RE.fullmatch(sid):
             continue
-        candidates.append((float(row.get("assigned_at") or 0), sid, str(row.get("title") or "")))
+        candidates.append((_as_time(row.get("assigned_at")), sid, str(row.get("title") or "")))
     subagents = _subagent_ids(store, [sid for _, sid, _ in candidates])
     for seen, sid, title in candidates:
         if sid in subagents:
