@@ -1329,8 +1329,16 @@ def neutralize_mentions(text: str) -> str:
     return _LOUD_RE.sub("@_*", text)
 
 
+_WILDCARD_RE = re.compile(r"@\*\*(all|everyone|stream|channel|topic)\*\*", re.IGNORECASE)
+
+
 def sanitize_compose_mentions(text: str) -> str:
-    """Remove group mentions and silence stray @* tokens; leave @** user mentions loud (AFC-689)."""
+    """Remove group mentions and silence stray @* tokens; leave @** user mentions loud (AFC-689).
+
+    The Zulip wildcard mentions (@**all**, @**everyone**, @**stream**, @**channel**,
+    @**topic**) share the @**..** shape of a user mention but notify a whole stream, so
+    they are made silent like every other loud form this composer does not intend."""
+    text = _WILDCARD_RE.sub(lambda m: "@_**" + m.group(1) + "**", text)
     while True:
         changed = _GROUP_RE.sub("", text)
         if changed == text:

@@ -363,6 +363,11 @@ class ReplyTextTests(unittest.TestCase):
         )
         self.assertEqual(W.sanitize_compose_mentions("heads up @*fleet* now"), "heads up  now")
         self.assertEqual(W.sanitize_compose_mentions("@@*x***Bob**"), "@**Bob**")
+        self.assertEqual(
+            W.sanitize_compose_mentions("note @**all** and @**topic**"),
+            "note @_**all** and @_**topic**",
+        )
+        self.assertEqual(W.sanitize_compose_mentions("hi @**everyone**"), "hi @_**everyone**")
 
     def test_mentions_are_neutralized_and_groups_removed(self) -> None:
         text = W.compose_reply(
