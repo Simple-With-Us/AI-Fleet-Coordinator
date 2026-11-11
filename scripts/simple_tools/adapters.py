@@ -42,6 +42,7 @@ import datetime
 import hashlib
 import hmac
 import http.client
+import ipaddress
 import json
 import os
 import queue
@@ -2796,9 +2797,22 @@ def routine_secret_values(url: str, key: str = "") -> list[str]:
     return [value for value in found if value and len(value) >= 4]
 
 
+_TAILNET = ipaddress.ip_network("100.64.0.0/10")
+
+
+def _is_tailnet(host: str) -> bool:
+    """Whether the host is a Tailscale address (the 100.64.0.0/10 range), as an IP literal only.  A
+    wake bridge that binds a tailnet address (the ZCode bridge does) is reached over the tailnet,
+    which is encrypted, and from the server's own container without leaving the machine."""
+    try:
+        return ipaddress.ip_address(host) in _TAILNET
+    except ValueError:
+        return False
+
+
 def routine_url_problem(url: str) -> str | None:
     """Why a routine URL is refused, or None.  https only (plain http only to a loopback test
-    server), a host, no user:password part and no control characters."""
+    server or a Tailscale address), a host, no user:password part and no control characters."""
     if any(ch in url for ch in "\r\n\x00\t "):
         return "it holds whitespace or a control character"
     try:
@@ -2813,8 +2827,11 @@ def routine_url_problem(url: str) -> str | None:
         return "it has no host"
     if parts.username is not None or parts.password is not None:
         return "it must not carry a user name or password"
-    if parts.scheme == "http" and not Z._is_loopback(host.lower()):
-        return "it must be https (plain http is accepted only for a loopback test server)"
+    if parts.scheme == "http" and not (Z._is_loopback(host.lower()) or _is_tailnet(host)):
+        return (
+            "it must be https (plain http is accepted only for a loopback test server "
+            "or a Tailscale address)"
+        )
     return None
 
 

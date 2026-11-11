@@ -681,9 +681,20 @@ class RoutineBodyTests(unittest.TestCase):
             "https://routines.grok.example/hooks/abc?token=1",
             "http://127.0.0.1:8080/x",
             "http://localhost/x",
+            # A wake bridge on a Tailscale address (the ZCode bridge binds the tailnet IP), both ends of the range.
+            "http://100.69.77.26:8791/wake/ZC",
+            "http://100.64.0.1/x",
+            "http://100.127.255.254/x",
         ]
         bad = {
             "http://routines.example.com/x": "must be https",
+            # Just outside 100.64.0.0/10, a private range that is not the tailnet, a public address, and a
+            # hostname that merely starts like a tailnet address.
+            "http://100.128.0.1/x": "must be https",
+            "http://100.63.255.255/x": "must be https",
+            "http://10.0.0.5/x": "must be https",
+            "http://8.8.8.8/x": "must be https",
+            "http://100.69.77.26.evil.example/x": "must be https",
             "ftp://x/y": "https URL",
             "https://user:pw@host/x": "user name or password",
             "https:///nohost": "no host",
