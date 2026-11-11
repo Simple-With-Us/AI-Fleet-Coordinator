@@ -141,6 +141,7 @@ TOOLS = [
                 "repo": {"type": "string"},
                 "number": {"type": "integer"},
                 "body": {"type": "string"},
+                "intent_id": {"type": "string"},
             },
             "required": ["repo", "number", "body"],
         },

@@ -162,7 +162,15 @@ def _validate_args(action: str, args: dict) -> dict:
             {"number": ("number", True), "comment_id": ("number", True), "body": ("clean", True)}
         )
     elif action == "comment_pr":
-        specs.update({"number": ("number", True), "body": ("clean", True)})
+        # intent_id is envelope metadata only:  it binds the idempotency key
+        # to an explicit operation intent (the same contract pattern as
+        # workflow_dispatch's), so a deliberate re-trigger of an identical
+        # comment is a NEW operation while an identical no-intent resend
+        # stays idempotent-replayed.  It never reaches dispatch or the
+        # upstream comment.
+        specs.update(
+            {"number": ("number", True), "body": ("clean", True), "intent_id": ("text", False)}
+        )
     elif action == "mint_token":
         specs["permissions"] = ("permissions", True)
     elif action == "merge_pr":

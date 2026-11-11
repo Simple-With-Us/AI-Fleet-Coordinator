@@ -148,3 +148,73 @@ class DispatchIntents(unittest.TestCase):
             self.assertTrue(body["retryable"])
             status, _ = relay.handle(SEAT_TOKEN, "workflow_dispatch", self.args())
             self.assertEqual(status, 200)
+
+
+class CommentIntentTests(unittest.TestCase):
+    """comment_pr idempotency: identical text resends replay; an explicit
+    intent_id makes a deliberate re-trigger a new operation; the metadata
+    never reaches dispatch or the upstream comment."""
+
+    def args(self, **updates):
+        return {"repo": "example/x", "number": 5, "body": "@kody start-review", **updates}
+
+    def relay(self, tmp, client=None):
+        return Relay(
+            SeatPolicy(APP_SEATS_JSON),
+            client or StubClient(),
+            AuditLog(str(Path(tmp) / "audit.jsonl")),
+            app_minter=FakeMinter(),
+        )
+
+    def test_identical_resend_without_intent_replays(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = self.relay(tmp)
+            relay._dispatch = Mock(return_value={"id": 3, "url": "u"})
+            status, first = relay.handle(SEAT_TOKEN, "comment_pr", self.args())
+            self.assertEqual(status, 200)
+            status, replay = relay.handle(SEAT_TOKEN, "comment_pr", self.args())
+            self.assertEqual(status, 200)
+            self.assertEqual(replay, first)
+            self.assertEqual(relay._dispatch.call_count, 1)
+
+    def test_distinct_intent_ids_are_distinct_operations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = self.relay(tmp)
+            relay._dispatch = Mock(return_value={"id": 3, "url": "u"})
+            relay.handle(SEAT_TOKEN, "comment_pr", self.args(intent_id="trigger-0700z"))
+            relay.handle(SEAT_TOKEN, "comment_pr", self.args(intent_id="trigger-1300z"))
+            self.assertEqual(relay._dispatch.call_count, 2)
+
+    def test_same_intent_id_replays(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = self.relay(tmp)
+            relay._dispatch = Mock(return_value={"id": 3, "url": "u"})
+            relay.handle(SEAT_TOKEN, "comment_pr", self.args(intent_id="trigger-0700z"))
+            status, replay = relay.handle(
+                SEAT_TOKEN, "comment_pr", self.args(intent_id="trigger-0700z")
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(relay._dispatch.call_count, 1)
+
+    def test_intent_id_validation(self):
+        for bad in (123, "", "   ", "x" * 40000):
+            with self.subTest(bad=repr(bad)[:20]), self.assertRaises(ValueError):
+                _validate_args("comment_pr", self.args(intent_id=bad))
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = self.relay(tmp)
+            status, body = relay.handle(SEAT_TOKEN, "comment_pr", self.args(intent_id=123))
+            self.assertEqual(status, 400)
+
+    def test_intent_id_never_reaches_dispatch_or_upstream(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client = StubClient()
+            relay = self.relay(tmp, client=client)
+            status, _ = relay.handle(SEAT_TOKEN, "comment_pr", self.args(intent_id="trigger-0700z"))
+            self.assertEqual(status, 200)
+            # The upstream comment call carries exactly repo, number, body,
+            # bearer:  no intent metadata.
+            self.assertEqual(len(client.calls), 1)
+            name, repo, number, body, bearer = client.calls[0]
+            self.assertEqual(
+                (name, repo, number, body), ("comment_pr", "example/x", 5, "@kody start-review")
+            )
