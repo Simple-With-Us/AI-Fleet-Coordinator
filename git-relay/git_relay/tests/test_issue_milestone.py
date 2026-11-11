@@ -1,11 +1,13 @@
 import tempfile
 import unittest
 from unittest.mock import patch
+
 from git_relay.github_client import RelayGitHubError
 from git_relay.outcomes import OutcomeStore
 from git_relay.server import _REAPPLY_STATE_ACTIONS
 from git_relay.workflow_verbs import Refused, WorkflowVerbs
-from .test_workflow_verbs import REPO, Client, Policy, Minter
+
+from .test_workflow_verbs import REPO, Client, Minter, Policy
 from .test_workflow_wiring import TOKEN, relay
 
 
