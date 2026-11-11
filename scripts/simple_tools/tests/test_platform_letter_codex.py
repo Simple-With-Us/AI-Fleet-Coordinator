@@ -1856,6 +1856,48 @@ class ReleaseTests(HookBase):
         self.assertEqual((code, out["kept"], out["released"]), (0, [sid], []))
         self.assertNotEqual(self.reg_state(sid), "closed")
 
+    def test_a_chat_still_archived_for_another_reason_is_released_with_the_current_one(self) -> None:
+        sid = self.chat(1)
+        self.archive(sid)
+        with mock.patch.object(C, "archive_reason", side_effect=["archived", "parent archived"]):
+            code, out = self.release("--apply")
+        self.assertEqual(code, 0)
+        self.assertEqual(out["kept"], [])
+        self.assertEqual([(r["session_id"], r["reason"]) for r in out["released"]], [(sid, "parent archived")])
+        self.assertEqual(self.reg_state(sid), "closed")
+
+    def test_a_registry_error_closes_the_store(self) -> None:
+        self.chat(1)
+        opened: list = []
+        real = C.open_store
+
+        def spy(path):
+            conn = real(path)
+            opened.append(conn)
+            return conn
+
+        with mock.patch.object(C, "open_store", side_effect=spy), \
+                mock.patch.object(C, "live_registrations", return_value=([], "the registry could not be read (x)")):
+            code, out = self.release("--apply")
+        self.assertEqual((code, out["error"]), (2, "the registry could not be read (x)"))
+        with self.assertRaises(sqlite3.ProgrammingError):  # closed
+            opened[0].execute("SELECT 1")
+
+    def test_a_store_that_fails_its_first_query_is_closed(self) -> None:
+        conns: list = []
+
+        class Broken:
+            def execute(self, *a):
+                raise sqlite3.DatabaseError("file is not a database")
+
+            def close(self):
+                conns.append("closed")
+
+        with mock.patch.object(C.sqlite3, "connect", return_value=Broken()):
+            with self.assertRaises(C.StoreUnreadable):
+                C.open_store(self.store)
+        self.assertEqual(conns, ["closed"])
+
     def test_sub_threads_go_with_their_archived_parent(self) -> None:
         parent = self.chat(1)
         self.prompt(parent, "spawn a helper")
