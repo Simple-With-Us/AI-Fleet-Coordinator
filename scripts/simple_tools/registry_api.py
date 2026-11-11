@@ -140,7 +140,10 @@ def _setting(env: Mapping[str, str], env_name: str, knob_name: str) -> str:
 def _unset_reason(env: Mapping[str, str], env_name: str, knob_name: str) -> str:
     """Why a setting reads as unset, by name only:  never a value."""
     if not _is_process_env(env):
-        return "%s is not set in the given environment (knobs are not consulted for an explicit mapping)" % env_name
+        return (
+            "%s is not set in the given environment (knobs are not consulted for an explicit mapping)"
+            % env_name
+        )
     return "%s is not set; knob: %s" % (env_name, _KNOB_REASONS.get(knob_name, "unset"))
 
 
@@ -208,7 +211,8 @@ def call(
     url = base_url(env)
     if not url:
         return {
-            "error": "no registry API URL is configured (%s)" % _unset_reason(env, URL_ENV, URL_KNOB),
+            "error": "no registry API URL is configured (%s)"
+            % _unset_reason(env, URL_ENV, URL_KNOB),
             "code": "not_configured",
         }
     key = signing_key(env)
