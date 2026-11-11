@@ -292,8 +292,10 @@ def _excluded_ids(
             row = con.execute(
                 "SELECT workspace_path FROM tasks WHERE task_id = ?", (sid,)
             ).fetchone()
-            if not row or not row[0] or os.path.realpath(str(row[0])) != os.path.realpath(
-                workspace
+            if (
+                not row
+                or not row[0]
+                or os.path.realpath(str(row[0])) != os.path.realpath(workspace)
             ):
                 out.add(sid)
         con.close()
@@ -315,18 +317,19 @@ def build_platform(
     """The server-side `Platform` for the router's table:  the same delivery as
     `deliver_request`, as a `WR.command_platform` spec, with the sub-agent and
     wrong-workspace sessions excluded from the pick itself."""
+
     def setting(name: str, default: str) -> str:
         e = env or {}
         return e.get(name) or os.environ.get(name) or default
 
     workspace = workspace or setting("ZCODE_WAKE_WORKSPACE", DEFAULT_WORKSPACE)
     zcode_bin = zcode_bin or setting("ZCODE_WAKE_BIN", DEFAULT_ZCODE)
-    index = Path(os.path.expanduser(index_path or setting(
-        "ZCODE_WAKE_TASKS_INDEX", DEFAULT_TASKS_INDEX
-    )))
-    cli_db = Path(os.path.expanduser(cli_db or setting(
-        "ZCODE_WAKE_CLI_DB", "~/.zcode/cli/db/db.sqlite"
-    )))
+    index = Path(
+        os.path.expanduser(index_path or setting("ZCODE_WAKE_TASKS_INDEX", DEFAULT_TASKS_INDEX))
+    )
+    cli_db = Path(
+        os.path.expanduser(cli_db or setting("ZCODE_WAKE_CLI_DB", "~/.zcode/cli/db/db.sqlite"))
+    )
 
     def exclude(candidates: list[WR.Target]) -> set[str]:
         return _excluded_ids(index, cli_db, workspace, candidates)
