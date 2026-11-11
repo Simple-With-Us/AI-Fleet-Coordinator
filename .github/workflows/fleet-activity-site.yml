@@ -54,26 +54,41 @@ jobs:
           SITE_BASE_URL: https://simple-with-us.github.io/AI-Fleet-Coordinator
         run: python3 scripts/build-fleet-daily-digest.py
 
-      - name: Setup Pages
+      # main is ruleset-protected (GH013 on direct push).  Publish the snapshot
+      # to published/fleet-activity instead (PS-126 / mirror-site precedent).
+      - name: Publish artifacts to data branch
+        run: bash scripts/publish-fleet-activity-artifacts.sh
+
+      - name: Upload site for GitHub Pages
         if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fleet-digest-site
+          path: site
+          retention-days: 1
+
+  deploy-github-pages:
+    needs: build-and-publish
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download site artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: fleet-digest-site
+
+      - name: Setup Pages
         uses: actions/configure-pages@v6
 
       - name: Upload Pages artifact
-        if: github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@v5
         with:
           include-hidden-files: true
           path: site
 
       - name: Deploy to GitHub Pages
-        if: github.ref == 'refs/heads/main'
         id: deployment
-        environment:
-          name: github-pages
-          url: ${{ steps.deployment.outputs.page_url }}
         uses: actions/deploy-pages@v5
-
-      # main is ruleset-protected (GH013 on direct push).  Publish the snapshot
-      # to published/fleet-activity instead (PS-126 / mirror-site precedent).
-      - name: Publish artifacts to data branch
-        run: bash scripts/publish-fleet-activity-artifacts.sh
