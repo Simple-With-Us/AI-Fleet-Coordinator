@@ -48,6 +48,41 @@ class MessageCommandTests(Harness):
         self.assertEqual(edited.code, 0, edited.err)
         self.assertEqual(self.fake._find(posted)["content"], "[CLAUDE·%s 📁OPS] edited" % TAG)
 
+    def test_body_mentions_are_not_doubled_after_own_intro(self) -> None:
+        cases = [
+            ("[CLAUDE 📁AFC] @**Codex** ping", "[CLAUDE·%s 📁AFC] @**Codex** ping" % TAG),
+            ("[CLAUDE 📁AFC] @**Claude** status", "[CLAUDE·%s 📁AFC] @**Claude** status" % TAG),
+            (
+                "[CLAUDE 📁AFC →CODEX] @**Codex** please",
+                "[CLAUDE·%s 📁AFC →CODEX] @**Codex** please" % TAG,
+            ),
+        ]
+        for text, want in cases:
+            with self.subTest(text=text):
+                made = self.run_cli("post", "--topic", "t", text, "--json")
+                self.assertEqual(made.code, 0, made.err)
+                mid = json.loads(made.out)["id"]
+                self.assertEqual(self.fake._find(mid)["content"], want)
+
+    def test_typed_mentions_and_wildcards_stay_real(self) -> None:
+        for text in ("ping @**Codex** now", "everyone @**all** now"):
+            with self.subTest(text=text):
+                made = self.run_cli("post", "--topic", "t", text, "--json")
+                self.assertEqual(made.code, 0, made.err)
+                self.assertIn(text, self.fake._find(json.loads(made.out)["id"])["content"])
+
+    def test_to_is_deduped_by_who_is_mentioned_not_by_text(self) -> None:
+        def loud(text: str) -> int:
+            made = self.run_cli("post", "--topic", "t", "--to", "CODEX", text, "--json")
+            self.assertEqual(made.code, 0, made.err)
+            return self.fake._find(json.loads(made.out)["id"])["content"].lower().count("@**codex")
+
+        self.assertEqual(loud("[CLAUDE 📁AFC] @**Codex|1234** please"), 1)
+        self.assertEqual(loud("[CLAUDE 📁AFC] @**codex** please"), 1)
+        # In code or a quote Zulip does not notify, so the `to` mention is still needed.
+        self.assertEqual(loud("[CLAUDE 📁AFC] see `@**Codex**` there"), 2)
+        self.assertEqual(loud("[CLAUDE 📁AFC] look\n> @**Codex** said"), 2)
+
     def test_edit_never_double_tags_an_already_tagged_body(self) -> None:
         # AFC-666:  the edit path follows the post path's intro rule.  An already-tagged
         # body keeps its single intro (a foreign compact intro is preserved as post

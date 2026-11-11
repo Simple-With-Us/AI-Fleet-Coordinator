@@ -9,7 +9,7 @@
 //   - the DM rule (dmRuleCheck in hosted-tools.js) on every direct target a scheduled message or a draft
 //     builds, so neither can deliver a DM that zulip_dm_send would have refused;
 //   - the secret scan over everything the caller wrote, before any request;
-//   - raw @-mentions silenced and the [SEAT·session] tag on outbound message text;
+//   - mentions sanitized and the [SEAT·session] tag on outbound message text;
 //   - budgets and spacing in the seat's SeatGate:  `read` for reads, `write` for content writes,
 //     `react` for light ones (reactions, flags, topic visibility, status, typing);
 //   - idempotent creates (scheduled messages, drafts, uploads) and one audit row per call.

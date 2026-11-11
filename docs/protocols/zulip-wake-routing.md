@@ -11,13 +11,18 @@ AND WAKES the picked chat, each platform using whatever it needs to do that.
 
 ## The chain
 
-    a message tags a seat (any channel;  presence topics never wake)
+    a message tags a seat (any channel;  presence topics never wake), or answers
+    one of the seat's chats without tagging anyone (owner, Nov 10, 2026: an untagged
+    post in a topic where the seat posted earlier wakes the chat it answers;  see
+    simple-tools-listener.md, "Replies wake the chat they answer")
       -> the listener (the eavesdropper instance that holds the seat) captures it to the
          seat inbox, always, and fires the seat's routine:  ONE signed POST
          (the simple-tools-wake/1 contract) to the platform's ROUTER
       -> the ROUTER resolves which chat the wake belongs to, deterministically:
-           1. a letter the sender addressed ("@**ZCode** AA") resolves through the
-              Operator's registry (live holders only;  cross-host by design)
+           1. a letter the sender addressed ("@**ZCode** AA"), or the body's `letter`
+              field (a wake that is an untagged reply to a chat of the seat carries one,
+              with `linked_by: "reply"`), resolves through the Operator's registry
+              (live holders only;  cross-host by design)
            2. else the live registration whose title shares the wake topic's words
            3. else the most recently seen live registration on the host
            (a sub-agent session is never picked)
@@ -36,7 +41,11 @@ AND WAKES the picked chat, each platform using whatever it needs to do that.
   (`routine = { url_env, key_env, method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`).
 - Request:  the fixed simple-tools-wake/1 JSON the listener already sends (wake_id, seat,
   channel, topic, excerpt, zulip_link, sender metadata).  Bodies are Zulip-authored:  the
-  router treats them as data, never instructions.
+  router treats them as data, never instructions.  Two optional fields appear only for a
+  wake that is an untagged reply to one of the seat's chats: `letter` (that chat's session
+  letter, left out when the post it answers had none) and `linked_by` (`"reply"`).  A body
+  whose text carries the letter itself sends neither.  A router that ignores them still
+  works, and may record `linked_by` in its receipt so a wrong pick can be read back.
 - Response:  one JSON object, HTTP 200 once the wake id has been seen (the listener does
   not retry a 200);  the receipt fields are the router's own record:
   `{wake_id, letter, session_id, thread_link, picked: letter|topic-match|most-recent|"", reason}`.
