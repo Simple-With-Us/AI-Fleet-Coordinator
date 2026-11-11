@@ -2121,6 +2121,91 @@ class Http(Base):
         self.assertIn(WR.secretscan.WITHHELD, kept)
 
 
+class WorkerPool(Base):
+    """A delivery that hangs must not cost another chat its turn."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.registry.letters = {
+            "AA": row(SID_A, "AA", "One"),
+            "BB": row(SID_B, "BB", "Two"),
+        }
+        self.release = threading.Event()
+        self.addCleanup(self.release.set)
+        self.reached: dict[str, threading.Event] = {
+            SID_A: threading.Event(),
+            SID_B: threading.Event(),
+        }
+
+    def deliver(self, target: WR.Target, wake: WR.Wake) -> WR.Delivery:
+        self.reached[target.session_id].set()
+        if target.session_id == SID_A:
+            self.release.wait(timeout=30)
+        return WR.Delivery("sent", "fake")
+
+    def running(self, **config) -> WR.Router:
+        router = self.router(deliver=self.deliver, **config)
+        router.start()
+        self.addCleanup(router.stop, 35)
+        self.addCleanup(self.release.set)
+        return router
+
+    def accept(self, router: WR.Router, wake_id: str, letter: str) -> None:
+        router.accept(self.wake(wake_id, letter=letter))
+
+    def test_a_hung_chat_does_not_starve_another_chat(self) -> None:
+        router = self.running(workers=1)
+        self.accept(router, "w-a", "AA")
+        self.assertTrue(self.reached[SID_A].wait(10))
+        self.accept(router, "w-b", "BB")
+        self.assertTrue(self.reached[SID_B].wait(10))
+        self.assertFalse(self.release.is_set())
+
+    def test_the_cap_holds_a_later_chat_without_using_an_attempt(self) -> None:
+        router = self.running(workers=2, max_deliveries=1)
+        self.accept(router, "w-a", "AA")
+        self.assertTrue(self.reached[SID_A].wait(10))
+        self.accept(router, "w-b", "BB")
+        self.assertFalse(self.reached[SID_B].wait(1.5))
+        self.release.set()
+        self.assertTrue(self.reached[SID_B].wait(10))
+        deadline = time.time() + 10
+        while time.time() < deadline and not (self.state / "done" / "w-b.json").exists():
+            time.sleep(0.05)
+        self.assertEqual(self.done("w-b")["attempts"], 1)
+
+    def test_the_pool_returns_to_its_size(self) -> None:
+        router = self.running(workers=2)
+        self.release.set()
+        self.accept(router, "w-a", "AA")
+        self.accept(router, "w-b", "BB")
+        deadline = time.time() + 10
+        done = self.state / "done"
+        while time.time() < deadline and not (
+            (done / "w-a.json").exists() and (done / "w-b.json").exists()
+        ):
+            time.sleep(0.05)
+        while time.time() < deadline and sum(t.is_alive() for t in router._threads) != 2:
+            time.sleep(0.05)
+        self.assertEqual(sum(t.is_alive() for t in router._threads), 2)
+
+    def test_stop_waits_for_a_delivery_that_gave_up_its_place(self) -> None:
+        router = self.running(workers=1)
+        self.accept(router, "w-a", "AA")
+        self.assertTrue(self.reached[SID_A].wait(10))
+        self.assertFalse(router.stop(0.2))
+        self.release.set()
+        self.assertTrue(router.stop(10))
+        self.assertEqual(self.done("w-a")["status"], "delivered")
+
+    def test_run_once_keeps_its_thread_out_of_the_pool(self) -> None:
+        self.release.set()
+        router = self.router(deliver=self.deliver)
+        self.accept(router, "w-a", "AA")
+        self.assertTrue(router.run_once())
+        self.assertEqual(router._threads, [])
+
+
 class CommandPlatform(Base):
     TARGET = WR.Target(SID_A, letter="AA", generation=1)
     NOTE = "This wake was linked by reply."
@@ -2148,10 +2233,50 @@ class CommandPlatform(Base):
         self.assertIs(platform.exclude, only)
         self.assertIsNone(self.platform(["prog", "{session_id}"]).exclude)
 
-    def test_exit_zero_is_completed(self) -> None:
+    def test_exit_zero_proves_only_that_the_command_ran(self) -> None:
         result = self.run_python("pass")
-        self.assertEqual((result.outcome, result.ack), ("completed", "confirmed"))
+        self.assertEqual((result.outcome, result.ack), ("sent", "unknown"))
         self.assertEqual(result.route, "command")
+
+    def test_exit_zero_does_not_claim_delivery_on_the_receipt(self) -> None:
+        self.registry.rows = [row(SID_A, "AA", "Only chat", seat="ZC")]
+        platform = self.platform([sys.executable, "-c", "pass", "{session_id}"])
+        router = WR.Router(
+            platform, {"HOME": self.tmp}, self.config(), self.state, self.key_file, clock=self.clock
+        )
+        router.accept(self.wake(seat="ZC"))
+        self.drain(router)
+        receipt = self.done()
+        self.assertEqual((receipt["status"], receipt["ack"]), ("delivered", "unknown"))
+        self.assertIsNone(receipt["delivered"])
+
+    def test_a_value_that_could_read_as_an_option_is_refused(self) -> None:
+        ran: list[list[str]] = []
+
+        def runner(argv, **kwargs):
+            ran.append(argv)
+            return SimpleNamespace(returncode=0)
+
+        permissive = re.compile(r"[-A-Za-z0-9]+")
+        cases = (
+            (["prog", "{session_id}"], WR.Target("--dangerous", letter="AA"), self.told()),
+            (["prog", "{session_id}"], WR.Target("-p", letter="AA"), self.told()),
+            (["prog", "{wake_id}"], self.TARGET, self.wake("-w")),
+            (["prog", "{message_id}"], self.TARGET, self.wake(message_id=-5)),
+        )
+        for argv, target, wake in cases:
+            platform = WR.command_platform("ZC", "z", "Z", permissive, argv, runner=runner)
+            result = platform.deliver(target, wake)
+            self.assertEqual((result.outcome, result.code), ("refused", "command-option-shaped-value"))
+        self.assertEqual(ran, [])
+
+    def test_only_the_values_the_command_names_are_checked(self) -> None:
+        def runner(argv, **kwargs):
+            return SimpleNamespace(returncode=0)
+
+        platform = self.platform(["prog", "{session_id}"], runner=runner)
+        result = platform.deliver(self.TARGET, self.wake(message_id=-5))
+        self.assertEqual(result.outcome, "sent")
 
     def test_a_non_zero_exit_is_refused(self) -> None:
         result = self.run_python("raise SystemExit(3)")
@@ -2180,7 +2305,7 @@ class CommandPlatform(Base):
         argv = [sys.executable, "-c", self.RECORD, out, *fields]
         evil = "$(touch %s)" % os.path.join(self.tmp, "ran")
         wake = self.told(topic=evil, sender=evil, channel=evil, zulip_link=evil)
-        self.assertEqual(self.platform(argv).deliver(self.TARGET, wake).outcome, "completed")
+        self.assertEqual(self.platform(argv).deliver(self.TARGET, wake).outcome, "sent")
         with open(out, encoding="utf-8") as fh:
             got = json.load(fh)
         self.assertEqual(got[:4], [SID_A, "--wake=w-1", "7", self.NOTE])
