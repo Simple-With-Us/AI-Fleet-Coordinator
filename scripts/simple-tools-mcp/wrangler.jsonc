@@ -65,20 +65,6 @@
   // holds these to scripts/worker-registry.json.
   "limits": { "cpu_ms": 300, "subrequests": 200 },
 
-  // Placement hint (AFC-617;  owner decision, Nov 10, 2026:  "Pin near server in
-  // Frankfurt isn't far").  The server seats call this Worker from Nuremberg, and
-  // aws:eu-central-1 is Frankfurt, so the fetch handler runs in the Cloudflare data
-  // center with the lowest latency to that region instead of wherever each request
-  // lands (Cloudflare docs, "Configure explicit Placement Hints").  It moves only the
-  // fetch handler:  SeatGate keeps the placement Durable Objects get on their own, so an
-  // object that was created far from Frankfurt is now called from Frankfurt.  After a
-  // deploy, compare wall time per seat with a production tail from before it
-  // (docs/cloudflare-workers.md), and take the key out if that regresses.
-  // Like the limits above it takes effect only when this config is deployed, and
-  // dropping the key takes it off at the next deploy.  The key takes exactly one of
-  // region, host, hostname or mode.
-  "placement": { "region": "aws:eu-central-1" },
-
   "kv_namespaces": [
     // Grants, hashed tokens and encrypted props (the OAuth library's store).
     // DEPLOY-PHASE0.md step 3 creates it and fills in the id.
