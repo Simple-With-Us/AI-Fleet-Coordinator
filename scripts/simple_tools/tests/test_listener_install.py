@@ -73,23 +73,17 @@ class InstallTests(ListenerHarness):
         self.assertIn("does not run launchctl", result.out)
         sample = (self.home / ".simple-tools" / "listener.toml").read_text()
         self.assertEqual(mode_of(self.home / ".simple-tools" / "listener.toml"), 0o600)
-        self.assertIn("[seat.CLAUDE]", sample)
-        self.assertIn("# [seat.CODEX]", sample)
+        # One listener, on the server, holds every seat (owner, Tue, Nov 10):  the Mac sample
+        # holds no [seat.*] table, and keeps [daemon] and [platform.claude-code] for the CLI.
+        self.assertNotIn("[seat.", sample.replace("No [seat.*] table", ""))
         self.assertIn(
-            'the partition gives them to "mac"',
+            "no reader on this Mac (left out on purpose): CODEX, MM, BF-BUILDER",
             sample,
-            "the sample says the other Mac seats can be enabled",
+            "a bot with a credential file is named, and AG (no file) is not",
         )
-        self.assertIn("# [seat.MM]", sample)
-        self.assertNotIn("[seat.AG]", sample, "a seat with no credential file is not listed")
-        self.assertIn("no reader on this Mac (left out on purpose): BF-BUILDER", sample)
         cfg = C.from_dict(__import__("tomllib").loads(sample))
-        self.assertEqual(sorted(cfg.seats), ["CLAUDE"])
-        self.assertEqual(cfg.seats["CLAUDE"].budget["usd_per_day"], 2.0)
-        self.assertEqual(cfg.seats["CLAUDE"].budget["board_per_day"], 0)
-        for cap in C.WAKE_CAP_KEYS:
-            self.assertNotIn(cap, cfg.seats["CLAUDE"].budget, "the sample sets no wake cap")
-        self.assertIn("unset is no limit", sample)
+        self.assertEqual((sorted(cfg.seats), sorted(cfg.disabled)), ([], []))
+        self.assertEqual(cfg.errors, [])
         self.assertEqual(cfg.claude_seat, "CLAUDE")
         self.assertFalse(cfg.rewake_verified)
         again = self.run_cli(

@@ -170,6 +170,82 @@ creds = "env"                     # ZULIP_ECHO_EMAIL, ZULIP_ECHO_API_KEY (instin
 wake = "inbox"
 muse_bridge = false               # enable only after the Mac pull, Muse pin and receipt gate pass
 
+# The Mac CLI seats (owner, Tue, Nov 10:  one listener, on the server;  "All seats at once").  Each holds its queue
+# here with wake = "inbox", so its @-mentions and DMs are captured under /data/<SEAT>/.  The Mac listener
+# (com.jay.operator) is booted out and its listener.toml holds no [seat.*] table.  A Mac-side wake, where one is
+# needed, is a signal from this listener to a process on the Mac (owner:  "the server's listener and router can
+# send a signal to a Mac based wake process if necessary for wake delivery").  Each reads ZULIP_<CODE>_EMAIL and
+# ZULIP_<CODE>_API_KEY.
+[seat.CLAUDE]
+instance = "server"
+creds = "env"                     # ZULIP_CLAUDE_EMAIL, ZULIP_CLAUDE_API_KEY
+wake = "inbox"
+
+[seat.CODEX]
+instance = "server"
+creds = "env"                     # ZULIP_CODEX_EMAIL, ZULIP_CODEX_API_KEY
+wake = "inbox"
+
+[seat.AG]
+instance = "server"
+creds = "env"                     # ZULIP_AG_EMAIL, ZULIP_AG_API_KEY
+wake = "inbox"
+
+[seat.CURSOR]
+instance = "server"
+creds = "env"                     # ZULIP_CURSOR_EMAIL, ZULIP_CURSOR_API_KEY
+wake = "inbox"
+
+# GROK is off:  its Infisical pair is stored under the stem ZULIP_GROK_BUILD_* (the seat's older code), which the
+# GROK section's default names (ZULIP_GROK_EMAIL, ZULIP_GROK_API_KEY) do not load.
+[seat.GROK]
+instance = "server"
+enabled = false
+creds = "env"                     # ZULIP_GROK_EMAIL, ZULIP_GROK_API_KEY
+wake = "inbox"
+
+[seat.CLUTCH]
+instance = "server"
+creds = "env"                     # ZULIP_CLUTCH_EMAIL, ZULIP_CLUTCH_API_KEY
+wake = "inbox"
+
+[seat.FX]
+instance = "server"
+creds = "env"                     # ZULIP_FX_EMAIL, ZULIP_FX_API_KEY
+wake = "inbox"
+
+[seat.MM]
+instance = "server"
+creds = "env"                     # ZULIP_MM_EMAIL, ZULIP_MM_API_KEY
+wake = "inbox"
+
+[seat.MC]
+instance = "server"
+creds = "env"                     # ZULIP_MC_EMAIL, ZULIP_MC_API_KEY
+wake = "inbox"
+
+[seat.OPENCODE]
+instance = "server"
+creds = "env"                     # ZULIP_OPENCODE_EMAIL, ZULIP_OPENCODE_API_KEY
+wake = "inbox"
+
+[seat.ZC]
+instance = "server"
+creds = "env"                     # ZULIP_ZC_EMAIL, ZULIP_ZC_API_KEY
+wake = "inbox"
+
+[seat.KIMI]
+instance = "server"
+creds = "env"                     # ZULIP_KIMI_EMAIL, ZULIP_KIMI_API_KEY
+wake = "inbox"
+
+# AMP is off:  there is no ZULIP_AMP_EMAIL and ZULIP_AMP_API_KEY pair to load.
+[seat.AMP]
+instance = "server"
+enabled = false
+creds = "env"                     # ZULIP_AMP_EMAIL, ZULIP_AMP_API_KEY
+wake = "inbox"
+
 # Grok bots (GB) (Sat, Oct 10):  each is woken on an @-mention or a DM through its Grok Bot routine webhook,
 # POST simple-tools-wake/1 with Authorization: Bearer <ZULIP_ALERT_GB_<ROLE>_KEY>.  The routine replies in Zulip with the
 # bot's own key.  Each section reads five different variables:  the Zulip email, key and site, and the

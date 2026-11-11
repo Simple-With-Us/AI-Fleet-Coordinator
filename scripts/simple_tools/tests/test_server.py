@@ -33,7 +33,7 @@ from simple_tools import launchd
 from simple_tools import live as L
 from simple_tools import service_identity as S
 from simple_tools.tests.fake_routine import FakeRoutine
-from simple_tools.tests.harness import write_rc
+from simple_tools.tests.harness import TWO_INSTANCE_PARTITION, write_rc
 from simple_tools.tests.listener_harness import ListenerHarness
 
 REPO = Path(__file__).resolve().parents[3]
@@ -52,6 +52,13 @@ CLOUD_SEATS = {
     "WISE": ("instinct-owl-bot@zulip.test", "Wise Owl"),
     "ECHO": ("instinct-bat-bot@zulip.test", "Echo Bat"),
 }
+# The Mac CLI seats, held by the server listener since the one-listener cutover (owner, Tue,
+# Nov 10).  GROK and AMP are disabled there:  GROK's Infisical pair has the ZULIP_GROK_BUILD_*
+# stem, and AMP has no ZULIP_AMP_* pair.
+MAC_CLI_SEATS = [
+    "CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "OPENCODE", "ZC", "KIMI", "AMP",
+]
+MAC_CLI_DISABLED = ["AMP", "GROK"]
 
 
 def routine_cfg(**kw) -> C.RoutineConfig:
@@ -100,6 +107,8 @@ class ServerHarness(ListenerHarness):
             GB_COMPILER_ROUTINE_KEY=self.routine_key,
             SIMPLE_TOOLS_INSTANCE="server",
             SIMPLE_TOOLS_CONFIG=str(self.config_file),
+            # The server instance reads the live partition, so the shipped sample is checked against it.
+            SIMPLE_TOOLS_PARTITION=str(PARTITION),
             AGENT_SEAT=None,
             CLAUDE_CODE_SESSION_ID=None,
         )
@@ -1052,13 +1061,15 @@ class PartitionTests(ServerHarness):
         self.assertIn('"refused-start"', log)
 
     def test_the_partition_file_keeps_claude_off_the_server_and_gb_off_the_mac(self) -> None:
+        # The mechanics, on the two-instance fixture:  the live partition has given CLAUDE to the
+        # server since the one-listener cutover (owner, Tue, Nov 10).
         self.write_server_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n')
-        err = self.refused(self.server_env())
+        err = self.refused(self.server_env(SIMPLE_TOOLS_PARTITION=str(TWO_INSTANCE_PARTITION)))
         self.assertIn(
             "seat CLAUDE is configured here (the 'server' listener), but it belongs to the 'mac' instance",
             err,
         )
-        self.assertIn("simple-tools-partition.toml", err)
+        self.assertIn(str(TWO_INSTANCE_PARTITION), err)
         self.write_config(
             seats='[seat.CLAUDE]\nbot = "Claude"\n\n[seat.GB-COMPILER]\nenabled = false\nbot = "GB-Compiler"\n'
         )
@@ -1105,7 +1116,8 @@ class PartitionTests(ServerHarness):
         )
         err = self.refused(self.env())
         self.assertIn(
-            "seat ZED is configured here (the 'mac' listener), but %s does not list it" % PARTITION,
+            "seat ZED is configured here (the 'mac' listener), but %s does not list it"
+            % TWO_INSTANCE_PARTITION,
             err,
         )
         self.assertIn("held by no instance", err)
@@ -1224,7 +1236,13 @@ class PartitionTests(ServerHarness):
     def test_the_repo_partition_and_both_sample_configs_agree(self) -> None:
         partition, error = C.load_partition(str(PARTITION))
         self.assertIsNone(error)
-        self.assertEqual(partition["CLAUDE"], "mac")
+        self.assertEqual(
+            {s: v for s, v in partition.items() if v == "mac"},
+            {"OPERATOR": "mac"},
+            "one listener, on the server, holds every seat (owner, Tue, Nov 10);  only the "
+            "Operator's service identity stays on the Mac",
+        )
+        self.assertEqual({partition[s] for s in MAC_CLI_SEATS}, {"server"})
         gb = sorted(s for s in partition if s.startswith("GB-"))
         self.assertEqual(len(gb), 12)
         self.assertEqual({partition[s] for s in gb}, {"server"})
@@ -1241,9 +1259,10 @@ class PartitionTests(ServerHarness):
         self.assertEqual(
             {s for s, v in partition.items() if v == "mac"} - S.SERVICE_SEATS,
             set(launchd.READER_SEATS),
-            "the Mac holds every Mac seat (owner, Thu, Oct 8), the deterministic service "
-            "identities excepted (they hold no reader seat)",
+            "the Mac's reader seats are the partition's mac seats, the deterministic service "
+            "identities excepted (they hold no reader seat);  since Nov 10 there are none",
         )
+        self.assertEqual(launchd.READER_SEATS, [])
         for seat in ["MA", "JET", "GROK-WEB", "ECHO", "WISE"]:
             self.assertEqual(partition.get(seat), "server", "%s is a cloud seat" % seat)
         self.assertEqual(
@@ -1254,7 +1273,7 @@ class PartitionTests(ServerHarness):
         mac = C.from_dict(tomllib.loads(launchd.sample_config(str(self.secrets_dir))))
         self.assertEqual(mac.instance, "mac")
         self.assertEqual(C.partition_errors(mac, partition, env_instance="mac"), [])
-        self.assertEqual(sorted(mac.seats), ["CLAUDE"])
+        self.assertEqual((sorted(mac.seats), sorted(mac.disabled)), ([], []))
         self.assertTrue(
             (bf_names - {"BF-BUILDER"}) <= mac.outgoing_webhook_seats,
             "a fresh Mac sample accepts migrated BF senders without holding their queues "
@@ -1272,14 +1291,33 @@ class PartitionTests(ServerHarness):
         self.assertEqual(C.partition_errors(server, partition, env_instance="server"), [])
         self.assertEqual(
             sorted(server.disabled),
-            [],
-            "no server seat is disabled:  every seat works through the Operator (owner, Fri, Nov 6)",
+            MAC_CLI_DISABLED,
+            "only GROK and AMP are disabled, for want of a loadable Zulip pair (owner, Tue, Nov 10)",
         )
         self.assertEqual(
             sorted(server.seats),
-            sorted(list(gb) + list(CLOUD_SEATS) + [s for s, v in bf.items() if v == "server"]),
-            "the enabled seats are every GB bot, the five cloud seats and every live BF seat",
+            sorted(
+                list(gb)
+                + list(CLOUD_SEATS)
+                + [s for s, v in bf.items() if v == "server"]
+                + [s for s in MAC_CLI_SEATS if s not in MAC_CLI_DISABLED]
+            ),
+            "the enabled seats are every GB bot, the five cloud seats, every live BF seat and "
+            "the Mac CLI seats with a loadable pair",
         )
+        for seat in MAC_CLI_SEATS:
+            seat_cfg = server.seats.get(seat) or server.disabled[seat]
+            code = C.env_code(seat)
+            self.assertEqual(
+                (seat_cfg.wake, seat_cfg.creds, seat_cfg.instance, seat_cfg.routine),
+                ("inbox", "env", "server", None),
+                "%s has inbox capture on the server" % seat,
+            )
+            self.assertEqual(
+                (seat_cfg.email_env, seat_cfg.key_env, seat_cfg.site_env),
+                ("ZULIP_%s_EMAIL" % code, "ZULIP_%s_API_KEY" % code, "ZULIP_SITE"),
+                seat,
+            )
         for seat in [s for s, v in bf.items() if v == "server"]:
             seat_cfg = server.seats[seat]
             code = C.env_code(seat)

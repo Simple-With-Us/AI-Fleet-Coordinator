@@ -2,9 +2,10 @@
 
 They write files only.  They never run launchctl:  they print the bootstrap or bootout command
 for the person (or orchestrator) doing the install.  Every path is derived from HOME, so tests
-run against a temporary home.  The sample config names a seat for every credential file found
-by checking the known roster's file names one by one (a stat, never a glob and never a read),
-and only CLAUDE is enabled.
+run against a temporary home.  The sample config holds no seat:  there is one listener, on the
+server, and it holds every seat (owner, Tue, Nov 10).  It names the bots whose credential is
+found by checking the known roster's file names one by one (a stat, never a glob and never a
+read).
 
 Python 3.11+, standard library only.
 """
@@ -21,8 +22,11 @@ from . import live as L
 from . import zulip as Z
 
 LABEL = "com.jay.operator"
-# Fleet seats with a reader on this Mac (they can be enabled), then bots that have none.
-READER_SEATS = [
+# Fleet seats with a reader on this Mac (the agent seats the partition gives to "mac"), then bots
+# that have none.  Since the one-listener cutover (owner, Tue, Nov 10) the server listener holds
+# every seat, so the Mac has no reader seat and every bot is in NO_READER.
+READER_SEATS: list[str] = []
+NO_READER = [
     "CLAUDE",
     "CODEX",
     "AG",
@@ -36,8 +40,6 @@ READER_SEATS = [
     "ZC",
     "KIMI",
     "AMP",
-]  # the Mac seats (partition "mac")
-NO_READER = [
     "BF-BUILDER",
     "BF-COMPILER",
     "BF-DEPLOYER",
@@ -103,9 +105,9 @@ def plist_dict(home: str, python: str, program: str, root: str) -> dict:
 
 
 def sample_config(secrets_dir: str | None, env: Mapping[str, str] | None = None) -> str:
-    """The sample listener.toml.  Only CLAUDE is enabled; every other seat whose credential is present
-    (its three Infisical /zulip names, or its file in the explicit SIMPLE_TOOLS_SECRETS_DIR override)
-    is listed commented out."""
+    """The sample listener.toml.  It holds no [seat.*] table (the server listener holds every seat,
+    owner, Tue, Nov 10);  every bot whose credential is present (its three Infisical /zulip names,
+    or its file in the explicit SIMPLE_TOOLS_SECRETS_DIR override) is named in a comment."""
     seats_in_infisical = frozenset() if secrets_dir else Z.infisical_seats(env)
 
     def present(seat: str) -> bool:
@@ -113,20 +115,17 @@ def sample_config(secrets_dir: str | None, env: Mapping[str, str] | None = None)
             return os.path.isfile(os.path.join(secrets_dir, Z.credential_file_name(seat)))
         return seat in seats_in_infisical
 
-    def where(seat: str) -> str:
-        if secrets_dir:
-            return os.path.join(secrets_dir, Z.credential_file_name(seat))
-        return "Infisical Fleet-OPS %s %s" % (Z.INFISICAL_PATH, Z.infisical_key_names(seat)[1])
-
     lines = [
         "# simple-chat listener config.  Local to this Mac; it holds no secrets.",
         "# Design: docs/protocols/simple-tools-listener.md in AI-Fleet-Coordinator.",
         "# Changes take effect on `simple-chat daemon reload` (SIGHUP) or a restart.",
         "",
         "[daemon]",
-        "# The Mac instance holds the Mac seats (owner decision, Thu, Oct 8); the cloud seats (Grok Bots, MA, Jet,",
-        "# Instinct, Echo, Grok Web) run on the server instance.  docs/protocols/simple-tools-partition.toml says which instance holds which",
-        "# seat and fails closed:  a listener refuses to start with any seat it does not give to this instance.",
+        "# One listener, on the server, holds every seat (owner, Tue, Nov 10:  \"Only should have one and the server's",
+        "# listener and router can send a signal to a Mac based wake process if necessary for wake delivery\"), so this",
+        "# file holds no [seat.*] table.  The CLI and the plugin hooks still read [daemon] and [platform.*] here.",
+        "# docs/protocols/simple-tools-partition.toml says which instance holds which seat and fails closed:  a",
+        "# listener refuses to start with any seat it does not give to this instance.",
         'instance = "mac"',
         "# Sender eligibility for migrated BotFleet outgoing bots.  This does not hold a queue:",
         "# the partition gives every BF seat to the server (owner, Fri, Nov 6).",
@@ -156,57 +155,9 @@ def sample_config(secrets_dir: str | None, env: Mapping[str, str] | None = None)
         "rewake_verified_cli = false       # true only after manual test 1 in a terminal;  until then live delivery is headlines only",
         "rewake_verified_desktop = false   # the same for the Desktop Code tab, which has its own flag (the old rewake_verified sets both)",
         "",
-        "[seat.CLAUDE]",
-        'bot = "Claude"                    # reads %s (moderator or member role only)%s'
-        % (
-            where("CLAUDE"),
-            "" if present("CLAUDE") else "; NOT FOUND",
-        ),
-        'wake = "claude"                   # runs only after `simple-chat daemon test-wake --seat CLAUDE --run`, then --pin',
-        'model = "sonnet"',
-        "# The wake count caps (wakes_per_hour, wakes_per_day, per_topic_per_hour, owner_per_day,",
-        "# owner_per_topic_per_hour) have no default:  unset is no limit.  Add one to cap it, or 0 to pause wakes.",
-        "budget = { usd_per_day = 2.0, board_per_day = 0 }",
-        "live = { per_hour = 6, per_day = 30, per_topic_minutes = 5, owner_per_day = 20, loop_turns = 3 }",
-        "",
-        "# The muse wake (docs/protocols/simple-tools-listener.md 3.3a) is verified and available, and",
-        "# no seat below uses it:  a seat moves to it only when the owner switches it over on purpose,",
-        "# after `simple-chat daemon test-wake --seat <SEAT> --run` and then --pin on that seat's own",
-        "# muse pin file.  Uncomment for a seat that is meant to wake on it.",
-        "# [seat.MM]",
-        '# bot = "MiniMax"',
-        '# wake = "muse"',
-        '# model = "muse-spark-1.3-contributor"   # the plain muse-spark-1.3 is 15x dearer',
-        '# muse = "/absolute/path/to/muse"         # optional; else muse on the wake PATH',
-        '# provider = "MiniMax"                    # the CodeCaps provider the quota gate reads',
-        '# fallback = "mcode"                      # optional; the mcode fallback (3.3b).  Fallback-only by design.',
-        "# fallback_uncontained_ok = false       # mcode writes files while it answers; only true if that is accepted",
-        "",
-        "# The OpenRouter wake (docs/protocols/simple-tools-listener.md 3.3c) is one HTTPS call with no tools:",
-        "# no binary to pin and no login to expire.  The key is the Operator's, read from Fleet-OPS /wake.",
-        "# Either run the Muse contributor tier through it as the wake (and fall back to a second model):",
-        "# [seat.MM]",
-        '# bot = "MiniMax"',
-        '# wake = "openrouter"',
-        '# model = "meta/muse-spark-1.3-contributor"       # the default for this wake type',
-        '# fallback = "openrouter"                         # optional; another model on a failure',
-        '# fallback_model = "minimax/MiniMax-M3.1-Flash"   # the default;  must differ from model',
-        "# ... or keep the muse binary as the wake and let OpenRouter answer when it cannot:",
-        '# wake = "muse"',
-        '# fallback = "openrouter"',
-        "# Either way:  `simple-chat daemon test-wake --seat MM --run` then --pin (and --runtime fallback",
-        "# for the fallback's own pin).  fallback_uncontained_ok is not used:  there are no tools.",
+        "# No [seat.*] table:  the partition gives no agent seat to \"mac\", so this listener would refuse one.",
+        "# Each seat's section lives in the server listener's config (scripts/simple_tools/server/listener.toml).",
     ]
-    listed = [seat for seat in READER_SEATS[1:] if present(seat)]
-    if listed:
-        lines += [
-            "",
-            '# The other Mac seats (the partition gives them to "mac").  Uncomment to capture their',
-            "# @-mentions and DMs into their inboxes (owner, Thu, Oct 8:  get the listeners all active).",
-        ]
-    for seat in listed:
-        stem = Z.credential_file_name(seat)[: -len("-zuliprc")]
-        lines += ["", "# [seat.%s]" % seat, '# bot = "%s"' % stem, '# wake = "inbox"']
     others = [s for s in NO_READER if present(s)]
     if others:
         lines += [
@@ -266,7 +217,7 @@ def install(
     if os.path.exists(config_path):
         out.write("config already present, left as it is: %s\n" % config_path)
     else:
-        say("write the sample config %s (mode 600; only CLAUDE enabled)" % config_path)
+        say("write the sample config %s (mode 600; no seat:  the server listener holds every seat)" % config_path)
         if not dry_run:
             write_private(config_path, sample_config(secrets_dir, env))
     current = None
@@ -289,8 +240,7 @@ def install(
     out.write("  launchctl bootstrap gui/%d %s\n" % (uid, target))
     out.write("After an update to the checkout:  launchctl kickstart -k gui/%d/%s\n" % (uid, LABEL))
     out.write(
-        "Before wakes can run:  simple-chat daemon init, then simple-chat daemon test-wake --seat CLAUDE --run, "
-        "read the result, then simple-chat daemon test-wake --seat CLAUDE --pin\n"
+        "One listener, on the server, holds every seat (owner, Tue, Nov 10);  this Mac config holds none.\n"
     )
     if dry_run:
         out.write("dry run: nothing was changed\n")
