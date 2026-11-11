@@ -49,6 +49,7 @@ def assess(
     wake_id: str,
     message_id: int,
     session_id: str,
+    generation: int,
     seat: str,
     mention: str,
     source: Mapping[str, Any],
@@ -69,6 +70,8 @@ def assess(
             raise ValueError("noncanonical session")
     except (ValueError, TypeError, AttributeError):
         raise ValueError("invalid expected session") from None
+    if type(generation) is not int or generation <= 0:
+        raise ValueError("invalid expected generation")
     if not re.fullmatch(r"[A-Z][A-Z0-9-]{0,31}", seat) or not mention:
         raise ValueError("invalid expected seat")
 
@@ -77,7 +80,7 @@ def assess(
     source = _object(source.get("message", source))
     content = source.get("content")
     loud = re.compile(r"@\*\*" + re.escape(mention) + r"(?:\|[0-9]+)?\*\*")
-    if source.get("id") != message_id:
+    if type(source.get("id")) is not int or source.get("id") != message_id:
         checks["source"] = "mismatch"
         errors.append("source-message-mismatch")
     elif not isinstance(content, str) or not loud.search(content):
@@ -114,10 +117,17 @@ def assess(
     elif receipt.get("session_id") != session_id:
         checks["router"] = "mismatch"
         errors.append("router-target-mismatch")
+    elif type(receipt.get("generation")) is not int or receipt.get("generation") != generation:
+        checks["router"] = "mismatch"
+        errors.append("router-generation-mismatch")
     elif receipt.get("status") in ("dead", "failed", "refused"):
         checks["router"] = "failed"
         errors.append("router-terminal-failure")
-    elif receipt.get("status") == "delivered" and receipt.get("delivered") is not False:
+    elif (
+        receipt.get("status") == "delivered"
+        and "delivered" in receipt
+        and (receipt.get("delivered") is None or receipt.get("delivered") is True)
+    ):
         # A native queue handoff may still have delivered=null.  Transcript evidence
         # below, independent of the queue receipt, must establish actual arrival.
         checks["router"] = "matched"
@@ -146,6 +156,7 @@ def assess(
         "wake_id": wake_id,
         "message_id": message_id,
         "session_id": session_id,
+        "generation": generation,
         "seat": seat,
         "status": "proven" if proven else "rejected" if errors else "pending",
         "checks": checks,
@@ -195,12 +206,15 @@ def main(argv: list[str] | None = None) -> int:
         "wake-id",
         "message-id",
         "session-id",
+        "generation",
         "source",
         "listener",
         "receipt",
         "transcript",
     ):
-        parser.add_argument("--" + name, required=True, type=int if name == "message-id" else str)
+        parser.add_argument(
+            "--" + name, required=True, type=int if name in ("message-id", "generation") else str
+        )
     parser.add_argument("--seat", default="CODEX")
     parser.add_argument("--mention", default="Codex")
     args = parser.parse_args(argv)
@@ -209,6 +223,7 @@ def main(argv: list[str] | None = None) -> int:
             wake_id=args.wake_id,
             message_id=args.message_id,
             session_id=args.session_id,
+            generation=args.generation,
             seat=args.seat,
             mention=args.mention,
             source=json_file(args.source),

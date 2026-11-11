@@ -15,11 +15,13 @@ OTHER = "22222222-2222-4222-8222-222222222222"
 class AcceptanceTests(unittest.TestCase):
     def setUp(self):
         self.args = dict(
-            wake_id="w-123", message_id=12345, session_id=SID, seat="CODEX", mention="Codex",
+            wake_id="w-123", message_id=12345, session_id=SID, generation=3,
+            seat="CODEX", mention="Codex",
             source={"id": 12345, "content": "@**Codex** BB please read the topic"},
             listener=[{"wake_id": "w-123", "seat": "CODEX", "trigger_ids": [12345], "state": "done"}],
             receipt={"wake_id": "w-123", "seat": "CODEX", "test": False,
-                     "session_id": SID, "status": "delivered", "delivered": None},
+                     "session_id": SID, "generation": 3,
+                     "status": "delivered", "delivered": None},
             transcript=[{"type": "session_meta", "payload": {"id": SID}},
                         {"type": "event_msg", "payload": {"type": "user_message",
                          "message": "Wake w-123; source message 12345"}}],
@@ -94,6 +96,33 @@ class AcceptanceTests(unittest.TestCase):
 
     def test_pending_router_cannot_be_overruled_by_transcript(self):
         self.args["receipt"]["status"] = "accepted"
+        self.check("pending")
+
+    def test_generation_reuse_or_missing_generation_cannot_pass(self):
+        for value in (None, 0, 2, True, "3"):
+            with self.subTest(value=value):
+                self.args["receipt"]["generation"] = value
+                result = self.check("rejected")
+                self.assertIn("router-generation-mismatch", result["errors"])
+
+    def test_expected_generation_must_be_a_positive_integer(self):
+        for value in (0, -1, True, "3", None):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                WA.assess(**{**self.args, "generation": value})
+
+    def test_boolean_source_id_cannot_equal_integer_message_id(self):
+        self.args["message_id"] = 1
+        self.args["source"]["id"] = True
+        self.args["listener"][0]["trigger_ids"] = [1]
+        self.args["transcript"][1]["payload"]["message"] = "w-123; source 1"
+        self.assertIn("source-message-mismatch", self.check("rejected")["errors"])
+
+    def test_malformed_delivered_value_cannot_pass(self):
+        for value in (0, 1, "unknown", [], {}):
+            with self.subTest(value=value):
+                self.args["receipt"]["delivered"] = value
+                self.check("pending")
+        self.args["receipt"].pop("delivered")
         self.check("pending")
 
     def test_jsonl_tail_keeps_original_session_header(self):

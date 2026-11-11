@@ -55,11 +55,14 @@ def thread_metadata(env: Mapping[str, str], session_id: str) -> dict[str, Any] |
         conn.close()
 
 
-def wake_text(wake: WR.Wake) -> str:
+def wake_text(target: WR.Target, wake: WR.Wake) -> str:
     """Metadata-only prompt. Zulip-authored values are cleaned and secret-scanned."""
     fields = {
         "wake_id": wake.wake_id,
         "message_id": wake.message_id,
+        "target_session_id": target.session_id,
+        "target_letter": target.letter,
+        "target_generation": getattr(target, "generation", 0),
         "sender": WR.clean(wake.sender),
         "channel": WR.clean(wake.channel),
         "topic": WR.clean(wake.topic),
@@ -103,6 +106,9 @@ class CodexDelivery:
             return WR.Delivery("refused", route="codex-desktop", code="invalid-wake-id")
         if type(wake.message_id) is not int or wake.message_id <= 0:
             return WR.Delivery("refused", route="codex-desktop", code="invalid-message-id")
+        generation = getattr(target, "generation", 0)
+        if type(generation) is not int or generation <= 0:
+            return WR.Delivery("refused", route="codex-desktop", code="invalid-generation")
 
         try:
             owner = PLC.thread_row(self.env, sid)
@@ -146,7 +152,7 @@ class CodexDelivery:
             # The original thread cwd is authoritative; router title/link metadata is not.
             "cwd": meta["cwd"],
         }
-        text = wake_text(wake)
+        text = wake_text(target, wake)
         try:
             preflight = self.transport.preflight(binding)
         except Exception:  # noqa: BLE001 - plugin errors must keep a safe delivery outcome
