@@ -15,6 +15,7 @@ import json
 import os
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -3716,6 +3717,893 @@ class EavesdropperStatusDispatchTests(Base):
                 code, answer = self.run_real(script)
                 self.assertEqual((code, answer["errorCode"]), (1, reason))
                 self.assertNotIn("abc", json.dumps(answer))
+
+
+class LocalStoreReader:
+    """Stands in for `run_bounded_read` and for the container: checks the fixed `docker exec`
+    argv of an Operator read, then runs the very program it carries with this interpreter
+    (`-I`, as in the container) against fixture places instead of the container's own."""
+
+    def __init__(self, places):
+        self.places = [str(place) for place in places]
+        self.calls = []
+
+    def __call__(self, argv, timeout=None, env=None, max_bytes=None):
+        self.calls.append(list(argv))
+        assert argv[1:8] == [
+            "exec",
+            "--user",
+            "simpletools",
+            "eavesdropper",
+            "/usr/local/bin/python3",
+            "-I",
+            "-c",
+        ], argv
+        done = subprocess.run(  # noqa: S603 - the helper's own constant program
+            [sys.executable, "-I", "-c", argv[8]] + self.places,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=60,
+            check=False,
+            cwd="/",
+            env={"PATH": "/usr/bin:/bin"},
+        )
+        over = max_bytes is not None and len(done.stdout) > max_bytes
+        return done.returncode, (b"" if over else done.stdout), done.stderr, over
+
+
+class OperatorReadTests(Base):
+    """`server operator-sessions server --plan` and `server operator-wakes server --plan`:
+    read-only readings of the server Operator's session registry and wake records."""
+
+    # Made up and assembled here so no token-shaped literal sits in the file.
+    VALUE = "".join(["aB3dE6g", "H9jK2mN", "5pQ8sT1", "vW4yZ7b", "C0eF"])
+    PATH = "/" + "/".join(["home", "owner", "private", "place"])
+    EMAIL = "owner" + "@" + "example.invalid"
+    SESSION = "-".join(["0123abcd", "4567", "89ab", "cdef", "0123456789ab"])
+    BODY = "please read this private message body"
+    VERBS = ("operator-sessions", "operator-wakes")
+    KEYS = {"operator-sessions": "sessions", "operator-wakes": "wakes"}
+    PLACES = {
+        "operator-sessions": ["/data/operator/registry.sqlite3"],
+        "operator-wakes": ["/data/listener", "/app/scripts"],
+    }
+    HIDDEN = (VALUE, PATH, EMAIL, SESSION, BODY)
+    ISO = "2026-11-11T18:00:00.123Z"
+
+    def sessions_document(self):
+        """What the sessions program prints: the counts and one list per live session."""
+        issues = json.dumps([{"id": "AFC-704", "seen_at": self.ISO}, {"id": "OPS-1048"}])
+        return {
+            "counts": [["active", 2], ["closed", 5]],
+            "rows": [
+                ["CLAUDE", "claude", "mac", "active", "none", self.ISO, self.ISO, "II", 2, issues],
+                ["CODEX", "codex", "server", "active", "code-supported", self.ISO, self.ISO]
+                + [None, None, None],
+            ],
+        }
+
+    def wakes_document(self):
+        """What the wakes program prints for one seat, plus one seat it could not read."""
+        return {
+            "seat_count": 2,
+            "seats": [
+                {
+                    "seat": "CLAUDE",
+                    "recent": {
+                        "total": 3,
+                        "by_state": {"done": 2, "held_back": 1},
+                        "rows": [
+                            {
+                                "wake_id": "w-1",
+                                "state": "held_back",
+                                "ts": NOW - 60,
+                                "dm": False,
+                                "owner": True,
+                                "catch_up": False,
+                                "reason": "wakes_per_hour",
+                                "trigger_ids": [639558944],
+                            }
+                        ],
+                    },
+                    "held_back": {
+                        "count": 1,
+                        "lost": 0,
+                        "reasons": {"wakes_per_hour": 1},
+                        "rows": [
+                            {
+                                "message_id": 639558944,
+                                "at": NOW - 60,
+                                "reason": "wakes_per_hour",
+                                "dm": False,
+                            }
+                        ],
+                    },
+                    "owner_queue": {
+                        "pending": 1,
+                        "rows": [{"seq": 4, "ts": NOW - 30, "kind": "question", "risk": "high"}],
+                    },
+                }
+            ],
+            "unreadable": ["GROK"],
+        }
+
+    def document(self, verb):
+        return self.sessions_document() if verb == "operator-sessions" else self.wakes_document()
+
+    def plan(self, verb, reader=None, argv=None, **ctx_args):
+        context = self.ctx(**ctx_args)
+        context.reader = reader or StatusReader(out=json.dumps(self.document(verb)).encode())
+        return self.run_main(argv or ["server", verb, "server", "--plan", "--json"], context)
+
+    def each(self):
+        for verb in self.VERBS:
+            with self.subTest(verb=verb):
+                yield verb, StatusReader(out=json.dumps(self.document(verb)).encode())
+
+    def test_the_plan_reads_once_with_one_fixed_argv_and_bounds(self):
+        for verb, reader in self.each():
+            code, answer = self.plan(verb, reader)
+            self.assertEqual(
+                (code, answer["ok"], answer["result"], answer["verb"], answer["target"]),
+                (0, True, "planned", f"server {verb}", "server"),
+            )
+            (call,) = reader.calls
+            argv = call["argv"]
+            self.assertTrue(argv[0].endswith("/docker"), argv)
+            self.assertEqual(
+                argv[1:8],
+                [
+                    "exec",
+                    "--user",
+                    "simpletools",
+                    "eavesdropper",
+                    "/usr/local/bin/python3",
+                    "-I",
+                    "-c",
+                ],
+            )
+            self.assertEqual(argv[8], foc.OPERATOR_READS[verb][0])
+            self.assertEqual(argv[9:], self.PLACES[verb])
+            self.assertEqual(call["max_bytes"], foc.OPERATOR_READ_MAX_BYTES)
+            self.assertEqual(call["timeout"], foc.OPERATOR_READ_TIMEOUT)
+            self.assertNotIn(foc.SUDO, argv)
+
+    def test_the_programs_are_constants_that_compile_and_name_no_secret_column(self):
+        for verb in self.VERBS:
+            with self.subTest(verb=verb):
+                program = foc.OPERATOR_READS[verb][0]
+                compile(program, verb, "exec")
+                self.assertNotIn("__", program.replace("__name__", ""))
+        sessions = foc.OPERATOR_SESSIONS_PROGRAM
+        for column in ("native_session_id", "title", "thread_link", "apple_note_link", "project"):
+            self.assertNotIn(column, sessions)
+        self.assertIn("mode=ro", sessions)
+        wakes = foc.OPERATOR_WAKES_PROGRAM
+        for key in ('"body"', '"title"', '"topic"', '"channel"', "sender", "zulip_link", '"note"'):
+            self.assertNotIn(key, wakes)
+
+    def test_the_docker_environment_is_pinned_and_nothing_of_the_callers_reaches_it(self):
+        hostile = {
+            "PATH": "/evil/bin",
+            "DOCKER_HOST": "tcp://evil.invalid:2375",
+            "DOCKER_CONFIG": "/evil/config",
+            "DOCKER_CONTEXT": "evil",
+            "HOME": "/home/evil",
+            "PYTHONPATH": "/evil/python",
+            "SECRET_THING": "x" * 20,
+        }
+        for verb, reader in self.each():
+            code, answer = self.plan(verb, reader, environ=hostile)
+            self.assertEqual((code, answer["result"]), (0, "planned"))
+            (call,) = reader.calls
+            config = call["config_dir"]
+            self.assertEqual(
+                call["env"],
+                {
+                    "PATH": "/usr/bin:/bin",
+                    "DOCKER_HOST": "unix:///var/run/docker.sock",
+                    "DOCKER_CONFIG": config,
+                    "HOME": config,
+                },
+            )
+            self.assertTrue(call["config_is_empty_and_private"])
+            self.assertFalse(os.path.exists(config), "the temporary config is removed afterwards")
+            self.assertNotIn("evil", json.dumps(call["argv"]))
+
+    def test_it_refuses_without_plan_and_runs_nothing(self):
+        for verb, reader in self.each():
+            code, answer = self.plan(verb, reader, argv=["server", verb, "server", "--json"])
+            self.assertEqual((code, answer["result"]), (2, "refused"))
+            self.assertNotIn(self.KEYS[verb], answer)
+            self.assertEqual(reader.calls, [])
+            self.assertEqual(self.audit_rows(), [])
+
+    def test_yes_is_refused_and_audited_and_runs_nothing(self):
+        for verb, reader in self.each():
+            code, answer = self.plan(
+                verb, reader, argv=["server", verb, "server", "--yes", "--json"]
+            )
+            self.assertEqual((code, answer["result"]), (2, "refused"))
+            self.assertNotIn(self.KEYS[verb], answer)
+            self.assertEqual(reader.calls, [])
+            rows = self.audit_rows()
+            self.assertEqual((rows[-1]["verb"], rows[-1]["result"]), (f"server {verb}", "refused"))
+
+    def test_any_extra_argument_is_refused_and_runs_nothing(self):
+        for verb, reader in self.each():
+            for extra in (
+                ["server", verb, "server", "extra", "--plan", "--json"],
+                ["server", verb, "server", "--plan", "--json", "--limit=5"],
+                ["server", verb, "server", "--plan", "--json", "--db", "/tmp/x"],
+                ["server", verb, "server", "--plan", "--yes", "--json"],
+                ["server", verb, "--plan", "--json"],
+            ):
+                code, answer = self.plan(verb, reader, argv=extra)
+                self.assertEqual((code, answer["result"]), (2, "refused"), extra)
+            self.assertEqual(reader.calls, [])
+
+    def test_a_target_other_than_server_is_refused_and_runs_nothing(self):
+        for verb, reader in self.each():
+            for target in ("nope", "mac", "SERVER", "..", "server.x", "a" * 40, self.PATH):
+                code, answer = self.plan(
+                    verb, reader, argv=["server", verb, target, "--plan", "--json"]
+                )
+                self.assertEqual((code, answer["result"]), (2, "refused"), target)
+            self.assertEqual(reader.calls, [])
+
+    def test_it_runs_on_the_server_only_like_every_server_verb(self):
+        for verb, reader in self.each():
+            code, answer = self.plan(verb, reader, platform="darwin")
+            self.assertEqual((code, answer["result"]), (2, "refused"))
+            self.assertEqual(reader.calls, [])
+
+    def test_the_ssh_gate_accepts_the_plan_and_refuses_anything_more(self):
+        for verb, reader in self.each():
+            good = f"server {verb} server --plan --json"
+            code, answer = self.plan(
+                verb,
+                reader,
+                argv=["--from-ssh"],
+                environ={"PATH": "/usr/bin", "SSH_ORIGINAL_COMMAND": good},
+            )
+            self.assertEqual((code, answer["result"]), (0, "planned"))
+            self.assertEqual(len(reader.calls), 1)
+            for bad in (
+                f"server {verb} server extra --plan",
+                f"server {verb} server --plan --db=/tmp/x",
+                f"server {verb} server --plan; id",
+                f"server {verb} server",
+                f"server {verb} server --yes",
+                f"server {verb} mac --plan",
+            ):
+                code, answer = self.plan(
+                    verb,
+                    reader,
+                    argv=["--from-ssh"],
+                    environ={"PATH": "/usr/bin", "SSH_ORIGINAL_COMMAND": bad},
+                )
+                self.assertEqual((code, answer["result"]), (2, "refused"), bad)
+            self.assertEqual(len(reader.calls), 1)
+
+    def test_the_muster_route_does_not_offer_them(self):
+        backend = foc._MusterBackend(self.ctx(), None)
+        for verb in self.VERBS:
+            self.assertFalse(backend.target_ok(verb, "server"))
+
+    def test_it_takes_no_lock_writes_no_audit_row_and_needs_no_allowlist_entry(self):
+        config = json.loads(self.config_path.read_text())
+        config["server"] = {key: type(value)() for key, value in config["server"].items()}
+        self.config_path.write_text(json.dumps(config))
+        for verb, reader in self.each():
+            with mock.patch.object(foc, "action_lock", side_effect=AssertionError("lock taken")):
+                code, answer = self.plan(verb, reader)
+            self.assertEqual((code, answer["result"]), (0, "planned"))
+            self.assertEqual(self.audit_rows(), [])
+            self.assertFalse((self.state / "ops-control.lock").exists())
+
+    def test_a_missing_allowlist_refuses_them_like_every_other_verb(self):
+        self.config_path.unlink()
+        for verb, reader in self.each():
+            code, answer = self.plan(verb, reader)
+            self.assertEqual((code, answer["result"]), (2, "refused"))
+            self.assertEqual(reader.calls, [])
+
+    def test_the_answer_has_only_the_known_keys(self):
+        for verb, reader in self.each():
+            _, answer = self.plan(verb, reader)
+            self.assertEqual(
+                set(answer),
+                {"ok", "verb", "target", "commands", "result", "detail", self.KEYS[verb]},
+            )
+            self.assertEqual(answer["commands"], [])
+
+    def test_a_store_that_cannot_be_read_is_unavailable_with_a_reason_word_only(self):
+        daemon = b"Error response from daemon: "
+        big = b"x" * (foc.OPERATOR_READ_MAX_BYTES + 1)
+        cases = (
+            ("docker_unavailable", StatusReader(status=127)),
+            ("timeout", StatusReader(status=124)),
+            (
+                "container_not_running",
+                StatusReader(status=1, err=daemon + b"No such container: eavesdropper"),
+            ),
+            ("read_failed", StatusReader(status=1, err=b"Traceback " + self.PATH.encode())),
+            ("read_failed", StatusReader(status=126, err=b"executable file not found")),
+            ("too_large", StatusReader(out=big)),
+            ("not_json", StatusReader(out=b"not json " + self.PATH.encode())),
+            ("not_json", StatusReader(out=b"[1, 2]")),
+            ("not_json", StatusReader(out=b"")),
+            ("store_missing", StatusReader(out=b'{"error": "store_missing"}')),
+            ("reader_failed", StatusReader(out=b'{"error": "reader_failed"}')),
+            ("reader_failed", StatusReader(out=json.dumps({"error": self.PATH}).encode())),
+        )
+        for verb in self.VERBS:
+            for word, reader in cases:
+                with self.subTest(verb=verb, word=word):
+                    out = io.StringIO()
+                    context = self.ctx()
+                    context.reader = reader
+                    code = foc.main(["server", verb, "server", "--plan", "--json"], context, out)
+                    text = out.getvalue()
+                    answer = json.loads(text)
+                    self.assertEqual(
+                        (code, answer["ok"], answer["result"], answer["errorCode"]),
+                        (1, False, "unavailable", word),
+                    )
+                    self.assertEqual(answer["detail"], foc.OPERATOR_UNAVAILABLE[word])
+                    self.assertNotIn(self.KEYS[verb], answer)
+                    for hidden in (self.PATH, "/data/", "Traceback", "daemon", "sqlite"):
+                        self.assertNotIn(hidden, text)
+        self.assertEqual(self.audit_rows(), [])
+
+    def test_the_sessions_answer_has_the_documented_shape(self):
+        code, answer = self.plan("operator-sessions")
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            answer["sessions"],
+            {
+                "schema": 1,
+                "generated_at": stamp(NOW),
+                "instance": "server",
+                "counts": {"active": 2, "closed": 5},
+                "truncated": False,
+                "dropped": 0,
+                "sessions": [
+                    {
+                        "letter": "II",
+                        "generation": 2,
+                        "seat": "CLAUDE",
+                        "platform": "claude",
+                        "host": "mac",
+                        "host_code": "M",
+                        "status": "active",
+                        "wake": "none",
+                        "registered_at": "2026-11-11T18:00:00Z",
+                        "last_seen_at": "2026-11-11T18:00:00Z",
+                        "issues": ["AFC-704", "OPS-1048"],
+                    },
+                    {
+                        "letter": None,
+                        "generation": None,
+                        "seat": "CODEX",
+                        "platform": "codex",
+                        "host": "server",
+                        "host_code": "S",
+                        "status": "active",
+                        "wake": "code-supported",
+                        "registered_at": "2026-11-11T18:00:00Z",
+                        "last_seen_at": "2026-11-11T18:00:00Z",
+                        "issues": [],
+                    },
+                ],
+            },
+        )
+
+    def test_the_wakes_answer_has_the_documented_shape(self):
+        code, answer = self.plan("operator-wakes")
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            answer["wakes"],
+            {
+                "schema": 1,
+                "generated_at": stamp(NOW),
+                "instance": "server",
+                "window_hours": 24,
+                "totals": {"recent": 3, "held_back": 1, "held_back_lost": 0, "owner_queue": 1},
+                "truncated": False,
+                "seats": [
+                    {
+                        "seat": "CLAUDE",
+                        "recent": {
+                            "total": 3,
+                            "by_state": {"done": 2, "held_back": 1},
+                            "rows": [
+                                {
+                                    "wake_id": "w-1",
+                                    "state": "held_back",
+                                    "at": stamp(NOW - 60),
+                                    "reason": "wakes_per_hour",
+                                    "dm": False,
+                                    "owner": True,
+                                    "catch_up": False,
+                                    "message_ids": [639558944],
+                                }
+                            ],
+                        },
+                        "held_back": {
+                            "count": 1,
+                            "lost": 0,
+                            "reasons": {"wakes_per_hour": 1},
+                            "rows": [
+                                {
+                                    "message_id": 639558944,
+                                    "at": stamp(NOW - 60),
+                                    "reason": "wakes_per_hour",
+                                    "dm": False,
+                                }
+                            ],
+                        },
+                        "owner_queue": {
+                            "pending": 1,
+                            "rows": [
+                                {
+                                    "seq": 4,
+                                    "at": stamp(NOW - 30),
+                                    "kind": "question",
+                                    "risk": "high",
+                                }
+                            ],
+                        },
+                    }
+                ],
+                "unreadable": ["GROK"],
+            },
+        )
+
+    # The reducer allowlist: every key an answer may hold, and the shape every string must have.
+    ALLOWED_KEYS = {
+        "sessions": {
+            "schema", "generated_at", "instance", "counts", "active", "closed", "truncated",
+            "dropped", "sessions", "letter", "generation", "seat", "platform", "host",
+            "host_code", "status", "wake", "registered_at", "last_seen_at", "issues",
+        },
+        "wakes": {
+            "schema", "generated_at", "instance", "window_hours", "totals", "recent",
+            "held_back", "held_back_lost", "owner_queue", "truncated", "seats", "seat", "total",
+            "by_state", "rows", "wake_id", "state", "at", "reason", "dm", "owner", "catch_up",
+            "message_ids", "count", "lost", "reasons", "message_id", "pending", "seq", "kind",
+            "risk", "unreadable",
+        },
+    }  # fmt: skip
+    STRING_SHAPES = (
+        foc.OPERATOR_SEAT_RE,
+        foc.OPERATOR_PLATFORM_RE,
+        foc.OPERATOR_ISSUE_RE,
+        foc.OPERATOR_WORD_RE,
+        foc.OPERATOR_WAKE_ID_RE,
+        foc.re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"),
+        foc.re.compile(r"code-supported"),
+    )
+
+    def assert_allowlisted(self, value, keys, free_keys=False):
+        """Every key is a known one (or, under a counts object, a code word), every string has
+        one of the known shapes, and every other value is a bool, an int or null."""
+        if isinstance(value, dict):
+            for key, inner in value.items():
+                if free_keys:
+                    self.assertRegex(key, r"\A[a-z][a-z0-9_]{0,39}\Z")
+                else:
+                    self.assertIn(key, keys)
+                self.assert_allowlisted(inner, keys, key in ("by_state", "reasons"))
+        elif isinstance(value, list):
+            for inner in value:
+                self.assert_allowlisted(inner, keys)
+        elif isinstance(value, str):
+            self.assertTrue(any(shape.fullmatch(value) for shape in self.STRING_SHAPES), value)
+            self.assertLessEqual(len(value), 80)
+        else:
+            self.assertTrue(value is None or isinstance(value, (bool, int)), value)
+
+    def hostile(self, value):
+        """`value` with every string replaced by one that carries a path, an email, a key-shaped
+        run, a session id and a message body, and with keys no answer may hold added to every
+        object."""
+        bad = " ".join(self.HIDDEN)
+        if isinstance(value, dict):
+            changed = {key: self.hostile(inner) for key, inner in value.items()}
+            changed.update(
+                title=bad, body=bad, topic=bad, native_session_id=self.SESSION, zulip_link=bad
+            )
+            changed[bad] = 1
+            return changed
+        if isinstance(value, list):
+            return [self.hostile(inner) for inner in value] + [bad, {"seat": bad, "id": bad}]
+        if isinstance(value, str):
+            return bad
+        return value
+
+    def test_the_output_passes_the_reducer_allowlist(self):
+        for verb in self.VERBS:
+            for name, document in (
+                ("real", self.document(verb)),
+                ("hostile", self.hostile(self.document(verb))),
+            ):
+                with self.subTest(verb=verb, document=name):
+                    out = io.StringIO()
+                    context = self.ctx()
+                    context.reader = StatusReader(out=json.dumps(document).encode())
+                    code = foc.main(["server", verb, "server", "--plan", "--json"], context, out)
+                    text = out.getvalue()
+                    self.assertEqual(code, 0)
+                    key = self.KEYS[verb]
+                    self.assert_allowlisted(json.loads(text)[key], self.ALLOWED_KEYS[key])
+                    for hidden in self.HIDDEN + ("/data/", '"title"', '"body"', '"topic"'):
+                        self.assertNotIn(hidden, text)
+
+    def test_a_hostile_value_is_dropped_and_never_repaired(self):
+        document = self.sessions_document()
+        row = document["rows"][0]
+        row[1] = self.PATH  # platform
+        row[2] = "laptop"  # host
+        row[3] = "active; " + self.BODY
+        row[5] = "yesterday"
+        row[7] = "II " + self.SESSION
+        row[8] = True
+        row[9] = json.dumps([{"id": self.PATH}, {"id": "AFC-704"}, {"id": "AFC-704"}, 7])
+        document["rows"].append([self.EMAIL] + row[1:])  # a seat that is not a seat name
+        document["rows"].append(["CLAUDE"])  # a short row
+        document["counts"] = [["active", "many"], [self.PATH, 3], ["closed", True]]
+        _, answer = self.plan("operator-sessions", StatusReader(out=json.dumps(document).encode()))
+        sessions = answer["sessions"]
+        self.assertEqual(sessions["counts"], {"active": None, "closed": None})
+        self.assertEqual((len(sessions["sessions"]), sessions["dropped"]), (2, 2))
+        first = sessions["sessions"][0]
+        self.assertEqual(
+            [first[k] for k in ("platform", "host", "host_code", "status", "registered_at")],
+            [None] * 5,
+        )
+        self.assertEqual((first["letter"], first["generation"]), (None, None))
+        self.assertEqual(first["issues"], ["AFC-704"])
+
+    def test_a_failed_wakes_free_text_reason_is_never_answered(self):
+        document = self.wakes_document()
+        row = document["seats"][0]["recent"]["rows"][0]
+        row.update(state="failed", reason="timeout")
+        _, answer = self.plan("operator-wakes", StatusReader(out=json.dumps(document).encode()))
+        (kept,) = answer["wakes"]["seats"][0]["recent"]["rows"]
+        self.assertEqual((kept["state"], kept["reason"]), ("failed", None))
+
+    def test_the_lists_are_capped(self):
+        document = self.sessions_document()
+        document["rows"] = [document["rows"][0]] * (foc.OPERATOR_MAX_SESSIONS + 50)
+        document["counts"] = [["active", foc.OPERATOR_MAX_SESSIONS + 50]]
+        _, answer = self.plan("operator-sessions", StatusReader(out=json.dumps(document).encode()))
+        self.assertEqual(len(answer["sessions"]["sessions"]), foc.OPERATOR_MAX_SESSIONS)
+        self.assertTrue(answer["sessions"]["truncated"])
+        document = self.wakes_document()
+        seat = document["seats"][0]
+        seat["recent"]["rows"] = seat["recent"]["rows"] * 12
+        seat["recent"]["rows"][0]["trigger_ids"] = list(range(1, 31))
+        document["seats"] = [dict(seat, seat="S%d" % n) for n in range(foc.OPERATOR_MAX_SEATS + 9)]
+        document["seat_count"] = foc.OPERATOR_MAX_SEATS + 9
+        _, answer = self.plan("operator-wakes", StatusReader(out=json.dumps(document).encode()))
+        wakes = answer["wakes"]
+        self.assertEqual(len(wakes["seats"]), foc.OPERATOR_MAX_SEATS)
+        self.assertTrue(wakes["truncated"])
+        rows = wakes["seats"][0]["recent"]["rows"]
+        self.assertEqual(len(rows), foc.OPERATOR_MAX_ROWS)
+        self.assertEqual(len(rows[0]["message_ids"]), foc.OPERATOR_MAX_MESSAGE_IDS)
+
+    def test_the_reducers_never_raise_on_a_document_of_the_wrong_shape(self):
+        junk = (
+            {},
+            {"rows": 7, "counts": "x", "seats": {"a": 1}, "unreadable": 3, "seat_count": "9"},
+            {"rows": [None, 5, "x", [], [None] * 10], "counts": [None, [1], ["active"]]},
+            {"seats": [None, 5, [], {"seat": 5}, {"seat": "MA", "recent": 3, "held_back": []}]},
+            {"seats": [{"seat": "MA", "recent": {"rows": [None, 1, {"wake_id": 5}, {}]}}]},
+            {"seats": [{"seat": "MA", "recent": {"total": float("inf"), "by_state": [1]}}]},
+            {"rows": [["MA", 1, 2, 3, 4, 5, 6, 7, 8, "[" * 5000]]},
+            {"rows": [["MA", None, None, None, None, None, None, None, 1e400, "{"]]},
+        )
+        for verb in self.VERBS:
+            for document in junk:
+                with self.subTest(verb=verb, document=str(document)[:60]):
+                    reduced = foc.OPERATOR_REDUCERS[verb](document, NOW)
+                    self.assertEqual(reduced["schema"], 1)
+                    key = self.KEYS[verb]
+                    self.assert_allowlisted(reduced, self.ALLOWED_KEYS[key])
+                    json.dumps(reduced)
+
+    def test_a_time_outside_2000_to_2100_or_not_a_number_is_null(self):
+        for value in (0, -5, 1e12, float("nan"), float("inf"), "1800000000", True, None, [NOW]):
+            self.assertIsNone(foc._operator_epoch(value), value)
+        self.assertEqual(foc._operator_epoch(NOW), stamp(NOW))
+        for value in ("2026-11-11", "2026-11-11T18:00:00", "2026-11-11T18:00:00+05:00", 7):
+            self.assertIsNone(foc._operator_iso(value), value)
+        self.assertEqual(foc._operator_iso("2026-11-11T18:00:00+00:00"), "2026-11-11T18:00:00Z")
+
+
+@unittest.skipUnless(sys.version_info >= (3, 11), "the Operator's own modules need Python 3.11")
+class OperatorFixtureStoreTests(Base):
+    """The two verbs against a fixture store: the helper's own constant programs are run for
+    real (by `LocalStoreReader`) on a registry made with the registry's own schema and on a
+    seat folder laid out as the listener writes it."""
+
+    VALUE = OperatorReadTests.VALUE
+    PATH = OperatorReadTests.PATH
+    EMAIL = OperatorReadTests.EMAIL
+    SESSION = OperatorReadTests.SESSION
+    BODY = OperatorReadTests.BODY
+
+    def run_verb(self, verb, places):
+        context = self.ctx()
+        context.reader = LocalStoreReader(places)
+        out = io.StringIO()
+        code = foc.main(["server", verb, "server", "--plan", "--json"], ctx=context, out=out)
+        return code, out.getvalue(), context.reader
+
+    def registry(self, issues_table=True):
+        import sqlite3
+
+        spec = importlib.util.spec_from_file_location(
+            "operator_registry_schema",
+            os.path.join(HERE, "simple_tools", "operator_registry_schema.py"),
+        )
+        schema = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(schema)
+        path = self.home / "registry.sqlite3"
+        conn = sqlite3.connect(str(path))
+        conn.executescript(schema.DDL)
+        secret = " ".join((self.PATH, self.EMAIL, self.VALUE, self.BODY))
+        sessions = (
+            # record, seat, platform, host, state, wake, registered, last seen, closed
+            ("R1", "CLAUDE", "claude", "mac", "active", "none", "2026-11-11T17:00:00.000Z",
+             "2026-11-11T19:30:00.500Z", None),
+            ("R2", "CODEX", "codex", "server", "active", "code-supported",
+             "2026-11-10T08:00:00.000Z", "2026-11-11T19:45:00.000Z", None),
+            ("R3", "MM", "minimax", "cloud", "active", "unknown", "2026-11-09T08:00:00.000Z",
+             "2026-11-09T09:00:00.000Z", None),
+            ("R4", "CLAUDE", "claude", "mac", "closed", "none", "2026-11-01T08:00:00.000Z",
+             "2026-11-02T08:00:00.000Z", "2026-11-02T09:00:00.000Z"),
+        )  # fmt: skip
+        for record, seat, platform, host, state, wake, registered, seen, closed in sessions:
+            conn.execute(
+                "INSERT INTO sessions(record_id, seat, platform, verified_host, profile_scope,"
+                " native_session_id, title, project, thread_link, apple_note_link, state,"
+                " wake_capability, registered_at, last_seen_at, closed_at, source)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (record, seat, platform, host, self.PATH, self.SESSION + record, secret, secret,
+                 "https://example.invalid/" + self.VALUE, secret, state, wake, registered, seen,
+                 closed, "fixture"),
+            )  # fmt: skip
+        aliases = (
+            ("claude", "II", 2, "R1", None),
+            ("claude", "II", 1, "R4", "2026-11-02T09:00:00.000Z"),
+            ("codex", "B", 1, "R2", None),
+        )
+        for platform, letter, generation, record, retired in aliases:
+            conn.execute(
+                "INSERT INTO alias_assignments(platform, letter, generation, record_id,"
+                " assigned_at, retired_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (platform, letter, generation, record, "2026-11-01T08:00:00.000Z", retired),
+            )
+        if issues_table:
+            conn.execute(
+                "INSERT INTO session_issues(record_id, issues, updated_at) VALUES (?, ?, ?)",
+                (
+                    "R1",
+                    json.dumps(
+                        [
+                            {"id": "AFC-704", "seen_at": "2026-11-11T19:30:00Z"},
+                            {"id": "AFC-616", "seen_at": "2026-11-11T18:30:00Z"},
+                        ]
+                    ),
+                    "2026-11-11T19:30:00.000Z",
+                ),
+            )
+        else:
+            conn.execute("DROP TABLE session_issues")
+        conn.commit()
+        conn.close()
+        return path
+
+    def session(self, letter, generation, seat, platform, host, wake, registered, seen, issues):
+        return {
+            "letter": letter,
+            "generation": generation,
+            "seat": seat,
+            "platform": platform,
+            "host": host,
+            "host_code": {"mac": "M", "server": "S", "cloud": "C"}[host],
+            "status": "active",
+            "wake": wake,
+            "registered_at": registered,
+            "last_seen_at": seen,
+            "issues": issues,
+        }
+
+    def expected_sessions(self, issues):
+        return {
+            "schema": 1,
+            "generated_at": stamp(NOW),
+            "instance": "server",
+            "counts": {"active": 3, "closed": 1},
+            "truncated": False,
+            "dropped": 0,
+            "sessions": [
+                self.session("B", 1, "CODEX", "codex", "server", "code-supported",
+                             "2026-11-10T08:00:00Z", "2026-11-11T19:45:00Z", []),
+                self.session("II", 2, "CLAUDE", "claude", "mac", "none",
+                             "2026-11-11T17:00:00Z", "2026-11-11T19:30:00Z", issues),
+                self.session(None, None, "MM", "minimax", "cloud", "unknown",
+                             "2026-11-09T08:00:00Z", "2026-11-09T09:00:00Z", []),
+            ],
+        }  # fmt: skip
+
+    def assert_nothing_private(self, text):
+        for hidden in (self.VALUE, self.PATH, self.EMAIL, self.SESSION, self.BODY, "R1", "R2"):
+            self.assertNotIn(hidden, text)
+        for key in ('"title"', '"body"', '"topic"', '"channel"', "example.invalid", "fixture"):
+            self.assertNotIn(key, text)
+        self.assertNotIn(str(self.home), text)
+
+    def test_operator_sessions_returns_the_documented_shape_from_a_fixture_registry(self):
+        code, text, reader = self.run_verb("operator-sessions", [self.registry()])
+        answer = json.loads(text)
+        self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "planned"))
+        self.assertEqual(answer["sessions"], self.expected_sessions(["AFC-704", "AFC-616"]))
+        self.assert_nothing_private(text)
+        self.assertEqual(len(reader.calls), 1)
+
+    def test_a_registry_from_before_the_issues_table_has_no_issues(self):
+        code, text, _ = self.run_verb("operator-sessions", [self.registry(issues_table=False)])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(text)["sessions"], self.expected_sessions([]))
+
+    def test_the_read_does_not_change_the_registry(self):
+        path = self.registry()
+        before = (path.read_bytes(), sorted(p.name for p in self.home.iterdir()))
+        path.chmod(0o400)
+        code, _, _ = self.run_verb("operator-sessions", [path])
+        self.assertEqual(code, 0)
+        path.chmod(0o600)
+        self.assertEqual(before, (path.read_bytes(), sorted(p.name for p in self.home.iterdir())))
+
+    def test_a_missing_or_unreadable_store_is_unavailable(self):
+        cases = (
+            ("operator-sessions", [self.home / "absent.sqlite3"], "store_missing"),
+            ("operator-wakes", [self.home / "absent", HERE], "store_missing"),
+            ("operator-wakes", [self.listener()[0], self.home / "no-package"], "reader_failed"),
+        )
+        garbage = self.home / "garbage.sqlite3"
+        garbage.write_bytes(b"this is not a database " * 64)
+        cases += (("operator-sessions", [garbage], "reader_failed"),)
+        for verb, places, word in cases:
+            with self.subTest(verb=verb, word=word):
+                code, text, _ = self.run_verb(verb, places)
+                answer = json.loads(text)
+                self.assertEqual(
+                    (code, answer["ok"], answer["result"], answer["errorCode"]),
+                    (1, False, "unavailable", word),
+                )
+                self.assertNotIn("sessions", answer)
+                self.assertNotIn("wakes", answer)
+                self.assertNotIn(str(self.home), text)
+
+    def listener(self):
+        """A listener folder with one seat the way the daemon writes it (700 folders, 600 files),
+        one seat whose folder is open to others, and the daemon's own status file."""
+        now = time.time()
+        root = self.home / "listener"
+        root.mkdir(mode=0o700, exist_ok=True)
+        (root / "status.json").write_text("{}")
+        seat = root / "CLAUDE"
+        seat.mkdir(mode=0o700, exist_ok=True)
+        secret = " ".join((self.PATH, self.EMAIL, self.VALUE, self.BODY))
+        common = {"type": "stream", "channel": secret, "topic": secret, "by": self.EMAIL}
+        ledger = [
+            dict(common, wake_id="w-old", state="done", ts=now - 90000, trigger_ids=[11]),
+            dict(common, wake_id="w-1", state="queued", ts=now - 600, trigger_ids=[101, 102]),
+            dict(common, wake_id="w-1", state="done", ts=now - 590, adapter="claude"),
+            dict(common, wake_id="w-2", state="failed", ts=now - 300, reason=secret,
+                 trigger_ids=[103], owner=True),
+            dict(common, wake_id="w-3", state="held_back", ts=now - 120,
+                 reason="wakes_per_hour", trigger_ids=[104], catch_up=True, type="private"),
+        ]  # fmt: skip
+        held = {
+            "records": [
+                {"message_id": 104, "at": int(now - 120), "reason": "wakes_per_hour",
+                 "dm": True, "channel": secret, "topic": secret, "sender_full_name": secret,
+                 "zulip_link": "https://example.invalid/" + self.VALUE, "wake_ids": ["w-3"]},
+            ],
+            "overflow": [{"message_id": 90, "at": int(now - 4000), "reason": "pin_stale",
+                          "overflow": True}],
+            "lost": 2,
+        }  # fmt: skip
+        owner = [
+            {"seq": 1, "kind": "question", "title": secret, "text": secret, "risk": "low",
+             "note": secret, "ts": now - 5000, "trigger_ids": [80], "sender_id": 918273645},
+            {"seq": 2, "kind": "decision", "title": secret, "text": secret, "risk": "high",
+             "note": secret, "ts": now - 200, "trigger_ids": [103], "sender_id": 918273645},
+        ]  # fmt: skip
+        files = {
+            "wakes.jsonl": "".join(json.dumps(row) + "\n" for row in ledger),
+            "held-back.json": json.dumps(held),
+            "owner-queue.jsonl": "".join(json.dumps(row) + "\n" for row in owner),
+            "owner-queue.meta.json": json.dumps({"surfaced": 1}),
+        }
+        for name, text in files.items():
+            (seat / name).write_text(text)
+            (seat / name).chmod(0o600)
+        seat.chmod(0o700)
+        loose = root / "GROK"
+        loose.mkdir(exist_ok=True)
+        loose.chmod(0o755)
+        return root, now
+
+    def test_operator_wakes_returns_the_documented_shape_from_a_fixture_listener(self):
+        root, now = self.listener()
+        code, text, reader = self.run_verb("operator-wakes", [root, HERE])
+        answer = json.loads(text)
+        self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "planned"))
+        wakes = answer["wakes"]
+        self.assertEqual(
+            {k: wakes[k] for k in ("schema", "instance", "window_hours", "truncated")},
+            {"schema": 1, "instance": "server", "window_hours": 24, "truncated": False},
+        )
+        self.assertEqual(wakes["generated_at"], stamp(NOW))
+        self.assertEqual(
+            wakes["totals"], {"recent": 3, "held_back": 2, "held_back_lost": 2, "owner_queue": 1}
+        )
+        # A seat folder open to other users is not the daemon's: named, never read.
+        self.assertEqual(wakes["unreadable"], ["GROK"])
+        (seat,) = wakes["seats"]
+        self.assertEqual(seat["seat"], "CLAUDE")
+        self.assertEqual(
+            seat["recent"],
+            {
+                "total": 3,
+                "by_state": {"done": 1, "failed": 1, "held_back": 1},
+                "rows": [
+                    {"wake_id": "w-1", "state": "done", "at": stamp(now - 590), "reason": None,
+                     "dm": False, "owner": False, "catch_up": False, "message_ids": [101, 102]},
+                    {"wake_id": "w-2", "state": "failed", "at": stamp(now - 300), "reason": None,
+                     "dm": False, "owner": True, "catch_up": False, "message_ids": [103]},
+                    {"wake_id": "w-3", "state": "held_back", "at": stamp(now - 120),
+                     "reason": "wakes_per_hour", "dm": True, "owner": False, "catch_up": True,
+                     "message_ids": [104]},
+                ],
+            },
+        )  # fmt: skip
+        self.assertEqual(
+            seat["held_back"],
+            {
+                "count": 2,
+                "lost": 2,
+                "reasons": {"pin_stale": 1, "wakes_per_hour": 1},
+                "rows": [
+                    {"message_id": 90, "at": stamp(int(now - 4000)), "reason": "pin_stale",
+                     "dm": False},
+                    {"message_id": 104, "at": stamp(int(now - 120)),
+                     "reason": "wakes_per_hour", "dm": True},
+                ],
+            },
+        )  # fmt: skip
+        self.assertEqual(
+            seat["owner_queue"],
+            {
+                "pending": 1,
+                "rows": [{"seq": 2, "at": stamp(now - 200), "kind": "decision", "risk": "high"}],
+            },
+        )
+        self.assert_nothing_private(text)
+        self.assertNotIn("918273645", text)
+        OperatorReadTests.assert_allowlisted(self, wakes, OperatorReadTests.ALLOWED_KEYS["wakes"])
+        self.assertEqual(len(reader.calls), 1)
+
+    STRING_SHAPES = OperatorReadTests.STRING_SHAPES
+    assert_allowlisted = OperatorReadTests.assert_allowlisted
 
 
 class ReducerModuleTests(Base):
