@@ -54,7 +54,9 @@ the old request, which would skip the Mac's recheck and the ids.
 The Mac asks the registry again immediately before delivering, as the router did before sending.  A
 letter that no longer holds that session at that generation, or is closed, is `refused`.  A registry
 that cannot be read is `failed`, since nothing has run, and so a bounded retry, never a blind
-delivery.  A router from before this envelope sends `{"session_id", "wake"}` and reads a flat answer.
+delivery.  So is a live row that does not name a well-formed Claude chat (no seat, a malformed one
+or another seat's):  it is not proof that the letter was released.  A router from before this
+envelope sends `{"session_id", "wake"}` and reads a flat answer.
 It has no generation to check, so it is delivered to on the router's own check, as it always was.
 
 The ssh key.  Install the router's key on the Mac with a forced command, so it can do nothing else:
@@ -762,7 +764,10 @@ def _recheck(env: Mapping[str, str], target: WR.Target) -> WR.Delivery | None:
         return WR.Delivery("failed", code="registry-unavailable")
     if not isinstance(answer, Mapping) or "error" in answer:
         return WR.Delivery("failed", code="registry-unavailable")
-    if not WR.holds(answer, target, SEAT, SESSION_RE):
+    held = WR.holds(answer, target, SEAT, SESSION_RE)
+    if held is None:  # a live row that is not a well-formed Claude chat proves no release
+        return WR.Delivery("failed", code=WR.UNREADABLE_ROW)
+    if not held:
         return WR.Delivery("refused", code=WR.RELEASED)
     return None
 
