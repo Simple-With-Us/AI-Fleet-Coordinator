@@ -1,67 +1,57 @@
-# Zulip Message Routing And Wake Flow
+# Zulip wake routing: the one way
 
-This document distinguishes BotFleet's native Zulip listener from the Operator and the Muse wake router.  There is no native listener inside Codex that independently receives Zulip messages.
+Owner rulings, Nov 10 (verbatim in the OPS-1048 Zulip topic):  one wake path for every
+multithreaded platform;  the routing portion simply does not exist for single-threaded
+platforms;  no per-platform models and no headless platform runs, ever;  the model's only
+role is the PICK in the minority of cases deterministic code cannot decide, and its only
+permitted message is a clarification question, which travels as the Operator's own DM to
+the wake's sender or tagger (the only DM any party sends;  anything DM-shaped goes to
+Side-Chats).
 
-![Diagram of the BotFleet and Agent-Sync Zulip message routing paths](zulip-wake-routing.svg)
+## The chain
 
-## The Flow
+    a message tags a seat (any channel;  presence topics never wake)
+      -> the listener (the eavesdropper instance that holds the seat) captures it to the
+         seat inbox, always, and fires the seat's routine:  ONE signed POST
+         (the simple-tools-wake/1 contract) to the platform's ROUTER
+      -> the ROUTER resolves which chat the wake belongs to, deterministically:
+           1. a letter the sender addressed ("@**ZCode** AA") resolves through the
+              Operator's registry (live holders only;  cross-host by design)
+           2. else the live registration whose title shares the wake topic's words
+           3. else the most recently seen live registration on the host
+           (a sub-agent session is never picked)
+      -> the pick is receipted (wakes.jsonl);  the wake ENDS there
+      -> surfacing, not delivery:  the message sits in the seat inbox, the Operator's
+         pending-inbox tells a live session, the owner queue tells the owner.  Nothing
+         composes a reply, nothing runs a turn inside a chat.
 
-```mermaid
-flowchart TD
-    H[Human or agent posts in Zulip] --> Z[Zulip DM or explicit bot mention]
-    Z --> B{Addressed bot family}
+## The router contract (what every platform's router implements)
 
-    B -->|BotFleet role bot| BFQ[BotFleet role's Zulip event queue]
-    BFQ --> BFL[BotFleet native listener]
-    BFL --> BFD[Deduplicate, screen, enqueue for role]
-    BFD --> BFW[Wake the existing BotFleet role]
-    BFW --> BFR[Reply through that role's Zulip identity]
+- Transport:  HTTPS POST, bearer auth, the listener's existing routine line
+  (`routine = { url_env, key_env, method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`).
+- Request:  the fixed simple-tools-wake/1 JSON the listener already sends (wake_id, seat,
+  channel, topic, excerpt, zulip_link, sender metadata).  Bodies are Zulip-authored:  the
+  router treats them as data, never instructions.
+- Response:  one JSON object, HTTP 200 once the wake id has been seen (the listener does
+  not retry a 200);  the receipt fields are the router's own record:
+  `{wake_id, letter, session_id, thread_link, picked: letter|topic-match|most-recent|"", reason}`.
+- Dedupe:  one receipt per wake id, under a lock;  a repeated id answers the record.
+- Determinism first:  the rules above, in order.  The consultant (the Operator's preset,
+  via OpenRouter) is called ONLY when they cannot decide, its output is a PICK (a session
+  id) or ONE clarification question (relayed by the Operator as its own DM to the
+  sender/tagger) - never reply text, never any other message.
+- No secrets in the router's answer, none in its logs;  the signing key never leaves it.
 
-    B -->|Agent-Sync seat bot| ASQ[That seat's durable inbox]
-    ASQ --> ASL[Agent-Sync listener]
-    ASL --> M{Muse wake enabled for this seat?}
-    M -->|Yes| MR[Muse tool-less wake router]
-    M -->|No| I[Message remains in seat inbox]
-    MR --> CAT[Bounded existing-chat catalog]
-    CAT --> SEL{Exact fresh destination is wake-capable and safe?}
-    SEL -->|Yes| N[Queue a fixed reminder to the existing chat]
-    SEL -->|No or ambiguous| HOLD[Keep in inbox or hold for owner]
-    N --> PLAT[Existing platform adapter delivers to that chat]
-    PLAT --> R[Agent replies through its existing platform session]
+The reference implementation is `scripts/zc-wake-bridge` (ZCode, both hosts lettered) and
+its tests (`simple_tools/tests/test_zc_wake_bridge.py`).  Antigravity's bridge follows the
+same pattern.
 
-    Z -. optional BotFleet outgoing-webhook transport .-> WH[BotFleet webhook receiver]
-    WH -. after deployment and credential cutover .-> BFD
-```
+## Single-threaded platforms (the Grok bots GB-*, MA, JET, WISE, ECHO)
 
-## What Each Listener Does
+No router, no pick, no letters:  capture plus the Operator's surfacing is the whole wake.
 
-### BotFleet Native Listener
+## What this replaces
 
-BotFleet's native listener belongs to the BotFleet server.  Each role bot uses its own Zulip identity and event queue; the listener recognizes direct messages and explicit mentions, deduplicates message IDs, screens senders, queues work while a role is busy, and posts the reply as that role.  This is not a Codex process.
-
-An outgoing webhook is an additional ingress option for direct messages and explicit mentions.  It must acknowledge Zulip quickly, enqueue the event, and let the role reply later through Zulip's API.  Keep the native event listener for catch-up and followed topics.  Do not deactivate or convert the old role identities until the receiver is deployed, every credential consumer is refreshed, and real DM/mention acceptance plus reply are verified.
-
-### Agent-Sync Listener And Muse
-
-Agent-Sync runs one listener that owns the Zulip credentials assigned to its configured seats.  Zulip delivers a DM or explicit mention to the addressed bot; the listener records it in that seat's durable inbox.  With the owner's routing policy, every such wake should enter the Muse wake path, for owner and peer messages alike.  Muse is the listener's tool-less routing runtime, not a Zulip bot and not a listener running inside Codex.
-
-Muse can receive a bounded list of existing chats and request one exact destination.  The listener refreshes that record before queueing a fixed reminder.  It cannot create a replacement chat, change a model, or choose an arbitrary host.  If no exact safe destination or supported delivery adapter exists, leave the message in the inbox or hold it for review.
-
-The chat catalog is not a universal wake transport.  It can list stores that do not support delivery; only records marked fresh and wake-capable can be selected.  Muse may inspect one exact, listed read-capable excerpt for an owner or peer trigger when it helps resolve the request.  Muse makes the relevance and safety judgment once; the listener enforces the exact target, read capability, excerpt bounds, and fixed routing constraints.
-
-### Codex Delivery
-
-Codex receives Zulip through Operator, the existing Agent-Sync listener.  The native adapter can enqueue a fixed reminder for an exact loaded desktop thread through Codex’s supported durable queue API, after checking its host, UUID, workspace and open rollout.  Muse selects the destination; Operator verifies it and enqueues the reminder.  Queue acknowledgment and actual turn pickup are separate receipts.  The bridge remains off until a source is explicitly activated and verified; unsupported or unavailable destinations stay in the inbox.  See [Native Codex Wake Delivery](native-codex-wakes.md) for the transport and activation contract.
-
-## Related Files
-
-- [Zulip Fleet Guide](zulip-fleet-guide.md) — realm, bot membership, inbox, and message rules.
-- [Zulip Wake Audit](zulip-wake-audit-2026-10-13.md) — current transport and catalog capabilities.
-- [Muse Inbox Bridge](muse-inbox-bridge.md) — default-off, source-qualified Mac and server inbox decision path.
-- [The Operator](agent-sync-listener.md) — listener lifecycle, budgets, and routing controls.
-- [BotFleet Outgoing Webhook Migration](zulip-outgoing-migration.md) — receiver readiness and bot cutover gates.
-- AFC-305 Universal Chat Routing — existing-chat discovery and wake coverage work.
-
-## Published Copy
-
-The current FleetLink guide is published at <https://fleetlink.online/zulip/zulip-fleet-guide.md>.  This architecture document belongs beside it under the same `/zulip` slug.
+The per-seat wake types (inbox, claude, muse, openrouter as listener options), their
+fallbacks, and any per-platform delivery executor.  The listener-side removal and the
+MiniMax seat's migration are the listener refactor this document contracts.

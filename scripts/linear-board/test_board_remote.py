@@ -83,9 +83,9 @@ class Remote(unittest.TestCase):
         self.assertIn("seat: CODEX", out)
         self.assertNotIn(BEARER, out + err + json.dumps(msg))
 
-    LIST_TEXT = "agent-sync linear_list\nAFC-12 | Fix the thing | In Progress | P1\nAFC-13 | Other | Todo | P2"
+    LIST_TEXT = "simple-tools linear_list\nAFC-12 | Fix the thing | In Progress | P1\nAFC-13 | Other | Todo | P2"
     SHOW_TEXT = (
-        "agent-sync linear_show: AFC-12\ndescription: the full body\nlabels: Kind/bug\n"
+        "simple-tools linear_show: AFC-12\ndescription: the full body\nlabels: Kind/bug\n"
         "comment by CODEX: the comment body\nduplicate_of: AFC-9"
     )
 
@@ -145,11 +145,26 @@ class Remote(unittest.TestCase):
         it = iter(answers)
         return it
 
+    IDANS = {
+        "default_identity": "CODEX",
+        "authenticated_seat": "CODEX",
+        "identities": [{"identity": "CODEX"}],
+    }
+
     def run_writes(self, argv, answers, env=None):
         calls, it = [], iter(answers)
 
         def fake(url, headers, body, timeout):
-            calls.append(json.loads(body)["params"])
+            params = json.loads(body)["params"]
+            calls.append(params)
+            args = params.get("arguments") or {}
+            if params["name"] in (
+                "linear_file",
+                "linear_claim",
+                "linear_comment",
+                "linear_status",
+            ) and not args.get("identity"):
+                return rpc({"code": "identity_required"}, is_error=True)
             return next(it)
 
         out, err = io.StringIO(), io.StringIO()
@@ -166,8 +181,6 @@ class Remote(unittest.TestCase):
                 code = e.code
         return code, out.getvalue(), err.getvalue(), calls
 
-    WHO = {"seat": "CODEX", "authenticated_seat": "CODEX", "app": "Codex"}
-
     def test_writes_need_their_own_switch(self):
         code, _, err, calls = self.run_cli(
             ["comment", "AFC-1", "--by", "CODEX", "--text", "x"], rpc({})
@@ -180,22 +193,22 @@ class Remote(unittest.TestCase):
             (
                 ["comment", "AFC-1", "--by", "codex", "--text", "hi"],
                 "linear_comment",
-                {"id": "AFC-1", "body": "hi"},
+                {"id": "AFC-1", "body": "hi", "identity": "CODEX"},
             ),
             (
                 ["claim", "AFC-1", "--by", "CODEX", "--comment", "on it"],
                 "linear_claim",
-                {"id": "AFC-1", "comment": "on it"},
+                {"id": "AFC-1", "comment": "on it", "identity": "CODEX"},
             ),
             (
                 ["status", "AFC-1", "done", "--by", "CODEX"],
                 "linear_status",
-                {"id": "AFC-1", "status": "done"},
+                {"id": "AFC-1", "status": "done", "identity": "CODEX"},
             ),
             (
                 ["status", "AFC-1", "duplicate", "--of", "AFC-2"],
                 "linear_status",
-                {"id": "AFC-1", "status": "duplicate", "of": "AFC-2"},
+                {"id": "AFC-1", "status": "duplicate", "of": "AFC-2", "identity": "CODEX"},
             ),
             (
                 [
@@ -219,39 +232,99 @@ class Remote(unittest.TestCase):
                     "severity": "P2",
                     "description": "d",
                     "label": ["needs-owner"],
+                    "identity": "CODEX",
                 },
             ),
         ]
         for argv, tool, args in cases:
             with self.subTest(argv=argv):
-                answers = ([rpc(self.WHO)] if "--by" in argv else []) + [
-                    rpc({"id": "1"}, text="done")
-                ]
+                answers = [rpc(self.IDANS), rpc({"id": "1"}, text="done")]
                 code, out, err, calls = self.run_writes(argv, answers)
                 self.assertEqual(code, 0, err)
                 self.assertEqual(calls[-1], {"name": tool, "arguments": args})
 
     def test_by_that_is_not_the_bearers_seat_is_refused_before_any_write(self):
         code, _, err, calls = self.run_writes(
-            ["comment", "AFC-1", "--by", "ECHO", "--text", "x"], [rpc(self.WHO)]
+            ["comment", "AFC-1", "--by", "ECHO", "--text", "x"], [rpc(self.IDANS)]
         )
         self.assertEqual(code, 2)
-        self.assertEqual([c["name"] for c in calls], ["linear_whoami"])
+        self.assertEqual([c["name"] for c in calls], ["identities"])
 
     def test_by_mismatch_names_the_seat_the_server_reported(self):
         _, _, err, _ = self.run_writes(
-            ["comment", "AFC-1", "--by", "ECHO", "--text", "x"], [rpc(self.WHO)]
+            ["comment", "AFC-1", "--by", "ECHO", "--text", "x"], [rpc(self.IDANS)]
         )
         self.assertIn("(CODEX)", err)
 
     def test_a_credential_shaped_comment_is_refused_before_any_write(self):
         code, _, err, calls = self.run_writes(
             ["comment", "AFC-1", "--by", "CODEX", "--text", "token ghp_" + "A1b2C3d4E5" * 4],
-            [rpc(self.WHO)],
+            [rpc(self.IDANS)],
         )
-        self.assertEqual([c["name"] for c in calls], ["linear_whoami"])
+        # The scan runs before even the identities lookup:  nothing is sent.
+        self.assertEqual([c["name"] for c in calls], [])
         self.assertIn("secret_scan:body", err)
         self.assertNotIn("ghp_", err)
+
+    def test_identity_answer_mismatch_refuses_before_the_write(self):
+        bad = {
+            "default_identity": "ECHO",
+            "authenticated_seat": "CODEX",
+            "identities": [{"identity": "ECHO"}],
+        }
+        code, _, err, calls = self.run_writes(
+            ["comment", "AFC-1", "--by", "CODEX", "--text", "x"], [rpc(bad)]
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual([c["name"] for c in calls], ["identities"])
+
+    def test_list_single_label_maps_and_multiple_or_combined_are_refused(self):
+        code, _, err, calls = self.run_cli(
+            ["list", "--label", "needs-owner"], rpc({"count": 0, "ids": []})
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(calls[0][2]["params"]["arguments"], {"label": "needs-owner", "limit": 60})
+        for argv in (
+            ["list", "--label", "needs-owner", "--label", "ask-capture"],
+            ["list", "--label", "needs-owner,ask-capture"],
+        ):
+            code, _, err, calls = self.run_cli(argv, rpc({"count": 0, "ids": []}))
+            self.assertEqual(code, 2)
+            self.assertEqual(calls, [])
+            self.assertIn("single", err)
+
+    def test_list_comma_status_and_severity_are_refused_naming_single_value(self):
+        for argv, flag in (
+            (["list", "--status", "open,completed"], "--status"),
+            (["list", "--severity", "P0,P1"], "--severity"),
+        ):
+            code, _, err, calls = self.run_cli(argv, rpc({"count": 0, "ids": []}))
+            self.assertEqual(code, 2)
+            self.assertEqual(calls, [])
+            self.assertIn(flag, err)
+            self.assertIn("single value", err)
+
+    def test_file_comma_severity_is_refused_before_any_call(self):
+        code, _, err, calls = self.run_writes(
+            ["file", "--title", "T", "--severity", "P0,P1"], [rpc(self.IDANS)]
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(calls, [])
+        self.assertIn("single value", err)
+
+    def test_remote_error_hints_are_static_and_do_not_echo_server_text(self):
+        for code_name in (
+            "identity_required",
+            "session_required",
+            "writes_disabled",
+            "not_configured",
+        ):
+            code, _, err, _ = self.run_cli(
+                ["list"], rpc({"code": code_name}, is_error=True, text="server-private-word")
+            )
+            self.assertEqual(code, board.EXIT_ERROR)
+            self.assertIn(code_name, err)
+            self.assertNotIn("server-private-word", err)
 
     def test_show_with_no_text_prints_the_structured_result_and_text_is_escaped(self):
         code, out, _, _ = self.run_cli(["show", "AFC-1"], rpc({"id": "AFC-1"}))
@@ -270,7 +343,7 @@ class Remote(unittest.TestCase):
             ["file", "--title", "T", "--by", "X"],
         ):
             with self.subTest(argv=argv):
-                code, _, _, calls = self.run_writes(argv, [rpc(self.WHO)] * 2)
+                code, _, _, calls = self.run_writes(argv, [rpc(self.IDANS)] * 2)
                 self.assertEqual(code, 2)
                 self.assertNotIn("linear_comment", [c["name"] for c in calls])
 
@@ -338,6 +411,142 @@ class Remote(unittest.TestCase):
     def test_without_the_switch_the_remote_path_is_not_taken(self):
         with unittest.mock.patch.dict(os.environ, {}, clear=True):
             self.assertFalse(board.remote_selected())
+
+
+class NativeEcho(unittest.TestCase):
+    def test_native_transport_uses_fixed_custody_and_no_secret_environment(self):
+        reply = b'{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-06-18"}}\n{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"seat":"ECHO"},"content":[]}}\n'
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return type("Reply", (), {"returncode": 0, "stdout": reply})()
+
+        with (
+            unittest.mock.patch.dict(
+                os.environ,
+                {"SIMPLE_BOARD_NATIVE_ECHO": "1", "SIMPLE_TOOLS_BEARER": "must-not-export"},
+                clear=True,
+            ),
+            unittest.mock.patch.object(board.os, "geteuid", return_value=0),
+            unittest.mock.patch.object(board.subprocess, "run", run),
+        ):
+            result = board.remote_call("linear_whoami", {})
+        self.assertEqual(result["structured"]["seat"], "ECHO")
+        self.assertEqual(
+            calls[0][0],
+            ["/usr/bin/python3", "-I", "/usr/local/libexec/assigned-echo-mcp/linux-custody.py"],
+        )
+        self.assertEqual(calls[0][1]["env"], {"PATH": "/usr/bin:/bin"})
+        self.assertEqual(calls[0][1]["stderr"], board.subprocess.DEVNULL)
+        messages = [json.loads(x) for x in calls[0][1]["input"].splitlines()]
+        self.assertEqual(
+            [x["method"] for x in messages],
+            ["initialize", "notifications/initialized", "tools/call"],
+        )
+        self.assertNotIn("must-not-export", str(calls))
+
+    def test_native_failure_is_unknown_for_write_and_does_not_print_stderr(self):
+        fake = type("Reply", (), {"returncode": 3, "stdout": b"", "stderr": b"private-detail"})()
+        out = io.StringIO()
+        with (
+            unittest.mock.patch.object(board.os, "geteuid", return_value=0),
+            unittest.mock.patch.object(board.subprocess, "run", return_value=fake),
+            contextlib.redirect_stderr(out),
+            self.assertRaises(SystemExit),
+        ):
+            board._native_echo_post(b"{}", True)
+        self.assertIn("outcome unknown", out.getvalue())
+        self.assertNotIn("private-detail", out.getvalue())
+
+    def test_canonical_simple_board_cli_runs_native_whoami_and_write(self):
+        import runpy
+        import subprocess
+        import sys
+
+        def run(argv, **kwargs):
+            call = json.loads(kwargs["input"].splitlines()[-1])
+            name = call["params"]["name"]
+            if name == "identities":
+                result = {
+                    "default_identity": "ECHO",
+                    "authenticated_seat": "ECHO",
+                    "identities": [{"identity": "ECHO"}],
+                }
+            elif name == "linear_whoami":
+                result = {"seat": "ECHO", "app": "FleetOPS"}
+            else:
+                result = {"ok": True}
+            response = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {"structuredContent": result, "content": []},
+            }
+            raw = (
+                json.dumps(
+                    {"jsonrpc": "2.0", "id": 0, "result": {"protocolVersion": "2025-06-18"}}
+                ).encode()
+                + b"\n"
+                + json.dumps(response).encode()
+                + b"\n"
+            )
+            return type("Reply", (), {"returncode": 0, "stdout": raw})()
+
+        entry = str(HERE.parent / "simple-board")
+        for args in (["whoami"], ["comment", "AFC-1", "--text", "Offline fixture", "--by", "ECHO"]):
+            output = io.StringIO()
+            with (
+                unittest.mock.patch.dict(
+                    os.environ,
+                    {"SIMPLE_BOARD_NATIVE_ECHO": "1", "SIMPLE_BOARD_REMOTE_WRITES": "1"},
+                    clear=True,
+                ),
+                unittest.mock.patch.object(os, "geteuid", return_value=0),
+                unittest.mock.patch.object(subprocess, "run", run),
+                unittest.mock.patch.object(sys, "argv", [entry, *args]),
+                unittest.mock.patch.object(sys, "version_info", (3, 11, 0)),
+                contextlib.redirect_stdout(output),
+                self.assertRaises(SystemExit) as exit,
+            ):
+                runpy.run_path(entry, run_name="__main__")
+            self.assertEqual(exit.exception.code, 0)
+            self.assertTrue(output.getvalue())
+
+    def test_native_adapter_content_only_failure_preserves_unknown_write(self):
+        raw = b'{"jsonrpc":"2.0","id":0,"result":{}}\n{"jsonrpc":"2.0","id":1,"result":{"isError":true,"content":[{"type":"text","text":"private transport details"}]}}\n'
+        fake = type("Reply", (), {"returncode": 0, "stdout": raw})()
+        with (
+            unittest.mock.patch.object(board.os, "geteuid", return_value=0),
+            unittest.mock.patch.object(board.subprocess, "run", return_value=fake),
+        ):
+            status, ctype, data = board._native_echo_post(b"{}", True)
+        result, error = board._remote_answer(ctype, data, "linear_comment", True)
+        self.assertIsNone(result)
+        self.assertIn("may or may not", error)
+        self.assertNotIn("private transport details", error)
+
+    def test_native_deep_json_returns_unknown_not_traceback(self):
+        raw = b"[" * 2000 + b"0" + b"]" * 2000
+        fake = type("Reply", (), {"returncode": 0, "stdout": raw})()
+        out = io.StringIO()
+        with (
+            unittest.mock.patch.object(board.os, "geteuid", return_value=0),
+            unittest.mock.patch.object(board.subprocess, "run", return_value=fake),
+            contextlib.redirect_stderr(out),
+            self.assertRaises(SystemExit),
+        ):
+            board._native_echo_post(b"{}", True)
+        self.assertIn("outcome unknown", out.getvalue())
+
+    def test_native_nonroot_refuses_before_spawn(self):
+        with (
+            unittest.mock.patch.object(board.os, "geteuid", return_value=501),
+            unittest.mock.patch.object(board.subprocess, "run") as run,
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit),
+        ):
+            board._native_echo_post(b"{}", False)
+        run.assert_not_called()
 
 
 if __name__ == "__main__":

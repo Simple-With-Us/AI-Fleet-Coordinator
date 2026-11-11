@@ -379,9 +379,9 @@ class FileTests(unittest.TestCase):
         self.assertEqual(len(self.w.board_state()["issues"]), 1)
 
     # ---- failures ----------------------------------------------------------------------------
-    def test_board_writes_off_passes_the_exit_code_through(self) -> None:
+    def test_a_write_with_no_bearer_passes_the_exit_code_through(self) -> None:
         r = self.w.file(Q, "Yes", "No", env=self.w.env(FAKE_BOARD_WRITES_OFF="1"))
-        self.assertEqual(r.code, 7, r.err)
+        self.assertEqual(r.code, 6, r.err)
         self.assertEqual(self.w.calls("simple-chat"), [])
 
     def test_no_board_is_an_error(self) -> None:

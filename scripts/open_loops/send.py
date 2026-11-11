@@ -21,7 +21,7 @@ failed (a network failure after the request left may mean it was delivered:  it 
 `simple-chat dm-read --with owner`);  6 the DM is out but the heartbeat is not.
 
 Every simple-chat command line is built by a function in this module so a test can run it through
-`agent_sync.cli.build_parser()`.  The command lines never contain the DM text.
+`simple_tools.cli.build_parser()`.  The command lines never contain the DM text.
 """
 
 from __future__ import annotations

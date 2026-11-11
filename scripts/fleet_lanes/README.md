@@ -103,7 +103,8 @@ python3 -m fleet_lanes.doctor --cleaner-list       # only the paths a cleaner ma
 | `--gh-limit N` | PRs fetched per repo, default 500, maximum 1000.  A list that fills the limit cannot prove a branch has no PR, so unmatched checkouts report UNKNOWN instead of NONE. |
 | `--only-class CLASS` | Show only one location class.  `--strict` still judges the whole machine.  `cleaner_candidates` follows what is shown. |
 | `--strict` | Exit 2 if any FORBIDDEN_TMP, FORBIDDEN_CODE_TOPLEVEL or UNSANCTIONED checkout exists.  Plugin caches and third-party clones do not count toward UNSANCTIONED. |
-| `--fresh-days N` | Number, 0 to 3650, default 7.  Sets the fresh-lane rule below.  The cleaner age floor is `max(N, 7)`, so no value makes a younger lane a candidate.  `nan`, `inf`, a negative or non-number exits 64. |
+| `--fresh-days N` | Number, 0 to 3650, default 7.  Sets the fresh-lane rule below.  Without `--cleaner-retention-days`, the cleaner age floor is `max(N, 7)`, so no value makes a younger lane a candidate.  `nan`, `inf`, a negative or non-number exits 64. |
+| `--cleaner-retention-days N` | Integer, 1 to 90, default 7.  Sets the minimum age and idle time for cleaner candidates, independently of the fresh-lane label rule.  Without this option the existing `max(--fresh-days, 7)` floor applies. |
 | `--cleaner-list` | Print only the `cleaner_candidates` real paths, one per line (nothing at all when the list is empty).  Notes about skipped or failed `gh` and `lsof` go to stderr.  Cannot be combined with `--json` (exit 64); use `--write PATH` to keep the JSON.  `--write`, `--strict` and `--only-class` still work with it. |
 | `--home PATH`, `--tmp-root PATH` | Point the sweep at a fake home and fake temp root (tests). |
 
@@ -212,7 +213,7 @@ A legacy empty `.janitor-keep` is `valid: false` and still honored.  Any present
 `cleaner_candidates` is the only list a cleaner may act on.  It is a sorted array of real paths, computed over the checkouts shown (so `--only-class` narrows it), and a checkout is on it only when ALL of these hold:
 
 - safety is SAFE-TO-REMOVE and the PR state is MERGED or CLOSED (merged evidence, not "no PR found");
-- `lane_age_days` and `idle_days` are both known and at least `cleaner_min_days` (the larger of `--fresh-days` and 7);
+- `lane_age_days` and `idle_days` are both known and at least `cleaner_min_days` (the larger of `--fresh-days` and 7 unless `--cleaner-retention-days` is set);
 - no `.janitor-keep` marker, no `git_op_in_progress`, `cwd_procs` is an empty list (lsof worked and found no process) and `active` is false;
 - the location class is one of the five lane classes, it is not a tool cache, and `read_errors` is empty;
 - its `owner_repo` has `gh_repos[repo] == "ok"` (the PR list for that repo was read in full);
@@ -229,7 +230,7 @@ Schema 2 is schema 1 plus `fresh_days`, `cleaner_min_days`, `gh_repos`, `cleaner
   "schema": 2,
   "generated_at": "2026-10-07T16:15:00+00:00",   # UTC, from an injected clock
   "host": "...", "layout_mode": "nested|flat", "home": "...", "only_class": null,
-  "fresh_days": 7, "cleaner_min_days": 7,        # the option, and max(option, 7)
+  "fresh_days": 7, "cleaner_min_days": 7,        # effective candidate age floor; explicit cleaner retention overrides max(option, 7)
   "lsof": "ok|unavailable", "gh": "ok|partial|failed|skipped", "warnings": [...],   # partial/failed name the repos
   "gh_repos": {"owner/repo": "ok|failed"},       # every repo that needed a PR lookup
   "scan": [{"label", "path", "depth", "found"}],
@@ -257,7 +258,7 @@ Anomaly types, most urgent first: FORBIDDEN_TMP, FORBIDDEN_CODE_TOPLEVEL, ORPHAN
 - Timeouts are enforced per call (git and lsof 20 seconds, du 30, gh 60 because it lists over the network) and the whole process group is killed.  A repo that times out or cannot be read becomes UNKNOWN and the sweep continues.
 - Credentials in remote URLs and in stored stderr are replaced (`user:token@host` becomes `REDACTED@host`), including passwords that contain `/` or `@` and a token in the user slot of an scp-style remote (`TOKEN@github.com:o/r.git`).  The ssh user `git` is kept.
 - The test suite proves the refusals, then runs the doctor over real temp repos with a stale index and compares a hash and mtime of every file before and after, with a control that shows plain `git status` does rewrite that index.
-- The cleaner contract only ever narrows the doctor's answer.  The new options change what is printed (`--cleaner-list`) or how a lane is labelled (`--fresh-days`); none of them adds a command to the allowlist.
+- The cleaner contract only ever narrows the doctor's answer.  The new options change what is printed (`--cleaner-list`) or how a lane is labelled (`--fresh-days`) or which aged lanes qualify for cleaning (`--cleaner-retention-days`); none of them adds a command to the allowlist.
 
 ### Known limits (doctor)
 
@@ -355,6 +356,17 @@ The adapter shares the lane-checkout and shell secret policies, adds a bare `ps`
 - **Verify:** `verify minimax` reads the command back from the written bundle and checks shell lane/secret denials, file secret/integration denials and safe allows, including the restricted hook environment.  These subprocess probes do not prove MiniMax dispatch; `fires` remains `SKIP`.  Crash, timeout, malformed input and unsupported tools can fail open.  An unavailable or malformed `SECRET_FILE_PATTERNS` table refuses file operations not already denied by an independent path policy.  A registry read failure refuses file operations not already denied by an independent path policy and identifies the unavailable `FLEET_APPS_JSON` source.  Installation and verification refuse an unavailable or malformed required registry, and staging also probes a module-backed `.env` denial.  A new real session and loaded-plugin dispatch remain separate proof steps; no live configuration or running session is changed by tests.
 - Tests: `fleet_lanes.tests.test_minimax_guard_hook` and `fleet_lanes.tests.test_install_tools.MinimaxBundleTests`.
 
+### The file guard core and Claude Code's file guard
+
+Every seat gets a shell guard and a file guard (owner, Nov 6, 2026).  The file policy is seat-neutral and lives in `file_guard.py`;  each runtime adds a small adapter.
+
+- **Core API:**  `FileTools(kinds={tool_name: READ | WRITE}, path_fields=(...))` names the runtime's file tools and every `tool_input` field that may hold a path (default `file_path`, `path`, `notebook_path`;  all are checked on every file tool).  `FilePolicy(label, tools, deny_integration_reads=True)` adds the label the reasons start with.  `file_reason(payload, policy, ctx=None, secret_guard=None)` returns the deny reason or None;  `path_reason`, `trusted_seat`, `load_secret_patterns` and `tool_kind` are public.  The policy is the one described for MiniMax above:  secret paths refused for reads and writes, the integration tree refused for writes (and reads, unless the policy allows them), review lanes, other seats' lanes and lanes without a trusted seat refused for writes, and a missing secret table or registry refused after the path checks.
+- **Adapters:**  `minimax_guard_hook.py` (label MiniMax, native and compatible Read/Write/Edit, fields `file_path` and `path`) and `claude_file_guard_hook.py` (label Claude, Read, Write, Edit, MultiEdit and NotebookEdit).  Claude allows reads of the integration tree, because the owner opens Claude Code sessions there;  writes there are still refused.  Shell commands stay with `lane-guard-hook` and the secret guard hook.  When the policy itself raises on one of its file tools, the Claude adapter refuses the call (fail closed);  MiniMax keeps its fail-open contract.
+- **Install:**  `apply tools` writes `<stable>/claude-file-guard-hook` (no prefilter) and probes the staged copy with Claude's file payloads.  `apply claude` keeps the shell group and adds a second `PreToolUse` group, matcher `Read|Write|Edit|MultiEdit|NotebookEdit`, timeout 10 seconds;  a narrow or stale file group of ours is corrected, a shared one is reported.  `verify claude` reads that group back and runs `probe_claude_files`:  Read, Edit, MultiEdit and NotebookEdit of `~/.secrets`, a Read of `~/.env` and a Write into the integration tree must be denied;  a Read inside the integration tree and a Read and Write of a public path must be allowed.
+- **Muster:**  the `claude-hooks-file-guard` rule names `claude-file-guard-hook`, and its L1 probe sends Read, Write and Edit payloads at `~/.secrets`.
+- **Not covered:**  Grep and Glob, MCP file tools, and shell programs that read files (the shell guards cover their own patterns).  A later seat adds its own adapter, installer wiring, probes and Muster row on the same core.
+- Tests: `fleet_lanes.tests.test_file_guard` and `fleet_lanes.tests.test_install_tools.ClaudeFileGuardInstallTests`.
+
 ### Copilot CLI
 
 Copilot CLI reads hooks from JSON files under `~/.copilot/hooks/`.  The fleet's guard is a NEW file this tool owns, `~/.copilot/hooks/fleet-lane-guard.json` (version 1, one `hooks.PreToolUse` group, matcher `Bash`, one `type: command` hook running `<stable>/fleet-guard-hook --format claude` by absolute path, `timeoutSec` 5).  The PascalCase `PreToolUse` event gets Claude matcher semantics and reports the Claude tool name, which is exactly the payload the fleet hook already parses, so the deny is the Claude shape.
@@ -424,7 +436,7 @@ A bare invocation, or one whose first argument is a flag, runs `plan` for all pl
 | `antigravity` | `.gemini/config/AGENTS.md` | Full |
 | `minimax` | `.minimax/memory/user.md` | The 3-line minimal text.  The file is already about 20 KB and goes into every prompt; it looks agent-managed and may be regenerated (UNVERIFIED), so `verify minimax` is how to catch a lost block. |
 | `cursor` | `.cursor/rules/fleet-lane-map.mdc` | Full, under `alwaysApply: true` frontmatter.  Whether Cursor loads user-level `.mdc` rules is UNVERIFIED. |
-| `clutch` | `.clutch/dsh/AGENTS.md` | Fleet Basics (AGENT-SYNC pointer, seat identity with the CLUTCH default and a launcher's seat first, coordination, landing, secrets, writing) then the Lane Map.  Refuses a result over 65536 bytes: the engine caps its whole instruction baseline there and drops the broadest file first. |
+| `clutch` | `.clutch/dsh/AGENTS.md` | Fleet Basics (FLEET-PROTOCOL pointer, seat identity with the CLUTCH default and a launcher's seat first, coordination, landing, secrets, writing) then the Lane Map.  Refuses a result over 65536 bytes: the engine caps its whole instruction baseline there and drops the broadest file first. |
 | `opencode` | `.config/opencode/AGENTS.md` | A Seat Identity with the fixed default seat OPENCODE, then the Lane Map.  OpenCode is the OPENCODE seat (owner, #440):  the default is for a session Jay opens in a terminal, a launcher's seat or a seat Jay names comes first, and a headless run or a session inside Conductor has no default.  It is not the whole Fleet Basics:  the live file is a whole copy of `~/AGENTS.md` (`docs/OPENCODE-ONBOARDING-PROMPT.md`), which already holds coordination, landing, secrets and writing, so this tool does not repeat them.  The row is the owner's (#438); `.config` is shared, so `.config/opencode` has to exist before `--create` writes.  OpenCode also walks AGENTS.md up to `$HOME`, so a session under `$HOME` may load this file and `~/AGENTS.md` (the same Lane Map twice; read from the binary, not run with a model), and `plan` says so. |
 | `kimi` | `.kimi-code/AGENTS.md` | Fleet Basics with NO default seat (take a launcher's seat or ask Jay), then the Lane Map |
 | `copilot` | `.copilot/copilot-instructions.md` | The same no-default text; the file name is from GitHub's documentation and is UNVERIFIED on this Mac (`plan` and `apply` print that) |
@@ -456,6 +468,142 @@ python3 -m fleet_lanes.install_mcp remove TARGET ...   [--with-simple-chat]
 
 Minimal by default: `fleet-recall` only.  `--with-simple-chat` adds `simple-chat mcp --default-seat <SEAT>` for the targets with a fixed seat (opencode OPENCODE, muse MC, minimax MM, fx FX, clutch CLUTCH) and never for a tool with no default seat (Kimi, Copilot CLI).  OpenCode is a target in code but is left out of the live batch:  a session OpenCode runs inside Conductor has no default seat and shares the same global file, so `simple-chat` is registered there only after the owner answers that question (#440).  No token is written and no `AGENT_SEAT` is pinned.  A tool whose home folder is missing is skipped, an entry with the same command is left as it is (`present`), a different command is `skipped-foreign`, a file that is not a JSON object is left alone, and an env block that pins `AGENT_SEAT` is reported.  One `*.bak-fleet-mcp-<stamp>` backup per file (always mode 0600, whatever the original's mode, so a config with a plaintext token never gets a second readable copy; `plan` and `apply` warn, without printing the value, when the file holds a literal Authorization, Bearer, token, key, password or secret string), an atomic replace, and a second apply writes nothing.  `verify --probe` starts each registered command and sends MCP `initialize` and `tools/list`, nothing else, in an environment without the seat, launcher and Zulip credential variables.  A `simple-chat` entry is probed only from a session that IS its seat (the registration's `--default-seat` reads that seat's credential file and acts as its bot), and is a SKIP from any other session.  `scripts/install-fleet-rag.sh` calls it for the six non-Clutch targets.  Clutch's patch is checked before it is written: `apply clutch --with-simple-chat` refuses unless `@deepseek-ai/dsh-mcp-client` resolves under the real `~/.clutch/dsh/profiles/node_modules` (restart `clutch-web` first if a link dangles), then runs the pinned `dsh --profile P --dump-config` for every profile on a scratch copy of the profiles (`--dsh PATH`, `--no-dsh-check`).  `--dump-config` is a merge-and-parse check, not a plugin load, so `install_tools verify clutch` on the final file comes next.  A profile with `patchReload: live` (clutch-web's `web`) watches the patch, so the write reaches the running engine at once; `apply` prints each profile's mode.  Tests: `fleet_lanes.tests.test_install_mcp`.
 
+## Placement (AFC-618)
+
+`placement.py` holds the exceptions file reader, the mode file and the event log.  `docs/protocols/lane-map.md`, "Placement Enforcement", says what each layer is for.  Nothing here runs until it is installed, and merging changes nothing live.
+
+### Exceptions
+
+`placement-exceptions.json`, shipped beside the package.  `{home}`, `{code}`, `{apps}` and `{lanes}` are filled from the host's roots, `*` is one path component, and `**` is any number of them.  A row needs `id`, `pattern`, `class`, `creator`, `reason`, `decided_by`, `decided_on`, `expires` and `hosts` (`mac`, `server`).  A pattern must name a literal folder after its root, so a catch-all never loads.  Dates are staggered, and the doctor warns 30 days ahead (`placement_warnings`, which `--strict-placement` does not fail on).
+
+The class says what a row excuses, because a pattern says only where, and a tool filling its cache and a seat typing a clone can name the same folder.  The shim records every excused command as an `excused` event.
+
+| Class | Excuses |
+|---|---|
+| `service`, `backup` | Everything, from the hook and the shim |
+| `tool-cache`, `package-manager` | A clone reaching the shim, outside temp and `~/Code`.  Never a worktree, and never the hook, which is an agent's own command |
+| `package-temp` | The same, only when the destination really is in temp (pip, pnpm) |
+| `third-party-build` | A mirror or bare clone, or a clone from a local path, which are the two SwiftPM makes, anywhere |
+| `temp-build` | Build output in temp:  a build tool's own temp folder, such as Homebrew building from source or `cargo install`.  Never a checkout.  It matches a folder by name alone, which an agent can choose, so it excuses only what the build shim and the watcher see, never a build the hook reads from an agent's own command.  `package-temp`, `service` and `backup` rows excuse a temp build too |
+| `personal`, `trash` | Nothing a guard judges.  The doctor reads them:  a personal row excuses a clone of a repo the registry does not hold, and a cache or personal row never excuses a linked worktree |
+
+`code_main_sync` fails closed where the others fail open:  a lapsed row still pins a clone, and a missing or malformed file fails every clone (`load_exceptions_strict`).  `tests/test_placement.py` is the schema check, and it refuses a private path.
+
+### Doctor
+
+`lane ls --strict-placement` exits 2 when `placement_anomalies` is not empty.  `--strict` is unchanged, so it still passes a worktree under `~/Code/<Repo>/.muse`.  Each checkout gains `sanctioned`, `cleanup_eligible`, `placement_exception` and `placement_violation`, and the report gains `main_clones` and `placement_anomalies`.  The location class and `cleaner_candidates` are unchanged:  a repo-local worktree stays MANAGED and retirable, and `cleanup_eligible` is why.  `--main-clone-behind N` sets the threshold, 20 by default.
+
+### Git shim
+
+`shims/git` is POSIX `sh` and `git_shim.py` is its decision module.  `install_tools apply tools` writes it to `~/apps/lane-tools/shims/git` and links nothing.  Only `clone`, `worktree add` or `move`, `archive`, `checkout-index`, an alias that may reach one of them, a `-c` or `--git-dir` before a word that may be an alias, or a `fetch`, `pull` or `remote add` the temp rule could apply to (run in, or with `-C` naming, a temp folder, or with `--git-dir`, `--work-tree` or `GIT_DIR` naming a repo the shell cannot judge) starts Python.  A `-c` before `fetch`, `pull` or `remote` does not, and neither does a plain `-C` before a word that turns out not to be an alias.  It resolves the roots the way the hook shims do:  the environment, then the home folder, then `FLEET_SERVER_VOLUME`.  A repo is fleet by its origin, so a stray checkout is still judged and a repo with no fleet origin is not.  With `isolation off`, a worktree add into a repo-local harness folder is left alone even under `block code`, because the `isolation` line rules on those.  Only exit 77 from Python blocks, and a missing Python, a crash, or Python's own three second limit runs the real git.  The shell gives an interpreter that stalls before it reaches that limit four seconds, then kills it and runs the real git.  Python gets none of git's streams, so a broken interpreter adds nothing to git's output;  a deny reason comes back through a temp file and the shell prints it.  Any exit but 0 or 77 leaves a fail-open event.  An inherited `SHELLOPTS` reaches git as it came, minus the `posix` that running as sh adds.  The real git is the next one on the process's own PATH every time, so an inherited `FLEET_GIT_SHIM_REAL` decides nothing.  Events go to `~/.local/state/fleet/lane-guard-events.jsonl`.  `lane` calls real git by absolute path.
+
+### Build shim and the temp-build class
+
+`temp_build.py` reads where a build writes from its argv alone, and the hook, `build_shim.py` and the watcher share it.  The hook (`guard.py`) records `xcodebuild`, `xcrun xcodebuild`, `swift`, `cargo`, `npm`, `pnpm`, `yarn` and `bun` output aimed at temp outside the scratchpad, under the class `temp-build`.  Clones keep their own rules:  a fleet clone into temp is the `temp` class and the hook denies it outright, a third-party clone to read stays allowed, and the watcher reports any checkout in temp that grows past 1 GB and sits idle.  The mode file decides it on the hook as well as the shim:  `detect` allows and logs a `detect` event, and `block` or `block temp-build` denies with `build-into-temp`, naming `~/Library/Caches` (`~/.cache` on the server) or the lane as the place to build instead.  The hook shims start Python only for a command naming one of `guard._TRIGGER`'s words, so an ordinary `xcodebuild` or `npm run build` stays free:  the hook sees a build whose text names an output option (`-derivedDataPath`, `-archivePath`, `-resultBundlePath`, `SYMROOT=`, `OBJROOT=`, `--target-dir`, `--build-path`, `--scratch-path`).  A build that writes into temp only because it runs there, or through `CARGO_TARGET_DIR`, is left to the build shim and the watcher.
+
+`shims/build` is POSIX `sh`, linked under each tool's name, and runs the next real tool on PATH.  It starts Python only when the working directory, an argument (whole, or after its `=`) or `CARGO_TARGET_DIR` names temp, and every failure runs the real tool with a `fail-open` event (`via` `build-shim`).  Exit 77 from `build_shim.py` blocks, and the shell prints the reason and exits 1.  `install_tools` ships `temp_build.py` with the package, because the guard imports it, but does not link the build shim yet:  linking `~/apps/lane-tools/shims/build` as `~/bin/xcodebuild` and the rest is a later, owner-approved step, and `FLEET_LANE_GUARD=off` or `off` in the mode file takes it out of every decision.
+
+### Placement watcher
+
+`python3 -m fleet_lanes.placement_watch` prints what it would file.  `--apply` files issues, posts, and remembers, under `~/.local/state/fleet/`:  `placement-watch.json` (what it has reported), `placement-watch-status.json` (read by `fleet-tools-doctor` and Muster) and `placement-report.json` (its last sweep, for reading;  it never reads that back).  It exits 3 on stale inputs, 4 when filing failed, and 5 when it ran but an external root refused to be read.  A run without `--apply` changes nothing else but does write the status file, with `held` true, so a watcher held in dry run shows on the doctor and Muster as held rather than leaving no row.  A dry run leaves the status of a run that was meant to act alone for three hours, failed or not, so running one by hand neither calls that watcher held nor hides its errors.  After that it takes over and carries `last_acting_run`, so a watcher that stopped still reads as stopped.  It files as CLAUDE until the owner chooses otherwise.  `simple-board` needs the seat bearer, so the job's environment must carry `SIMPLE_BOARD_BEARER_FILE`, the absolute path of that seat's private bearer file;  `SIMPLE_BOARD_TOOLS_TOKEN_FILE` and `SIMPLE_BOARD_TOOLS_PROJECT_ID`, the read-scoped token and project for the bearer verify key;  and `LINEAR_BOARD_INFISICAL_READ_TOKEN_FILE` and `LINEAR_BOARD_INFISICAL_PROJECT_ID`, the read of the seat's Linear credential folder.  A missing bearer file or verify token is exit 6, a missing Linear pair is exit 4, and in each case it sends nothing and says so in the status file.
+
+It holds its sends in two cases, and each says why in the status file.  More than 25 new findings in one run looks like a renamed mount or a wrong root, so it waits for one run with `--accept-burst`.  A lost or corrupt state file would make everything look new, so it waits for one run with `--reset-state`, which keeps the old file beside the new one.  A send whose outcome is unknown (a timeout, an unexpected exit, a Zulip network error that may have delivered) counts as sent and is never repeated.  A proven non-send is tried again next run:  no credential, a refused identity, a rate limit that outlasted its wait, or a network error from before the request left.  A filing always retries, since the board dedupes it on its uid, and a filing the board deduped goes in as a comment, because the board keeps the old text.  There is one rolling issue per rule class per host (misplaced checkouts, main clones, Code clones holding work, exceptions, the exceptions file, the mode file, hook coverage), not one per creator and repo, so a dry run that found 34 findings in 16 groups is a handful of issues.  A filing's body holds every row of that batch and names the creator and repo in each misplaced row;  a later batch goes in comments on the same issue, because the board keeps the old text.
+
+The owner gets one message for each new set of rows, however many, and at most one a day:  rows that arrive after it wait for the next, and that limit outlives `--reset-state`.  A message too long for Zulip counts the rows it cut, and they are all in the issues.  Two things reach it.  One is a clone in the Code root with a stash or with recent commits no remote has.  A clone whose only such work is local branches with nothing newer than 30 days is not urgent, because old squash-merged branches look the same, so it stays in the issue with the age in its row;  an age or a stash that could not be read counts as recent.  The other is a creator's leak in one repo still growing seven days after that leak first reached an issue, which counts per creator and repo even though the issue does not.
+
+Each run also measures the top-level folders of `/tmp`, `/var/tmp` and `$TMPDIR` (or the colon-separated `FLEET_TEMP_BUILD_SCAN_ROOTS`, and none at all in a test run without it).  A folder with a build or checkout mark (`Build`, `.build`, `target`, `node_modules`, `.git`, `package.json` and the like) at its top or one level down, at least 1 GB, and nothing newer than 24 hours in its top three levels is a `TEMP-BUILD` finding in the `temp-build` issue, posted as `{temp}/<name>`.  The scratchpad and anything a `temp-build` or `package-temp` row covers are passed over, the walk never follows a symlink or leaves the device, and it stops counting at 1 GB.  It reports and never removes.  A `temp-build` event from the hook or the build shim joins the same issue.
+
+A missing or broken exceptions file holds every placement finding and exits 3 until it is repaired, because each excused checkout would otherwise look misplaced.  So does an `install_tools verify` that could not run.  A path on a disk that is not mounted stays remembered, and the status file counts those as `out_of_sight`.
+
+launchd has no permission for `/Volumes/External` unless the owner grants it, and macOS answers with Operation not permitted, which a sweep would otherwise read as nothing there.  The doctor names such a root in `unreadable_roots` and in its warnings, and the watcher then writes `coverage: external-unreadable` in the status file, exits 5, and keeps every remembered finding on that root, including a path that reaches it through a lanes symlink.  An unmounted disk is the older case above, and it reads as `full`.
+
+`install_tools verify` under load, such as a doctor sweep alongside, can fail a good hook that misses its five seconds.  With `--verify-hooks` each platform with a failure is probed again, one at a time, and only a row that fails both times is reported:  `VERIFY-TIMEOUT` for `probe timed out`, and `VERIFY-FAIL` for `hook missing` or `hook failed its probe`.  A retry that cannot run leaves the first answer standing.
+
+### How far the shim reaches
+
+The shim only sees a process that finds it first on PATH.  `lane ls --strict-placement` (or `--shim-reach`) starts each common shell shape from launchd's default PATH, asks it `command -v git`, and prints a `SHIM REACH` section, also in the JSON as `shim_reach`.  It fails no check, and a plain `lane ls` starts no shells.  The server's reviewed CLI bundle carries the doctor without this module, so there it warns and skips the section.  `unknown` means a shape could not be asked, such as a dotfile that took over 15 seconds, and is not a no.
+
+On the owner's Mac `~/bin` is first on PATH only through `~/.zshrc`, so only `zsh -ic` starts at the shim.  One line reaches the shape agents use most, and it is the owner's to approve, because nothing here edits a dotfile.  Add it as the last line of `~/.zprofile`:
+
+```sh
+export PATH="$HOME/bin:$PATH"
+```
+
+That reaches `zsh -lc`.  It has to be `~/.zprofile` and not `~/.zshenv`, because macOS runs `path_helper` from `/etc/zprofile` after `.zshenv` and moves what that file added behind `/usr/bin`.  The same line in `~/.bash_profile` reaches `bash -lc`, or in `~/.profile` when there is no `~/.bash_profile`, and in `~/.zshenv` it reaches plain `zsh -c`.  `bash -c` and a launchd job read no dotfile at all, so no such line reaches them:  they keep whatever PATH their parent or plist gave them.
+
+For every shape the shim misses, the watcher is the backstop.  It finds the checkout on its next sweep and files it, so a miss means reported afterwards rather than stopped at the moment of the command.  That holds for a block as well, so turning on `block` protects only the shapes this section says the shim reaches.
+
+### code_main_sync
+
+The tracked source of the server's `code-main-sync`.  A clean clone with a stale `index.lock` failed its fast-forward on every run, and the job threw away the stderr that said so.  It now clears a lock over an hour old that no process holds, logs git's first error line, and passes over a folder that is no repo and a clone with an exception row.  The Mac keeps `code-main-keeper`, tracked as `scripts/code-main-keeper.sh` (see Mirror Rule below).
+
+### Mirror Rule
+
+`mirror_write.py` answers one question for the git shim:  is this `commit` or `stash` (anything but `stash list` and `stash show`, and not `commit --dry-run`) writing into a primary clone that sits directly under the Code root?  If so, `git_shim.decide` logs a `mirror-warn` event and, by the `mirror` line of the mode file, warns or blocks.  The mode file now takes `mirror off|detect|block`, with `detect` the default.  It is a line of its own like `isolation`, and a bare `block` never turns it on.  The shim sends `commit` and `stash` to Python only when the folder is under the Code root (or an alias might lead to either), so a commit anywhere else never starts an interpreter.  A warning is exit 78 from Python, which the shell prints and then runs the real git, where a block is exit 77.  The placement watcher counts only `detect` and `block` actions, so `mirror-warn` and `mirror-block` never read as a misplaced checkout.  Gaps, by design:  a git not found through PATH, a `!` alias, `--git-dir` with no `--work-tree`, and `GIT_DIR` are not judged.  Tests:  `tests/test_mirror_write.py`.
+
+`scripts/code-main-keeper.sh` is the tracked source of the Mac's `code-main-keeper` (until AFC-618 it lived only at `~/apps/code-main-keeper.sh`).  Its only write is `git fetch origin` then `git merge --ff-only origin/main`, on an allowlisted clone on `main` that is completely clean and whose HEAD is an ancestor of origin/main.  Everything else is logged and left as found:  `HOLD` for an allowlisted clone it did not move, `NOTE` for a dirty tree, an off-main branch, local-only branches, stashes, or a clone that is mirror only (not on the allowlist, and not even fetched).  Edit the `ALLOWLIST_DEFAULT` array to add a repo on purpose.  Tests:  `tests/test_code_main_keeper.py`, with real git and a fake Code root.  Deploy by copying the file over `~/apps/code-main-keeper.sh`;  the pm2 loop runs it fresh every 60 seconds.
+
+### Install, Mac
+
+Run these after merge.  Each step stands alone and rolls back by itself.
+
+```bash
+AFC=~/apps/lanes/_managed/fleet/simple-tools-runtime/scripts     # or any up-to-date checkout's scripts folder
+cd "$AFC"
+# 1. Refresh the stable copy.  Remove the stray patch_*.py files from ~/apps/lane-tools first, or `tools` stays FAIL.
+python3 -m fleet_lanes.install_tools plan tools && python3 -m fleet_lanes.install_tools apply tools
+python3 -m fleet_lanes.install_tools apply claude          # widens the Claude matcher;  start new sessions to pick it up
+python3 -m fleet_lanes.install_tools verify all
+# 2. Watcher.  Issues start here, with no denies.
+export SIMPLE_BOARD_BEARER_FILE=/absolute/path/to/seat-bearer   # the seat bearer's private file, which the owner places;  the path is not a secret, the file's contents are
+export SIMPLE_BOARD_TOOLS_TOKEN_FILE=/absolute/path/to/tools-read-token      # the /tools read-scoped service token's private file
+export SIMPLE_BOARD_TOOLS_PROJECT_ID=fleet-ops-project-id                    # the Fleet-OPS project the verify key lives in
+export LINEAR_BOARD_INFISICAL_READ_TOKEN_FILE=/absolute/path/to/afc-linear-read-token   # the AFC /linear read-scoped token's private file
+export LINEAR_BOARD_INFISICAL_PROJECT_ID=afc-project-id                      # the AI Fleet Coordinator project
+# Look first:  run it without --apply, and if more than 25 new findings are real, run it once with --apply --accept-burst.
+sed -e "s#@HOME@#$HOME#g" -e "s#@BEARER_FILE@#$SIMPLE_BOARD_BEARER_FILE#g" -e "s#@TOOLS_TOKEN_FILE@#$SIMPLE_BOARD_TOOLS_TOKEN_FILE#g" -e "s#@TOOLS_PROJECT_ID@#$SIMPLE_BOARD_TOOLS_PROJECT_ID#g" -e "s#@INFISICAL_READ_TOKEN_FILE@#$LINEAR_BOARD_INFISICAL_READ_TOKEN_FILE#g" -e "s#@INFISICAL_PROJECT_ID@#$LINEAR_BOARD_INFISICAL_PROJECT_ID#g" fleet_lanes/templates/com.jay.lane-placement-watch.plist > ~/Library/LaunchAgents/com.jay.lane-placement-watch.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jay.lane-placement-watch.plist
+# 3. Shim, in detect.  Add the Master List rows and refresh the note in the same change.
+mkdir -p ~/.config/fleet && printf 'detect\nisolation off\n' > ~/.config/fleet/lane-guard-mode
+ln -s ~/apps/lane-tools/shims/git ~/bin/git
+# Rollback:  rm ~/bin/git, or put `off` in the mode file;  launchctl bootout gui/$(id -u)/com.jay.lane-placement-watch
+```
+
+### Install, Server
+
+The volume path stays out of this repository.  Read it from `fleet-ops:ATTACK-MAP.md`.
+
+```bash
+sudo install -d /etc/fleet
+# /etc/fleet/lanes.conf:  FLEET_CODE_ROOT=, FLEET_APPS_ROOT=, FLEET_LANES_ROOT=, each the volume's real path
+AFC=~/.local/share/fleet-cli/repo/scripts
+cd "$AFC"
+# 1. Refresh the package and bring the dead guards back.
+python3 -m fleet_lanes.install_tools apply tools
+python3 -m fleet_lanes.install_tools apply minimax cursor grok claude
+python3 -m fleet_lanes.install_tools verify all
+muse plugins list      # disable integration-lane-guard if its command is gone:  the watcher reports it as DEAD-HOOK
+# 2. Fix code-main-sync.  In a drop-in for the unit, with `sudo systemctl edit code-main-sync.service`:
+#      [Service]
+#      EnvironmentFile=/etc/fleet/lanes.conf
+#      ExecStart=
+#      Environment=FLEET_SYNC_RELAY_URL=http://127.0.0.1:8471
+#      Environment=FLEET_SYNC_BEARER_FILE=<home>/.secrets/fleet-tools/<seat>
+#      ExecStart=/usr/bin/python3 -I <home>/.local/share/fleet-cli/repo/scripts/fleet_lanes/code_main_sync.py
+#    `install_tools` does not copy this script, so run it from the fleet CLI clone, which follows main.
+#    Every fetch then goes through the relay's read-only /git/ route as that seat, so the unit uses no GitHub credential, and a route it cannot use fails the clone.
+sudo systemctl start code-main-sync.service && journalctl -u code-main-sync.service -n 25 --no-pager
+# 3. Watcher, then shim in detect.
+# /etc/fleet/placement-watch.conf holds SIMPLE_BOARD_BEARER_FILE=<private file path>, FLEET_APPS_JSON=<stable>/fleet-apps.json, SIMPLE_BOARD_TOOLS_TOKEN_FILE and SIMPLE_BOARD_TOOLS_PROJECT_ID (the bearer verify key's token and project), and LINEAR_BOARD_INFISICAL_READ_TOKEN_FILE with LINEAR_BOARD_INFISICAL_PROJECT_ID (the Linear credential read).
+sudo install -m 0644 systemd/lane-placement-watch.service systemd/lane-placement-watch.timer /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now lane-placement-watch.timer
+printf 'detect\nisolation off\n' > ~/.config/fleet/lane-guard-mode
+# Add <stable>/shims to the managed bashrc block for root and jay, and to a unit's Environment=PATH only after review.
+# BotFleet's unit sets its own HOME, so its engines need the shim on that unit's PATH and their own mode file.
+```
+
+Move to `block` one class at a time, by editing the mode file, after at least seven days of detect logs:  `temp`, then `code`, then `home` and `apps`, then `clone-in-lanes`.
+
 ## Rollout order for live installs
 
 Each step is owner-approved, read the `plan` first, and nothing here is installed until that happens (nothing under `~/apps/lane-tools`, no `~/apps/lane`, no hook entry and no rules block exists yet).
@@ -482,6 +630,12 @@ python3 -m unittest fleet_lanes.tests.test_install_tools -v
 python3 -m unittest fleet_lanes.tests.test_install_mcp -v
 python3 -m unittest fleet_lanes.tests.test_fleet_guard_hook -v
 python3 -m unittest fleet_lanes.tests.test_dsh_check -v
+python3 -m unittest fleet_lanes.tests.test_placement fleet_lanes.tests.test_guard_placement fleet_lanes.tests.test_git_shim -v
+python3 -m unittest fleet_lanes.tests.test_doctor_placement fleet_lanes.tests.test_placement_watch fleet_lanes.tests.test_code_main_sync -v
+python3 -m unittest fleet_lanes.tests.test_shim_reach -v
+python3 -m unittest fleet_lanes.tests.test_temp_build -v
 ```
+
+A test run cannot write the account's real event log:  `fleet_lanes/__init__.py` marks every child of a test process with `FLEET_LANES_TEST_RUN`, and `placement.log_event` and the shim's two fail-open writers refuse the real log when that marker or `unittest` is present, whatever `HOME` says.  The fixture home is `/Users/fixture-home`, so a fixture row no longer names the owner's real home.
 
 The tests build real throwaway git repos with a hermetic git config, fake `gh` and `lsof`, and never scan the real `/tmp`.  They take minutes rather than seconds because every report or lane creation runs real git, and `/usr/bin/git` on macOS costs 60 to 100 milliseconds per call, more on a loaded machine (`test_lane` took 100 to 230 seconds at a load average near 900).  The installers are tested against temp fake homes only; never run `apply` against the real home from a test or a demo.  `test_guard` has a timing assertion on the allowed-command path that can fail once on a very loaded machine; rerun before treating it as a regression.

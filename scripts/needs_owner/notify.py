@@ -8,7 +8,7 @@ with the message on standard input.  The mention comes from the owner id pinned 
 (`--to-owner`), never from a name.  On success a comment `[needs-owner] notified msg <id>` records the
 message.  When the post fails or the seat has no bot credential the item gets `[needs-owner]
 notify_pending` and CLAUDE's fallback notifier (C6-2) sends it.  A mirrored item (`--mirror-of`) has no
-post of its own:  the Grok Bot persona's topic is the notice, so its message id is recorded and the
+post of its own:  the Grok bot's topic is the notice, so its message id is recorded and the
 Linear link is replied in that topic.
 
 A post that may or may not have gone through (simple-chat exit 5 or 6, or a timeout) is never retried
@@ -21,8 +21,9 @@ a peer who copies the (public) uid can never become the notice.
 A board write is classified before anything is done with it.  `ok` is the comment on the issue.  `retryable`
 means the board decided before it wrote anything and a later run may write the record again (exit 3, the
 claim is held by another seat, and exit 5, the rate limit).  `terminal` means it decided before it wrote
-anything and no retry will help until an operator acts (exit 2 usage, 4 no credentials, 6 auth refused and
-7 writes off), and it raises BoardFailed, so the CLI exits with the board's own code.  `unknown` means the
+anything and no retry will help until an operator acts (exit 2 usage, 4 no credentials, and 6 no
+bearer-verified seat or a refused authentication), and it raises BoardFailed, so the CLI exits with
+the board's own code.  `unknown` means the
 write may have landed (a timeout, an exit-1 GraphQL
 refusal, a transport failure, or anything we cannot prove was never sent):  the row is kept as unknown,
 so the record is never written twice.
@@ -49,7 +50,7 @@ from .items import Item
 from .proc import Result, Runner
 
 SESSION = "needsown"  # simple-chat cuts a session label to 8 characters
-# The realm renamed #agent-sync, and the env var overrides it.  The name is read
+# The service channel;  the env var overrides it.  The name is read
 # through the links module, which casefolds it, so a mixed-case override still
 # compares with the casefolded channel names everywhere else.
 CHANNEL = linkmod.resolve_channel()
@@ -59,14 +60,17 @@ FALLBACK_SEAT = "CLAUDE"  # CLAUDE's fallback notifier (C6-2) posts a pending no
 _FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 
 # The board CLI's exit codes, and what each one means for a write.  2 usage,
-# 4 no credentials, 6 auth refused and 7 writes off are all decided before
-# anything is written, and a retry will not help until an operator acts:  they
-# are terminal.  3 claim held and 5 rate limit are decided before anything is
-# written too, but a later run may write the record, so they are retryable.
+# 4 no credentials, and 6 no bearer-verified seat or a refused authentication
+# are all decided before anything is written, and a retry will not help until
+# an operator acts:  they are terminal.  3 claim held and 5 rate limit are
+# decided before anything is written too, but a later run may write the
+# record, so they are retryable.
 # Exit 1 is the generic failure:  it carries both a GraphQL refusal and a
 # transport failure, and the mutation may have landed, so it is unknown.
+# Exit 7 is retired:  it was the writes-off switch, and the bearer-verified
+# seat is the only write gate now.
 BOARD_RETRYABLE_CODES = (3, 5)
-BOARD_TERMINAL_CODES = (2, 4, 6, 7)
+BOARD_TERMINAL_CODES = (2, 4, 6)
 UNKNOWN_MARKERS = ("no usable response", "not confirmed", "timed out", "timeout")
 
 # The four outcomes of a board write.
@@ -286,8 +290,8 @@ def find_notice(
 
     The channel comes from the caller's own `environ`, and from the runner's own
     environment when there is none:  never from the process environment, so an
-    ambient `AGENT_SYNC_CHANNEL` cannot decide where the notice is read."""
-    result = runner.agent_sync(
+    ambient `SIMPLE_TOOLS_CHANNEL` cannot decide where the notice is read."""
+    result = runner.simple_tools(
         "read",
         "--as",
         runner.seat,
@@ -648,7 +652,7 @@ def notify(
         earlier = find_notice(runner, topic, b.uid, filer=b.filed_by, channel=channel)
         if earlier is not None:
             return _announce(runner, item, earlier, topic)
-    result = runner.agent_sync(
+    result = runner.simple_tools(
         "post",
         "--as",
         runner.seat,
@@ -677,7 +681,7 @@ def notify(
             else _pending(runner, item, topic, "send_failed")
         )
     if result.missing:
-        return _pending(runner, item, topic, "no_agent_sync")
+        return _pending(runner, item, topic, "no_simple_tools")
     if result.timed_out or result.code in MAYBE_SENT_CODES:
         landed = find_notice(runner, topic, b.uid, filer=b.filed_by, channel=channel)
         if landed is not None:
@@ -689,14 +693,14 @@ def notify(
 
 
 def _mirror(runner: Runner, item: Item, link: linkmod.TopicLink) -> Notice:
-    """A Grok Bot persona already opened the topic:  record its message as the notice, then reply there
+    """A Grok bot already opened the topic:  record its message as the notice, then reply there
     with the Linear link (the reply is a courtesy;  its failure is reported and does not undo the record)."""
     notice = _announce(runner, item, link.message_id, link.topic)
     reply = "Filed in Linear as %s:  %s\n\nAnswer here or as a comment on the Linear issue.\n" % (
         item.identifier,
         item.url,
     )
-    result = runner.agent_sync(
+    result = runner.simple_tools(
         "reply",
         "--as",
         runner.seat,

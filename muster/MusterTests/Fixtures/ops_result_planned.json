@@ -1,0 +1,1 @@
+{"ok": true, "verb": "server restart", "target": "fleet-server-status.timer", "commands": [["systemctl", "--user", "restart", "fleet-server-status.timer"]], "result": "planned", "detail": "Nothing has run."}

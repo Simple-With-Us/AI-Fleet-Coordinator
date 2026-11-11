@@ -4,17 +4,27 @@
 Launchd: com.jay.mac-resource-watch (every 5 min).
 On-demand: python3 ~/apps/mac-resource-watch.py --once
 Never prints webhook secrets.  Load BOTFLEET_HOUSEKEEPER_WEBHOOK_* from the environment, else
-from Infisical Fleet-OPS /botfleet-housekeeper-webhook (`fleet-secrets get`), and, if present,
-GROK_BOT_HOUSEKEEPER_WEBHOOK_* from /grok-bot-housekeeper-webhook, without echoing values.
-No credential file is read (AFC-359).  BotFleet is the primary wake.  Grok Bot is optional.
+from Infisical Fleet-OPS prod:/botfleet-housekeeper-webhook with the scoped read-only service
+token in the owner's login keychain, and, if present,
+GROK_BOT_HOUSEKEEPER_WEBHOOK_* from the environment, without echoing values.
+The token is scoped to /botfleet-housekeeper-webhook alone, so the Grok Bot pair has no
+Infisical source.  There is no fleet-secrets fallback and no cached copy:  a missing
+keychain item, a locked keychain or any Infisical error yields no webhook.
+BotFleet is the primary wake.  Grok Bot is optional.
+
+The log says where each wake's credentials came from and, when they are missing, WHY
+(AFC-609), so a skipped delivery is never reported as the one vague line that said
+"no valid urls/secrets found" about every different failure.
 """
 
 from __future__ import annotations
 
 import argparse
+import calendar
 import contextlib
 import ctypes
 import fcntl
+import http.client
 import json
 import math
 import os
@@ -26,6 +36,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from contextlib import contextmanager
@@ -35,9 +46,33 @@ HOME = Path.home()
 STATE_DIR = HOME / ".claude-disk-janitor"
 STATE_FILE = STATE_DIR / "resource-watch-state.json"
 LOG_FILE = HOME / "Library" / "Logs" / "mac-resource-watch.log"
-FLEET_SECRETS = Path(os.environ.get("FLEET_SECRETS") or HOME / ".local" / "bin" / "fleet-secrets")
 BF_SECRET_FOLDER = "/botfleet-housekeeper-webhook"
-GB_SECRET_FOLDER = "/grok-bot-housekeeper-webhook"
+# The scoped read-only service token for this watcher (AFC-621, AFC-624).  It lives in
+# the owner's login keychain as one generic-password item per token:  the service is
+# KEYCHAIN_SERVICE and the account is the token's registry name, so a reader holding the
+# registry row can find the item by that name.  It is NOT in the shared `fleet-secrets`
+# reader, NOT in the environment and NOT in a file on disk:  the token is what the
+# watcher is allowed to read, and a store only this watcher reads keeps it that narrow.
+KEYCHAIN_SERVICE = "infisical-service-token"
+KEYCHAIN_ACCOUNT = "mac-resource-watch-ro"
+# The login keychain is reachable only from the owner's GUI session.  A launchd agent
+# bootstrapped into gui/$(id -u) is in that session; a plain shell over SSH is not, and
+# `security` there answers "User interaction is not allowed".
+SECURITY_BIN = "/usr/bin/security"
+# `security find-generic-password` exit codes:  44 is errSecItemNotFound (there is no
+# such item) and 36 is errSecInteractionNotAllowed (the keychain is locked, or the
+# caller is outside the GUI session).  Both are refusals, and the watcher has to be able
+# to tell the owner which one it was.
+SECURITY_ITEM_NOT_FOUND = 44
+SECURITY_INTERACTION_NOT_ALLOWED = 36
+INFISICAL_API = "https://app.infisical.com/api"
+INFISICAL_PROJECT_ID = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"
+INFISICAL_ENVIRONMENT = "prod"
+INFISICAL_TIMEOUT = 15
+# One retry, and only for a timeout:  that is the one failure that is the
+# machine being slow rather than the credentials being wrong.  A 404, a 403
+# and a malformed body are NOT retried, because the answer will not change.
+INFISICAL_RETRY_SEC = 2
 CLEANUP = HOME / "apps" / "mac-auto-cleanup.sh"
 JANITOR = HOME / ".claude-disk-janitor" / "janitor.sh"
 # The exit codes that mean the cleanup itself ran.  75 is the cleanup
@@ -229,46 +264,255 @@ def save_state(state: dict) -> None:
     tmp.replace(STATE_FILE)
 
 
-def _fleet_secret(name: str, folder: str) -> str:
-    """One Infisical value via `fleet-secrets get`, or "" when absent or unreachable.  Never logs it."""
-    if not FLEET_SECRETS.is_file():
-        return ""
+def _service_token_status() -> tuple[str, str]:
+    """The scoped read-only Infisical token from the owner's login keychain, and why.
+
+    Returns (token, status).  The token is "" for every refusal, exactly as
+    before;  the status says WHICH refusal it was -- "no-token" (there is no
+    such item in the keychain), "keychain-locked" (the keychain refused the
+    read, because it is locked or the caller is outside the owner's GUI
+    session) or "token-unreadable" (the item is there but the read failed) --
+    because a watcher that skipped its delivery for one of those reasons has
+    to be able to tell the owner which one it was.
+
+    The token value is never printed, logged or echoed.
+    """
+    command = [
+        SECURITY_BIN,
+        "find-generic-password",
+        "-s",
+        KEYCHAIN_SERVICE,
+        "-a",
+        KEYCHAIN_ACCOUNT,
+        "-w",
+    ]
     try:
-        proc = subprocess.run(
-            [str(FLEET_SECRETS), "get", name, "--path", folder],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            stdin=subprocess.DEVNULL,
-        )
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
-        return ""
-    return proc.stdout.strip() if proc.returncode == 0 else ""
+        return "", "token-unreadable"
+    if result.returncode == 0:
+        token = result.stdout.strip()
+        return (token, "ok") if token else ("", "no-token")
+    detail = (result.stderr or "").lower()
+    if result.returncode == SECURITY_ITEM_NOT_FOUND or "could not be found" in detail:
+        return "", "no-token"
+    if (
+        result.returncode == SECURITY_INTERACTION_NOT_ALLOWED
+        or "interaction is not allowed" in detail
+    ):
+        return "", "keychain-locked"
+    return "", "token-unreadable"
+
+
+def _service_token() -> str:
+    """The scoped read-only Infisical token from the owner's login keychain, or "".
+
+    A missing item, a locked keychain or an unreadable store yields no token
+    and no output:  the watcher then simply has no webhook, which is the
+    fail-closed behaviour the scoped migration asks for.  The token value is
+    never printed, logged or echoed.
+
+    This is the credential-only view;  `_service_token_status` is the same
+    read with the reason it came back empty.
+    """
+    return _service_token_status()[0]
+
+
+def _infisical_get_status(name: str, folder: str, token: str) -> tuple[str, str]:
+    """One Infisical value read with the scoped service token, and the reason.
+
+    Returns (value, status).  The value is "" for every failure, exactly as
+    it was before;  the status is what says WHICH failure it was, so a
+    skipped delivery can be told apart from a delivery that was refused:
+
+      ok          a 200 with a usable body
+      absent      404 -- the name is not in that folder
+      forbidden   403 -- the token does not cover that folder
+      http-<code> any other non-200
+      timeout     the API did not answer in time
+      unreachable the transport failed
+      truncated   the response was incomplete or malformed
+      bad-output  the body was not the shape this route answers
+
+    Reads the v3 raw route, which is the one this deployment answers
+    (`/api/v3/secrets/raw/{name}`;  the v1 `/api/v1/secrets` route answers
+    404 here, so a v1 URL would fail closed every time).
+
+    Fails closed:  only a 200 with a usable body yields a value.  Any other
+    status, a transport error or an unparseable body yields "", and there is
+    NO fallback to `fleet-secrets`, to the Automation identity or to any other
+    credential source (AFC-621).  A token scoped to one folder is refused by
+    Infisical outside that scope, which lands here as a 403 and yields
+    nothing.  The value is never printed or logged.
+    """
+    if not token:
+        return "", "no-token"
+    query = urllib.parse.urlencode(
+        {
+            "projectId": INFISICAL_PROJECT_ID,
+            "environment": INFISICAL_ENVIRONMENT,
+            "secretPath": folder,
+        }
+    )
+    url = f"{INFISICAL_API}/v3/secrets/raw/{urllib.parse.quote(name)}?{query}"
+    request = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+    )
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(request, timeout=INFISICAL_TIMEOUT) as response:
+                if response.getcode() != 200:
+                    return "", f"http-{response.getcode()}"
+                raw = response.read()
+        except urllib.error.HTTPError as exc:
+            #  A 404 means the name is not in that folder and a 403 means the
+            #  token does not cover it.  They are different problems, and
+            #  only one of them is fixed by changing the token.
+            if exc.code == 404:
+                return "", "absent"
+            if exc.code == 403:
+                return "", "forbidden"
+            return "", f"http-{exc.code}"
+        except urllib.error.URLError as exc:
+            #  urlopen wraps the socket error, so a read that ran out of time
+            #  arrives here carrying a TimeoutError as its reason.
+            if isinstance(exc.reason, (socket.timeout, TimeoutError)):
+                if attempt == 0:
+                    time.sleep(INFISICAL_RETRY_SEC)
+                    continue
+                return "", "timeout"
+            return "", "unreachable"
+        except TimeoutError:
+            if attempt == 0:
+                time.sleep(INFISICAL_RETRY_SEC)
+                continue
+            return "", "timeout"
+        except (http.client.HTTPException, ValueError):
+            #  A truncated or malformed response raises http.client's own
+            #  exceptions (IncompleteRead, BadStatusLine), and those are neither
+            #  OSError nor URLError.  They must fail closed like every other
+            #  transport error: a crashed run would skip save_state() and make
+            #  the next scheduled run repeat the cleanup it already did.
+            return "", "truncated"
+        except OSError:
+            return "", "unreachable"
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return "", "bad-output"
+        if not isinstance(payload, dict):
+            return "", "bad-output"
+        # The raw route wraps the secret in a "secret" object;  a bare object is
+        # accepted too so an API shape change cannot silently empty the value.
+        inner = payload.get("secret")
+        secret = inner if isinstance(inner, dict) else payload
+        value = secret.get("secretValue")
+        if not isinstance(value, str) or not value.strip():
+            return "", "bad-output"
+        return value.strip(), "ok"
+    return "", "timeout"
+
+
+def _infisical_get(name: str, folder: str, token: str) -> str:
+    """One Infisical value read with the scoped service token, or "".
+
+    The credential-only view of `_infisical_get_status`:  the value is "" for
+    every failure, and the reason is dropped.  The watcher itself uses the
+    status form so it can say what went wrong;  this keeps the plain form
+    for a caller that only wants the value.
+    """
+    return _infisical_get_status(name, folder, token)[0]
+
+
+def _env_webhook(url_key: str, secret_key: str) -> tuple[str, str]:
+    """The webhook pair from the environment, which always wins."""
+    return os.environ.get(url_key, "").strip(), os.environ.get(secret_key, "").strip()
+
+
+def _read_webhook_status(folder: str, url_key: str, secret_key: str) -> tuple[str, str, str]:
+    """Environment first, then the scoped Infisical service token (folder).
+
+    The environment still wins, as before:  the launchd job may inject the
+    pair directly, and an injected value is never second-guessed.  Otherwise
+    the value comes from Infisical with the scoped token -- and from nowhere
+    else.
+
+    Returns (url, secret, status).  The status says where the values came
+    from, or why they are missing:  "env", "ok", "env+infisical", "no-token",
+    "keychain-locked", "token-unreadable", "absent", "forbidden",
+    "http-<code>", "timeout", "unreachable", "truncated" or "bad-output".
+    """
+    url, secret = _env_webhook(url_key, secret_key)
+    if url and secret:
+        return url, secret, "env"
+    token, token_status = _service_token_status()
+    if not token:
+        return url, secret, token_status
+    sources: list[str] = []
+    if url:
+        sources.append("env")
+    else:
+        url, status = _infisical_get_status(url_key, folder, token)
+        sources.append(status)
+    if secret:
+        sources.append("env")
+    else:
+        secret, status = _infisical_get_status(secret_key, folder, token)
+        sources.append(status)
+    if sources == ["env", "env"]:
+        return url, secret, "env"
+    if sources == ["env", "ok"] or sources == ["ok", "env"]:
+        return url, secret, "env+infisical"
+    if len(set(sources)) == 1:
+        return url, secret, sources[0]
+    return url, secret, "+".join(sources)
 
 
 def _read_webhook(folder: str, url_key: str, secret_key: str) -> tuple[str, str]:
-    """Environment first, then Infisical `fleet-secrets get` (folder)."""
-    url = os.environ.get(url_key, "").strip() or _fleet_secret(url_key, folder)
-    secret = os.environ.get(secret_key, "").strip() or _fleet_secret(secret_key, folder)
+    """Environment first, then the scoped Infisical service token (folder).
+
+    The credential-only view of `_read_webhook_status`.
+    """
+    url, secret, _status = _read_webhook_status(folder, url_key, secret_key)
     return url, secret
 
 
-def load_webhooks() -> list[tuple[str, str, str]]:
-    """Return list of (name, url, secret).  Never print url/secret."""
+def load_webhooks_status() -> tuple[list[tuple[str, str, str]], list[str]]:
+    """Return (hooks, notes).  Never print url/secret.
+
+    `hooks` is the list of (name, url, secret) the watcher will fire.
+    `notes` says, per wake, where its credentials came from and -- when they
+    are missing -- WHY, so a skipped delivery can be told apart from a
+    delivery that was refused.  The notes carry status tokens only:  no url,
+    no secret and no value of any kind is ever put in them.
+    """
     hooks: list[tuple[str, str, str]] = []
-    bf_url, bf_secret = _read_webhook(
+    notes: list[str] = []
+    bf_url, bf_secret, bf_status = _read_webhook_status(
         BF_SECRET_FOLDER, "BOTFLEET_HOUSEKEEPER_WEBHOOK_URL", "BOTFLEET_HOUSEKEEPER_WEBHOOK_SECRET"
     )
     if bf_url and bf_secret:
         hooks.append(("BotFleet", bf_url, bf_secret))
-    # Optional second wake;  no Infisical folder exists for it yet, so this is skipped unless the
-    # environment or a future /grok-bot-housekeeper-webhook folder supplies both names.
-    gb_url, gb_secret = _read_webhook(
-        GB_SECRET_FOLDER, "GROK_BOT_HOUSEKEEPER_WEBHOOK_URL", "GROK_BOT_HOUSEKEEPER_WEBHOOK_SECRET"
+    notes.append(f"BotFleet={bf_status}")
+    # The Grok Bot pair is environment-only:  the service token is scoped to
+    # prod:/botfleet-housekeeper-webhook, so there is no Infisical path for
+    # it and no second token is read.  It is optional, so its absence never
+    # blocks the BotFleet wake.
+    gb_url, gb_secret = _env_webhook(
+        "GROK_BOT_HOUSEKEEPER_WEBHOOK_URL", "GROK_BOT_HOUSEKEEPER_WEBHOOK_SECRET"
     )
     if gb_url and gb_secret:
         hooks.append(("GrokBot", gb_url, gb_secret))
-    return hooks
+        notes.append("GrokBot=env")
+    else:
+        notes.append("GrokBot=env-absent")
+    return hooks, notes
+
+
+def load_webhooks() -> list[tuple[str, str, str]]:
+    """Return list of (name, url, secret).  Never print url/secret."""
+    return load_webhooks_status()[0]
 
 
 def _housekeeper_owner_path() -> Path:
@@ -406,10 +650,12 @@ def _housekeeper_guard():
 # all.
 _OWNER_KEYS = frozenset({"pid", "host", "acquired_at", "lock", "start"})
 
-# The start time of the holder's process, as the kernel reports it.  It is an
-# OPAQUE string:  it is compared and never parsed, so the only bound it needs
-# is one that keeps a hostile file from putting an unbounded string in memory.
+# The start time of the holder's process, as the kernel reports it.  Readers
+# parse this fixed C-locale civil timestamp only to recognize legacy local
+# tokens across a timezone change; the bound also limits hostile input size.
 _OWNER_START_MAX = 128
+_OWNER_ACQUIRED_AT_FS_SKEW_SEC = 2.0
+_OWNER_ACQUIRED_AT_FUTURE_SKEW_SEC = 60.0
 
 
 def _parse_housekeeper_owner(raw: str) -> dict | None:
@@ -464,6 +710,20 @@ def _parse_housekeeper_owner(raw: str) -> dict | None:
     return owner
 
 
+def _owner_acquired_at_is_sane(
+    acquired_at: float, lock_mtime: float, owner_mtime: float, *, now: float | None = None
+) -> bool:
+    """Whether acquired_at agrees with the lock and owner file timestamps."""
+    if not math.isfinite(acquired_at):
+        return False
+    now = time.time() if now is None else now
+    skew = _OWNER_ACQUIRED_AT_FS_SKEW_SEC
+    return (
+        lock_mtime - skew <= acquired_at <= owner_mtime + skew
+        and acquired_at <= now + _OWNER_ACQUIRED_AT_FUTURE_SKEW_SEC
+    )
+
+
 def _read_housekeeper_owner() -> dict | None:
     """Read the owner file and parse it, under the shared guard.
 
@@ -491,29 +751,30 @@ def _read_housekeeper_owner() -> dict | None:
         return None
 
 
-def _process_start_token(pid: int) -> str:
-    """The start time of the process a pid names, as an opaque string.
+def _process_start_token(pid: int, *, utc: bool = False) -> str:
+    """The C-locale start time of the process a pid names.
 
     A pid alone does not name a process:  the kernel hands the same number to
     somebody else once the original exits, and a reused pid that is ALIVE
     looks exactly like a holder that is still running.  The start time tells
     the two apart.
 
-    The token is read from the kernel through ps and kept as a string that is
-    compared and never parsed, so the format does not have to be understood
-    here.  The C locale is forced, because the writer and the reader have to
-    produce the SAME string for the same process:  a token that differed only
-    because the two processes ran under different locales would read as a
-    different process, and a live holder's lock would be taken away from it.
+    Readers compare exact UTC tokens directly and parse a differing token
+    only as the fixed English civil form emitted under LC_ALL=C.  That lets a
+    reader recognize a legacy local token after the host timezone changes.
 
     An empty token means the start time could not be read at all.  A caller
     that cannot tell the holder from a reused pid must not conclude that the
     holder is gone.
     """
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C"}
+    if utc:
+        # Readers normalize to UTC.  Writers keep the existing local token
+        # until every reader in the fleet accepts both forms.
+        env["TZ"] = "UTC0"
     try:
         result = subprocess.run(
-            ["ps", "-o", "lstart=", "-p", str(pid)],
+            ["/bin/ps", "-o", "lstart=", "-p", str(pid)],
             capture_output=True,
             text=True,
             timeout=10,
@@ -525,6 +786,74 @@ def _process_start_token(pid: int) -> str:
     if result.returncode != 0:
         return ""
     return result.stdout.strip()
+
+
+def _c_lstart_epoch(token: str) -> float | None:
+    """Parse the fixed English civil timestamp emitted under LC_ALL=C."""
+    match = re.fullmatch(
+        r"(Mon|Tue|Wed|Thu|Fri|Sat|Sun) "
+        r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
+        r"( {1,2}[1-9]| [12][0-9]| 3[01]) "
+        r"([01][0-9]|2[0-3]):([0-5][0-9]):([0-5][0-9]) ([0-9]{4})",
+        token,
+    )
+    if match is None:
+        return None
+    weekday, month_name, day_text, hour, minute, second, year = match.groups()
+    months = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    weekdays = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+    try:
+        civil = time.struct_time(
+            (
+                int(year),
+                months.index(month_name) + 1,
+                int(day_text),
+                int(hour),
+                int(minute),
+                int(second),
+                0,
+                0,
+                0,
+            )
+        )
+        epoch = calendar.timegm(civil)
+        parsed = time.gmtime(epoch)
+        if parsed[:6] != civil[:6] or parsed.tm_wday != weekdays.index(weekday):
+            return None
+        return float(epoch)
+    except (ValueError, OverflowError):
+        return None
+
+
+def _owner_start_matches_current(
+    start: str,
+    current_utc: str,
+    acquired_at: float,
+    lock_mtime: float,
+    owner_mtime: float,
+) -> bool | None:
+    """Return same/different, or None when token evidence is unusable.
+
+    Tokens more than 24 hours apart cannot name the same process under any
+    timezone change, so they mean a reused pid even when acquired_at cannot
+    be trusted.  Within that window, a pre-migration local-time token can
+    equal a later process's UTC token, so string equality alone is not
+    decisive:  acquired_at rules out a process that started after this owner
+    record was published, and equality is only the fallback when the tokens
+    or acquired_at cannot be checked.
+    """
+    exact = start == current_utc
+    old_epoch = _c_lstart_epoch(start)
+    current_epoch = _c_lstart_epoch(current_utc)
+    if old_epoch is None or current_epoch is None:
+        return True if exact else None
+    if abs(old_epoch - current_epoch) > 24 * 60 * 60:
+        return False
+    if not _owner_acquired_at_is_sane(acquired_at, lock_mtime, owner_mtime):
+        return True if exact else None
+    if current_epoch > acquired_at:
+        return False
+    return True
 
 
 def _pid_alive(pid: int) -> bool:
@@ -587,12 +916,15 @@ def _housekeeper_owner_is_gone(lock_mtime: float) -> bool:
     # the kernel hands a pid to somebody else once the original exits, and a
     # reused pid looks exactly like a live holder.  Believing it would leave
     # a dead holder's lock in place until the whole stale window expires.
-    current = _process_start_token(pid)
+    current = _process_start_token(pid, utc=True)
     if not current:
         # The start time could not be read:  the record cannot speak for the
         # lock, and the age rule decides.
         return False
-    return current != owner["start"]
+    same_holder = _owner_start_matches_current(
+        owner["start"], current, owner["acquired_at"], lock_mtime, owner_mtime
+    )
+    return same_holder is False
 
 
 def _write_housekeeper_owner() -> None:
@@ -1102,9 +1434,10 @@ def _webhook_started(raw: str, status: int) -> tuple[bool, str]:
 
 
 def fire_webhook(hits: list[dict], sample_data: dict, cleaned: bool) -> bool:
-    hooks = load_webhooks()
+    hooks, notes = load_webhooks_status()
+    log("webhook credentials: " + " ".join(notes))
     if not hooks:
-        log("webhooks skipped: no valid urls/secrets found")
+        log("webhooks skipped: no complete url+secret pair (see the credential line above)")
         return False
     event_name = _event_name(hits)
     payload = {

@@ -3,6 +3,8 @@
 Type: Fleet change  (board `86aa2176`)
 > **Correction, 2026-10-20, and its own reversal the same day.**  A note here briefly said the MiniMax Code pane does NOT decode the `&nbsp;` entity and that the gap there is a real U+00A0 plus a normal space.  That was an inference, it was never owner-verified, and the owner reversed it:  the MiniMax Code chat pane decodes the entity, the same form as the Claude Code Code tab (owner-verified 2026-10-18, reaffirmed 2026-10-20).  See the `sentence-gap` skill for the per-surface table.
 
+> **Superseded 2026-10-23 — the per-surface table below is the Oct 8 record, not the rule.**  The owner's ruling of 2026-10-23 replaced the split with one mechanism: a real U+00A0 plus a normal space between sentences on every surface, GitHub and Zulip included, and two plain ASCII spaces are never the rule.  There is one exception: a chat reply in the Claude Code Code tab or the MiniMax Code chat pane takes the `&nbsp;` entity plus a normal space, because those two panes normalize a raw U+00A0 away and collapse two plain ASCII spaces into one.  The owner confirmed it in Zulip `#Policy`, message 633873394, "NBSP (U+00A0) + ASCII space between sentences (w/exceptions)", posted Thu, Oct 22 and edited Sat, Oct 24 at 1:26 PM.  So the rows below that give the entity to every Markdown agent pane, and that give two ASCII spaces to terminals, cloud chat, commits and docs, are all superseded.  The live table is `docs/fleet-skills/sentence-gap/SKILL.md`: take the mechanism from there.
+
 
 ## Why
 
@@ -35,7 +37,7 @@ This reverses the 2026-09-04 ruling that put two ASCII spaces in the Code tab.
 | HTML, JSX, SwiftUI product copy; Apple Notes `--html` | A real U+00A0 plus a space, or `SENTENCE_GAP`. |
 
 The owner must never see the six characters `&nbsp;`.  If a surface shows them, stop using
-the entity there, report the surface in #agent-sync, and treat it as unknown until it is
+the entity there, report the surface in #Work-In-Progress, and treat it as unknown until it is
 tested.  When a surface needs a mechanism to show two spaces, use it without asking.
 
 Producing U+00A0 through a tool:  write two ASCII spaces after each sentence, then run
@@ -72,7 +74,7 @@ output holds a U+00A0 before `gh pr create --body-file` or `simple-chat post`.
 > ``grep -o $'[.!?][]*_`)"]*\xc2\xa0' body.nbsp.txt | wc -l`` must be `> 0`, and
 > ``grep -cE '[^0-9][.!?][]*_`)"]* +[A-Z"]' body.nbsp.txt`` must be `0`.
 > The 2026-10-08 and 2026-10-18 commands are left as they were written;  the one home is
-> `docs/fleet-skills/sentence-gap/SKILL.md`.  `AGENT-SYNC.md` is a generated mirror:  it is
+> `docs/fleet-skills/sentence-gap/SKILL.md`.  `FLEET-PROTOCOL.md` is a generated mirror:  it is
 > built from the Fleet-OPS handbook and rewritten by the handbook sync, so it carries the
 > command as of its last sync and not necessarily this one.  Take the command from the one
 > home, not from the mirror.
@@ -96,10 +98,10 @@ output holds a U+00A0 before `gh pr create --body-file` or `simple-chat post`.
 
 ## What landed (docs, in this PR)
 
-- `AGENT-SYNC.md` § Sentence Gap (the authoritative per-surface table), the Zulip summary
+- `FLEET-PROTOCOL.md` § Sentence Gap (the authoritative per-surface table), the Zulip summary
   line, the Cursor and load-path notes, the skills catalog row, and the history entry.
 - `FLEET-UI-COPY.md`, `TEMPLATE-AGENTS.md`, `docs/protocols/zulip-fleet-guide.md`
-  (Writing Rules), and the retired-row text in `docs/protocols/agent-sync-rewrite-map.md`.
+  (Writing Rules).
 - `docs/SENTENCE-GAP-PORTABLE-SKILL.md` and the canonical pack skills `sentence-gap`,
   `owner-copy`, `fleet-coordination`, `land-lane`, `codex-triage`, re-rendered into
   `skills/`, `.claude/skills`, `.cursor/skills`, `.grok/skills`, and every
@@ -113,7 +115,7 @@ output holds a U+00A0 before `gh pr create --body-file` or `simple-chat post`.
   action.  It is not a file.
 - Chat surfaces other than the Code tab are unverified.  A tester should run the
   self-test in the `sentence-gap` skill on each and record the answer in its table.
-- `scripts/agent_sync/wake/wake-contract.md` still says "Two spaces between sentences".
+- `scripts/simple_tools/wake/wake-contract.md` still says "Two spaces between sentences".
   The wake responder is model-written text posted by the daemon, so it cannot emit U+00A0.
   A daemon-side conversion in `simple-chat post` would make the Zulip rule automatic.
 - Several tests in `scripts/test_fleet_skill_identity.py` already fail on main (15 of 49).

@@ -1,7 +1,7 @@
 """Thin GitHub REST client for the PR relay.
 
-Holds the scoped token; seats never see it.  Responses are bounded (1 MiB,
-32 KiB error previews) and every call carries a timeout.  Errors surface as
+Holds the scoped token; seats never see it.  Responses are bounded (1 MiB, or
+8 MiB for a paged GET;  32 KiB error previews) and every call carries a timeout.  Errors surface as
 RelayGitHubError with the HTTP status so the server can classify them without
 leaking response bodies upstream.
 """
@@ -13,10 +13,16 @@ import json
 import re
 import urllib.error
 import urllib.request
+from urllib.parse import parse_qsl
 
 from .secret_scan import mask_credential
 
 MAX_BODY = 1024 * 1024
+# A paged GET (``per_page`` in its query) is bounded by its page size, not by MAX_BODY.  GitHub's raw
+# rows are far larger than the slim rows the relay returns:  50 pull requests are 1.0 to 1.3 MB raw,
+# so the 1 MiB bound refused ordinary pages (BotFleet page 11 at per_page 50) as unreadable.  Fifty
+# rows of GitHub's largest objects (65,536-character bodies) stay well under this.
+MAX_PAGE_BODY = 8 * 1024 * 1024
 MAX_ERROR_PREVIEW = 512
 TIMEOUT_SECONDS = 30
 MAX_DISPATCH_INPUTS = 32
@@ -98,6 +104,67 @@ def safe_error_diagnostics(headers=None, message=None):
     return result
 
 
+MAX_DOWNLOAD_CHUNK = 256 * 1024
+MAX_DOWNLOAD_OFFSET = 512 * 1024 * 1024
+# A 200 means the storage host ignored Range; skipping to the offset would drain the stream.
+MAX_200_SKIP = 1024 * 1024
+# Signed download origins GitHub redirects to.  Matched on whole labels, https only.
+_SIGNED_HOST_SUFFIXES = (
+    ".githubusercontent.com",
+    ".blob.core.windows.net",
+)
+
+
+def _signed_download_url(location) -> str:
+    """Validate a redirect target before any bytes are fetched from it."""
+    from urllib.parse import urlsplit
+
+    if not isinstance(location, str) or not 8 <= len(location) <= 4096:
+        raise RelayGitHubError(0, "download redirect missing")
+    if any(ord(c) < 33 or ord(c) == 127 for c in location):
+        raise RelayGitHubError(0, "download redirect invalid")
+    try:
+        parts = urlsplit(location)
+        host, port = parts.hostname, parts.port
+    except ValueError:
+        raise RelayGitHubError(0, "download redirect invalid") from None
+    if (
+        parts.scheme != "https"
+        or not host
+        or parts.username is not None
+        or parts.password is not None
+        or port not in (None, 443)
+        or not host.endswith(_SIGNED_HOST_SUFFIXES)
+        or parts.fragment
+    ):
+        raise RelayGitHubError(0, "download redirect origin refused")
+    return location
+
+
+_MOVED_STATUSES = frozenset({301, 302, 307, 308})
+_MOVED_PATH = re.compile(r"/repositories/([1-9][0-9]{0,15})(?:/[A-Za-z0-9_.~%/-]*)?(?:\?[^#\s]*)?")
+
+
+def moved_repository_id(base: str, status, headers) -> int | None:
+    """The repository id a GitHub redirect for a renamed or transferred repo names, else None.
+
+    GitHub answers a repository's old owner/name with a 301 (reads) or 307 (writes) whose Location
+    is ``<api base>/repositories/<id>/<rest of the path>``.  Only that exact form, on the same API
+    base, counts;  any other redirect stays an ordinary refusal.
+    """
+    if status not in _MOVED_STATUSES or headers is None:
+        return None
+    location = headers.get("Location")
+    prefix = base.rstrip("/")
+    if not isinstance(location, str) or len(location) > 2048 or not location.startswith(prefix):
+        return None
+    match = _MOVED_PATH.fullmatch(location[len(prefix) :])
+    if not match:
+        return None
+    value = int(match.group(1))
+    return value if 0 < value <= 2**53 - 1 else None
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """A 3xx must never be followed:  redirects can carry the bearer to another origin."""
 
@@ -122,11 +189,19 @@ class RelayGitHubError(Exception):
         retry_after=None,
         credential_preview: str | None = None,
         diagnostics: dict | None = None,
+        moved_repository_id: int | None = None,
     ):
         super().__init__(f"github {status}: {message}")
         self.status = status
         self.message = message
         self.code = code
+        # Set only with code "repository_moved":  the numeric id GitHub's redirect named
+        # (Location /repositories/<id>/...).  A number, never upstream text.
+        self.moved_repository_id = (
+            moved_repository_id
+            if type(moved_repository_id) is int and 0 < moved_repository_id <= 2**53 - 1
+            else None
+        )
         self.retry_after = retry_after
         # First-eight/last-four of the bearer GitHub refused, when the failure
         # is about the credential itself;  identifies the dead key without
@@ -168,6 +243,30 @@ def _retry_after_seconds(headers) -> int | None:
     return None
 
 
+# A compare answer pages only its commits:  the whole file list, patches included, comes with every
+# page, so ``per_page`` does not bound it and it keeps the plain bound.
+_COMPARE_ROUTE = re.compile(r"/repos/[^/?]+/[^/?]+/compare/")
+
+
+def response_limit(method: str, path: str) -> int:
+    """The response bound for one call:  MAX_PAGE_BODY for a paged GET, else MAX_BODY.
+
+    Paged means ``per_page`` is a key of the query after the first ``?``.  A file name that
+    contains ``per_page=`` sits in the path (``?`` is quoted there), so it never widens a read.
+    """
+    if method == "GET":
+        route, _, query = path.partition("?")
+        if not _COMPARE_ROUTE.match(route) and any(
+            key == "per_page" for key, _ in parse_qsl(query, keep_blank_values=True)
+        ):
+            return MAX_PAGE_BODY
+    return MAX_BODY
+
+
+class DispatchPreReadUnavailable(Exception):
+    """Dispatch source read failed before any write was attempted."""
+
+
 class GitHubClient:
     def __init__(self, token: str, base_url: str = "https://api.github.com", opener=None):
         if not token:
@@ -176,27 +275,64 @@ class GitHubClient:
         self._base = base_url.rstrip("/")
         self._opener = opener or urllib.request.build_opener(_NoRedirect()).open
 
-    def _call(self, method: str, path: str, payload: dict | None = None, bearer=None) -> dict:
+    def _call(
+        self,
+        method: str,
+        path: str,
+        payload: dict | None = None,
+        bearer=None,
+        expected_status=None,
+        allow_empty_object=False,
+    ) -> dict:
         if bearer is not None and not bearer:
             # Fail closed:  an empty task credential must never fall back to the
             # owner token and run a privileged write under the wrong identity.
             raise ValueError("empty task credential; refusing to use the owner token")
         url = f"{self._base}{path}"
+        limit = response_limit(method, path)
         req = urllib.request.Request(
             url,
             method=method,
-            data=None if payload is None else json.dumps(payload).encode(),
+            data=None
+            if payload is None
+            else payload
+            if isinstance(payload, bytes)
+            else json.dumps(payload).encode(),
             headers={
                 "Accept": "application/vnd.github+json",
                 "Authorization": f"Bearer {bearer or self._token}",
-                "Content-Type": "application/json",
+                "Content-Type": "application/octet-stream"
+                if isinstance(payload, bytes)
+                else "application/json",
                 "User-Agent": "swu-git-relay",
             },
         )
         try:
             with self._opener(req, timeout=TIMEOUT_SECONDS) as resp:
-                raw = resp.read(MAX_BODY + 1)
+                raw = resp.read(limit + 1)
+                completion_body_ok = not raw
+                if allow_empty_object and expected_status in (201, 202):
+                    try:
+                        completion_body_ok = not raw or json.loads(raw) == {}
+                    except (ValueError, UnicodeError):
+                        completion_body_ok = False
+                if expected_status is not None and (
+                    resp.status != expected_status or not completion_body_ok
+                ):
+                    raise RelayGitHubError(502, "unexpected upstream completion status or body")
         except urllib.error.HTTPError as exc:
+            moved = moved_repository_id(self._base, exc.code, exc.headers)
+            if moved is not None:
+                # A renamed or transferred repository:  GitHub answers its old slug with a
+                # redirect to /repositories/<id>.  The redirect is never followed (it could carry
+                # the bearer elsewhere) and nothing ran upstream;  the caller learns the repo moved
+                # instead of seeing an outage (OPS-1036).
+                raise RelayGitHubError(
+                    exc.code,
+                    "repository moved",
+                    code="repository_moved",
+                    moved_repository_id=moved,
+                ) from exc
             preview = exc.read(MAX_ERROR_PREVIEW).decode("utf-8", "replace")
             code = None
             try:
@@ -229,8 +365,12 @@ class GitHubClient:
             raise RelayGitHubError(0, f"connection failed: {exc.reason}") from exc
         except (OSError, http.client.HTTPException) as exc:
             raise RelayGitHubError(0, f"connection failed: {exc}") from exc
-        if len(raw) > MAX_BODY:
-            raise RelayGitHubError(0, "github response exceeded 1 MiB bound")
+        if len(raw) > limit:
+            raise RelayGitHubError(
+                0,
+                f"github response exceeded {limit // (1024 * 1024)} MiB bound",
+                code="response_too_large",
+            )
         if not raw:
             return {}
         try:
@@ -238,19 +378,177 @@ class GitHubClient:
         except json.JSONDecodeError as exc:
             raise RelayGitHubError(0, "github response was not valid JSON") from exc
 
+    def upload_release_asset(self, repo, release_id, name, content, bearer, max_bytes=32768):
+        """Fixed GitHub upload host, own bearer, no redirects or arbitrary URL."""
+        from urllib.parse import quote
+
+        self._check_repo(repo)
+        if (
+            not bearer
+            or isinstance(release_id, bool)
+            or not isinstance(release_id, int)
+            or release_id < 1
+            or not isinstance(name, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", name)
+            or name.endswith(".")
+            or not isinstance(content, bytes)
+            or not 1 <= len(content) <= max_bytes
+        ):
+            raise ValueError("bounded own-App asset upload required")
+        client = GitHubClient(bearer, "https://uploads.github.com", opener=self._opener)
+        return client._call(
+            "POST",
+            f"/repos/{repo}/releases/{release_id}/assets?name={quote(name, safe='')}",
+            content,
+            bearer=bearer,
+        )
+
+    def download_chunk(self, path, bearer, offset, length, accept="application/vnd.github+json"):
+        """One bounded byte range of a GitHub download that answers with a signed redirect.
+
+        The first request carries the seat's own bearer to the fixed API origin only.  Its
+        3xx Location is validated (https, no userinfo, default port, allowlisted storage
+        host) and fetched by a second request that never carries Authorization.  Neither
+        request follows a redirect.  Returns (bytes, total_or_None).
+        """
+        if not bearer:
+            raise ValueError("empty task credential; refusing to use the owner token")
+        if (
+            not isinstance(path, str)
+            or not path.startswith("/repos/")
+            or isinstance(offset, bool)
+            or isinstance(length, bool)
+            or not isinstance(offset, int)
+            or not isinstance(length, int)
+            or not 0 <= offset <= MAX_DOWNLOAD_OFFSET
+            or not 1 <= length <= MAX_DOWNLOAD_CHUNK
+        ):
+            raise ValueError("bounded download required")
+        first = urllib.request.Request(
+            f"{self._base}{path}",
+            method="GET",
+            headers={
+                "Accept": accept,
+                "Authorization": f"Bearer {bearer}",
+                "User-Agent": "swu-git-relay",
+            },
+        )
+        location = None
+        try:
+            with self._opener(first, timeout=TIMEOUT_SECONDS) as resp:
+                resp.read(1)  # a direct 2xx body is not a download this client trusts
+            raise RelayGitHubError(0, "expected a download redirect")
+        except urllib.error.HTTPError as exc:
+            if exc.code in (301, 302, 303, 307, 308):
+                location = exc.headers.get("Location")
+            else:
+                preview = exc.read(MAX_ERROR_PREVIEW).decode("utf-8", "replace")
+                try:
+                    body = json.loads(preview)
+                except json.JSONDecodeError:
+                    body = None
+                message = body.get("message") if isinstance(body, dict) else None
+                raise RelayGitHubError(
+                    exc.code,
+                    (message if isinstance(message, str) else "download refused")[
+                        :MAX_ERROR_PREVIEW
+                    ],
+                    retry_after=_retry_after_seconds(exc.headers),
+                    diagnostics=safe_error_diagnostics(exc.headers, message),
+                    credential_preview=(
+                        mask_credential(bearer) if exc.code in (401, 403) else None
+                    ),
+                ) from exc
+        except urllib.error.URLError as exc:
+            raise RelayGitHubError(0, f"connection failed: {exc.reason}") from exc
+        except (OSError, http.client.HTTPException) as exc:
+            raise RelayGitHubError(0, f"connection failed: {exc}") from exc
+        target = _signed_download_url(location)
+        second = urllib.request.Request(
+            target,
+            method="GET",
+            headers={
+                "Accept": "*/*",
+                "Range": f"bytes={offset}-{offset + length - 1}",
+                "User-Agent": "swu-git-relay",
+            },
+        )
+        try:
+            with self._opener(second, timeout=TIMEOUT_SECONDS) as resp:
+                status = getattr(resp, "status", None) or resp.getcode()
+                total = None
+                if status == 206:
+                    match = re.fullmatch(
+                        r"bytes (\d+)-(\d+)/(\d+|\*)", resp.headers.get("Content-Range") or ""
+                    )
+                    if not match or int(match.group(1)) != offset:
+                        raise RelayGitHubError(0, "download range mismatch")
+                    total = None if match.group(3) == "*" else int(match.group(3))
+                    data = resp.read(length + 1)
+                elif status == 200:
+                    if offset > MAX_200_SKIP:
+                        raise RelayGitHubError(
+                            416, "download range not honored beyond bounded fallback"
+                        )
+                    skipped = 0
+                    while skipped < offset:
+                        block = resp.read(min(65536, offset - skipped))
+                        if not block:
+                            break
+                        skipped += len(block)
+                    data = resp.read(length) if skipped == offset else b""
+                    declared = resp.headers.get("Content-Length")
+                    if declared and declared.isdigit():
+                        total = int(declared)
+                else:
+                    raise RelayGitHubError(0, "unexpected download status")
+        except urllib.error.HTTPError as exc:
+            raise RelayGitHubError(exc.code, "download refused") from exc
+        except urllib.error.URLError as exc:
+            raise RelayGitHubError(0, f"connection failed: {exc.reason}") from exc
+        except (OSError, http.client.HTTPException) as exc:
+            raise RelayGitHubError(0, f"connection failed: {exc}") from exc
+        if len(data) > length:
+            raise RelayGitHubError(0, "download exceeded the requested bound")
+        return data, total
+
     @staticmethod
     def _check_repo(repo: str) -> None:
         parts = repo.split("/")
         if len(parts) != 2 or not all(parts) or ".." in repo:
             raise ValueError(f"repo must look like owner/name, got {repo!r}")
 
-    def open_pr(self, repo: str, base: str, head: str, title: str, body: str) -> dict:
+    def open_pr(
+        self, repo: str, base: str, head: str, title: str, body: str, draft: bool = False
+    ) -> dict:
         self._check_repo(repo)
+        if type(draft) is not bool:
+            raise ValueError("draft must be a boolean")
+        payload = {"title": title, "head": head, "base": base, "body": body}
+        if draft:
+            payload["draft"] = True
         data = self._call(
             "POST",
             f"/repos/{repo}/pulls",
-            {"title": title, "head": head, "base": base, "body": body},
+            payload,
         )
+        if draft:
+            number = data.get("number") if isinstance(data, dict) else None
+            url = data.get("html_url") if isinstance(data, dict) else None
+            base_row = data.get("base") if isinstance(data, dict) else None
+            base_repo = base_row.get("repo") if isinstance(base_row, dict) else None
+            full_name = base_repo.get("full_name") if isinstance(base_repo, dict) else None
+            if (
+                type(number) is not int
+                or not 1 <= number <= 2**53 - 1
+                or not isinstance(url, str)
+                or len(url) > 2048
+                or url.casefold() != f"https://github.com/{repo}/pull/{number}".casefold()
+                or not isinstance(full_name, str)
+                or full_name.casefold() != repo.casefold()
+                or data.get("draft") is not True
+            ):
+                raise RelayGitHubError(502, "draft PR creation outcome unverifiable")
         return {"number": data.get("number"), "url": data.get("html_url")}
 
     def edit_pr(
@@ -294,7 +592,7 @@ class GitHubClient:
         return {"merged": data.get("merged"), "sha": data.get("sha")}
 
     def workflow_dispatch(
-        self, repo: str, workflow: str, ref: str, inputs: dict, bearer: str
+        self, repo: str, workflow: str, ref: str, inputs: dict, bearer: str, expected_head_sha=None
     ) -> dict:
         self._check_repo(repo)
         if not isinstance(workflow, str) or "/" in workflow or ".." in workflow:
@@ -311,13 +609,44 @@ class GitHubClient:
                     raise ValueError(
                         f"inputs string values are capped at {MAX_DISPATCH_INPUT_VALUE} characters"
                     )
-        self._call(
+        if expected_head_sha is not None:
+            # GitHub accepts a branch/tag, not an atomic expected-SHA condition.
+            # Restrict intent calls to branch refs, check before send, and require
+            # actual run head verification later. Never claim an execution fence.
+            if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]{0,199}", ref) or ".." in ref:
+                raise ValueError("intent dispatch requires a canonical branch name")
+            try:
+                actual = self._call("GET", f"/repos/{repo}/git/ref/heads/{ref}", bearer=bearer)
+            except RelayGitHubError as exc:
+                if exc.status in (0, 408) or exc.status >= 500:
+                    raise DispatchPreReadUnavailable() from None
+                raise
+            if actual.get("object", {}).get("sha") != expected_head_sha:
+                raise ValueError("dispatch source changed before send")
+        receipt = self._call(
             "POST",
             f"/repos/{repo}/actions/workflows/{workflow}/dispatches",
             {"ref": ref, "inputs": inputs or {}},
             bearer=bearer,
         )
-        return {"dispatched": True, "workflow": workflow, "ref": ref}
+        result = {"dispatched": True, "accepted": True, "workflow": workflow, "ref": ref}
+        # New GitHub API versions return a run receipt; older204 responses do not.
+        # Project only validated identifiers, never arbitrary headers/body/error text.
+        run_id = receipt.get("workflow_run_id") if isinstance(receipt, dict) else None
+        if type(run_id) is int and 0 < run_id <= 10**18:
+            result["workflow_run_id"] = run_id
+            for field in ("run_url", "html_url"):
+                value = receipt.get(field)
+                prefix = (
+                    "https://api.github.com/repos/" if field == "run_url" else "https://github.com/"
+                )
+                if value == prefix + repo + "/actions/runs/" + str(run_id):
+                    result[field] = value
+        if expected_head_sha is not None:
+            result["expected_head_sha"] = expected_head_sha
+            result["source_checked_before_send"] = True
+            result["source_fence_atomic"] = False
+        return result
 
     def resolve_thread(self, thread_id: str, bearer: str) -> dict:
         if not isinstance(thread_id, str) or not thread_id.startswith("PRRT_"):
@@ -339,8 +668,25 @@ class GitHubClient:
             first = errors[0] if isinstance(errors, list) and errors else {}
             kind = first.get("type") if isinstance(first, dict) else None
             detail = f" ({kind})" if isinstance(kind, str) and kind else ""
+            # Only a structured authorization denial at this sole mutation,
+            # with no mutation result, proves that no write took place.  Partial
+            # results, mixed errors and unscoped errors remain unknown.
+            payload = data.get("data")
+            no_result = payload is None or (
+                isinstance(payload, dict) and payload.get("resolveReviewThread") is None
+            )
+            definite_refusal = (
+                isinstance(errors, list)
+                and no_result
+                and all(
+                    isinstance(error, dict)
+                    and error.get("type") == "FORBIDDEN"
+                    and error.get("path") == ["resolveReviewThread"]
+                    for error in errors
+                )
+            )
             raise RelayGitHubError(
-                0,
+                403 if definite_refusal else 0,
                 f"graphql resolveReviewThread failed{detail}",
                 code=kind if isinstance(kind, str) and kind else None,
                 credential_preview=mask_credential(bearer),

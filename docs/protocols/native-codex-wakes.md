@@ -1,6 +1,6 @@
 # Native Codex Wake Delivery
 
-Operator is the existing Agent-Sync listener service.  Its headless Muse worker selects an existing chat, and its deterministic adapter validates and delivers a fixed reminder.  GitHub token issuance and the future letter registry are separate modules of that service; each agent retains its own identities.
+Operator is the existing Simple-Tools listener service.  Its headless Muse worker selects an existing chat, and its deterministic adapter validates and delivers a fixed reminder.  GitHub token issuance and the future letter registry are separate modules of that service; each agent retains its own identities.
 
 ## Native Queue Transport
 

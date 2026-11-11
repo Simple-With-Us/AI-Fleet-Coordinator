@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from fleet_knobs.tests._fake import ScopedReadAPI
 
 SCRIPTS = Path(__file__).resolve().parents[2]
 INSTALL = SCRIPTS / "fleet_facts" / "install.sh"
@@ -47,9 +48,11 @@ class Install(unittest.TestCase):
                     "fleet_facts/interfaces.py", "fleet_facts/safety.py", "fleet_facts/runner.py", "fleet_facts/gather.py",
                     "fleet_facts/signing.py", "fleet_facts/publish.py", "fleet_facts/repo.py", "fleet_facts/minimize.py", "fleet_facts/localtime.py",
                     "fleet_knobs/__init__.py", "fleet_knobs/knobs.py", "fleet_knobs/registry.py", "fleet_knobs/source.py",
-                    "agent_sync/__init__.py", "agent_sync/textsafe.py", "agent_sync/secretscan.py"):
+                    "simple_tools/__init__.py", "simple_tools/textsafe.py", "simple_tools/secretscan.py"):
             self.assertTrue((self.stable / rel).is_file(), rel)
-        self.assertEqual((self.stable / "agent_sync" / "__init__.py").read_text(), "")
+        self.assertEqual((self.stable / "simple_tools" / "__init__.py").read_text(), "")
+        self.assertEqual(sorted(p.name for p in (self.stable / "fleet_secrets").iterdir()), ["__init__.py", "core.py"])
+        self.assertFalse((self.stable / "fleet-secrets").exists())
         self.assertFalse((self.stable / "fleet_facts" / "tests").exists())            # no tests in the stable copy
         self.assertFalse((self.stable / "fleet_facts" / "check_fixtures.py").exists())   # nor the CI checker
         self.assertFalse((self.stable / "fleet_facts" / "README.md").exists())
@@ -66,7 +69,7 @@ class Install(unittest.TestCase):
             proc = self.isolated(program, "--help")
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("gather", proc.stdout)
-        # A real gather, which loads the F3 helpers by path from the stable copy's own agent_sync folder.
+        # A real gather, which loads the F3 helpers by path from the stable copy's own simple_tools folder.
         proc = self.isolated(self.link, "gather", "--no-mac", "--part", "lanes", "--part", "backup", "--json")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         doc = json.loads(proc.stdout)
@@ -88,10 +91,12 @@ class Install(unittest.TestCase):
     def test_idempotent_and_replaces_a_stale_copy(self):
         self.install("--apply")
         (self.stable / "fleet_facts" / "stale_module.py").write_text("# left over\n")
+        (self.stable / "fleet_secrets" / "cli.py").write_text("# must not ship\n")
         again = self.install("--apply")
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertIn("symlink already correct", again.stdout)
         self.assertFalse((self.stable / "fleet_facts" / "stale_module.py").exists())
+        self.assertFalse((self.stable / "fleet_secrets" / "cli.py").exists())
         self.assertFalse((self.home / "apps" / "fleet-facts.prev").exists())
 
     def test_it_will_not_overwrite_a_regular_file_at_the_link(self):
@@ -134,14 +139,18 @@ class Install(unittest.TestCase):
     def test_the_stable_copy_signs_with_the_key_k1_gives_it_and_verify_checks_it_with_the_environment(self):
         self.install("--apply")
         signer = "fixture-signing-key-0123456789abcdefABCDEF"
-        bin_dir = self.fake_infisical("printf '{\"FLEET_FACTS_SIGNING_KEY\": \"%s\"}' \"$FAKE_SIGNING_KEY\"")
-        env = {"HOME": str(self.home), "PATH": "%s:/usr/bin:/bin" % bin_dir, "FAKE_SIGNING_KEY": signer}
+        api = ScopedReadAPI({"FLEET_FACTS_SIGNING_KEY": signer})
+        api.__enter__()
+        self.addCleanup(api.__exit__)
+        env = {"HOME": str(self.home), "PATH": "/usr/bin:/bin", **api.env}
         out = Path(self.tmp.name) / "dry"
         proc = subprocess.run([sys.executable, "-I", str(self.link), "publish-mac", "--dry-run", "--out", str(out)],
                               capture_output=True, text=True, env=env, timeout=120)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         signed = out / "gb" / "mac-facts.json"
         self.assertTrue(signed.is_file())
+        self.assertEqual(api.requests[0], "/api/v2/service-token")
+        self.assertTrue(any(path.startswith("/api/v3/secrets/raw/FLEET_FACTS_SIGNING_KEY?") for path in api.requests))
         good = subprocess.run([sys.executable, "-I", str(self.link), "verify", str(signed), "--path", "gb/mac-facts.json"],
                               capture_output=True, text=True, env={"HOME": str(self.home), "PATH": "/usr/bin:/bin", "FLEET_FACTS_SIGNING_KEY": signer}, timeout=60)
         self.assertEqual(good.returncode, 0, good.stderr)
@@ -155,6 +164,18 @@ class Install(unittest.TestCase):
                                 capture_output=True, text=True, env=env, timeout=60)
         self.assertEqual(broken.returncode, 3)
         self.assertIn("install.sh --apply", broken.stderr)
+
+    def test_the_installed_real_verifier_rejects_a_mismatched_grant_before_values(self):
+        self.assertEqual(self.install("--apply").returncode, 0)
+        with ScopedReadAPI({"FLEET_FACTS_SIGNING_KEY": "unused-synthetic-value"}) as api:
+            api.metadata_override["scopes"] = [{"environment": "prod", "secretPath": "/other"}]
+            env = {"HOME": str(self.home), "PATH": "/usr/bin:/bin", **api.env}
+            proc = subprocess.run([sys.executable, "-I", str(self.link), "publish-mac", "--dry-run", "--out", str(self.home / "out")],
+                                  capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual(proc.returncode, 3, proc.stderr)
+        self.assertIn("nothing was published", proc.stderr)
+        self.assertEqual(api.requests, ["/api/v2/service-token"])
+        self.assertFalse((self.home / "out" / "gb" / "mac-facts.json").exists())
 
     def test_unknown_option_is_refused(self):
         proc = self.install("--force")

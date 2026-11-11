@@ -131,7 +131,7 @@ seat, no simple-chat, an F3 helper missing);  4 lint failed;  5 could not check 
 DM is out but the heartbeat is not.  `--dry-run` runs steps 1 to 4 and sends nothing.
 
 Every simple-chat command line is built by a function in `send.py` (and `zulip_topics.py`), and `test_parser_parity`
-runs each through `agent_sync.cli.build_parser()`.  The fake simple-chat the tests use does the same for every call.
+runs each through `simple_tools.cli.build_parser()`.  The fake simple-chat the tests use does the same for every call.
 
 ## Not built yet
 
@@ -157,7 +157,7 @@ scripts/open_loops/install.sh [--c2-id ID]            # a plan, changes nothing
 scripts/open_loops/install.sh --apply [--c2-id ID]    # ~/apps/open-loops + ~/.local/bin/open-loops
 ```
 
-The stable copy holds the entry script, `open_loops`, `fleet_facts` (without its tests and CI checker) and `agent_sync/`
+The stable copy holds the entry script, `open_loops`, `fleet_facts` (without its tests and CI checker) and `simple_tools/`
 with only `__init__.py`, `textsafe.py`, `secretscan.py` and `textfmt.py`:  a tool run with `python3 -I` cannot import what
 it did not copy.  The entry script's first line is rewritten to `#!<absolute python3 3.11+> -I`, so a routine's short
 `PATH` cannot pick an older Python.  The installer loads no LaunchAgent and touches nothing under `~/.secrets`.  The live

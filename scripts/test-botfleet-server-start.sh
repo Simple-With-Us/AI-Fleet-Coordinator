@@ -33,8 +33,9 @@ if ! BOTFLEET_SERVER_ROOT="${tmp}/no-such" bash "${tmp}/wrap.sh" >"${tmp}/out" 2
 fi
 grep -q "already healthy" "${tmp}/out" || { echo "FAIL missing already-healthy log" >&2; exit 1; }
 
-# The probe must hit /api/health: BotFleet has no /health route (it 404s), so a
-# stub that only succeeds for /api/health proves the wrapper asks the real one.
+# The probe must hit /api/health.  BotFleet serves both /health and
+# /api/health (server/index.ts answers 200 on either), so the stub proves the
+# wrapper asks the one this contract names rather than the other.
 cat >"${tmp}/curl" <<'EOS'
 #!/bin/bash
 case "$*" in

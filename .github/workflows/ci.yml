@@ -6,9 +6,24 @@ on:
   pull_request:
     branches: [ "main" ]
 
+# A newer push makes older runs on the same ref stale,  so superseded runs stop
+# instead of racing the newest one to the required check.
+concurrency:
+  group: ci-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: every job below only reads the checkout and the toolchains,  so the
+# workflow grants contents read and nothing else.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    # A stalled step once held this job open for over 15 minutes, and a rerun passed.  Each test
+    # step has its own limit, about twice its normal run (a stall now fails in minutes and names
+    # the step), and the whole job stops at 60 minutes;  a normal run takes 21 to 32 minutes.
+    timeout-minutes: 60
     steps:
     # Depth 2 keeps both parents of a pull request's merge commit, so the mirror check below can read the base
     # side (HEAD^1) without a second fetch.  Nothing else in the job reads history.
@@ -24,6 +39,7 @@ jobs:
     # not read the tree must fail the gate rather than pass it silently.  The `=======`
     # alternative is the separator git writes between the two halves of a conflict.
     - name: No conflict markers
+      timeout-minutes: 10
       run: |
         # The substitution is in an `if` condition on purpose.  A standalone
         # assignment takes the status of the command it holds,  and grep exits 1 when
@@ -58,7 +74,7 @@ jobs:
       run: |
         timeout 60 ruby scripts/check-workflow-duplicate-keys.rb .github/workflows .github/pr-autofix-trusted.yml
         cd scripts && python3 -m unittest test_workflow_duplicate_keys -v
-    # AGENT-SYNC.md is generated from Fleet-OPS handbook/ and mirrored here by the sync job's pull request from
+    # FLEET-PROTOCOL.md is generated from Fleet-OPS handbook/ and mirrored here by the sync job's pull request from
     # handbook-sync/mirror.  The mirror must start with the GENERATED header, its body must hash to the header, and
     # only that branch may change it.  To change policy, open a PR to Fleet-OPS handbook/ (its README has the rules).
     # `test` is a required status check on main (strict:  the branch must be up to date), so this step is a hard gate:
@@ -72,6 +88,7 @@ jobs:
     # tagged fork:, so it can never borrow the mirror branch name.  A push to main checks the header and hash only.
     # The branch and its repo arrive through env, never spliced into the script.
     - name: Generated mirror header, hash and author
+      timeout-minutes: 10
       env:
         EVENT: ${{ github.event_name }}
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -94,9 +111,11 @@ jobs:
           python3 scripts/check-generated-mirror.py
         fi
     - name: Run unittests
+      timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest discover fleet_rag/tests/ -v
     - name: Lane doctor and tmp guard tests
+      timeout-minutes: 15
       run: |
         cd scripts && python3 -m unittest discover -s fleet_lanes/tests -t . -v
     # hold-guard (Kody r4373587808 on #964):  unit, integration (the shipped
@@ -104,26 +123,135 @@ jobs:
     # decoration:  regressions would ship under a green CI.  PyYAML is needed
     # by test_workflow_static.py.
     - name: hold-guard tests
+      timeout-minutes: 10
       run: |
-        pip install PyYAML
+        pip install "PyYAML==6.0.3"
         cd scripts/hold-guard && python3 -m unittest discover -s . -t . -v
+    # ECHO Linux custody (assigned-echo-mcp): the ingress gate that keeps
+    # untrusted stdin out of every other fd and the encrypted exclusive
+    # output write.  Fakes only;  no native command, secret or service is touched.
+    - name: ECHO custody tests
+      timeout-minutes: 10
+      run: python3 scripts/assigned-echo-mcp/test_linux_custody.py -v
     # pr-sweep (docs/PR-SWEEP.md):  a fake gh, fake agents and a fake lane tool, so nothing reaches GitHub or runs
     # an agent;  includes the check that no adapter, skill or doc carries a copy of a rule from rules.md.
     - name: pr-sweep tests
+      timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest discover -s pr_sweep/tests -t . -v
     # git-relay / GR-MCP:  seat-policy allowlists, constant-time auth, the one-bearer-one-bot
     # identity rule, fsynced audit rows (bodies hashed, never logged), the bounded GitHub
     # client and the HTTP surface.  Fakes only;  no network.
     - name: git-relay tests
+      timeout-minutes: 10
       run: |
         python3 -m unittest discover -s git-relay/git_relay/tests -t git-relay -v
     - name: Code-only Coolify fleet CLI sync tests
+      timeout-minutes: 10
       run: |
         python3 scripts/test_fleet_cli_release.py
         python3 scripts/test_fleet_cli_sync.py
         python3 scripts/test_fleet_cli_runtime.py
-        bash -n scripts/agent-sync-runtime-sync.sh
+        python3 scripts/test_fleet_cli_git_update.py
+        (cd scripts/git-tools && python3 -m unittest test_git_remote test_simple_git_wrapper test_helper_plan -v)
+        bash -n scripts/simple-tools-runtime-sync.sh
+    # backup-repos archive loop (AFC-682):  a failed clone target must keep the
+    # partial archive set, label it, and still fail the run;  plus the secret/noise
+    # zip exclusions.  Stubbed clones only;  no network, no token.
+    - name: backup-repos tests
+      timeout-minutes: 10
+      run: python3 scripts/test_backup_repos.py -v
+    # systemd unit templates (the fleet CLI updater unit):  the measured host
+    # quirk that %h expands to the root account's home inside a system unit even
+    # when User= names another account, the unit's own internal consistency, and
+    # the compliance inventory row that quotes its ExecStart.  A unit that
+    # changes without the row changing is the drift this suite exists to catch.
+    # Unwired tests are decoration:  a step is what makes the test real.
+    - name: systemd unit template tests
+      timeout-minutes: 10
+      run: python3 -m unittest discover -s scripts/systemd -t scripts/systemd -v
+    # The Muster route's approvals (scripts/muster_approval.py, AFC-654) verify ECDSA P-256
+    # signatures with the cryptography package, pinned to the version the server runs.  Without
+    # it the route's tests and the installer's payload test skip, and say so, so this step is
+    # what makes them real.  It must come before the steps that import the route.
+    - name: Install cryptography for the Muster route tests
+      timeout-minutes: 10
+      run: pip install "cryptography==46.0.5"
+    - name: Coding CPU And Memory Controller Tests
+      timeout-minutes: 10
+      run: |
+        python3 -m unittest discover -s scripts/hetzner -p 'test_fleet_coding_memory.py' -v
+        python3 -m unittest discover -s scripts/hetzner -p 'test_coding_resources.py' -v
+        python3 -m unittest discover -s scripts/hetzner -p 'test_install_resource_control.py' -v
+    # The Operator Sheets drain installer (OPS-1037):  inputs, the dry run, its Python block
+    # with Infisical faked, and steps 1, 4 and 5 run for real in its test mode against a
+    # throwaway checkout, a temporary root and stub docker and systemctl.  No network.
+    - name: Operator Sheets drain installer tests
+      timeout-minutes: 10
+      run: python3 scripts/test_install_operator_sheets_drain.py -v
+    # fleet-server-status (AFC-548):  the server collector whose report the Muster
+    # Server Status panel reads.  The drift against the previous report, the omission
+    # of a measurement that could not be taken, the credential path filter and the
+    # atomic private write.  Fakes only:  no docker, no network, no server.
+    - name: fleet-server-status tests
+      timeout-minutes: 10
+      run: python3 scripts/test_fleet_server_status.py
+    - name: fleet-vm-status tests
+      timeout-minutes: 10
+      run: python3 scripts/test_fleet_vm_status.py
+    # Muster operations (AFC-563):  the Mac LaunchAgent collector and the allowlisted
+    # control helper (plan then yes, the ssh forced-command gate, the audit row, and
+    # no token in an argv, an answer or the audit).  Fakes only:  no launchctl,
+    # no systemctl, no Coolify, no network.
+    - name: Muster operations tests
+      timeout-minutes: 10
+      run: |
+        python3 scripts/test_fleet_mac_services.py
+        python3 scripts/test_fleet_seat_inventory.py
+        python3 scripts/test_fleet_ops_control.py
+        python3 scripts/test_fleet_resource_control.py
+    # The Muster route's approvals (AFC-654):  389 tests that start the helper's --from-muster
+    # entry as a subprocess, so they get their own step and their own limit, and a slow suite
+    # names itself instead of cancelling the four above.
+    - name: Muster approval tests
+      timeout-minutes: 10
+      run: python3 scripts/test_muster_approval.py
+    # The Muster route's vectors (AFC-654):  the checker re-derives every vector printed in
+    # section 16 of the route spec from its text alone, and the generator's `--check` proves the
+    # fixture the Swift side reads is what the module and helper produce.  Test keys only.
+    - name: Muster route vectors
+      timeout-minutes: 10
+      run: |
+        (cd docs/muster-ios && python3 -I check_vectors_v5.py)
+        python3 scripts/make_muster_vectors.py --check
+    # The route runs on the server's /usr/bin/python3, which is 3.14, not on the job's Python, so
+    # the approval tests and the vectors run a second time with the interpreter they will run on:
+    # a change that only works on the newer Python must not pass this gate and then leave the
+    # helper unable to load its modules on the server (every request would answer
+    # helper_key_missing).  The same reasoning, and the same shape, as the fleet_view step below.
+    # update-environment is off so every later step keeps the job's own Python.
+    - name: Set up Python 3.14 for the Muster route
+      id: muster-route-py314
+      uses: actions/setup-python@v7
+      with:
+        python-version: '3.14'
+        update-environment: false
+    - name: Install cryptography on Python 3.14 for the Muster route
+      timeout-minutes: 10
+      env:
+        PY314: ${{ steps.muster-route-py314.outputs.python-path }}
+      run: |
+        "$PY314" -c 'import sys; assert sys.version_info[:2] == (3, 14), sys.version; print(sys.version)'
+        "$PY314" -m pip install "cryptography==46.0.5"
+    # The suite alone takes about half a minute here, so the ten minutes belong to it.
+    - name: Muster route on Python 3.14
+      timeout-minutes: 10
+      env:
+        PY314: ${{ steps.muster-route-py314.outputs.python-path }}
+      run: |
+        "$PY314" scripts/test_muster_approval.py
+        (cd docs/muster-ios && "$PY314" -I check_vectors_v5.py)
+        "$PY314" scripts/make_muster_vectors.py --check
     # The Lark bridge: the eyes marker, the Operator's signal path and the
     # durable write of a record.  No job ran this file, so every assertion in
     # it was decoration: the write could lose a record on a crash and CI would
@@ -134,34 +262,67 @@ jobs:
       # read, so a test that hangs would hold the job open with nothing to
       # report.  The step ends on its own after five minutes instead.
       timeout-minutes: 5
-      run: cd scripts && python3 test-lark-mm-bridge.py
+      # test_lark_bridge_runtime.py pins where the bridge finds the fleet runtime (AFC-490).
+      run: cd scripts && python3 test-lark-mm-bridge.py && python3 -m unittest test_lark_bridge_runtime -v
     # Keeps the docs/PR-AUTOFIX.md caller template's permissions and secrets
     # block in step with what the pr-autofix reusable declares and consumes.
     - name: Autofix caller template guard
+      timeout-minutes: 10
       run: python3 scripts/test_pr_autofix_doc_template.py
     - name: simple-chat CLI tests
+      timeout-minutes: 12
       run: |
-        cd scripts && python3 -m unittest discover -s agent_sync/tests -t . -v
+        cd scripts && python3 -m unittest discover -s simple_tools/tests -t . -v
         python3 -m unittest discover -s whatsapp_bridge/tests -t . -v
+    # The Operator's session registry and the MM seat's letter hook:  the letter
+    # allocation, the two letter spaces, the registry CLI, and the secret scan that
+    # guards every title.  Both files sit at the top of scripts/, outside the
+    # directories discovery walks, so nothing ran them:  before this step their
+    # assertions were decoration and a regression would ship under a green CI.
+    - name: Operator session registry and letter hook tests
+      timeout-minutes: 10
+      run: |
+        cd scripts && python3 -m unittest test_operator_registry test_mm_session_letter test_operator_export_attempts -v
     # Infisical knobs for the open-loops jobs:  fake-CLI fetch, last-known-good, secrets fail
     # closed, local files only narrow, and INFISICAL.md equal to the registry.
     - name: fleet_knobs tests
+      timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest discover -s fleet_knobs/tests -t . -v
     # fleet_config (Muster Phase 2):  the desired-state manifest and its validators, the six L0 check
     # kinds, the L1 and L2 proof machinery, the aggregator's fail-closed verdict math, the plan and the
     # apply side, and the Touch ID gate.  Every test uses a temp home;  none touches the real Mac.
     - name: fleet_config tests
+      timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest discover -s fleet_config/tests -t . -v
     # fleet_view (AFC-394):  the Fleet View collectors for lanes, open PRs and Linear claims, the
     # request budget, the blocker mapping and the pinned envelope.  Fake runners only;  no network.
     - name: fleet_view tests
+      timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest discover -s fleet_view/tests -t . -v
+    # The same suite on a real Python 3.9 (AFC-616).  Muster runs this collector under the Mac's
+    # /usr/bin/python3, which is 3.9, and a 3.11-only import once broke the whole Apps & Work page
+    # there while the run above stayed green.  update-environment is off so every later step keeps
+    # the job's own Python.
+    - name: Set up Python 3.9 for fleet_view
+      id: fleet-view-py39
+      uses: actions/setup-python@v7
+      with:
+        python-version: '3.9'
+        update-environment: false
+    - name: fleet_view tests on Python 3.9
+      timeout-minutes: 10
+      env:
+        PY39: ${{ steps.fleet-view-py39.outputs.python-path }}
+      run: |
+        "$PY39" -c 'import sys; assert sys.version_info[:2] == (3, 9), sys.version; print(sys.version)'
+        cd scripts && "$PY39" -m unittest discover -s fleet_view/tests -t . -v
     # fleet-secrets (OPS-818):  fake infisical and Keychain at subprocess.run;  get, run, --only, exit 3, the
     # unresolved-reference guard, auth selection, and no secret in argv or error text.
     - name: fleet_secrets tests
+      timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest discover -s fleet_secrets/tests -t . -v
         bash -n install-fleet-secrets.sh
@@ -171,47 +332,77 @@ jobs:
     # clock and fake K1 knobs for the fallback notifier;  the stable copy installed into a temp HOME must run under
     # `python3 -I`, and the LaunchAgent plist must parse.
     - name: needs-owner tests
+      timeout-minutes: 12
       run: |
         cd scripts && python3 -m unittest discover -s needs_owner/tests -t . -v
     # Open-loops F6:  the fleet_facts gatherers and the single activity definition.  Fake gh, board and lane
     # programs on PATH and a temp HOME, so nothing live is read;  the install test runs the stable copy
     # with python3 -I.  The second step fails if the test data holds a real path, Linear id, UUID or secret.
     - name: fleet_facts tests
+      timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest discover -s fleet_facts/tests -t . -v
     - name: fleet_facts fixtures are synthetic
+      timeout-minutes: 10
       run: python3 scripts/fleet_facts/check_fixtures.py
     # Open-loops C2-1:  gather, render and send for the daily digest.  Scripted gatherers, a fake simple-chat that
     # runs every command line through the real simple-chat parser, and a temp HOME for the install test (which
     # runs the stable copy with python3 -I).  The second step uses the same synthetic-data check on these tests.
     - name: open_loops tests
+      timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest discover -s open_loops/tests -t . -v
     - name: open_loops fixtures are synthetic
+      timeout-minutes: 10
       run: python3 scripts/fleet_facts/check_fixtures.py --root scripts/open_loops/tests
     # Fleet tool parity doctor (docs/protocols/fleet-tool-parity.md).
     - name: Fleet tools doctor tests
+      timeout-minutes: 10
       run: python3 scripts/test_fleet_tools_doctor.py
+    # The fleet-app process scan the doctor carries (AFC-576):  identity matching, the server's
+    # half over the doctor's route, the Mac's report, and no argv or environment ever written.
+    # Fake ps, launchctl, /proc and pm2 pid files only.
+    - name: Fleet app processes tests
+      timeout-minutes: 10
+      run: python3 scripts/test_fleet_app_processes.py
     # Zulip bot provisioning script (AFC-359):  runs against a fake Zulip on 127.0.0.1 and a fake fleet-secrets.
     - name: Zulip provision bots tests
+      timeout-minutes: 10
       run: python3 scripts/test_zulip_provision_bots.py
     # MiniMax Code guard live proof (AFC-365):  the tool that separates the matcher, the
     # policy and the live dispatch, so an installed-but-never-fired guard cannot read as
     # protected.  The test builds a temporary plugin directory and a fake hook command, so
     # it starts no MiniMax session and reads no installed plugin.
     - name: Muster install transaction tests
+      timeout-minutes: 10
       run: python3 -m unittest discover -s muster/script -t muster/script -v
+    # The Muster release's credential loader (muster/docs/AUTO-UPDATE.md):  names reported,
+    # keys only as 0600 files, a wrong-scope token failing rather than reading as missing.
+    - name: Muster release credential loader tests
+      timeout-minutes: 10
+      run: node --test muster/script/load_release_secrets.test.mjs
     - name: Muster guard live proof tests
+      timeout-minutes: 10
       run: python3 scripts/test_muster_guard_live_proof.py
     # Fleet skills pack: canonical pin-or-fail identity block, every rendered
-    # tree equal to a fresh render, and the AGENT-SYNC roster the pack mirrors.
+    # tree equal to a fresh render, and the FLEET-PROTOCOL roster the pack mirrors.
     - name: Fleet skill identity tests
+      timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_fleet_skill_identity -v
+    # The housekeeper locks, read from the one home:  the lock blocks are run
+    # as written, with the ssh hop replaced by a fake, so the free, peer-held
+    # and unmakeable paths are all covered and the destructive commands are
+    # checked to run inside the locked block.
+    - name: Housekeeper lock tests
+      timeout-minutes: 10
+      run: |
+        cd scripts && python3 -m unittest test_housekeeper_lock -v
     # The sentence-gap converter, read from the one home:  its shape (one or more
     # spaces, the numbered-list lookbehind, the markup group) and its behaviour on
     # every shape a body can hold, plus the check that no copy has drifted.
     - name: Sentence gap converter tests
+      timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_sentence_gap_converter -v
     # The code-aware sentence-gap program:  every surface embeds the same program,
@@ -219,61 +410,81 @@ jobs:
     # the gaps are made, the prose runs collapse, and the program is idempotent --
     # the check that sees a prose double space no grep over the body can see.
     - name: Sentence gap program tests
+      timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_sentence_gap_program -v
     # The FINAL owner sentence-gap policy (AFC-521):  every file that states the
-    # rule names the one exception (the Claude Code Code tab and the MiniMax Code
-    # chat pane take the entity), no live line prescribes the superseded 2026-10-22
+    # rule names the exception (the Claude Code Code tab and the MiniMax Code chat
+    # pane take the entity),
+    # no live line prescribes the superseded 2026-10-22
     # GitHub-entity split, and the published note takes a real U+00A0 on GitHub too.
     - name: Sentence gap final policy tests
+      timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_sentence_gap_final_policy -v
+    # The App Store sheet's sentence-gap rule (CPY-1) must agree with the canonical
+    # rule:  the same mechanism, the same two chat-pane exceptions and the same
+    # Apple Notes exception.  The requirements are read from the canonical skill, so
+    # the sheet rule cannot drift away from the one home of the rule.
+    - name: Sheet rule sentence gap tests
+      timeout-minutes: 10
+      run: |
+        cd scripts && python3 -m unittest test_sheet_rules_sentence_gap -v
     # AFC-478 follow-up:  the Muster reader of the Worker's Linear token health
     # (signature scheme, document shape, atomic 0600 write).
     - name: Worker health reader tests
+      timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_fleet_worker_health -v
     # The MiniMax model id the autofix bots dispatch: the trusted policy, every
     # reusable workflow default, and the reference doc all name one id, and a
     # retired spelling may appear in a comment but never as a value.
     - name: Autofix model default tests
+      timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_autofix_model_defaults -v
     # Owner rule 2026-10-21:  the request gate fires only on a tag that opens
     # the comment.  The test runs the reusables' own marked gate block.
     - name: Autofix request gate tests
+      timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_autofix_request_gate -v
-    # Owner seat-precedence rule (AGENT-SYNC Identity Rules, 2026-10-09):  no
+    # Owner seat-precedence rule (FLEET-PROTOCOL Identity Rules, 2026-10-09):  no
     # rendered skill may export a platform seat over a launcher's, write the
     # launcher variables, or lack the launcher clause.
     - name: Seat blocks in the rendered skill trees
+      timeout-minutes: 10
       run: python3 scripts/check-seat-blocks.py
     # The open-loops routine texts are private (kept in the canonical private repository) and never enter this
     # repo.  Only their checker and its synthetic fixtures do:  the good set must pass, and each bad
     # fixture must fail on exactly its own rule (docs/open-loops/README.md).
     - name: Routine prompt checker
+      timeout-minutes: 10
       run: |
         python3 scripts/test_check_routine_prompts.py
         python3 scripts/check-routine-prompts.py scripts/tests/fixtures/routines/good
     # Mac watch and Grok idle-unload logic.  Both suites build their own temp
     # HOME and fixture sessions, so they read no live state and kill nothing.
     - name: Mac watch and Grok idle-unload tests
+      timeout-minutes: 10
       run: |
         python3 scripts/test_grok_idle_unload.py
         python3 scripts/test_mac_process_watch_shellular.py
     # Simulator idle reaper and the Claude turn-end hook:  fake device.plist files and a
     # temp state dir;  xcrun, simctl and pgrep are patched, so nothing is booted or shut down.
     - name: Simulator idle reaper tests
+      timeout-minutes: 10
       run: python3 scripts/test_sim_idle_reaper.py
     # Zulip linkifiers:  TARGET's patterns against every CHECKS string under Zulip's match
     # boundaries, and the plan and reorder logic.  No network.
     - name: Zulip linkifier tests
+      timeout-minutes: 10
       run: cd scripts && python3 -m unittest test_zulip_linkifiers -v
     # The Google Drive backup:  the File Provider-safe copy, the rule that a refused subtree is
     # reported rather than raised, and the retention that drops the dated backup folders beyond
     # the newest N.  Temp directories only, so nothing in Drive is read or written.
     - name: Google Drive backup tests
+      timeout-minutes: 10
       run: python3 scripts/test_sync_fleet_agent_config.py -v
     # Fleet work backup (restic to B2):  temp repos and a temp home, stub restic and gitleaks, git
     # with no user config.  Nothing is uploaded and no real path is read.
@@ -282,26 +493,44 @@ jobs:
     - name: Install restic
       run: sudo apt-get update -qq && sudo apt-get install -y -qq restic
     - name: Fleet work backup tests
+      timeout-minutes: 10
       run: python3 scripts/fleet-work-backup/test_fleet_work_backup.py
+    - name: Cloudflare usage watchdog tests
+      timeout-minutes: 10
+      run: python3 scripts/cf-usage-watchdog/test_watchdog.py
     - name: Verify public activity boundary
+      timeout-minutes: 10
       run: python3 scripts/test-public-activity.py
     - name: Verify fleet registry
+      timeout-minutes: 10
       run: python3 scripts/check-fleet-registry.py
-    # The registry's AGENT-SYNC.md rows are read under the GENERATED header, which itself names Fleet-OPS.
-    - name: Registry checks read AGENT-SYNC.md under its header
+    # Every tracked wrangler config carries runaway limits, keeps preview URLs off,
+    # states its log sampling and has a row in scripts/worker-registry.json
+    # (docs/cloudflare-workers.md, AFC-617).  Reads files only;  no network.
+    - name: Worker guard registry and limits
+      timeout-minutes: 10
+      run: |
+        python3 scripts/test_check_worker_guards.py
+        python3 scripts/check-worker-guards.py
+    # The registry's FLEET-PROTOCOL.md rows are read under the GENERATED header, which itself names Fleet-OPS.
+    - name: Registry checks read FLEET-PROTOCOL.md under its header
+      timeout-minutes: 10
       run: python3 scripts/test_check_fleet_registry.py
-    # check-ci-runner-policy.py must recognize AGENT-SYNC's local-Mac-runner ban wording.
-    - name: CI runner policy lint tracks AGENT-SYNC ban text
+    # check-ci-runner-policy.py must recognize the local-Mac-runner ban wording in AGENTS.md.
+    - name: CI runner policy lint tracks the AGENTS.md ban text
+      timeout-minutes: 10
       run: python3 scripts/test_check_ci_runner_policy.py
     # GROK-BUILD in any spelling is an alias for GROK (owner 2026-10-10).  The standalone runtimes (the
     # Linear board, recall) carry a copy of the registry's aliasPattern;  these fail when a copy drifts.
     - name: Seat alias parity (linear-board)
+      timeout-minutes: 10
       run: python3 scripts/linear-board/test_board.py SeatAliasTests
     # AFC-361:  board writes, notes_create/notes_update and apple-notes-coding.sh carry a session id and refuse
     # without one (single-thread seats exempt).  The parity test keeps every copy of fleet-apps.json
     # `sessionIds` equal;  the other two run the board verbs against the mock Linear and the notes script with
     # APPLE_NOTES_PRINT_HTML=1, which never touches Notes.
     - name: Session id contract (AFC-361)
+      timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_session_ids_parity test_apple_notes_session
         cd .. && python3 scripts/linear-board/test_board.py SessionIdTests
@@ -309,6 +538,7 @@ jobs:
     # unpinned, and a failed run must not be reported as a missing Shortcut.  The test drives the real
     # pin block out of the script with a stub `shortcuts` on PATH, so it touches no Notes and runs here.
     - name: Notes pin decision (AFC-431)
+      timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_apple_notes_pin
     # AFC-436:  the canonical helper must carry the 900 s AppleEvent timeout around its Notes calls.
@@ -316,11 +546,13 @@ jobs:
     # lost it and an install from the repository would have dropped it again.  These tests read the
     # script as text, so they touch no Notes and run here.
     - name: Notes AppleEvent timeout (AFC-436)
+      timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_apple_notes_timeout
     # AFC-486:  the helper's --read, --list and --existing-only modes and its action log.  A stub osascript on
     # PATH stands in for Notes, so the tests touch no Notes and run here.
     - name: Notes read, list and action log (AFC-486)
+      timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_apple_notes_actions
     # AFC-547:  the helper turns a bare project or pull request reference into a link, the way the writer
@@ -331,6 +563,15 @@ jobs:
       timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_apple_notes_linkify
+    # AFC-565:  a note body over the command line budget could not be written.  The helper passed the
+    # body as an argument, so a body over 1048576 bytes died with "Argument list too long" and the
+    # note kept the content it already had, which left the pinned Background Jobs Master List stale
+    # with nothing to show for it.  The body travels on stdin now.  The test drives the script
+    # through the preview hook, so it touches no Notes.
+    - name: Notes body size (AFC-565)
+      timeout-minutes: 10
+      run: |
+        cd scripts && python3 -m unittest test_apple_notes_body_size
     # The open-loops tools (needs-owner, ask-capture, claim expiry, lane sweep) file and comment through
     # `board` with the text in a 0600 file, never in argv, and set flat labels that only a fixed
     # allow-list may name.  These two classes (about a minute) pin that contract; the full suite is
@@ -341,22 +582,26 @@ jobs:
     # could not use:  a masked preview of the credential rather than the credential, and the name of
     # the variable to fix on every exit-4 line (AFC-473).
     - name: Board CLI input files and flat labels
+      timeout-minutes: 10
       run: python3 scripts/linear-board/test_board.py FileInputTests FlatLabelTests CommentAuthorTests TokenBlobTests CredentialPreviewTests CredentialFailureTests
     # Infisical for the board CLI (AFC-348):  client pairs from /linear before local files, the shared
     # LINEAR_<SEAT>_CACHE_TOKEN adopted and published, and the fallback when Infisical is down.  Mock servers only.
     - name: Board CLI Infisical tests
+      timeout-minutes: 10
       run: python3 scripts/linear-board/test_board_infisical.py
-    # Agent-Sync parity (AFC-329):  `board commands|run|api|mcp` serve the hosted server's Linear catalogs from
-    # scripts/linear-board/catalog/ (pinned to the server's export by the agent-sync-mcp node test
+    # Simple-Tools parity (AFC-329):  `board commands|run|api|mcp` serve the hosted server's Linear catalogs from
+    # scripts/linear-board/catalog/ (pinned to the server's export by the simple-tools-mcp node test
     # linear-catalog-parity).  This replays the server's documents and guard verdicts against board's Python
     # ports, checks board lists exactly the exported names, and runs the verbs against a mock Linear and a fake
     # official MCP server (about a minute).
-    - name: Board CLI Agent-Sync parity
+    - name: Board CLI Simple-Tools parity
+      timeout-minutes: 10
       run: python3 scripts/linear-board/test_board_parity.py
     # Infisical's only environment is prod (owner 2026-10-10).  The lint fails on a dev or
     # staging INFISICAL_ENV in an env file or cursor-cloud-start.sh fallback, and on a
     # non-prod .infisical.json default;  `--fleet` runs it over every ~/Code repo on origin/main.
     - name: Infisical environment lint (prod only)
+      timeout-minutes: 10
       run: |
         python3 scripts/test_check_infisical_env.py
         python3 scripts/check-infisical-env.py
@@ -364,14 +609,28 @@ jobs:
     # secretscan redaction parity, Coolify env-name inventory, and a stubbed
     # configure-agents.sh (never talks to Infisical or writes under $HOME).
     - name: fleet-telemetry-relay tests
+      timeout-minutes: 10
       run: |
         cd telemetry-relay && PYTHONPATH=tests python3 -m unittest discover -s tests -t tests -v
     - name: Set up Node
       uses: actions/setup-node@v7
       with:
-        node-version: '24'
+        node-version: '26'
+        cache: npm
+        cache-dependency-path: |
+          visual-tests/package-lock.json
+          scripts/simple-tools-mcp/package-lock.json
     - name: Verify operator start routing
+      timeout-minutes: 10
       run: node --test scripts/safari-start/worker.test.mjs
+    # The alert-ingress secret provisioner (AFC-351):  the batched read against a
+    # fake `fleet-secrets` that keeps the CLI's own contract -- one name answers
+    # with the raw value, several answer with a JSON object -- so a one-name
+    # batch cannot decode as the other.  No network, no secret in any assertion.
+    - name: alert_ingress provisioner tests
+      timeout-minutes: 10
+      run: |
+        cd scripts && python3 -m unittest test_alert_ingress_provision -v
     # Shared alert ingress: state transitions, vendor normalization, and the
     # Zulip status rendering.  Pure functions, so no Workers runtime needed.
     # The test files are named explicitly: on Node 24 the directory form
@@ -379,42 +638,70 @@ jobs:
     # single module and reports one passing test without running any test
     # file, which left this gate vacuous.
     - name: Alert ingress unit tests
+      timeout-minutes: 10
       run: node --test workers/alert-ingress/src/*.test.js
+    # The Worker deploy scripts.  worker-deploy.yml is gated off and the alert workflow
+    # runs only on main, so without this a broken deploy script would merge unnoticed.
+    - name: Worker deploy script tests
+      timeout-minutes: 10
+      run: |
+        python3 scripts/test-deploy-mapped-worker.py
+        python3 scripts/test-deploy-alert-workers.py
     # Hosted ST-MCP Worker unit tests (including GraphQL document
     # parsing).  Install its pinned dependencies before running the suites.
     - name: ST-MCP Worker unit tests
+      timeout-minutes: 10
       run: |
-        npm ci --ignore-scripts --prefix scripts/agent-sync-mcp
-        node --test scripts/agent-sync-mcp/test/*.test.mjs
+        npm ci --ignore-scripts --prefix scripts/simple-tools-mcp
+        node --test scripts/simple-tools-mcp/test/*.test.mjs
     # The scoped-folder copy script (AFC-478) against a mocked Infisical and a fake
     # fleet-secrets:  names-only output, collisions, exit codes and reruns.
     - name: ST-MCP scoped-folder copy script tests
-      run: python3 -I scripts/agent-sync-mcp/scripts/test_populate_scoped_folders.py
+      timeout-minutes: 10
+      run: python3 -I scripts/simple-tools-mcp/scripts/test_populate_scoped_folders.py
     - name: Kody defer and deferred sweep tests
+      timeout-minutes: 10
       run: node --test scripts/kody-defer/*.test.mjs scripts/kody-deferred-sweep.test.mjs
+    - name: Kody first-review prompter tests
+      timeout-minutes: 10
+      run: node --test scripts/kody-first-review/*.test.mjs
     - name: Autofix dispatcher tests
+      timeout-minutes: 10
       run: node --test scripts/autofix-dispatcher/*.test.mjs
     # The pr-sweep Claude adapter (a Workflow script) against stubbed workflow hooks:  a mismatched or missing status,
     # or a copy that fails its check line, stops it before any worker;  repairs and deploys go only where they belong.
     - name: pr-sweep Claude adapter test
+      timeout-minutes: 10
       run: node --test scripts/pr_sweep/tests/claude_adapter.test.mjs
     - name: PR Autofix reusable workflow contract
+      timeout-minutes: 10
       run: node --test .github/pr-autofix-reusable.node-test.mjs
     # The shared auto-merge armer against a fake `gh`:  a merge queue refuses
     # --delete-branch, and the armer has to arm again without the flag instead of
     # failing every PR in the repo (AFC-413).  No network:  the fake records its
     # arguments and answers what the test tells it to.
     - name: Auto-merge reusable workflow contract
+      timeout-minutes: 10
       run: python3 scripts/test_auto_merge_reusable.py
     # Pure builders and readers of the Fleet Reference Sheet registry sync.  No
     # network:  the tests import the script, which runs main() only as an entry point.
     - name: Fleet Reference Sheet registry sync tests
+      timeout-minutes: 10
       run: node --test scripts/fleet-apps-sheet-sync.format.test.mjs scripts/fleet-apps-sheet-sync.tabs.test.mjs scripts/fleet-apps-sheet-sync.ingest.test.mjs
+    # The Operator registry -> Sheets drain (OPS-1037):  the exporter, the Google Sheets
+    # transport and the drain runner (pass loop, run deadline, stop signal, write pacing
+    # and HTTP 429 back-off).  No network:  fetch, the registry bridge and the clock are
+    # injected, and nothing sleeps for real.
+    - name: Operator Sheets drain tests
+      timeout-minutes: 10
+      run: node --test scripts/test_operator_sheets_export.mjs scripts/test_operator_sheets_google.mjs scripts/test_operator_sheets_drain.mjs
     # The TestFlight freshness deploy check (AFC-341).  App Store Connect, gh, build-window.sh,
     # the state file and Zulip are stubbed;  the last test validates testflight-apps.json.
     - name: TestFlight freshness check tests
+      timeout-minutes: 10
       run: |
         node --test scripts/ios-fleet/ios_testflight_freshness.test.mjs
+        node --test scripts/ios-fleet/build_number_audit.test.mjs
         bash -n scripts/ios-fleet/install-testflight-freshness.sh
     # The fleet iOS version manifest publisher (AFC-540).  It publishes as a
     # branch plus a pull request against this repository, because the ruleset
@@ -422,25 +709,34 @@ jobs:
     # sibling app, that the publish never names the default branch, and that
     # the workflow's own read-only GITHUB_TOKEN is refused.
     - name: Fleet iOS version manifest publisher tests
+      timeout-minutes: 10
       run: |
         node --test scripts/ios-fleet/publish-ios-versions.test.mjs
         bash -n scripts/ios-fleet/publish-ios-versions.sh
     - name: Mac ledger mirror tests
+      timeout-minutes: 10
       run: bash scripts/test-mac-ledger-mirror.sh
     # The cutover helper for retiring ~/.secrets (AFC-359):  a temp HOME, stub launchctl and lsof, a throwaway repo.
     - name: Retire secrets dir tests
+      timeout-minutes: 10
       run: bash scripts/test-retire-secrets-dir.sh
     # The BotFleet launch wrapper and its LaunchAgent template:  the "already healthy" exit, the
     # missing-checkout exits, and the fleet-seat switch (BOTFLEET_FLEET_SEAT_PROMPTS=1) that the
     # open-loops routines depend on.  A stub curl and a stub node stand in for the real ones.
     - name: BotFleet start wrapper tests
+      timeout-minutes: 10
       run: bash scripts/test-botfleet-server-start.sh
     # The resource watcher that runs on this Mac every 5 minutes:  the live
     # thresholds it must carry, and the shared housekeeper lock it must take so
     # two schedulers never reclaim at once.  Static checks plus the module's own
     # evaluate();  nothing here reads the host or sends a webhook.
     - name: Mac resource watch tests
+      timeout-minutes: 10
       run: bash scripts/test-mac-resource-watch.sh
+    # Qdrant snapshot log lines: UTC stamp plus Central time with offset.
+    - name: Qdrant snapshot log label tests
+      timeout-minutes: 10
+      run: bash scripts/test-fleet-qdrant-log-label.sh
 
   mac-scripts:
     name: Mac scripts
@@ -458,21 +754,67 @@ jobs:
       run: bash scripts/test-mac-auto-cleanup.sh
     - name: Mac resource watch tests
       run: bash scripts/test-mac-resource-watch.sh
+    # The coding-priority launcher (AFC-609):  the allowlist, the refusals, the
+    # receipt, and the live canary that MEASURES the nice value and the QoS
+    # clamp on a job this test launches.  That canary needs macOS, so this
+    # job is where it actually runs.
+    - name: Mac coding priority tests
+      run: python3 scripts/test_mac_coding_priority.py
 
   muster-macos-build:
     name: Muster macOS build
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
+      # The interpreter FleetViewService runs, on the machine shape that has it.  The version is
+      # printed and not asserted, because the image decides it;  the 3.9 proof is the test job's.
+      # FleetViewCollectorTests below runs the whole command through the app's own decoder.
+      - name: Collector imports under the app's Python
+        working-directory: scripts
+        run: |
+          /usr/bin/python3 --version
+          /usr/bin/python3 -c 'import fleet_view.__main__'
+      # The release job compares this derived key with the app's SUPublicEDKey before it signs
+      # an update;  swift is only here, so this is where the derivation is proved.
+      - name: Sparkle public key derivation
+        run: python3 muster/script/test_sparkle_public_key.py -v
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate and compile unsigned scaffold
         working-directory: muster
         run: |
           xcodegen generate --spec project.yml
+          # The checked-out commit's own time, in the same UTC form the build scripts write.
+          commit_time="$(date -u -r "$(git show -s --format=%ct HEAD)" +%Y-%m-%dT%H:%M:%SZ)"
           xcodebuild -project Muster.xcodeproj -scheme Muster -configuration Debug \
             -destination 'platform=macOS' -derivedDataPath .build/CI \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= build
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= \
+            "MUSTER_COMMIT=$GITHUB_SHA" "MUSTER_COMMIT_TIME=$commit_time" MUSTER_BUILD_CHANNEL=development \
+            build
+      # The build stamp travels through Support/Info.plist into the generated one, which is
+      # what Settings and the menu read.  The Debug build carries no update feed, so Sparkle
+      # stays off in it.
+      - name: Check the built app carries its build stamp
+        working-directory: muster
+        run: |
+          plist=.build/CI/Build/Products/Debug/Muster.app/Contents/Info.plist
+          test "$(/usr/libexec/PlistBuddy -c 'Print :MusterCommit' "$plist")" = "$GITHUB_SHA"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :MusterBuildChannel' "$plist")" = development
+          test -z "$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$plist")"
+          test -d .build/CI/Build/Products/Debug/Muster.app/Contents/Frameworks/Sparkle.framework
+          MUSTER_BUILT_APP="$PWD/.build/CI/Build/Products/Debug/Muster.app" \
+            python3 -m unittest discover -s script -t script -p 'test_no_external_entry_points.py' -v
+      # The Swift names the image sets by string, so only the built bundle proves that
+      # both modes' artwork and the bundle's own icon came out of the asset compiler.
+      - name: Check the built app carries its icons
+        working-directory: muster
+        run: |
+          app=.build/CI/Build/Products/Debug/Muster.app
+          /usr/libexec/PlistBuddy -c 'Print CFBundleIconName' "$app/Contents/Info.plist" | grep -qx AppIcon
+          test -s "$app/Contents/Resources/AppIcon.icns"
+          xcrun --sdk macosx assetutil --info "$app/Contents/Resources/Assets.car" > .build/assets.json
+          grep -q '"MusterIconLight"' .build/assets.json
+          grep -q '"MusterIconDark"' .build/assets.json
       - name: Run the Muster unit tests
         working-directory: muster
         run: |

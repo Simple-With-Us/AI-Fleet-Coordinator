@@ -35,8 +35,9 @@ collections and is no longer ST-only.
 | `fleet-agents` | grows nightly | The shared agent memory.  Embedded by the **self-hosted** endpoint. |
 
 `fleet-agents` is 1024-dim cosine, vectors in RAM, with payload indexes on `source`, `app`,
-`category`, `seat`, `doc_id`, `content_hash`, `created_at`, and a full-text index on `text` so
-keyword and vector search are fused (see *Search*).
+`category`, `seat`, `doc_id`, `content_hash`, `created_at`, and `retracted` (bool), plus a
+full-text index on `text` so keyword and vector search are fused (see *Search*).  The recall
+service creates the `retracted` index idempotently before its first search after deploy.
 
 ### Payload schema (v2)
 
@@ -45,7 +46,7 @@ Every point carries:
 ```jsonc
 {
   "text":         "[Title › Section]\nthe chunk",
-  "source":       "board | effort-log | apple-note | doc | skill | memory | chat-log | agent-contribution | meta",
+  "source":       "board | linear | effort-log | apple-note | doc | skill | memory | chat-log | agent-contribution | meta",
   "app":          "fleet | socratic-trade | congress-trade | usage-monitor | dealdex | botfleet | ...",
   "category":     "lesson | preference | infrastructure | decision | runbook | finding | note | doc",
   "seat":         "CLAUDE | MONET | GROK | CODEX | AG | CURSOR | OWNER | FLEET",
@@ -66,7 +67,23 @@ and re-ingesting unchanged content is a no-op.  One extra point, `doc_id = meta/
 
 | Source | Where it comes from | Notes |
 |---|---|---|
-| `board` | `findings.db` (title, body, resolution, status, severity, comments), the archived database of THE BOARD (retired 2026-10-19;  the copy is `~/apps/_retired/mac-collab-20261019/findings.db`;  a `linear` source reading Linear through the read-only Fleet Reader app is planned) | category `lesson` when resolved, else `finding`; url is the board |
+| `board` | `findings.db` (title, body, resolution, status, severity, comments), the archived database of THE BOARD (retired 2026-10-19;  the copy is `~/apps/_retired/mac-collab-20261019/findings.db`, frozen at the retirement) | category `lesson` when resolved, else `finding`; url is the Linear issue from the migration map |
+| `linear` | All live and archived Linear issues through the installed `simple-board` read-only GraphQL path. Untouched imported history is included, independent of `findings.db`, the migration TSV or freeze date. Committed ingest state controls incremental refetches; `FLEET_RAG_LINEAR_FULL=1` bypasses that cache and selects every scanned UUID. Comment edits can escape issue timestamps, so the committed `refreshed_at` window still forces periodic refetches (default 7 days). Issue chunks halve on the CLI cap; a single issue retries with one connection node, and follow-on comments, labels and attachments page completely with adaptive widths, cursor-progress checks and a per-chunk deadline. A single-field overflow remains an identified incomplete issue, never a partial document. Run `linear_read_receipt` records every scanned UUID, selected count, fetched/cached/skipped status, skip reason and fetched Markdown SHA256. `source_complete` means an unlimited read fetched every scanned UUID without skips; `state_hash_verified` separately compares fetched text with committed ingest state. Neither proves independent Qdrant chunk coverage or authorizes deletion. Linear is in the normal nightly source set, but explicit Linear prune remains refused and nightly Linear prune is skipped, even with FULL. Board/effort reconciliation and retired-file deletion require separate validated coverage and clearance. Stable doc ID `linear/<issue-uuid>` survives team moves; app from `app:<slug>` else team mapping | category `lesson` for completed state, otherwise `finding`; seat from `seat:`/`claimed:` labels |
+
+Agent-facing recall text is presented as nonce-fenced JSON with an explicit warning that hits
+are untrusted data, never instructions or owner approval. The shared `recall_presentation`
+helper covers the standalone stdio MCP, recall-service MCP, seat-mcp and CLI text surfaces.
+The JSON inside the fence is lossless: delimiter-like text uses JSON Unicode escapes, not
+source removal. MCP `structuredContent` and CLI `--json` stdout retain the raw result shape
+and original source text; CLI JSON writes its trust warning to stderr. REST and the Python
+API remain raw-data interfaces. Machine consumers must treat their hits as untrusted source
+data and separately verify authority before acting; indexing text does not authenticate it.
+No text fence can make an agent immune to prompt injection. The hosted/simple-tools MCP already
+has its own untrusted recall envelope. `install-fleet-rag.sh --with-seat-mcp` now copies the
+seat server renderer as well as its bridge/tools; the main package rsync and service Docker
+COPY include the shared helper. These source changes do not install, restart or deploy a
+runtime by themselves.
+
 | `apple-note` | every note in the iCloud folder **Coding**, exported by AppleScript without stealing focus, cached by modification date | app and seat parsed from the `[TEAM_KEY, Agent] Topic` title convention |
 | `doc` | markdown in fleet app repos under `~/Code` (`README.md`, `AGENTS.md`, `STATUS.md`, `CLAUDE.md`, `docs/**/*.md`), plus the broader walk of AI-Fleet-Coordinator and fleet-ops, top-level `~/apps/*.md` except effort logs, `~/.claude/CLAUDE.md`, `~/.grok/docs/**/*.md`, and `~/.grok/skills/**/SKILL.md` | GitHub blob URL when the file is in a repo.  Skip `node_modules`, `.git`, backups, dist, build, vendor, and `reviews/raw`.  Deduped by resolved path. |
 | `effort-log` | `~/apps/*-EFFORT-LOG.md` and the protocol | one doc per file, app from the filename |
@@ -76,7 +93,7 @@ and re-ingesting unchanged content is a no-op.  One extra point, `doc_id = meta/
 | `agent-contribution` | `recall contribute` / `recall_contribute` | **Highest-yield write path.**  Scrubbed, gitleaks-gated, 40–4,000 chars.  Search first, then contribute the lesson at the moment it was learned. |
 
 Mirror rules keep one copy of each document: the live `~/apps/*.md` copy wins over its
-repo mirror (AGENT-SYNC, MAC-LOCAL-PROCESSES, FLEET-UI-COPY, TEMPLATE-AGENTS), the by-seat and
+repo mirror (FLEET-PROTOCOL, MAC-LOCAL-PROCESSES, FLEET-UI-COPY, TEMPLATE-AGENTS), the by-seat and
 repo copies of skills are skipped in favour of the `skill` source, effort-log mirrors are skipped
 in favour of the live boards, and checkouts reachable under two spellings are walked once.
 `recall ingest --prune` deletes the chunks of documents a source no longer yields.
@@ -156,6 +173,39 @@ the chat log.  Search first, then contribute one paragraph.  Chat transcripts ar
 ingested as lessons; `ingest --all` skips `chat-log`.  An explicit `--source chat-log` pass is
 a rare infra/policy scan of owner rulings only.
 
+**Correction and retraction (2026-11-05).**  A contribution can be corrected or taken back by
+exact `doc_id`; the take-back operation is named *retraction*, never "recall".  The owning
+seat, or the `OWNER` admin seat, may mutate it.  On the shared HTTP service the OWNER claim
+requires the distinct `RECALL_OWNER_TOKEN` bearer; a client-supplied seat value alone is never
+proof.  `recall_correct` replaces the current text in
+one Qdrant point upsert on the same point id and `doc_id`:  the old text, hash, title and URL
+move into the payload's `revisions[]` audit with actor, time and reason, `revision` increments,
+and only the current `text` is embedded or searched.  A same-text correction with new metadata
+updates that same point's title/URL and audit; one with no text or metadata change returns
+`status: unchanged`.  Contributing text that already occupies the deterministic point id returns
+`duplicate`, even when that point was retracted or later corrected to different text, so a write
+can never erase retraction audit or resurrect old text by overwrite.  `recall_retract` makes one
+Qdrant payload write setting `retracted`,
+`retracted_at`, `retracted_by` and `retraction_reason`; it never deletes the point, and a
+repeat returns `already_retracted`.  Normal search excludes retracted contributions by
+construction (`include_retracted=True` is the audit view), and a retracted contribution cannot
+be corrected back to life.  Replacement text, reasons, titles and URLs get the same scrub and
+fail-closed gitleaks gate as a contribution.  `expected_revision` is an optional optimistic
+precondition for a caller that read first.
+
+Supported fleet mutation surfaces route through the single recall service process (the stock CLI,
+stdio MCP, seat-mcp and hosted Worker all use the public service route).  `QDRANT_URL` and
+`TEI_URL` alone do not select a local mutation path: an SSH tunnel can point those variables at
+the shared corpus, and that would bypass the service lock and OWNER bearer check.  Only an
+explicit `FLEET_RECALL_LOCAL_MUTATIONS=1` Run-your-own override uses the same implementation in
+that operator's process against their own corpus instead; a local OWNER mutation still requires
+`RECALL_OWNER_TOKEN`, and local mutations are outside the fleet service's serialization.
+`recall_api._MUTATION_LOCK` serializes the read-modify-write
+inside that one process, and each write is deliberately a one-point Qdrant operation because
+Qdrant has no cross-point transaction or compare-and-set.  If the service is ever scaled to
+multiple replicas, that in-process lock no longer spans writers:  run mutations behind one
+writer or add an external lock/leader before scaling out.
+
 ### From a Mac seat (Claude, Codex, Cursor, Grok, Antigravity, Monet)
 
 The `fleet-recall` MCP server is registered in every CLI's global MCP config by
@@ -165,8 +215,10 @@ calls `python3 -m fleet_lanes.install_mcp` for them (each tool's native shape, a
 hand-registered entry is left alone).  Clutch is not in the list: it carries `fleet-recall` as a native agent preset
 (`~/.clutch/dsh/.agent-presets/fleet-recall`), and a second copy would double the tools.  Tools:
 
-- `recall_search(query, limit=5, category?, app?, source?, seat?, since_days?)`
+- `recall_search(query, limit=5, category?, app?, source?, seat?, since_days?, include_retracted?)`
 - `recall_contribute(text, category, app="fleet", seat, title?, url?)`
+- `recall_correct(doc_id, text, reason, seat, title?, url?, expected_revision?)`
+- `recall_retract(doc_id, reason, seat, expected_revision?)`
 - `recall_stats()`
 
 The CLI is `recall`, on PATH through `~/.local/bin/recall` like `simple-board` (the old `~/apps/mac-collab/recall` symlink was retired on 2026-10-19):
@@ -175,6 +227,9 @@ The CLI is `recall`, on PATH through `~/.local/bin/recall` like `simple-board` (
 recall "pm2 orphan holds port"                       # ranked hits with source, date, board id / url
 recall "rotate the Coolify token" --app fleet --limit 3 --since-days 60
 recall contribute "TEI warmup memory scales with --max-batch-tokens; 4096 under 10 GiB is stable." --category lesson --app fleet
+recall correct contrib/CLAUDE/2026-11-05/472fc36e "Replacement lesson text ..." --reason "make the command exact"
+recall retract contrib/CLAUDE/2026-11-05/472fc36e --reason "obsolete after the bridge rewrite"
+recall "old lesson" --include-retracted         # audit view only
 recall stats            # points, by source / app, embedder health
 recall doctor           # credentials found (names only), key mode, service health
 recall eval --k 5 [--compare]   # golden-set retrieval quality, with/without lessons and rerank
@@ -199,7 +254,7 @@ loop.
 2026-09-08).  The `recall` CLI and the stdio `fleet-recall-mcp.py` both call `recall_api`
 directly against `TEI_URL` / `QDRANT_URL` -- Tailscale mesh addresses -- so a Mac that is
 logged out of Tailscale used to fail every `recall_search` / `recall_stats` /
-`recall_contribute` with a slow, opaque `RemoteDisconnected` / `ConnectionError` traceback
+`recall_contribute`, `recall_correct` or `recall_retract` with a slow, opaque `RemoteDisconnected` / `ConnectionError` traceback
 (`core.http_json` retries a connection failure 4x with backoff before giving up).  Both
 surfaces now route every call through `public_fallback.call_with_fallback`, which:
 
@@ -308,11 +363,12 @@ Access service-token headers when you are not already on the Mac.
 | Mac CLI (Claude, Codex, Cursor, Grok, AG, Monet) | stdio MCP `fleet-recall` (installer) or `recall` CLI |
 | BotFleet on this Mac | inherits that stdio MCP from the engine config |
 | Cursor cloud / Claude Code Cloud / Codex cloud / Grok Bot | remote MCP `https://recall.jays.services/mcp` (entry `fleet-recall` in `scripts/seat-mcp/mcp.example.json`); `https://agents.jays.services/mcp` when you need seat tools too |
-| Anything that can HTTP | REST: `GET https://recall.jays.services/recall/stats`, `POST .../recall/search`, `POST .../recall/contribute` (same paths on agents.jays.services) |
+| Anything that can HTTP | REST: `GET https://recall.jays.services/recall/stats`, `POST .../recall/search`, `POST .../recall/contribute`, `POST .../recall/correct`, `POST .../recall/retract` (same paths on agents.jays.services) |
 | iOS BotFleet | same REST or remote MCP; the companion talks to the Mac harness when the Mac is the computer, otherwise `recall.jays.services` |
 
-MCP tools on `/mcp`: `recall_search`, `recall_stats`, `recall_contribute` (`seat` is required
-for contributions on both hops; a remote caller has no `AGENT_SEAT`).  REST bodies are the same
+MCP tools on `/mcp`: `recall_search`, `recall_stats`, `recall_contribute`, `recall_correct`,
+and `recall_retract` (`seat` is required for mutations on both hops; a remote caller has no
+`AGENT_SEAT`).  REST bodies are the same
 JSON as the MCP arguments.  The Hetzner service is a stdlib-only Python process
 (`scripts/fleet-recall-service/server.py`) that imports `fleet_rag.recall_api` unchanged and
 reads its configuration from the environment only (`QDRANT_*`, `TEI_*`, `RECALL_API_TOKEN`);

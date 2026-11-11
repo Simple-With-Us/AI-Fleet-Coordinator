@@ -121,7 +121,7 @@ from urllib.parse import urlparse
 
 here, tag, short = sys.argv[1:4]
 sys.path.insert(0, str(Path(here) / "scripts"))
-from agent_sync.zulip import UsageError, credential_file_name, normalise_seat  # noqa: E402
+from simple_tools.zulip import UsageError, credential_file_name, normalise_seat  # noqa: E402
 
 try:
     seat = normalise_seat(tag)
@@ -220,14 +220,14 @@ echo "            python3 scripts/zulip_provision_bots.py --dry-run --only \"<di
 echo "            python3 scripts/zulip_provision_bots.py --only \"<display name in that ROSTER row>\""
 echo "          --only matches the full display name, so use the one Jay chose.  Without --only it covers the whole roster."
 echo "          Settings > Bots in Zulip works too; enter only the short name there."
-echo "          The script writes ~/.agent-sync/provisioned/$FILE_CODE-zuliprc with mode 600 and never prints the key."
+echo "          The script writes ~/.simple-tools/provisioned/$FILE_CODE-zuliprc with mode 600 and never prints the key."
 echo "          It then prints the Infisical /zulip key names to store (upper case, hyphens as underscores)."
 echo "          An existing bot keeps its key unless Jay passes --regenerate, which invalidates the old key."
 echo "          A cloud seat gets env ZULIP_EMAIL, ZULIP_API_KEY and ZULIP_SITE instead of a file."
-echo "       c. Jay stores the three values in Infisical /zulip and deletes ~/.agent-sync/provisioned/."
+echo "       c. Jay stores the three values in Infisical /zulip and deletes ~/.simple-tools/provisioned/."
 echo "          Check the file mode (expect 600) before that and the identity (it must show $BOT_EMAIL) after."
 echo "          Neither prints the key:"
-echo "            stat -f '%Lp' ~/.agent-sync/provisioned/$FILE_CODE-zuliprc"
+echo "            stat -f '%Lp' ~/.simple-tools/provisioned/$FILE_CODE-zuliprc"
 echo "            AGENT_SEAT=$TAG simple-chat whoami"
 echo "       d. Subscribe at setup, not ad hoc (a typo cannot create a channel with --must-exist):"
 echo "            AGENT_SEAT=$TAG simple-chat subscribe --channel work-in-progress --channel builds --must-exist"
@@ -235,10 +235,10 @@ echo "  5. Intro, once per session, before the first claim:"
 echo "       AGENT_SEAT=$TAG simple-chat post --topic \"roll call\" \"online  |  <platform>  |  cadence:  <listen|wait|per-turn read>"
 echo "       can:  <what this session can do>\""
 echo "     The CLI writes the [${TAG}·session8] tag itself.  Read the room first:  simple-chat inbox"
-echo "  6. Listener: docs/protocols/agent-sync-partition.toml must list $TAG as mac or server, in the"
+echo "  6. Listener: docs/protocols/simple-tools-partition.toml must list $TAG as mac or server, in the"
 echo "     PR that enables it and with Jay's OK.  A listener refuses a seat the file does not give to"
 echo "     its own instance, and a seat must never be in both."
 echo "  7. Add the seat to the Who's Here roster in docs/protocols/zulip-fleet-guide.md (mention, bot"
 echo "     email, file code), and a row to the Active Seats table if this is a standing seat:  that table is in"
-echo "     Fleet-OPS handbook/core/seats-and-identity.md, changed by pull request, never by editing AGENT-SYNC.md"
+echo "     Fleet-OPS handbook/core/seats-and-identity.md, changed by pull request, never by editing FLEET-PROTOCOL.md"
 echo "  8. See docs/ONBOARDING-NEW-AGENT.md"

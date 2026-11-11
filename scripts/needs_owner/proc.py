@@ -22,7 +22,7 @@ from . import seat as seatmod
 from .errors import BoardFailed, NeedsOwnerError
 
 BOARD_TIMEOUT = 240  # seconds:  the board waits out a Linear rate limit itself
-AGENT_SYNC_TIMEOUT = 90
+SIMPLE_TOOLS_TIMEOUT = 90
 
 
 @dataclass
@@ -120,11 +120,8 @@ class Runner:
         return Result(done.returncode, done.stdout or "", done.stderr or "")
 
     def board(self, *args: str) -> Result:
-        # The retired board wrapper exported LINEAR_BOARD_WRITES=1;  simple-board is the board
-        # entry point itself, so without the opt-in every file/comment/label exits 7.
-        env = dict(self.env)
-        env["LINEAR_BOARD_WRITES"] = "1"
-        return self._run("simple-board", args, None, BOARD_TIMEOUT, env)
+        # The bearer-verified seat is the write gate, so a write needs no opt-in here.
+        return self._run("simple-board", args, None, BOARD_TIMEOUT, dict(self.env))
 
     def board_json(self, *args: str):
         """Run a `board ... --json` read and return the parsed JSON, or raise BoardFailed."""
@@ -140,8 +137,8 @@ class Runner:
         except ValueError:
             raise BoardFailed("board %s did not return JSON" % args[0]) from None
 
-    def agent_sync(self, *args: str, stdin: str | None = None) -> Result:
-        return self._run("simple-chat", args, stdin, AGENT_SYNC_TIMEOUT)
+    def simple_tools(self, *args: str, stdin: str | None = None) -> Result:
+        return self._run("simple-chat", args, stdin, SIMPLE_TOOLS_TIMEOUT)
 
     def require_board(self) -> None:
         if find_tool("simple-board", self.env) is None:

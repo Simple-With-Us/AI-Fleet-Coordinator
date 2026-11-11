@@ -43,8 +43,8 @@ GENERATOR_LINE = (
     "body-sha256:{sha} -->"
 )
 
-BODY = "# AGENT-SYNC\n\nOne rule.  Another rule.\n"
-OPS_BODY = "# AGENT-SYNC\n\nOPS and Fleet-OPS are listed here.\n"
+BODY = "# FLEET-PROTOCOL\n\nOne rule.  Another rule.\n"
+OPS_BODY = "# FLEET-PROTOCOL\n\nOPS and Fleet-OPS are listed here.\n"
 
 
 def sha(text: str) -> str:
@@ -60,7 +60,7 @@ def mirror(body: str = BODY) -> str:
 
 
 class RepoCase(unittest.TestCase):
-    PATH = "AGENT-SYNC.md"
+    PATH = "FLEET-PROTOCOL.md"
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -229,12 +229,11 @@ class ContentRules(RepoCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("is missing", problems[0])
 
-    def test_the_real_pin_is_the_imported_text(self) -> None:
+    def test_the_shipped_entry_is_the_current_document_with_no_stale_pin(self) -> None:
         spec = gm.GENERATED_PATHS[0]
-        self.assertEqual(spec.path, "AGENT-SYNC.md")
-        self.assertEqual(
-            spec.pre_flip_sha256, "9d8fe9a88d34535dac761e1c7ae860d2a5c48169f12d00ef771650f2e1b097ef"
-        )
+        self.assertEqual(spec.path, "FLEET-PROTOCOL.md")
+        self.assertIsNone(spec.pre_flip_sha256)
+        self.assertIsNone(spec.alternate)
 
 
 class BranchRule(RepoCase):
@@ -400,13 +399,16 @@ class BranchRule(RepoCase):
         self.assertTrue(any("not 'handbook-sync/mirror'" in m for m in problems))
 
     def test_two_paths_are_checked_independently(self) -> None:
-        self.write(mirror(), "AGENT-SYNC.md")
+        self.write(mirror(), "FLEET-PROTOCOL.md")
         self.write(mirror(OPS_BODY), "docs/guide.md")
         self.git("add", "-A")
         self.git("commit", "-q", "-m", "base")
         self.base_sha = self.git("rev-parse", "HEAD")
         self.write(mirror(OPS_BODY + "Changed.\n"), "docs/guide.md")
-        specs = (gm.GeneratedPath("AGENT-SYNC.md", None), gm.GeneratedPath("docs/guide.md", None))
+        specs = (
+            gm.GeneratedPath("FLEET-PROTOCOL.md", None),
+            gm.GeneratedPath("docs/guide.md", None),
+        )
         problems, _ = gm.check(self.root, specs, self.base_sha, "claude/x")
         self.assertEqual([p for p, _ in problems], ["docs/guide.md"])
 
@@ -502,10 +504,9 @@ class RenameInFlight(RepoCase):
         problems, _ = self.run_pair(base=True, branch="handbook-sync/mirror")
         self.assertTrue(any("may change generated paths only" in m for m in problems), problems)
 
-    def test_the_shipped_list_names_both_during_the_rename(self) -> None:
+    def test_the_shipped_list_names_only_the_current_document(self) -> None:
         shipped = {s.path: s.alternate for s in gm.GENERATED_PATHS}
-        self.assertEqual(shipped.get("AGENT-SYNC.md"), "FLEET-PROTOCOL.md")
-        self.assertEqual(shipped.get("FLEET-PROTOCOL.md"), "AGENT-SYNC.md")
+        self.assertEqual(shipped.get("FLEET-PROTOCOL.md"), None)
 
 
 class CommandLine(RepoCase):
@@ -528,13 +529,13 @@ class CommandLine(RepoCase):
         self.write(mirror())
         code, out, _ = self.run_main()
         self.assertEqual(
-            (code, out.startswith("ok: AGENT-SYNC.md: GENERATED header valid")), (0, True)
+            (code, out.startswith("ok: FLEET-PROTOCOL.md: GENERATED header valid")), (0, True)
         )
         self.write(header(BODY) + BODY + "Hand edit.\n")
         code, out, _ = self.run_main()
         self.assertEqual(code, 1)
         self.assertTrue(
-            out.startswith("error: AGENT-SYNC.md: the body does not match its header"), out
+            out.startswith("error: FLEET-PROTOCOL.md: the body does not match its header"), out
         )
 
     def test_github_annotation_only_in_actions(self) -> None:
@@ -544,7 +545,7 @@ class CommandLine(RepoCase):
         try:
             os.environ["GITHUB_ACTIONS"] = "true"
             _, out, _ = self.run_main()
-            self.assertIn("::error file=AGENT-SYNC.md::", out)
+            self.assertIn("::error file=FLEET-PROTOCOL.md::", out)
             os.environ.pop("GITHUB_ACTIONS")
             _, out, _ = self.run_main()
             self.assertNotIn("::error", out)

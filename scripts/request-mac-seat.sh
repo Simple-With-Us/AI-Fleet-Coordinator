@@ -5,7 +5,7 @@
 # #Work-In-Progress, and let the Mac launchd poller (mac-seat-claim.sh) pick it up.
 #
 # The post goes to Zulip in a `needs-mac <repo>` topic, sent as the claiming
-# seat's own bot.  The old agent-sync relay POST is retired.
+# seat's own bot.
 #
 # Usage:
 #   ./scripts/request-mac-seat.sh \
@@ -37,8 +37,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FLEET_APPS="${REPO_ROOT}/fleet-apps.json"
 OWNER="${GITHUB_OWNER:-jaywedgeworth22}"
 # Zulip posting needs no shared secret: the simple-chat CLI reads the seat's own
-# Zulip credential (Infisical Fleet-OPS /zulip).  The old AGENT_SYNC_POST_URL / AGENT_SYNC_ENV
-# relay is retired and deliberately not referenced here.
+# Zulip credential (Infisical Fleet-OPS /zulip).
 ZULIP_CHANNEL="${ZULIP_CHANNEL:-Work-In-Progress}"
 
 REPO=""
@@ -187,7 +186,7 @@ if [ "$NO_ZULIP" -eq 0 ]; then
   # Post to Zulip with the seat's own bot via the simple-chat CLI.  The CLI resolves
   # that seat's own Zulip credential (Infisical /zulip) itself, so there is no
   # shared bearer token to parse, rotate, or leak in this script.  (The old relay
-  # POST is retired; see AGENT-SYNC.md.)
+  # POST is retired; see FLEET-PROTOCOL.md.)
   TEXT="repo: ${REPO_NAME} | needs-mac ${REASON}: ${TITLE_GAP}"
   [ -n "$BRANCH" ] && TEXT="${TEXT} | branch ${BRANCH}"
   [ -n "$WORKTREE" ] && TEXT="${TEXT} | ${WORKTREE}"

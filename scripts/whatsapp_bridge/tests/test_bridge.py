@@ -2,8 +2,11 @@ import hashlib
 import hmac
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import mock_open, patch
 
 from whatsapp_bridge.bridge import (
@@ -441,14 +444,14 @@ class LaunchTests(unittest.TestCase):
     def _launch(self, mode, token=None, denied=False):
         import contextlib
         import io
-        import subprocess
+        import urllib.parse
         from pathlib import Path
 
         from fleet_secrets import cli, core
 
         from whatsapp_bridge import launch
 
-        exports, children = [], []
+        requests, children = [], []
         request_id = "00000000-0000-4000-8000-000000000009"
         folder = launch.OPERATOR_FOLDER if mode == "operator" else "/jet"
         expected_token = self.OPERATOR_TOKEN if mode == "operator" else self.BRIDGE_TOKEN
@@ -466,21 +469,40 @@ class LaunchTests(unittest.TestCase):
             values["WHATSAPP_API_KEY"] = "must-never-reach-operator"
         output = io.StringIO()
 
-        def export(argv, **options):
-            exports.append((argv, dict(options["env"])))
-            self.assertEqual(argv[1], "export", "no login/session/machine fallback")
-            self.assertIn("--env=prod", argv)
-            self.assertIn("--projectId=" + self.PROJECT, argv)
-            self.assertIn("--path=" + folder, argv)
-            self.assertNotIn(token, " ".join(argv))
-            # Simulates the server's exact-folder read-only token boundary.
-            accepted = not denied and options["env"].get("INFISICAL_TOKEN") == expected_token
-            return subprocess.CompletedProcess(
-                argv,
-                0 if accepted else 1,
-                json.dumps(values).encode() if accepted else b"",
-                b"forbidden",
-            )
+        def api(method, path, request_token, body, env, **options):
+            requests.append((method, path))
+            self.assertEqual(method, "GET")
+            self.assertEqual(request_token, token)
+            self.assertIsNone(body)
+            self.assertNotIn(token, path)
+            if path == "/v2/service-token":
+                granted_folder = launch.OPERATOR_FOLDER if token == self.OPERATOR_TOKEN else "/jet"
+                return 200, {
+                    "workspace": self.PROJECT,
+                    "scopes": [{"environment": "prod", "secretPath": granted_folder}],
+                    "permissions": ["read"],
+                    "expiresAt": "2000-01-01T00:00:00Z" if denied else None,
+                }
+            self.assertTrue(path.startswith("/v3/secrets/raw?"))
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)
+            self.assertEqual(query["workspaceId"], [self.PROJECT])
+            self.assertEqual(query["environment"], ["prod"])
+            self.assertEqual(query["secretPath"], [folder])
+            for field in ("recursive", "include_imports", "expandSecretReferences"):
+                self.assertEqual(query[field], ["false"])
+            return 200, {
+                "secrets": [
+                    {
+                        "secretKey": name,
+                        "secretValue": value,
+                        "type": "shared",
+                        "workspace": self.PROJECT,
+                        "environment": "prod",
+                        "secretPath": folder,
+                    }
+                    for name, value in values.items()
+                ]
+            }
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / launch.CREDENTIAL_NAMES[mode]
@@ -491,8 +513,11 @@ class LaunchTests(unittest.TestCase):
                 "WA_INFISICAL_PROJECT_ID": self.PROJECT,
             }
             with (
-                patch.object(core, "find_cli", return_value="/fake/infisical"),
-                patch.object(core.subprocess, "run", side_effect=export),
+                patch.object(core, "_api_json", side_effect=api),
+                patch.object(core, "find_cli", side_effect=AssertionError("CLI fallback")),
+                patch.object(
+                    core.subprocess, "run", side_effect=AssertionError("subprocess fallback")
+                ),
                 patch.object(
                     cli.os,
                     "execvpe",
@@ -509,11 +534,13 @@ class LaunchTests(unittest.TestCase):
                         launch.main(argv, environment)
                 else:
                     self.assertEqual(launch.main(argv, environment), 0)
-        self.assertEqual(len(exports), 1)
+        self.assertEqual(requests[0], ("GET", "/v2/service-token"))
         self.assertNotIn(token, output.getvalue())
         if denied or token != expected_token:
+            self.assertEqual(len(requests), 1, "wrong folder or expiry stops before secret values")
             self.assertEqual(children, [])
             return
+        self.assertEqual(len(requests), 2)
         self.assertEqual(len(children), 1)
         child = children[0][2]
         self.assertTrue(set(core.AUTH_ENV_VARS).isdisjoint(child))
@@ -523,6 +550,32 @@ class LaunchTests(unittest.TestCase):
             self.assertNotIn("WHATSAPP_API_KEY", child)
             self.assertNotIn("WA_BRIDGE_HMAC_KEY_JET", child)
             self.assertEqual(children[0][1][-1], request_id)
+
+    def test_missing_send_switch_defaults_off_without_weakening_required_keys(self):
+        from fleet_secrets import core
+
+        from whatsapp_bridge import launch
+
+        names = {n: "synthetic" for n in launch.POLL_NAMES if n != "WHATSAPP_BRIDGE_SEND_ENABLED"}
+        command = launch.arguments("poll", __import__("pathlib").Path("/release"))
+        children = []
+        with (
+            patch.object(core, "fetch_all", return_value=names),
+            patch.object(launch.os, "execvpe", side_effect=lambda *a: children.append(a)),
+        ):
+            launch.run_poll_with_optional_send(
+                command, {"PATH": "/usr/bin", "INFISICAL_TOKEN": "synthetic"}
+            )
+        self.assertEqual(children[0][2]["WHATSAPP_BRIDGE_SEND_ENABLED"], "off")
+        self.assertNotIn("INFISICAL_TOKEN", children[0][2])
+        del names["WHATSAPP_API_KEY"]
+        with (
+            patch.object(core, "fetch_all", return_value=names),
+            patch.object(launch.os, "execvpe") as execute,
+        ):
+            with self.assertRaises(core.SecretsError):
+                launch.run_poll_with_optional_send(command, {})
+            execute.assert_not_called()
 
     def test_poller_and_binder_strip_bootstrap_before_exec(self):
         self._launch("poll")
@@ -859,6 +912,51 @@ class BoundaryRegressionTests(unittest.TestCase):
                 Bridge(state, "synthetic", "k" * 64, "https://worker.example", request).step()
             finally:
                 state.close()
+
+
+class BridgeModuleAliasTests(unittest.TestCase):
+    """The launcher boots the bridge with runpy, so the module runs as
+    __main__ and the outbound module imports it by its package name."""
+
+    def test_the_bridge_module_is_one_copy_under_the_launcher_boot(self):
+        """One copy of the module means one BridgeError and one StopBridge,
+        so the handlers in main() catch what the outbound module raises."""
+        script = (
+            "import runpy, sys\n"
+            "try:\n"
+            "    runpy.run_module('whatsapp_bridge.bridge', run_name='__main__')\n"
+            "except SystemExit:\n"
+            "    pass\n"
+            "from whatsapp_bridge import bridge, outbound\n"
+            "from whatsapp_bridge.errors import BridgeError, StopBridge\n"
+            "print('SAME_ERROR', outbound.BridgeError is BridgeError and bridge.BridgeError is BridgeError)\n"
+            "print('SAME_STOP', bridge.StopBridge is StopBridge and issubclass(StopBridge, BridgeError))\n"
+        )
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if key
+            not in (
+                "WHATSAPP_API_KEY",
+                "WA_BRIDGE_HMAC_KEY_JET",
+                "WA_WORKER_URL",
+                "WA_STATE_DIRECTORY",
+                "WA_AGENT_HASH_JET",
+                "WA_SENDER_HASH_JET",
+                "WHATSAPP_BRIDGE_ENABLED",
+            )
+        }
+        root = Path(__file__).resolve().parents[2]
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=str(root),
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertIn("SAME_ERROR True", result.stdout, result.stderr)
+        self.assertIn("SAME_STOP True", result.stdout, result.stderr)
 
 
 if __name__ == "__main__":

@@ -14,9 +14,11 @@ import uuid
 from urllib.parse import urlsplit
 
 if __package__:
-    from .bridge import BridgeError, StopBridge, request_json, retry_delay
+    from .bridge import request_json, retry_delay
+    from .errors import BridgeError, StopBridge
 else:
-    from bridge import BridgeError, StopBridge, request_json, retry_delay
+    from bridge import request_json, retry_delay
+    from errors import BridgeError, StopBridge
 
 
 def wake(base_url, signing_key, request_id, request=request_json):

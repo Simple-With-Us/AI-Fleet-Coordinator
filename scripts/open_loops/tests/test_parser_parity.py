@@ -1,12 +1,12 @@
 """Every simple-chat command line open-loops builds is accepted by the REAL simple-chat argument parser.
 
-The plan's trap:  `dm-read` has `--with NAME` and no `--owner`.  These tests import `agent_sync.cli.build_parser()`
+The plan's trap:  `dm-read` has `--with NAME` and no `--owner`.  These tests import `simple_tools.cli.build_parser()`
 and parse each line, so a flag simple-chat does not have fails here and not at 7:00am."""
 import contextlib
 import io
 import unittest
 
-from agent_sync import cli as agent_cli
+from simple_tools import cli as agent_cli
 
 from open_loops import send
 

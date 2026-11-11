@@ -2,7 +2,7 @@
 
 **Retired at the Linear cutover (owner 2026-10-10).**  The effort logs are archived, and Linear is the system of record for fleet work.  Nothing in this file binds any agent any more.  It stays as a stub so old links and old skill text resolve to the right answer.
 
-Current rules live in `AGENT-SYNC.md` § Linear and the Claim Lifecycle:
+Current rules live in `FLEET-PROTOCOL.md` § Linear and the Claim Lifecycle:
 
 - Work is a Linear issue, one public team per app, ids like `BF-123`.  Agents use the `simple-board` CLI (same verbs and flags as before, Linear-backed).
 - Claim with `simple-board claim`, close out with `simple-board status <id> completed|deployed`, and post in the work's Zulip topic `<ID> <subject>`.
@@ -45,4 +45,4 @@ A new app gets a Linear team (Jay creates it, key = the app acronym) instead of 
 
 ## Apple Notes close-out (all agents, all apps)
 
-The Apple Notes rules are in `AGENT-SYNC.md` § Apple Notes and the `apple-notes` skill.  The title shape is `[TEAM_KEY, Agent] Topic`, with a second row `Sun, Aug 9, 3:52pm · PR #18`, and the helper is `~/apps/apple-notes-coding.sh`.
+The Apple Notes rules are in `FLEET-PROTOCOL.md` § Apple Notes and the `apple-notes` skill.  The title shape is `[TEAM_KEY, Agent] Topic`, with a second row `Sun, Aug 9, 3:52pm · PR #18`, and the helper is `~/apps/apple-notes-coding.sh`.

@@ -55,12 +55,11 @@ at the Cloudflare Access login page.  It no longer applies:
 cd AI-Fleet-Coordinator && bash scripts/cloud-setup.sh
 ```
 
-The script reads an Infisical machine identity **from the environment** — `INFISICAL_SHARED_CLIENT_ID`
-/ `INFISICAL_SHARED_CLIENT_SECRET`, or the `INFISICAL_AUTOMATION_*` pair — performs the same
-universal-auth login the Mac-side `recall` CLI performs, and writes the three names above to a
-`0600` `~/.fleet-recall.env` (override with `FLEET_RECALL_ENV_FILE`).  It also registers the
+The script requires the recall-scoped `FLEET_RECALL_INFISICAL_TOKEN` service token from the
+approved private runtime binding.  It reads the three names above directly from Infisical into a
+`0600` `~/.fleet-recall.env` (override with `FLEET_RECALL_ENV_FILE`).  It also registers the
 `fleet-recall` remote MCP server in `~/.claude.json` with `${...}` header **placeholders**, never
-values.  It is idempotent, it never prints a value, and it exits 0 even with no identity — this
+values.  It is idempotent, it never prints a value, and it exits 0 even with no token — this
 repo is docs/infra, and setup must not fail a sandbox.
 
 ```bash
@@ -68,13 +67,13 @@ set -a; . ~/.fleet-recall.env; set +a     # before starting your agent
 bash scripts/cloud-setup.sh --check       # names and booleans only: resolvable? registered?
 ```
 
-The identity itself still travels a private path — never the cloud environment-variables dialog,
-which anyone who can open it can read (see
+Bind the token through the approved private runtime route, never the cloud environment-variables
+dialog, which anyone who can open it can read (see
 [CLAUDE-CODE-CLOUD-ENVIRONMENTS.md](CLAUDE-CODE-CLOUD-ENVIRONMENTS.md)).
 
-**Manual fallback**, only for a sandbox whose platform cannot inject an identity: say so on the
-Linear issue and a Mac-side seat will hand the three values over through the usual `chmod 600`
-file — do not ask for them in Zulip or in a comment.
+**Manual fallback**, only for a sandbox whose platform cannot inject the scoped token: say so on
+the Linear issue and use the approved private secret handoff.  Do not ask for it in Zulip or in a
+comment.
 
 ---
 
@@ -170,7 +169,7 @@ Where it goes, and what already carries it (checked 2026-09-03):
 | ChatGPT / Claude.ai / Gemini web personalization | paste the block as-is |
 | DeepSeek Harness (DSH), Kimi | skills only (`~/.deepseek/skills`); DSH chat tag is `[DSH]` (former `DEEPSEEK` retired).  Kimi is retired |
 
-Keep the wording aligned with the `fleet-recall` skill and the AGENT-SYNC stanza, so a seat
+Keep the wording aligned with the `fleet-recall` skill and the FLEET-PROTOCOL stanza, so a seat
 reading two sources never gets two different rules.
 
 ## Rules that apply on every surface

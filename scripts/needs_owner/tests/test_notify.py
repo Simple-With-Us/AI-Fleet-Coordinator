@@ -54,7 +54,7 @@ class Reader:
         self.rows = rows
         self.calls: list = []
 
-    def agent_sync(self, *args: str, stdin=None) -> Result:
+    def simple_tools(self, *args: str, stdin=None) -> Result:
         self.calls.append(args)
         return Result(0, "\n".join(json.dumps(r) if isinstance(r, dict) else r for r in self.rows) + "\n")
 
@@ -83,7 +83,7 @@ class Stub:
         self.board_calls.append(args[0])
         return self.result
 
-    def agent_sync(self, *args: str, stdin=None) -> Result:
+    def simple_tools(self, *args: str, stdin=None) -> Result:
         self.sends.append(args)
         return Result(0, json.dumps({"id": self.msg_id}) + "\n")
 
@@ -164,7 +164,7 @@ class FindNoticeTests(unittest.TestCase):
 
     def test_a_failed_read_finds_nothing(self) -> None:
         class Broken(Reader):
-            def agent_sync(self, *args, stdin=None):
+            def simple_tools(self, *args, stdin=None):
                 return Result(5, "", "boom")
 
         self.assertIsNone(notifymod.find_notice(Broken("CLAUDE", []), "t", UID))
@@ -215,10 +215,10 @@ class NoticeTests(unittest.TestCase):
             self.assertEqual(got["state"], "notify_pending", mode)
         self.assertEqual(self.w.run("list", "--json").json()[0]["notified_msg_id"], None)
 
-    def test_no_agent_sync_is_pending(self) -> None:
+    def test_no_simple_tools_is_pending(self) -> None:
         self.w.remove_tool("simple-chat")
         got = self.w.file(Q, "Yes", "No").json()
-        self.assertEqual((got["state"], got["reason"]), ("notify_pending", "no_agent_sync"))
+        self.assertEqual((got["state"], got["reason"]), ("notify_pending", "no_simple_tools"))
         self.assertEqual(len(self.w.board_state()["issues"]), 1)
 
     # ---- maybe sent --------------------------------------------------------------------------
@@ -353,7 +353,7 @@ class NoticeTests(unittest.TestCase):
             return [json.loads(line) for line in ran.stdout.splitlines()]
 
         shown = read()[0]
-        code = ("import json, sys; sys.path.insert(0, %r)\nfrom agent_sync import cli as C\n"
+        code = ("import json, sys; sys.path.insert(0, %r)\nfrom simple_tools import cli as C\n"
                 "class Probe(C.Agent):\n    def __init__(self): pass\n    def sender_is_bot(self, m): return True\n"
                 "    def sender_seat(self, m, b): return ('CLAUDE', None)\n    def is_sibling(self, m): return False\n"
                 "    def is_mention(self, m): return False\n"
@@ -380,7 +380,7 @@ class NoticeTests(unittest.TestCase):
         self.assertEqual((got["state"], got["notified_msg_id"], got["linkback"]), ("notified", 777, "ok"))
         self.assertEqual(got["topic"], "OWNER AFC-9 Plumber needs a key")
         sends = self.w.calls("simple-chat")
-        self.assertEqual([c["argv"][0] for c in sends], ["reply"], "no post:  the persona's topic is the notice")
+        self.assertEqual([c["argv"][0] for c in sends], ["reply"], "no post:  the bot's topic is the notice")
         self.assertEqual(sends[0]["argv"], ["reply", "--as", "CLAUDE", "--session", "needsown", "--json", "--id", "777", "--", "-"])
         self.assertIn("Filed in Linear as AFC-300", sends[0]["stdin"])
         self.assertIn("https://linear.app/test-fleet/issue/AFC-300", sends[0]["stdin"])
@@ -476,12 +476,14 @@ class BoardWriteTests(unittest.TestCase):
     # ---- the table ------------------------------------------------------------------------
     def test_the_classifier_reads_the_board_codes(self) -> None:
         table = {2: notifymod.TERMINAL, 3: notifymod.RETRYABLE, 4: notifymod.TERMINAL,
-                 5: notifymod.RETRYABLE, 6: notifymod.TERMINAL, 7: notifymod.TERMINAL}
+                 5: notifymod.RETRYABLE, 6: notifymod.TERMINAL}
         for code, want in table.items():
             self.assertEqual(notifymod._classify(Result(code, "", "board: refused")), want, code)
         self.assertEqual(notifymod._classify(Result(0, "commented")), notifymod.OK)
         self.assertEqual(notifymod._classify(Result(124, "", "timed out", timed_out=True)), notifymod.UNKNOWN)
         self.assertEqual(notifymod._classify(Result(1, "", "board: Linear refused the comment: x")), notifymod.UNKNOWN)
+        # Exit 7 is retired:  the board does not return it, and an unclassified code is unknown.
+        self.assertEqual(notifymod._classify(Result(7, "", "board: refused")), notifymod.UNKNOWN)
 
     # ---- retryable ------------------------------------------------------------------------
     def test_exit_3_is_retryable_and_leaves_the_item_pending(self) -> None:
@@ -545,14 +547,20 @@ class BoardWriteTests(unittest.TestCase):
         self.assertNotIn("LINEAR_CLIENT_SECRET", message, "a name with a value is not a missing variable")
         self.assertNotIn("hunter2", message)
 
-    def test_exits_2_6_and_7_are_terminal(self) -> None:
-        for code in (2, 6, 7):
+    def test_exits_2_and_6_are_terminal(self) -> None:
+        for code in (2, 6):
             runner = self.stub(Result(code, "", "board: refused"))
             with self.assertRaises(BoardFailed) as raised:
                 notifymod.notify(runner, self.item)
             self.assertIn("exit %d" % code, str(raised.exception))
-            # errors.py passes the board's own code through for 4 to 7, and 1 for the rest.
-            self.assertEqual(raised.exception.exit_code, code if code in (4, 5, 6, 7) else 1)
+            # errors.py passes the board's own code through for 4 to 6, and 1 for the rest.
+            self.assertEqual(raised.exception.exit_code, code if code in (4, 5, 6) else 1)
+
+    def test_exit_7_is_not_a_terminal_code_anymore(self) -> None:
+        # Exit 7 was the writes-off switch.  The board retired it:  a write with no
+        # bearer-verified seat exits 6.  A stale 7 must not read as a definite refusal.
+        self.assertNotIn(7, notifymod.BOARD_TERMINAL_CODES)
+        self.assertNotIn(7, notifymod.BOARD_RETRYABLE_CODES)
 
     def test_a_terminal_failure_is_not_tried_twice(self) -> None:
         # A terminal failure is decided before the board writes anything, and it is the same on a
@@ -682,9 +690,9 @@ class BoardWriteTests(unittest.TestCase):
         self.assertIn("request_id=req-abc12345", message)
 
     def test_the_channel_comes_from_the_runner_and_not_from_the_process(self) -> None:
-        # An ambient AGENT_SYNC_CHANNEL must not decide where the notice goes:  the
+        # An ambient SIMPLE_TOOLS_CHANNEL must not decide where the notice goes:  the
         # runner's own environment does.
-        with mock.patch.dict(os.environ, {"AGENT_SYNC_CHANNEL": "ambient-channel"}):
+        with mock.patch.dict(os.environ, {"SIMPLE_TOOLS_CHANNEL": "ambient-channel"}):
             runner = self.stub(Result(0, "commented"))
             notifymod.notify(runner, self.item)
         channels = [args[args.index("--channel") + 1] for args in runner.sends if "--channel" in args]

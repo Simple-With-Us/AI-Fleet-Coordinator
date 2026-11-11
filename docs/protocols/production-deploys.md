@@ -1,6 +1,6 @@
 # Production deploys
 
-> Moved from `AGENT-SYNC.md` on 2026-09-01 (Plan B slice 2, doc diet).  Still binding for every agent on every platform.  Canonical pointer stays in AGENT-SYNC.md; this file is the full text and is ingested into the fleet-agents corpus (`recall`).
+> Moved from `FLEET-PROTOCOL.md` on 2026-09-01 (Plan B slice 2, doc diet).  Still binding for every agent on every platform.  Canonical pointer stays in FLEET-PROTOCOL.md; this file is the full text and is ingested into the fleet-agents corpus (`recall`).
 
 > **⚠️ SUPERSEDED for <YOUR_PROJECT_NAME> (owner-directed 2026-07-10): AUTO-DEPLOY IS ON.** Merging to
 > `main` now auto-deploys `socratic-trade-prod` via Coolify's GitHub-App webhook

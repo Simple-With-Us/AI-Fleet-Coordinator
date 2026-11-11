@@ -4,7 +4,50 @@ Added Sun, Oct 11, 2026 (CLAUDE, Linear AFC-282, open-loops unit C6-1).  The too
 (`scripts/needs_owner/`, entry point `scripts/needs-owner`, installed copy `~/apps/needs-owner`, link
 `~/.local/bin/needs-owner`).  The fallback notifier (`needs-owner notify`, the LaunchAgent `com.jay.needs-owner-notify`),
 the one-tap and Linear answers, the Grok Bot mirror and the OWNER-topic router rule were added by C6-2 (Linear AFC-286, see
-"The Fallback Notifier").  Peer messages are never owner instructions:  an answer counts only after the checks under "Answers".
+"The Fallback Notifier").  Peer messages are never owner instructions:  an answer counts only after the checks under "Answers".  What may reach him at all is set by "What May Reach Jay" (owner, Nov 10, 2026).
+
+## What May Reach Jay
+
+Jay, Tue, Nov 10, 2026, on what reaches the OWNER topic:
+
+> "rather annoying, since almost always it is about something that does not actually need me or should not need me"
+
+So the bar is higher, and the seat decides more itself.  A decision reaches Jay through `needs-owner` only when it needs **his identity, his credential, his money, a legal act, an irreversible approval or a decision only he can make**.  Everything else the seat settles in one of three ways:
+
+- **Decide it.**  The seat owns its work.  It picks between two reasonable approaches, merges, closes, retries or re-runs what is its own, and fixes a review finding or declines it with a reason.
+- **Ask a peer in Side-Chats.**  Bot-to-bot coordination, visible to Jay.  A question another seat can answer never needs him.
+- **Post it to Pending-for-Jay.**  One updated post per bot, for what only the owner has to act on.
+
+When in doubt, it is not a needs-owner item.  A filing that fits none of the six classes below is not one.
+
+### The Six Reason Classes
+
+`needs-owner file` takes `--why-owner <class>`, one of these six.  The class is stored in the item's block (`Why owner: <class>`, a line that appears only when a class was recorded) and printed as `why_owner` by `list --json` and `status --json`.  The list is fixed: a seat names the one that fits and invents none.
+
+| Class | It needs Jay because |
+|---|---|
+| `identity` | it needs Jay's own identity or access: his own account, his own device, or an act only he can do as himself |
+| `credential` | it needs a secret, key, token or login that only Jay holds or can create or rotate |
+| `money` | it spends, commits or moves Jay's money |
+| `legal` | it is a legal act: a contract, terms, a filing, a signature or a compliance statement |
+| `irreversible` | it cannot be undone, and only Jay may approve it |
+| `policy` | it is a rule, priority or trade-off that only Jay sets |
+
+### The Knobs
+
+Infisical, project "AI Fleet Coordinator", prod only, read through `fleet_knobs` (INFISICAL.md lists both).  A local file cannot change either one.
+
+| Knob | Values | What it does |
+|---|---|---|
+| `NEEDS_OWNER_BAR` | `off` (the default), `warn`, `enforce` | `off` is today's behaviour exactly: `--why-owner` is neither read nor recorded, and nothing is counted.  `warn` files the item, records the class when one is given, and prints one warning line when it is missing or unknown.  `enforce` refuses a new filing with no class, or an unknown one (exit 2, before anything is filed or sent), and the refusal points the seat to Side-Chats and Pending-for-Jay. |
+| `NEEDS_OWNER_SEAT_DAILY_MAX` | a whole number from 0 to 50 (the default is 0) | The most items one seat may file in 24 hours.  0 means no cap.  In `warn` an item over the cap is filed with one warning line; in `enforce` it is refused (exit 2).  It does nothing in `off`. |
+
+- A knob that cannot be read, or that holds anything but `off`, `warn` or `enforce`, behaves as `off`: the bar never stops a filing it cannot be sure about.  A `needs-owner` process with no knob reader token and no fresh last-known-good copy reads the defaults, so the bar is `off` there.
+- **Exempt.**  A Grok Bot mirror (`file --mirror-of`, which the fallback notifier runs as CLAUDE) is never held to the bar, because the Grok bot already opened its own OWNER topic.  `adopt` and the fallback notifier are not changed.
+- **The cap's count** is this host's own filings, kept in `~/apps/needs-owner/filings/filings.json` (mode 0600, seat, time and Linear identifier only, never a word the filer wrote).  A closed item still counts, because the filer removes the label when it closes one and Linear alone would forget it.  A rerun that files nothing new is neither counted nor stopped by the cap, `--again` is a new filing and counts, and `--dry-run` checks the cap but records nothing.  Filings from before the bar was first on are not counted, and two hosts count separately.
+- **An item that already exists is not a new filing.**  `file` looks it up first, the way a rerun always has, and only then applies the class rule and the cap.  A rerun of an item that is already filed behaves exactly as in `off`: it needs no class, reads no knob, prints no warning and counts for nothing, whatever the mode and however full the cap is.  Only a new filing (or an `--again` that really asks again) meets the bar.
+- **The lock.**  The cap's check, the Linear filing and the record are one critical section under an exclusive advisory lock (`flock` on `~/apps/needs-owner/filings/filings.lock`, mode 0600, beside the count), so two filings racing for the last slot cannot both pass, and a filing that fails records nothing.  A waiting filing polls for up to 60 seconds, and the lock dies with its process, so nothing is left to expire.  A lock that cannot be taken (no `fcntl`, the file cannot be opened, or the 60 seconds pass) fails open in `warn`: the item is filed, with one warning line.  In `enforce` it fails closed when a cap is set: nothing is filed, and the refusal names the reason.  With no cap there is nothing the lock protects, so `enforce` fails open too.  `off` never takes it.
+- **Turning it on.**  Install the new copy on every host that runs `needs-owner file` (`scripts/needs_owner/install.sh --apply`) first: an older copy reads a `Why owner:` line as an unknown field and shows that item as `unadopted`.  Then set `NEEDS_OWNER_BAR` to `warn`, so seats see the warning and start naming a class, and to `enforce` when they do.
 
 ## Acceptance Criteria
 
@@ -12,15 +55,16 @@ the one-tap and Linear answers, the Grok Bot mirror and the OWNER-topic router r
 - The seat is verified from `AGENT_LAUNCH_SEAT` (when `AGENT_LAUNCHER` is set) or `AGENT_SEAT`;  `--by` is a check only.  A missing seat or a disagreement between `--by` and the session is refused (exit 2).  `AGENT_SEAT` is set to the verified seat for every child the tool runs.
 - 1 to 5 `--option`s, each different, at most 200 characters;  the question at most 200 (it is the issue title);  context at most 600.
 - Low-stakes options may be answered by a tap on their keycap emoji (1️⃣, 2️⃣, 3️⃣, 4️⃣, 5️⃣).  Risky options never take a tap.  `--low-stakes` is refused with `--urgent` (P1).
-- Nothing is decided or done without an answer:  no "default if no answer" action, no cap on open items per seat (more than five only adds `over_five: true` to the digest).
+- Nothing is decided or done without an answer:  no "default if no answer" action, no cap on open items per seat (more than five only adds `over_five: true` to the digest), and the only limit on filings is the optional daily filing cap (`NEEDS_OWNER_SEAT_DAILY_MAX`, off by default).
 - A rerun with the same words is idempotent (the uid hash matches);  a change to an already-filed item is refused (exit 2) unless `--again` files a new version that quotes the earlier one.  A closed item needs `--again` too.
 - Refused (exit 2) before anything is filed or sent:  a secret (F3 `secretscan`), an email address, a phone number, a run of six or more digits, or a dollar amount in the filer's words.  Free text never rides on argv:  descriptions and comments use a private 0600 file (deleted afterwards), Zulip messages use stdin.  Every word echoed into Zulip goes through `render_untrusted` (no `@**all**`, no `/poll`, no live link, no backtick breakout).
 - States (`unadopted`, `notify_pending`, `notified`, `replied`, `closed`) are derived from the label, the block, the notice record and the board status;  `--open` is what waits on Jay.  An item without a readable block is `unadopted`, and an unparseable description posts the block as a `[needs-owner] block` comment so the decision still lands.
 - An answer is verified before it is acted on:  a tap counted only when the reactor's user id equals the pinned `owner_user_id`;  a Zulip reply through `simple-chat verify-owner-msg` (owner id, human client, right topic, newer than the notice);  a Linear comment whose author equals `OWNER_LINEAR_USER_ID`.  The records say a reply exists, nothing more.
 - Exit codes:  0 done (a filed item with its notice pending is still done);  1 something failed (Linear, the network, a missing tool);  2 refused;  3 `status` or `adopt` named something that is not a needs-owner item;  4 to 7 the `simple-board` CLI's own code, passed through when a write failed (7 means Linear writes are off).
 - **C6-2.**  `needs-owner notify` (CLAUDE only) sends the notice of an item whose own seat could not (after 2 minutes, urgent first, under the caps), records the first answer to each open item as one `owner replied:` Linear comment, wakes the filer with one directed note (or leaves an entry in `pending-CLAUDE.json` for CLAUDE's own items), asks again once for two different taps and once for a tap on a risky option, and mirrors Grok Bot `needs-owner-request` blocks into Linear.  It never closes, edits or restates an item, posts nothing while paused, holds one lock, and logs ids and reason words only.  Records count only from who may write them.  OWNER topics never peer-wake, except its note.
-- Stable copy at `~/apps/needs-owner` runs under `python3 -I` with only the package, `fleet_knobs/` (the notifier's knob reader) and the three F3 files it loads by path (`agent_sync/identity.py`, `secretscan.py`, `textsafe.py`).  The install proof is `--help` and `--version` of that copy under `python3 -I`:  both load the package and the three F3 files before they parse anything, so a copy that lacks or has damaged one fails them (exit 1).  Tests use fakes that parse argv with the real `simple-board` and `simple-chat` parsers and print the real `read --json` keys.
+- Stable copy at `~/apps/needs-owner` runs under `python3 -I` with only the package, `fleet_knobs/` (the notifier's knob reader) and the three F3 files it loads by path (`simple_tools/identity.py`, `secretscan.py`, `textsafe.py`).  The install proof is `--help` and `--version` of that copy under `python3 -I`:  both load the package and the three F3 files before they parse anything, so a copy that lacks or has damaged one fails them (exit 1).  Tests use fakes that parse argv with the real `simple-board` and `simple-chat` parsers and print the real `read --json` keys.
 - A post that may have landed is found again by its `Ref:` line (`notify.find_notice`):  only a message from a bot (`is_bot` true) of the filing seat or of CLAUDE, only when the line stands alone and is not quoted, and the oldest such message wins.  A person's quote-and-reply, or a peer who copies the public uid, is never taken for the notice.
+- **The bar (owner, Nov 10, 2026).**  `file` takes `--why-owner <class>`, one of `identity`, `credential`, `money`, `legal`, `irreversible` or `policy`.  `NEEDS_OWNER_BAR` is `off` (the default: nothing changes), `warn` (file it, record the class, one warning line when it is missing) or `enforce` (refuse a new filing with no class, exit 2, before anything is filed or sent).  `NEEDS_OWNER_SEAT_DAILY_MAX` (the default 0 means no cap) caps one seat's filings in 24 hours in `warn` and `enforce`.  A knob that cannot be read, or holds anything else, is `off`.  A Grok Bot mirror and an item that already exists are exempt.  See "What May Reach Jay".
 
 ## Why This Exists
 
@@ -36,7 +80,7 @@ binds this design:
 So a decision that waits on Jay is **one Linear issue** (easy to find) **plus one Zulip topic** that mentions
 him (so he is told), opened by **the seat that needs him** (so the message is from the right bot).  Nothing
 is decided or done on his behalf while he has not answered:  an item has no "default if no answer" action
-and no cap.  Seven open items from one seat all land (more than five only adds a warning to the digest).
+and no cap.  Seven open items from one seat all land (more than five only adds a warning to the digest).  That is the default; the optional bar under "What May Reach Jay" can refuse a filing that names no reason class, and can cap a seat's filings per day.
 
 ## Using It
 
@@ -44,7 +88,8 @@ and no cap.  Seven open items from one seat all land (more than five only adds a
 needs-owner file --by CLAUDE --app AFC \
   --question "Revive PR 761 or close it?" \
   --option "Revive it" --option "Close it" \
-  --low-stakes 1 --recommend 1 [--parent AFC-123] [--context "one line of background"] [--urgent]
+  --low-stakes 1 --recommend 1 [--parent AFC-123] [--context "one line of background"] [--urgent] \
+  [--why-owner credential]
 
 needs-owner list [--open | --replied | --all] [--seat SEAT] [--json]
 needs-owner status AFC-282 [--json]
@@ -61,6 +106,7 @@ needs-owner adopt AFC-290 --by CLAUDE --option "Yes" --option "No" [--low-stakes
 - `--parent ID` hangs the item off an issue **you hold** (its `claimed:<SEAT>` label), adds one comment
   `waiting on owner:  <ID>` there, and makes the parent part of the uid.
 - `--urgent` files as P1 instead of P2.
+- `--why-owner CLASS` names why this needs Jay: `identity`, `credential`, `money`, `legal`, `irreversible` or `policy` ("What May Reach Jay").  It is required on a new filing when `NEEDS_OWNER_BAR` is `enforce`, recorded and checked when it is `warn`, and ignored when it is `off` (the default).
 - `--dry-run` checks everything and prints the plan.
 - Write the question so it stands alone.  Do not put a secret, an email address, a phone number, a run of six
   or more digits or a dollar amount in it:  the request is refused (exit 2) and nothing is filed or sent.  Say
@@ -111,7 +157,7 @@ info string, because Linear's editor may normalize a code language it does not k
 description does not read back as a block at all, `file` posts the block as a `[needs-owner] block` comment
 (the way `adopt` does) and says so on stderr, so the decision still lands.
 
-`Version`, `Again of` and `Mirror of` lines appear only when they apply.  Every value is one clean line
+`Version`, `Again of`, `Mirror of` and `Why owner` lines appear only when they apply.  Every value is one clean line
 (control and invisible characters dropped, whitespace collapsed, a backtick turned into an apostrophe), so a
 value can neither start another field nor close the fence.  The reader is strict:  an unknown or repeated
 field, a gap in the option numbers, a bad uid or a seat that is not a token makes the item **unadopted**.
@@ -123,7 +169,7 @@ simple-chat post --as SEAT --session needsown --json --topic "OWNER <ID> <subjec
 ```
 
 with the message on standard input.  The mention of Jay comes from the owner id pinned in
-`~/.agent-sync/listener.toml` (`--to-owner`), never from a typed name.  The message holds the question and
+`~/.simple-tools/listener.toml` (`--to-owner`), never from a typed name.  The message holds the question and
 options (every word the filer wrote goes through `render_untrusted`), a keycap emoji on each low-stakes
 option **by its own position** (a low-stakes option 3 is 3️⃣) with "Tap to answer", the recommendation, the
 Linear link, "Answer here or as a comment on the Linear issue.", and a reference line with the uid.
@@ -137,7 +183,7 @@ Linear link, "Answer here or as a comment on the Linear issue.", and a reference
 | `[needs-owner] block` then the fenced block | `adopt` | an issue filed earlier became an item |
 | `owner replied:  msg <id>` / `reaction <n> on msg <id>` / `comment <id>` | the notifier (C6-2) | Jay replied;  **never holds the answer** |
 
-Readers accept any whitespace where the writers put one.  Reasons are `no_credential`, `send_failed`, `no_agent_sync`, `unsent` and `held`
+Readers accept any whitespace where the writers put one.  Reasons are `no_credential`, `send_failed`, `no_simple_tools`, `unsent` and `held`
 (`adopt --no-notify` marks the item `held`, so the fallback notifier leaves it alone until it is announced for real).
 
 **Who may write a record.**  Anyone who can comment can type a record, so a record counts only when the comment is signed by a seat that may
@@ -171,10 +217,10 @@ tap reaction key on the bot's own post and Jay's answer counts as newer than it.
 states live in `records.py` and `items.py`:  import them rather than copying the patterns.
 
 **A Grok Bot item** (`file --mirror-of <topic link> --context "for GB-<ROLE>"`, used by the C6-2 notifier as
-CLAUDE):  files as above, posts **no** new topic, records the persona's own message as the notice
-(`notified msg <the persona's message id>` with that topic), and replies in that topic with the Linear link.
+CLAUDE):  files as above, posts **no** new topic, records the bot's own message as the notice
+(`notified msg <the bot's message id>` with that topic), and replies in that topic with the Linear link.
 The link must be on this realm, in #Work-In-Progress, in a topic that starts `OWNER `, and name its message
-(`/near/<id>`);  the message id is folded into the uid, so two personas asking one question are two items and
+(`/near/<id>`);  the message id is folded into the uid, so two bots asking one question are two items and
 a repeat of the same request is not.  The caller has already checked who opened the topic.
 
 **Adopting** (`adopt ID --by SEAT --option ...`):  for an issue the seat filed earlier (the day-0 items,
@@ -205,6 +251,7 @@ agent-report;  and it never re-files.
 | `seat`, `seat_verified`, `for_seat` | `seat` is the block's "Filed by";  `seat_verified` is true when the text that carries the block was signed by that seat (the issue's own tag line, or the block comment's author);  `for_seat` is `GB-<ROLE>` on a mirrored item |
 | `question`, `options`, `low_stakes`, `recommend`, `context`, `parent` | from the block (an unadopted item shows its title and no options) |
 | `severity`, `urgent` | P2 or P1 |
+| `why_owner` | the reason class, present only when the block records one (the bar was `warn` or `enforce` when it was filed) |
 | `topic`, `notified_msg_id` | from the notified record, else the computed topic |
 | `replied` | null, or `{kind: msg|reaction|comment, id, option, by}` |
 | `state`, `status` | the state above, and the board's status word |
@@ -258,7 +305,7 @@ a Grok Bot request) one Linear item.  It reads no secret.  A failed read of Line
    (5 minutes, then doubling up to an hour).
 4. **Notes.**  The record is followed by one directed note in the item's topic that wakes the filer:  `simple-chat --as CLAUDE --session needsown post --topic "OWNER <ID> ..." --to <SEAT>`,
    saying "Jay replied on <ID>:  <Linear link>" and where the reply is (the message, the message a tap is on, or the Linear comment), "verify it before you act", and that
-   the item stays open.  It never repeats the answer.  For a Grok Bot item the note goes to the persona (`for GB-<ROLE>`).  For **CLAUDE's own items** a post that mentions
+   the item stays open.  It never repeats the answer.  For a Grok Bot item the note goes to the bot (`for GB-<ROLE>`).  For **CLAUDE's own items** a post that mentions
    yourself wakes nobody, so the entry goes into `~/apps/needs-owner/state/pending-CLAUDE.json` (identifier, link, kind, message or comment id, option, topic and time;
    no words) for the CLAUDE session-start skill to read, and is removed once the item is closed.  A note that cannot go out (the seat has no bot, the caps are full, the pause)
    stays due and is retried, 12 times at the most.
@@ -275,7 +322,7 @@ and the file for CLAUDE's items is still written.  To stop it at once:  `launchc
 (one run at a time;  a lock older than 30 minutes, or whose process is gone, is taken over) and `pending-CLAUDE.json`.  The log is `~/Library/Logs/needs-owner-notify.log`:  a line per
 event with an identifier and reason words (`notified`, `replied`, `note-sent`, `skip why=edited_after_filing`, `deferred cap=per_hour`, ...), nothing else.
 
-**The Grok Bot mirror.**  A Grok Bot persona cannot run the Mac CLI and has no Linear write, so it opens its own OWNER topic by REST and puts a fenced block in the message:
+**The Grok Bot mirror.**  A Grok bot cannot run the Mac CLI and has no Linear write, so it opens its own OWNER topic by REST and puts a fenced block in the message:
 
 ````text
 ```needs-owner-request
@@ -284,15 +331,15 @@ event with an identifier and reason words (`notified`, `replied`, `note-sent`, `
 ````
 
 Each run lists the recent OWNER topics (`simple-chat topics --json`), skips the topics of existing items and the ones already read at their last message, and for the others requires
-that the topic's first message is from a **Grok Bot persona** (a bot whose seat is `GB-<ROLE>`, whose `seat_app` is `grok-bot` and whose email is exactly `<role>-grok-bot@<this realm>`),
-and that the block is in a message from that same persona, once, with only the keys above (`app` and `format` are accepted and ignored).  The question is 1 to 200 characters, there are
+that the topic's first message is from a **Grok bot** (a bot whose seat is `GB-<ROLE>`, whose `seat_app` is `grok-bot` and whose email is exactly `<role>-grok-bot@<this realm>`),
+and that the block is in a message from that same bot, once, with only the keys above (`app` and `format` are accepted and ignored).  The question is 1 to 200 characters, there are
 1 to 5 different options, `seat` equals the sender's seat, `low_stakes` and `recommend` name real options, `urgent` never comes with `low_stakes`, and the same secret and personal-data
 refusals as `file` apply.  An accepted request becomes `needs-owner file --by CLAUDE --app AFC --mirror-of <topic link> --context "for GB-<ROLE>: ..."` (in process, with `AGENT_SEAT=CLAUDE`),
-which posts no topic of its own, records the persona's message as the notice and replies in the topic with the Linear link.  Three requests a run at the most, once per message (the uid folds
+which posts no topic of its own, records the bot's message as the notice and replies in the topic with the Linear link.  Three requests a run at the most, once per message (the uid folds
 in the message id, and the message ids already mirrored are kept in the state), so within about 5 minutes of the post.  A block that is wrong gets **one** reply with a reason word
-(`seat_is_not_the_sender`, `not_json`, `secret_or_personal_data`, ...) and no Linear item.  A topic opened by anyone else is ignored, and so is a persona's block in a topic someone else opened.
+(`seat_is_not_the_sender`, `not_json`, `secret_or_personal_data`, ...) and no Linear item.  A topic opened by anyone else is ignored, and so is a bot's block in a topic someone else opened.
 
-**The router rule** (`scripts/agent_sync/router.py`, described in `docs/protocols/agent-sync-listener.md`):  nothing a peer posts in a topic that starts `OWNER ` wakes anyone, except this
+**The router rule** (`scripts/simple_tools/router.py`, described in `docs/protocols/simple-tools-listener.md`):  nothing a peer posts in a topic that starts `OWNER ` wakes anyone, except this
 notifier's note (CLAUDE's bot, tag `[CLAUDE·needsown→`).  The owner's own message there wakes only the seats it mentions.
 
 **The knobs** (Infisical, project "AI Fleet Coordinator", prod only;  read through `fleet_knobs`, one fetch a run, the last-known-good copy when Infisical is unreachable):
@@ -331,7 +378,7 @@ board, the network, a missing tool);  2 refused;  3 `status` or `adopt` named so
 ## Installing
 
 `scripts/needs_owner/install.sh` prints a plan;  `--apply` copies `needs-owner`, the `needs_owner` package
-(without its tests) and the three F3 files it loads by path (`agent_sync/identity.py`, `secretscan.py`,
+(without its tests) and the three F3 files it loads by path (`simple_tools/identity.py`, `secretscan.py`,
 `textsafe.py`) and `fleet_knobs/` (the K1 knob reader the notifier uses, without its tests) to `~/apps/needs-owner`, links `~/.local/bin/needs-owner`, and proves the copy by running
 `python3 -I ~/apps/needs-owner/needs-owner --help` and `--version`, which load the package and the three F3 files
 (a missing or damaged file fails them).  The proof does not run a verb;  the tests do that through a copy (`notify` also runs from it, and says so when
@@ -342,8 +389,8 @@ arguments.
 
 ## Tests
 
-`cd scripts && python3 -m unittest discover -s needs_owner/tests -t .` (CI runs it;  about four minutes).  The router rule is tested in
-`agent_sync/tests/test_router.py`, the `reactions` and `owner_user_id` fields in `agent_sync/tests/test_safety_commands.py`, and the comment account fields
+`cd scripts && python3 -m unittest discover -s needs_owner/tests -t .` (CI runs it;  about four minutes).  The bar is in `needs_owner/tests/test_bar.py` (off changes nothing, warn files and warns, enforce refuses, the cap, the exemption) and in `test_knobs_adapter.py` (the real `fleet_knobs` reading both knobs).  The router rule is tested in
+`simple_tools/tests/test_router.py`, the `reactions` and `owner_user_id` fields in `simple_tools/tests/test_safety_commands.py`, and the comment account fields
 in `linear-board/test_board.py` (`CommentAuthorTests`).  The notifier tests run `notify` in process with a fixed clock and fake K1 knobs (and one class against
 the real `fleet_knobs` and a fake `infisical`), and a LaunchAgent test parses the plist.  The fakes parse
 argv with the real `simple-board` and `simple-chat` parsers, so a wrong flag fails here too, and the fake board hands
