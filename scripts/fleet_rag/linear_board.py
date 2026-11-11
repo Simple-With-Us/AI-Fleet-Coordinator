@@ -99,9 +99,9 @@ def query(
     max_chars: int,
 ) -> dict:
     """One read-only GraphQL query through the board stack for this seat's app."""
-    B, linear = _client_for(seat, client_id, client_secret)
     err_buf = io.StringIO()
     try:
+        B, linear = _client_for(seat, client_id, client_secret)
         with redirect_stderr(err_buf):
             data = B.clean_data(linear.call(graphql))
             B.output_limited(data, max_chars)
