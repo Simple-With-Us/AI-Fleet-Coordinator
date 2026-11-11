@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+"""open-loops:  entry point.  `open-loops gather|render|send ...`.  See open_loops/README.md.
+
+Runs from the repository (`scripts/open-loops`) or from the stable copy (`~/apps/open-loops/open-loops`,
+through the symlink `~/.local/bin/open-loops`).  `python3 -I` leaves the script's own directory off
+sys.path, so the real directory of this file is put first;  realpath, because the link is a symlink.
+"""
+import os
+import sys
+
+if sys.version_info < (3, 11):
+    sys.stderr.write("open-loops needs Python 3.11 or newer\n")
+    raise SystemExit(3)
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+from open_loops.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    raise SystemExit(main())

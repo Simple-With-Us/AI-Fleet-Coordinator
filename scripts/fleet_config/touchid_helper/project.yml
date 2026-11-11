@@ -1,0 +1,36 @@
+# The XcodeGen project for the Touch ID gate helper.
+#
+# The generated TouchIDGate.xcodeproj is machine specific and is not committed;  run
+# build.sh,  which regenerates it and builds the binary with xcodebuild.  This file and
+# the Swift source are the committed sources of the helper.
+
+name: TouchIDGate
+options:
+  bundleIdPrefix: com.simplewithus.fleet
+  createIntermediateGroups: true
+  deploymentTarget:
+    macOS: "13.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGNING_REQUIRED: "YES"
+    CODE_SIGNING_ALLOWED: "YES"
+    ENABLE_HARDENED_RUNTIME: "YES"
+targets:
+  TouchIDGate:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Sources
+    settings:
+      base:
+        PRODUCT_NAME: TouchIDGate
+        PRODUCT_BUNDLE_IDENTIFIER: com.simplewithus.fleet.touchid-gate
+        INFOPLIST_FILE: Info.plist
+        SKIP_INSTALL: "NO"
+        COMBINE_HIDPI_IMAGES: "NO"
+        # A command line tool has no bundle,  so macOS reads its Info.plist from the
+        # __TEXT,__info_plist section;  without this the Face ID usage string is missing.
+        OTHER_LDFLAGS: "-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker $(SRCROOT)/Info.plist"

@@ -10,21 +10,19 @@
 
 set -uo pipefail
 
-SECRETS="/Users/jay/.secrets/global-api-keys"
+# Cron's PATH is minimal, so the absolute path;  override with FLEET_SECRETS_BIN.
+FLEET_SECRETS="${FLEET_SECRETS_BIN:-/Users/jay/.local/bin/fleet-secrets}"
 LOG="/Users/jay/apps/hetzner-upgrade-watch.log"
 SERVER_ID="${HETZNER_SERVER_ID:-hetzner-box}"
 DC="nbg1-dc3"
 CURRENT_TYPE="cx43"
 STAMP="$(date '+%Y-%m-%d %H:%M:%S')"
 
-if [ ! -r "$SECRETS" ]; then
-  echo "$STAMP  ERROR: cannot read $SECRETS" >> "$LOG"
-  exit 1
+# Environment first, then `fleet-secrets get` (OPS-818;  the old flat secrets file is retired, AFC-359).
+TOKEN="${HCLOUD_TOKEN:-}"
+if [ -z "$TOKEN" ] && [ -x "$FLEET_SECRETS" ]; then
+  TOKEN="$("$FLEET_SECRETS" get HCLOUD_TOKEN 2>/dev/null || true)"
 fi
-
-TOKEN="$(grep -m1 '^HCLOUD_TOKEN=' "$SECRETS" | cut -d= -f2-)"
-TOKEN="${TOKEN#\"}"; TOKEN="${TOKEN%\"}"
-TOKEN="${TOKEN#\'}"; TOKEN="${TOKEN%\'}"   # tolerate the recurring double-then-single quote bug
 if [ -z "$TOKEN" ]; then
   echo "$STAMP  ERROR: HCLOUD_TOKEN missing/empty" >> "$LOG"
   exit 1
@@ -100,8 +98,7 @@ if [ "$STATUS" = "HIT" ]; then
   BANNER="HETZNER CHEAPER 8-vCPU AVAILABLE: $DETAIL -- live host id $SERVER_ID is $CURRENT_TYPE in $DC.  Review before any change_type."
   echo "$STAMP  *** $BANNER" >> "$LOG"
   osascript -e "display notification \"$DETAIL\" with title \"Hetzner cx43/cpx41 now migratable\"" 2>/dev/null || true
-  BOARD="/Users/jay/apps/CONGRESS-SHARED-EFFORT-LOG.md"
-  if [ -w "$BOARD" ] && ! grep -q "HETZNER UPGRADE AVAILABLE" "$BOARD" 2>/dev/null; then
-    printf '\n- **[fleet][AUTOMATED WATCH] %s** (detected %s by check-hetzner-cx43.sh)\n' "$BANNER" "$STAMP" >> "$BOARD"
-  fi
+  # No effort-log line any more:  the effort logs are archived (Linear cutover).  The log above and
+  # the notification are the record;  a person files the Linear issue (`board file --app OPS`) if the
+  # migration is worth doing.
 fi

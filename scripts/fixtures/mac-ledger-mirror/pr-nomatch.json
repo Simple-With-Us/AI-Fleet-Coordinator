@@ -1,0 +1,9 @@
+{
+  "number": 12345,
+  "title": "nothing to see",
+  "state": "OPEN",
+  "mergedAt": null,
+  "files": [
+    {"path": "docs/not-in-the-table.md"}
+  ]
+}

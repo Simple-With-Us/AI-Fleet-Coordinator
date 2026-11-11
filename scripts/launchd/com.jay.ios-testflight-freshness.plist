@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jay.ios-testflight-freshness</string>
+  <!-- The fleet TestFlight deploy check (AFC-341, docs/ios-testflight-freshness.md).
+       It only calls App Store Connect and GitHub:  no xcodebuild runs here.  A catch-up
+       ship is a `gh workflow run` of the app's own ship workflow, which builds on that
+       workflow's runner.  Installed by scripts/ios-fleet/install-testflight-freshness.sh. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/jay/apps/ios-fleet/ios_testflight_freshness.mjs</string>
+    <string>--ship-behind</string>
+    <string>--alert</string>
+  </array>
+  <!-- Every two hours at :20.  Scheduled, not always-on.  :20 sits inside Socratic
+       Trade's X:15-X:45 build window (build-window.sh), so its catch-up is not deferred
+       by the clock.  Not RunAtLoad, so a bootstrap never dispatches a ship by itself. -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>0</integer><key>Minute</key><integer>20</integer></dict>
+    <dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>20</integer></dict>
+    <dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>20</integer></dict>
+    <dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>20</integer></dict>
+    <dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>20</integer></dict>
+    <dict><key>Hour</key><integer>10</integer><key>Minute</key><integer>20</integer></dict>
+    <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>20</integer></dict>
+    <dict><key>Hour</key><integer>14</integer><key>Minute</key><integer>20</integer></dict>
+    <dict><key>Hour</key><integer>16</integer><key>Minute</key><integer>20</integer></dict>
+    <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>20</integer></dict>
+    <dict><key>Hour</key><integer>20</integer><key>Minute</key><integer>20</integer></dict>
+    <dict><key>Hour</key><integer>22</integer><key>Minute</key><integer>20</integer></dict>
+  </array>
+  <key>RunAtLoad</key>
+  <false/>
+  <!-- Standard, not Background:  the background class starved com.jay.grok-idle-unload
+       at load average ~300.  The job is a few dozen API calls and exits. -->
+  <key>ProcessType</key>
+  <string>Standard</string>
+  <key>StandardOutPath</key>
+  <string>/Users/jay/Library/Logs/ios-testflight-freshness.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/jay/Library/Logs/ios-testflight-freshness.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/jay/.local/bin</string>
+  </dict>
+</dict>
+</plist>

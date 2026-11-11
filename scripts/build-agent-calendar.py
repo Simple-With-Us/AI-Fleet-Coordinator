@@ -6,11 +6,10 @@ and writes calendar/agent-activity.ics.
 
 Auth:
   GITHUB_TOKEN          — default Actions token (current repo + public repos)
-  FLEET_GITHUB_TOKEN    — optional PAT with repo scope for private fleet repos
-                          (e.g. Congress.Trade)
+  FLEET_GITHUB_TOKEN    — optional token for GitHub API rate limits
 
 Env:
-  FLEET_OWNER           — GitHub owner (default: jaywedgeworth22)
+  FLEET_OWNER           — GitHub owner (default: Simple-With-Us)
   FLEET_REPOS           — comma list of repo names (default fleet set)
   CALENDAR_LOOKBACK_DAYS — how far back to fetch (default: 14)
   CALENDAR_PER_REPO     — max commits per repo (default: 40)
@@ -30,17 +29,9 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ics_utils import fold_line, ics_escape, join_ics  # noqa: E402
+from public_activity_repos import DEFAULT_FLEET_OWNER, PUBLIC_REPOS, select_public_repos  # noqa: E402
 
-DEFAULT_REPOS = [
-    "Socratic.Trade",
-    "Congress.Trade",
-    "Usage-Monitor",
-    "congress-trading-shared",
-    "DealDex",
-    "Personal-Site",
-    "TopSpin",
-    "ai-fleet-coordinator",
-]
+DEFAULT_REPOS = PUBLIC_REPOS
 
 
 def env_int(name: str, default: int) -> int:
@@ -65,7 +56,7 @@ def gh_get(url: str, token: str) -> Any:
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {token}",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "ai-fleet-coordinator-agent-calendar",
+            "User-Agent": "AI-Fleet-Coordinator-agent-calendar",
         },
     )
     with urllib.request.urlopen(req, timeout=45) as resp:
@@ -122,7 +113,7 @@ def build_ics(events: list[dict[str, Any]], now: datetime) -> str:
         "CALSCALE:GREGORIAN",
         "METHOD:PUBLISH",
         "X-WR-CALNAME:AI Fleet — Agent Coding Activity",
-        "X-WR-CALDESC:Merged commits across fleet repos. Auto-refreshed by GitHub Actions in ai-fleet-coordinator.",
+        "X-WR-CALDESC:Merged commits across fleet repos. Auto-refreshed by GitHub Actions in AI-Fleet-Coordinator.",
         "X-WR-TIMEZONE:America/Chicago",
         "REFRESH-INTERVAL;VALUE=DURATION:PT6H",
         "X-PUBLISHED-TTL:PT6H",
@@ -149,9 +140,9 @@ def build_ics(events: list[dict[str, Any]], now: datetime) -> str:
 
 
 def main() -> int:
-    owner = os.environ.get("FLEET_OWNER", "jaywedgeworth22").strip() or "jaywedgeworth22"
+    owner = os.environ.get("FLEET_OWNER", DEFAULT_FLEET_OWNER).strip() or DEFAULT_FLEET_OWNER
     repos_raw = os.environ.get("FLEET_REPOS", "").strip()
-    repos = [r.strip() for r in repos_raw.split(",") if r.strip()] or DEFAULT_REPOS
+    requested = [r.strip() for r in repos_raw.split(",") if r.strip()] or list(DEFAULT_REPOS)
     lookback = env_int("CALENDAR_LOOKBACK_DAYS", 14)
     per_repo = env_int("CALENDAR_PER_REPO", 40)
     out = Path(os.environ.get("CALENDAR_OUT", "calendar/agent-activity.ics"))
@@ -163,6 +154,7 @@ def main() -> int:
     if not token:
         print("error: set GITHUB_TOKEN or FLEET_GITHUB_TOKEN", file=sys.stderr)
         return 2
+    repos = select_public_repos(owner, requested, token)
 
     now = datetime.now(timezone.utc)
     since = now - timedelta(days=lookback)
@@ -184,11 +176,11 @@ def main() -> int:
             start = datetime.fromisoformat(author_date.replace("Z", "+00:00"))
             mins = event_duration_minutes(msg)
             end = start + timedelta(minutes=mins)
-            url = c.get("html_url") or f"https://github.com/{owner}/{repo}/commit/{full_sha}"
+            url = f"https://github.com/{owner}/{repo}/commit/{full_sha}"
             subject = first_line(msg)
             events.append(
                 {
-                    "uid": f"{full_sha or sha}-{repo}@ai-fleet-coordinator",
+                    "uid": f"{full_sha or sha}-{repo}@AI-Fleet-Coordinator",
                     "start": start,
                     "end": end,
                     "summary": f"[{repo}] {subject}",

@@ -1,0 +1,12 @@
+[Unit]
+Description=Fleet host housekeeping check (disk, zombies, failed units)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/fleet-housekeep.sh
+SyslogIdentifier=fleet-housekeep
+EnvironmentFile=-/etc/fleet-housekeep.env
+
+[Install]
+WantedBy=multi-user.target

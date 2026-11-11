@@ -1,0 +1,1 @@
+fleet-config: unknown seat 'NOPE';  the manifest holds CLAUDE, CODEX, AG, CURSOR, GROK, GROK-WEB, CLUTCH, GROK-BOT, FX, MM, MA, MC, OPENCODE, ECHO, WISE

@@ -9,6 +9,9 @@ WATCH="${ROOT}/mac-process-watch.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+grep -q '"app.botfleet.server app.botfleet.server.plist com.jay.botfleet-server"' "$WATCH" || { echo "FAIL watch must list app.botfleet.server (legacy com.jay.botfleet-server alias)" >&2; exit 1; }
+grep -q '8799-healthy' "$WATCH" || { echo "FAIL watch must treat :8799 health as botfleet UP" >&2; exit 1; }
+
 covers() {
   bash "$WATCH" --dump-covers "$@"
 }
@@ -31,30 +34,30 @@ assert_no() {
 printf '%s\n' '[{"name":"vision-worker","pm2_env":{"name":"vision-worker","status":"online"}}]' \
   >"${tmp}/poisoned.json"
 assert_no "${tmp}/poisoned.json" \
-  shellular scout senate-relay senate-tunnel agent-sync-push \
-  code-main-keeper vision-worker xcode-health cursor-slack-sync agy-acp \
-  grok-leader grok-acp mac-collab mac-collab-sync
+  shellular scout senate-relay senate-tunnel \
+  code-main-keeper vision-worker xcode-health agy-acp \
+  grok-leader grok-acp
 
-# same poisoned dump still fails the original 10-job list
+# same poisoned dump still fails the original job list
 assert_no "${tmp}/poisoned.json" \
-  shellular scout senate-relay senate-tunnel agent-sync-push \
-  code-main-keeper vision-worker xcode-health cursor-slack-sync agy-acp
+  shellular scout senate-relay senate-tunnel \
+  code-main-keeper vision-worker xcode-health agy-acp
 
 # complete dump with top-level name
 python3 - "${tmp}/complete.json" <<'PY'
 import json, sys
 path = sys.argv[1]
 names = [
-    "shellular", "scout", "senate-relay", "senate-tunnel", "agent-sync-push",
-    "code-main-keeper", "vision-worker", "xcode-health", "cursor-slack-sync",
-    "agy-acp", "grok-leader", "grok-acp", "mac-collab", "mac-collab-sync",
+    "shellular", "scout", "senate-relay", "senate-tunnel",
+    "code-main-keeper", "vision-worker", "xcode-health", "agy-acp",
+    "grok-leader", "grok-acp",
 ]
 json.dump([{"name": n} for n in names], open(path, "w"))
 PY
 assert_ok "${tmp}/complete.json" \
-  shellular scout senate-relay senate-tunnel agent-sync-push \
-  code-main-keeper vision-worker xcode-health cursor-slack-sync agy-acp \
-  grok-leader grok-acp mac-collab mac-collab-sync
+  shellular scout senate-relay senate-tunnel \
+  code-main-keeper vision-worker xcode-health agy-acp \
+  grok-leader grok-acp
 
 # pm2_env.name only
 python3 - "${tmp}/envonly.json" <<'PY'

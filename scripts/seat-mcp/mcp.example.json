@@ -1,0 +1,33 @@
+{
+  "mcpServers": {
+    "fleet-recall": {
+      "url": "https://recall.jays.services/mcp",
+      "headers": {
+        "Authorization": "Bearer ${RECALL_API_TOKEN}",
+        "CF-Access-Client-Id": "${CF_ACCESS_CLIENT_ID}",
+        "CF-Access-Client-Secret": "${CF_ACCESS_CLIENT_SECRET}"
+      }
+    },
+    "seat-mcp": {
+      "url": "https://agents.jays.services/mcp",
+      "headers": {
+        "Authorization": "Bearer ${SEAT_MCP_TOKEN}",
+        "CF-Access-Client-Id": "${CF_ACCESS_CLIENT_ID}",
+        "CF-Access-Client-Secret": "${CF_ACCESS_CLIENT_SECRET}"
+      }
+    }
+  },
+  "_fleet_recall": {
+    "note": "Hetzner-side fleet recall (scripts/fleet-recall-service); works while the Mac is asleep.  Same Access service token as seat-mcp; RECALL_API_TOKEN lives in Infisical shared/prod.  contribute requires seat.",
+    "health": "GET https://recall.jays.services/health  (no auth)",
+    "stats": "GET https://recall.jays.services/recall/stats",
+    "search": "POST https://recall.jays.services/recall/search",
+    "contribute": "POST https://recall.jays.services/recall/contribute"
+  },
+  "_recall_rest": {
+    "stats": "GET https://agents.jays.services/recall/stats",
+    "search": "POST https://agents.jays.services/recall/search",
+    "contribute": "POST https://agents.jays.services/recall/contribute",
+    "note": "Mac-side hop (seat-mcp); same Authorization and Cloudflare Access headers as seat-mcp.  contribute requires seat.  Prefer fleet-recall above when you only need recall."
+  }
+}

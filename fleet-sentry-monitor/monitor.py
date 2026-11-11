@@ -19,7 +19,7 @@ Checks performed each pass:
      most once per hour per fingerprint while the condition persists.
   2. Claude desktop process presence + total RSS -> breadcrumb/context only.
      Not-running is NOT an error condition.
-  3. Disk free space on / -> warning < 20GB, error < 8GB.
+  3. Disk free space on / -> warning < 80GB, error < 30GB (the disk-janitor band).
      Known SQLite WAL files > 512MB -> warning (per-file, deduped hourly).
   4. `gh api rate_limit` -> warning if core or graphql remaining < 300,
      includes reset time in the message.
@@ -41,7 +41,7 @@ import os
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -76,14 +76,21 @@ CRITICAL_APPS: set[str] = set()
 PROD_HEALTH_ENDPOINTS = [
     {"name": "socratic-trade", "url": "https://socratictrade.com/api/health"},
     {"name": "usage-monitor", "url": "https://usage.jays.services/api/health"},
+    {"name": "dealdex", "url": "https://dealdex.net/"},
+    {"name": "botfleet", "url": "https://botfleet.app/"},
+    {"name": "simple-tools", "url": "http://127.0.0.1:8787/health"},
+    {"name": "cloudflared-ready", "url": "http://127.0.0.1:20241/ready"},
 ]
 PROD_HEALTH_TIMEOUT_SECONDS = 20
 
 RESTART_DELTA_ERROR_THRESHOLD = 5
 DEDUP_WINDOW_SECONDS = 60 * 60  # re-emit a persisting fingerprint at most hourly
 
-DISK_WARN_FREE_GB = 20
-DISK_ERROR_FREE_GB = 8
+# Aligned to scripts/disk-janitor.sh: it starts reclaiming caches below
+# LOW_FREE=80GB and turns destructive below CRIT_FREE=30GB, so warn when
+# reclaim starts and error at the janitor's critical band, not at ~full.
+DISK_WARN_FREE_GB = 80
+DISK_ERROR_FREE_GB = 30
 WAL_WARN_BYTES = 512 * 1024 * 1024  # 512MB
 
 GH_RATE_LIMIT_WARN_REMAINING = 300
@@ -109,7 +116,7 @@ WAL_GLOBS = [
 ]
 
 MONITOR_SLUG = "fleet-host-monitor"
-GH_REPO = "jaywedgeworth22/agentic-trading"
+GH_REPO = "Simple-With-Us/Socratic-Trade"
 DEFAULT_TAGS = {"agent": "FLEET", "app": "fleet-infra"}
 PM2_TAGS = {
     "trading-codex": {"agent": "CODEX", "app": "socratic-trade"},
@@ -117,6 +124,8 @@ PM2_TAGS = {
     "trading": {"agent": "FLEET", "app": "socratic-trade"},
     "trading-main": {"agent": "FLEET", "app": "socratic-trade"},
     "congress-scout": {"agent": "FLEET", "app": "congress-trade"},
+    "dealdex": {"agent": "FLEET", "app": "dealdex"},
+    "botfleet": {"agent": "FLEET", "app": "botfleet"},
 }
 CODEX_SESSION_GLOB = str(Path.home() / ".codex" / "sessions" / "**" / "*.jsonl")
 
@@ -212,9 +221,7 @@ def should_emit(state: dict, fingerprint: str, now: float) -> bool:
 
 def prune_fingerprints(state: dict, now: float) -> None:
     cutoff = now - (DEDUP_WINDOW_SECONDS * 4)
-    state["fingerprints"] = {
-        fp: ts for fp, ts in state["fingerprints"].items() if ts >= cutoff
-    }
+    state["fingerprints"] = {fp: ts for fp, ts in state["fingerprints"].items() if ts >= cutoff}
 
 
 def run_cmd(args: list[str], timeout: int = 30, env: dict | None = None) -> tuple[int, str, str]:
@@ -305,10 +312,7 @@ def sentry_cron_checkin(
                 status=status,
                 monitor_config=monitor_config,
             )
-            print(
-                f"[fleet-sentry-monitor] Sentry Crons check-in sent: "
-                f"{monitor_slug}={status}"
-            )
+            print(f"[fleet-sentry-monitor] Sentry Crons check-in sent: {monitor_slug}={status}")
             return
         except Exception as exc:  # noqa: BLE001 - monitoring must never crash the pass
             print(f"[fleet-sentry-monitor] sentry-sdk check-in failed, falling back: {exc}")
@@ -340,7 +344,7 @@ def _raw_envelope_checkin(
     """Fallback path: send a check-in envelope over raw HTTP via urllib (no sentry-sdk)."""
     import urllib.request
     import uuid
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     parsed = _parse_dsn(dsn)
     if not parsed:
@@ -350,7 +354,7 @@ def _raw_envelope_checkin(
     url = f"https://{host}/api/{project_id}/envelope/"
 
     checkin_id = uuid.uuid4().hex
-    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     envelope_header = json.dumps({"sent_at": now_iso})
     item_payload = {
         "check_in_id": checkin_id,
@@ -363,8 +367,7 @@ def _raw_envelope_checkin(
     envelope = "\n".join([envelope_header, item_header, item_body]) + "\n"
 
     auth_header = (
-        f"Sentry sentry_version=7, sentry_client=fleet-monitor-raw/1.0, "
-        f"sentry_key={public_key}"
+        f"Sentry sentry_version=7, sentry_client=fleet-monitor-raw/1.0, sentry_key={public_key}"
     )
     req = urllib.request.Request(
         url,
@@ -490,20 +493,37 @@ def _check_one_prod_health(endpoint: dict, state: dict, now: float) -> None:
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "fleet-sentry-monitor/1.0"})
             with urllib.request.urlopen(req, timeout=PROD_HEALTH_TIMEOUT_SECONDS) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-            if body.get("ok") is not True:
-                problem = f"health ok={body.get('ok')!r} checks={body.get('checks')!r}"[:400]
+                status_code = resp.status
+                raw_data = resp.read()
+
+            if status_code != 200:
+                problem = f"HTTP status {status_code}"
             else:
-                add_breadcrumb(
-                    "prod",
-                    f"prod health ok ({name})",
-                    {
-                        "app": name,
-                        "schedulerAgeSeconds": (body.get("checks") or {}).get("schedulerAgeSeconds"),
-                        "revision": body.get("revision"),
-                    },
-                )
-                break
+                try:
+                    body = json.loads(raw_data.decode("utf-8"))
+                    if isinstance(body, dict) and "ok" in body and body.get("ok") is not True:
+                        problem = f"health ok={body.get('ok')!r} checks={body.get('checks')!r}"[
+                            :400
+                        ]
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    # Non-JSON HTML/static response with HTTP 200 is healthy
+                    body = {}
+
+                if not problem:
+                    add_breadcrumb(
+                        "prod",
+                        f"prod health ok ({name})",
+                        {
+                            "app": name,
+                            "schedulerAgeSeconds": (body.get("checks") or {}).get(
+                                "schedulerAgeSeconds"
+                            )
+                            if isinstance(body, dict)
+                            else None,
+                            "revision": body.get("revision") if isinstance(body, dict) else None,
+                        },
+                    )
+                    break
         except Exception as exc:  # noqa: BLE001 - any failure to reach prod is the finding
             # A 502/503 raises HTTPError here, which is exactly the shape the
             # 2026-07-20 usage-monitor outage took (app container exited, proxy up).
@@ -588,13 +608,16 @@ def check_codex_desktop_and_sessions(state: dict, now: float) -> None:
         },
     )
 
+
 def check_disk(state: dict, now: float) -> None:
     try:
         st = os.statvfs("/")
         free_bytes = st.f_bavail * st.f_frsize
         free_gb = free_bytes / (1024**3)
     except OSError as exc:
-        capture_message("disk free-space check failed", "warning", ["disk-check-failure"], {"error": str(exc)})
+        capture_message(
+            "disk free-space check failed", "warning", ["disk-check-failure"], {"error": str(exc)}
+        )
         return
 
     if free_gb < DISK_ERROR_FREE_GB:
@@ -626,7 +649,7 @@ def check_disk(state: dict, now: float) -> None:
                 fp = f"wal-size:{path}"
                 if should_emit(state, fp, now):
                     capture_message(
-                        f"SQLite WAL file oversized: {path} ({size / (1024*1024):.1f}MB)",
+                        f"SQLite WAL file oversized: {path} ({size / (1024 * 1024):.1f}MB)",
                         "warning",
                         [fp],
                         {"path": path, "size_mb": round(size / (1024 * 1024), 1)},
@@ -684,9 +707,7 @@ def check_gh_rate_limit(state: dict, now: float) -> None:
 
 
 def check_self_hosted_runner() -> None:
-    code, out, _ = run_cmd(
-        ["gh", "api", f"repos/{GH_REPO}/actions/runners"], env=gh_cmd_env()
-    )
+    code, out, _ = run_cmd(["gh", "api", f"repos/{GH_REPO}/actions/runners"], env=gh_cmd_env())
     if code != 0 or not out.strip():
         add_breadcrumb("gh-runner", "runner status lookup failed (non-fatal, context only)", {})
         return
@@ -855,40 +876,52 @@ def check_usage_monitor_garage_backup(state: dict, now: float, dsn: str | None) 
         backup["replica_age_seconds"] = round(replica_age)
         backup["latest_created"] = latest.isoformat()
         if backup["scheduler_enabled"] and replica_age > USAGE_MONITOR_REPLICA_MAX_AGE_SECONDS:
-            problems.append((
-                "usage-monitor-garage-replica-stale",
-                f"Usage Monitor Garage replica is stale ({replica_age / 60:.0f} minutes)",
-                backup,
-            ))
+            problems.append(
+                (
+                    "usage-monitor-garage-replica-stale",
+                    f"Usage Monitor Garage replica is stale ({replica_age / 60:.0f} minutes)",
+                    backup,
+                )
+            )
     except Exception as exc:  # noqa: BLE001 - convert each probe failure into one alert
-        problems.append((
-            "usage-monitor-garage-probe-failed",
-            "Usage Monitor Garage authenticated replica probe failed",
-            {"error": f"{type(exc).__name__}: {exc}"[:500]},
-        ))
+        problems.append(
+            (
+                "usage-monitor-garage-probe-failed",
+                "Usage Monitor Garage authenticated replica probe failed",
+                {"error": f"{type(exc).__name__}: {exc}"[:500]},
+            )
+        )
 
     try:
         disk = _usage_monitor_coolify_disk_probe()
         free_gb = disk["free_bytes"] / (1024**3)
         total_gb = disk["total_bytes"] / (1024**3)
-        disk = {"free_gb": round(free_gb, 1), "total_gb": round(total_gb, 1), "garage": disk["garage"]}
+        disk = {
+            "free_gb": round(free_gb, 1),
+            "total_gb": round(total_gb, 1),
+            "garage": disk["garage"],
+        }
         threshold = (
             USAGE_MONITOR_COOLIFY_DISK_ERROR_FREE_GB
             if free_gb < USAGE_MONITOR_COOLIFY_DISK_ERROR_FREE_GB
             else USAGE_MONITOR_COOLIFY_DISK_WARN_FREE_GB
         )
         if free_gb < USAGE_MONITOR_COOLIFY_DISK_WARN_FREE_GB:
-            problems.append((
-                "usage-monitor-coolify-disk-low",
-                f"Coolify Garage disk is low ({free_gb:.1f}GB free)",
-                {**disk, "threshold_gb": threshold},
-            ))
+            problems.append(
+                (
+                    "usage-monitor-coolify-disk-low",
+                    f"Coolify Garage disk is low ({free_gb:.1f}GB free)",
+                    {**disk, "threshold_gb": threshold},
+                )
+            )
     except Exception as exc:  # noqa: BLE001
-        problems.append((
-            "usage-monitor-coolify-probe-failed",
-            "Coolify Garage health/disk probe failed",
-            {"error": f"{type(exc).__name__}: {exc}"[:500]},
-        ))
+        problems.append(
+            (
+                "usage-monitor-coolify-probe-failed",
+                "Coolify Garage health/disk probe failed",
+                {"error": f"{type(exc).__name__}: {exc}"[:500]},
+            )
+        )
 
     last_restore = float(state.get("usage_monitor_backup_last_restore", 0) or 0)
     if not problems and now - last_restore >= USAGE_MONITOR_RESTORE_DRILL_INTERVAL_SECONDS:
@@ -896,11 +929,13 @@ def check_usage_monitor_garage_backup(state: dict, now: float, dsn: str | None) 
             _usage_monitor_restore_drill()
             state["usage_monitor_backup_last_restore"] = now
         except Exception as exc:  # noqa: BLE001
-            problems.append((
-                "usage-monitor-garage-restore-failed",
-                "Usage Monitor Garage full restore drill failed",
-                {"error": f"{type(exc).__name__}: {exc}"[:500]},
-            ))
+            problems.append(
+                (
+                    "usage-monitor-garage-restore-failed",
+                    "Usage Monitor Garage full restore drill failed",
+                    {"error": f"{type(exc).__name__}: {exc}"[:500]},
+                )
+            )
 
     for fingerprint, message, extra in problems:
         if should_emit(state, fingerprint, now):
@@ -917,7 +952,11 @@ def check_usage_monitor_garage_backup(state: dict, now: float, dsn: str | None) 
         add_breadcrumb(
             "usage-monitor-backup",
             "Garage replica, restore plan, container, and disk healthy",
-            {"backup": backup, "disk": disk, "last_restore": state.get("usage_monitor_backup_last_restore")},
+            {
+                "backup": backup,
+                "disk": disk,
+                "last_restore": state.get("usage_monitor_backup_last_restore"),
+            },
         )
     sentry_cron_checkin(
         status,
@@ -928,6 +967,33 @@ def check_usage_monitor_garage_backup(state: dict, now: float, dsn: str | None) 
     )
 
 
+def run_checks(checks, state: dict, now: float) -> list[str]:
+    """Run each (name, callable) check in its own try block.
+
+    A raising check records a per-check error fingerprint and the pass
+    continues, so one bad check can never silently skip later ones
+    (previously all eight shared one try, so the first exception skipped
+    disk and everything after it).  Returns the failed check names.
+    """
+    failed: list[str] = []
+    for name, check in checks:
+        try:
+            check()
+        except Exception as exc:  # noqa: BLE001 - isolate each check
+            failed.append(name)
+            fingerprint = f"monitor-check-failed:{name}"
+            if should_emit(state, fingerprint, now):
+                capture_message(
+                    f"fleet-sentry-monitor check {name} raised: {type(exc).__name__}: {exc}"[:500],
+                    "error",
+                    [fingerprint],
+                    {"check": name},
+                )
+            else:
+                print(f"[fleet-sentry-monitor] check {name} raised: {exc}")
+    return failed
+
+
 def main() -> int:
     dsn = load_dsn()
     init_sentry(dsn)
@@ -935,19 +1001,17 @@ def main() -> int:
     now = time.time()
     state = load_state()
 
-    status = "ok"
-    try:
-        check_pm2(state, now)
-        check_prod_health(state, now)
-        check_claude_desktop()
-        check_codex_desktop_and_sessions(state, now)
-        check_disk(state, now)
-        check_gh_rate_limit(state, now)
-        check_self_hosted_runner()
-        check_usage_monitor_garage_backup(state, now, dsn)
-    except Exception as exc:  # noqa: BLE001 - never let one bad check crash the pass
-        status = "error"
-        capture_message(f"fleet-sentry-monitor pass raised: {exc}", "error", ["monitor-internal-error"], {})
+    checks = [
+        ("pm2", lambda: check_pm2(state, now)),
+        ("prod-health", lambda: check_prod_health(state, now)),
+        ("claude-desktop", check_claude_desktop),
+        ("codex-desktop-and-sessions", lambda: check_codex_desktop_and_sessions(state, now)),
+        ("disk", lambda: check_disk(state, now)),
+        ("gh-rate-limit", lambda: check_gh_rate_limit(state, now)),
+        ("self-hosted-runner", check_self_hosted_runner),
+        ("usage-monitor-garage-backup", lambda: check_usage_monitor_garage_backup(state, now, dsn)),
+    ]
+    status = "error" if run_checks(checks, state, now) else "ok"
 
     prune_fingerprints(state, now)
     save_state(state)
@@ -957,7 +1021,9 @@ def main() -> int:
     if _sentry_available and _sentry_sdk is not None:
         _sentry_sdk.flush(timeout=5)
 
-    print(f"[fleet-sentry-monitor] pass complete at {time.strftime('%Y-%m-%d %H:%M:%S')}; sleeping {CHECK_INTERVAL_SECONDS}s")
+    print(
+        f"[fleet-sentry-monitor] pass complete at {time.strftime('%Y-%m-%d %H:%M:%S')}; sleeping {CHECK_INTERVAL_SECONDS}s"
+    )
     time.sleep(CHECK_INTERVAL_SECONDS)
     return 0
 

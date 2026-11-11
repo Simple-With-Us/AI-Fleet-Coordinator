@@ -1,0 +1,5 @@
+# The Touch ID gate helper is built on the machine that uses it:  the generated project and
+# the build products are machine specific and are not committed.  project.yml,  the Swift
+# source and Info.plist are the committed sources;  build.sh regenerates and builds them.
+build/
+TouchIDGate.xcodeproj/

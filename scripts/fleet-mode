@@ -1,0 +1,35 @@
+#!/bin/bash
+# fleet-mode — print the portable Fleet mode briefing for pasting at any platform's agent.
+# On-demand helper.  Canonical text: docs/FLEET-MODE.md in AI-Fleet-Coordinator (the Mac keeps a
+# copy at ~/apps/FLEET-MODE.md;  fleet-tools-doctor warns when the two differ).
+# The doc is found beside this script first (scripts/ and docs/ are siblings in a checkout and in
+# a fleet-cli release), then at ~/apps/FLEET-MODE.md.
+# Usage: fleet-mode          # print the pasteable block only
+#        fleet-mode --full   # print the whole FLEET-MODE.md
+set -euo pipefail
+self=$0
+hops=0
+while [ -L "$self" ] && [ "$hops" -lt 40 ]; do
+  target=$(readlink "$self") || break
+  case $target in
+    /*) self=$target ;;
+    *) self=$(dirname "$self")/$target ;;
+  esac
+  hops=$((hops + 1))
+done
+here=$(cd "$(dirname "$self")" 2>/dev/null && pwd -P) || here=""
+DOC=""
+for candidate in "${here:+$here/../docs/FLEET-MODE.md}" "${HOME:-}/apps/FLEET-MODE.md"; do
+  if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+    DOC=$candidate
+    break
+  fi
+done
+[ -n "$DOC" ] || { echo "fleet-mode: FLEET-MODE.md not found beside this script or at ~/apps/FLEET-MODE.md" >&2; exit 1; }
+if [ "${1:-}" = "--full" ]; then
+  cat "$DOC"
+else
+  # Print the block-quoted pasteable section with the leading "> " stripped.
+  awk '/^## The pasteable block/{f=1;next} f&&/^## /{exit} f&&/^>/{sub(/^> ?/,"");print} f&&/^$/{print}' "$DOC" \
+    | sed '/./,$!d'
+fi

@@ -1,0 +1,5 @@
+#!/bin/bash
+# Thin wrapper so `cursor-chat-surfaces status` works from ~/apps after install.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+exec python3 "$ROOT/cursor_chat_surfaces.py" "$@"

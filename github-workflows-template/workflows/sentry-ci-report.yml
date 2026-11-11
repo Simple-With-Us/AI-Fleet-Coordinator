@@ -2,14 +2,16 @@ name: Sentry CI Report
 
 # Fleet-wide CI observability: fires after every other workflow in this repo
 # completes and reports failures to the shared `fleet-infra` Sentry project
-# (org jays-services). ADDITIVE ONLY — this file must never modify the
+# (org simple-with-us). ADDITIVE ONLY — this file must never modify the
 # behavior of the workflows it observes.
 #
 # Two independent signals per completed run:
 #   1. On conclusion == failure: a Sentry error event, tagged with
-#      {workflow, branch, actor}, carrying the run URL, fingerprinted on
-#      [workflow, branch] so repeated failures on the same branch group
-#      together instead of paging separately every time.
+#      {app, workflow, branch, actor}, carrying the run URL, fingerprinted on
+#      [app, workflow] only (scripts/sentry-ci-report.py:
+#      ["ci-failure", APP, workflow_name]).  Branch and SHA are tags, never
+#      fingerprint components — merge-queue refs minted throwaway fleet-infra
+#      issues when the fingerprint included the branch.
 #   2. On event == schedule (i.e. the completed run was a cron-triggered
 #      run of a workflow that defines `schedule:`): a Sentry Crons check-in
 #      (ok on success, error on failure) with an upsert monitor_config whose

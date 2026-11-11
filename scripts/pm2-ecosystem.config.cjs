@@ -10,9 +10,16 @@
  * system cloudflared).  Do not start scheduled fire-and-exit jobs here
  * (watchdog, janitor, collector) — those stay launchd StartInterval.
  *
- * scout MUST have stdin /dev/null.  A raw `interpreter: bash` start hangs
- * in bash reader_loop because pm2's unix-socket stdin breaks the secrets
- * heredoc in run-scout.sh.
+ * Deprecated / removed from this ecosystem (do not resurrect): mac-collab,
+ * mac-collab-litestream, mac-collab-sync and mac-collab-writeback (the board
+ * server and its replicas;  the sync and writeback jobs retired at the Linear
+ * cutover, the server and litestream on 2026-10-19, AFC-363;  Linear is the
+ * tracker and the directory is parked in ~/apps/_retired/), scout,
+ * residential-proxy, senate-relay, senate-tunnel.  Senate/residential stay
+ * off this Mac; Coolify/Texas paths own them.
+ *
+ * Coordination runs through the `simple-chat` CLI and its always-on listener;
+ * no Slack relay runs here (cursor-slack-sync is removed, do not resurrect it).
  */
 const home = "/Users/jay";
 const logs = `${home}/.pm2/logs`;
@@ -27,7 +34,15 @@ function app(partial) {
     watch: false,
     merge_logs: true,
     time: true,
-    env: { PATH: path, HOME: home, ...(partial.env || {}) },
+    env: {
+      PATH: path,
+      HOME: home,
+      DD_AGENT_HOST: "127.0.0.1",
+      DD_TRACE_AGENT_PORT: "8126",
+      DD_ENV: "prod",
+      DD_SITE: "us5.datadoghq.com",
+      ...(partial.env || {})
+    },
     ...partial,
   };
 }
@@ -37,43 +52,11 @@ module.exports = {
     app({
       name: "shellular",
       script: `${home}/apps/shellular-runtime/node_modules/shellular/dist/main.js`,
-      args: "__daemon --server https://server.shellular.dev --dir /Users/jay --unknown-clients requires-approval",
+      args: "__daemon --server https://server.shellular.dev --dir /Users/jay --unknown-clients always-allow",
       cwd: home,
       interpreter: "node",
       out_file: `${logs}/shellular-out.log`,
       error_file: `${logs}/shellular-error.log`,
-    }),
-    app({
-      name: "scout",
-      script: "/bin/bash",
-      args: ["-lc", "exec /Users/jay/apps/scout-runtime/run-scout.sh </dev/null"],
-      cwd: `${home}/Code/Congress.Trade`,
-      out_file: `${logs}/scout-out.log`,
-      error_file: `${logs}/scout-error.log`,
-    }),
-    app({
-      name: "senate-relay",
-      script: `${home}/apps/senate-relay-runtime/run.sh`,
-      interpreter: "bash",
-      cwd: `${home}/apps/senate-relay-runtime`,
-      out_file: `${logs}/senate-relay-out.log`,
-      error_file: `${logs}/senate-relay-error.log`,
-    }),
-    app({
-      name: "senate-tunnel",
-      script: `${home}/Code/Congress.Trade/scout/run-senate-tunnel.sh`,
-      interpreter: "bash",
-      cwd: `${home}/Code/Congress.Trade`,
-      out_file: `${logs}/senate-tunnel-out.log`,
-      error_file: `${logs}/senate-tunnel-error.log`,
-    }),
-    app({
-      name: "agent-sync-push",
-      script: `${home}/apps/agent-sync-push/start.sh`,
-      interpreter: "bash",
-      cwd: `${home}/Code/Congress.Trade`,
-      out_file: `${logs}/agent-sync-push-out.log`,
-      error_file: `${logs}/agent-sync-push-error.log`,
     }),
     app({
       name: "code-main-keeper",
@@ -98,42 +81,6 @@ module.exports = {
       cwd: `${home}/apps/xcode-health`,
       out_file: `${logs}/xcode-health-out.log`,
       error_file: `${logs}/xcode-health-error.log`,
-    }),
-    app({
-      name: "mac-collab",
-      script: `${home}/apps/mac-collab/mac-collab-server.py`,
-      interpreter: "/usr/bin/python3",
-      cwd: `${home}/apps/mac-collab`,
-      out_file: `${logs}/mac-collab-out.log`,
-      error_file: `${logs}/mac-collab-error.log`,
-    }),
-    app({
-      name: "mac-collab-sync",
-      script: `${home}/apps/mac-collab/sync_board.py`,
-      args: "--loop",
-      interpreter: "/usr/bin/python3",
-      interpreter_args: "-u",
-      cwd: `${home}/apps/mac-collab`,
-      out_file: `${logs}/mac-collab-sync-out.log`,
-      error_file: `${logs}/mac-collab-sync-error.log`,
-    }),
-    app({
-      name: "mac-collab-writeback",
-      script: `${home}/apps/mac-collab/write_back.py`,
-      args: "--loop",
-      interpreter: "/usr/bin/python3",
-      interpreter_args: "-u",
-      cwd: `${home}/apps/mac-collab`,
-      out_file: `${logs}/mac-collab-writeback-out.log`,
-      error_file: `${logs}/mac-collab-writeback-error.log`,
-    }),
-    app({
-      name: "cursor-slack-sync",
-      script: `${home}/apps/cursor-slack-ws-sync.py`,
-      interpreter: "/opt/homebrew/bin/python3",
-      cwd: `${home}/apps`,
-      out_file: `${logs}/cursor-slack-sync-out.log`,
-      error_file: `${logs}/cursor-slack-sync-error.log`,
     }),
     app({
       name: "agy-acp",
@@ -163,6 +110,47 @@ module.exports = {
       cwd: `${home}/apps/grok-acp-runtime`,
       out_file: `${logs}/grok-acp-out.log`,
       error_file: `${logs}/grok-acp-error.log`,
+    }),
+    app({
+      // Clutch web UI on :3180.  Renamed from harness-web (Harness -> Clutch).
+      // Canonical scripts live in Simple-With-Us/Clutch; this Mac runs them
+      // from ~/apps/clutch-runtime, a real clone updated by update-mac-app.sh.
+      // DSH_HOME is not set here: start-web.sh sources scripts/lib/clutch-env.sh,
+      // which forces DSH_HOME to $CLUTCH_HOME/dsh.
+      name: "clutch-web",
+      script: `${home}/apps/clutch-runtime/scripts/start-web.sh`,
+      interpreter: "bash",
+      cwd: `${home}/apps/clutch-runtime`,
+      // 3 = port held by a non-clutch process.  Do not storm.
+      stop_exit_codes: [3],
+      env: {
+        CLUTCH_RUNTIME_ROOT: `${home}/apps/clutch-runtime`,
+        CLUTCH_HOME: `${home}/.clutch`,
+        CLUTCH_WEB_HOST: "127.0.0.1",
+        CLUTCH_WEB_PORT: "3180",
+      },
+      out_file: `${logs}/clutch-web-out.log`,
+      error_file: `${logs}/clutch-web-error.log`,
+    }),
+    app({
+      name: "seat-mcp",
+      script: `${home}/apps/seat-mcp/start.sh`,
+      interpreter: "bash",
+      cwd: `${home}/apps/seat-mcp`,
+      out_file: `${logs}/seat-mcp-out.log`,
+      error_file: `${logs}/seat-mcp-error.log`,
+    }),
+    app({
+      name: "botfleet-mcp",
+      script: `${home}/apps/botfleet-server/scripts/start-mcp-sse.sh`,
+      interpreter: "bash",
+      cwd: `${home}/apps/botfleet-server`,
+      env: {
+        BOTFLEET_MCP_PORT: "8794",
+        BOTFLEET_URL: "http://127.0.0.1:8799",
+      },
+      out_file: `${logs}/botfleet-mcp-out.log`,
+      error_file: `${logs}/botfleet-mcp-error.log`,
     }),
   ],
 };

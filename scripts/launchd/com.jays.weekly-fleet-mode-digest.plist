@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd job for scripts/weekly-fleet-mode-digest.mjs (ai-fleet-coordinator).
+
+  Posts a weekly #Work-In-Progress summary of frontier-vs-non-frontier Claude-family
+  model usage (Usage Monitor `/api/agent-model-mix`) and sub-agent tier mix
+  (Sentry `agent-sessions` project) to the fleet.
+
+  Calendar-scheduled (Monday 8:00 AM local time), not an always-on poller --
+  system timezone is confirmed America/Chicago, so a plain local-wall-clock
+  StartCalendarInterval needs no extra timezone handling.
+
+  Points at the tracked repo checkout (~/Code/ai-fleet-coordinator), never a
+  worktree -- worktrees are removed once their PR is open.
+
+  Install:
+    launchctl bootstrap gui/$(id -u) \
+      ~/Library/LaunchAgents/com.jays.weekly-fleet-mode-digest.plist
+  Uninstall:
+    launchctl bootout gui/$(id -u)/com.jays.weekly-fleet-mode-digest
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jays.weekly-fleet-mode-digest</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/jay/Code/ai-fleet-coordinator/scripts/weekly-fleet-mode-digest.mjs</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/opt/node@24/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Weekday</key>
+    <integer>1</integer>
+    <key>Hour</key>
+    <integer>8</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>/Users/jay/Library/Logs/weekly-fleet-mode-digest.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/jay/Library/Logs/weekly-fleet-mode-digest.log</string>
+</dict>
+</plist>

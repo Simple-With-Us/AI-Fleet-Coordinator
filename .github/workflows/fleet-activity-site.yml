@@ -31,16 +31,15 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build per-commit activity ICS
         env:
-          FLEET_GITHUB_TOKEN: ${{ secrets.FLEET_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          FLEET_OWNER: jaywedgeworth22
-          FLEET_REPOS: Socratic.Trade,Congress.Trade,Usage-Monitor,congress-trading-shared,ai-fleet-coordinator
+          FLEET_OWNER: Simple-With-Us
+          FLEET_REPOS: Socratic-Trade,Congress.Trade,Usage-Monitor,congress-trading-shared,AI-Fleet-Coordinator,DealDex,Autorotate,ContactLogo,Personal-Site,BotFleet,HogHunter,Clutch,codecaps
           CALENDAR_LOOKBACK_DAYS: "21"
           CALENDAR_PER_REPO: "50"
           CALENDAR_OUT: calendar/agent-activity.ics
@@ -48,15 +47,14 @@ jobs:
 
       - name: Build daily digest (MD + HTML + ICS)
         env:
-          FLEET_GITHUB_TOKEN: ${{ secrets.FLEET_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          FLEET_OWNER: jaywedgeworth22
-          FLEET_REPOS: Socratic.Trade,Congress.Trade,Usage-Monitor,congress-trading-shared,ai-fleet-coordinator
+          FLEET_OWNER: Simple-With-Us
+          FLEET_REPOS: Socratic-Trade,Congress.Trade,Usage-Monitor,congress-trading-shared,AI-Fleet-Coordinator,DealDex,Autorotate,ContactLogo,Personal-Site,BotFleet,HogHunter,Clutch,codecaps
           DIGEST_LOOKBACK_DAYS: "21"
           DIGEST_TZ: America/Chicago
           SITE_OUT: site
           ICS_OUT: calendar/daily-digest.ics
-          SITE_BASE_URL: https://jaywedgeworth22.github.io/ai-fleet-coordinator
+          SITE_BASE_URL: https://simple-with-us.github.io/AI-Fleet-Coordinator
         run: python3 scripts/build-fleet-daily-digest.py
 
       - name: Commit artifacts if changed
@@ -69,17 +67,30 @@ jobs:
             echo "No artifact changes."
           else
             git commit -m "chore(site): refresh fleet daily digest + calendars [skip ci]"
-            git push
+            # A rejected push (branch rules) must be a red run, not a silent
+            # frozen site - but it must not stop tonight's Pages deploy of the
+            # artifact this job just built, so record it and fail after deploy.
+            if ! git push; then
+              echo "PUSH_FAILED=1" >> "$GITHUB_ENV"
+              echo "::error::commit-back push rejected; deploying the built artifact, then failing the run"
+            fi
           fi
 
       - name: Setup Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
+          include-hidden-files: true
           path: site
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
+
+      - name: Fail the run when the commit-back push was rejected
+        if: env.PUSH_FAILED == '1'
+        run: |
+          echo "::error::artifacts deployed to Pages but could not be committed back to main"
+          exit 1

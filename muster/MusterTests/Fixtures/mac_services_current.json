@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "tool": "fleet-mac-services",
+  "generatedAt": "2026-10-28T15:00:00Z",
+  "host": "mac",
+  "agents": [
+    {"label": "com.jay.fleet-tools-doctor", "plistInRepo": true, "installed": true, "loaded": true, "pid": null, "lastExitStatus": 0, "controllable": true},
+    {"label": "com.jay.fleet-worker-health", "plistInRepo": true, "installed": true, "loaded": true, "pid": 4242, "lastExitStatus": null, "controllable": false},
+    {"label": "com.jay.fleet-mac-services", "plistInRepo": true, "installed": true, "loaded": false, "pid": null, "lastExitStatus": null, "controllable": false},
+    {"label": "com.jay.example-missing", "plistInRepo": false, "installed": false, "loaded": false, "pid": null, "lastExitStatus": null, "controllable": false},
+    {"label": "com.jay.example-failing", "plistInRepo": true, "installed": true, "loaded": true, "pid": null, "lastExitStatus": 78, "controllable": "yes"}
+  ]
+}

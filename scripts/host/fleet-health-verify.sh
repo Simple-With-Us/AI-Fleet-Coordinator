@@ -61,6 +61,14 @@ for d in socratic congress usage-monitor; do
   fi
 done
 
+# Qdrant snapshot age + fleet-agents ingest sentinel.  No-op until the helper
+# is installed next to this script as /usr/local/sbin/fleet-qdrant-health.sh.
+if [ -x /usr/local/sbin/fleet-qdrant-health.sh ]; then
+  if ! /usr/local/sbin/fleet-qdrant-health.sh; then
+    FAIL=1
+  fi
+fi
+
 if [ "$FAIL" -eq 1 ]; then
   mkdir -p /var/lib/fleet-health-verify
   stamp=/var/lib/fleet-health-verify/last_notify

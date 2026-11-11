@@ -1,0 +1,27 @@
+name: Kody first-review prompter
+
+# Caller for the fleet reusable (AI-Fleet-Coordinator). Runs hourly; requests Kody's
+# initial review on open PRs in THIS repository that have never had one and have no
+# pending request. Manual dispatch defaults to a dry run.
+
+on:
+  schedule:
+    - cron: '53 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: List decisions without commenting
+        type: boolean
+        default: true
+
+# A called workflow can only narrow these, so the caller grants all three.
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+
+jobs:
+  prompt:
+    uses: Simple-With-Us/AI-Fleet-Coordinator/.github/workflows/kody-first-review-reusable.yml@main
+    with:
+      dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run || false }}

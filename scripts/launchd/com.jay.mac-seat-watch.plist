@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jay.mac-seat-watch</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/jay/apps/mac-seat-claim.sh</string>
+    <string>--once</string>
+    <string>--by</string>
+    <string>GROK</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>180</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/jay/Library/Logs/mac-seat-watch.launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/jay/Library/Logs/mac-seat-watch.launchd.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/jay/.grok/bin:/opt/homebrew/bin:/usr/local/bin:/Users/jay/.local/bin:/usr/sbin:/sbin:/usr/bin:/bin</string>
+    <key>HOME</key>
+    <string>/Users/jay</string>
+  </dict>
+</dict>
+</plist>

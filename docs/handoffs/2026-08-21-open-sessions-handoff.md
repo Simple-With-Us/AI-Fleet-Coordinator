@@ -28,7 +28,7 @@ from different angles, and two lanes are blocked on the same owner action.
 | `:8899` holder | orphan deno pid **76761** (not pm2) | same orphan, 08:33 |
 
 Open PRs, all repos: **Socratic.Trade has 6; Congress.Trade, Usage-Monitor and
-ai-fleet-coordinator have zero.**  Session metadata that still shows "PR 61 OPEN" or
+AI-Fleet-Coordinator have zero.**  Session metadata that still shows "PR 61 OPEN" or
 "PR 3004 open" is stale — both are closed out.
 
 ### The single most valuable mechanism to carry forward
@@ -94,7 +94,7 @@ Account for a clean slate.
 ## Lane 2 — Socratic.Trade sign-in button unification ⚠️ STOPPED MID-WORK
 
 **Session:** `local_7a60bb21-441f-4006-bb07-2e5a97610c4a` · last activity 14:29 CT ·
-successor PR **[#3008](https://github.com/jaywedgeworth22/Socratic.Trade/pull/3008)**
+successor PR **[#3008](https://github.com/Simple-With-Us/Socratic-Trade/pull/3008)**
 (`claude/login-wordmark-catalyst`, OPEN, **BLOCKED**)
 
 This is the most at-risk lane — the session ends on a bare tool call with no closing summary,
@@ -128,7 +128,7 @@ GitHub's own brand assets rather than guessing a path.  Then unblock and land #3
 
 ## Lane 3 — Mac fleet health: two orphans awaiting a yes ⚠️ OWNER-BLOCKED
 
-**Session:** `local_84ffc5a0-4e5b-43a1-a866-3d5815819202` · cwd `~/Code/ai-fleet-coordinator` ·
+**Session:** `local_84ffc5a0-4e5b-43a1-a866-3d5815819202` · cwd `~/Code/AI-Fleet-Coordinator` ·
 last activity 08:33 CT
 
 The session ended on a direct question to the owner — *"Want me to do #1 now?"* — that was
@@ -250,7 +250,7 @@ the pressure is returning.
 
 ## Lane 6 — Fleet docs: unlanded work + a real drift problem
 
-**Session:** `local_01bfeec0-2bcb-4714-8e2c-2020ebc96336` · cwd `~/Code/ai-fleet-coordinator` ·
+**Session:** `local_01bfeec0-2bcb-4714-8e2c-2020ebc96336` · cwd `~/Code/AI-Fleet-Coordinator` ·
 last activity 16:25 CT
 
 Landed: agent logo fixes (the Grok chip was showing the **xAI company mark** — `grok.svg` was
@@ -269,12 +269,12 @@ digest hardcoded `agent-logos/<slug>.svg`.  The portable sentence-gap skill land
    prepare that expanded then released — **a hypothesis, not a conclusion.**  The one
    confirmed *standing* item is the **22 GB CoreSimulator runtime volume (iOS 23F77)**,
    which sat at 97.56% full all session.
-2. **`AGENT-SYNC.md` has genuinely diverged in both directions** — `/Users/jay/apps/AGENT-SYNC.md`
-   has TopSpin content the repo copy lacks; the repo copy has the THE BOARD section the live
+2. **`FLEET-PROTOCOL.md` has genuinely diverged in both directions** — `/Users/jay/apps/FLEET-PROTOCOL.md`
+   has Autorotate content the repo copy lacks; the repo copy has the THE BOARD section the live
    copy lacks.  The session added the cross-link to each independently but deliberately did
    **not** pick a winner.  This needs someone to reconcile it on purpose.
-3. **Uncommitted work is sitting in the `ai-fleet-coordinator` worktree right now** on branch
-   `deepseek/seat-onboard`: modified `AGENT-SYNC.md`, `TEMPLATE-AGENTS.md`,
+3. **Uncommitted work is sitting in the `AI-Fleet-Coordinator` worktree right now** on branch
+   `deepseek/seat-onboard`: modified `FLEET-PROTOCOL.md`, `TEMPLATE-AGENTS.md`,
    `docs/fleet-skills/README-add-in-app.md`, `docs/fleet-skills/owner-copy/SKILL.md`, plus
    untracked `docs/fleet-skills/sentence-gap/`, `docs/fleet-skills/sentence-gap.zip`,
    `.claude/skills/sentence-gap/`, `.grok/skills/sentence-gap/` and `.cursor/`.  Per standing
@@ -401,9 +401,9 @@ file before assuming it finished.
 
 ## Rules that apply to whoever picks these up
 
-- Claim on THE BOARD before substantial work (`board list` → `board claim <id> --by <SEAT>
+- Claim on THE BOARD before substantial work (`simple-board list` → `simple-board claim <id> --by <SEAT>
   --env Mac --where "..."`), land the `docs/EFFORT-LOG.md` row, post start and closeout to
-  `#agent-sync`.
+  `#Work-In-Progress`.
 - Branch under your own seat prefix and work in `~/apps/*`, never a top-level `~/Code/*`
   checkout (fleet #62).  `code-main-keeper` returns those to `main`.
 - Two spaces between sentences everywhere — two literal ASCII spaces in files like this one,

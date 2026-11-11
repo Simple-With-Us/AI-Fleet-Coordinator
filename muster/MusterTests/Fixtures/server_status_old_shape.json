@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tool": "fleet-server-status",
+  "generatedAt": "2026-10-28T15:00:00Z",
+  "host": "example-server",
+  "coolify": [
+    {"uuid": "example-uuid-1", "name": "example-app", "type": "application", "status": "running"}
+  ],
+  "processes": [
+    {"pid": 101, "owner": "root", "name": "dockerd"}
+  ],
+  "files": [
+    {"path": "/srv/example/AGENTS.md", "bytes": 100, "sha256": "aa", "drift": "unchanged"}
+  ]
+}

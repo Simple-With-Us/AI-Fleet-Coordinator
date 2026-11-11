@@ -1,0 +1,42 @@
+name: Signal the server to update its fleet tools
+# On a merge to main that touches the fleet tools, ask the Hetzner server to move its git checkout
+# (scripts/fleet-cli-git-update.py).  The key can do nothing else:  its authorized_keys entry is
+# `restrict` with a forced command that starts the fleet-cli-git-update service.  The server's
+# hourly timer is the safety net if this signal is ever lost.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/**"
+      - "fleet-apps.json"
+      - "docs/FLEET-MODE.md"
+      - "docs/protocols/simple-tools-*"
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: fleet-cli-server-update
+  cancel-in-progress: true
+jobs:
+  signal:
+    if: vars.FLEET_CLI_SIGNAL_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Start the server's update
+        env:
+          SSH_KEY: ${{ secrets.FLEET_CLI_UPDATE_SSH_KEY }}
+          SSH_HOST: ${{ secrets.FLEET_CLI_UPDATE_HOST }}
+          KNOWN_HOSTS: ${{ secrets.FLEET_CLI_UPDATE_KNOWN_HOSTS }}
+        run: |
+          set -eu
+          umask 077
+          dir="$(mktemp -d)"
+          # Use only this job's fresh agent; never touch an inherited agent.
+          unset SSH_AUTH_SOCK SSH_AGENT_PID
+          trap 'if [ -n "${SSH_AGENT_PID:-}" ]; then ssh-agent -k >/dev/null 2>&1 || true; fi; rm -rf "$dir"' EXIT
+          eval "$(ssh-agent -a "$dir/agent.sock" -s)" >/dev/null
+          python3 -c 'import os, pathlib, subprocess, sys; root = pathlib.Path(sys.argv[1]); (root / "known_hosts").write_text(os.environ["KNOWN_HOSTS"] + "\n"); key = os.environ.pop("SSH_KEY"); subprocess.run(["ssh-add", "-"], input=key + "\n", text=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)' "$dir"
+          unset SSH_KEY
+          # The forced command ignores what is asked for;  "update" is only a label in the server's log.
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$dir/known_hosts" -o ConnectTimeout=15 "root@$SSH_HOST" update

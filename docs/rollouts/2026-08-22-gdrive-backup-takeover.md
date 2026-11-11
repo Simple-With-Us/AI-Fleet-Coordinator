@@ -6,10 +6,10 @@ Personal-Site `.github/workflows/backup-repos.yml` ran daily since 2026-08-13 an
 failed every run.  `GH_BACKUP_TOKEN` was never set, so `GH_TOKEN` was empty and
 `gh auth status` exited 1.  The original workflow was named "Backup GitHub Repos
 to Google Drive" but the Drive upload step was a comment.  Artifacts never
-landed.  New apps (ContactLogo, TopSpin, fleet-ops) were easy to miss in a
+landed.  New apps (ContactLogo, Autorotate, fleet-ops) were easy to miss in a
 hardcoded list.
 
-ai-fleet-coordinator already had `scripts/backup-fleet-to-gdrive.py` as an
+AI-Fleet-Coordinator already had `scripts/backup-fleet-to-gdrive.py` as an
 on-demand helper.  Today's Drive folder
 `Website & App Source Backups - 2026-08-22` is from that script.  Owner asked
 to keep Drive backups working for new apps unless this repo takes over.

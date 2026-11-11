@@ -2,10 +2,10 @@
 # ios-debug.sh - Capture the Xcode-console equivalent without opening Xcode.
 #
 # Live copy:  /Users/jay/apps/ios-fleet/ios-debug.sh
-# Tracked:    ai-fleet-coordinator/scripts/ios-debug.sh
+# Tracked:    AI-Fleet-Coordinator/scripts/ios-debug.sh
 #
 # Usage:
-#   bash /Users/jay/apps/ios-fleet/ios-debug.sh <socratic|congress|usage|usage-local|dealdex|topspin> [options]
+#   bash /Users/jay/apps/ios-fleet/ios-debug.sh <socratic|congress|usage|usage-local|dealdex|autorotate> [options]
 #
 # Options:
 #   --target auto|simulator|device   Default auto (= simulator; never the phone unless --target device)
@@ -21,7 +21,7 @@
 #   --list                           Print simulator + paired devices and exit
 #   --dry-run                        Print plan and exit
 #
-# When to run this (owner 2026-08-21). Canonical: AGENT-SYNC.md § iOS agent build loop.
+# When to run this (owner 2026-08-21). Canonical: FLEET-PROTOCOL.md § iOS agent build loop.
 #   1. Simulator Debug + this script is the default for UI and print()/os_log.
 #   2. Device --logs-only when the bug is phone-only and TestFlight is the truth.
 #   3. Device --install-debug only when we need a DEBUG binary or unreleased code.

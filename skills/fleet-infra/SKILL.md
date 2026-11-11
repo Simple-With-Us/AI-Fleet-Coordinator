@@ -1,34 +1,33 @@
 ---
 name: fleet-infra
-description: Access private fleet infrastructure inventory (host IPs, Tailscale mesh IPs, Coolify container UUIDs, Infisical project IDs, and SSH keys) maintained in jaywedgeworth22/fleet-ops:ATTACK-MAP.md. Use when locating production servers, configuring environment variables, verifying edge routing, or handling infrastructure secrets without leaking them into public repos.
+description: Access private fleet infrastructure inventory (host IPs, Tailscale mesh IPs, Coolify container UUIDs, Infisical project IDs, and SSH keys) maintained in Simple-With-Us/fleet-ops:ATTACK-MAP.md.  Use when locating production servers, configuring environment variables, verifying edge routing, or handling infrastructure secrets without leaking them into public repos.
 ---
 
 # Fleet Infrastructure & Private Inventory Access (ALL AGENTS)
 
-All fleet repositories except `fleet-ops` are **public**.  To protect origin infrastructure from direct attacks, scanning, and DDoS, production host IPs, Tailscale IPs, Coolify container/server UUIDs, hardware serials, and secret keys must **never** be committed to public repositories or printed to chat/logs.
+All fleet repositories except `fleet-ops` are **public**.  To protect origin infrastructure from direct attacks, scanning, and DDoS, production host IPs, Tailscale IPs, Coolify container/server UUIDs, hardware serials, and secret keys must **never** be committed to public repositories or printed to chat/logs.
 
 ## Canonical Inventory Location
 
 - **Local Workstation Agents (Mac/Terminal):**
-  Read directly from `/Users/jay/Code/fleet-ops/ATTACK-MAP.md`.
-  GitHub repo: [`jaywedgeworth22/fleet-ops:ATTACK-MAP.md`](https://github.com/jaywedgeworth22/fleet-ops/blob/main/ATTACK-MAP.md) (private).
+  Read directly from `~/Code/fleet-ops/ATTACK-MAP.md`.
+  GitHub repo: [`Simple-With-Us/fleet-ops:ATTACK-MAP.md`](https://github.com/Simple-With-Us/fleet-ops/blob/main/ATTACK-MAP.md) (private).
 
-- **Cloud / Remote Agents (without direct repo access):**
-  Fetch securely from the Mac agent relay using `MAC_COLLAB_TOKEN`:
-  ```bash
-  curl -fsS -H "Authorization: Bearer ${MAC_COLLAB_TOKEN}" https://mac.jays.services/files/ATTACK-MAP.md
-  ```
+- **Cloud / Remote Agents (without a local clone):**
+  A seat with read access to the private repo fetches the file with the relay tool `gr_wf_file_get` (`repo` = `Simple-With-Us/Fleet-OPS`, `path` = `ATTACK-MAP.md`, `ref` = the branch).
+  A seat without access asks a Mac seat or the owner.  The old Mac relay copy of the map was retired 2026-10-19.
 
 ## What Lives in `fleet-ops:ATTACK-MAP.md`
 
 1. **Host Topology & IP Addresses:**
-   - Production Hetzner Linux host public IP and Tailscale mesh IP (`100.69.77.26`).
-   - Mac workstation local relay Tailscale IP (`100.113.106.39`).
-   - iPhone operator client Tailscale IP (`100.100.72.76`).
+   - The production Hetzner Linux host public IP, its Tailscale MagicDNS name, and its mesh IP.
+   - The Mac workstation local relay Tailscale IP.
+   - The iPhone operator client Tailscale IP.
    - Retired Oracle server references and transition logs.
+   - The values themselves are private deployment inventory: they live in `fleet-ops:ATTACK-MAP.md` and in the operator's own host table on that Mac, and this pack names where they live rather than carrying them.
 
 2. **Coolify Container & Server UUIDs:**
-   - Server UUIDs for Hetzner (`fleet-hetzner-nbg1`).
+   - Server UUIDs for Hetzner (in the operator's private inventory on that Mac).
    - Application UUIDs for `Socratic.Trade`, `Congress.Trade`, and `Usage-Monitor`.
 
 3. **Infisical Project IDs:**
@@ -42,10 +41,10 @@ All fleet repositories except `fleet-ops` are **public**.  To protect origin inf
 ## Invariants for Public Repositories
 
 1. **Never Hardcode Infrastructure IDs in Public Repos:**
-   Always read values from environment variables (`INFISICAL_PROJECT_ID`, `COOLIFY_ST_APP_UUID`, `HETZNER_HOST_IP`, etc.) or query them dynamically via authenticated APIs.
+   Read host IPs, Tailscale names, and Coolify UUIDs from `fleet-ops:ATTACK-MAP.md` (or ask a Mac seat with access).  Load tunables through Infisical at process start — never commit literals or teach agents to read ad-hoc process environment variables for infrastructure IDs.
 
 2. **Secrets Handoff Protection:**
-   Read credentials from `~/.secrets/global-api-keys` or Infisical.  Never `cat`, `grep -E '^[A-Z0-9_]+='`, or log secret values into transcripts.
+   Read credentials only with the consumer's own scoped Infisical service token (the `service-tokens` pack) or the app's own Infisical project; the shared `fleet-secrets` reader (Infisical Fleet-OPS) needs a working login on this host, and without one you stop and report it.  Do not read process environment variables for secrets, and never `cat`, `grep -E '^[A-Z0-9_]+='`, or log secret values into transcripts.
 
 3. **Mock Data in Tests & Documentation:**
    Use RFC 5737 documentation ranges (`192.0.2.1`, `198.51.100.1`, `203.0.113.1`) and generic mock UUIDs (`mock-app-uuid`, `mock-project-id`) in test fixtures and public rollouts.

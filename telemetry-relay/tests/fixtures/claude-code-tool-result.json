@@ -1,0 +1,1 @@
+{"event":"tool_result","note":"Representative Claude Code tool_result record (audit B.2). Benign values only.","resource":{"service.name":"claude-code"},"attributes":{"event.name":"tool_result","model":"claude-opus-4-6","session_id":"session-002","tool_name":"Read","input_tokens":800,"output_tokens":120,"cost_usd":0.009,"duration_ms":2100}}

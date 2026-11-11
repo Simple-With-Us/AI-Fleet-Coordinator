@@ -1,0 +1,1 @@
+{"commands": [["infisical", "secrets", "set", "FLEET_AUTOPUSH_MODE=report", "--env=prod", "--path=/", "--projectId=example-project", "--type=shared", "--silent"]], "detail": "nothing written", "new": "report", "ok": true, "old": "off", "old_source": "infisical", "result": "planned", "target": "FLEET_AUTOPUSH_MODE", "verb": "set"}

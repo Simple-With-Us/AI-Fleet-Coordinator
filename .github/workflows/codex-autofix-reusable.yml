@@ -1,0 +1,437 @@
+name: Claude Code Autofix (Reusable)
+
+# Shared infrastructure for the PR autofix loop - called by individual repos that
+# want the same triggers / permissions / Claude action config.  Each repo supplies
+# its own prompt so behaviour stays auditable in-repo.  The filename still says
+# "codex" on purpose:  callers pin this file by SHA and path, so renaming it would
+# break every pin.  The display name is what changed.
+#
+# The agent runs claude-code-action against MiniMax's Anthropic-compatible
+# endpoint (https://api.minimax.io/anthropic), billed to the org secret
+# MINIMAX_API_KEY.  It acts on reviews from Codex, Kody and Cursor.
+#
+# To onboard a new repo:
+#   1. No per-repo model key is needed:  MINIMAX_API_KEY is an organization secret
+#      visible to every repo.  The caller only has to pass it through
+#      (`secrets: MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}`).  Do not pass
+#      GH_PAT:  the workflow ignores it and uses the built-in GITHUB_TOKEN for
+#      checkout, the push, and claude-code-action (owner 2026-10-11).  The org
+#      GH_PAT was rejected by GitHub, which broke checkout, and nothing in the fleet
+#      should act as the owner's account.  Consequence:  a push made with
+#      GITHUB_TOKEN does not trigger other workflows, so CI and the reviewers do not
+#      re-run on an autofix commit.  Re-push (an empty commit is enough) to
+#      re-trigger them before arming auto-merge.
+#   2. Create .github/workflows/claude-autofix.yml (or keep an existing
+#      codex-autofix.yml) from the caller template below.
+#   3. Caller workflows must trigger on `pull_request_review` with
+#      `types: [submitted]` plus `workflow_dispatch` only.  Do not trigger on
+#      pull_request_review_comment or issue_comment;  one review can contain many
+#      comments, and comment events can fan out into autofix storms.
+#   4. Callers MUST set this concurrency block, and the group name must be exactly
+#      this string.  It is shared on purpose with the fleet's other autofix caller
+#      (AI-Fleet-Coordinator pr-autofix-reusable.yml), so two bots never push to
+#      one PR branch at once:
+#
+#        concurrency:
+#          group: pr-autofix-${{ github.repository }}-${{ github.event.pull_request.number }}
+#          cancel-in-progress: false
+#
+#      (A reusable workflow cannot set this for its caller, so it lives in the
+#      caller.  For workflow_dispatch runs, use the dispatched PR number input in
+#      place of github.event.pull_request.number.)
+#
+# Caller template:
+#
+#   name: Claude Code Autofix
+#   on:
+#     pull_request_review:
+#       types: [submitted]
+#     workflow_dispatch:
+#       inputs:
+#         pr:
+#           description: "PR number to run the autofix loop on"
+#           required: true
+#   permissions:          # GITHUB_TOKEN needs all three, the reusable cannot raise them
+#     contents: write
+#     pull-requests: write
+#     issues: write  # the one-run marker comments are issue comments; a reusable can only narrow its caller's grants
+#   concurrency:
+#     group: pr-autofix-${{ github.repository }}-${{ github.event.pull_request.number || github.event.inputs.pr }}
+#     cancel-in-progress: false
+#   jobs:
+#     autofix:
+#       if: >-
+#         github.event_name == 'workflow_dispatch' ||
+#         (github.event_name == 'pull_request_review' &&
+#          github.event.review.user.type == 'Bot' &&
+#          github.event.pull_request.head.repo.full_name == github.repository)
+#       uses: Simple-With-Us/congress-trading-shared/.github/workflows/codex-autofix-reusable.yml@<merge sha>
+#       secrets:
+#         MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+#         USAGE_INGEST_TOKEN: ${{ secrets.USAGE_INGEST_TOKEN }}   # optional:  meters spend in Usage Monitor
+#       with:
+#         prompt: |
+#           <repo-specific fixer policy>
+#
+# Org-level alternative (preferred):
+#   Move this file to jaywedgeworth22/.github/workflows/codex-autofix-reusable.yml
+#   and call it as jaywedgeworth22/.github/workflows/codex-autofix-reusable.yml@main.
+#   See docs/how-to-setup-org-dot-github.md for setup steps.
+
+on:
+  workflow_call:
+    inputs:
+      prompt:
+        required: true
+        type: string
+        description: "Full prompt for the Claude autofix agent"
+      claude_args:
+        required: false
+        type: string
+        default: |
+          --max-turns 120
+          --allowedTools "Edit,Write,Read,Bash"
+        description: "Extra CLI args passed to claude-code-action"
+      allowed_bots:
+        required: false
+        type: string
+        default: "chatgpt-codex-connector,chatgpt-codex-connector[bot],kody-ai,kody-ai[bot],cursor,cursor[bot],claude,claude[bot],swu-ag,swu-ag[bot],swu-bf-builder,swu-bf-builder[bot],swu-bf-compiler,swu-bf-compiler[bot],swu-bf-deployer,swu-bf-deployer[bot],swu-bf-designer,swu-bf-designer[bot],swu-bf-director,swu-bf-director[bot],swu-bf-fixer,swu-bf-fixer[bot],swu-bf-housekeeper,swu-bf-housekeeper[bot],swu-bf-monitor,swu-bf-monitor[bot],swu-bf-oracle,swu-bf-oracle[bot],swu-bf-plumber,swu-bf-plumber[bot],swu-bf-publisher,swu-bf-publisher[bot],swu-claude,swu-claude[bot],swu-clutch,swu-clutch[bot],swu-codex,swu-codex[bot],swu-cursor,swu-cursor[bot],swu-cursor-cloud,swu-cursor-cloud[bot],swu-echo,swu-echo[bot],swu-fx,swu-fx[bot],swu-gb-compiler,swu-gb-compiler[bot],swu-gb-deployer,swu-gb-deployer[bot],swu-gb-designer,swu-gb-designer[bot],swu-gb-director,swu-gb-director[bot],swu-gb-engineer,swu-gb-engineer[bot],swu-gb-fixer,swu-gb-fixer[bot],swu-gb-housekeeper,swu-gb-housekeeper[bot],swu-gb-monitor,swu-gb-monitor[bot],swu-gb-oracle,swu-gb-oracle[bot],swu-gb-plumber,swu-gb-plumber[bot],swu-gb-publisher,swu-gb-publisher[bot],swu-gb-trader,swu-gb-trader[bot],swu-grok-build,swu-grok-build[bot],swu-grok-web,swu-grok-web[bot],swu-jet,swu-jet[bot],swu-mc,swu-mc[bot],swu-minimax,swu-minimax[bot],swu-opencode,swu-opencode[bot],swu-operator,swu-operator[bot],swu-rob,swu-rob[bot],swu-wise,swu-wise[bot]"
+        description: "Allowed bot actors (normalised by the action: lowercased, [bot] stripped)"
+      # The id the owner chose for all fleet MiniMax use on 2026-10-20.  A model id that is
+      # absent from the MiniMax Code runtime catalog can still be a valid public API id, and an
+      # id must never be rewritten from one route's evidence; the fleet recall contribution
+      # contrib/MM/2026-10-19/f11f7046 records that lesson, and it is a recall id rather than
+      # a path in this repository.  The retired spelling itself is named only in
+      # .github/pr-autofix-trusted.yml;  in these workflows it never appears, even in a
+      # comment,  and it must never appear as a value.
+      model:
+        required: false
+        type: string
+        default: "MiniMax-M3.1-Flash"
+        description: "MiniMax model id sent as ANTHROPIC_MODEL / ANTHROPIC_SMALL_FAST_MODEL"
+    secrets:
+      MINIMAX_API_KEY:
+        required: true
+      # Org secret;  used only when SWU_AUTOFIX_MODEL_BASE_URL points at api.meta.ai.
+      META_MODEL_API_TOKEN:
+        required: false
+      USAGE_INGEST_TOKEN:
+        required: false
+        description: "Usage Monitor ingest token scoped to the ci-autofix producer.  Optional:  when it is absent the usage report is skipped."
+      GH_PAT:
+        required: false
+        description: "Ignored (owner 2026-10-11).  Kept declared only so callers that still pass it do not fail;  the workflow uses the built-in GITHUB_TOKEN."
+
+permissions:
+  contents: write
+  pull-requests: write
+  # Marker comments record which bot already used its one run on a PR.
+  issues: write
+
+jobs:
+  autofix:
+    # Intentionally kept on hosted runners (NOT migrated to the fleet self-hosted
+    # CI runners). This is a reusable workflow invoked cross-repo, so a
+    # `vars.*`-gated runs-on would resolve against the *caller's* variables, and
+    # the job itself runs claude-code-action (a code-writing agent doing network
+    # installs) — the worst fit to run beside production containers + a
+    # repo-scoped runner PAT on the shared box. Under a $0 hosted-minutes cap
+    # this autofix convenience loop would simply not start; that is accepted.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      usage: ${{ steps.usage.outputs.json }}
+    steps:
+      # The guard runs before the request gate and the policy loader, so a bad
+      # endpoint/model pair fails before any run starts (Kody 2026-10-21).
+      # congress-trading-shared's copy of this workflow moved the guard behind
+      # the request gate instead;  this repository keeps it in front,  because
+      # here a misconfigured fleet-wide switch must be loud on every run,  not
+      # silent on the runs that happen to be accepted.
+      - name: Validate Model Switch
+        env:
+          VAR_BASE: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL }}
+          VAR_MODEL: ${{ vars.SWU_AUTOFIX_MODEL }}
+          META_TOKEN: ${{ secrets.META_MODEL_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The switch is all-or-nothing on the endpoint:  an unset base or the canonical
+          # MiniMax host keeps the MiniMax route (VAR_MODEL may still rotate the MiniMax
+          # model id),  and the only allowed non-MiniMax base is exactly
+          # https://api.meta.ai,  which requires a non-MiniMax model id and a provisioned
+          # META_MODEL_API_TOKEN. Values are never echoed into the workflow command:
+          # caller-controlled text there can inject runner commands (Kody 2026-10-21).
+          route=
+          case "$VAR_BASE" in
+            "" | https://api.minimax.io/anthropic) route=minimax ;;
+            https://api.meta.ai) route=meta ;;
+          esac
+          model_minimax=no
+          case "$VAR_MODEL" in [Mm][Ii][Nn][Ii][Mm][Aa][Xx]*) model_minimax=yes ;; esac
+          if [ "$route" = "minimax" ]; then
+            if [ -n "$VAR_MODEL" ] && [ "$model_minimax" = "no" ]; then
+              echo "::error::SWU_AUTOFIX_MODEL names a non-MiniMax model id while SWU_AUTOFIX_MODEL_BASE_URL selects the MiniMax host;  use a MiniMax-* id or switch the base to https://api.meta.ai"
+              exit 1
+            fi
+            exit 0
+          fi
+          if [ "$route" = "meta" ] && [ -n "$VAR_MODEL" ] && [ -n "$META_TOKEN" ] && [ "$model_minimax" = "no" ]; then exit 0; fi
+          echo "::error::SWU_AUTOFIX_MODEL_BASE_URL must be unset or https://api.minimax.io/anthropic (MiniMax) or exactly https://api.meta.ai with a non-MiniMax SWU_AUTOFIX_MODEL and META_MODEL_API_TOKEN provisioned;  got base_set=$([ -n "$VAR_BASE" ] && echo yes || echo no) model_set=$([ -n "$VAR_MODEL" ] && echo yes || echo no) token_set=$([ -n "$META_TOKEN" ] && echo yes || echo no)"
+          exit 1
+
+      - name: Autofix Request Gate
+        id: request_gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          NOTIFY_URL: ${{ vars.SWU_AUTOFIX_NOTIFY_URL }}
+          ALLOWED_BOTS: ${{ inputs.allowed_bots }}
+        run: |
+          set -euo pipefail
+          # Owner rule 2026-10-20:  one autofix run per bot per PR;  the owner
+          # (jaywedgeworth22) is unlimited,  and Sentry is exempt from the limit and the
+          # notification.  The record is a marker comment the accepted run leaves on the PR —
+          # deleting that comment is the manual reset.
+          # Owner rule 2026-10-20:  a review is an autofix request only when it carries the
+          # @codex-autofix tag — an untagged bot review is discussion, not a request.  A
+          # workflow_dispatch run IS the request,  so it needs no tag.  Sentry is exempt
+          # from the tag,  the once-per-PR cap,  and the notification ("Sentry can request
+          # all you want").
+          case "$GITHUB_EVENT_NAME" in
+            pull_request_review)
+              author=$(jq -r '.review.user.login' "$GITHUB_EVENT_PATH")
+              jq -r '.review.body // empty' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/request_body.txt"
+              needs_tag=true ;;
+            workflow_dispatch)
+              author="$TRIGGERING_ACTOR"
+              needs_tag=false ;;
+            *) author=$(jq -r '.sender.login' "$GITHUB_EVENT_PATH")
+              needs_tag=false ;;
+          esac
+          requester=$(printf '%s' "$author" | tr 'A-Z' 'a-z' | sed 's/\[bot\]$//')
+          gate_skip=false
+          if [ "$needs_tag" = "true" ]; then
+            GATE_BODY_FILE="$RUNNER_TEMP/request_body.txt"
+            GATE_TAG='@codex-autofix'
+            # REQUEST-GATE-BEGIN - scripts/test_autofix_request_gate.py runs this exact block.
+            awk '
+              fence == "" && /^[[:space:]]*>/ { next }
+              fence == "" {
+                s = $0
+                sub(/^[[:space:]]*/, "", s)
+                c = substr(s, 1, 1)
+                n = 0
+                if (c != "") { while (substr(s, n + 1, 1) == c) n++ }
+                if ((c == "`" || c == "~") && n >= 3) { fence = c; flen = n; next }
+                print
+                next
+              }
+              {
+                s = $0
+                sub(/^[[:space:]]*/, "", s)
+                c = substr(s, 1, 1)
+                n = 0
+                if (c != "") { while (substr(s, n + 1, 1) == c) n++ }
+                # Only a pure run of the same marker as the opener, at least as
+                # long as the opener and carrying no info string, closes the fence.
+                if (c == fence && n >= flen && substr(s, n + 1) ~ /^[[:space:]]*$/) { fence = ""; flen = 0 }
+                next
+              }
+            ' "$GATE_BODY_FILE" > "$RUNNER_TEMP/request_text.txt"
+            gate_line=$(grep -m1 -E '[^[:space:]]' "$RUNNER_TEMP/request_text.txt" || true)
+            if printf '%s' "$gate_line" | grep -qiE "^[[:space:]]*${GATE_TAG}([^A-Za-z0-9_-]|\$)"; then
+              gate_verdict=request
+            else
+              gate_verdict=discussion
+            fi
+            # The skip decision lives inside the marked block so the polarity of
+            # this comparison is covered by the extracted-block test.
+            gate_skip=false
+            if [ "$requester" != "sentry" ] && [ "$gate_verdict" != "request" ]; then
+              gate_skip=true
+            fi
+            # REQUEST-GATE-END
+          else
+            gate_verdict=request
+          fi
+          if [ "$gate_skip" = "true" ]; then
+            echo "::notice::No @codex-autofix request at the start of the review, skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$requester" = "jaywedgeworth22" ] || [ "$requester" = "sentry" ]; then
+            echo "::notice::$author is exempt from the one-run-per-bot rule"
+            marker="swu-autofix-run: bot=$requester"
+            # Exempt runs still leave their run-id marker:  the auto-merge gate
+            # reads these to hold a merge while the run is in flight (owner rule
+            # 2026-10-21).
+            gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments" \
+              -f body="<!-- $marker --> Autofix run $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID started for \`$author\`'s tagged request.  Owner/sentry request:  exempt from the per-bot cap (owner rule 2026-10-20)." \
+              > /dev/null
+            exit 0
+          fi
+          # Allowlist before any marker work (Kody on cts #394):  the action
+          # filters disallowed actors downstream,  but without a gate-side check
+          # their request still writes a marker and leaves a misleading
+          # "run started" comment.  Normalized as the action normalizes:
+          # lowercased,  [bot] stripped.  Only the normalized allowlisted
+          # requester reaches the marker below.
+          #
+          # The allowlist gates bot reviewers.  A workflow_dispatch run is
+          # requested by a human,  whose login is not a bot login;  requiring it
+          # to be on a bot list would silently skip every manual dispatch,  which
+          # the event handling above deliberately supports.  The dispatch itself
+          # already needs write access to the repository,  so the bot list has
+          # nothing to add there.
+          allowed=true
+          if [ "$GITHUB_EVENT_NAME" = "pull_request_review" ]; then
+            allowed=false
+            IFS=',' read -ra swu_bots <<< "$ALLOWED_BOTS"
+            for swu_bot in "${swu_bots[@]}"; do
+              swu_bot=$(printf '%s' "$swu_bot" | tr -d '[:space:]' | tr 'A-Z' 'a-z' | sed 's/\[bot\]$//')
+              if [ "$swu_bot" = "$requester" ]; then allowed=true; break; fi
+            done
+          fi
+          if [ "$allowed" != "true" ]; then
+            echo "::notice::$author is not in allowed_bots, skipping before any marker write"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Anchored exact marker text, github-actions[bot] comments only: an
+          # unanchored contains() lets bot=swu-cursor match bot=swu-cursor-cloud's
+          # marker, and without an author filter any commenter could forge a
+          # marker to block a bot's one run (Sentry on cts #395).
+          marker="swu-autofix-run: bot=$requester"
+          # Fail closed:  without the lookup result the one-run-per-bot record is
+          # unknown,  and a swallowed gh api error would let a bot run twice (Kody
+          # on cts #394).  The result goes through a file so pipefail cannot turn
+          # head's early close into a fake gh failure.
+          if ! gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" --paginate \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\") | .body | select(contains(\"<!-- $marker -->\"))" \
+            > "$RUNNER_TEMP/prior_markers.txt"; then
+            echo "::error::marker lookup failed (gh api error) - refusing to run without the one-run-per-bot record;  retry the run"
+            exit 1
+          fi
+          prior=$(head -1 "$RUNNER_TEMP/prior_markers.txt")
+          accepted=true
+          if [ -n "$prior" ]; then accepted=false; fi
+          if [ -n "${NOTIFY_URL:-}" ]; then
+            jq -n --arg repo "$GH_REPO" --arg pr "$PR_NUMBER" --arg bot "$requester" \
+              --arg event "$GITHUB_EVENT_NAME" --arg accepted "$accepted" \
+              --arg run "$GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID" \
+              '{repo:$repo, pr:$pr, bot:$bot, event:$event, accepted:$accepted, run:$run}' \
+            | curl -sfS -m 10 -X POST -H 'Content-Type: application/json' --data-binary @- "$NOTIFY_URL" \
+              || echo "::notice::owner notification for $requester's request failed (non-blocking)"
+          else
+            echo "::notice::SWU_AUTOFIX_NOTIFY_URL is not set, owner notification for $requester's request skipped"
+          fi
+          if [ "$accepted" = "false" ]; then
+            echo "::notice::$author already used its one autofix run on this PR, skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The marker must land before the model starts,  so a write failure
+          # stops the run here with an actionable error instead of a raw gh
+          # abort (Kody on cts #394) - before any model spend.
+          if ! gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments" \
+            -f body="<!-- $marker --> Autofix run $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID started for \`$author\`'s tagged request.  One autofix run per bot per PR (owner rule 2026-10-20);  delete this comment to reset." \
+            > /dev/null; then
+            echo "::error::could not record the one-run marker comment - the calling job must grant issues: write and the issues API must be reachable;  the run stops before billing the model"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: ${{ steps.request_gate.outputs.skip != 'true' }}
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Claude Autofix
+        id: claude
+        if: ${{ steps.request_gate.outputs.skip != 'true' }}
+        uses: anthropics/claude-code-action@ed670b4cf9de2a5a570d130d2f6197b9e543cd64 # v1
+        # Routed to MiniMax via its Anthropic-compatible endpoint:  claude-code-action
+        # drives the Claude Code CLI, which honors ANTHROPIC_BASE_URL / _AUTH_TOKEN /
+        # _MODEL, so this bills the org MINIMAX_API_KEY instead of Anthropic.  Same
+        # endpoint and key wiring as the fleet's other autofix workflows.  The model
+        # id comes from the `model` input (MiniMax-M3.1-Flash, the id the
+        # fleet's Harness route already uses over api anthropic-messages).
+        env:
+          # Owner switch 2026-10-21:  org/repo Actions variables retarget every caller at
+          # once;  unset,  the MiniMax pins below are exactly what ran before.
+          ANTHROPIC_BASE_URL: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL == 'https://api.meta.ai' && 'https://api.meta.ai' || 'https://api.minimax.io/anthropic' }}
+          ANTHROPIC_AUTH_TOKEN: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL == 'https://api.meta.ai' && (secrets.META_MODEL_API_TOKEN || 'MISSING-META-MODEL-API-TOKEN') || secrets.MINIMAX_API_KEY }}
+          ANTHROPIC_MODEL: ${{ vars.SWU_AUTOFIX_MODEL || inputs.model }}
+          ANTHROPIC_SMALL_FAST_MODEL: ${{ vars.SWU_AUTOFIX_MODEL || inputs.model }}
+        with:
+          anthropic_api_key: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL == 'https://api.meta.ai' && (secrets.META_MODEL_API_TOKEN || 'MISSING-META-MODEL-API-TOKEN') || secrets.MINIMAX_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          allowed_bots: ${{ inputs.allowed_bots }}
+          prompt: ${{ inputs.prompt }}
+          claude_args: ${{ inputs.claude_args }}
+          # Keep raw SDK messages out of logs; retain only the bounded summary below.
+          show_full_output: "false"
+          # claude-code-action's buffered-inline-comment classifier hardcodes
+          # https://api.anthropic.com and reads anthropic_api_key directly,
+          # ignoring ANTHROPIC_BASE_URL - with a MiniMax key it would 401 and
+          # fall back to posting every buffered comment unfiltered. Disable the
+          # feature rather than rely on a classifier that can't authenticate.
+          classify_inline_comments: "false"
+
+      - name: Summarize Autofix Diagnostics
+        if: ${{ always() && steps.request_gate.outputs.skip != 'true' }}
+        id: diagnostics
+        uses: Simple-With-Us/AI-Fleet-Coordinator/.github/actions/autofix-diagnostics@070fdbfacadbd9e90cbb54098123df7d3fef737f
+
+      - name: Extract Usage Counts
+        id: usage
+        # Only the counters of Claude Code's final result message leave this job (UM-1593):  no prompt,
+        # diff, or tool output.  The ingest credential is never present here, because the model runs
+        # with Bash in this job and could rewrite any file on the runner, including a cached action.
+        # Same guard as the diagnostics step above: a skipped request produced no usage file.
+        if: ${{ always() && steps.request_gate.outputs.skip != 'true' }}
+        continue-on-error: true
+        run: |
+          f="$RUNNER_TEMP/claude-execution-output.json"
+          if [ -f "$f" ] && [ ! -L "$f" ]; then
+            json=$(jq -c '[.[] | select(.type == "result")] | last // empty | {type, subtype, is_error, duration_ms, num_turns, total_cost_usd, usage, modelUsage}' "$f" 2> /dev/null || true)
+            if [ -n "$json" ] && [ "${#json}" -lt 100000 ]; then echo "json=$json" >> "$GITHUB_OUTPUT"; fi
+          fi
+
+      - name: Retain Sanitized Autofix Diagnostics
+        if: ${{ always() && steps.request_gate.outputs.skip != 'true' && steps.diagnostics.outputs.summary-path != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: claude-autofix-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.diagnostics.outputs.summary-path }}
+          if-no-files-found: error
+          retention-days: 7
+
+  # Best-effort metering (UM-1593).  It holds the optional ingest credential, so it runs apart from
+  # the job that executes the model.  With no token, or no usage counts, it does nothing and cannot
+  # fail the run.
+  meter:
+    needs: autofix
+    if: ${{ always() && needs.autofix.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions: {}
+    steps:
+      - name: Stage Usage Counts
+        env:
+          USAGE_JSON: ${{ needs.autofix.outputs.usage }}
+        run: |
+          if [ -n "$USAGE_JSON" ]; then printf '%s\n' "$USAGE_JSON" > "$RUNNER_TEMP/usage-result.json"; fi
+      - name: Report Usage To Usage Monitor
+        continue-on-error: true
+        uses: Simple-With-Us/congress-trading-shared/.github/actions/ci-usage-report@65f9ff5a5b1f7a68e729205c14f5ef3e59be561a
+        with:
+          token: ${{ secrets.USAGE_INGEST_TOKEN }}
+          harness: claude-code-ci
+          input-file: ${{ runner.temp }}/usage-result.json
+          input-kind: claude
+          model: ${{ inputs.model }}
+          pr-number: ${{ github.event.pull_request.number || github.event.inputs.pr }}
+          workflow: codex-autofix-reusable

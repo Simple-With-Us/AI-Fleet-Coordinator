@@ -6,7 +6,7 @@
 #
 # Exit 75 (EX_TEMPFAIL) when another process already holds the socket so
 # pm2 stop_exit_codes can park the job as stopped instead of crash-looping.
-# Tracked copy: ai-fleet-coordinator/scripts/grok-leader.sh
+# Tracked copy: AI-Fleet-Coordinator/scripts/grok-leader.sh
 set -euo pipefail
 
 export GROK_DISABLE_AUTOUPDATER=1
