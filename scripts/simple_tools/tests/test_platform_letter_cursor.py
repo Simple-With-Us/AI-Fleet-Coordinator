@@ -76,6 +76,9 @@ class HookTests(Base):
         self.assertRegex(label, r"^[A-Z]{2}$")
         self.assertEqual(list(answer), ["additional_context"])
         self.assertIn('"@**Cursor** %s"' % label, answer["additional_context"])
+        self.assertIn("rename-chat", answer["additional_context"])
+        self.assertIn("At the start of this chat", answer["additional_context"])
+        self.assertIn('%s: ' % label, answer["additional_context"])
 
     def test_a_prompt_keeps_the_letter_and_never_blocks(self) -> None:
         self.hook(payload("sessionStart"))
