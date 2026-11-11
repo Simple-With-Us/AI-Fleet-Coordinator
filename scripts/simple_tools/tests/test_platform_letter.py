@@ -1030,6 +1030,65 @@ class HookTests(Base):
         self.assertEqual(PL.follow_letter(note, {"ok": True, "label": "QX", "generation": 3, "record_id": "r1"}), "AA")
         self.assertEqual((note["label"], note["generation"]), ("QX", 3))
 
+    def test_a_new_letter_without_a_generation_is_the_first_generation(self) -> None:
+        note = {"state": "open", "label": "AA", "generation": 3, "record_id": "r1"}
+        self.assertEqual(PL.follow_letter(note, {"ok": True, "label": "QX"}), "AA")
+        self.assertEqual((note["label"], note["generation"]), ("QX", 1))
+        for bad in (None, 0, True, "2"):
+            note = {"state": "open", "label": "AA", "generation": 3}
+            PL.follow_letter(note, {"ok": True, "label": "QX", "generation": bad})
+            self.assertEqual(note["generation"], 1, bad)
+        note = {"state": "open", "label": "AA", "generation": 3}
+        PL.follow_letter(note, {"ok": True, "label": "AA"})  # the same letter with none:  the note keeps its own
+        self.assertEqual(note["generation"], 3)
+
+    def test_a_title_answer_refreshes_the_record_id(self) -> None:
+        self.titled_chat()
+        code, answer = self.registry(*self.reg_argv("title", "s-0001", title="Words"))
+        self.assertEqual(code, 0, answer)
+        self.assertEqual(answer["record_id"], self.lookup("s-0001")["record_id"])
+        note = {"state": "open", "label": "AA", "generation": 1, "record_id": "old"}
+        PL.follow_letter(note, {"ok": True, "label": "QX", "generation": 1, "record_id": "r2"})
+        self.assertEqual(note["record_id"], "r2")
+
+    def test_a_rename_that_only_drops_the_letter_touches_on_schedule_and_follows_a_moved_letter(self) -> None:
+        spec = make_spec(events={"session.created": "start", "session.renamed": "rename", "session.deleted": "end"},
+                         output="json")
+        start = time.time()
+
+        def rename(title: str, now: float, ssh: FakeSsh) -> dict | None:
+            out = io.StringIO()
+            PL.hook(spec, self.server_env(), io.StringIO(json.dumps(
+                {"event": "session.renamed", "session_id": "s-0001", "title": title})), out, runner=ssh, now=now)
+            text = out.getvalue().strip()
+            return json.loads(text)["platform_letter"] if text else None
+
+        PL.hook(spec, self.server_env(), io.StringIO(json.dumps({"event": "session.created", "session_id": "s-0001"})),
+                io.StringIO(), runner=FakeSsh(self), now=start)
+        old = self.label("s-0001")
+        rename("Fresh Name", start + 1, FakeSsh(self))  # the words reach the Operator
+        self.move_letter("s-0001", "QX")
+        path = os.path.join(self.state, "CODEX", "letters", "s-0001.json")
+
+        def forget_seen() -> None:  # the platform shows the bare words again, as a name it was not told
+            note = self.note("s-0001")
+            note.pop("seen", None)
+            with open(path, "w") as fh:
+                json.dump(note, fh)
+
+        # Within TOUCH_SECONDS of the last call a letter-only rename costs no registry call, as a prompt would not.
+        forget_seen()
+        ssh = FakeSsh(self)
+        body = rename("Fresh Name", start + 60, ssh)
+        self.assertEqual(ssh.ops(), [])
+        self.assertEqual(body["title"], "%s: Fresh Name" % old)
+        # Once a touch is due, the rename makes it and takes the letter the registry holds now.
+        forget_seen()
+        body = rename("Fresh Name", start + PL.TOUCH_SECONDS + 5, ssh)
+        self.assertEqual(ssh.ops(), ["touch"])
+        self.assertEqual((body["label"], body["title"]), ("QX", "QX: Fresh Name"))
+        self.assertIn("letter changed from %s to QX" % old, body["context"])
+
     def test_the_api_touch_answer_passes_the_letter_on_and_an_old_one_names_none(self) -> None:
         new = {"record_id": "r1", "outcome": "seen", "label": "QX", "generation": 2}
         self.assertEqual(PL._touch_answer(new), {"ok": True, "record_id": "r1", "label": "QX", "generation": 2})

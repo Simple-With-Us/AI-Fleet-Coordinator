@@ -118,6 +118,9 @@ class ApiSide(unittest.TestCase):
         code, moved = self.registry("touch", "--location", "mac", "--session-id", SID)
         self.assertEqual(code, 0, moved)
         self.assertEqual(moved["label"], "QX")
+        code, titled = self.registry("title", "--location", "mac", "--session-id", SID, "--title=New words")
+        self.assertEqual(code, 0, titled)
+        self.assertEqual((titled["label"], titled["record_id"]), ("QX", made["record_id"]))
 
     def test_a_server_chat_retitles_when_the_server_moved_its_letter(self) -> None:
         env = dict(self.api_env, CLAUDE_LETTER_LOCATION="server", CLAUDE_CODE_ENTRYPOINT="cli")

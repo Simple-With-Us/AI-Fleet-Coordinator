@@ -1409,6 +1409,33 @@ class HookTests(Base):
                                "sessionTitle": "QX: Help Get All PR Issues Addressed"})
         self.assertEqual(len(ssh.calls), 1)
 
+    def test_two_moves_in_place_take_every_earlier_letter_off_the_title(self) -> None:
+        self.titled()  # AA
+        self.move_letter("s-0001", "QX")
+        later = time.time() + CL.TOUCH_SECONDS + 5
+        self.renamed("AA: Help Get All PR Issues Addressed", now=later)
+        self.move_letter("s-0001", "QY")
+        later += CL.TOUCH_SECONDS + 5
+        # The app never took a title from the hook, so the chat still shows the first letter of the three.
+        out = self.renamed("AA: Help Get All PR Issues Addressed", now=later)
+        self.assertEqual(out["sessionTitle"], "QY: Help Get All PR Issues Addressed")
+        self.assertIn("letter changed from QX to QY", out["additionalContext"])
+        note = self.note("s-0001")
+        self.assertEqual((note["label"], note["prior_label"]), ("QY", "QX"))
+        self.assertEqual(note["held_labels"], ["AA", "QX", "QY"])
+        # A later prompt that still sees the first letter is not a rename:  no registry call, the letter goes back.
+        ssh = FakeSsh(self)
+        out = self.renamed("AA: Help Get All PR Issues Addressed", runner=ssh, now=later + 60)
+        self.assertEqual(out["sessionTitle"], "QY: Help Get All PR Issues Addressed")
+        self.assertEqual(ssh.calls, [])
+        self.assertEqual(self.lookup("s-0001")["title"], "Help Get All PR Issues Addressed")
+
+    def test_a_title_answer_names_the_record(self) -> None:
+        self.titled()
+        code, answer = self.registry("title", "--location", "server", "--session-id", "s-0001", "--title=Words")
+        self.assertEqual(code, 0, answer)
+        self.assertEqual(answer["record_id"], self.lookup("s-0001")["record_id"])
+
     def test_a_title_answer_with_a_new_letter_retitles_the_chat(self) -> None:
         self.titled()
         self.move_letter("s-0001", "QX")

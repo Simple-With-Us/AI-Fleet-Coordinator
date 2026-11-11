@@ -866,7 +866,7 @@ def _on_record(OR: Any, db: str, args: Any, sid: str) -> dict[str, Any]:
                 ),
                 "label": rec["label"],
             }
-        return {"ok": True, "label": rec["label"], "generation": rec["generation"]}
+        return {"ok": True, "label": rec["label"], "generation": rec["generation"], "record_id": rid}
     finally:
         reg.close_db()
 
@@ -1102,11 +1102,14 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
     error = _api_error(updated)
     if error is not None:
         return error
-    return {
+    out = {
         "ok": True,
         "label": updated.get("label", ""),
         "generation": updated.get("generation"),
     }
+    if updated.get("record_id"):
+        out["record_id"] = updated["record_id"]  # as a touch's answer carries it, for the hook's note
+    return out
 
 
 def _touch_answer(probe: Mapping[str, Any]) -> dict[str, Any]:
@@ -1628,7 +1631,8 @@ def follow_letter(note: dict[str, Any], answer: Mapping[str, Any]) -> str:
     if not isinstance(label, str) or not LABEL_RE.fullmatch(label) or not held_now:
         return ""
     gen = answer.get("generation")
-    if isinstance(gen, int) and not isinstance(gen, bool) and gen >= 1:
+    valid = isinstance(gen, int) and not isinstance(gen, bool) and gen >= 1
+    if valid:
         note["generation"] = gen
     rid = answer.get("record_id")
     if isinstance(rid, str) and rid:
@@ -1636,6 +1640,10 @@ def follow_letter(note: dict[str, Any], answer: Mapping[str, Any]) -> str:
     if label == held_now:
         return ""
     note["label"] = label
+    if not valid:
+        # The old letter's generation says nothing about the new one: it is the first, as `_apply` reads a register
+        # answer that names none.
+        note["generation"] = 1
     return held_now
 
 
@@ -2031,13 +2039,18 @@ def on_rename(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
         return 0
     note["seen"] = current
     moved = ""
+    answer: dict[str, Any] = {}
     if words:
         note["title"] = words
-        # A failed send is kept in the note for a later prompt.
-        prior = follow_letter(note, _push(chat, note, "title", words))
-        if prior:
-            show = _follow_title(note, prior, show or current)
-            moved = relabeled(prior, str(note["label"])) + reminder(chat.spec, note)
+        answer = _push(chat, note, "title", words)  # a failed send is kept in the note for a later prompt
+    elif chat.now - float(note.get("touched_at") or 0) >= TOUCH_SECONDS:
+        # Only the letter was dropped, so the Operator needs no words, but the letter put back must be the one the
+        # registry holds now, so a touch that is due (TOUCH_SECONDS, as on a prompt) is made here.
+        answer = _push(chat, note, "touch")
+    prior = follow_letter(note, answer)
+    if prior:
+        show = _follow_title(note, prior, show or current)
+        moved = relabeled(prior, str(note["label"])) + reminder(chat.spec, note)
     shown = present(chat, note, show, current, data, "rename") if show else None
     chat.write(note)
     if shown or moved:

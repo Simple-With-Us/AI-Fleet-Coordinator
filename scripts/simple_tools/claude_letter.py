@@ -298,9 +298,11 @@ def bare(title: object, label: str = "") -> str:
 def own_words(current: object, note: Mapping[str, Any]) -> str:
     """The words of a title as someone wrote them, with this chat's letters dropped:  its own, and the one it held
     before the Operator reissued it (a chat whose registration failed keeps showing the old letter until it takes a
-    new one).  The words are kept whole;  only the copy sent to the registry is cut and scanned."""
+    new one), and every earlier letter the note remembers (`held_labels`: a letter the registry moved twice in place
+    leaves the first one on a title the app did not retitle).  The words are kept whole;  only the copy sent to the
+    registry is cut and scanned."""
     words = one_line(current)
-    for held in (note.get("label"), note.get("prior_label")):
+    for held in (note.get("label"), note.get("prior_label"), *reversed(note.get("held_labels") or [])):
         if held:
             words = bare(words, str(held))
     return words
@@ -683,7 +685,7 @@ def _on_record(OR: Any, db: str, args: Any, sid: str) -> dict[str, Any]:
                 "closed": reg.close(rid, actor=args.seat, source=args.source),
                 "label": rec["label"],
             }
-        return {"ok": True, "label": rec["label"], "generation": rec["generation"]}
+        return {"ok": True, "label": rec["label"], "generation": rec["generation"], "record_id": rid}
     finally:
         reg.close_db()
 
@@ -825,7 +827,10 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
     error = PL._api_error(updated)
     if error is not None:
         return error
-    return {"ok": True, "label": updated.get("label", ""), "generation": updated.get("generation")}
+    out = {"ok": True, "label": updated.get("label", ""), "generation": updated.get("generation")}
+    if updated.get("record_id"):
+        out["record_id"] = updated["record_id"]  # as a touch's answer carries it, for the hook's note
+    return out
 
 
 def registry_main(
@@ -1235,6 +1240,14 @@ def _follow_letter(note: dict[str, Any], answer: Mapping[str, Any], shown: str) 
     if not prior:
         return "", ""
     label = str(note["label"])
+    # Every letter this chat held stays in `held_labels`, in the shape `_agent_title_fix` keeps it (the letter it
+    # holds last), so a title that still shows any of them, not only the latest, has it taken off.
+    earlier = [*(note.get("held_labels") or []), note.get("prior_label"), prior]
+    kept: list[str] = []
+    for letter in earlier:
+        if letter and str(letter) != label and str(letter) not in kept:
+            kept.append(str(letter))
+    note["held_labels"] = kept[-(HELD_LABELS - 1) :] + [label]
     note["prior_label"] = prior  # the title on screen still carries it
     note["placeholder"] = "%s: %s" % (label, PLACEHOLDER)
     words = own_words(shown, note)

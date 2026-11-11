@@ -383,6 +383,13 @@ class PlatformLetterTests(ApiBase):
             touched,
             {"ok": True, "record_id": made["record_id"], "label": "QX", "generation": made["generation"]},
         )
+        # A title call's answer names the record too, so a move learned there refreshes the note's id.
+        code, titled = self.registry(self.reg_argv("title", "s-0001", title="New words"))
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            titled,
+            {"ok": True, "record_id": made["record_id"], "label": "QX", "generation": made["generation"]},
+        )
 
     def test_the_whole_letter_life_runs_over_the_api(self) -> None:
         code, made = self.registry(
