@@ -9,10 +9,11 @@ import io
 import json
 import os
 import signal
+import threading
 import time
 from unittest import mock
 
-from fleet_knobs import source
+from fleet_knobs import knobs, source
 from fleet_knobs.registry import BY_NAME
 from fleet_knobs.tests._fake import KnobTestCase
 from simple_tools import claude_wake as CW
@@ -67,6 +68,7 @@ class Reading(Settings):
         settings = self.loaded()
         self.assertEqual(dict(settings), CW.DEFAULTS)
         self.assertIs(settings["delivery_enabled"], False)
+        self.assertTrue(settings.confirmed)
 
     def test_delivery_needs_the_switch_and_the_seat(self) -> None:
         cases = [
@@ -129,7 +131,58 @@ class Reading(Settings):
         del os.environ[source.ENV_KNOBS_TOKEN]
         settings = self.loaded(**ARMED)
         self.assertIs(settings["delivery_enabled"], False)
-        self.assertIn("stale service-token-required", self.stderr.getvalue())
+        self.assertFalse(settings.confirmed)
+        self.assertIn("unconfirmed service-token-required", self.stderr.getvalue())
+
+    def armed_copy_on_disk(self) -> None:
+        """A good fetch with delivery on, which leaves it in the last-known-good copy."""
+        self.assertIs(self.loaded(**ARMED)["delivery_enabled"], True)
+        self.assertTrue(self.lkg_file.exists())
+
+    def assert_not_armed_by_the_copy(self, settings: WS.WakeSettings) -> None:
+        self.assertIs(settings["delivery_enabled"], False)
+        self.assertFalse(settings.confirmed)
+
+    def starting_on_the_copy(self) -> WS.WakeSettings:
+        settings = WS.WakeSettings(CW.SEAT, CW.DEFAULTS, self.local_path)
+        settings.load()
+        return settings
+
+    def test_an_old_copy_cannot_arm_delivery_during_an_outage(self) -> None:
+        self.armed_copy_on_disk()
+        self.new_process()
+        self.fake.set(mode="fail")
+        self.assert_not_armed_by_the_copy(self.starting_on_the_copy())
+
+    def test_an_old_copy_cannot_arm_delivery_with_no_token(self) -> None:
+        self.armed_copy_on_disk()
+        self.new_process()
+        del os.environ[source.ENV_KNOBS_TOKEN]
+        self.assert_not_armed_by_the_copy(self.starting_on_the_copy())
+
+    def test_an_old_copy_cannot_arm_delivery_in_the_failed_fetch_cooldown(self) -> None:
+        self.armed_copy_on_disk()
+        self.new_process()
+        self.fake.set(mode="fail")
+        self.starting_on_the_copy()  # records the failure
+        self.new_process(keep_failure_marker=True)
+        self.fake.set(secrets=ARMED)  # it would answer, but the cooldown skips the fetch
+        settings = self.starting_on_the_copy()
+        self.assertIn("recent-", knobs.report()["fetch_reason"])
+        self.assert_not_armed_by_the_copy(settings)
+
+    def test_an_old_copy_cannot_arm_delivery_on_the_mac_reader(self) -> None:
+        self.armed_copy_on_disk()
+        self.new_process()
+        self.fake.set(mode="fail")
+        config = WS.read_once(CW.SEAT, CW.DEFAULTS, self.local_path)
+        self.assertIs(config["delivery_enabled"], False)
+
+    def test_other_settings_may_still_come_from_the_copy(self) -> None:
+        self.loaded(WAKE_ROUTER_MAX_ATTEMPTS="9")
+        self.new_process()
+        self.fake.set(mode="fail")
+        self.assertEqual(self.starting_on_the_copy()["max_attempts"], 9)
 
     def test_a_non_prod_environment_stops_the_router(self) -> None:
         os.environ[source.ENV_NAMES[0]] = "dev"
@@ -224,6 +277,62 @@ class Service(Settings):
         self.assertEqual(settings.interval, 60.0)
         self.assertIn("refresh-kept-last-good", self.stderr.getvalue())
 
+    def test_the_local_brake_works_during_an_outage(self) -> None:
+        settings = self.loaded(**ARMED)
+        self.fake.set(mode="fail")
+        self.local(delivery_enabled=False)
+        self.assertFalse(settings.refresh())
+        self.assertIs(settings["delivery_enabled"], False)
+
+    def test_taking_the_brake_off_during_an_outage_restores_what_was_held(self) -> None:
+        self.local(delivery_enabled=False)
+        settings = self.loaded(**ARMED)
+        self.assertIs(settings["delivery_enabled"], False)
+        self.fake.set(mode="fail")
+        self.local()
+        self.assertFalse(settings.refresh())
+        self.assertIs(settings["delivery_enabled"], True)
+
+    def test_a_local_cap_applies_during_an_outage(self) -> None:
+        settings = self.loaded(WAKE_ROUTER_MAX_DELIVERIES="8")
+        self.fake.set(mode="fail")
+        self.local(max_deliveries=2)
+        settings.refresh()
+        self.assertEqual(settings["max_deliveries"], 2)
+        self.local(max_deliveries=64)  # would widen what is held
+        settings.refresh()
+        self.assertEqual(settings["max_deliveries"], 8)
+
+    def test_the_brake_is_on_before_the_fetch_finishes(self) -> None:
+        settings = self.loaded(**ARMED)
+        self.local(delivery_enabled=False)
+        seen = {}
+
+        def during_the_fetch():
+            seen["delivery"] = settings["delivery_enabled"]
+
+        with mock.patch.object(knobs, "refresh", side_effect=during_the_fetch):
+            settings.refresh()
+        self.assertIs(seen["delivery"], False)
+
+    def test_the_first_good_fetch_confirms_and_can_arm(self) -> None:
+        self.fake.set(mode="fail")
+        settings = WS.WakeSettings(CW.SEAT, CW.DEFAULTS, self.local_path)
+        settings.load()
+        self.assertFalse(settings.confirmed)
+        self.assertFalse(settings.refresh())
+        self.assertFalse(settings.confirmed)
+        self.fake.set(secrets=ARMED)
+        self.assertTrue(settings.refresh())
+        self.assertTrue(settings.confirmed)
+        self.assertIs(settings["delivery_enabled"], True)
+
+    def test_a_failed_refresh_never_takes_back_a_confirmation(self) -> None:
+        settings = self.loaded(**ARMED)
+        self.fake.set(mode="fail")
+        settings.refresh()
+        self.assertTrue(settings.confirmed)
+
     def test_a_refresh_after_a_failure_applies_again(self) -> None:
         settings = self.loaded(**ARMED)
         self.fake.set(mode="fail")
@@ -269,6 +378,42 @@ class Service(Settings):
         self.assertTrue(self.wait_for(lambda: settings["delivery_enabled"]))
         settings.stop_refresh()
         self.assertFalse(thread.is_alive())
+
+    def test_a_kick_takes_no_lock(self) -> None:
+        settings = self.loaded()
+        read_end, write_end = os.pipe()
+        self.addCleanup(os.close, read_end)
+        self.addCleanup(os.close, write_end)
+        settings._kick_write = write_end
+        # A signal handler may interrupt the very thread holding one of these.
+        with (
+            mock.patch.object(threading.Event, "set", side_effect=AssertionError("Event.set")),
+            mock.patch.object(threading.Condition, "notify_all", side_effect=AssertionError("notify")),
+            mock.patch.object(WS, "_log", side_effect=AssertionError("write to stderr")),
+            mock.patch.object(settings, "refresh", side_effect=AssertionError("refresh in handler")),
+        ):
+            settings.kick()
+        self.assertEqual(os.read(read_end, 1), b"\0")
+
+    def test_a_kick_with_a_full_pipe_is_harmless(self) -> None:
+        settings = self.loaded()
+        settings._kick_write = 99
+        with mock.patch.object(WS.os, "write", side_effect=BlockingIOError):
+            settings.kick()
+        settings._kick_write = None
+
+    def test_a_kick_before_the_thread_starts_is_harmless(self) -> None:
+        self.loaded().kick()
+
+    def test_stop_closes_the_pipe(self) -> None:
+        settings = self.loaded()
+        settings.start_refresh()
+        read_end, write_end = settings._read_end, settings._kick_write
+        settings.stop_refresh()
+        self.assertIsNone(settings._kick_write)
+        for descriptor in (read_end, write_end):
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
 
     def test_the_refresh_thread_runs_on_its_interval(self) -> None:
         settings = self.loaded()
@@ -329,6 +474,24 @@ class Wiring(Settings):
         ):
             CW.main(["serve"])
         self.assertIs(seen["armed"], True)
+
+    def test_a_router_on_unconfirmed_settings_keeps_its_wakes(self) -> None:
+        del os.environ[source.ENV_KNOBS_TOKEN]
+        settings = WS.WakeSettings(CW.SEAT, CW.DEFAULTS, self.local_path)
+        settings.load()
+        platform = WR.Platform(
+            seat=CW.SEAT,
+            platform=CW.PLATFORM,
+            mention=CW.MENTION,
+            target_re=CW.SESSION_RE,
+            deliver=mock.Mock(),
+        )
+        router = WR.Router(platform, {}, settings, self.state, self.state / "key")
+        router.accept(WR.Wake(wake_id="w-1", seat=CW.SEAT))
+        self.assertTrue(router.run_once())
+        self.assertTrue((self.state / "pending" / "w-1.json").exists())
+        self.assertFalse((self.state / "done" / "w-1.json").exists())
+        platform.deliver.assert_not_called()
 
     def test_the_mac_reads_its_limits_through_the_knobs(self) -> None:
         self.fake.set(secrets={"WAKE_ROUTER_RESUME_TIMEOUT_SECONDS": "120"})

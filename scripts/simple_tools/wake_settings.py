@@ -17,9 +17,17 @@ file only narrowing.  And it is in `fleet_rag`, which the runtime bundle ships o
 `fleet_knobs` already ships and is the registry `INFISICAL.md` is checked against.  There is no
 write-through because the router has no admin save:  a value is changed with `fleet_knobs set`.
 
+Delivery needs a read that worked.  `fleet_knobs` answers from its last-known-good copy when it
+cannot fetch, and that copy may predate the owner turning delivery off.  So delivery is on only after
+a successful fetch in this process, whatever the copy says.  Until the first one `confirmed` is
+false, and the router leaves wakes pending rather than closing them as held (wake_router, Settings
+not yet confirmed).  After it, a failed refresh keeps the values that fetch gave.
+
 A local file only narrows.  `<state>/config.json` may lower a cap or turn delivery off, and whatever
-would widen is ignored and named on stderr.  `local_host` and `claude_bin` are not settings but facts
-about one host, which one Infisical value cannot hold, so they are still read from the file.
+would widen is ignored and named on stderr.  It is applied to the held values on every refresh
+before the fetch, so it works as a brake during an outage too, and taking it away restores them.
+`local_host` and `claude_bin` are not settings but facts about one host, which one Infisical value
+cannot hold, so they are still read from the file.
 
 What is not per-seat.  The knob registry is flat, with one name per value, so a seat is not a
 dimension of it.  The seats are a list of their own:  delivery runs for a seat only when
@@ -27,14 +35,15 @@ WAKE_ROUTER_DELIVERY_ENABLED is true AND WAKE_ROUTER_DELIVERY_SEATS names it, an
 delivers for nobody.
 
 `workers` is read when the router starts, so a new value needs a restart.  Every other setting
-takes effect at the next refresh.  With no reader token, the router runs on the last-known-good
-copy or else the defaults, and those have delivery off.
+takes effect at the next refresh.
 
 Python 3.11+, standard library only (fleet_knobs is too).
 """
 
 from __future__ import annotations
 
+import os
+import select
 import sys
 import threading
 from collections.abc import Iterator, Mapping
@@ -42,6 +51,8 @@ from pathlib import Path
 from typing import Any
 
 from fleet_knobs import knobs
+from fleet_knobs import values as knob_values
+from fleet_knobs.registry import BY_NAME
 
 from . import wake_router as WR
 
@@ -61,6 +72,8 @@ INT_KNOBS = {
     "resume_timeout_seconds": "WAKE_ROUTER_RESUME_TIMEOUT_SECONDS",
     "confirm_seconds": "WAKE_ROUTER_CONFIRM_SECONDS",
 }
+NARROWABLE = {"delivery_enabled": DELIVERY_ENABLED, **INT_KNOBS}
+NOT_NARROWABLE = {"retry_backoff": RETRY_BACKOFF, "mac_ssh": MAC_SSH}
 HOST_FACTS = ("local_host", "claude_bin")
 JOIN_SECONDS = 10  # longer than one fleet_knobs fetch can take
 
@@ -70,33 +83,62 @@ def _log(code: str) -> None:
     sys.stderr.write("wake-router: settings %s\n" % code)
 
 
-def read(seat: str, defaults: Mapping[str, Any], local: Mapping[str, Any]) -> dict[str, Any]:
-    """Every setting in `defaults`, from what `fleet_knobs` holds in this process, with `local` (only
-    what the file sets) narrowing them."""
+def _fetched() -> bool:
+    """Whether this process's knobs came from Infisical, and not from a copy or the defaults."""
+    return knobs.report()["fetch"] == "ok"
+
+
+def from_knobs(seat: str, defaults: Mapping[str, Any]) -> dict[str, Any]:
+    """Every setting in `defaults` from what `fleet_knobs` holds in this process, before any local
+    file.  Delivery is on only if that came from a fetch that worked."""
     values = dict(defaults)
-    values.update({name: local[name] for name in HOST_FACTS if name in local})
-    enabled = knobs.resolve(DELIVERY_ENABLED, local=local.get("delivery_enabled")).value
-    values["delivery_enabled"] = enabled and seat in knobs.resolve(DELIVERY_SEATS).value
+    enabled = knobs.resolve(DELIVERY_ENABLED).value
+    seats = knobs.resolve(DELIVERY_SEATS).value
+    values["delivery_enabled"] = _fetched() and enabled and seat in seats
     for name, knob in INT_KNOBS.items():
         if name in defaults:
-            values[name] = knobs.resolve(knob, local=local.get(name)).value
+            values[name] = knobs.resolve(knob).value
     if "retry_backoff" in defaults:
-        wanted = local.get("retry_backoff")
-        narrowing = None if wanted is None else ",".join(str(number) for number in wanted)
-        text = knobs.resolve(RETRY_BACKOFF, local=narrowing).value
+        text = knobs.resolve(RETRY_BACKOFF).value
         values["retry_backoff"] = [int(part) for part in text.split(",")]
     if "mac_ssh" in defaults:
-        values["mac_ssh"] = knobs.resolve(MAC_SSH, local=local.get("mac_ssh") or None).value or ""
+        values["mac_ssh"] = knobs.resolve(MAC_SSH).value or ""
     return values
+
+
+def narrowed(base: Mapping[str, Any], local: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """`base` with a local file's values applied, and the knobs whose local value was ignored.  No
+    fetch is involved, so this can run on values already held when Infisical cannot be reached."""
+    values = dict(base)
+    values.update({name: local[name] for name in HOST_FACTS if name in local})
+    ignored = []
+    for name, knob in NARROWABLE.items():
+        if name not in base or name not in local:
+            continue
+        spec = BY_NAME[knob]
+        valid, typed = knob_values.lenient(spec, local[name])
+        if not valid:
+            ignored.append(knob)
+            continue
+        values[name], _narrowed, widening = knob_values.narrow(spec, base[name], typed)
+        if widening:
+            ignored.append(knob)
+    ignored += [
+        knob
+        for name, knob in NOT_NARROWABLE.items()
+        if name in local and local[name] != base.get(name)
+    ]
+    return values, ignored
 
 
 def read_once(seat: str, defaults: Mapping[str, Any], local_path: Path) -> dict[str, Any]:
     """The settings for one short-lived process, as `wake-deliver` on the Mac is."""
-    return read(seat, defaults, WR.read_local_config(local_path, defaults))
+    local = WR.read_local_config(local_path, defaults)
+    return narrowed(from_knobs(seat, defaults), local)[0]
 
 
 class WakeSettings(Mapping[str, Any]):
-    """A router's settings, as the mapping it reads, kept current in the background.  Each refresh
+    """A router's settings, as the mapping it reads, kept current in the background.  Each change
     swaps in a whole new dict, so a reader never sees half of one."""
 
     def __init__(
@@ -112,11 +154,13 @@ class WakeSettings(Mapping[str, Any]):
         self.local_path = local_path
         self.required = required
         self.interval = 300.0
-        self._values: dict[str, Any] = {**defaults, "delivery_enabled": False}
+        self._confirmed = False
+        self._base: dict[str, Any] = {**defaults, "delivery_enabled": False}
+        self._values: dict[str, Any] = dict(self._base)
         self._refreshing = threading.Lock()
-        self._kick = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._kick_write: int | None = None
 
     def __getitem__(self, key: str) -> Any:
         return self._values[key]
@@ -127,66 +171,101 @@ class WakeSettings(Mapping[str, Any]):
     def __len__(self) -> int:
         return len(self._values)
 
+    @property
+    def confirmed(self) -> bool:
+        """Whether a fetch has worked in this process.  Until one has, nobody knows whether delivery
+        should be on, which is not the same as knowing it is off."""
+        return self._confirmed
+
     def _local(self) -> dict[str, Any]:
         return WR.read_local_config(self.local_path, self.defaults, required=self.required)
 
     def load(self) -> None:
         """Read at startup.  A bad local file or a refused environment stops the router here."""
         try:
-            self._values = read(self.seat, self.defaults, self._local())
+            local = self._local()
+            base = from_knobs(self.seat, self.defaults)
             self.interval = float(knobs.resolve(REFRESH_SECONDS).value)
         except knobs.KnobError as exc:
             raise SystemExit("wake-router: %s" % exc) from None
-        report = knobs.report()
-        if report["fetch"] != "ok":
-            _log("stale %s" % report.get("fetch_reason", ""))
-        for name, answer in report["knobs"].items():
-            if answer.get("local_ignored"):
-                _log("local-ignored %s" % name)
+        self._confirmed = _fetched()
+        self._base = base
+        self._values, ignored = narrowed(base, local)
+        if not self._confirmed:
+            _log("unconfirmed %s" % knobs.report().get("fetch_reason", ""))
+        for knob in ignored:
+            _log("local-ignored %s" % knob)
 
     def refresh(self) -> bool:
-        """Read again, and answer whether that took.  Only a good fetch replaces what is held:  a
-        failed one would otherwise answer with an old copy or the defaults, and an outage would turn
-        delivery off, or back on."""
+        """Apply the local file, read again, and answer whether the read took.  Only a good fetch
+        replaces the values held:  a failed one would otherwise answer with an old copy or the
+        defaults, and an outage would turn delivery off, or back on."""
         with self._refreshing:
             try:
                 local = self._local()
-                knobs.refresh()
-                values = read(self.seat, self.defaults, local)
-                interval = float(knobs.resolve(REFRESH_SECONDS).value)
-                report = knobs.report()
             except (Exception, SystemExit) as exc:  # noqa: BLE001 - staleness beats a dead thread
                 _log("refresh-error %s" % type(exc).__name__)
                 return False
-            if report["fetch"] != "ok":
-                _log("refresh-kept-last-good %s" % report.get("fetch_reason", ""))
+            # First, and whatever the fetch does:  this is the brake that works in an outage.
+            self._values = narrowed(self._base, local)[0]
+            try:
+                knobs.refresh()
+                base = from_knobs(self.seat, self.defaults)
+                interval = float(knobs.resolve(REFRESH_SECONDS).value)
+                fetched = _fetched()
+                reason = knobs.report().get("fetch_reason", "")
+            except Exception as exc:  # noqa: BLE001 - staleness beats a dead thread
+                _log("refresh-error %s" % type(exc).__name__)
                 return False
-            self._values = values
+            if not fetched:
+                _log("refresh-kept-last-good %s" % reason)
+                return False
+            self._base = base
+            self._values = narrowed(base, local)[0]
             self.interval = interval
+            self._confirmed = True
             return True
 
     def kick(self) -> None:
-        """Refresh now.  Safe to call from a signal handler."""
-        self._kick.set()
+        """Refresh now.  This runs in a signal handler, where taking a lock can deadlock against the
+        thread it interrupted, so all it does is write one byte to a pipe."""
+        descriptor = self._kick_write
+        if descriptor is None:
+            return
+        try:
+            os.write(descriptor, b"\0")
+        except OSError:
+            pass  # the pipe is full, so a refresh is already coming, or it has just closed
 
     def start_refresh(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop.clear()
+        read_end, write_end = os.pipe()
+        os.set_blocking(read_end, False)
+        os.set_blocking(write_end, False)
 
         def loop() -> None:
             while not self._stop.is_set():
-                self._kick.wait(self.interval)
-                self._kick.clear()
+                ready, _, _ = select.select([read_end], [], [], self.interval)
+                if ready:
+                    os.read(read_end, 4096)
                 if not self._stop.is_set():
                     self.refresh()
 
+        self._read_end, self._kick_write = read_end, write_end
         self._thread = threading.Thread(target=loop, name="wake-settings-refresh", daemon=True)
         self._thread.start()
 
     def stop_refresh(self) -> None:
+        if self._thread is None:
+            return
         self._stop.set()
-        self._kick.set()
-        if self._thread is not None:
-            self._thread.join(timeout=JOIN_SECONDS)
-            self._thread = None
+        self.kick()
+        self._thread.join(timeout=JOIN_SECONDS)
+        finished = not self._thread.is_alive()
+        self._thread = None
+        write_end, self._kick_write = self._kick_write, None
+        os.close(write_end)
+        if finished:  # a thread still in a refresh goes on to read this, so it keeps it
+            os.close(self._read_end)

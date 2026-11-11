@@ -1568,6 +1568,143 @@ class Dedupe(Base):
         self.assertEqual(len(self.delivered), 1)
 
 
+class UnconfirmedConfig(dict):
+    """Settings that say, as WakeSettings does, whether a read has worked yet."""
+
+    confirmed = False
+
+
+class Unconfirmed(Base):
+    def unconfirmed_router(self, **config) -> WR.Router:
+        router = self.router(**config)
+        router.config = UnconfirmedConfig(router.config)
+        self.registry.rows = [row(SID_A, "AA", "unrelated")]
+        return router
+
+    def assert_waiting(self, router: WR.Router) -> dict:
+        self.assertTrue(self.pending().exists())
+        self.assertFalse((self.state / "done" / "w-1.json").exists())
+        self.assertEqual(self.delivered, [])
+        return json.loads(self.pending().read_text(encoding="utf-8"))
+
+    def test_a_wake_waits_and_uses_up_no_attempt(self) -> None:
+        router = self.unconfirmed_router()
+        router.accept(self.wake())
+        self.assertTrue(router.run_once())
+        kept = self.assert_waiting(router)
+        self.assertEqual((kept["attempts"], kept["failures"]), (0, 0))
+        self.assertEqual(kept["next_at"], self.clock.now + router.config["busy_retry_seconds"])
+
+    def test_delivery_off_does_not_close_a_wake_while_unconfirmed(self) -> None:
+        router = self.unconfirmed_router(delivery_enabled=False)
+        router.accept(self.wake())
+        self.assertTrue(router.run_once())
+        self.assert_waiting(router)
+
+    def test_no_pick_is_made_while_unconfirmed(self) -> None:
+        router = self.unconfirmed_router()
+        router.accept(self.wake())
+        router.run_once()
+        self.assertEqual(self.registry.calls, [])
+
+    def test_it_delivers_once_confirmed(self) -> None:
+        router = self.unconfirmed_router()
+        router.accept(self.wake())
+        router.run_once()
+        router.config.confirmed = True
+        self.clock.now += router.config["busy_retry_seconds"]
+        self.drain(router)
+        self.assertEqual(self.delivered, [(SID_A, "w-1")])
+        self.assertEqual(self.done()["status"], "delivered")
+
+    def test_confirmed_with_delivery_off_is_held_as_before(self) -> None:
+        router = self.unconfirmed_router(delivery_enabled=False)
+        router.accept(self.wake())
+        router.run_once()
+        router.config.confirmed = True
+        self.clock.now += router.config["busy_retry_seconds"]
+        self.drain(router)
+        self.assertEqual((self.done()["status"], self.done()["reason"]), ("held", "delivery-disabled"))
+
+    def test_the_wait_is_bounded_by_the_age_limit(self) -> None:
+        router = self.unconfirmed_router()
+        router.accept(self.wake())
+        router.run_once()
+        self.clock.now += router.config["max_age_seconds"]
+        self.drain(router)
+        receipt = self.done()
+        self.assertEqual((receipt["status"], receipt["delivered"]), ("dead", False))
+        self.assertEqual(self.delivered, [])
+
+    def test_a_wake_replayed_with_a_pick_keeps_it_while_waiting(self) -> None:
+        router = self.router()
+        self.registry.rows = [row(SID_A, "AA", "unrelated")]
+        router.accept(self.wake())
+        entry = router._entries["w-1"]
+        entry["pick"] = WR.asdict(WR.Pick(target=WR.Target(SID_A, "AA", generation=1), picked="letter"))
+        router.config = UnconfirmedConfig(router.config)
+        router.run_once()
+        kept = self.assert_waiting(router)
+        self.assertEqual(kept["pick"]["target"]["session_id"], SID_A)
+
+
+class Receipts(Base):
+    """`delivered` on a refusal says what is known about whether the turn ran."""
+
+    def settled(self, code: str) -> dict:
+        self.results = [WR.Delivery("refused", "fake", code=code)]
+        self.registry.rows = [row(SID_A, "AA", "unrelated")]
+        router = self.router()
+        router.accept(self.wake(code))
+        self.drain(router)
+        return self.done(code)
+
+    def test_a_refusal_that_may_have_run_is_unknown(self) -> None:
+        codes = (
+            "ssh-timeout",
+            "ssh-dropped",
+            "ssh-error-BrokenPipeError",
+            "remote-exit-1",
+            "remote-mismatch",
+            "resume-timeout",
+            "resume-exit-1",
+            "resume-error-ValueError",
+            "platform-mismatch",
+            "platform-bad-answer",
+            "platform-error-RuntimeError",
+            "command-timeout",
+            "command-exit-1",
+            "a-code-nobody-has-classified",
+        )
+        for code in codes:
+            with self.subTest(code):
+                receipt = self.settled(code)
+                self.assertEqual(receipt["status"], "dead")
+                self.assertIsNone(receipt["delivered"])
+
+    def test_a_refusal_that_cannot_have_run_says_so(self) -> None:
+        for code in sorted(WR.NEVER_RAN):
+            with self.subTest(code):
+                self.assertIs(self.settled(code)["delivered"], False)
+
+    def test_the_known_safe_codes(self) -> None:
+        self.assertEqual(
+            WR.NEVER_RAN,
+            {
+                "target-released",
+                "bad-request",
+                "bad-session-id",
+                "command-option-shaped-value",
+                "no-ssh-destination",
+                "no-transcript",
+                "platform-not-installed",
+                "session-cwd-gone",
+                "unknown-host",
+                "unknown-platform",
+            },
+        )
+
+
 class Retries(Base):
     def setUp(self) -> None:
         super().setUp()
@@ -2803,6 +2940,59 @@ class Resume(ClaudeBase):
         self.assertEqual(self.runs, [])
 
 
+class NonInteractiveHolder(ClaudeBase):
+    """A live record that is not an interactive chat gets no wake, on the Mac as on the server."""
+
+    def assert_no_wake(self, result: WR.Delivery, inbox: FakeInbox | None = None) -> None:
+        # `failed`:  nothing has run, and a later try can work once that process exits.
+        self.assertEqual((result.outcome, result.code), ("failed", "holder-not-interactive"))
+        self.assertEqual(self.runs, [])
+        if inbox is not None:
+            self.assertFalse(inbox.done.wait(timeout=0.2))
+
+    def test_a_live_headless_record_gets_no_wake(self) -> None:
+        inbox = self.inbox()
+        self.holder_file(sock=inbox.path, kind="print")
+        self.transcript()
+        self.assert_no_wake(self.deliver(), inbox)
+
+    def test_a_record_that_does_not_say_its_kind_gets_no_wake(self) -> None:
+        inbox = self.inbox()
+        path = self.holder_file(sock=inbox.path)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        del data["kind"]
+        path.write_text(json.dumps(data), encoding="utf-8")
+        self.transcript()
+        self.assert_no_wake(self.deliver(), inbox)
+
+    def test_one_headless_record_among_live_ones_gets_no_wake(self) -> None:
+        inbox = self.inbox()
+        self.holder_file(sock=inbox.path)
+        self.holder_file(pid=os.getppid(), kind="print")
+        self.transcript()
+        self.assert_no_wake(self.deliver(), inbox)
+
+    def test_a_headless_process_appearing_under_the_lock_gets_no_wake(self) -> None:
+        self.transcript()
+        late = CW.Holder(os.getpid(), "/tmp/late.sock", interactive=False)
+        with mock.patch.object(CW, "find_holder", side_effect=[None, late]):
+            self.assert_no_wake(self.deliver())
+
+    def test_a_stale_headless_record_does_not_block_a_resume(self) -> None:
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        child.wait()
+        self.holder_file(pid=child.pid, procStart="1", kind="print")
+        self.transcript()
+        self.assertEqual(self.deliver().outcome, "completed")
+
+    def test_an_interactive_holder_still_gets_its_wake(self) -> None:
+        inbox = self.inbox()
+        self.holder_file(sock=inbox.path)
+        self.transcript()
+        self.assertEqual(self.deliver().route, "socket")
+        self.assertTrue(inbox.done.wait(timeout=5))
+
+
 class HolderFailsClosed(ClaudeBase):
     """Not being sure that no process holds a chat must never start a resume."""
 
@@ -2980,6 +3170,24 @@ class Remote(RemoteBase):
                 self.answer = SimpleNamespace(returncode=0, stdout=text)
                 result = self.deliver_remote()
                 self.assertEqual((result.outcome, result.code), ("refused", "remote-exit-0"))
+
+    def test_an_oserror_once_the_command_has_started_is_final(self) -> None:
+        for error in (BrokenPipeError(), ConnectionResetError(), OSError("from communicate")):
+            with self.subTest(error=error):
+                runner = self.scripted(SimpleNamespace(returncode=0, stdout=""), error)
+                result = CW.deliver_remote(self.env, self.cfg, self.target, self.w, runner=runner)
+                self.assertEqual(result.outcome, "refused")
+                self.assertEqual(result.code, "ssh-error-%s" % type(error).__name__)
+
+    def test_an_oserror_in_the_preflight_is_still_a_retry(self) -> None:
+        runner = self.scripted(FileNotFoundError())
+        result = CW.deliver_remote(self.env, self.cfg, self.target, self.w, runner=runner)
+        self.assertEqual((result.outcome, len(self.runs)), ("failed", 1))
+
+    def test_a_deeply_nested_answer_is_final(self) -> None:
+        depth = 200000
+        result = self.answered(0, '{"a":' * depth + "1" + "}" * depth + "\n")
+        self.assertEqual((result.outcome, result.code), ("refused", "remote-exit-0"))
 
     OLD_MAC = '{"outcome": "refused", "route": "", "ack": "unknown", "code": "bad-request", "note": ""}\n'
 
@@ -3381,6 +3589,51 @@ class Remote(RemoteBase):
                 code, answer = self.run_main(text)
                 self.assertEqual((code, answer["delivery"]["code"]), (2, "bad-request"))
 
+    def duplicated(self, field: str, first: str, **over) -> str:
+        """The envelope as text, with this field written twice:  `first`, then its real value."""
+        text = json.dumps(self.envelope(**over))
+        real = re.search(r'"%s": ("[^"]*"|\d+)' % field, text).group(0)
+        return text.replace(real, '"%s": %s, %s' % (field, first, real), 1)
+
+    def test_a_repeated_key_is_refused_before_anything_runs(self) -> None:
+        cases = {
+            "the generation": self.duplicated("generation", "0"),
+            "the session": self.duplicated("session_id", json.dumps(SID_B)),
+            "the letter": self.duplicated("letter", '"ZZ"'),
+            "the platform": self.duplicated("platform", '"codex"'),
+            "the wake id": self.duplicated("wake_id", '"w-other"'),
+            "the same value twice": self.duplicated("generation", "3"),
+        }
+        for label, text in cases.items():
+            with self.subTest(label):
+                self.registry.calls.clear()
+                with (
+                    mock.patch.object(CW, "deliver_local") as spy,
+                    mock.patch.object(CW.importlib, "import_module") as importing,
+                ):
+                    code, answer = self.run_main(text)
+                self.assertEqual((code, answer["delivery"]["code"]), (2, "bad-request"))
+                self.assertEqual(answer["delivery"]["outcome"], "refused")
+                spy.assert_not_called()
+                importing.assert_not_called()
+                self.assertEqual(self.registry.calls, [])
+
+    def test_a_repeated_key_is_refused_on_the_legacy_request_too(self) -> None:
+        text = json.dumps({"session_id": SID_A, "wake": WR.asdict(self.w)})
+        text = text.replace('"session_id"', '"session_id": %s, "session_id"' % json.dumps(SID_B), 1)
+        with mock.patch.object(CW, "deliver_local") as spy:
+            code, answer = self.run_main(text)
+        self.assertEqual((code, answer["delivery"]["code"]), (2, "bad-request"))
+        spy.assert_not_called()
+
+    def test_the_same_key_in_different_objects_is_not_a_repeat(self) -> None:
+        # `letter` is in both the target and the wake on every real request.
+        request = self.envelope(wake={**WR.asdict(self.w), "letter": "AA"})
+        with mock.patch.object(CW, "deliver_local", return_value=WR.Delivery("sent")) as spy:
+            code, answer = self.run_main(request)
+        self.assertEqual((code, answer["delivery"]["outcome"]), (0, "sent"))
+        spy.assert_called_once()
+
     def test_a_bad_request_from_an_old_router_gets_a_flat_refusal(self) -> None:
         code, answer = self.run_main({"session_id": SID_A, "wake": {"wake_id": "../x"}})
         self.assertEqual((code, answer["code"]), (2, "bad-request"))
@@ -3444,6 +3697,13 @@ class Gate(RemoteBase):
                 for called in (spy, run, popen, system):
                     called.assert_not_called()
                 self.assertFalse(marker.exists())
+
+    def test_a_repeated_key_through_the_gate_is_refused(self) -> None:
+        text = json.dumps(self.envelope()).replace('"generation": 3', '"generation": 0, "generation": 3')
+        with mock.patch.object(CW, "deliver_local") as spy:
+            code, out, _ = self.gate(CW.REMOTE_COMMAND, text)
+        self.assertEqual((code, json.loads(out)["delivery"]["code"]), (2, "bad-request"))
+        spy.assert_not_called()
 
     def test_a_refusal_is_never_read_as_an_unreachable_host(self) -> None:
         self.assertNotEqual(CW.GATE_REFUSED, CW.SSH_UNREACHABLE)

@@ -50,7 +50,9 @@ It returns a `Delivery` whose `outcome` is one of:
 
 Any exception counts as `failed`, so a `deliver` that may already have started the turn must catch
 its own errors from that point on and return `refused`.  `route`, `code` and `note` are short fixed
-codes for the receipt, never message text and never a credential.
+codes for the receipt, never message text and never a credential.  A receipt says `delivered: false`
+for a refusal only when its code is in `NEVER_RAN`:  any other refusal may follow a turn that
+started, so it says `delivered: null`, because nobody knows.
 
 The answer and the durability.  The listener waits at most its routine timeout, resends with the
 same id, and treats any 2xx as accepted, so it never retries after one.  So the POST only checks
@@ -74,6 +76,12 @@ picked, nothing is delivered:  a wake addressed to a letter ends in a `dead` rec
 `target-released`, because the letter's new holder is not who the sender meant, and any other wake
 goes back through the pick.  A registry that cannot be read is a bounded retry, never a blind
 delivery.  Receipts name the selected generation as `picked_generation`.
+
+Settings not yet confirmed.  A router whose settings have not come from a successful read in this
+process does not know whether delivery is on, and "off" would close every pending wake as `held`.
+So until the config says `confirmed`, workers leave wakes pending, use up no attempt and look again;
+`max_age_seconds` still bounds the wait, and only a plain dict of settings is confirmed from the
+start.
 
 One chat's wakes run in the order they came.  A later wake waits behind an earlier one for the same
 chat until that one is settled;  it is not failed as busy.  A wake that still cannot be delivered,
@@ -164,6 +172,23 @@ OUTCOMES = ("sent", "completed", "busy", "unreachable", "failed", "refused")
 INTERRUPTED = "interrupted-during-delivery"
 EXPIRED = "wake-expired"
 RELEASED = "target-released"
+UNCONFIRMED = "settings-unconfirmed"
+# The `refused` codes that can only come before anything ran.  It is a list of what is known safe,
+# so a new code reads as unknown until someone adds it here.
+NEVER_RAN = frozenset(
+    {
+        RELEASED,
+        "bad-request",
+        "bad-session-id",
+        "command-option-shaped-value",
+        "no-ssh-destination",
+        "no-transcript",
+        "platform-not-installed",
+        "session-cwd-gone",
+        "unknown-host",
+        "unknown-platform",
+    }
+)
 # What the receiving chat is told, by pick reason.  Fixed sentences on purpose:  the only thing that
 # can vary is {issue}, and that has matched ISSUE_ID, so no Zulip text reaches a chat's prompt.
 UNSURE = "and the router is not sure this wake is meant for this chat."
@@ -1004,6 +1029,12 @@ class Router:
             result = Delivery("failed", code=EXPIRED)
             self._finish(entry, old, status="dead", delivered=False, result=result)
             return
+        if not getattr(self.config, "confirmed", True):
+            # Before the pick, so a pick is never kept across an outage and delivered stale.
+            kept = _pick_from(entry["pick"]) if entry["pick"] else None
+            waiting = Delivery("busy", code=UNCONFIRMED)
+            self._retry(entry, counted=False, code=UNCONFIRMED, pick=kept, result=waiting)
+            return
         wake = Wake(**entry["wake"])
         if entry["pick"] is None:
             pick = self.pick(wake)
@@ -1100,7 +1131,8 @@ class Router:
             delivered = True if outcome == "completed" or result.ack == "confirmed" else None
             self._finish(entry, pick, status="delivered", delivered=delivered, result=result)
         elif outcome == "refused":
-            self._finish(entry, pick, status="dead", delivered=False, result=result)
+            delivered = False if result.code in NEVER_RAN else None
+            self._finish(entry, pick, status="dead", delivered=delivered, result=result)
         elif outcome == "failed":
             self._retry(entry, counted=True, code=result.code or "failed", pick=pick, result=result)
         else:

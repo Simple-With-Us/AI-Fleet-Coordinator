@@ -147,6 +147,7 @@ class Holder:
 
     pid: int
     socket_path: str
+    interactive: bool = True  # false when any live record for the chat is not an interactive one
 
 
 class HolderUnknown(Exception):
@@ -253,7 +254,8 @@ def find_holder(env: Mapping[str, str], session_id: str) -> Holder | None:
     if not records:
         return None
     data = next((r for r in records if r.get("messagingSocketPath")), records[0])
-    return Holder(int(data["pid"]), str(data.get("messagingSocketPath") or ""))
+    interactive = all(r.get("kind") == "interactive" for r in records)
+    return Holder(int(data["pid"]), str(data.get("messagingSocketPath") or ""), interactive)
 
 
 def exclude_non_interactive(
@@ -399,6 +401,11 @@ def _via_socket(
     wake: WR.Wake,
     sleep: Callable[[float], None],
 ) -> WR.Delivery:
+    if not holder.interactive:
+        # `failed`, not `refused`:  nothing has run, and a headless resume of this same chat holds
+        # it this way only until it exits, so a later try can work.  The router's pick excludes
+        # these only on its own host, so this is what protects a chat on the Mac.
+        return WR.Delivery("failed", "socket", code="holder-not-interactive")
     if not holder.socket_path:
         return WR.Delivery("failed", "socket", code="holder-has-no-socket")
     transcript = transcript_path(env, session_id)
@@ -568,9 +575,8 @@ def deliver_remote(
         )
     except subprocess.TimeoutExpired:
         return WR.Delivery("refused", "ssh", code="ssh-timeout")
-    except OSError as exc:
-        return WR.Delivery("failed", "ssh", code="ssh-%s" % type(exc).__name__)
     except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
+        # An OSError too:  subprocess.run raises one from communicate(), after ssh has spawned.
         return WR.Delivery("refused", "ssh", code="ssh-error-%s" % type(exc).__name__)
     # From here the remote command may have started, so nothing unclear is ever retried.
     if proc.returncode == SSH_UNREACHABLE:
@@ -623,7 +629,7 @@ def _last_json(text: str) -> dict[str, Any] | None:
         if line.startswith("{"):
             try:
                 value = json.loads(line)
-            except ValueError:
+            except (ValueError, RecursionError):
                 continue
             return value if isinstance(value, dict) else None
     return None
@@ -828,7 +834,8 @@ PLATFORMS: dict[str, Callable[[Mapping[str, Any], Mapping[str, str]], dict[str, 
 
 def _deliver_legacy(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
     """A router from before the envelope:  `{"session_id", "wake"}` in, a flat Delivery out.  It
-    names no generation, so there is nothing to recheck against."""
+    names no generation, so there is nothing to recheck against.  Remove this once the server is
+    updated:  it exists only for that rollout, and it is the one path that skips the recheck."""
     try:
         session_id = str(request["session_id"])
         wake = _wake_from(request["wake"])
@@ -847,13 +854,24 @@ def _handle(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[str, Any
     return handler(request, env)
 
 
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """A JSON object, refused if it repeats a key:  plain `json.loads` keeps the last value, so what
+    was validated and what a second reader sees could differ."""
+    found: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in found:
+            raise ValueError("duplicate key")
+        found[key] = value
+    return found
+
+
 def wake_deliver_main(stdin: TextIO, stdout: TextIO, env: Mapping[str, str]) -> int:
     """`simple-chat wake-deliver`:  one delivery on this host, for the router on the other one."""
     try:
         raw = stdin.read(STDIN_LIMIT + 1)
         if len(raw) > STDIN_LIMIT:
             raise ValueError("stdin over the limit")
-        request = json.loads(raw)
+        request = json.loads(raw, object_pairs_hook=_unique_object)
         if not isinstance(request, dict):
             raise ValueError("not an object")
     except (ValueError, RecursionError):
