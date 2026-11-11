@@ -2020,7 +2020,9 @@ def _linear_query(query: str, timeout_s: int = LINEAR_QUERY_TIMEOUT_S) -> dict:
         data = _linear_run(query, timeout_s)
     except LinearSourceError:
         raise
-    except Exception as e:
+    except linear_board.BoardCliFailure as err:
+        raise _linear_board_failure(err) from None
+    except (OSError, ImportError) as e:
         raise LinearSourceError(f"linear: simple-board api query failed to run: {e}") from None
     if isinstance(data, dict) and data.get("errors"):
         raise LinearSourceError(f"linear: GraphQL errors: {str(data['errors'])[:300]}")
