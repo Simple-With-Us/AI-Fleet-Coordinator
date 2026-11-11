@@ -928,7 +928,17 @@ struct WakeSettingsView: View {
         func of(_ count: Int, _ key: WakeSettingKey, _ what: String) -> (text: String, emphasised: Bool) {
             let cap = seat.cap(key)
             let capped = cap.flatMap { Double($0) }.map { Double(count) >= $0 } ?? false
-            let limit = cap.map { " of \($0)" } ?? " (no cap read)"
+            let limit: String
+            if key.isWakeCap {
+                // A wake cap the seat holds none of is No Limit, and one of 0 is Paused.
+                switch cap {
+                case nil: limit = " (\(WakeSettingKey.noLimitText))"
+                case "0"?: limit = " of 0 (\(WakeSettingKey.pausedText))"
+                case let value?: limit = " of \(value)"
+                }
+            } else {
+                limit = cap.map { " of \($0)" } ?? " (no cap read)"
+            }
             return ("\(floor)\(count)\(limit) \(what)", capped)
         }
         var facts = [
@@ -1089,6 +1099,11 @@ private struct WakeSettingRow: View {
         )
     }
 
+    /// Whether the field holds 0, which for a wake cap is Paused.
+    private var isPausedDraft: Bool {
+        Double(draft.trimmingCharacters(in: .whitespaces)) == 0
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 12) {
@@ -1105,21 +1120,35 @@ private struct WakeSettingRow: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 if editable {
-                    TextField(setting.title, text: fieldText, prompt: Text("not set, default"))
-                        .labelsHidden()
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 11, design: .monospaced))
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    // A wake cap left empty is No Limit, so the empty field says so, and clearing
+                    // it is the plain way to choose No Limit.
+                    TextField(
+                        setting.title,
+                        text: fieldText,
+                        prompt: Text(setting.key.isWakeCap ? WakeSettingKey.noLimitText : "not set, default")
+                    )
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11, design: .monospaced))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .help(setting.key.isWakeCap ? WakeSettingKey.wakeCapHelp : setting.title)
                 } else {
-                    GridCellText(value: setting.configured?.displayText ?? "not set")
+                    GridCellText(value: setting.fileWords)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                GridCellText(value: setting.live?.displayText ?? "not reported")
+                GridCellText(value: setting.liveWords)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .help(setting.live?.displayText ?? "The eavesdropper did not report a value.")
+                    .help(setting.live == nil && !setting.liveNoLimit ? "The eavesdropper did not report a value." : setting.liveWords)
                 WakeStateBadge(state: setting.state, width: 108)
+            }
+            if setting.key.isWakeCap, editable, isPausedDraft {
+                // 0 is Paused, which is allowed and easy to type by mistake, so it is said plainly.
+                Label("Paused:  no wake of this kind is allowed while this is 0.", systemImage: "pause.circle")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if !setting.note.isEmpty {
                 Text(setting.note)

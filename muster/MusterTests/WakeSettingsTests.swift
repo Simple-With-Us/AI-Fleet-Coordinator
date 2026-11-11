@@ -1996,20 +1996,28 @@ final class WakeSettingsTests: XCTestCase {
 
     // MARK: The review round on #1720
 
-    /// The eavesdropper refuses a wake once its count is at or over a cap (`wakes.py` and
-    /// `live.py` compare with `>=`), so 0 stops every wake, and Muster refuses it with why.  The
-    /// live loop turns and minutes per topic treat 0 as off and as no spacing, so 0 stays a real
-    /// value for those two.
-    func test_a_zero_cap_that_would_stop_every_wake_is_refused() async {
-        let stopping: [WakeSettingKey] = [
-            .wakesPerHour, .wakesPerDay, .perTopicPerHour, .ownerPerDay, .ownerPerTopicPerHour,
-            .livePerHour, .livePerDay, .liveOwnerPerDay,
-        ]
-        for key in stopping {
+    /// The five wake caps take 0 as Paused (#1735:  `wakes.py` `at_cap` is reached at once), so 0
+    /// is written for them and reads Paused.  The live caps `live.py` still compares with `>=`
+    /// (`per_hour`, `per_day`, `owner_per_day`) keep their defaults, so 0 there would stop every
+    /// live turn, and Muster still refuses it.  The live loop turns and minutes per topic treat 0
+    /// as off and as no spacing, so 0 stays a real value for those two.
+    func test_a_zero_cap_is_paused_for_wake_caps_and_refused_where_it_stops_every_wake() async {
+        let wakeCaps: [WakeSettingKey] = [.wakesPerHour, .wakesPerDay, .perTopicPerHour, .ownerPerDay, .ownerPerTopicPerHour]
+        XCTAssertEqual(WakeSettingKey.allCases.filter(\.isWakeCap), wakeCaps)
+        for key in wakeCaps {
+            XCTAssertFalse(key.zeroStopsEveryWake, key.rawValue)
+            XCTAssertNil(key.fieldProblem(.number(0)), key.rawValue)
+            let reading = await WakeSettingsStore.readDraft(seat: "MM", values: [key: "0"], before: [key: "5"])
+            XCTAssertEqual(reading.edits, [WakeSettingsWriter.Edit(seat: "MM", key: key, value: .number(0))], key.rawValue)
+            XCTAssertEqual(reading.refusals, [], key.rawValue)
+            XCTAssertEqual(reading.changes, ["\(key.title): 5 to 0 (Paused)"], key.rawValue)
+            XCTAssertEqual(WakeSettingKey.wakeCapText(.number(0)), "Paused")
+        }
+        for key in [WakeSettingKey.livePerHour, .livePerDay, .liveOwnerPerDay] {
+            XCTAssertTrue(key.zeroStopsEveryWake, key.rawValue)
             let reading = await WakeSettingsStore.readDraft(seat: "MM", values: [key: "0"], before: [key: "5"])
             XCTAssertEqual(reading.edits, [], key.rawValue)
             XCTAssertEqual(reading.refusals, ["\(key.title): 0 would stop every wake.\u{00A0} A no-limit setting waits on the listener change."], key.rawValue)
-            XCTAssertTrue(key.zeroStopsEveryWake, key.rawValue)
             // Any other number is still a cap.
             let one = await WakeSettingsStore.readDraft(seat: "MM", values: [key: "1"], before: [key: "5"])
             XCTAssertEqual(one.edits, [WakeSettingsWriter.Edit(seat: "MM", key: key, value: .number(1))], key.rawValue)
@@ -2019,6 +2027,92 @@ final class WakeSettingsTests: XCTestCase {
             let reading = await WakeSettingsStore.readDraft(seat: "MM", values: [key: "0"], before: [key: "3"])
             XCTAssertEqual(reading.edits, [WakeSettingsWriter.Edit(seat: "MM", key: key, value: .number(0))], key.rawValue)
         }
+    }
+
+    /// A wake cap the file does not hold reads No Limit in the file's column, and one the
+    /// eavesdropper's published budget leaves out reads No Limit in its column (#1735 publishes only
+    /// the caps a seat holds).  A cap of 0 reads Paused in both.  A status with no budget at all
+    /// says nothing about the caps, and a file that was not read is never No Limit.
+    func test_an_unset_wake_cap_reads_no_limit_and_zero_reads_paused() throws {
+        let config = "[seat.MM]\nbot = \"MM\"\nwake = \"http\"\nroutine = { url_env = \"MM_ROUTINE_URL\" }\nbudget = { wakes_per_day = 0, per_topic_per_hour = 3 }\n"
+        let status = #"{"running": true, "status": {"seats": {"MM": {"bot": "MM", "budget": {"usd_per_day": 2.0, "wakes_per_day": 0, "per_topic_per_hour": 3}}}}}"#
+        let seat = try XCTUnwrap(WakeSettingsBuilder.build(sources(config: config, status: status)).seats.first)
+        func row(_ key: WakeSettingKey) throws -> WakeSetting {
+            try XCTUnwrap(seat.settings.first(where: { $0.key == key }), key.rawValue)
+        }
+
+        let hour = try row(.wakesPerHour)
+        XCTAssertNil(hour.configured)
+        XCTAssertNil(hour.live)
+        XCTAssertTrue(hour.liveNoLimit)
+        XCTAssertEqual(hour.state, .unset)
+        XCTAssertEqual(hour.fileWords, "No Limit")
+        XCTAssertEqual(hour.liveWords, "No Limit")
+        XCTAssertTrue(hour.note.contains("Clearing the field is how to choose No Limit"), hour.note)
+        XCTAssertFalse(hour.state.isProblem)
+
+        let day = try row(.wakesPerDay)
+        XCTAssertEqual(day.state, .match)
+        XCTAssertEqual(day.fileWords, "Paused")
+        XCTAssertEqual(day.liveWords, "Paused")
+
+        let topic = try row(.perTopicPerHour)
+        XCTAssertEqual(topic.fileWords, "3")
+        XCTAssertEqual(topic.liveWords, "3")
+        XCTAssertEqual(topic.state, .match)
+
+        // The owner caps are unset in both, so both read No Limit too.
+        XCTAssertEqual(try row(.ownerPerDay).liveWords, "No Limit")
+        XCTAssertEqual(try row(.ownerPerTopicPerHour).fileWords, "No Limit")
+        // The live caps keep their own words:  nothing about No Limit.
+        XCTAssertEqual(try row(.livePerHour).fileWords, "not set")
+        XCTAssertEqual(try row(.livePerHour).liveWords, "not reported")
+
+        // A cap the file holds and the published budget leaves out is not what the eavesdropper
+        // uses:  it runs with No Limit.
+        let capped = config.replacingOccurrences(of: "per_topic_per_hour = 3", with: "per_topic_per_hour = 3, wakes_per_hour = 6")
+        let drifted = try XCTUnwrap(
+            WakeSettingsBuilder.build(sources(config: capped, status: status)).seats.first?.settings.first(where: { $0.key == .wakesPerHour })
+        )
+        XCTAssertEqual(drifted.state, .drift)
+        XCTAssertEqual(drifted.liveWords, "No Limit")
+        XCTAssertTrue(drifted.note.contains("using No Limit"), drifted.note)
+        XCTAssertTrue(drifted.note.contains("file holds 6"), drifted.note)
+
+        // A status with no budget says nothing, so the eavesdropper's column is not No Limit.
+        let silent = #"{"running": true, "status": {"seats": {"MM": {"bot": "MM"}}}}"#
+        let quiet = try XCTUnwrap(
+            WakeSettingsBuilder.build(sources(config: capped, status: silent)).seats.first?.settings.first(where: { $0.key == .wakesPerHour })
+        )
+        XCTAssertFalse(quiet.liveNoLimit)
+        XCTAssertEqual(quiet.state, .unpublished)
+        XCTAssertEqual(quiet.liveWords, "not reported")
+
+        // A file that was not read is not known, never No Limit.
+        var unread = sources(config: "", status: status)
+        unread.configProblem = "denied"
+        let unknown = try XCTUnwrap(WakeSettingsBuilder.build(unread).seats.first?.settings.first(where: { $0.key == .wakesPerHour }))
+        XCTAssertEqual(unknown.state, .unknown)
+        XCTAssertEqual(unknown.fileWords, "not set")
+    }
+
+    /// Clearing a wake cap's field takes the key out of the file, which is how to choose No Limit,
+    /// and the confirmation says so.
+    func test_clearing_a_wake_cap_writes_no_key_and_reads_no_limit() async throws {
+        let reading = await WakeSettingsStore.readDraft(seat: "MM", values: [.wakesPerHour: ""], before: [.wakesPerHour: "5"])
+        XCTAssertEqual(reading.edits, [WakeSettingsWriter.Edit(seat: "MM", key: .wakesPerHour, value: nil)])
+        XCTAssertEqual(reading.changes, ["Wakes per hour: 5 to No Limit"])
+
+        let space = try makeWorkspace()
+        let writer = WakeSettingsWriter(configURL: space.config, partitionURL: space.partition)
+        try writer.apply(reading.edits)
+        let document = ListenerConfigDocument(text: try String(contentsOf: space.config, encoding: .utf8))
+        XCTAssertNil(document.value(section: "seat.MM", key: "budget", subPath: ["wakes_per_hour"]))
+        XCTAssertEqual(document.value(section: "seat.MM", key: "budget", subPath: ["wakes_per_day"]), .number(80))
+        XCTAssertFalse(try String(contentsOf: space.config, encoding: .utf8).contains("wakes_per_hour"))
+        XCTAssertEqual(document.problems, [])
+        XCTAssertTrue(WakeSettingKey.wakeCapHelp.contains("Clear the field for No Limit"))
+        XCTAssertTrue(WakeSettingKey.wakeCapHelp.contains("no wake of this kind is allowed while it is 0"))
     }
 
     /// One batch that clears the only key of an inline routine table and sets another is judged on
