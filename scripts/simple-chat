@@ -54,6 +54,9 @@ if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "muster-servi
     sys.exit(muster_main(sys.argv[2:]))
 
 # Claude's wake router and its one-delivery command (OPS-1048):  host-local services, never routed to a hosted server.
+if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "wake-acceptance":
+    from simple_tools.wake_acceptance import main as wake_acceptance_main
+    sys.exit(wake_acceptance_main(sys.argv[2:]))
 if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "wake-router":
     from simple_tools.claude_wake import main as wake_router_main
     sys.exit(wake_router_main(sys.argv[2:]))
