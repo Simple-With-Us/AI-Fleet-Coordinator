@@ -122,7 +122,7 @@ def sample_config(secrets_dir: str | None, env: Mapping[str, str] | None = None)
         "",
         "[daemon]",
         "# One listener, on the server, holds every seat (owner, Tue, Nov 10:  \"Only should have one and the server's",
-        "# listener and router can send a signal to a Mac based wake process if necessary for wake delivery\"), so this",
+        '# listener and router can send a signal to a Mac based wake process if necessary for wake delivery"), so this',
         "# file holds no [seat.*] table.  The CLI and the plugin hooks still read [daemon] and [platform.*] here.",
         "# docs/protocols/simple-tools-partition.toml says which instance holds which seat and fails closed:  a",
         "# listener refuses to start with any seat it does not give to this instance.",
@@ -155,7 +155,7 @@ def sample_config(secrets_dir: str | None, env: Mapping[str, str] | None = None)
         "rewake_verified_cli = false       # true only after manual test 1 in a terminal;  until then live delivery is headlines only",
         "rewake_verified_desktop = false   # the same for the Desktop Code tab, which has its own flag (the old rewake_verified sets both)",
         "",
-        "# No [seat.*] table:  the partition gives no agent seat to \"mac\", so this listener would refuse one.",
+        '# No [seat.*] table:  the partition gives no agent seat to "mac", so this listener would refuse one.',
         "# Each seat's section lives in the server listener's config (scripts/simple_tools/server/listener.toml).",
     ]
     others = [s for s in NO_READER if present(s)]
@@ -217,7 +217,10 @@ def install(
     if os.path.exists(config_path):
         out.write("config already present, left as it is: %s\n" % config_path)
     else:
-        say("write the sample config %s (mode 600; no seat:  the server listener holds every seat)" % config_path)
+        say(
+            "write the sample config %s (mode 600; no seat:  the server listener holds every seat)"
+            % config_path
+        )
         if not dry_run:
             write_private(config_path, sample_config(secrets_dir, env))
     current = None
