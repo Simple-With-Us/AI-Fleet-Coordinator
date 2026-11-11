@@ -375,8 +375,8 @@ def run_file(args, io: Streams) -> int:
     new = existing is None
     item = existing
     if new:
-        # The cap check, the Linear filing and the record are one critical section (bar.Slot):  two filings racing
-        # for the last slot cannot both pass, and a filing that fails records nothing.
+        # Reserve a cap place under the lock, then release the lock before board I/O.
+        # An ambiguous write keeps its reservation counting rather than risking a cap breach.
         with bar.Slot(policy, io.environ, seat, io.clock, io.warn) as slot:
             cap_warning = slot.check()
             if cap_warning:
@@ -446,16 +446,23 @@ def file_new(
             raise BoardFailed(
                 "board file failed:  %s" % (first_line(result.err) or "exit %d" % result.code),
                 result.code,
+                outcome_unknown=result.timed_out or result.code not in (4, 5, 6),
             )
         match = _FILED_RE.search(result.out)
         if not match:
-            raise BoardFailed("board file answered with a line I cannot read")
-        item = itemsmod.fetch(runner, match.group(3))
+            raise BoardFailed("board file answered with a line I cannot read", outcome_unknown=True)
+        unchanged = "already filed" in match.group(4)
+        try:
+            item = itemsmod.fetch(runner, match.group(3))
+        except BoardFailed as exc:
+            if not unchanged:
+                exc.outcome_unknown = True
+            raise
         if item is None:
             raise BoardFailed(
-                "%s was filed but cannot be read back;  run the same command again" % match.group(3)
+                "%s was filed but cannot be read back;  run the same command again" % match.group(3),
+                outcome_unknown=True,
             )
-        unchanged = "already filed" in match.group(4)
         if unchanged and item.status in CLOSED_STATUSES:
             # An issue with this uid exists that the open list did not show (it is closed).
             if not again:
@@ -474,7 +481,14 @@ def file_new(
             )
             continue
         if item.block is None:
-            item = repair_block(io, runner, item, block)
+            try:
+                item = repair_block(io, runner, item, block)
+            except BoardFailed as exc:
+                # A definite COMMENT failure says nothing about the issue that
+                # FILE already created. Keep its cap reservation on this path.
+                if not unchanged:
+                    exc.outcome_unknown = True
+                raise
         return item, not unchanged
     raise BoardFailed(
         "could not find an unused version of this question after %d tries" % _MAX_VERSION_TRIES

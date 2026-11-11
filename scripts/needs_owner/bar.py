@@ -20,13 +20,15 @@ The cap counts this host's own filings, kept in `~/apps/needs-owner/filings/fili
 names, times and identifiers only).  A closed item still counts, because the filer removes the label when it
 closes one and Linear alone would forget it.  A rerun that files nothing new is never counted or refused.
 
-The count is a read-modify-write, so a `Slot` makes the check, the Linear filing and the record one critical
-section under an exclusive advisory lock (`flock` on `filings.lock` beside the ledger, mode 0600), and two
-filings racing for the last slot cannot both pass.  The lock dies with its process, so nothing is left to expire,
-and a filing that fails records nothing.  A lock that cannot be taken (no `fcntl`, the file cannot be opened, or
-the wait of 60 seconds runs out) fails OPEN in warn (the filing goes ahead, with one warning line) and CLOSED in
-enforce when a cap is set (nothing is filed, and the refusal says why).  With no cap there is nothing the lock
-would protect, so enforce fails open too.  Off never takes it.
+The count is a read-modify-write, so Slot reserves a place under the exclusive host lock and releases
+it before board I/O. A pending reservation counts toward the seat's daily cap. Confirmed no-write failures
+and duplicate results release it. An ambiguous write, unexpected post-write failure or process crash keeps
+it for the rolling 24-hour window; a retry that finds the existing issue never files another one. Successful
+writes finalize the reservation under a short lock. A failed finalization keeps the reservation counting.
+Other seats and unused places are not blocked by a slow board request. The lock wait remains 60 seconds
+for local ledger contention only. Failure to take the lock remains open in warn/no-cap mode and closed in
+enforce with a cap. Failure to persist a reservation also refuses before I/O in enforce with a cap. Off
+never reserves or locks. No request text or credentials enter this ledger.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
@@ -174,20 +177,29 @@ def filings_in_window(environ: Mapping[str, str], seat: str, now: float) -> int:
     return count
 
 
+def _bounded_rows(rows: list[dict], now: float) -> list[dict]:
+    """Keep every live count, including uncertain reservations. Refuse overflow.
+
+    Never evict a live row to make room for another filing. An oversized existing
+    ledger remains untouched until enough rows age out. Older history is optional.
+    """
+    valid = [r for r in rows if isinstance(r.get("t"), (int, float))
+             and not isinstance(r["t"], bool) and now-r["t"] < KEEP_SECONDS]
+    live = [r for r in valid if now-r["t"] < WINDOW_SECONDS]
+    if len(live) > MAX_ROWS:
+        raise OSError("live daily cap ledger is full")
+    older = [r for r in valid if now-r["t"] >= WINDOW_SECONDS]
+    remaining = MAX_ROWS-len(live)
+    return live + (older[-remaining:] if remaining else [])
+
+
 def record_filing(environ: Mapping[str, str], seat: str, identifier: str, now: float) -> None:
-    """Remember one new filing.  A write that fails is ignored:  the bar never blocks a filing that landed."""
+    """Best-effort counting in degraded fail-open mode; never evict another live count."""
     try:
-        rows = [
-            r
-            for r in _rows(environ)
-            if isinstance(r.get("t"), (int, float)) and 0 <= now - r["t"] < KEEP_SECONDS
-        ]
-        rows.append({"seat": seat, "t": now, "id": identifier})
+        rows = _bounded_rows(_rows(environ) + [{"seat": seat, "t": now, "id": identifier}], now)
         path = _path(environ)
         ledger.private_dir(os.path.dirname(path))
-        ledger.write_private(
-            path, json.dumps({"schema": SCHEMA, "rows": rows[-MAX_ROWS:]}, sort_keys=True)
-        )
+        ledger.write_private(path, json.dumps({"schema": SCHEMA, "rows": rows}, sort_keys=True), durable=True)
     except OSError:
         pass
 
@@ -274,57 +286,111 @@ class FilingsLock:
 
 
 class Slot:
-    """One new filing's place in the seat's daily count:  the lock, the cap check and the record in one section.
+    """Reserve a cap place under the lock, never hold the lock across board I/O.
 
-        with Slot(policy, environ, seat, clock, warn) as slot:
-            line = slot.check()          # a warning line (warn), or a Refusal (enforce), when the seat is at its cap
-            ... file the item ...
-            slot.record(identifier)      # only when the item was really filed
+    A reservation counts immediately. Confirmed no-write failures release it;
+    an ambiguous write or a crashed process keeps it for the daily window.
+    """
 
-    Nothing is held in off.  See the module docstring for what a lock that cannot be taken does."""
+    def __init__(self, policy, environ, seat, clock, warn):
+        self.policy, self.environ, self.seat = policy, environ, seat
+        self.clock, self.warn = clock, warn
+        self.lock = None
+        self.reservation = None
+        self.finished = False
+        self.write_succeeded = False
 
-    def __init__(
-        self,
-        policy: Policy,
-        environ: Mapping[str, str],
-        seat: str,
-        clock: object | None,
-        warn: Callable[[str], None],
-    ) -> None:
-        self.policy = policy
-        self.environ = environ
-        self.seat = seat
-        self.clock = clock
-        self.warn = warn
-        self.lock: FilingsLock | None = None
-
-    def __enter__(self) -> Slot:
-        if not self.policy.on:
-            return self
+    def _acquire(self):
         lock = FilingsLock(self.environ)
         reason = lock.acquire()
         if reason is None:
             self.lock = lock
-            return self
+            return True
         if self.policy.mode == ENFORCE and self.policy.cap > 0:
             raise Refusal(
                 "the daily cap cannot be checked safely (could not take the filings lock: %s), so nothing was "
                 "filed;  try again in a moment, or post it to Pending-for-Jay" % reason
             )
-        self.warn(
-            "could not take the filings lock (%s);  filing without it, so this filing may not be counted exactly"
-            % reason
-        )
-        return self
+        self.warn("could not take the filings lock (%s); filing without it, so this filing may not be counted exactly" % reason)
+        return False
 
-    def check(self) -> str | None:
-        return check_cap(self.policy, self.environ, self.seat, wall(self.clock))
-
-    def record(self, identifier: str) -> None:
-        if self.policy.on:
-            record_filing(self.environ, self.seat, identifier, wall(self.clock))
-
-    def __exit__(self, *exc: object) -> None:
+    def _release_lock(self):
         if self.lock is not None:
             self.lock.release()
             self.lock = None
+
+    def _save(self, rows):
+        path = _path(self.environ)
+        ledger.private_dir(os.path.dirname(path))
+        ledger.write_private(path, json.dumps({"schema": SCHEMA, "rows": _bounded_rows(rows, wall(self.clock))}, sort_keys=True), durable=True)
+
+    def __enter__(self):
+        if self.policy.on:
+            self._acquire()
+        return self
+
+    def check(self):
+        try:
+            warning = check_cap(self.policy, self.environ, self.seat, wall(self.clock))
+            if self.policy.on and self.lock is not None:
+                now = wall(self.clock)
+                rows = _rows(self.environ)
+                reservation = uuid.uuid4().hex
+                rows.append({"seat": self.seat, "t": now, "reservation": reservation})
+                try:
+                    self._save(rows)
+                except OSError:
+                    if self.policy.mode == ENFORCE and self.policy.cap > 0:
+                        raise Refusal("the daily cap place cannot be reserved safely, so nothing was filed") from None
+                    self.warn("could not reserve a daily cap place; this filing may not be counted exactly")
+                else:
+                    self.reservation = reservation
+            return warning
+        finally:
+            self._release_lock()
+
+    def _finish(self, identifier=None):
+        if self.reservation is None:
+            if identifier is not None and self.policy.on:
+                record_filing(self.environ, self.seat, identifier, wall(self.clock))
+            return
+        # The network write already happened: failure here must never say that
+        # nothing was filed. Leave the durable reservation counting instead.
+        lock = FilingsLock(self.environ)
+        reason = lock.acquire()
+        if reason is not None:
+            self.warn("could not finalize the daily cap place; its reservation still counts")
+            return
+        try:
+            rows = _rows(self.environ)
+            matched = False
+            out = []
+            for row in rows:
+                if row.get("reservation") == self.reservation:
+                    matched = True
+                    if identifier is not None:
+                        out.append({"seat": self.seat, "t": wall(self.clock), "id": identifier})
+                else:
+                    out.append(row)
+            if identifier is not None and not matched:
+                out.append({"seat": self.seat, "t": wall(self.clock), "id": identifier})
+            self._save(out)
+            self.finished = True
+        except OSError:
+            self.warn("could not finalize the daily cap place; its reservation still counts")
+        finally:
+            lock.release()
+
+    def record(self, identifier):
+        self.write_succeeded = True
+        self._finish(identifier)
+
+    def __exit__(self, kind, exc, traceback):
+        self._release_lock()
+        if self.reservation is not None and not self.finished:
+            if self.write_succeeded:
+                pass  # _finish already reported the finalization failure.
+            elif exc is not None and getattr(exc, "outcome_unknown", not isinstance(exc, Refusal)):
+                self.warn("the board write outcome is unknown; its daily cap reservation still counts")
+            else:
+                self._finish()
