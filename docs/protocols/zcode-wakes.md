@@ -62,15 +62,13 @@ a working key for the MiniMax entry.  Flipping it is one config file:
     `fleet-secrets` writes it;  never through chat text, never printed.
 2.  Mirror the same value into the server's `~/.local/state/zc-wake/routine-key` (0600).  The
     copy is a redirect into the file, never terminal output.
-3.  Mac listener:  `[seat.ZC]` gains `wake = "http"` and the routine line reading
-    `url_env = "ZC_ROUTINE_URL"`, `key_env = "ZC_ROUTINE_KEY"`.  The Mac daemon fetches a
-    http-wake seat's routine names from Infisical at start (the same one fetch as the seat's
-    Zulip pair), so a `daemon reload` applies the config and a restart picks the keys up.
-    `ZC_ROUTINE_URL` is the bridge's tailnet URL, `http://<jay-server tailnet ip>:8791/wake/ZC`.
-    Since the Nov 10 one-listener cutover the listener that holds `[seat.ZC]` is the server's, not the Mac's:  its sample section carries `wake = "http"` and the routine line above, the key is read from Fleet-OPS `/zulip` through the loader's secondary read (`LISTENER_READ_CODES` in `server/infisical_env.py`) and the URL from AFC `prod` `/zulip`, and both load at the container's start, so a redeploy picks them up and a `daemon reload` does not.
-4.  Server:  install the unit (`/etc/zc-wake-bridge.env` carries `ZC_WAKE_BIND=<tailnet ip>`),
+3.  Server listener:  `[seat.ZC]` gains `wake = "http"` and the routine line reading
+    `url_env = "ZC_ROUTINE_URL"`, `key_env = "ZC_ROUTINE_KEY"`.  The server loader reads the key from
+    Fleet-OPS `/zulip` (its secondary read, `LISTENER_READ_CODES` in `server/infisical_env.py`) and the URL from AFC
+    `prod` `/zulip` once at the container's start, so a restart (a redeploy) picks them up and a `daemon reload` does not.
+    `ZC_ROUTINE_URL` is the bridge's tailnet URL, `http://<jay-server tailnet ip>:8791/wake/ZC`.4.  Server:  install the unit (`/etc/zc-wake-bridge.env` carries `ZC_WAKE_BIND=<tailnet ip>`),
     enable it, `curl -s http://127.0.0.1:8791/health`.
-5.  Prove it:  mention @ZC in a test topic;  the Mac listener's wake ledger records the POST,
+5.  Prove it:  mention @ZC in a test topic;  the server listener's wake ledger (`simple-chat wakes` inside the container) records the POST,
     and `~/.local/state/zc-wake/delivery.jsonl` carries the receipt with the resolved session.
 
 ## Verification to date
