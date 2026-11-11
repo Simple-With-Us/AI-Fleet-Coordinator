@@ -248,6 +248,8 @@ Until a key is set in Infisical, a job runs on the Default column, which is the 
 | `NEEDS_OWNER_NOTIFY_PAUSED` | C6 | bool | `false` | no | only set it to `true` | true pauses the fallback notifier;  an Infisical outage past the 48 hour copy limit reads false and unpauses it |
 | `NEEDS_OWNER_CAPS` | C6 | caps | `per_day=30,per_hour=6,urgent_per_hour=3` | no | only lower a number | notifier post caps |
 | `OWNER_LINEAR_USER_ID` | C6 | str | unset | no | nothing | the owner's Linear user id;  empty means no Linear reply is accepted as the owner's |
+| `NEEDS_OWNER_BAR` | C6 | enum: off < warn < enforce | `off` | no | nothing | how hard the bar is on `needs-owner file`;  off changes nothing, warn files the item and warns when --why-owner is missing, enforce refuses a filing with no reason class;  an unreadable or unknown value is off |
+| `NEEDS_OWNER_SEAT_DAILY_MAX` | C6 | int 0 to 50 | `0` | no | nothing | most needs-owner items one seat may file in 24 hours, counted on the host that files them;  0 means no cap;  applies in warn (a warning) and enforce (a refusal) and never in off |
 | `CLAIM_EXPIRY_MODE` | C4 | enum: dry-run < ping-only < act | `dry-run` | no | only move toward `dry-run` | act also needs CLAIM_EXPIRY_LAUNCH_AT |
 | `CLAIM_EXPIRY_CAPS` | C4 | caps | `pings_per_run=40,releases_per_day=40,releases_per_run=20` | no | only lower a number | code ceilings are the same numbers;  Infisical can lower them |
 | `CLAIM_EXPIRY_LAUNCH_AT` | C4 | str | unset | no | nothing | ISO 8601 time the claim clock starts, set once;  empty means the clock has not started |
