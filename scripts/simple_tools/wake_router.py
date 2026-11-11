@@ -9,18 +9,24 @@ chats:  a `Platform` that names its seat, its mention and its `deliver` function
 one line in `wake_service.BUILDERS`.
 
 One process, a router per seat.  Each seat served has its own `Router`, with its own state
-folder, pending queue, workers, delivery cap, bearer and receipts, so a fault, an outage or a
-busy chat in one seat cannot reach another seat's wakes.  `Seats` holds them and routes by path:
+folder, pending queue, workers, delivery cap and receipts, so a fault, an outage or a busy chat
+in one seat cannot reach another seat's wakes.  Each Router asks its own `KeySource` for the
+bearer;  the service gives every seat the one key WAKE_ROUTER_KEY.  `Seats` holds them and routes
+by path:
 
-    POST /wake/<SEAT>             a wake for that seat, checked against that seat's bearer
+    POST /wake/<SEAT>             a wake for that seat, checked against that seat's KeySource
     GET  /receipt/<SEAT>/<id>     that seat's record of a wake, with the same bearer
     GET  /receipt/<id>            the CLAUDE seat's record, the form from before
-    GET  /health                  every seat, no bearer:  200 only when every seat is healthy
+    GET  /health                  every seat, no bearer:  200 only when every installed seat is
+                                  healthy
     GET  /health/<SEAT>           one seat
 
-A seat that is registered and not served (its module is missing, its builder failed) answers
-503 with a reason token, and `/health` names it;  a seat nobody registered is 404.  The body's
-`seat` must equal the path's, so one seat's bearer can never place a wake in another's queue.
+A seat that is registered and not served answers 503 with a reason token, and `/health` names
+it.  One whose module is not installed yet shows `not-installed` and leaves the overall health
+alone;  one whose module is there but broken (its builder missing or failing) counts against it.
+A seat nobody registered is 404.  A served seat is unhealthy while it has no routine key or no
+registry address.  The body's `seat` must equal the path's, so a wake for one seat can never
+land in another's queue.
 
 The pick.  An addressed letter;  then a fragment of a session id, at least 8 hex characters, that
 identifies exactly one live chat;  then a Linear issue id from the topic or the excerpt, found in a
@@ -76,8 +82,9 @@ It returns a `Delivery` whose `outcome` is one of:
 Any exception counts as `failed`, so a `deliver` that may already have started the turn must catch
 its own errors from that point on and return `refused`.  `route`, `code` and `note` are short fixed
 codes for the receipt, never message text and never a credential.  A receipt says `delivered: false`
-for a refusal only when its code is in `NEVER_RAN`:  any other refusal may follow a turn that
-started, so it says `delivered: null`, because nobody knows.
+for a refusal only when its code is in `NEVER_RAN` or in the seat's own module's `NEVER_RAN` (the
+Router's `never_ran`):  any other refusal may follow a turn that started, so it says
+`delivered: null`, because nobody knows.
 
 The answer and the durability.  The listener waits at most its routine timeout, resends with the
 same id, and treats any 2xx as accepted, so it never retries after one.  So the POST only checks
@@ -150,7 +157,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, fields, replace
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -206,6 +213,10 @@ EXPIRED = "wake-expired"
 RELEASED = "target-released"
 # A live registry row the check before delivery cannot read as a chat of this seat.
 UNREADABLE_ROW = "registry-row-unreadable"
+# The registry has no address or no key on this host:  a bounded retry, as an outage is.
+NOT_CONFIGURED = "registry-not-configured"
+# A registered seat whose platform module is not on this host yet.
+NOT_INSTALLED = "not-installed"
 # A seat tag as the fleet writes one (identity._SEAT_RE).  A registry row must name its seat:  a
 # missing one is never read as this platform's.
 SEAT_RE = re.compile(r"[A-Z0-9][A-Z0-9_-]{0,31}")
@@ -576,11 +587,16 @@ def load_config(
 
 
 def read_local_config(
-    path: Path, defaults: Mapping[str, Any], *, required: bool = False
+    path: Path,
+    defaults: Mapping[str, Any],
+    *,
+    required: bool = False,
+    seat_lists: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Only what a JSON file sets.  A file named explicitly must exist.  A file that is there must
     parse, name only known keys and match each default's type:  an unreadable or mistyped config is
-    a refusal that names the path, never a quiet run on defaults."""
+    a refusal that names the path, never a quiet run on defaults.  A key in `seat_lists` is known
+    too, and its value must be a list of seat tags."""
     config: dict[str, Any] = {}
     try:
         text = path.read_text(encoding="utf-8")
@@ -599,6 +615,13 @@ def read_local_config(
     if not isinstance(loaded, dict):
         raise SystemExit("wake-router: the config file %s is not a JSON object" % path)
     for key, value in loaded.items():
+        if key in seat_lists:
+            if not isinstance(value, list) or not all(
+                isinstance(seat, str) and SEAT_RE.fullmatch(seat) for seat in value
+            ):
+                raise SystemExit("wake-router: %s: %s has the wrong type" % (path, key))
+            config[key] = value
+            continue
         if key not in defaults:
             raise SystemExit("wake-router: %s: unknown setting %s" % (path, key))
         if not _same_shape(value, defaults[key]):
@@ -712,8 +735,12 @@ class Router:
         key: KeySource,
         consult: Consult | None = None,
         clock: Callable[[], float] = time.time,
+        never_ran: Iterable[str] = (),
     ) -> None:
         self.platform = platform
+        # The refusals known to come before anything ran:  this module's, and the platform's own
+        # (its module's NEVER_RAN), so the pinned set here does not grow with each platform.
+        self.never_ran = NEVER_RAN | frozenset(never_ran)
         self.env = env
         self.config = config
         self.state = state
@@ -780,7 +807,7 @@ class Router:
             found = answer.get("found") if isinstance(answer, Mapping) else None
             if type(found) is not bool or "error" in answer:
                 # Unreadable, so not a dead letter:  falling back would wake a chat not addressed.
-                return Pick(reason="registry-unavailable", retry=True)
+                return Pick(reason=registry_trouble(answer), retry=True)
             live = found and not _closed(answer)
             target = self._valid(answer) if live else None
             if target is not None:
@@ -798,7 +825,7 @@ class Router:
             timeout=timeout,
         )
         if not isinstance(answer, Mapping) or "error" in answer:
-            return Pick(reason="registry-unavailable", retry=True)
+            return Pick(reason=registry_trouble(answer), retry=True)
         live: dict[str, Target] = {}
         seen: dict[str, float | None] = {}
         row_issues: dict[str, list[tuple[str, float | None]]] = {}
@@ -1218,7 +1245,7 @@ class Router:
             timeout=REGISTRY_TIMEOUT,
         )
         if not isinstance(answer, Mapping) or "error" in answer:
-            return "registry-unavailable"
+            return registry_trouble(answer)
         held = holds(answer, target, self.platform.seat, self.platform.target_re)
         if held is None:
             return UNREADABLE_ROW
@@ -1246,7 +1273,7 @@ class Router:
             delivered = True if outcome == "completed" or result.ack == "confirmed" else None
             self._finish(entry, pick, status="delivered", delivered=delivered, result=result)
         elif outcome == "refused":
-            delivered = False if result.code in NEVER_RAN else None
+            delivered = False if result.code in self.never_ran else None
             self._finish(entry, pick, status="dead", delivered=delivered, result=result)
         elif outcome == "failed":
             self._retry(entry, counted=True, code=result.code or "failed", pick=pick, result=result)
@@ -1399,6 +1426,15 @@ class Router:
     def _log(self, code: str, wake_id: str) -> None:
         """The seat, codes and wake ids only:  no payload, no names, no key."""
         sys.stderr.write("wake-router: %s %s %s\n" % (self.platform.seat, wake_id, code))
+
+
+def registry_trouble(answer: object) -> str:
+    """The retry code for a registry answer that is not a reading:  `registry-not-configured`
+    when this host has no registry address or key (registry_api's `not_configured`), else
+    `registry-unavailable`.  Either way nothing is delivered on it."""
+    if isinstance(answer, Mapping) and answer.get("code") == "not_configured":
+        return NOT_CONFIGURED
+    return "registry-unavailable"
 
 
 def _closed(row: Mapping[str, Any]) -> bool:
@@ -1584,12 +1620,16 @@ def _most_recent(targets: list[Target], seen: Mapping[str, float | None]) -> Tar
 
 
 class Seats:
-    """Every seat one service serves:  a `Router` for each seat that was built, and a reason token
-    for each registered seat that was not.  Nothing here is shared between seats but the port:
-    each Router keeps its own folder, queue, workers, bearer and receipts."""
+    """Every seat one service serves:  a `Router` for each seat that was built, a reason token for
+    each registered seat that was not, and the registered seats whose module is not installed
+    yet.  Nothing here is shared between seats but the port:  each Router keeps its own folder,
+    queue, workers and receipts."""
 
     def __init__(
-        self, routers: Sequence[Router] = (), down: Mapping[str, str] | None = None
+        self,
+        routers: Sequence[Router] = (),
+        down: Mapping[str, str] | None = None,
+        not_installed: Iterable[str] = (),
     ) -> None:
         self.routers: dict[str, Router] = {}
         for router in routers:
@@ -1602,14 +1642,29 @@ class Seats:
             if not SEAT_RE.fullmatch(seat) or seat in self.routers:
                 raise ValueError("Seats:  a seat is served or down, never both")
             self.down[seat] = str(reason) or "unknown"
+        # A seat whose module is not there yet is not served and is not a fault:  it shows as
+        # not installed and leaves the service's health alone (wake_service, Which seats).
+        self.not_installed: set[str] = set()
+        for seat in not_installed:
+            if not SEAT_RE.fullmatch(seat) or seat in self.routers or seat in self.down:
+                raise ValueError("Seats:  a seat is served, down or not installed, only one")
+            self.not_installed.add(seat)
 
     def names(self) -> list[str]:
-        return sorted({*self.routers, *self.down})
+        return sorted({*self.routers, *self.down, *self.not_installed})
+
+    def unserved(self, seat: str) -> str | None:
+        """Why a known seat is not served, or None when it is served or unknown."""
+        if seat in self.not_installed:
+            return NOT_INSTALLED
+        return self.down.get(seat)
 
     def seat_health(self, seat: str) -> tuple[int, dict[str, Any]]:
         """One seat's state:  reason tokens only, never a value."""
         router = self.routers.get(seat)
         if router is None:
+            if seat in self.not_installed:
+                return 503, {"seat": seat, "healthy": False, "reason": NOT_INSTALLED}
             reason = "seat-not-served:" + self.down.get(seat, "unknown")
             return 503, {"seat": seat, "healthy": False, "reason": reason}
         delivery = router.config.get("delivery_enabled") is True
@@ -1618,16 +1673,21 @@ class Seats:
         if not key:
             reason = "routine-key-unavailable:" + why
             return 503, {**answer, "healthy": False, "reason": reason}
+        if not registry_api.base_url(router.env):
+            # A router with no registry can pick nothing, so it must not look healthy.
+            return 503, {**answer, "healthy": False, "reason": NOT_CONFIGURED}
         return 200, {**answer, "healthy": True}
 
     def health(self) -> tuple[int, dict[str, Any]]:
-        """Every seat, healthy only when each one served is and at least one is."""
+        """Every seat.  Healthy only when each seat that is installed is healthy and at least one
+        is:  a seat not installed yet is listed and does not count against it."""
         every = {}
         for seat in self.names():
             state = dict(self.seat_health(seat)[1])
             state.pop("seat")
             every[seat] = state
-        healthy = bool(every) and all(state["healthy"] for state in every.values())
+        counted = [state for seat, state in every.items() if seat not in self.not_installed]
+        healthy = bool(counted) and all(state["healthy"] for state in counted)
         return (200 if healthy else 503), {"healthy": healthy, "seats": every}
 
     def start(self) -> None:
@@ -1712,7 +1772,7 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
             router = seats.routers.get(seat)
             if router is not None:
                 return router
-            reason = seats.down.get(seat)
+            reason = seats.unserved(seat)
             if reason is None:
                 self._answer(404, {"error": "not found"})
             else:
@@ -1720,7 +1780,7 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
             return None
 
         def _authorized(self, router: Router) -> bool:
-            """Checked against this seat's own bearer, and no other seat's."""
+            """Checked against the bearer this seat's router asks its own KeySource for."""
             key, why = router.routine_key()
             if not key:
                 # Without the key nothing can be checked, so nothing is let in.
@@ -1804,16 +1864,15 @@ def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
 
 
 def serve(target: Router | Seats, bind: str, port: int) -> int:
-    """Run every seat's router on one port.  It refuses to start without the registry
-    configuration:  a router missing it would answer every wake and look healthy doing it.  A seat
-    starts without its routine key, but then refuses its requests with 503 and says why on
-    /health, so an Infisical outage at start leaves a router that tells the truth and takes the key
-    once a refresh reads it.  The port is bound before anything is replayed, so a second instance
-    stops there and touches no pending wake.  SIGTERM closes the port, stops new work and waits
-    for running deliveries, in every seat at once."""
+    """Run every seat's router on one port.  A seat starts without its routine key or its
+    registry address, since both come from Infisical, which may be down at start.  Without the
+    key it refuses its requests with 503;  without the registry it picks nothing (each wake is a
+    bounded `registry-not-configured` retry);  either way /health answers 503 with the reason, so
+    the router never looks healthy while it cannot work, and it takes the values once a refresh
+    reads them.  The port is bound before anything is replayed, so a second instance stops there
+    and touches no pending wake.  SIGTERM closes the port, stops new work and waits for running
+    deliveries, in every seat at once."""
     seats = target if isinstance(target, Seats) else Seats([target])
-    if not all(registry_api.base_url(router.env) for router in seats.routers.values()):
-        raise SystemExit("wake-router: the registry API URL is not set")
     try:
         server = ThreadingHTTPServer((bind, port), make_handler(seats))
     except OSError as exc:
@@ -1830,7 +1889,8 @@ def serve(target: Router | Seats, bind: str, port: int) -> int:
     try:
         seats.start()
         served = ", ".join(sorted(seats.routers)) or "none"
-        down = ", ".join("%s (%s)" % item for item in sorted(seats.down.items())) or "none"
+        unserved = {**seats.down, **{seat: NOT_INSTALLED for seat in seats.not_installed}}
+        down = ", ".join("%s (%s)" % item for item in sorted(unserved.items())) or "none"
         print(
             "wake-router listening on %s:%d for seats %s;  not served:  %s"
             % (bind, port, served, down),
