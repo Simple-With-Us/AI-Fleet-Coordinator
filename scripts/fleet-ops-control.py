@@ -243,7 +243,8 @@ OPERATOR_READ_TIMEOUT = 20
 # Each program stops itself after this long and answers `timeout`.  It is shorter than the read's
 # own limit on purpose:  when that limit kills the local `docker exec`, the process it started
 # inside the container is not killed with it, so a slow read would otherwise run on beside the
-# daemon after its answer was given up.
+# daemon after its answer was given up.  The stop does not depend on the answer being written:
+# with nobody left to read it, the program still exits.
 OPERATOR_PROGRAM_SECONDS = 15
 OPERATOR_SCHEMA = 1
 # The caps the programs apply inside the container and the reducers apply again here.
@@ -323,8 +324,10 @@ def word(error):
 
 def late():
     if once.acquire(False):
-        os.write(1, b'{"error": "timeout"}')
-        os._exit(0)
+        try:
+            os.write(1, b'{"error": "timeout"}')
+        finally:
+            os._exit(0)
 
 
 once = threading.Lock()
@@ -423,8 +426,10 @@ def read():
 
 def late():
     if once.acquire(False):
-        os.write(1, b'{"error": "timeout"}')
-        os._exit(0)
+        try:
+            os.write(1, b'{"error": "timeout"}')
+        finally:
+            os._exit(0)
 
 
 once = threading.Lock()

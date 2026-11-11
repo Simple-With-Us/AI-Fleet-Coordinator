@@ -4571,6 +4571,36 @@ class OperatorFixtureStoreTests(Base):
         )
         self.assert_unavailable(code, text, "timeout")
 
+    def test_a_program_past_its_limit_exits_even_when_nobody_reads_its_answer(self):
+        import sqlite3
+
+        path = self.registry()
+        program = foc.OPERATOR_SESSIONS_PROGRAM.replace("SECONDS = 15", "SECONDS = 1")
+        self.assertNotEqual(program, foc.OPERATOR_SESSIONS_PROGRAM)
+        writer = sqlite3.connect(str(path), isolation_level=None)
+        try:
+            writer.execute("BEGIN EXCLUSIVE")
+            child = subprocess.Popen(
+                [sys.executable, "-I", "-c", program, str(path)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                cwd="/",
+                env={"PATH": "/usr/bin:/bin"},
+            )
+            try:
+                # The reader goes away, as a killed `docker exec` does:  the write of the
+                # timeout word then fails, and the program must still stop.
+                child.stdout.close()
+                child.wait(timeout=4)
+            finally:
+                child.kill()
+                child.wait()
+        finally:
+            writer.close()
+        for program in (foc.OPERATOR_SESSIONS_PROGRAM, foc.OPERATOR_WAKES_PROGRAM):
+            self.assertIn("        finally:\n            os._exit(0)\n", program)
+
     def test_the_read_does_not_change_the_registry(self):
         path = self.registry()
         before = (path.read_bytes(), sorted(p.name for p in self.home.iterdir()))
