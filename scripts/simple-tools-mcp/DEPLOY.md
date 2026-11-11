@@ -275,7 +275,7 @@ Owner ruling, Sat, Oct 10, 2026:  "I want bots to wake to any channel or DM", an
 
 ## The rest of Zulip (AFC-330)
 
-Owner, Thu, Oct 15:  "I'd like Simple-Tools and whatever local agents use to be able to do all tasks supported by Zulip."  33 more `zulip_*` tools (spec section 1.6) come from `tools.json` by construction, implemented in `src/zulip-full.js`.  No secret, scope or var changes:  step 1 is the whole deploy.  Clients that cache `tools/list` (Grok on the web, ChatGPT) refresh the connector's tools to see them.  Smoke test from a connected seat after the deploy:  `zulip_channels`, then `zulip_search` with `{"query": "deploy", "channel": "sandbox"}`, then `zulip_draft_create` and `zulip_draft_delete` in #sandbox (a draft is never sent).  **Not deployed yet.**
+Owner, Thu, Oct 15:  "I'd like Simple-Tools and whatever local agents use to be able to do all tasks supported by Zulip."  33 more `zulip_*` tools (spec section 1.6) come from `tools.json` by construction, implemented in `src/zulip-full.js`.  No secret, scope or var changes:  step 1 is the whole deploy.  Clients that cache `tools/list` (Grok on the web, ChatGPT) refresh the connector's tools to see them.  Smoke test from a connected seat after the deploy:  `zulip_channels`, then `zulip_search` with `{"query": "deploy", "channel": "sandbox"}`, then `zulip_draft_create` and `zulip_draft_delete` in #Sandbox (a draft is never sent).  **Not deployed yet.**
 
 ## Listener read API (AFC-330)
 

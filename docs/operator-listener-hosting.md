@@ -115,7 +115,7 @@ wake alerter's hook mode provides it:
    cursors (or accept a bounded catch-up replay - held-back/dedup keeps it
    quiet).
 4. Stop the Mac listener unit (bootout), start of the 5-10 min window.
-5. Watch `#alerts` and the wake ledger for 30 min:  mentions/DMs landing,
+5. Watch `#Alerts` and the wake ledger for 30 min:  mentions/DMs landing,
    banners firing, no duplicate wakes.
 6. Only after a clean soak:  remove the old Mac listener unit file and any
    now-unused Mac-side Zulip keys (each deletion is a separate, explicit
