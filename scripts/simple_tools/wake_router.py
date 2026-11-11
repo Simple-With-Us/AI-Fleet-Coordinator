@@ -207,6 +207,8 @@ REGISTRY_TIMEOUT = 15
 DONE_KEEP_SECONDS = 30 * 86400
 # Longer than the listener's routine timeout, so only a client that has stalled is cut off.
 REQUEST_TIMEOUT = 30
+# What `Seats.stop` allows past a seat's own shutdown wait before it stops waiting for that seat.
+STOP_MARGIN_SECONDS = 5.0
 OUTCOMES = ("sent", "completed", "busy", "unreachable", "failed", "refused")
 INTERRUPTED = "interrupted-during-delivery"
 EXPIRED = "wake-expired"
@@ -1718,24 +1720,34 @@ class Seats:
 
     def stop(self) -> bool:
         """Stop every seat at once, each waiting up to its own `shutdown_wait_seconds` for its
-        running deliveries, and answer whether all of them finished."""
+        running deliveries, and answer whether all of them finished.  Each seat's wait is bounded
+        from one shared start, so the whole stop takes at most the longest seat's wait plus
+        STOP_MARGIN_SECONDS.  A seat whose stop has not returned by then counts as not finished:
+        its deliveries are left to the replay, which closes them as interrupted."""
         finished: dict[str, bool] = {}
+        default = ROUTER_DEFAULTS["shutdown_wait_seconds"]
+        waits = {
+            seat: float(router.config.get("shutdown_wait_seconds", default))
+            for seat, router in self.routers.items()
+        }
 
         def one(seat: str, router: Router) -> None:
-            default = ROUTER_DEFAULTS["shutdown_wait_seconds"]
-            finished[seat] = router.stop(float(router.config.get("shutdown_wait_seconds", default)))
+            finished[seat] = router.stop(waits[seat])
 
-        threads = [
-            threading.Thread(target=one, args=item, daemon=True) for item in self.routers.items()
-        ]
-        for thread in threads:
+        threads = {
+            seat: threading.Thread(target=one, args=(seat, router), daemon=True)
+            for seat, router in self.routers.items()
+        }
+        began = time.monotonic()
+        for thread in threads.values():
             thread.start()
-        for thread in threads:
-            thread.join()
-        for seat, done in sorted(finished.items()):
-            if not done:
-                self.routers[seat]._log("shutdown-left-deliveries-running", "-")
-        return all(finished.values())
+        for seat, thread in threads.items():
+            deadline = began + waits[seat] + STOP_MARGIN_SECONDS
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        done = {seat: finished.get(seat, False) and not threads[seat].is_alive() for seat in threads}
+        for seat in sorted(seat for seat, ok in done.items() if not ok):
+            self.routers[seat]._log("shutdown-left-deliveries-running", "-")
+        return all(done.values())
 
 
 def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:

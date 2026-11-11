@@ -2915,6 +2915,36 @@ class ManySeats(Base):
         self.assertTrue(zc._stopping)
         self.assertIn("ZC - start-error-OSError", self.stderr.getvalue())
 
+    def test_a_seat_whose_stop_never_returns_is_not_finished(self) -> None:
+        claude = self.router(shutdown_wait_seconds=1)
+        zc = self.zc_router(shutdown_wait_seconds=1)
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def stuck(wait: float) -> bool:
+            release.wait(timeout=30)  # a stop that hangs far past its own wait
+            return True
+
+        seats = WR.Seats([claude, zc])
+        with (
+            mock.patch.object(WR, "STOP_MARGIN_SECONDS", 0.2),
+            mock.patch.object(zc, "stop", side_effect=stuck),
+        ):
+            began = time.monotonic()
+            self.assertIs(seats.stop(), False)
+            elapsed = time.monotonic() - began
+        self.assertLess(elapsed, 1 + 0.2 + 1.0, "bounded by the seat's wait and the margin")
+        self.assertTrue(claude._stopping, "the other seat still stops")
+        log = self.stderr.getvalue()
+        self.assertIn("ZC - shutdown-left-deliveries-running", log)
+        self.assertNotIn("CLAUDE - shutdown-left-deliveries-running", log)
+
+    def test_a_seat_whose_stop_says_not_finished_counts(self) -> None:
+        claude, zc = self.router(), self.zc_router()
+        with mock.patch.object(zc, "stop", return_value=False):
+            self.assertIs(WR.Seats([claude, zc]).stop(), False)
+        self.assertIn("ZC - shutdown-left-deliveries-running", self.stderr.getvalue())
+
     def test_stop_stops_every_seat(self) -> None:
         claude, zc = self.router(), self.zc_router()
         seats = WR.Seats([claude, zc])
