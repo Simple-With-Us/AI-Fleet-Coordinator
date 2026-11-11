@@ -91,10 +91,17 @@ def assess(
 
     rows = [_object(row) for row in listener if _object(row).get("wake_id") == wake_id]
     matching = [row for row in rows if row.get("seat") == seat]
-    triggers = {mid for row in matching for mid in row.get("trigger_ids", []) if type(mid) is int}
+    trigger_lists = [row.get("trigger_ids", []) for row in matching]
+    invalid_triggers = any(not isinstance(ids, list) for ids in trigger_lists)
+    triggers = {
+        mid for ids in trigger_lists if isinstance(ids, list) for mid in ids if type(mid) is int
+    }
     states = [str(row.get("state") or "") for row in matching]
     if not rows:
         checks["listener"] = "pending"
+    elif invalid_triggers:
+        checks["listener"] = "mismatch"
+        errors.append("listener-invalid-trigger-ids")
     elif not matching or message_id not in triggers:
         checks["listener"] = "mismatch"
         errors.append("listener-source-or-seat-mismatch")

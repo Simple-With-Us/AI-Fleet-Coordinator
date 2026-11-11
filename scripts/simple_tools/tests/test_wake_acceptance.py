@@ -125,6 +125,13 @@ class AcceptanceTests(unittest.TestCase):
         self.args["receipt"].pop("delivered")
         self.check("pending")
 
+    def test_non_list_listener_trigger_ids_are_rejected_without_crashing(self):
+        for value in (None, 12345, "12345", {}):
+            with self.subTest(value=value):
+                self.args["listener"][0]["trigger_ids"] = value
+                result = self.check("rejected")
+                self.assertIn("listener-invalid-trigger-ids", result["errors"])
+
     def test_jsonl_tail_keeps_original_session_header(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "rollout.jsonl"
