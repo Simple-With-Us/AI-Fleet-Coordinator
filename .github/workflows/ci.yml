@@ -784,6 +784,7 @@ jobs:
         working-directory: muster
         run: |
           xcodegen generate --spec project.yml
+          python3 script/resolve_packages.py --project Muster.xcodeproj --derived-data .build/CI
           # The checked-out commit's own time, in the same UTC form the build scripts write.
           commit_time="$(date -u -r "$(git show -s --format=%ct HEAD)" +%Y-%m-%dT%H:%M:%SZ)"
           xcodebuild -project Muster.xcodeproj -scheme Muster -configuration Debug \
