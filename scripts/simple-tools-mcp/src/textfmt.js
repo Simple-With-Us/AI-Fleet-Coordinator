@@ -291,6 +291,71 @@ export function singleGaps(text) {
   return [pieces.join(""), count];
 }
 
+// ---- AFC-722:  the house gap for hosted GitHub and Linear text -----------------------------------------------
+//
+// A model cannot type U+00A0 into a tool argument:  it reaches the client as a plain space (byte evidence in
+// AFC-722).  So the server writes the gap itself, with the same reach as the house perl converter and its
+// widened cases (the sentence-gap converter holes):  after `.`, `!` or `?`, with any closing quote, bracket,
+// `*`, `_`, `~` or a Markdown link target `](url)` between, ONE OR MORE ASCII spaces before a capital, a
+// lowercase letter, a digit, a quote, `*`, `#`, `@`, `(`, `[`, `_`, `~` or a code span become U+00A0 plus one
+// space.  A digit before the period is a sentence end too ("must print 0.  The"), except a list marker such as
+// `1. Item` at the start of a line.  An `&nbsp;` entity typed after a sentence (the Code-tab habit) becomes
+// the real character, since GitHub and Linear show the entity as text.  Code spans, fenced code, `$$` math and
+// mentions are never touched, and neither are abbreviations, dotted words and initials (`e.g. this`,
+// `i.e. that`, `v1.2. next` keeps its gap after the version only because a sentence ends there).  Text that
+// already carries U+00A0 plus a space is left exactly as it is, so a second pass changes nothing.
+
+const HOUSE_CLOSERS = "(?:\\]\\([^()\\s]{1,255}\\)|[\"'”’)\\]*_~`])*";
+const HOUSE_NEXT = `(?=[A-Za-z0-9"“‘'(*#@\\[_~\`${MASK}])`;
+const HOUSE_GAP_RE = new RegExp(`([.!?]${HOUSE_CLOSERS})( +)${HOUSE_NEXT}`, "g");
+const HOUSE_ENTITY_RE = new RegExp(`([.!?]${HOUSE_CLOSERS})&nbsp; ?${HOUSE_NEXT}`, "g");
+const ANY_HOUSE_RE = /[.!?]\S* |&nbsp;/;
+
+/** `text` with every sentence gap written as U+00A0 plus one space (the house rule, AFC-722). */
+export function houseGap(text) {
+  if (typeof text !== "string" || !ANY_HOUSE_RE.test(text)) return text;
+  // The entity first, on its own pass:  it is not a space run, and it shortens the text, so the second pass
+  // works on fresh indexes.
+  let out = rewriteGaps(text, HOUSE_ENTITY_RE, () => true);
+  out = rewriteGaps(out, HOUSE_GAP_RE, (masked, match, source) => {
+    // Two or more spaces are the author's own gap;  only a single space is a guess that the abbreviation and
+    // initial lists can veto.
+    if (match[1].startsWith(".") && match[2].length === 1) {
+      const window = masked.slice(Math.max(0, match.index - 40), match.index);
+      const before = WORD_BEFORE_RE.exec(window);
+      const word = before ? before[1].toLowerCase().replace(/\.+$/, "") : "";
+      // The tail of a path, URL or identifier (`https://x.test/a.`, `v2_b.`) is not an abbreviation or an
+      // initial:  only a word that stands on its own is.
+      const lead = before ? window[window.length - before[1].length - 1] : undefined;
+      const standalone = lead === undefined || !/[\p{L}\p{N}_/\\:=@#%&-]/u.test(lead);
+      if (before && standalone && (ABBREVIATIONS.has(word) || word.length === 1 || word.includes("."))) return false;
+    }
+    if (match[1] === ".") {
+      const lineStart = source.lastIndexOf("\n", match.index - 1) + 1;
+      if (LIST_MARKER_PREFIX_RE.test(source.slice(lineStart, match.index))) return false; // `1. Item` stays a list
+    }
+    return true;
+  });
+  return out;
+}
+
+/** Each unprotected `re` match in `text` whose `keep` says so becomes its group 1 plus GAP. */
+function rewriteGaps(text, re, keep) {
+  const masked = maskedText(text);
+  const pieces = [];
+  let last = 0;
+  re.lastIndex = 0;
+  for (const match of masked.matchAll(re)) {
+    if (!keep(masked, match, text)) continue;
+    const end = match.index + match[0].length;
+    pieces.push(text.slice(last, match.index), text.slice(match.index, match.index + match[1].length), GAP);
+    last = end;
+  }
+  if (pieces.length === 0) return text;
+  pieces.push(text.slice(last));
+  return pieces.join("");
+}
+
 /** [text with ISO dates in prose in the fleet form, [[old, new], ...]]. */
 export function fleetDates(text, now = undefined) {
   if (typeof text !== "string" || !ANY_ISO_RE.test(text)) return [text, []];
