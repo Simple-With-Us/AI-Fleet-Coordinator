@@ -115,6 +115,7 @@ PREFLIGHT_COMMAND = "true"
 ENV_SSH_COMMAND = "SSH_ORIGINAL_COMMAND"
 GATE_REFUSED = 126  # never ssh's own 255, which the sender reads as a host that did not answer
 CODEX_MODULE = "simple_tools.codex_wake"
+ZCODE_MODULE = "simple_tools.zcode_wake"
 BAD_REQUEST = "bad-request"
 BAD_REQUEST_EXIT = 2
 UNKNOWN_PLATFORM = "unknown-platform"
@@ -830,10 +831,41 @@ def _deliver_codex(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[s
     )
 
 
+def _deliver_zcode(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
+    """ZCode's delivery, loaded only when a request names it.  The module's name is this file's
+    constant:  nothing from the request reaches the import."""
+    try:
+        module = importlib.import_module(ZCODE_MODULE)
+    except ImportError:
+        return _answer(request, WR.Delivery("refused", code="platform-not-installed"))
+    try:
+        answer = module.deliver_request(request, env=_registry_env(env))
+    except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
+        return _answer(
+            request, WR.Delivery("refused", code="platform-error-%s" % type(exc).__name__)
+        )
+    delivery = answer.get("delivery") if isinstance(answer, Mapping) else None
+    if not isinstance(delivery, Mapping) or delivery.get("outcome") not in WR.OUTCOMES:
+        return _answer(request, WR.Delivery("refused", code="platform-bad-answer"))
+    if not _same_ids(answer, _correlation(request)):
+        return _answer(request, WR.Delivery("refused", code="platform-mismatch"))
+    return _answer(
+        request,
+        WR.Delivery(
+            str(delivery["outcome"]),
+            _short(delivery.get("route")),
+            ack=_short(delivery.get("ack")) or "unknown",
+            code=_short(delivery.get("code")),
+            note=_short(delivery.get("note")),
+        ),
+    )
+
+
 #: Every platform a request may name.  Only a key of this table is ever acted on.
 PLATFORMS: dict[str, Callable[[Mapping[str, Any], Mapping[str, str]], dict[str, Any]]] = {
     PLATFORM: _deliver_claude,
     "codex": _deliver_codex,
+    "zcode": _deliver_zcode,
 }
 
 
