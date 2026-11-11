@@ -60,7 +60,8 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # service the daemon hosts).
 # The 166th and 167th are simple_tools/wake_router.py and simple_tools/claude_wake.py (OPS-1048, the shared wake
 # router and Claude's delivery;  `simple-chat wake-deliver` has to run on the Mac, so they ship).
-MAX_FILES = 167
+# The 168th and 169th are Codex's native delivery seam and the read-only wake acceptance helper (AFC-694).
+MAX_FILES = 169
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,
