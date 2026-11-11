@@ -311,7 +311,7 @@ def receiver_mode(path: Path | None) -> str:
             tail = fh.read()
     except OSError:
         return ""
-    found = re.findall(rb'"permissionMode":"([A-Za-z]+)"', tail)
+    found = re.findall(rb'"permissionMode"\s*:\s*"([A-Za-z]+)"', tail)
     return found[-1].decode("ascii") if found else ""
 
 
@@ -456,7 +456,7 @@ def deliver_local(
         if holder is not None:
             return _via_socket(env, config, session_id, holder, wake, sleep)
         folder = state_dir(env) / "locks"
-        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+        WR.private_dir(folder)
         fd = os.open(folder / ("session-%s.lock" % session_id), os.O_CREAT | os.O_RDWR, 0o600)
         with os.fdopen(fd, "w") as lock:
             try:
@@ -593,7 +593,10 @@ def make_platform(
 def wake_deliver_main(stdin: TextIO, stdout: TextIO, env: Mapping[str, str]) -> int:
     """`simple-chat wake-deliver`:  one delivery on this host, for the router on the other one."""
     try:
-        request = json.loads(stdin.read(STDIN_LIMIT + 1)[:STDIN_LIMIT])
+        raw = stdin.read(STDIN_LIMIT + 1)
+        if len(raw) > STDIN_LIMIT:
+            raise ValueError("stdin over the limit")
+        request = json.loads(raw)
         session_id = str(request["session_id"])
         fields = request["wake"]
         if not WR.WAKE_ID_RE.fullmatch(str(fields["wake_id"])):
