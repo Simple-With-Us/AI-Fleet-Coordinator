@@ -142,6 +142,7 @@ const SPECS = {
   wf_rulesets: ['List the repository rulesets (id, name, target, source, enforcement; no rules or bypass list). includes_parents (default true) adds organization rulesets. Metadata read.', obj(['repo'], {repo:REPO,includes_parents:{type:'boolean'},page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
   wf_issue_get: ['Read one issue with body (untrusted text; credential-shaped bodies withheld).', obj(['repo','number'], {repo:REPO,number:INT})],
   wf_issue_create: ['Create an issue as your own GitHub App.', obj(['repo','title','body'], {repo:REPO,title:CONTENT,body:CONTENT})],
+ wf_issue_milestone_set:['Set or remove one issue milestone after exact issue/milestone pre-reads. Zero removes, no PR targets; receipt checks silent ignored updates.',obj(['repo','number','milestone_number'],{repo:REPO,number:INT,milestone_number:{type:'integer',minimum:0,maximum:1e12}})],
   wf_issue_update: ['Update issue text or open/closed state.', obj(['repo','number'], {repo:REPO,number:INT,title:CONTENT,body:CONTENT,state:{type:'string',enum:['open','closed']}})],
   wf_issue_comment: ['Comment on an issue as your own GitHub App.', obj(['repo','number','body'], {repo:REPO,number:INT,body:CONTENT})],
   wf_issue_comment_update: ['issue comment update.',obj(['repo', 'comment_id', 'body'],{repo:REPO,comment_id:INT,body:{type:"string",minLength:1,maxLength:32768}})],
@@ -405,6 +406,7 @@ const RESPONSE_KEYS = {
   wf_label_create:['result'],
   wf_label_delete:['completed'],
  wf_file_delete:['deleted','path','branch','commit'],
+ wf_issue_milestone_set:['issue_number','milestone_number'],
  wf_milestones:['milestones','complete'],wf_milestone_get:['milestone'],wf_milestone_create:['milestone'],wf_milestone_update:['milestone'],wf_milestone_delete:['deleted'],
  wf_labels_set:['labels'],wf_reviewers_request:['result'],wf_reviewers_remove:['result'],wf_release_create:['result'],wf_release_update:['result'],
  wf_deployments:['deployments','complete'],wf_deployment_get:['deployment'],wf_deployment_statuses:['statuses','complete'],wf_deployment_create:['deployment'],wf_deployment_status_create:['status'],wf_deployment_delete:['deleted'],
@@ -512,6 +514,7 @@ const deploymentItem=z.object({id:positive,sha:shaValue,ref:deploymentText,envir
 const deploymentStatus=z.object({id:positive,state:z.enum(['error','failure','inactive','in_progress','queued','pending','success']),description:deploymentText,created_at:deploymentText}).strict();
 const deploymentResponses={wf_deployments:z.object({deployments:z.array(deploymentItem).max(50),complete:z.boolean()}).strict(),wf_deployment_get:z.object({deployment:deploymentItem}).strict(),wf_deployment_create:z.object({deployment:deploymentItem}).strict(),wf_deployment_statuses:z.object({statuses:z.array(deploymentStatus).max(50),complete:z.boolean()}).strict(),wf_deployment_status_create:z.object({status:deploymentStatus}).strict(),wf_deployment_delete:z.object({deleted:z.literal(true),deployment_id:positive}).strict()};
 const milestoneItem=z.object({number:positive,title:z.string().min(1).refine(v=>new TextEncoder().encode(v).length<=1024),state:z.enum(['open','closed']),html_url:z.string().nullable(),due_on:z.string().nullable(),open_issues:z.number().int().nonnegative().nullable(),closed_issues:z.number().int().nonnegative().nullable()}).strict();
+const issueMilestoneReceipt=z.object({issue_number:z.number().int().positive(),milestone_number:z.number().int().positive().nullable()}).strict();
 const milestoneResponses={wf_milestones:z.object({milestones:z.array(milestoneItem).max(50),complete:z.boolean()}).strict(),wf_milestone_get:z.object({milestone:milestoneItem}).strict(),wf_milestone_create:z.object({milestone:milestoneItem}).strict(),wf_milestone_update:z.object({milestone:milestoneItem}).strict(),wf_milestone_delete:z.object({deleted:z.literal(true),number:positive}).strict()};
 const checkWriteItem=z.object({id:positive,head_sha:shaValue,name:z.string().min(1),status:z.enum(['queued','in_progress','completed']),conclusion:z.enum(['action_required','cancelled','failure','neutral','success','skipped','stale','timed_out']).nullable(),html_url:z.string().nullable()}).strict().refine(v=>v.status==='completed'?v.conclusion!==null:v.conclusion===null);
 const checkWriteResponses={wf_check_create:z.object({check:checkWriteItem}).strict(),wf_check_update:z.object({check:checkWriteItem}).strict()};
@@ -766,6 +769,7 @@ export function validWfV1Response(action, body, args) {
  if(environmentResponses[action])return environmentResponses[action].safeParse(body).success;
 
  if(deploymentResponses[action])return deploymentResponses[action].safeParse(body).success;
+ if(action==='wf_issue_milestone_set')return issueMilestoneReceipt.safeParse(body).success && (!args || body.issue_number===args.number && body.milestone_number===(args.milestone_number===0?null:args.milestone_number));
  if(milestoneResponses[action])return milestoneResponses[action].safeParse(body).success;
  if(checkWriteResponses[action])return checkWriteResponses[action].safeParse(body).success;
   if (action === 'wf_release_list' && (!Array.isArray(body?.releases) || body.releases.length > 50 || !body.releases.every(x => x && Number.isInteger(x.id) && x.id > 0 && typeof x.draft === 'boolean' && typeof x.prerelease === 'boolean' && Object.keys(x).every(k => ['id','tag_name','name','html_url','created_at','published_at','draft','prerelease'].includes(k)) && ['tag_name','name','html_url','created_at','published_at'].every(k => x[k] === null || typeof x[k] === 'string' && new TextEncoder().encode(x[k]).length <= 2048)))) return false;
