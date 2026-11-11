@@ -83,6 +83,13 @@ ALERT_CHANNEL = "Alerts"  # the realm stream's own name;  Zulip matches stream n
 ALERT_TOPIC = "sim-idle-reaper"  # #alerts topic = service name (docs/protocols/zulip-fleet-guide)
 ALERT_SEVERITY = "SEVERE"  # one of the guide's SEVERE / MODERATE / INFO
 ALERT_TIMEOUT_SEC = 60
+# A resource issue that is not "almost out of space" tags both Housekeepers and Jay, and only a nearly full
+# disk tags @all (owner, Oct 29 2026;  docs/HOUSEKEEPER.md, Alert Tiers).  Load is never a space
+# issue, so the guard's post wakes the two Housekeepers and Jay.  The mentions ride on a second line, so
+# the #Alerts line still starts with its severity;  name|id is the exact form Zulip resolves.
+RESOURCE_MENTIONS = (
+    "@**BF-Housekeeper|1216054** @**GB-Housekeeper|1215533** @**Jay Wedgeworth|1211974**"
+)
 # simple-chat exits 2 (usage) and 3 (credential) before anything is sent:  provably unsent.
 CHAT_UNSENT_EXITS = (2, 3)
 UDID_RE = re.compile(
@@ -361,7 +368,7 @@ def fleet_alert(content: str) -> str:
     """
     chat = os.environ.get(SIMPLE_CHAT_ENV) or shutil.which("simple-chat") or SIMPLE_CHAT
     argv = [chat, "--as", "MA", "post", "--no-tag"]
-    argv += ["--channel", ALERT_CHANNEL, "--topic", ALERT_TOPIC, content]
+    argv += ["--channel", ALERT_CHANNEL, "--topic", ALERT_TOPIC, content + "\n" + RESOURCE_MENTIONS]
     try:
         p = subprocess.run(argv, capture_output=True, text=True, timeout=ALERT_TIMEOUT_SEC)
     except subprocess.TimeoutExpired:

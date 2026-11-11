@@ -1,7 +1,7 @@
 {
   "count": 10,
-  "generated_by": "scripts/agent-sync-mcp/scripts/export-linear-catalog.mjs",
-  "regenerate": "cd scripts/agent-sync-mcp && node scripts/export-linear-catalog.mjs",
+  "generated_by": "scripts/simple-tools-mcp/scripts/export-linear-catalog.mjs",
+  "regenerate": "cd scripts/simple-tools-mcp && node scripts/export-linear-catalog.mjs",
   "sources": [
     "src/linear.js",
     "src/linear-api.js"
@@ -50,7 +50,7 @@
         ],
         "type": "object"
       },
-      "title": "Linear Whoami"
+      "title": "Linear: Whoami"
     },
     {
       "annotations": {
@@ -148,7 +148,7 @@
         ],
         "type": "object"
       },
-      "title": "Linear List"
+      "title": "Linear: List"
     },
     {
       "annotations": {
@@ -206,7 +206,7 @@
         ],
         "type": "object"
       },
-      "title": "Linear Show"
+      "title": "Linear: Show"
     },
     {
       "annotations": {
@@ -308,7 +308,7 @@
         ],
         "type": "object"
       },
-      "title": "Linear File"
+      "title": "Linear: File"
     },
     {
       "annotations": {
@@ -382,7 +382,7 @@
         ],
         "type": "object"
       },
-      "title": "Linear Claim"
+      "title": "Linear: Claim"
     },
     {
       "annotations": {
@@ -438,7 +438,7 @@
         ],
         "type": "object"
       },
-      "title": "Linear Comment"
+      "title": "Linear: Comment"
     },
     {
       "annotations": {
@@ -524,7 +524,7 @@
         ],
         "type": "object"
       },
-      "title": "Linear Status"
+      "title": "Linear: Status"
     },
     {
       "annotations": {
@@ -563,7 +563,7 @@
       },
       "kind": "read",
       "name": "linear_schema",
-      "title": "Linear Schema"
+      "title": "Linear: Schema"
     },
     {
       "annotations": {
@@ -576,7 +576,7 @@
         "properties": {
           "max_chars": {
             "default": 24000,
-            "maximum": 64000,
+            "maximum": 1000000,
             "minimum": 1000,
             "type": "integer"
           },
@@ -597,7 +597,7 @@
       },
       "kind": "read",
       "name": "linear_query",
-      "title": "Linear Query"
+      "title": "Linear: Query"
     },
     {
       "annotations": {
@@ -617,7 +617,7 @@
           },
           "max_chars": {
             "default": 24000,
-            "maximum": 64000,
+            "maximum": 1000000,
             "minimum": 1000,
             "type": "integer"
           },
@@ -644,7 +644,7 @@
       },
       "kind": "write",
       "name": "linear_mutation",
-      "title": "Linear Mutation"
+      "title": "Linear: Mutation"
     }
   ]
 }

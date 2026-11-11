@@ -19,6 +19,8 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Archive fleet repositories
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -32,31 +34,38 @@ jobs:
           PY
 
           mkdir -p backups
-          DATE_STR="$(date +%Y-%m-%d)"
-          while IFS= read -r repo; do
-            [ -z "$repo" ] && continue
-            echo "=========================================="
-            echo "Cloning Simple-With-Us/${repo}"
-            if git clone --depth=1 "https://github.com/Simple-With-Us/${repo}.git" "backups/${repo}"; then
-              (
-                cd "backups/${repo}"
-                zip -rq "../${repo}-backup-${DATE_STR}.zip" . \
-                  -x "*/node_modules/*" -x "*/.git/*" -x "*/dist/*" -x "*/build/*"
-              )
-              rm -rf "backups/${repo}"
-              echo "Archive created: ${repo}-backup-${DATE_STR}.zip"
-            else
-              echo "Could not clone ${repo} (private or missing) — skipping"
-            fi
-          done < backup-repo-list.txt
+          # Authenticated full-history clone with the built-in GITHUB_TOKEN
+          # (contents: read):  an unauthenticated shallow clone cannot see
+          # private fleet repos and used to fail green,  so a missing repo
+          # was a silent gap in the offsite.  Full history keeps the backup
+          # a restore,  not a tip snapshot.
+          #
+          # AFC-682:  one failed target must not discard the archives that
+          # succeeded.  The script records failures, keeps the partial set,
+          # labels the artifact -PARTIAL via $GITHUB_ENV, and still exits
+          # non-zero so a partial run is never green.
+          python3 scripts/backup_repos.py \
+            --repo-list backup-repo-list.txt \
+            --outdir backups \
+            --date "$(date +%Y-%m-%d)"
 
-          echo "Created archives:"
-          ls -lh backups/ || true
-
+      # !cancelled() so the archives that succeeded still upload when the
+      # archive step failed with an ordinary non-zero exit, while a cancelled
+      # run skips the upload.  This is the docs-recommended alternative to
+      # always(), which runs even on cancel and which GitHub warns can hang
+      # until timeout:  docs.github.com/en/actions/reference/workflows-and-actions/expressions#status-check-functions
+      # The bounded timeout is the backstop, not a cancellation guarantee.
+      # The upload path is limited to the zips and the summary the script
+      # writes (the zip exclusions keep secrets out), so nothing unintended
+      # publishes.
       - name: Upload backup archives as artifacts
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
         uses: actions/upload-artifact@v7
         with:
-          name: fleet-repo-backups-${{ github.run_id }}
-          path: backups/*.zip
+          name: fleet-repo-backups-${{ github.run_id }}${{ env.BACKUP_ARTIFACT_SUFFIX }}
+          path: |
+            backups/*.zip
+            backups/BACKUP-SUMMARY.txt
           retention-days: 90
           if-no-files-found: error

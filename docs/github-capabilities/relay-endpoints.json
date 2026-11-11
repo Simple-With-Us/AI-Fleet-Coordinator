@@ -1,0 +1,444 @@
+{
+  "wf_commit_comment_create": [
+    "/repos/{...}/commits/{...}",
+    "/repos/{...}/commits/{...}/comments"
+  ],
+  "wf_commit_comment_update": [
+    "/repos/{...}/comments/{...}"
+  ],
+  "wf_commit_comment_delete": [
+    "/repos/{...}/comments/{...}"
+  ],
+  "wf_pr_commits_page": [
+    "/repos/{...}/pulls/{...}/commits?per_page={...}&page={...}"
+  ],
+  "wf_pr_review_get": [
+    "/repos/{...}/pulls/{...}/reviews/{...}"
+  ],
+  "wf_release_latest": [
+    "/repos/{...}/releases/latest"
+  ],
+  "wf_release_by_tag": [
+    "/repos/{...}/releases/tags/{...}"
+  ],
+  "wf_commit_comments_page": [
+    "/repos/{...}/commits/{...}/comments?per_page={...}&page={...}"
+  ],
+  "wf_commit_comment_get": [
+    "/repos/{...}/comments/{...}"
+  ],
+  "wf_pr_requested_reviewers": [
+    "/repos/{...}/pulls/{...}",
+    "/repos/{...}/pulls/{...}/requested_reviewers"
+  ],
+  "wf_repo_tags": [
+    "/repos/{...}/tags?per_page={...}&page={...}"
+  ],
+  "wf_repo_languages": [
+    "/repos/{...}/languages"
+  ],
+  "wf_issue_list": [
+    "/repos/{...}/issues?state={...}&per_page={...}"
+  ],
+  "wf_issue_get": [
+    "/repos/{...}/issues/{...}"
+  ],
+  "wf_issue_create": [
+    "/repos/{...}/issues"
+  ],
+  "wf_issue_update": [
+    "/repos/{...}/issues/{...}"
+  ],
+  "wf_issue_comment": [
+    "/repos/{...}/issues/{...}/comments"
+  ],
+  "wf_environments": [
+    "/repos/{...}/environments?per_page={...}&page={...}"
+  ],
+  "wf_environment_get": [
+    "/repos/{...}/environments/{...}"
+  ],
+  "wf_repo_variables": [
+    "/repos/{...}/actions/variables?per_page={...}&page={...}"
+  ],
+  "wf_repo_variable_get": [
+    "/repos/{...}/actions/variables/{...}"
+  ],
+  "wf_repo_variable_create": [
+    "/repos/{...}/actions/variables"
+  ],
+  "wf_repo_variable_update": [
+    "/repos/{...}/actions/variables/{...}"
+  ],
+  "wf_repo_variable_delete": [
+    "/repos/{...}",
+    "/repos/{...}/actions/variables/{...}"
+  ],
+  "wf_issue_parent": [],
+  "wf_issue_subissues": [],
+  "wf_issue_blocked_by": [],
+  "wf_issue_blocking": [],
+  "wf_issue_events": [],
+  "wf_issue_timeline": [],
+  "wf_issue_dependency_add": [],
+  "wf_issue_dependency_remove": [],
+  "wf_release_assets": [
+    "/repos/{...}/releases/{...}/assets?per_page={...}"
+  ],
+  "wf_release_asset_get": [
+    "/repos/{...}/releases/assets/{...}"
+  ],
+  "wf_release_asset_upload": [
+    "/repos/{...}/releases/{...}"
+  ],
+  "wf_release_asset_upload_binary": [
+    "/repos/{...}/releases/{...}"
+  ],
+  "wf_release_asset_delete": [
+    "/repos/{...}/releases/assets/{...}"
+  ],
+  "wf_release_asset_update": [
+    "/repos/{...}/releases/assets/{...}"
+  ],
+  "wf_release_asset_download": [
+    "/repos/{...}/releases/assets/{...}"
+  ],
+  "wf_artifact_download": [
+    "/repos/{...}/actions/artifacts/{...}",
+    "/repos/{...}/actions/artifacts/{...}/zip"
+  ],
+  "wf_run_logs": [
+    "/repos/{...}/actions/runs/{...}/logs"
+  ],
+  "wf_job_log": [
+    "/repos/{...}/actions/jobs/{...}/logs"
+  ],
+  "wf_review_submit": [
+    "/repos/{...}/pulls/{...}/reviews"
+  ],
+  "wf_review_inline": [
+    "/repos/{...}/pulls/{...}/comments"
+  ],
+  "wf_commit_statuses": [
+    "/repos/{...}/commits/{...}/statuses?per_page={...}"
+  ],
+  "wf_commit_status_create": [
+    "/repos/{...}/statuses/{...}"
+  ],
+  "wf_review_update": [
+    "/repos/{...}/pulls/{...}/reviews/{...}"
+  ],
+  "wf_review_dismiss": [
+    "/repos/{...}/pulls/{...}/reviews/{...}/dismissals"
+  ],
+  "wf_review_pending_delete": [],
+  "wf_review_comment_reply": [
+    "/repos/{...}/pulls/{...}/comments/{...}/replies"
+  ],
+  "wf_check_create": [
+    "/repos/{...}/check-runs"
+  ],
+  "wf_check_update": [
+    "/repos/{...}/check-runs/{...}"
+  ],
+  "wf_deployments": [
+    "/repos/{...}/deployments?per_page={...}"
+  ],
+  "wf_deployment_get": [
+    "/repos/{...}/deployments/{...}"
+  ],
+  "wf_deployment_statuses": [
+    "/repos/{...}/deployments/{...}/statuses?per_page={...}"
+  ],
+  "wf_deployment_create": [
+    "/repos/{...}/deployments"
+  ],
+  "wf_deployment_status_create": [
+    "/repos/{...}/deployments/{...}/statuses"
+  ],
+  "wf_deployment_delete": [
+    "/repos/{...}/deployments/{...}"
+  ],
+  "wf_milestones": [
+    "/repos/{...}/milestones?state={...}&per_page={...}"
+  ],
+  "wf_milestone_get": [
+    "/repos/{...}/milestones/{...}"
+  ],
+  "wf_milestone_create": [
+    "/repos/{...}/milestones"
+  ],
+  "wf_milestone_update": [
+    "/repos/{...}/milestones/{...}"
+  ],
+  "wf_milestone_delete": [
+    "/repos/{...}/milestones/{...}"
+  ],
+  "wf_branch_create": [
+    "/repos/{...}/git/refs"
+  ],
+  "wf_labels_set": [
+    "/repos/{...}/issues/{...}/labels"
+  ],
+  "wf_review_requests_add": [],
+  "wf_review_requests_remove": [],
+  "wf_review_requests_rerequest": [],
+  "wf_reviewers_request": [
+    "/repos/{...}/pulls/{...}/requested_reviewers"
+  ],
+  "wf_reviewers_remove": [
+    "/repos/{...}/pulls/{...}/requested_reviewers"
+  ],
+  "wf_release_create": [
+    "/repos/{...}/releases"
+  ],
+  "wf_release_update": [
+    "/repos/{...}/releases/{...}"
+  ],
+  "wf_issue_comment_update": [
+    "/repos/{...}/issues/comments/{...}"
+  ],
+  "wf_issue_comment_delete": [
+    "/repos/{...}/issues/comments/{...}"
+  ],
+  "wf_review_comment_update": [
+    "/repos/{...}/pulls/comments/{...}"
+  ],
+  "wf_review_comment_delete": [
+    "/repos/{...}/pulls/comments/{...}"
+  ],
+  "wf_release_list": [
+    "/repos/{...}/releases?per_page=50"
+  ],
+  "wf_release_get": [
+    "/repos/{...}/releases/{...}"
+  ],
+  "wf_release_delete": [
+    "/repos/{...}/releases/{...}"
+  ],
+  "wf_branch_update": [
+    "/repos/{...}",
+    "/repos/{...}/git/ref/heads/{...}"
+  ],
+  "wf_branch_delete": [
+    "/repos/{...}",
+    "/repos/{...}/git/ref/heads/{...}"
+  ],
+  "wf_tag_create": [],
+  "wf_tag_get": [],
+  "wf_tag_delete": [
+    "/repos/{...}/git/ref/tags/{...}"
+  ],
+  "wf_merge_queue_entry": [],
+  "wf_merge_queue_enqueue": [],
+  "wf_merge_queue_dequeue": [],
+  "wf_pr_draft": [],
+  "wf_pr_ready": [],
+  "wf_automerge_disable": [],
+  "wf_automerge_enable": [],
+  "wf_review_thread_resolve": [],
+  "wf_review_thread_unresolve": [],
+  "wf_review_threads": [],
+  "wf_assignees_add": [],
+  "wf_assignees_remove": [],
+  "wf_issue_lock": [],
+  "wf_issue_unlock": [],
+  "wf_label_create": [],
+  "wf_label_delete": [],
+  "wf_workflow_enable": [
+    "/repos/{...}/actions/workflows/{...}/enable"
+  ],
+  "wf_workflow_disable": [
+    "/repos/{...}/actions/workflows/{...}/disable"
+  ],
+  "wf_run_delete": [
+    "/repos/{...}/actions/runs/{...}"
+  ],
+  "wf_artifact_delete": [
+    "/repos/{...}/actions/artifacts/{...}"
+  ],
+  "wf_pr_get": [
+    "/repos/{...}/pulls/{...}"
+  ],
+  "wf_pr_reviews": [
+    "/repos/{...}/pulls/{...}/reviews?per_page={...}"
+  ],
+  "wf_pr_comments": [
+    "/repos/{...}/pulls/{...}/comments?per_page={...}"
+  ],
+  "wf_issue_comments": [
+    "/repos/{...}/issues/{...}/comments?per_page={...}"
+  ],
+  "wf_commit_get": [
+    "/repos/{...}/commits/{...}"
+  ],
+  "wf_compare": [
+    "/repos/{...}/compare/{...}...{...}"
+  ],
+  "wf_branch_get": [
+    "/repos/{...}/branches/{...}"
+  ],
+  "wf_repo_get": [
+    "/repos/{...}"
+  ],
+  "wf_labels": [
+    "/repos/{...}/labels?per_page={...}"
+  ],
+  "wf_workflows": [
+    "/repos/{...}/actions/workflows?per_page={...}"
+  ],
+  "wf_run_get": [
+    "/repos/{...}/actions/runs/{...}"
+  ],
+  "wf_run_artifacts": [
+    "/repos/{...}/actions/runs/{...}/artifacts?per_page={...}"
+  ],
+  "wf_label_update": [],
+  "wf_labels_add": [
+    "/repos/{...}/issues/{...}/labels",
+    "/repos/{...}/labels/{...}"
+  ],
+  "wf_pr_reviews_page": [],
+  "wf_pr_comments_page": [],
+  "wf_compare_commits_page": [
+    "/repos/{...}/compare/{...}...{...}?per_page={...}&page={...}"
+  ],
+  "wf_pr_list_page": [
+    "/repos/{...}/pulls?{...}"
+  ],
+  "wf_pr_list": [
+    "/repos/{...}/pulls?{...}"
+  ],
+  "wf_pr_files_page": [
+    "/repos/{...}/pulls/{...}",
+    "/repos/{...}/pulls/{...}/files?per_page={...}&page={...}"
+  ],
+  "wf_pr_files": [
+    "/repos/{...}/pulls/{...}/files?per_page={...}"
+  ],
+  "wf_file_get": [
+    "/repos/{...}/contents/{...}?ref={...}"
+  ],
+  "wf_tree": [
+    "/repos/{...}/git/trees/{...}?recursive=1"
+  ],
+  "wf_branches": [
+    "/repos/{...}/branches?per_page={...}"
+  ],
+  "wf_file_history": [
+    "/repos/{...}/commits?sha={...}&path={...}&per_page={...}&page={...}"
+  ],
+  "wf_commits": [
+    "/repos/{...}/commits?{...}"
+  ],
+  "wf_code_search": [
+    "/search/code?q={...}&per_page={...}"
+  ],
+  "wf_runs_page": [
+    "/repos/{...}/actions/runs?{...}"
+  ],
+  "wf_workflows_page": [
+    "/repos/{...}/actions/workflows?per_page={...}&page={...}"
+  ],
+  "wf_runs": [
+    "/repos/{...}/actions/runs?{...}"
+  ],
+  "wf_run_jobs": [
+    "/repos/{...}/actions/runs/{...}/jobs?per_page={...}"
+  ],
+  "wf_check_runs_page": [
+    "/repos/{...}/commits/{...}/check-runs?check_name={...}&filter=all&per_page={...}&page={...}"
+  ],
+  "wf_check_run_get": [
+    "/repos/{...}/check-runs/{...}"
+  ],
+  "wf_checks": [
+    "/repos/{...}/commits/{...}/check-runs?per_page={...}"
+  ],
+  "wf_update_branch": [
+    "/repos/{...}/pulls/{...}/update-branch"
+  ],
+  "wf_workflow_get": [
+    "/repos/{...}/actions/workflows/{...}"
+  ],
+  "wf_artifact_get": [
+    "/repos/{...}/actions/artifacts/{...}"
+  ],
+  "wf_artifacts_page": [
+    "/repos/{...}/actions/artifacts?per_page={...}&page={...}"
+  ],
+  "wf_caches_page": [
+    "/repos/{...}/actions/caches?per_page={...}&page={...}"
+  ],
+  "wf_cache_usage": [
+    "/repos/{...}/actions/cache/usage"
+  ],
+  "wf_run_attempt_get": [
+    "/repos/{...}/actions/runs/{...}/attempts/{...}"
+  ],
+  "wf_run_attempt_jobs": [
+    "/repos/{...}/actions/runs/{...}/attempts/{...}/jobs?per_page={...}&page={...}"
+  ],
+  "wf_run_pending_deployments": [
+    "/repos/{...}/actions/runs/{...}/pending_deployments"
+  ],
+  "wf_job_get": [],
+  "wf_job_rerun": [],
+  "wf_run_rerun_all": [],
+  "wf_run_force_cancel": [],
+  "wf_run_logs_delete": [],
+  "wf_run_rerun": [],
+  "wf_run_cancel": [],
+  "wf_run_approve": [],
+  "wf_git_blob_binary_get": [
+    "/repos/{...}/git/blobs/{...}"
+  ],
+  "wf_git_tree_create": [
+    "/repos/{...}/git/trees"
+  ],
+  "wf_git_commit_create": [
+    "/repos/{...}/git/commits"
+  ],
+  "wf_git_blob_get": [
+    "/repos/{...}/git/blobs/{...}"
+  ],
+  "wf_git_blob_create": [
+    "/repos/{...}/git/blobs"
+  ],
+  "wf_git_commit_get": [
+    "/repos/{...}/git/commits/{...}"
+  ],
+  "wf_git_tree_get": [
+    "/repos/{...}/git/trees/{...}"
+  ],
+  "wf_file_rename": [
+    "/repos/{...}",
+    "/repos/{...}/git/commits",
+    "/repos/{...}/git/commits/{...}",
+    "/repos/{...}/git/ref/heads/{...}",
+    "/repos/{...}/git/refs/heads/{...}",
+    "/repos/{...}/git/trees",
+    "/repos/{...}/git/trees/{...}"
+  ],
+  "wf_file_delete": [
+    "/repos/{...}",
+    "/repos/{...}/branches/{...}",
+    "/repos/{...}/contents/{...}"
+  ],
+  "wf_file_put": [
+    "/repos/{...}",
+    "/repos/{...}/contents/{...}"
+  ],
+  "wf_files_put": [
+    "/repos/{...}",
+    "/repos/{...}/git/blobs",
+    "/repos/{...}/git/commits",
+    "/repos/{...}/git/commits/{...}",
+    "/repos/{...}/git/ref/heads/{...}",
+    "/repos/{...}/git/refs/heads/{...}",
+    "/repos/{...}/git/trees"
+  ],
+  "wf_merge_guarded": [
+    "/repos/{...}/pulls/{...}/merge"
+  ]
+}

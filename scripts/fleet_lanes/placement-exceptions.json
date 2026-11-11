@@ -1,0 +1,616 @@
+{
+  "version": 1,
+  "notes": "Checkouts the Lane Map does not place but that have a recorded reason.  Schema, and what each class excuses: fleet_lanes/placement.py.  Patterns use root tokens and never a server volume path.  A row past `expires` stops excusing anything.  Dates are staggered so the rows never lapse together, and the doctor warns 30 days ahead.",
+  "exceptions": [
+    {
+      "id": "service-botfleet-server-mac",
+      "pattern": "{apps}/botfleet-server",
+      "class": "service",
+      "creator": "botfleet",
+      "reason": "The Mac BotFleet service runs from this clone, through its launchd job and start script.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-02-04",
+      "hosts": [
+        "mac"
+      ]
+    },
+    {
+      "id": "service-clutch-runtime",
+      "pattern": "{apps}/clutch-runtime",
+      "class": "service",
+      "creator": "clutch",
+      "reason": "The Clutch web service and its auto-update job run from this clone.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-02-18",
+      "hosts": [
+        "mac"
+      ]
+    },
+    {
+      "id": "service-simple-tools-runtime",
+      "pattern": "{lanes}/_managed/fleet/simple-tools-runtime",
+      "class": "service",
+      "creator": "afc",
+      "reason": "Launchd jobs, a running process, the simple-chat CLI and its runtime-sync job use this managed runtime checkout.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-03-04",
+      "hosts": [
+        "mac"
+      ]
+    },
+    {
+      "id": "service-kodus-config-clones",
+      "pattern": "{lanes}/Kodus-Config",
+      "class": "service",
+      "creator": "afc",
+      "reason": "This repo has no integration tree under the Code root, so a linked worktree has nothing to hang from and its lanes are full clones until it gets one.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-02-18",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "service-botfleet-server-clone",
+      "pattern": "{code}/BotFleet-server",
+      "class": "service",
+      "creator": "botfleet",
+      "reason": "Pinned service clone: the BotFleet server unit runs from it and deploys choose its commit, so it is meant to sit off the default branch.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-03-04",
+      "hosts": [
+        "server"
+      ]
+    },
+    {
+      "id": "service-fleet-ops-clone",
+      "pattern": "{code}/Fleet-OPS",
+      "class": "service",
+      "creator": "afc",
+      "reason": "Private repo with no GitHub credential on this host, by the owner's choice:  code-main-sync cannot fetch it, so the clone stays where it is and agents read Fleet-OPS through the fleet GitHub tools.",
+      "decided_by": "Jay, Nov 5, 2026",
+      "decided_on": "2026-11-05",
+      "expires": "2027-02-18",
+      "hosts": [
+        "server"
+      ]
+    },
+    {
+      "id": "service-fleet-cli-repo",
+      "pattern": "{home}/.local/share/fleet-cli",
+      "class": "service",
+      "creator": "afc",
+      "reason": "The fleet CLI updater owns this AFC clone and its release copies.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-02-04",
+      "hosts": [
+        "server"
+      ]
+    },
+    {
+      "id": "service-botfleet-workspaces-mac",
+      "pattern": "{home}/.botfleet/workspaces",
+      "class": "service",
+      "creator": "botfleet",
+      "reason": "BotFleet owns its bot workspaces; bots clone into them.  Work saved there is handled by the batch plan.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-02-18",
+      "hosts": [
+        "mac"
+      ]
+    },
+    {
+      "id": "service-botfleet-workspaces-server",
+      "pattern": "{apps}/runtime/botfleet-server/data/workspaces",
+      "class": "service",
+      "creator": "botfleet",
+      "reason": "The BotFleet server data directory owns its bot workspaces.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-03-04",
+      "hosts": [
+        "server"
+      ]
+    },
+    {
+      "id": "backup-botfleet-migration",
+      "pattern": "{home}/BotFleet-migration-backups",
+      "class": "backup",
+      "creator": "botfleet",
+      "reason": "Data copies from the BotFleet migrations of Oct 30 and 31.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-05-13",
+      "hosts": [
+        "mac"
+      ]
+    },
+    {
+      "id": "tool-codex-tmp",
+      "pattern": "{home}/.codex/.tmp",
+      "class": "tool-cache",
+      "creator": "codex",
+      "reason": "Codex staging for marketplace and plugin clones.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-03-18",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "tool-codex-plugins",
+      "pattern": "{home}/.codex/plugins",
+      "class": "tool-cache",
+      "creator": "codex",
+      "reason": "Codex plugin source staging and cache.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-04-01",
+      "hosts": [
+        "mac"
+      ]
+    },
+    {
+      "id": "tool-codex-memories",
+      "pattern": "{home}/.codex/memories",
+      "class": "tool-cache",
+      "creator": "codex",
+      "reason": "Codex keeps its memories in a private git repo.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-04-15",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "tool-claude-plugins",
+      "pattern": "{home}/.claude/plugins",
+      "class": "tool-cache",
+      "creator": "claude",
+      "reason": "Claude plugin marketplaces and cache.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-03-18",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "tool-claude-remote-plugins",
+      "pattern": "{home}/.claude/remote/plugins",
+      "class": "tool-cache",
+      "creator": "claude",
+      "reason": "Claude remote plugin clones.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-04-01",
+      "hosts": [
+        "server"
+      ]
+    },
+    {
+      "id": "tool-grok-installed-plugins",
+      "pattern": "{home}/.grok/installed-plugins",
+      "class": "tool-cache",
+      "creator": "grok",
+      "reason": "Grok plugin clones.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-04-15",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "tool-grok-marketplace-cache",
+      "pattern": "{home}/.grok/marketplace-cache",
+      "class": "tool-cache",
+      "creator": "grok",
+      "reason": "Grok marketplace cache.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-03-18",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "tool-kimi-plugins",
+      "pattern": "{home}/.kimi-code/plugins",
+      "class": "tool-cache",
+      "creator": "kimi",
+      "reason": "Kimi plugin clones.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-04-01",
+      "hosts": [
+        "mac"
+      ]
+    },
+    {
+      "id": "tool-antigravity-brain",
+      "pattern": "{home}/.gemini/antigravity-cli/brain",
+      "class": "tool-cache",
+      "creator": "antigravity",
+      "reason": "Antigravity keeps its CLI state in a git repo.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-04-15",
+      "hosts": [
+        "mac"
+      ]
+    },
+    {
+      "id": "tool-cursor-plugins",
+      "pattern": "{home}/.cursor/plugins/cache",
+      "class": "tool-cache",
+      "creator": "cursor",
+      "reason": "Cursor plugin cache.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-03-18",
+      "hosts": [
+        "server"
+      ]
+    },
+    {
+      "id": "tool-cli-state-copies",
+      "pattern": "{apps}/cli-state",
+      "class": "tool-cache",
+      "creator": "afc",
+      "reason": "Separate tool state copies of the plugin and memory repos above.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-04-01",
+      "hosts": [
+        "server"
+      ]
+    },
+    {
+      "id": "build-sourcepackages-checkouts",
+      "pattern": "**/SourcePackages/checkouts",
+      "class": "third-party-build",
+      "creator": "swiftpm",
+      "reason": "SwiftPM dependency checkouts in DerivedData, congress-trading-shared among them.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-04-29",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "build-sourcepackages-repositories",
+      "pattern": "**/SourcePackages/repositories",
+      "class": "third-party-build",
+      "creator": "swiftpm",
+      "reason": "SwiftPM dependency mirrors in DerivedData.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-04-29",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "build-spm-checkouts",
+      "pattern": "**/.build/checkouts",
+      "class": "third-party-build",
+      "creator": "swiftpm",
+      "reason": "SwiftPM dependency checkouts in a package build folder.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-04-29",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "build-spm-repositories",
+      "pattern": "**/.build/repositories",
+      "class": "third-party-build",
+      "creator": "swiftpm",
+      "reason": "SwiftPM dependency mirrors in a package build folder.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-04-29",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "build-spm-cache",
+      "pattern": "{home}/Library/Caches/org.swift.swiftpm",
+      "class": "third-party-build",
+      "creator": "swiftpm",
+      "reason": "The SwiftPM global repository cache.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-04-29",
+      "hosts": [
+        "mac"
+      ]
+    },
+    {
+      "id": "personal-documents",
+      "pattern": "{home}/Documents",
+      "class": "personal",
+      "creator": "owner",
+      "reason": "The owner's own older repos, outside the fleet.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-05-27",
+      "hosts": [
+        "mac"
+      ]
+    },
+    {
+      "id": "trash-linux",
+      "pattern": "{home}/.local/share/Trash",
+      "class": "trash",
+      "creator": "system",
+      "reason": "Deleted test fixtures such as ship-gate-test; the Trash is not a home for work.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-06-10",
+      "hosts": [
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-npm-cache",
+      "pattern": "{home}/.npm/_cacache",
+      "class": "package-manager",
+      "creator": "npm",
+      "reason": "npm clones a git dependency here before it packs it.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-06-24",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-pnpm-store-mac",
+      "pattern": "{home}/Library/pnpm/store",
+      "class": "package-manager",
+      "creator": "pnpm",
+      "reason": "pnpm clones a git dependency into its store's tmp folder.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-06-24",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-pnpm-store-linux",
+      "pattern": "{home}/.local/share/pnpm/store",
+      "class": "package-manager",
+      "creator": "pnpm",
+      "reason": "pnpm clones a git dependency into its store's tmp folder.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-06-24",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-yarn-cache-mac",
+      "pattern": "{home}/Library/Caches/Yarn",
+      "class": "package-manager",
+      "creator": "yarn",
+      "reason": "Yarn clones a git dependency into its cache's .tmp folder.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-07-08",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-yarn-cache-linux",
+      "pattern": "{home}/.cache/yarn",
+      "class": "package-manager",
+      "creator": "yarn",
+      "reason": "Yarn clones a git dependency into its cache's .tmp folder.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-07-08",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-bun-cache",
+      "pattern": "{home}/.bun/install/cache",
+      "class": "package-manager",
+      "creator": "bun",
+      "reason": "Bun keeps a bare copy of a git dependency in its install cache.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-07-08",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-uv-cache",
+      "pattern": "{home}/.cache/uv/git-v0",
+      "class": "package-manager",
+      "creator": "uv",
+      "reason": "uv keeps a git dependency's database and checkouts in its cache.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-07-22",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-homebrew-taps",
+      "pattern": "**/Library/Taps",
+      "class": "package-manager",
+      "creator": "homebrew",
+      "reason": "Homebrew clones a tap here, the fleet's own tap included.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-07-22",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-pip-build",
+      "pattern": "**/pip-req-build-*",
+      "class": "package-temp",
+      "creator": "pip",
+      "reason": "pip clones a git dependency into a temp build folder.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-08-05",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-pip-install",
+      "pattern": "**/pip-install-*",
+      "class": "package-temp",
+      "creator": "pip",
+      "reason": "pip's temp install folder, which can hold a git dependency.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-08-05",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-pnpm-temp",
+      "pattern": "**/_tmp_*",
+      "class": "package-temp",
+      "creator": "pnpm",
+      "reason": "pnpm's temp clone, when its store is not on hand.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 audit; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-08-05",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-pip-editable",
+      "pattern": "**/.venv/src",
+      "class": "package-manager",
+      "creator": "pip",
+      "reason": "`pip install -e git+...` clones into the venv's src folder.  The shim spells any real venv as .venv for this row.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 review; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-08-05",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-homebrew-cache-mac",
+      "pattern": "{home}/Library/Caches/Homebrew",
+      "class": "package-manager",
+      "creator": "homebrew",
+      "reason": "Homebrew clones a head or git formula into its download cache.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 review; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-08-05",
+      "hosts": [
+        "mac"
+      ]
+    },
+    {
+      "id": "pkg-homebrew-cache-linux",
+      "pattern": "{home}/.cache/Homebrew",
+      "class": "package-manager",
+      "creator": "homebrew",
+      "reason": "Homebrew clones a head or git formula into its download cache.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 review; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-08-05",
+      "hosts": [
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-yarn-berry-temp",
+      "pattern": "**/xfs-*",
+      "class": "package-temp",
+      "creator": "yarn",
+      "reason": "Yarn Berry's temp clone of a git dependency.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 review; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-08-05",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "temp-build-homebrew-source",
+      "pattern": "**/tmp/*-20??????-*",
+      "class": "temp-build",
+      "creator": "homebrew",
+      "reason": "Homebrew builds a formula from source in a temp folder named for the formula and the date, and removes it when the install ends.",
+      "decided_by": "CLAUDE, seeded with the temp-build rule (AFC-618); the owner reviews at expiry",
+      "decided_on": "2026-11-07",
+      "expires": "2027-05-07",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "temp-build-cargo-install",
+      "pattern": "**/cargo-install*",
+      "class": "temp-build",
+      "creator": "cargo",
+      "reason": "`cargo install` builds in a temp target folder of its own and removes it when the install ends.",
+      "decided_by": "CLAUDE, seeded with the temp-build rule (AFC-618); the owner reviews at expiry",
+      "decided_on": "2026-11-07",
+      "expires": "2027-05-21",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    }
+  ]
+}

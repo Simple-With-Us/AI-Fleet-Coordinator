@@ -1,6 +1,8 @@
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Daily Qdrant snapshots (socratic-trade + fleet-agents) -> /data/backups/qdrant -> Backblaze B2.
-# 03:20 UTC: after Socratic.Trade's post-close jobs, before the Hetzner host backup window (14-18 UTC).
+# Host clock is America/Chicago (Jay 2026-10-30), so this is 10:20pm Central (was 03:20 UTC):
+# after Socratic.Trade's post-close jobs, before the Hetzner host backup window.
 # Health rows (snapshot age, ingest sentinel) run from fleet-health-verify.sh every 15 minutes.
-20 3 * * * root /usr/local/sbin/fleet-qdrant-snapshot.sh >> /var/log/fleet-backup/cron-qdrant.log 2>&1
+# Jay 2026-09-04: local 2, remote 2 days (was 3). Echo 2026-10-17: local 1, approved by Jay 2026-10-17 ~5:18 CT. ~6G/day socratic-trade.
+20 22 * * * root QDRANT_KEEP_LOCAL=1 QDRANT_KEEP_REMOTE_DAYS=2 /usr/local/sbin/fleet-qdrant-snapshot.sh >> /var/log/fleet-backup/cron-qdrant.log 2>&1

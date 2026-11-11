@@ -6,7 +6,7 @@ description: >-
 
 # Fleet mode
 
-> **Runtime (Clutch).**  Clutch runs the DSH engine (`clutch`, pm2 `clutch-web`, the Clutch Mac app).  The engine finds skills in `~/.clutch/dsh/skills` before the shared `~/.agents/skills` pack it also reads, so this pack shadows that one.  It loads `~/.clutch/dsh/AGENTS.md` and then the project `AGENTS.md` chain, and reads neither `~/AGENTS.md` nor `~/.claude/CLAUDE.md`.  Start `clutch` inside a lane (`~/apps/lanes/Clutch/clutch-<slug>`).  A seat a launcher assigned (BotFleet, a bridge) beats the CLUTCH default.
+> **Runtime (Clutch).**  Clutch runs the DSH engine (`clutch`, pm2 `clutch-web`, the Clutch Mac app).  The engine finds skills in `~/.clutch/dsh/skills` before the shared `~/.agents/skills` pack it also reads, so this pack shadows that one.  It loads `~/.clutch/dsh/AGENTS.md` and then the project `AGENTS.md` chain, and reads neither `~/AGENTS.md` nor `~/.claude/CLAUDE.md`.  Start `clutch` inside a lane (`~/apps/lanes/Clutch/clutch-<slug>`).  A seat a launcher assigned (BotFleet, a bridge) beats the CLUTCH default.
 
 
 Fleet mode is not a special mode.  It is how every agent on this fleet is expected to work by default, on every platform, forever.  The trigger phrases exist only to *remind* an agent that has drifted back into grinding everything inline.
@@ -27,6 +27,8 @@ Where the two pull apart, say so rather than silently optimising for cost.
 **Pick the most affordable sufficiently competent model.**  *Sufficiently competent* means at least a 90% chance it finishes the task for no more total tokens than a pricier model would have needed.  Below that confidence, go up a tier.  Compare **total tokens for the finished task**, never price per token — a cheap model that needs three attempts already cost more than one competent attempt, plus the owner's time waiting for an answer that was not coming.
 
 **Escalate as freely as you delegate down.**  A money-path kernel, an ambiguous design call, or a security-subtle diff deserves a frontier child even from a cheap session.  If you can *name* a reason you will likely struggle, hand it up before burning turns — not after five failed attempts.
+
+A parent may choose a subagent that is more capable, higher-tier, or more expensive than itself whenever the task warrants it.  The parent model’s tier or price is not a ceiling.  Keep the expensive assignment narrow and provide only the context and tools it needs, where the platform allows.  A smaller context and toolset may reduce total cost, but savings are not guaranteed; the capability the task needs is sufficient reason to escalate.
 
 **Keep turns short.**  Twenty tool calls inline makes you unreachable for the whole grind, and the owner's next message either waits or lands mid-run and derails it.  Spawn workers and return.  End turns often rather than batching into one long one.
 

@@ -8,6 +8,7 @@ the Zulip topic `OWNER <ID> <subject>` that mentions Jay.  `list` and `status` r
 Modules:
   f3        the F3 helpers (textsafe, secretscan, identity) loaded by file path, never by package import
   text      cleaning and normalizing caller text, the uid hash, the topic name, the emoji
+  bar       the owner bar:  reason classes, the mode and daily-cap knobs, the per-host filings count
   block     the fixed description block:  render and strict parse
   records   the comment formats that record a notice, a pending notice and an owner reply
   safety    the secret and personal-data refusals that run before anything is sent

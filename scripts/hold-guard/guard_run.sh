@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# hold-guard orchestration: disarm-first, evaluate, repair, report, publish
+# hold-guard orchestration: evaluate, conditionally disarm, repair, report, publish
 # the merge-gate check.  Executed by hold-guard.yml AND by the integration
 # tests (test_guard_integration.py runs THIS script against a fake gh), so
 # the tested code is the shipped code.
@@ -77,26 +77,36 @@ if [ -z "$PR" ]; then
 fi
 prs=("$PR")
 
-# 1. Disarm any armed auto-merge FIRST (disarming never merges).
-#    Fleet contract (ST scripts/disable-pr-automerge.sh, ported inline into
-#    AFC auto-merge-reusable.yml disarm job): success is defined by the
-#    STATE READ (`gh pr view --json autoMergeRequest`), not by the mutation
-#    exit code.  off = benign (disarmed or never armed); armed or
-#    unreadable after the attempt = critical failure.  The failure is kept in
-#    $disarm_error, which settles the published conclusion as well as the
-#    job: a pull request that can still merge itself is not one a green
-#    gate may vouch for, whatever the hold state says.
-gh pr merge --disable-auto "$PR_URL" 2>&1 | head -3 || true
-state="$(gh pr view "$PR_URL" --json autoMergeRequest \
-  --jq 'if .autoMergeRequest == null then "off" else "armed" end' 2>/dev/null || true)"
-[ -n "$state" ] || state=unreadable
+# Disarm only when a hold or critical error requires it. A clear PR may
+# keep legitimate auto-merge armed; the guard must not create a hold itself.
+# State readback remains authoritative when disarming is required.
 disarm_error=""
-case "$state" in
-  off) : ;;
-  *) echo "::error::auto-merge state after disarm attempt: $state ($PR_URL)"
-     any_error=1
-     disarm_error="auto-merge is $state after the disarm attempt" ;;
-esac
+disarm_attempted=0
+ensure_disarmed() {
+  [ "$disarm_attempted" -eq 1 ] && return
+  disarm_attempted=1
+  gh pr merge --disable-auto "$PR_URL" 2>&1 | head -3 || true
+  state="$(gh pr view "$PR_URL" --json autoMergeRequest \
+    --jq 'if .autoMergeRequest == null then "off" else "armed" end' 2>/dev/null || true)"
+  [ -n "$state" ] || state=unreadable
+  case "$state" in
+    off) : ;;
+    *) echo "::error::auto-merge state after disarm attempt: $state ($PR_URL)"
+       any_error=1
+       disarm_error="auto-merge is $state after the disarm attempt" ;;
+  esac
+}
+
+# Fast current-label signal: disarm visible holds before expensive paginated
+# timeline ownership evaluation. Errors also disarm, never a false-clear.
+# Removed-but-unreleased historical holds still require timeline recovery.
+if signal="$(python3 "$DIR/hold_guard.py" "$REPO" "$PR" --hold-signal)" &&
+   signal_state="$(printf '%s' "$signal" | jq -er '.held | if type == "boolean" then tostring else error("invalid hold signal") end')"; then
+  [ "$signal_state" = true ] && ensure_disarmed
+else
+  any_error=1; read_error="current hold signal error"
+  ensure_disarmed
+fi
 
 # 2. Evaluate holds (fail closed per PR).
 combined='[]'
@@ -118,6 +128,15 @@ for pr in "${prs[@]}"; do
   echo "$out" > "$SCRATCH/hold-guard-$pr.json"
   combined="$(jq -s --arg pr "$pr" '.[0] + [ .[1].holds[]? | . + {pr: $pr} ]' <(echo "$combined") <(echo "$out"))"
 done
+
+# Evaluate before mutation: active holds and evaluation errors disarm
+# before repair. A later hold/read failure is caught again before publish.
+if ! hold_count="$(printf '%s' "$combined" | jq -er 'if type == "array" then length else error("invalid hold list") end')"; then
+  any_error=1; read_error="invalid hold evaluation"; hold_count=0
+fi
+if [ "$any_error" -eq 1 ] || [ "$hold_count" -gt 0 ]; then
+  ensure_disarmed
+fi
 
 # 3. Repairs + reports (labels via jq-built JSON, never word-split).
 #    Pipelines run in subshells; failures are recorded via marker file and
@@ -233,6 +252,15 @@ else
   echo "::error::could not list merge-gate runs for $HEAD_SHA"
   any_error=1
   [ -n "$read_error" ] || read_error="check-run listing error"
+fi
+
+# The fence can discover a newly placed hold, and the final check listing
+# can fail after an initially clear evaluation. Both still require disarm.
+if ! hold_count="$(printf '%s' "$fresh" | jq -er 'if type == "array" then length else error("invalid hold list") end')"; then
+  any_error=1; read_error="invalid fresh hold evaluation"; hold_count=0
+fi
+if [ "$any_error" -eq 1 ] || [ "$hold_count" -gt 0 ]; then
+  ensure_disarmed
 fi
 
 if [ -n "$read_error" ]; then

@@ -846,17 +846,11 @@ class LinkifyTests(LinkifyTestCase):
         self.assertIn("fl/tools</code>", out)
 
     def test_every_live_project_reference_becomes_a_link(self):
-        #  the eight P-* rules of the live Zulip set, each coded by hand like P-BF-6
-        refs = {
-            "P-AFC-7": "muster-fleet-admin-mac-app-9c28cf61dcc8",
-            "P-AFC-8": "fleet-gitops-272cdd72e951",
-            "P-BF-1": "system-prompt-receipt-port-bf-1411-cc08b4cf163b",
-            "P-BF-6": "botfleet-native-macos-rewrite-5afcbc055535",
-            "P-CTS-5": "cts-shared-dependency-a04bf2274b2d",
-            "P-OPS-2": "mac-resource-mgmt-22f992634f02",
-            "P-OPS-4": "fleet-hygiene-cross-team-32fd751b0b36",
-            "P-SWU-3": "public-websites-6e26b4c70c72",
-        }
+        #  every project the Notes script codes (AFC-565 generates PROJECT_PATHS from Linear, ID-only)
+        import test_notes_zulip_linkifier_parity as parity
+
+        refs = parity.notes_project_paths(parity.shell_text())
+        self.assertIn("P-BF-6", refs)
         out = self.html("[AFC, MM] Notes", "The plan covers " + ", ".join(refs) + ".")
         base = "https://" + LINEAR_HOST + "/" + LINEAR_WORKSPACE + "/project/"
         for ref, slug in refs.items():

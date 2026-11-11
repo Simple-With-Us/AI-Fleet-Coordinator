@@ -121,6 +121,14 @@ class NearDuplicateTests(GuardBase):
         self.assertIn({"key": "source", "match": {"value": "agent-contribution"}}, flt["must"])
         self.assertEqual(flt["must_not"], [recall_api.meta_exclude()])
 
+    def test_retracted_contribution_still_blocks_a_near_duplicate(self):
+        point = add_contrib(EXISTING)
+        point["payload"]["retracted"] = True
+        ScoredFake.scores[EXISTING] = 0.99
+        res = contribute_guard.near_duplicate(self.cfg, self.q, "pm2 start ignores env changes; use --update-env.")
+        self.assertTrue(res["duplicate"])
+        self.assertEqual(res["existing"]["doc_id"], "contrib/GROK/2026-09-01/abcd1234")
+
     def test_excerpt_is_capped_at_200_chars_and_whitespace_collapsed(self):
         long = "word " * 100 + "\n\nend"
         add_contrib(long)

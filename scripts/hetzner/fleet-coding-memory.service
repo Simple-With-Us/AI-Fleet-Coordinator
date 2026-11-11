@@ -1,0 +1,23 @@
+[Unit]
+Description=Low-priority coding memory controller
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=/etc/fleet-coding-memory/environment
+LoadCredential=infisical-token:/etc/fleet-coding-memory/read-token
+ExecStart=/usr/bin/python3 /usr/local/lib/fleet-coding-memory/fleet_coding_memory.py
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=35
+UMask=0077
+StateDirectory=fleet-coding-memory
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+ProtectSystem=full
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

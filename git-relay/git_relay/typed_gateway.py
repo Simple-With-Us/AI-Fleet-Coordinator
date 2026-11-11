@@ -3,6 +3,7 @@
 Injected only in offline contract tests until review and host qualification.
 """
 
+from .audit import UnauthorizedAuditor
 from .outcomes import OutcomeStoreError, key_for
 from .typed_disarm import PreflightUnavailable, RateLimited, Refused, TypedDisarm
 
@@ -15,6 +16,7 @@ class TypedGateway:
             raise ValueError("durable outcomes required")
         self.policy, self.client, self.minter = policy, client, minter
         self.audit, self.outcomes = audit, outcomes
+        self._unauth_auditor = UnauthorizedAuditor()
 
     def _release_prewrite(self, key):
         if key is None:
@@ -26,9 +28,10 @@ class TypedGateway:
             # Reservation stays held when durability cannot be confirmed.
             return False
 
-    def handle(self, token, action, args):
-        seat = self.policy.authenticate(token)
+    def handle(self, token, action, args, proof=None):
+        seat = self.policy.authenticate(token, proof)
         if seat is None:
+            self._unauth_auditor.record(self.audit, action)
             return 401, {"error": "unauthenticated"}
         key = None
         repo = ""
