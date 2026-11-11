@@ -1337,13 +1337,14 @@ def sanitize_compose_mentions(text: str) -> str:
 
     The Zulip wildcard mentions (@**all**, @**everyone**, @**stream**, @**channel**,
     @**topic**) share the @**..** shape of a user mention but notify a whole stream, so
-    they are made silent like every other loud form this composer does not intend."""
-    text = _WILDCARD_RE.sub(lambda m: "@_**" + m.group(1) + "**", text)
+    they are made silent like every other loud form this composer does not intend.  Group
+    removal runs first, because removing a group can rebuild a wildcard (@@*x***all**)."""
     while True:
         changed = _GROUP_RE.sub("", text)
         if changed == text:
             break
         text = changed
+    text = _WILDCARD_RE.sub(lambda m: "@_**" + m.group(1) + "**", text)
     return _LOUD_SINGLE_STAR_RE.sub("@_*", text)
 
 

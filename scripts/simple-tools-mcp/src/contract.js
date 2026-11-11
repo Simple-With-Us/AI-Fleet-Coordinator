@@ -407,6 +407,7 @@ const MENTION_RE = /@(?!_)\*\*/g;
 const GROUP_RE = /@_?\*(?!\*)[^*\n]{1,100}\*/g;
 const LOUD_RE = /@(?!_)\*/g;
 const LOUD_SINGLE_STAR_RE = /@(?!_)\*(?!\*)/g;
+const WILDCARD_RE = /@\*\*(all|everyone|stream|channel|topic)\*\*/gi;
 
 /** @**X** becomes silent @_**X**;  group mentions are removed, until stable. */
 export function neutralizeMentions(text) {
@@ -418,14 +419,15 @@ export function neutralizeMentions(text) {
   return text.replace(LOUD_RE, "@_*");
 }
 
-/** Group mentions are removed and stray @* tokens silenced;  @** user mentions stay loud (AFC-689). */
+/** Group mentions are removed, wildcards and stray @* tokens silenced;  @** user mentions stay loud (AFC-689).
+ * Group removal runs first, because removing a group can rebuild a wildcard (@@*x***all**). */
 export function sanitizeComposeMentions(text) {
   for (;;) {
     const changed = text.replace(GROUP_RE, "");
     if (changed === text) break;
     text = changed;
   }
-  return text.replace(LOUD_SINGLE_STAR_RE, "@_*");
+  return text.replace(WILDCARD_RE, "@_**$1**").replace(LOUD_SINGLE_STAR_RE, "@_*");
 }
 
 // ---------------------------------------------------------------- seats and tags (cli.py, zulip.py)

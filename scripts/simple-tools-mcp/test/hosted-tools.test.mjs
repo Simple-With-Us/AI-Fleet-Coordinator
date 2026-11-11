@@ -178,7 +178,7 @@ test("fixtures:  secret (refused before any request, naming the field)", async (
   assert.match(reply.message, /a loaded credential/);
 });
 
-test("fixtures:  mentions (raw mentions silenced, wildcards and groups neutralized), and `to`", async () => {
+test("fixtures:  mentions (user mentions kept, wildcards silenced, groups removed), and `to`", async () => {
   const { fake, tools } = harness();
   for (const [n, c] of fixtures("mentions").entries()) {
     structured(await tools.call("zulip_post", { channel: "sandbox", topic: `m${n}`, text: c.input }), "zulip_post");

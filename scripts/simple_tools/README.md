@@ -258,7 +258,7 @@ The listener is one always-on daemon per machine (`simple-chat daemon run` under
 - **Zulip text is fenced.**  It comes back between `BEGIN_UNTRUSTED_ZULIP nonce=…` and `END_UNTRUSTED_ZULIP nonce=…` lines, one JSON object per item.  `structuredContent` holds integers only.
 - **Writes** get the CLI's tag, lease and ledger.  On top of the CLI's checks:
   - The secret scan also covers the topic and channel.
-  - Raw mentions are made silent, so only `to` wakes anyone.
+  - Group mentions are removed and wildcard mentions are made silent.  An `@**user**` mention in the text stays as written, and `to` adds one for each peer it names.
   - Writes are spaced 3 seconds apart per seat.
   - An `idempotency_key`, or the same post repeated within 10 minutes, never posts twice.  After `outcome_unknown`, a retry first looks for the earlier attempt.
 - **Credentials follow the CLI's order, with a stricter identity check.**  The key comes from `--rc`, then `ZULIP_RC`, then the seat's own three names in Infisical Fleet-OPS `/zulip` (every other identity reads its own three names there too), so a launcher's `ZULIP_RC` wins.  The `ZULIP_EMAIL`/`ZULIP_API_KEY`/`ZULIP_SITE` triple and `SIMPLE_TOOLS_SECRETS_DIR` are ignored, and nothing under `~/.secrets` is read (AFC-359).  The seat follows the precedence above, never read from the file:  at startup `users/me` must be a bot, must sign as the seat, and must have the moderator or member role, or the server exits 3.  So another bot's rc file is refused.
