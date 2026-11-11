@@ -89,7 +89,7 @@ class ListenerSecondaryKeyTests(unittest.TestCase):
         self.assertEqual(primary_calls[0][1]["expected_paths"], ("/zulip", MODULE.OPERATOR_PATH))
 
     def test_zc_key_comes_from_the_secondary_project_and_its_url_from_the_primary(self):
-        zc_url = "http://100.100.100.100:8791/wake/ZC"
+        zc_url = "http://example.test:8791/wake/ZC"
         calls = []
 
         def fetch(env, **kwargs):

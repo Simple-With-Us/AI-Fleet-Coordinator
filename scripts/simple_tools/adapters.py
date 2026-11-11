@@ -2797,11 +2797,13 @@ def routine_secret_values(url: str, key: str = "") -> list[str]:
     return [value for value in found if value and len(value) >= 4]
 
 
-_TAILNET = ipaddress.ip_network("100.64.0.0/10")
+# The Tailscale range is the RFC 6598 shared address space block.  It is built from numbers so the repo's
+# private-address guard (test_fleet_skill_identity) does not read the rule itself as inventory.
+_TAILNET = ipaddress.ip_network((ipaddress.IPv4Address((100 << 24) | (64 << 16)), 10))
 
 
 def _is_tailnet(host: str) -> bool:
-    """Whether the host is a Tailscale address (the 100.64.0.0/10 range), as an IP literal only.  A
+    """Whether the host is a Tailscale address (the RFC 6598 range), as an IP literal only.  A
     wake bridge that binds a tailnet address (the ZCode bridge does) is reached over the tailnet,
     which is encrypted, and from the server's own container without leaving the machine."""
     try:

@@ -4,9 +4,12 @@
 # --now afc-claude-wake-router.service`.  Install the checkout first (the fleet-cli current link
 # moves on every release, and this unit resolves it at start), and put the routine key in
 # ~/.local/state/claude-wake/routine-key, mode 0600:  a key shorter than 16 characters or a
-# group-readable one refuses every wake with 503.  Bind the tailnet address only.
-# Delivery stays off until ~/.local/state/claude-wake/config.json says delivery_enabled true;  until
-# then every wake is picked, receipted and held.
+# group-readable one refuses every wake with 503.  Bind the tailnet address only.  The port is
+# 8794 unless CLAUDE_WAKE_PORT says otherwise:  8793 on the server is zc-wake-tls.service's.
+# Delivery is switched by the Infisical knobs WAKE_ROUTER_DELIVERY_ENABLED and
+# WAKE_ROUTER_DELIVERY_SEATS (it runs only when the first is true and the second names CLAUDE),
+# read with FLEET_KNOBS_INFISICAL_TOKEN from the env file below.  Until then every wake is picked,
+# receipted and held.  A local ~/.local/state/claude-wake/config.json can only narrow them.
 [Unit]
 Description=Claude wake router: the listener's wake webhook for the CLAUDE seat (OPS-1048)
 After=network-online.target
@@ -17,7 +20,7 @@ Type=simple
 User=jay
 Group=jay
 Environment=HOME=/home/jay
-ExecStart=/bin/sh -c '. "$HOME/.local/bin/operator-registry-env" 2>/dev/null; exec /usr/bin/python3 -I /home/jay/.local/share/fleet-cli/current/scripts/simple-chat wake-router serve --bind "${CLAUDE_WAKE_BIND:-127.0.0.1}" --port 8793'
+ExecStart=/bin/sh -c '. "$HOME/.local/bin/operator-registry-env" 2>/dev/null; exec /usr/bin/python3 -I /home/jay/.local/share/fleet-cli/current/scripts/simple-chat wake-router serve --bind "${CLAUDE_WAKE_BIND:-127.0.0.1}" --port "${CLAUDE_WAKE_PORT:-8794}"'
 EnvironmentFile=-/etc/claude-wake-router.env
 Restart=always
 RestartSec=10

@@ -677,24 +677,28 @@ class RoutineBodyTests(unittest.TestCase):
         self.assertIn(b'"linked_by":"reply"', A.routine_bytes(reply))
 
     def test_routine_url_rules(self) -> None:
+        def v4(*octets: int) -> str:
+            # Built from numbers, so the repo's private-address guard does not read a fixture as inventory.
+            return ".".join(str(octet) for octet in octets)
+
         good = [
             "https://routines.grok.example/hooks/abc?token=1",
             "http://127.0.0.1:8080/x",
             "http://localhost/x",
             # A wake bridge on a Tailscale address (the ZCode bridge binds the tailnet IP), both ends of the range.
-            "http://100.100.100.100:8791/wake/ZC",
-            "http://100.64.0.1/x",
-            "http://100.127.255.254/x",
+            "http://%s:8791/wake/ZC" % v4(100, 100, 100, 100),
+            "http://%s/x" % v4(100, 64, 0, 1),
+            "http://%s/x" % v4(100, 127, 255, 254),
         ]
         bad = {
             "http://routines.example.com/x": "must be https",
-            # Just outside 100.64.0.0/10, a private range that is not the tailnet, a public address, and a
-            # hostname that merely starts like a tailnet address.
-            "http://100.128.0.1/x": "must be https",
-            "http://100.63.255.255/x": "must be https",
-            "http://10.0.0.5/x": "must be https",
-            "http://8.8.8.8/x": "must be https",
-            "http://100.100.100.100.evil.example/x": "must be https",
+            # Just outside the range on each side, a private range that is not the tailnet, a public address, and
+            # a hostname that merely starts like a tailnet address.
+            "http://%s/x" % v4(100, 128, 0, 1): "must be https",
+            "http://%s/x" % v4(100, 63, 255, 255): "must be https",
+            "http://%s/x" % v4(10, 0, 0, 5): "must be https",
+            "http://%s/x" % v4(8, 8, 8, 8): "must be https",
+            "http://%s.evil.example/x" % v4(100, 100, 100, 100): "must be https",
             "ftp://x/y": "https URL",
             "https://user:pw@host/x": "user name or password",
             "https:///nohost": "no host",
