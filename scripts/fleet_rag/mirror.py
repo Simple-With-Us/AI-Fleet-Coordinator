@@ -189,6 +189,15 @@ def mirror_status(root: Path | None, now: float, max_age: int) -> MirrorStatus:
     return MirrorStatus(True, "fresh", at)
 
 
+def _fsync_dir(directory: Path) -> None:
+    """Fsync a directory so a rename or replace inside it survives a crash."""
+    fd = os.open(str(directory), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def write_stamp(directory: Path, now: float, counts: dict[str, int]) -> None:
     payload = {"complete": True, "at": int(now), "files": counts}
     tmp = directory / ".complete.tmp"
@@ -196,6 +205,7 @@ def write_stamp(directory: Path, now: float, counts: dict[str, int]) -> None:
     tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
     os.chmod(tmp, 0o644)
     os.replace(tmp, path)
+    _fsync_dir(directory)
 
 
 def _within(child: Path, parent: Path) -> bool:
@@ -243,12 +253,15 @@ def promote(
     except OSError:
         if moved and previous.exists() and not live.exists():
             os.rename(previous, live)
+            _fsync_dir(live.parent)
         raise
+    _fsync_dir(live.parent)
     if not (live / COMPLETE_NAME).is_file():
         if moved and previous.exists():
             if live.exists():
                 shutil.rmtree(live)
             os.rename(previous, live)
+            _fsync_dir(live.parent)
         raise MirrorError("stamp-missing")
     if previous.exists():
         shutil.rmtree(previous)
@@ -256,7 +269,7 @@ def promote(
 
 
 def _ssh(target: str) -> list[str]:
-    return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", target]
+    return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "--", target]
 
 
 def rsync_argv(
@@ -272,6 +285,7 @@ def rsync_argv(
     if delete:
         argv.append("--delete")
     argv.extend(filters)
+    argv.append("--")
     argv.append(str(local).rstrip("/") + "/")
     argv.append(remote_spec)
     return argv
@@ -307,10 +321,8 @@ def promote_argv(target: str, remote_python: str, remote_script: str, root: str)
             "-I",
             remote_script,
             "promote",
-            "--incoming",
-            f"{base}/{INCOMING_NAME}",
-            "--live",
-            f"{base}/{LIVE_NAME}",
+            f"--incoming={base}/{INCOMING_NAME}",
+            f"--live={base}/{LIVE_NAME}",
         )
     )
     return [*_ssh(target), command]
