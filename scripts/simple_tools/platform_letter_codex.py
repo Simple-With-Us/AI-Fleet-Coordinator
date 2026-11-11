@@ -818,9 +818,7 @@ class StoreUnreadable(RuntimeError):
 
 def _archive_state(conn: sqlite3.Connection, sid: str) -> tuple[bool, str] | None:
     """(archived, parent) for one thread of the store, or None when the store has no such row."""
-    row = conn.execute(
-        "SELECT archived, source FROM threads WHERE id = ?", (sid,)
-    ).fetchone()
+    row = conn.execute("SELECT archived, source FROM threads WHERE id = ?", (sid,)).fetchone()
     if row is None:
         return None
     parent = ""
@@ -866,7 +864,9 @@ def open_store(path: str) -> sqlite3.Connection:
         conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
         cols = {r[1] for r in conn.execute("PRAGMA table_info(threads)")}
     except sqlite3.Error as exc:
-        raise StoreUnreadable("the Codex store could not be read (%s)" % type(exc).__name__) from exc
+        raise StoreUnreadable(
+            "the Codex store could not be read (%s)" % type(exc).__name__
+        ) from exc
     if "archived" not in cols:
         conn.close()
         raise StoreUnreadable("the Codex store has no archived column")
@@ -977,7 +977,9 @@ def release_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int
                 due.append((sid, reason))
     except sqlite3.Error as exc:
         conn.close()
-        return _emit(stdout, {"error": "the Codex store could not be read (%s)" % type(exc).__name__}, 2)
+        return _emit(
+            stdout, {"error": "the Codex store could not be read (%s)" % type(exc).__name__}, 2
+        )
     released: list[dict[str, Any]] = []
     absent: list[str] = []
     failed: list[str] = []
@@ -989,21 +991,38 @@ def release_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int
                 continue
             try:
                 if archive_reason(conn, sid) != reason:
-                    kept.append(sid)  # unarchived (or changed) since the first read:  it keeps its letter
+                    kept.append(
+                        sid
+                    )  # unarchived (or changed) since the first read:  it keeps its letter
                     continue
             except sqlite3.Error:
                 failed.append(sid)
                 continue
             buf = io.StringIO()
-            argv_close = ["close", "--platform", PLATFORM, "--location", location, "--session-id", sid,
-                          "--source", RELEASE_SOURCE]
+            argv_close = [
+                "close",
+                "--platform",
+                PLATFORM,
+                "--location",
+                location,
+                "--session-id",
+                sid,
+                "--source",
+                RELEASE_SOURCE,
+            ]
             if args.db:
                 argv_close += ["--db", args.db]
             code = PL.registry_main(argv_close, env=env, stdout=buf)
             answer = PL._last_json(buf.getvalue()) or {}
             if code == 0 and answer.get("closed"):
-                released.append({"session_id": sid, "reason": reason, "released": True,
-                                 "label": _s(answer.get("label"))})
+                released.append(
+                    {
+                        "session_id": sid,
+                        "reason": reason,
+                        "released": True,
+                        "label": _s(answer.get("label")),
+                    }
+                )
                 _close_note(env, sid, reason)
             elif answer.get("retired") or answer.get("error") == PL.NO_REGISTRATION:
                 absent.append(sid)  # closed already, or never held:  nothing to free
