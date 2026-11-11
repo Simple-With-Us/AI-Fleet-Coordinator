@@ -42,7 +42,8 @@ does it today.
     mostly deterministic and does not converse with users, and that the Muse spark 1.3 contributor
     or the MiniMax M3.1 fallback is for the headless consultant.  **Superseded in its first half
     on Oct 26, 2026**, by the ruling below:  the Operator may converse, in a direct message.  The
-    consultant boundary in this bullet is unchanged.
+    consultant boundary in this bullet is **refined on Nov 7, 2026** by the wake ruling below:  the
+    consultant runs only when deterministic code cannot decide, on the owner's own OpenRouter preset.
 *  The Operator being able to speak to anyone and to converse with them, and doing that in a
     direct message rather than a channel post, so that conversations do not get bloated:  Jay, in
     the MiniMax Code pane on Oct 26, 2026, verbatim, "operator can speak to anyone or converse with
@@ -56,6 +57,18 @@ does it today.
     Jay left out, because they carry no project detail.  A message with detail, such as the
     candidate list, is unchanged and keeps Jay in the conversation.  The Operator's clarifying
     question is not part of this yet:  its reply leg is not built.
+*  The wake design:  Jay, to session AA on Nov 7, 2026, verbatim, "Wake agent should use operator
+    for headless agent when needed only if unable to determine with deterministic code, and then
+    should use a preset I made on openrouter", "Only the operator does headless runs sometimes",
+    "Seat wake doesn't need an agent" and "Consultant is an agent needed minority of the time
+    hopefully".  The preset is his own, built on the Muse spark 1.3 contributor ("Not just normal
+    one").  ECHO reports it as `@preset/operator-inbox-router` version 3 (served by
+    `meta/muse-spark-1.3-contributor`, backup `minimax/minimax-m3.1-flash`);  it was held when this
+    was written, and the Mac has declared it as the bridge consult backup since Nov 7, 2026, 10:14 PM
+    (section 3.2).  Jay also objected to the Operator ever being
+    called "MM-wake":  the wake tag is `[OPERATOR·wake]`, and a wake is not tied to MM or to any
+    seat.  This is a ruling, not current behaviour:  per-seat model wakes still run until Phase 2,
+    and PR #1506 only records how often each start was avoidable (section 3.2).
 
 1.  **The Operator is the thing that listens.**  It holds the eavesdropper, it runs on the server,
     and it is the service identity the fleet talks to.
@@ -71,8 +84,9 @@ does it today.
     Operator cannot pair the message with a specific thread to receive it.  Jay's Oct 26
     ruling adds that the Operator may converse at all, and that it does so in a direct message
     rather than in a channel post, so that conversations do not get bloated.  Jay's consultant
-    boundary is separate:  the Muse spark 1.3 contributor or the MiniMax M3.1 fallback is for the
-    headless consultant, not for the Operator's own voice, and separating incoming content from
+    boundary is separate:  the headless consultant (since Nov 7, 2026, run only when deterministic
+    code cannot decide, on the owner's own OpenRouter preset) is not the Operator's own voice,
+    and separating incoming content from
     authority, and consultation from execution, are the barriers that make that safe.  Jay's own
     note is that a barrier may also help with prompt-injection risk, which is a rationale and not
     a proof of immunity.
@@ -92,19 +106,27 @@ does it today.
     seat on Zulip.  The registry already records where a session lives, so the surface is a
     property of the session rather than a choice the Operator makes per message.
 
+8.  **A seat wake needs no agent, and only the Operator starts a model, sometimes.**  Jay's Nov 7,
+    2026 ruling, quoted above:  a seat wake is deterministic delivery, and the Operator starts its
+    headless consultant only when deterministic code cannot decide, on the owner's own OpenRouter
+    preset.  A wake belongs to no seat's tag:  it is `[OPERATOR·wake]`, never "MM-wake".  The running
+    code does not do this yet:  a seat configured with a `claude`, `muse` or `openrouter` wake still
+    starts a model for itself, and converging those onto the Operator's one consultant run is Phase 2,
+    which is pending (section 3.2).
+
 ## 2: What already exists
 
 | Requirement | Where it lives today | State |
 | --- | --- | --- |
-| The Operator as a service seat | `scripts/agent_sync/config.py`: the `OPERATOR` seat requires `bot = "Operator"`, `creds = "infisical"` and `wake = "inbox"` | built |
-| The Operator's identity, read from the environment | `scripts/agent_sync/service_identity.py`, `scripts/agent_sync/dm_policy.py`: `operator_user_id(env, pinned)` | built |
-| The Operator's direct message rule | `scripts/agent_sync/dm_policy.py`: `check_new_dm()` lets the Operator open a direct message for its one clarifying question and, with `status=True`, for its status message; `scripts/agent_sync/zulip.py`: `check_dm_guard()` refuses a direct message that does not carry the owner, and `ZulipClient.operator_status_dm` is the one exemption, for the status message alone | built for the status message, narrower than the Oct 26 ruling |
-| Session letters | `scripts/agent_sync/operator_registry.py`: the `sessions` and `alias_assignments` tables, one live holder per `(platform, letter)`, generation on recycle | built (AFC-412) |
-| The registry on the Fleet Reference sheet | `scripts/agent_sync/operator_sheets_export.mjs`: the exporter writes the Sessions (`2033000102`) and Events (`2033000103`) tabs and never touches Reference (`2033000101`) | built (AFC-412 PR2) |
-| The Zulip to Linear mirror | `scripts/agent_sync/linear_relay.py`: one comment per `(issue, topic)`, edited in place, ten minute batching, direct messages and private streams excluded | built (AFC-502, PR #899) |
-| The listener's read API the eavesdropper reads | `scripts/agent_sync/listener_api.py`: five signed GET endpoints under `/listener/v1/<SEAT>/<record>` | built (AFC-330 part B) |
+| The Operator as a service seat | `scripts/simple_tools/config.py`: the `OPERATOR` seat requires `bot = "Operator"`, `creds = "infisical"` and `wake = "inbox"` | built |
+| The Operator's identity, read from the environment | `scripts/simple_tools/service_identity.py`, `scripts/simple_tools/dm_policy.py`: `operator_user_id(env, pinned)` | built |
+| The Operator's direct message rule | `scripts/simple_tools/dm_policy.py`: `check_new_dm()` lets the Operator open a direct message for its one clarifying question and, with `status=True`, for its status message; `scripts/simple_tools/zulip.py`: `check_dm_guard()` refuses a direct message that does not carry the owner, and `ZulipClient.operator_status_dm` is the one exemption, for the status message alone | built for the status message, narrower than the Oct 26 ruling |
+| Session letters | `scripts/simple_tools/operator_registry.py`: the `sessions` and `alias_assignments` tables, one live holder per `(platform, letter)`, generation on recycle | built (AFC-412) |
+| The registry on the Fleet Reference sheet | `scripts/simple_tools/operator_sheets_export.mjs`: the exporter writes the Sessions (`2033000102`) and Events (`2033000103`) tabs and never touches Reference (`2033000101`) | built (AFC-412 PR2) |
+| The Zulip to Linear mirror | `scripts/simple_tools/linear_relay.py`: one comment per `(issue, topic)`, edited in place, ten minute batching, direct messages and private streams excluded | built (AFC-502, PR #899) |
+| The listener's read API the eavesdropper reads | `scripts/simple_tools/listener_api.py`: five signed GET endpoints under `/listener/v1/<SEAT>/<record>` | built (AFC-330 part B) |
 | The Operator waking MM on Lark | `docs/protocols/lark-mm-bridge.md`: the Operator runs the bridge with `--signal` and the text, and the bridge, the only holder of the Lark bot identity, sends it, runs the seat turn and puts the answer back in the same chat | built |
-| The Fleet Reference sheet adapter | the exporter depends on an adapter surface (`inspect()`, `validateHeaders()`, `readRows()`, `appendSession()`, `updateSessionRow()`, `appendEvent()`) that is deliberately another seat's slice, so the exporter is written against it rather than owning it | built, owned elsewhere |
+| The Fleet Reference sheet adapter | `scripts/simple_tools/operator_sheets_google.mjs`: the Google Sheets transport behind the exporter's adapter surface (`inspect()`, `validateHeaders()`, `readRows()`, `appendSession()`, `updateSessionRow()`, `appendEvent()`), with `SESSION_HEADERS` and `EVENT_HEADERS` as the authoritative header contract | built (AFC-428) |
 
 Two facts about the existing code shape the discussion below.
 
@@ -114,8 +136,8 @@ is relayed today.  What is wrong is the keying, not the detection:  `ledger_key
 topic)` folds that message into the standing comment for `(issue, topic)`, so a message about an
 issue the topic is not about lands in a comment that claims the topic is about it.
 
-**The wake tag is composed for every seat, including the Operator.**  `scripts/agent_sync/wakes.py`
-builds `"[%s·wake] re=%d\n%s"`, and `scripts/agent_sync/adapters.py` sets the same shape as the
+**The wake tag is composed for every seat, including the Operator.**  `scripts/simple_tools/wakes.py`
+builds `"[%s·wake] re=%d\n%s"`, and `scripts/simple_tools/adapters.py` sets the same shape as the
 adapter's `reply_prefix`.  There is no path today that lets a seat speak in its own right with
 its own tag instead of the wake-reply tag.
 
@@ -223,12 +245,15 @@ Three concrete changes carry that:
     **Oct 30, 2026 addition.**  The Operator now also RELAYS a headless wake's reply (owner
     ruling, Oct 30, 2026: automation that composes text for a seat never posts as the seat's bot,
     and the owner said yes to the reply going out as the Operator in the trigger's topic).  That
-    relay keeps the `[SEAT·wake] re=<id>` tag on its first line.  It is not the Operator wearing
-    a seat's tag in its own voice: the sender line says Operator, and the tag is the label the
-    loop guard and the router read (a `·wake` post never wakes anyone) and the label that says
-    which seat's consultant wrote the text.  The Operator's own messages (its questions, its
+    relay's first line is `[OPERATOR·wake] re=<id>` (`wakes.compose_reply`, `OPERATOR_TAG`), not
+    a seat's tag:  the owner ruled the same day that the tag is the Operator's, and on Nov 7, 2026
+    he objected to the Operator ever being called "MM-wake", because a wake is tied to no seat.
+    The tag is the label the loop guard and the router read (a `·wake` post never wakes anyone),
+    and the seat the wake was for is in the wake ledger row.  A seat's own `[SEAT·wake]` tag
+    survives only in an `http` routine's `reply_prefix`, which that routine posts as itself.  The
+    Operator's own messages (its questions, its
     status messages, the `@all` reminder, tagged `[OPERATOR·note]`) keep their own tags.  See
-    `agent-sync-listener.md`, "The Operator's voice".
+    `simple-tools-listener.md`, "The Operator's voice".
 
 3.  **The pairing test decides whether the Operator speaks, and the direct message carries what
     it says.**  A message that pairs with a thread gets the Operator's own message, and that
@@ -237,10 +262,10 @@ Three concrete changes carry that:
     thread gets the Operator's question, and that goes by direct message too.  The direct message
     is the fleet's exception, used only by the Operator:  that question and the exchange it opens,
     and, as a separate direct message, the candidate list that tells the sender of a tagged address
-    which sessions the letter could mean (`scripts/agent_sync/operator_candidates.py`).  That list
+    which sessions the letter could mean (`scripts/simple_tools/operator_candidates.py`).  That list
     carries the fleet's internal session inventory, so it goes only to the pinned owner or to a user
     the owner has allowed in `[operator] dm_allow`, and the gate that decides it is
-    `operator_dm_allowed()` in `scripts/agent_sync/daemon.py`.  Jay's Oct 26 ruling is what moved
+    `operator_dm_allowed()` in `scripts/simple_tools/daemon.py`.  Jay's Oct 26 ruling is what moved
     it:  the Operator may speak to anyone and converse with them, and it converses by direct
     message rather than in a channel post, so that conversations do not get bloated.  The question
     itself is bounded:  it asks about a tag to wake, and it is not an opening for an open-ended
@@ -266,12 +291,31 @@ message alone (`ZulipClient.operator_status_dm`, `operator_send.py`, Oct 29, 202
 Operator direct message still has to carry Jay.
 
 **The headless consultant is a different thing.**  Jay's boundary is that the Muse spark 1.3
-contributor or the MiniMax M3.1 fallback is for the headless consultant, and it is not the
+contributor or the MiniMax M3.1 fallback (Oct 25, 2026;  refined on Nov 7, 2026 to the owner's
+own OpenRouter preset, built on that contributor model) is for the headless consultant, and it is
+not the
 Operator's own voice.  So the Operator's deterministic outputs and the consultant's reasoning are
 separate, and the consultant is not what the Operator listens with.  Jay's own note is that
 separating incoming content from authority, and consultation from execution, are the useful
 barriers here, and that a barrier may also help with prompt-injection risk, which is a rationale
 and not a proof of immunity.
+
+**When the consultant runs (owner, Nov 7, 2026).**  "Wake agent should use operator for headless
+agent when needed only if unable to determine with deterministic code, and then should use a preset
+I made on openrouter", "Only the operator does headless runs sometimes", "Seat wake doesn't need an
+agent" and "Consultant is an agent needed minority of the time hopefully".  So the consultant is the
+only model run, it is the Operator's, and it starts only when deterministic code cannot decide.  What
+runs today is not that yet:  a seat configured with a `claude`, `muse` or `openrouter` wake still
+starts a model for itself, with any configured fallback behind it, and the Mac bridge consult runs
+on the pinned Muse binary unless an operator declares its known-cap OpenRouter mode.  PR #1506 adds
+a record-only model gate that records, for every model start, why it happened and whether a
+deterministic rule could have decided it, and `simple-chat status` counts the avoidable ones;  it
+changes no decision (`simple-tools-listener.md`, section 3.4a).  Phase 2 is pending and not built:
+PR #1506 lists AA's readings of these lines, which are readings and not rulings, that it would
+remove the `claude`, `muse` and `openrouter` seat wakes and their fallbacks in favour of the
+Operator's one consultant run, fix the per-seat model run an `@all` starts, and move the Mac bridge
+consult onto the owner's preset.  ECHO's candidate for that preset, `@preset/operator-inbox-router`
+version 3, was held when this was written.  The Mac's `listener.toml` declares it as the bridge consult backup (`[muse_bridge] consult_backup`, the AFC-649 known-cap mode) since Nov 7, 2026, 10:14 PM, with the owner's Nov 6 line as the reason and no `review_by`.  That is the only place it is applied;  making it the consult's standing runtime is still pending Phase 2, and no release by ECHO's coordinator is recorded in the repository.
 
 **The direct message consequence, and what Jay has now ruled.**  AFC-469, merged on Oct 25, 2026,
 says a direct message may go out only when the owner is in the conversation, checked by user id.
@@ -312,25 +356,51 @@ summary and not for itself.
 The Sessions tab already carries a Host column for the location, so the tab needs one new
 column and not two.
 
-**The sheet adapter is not in this repository.**  `scripts/agent_sync/operator_sheets_export.mjs`
-writes the Sessions and Events tabs and depends on an adapter surface  (`inspect()`,
-`validateHeaders()`, `readRows()`, `appendSession()`, `updateSessionRow()`, `appendEvent()`)  that its
-own header records as deliberately another seat's slice.  So the new column is a request to that
-adapter's owner, not a change made here, and the sheet's own header list and validation have to
-accept it before a row can carry it.
+**The sheet adapter is `scripts/simple_tools/operator_sheets_google.mjs`.**  It is the Google
+Sheets transport the exporter writes through (`inspect()`, `validateHeaders()`, `readRows()`,
+`appendSession()`, `updateSessionRow()`, `appendEvent()`), and its `SESSION_HEADERS` and
+`EVENT_HEADERS` are the authoritative header contract the tabs are validated against.  So the new
+column is a change to that header contract first:  the sheet's own header list and validation have
+to accept it before a row can carry it.
+
+**Exporter adapter contract.** `inspect()` returns
+`{ sessions: { rowCount }, events: { rowCount } }`. Each `rowCount` is the positive
+safe-integer physical grid row count, including the header. `readRows(table,
+{ startRow, limit })` returns an array, or `{ rows: [...] }`, of
+`{ rowNumber, cells }` records with 1-based physical row numbers inside the requested
+page. The exporter also accepts `row` and `values` aliases. Empty or short values
+pages do not end the physical grid scan. Duplicate matching Record IDs or Event IDs
+refuse a write. `findSessionRowByRecordId` and optional fast lookups are unsupported:
+they cannot prove destination uniqueness.
+
+The runner MUST hold one exclusive cross-process writer lease across reconciliation,
+write and acknowledgement, with no concurrent manual row restructuring. An error
+keeps the earliest outbox row pending and stops the batch so later snapshots cannot
+overtake it. After a confirmed Sheets append and failed registry acknowledgement,
+replay first scans the immutable ID: an existing event is acknowledged without
+another append. A truly unknown Sheets transport outcome can commit late. An
+exclusive writer alone does not prove that an ID absent from a read will stay
+absent, so the runner must not automatically resume such an uncertain drain until
+the outstanding request is settled or safely reconciled. The exporter does not
+persist a general durable `ok`/`unknown`/`refused` mutation ledger; the required
+runner handling of truly unknown Sheets writes remains an integration gap.
+A duplicate needs destination repair before draining resumes; skipping it or adding
+a failure/quarantine state would require a separate ordering and schema design.
+Repeated full-grid scans are an explicit safety/performance tradeoff; a reusable
+index needs a separately qualified runner lease and destination-mutation contract.
 
 **The citations for the pieces this discussion rests on.**
 
-*  The wake tag composer:  `scripts/agent_sync/wakes.py`, `"[%s·wake] re=%d\n%s"`.
-*  The owner-in-the-direct-message guard, merged Oct 25, 2026:  `scripts/agent_sync/zulip.py`,
+*  The wake tag composer:  `scripts/simple_tools/wakes.py`, `"[%s·wake] re=%d\n%s"`.
+*  The owner-in-the-direct-message guard, merged Oct 25, 2026:  `scripts/simple_tools/zulip.py`,
   `direct_recipient_sets()` and `check_dm_guard()`, and the client call site that runs the guard for
   a POST and a PATCH.  Pull request 947, AFC-469.
 *  The Lark bridge:  `docs/protocols/lark-mm-bridge.md` and `scripts/lark-mm-bridge.py`, and the
   Operator's signal path through `--signal`.
-*  The relay:  `scripts/agent_sync/linear_relay.py`, `find_issue_ids()` and `ledger_key()`.
-*  The registry and the letters:  `scripts/agent_sync/operator_registry.py`, the `sessions` and
+*  The relay:  `scripts/simple_tools/linear_relay.py`, `find_issue_ids()` and `ledger_key()`.
+*  The registry and the letters:  `scripts/simple_tools/operator_registry.py`, the `sessions` and
   `alias_assignments` tables.
-*  The exporter:  `scripts/agent_sync/operator_sheets_export.mjs`.
+*  The exporter:  `scripts/simple_tools/operator_sheets_export.mjs`.
 
 ### 3.4: The Linear mirror, one message at a time
 
@@ -438,7 +508,7 @@ Zulip only.
 *  **The Operator's own voice on the server.**  The Operator seat is already a service seat with
     its credentials from Infisical and its identity read from the environment.  What is missing is
     the Operator publishing its own threads rather than a seat reporting on them.
-*  **The Lark path.**  Built and running.  The Operator's signal reaches MM's Lark chat today.
+*  **The Lark path.**  Built, but not running on the Mac from Nov 2 to Nov 7, 2026 (AFC-490).  The installed bridge could not find the managed runtime's `simple_tools` package and crash-looped on `ModuleNotFoundError` (over 10,000 launchd runs, last exit 1).  `scripts/lark-mm-bridge.py` now looks in its own scripts folder and then in the managed runtime, and the Mac's copy is reinstalled from it.  A signal reaching MM's Lark chat has to be checked again after that reinstall, and this line says so until it has been.
 *  **The WhatsApp receive half.**  Owned by CODEX as the approved executor, with Jet owning the
     subscription, the binding ceremony and the acceptance receipts.  Blocked on the deployed
     Worker being behind the merged read-routing, on the poller being stopped with the binding

@@ -900,7 +900,7 @@ class DigestTests(unittest.TestCase):
 
         q.scroll = spy
         doctor.contribution_digest(q, days=7, app="fleet", now=NOW)
-        self.assertEqual(seen[0]["must_not"], [recall_api.meta_exclude()])
+        self.assertEqual(seen[0]["must_not"], [recall_api.meta_exclude(), recall_api.retracted_exclude()])
         self.assertIn({"key": "source", "match": {"value": "agent-contribution"}}, seen[0]["must"])
         self.assertIn({"key": "app", "match": {"value": "fleet"}}, seen[0]["must"])
         self.assertIn({"key": "created_at", "range": {"gte": NOW - 7 * DAY}}, seen[0]["must"])
@@ -1044,7 +1044,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         out = buf.getvalue()
         self.assertIn("hits  (hybrid+rerank)", out)
-        first = out.splitlines()[2]
+        first = json.loads(out.splitlines()[2]).splitlines()[2]
         self.assertTrue(first.startswith("#1  "), first)
         self.assertIn("rerank=", first)
         self.assertIn("fused=", first)

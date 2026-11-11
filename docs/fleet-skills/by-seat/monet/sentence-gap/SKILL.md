@@ -9,7 +9,7 @@ description: >-
 > **Retired seat.**  Owner directive 2026-10-07: the Monet Claude account and app are no longer used, and `CLAUDE` is the only Claude seat.  Do not take work as MONET, do not leave MONET In Progress, and do not install this pack anywhere.  This catalog copy is inactive.
 
 
-Source of truth: `/Users/jay/Code/AI-Fleet-Coordinator/docs/SENTENCE-GAP-PORTABLE-SKILL.md`
+Source of truth: `~/Code/AI-Fleet-Coordinator/docs/SENTENCE-GAP-PORTABLE-SKILL.md`
 
 The block below is the canonical protocol, pasted verbatim.  Follow it exactly.  Do not weaken it.  Cloud agents without the Mac filesystem still have the full protocol in this file.
 
@@ -23,6 +23,12 @@ docs, tickets, release notes, design docs.  Only code and code comments are exe
 
 Do **not** add a gap after a non-terminal abbreviation (`e.g.`, `i.e.`, `Dr.`, `v1.2.3`),
 inside a URL, email, filename, or a brand name containing a period.
+
+No gap where the sentence ends its line (owner ruling 2026-11-01:  "don't need 2 spaces if
+there is a line break like if end of the paragraph").  A sentence that ends at a line
+break, at a blank line (the end of a paragraph) or at the end of the text takes no gap.
+The converter adds none there and the checks do not count it.  A paragraph is still one
+line, so a sentence that continues the same paragraph never sits after a line break.
 
 ### Current rule (owner ruling 2026-10-23) — one mechanism on every surface, and one exception
 
@@ -556,7 +562,7 @@ A `0` from the first check means the run changed nothing.  Fix it before postin
 A body holds user-supplied text, so it needs the approved credential scan before it is persisted
 and before it leaves the machine.  The scan comes **first**, ahead of every `body*.txt` file: the
 unsaved body reaches the scanner on stdin, so no body file exists while the scan runs and a
-refusal never leaves the text on disk.  The approved scanner is `scripts/agent_sync/secretscan.py`:
+refusal never leaves the text on disk.  The approved scanner is `scripts/simple_tools/secretscan.py`:
 `scan(text, known)` returns the *kind* of secret it found (for example `GitHub token` or `assigned
 secret`) or `None`, and it never returns the matched text, so it is safe to use as the guard.
 `known` is the list of exact values the process has already loaded, if any.
@@ -570,7 +576,7 @@ written.
 
 ```sh
 umask 077
-printf '%s' "$BODY" | python3 -c 'import sys; sys.path.insert(0, "scripts"); from agent_sync.secretscan import scan; text = sys.stdin.read(); hit = scan(text); print("body:" + ("secret:" + str(hit) if hit else "clean"), file=sys.stderr); raise SystemExit(2 if hit else 0)'
+printf '%s' "$BODY" | python3 -c 'import sys; sys.path.insert(0, "scripts"); from simple_tools.secretscan import scan; text = sys.stdin.read(); hit = scan(text); print("body:" + ("secret:" + str(hit) if hit else "clean"), file=sys.stderr); raise SystemExit(2 if hit else 0)'
 ```
 
 The scan exits nonzero on a hit, so the write step and the relay step never run on a body that
@@ -586,11 +592,11 @@ refusal is not something to work around: do not split the secret, do not edit it
 it in a different surface.
 
 The `simple-chat` CLI is already covered: `_scan_refusal` in
-`scripts/agent_sync/cli.py` refuses a secret-shaped body, topic or channel before the post goes
-out.  A `gh pr create --body-file` or `gh pr comment --body-file` relay bypasses that CLI, so the
-scan still has to run *before* the `gh` relay.
+`scripts/simple_tools/cli.py` refuses a secret-shaped body, topic or channel before the post goes
+out.  The relay tools `gr_open_pr` and `gr_comment_pr` bypass that CLI, so the
+scan still has to run *before* the relay write.
 
-Then pass the file to `gh pr create --body-file`, `gh pr comment --body-file`, or
+Then pass the scanned text to the relay tools `gr_open_pr` or `gr_comment_pr`, or
 `simple-chat post --body-file` — which refuses any file whose mode is not `0600` or `0400`, so
 run `chmod 600` on it first.  There is no override flag.
 

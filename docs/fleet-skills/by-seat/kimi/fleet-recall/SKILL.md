@@ -6,7 +6,7 @@ description: >-
 
 # Fleet recall
 
-> **Retired seat.**  Owner directive 2026-08-21: do not assign or accept new Kimi work.  Do not start a Kimi session.  Do not take work.  This catalog copy is inactive — do not install to `~/.kimi`.
+> **Runtime (Kimi Code).**  Kimi Code CLI runs from `~/.local/bin/kimi` with config in `~/.kimi-code`.  Skills installed here (`~/.kimi-code/skills`) are loaded by Kimi Code.  Start Kimi inside a lane (`~/apps/lanes/<Repo>/kimi-<slug>`).  A seat a launcher assigned beats the KIMI default.
 
 
 The fleet has one shared memory: the `fleet-agents` collection in the self-hosted Qdrant on the
@@ -96,7 +96,7 @@ scans the transcript once: a session with 25+ tool uses that never called `recal
 contribute or say `no lesson`; a per-session marker under `~/apps/fleet-rag/state/hook-nudged/`
 prevents repeats and `FLEET_RECALL_HOOKS=0` disables both hooks.
 
-Cloud seats (Cursor cloud, Codex cloud, Claude cloud, Grok Bot personas) reach the same three
+Cloud seats (Cursor cloud, Codex cloud, Claude cloud, Grok bots) reach the same three
 tools through the fleet MCP gateway (`docs/RECALL-ACCESS-CHECK.md` names the URL; Cloudflare Access +
 bearer, see `docs/fleet-skills/drive-grok-tui`).  Nothing else on the internet can reach the
 corpus; both services bind to the Tailscale mesh only.
@@ -104,7 +104,7 @@ corpus; both services bind to the Tailscale mesh only.
 ## Rules
 
 - **Search first, then act.**  A hit with a board id or a note title is a lead, not a verdict:
-  open the source (simple-board show, the note, the doc) before relying on it.
+  open the source (`linear_get_issue`, the note, the doc) before relying on it.
 - **Rank 1 is resemblance, not correctness.**  For a ruling, preference, or infra-fact question, read the top 5 and never act on rank 1 alone.  Open the source for its date — a hit's `created_at` is the file's, not the section's.  Found a hit that supersedes another?  Contribute the correction with `force: true` (CLI `--force`); a one-detail fix often reads as a near-duplicate and is refused otherwise.
 - **Contribute lessons, not logs.**  40 to 4,000 characters, one idea, with `category` one of
   `lesson | preference | infrastructure | decision | runbook` and the app slug.  Do not paste

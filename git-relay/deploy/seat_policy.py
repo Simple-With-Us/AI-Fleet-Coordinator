@@ -42,9 +42,11 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fcntl
 import hashlib
 import json
 import os
+import pwd
 import re
 import shutil
 import stat
@@ -62,6 +64,10 @@ DEFAULT_POLICY = HERE / "seat-policy.json"
 DEFAULT_SECRETS_PATH = "/github-apps"
 APPS_CREDENTIAL = "git-relay-apps-token"
 SEATS_VAR = "GIT_RELAY_SEATS_JSON"
+# The systemd credential input (policy_input.py):  the unit sets GIT_RELAY_SEATS_CREDENTIAL=seat-policy and
+# carries LoadCredential=seat-policy:<backing file>.  A DynamicUser unit takes the policy this way.
+SEATS_CREDENTIAL_VAR = "GIT_RELAY_SEATS_CREDENTIAL"
+SEATS_CREDENTIAL = "seat-policy"
 SECRETS_PATH_VAR = "GIT_RELAY_SECRETS_PATH"
 VERIFY_REPO = "Simple-With-Us/AI-Fleet-Coordinator"
 # The unit environment the inner check needs, copied from the running unit (never a secret).
@@ -160,6 +166,26 @@ def digest(seats: dict) -> str:
     return hashlib.sha256(compact(seats).encode()).hexdigest()[:16]
 
 
+def canonical_digest(policy: dict) -> str:
+    """The full canonical digest the additive transaction checks (seat_add_policy.digest).
+
+    Unlike digest() (the env installer's short line digest), this commits to the
+    whole rendered policy object:  it is the CAS value on the live seats file and
+    the receipt's transaction binding.
+    """
+    return hashlib.sha256(
+        json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+SEATS_FILE_VAR = "GIT_RELAY_SEATS_FILE"
+PROOF_KEY_FILE_VAR = "GIT_RELAY_PROOF_KEY_FILE"
+# server.py's default audit path, relative to the unit's WorkingDirectory.
+DEFAULT_AUDIT = "git-relay-audit.jsonl"
+# The durable accepted-proof store (deploy_proof.ReplayStore), same directory.
+REPLAY_STORE = "git-relay-proofs.json"
+
+
 def blob_id(path: Path | str) -> str:
     """The file's git blob id, the value `git rev-parse <commit>:<path>` prints."""
     data = Path(path).read_bytes()
@@ -190,6 +216,10 @@ class Unit:
     config: str
     apps_token: str
     environment: dict
+    user: str = ""
+    dynamic_user: bool = False
+    # The backing file of LoadCredential=seat-policy:<file>;  empty when the unit has none.
+    seat_credential: str = ""
 
     @property
     def health(self) -> str:
@@ -214,11 +244,23 @@ def read_unit(name: str, show=None, cat=None) -> Unit:
         show
         if show is not None
         else _systemctl(
-            "show", name, "-p", "WorkingDirectory", "-p", "EnvironmentFiles", "-p", "Environment"
+            "show",
+            name,
+            "-p",
+            "WorkingDirectory",
+            "-p",
+            "EnvironmentFiles",
+            "-p",
+            "Environment",
+            "-p",
+            "User",
+            "-p",
+            "DynamicUser",
         )
     )
     cat = cat if cat is not None else _systemctl("cat", name)
     relay, files, env = "", [], {}
+    user, dynamic = "", False
     for line in show.splitlines():
         key, _, value = line.partition("=")
         if key == "WorkingDirectory":
@@ -228,18 +270,37 @@ def read_unit(name: str, show=None, cat=None) -> Unit:
             files.extend(ENV_FILE.findall(value))
         elif key == "Environment":
             env.update(item.split("=", 1) for item in value.split() if "=" in item)
-    tokens = []
+        elif key == "User":
+            user = value.strip()
+        elif key == "DynamicUser":
+            dynamic = value.strip() == "yes"
+    tokens, policies = [], []
     for line in cat.splitlines():
         if line.strip().startswith("LoadCredential="):
             ident, _, source = line.strip().split("=", 1)[1].partition(":")
             if ident == APPS_CREDENTIAL and source:
                 tokens.append(source)
+            elif ident == SEATS_CREDENTIAL and source:
+                policies.append(source)
+    if len(policies) > 1:
+        raise SystemExit(
+            f"{name}:  more than one {SEATS_CREDENTIAL} LoadCredential;  refusing as ambiguous"
+        )
     if not relay or len(files) != 1 or len(tokens) != 1:
         raise SystemExit(
             f"{name}:  expected a WorkingDirectory, one EnvironmentFile and one "
             f"{APPS_CREDENTIAL} LoadCredential;  found {bool(relay)}, {len(files)}, {len(tokens)}"
         )
-    return Unit(name=name, relay=relay, config=files[0], apps_token=tokens[0], environment=env)
+    return Unit(
+        name=name,
+        relay=relay,
+        config=files[0],
+        apps_token=tokens[0],
+        environment=env,
+        user=user,
+        dynamic_user=dynamic,
+        seat_credential=policies[0] if policies else "",
+    )
 
 
 def validate_with(relay_dir: str, seats: dict) -> None:
@@ -349,6 +410,347 @@ def _restore(unit: Unit, wait: int, before: str, backup: str) -> int:
     restored = _healthy(unit.health, unit.name, wait)
     print("restored and healthy" if restored else "THE RESTORE IS NOT HEALTHY:  check the unit now")
     return 3
+
+
+def _seats_file(unit: Unit) -> str:
+    """The live seats file:  exactly one GIT_RELAY_SEATS_FILE line, an absolute path.
+
+    The file input is mutually exclusive with the inline one (policy_input.py), so
+    a unit that sets both is refused rather than silently migrated.  A duplicate
+    line is refused as ambiguous:  the transaction must know exactly which setting
+    the service reads, not guess a winner.
+    """
+    with open(unit.config, encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
+    hits = [line for line in lines if line.startswith(SEATS_FILE_VAR + "=")]
+    if len(hits) != 1:
+        raise SystemExit(
+            f"{unit.config}:  expected exactly one {SEATS_FILE_VAR} line, found {len(hits)}"
+        )
+    value = hits[0].split("=", 1)[1].strip().strip("'\"")
+    if not os.path.isabs(value):
+        raise SystemExit(f"{unit.config}:  {SEATS_FILE_VAR} must be an absolute path")
+    if _config_value(lines, SEATS_VAR) is not None:
+        raise SystemExit(f"{unit.config}:  {SEATS_VAR} and {SEATS_FILE_VAR} are mutually exclusive")
+    return value
+
+
+def _seat_policy_source(unit: Unit) -> tuple[str, bool]:
+    """The live policy file and whether the service reads it through the systemd credential.
+
+    A unit that sets GIT_RELAY_SEATS_CREDENTIAL=seat-policy reads its policy from a
+    LoadCredential copy of one root-owned backing file, which is the only input a
+    DynamicUser unit can use.  The transaction then replaces that backing file, and
+    the restart makes systemd hand the new copy to the service.  The credential input
+    is mutually exclusive with the file and inline inputs (policy_input.py), so a unit
+    that sets any of them next to it is refused rather than guessed at, and so is a
+    unit whose LoadCredential for the policy is missing or not an absolute path.
+    Without the credential setting this is exactly the file input, unchanged.
+    """
+    with open(unit.config, encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
+    hits = [line for line in lines if line.startswith(SEATS_CREDENTIAL_VAR + "=")]
+    if not hits and SEATS_CREDENTIAL_VAR not in unit.environment:
+        return _seats_file(unit), False
+    if len(hits) > 1:
+        raise SystemExit(
+            f"{unit.config}:  expected exactly one {SEATS_CREDENTIAL_VAR} line, found {len(hits)}"
+        )
+    value = (
+        hits[0].split("=", 1)[1].strip().strip("'\"")
+        if hits
+        else unit.environment.get(SEATS_CREDENTIAL_VAR, "")
+    )
+    if hits and SEATS_CREDENTIAL_VAR in unit.environment:
+        raise SystemExit(
+            f"{unit.config}:  {SEATS_CREDENTIAL_VAR} is set twice;  refusing as ambiguous"
+        )
+    if value != SEATS_CREDENTIAL:
+        raise SystemExit(f"{unit.config}:  {SEATS_CREDENTIAL_VAR} must name {SEATS_CREDENTIAL}")
+    if (
+        _config_value(lines, SEATS_VAR) is not None
+        or _config_value(lines, SEATS_FILE_VAR) is not None
+        or SEATS_VAR in unit.environment
+        or SEATS_FILE_VAR in unit.environment
+    ):
+        raise SystemExit(f"{unit.config}:  the seat policy inputs are mutually exclusive")
+    if not unit.seat_credential or not os.path.isabs(unit.seat_credential):
+        raise SystemExit(
+            f"{unit.name}:  expected one absolute LoadCredential={SEATS_CREDENTIAL}:<file>;  "
+            f"found {unit.seat_credential!r}"
+        )
+    return unit.seat_credential, True
+
+
+def _credential_backing_refusal(path: str) -> str | None:
+    """Why a credential backing file is unsafe to replace, or None.
+
+    It is read by systemd as root and handed to a service uid that no host file can own,
+    so it must be a plain private file nobody else can write or swap:  not a symlink,
+    one link, owned by the user running this (root when run as root, as policy_input.py
+    accepts), mode 0400 or 0600, in a directory nobody else can write.  A non-root
+    operator is refused a root-owned file here, because it could neither read nor replace
+    it."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return "the credential backing file is unreadable"
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_nlink != 1
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) not in (0o400, 0o600)
+    ):
+        return "the credential backing file must be a private regular file (0400 or 0600, not a symlink)"
+    try:
+        parent = os.lstat(os.path.dirname(path))
+    except OSError:
+        return "the credential backing directory is unreadable"
+    if (
+        not stat.S_ISDIR(parent.st_mode)
+        or parent.st_uid not in (0, os.geteuid())
+        or stat.S_IMODE(parent.st_mode) & 0o022
+    ):
+        return "the credential backing directory must be private to its owner (no group or other write)"
+    return None
+
+
+def _audit_path(unit: Unit) -> str:
+    """The relay's ACTUAL audit log:  its GIT_RELAY_AUDIT_PATH (Environment= or the
+    EnvironmentFile), resolved like from_env does, else the default beside the code."""
+    value = unit.environment.get("GIT_RELAY_AUDIT_PATH")
+    if not value:
+        with open(unit.config, encoding="utf-8") as fh:
+            value = _config_value(fh.read().splitlines(), "GIT_RELAY_AUDIT_PATH")
+    if not value:
+        return os.path.join(unit.relay, DEFAULT_AUDIT)
+    return value if os.path.isabs(value) else os.path.join(unit.relay, value)
+
+
+TRANSACTION_LOCK_WAIT_S = 10
+
+
+def _acquire_transaction_lock(seats_path: str):
+    """Exclusive install transaction, on the adopt-lock pattern (server.py):
+
+    flock(LOCK_EX|LOCK_NB) on a fixed sibling of the seats file, retried until the
+    deadline;  the lock file is never unlinked, so there is no stale-inode race.
+    The lock spans verify, receipt consume, write, health gate and any recovery:
+    a second operator never interleaves a CAS, a store write or a replace.  None
+    on timeout (caller refuses the transaction);  the fd releases on close.
+    """
+    lock_path = seats_path + ".transaction.lock"
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    deadline = time.monotonic() + TRANSACTION_LOCK_WAIT_S
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            if time.monotonic() > deadline:
+                os.close(fd)
+                return None
+            time.sleep(0.05)
+
+
+def _service_uid(unit: Unit, credential: bool = False) -> int | None:
+    """The uid the service reads the seats file as;  None when that cannot work.
+
+    A DynamicUser gets a fresh uid per start, so no host file's ownership can
+    match it:  that deployment must use the systemd credential input instead.
+    On that input the service never reads the host file itself;  systemd reads
+    it as root, so the file stays root's and the answer is 0."""
+    if credential:
+        return 0
+    if unit.dynamic_user:
+        return None
+    if not unit.user or unit.user in ("root", "0"):
+        return 0
+    try:
+        return pwd.getpwnam(unit.user).pw_uid
+    except KeyError:
+        return None
+
+
+def _write_atomic_as(path: str, text: str, st) -> None:
+    """_write_atomic that preserves the replaced file's owner, group and mode.
+
+    A root 0600 replace under a non-root service would leave the unit unable to
+    read its own policy at the next start;  the restore path needs the same
+    preservation, so both go through here.  chown is only attempted as root."""
+    fd, tmp = tempfile.mkstemp(prefix=".seat-policy.", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        if os.geteuid() == 0 and (st.st_uid, st.st_gid) != (0, 0):
+            os.chown(tmp, st.st_uid, st.st_gid)
+        os.chmod(tmp, stat.S_IMODE(st.st_mode))
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def _restore_file(unit: Unit, wait: int, before: str, path: str, backup: str, st) -> int:
+    print(f"restoring {backup}")
+    _write_atomic_as(path, before, st)
+    subprocess.run(["systemctl", "restart", unit.name], check=False)
+    restored = _healthy(unit.health, unit.name, wait)
+    print("restored and healthy" if restored else "THE RESTORE IS NOT HEALTHY:  check the unit now")
+    return 3
+
+
+def install_seat(args, unit: Unit) -> int:
+    """Add exactly one seat to a file-backed policy under one exclusive transaction.
+
+    The transaction lock (adopt-lock pattern) spans verify, receipt consume,
+    write, health gate and any recovery:  two operators can never interleave a
+    CAS, a replay-store write or a replace.  Every other gate runs before
+    anything is written:  the service uid must be able to read the result, the
+    live file must BE the reviewed policy (CAS on the full canonical digest),
+    the additive result must match --expect-after, and the proof receipt must
+    verify for exactly this seat and this before/after pair against the
+    operator key, the durable replay store and the relay's ACTUAL audit log
+    (its configured GIT_RELAY_AUDIT_PATH, not an assumed default).  The dry run
+    checks the same gates without consuming the receipt;  --apply verifies it
+    again and records it.  No policy is ever trimmed, reordered or regenerated
+    here.
+    """
+    sys.path.insert(0, unit.relay)
+    try:
+        from git_relay import deploy_proof, policy_input, seat_add_policy
+    finally:
+        sys.path.remove(unit.relay)
+    path, credential = _seat_policy_source(unit)
+    if credential:
+        # The relay accepts the credential input only under one systemd credential
+        # directory, which systemd derives from the unit name.  A unit named otherwise
+        # would pass every gate here and then fail the health gate at startup, so it is
+        # refused before anything is written.
+        if f"/run/credentials/{unit.name}" != policy_input.SEAT_CREDENTIAL_DIRECTORY:
+            print(
+                "refusing:  the unit's systemd credential directory is not the one the relay "
+                "accepts for the policy credential"
+            )
+            return 2
+        # Validate the backing file and its directory BEFORE the transaction lock creates
+        # a file beside it as root.  The same check runs again under the lock.
+        refusal = _credential_backing_refusal(path)
+        if refusal:
+            print(f"refusing:  {refusal}")
+            return 2
+    try:
+        lock_fd = _acquire_transaction_lock(path)
+    except OSError:
+        print("refusing:  the transaction lock file cannot be opened safely;  nothing was written")
+        return 2
+    if lock_fd is None:
+        print("refusing:  another install-seat transaction holds the lock;  retry when it finishes")
+        return 2
+    try:
+        return _install_seat_locked(args, unit, path, deploy_proof, seat_add_policy, credential)
+    finally:
+        os.close(lock_fd)
+
+
+def _install_seat_locked(
+    args, unit: Unit, path: str, deploy_proof, seat_add_policy, credential: bool = False
+) -> int:
+    uid = _service_uid(unit, credential)
+    if credential:
+        refusal = _credential_backing_refusal(path)
+        if refusal:
+            print(f"refusing:  {refusal}")
+            return 2
+    if uid is None:
+        print(
+            "refusing:  the unit's User=/DynamicUser= cannot own a readable seats file;\n"
+            "a DynamicUser deployment takes the systemd credential input instead"
+        )
+        return 2
+    info = os.stat(path)
+    if uid != 0 and info.st_uid != uid:
+        print(
+            "refusing:  the service user does not own the seats file;  a root replace would be unreadable"
+        )
+        return 2
+    with open(path, encoding="utf-8") as fh:
+        before_text = fh.read()
+    try:
+        current = json.loads(before_text)
+    except ValueError:
+        print("refusing:  the live policy is not valid JSON;  nothing was written")
+        return 2
+    if canonical_digest(current) != args.expect_before:
+        print("refusing:  the live policy is not the reviewed one (--expect-before mismatch)")
+        return 2
+    with open(args.row_json, encoding="utf-8") as fh:
+        row = json.load(fh)
+    if not isinstance(row, dict):
+        print("refusing:  the seat row file is not a JSON object")
+        return 2
+    try:
+        result = seat_add_policy.prepare(current, args.seat, row, args.expect_before)
+    except ValueError as exc:
+        print(f"refusing:  {exc}")
+        return 2
+    after = canonical_digest(result)
+    if after != args.expect_after:
+        print("refusing:  --expect-after does not match the additive result;  re-render and review")
+        return 2
+    key_path = os.environ.get(PROOF_KEY_FILE_VAR)
+    if not key_path:
+        print(f"refusing:  {PROOF_KEY_FILE_VAR} names no proof-key file;  the proof gate stays on")
+        return 2
+    with open(key_path, "rb") as fh:
+        key = fh.read().strip()
+    with open(args.receipt, encoding="utf-8") as fh:
+        receipt = json.load(fh)
+    try:
+        audit_rows = deploy_proof.read_audit_rows(_audit_path(unit))
+        store = deploy_proof.ReplayStore(os.path.join(unit.relay, REPLAY_STORE))
+        deploy_proof.verify_receipt(
+            key,
+            receipt,
+            seat=args.seat,
+            now=int(time.time()),
+            store=store,
+            policy_before=args.expect_before,
+            policy_after=args.expect_after,
+            audit_rows=audit_rows,
+            store_id=args.apply,
+        )
+    except ValueError as exc:
+        print(f"refusing:  {exc}")
+        return 2
+    except OSError:
+        print("refusing:  the audit log or replay store is unreadable;  refusing closed")
+        return 2
+    print(f"additive policy digest {after} (new seat:  {args.seat})")
+    if not args.apply:
+        print(
+            "dry run;  install it with --apply and the same --expect-before/--expect-after/--receipt"
+        )
+        return 0
+    _ = unit.health  # refuse before writing if health cannot be checked
+    stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup = f"{path}.backup-seat-add-{stamp}"
+    _write_atomic(backup, before_text)
+    _write_atomic_as(path, json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n", info)
+    try:
+        restart = subprocess.run(["systemctl", "restart", unit.name], check=False)
+        if restart.returncode == 0 and _healthy(unit.health, unit.name, args.wait):
+            print(f"installed seat {args.seat};  {unit.name} is healthy;  backup {backup}")
+            return 0
+        print(f"{unit.name} did not come back healthy (restart exit {restart.returncode})")
+    except BaseException:
+        print("interrupted before the relay was confirmed healthy")
+        _restore_file(unit, args.wait, before_text, path, backup, info)
+        raise
+    return _restore_file(unit, args.wait, before_text, path, backup, info)
 
 
 def install(args, unit: Unit) -> int:
@@ -486,11 +888,24 @@ def verify_inner(args) -> int:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("command", choices=["render", "install", "verify-apps", "verify-inner"])
+    parser.add_argument(
+        "command", choices=["render", "install", "install-seat", "verify-apps", "verify-inner"]
+    )
     parser.add_argument("--policy", default=str(DEFAULT_POLICY))
-    parser.add_argument("--unit", help="install, verify-apps:  the relay's systemd unit")
+    parser.add_argument(
+        "--unit", help="install, install-seat, verify-apps:  the relay's systemd unit"
+    )
     parser.add_argument("--wait", type=int, default=30, help="seconds to wait for health")
     parser.add_argument("--expect", help="install --apply:  the digest the dry run printed")
+    parser.add_argument("--seat", help="install-seat:  the one seat to add")
+    parser.add_argument("--row-json", help="install-seat:  the reviewed rendered seat row")
+    parser.add_argument(
+        "--expect-before", help="install-seat:  full canonical digest of the live policy"
+    )
+    parser.add_argument(
+        "--expect-after", help="install-seat:  full canonical digest of live-plus-one-seat"
+    )
+    parser.add_argument("--receipt", help="install-seat:  the signed external-proof receipt")
     parser.add_argument("--seats", help="verify-inner only:  the rendered policy")
     parser.add_argument("--relay", help="verify-inner only:  the deployed relay code")
     parser.add_argument("--secrets-path", default=DEFAULT_SECRETS_PATH, help="verify-inner only")
@@ -511,6 +926,13 @@ def main(argv=None) -> int:
         print(f"{os.path.basename(path)} blob {blob_id(path)}")
     if args.command == "install":
         return install(args, unit)
+    if args.command == "install-seat":
+        for flag in ("seat", "row_json", "expect_before", "expect_after", "receipt"):
+            if not getattr(args, flag):
+                parser.error(f"install-seat needs --{flag.replace('_', '-')}")
+        if os.geteuid() == 0:
+            require_root_owned([args.row_json, args.receipt])
+        return install_seat(args, unit)
     return verify_apps(args, unit)
 
 

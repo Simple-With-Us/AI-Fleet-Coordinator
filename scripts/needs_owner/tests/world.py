@@ -30,7 +30,7 @@ if str(SCRIPTS) not in sys.path:
 from needs_owner import cli  # noqa: E402
 
 REALM_LINK = "https://simplewithus.zulipchat.com/#narrow/channel/12-work-in-progress/topic/%s/near/%d"
-OWNER_ID = 7  # Jay, the pinned owner in the fake realm (fake_agent_sync.OWNER_ID)
+OWNER_ID = 7  # Jay, the pinned owner in the fake realm (fake_simple_tools.OWNER_ID)
 KEYCAP = {n: "003%d-20e3" % n for n in range(1, 6)}  # Zulip's emoji_code for 1️⃣ to 5️⃣
 
 
@@ -71,8 +71,15 @@ class World:
         self.bin = self.root / "bin"
         self.state = self.root / "state"
         self.home = self.root / "home"
-        for d in (self.bin, self.state, self.home):
+        self.tmp = self.root / "tmp"
+        for d in (self.bin, self.state, self.home, self.tmp):
             d.mkdir()
+        # The CLI runs in process, so its private files land wherever `tempfile` points.  Point it at this
+        # world's own directory for the life of the world, so another run on the same machine cannot fail
+        # this run's leak check (and this run cannot fail theirs).
+        self._saved_tempdir = tempfile.tempdir
+        tempfile.tempdir = str(self.tmp)
+        test.addCleanup(setattr, tempfile, "tempdir", self._saved_tempdir)
         self.knobs = FakeKnobs()
         self.now = dt.datetime(2026, 10, 11, 18, 0, 0, tzinfo=dt.timezone.utc)  # well after every issue the fake board stamps
         from needs_owner import seat as _seat
@@ -81,7 +88,7 @@ class World:
         _seat.MANAGED_BIN_DIR = str(self.bin)  # the import-only seam:  the fake tools are the "managed" install
         test.addCleanup(setattr, _seat, "MANAGED_BIN_DIR", self._saved_bin)
         self._launcher("simple-board", HERE / "fake_board.py")
-        self._launcher("simple-chat", HERE / "fake_agent_sync.py")
+        self._launcher("simple-chat", HERE / "fake_simple_tools.py")
 
     def _launcher(self, name: str, script: Path) -> None:
         path = self.bin / name
@@ -95,14 +102,17 @@ class World:
     # ---- running -----------------------------------------------------------------------------
     def env(self, **extra: str) -> dict:
         env = {"PATH": "%s:/usr/bin:/bin" % self.bin, "HOME": str(self.home), "FAKE_STATE_DIR": str(self.state),
-               "FAKE_SCRIPTS_DIR": str(SCRIPTS), "AGENT_SEAT": "CLAUDE", "PYTHONDONTWRITEBYTECODE": "1"}
+               "FAKE_SCRIPTS_DIR": str(SCRIPTS), "AGENT_SEAT": "CLAUDE", "PYTHONDONTWRITEBYTECODE": "1",
+               # A run in a subprocess does not see this process's tempfile.tempdir, so it is pointed at the
+               # same per-world folder here and the leak check covers it too.
+               "TMPDIR": str(self.tmp), "TEMP": str(self.tmp), "TMP": str(self.tmp)}
         env.update(extra)
-        # The harness plays the trusted launcher:  a seat binds the run to a bearer locator and the fake board
+        # The harness plays the trusted launcher:  a seat binds the run to a bearer file and the fake board
         # proves that seat (FAKE_BEARER_SEAT).  AGENT_SEAT itself is never an identity any more, so it is not
-        # passed on;  no seat means no locator and the run refuses.
+        # passed on;  no seat means no bearer file and the run refuses.
         seat = env.pop("AGENT_SEAT", None)
         if seat:
-            env["SIMPLE_BOARD_BEARER_LOCATOR"] = "/fleet-seats:%s_SEAT_BEARER" % seat.replace("-", "_")
+            env["SIMPLE_BOARD_BEARER_FILE"] = "/run/seat-bearers/%s" % seat.replace("-", "_").lower()
             env["FAKE_BEARER_SEAT"] = seat
         return {k: v for k, v in env.items() if v is not None}
 
@@ -271,4 +281,4 @@ class World:
         self.save_board(world)
 
     def leftover_temp_files(self) -> list[str]:
-        return sorted(p for p in os.listdir(tempfile.gettempdir()) if p.startswith(".needs-owner-"))
+        return sorted(p for p in os.listdir(self.tmp) if p.startswith(".needs-owner-"))

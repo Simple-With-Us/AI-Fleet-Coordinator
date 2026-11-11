@@ -19,7 +19,11 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from git_relay.app_tokens import MINT_PERMISSION_CEILING
+from git_relay.app_tokens import (
+    MINT_PERMISSION_CEILING,
+    MINT_READ_ONLY_PERMISSIONS,
+    mint_permission_allowed,
+)
 from git_relay.policy import SeatPolicy
 from git_relay.server import ACTION_REQUIRED_PERMISSIONS
 from git_relay.shared_bearer import SharedBearerVerifier
@@ -28,7 +32,7 @@ from git_relay.workflow_verbs import SPECS
 
 RELAY = Path(__file__).resolve().parents[2]
 ROOT = RELAY.parent
-WORKER = ROOT / "scripts" / "agent-sync-mcp" / "src"
+WORKER = ROOT / "scripts" / "simple-tools-mcp" / "src"
 
 _spec = importlib.util.spec_from_file_location("seat_policy", RELAY / "deploy" / "seat_policy.py")
 seat_policy = importlib.util.module_from_spec(_spec)
@@ -50,8 +54,43 @@ NOT_SWU_IDENTITY = {
     "AMP": "swu-amp-agent",
 }
 # Explicit policy exclusions, documented in the deployed policy's header.
-# Original Jet is wake-only and has no GitHub App entry.
-EXCLUDED = {"JET"}
+# Original Jet is wake-only and has no GitHub App entry.  BF-BUILDER is dropped (owner
+# 2026-11-01 4:41pm CT:  BF-ENGINEER replaced it), so the relay admits no bearer for it.
+# KIMI is a newly added seat that does not have a deployed GitHub App yet.
+EXCLUDED = {"JET", "BF-BUILDER", "KIMI"}
+# Every GB seat and every BF bot (owner 2026-11-01 4:41pm CT:  "all 12" of each, including
+# the new BF-TRADER and BF-ENGINEER) reaches every repository in both namespaces.
+GB_SEATS = {
+    "GB-COMPILER",
+    "GB-DEPLOYER",
+    "GB-DESIGNER",
+    "GB-DIRECTOR",
+    "GB-ENGINEER",
+    "GB-FIXER",
+    "GB-HOUSEKEEPER",
+    "GB-MONITOR",
+    "GB-ORACLE",
+    "GB-PLUMBER",
+    "GB-PUBLISHER",
+    "GB-TRADER",
+}
+BF_SEATS = {
+    "BF-COMPILER",
+    "BF-DEPLOYER",
+    "BF-DESIGNER",
+    "BF-DIRECTOR",
+    "BF-ENGINEER",
+    "BF-FIXER",
+    "BF-HOUSEKEEPER",
+    "BF-MONITOR",
+    "BF-ORACLE",
+    "BF-PLUMBER",
+    "BF-PUBLISHER",
+    "BF-TRADER",
+}
+# The two seats whose live rollout carries the fleet action set in its own order (host
+# render/live compare 2026-11-01):  each pins its exact ordered live list in its own profile.
+ORDER_PINNED = {"swu-amp-agent": "amp", "swu-wise": "wise"}
 
 
 def worker_identities() -> set[str]:
@@ -62,8 +101,8 @@ def worker_identities() -> set[str]:
     bearer = (WORKER / "bearer-identities.js").read_text(encoding="utf-8")
     row = r'^\s+"?([A-Z][A-Z0-9-]*)"?: Object\.freeze\(\{ prefix:'
     names |= set(re.findall(row, bearer, re.MULTILINE))
-    personas = ROOT / "scripts" / "agent_sync" / "mcp" / "gb-identities.json"
-    names |= set(json.loads(personas.read_text(encoding="utf-8"))["enabled"])
+    bots = ROOT / "scripts" / "simple_tools" / "mcp" / "gb-identities.json"
+    names |= set(json.loads(bots.read_text(encoding="utf-8"))["enabled"])
     return names
 
 
@@ -113,6 +152,7 @@ class SeatPolicyFile(unittest.TestCase):
             self.assertEqual(policy.authenticate(bearer_for(cfg["identity"])), slug)
             self.assertEqual(policy.app_identity(slug)[0], slug)
         self.assertIsNone(policy.authenticate(bearer_for("JET")))
+        self.assertIsNone(policy.authenticate(bearer_for("BF-BUILDER")))
 
     def test_only_full_jet_login_reaches_jet_app_even_if_old_bearer_is_verified(self):
         policy = SeatPolicy(seat_policy.compact(SEATS), verifier=_Verifier())
@@ -166,7 +206,14 @@ class SeatPolicyFile(unittest.TestCase):
         rank = {"read": 1, "write": 2}
         for cfg in SEATS.values():
             ceiling = cfg["mint_permissions"]
-            self.assertTrue(set(ceiling) <= set(MINT_PERMISSION_CEILING))
+            self.assertTrue(
+                set(ceiling) <= set(MINT_PERMISSION_CEILING) | set(MINT_READ_ONLY_PERMISSIONS)
+            )
+            for key, level in ceiling.items():
+                self.assertTrue(
+                    mint_permission_allowed(key, level),
+                    f"seat ceiling {key}:{level} exceeds the mint allowance",
+                )
             for action in cfg["actions"]:
                 if action == "open_pr":
                     continue  # the owner's PR-only token, never the seat's App
@@ -180,39 +227,76 @@ class SeatPolicyFile(unittest.TestCase):
                     self.assertIn(name, ceiling, need)
                     self.assertGreaterEqual(rank[ceiling[name]], rank[level], need)
 
-    def test_repositories_are_exact_and_in_the_org(self):
-        # A repository the org moved in keeps its old owner's name only as a redirect,
-        # which the minter does not follow, so every entry names the org.
-        for cfg in SEATS.values():
-            for repo in cfg["repos"]:
-                self.assertNotIn("*", repo)
-                self.assertTrue(repo.startswith(ORG), repo)
+    def test_repositories_are_the_two_reviewed_namespaces(self):
+        # 2026-11-01 every-repo widening (owner instruction):  each seat reaches every
+        # repository in the two verified namespaces - the org and Jay's personal account -
+        # through the owner/* form the relay engine matches (policy._repo_allowed).  A
+        # repository the org moved in keeps its old owner's name only as a redirect, so the
+        # org namespace uses the current owner.  Nothing broader passes:  no bare "*", no
+        # other owner, and no per-seat variation.
+        reviewed = ["Simple-With-Us/*", "jaywedgeworth22/*"]
+        for slug, cfg in SEATS.items():
+            self.assertEqual(cfg["repos"], reviewed, slug)
             self.assertEqual(len(cfg["repos"]), len(set(cfg["repos"])))
+            for pattern in cfg["repos"]:
+                self.assertTrue(pattern.endswith("/*"), pattern)
+                self.assertNotEqual(pattern, "*")
 
-    def test_echo_keeps_its_narrower_repositories(self):
-        echo = SEATS["swu-echo"]
+    def test_every_seat_shares_the_widened_scope(self):
+        # Echo's profile survives so its seat entry stays stable, but after the widening it
+        # resolves to the fleet set;  every ACTIVE seat carries exactly the two reviewed
+        # namespaces.
+        self.assertEqual(DOC["profiles"]["echo"]["repos"], "fleet")
         fleet = SEATS["swu-claude"]
+        echo = SEATS["swu-echo"]
         self.assertEqual(echo["actions"], fleet["actions"])
         self.assertEqual(echo["mint_permissions"], fleet["mint_permissions"])
-        self.assertEqual(echo["repos"], DOC["profiles"]["echo"]["repos"])
-        self.assertLess(set(echo["repos"]), set(fleet["repos"]))
-        # Only Echo is narrowed:  every other seat carries the fleet set exactly.
         for slug, cfg in SEATS.items():
-            if slug != "swu-echo":
-                self.assertEqual(cfg["repos"], fleet["repos"], slug)
-                self.assertEqual(
-                    cfg["actions"],
-                    fleet["actions"] + (["wf_repo_get", "wf_pr_get"] if slug == "swu-jet" else []),
-                    slug,
-                )
-                self.assertEqual(cfg["mint_permissions"], fleet["mint_permissions"], slug)
+            self.assertEqual(cfg["repos"], fleet["repos"], slug)
+            if slug in ORDER_PINNED:
+                # Same set and ceiling as fleet, in the seat's own live order:  the pinned
+                # profile holds the exact list, and the reviewed-scope digest holds the order.
+                profile = DOC["profiles"][ORDER_PINNED[slug]]
+                self.assertIsInstance(profile["actions"], list, slug)
+                self.assertEqual(cfg["actions"], profile["actions"], slug)
+                self.assertEqual(len(cfg["actions"]), len(fleet["actions"]), slug)
+                self.assertEqual(sorted(cfg["actions"]), sorted(fleet["actions"]), slug)
+            else:
+                self.assertEqual(cfg["actions"], fleet["actions"], slug)
+            self.assertEqual(cfg["mint_permissions"], fleet["mint_permissions"], slug)
+
+    def test_bf_builder_is_dropped(self):
+        # BF-BUILDER is dropped (owner 2026-11-01 4:41pm CT):  no seat entry, no profile,
+        # and a bearer the Worker still confirms for it authenticates nowhere.
+        self.assertNotIn("swu-bf-builder", SEATS)
+        self.assertNotIn("retired-builder", DOC["profiles"])
+        self.assertFalse(any(row["identity"] == "BF-BUILDER" for row in DOC["seats"]))
+        policy = SeatPolicy(seat_policy.compact(SEATS), verifier=_Verifier())
+        self.assertIsNone(policy.authenticate(bearer_for("BF-BUILDER")))
+
+    def test_all_gb_and_bf_seats_reach_every_repository(self):
+        # Owner 2026-11-01 4:41pm CT:  all 12 GB seats and all 12 BF bots, including the
+        # new BF-TRADER and BF-ENGINEER, carry the full fleet scope.
+        self.assertEqual(len(GB_SEATS), 12)
+        self.assertEqual(len(BF_SEATS), 12)
+        by_identity = {cfg["identity"]: cfg for cfg in SEATS.values()}
+        gb = {i for i in by_identity if i.startswith("GB-")}
+        bf = {i for i in by_identity if i.startswith("BF-")}
+        self.assertEqual(gb, GB_SEATS)
+        self.assertEqual(bf, BF_SEATS)
+        fleet = SEATS["swu-claude"]
+        for identity in GB_SEATS | BF_SEATS:
+            cfg = by_identity[identity]
+            self.assertEqual(cfg["repos"], ["Simple-With-Us/*", "jaywedgeworth22/*"], identity)
+            self.assertEqual(cfg["actions"], fleet["actions"], identity)
+            self.assertEqual(cfg["mint_permissions"], fleet["mint_permissions"], identity)
 
     def test_the_reviewed_scope_is_pinned(self):
         # The rendered policy's digest, pinned here apart from the file:  any change to a
         # seat's repositories, actions or permission ceiling fails until this line is edited
         # too, so a widening can never ride in on the policy file alone.  When a policy
         # change is meant, run `seat_policy.py install` for the new digest and update it here.
-        self.assertEqual(seat_policy.digest(SEATS), "caccceb653836c98")
+        self.assertEqual(seat_policy.digest(SEATS), "4fe63e3e32e90998")
 
     def test_render_refuses_a_malformed_file(self):
         good = json.loads(json.dumps(DOC))
@@ -291,11 +375,11 @@ class SeatPolicyFile(unittest.TestCase):
                 "Environment=PATH=/usr/bin GIT_RELAY_HOST=localhost GIT_RELAY_PORT=18080",
             ]
         )
-        cat = "[Service]\nLoadCredential=other-token:/tmp/fixture/other-token\nLoadCredential=git-relay-apps-token:/tmp/fixture/apps-token\n"
+        cat = "[Service]\nLoadCredential=other-token:/tmp/o\nLoadCredential=git-relay-apps-token:/tmp/a\n"
         unit = seat_policy.read_unit("relay.service", show=show, cat=cat)
         self.assertEqual(unit.relay, "/tmp/fixture/relay/code")
         self.assertEqual(unit.config, "/tmp/fixture/relay/relay.env")
-        self.assertEqual(unit.apps_token, "/tmp/fixture/apps-token")
+        self.assertEqual(unit.apps_token, "/tmp/a")
         self.assertEqual(unit.health, "http://localhost:18080/healthz")
         # No assumed bind address:  a unit that sets none cannot be health-checked.
         no_bind = seat_policy.read_unit(
@@ -376,10 +460,7 @@ class SeatPolicyOauthAssertRender(unittest.TestCase):
         # accepts the rendered JSON unchanged, assertions refused everywhere.
         policy = SeatPolicy(seat_policy.compact(SEATS), assertion_verifier=None)
         self.assertIsNone(
-            policy.authenticate(
-                "gra1_codex_1800000000_1800000090_AbCdEfGhIjKlMnOp_"
-                "6c83d4e7a1b73c7c8afcc28641b50e8afe2b53ec21ed554f4c96947ca255f334"
-            )
+            policy.authenticate("gra1_codex_1800000000_1800000090_AbCdEfGhIjKlMnOp_" + "0" * 64)
         )
 
 

@@ -9,6 +9,8 @@ scripts=$(cd "$here/.." && pwd)
 dest=/usr/local/lib/fleet-coding-memory
 config=/etc/fleet-coding-memory
 install -d -m 0700 "$dest" "$dest/settings" "$dest/settings/fleet_secrets" "$config"
+install -d -m 0755 /run/fleet-coding-resources
+install -m 0600 "$here/coding_resources.py" "$dest/coding_resources.py"
 install -m 0600 "$here/fleet_coding_memory.py" "$dest/fleet_coding_memory.py"
 install -m 0700 "$scripts/fleet-secrets" "$dest/settings/fleet-secrets"
 for source in "$scripts"/fleet_secrets/*.py; do
@@ -18,7 +20,7 @@ install -m 0700 "$scripts/fleet_secrets/linux-entrypoint.py" "$dest/settings/lin
 python3 - "$config/environment" <<'PY'
 import os, sys, uuid
 from pathlib import Path
-metadata = Path('/home/jay/.agent-sync/fleet-ops-project-id').read_text().strip()
+metadata = Path('/home/jay/.simple-tools/fleet-ops-project-id').read_text().strip()
 uuid.UUID(metadata)
 target = Path(sys.argv[1])
 temporary = target.with_suffix('.tmp')
@@ -27,9 +29,14 @@ temporary.write_text('INFISICAL_FLEET_OPS_PROJECT_ID=' + metadata + '\n'
 temporary.chmod(0o600)
 os.replace(temporary, target)
 PY
-install -m 0644 "$here/fleet-coding-memory.service" /etc/systemd/system/fleet-coding-memory.service
-systemctl daemon-reload
+if ! cmp -s "$here/fleet-coding-memory.service" /etc/systemd/system/fleet-coding-memory.service; then
+  install -m 0644 "$here/fleet-coding-memory.service" /etc/systemd/system/fleet-coding-memory.service
+  systemctl daemon-reload
+fi
 if [[ "$mode" == --enable ]]; then
   systemctl enable --now fleet-coding-memory.service
+fi
+if [[ -e "$config/exclude-units" ]]; then
+  echo "Note: host-local exclude list present at $config/exclude-units (left untouched)."
 fi
 echo 'Coding memory code installed; authentication material was not copied.'

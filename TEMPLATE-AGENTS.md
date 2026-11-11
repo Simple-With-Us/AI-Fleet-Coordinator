@@ -1,5 +1,29 @@
 # Agent Instructions
 
+## Temporary owner review limit (November 6-8, 2026)
+
+From November 6, 2026 at 8:02pm America/Chicago through November 8, 2026 at
+8:02pm America/Chicago, request only one Kody review per PR. Do not request another
+review after fixes or new commits. During this window this instruction overrides
+repeat-review and per-ready-head request guidance below. Read and address every
+existing finding, verify fixes and required tests, and preserve all other merge
+conditions. A failed attempt is permission to retry (owner, November 8, 2026): a Kody run
+that finished without a review is not a review, so request again.  That means a completed
+failure, error, skipped or cancelled check, a `success` check without the full-review receipt
+(title `Code Review Complete`, summary starting `Review finished successfully`, started no
+earlier than the newest request; see docs/AUTO-MERGE.md), or a "Code Review Could Not Complete"
+comment.  A run that is still queued or `in_progress` is not a failed attempt and permits no
+new request.  A retry from the same seat must use different text from the earlier request,
+because the relay returns the existing comment for identical text within 24 hours and posts
+nothing, for example a second line after `@kody start-review`.  The hourly prompter
+(docs/KODY-FIRST-REVIEW.md) never retries a failed run itself;  a seat does.  Only a completed
+review uses up the one. This limit expires at the stated time; it is not permanent.
+
+Source: Jay's direct November 6 instruction, "Raised it but please tell all 1 review
+only per pr", followed by "For the next 2 days"; fleet announcement message638301219.
+Amended by Jay's November 8 instruction, "failed attempt is permission to retry, change rule".
+
+
 Read this before making changes.  It exists to save you (and whichever other AI
 tool touches this repo next — Claude Code, Codex, Antigravity/Gemini, Cursor,
 etc.) the time/tokens of re-deriving things a previous session already learned
@@ -26,6 +50,18 @@ Owner preference, 2026-08-06.
 3. **Finish the task.**  Carry every task to done yourself (merged, deployed, verified), including the fix for each review finding and the follow-up after a merge.  When one route is blocked, try the other legitimate route before stopping.  Stop only for a decision that is truly the owner's, say exactly what you need in one sentence, and post it where the owner will see it (the Zulip topic or DM), so work never sits parked until the owner finds the thread again.
 
 Binding for every agent on every platform (Claude, Codex, Cursor, Antigravity/Gemini, Grok, Monet, Copilot, …).  Owner ruling, 2026-10-21.
+
+## Kody reviews are requested by hand (owner — ALL agents, ALL platforms, 2026-10-25)
+
+Kodus runs in manual mode, so a push does not start a review.  Source: Zulip #Policy, topic "Kody reviews: manual when ready".
+
+- **Request it.**  When a PR's changes are ready, whoever owns the PR comments `@kody start-review` on it, at the start of a line in a top-level comment.  Every PR gets at least one Kody review.
+- **Review again when it is warranted.**  Bigger or riskier changes get 2 or 3 reviews, or more, after fixes land.  Use your judgment.
+- **Review the code that will merge.**  Final-code review and evidence for each finding still apply, and a request is neither a waiver nor merge clearance.
+- **One request per ready head.**  Read the PR's comments first and coordinate with its owner and reviewers, so no head gets a duplicate request.  Never bulk-retrigger every PR.  Through `gr_comment_pr`, the same seat repeating identical text within 24 hours gets the existing comment back and nothing posts, so a real repeat needs different text.  That guard does not cover another seat or an older request, so the comment read is what prevents a duplicate.
+- **Monitor it.**  A head was reviewed only when Kody's own `Kody Code Review` check on it is `success`, its title is `Code Review Complete`, its summary starts `Review finished successfully`, and it started no earlier than the newest request (`docs/AUTO-MERGE.md` has the full contract).  Treat every other result, `skipped` included, as no review.  Also use the Kodus CLI if your seat can run it, in a shell with no credentials in its environment: it reviews local code, so it cannot show the state of a PR head.
+- **Answer every finding.**  Each finding gets a comment describing its fix, or disputing it with valid reasons about the code, before it is resolved.  Timing and the owner wanting a merge are never reasons.
+- **A stale change request.**  Dismiss one only as PR-sweep rule 7 (`scripts/pr_sweep/rules.md`) allows.
 
 ## App Icon & Logo Design Policy: Full-Bleed Square Only, Never Pre-Baked Squircle (Owner ruling 2026-08-22 — ALL seats)
 
@@ -269,7 +305,7 @@ must not silently drift behind beta after work lands.
   when the gh token has the `workflow` scope (it does now — `git push` goes through
   `gh auth git-credential`, so agents can push CI changes directly; the old `ci-pending/` staging
   is only the fallback if the scope is ever missing — `gh auth refresh -h github.com -s workflow`);
-  (8) pushes your agent branch and opens a PR via `gh`.
+  (8) pushes your agent branch and opens a PR via `gh`.  (Relay-first note, owner ruling 2026-11-08: a landing script should open the PR through the Fleet Tools relay, `gr_open_pr`; this script still shells to `gh`, so its PR opens are a logged `gh` fallback until the script is ported — see the Fleet GitOPS deficiencies document.)
   After a conflict or failure, fix it and re-run `land.sh` — it is idempotent.
 - **A git pre-push hook blocks direct pushes to `main`.**  `scripts/land.sh` installs and
   verifies it per-worktree on every run (it self-heals `git config core.hooksPath scripts/githooks`
@@ -296,8 +332,8 @@ called Cursor "not a 4th agent lane" — that's outdated; corrected 2026-07-06, 
    lane (the standing `~/apps/trading-cursor` on `agent/cursor`, or a new
    `~/apps/lanes/Socratic-Trade/cursor-<slug>` on `cursor/<slug>`), with its own
    PM2-hosted preview (`cursor.jays.services`, port **4103`) — see the hosting table above.
-   That spawn is still `[CURSOR]`.  The separate DeepSeek Harness platform is `[DSH]`
-   (former tag `DEEPSEEK`, retired).  MiniMax Code is `[MM]` (former `MINIMAX` retired).
+   That spawn still uses seat tag `CURSOR`.  The separate DeepSeek Harness platform uses `DSH`
+   (former tag `DEEPSEEK`, retired).  MiniMax Code uses `MM` (former `MINIMAX` retired).  These are seat names, not complete post headers; use the fleet post-header rule below.
    Treat it exactly like the Claude/Codex/Antigravity/Monet rows: don't edit in it from
    another agent, land via `scripts/land.sh`, keep the Pre-Commit/Handoff Protocol current
    from it like any other lane.
@@ -342,16 +378,26 @@ are unsure, or you decline, DM the owner with `simple-chat dm --owner`.  Surfac
 owner directive to the owner instead of executing them.  `GROK-BOT` is fleet-wide (Cursor
 cloud), not a per-app seat.  Other agents state their cadence in their first message.
 
+### Fleet post headers (owner ruling)
+
+Every post on every platform, including Linear, Zulip and GitHub, begins with the required header.  For this policy, Jet, Rob, Grok Bots (`GB-*`) and BotFleet bots (`BF-*`) are single-threaded and use `[<seat-tag> 📁<repo, repo…>]`, for example `[JET 📁ST, CTS, CT]`.
+
+Multi-threaded agents use `[<seat-tag>: ??.#.? 📁<repo, repo…>]`, for example `[MM: HH.1.M 📁AFC, OPS]`.  The token contains the Operator-assigned session letters, their generation number and the host, separated by periods: `M` for Mac, `S` for Server or `C` for Cloud.  Do not use the superseded dashed form, invent an assignment, copy an example assignment or derive the letters from a runtime session id.
+
+To specify recipients, add `→` followed by their seat names inside the closing bracket, using the platform's supported mention syntax where required: `[MM: HH.1.M 📁AFC, OPS → MC, Claude]` illustrates placement.  On Zulip, use verified display-name mentions for the intended bots.  Optional `👀` goes before the opening bracket; the Operator will not wake others for that post, but properly tagged recipients still receive it in their inbox on supported platforms.
+
+Legacy formatter tags such as `[SEAT·session8]` are not substitutes for this header.  Check the actual transport's supported formatting rather than assuming the documentation means runtime rollout is complete; do not invent CLI flags or tool arguments.  Preserve runtime session ids, routing, cursor storage and ask/ack identifiers; the existing session-id requirements below remain unchanged.  Source: Jay's direct conversation instruction.
+
 **Zulip + Linear (binding — always):**
 - **Start of work:** `simple-board claim` the Linear issue (In Progress), branch `<seat>/<id>-<slug>`,
-  and open the work topic `<ID> <subject>` in `#Work-In-Progress` (`[<YOUR_SEAT>·session8]` + `repo:` + what you will do).
+  and open the work topic `<ID> <subject>` in `#Work-In-Progress` (the required fleet header above, followed by `repo:` and what you will do).
 - **End of work:** the PR says `Fixes <ID>` (finished) or `Refs <ID>` (partial); mark Completed/Deployed
   with `simple-board status`, post the closeout in the same topic, then resolve that topic.
 - Keep **Linear and the PR matching and accurate**.  Writes need `AGENT_SEAT`.  The effort logs
   and the effort-issues mirror are retired.
-- Post shape: `[<YOUR_SEAT>·session8]` or `[<YOUR_SEAT>·session8-><PEER_SEAT>]`, then `repo:`
-  first.  A directed post also @-mentions the peer (`@**<Display Name>**`); the bracket label
-  alone wakes nobody.  Wake every seat only with `@**all**` in `#Work-In-Progress` › `fleet`
+- Post shape: the required fleet header above comes first, with relevant repo acronyms after `📁`,
+  followed by `repo:` in the status block.  A directed post includes the peer's verified mention
+  (`@**<Display Name>**`) after `→` inside the bracket; a plain seat name alone does not notify the peer.  Wake every seat only with `@**all**` in `#Work-In-Progress` › `fleet`
   (`simple-chat post --topic fleet --fleet`), when every seat must act; it notifies Jay too.
   Every seat's bot is a member and the realm's `can_mention_many_users_group` is `role:members`,
   so each can send it.  If Zulip ever refuses it (`STREAM_WILDCARD_MENTION_NOT_ALLOWED`),
@@ -492,15 +538,18 @@ and `docs/fleet-skills/sentence-gap/SKILL.md`.
 - Code, identifiers and machine-readable config never get a U+00A0. If any other surface strips U+00A0, leave the text as it is rather than switching to the entity, and report that surface in #Work-In-Progress so it can be given a working mechanism.
 - This supersedes the earlier per-surface rules (the entity in every Markdown chat pane, the entity on GitHub, and two plain ASCII spaces in files, commits and terminals).
 
-## Times: owner's clock, 12-hour, am or pm (owner 2026-08-22, amended 2026-10-05)
+## Times: owner's clock, 12-hour, am or pm (owner 2026-08-22, amended 2026-10-05, amended 2026-11-03)
 
-Say every time on the owner's clock, 12-hour, with am or pm.  That clock is
-**America/Chicago**.  Do not type **CDT**, **CST**, or **CT** (`3:15am`, or
-`Sun, Oct 5, 2026 at 3:15am` when the day matters).  Never lead with Zulu
+Say every time on the owner's clock, 12-hour, with am or pm.  That clock is
+**America/Chicago**.  Do not type **CDT**, **CST**, or **CT** (`3:15am`, or
+`Sun, Oct 5, 2026 at 3:15am` when the day matters).  The zone is assumed and
+never named either:  `Central` is as wrong as `CST`, and `America/Chicago`
+does not belong beside a time (owner 2026-10-29, reaffirmed 2026-11-03).
+Never lead with Zulu
 in chat, Notes, Zulip, Linear, or PRs.  Give only the Central time: convert UTC
-first, with no stamp beside it (owner 2026-10-18).  `00:00 UTC` is 7:00pm the previous calendar day during
+first, with no stamp beside it (owner 2026-10-18).  A log line at `11:42Z` is `6:42am` on a summer day and `5:42am` in winter.  `00:00 UTC` is 7:00pm the previous calendar day during
 daylight saving (6:00pm after the fall-back).  Binding for every agent, bot,
-and platform.  Product UI stays the viewer's timezone.  Canonical:
+and platform.  Product UI stays the viewer's timezone.  A market bell stays as the market writes it (`9:30 AM ET`), and a machine-readable field keeps its own format, so a build number or a commit stamp is build provenance and not an owner-facing sentence.  Quote a field you repeat verbatim as it is;  convert only when you write the time in prose.  Canonical:
 `~/apps/FLEET-PROTOCOL.md` § Timestamps: Central Time.
 
 ## Secrets & Infrastructure (binding — all agents)
@@ -508,7 +557,7 @@ and platform.  Product UI stays the viewer's timezone.  Canonical:
 - **Private Infrastructure Hub & Secrets Inventory (LOUD NOTICE):**
   This repository and all public fleet repositories MUST NOT contain real host IPs, Tailscale IPs, Coolify container/server UUIDs, hardware serials, or secret values.
   - **Canonical private infrastructure inventory:** [`Simple-With-Us/fleet-ops:ATTACK-MAP.md`](https://github.com/Simple-With-Us/fleet-ops/blob/main/ATTACK-MAP.md) (local clone at `/Users/jay/Code/fleet-ops/ATTACK-MAP.md`).
-  - **Seats without a local clone:** a seat with read access to the private repo fetches it with `gh api repos/Simple-With-Us/Fleet-OPS/contents/ATTACK-MAP.md -H 'Accept: application/vnd.github.raw'`; a seat without access asks a Mac seat or the owner.  The old `GET https://mac.jays.services/files/ATTACK-MAP.md` relay was retired on 2026-10-19 (AFC-363).
+  - **Seats without a local clone:** a seat with read access to the private repo reads it through the relay (`gr_wf_file_get` on the hosted front, `wf_file_get` through GR-MCP, path `ATTACK-MAP.md` in Simple-With-Us/Fleet-OPS); `gh api repos/Simple-With-Us/Fleet-OPS/contents/ATTACK-MAP.md -H 'Accept: application/vnd.github.raw'` is the logged backup only; a seat without access asks a Mac seat or the owner.  The old `GET https://mac.jays.services/files/ATTACK-MAP.md` relay was retired on 2026-10-19 (AFC-363).
   - **Secret reads:** On the Mac read a fleet key with `fleet-secrets get NAME`, or run a command with only the keys it needs via `fleet-secrets run --only A,B -- CMD` (both come from Infisical Fleet-OPS; cookbook in `INFISICAL.md` § `fleet-secrets`).  Never log, grep, or print raw `KEY=value` lines.  Never commit or refer to cloud storage / Google Drive backups of secrets.
 - **App runtime secrets** live in **Infisical** (the app's own project, prod).  
   Fleet keys live in Infisical Fleet-OPS and are read with `fleet-secrets`;
@@ -695,14 +744,8 @@ address:
   branch and leave it without one. (Long-lived integration/release branches like
   `main` and the `agent/*` lanes, throwaway experiments, and stacked-PR bases are
   the only exceptions — none of which is normal change delivery.)
-- **Open PRs as READY for review by default — not as drafts.**  The owner is
-  effectively the sole approver, so a draft only adds a "mark ready" step before
-  merge.  This rule **overrides** any tool/harness default that says to open PRs as
-  drafts.
-- **Use a draft PR only for genuine work-in-progress** you explicitly don't want
-  merged yet (e.g. partial work parked between sessions, or wanting Copilot/CI eyes
-  before it's finished) — and say so in the PR description.  Mark it ready as soon
-  as it's complete and verified.
+- **Open merge-ready PRs as READY for review by default.**  Do not mark a PR ready while it is work-in-progress or subject to a do-not-merge hold.
+- **Keep every do-not-merge PR as a draft**, whether it is unfinished, awaiting a dependency or hold clearance, or superseded.  Put the readiness criteria at the very beginning of its description as bullets, following the rule below.  Mark it ready only when the applicable criteria are verified and existing holds are properly cleared.
 - **A required `verify` CI check gates every merge to `main`.**  A GitHub Actions
   workflow named `verify` runs `tsc --noEmit` → `npm test` → `npm run build` on each
   PR, and it **must be green before the PR can merge** — enforced by a repo **ruleset**.
@@ -720,13 +763,33 @@ address:
   - Because `verify` runs `npm run build`, a PR that breaks the build cannot merge —
     always run the full tsc/test/build trio locally before pushing.
 
+### Superseded PR closure and draft conversion
+
+Owner ruling, November 3, 2026, applies fleet-wide:
+
+- An agent may close a totally superseded PR if that agent made the PR being closed.
+- If another agent made the totally superseded PR, ask that agent first.  If no reply arrives within 20 minutes, ask Jay.  An agent may ask Jay first if urgent.
+- If 3 agents from 2 platforms agree to close a totally superseded PR, closure may proceed without Jay's or the PR owner's input.
+- Any agent may convert any PR to draft without anyone's permission.  Agents are encouraged to do so whenever a PR is not ready to merge.
+
+### Do-not-merge PRs and readiness criteria
+
+- Every PR marked do-not-merge, including an equivalent title, label or description hold, must be a draft.
+- The very beginning of its description must be a bullet list of the concrete criteria for becoming ready to merge, before references, summaries or other text.
+- Derive the criteria from the actual unresolved findings, dependencies and hold conditions.  Do not invent conditions, claim unverified work is complete, or treat a checklist as approval.
+- Preserve the existing hold, its setter and its release conditions.  Completing the bullets does not itself clear a hold, authorize activation or make the PR ready.
+- For a superseded PR that must never merge, say that in the first bullets and identify its replacement.  Do not invent a path to merge it; closure follows the separate superseded-PR rule above.
+
+Source: Jay's November 4, 2026 instructions to make all do-not-merge PRs drafts, put readiness criteria first in each description, and add this to policy.
+
+
 ### Fleet MCP and the Git Relay backend
 
 Connect to **Fleet MCP** at `https://agents.simplewithus.com/mcp` with your own assigned bearer for the tool families allowed to your agent.  Remote-capable clients connect directly; stdio-only clients use the reviewed assigned-hosted-stdio connector on their own runtime host.  Git Relay (`git-relay`) is the server-side backend, not a local per-agent replacement or bypass.  Fleet MCP is the MCP configuration target.  The owner wants one supported route for Mac agents across fleet tools and Git Relay; the final all-tool transport recommendation is pending, so do not add a parallel direct CLI route or remove a working route from these instructions.  Any approved client must retain the same assigned identity, backend policy, audit and operation limits, without a second broker, raw minted tokens, or credentials in arguments or logs.
 
 The seven core Git tools are `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`.  Additional workflow tools require their scoped rollout; this instruction is not a permission grant or a claim that every pending tool is deployed.  `mint_token` is not exposed because it returns a raw credential.  Policy, permission ceilings and audit remain server-side.  Use the supported configuration for your actual client transport, never invented fields or another agent's bearer.  The admin page must show missing service credentials explicitly, such as a missing Zulip token; having a bearer is not full-service readiness.
 
-These are the intended connection and tool names.  Actual deployment, runtime startup and native custody qualification are recorded separately and must not be inferred from these instructions.  If your assigned connection does not expose a needed tool or reports a missing service credential, report that exact readiness gap.  Use an already-authorized GitHub route only within its existing scope; never mint credentials, widen permissions, borrow another agent's bearer or bypass the backend to make these target instructions appear live.  Until the owner decides the git-relay cutover, Mac seats keep the interim `gh` and shell path for GitHub work within that authorized scope; that path runs outside git-relay and therefore outside Fleet MCP's server-side policy, permission ceilings, and audit log, and must not mint credentials, widen permissions, or replace the target configuration above.
+These are the intended connection and tool names.  Actual deployment, runtime startup and native custody qualification are recorded separately and must not be inferred from these instructions.  If your assigned connection does not expose a needed tool or reports a missing service credential, report that exact readiness gap.  Use an already-authorized GitHub route only within its existing scope; never mint credentials, widen permissions, borrow another agent's bearer or bypass the backend to make these target instructions appear live.  The git-relay cutover is decided (owner ruling 2026-11-08): every GitHub read or write goes through the relay — the `gr_*` / `gr_wf_*` verbs on the hosted front, the `wf_*` verbs through GR-MCP, or `simple-git` — under the seat's own identity, on Mac seats too.  `gh` is backup only, for an operation the relay has no verb for, and every `gh` fallback is logged the same day in the Fleet GitOPS deficiencies document (Linear, Part 2: the missing verb, what `gh` did, and why).  No route may mint credentials, widen permissions, or replace the target configuration above.
 
 ## Product philosophy — real trading, owner's risk (READ FIRST; do not re-paternalize)
 

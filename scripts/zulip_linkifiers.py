@@ -74,7 +74,7 @@ SENTRY_PROJECTS = (
     "FLEET-INFRA",
     "FLEETLINK",
     "HOGHUNTER",
-    "PERSONAL-SITE",
+    "BOTL-SITE",
     "SOCRATIC-TRADE",
     "USAGE-MONITOR",
 )
@@ -227,7 +227,12 @@ def credentials(rc_path: str | None, admin: bool = False) -> tuple[str, str, str
             os.environ.get("ZULIP_SITE", REALM),
         )
     if not path:
-        bot = "CLAUDE"
+        seat = (os.environ.get("AGENT_LAUNCH_SEAT") or os.environ.get("AGENT_SEAT") or "").strip()
+        if not seat:
+            sys.exit(
+                "no verified seat:  set AGENT_SEAT (or pass --rc / Zulip env) so this run uses its own credential"
+            )
+        bot = seat.upper().replace("-", "_")
         email, key, site = (
             _fleet_secret(f"{bot}_ZULIP_{part}") for part in ("EMAIL", "KEY", "SITE")
         )
@@ -355,8 +360,10 @@ def linear_team_keys() -> list[str] | None:
 def check_linear() -> int:
     keys = linear_team_keys()
     if keys is None:
-        print("skip  Linear team drift:  the board CLI is missing or could not read Linear")
-        return 0
+        print(
+            "FAIL  Linear team drift:  the board CLI is missing or could not read Linear (pass --skip-linear to waive)"
+        )
+        return 1
     missing, extra = team_drift(keys)
     for key in missing:
         print(
@@ -427,6 +434,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--check", action="store_true", help="render CHECKS and report")
     parser.add_argument(
+        "--skip-linear", action="store_true", help="with --check, skip the Linear team drift check"
+    )
+    parser.add_argument(
         "--delete-unlisted",
         action="store_true",
         help="with --apply, delete live rules TARGET omits",
@@ -440,7 +450,7 @@ def main(argv: list[str] | None = None) -> int:
     zulip = Zulip(*credentials(args.rc, admin=args.admin))
     try:
         if args.check and not args.apply:
-            return 1 if check(zulip) + check_linear() else 0
+            return 1 if check(zulip) + (0 if args.skip_linear else check_linear()) else 0
 
         steps, unlisted = plan(zulip.linkifiers())
         for kind, rule_id, pattern, url in steps:

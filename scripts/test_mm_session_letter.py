@@ -6,10 +6,13 @@ import contextlib
 import io
 import json
 import os
+import pathlib
 import signal
+import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -108,6 +111,344 @@ class MmSessionLetterTest(unittest.TestCase):
             os.environ["MINIMAX_HOOKS_DATA"] = link
             with self.assertRaises(M.RegistryError):
                 M.letter_cache_dir()
+
+    # --- the letter cache follows the runtime's scopes ---
+
+    def _write_cache(self, directory, session_id, letter):
+        os.makedirs(directory, exist_ok=True)
+        with open(os.path.join(directory, session_id + ".json"), "w", encoding="utf-8") as fh:
+            json.dump({"letter": letter, "host": "mac", "space": "double"}, fh)
+
+    def _shell_env(self, tmp):
+        """A shell that is not a hook:  the runtime names no scope, and MINIMAX_DATA_DIR
+        points at a temporary data directory, so the real one is never touched."""
+        return mock.patch.dict(os.environ, {"MINIMAX_HOOKS_DATA": "", "MINIMAX_DATA_DIR": tmp})
+
+    def test_the_letter_cache_reads_the_runtime_user_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scope = os.path.join(tmp, "v2", "hook-data", "user", "session-letters")
+            self._write_cache(scope, "sid", "BB")
+            with self._shell_env(tmp):
+                self.assertEqual(M.cached_letter("sid"), "BB")
+
+    def test_the_letter_cache_prefers_the_live_scope_over_the_pre_v2_layout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            live = os.path.join(tmp, "v2", "hook-data", "user", "session-letters")
+            legacy = os.path.join(tmp, "hook-state", "session-letters")
+            self._write_cache(live, "sid", "BB")
+            self._write_cache(legacy, "sid", "A")
+            with self._shell_env(tmp):
+                # The runtime writes the live scope, so the live letter wins over the
+                # stale one the pre-v2 layout still holds.
+                self.assertEqual(M.cached_letter("sid"), "BB")
+
+    def test_a_project_scope_letter_is_found_from_a_shell(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = os.path.join(tmp, "v2", "hook-data", "projects", "abc123", "session-letters")
+            self._write_cache(project, "sid", "CD")
+            with self._shell_env(tmp):
+                self.assertEqual(M.cached_letter("sid"), "CD")
+
+    def test_a_letter_written_from_a_shell_lands_in_the_runtime_user_scope(self):
+        with tempfile.TemporaryDirectory() as tmp, self._shell_env(tmp):
+            M.cache_letter("sid", "BB", "Topic", "double")
+            written = os.path.join(tmp, "v2", "hook-data", "user", "session-letters", "sid.json")
+            self.assertTrue(os.path.isfile(written))
+            self.assertEqual(M.cached_letter("sid"), "BB")
+
+    def test_a_letter_stays_in_the_scope_that_already_holds_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = os.path.join(tmp, "v2", "hook-data", "projects", "abc123", "session-letters")
+            self._write_cache(project, "sid", "CC")
+            with self._shell_env(tmp):
+                M.cache_letter("sid", "DD", "Topic", "double")
+                # The scope that holds the letter keeps it, so the letter does not split
+                # into two copies that drift apart.
+                self.assertEqual(M.cached_letter("sid"), "DD")
+                user_scope = os.path.join(tmp, "v2", "hook-data", "user", "session-letters")
+                self.assertFalse(os.path.isfile(os.path.join(user_scope, "sid.json")))
+
+    def test_a_symlinked_scope_is_refused_rather_than_followed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "real")
+            self._write_cache(real, "sid", "BB")
+            projects = os.path.join(tmp, "v2", "hook-data", "projects")
+            os.makedirs(projects)
+            os.symlink(real, os.path.join(projects, "abc123"))
+            with self._shell_env(tmp):
+                # The same rule the primary cache follows:  a symlinked cache path is
+                # refused with its own code, never followed.
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cached_letter("sid")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+
+    def test_a_symlinked_user_scope_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "real")
+            self._write_cache(real, "sid", "BB")
+            hook_data = os.path.join(tmp, "v2", "hook-data")
+            os.makedirs(hook_data)
+            os.symlink(real, os.path.join(hook_data, "user"))
+            with self._shell_env(tmp):
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cached_letter("sid")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+
+    def test_a_symlinked_letter_file_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scope = os.path.join(tmp, "v2", "hook-data", "user", "session-letters")
+            os.makedirs(scope)
+            target = os.path.join(tmp, "target.json")
+            with open(target, "w", encoding="utf-8") as fh:
+                json.dump({"letter": "BB"}, fh)
+            os.symlink(target, os.path.join(scope, "sid.json"))
+            with self._shell_env(tmp):
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cached_letter("sid")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+
+    def test_a_project_scope_makes_this_a_v2_host(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            legacy = os.path.join(tmp, "hook-state")
+            os.makedirs(legacy)
+            os.makedirs(os.path.join(tmp, "v2", "hook-data", "projects", "abc123"))
+            with self._shell_env(tmp):
+                # A host with a project scope is a v2 host even when the user scope
+                # is not there yet, so a new letter does not go to the old layout,
+                # where no hook ever reads it.
+                self.assertEqual(
+                    M.letter_cache_dir(),
+                    os.path.join(tmp, "v2", "hook-data", "user", "session-letters"),
+                )
+
+    def test_a_scope_that_appears_later_is_still_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            projects = os.path.join(tmp, "v2", "hook-data", "projects")
+            os.makedirs(projects)
+            scope = os.path.join(projects, "abc123", "session-letters")
+            with self._shell_env(tmp):
+                self.assertEqual(M.cached_letter("sid"), "")
+                self._write_cache(scope, "sid", "CD")
+                # The scopes are not remembered:  a scope that appears after the
+                # first listing is picked up straight away, with no tick to wait for.
+                self.assertEqual(M.cached_letter("sid"), "CD")
+
+    def test_a_write_never_lands_in_the_pre_v2_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            legacy = os.path.join(tmp, "hook-state", "session-letters")
+            self._write_cache(legacy, "sid", "A")
+            # The host has a v2 scope, so the pre-v2 directory is a read fallback
+            # and never the place a letter is written.
+            os.makedirs(os.path.join(tmp, "v2", "hook-data", "user"))
+            with self._shell_env(tmp):
+                directories = M.letter_cache_dirs()
+                self.assertIn(legacy, directories)
+                M.cache_letter("sid", "BB", "Topic", "double", directories)
+                # The pre-v2 directory is a read fallback and never a write target, so
+                # a letter does not stay in a place no hook reads.
+                with open(os.path.join(legacy, "sid.json"), encoding="utf-8") as fh:
+                    self.assertEqual(json.load(fh)["letter"], "A")
+                written = os.path.join(
+                    tmp, "v2", "hook-data", "user", "session-letters", "sid.json"
+                )
+                self.assertTrue(os.path.isfile(written))
+
+    def test_the_migration_reports_a_refused_scope_instead_of_aborting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            projects = os.path.join(tmp, "v2", "hook-data", "projects")
+            os.makedirs(projects)
+            real = os.path.join(tmp, "real")
+            os.makedirs(real)
+            os.symlink(real, os.path.join(projects, "abc123"))
+            out = io.StringIO()
+            with (
+                mock.patch.object(M, "sessions", return_value=self._migration_rows()),
+                mock.patch.object(
+                    M, "relabel", side_effect=AssertionError("no session may be moved")
+                ),
+                mock.patch.object(M, "set_title", return_value=True),
+                mock.patch.object(M, "update_title"),
+                self._shell_env(tmp),
+                contextlib.redirect_stdout(out),
+            ):
+                code = M.migrate_pairs()
+            # The refusal is reported per session, and the run does not abort with a
+            # traceback and no entries.
+            self.assertNotEqual(code, 0)
+            self.assertIn("symlink", out.getvalue())
+            self.assertIn("mvs_main", out.getvalue())
+
+    def test_the_sweep_passes_the_enumerated_scopes_to_every_title_write(self):
+        seen = []
+
+        def fake_update_title(session_id, title, directories=None):
+            seen.append((session_id, directories))
+            return {}
+
+        row = {
+            "session_id": "mvs_sweep",
+            "title": "BB: Topic",
+            "session_kind": "conversation",
+        }
+        with (
+            mock.patch.object(M, "sessions", return_value=[row]),
+            mock.patch.object(M, "letter_for", return_value="BB"),
+            mock.patch.object(M, "update_title", side_effect=fake_update_title),
+            self._shell_env(tempfile.gettempdir()),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            M.sweep(True)
+        # The already_ok branch writes the title too, and it passes the scopes on, so
+        # a sweep does not re-list them for every session.
+        self.assertTrue(seen)
+        for session_id, directories in seen:
+            self.assertEqual(session_id, "mvs_sweep")
+            self.assertIsNotNone(directories)
+
+    def test_a_scope_created_after_the_snapshot_is_still_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            projects = os.path.join(tmp, "v2", "hook-data", "projects")
+            os.makedirs(projects)
+            scope = os.path.join(projects, "abc123", "session-letters")
+            with self._shell_env(tmp):
+                snapshot = M.letter_cache_dirs()
+                self.assertEqual(M.cached_letter("sid", snapshot), "")
+                self._write_cache(scope, "sid", "CD")
+                # A miss re-enumerates once, so a scope created while the run was
+                # going is found.
+                self.assertEqual(M.cached_letter("sid", snapshot), "CD")
+
+    def test_a_hook_lookup_does_not_list_the_scopes_again(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scope = os.path.join(tmp, "v2", "hook-data", "user", "session-letters")
+            self._write_cache(scope, "sid", "BB")
+            with self._shell_env(tmp):
+                calls = []
+                real = os.listdir
+
+                def counting_listdir(path):
+                    calls.append(str(path))
+                    return real(path)
+
+                with mock.patch.object(os, "listdir", side_effect=counting_listdir):
+                    self.assertEqual(M.cached_letter("sid"), "BB")
+                    self.assertEqual(M.cached_letter("sid"), "BB")
+                # The scopes are listed once and the listing is remembered, so a hook
+                # that finds its letter pays a stat and not a listing.
+                listings = [c for c in calls if c.endswith("projects")]
+                self.assertLessEqual(len(listings), 1)
+
+    def test_a_caller_can_pass_the_scopes_it_enumerated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            other = os.path.join(tmp, "elsewhere")
+            self._write_cache(other, "sid", "CD")
+            with self._shell_env(tmp):
+                # The sweep and the migration enumerate the scopes once and pass the
+                # list on, so the listing is not repeated for every session.
+                self.assertEqual(M.cached_letter("sid", [other]), "CD")
+                self.assertEqual(M.cached_letter("sid"), "")
+
+    def test_a_symlinked_legacy_directory_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "real")
+            self._write_cache(real, "sid", "BB")
+            os.symlink(real, os.path.join(tmp, "hook-state"))
+            with self._shell_env(tmp):
+                # The pre-v2 directory is the last place a letter is read from, and a
+                # link one level up is refused there too.
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cached_letter("sid")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+
+    def test_a_symlinked_ancestor_of_the_scope_root_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "real")
+            self._write_cache(os.path.join(real, "user", "session-letters"), "sid", "BB")
+            os.makedirs(os.path.join(tmp, "v2"))
+            os.symlink(real, os.path.join(tmp, "v2", "hook-data"))
+            with self._shell_env(tmp):
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cached_letter("sid")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+
+    def test_a_symlinked_override_root_is_refused_on_the_read_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "real")
+            self._write_cache(os.path.join(real, "session-letters"), "sid", "BB")
+            scope = os.path.join(tmp, "scope")
+            os.symlink(real, scope)
+            with mock.patch.dict(
+                os.environ, {"MINIMAX_HOOKS_DATA": scope, "MINIMAX_DATA_DIR": tmp}
+            ):
+                # The scope the runtime names is refused on the read path too:  the
+                # write path already refused that base.
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cached_letter("sid")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+
+    def test_a_symlinked_user_scope_leaf_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "real")
+            self._write_cache(real, "sid", "BB")
+            user = os.path.join(tmp, "v2", "hook-data", "user")
+            os.makedirs(user)
+            os.symlink(real, os.path.join(user, "session-letters"))
+            with self._shell_env(tmp):
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cached_letter("sid")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+
+    def test_a_write_into_a_symlinked_scope_leaf_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "real")
+            os.makedirs(real)
+            user = os.path.join(tmp, "v2", "hook-data", "user")
+            os.makedirs(user)
+            os.symlink(real, os.path.join(user, "session-letters"))
+            with self._shell_env(tmp):
+                # The letter must not land in the link's target.
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cache_letter("sid", "BB", "Topic", "double")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+                self.assertEqual(os.listdir(real), [])
+
+    def test_the_pre_v2_layout_is_used_when_the_runtime_has_no_v2_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            legacy = os.path.join(tmp, "hook-state")
+            os.makedirs(legacy)
+            with self._shell_env(tmp):
+                self.assertEqual(M.letter_cache_dir(), os.path.join(legacy, "session-letters"))
+
+    def test_the_migration_finds_the_live_letters_from_a_plain_shell(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scope = os.path.join(tmp, "v2", "hook-data", "user", "session-letters")
+            self._write_cache(scope, "mvs_main", "A")
+            self._write_cache(scope, "mvs_child", "A")
+            calls = []
+
+            def fake_relabel(session_id, parent="", force=False):
+                calls.append((session_id, parent, force))
+                return {
+                    "label": "BB",
+                    "previous": "A",
+                    "outcome": "relabelled",
+                    "placed_after": "",
+                }
+
+            with (
+                mock.patch.object(M, "sessions", return_value=self._migration_rows()),
+                mock.patch.object(M, "relabel", side_effect=fake_relabel),
+                mock.patch.object(M, "cache_letter"),
+                mock.patch.object(M, "set_title", return_value=True),
+                mock.patch.object(M, "update_title"),
+                self._shell_env(tmp),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                code = M.migrate_pairs()
+            self.assertEqual(code, 0)
+            # The letters are found in the runtime's scope without a scope in the
+            # environment, so the migration moves the sessions instead of skipping them.
+            self.assertEqual([call[0] for call in calls], ["mvs_main", "mvs_child"])
 
     def test_require_registry_rejects_an_empty_label(self):
         with self.assertRaises(M.RegistryError):
@@ -208,6 +549,60 @@ class MmSessionLetterTest(unittest.TestCase):
         self.assertIn("secret_detected", out.getvalue())
         self.assertNotIn(secret, out.getvalue())
 
+    def test_the_rename_command_uses_the_resolved_letter_and_one_prefix(self):
+        """AFC-640: rename must not register() a second letter or double-prefix the title."""
+        from simple_tools import operator_registry as OR
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "registry.sqlite3")
+            reg = OR.SessionRegistry(db)
+            native = SESSION_ID
+            made = reg.resolve_or_register(
+                {
+                    "seat": "MM",
+                    "platform": "minimax",
+                    "verified_host": "mac-1",
+                    "profile_scope": "default",
+                    "native_session_id": native,
+                    "source": "test",
+                    "letter_space": "double",
+                }
+            )
+            reg._conn.execute(
+                "UPDATE alias_assignments SET letter = 'EH' WHERE record_id = ?",
+                (made["record_id"],),
+            )
+            reg._conn.commit()
+            reg.close_db()
+            out = io.StringIO()
+            with (
+                mock.patch.object(M, "registry_db", return_value=db),
+                mock.patch.object(M, "location", return_value="cloud-1"),
+                mock.patch.object(M, "set_title", return_value=True),
+                mock.patch.object(M, "update_title", return_value={"outcome": "updated"}),
+                mock.patch.object(M, "session_row", return_value={}),
+                mock.patch.object(
+                    M, "register", side_effect=AssertionError("register must not run")
+                ),
+                contextlib.redirect_stdout(out),
+            ):
+                code = M.main(
+                    [
+                        "rename",
+                        "--session-id",
+                        native,
+                        "--title",
+                        "EH: AFC-621 Housekeeper Webhook Credential Path",
+                    ]
+                )
+            self.assertEqual(code, 0)
+            payload = json.loads(out.getvalue().strip())
+            self.assertEqual(payload["letter"], "EH")
+            self.assertEqual(
+                payload["title"],
+                "EH: AFC-621 Housekeeper Webhook Credential Path",
+            )
+
     def test_read_hook_input_rejects_oversized_bytes(self):
         payload = b"x" * (M.HOOK_INPUT_MAX + 2)
         with mock.patch.object(sys, "stdin", _StdinBytes(payload)):
@@ -278,6 +673,123 @@ class MmSessionLetterTest(unittest.TestCase):
         ):
             code = M.sweep(True, topics_file=topic_file)
         return code, out.getvalue(), err.getvalue()
+
+    # --- the pair migration ---
+
+    def _migration_rows(self):
+        return [
+            {
+                "session_id": "mvs_main",
+                "title": "A: Fix the sweep",
+                "session_kind": "conversation",
+                "created_at_ms": 1,
+            },
+            {
+                "session_id": "mvs_child",
+                "title": "explore: look",
+                "session_kind": "task",
+                "parent_session_id": "mvs_main",
+                "created_at_ms": 2,
+            },
+        ]
+
+    def _run_migration(self, letters, calls):
+        def fake_relabel(session_id, parent="", force=False):
+            calls.append((session_id, parent, force))
+            return {
+                "label": "BB",
+                "previous": "A",
+                "outcome": "relabelled",
+                "placed_after": "",
+            }
+
+        with (
+            mock.patch.object(M, "sessions", return_value=self._migration_rows()),
+            mock.patch.object(
+                M, "cached_letter", side_effect=lambda sid, directories=None: letters[sid]
+            ),
+            mock.patch.object(M, "relabel", side_effect=fake_relabel),
+            mock.patch.object(M, "cache_letter"),
+            mock.patch.object(M, "set_title", return_value=True),
+            mock.patch.object(M, "update_title"),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            return M.migrate_pairs()
+
+    def test_the_migration_moves_a_session_that_holds_a_single_letter(self):
+        calls = []
+        code = self._run_migration({"mvs_main": "A", "mvs_child": "A"}, calls)
+        self.assertEqual(code, 0)
+        # The main chat goes first, and the child names it as its parent.
+        self.assertEqual([call[0] for call in calls], ["mvs_main", "mvs_child"])
+        self.assertEqual(calls[1][1], "mvs_main")
+
+    def test_the_migration_leaves_a_session_that_already_holds_a_pair(self):
+        calls = []
+        code = self._run_migration({"mvs_main": "AA", "mvs_child": "AB"}, calls)
+        self.assertEqual(code, 0)
+        # The main chat holds a pair and the child holds a pair in its parent's row:  a
+        # second run of the migration finds nothing to move.
+        self.assertEqual(calls, [])
+
+    def test_the_migration_moves_a_child_that_is_not_in_its_parents_row(self):
+        calls = []
+        code = self._run_migration({"mvs_main": "AA", "mvs_child": "BB"}, calls)
+        self.assertEqual(code, 0)
+        self.assertEqual([call[0] for call in calls], ["mvs_child"])
+        # It already holds a pair, so it has to be placed again rather than moved space.
+        self.assertTrue(calls[0][2])
+
+    def test_the_migration_registers_a_session_the_registry_has_never_seen(self):
+        calls = []
+        registered = []
+
+        def fake_relabel(session_id, parent="", force=False):
+            calls.append((session_id, parent, force))
+            raise M.RegistryError(
+                "session mvs_main is not registered on minimax at mac/default",
+                "not_registered",
+                "failed",
+            )
+
+        def fake_register(session_id, title="", parent_session_id=""):
+            registered.append((session_id, title, parent_session_id))
+            return {"label": "AA"}
+
+        out = io.StringIO()
+        with (
+            mock.patch.object(M, "sessions", return_value=self._migration_rows()),
+            mock.patch.object(M, "cached_letter", side_effect=lambda sid, directories=None: "A"),
+            mock.patch.object(M, "relabel", side_effect=fake_relabel),
+            mock.patch.object(M, "register", side_effect=fake_register),
+            mock.patch.object(M, "cache_letter"),
+            mock.patch.object(M, "set_title", return_value=True),
+            mock.patch.object(M, "update_title"),
+            contextlib.redirect_stdout(out),
+        ):
+            code = M.migrate_pairs()
+        self.assertEqual(code, 0)
+        # The session the registry never saw is registered, so it gets a pair from the start.
+        # The cache is not asked:  it still holds the old single letter.
+        self.assertIn('"outcome": "registered"', out.getvalue())
+        self.assertIn('"letter": "AA"', out.getvalue())
+        self.assertTrue(registered)
+
+    def test_the_letter_command_names_the_parent(self):
+        seen = {}
+
+        def fake(args, **kwargs):
+            seen["args"] = list(args)
+            return {"label": "CD"}
+
+        row = {"session_id": "mvs_child", "session_kind": "task", "parent_session_id": "mvs_main"}
+        with (
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "registry_call", side_effect=fake),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            M.main(["letter", "--session-id", "mvs_child"])
+        self.assertIn("--parent-session-id=mvs_main", seen["args"])
 
     def test_a_secret_shaped_topic_answers_with_a_stable_code(self):
         secret = FIXTURE_SECRET
@@ -427,6 +939,91 @@ class MmSessionLetterTest(unittest.TestCase):
                 ):
                     self.assertEqual(M.hook_pre_tool_use(), 0)
 
+    def test_the_session_start_hook_titles_the_thread_with_its_letter(self):
+        payload = json.dumps({"session_id": SESSION_ID}).encode()
+        row = {"session_id": SESSION_ID, "title": "Fix The Build", "session_kind": "conversation"}
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value=""),
+            mock.patch.object(M, "letter_for", return_value="B"),
+            mock.patch.object(M, "set_title", return_value=True) as set_title,
+            mock.patch.object(M, "update_title", return_value={}) as update_title,
+        ):
+            self.assertEqual(M.hook_session_start(), 0)
+        set_title.assert_called_once_with(SESSION_ID, "B: Fix The Build")
+        update_title.assert_called_once_with(SESSION_ID, "B: Fix The Build")
+
+    def test_a_thread_that_already_carries_its_letter_is_not_rewritten(self):
+        payload = json.dumps({"session_id": SESSION_ID}).encode()
+        row = {
+            "session_id": SESSION_ID,
+            "title": "B: Fix The Build",
+            "session_kind": "conversation",
+        }
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value=""),
+            mock.patch.object(M, "letter_for", return_value="B"),
+            mock.patch.object(M, "set_title", return_value=True) as set_title,
+            mock.patch.object(M, "update_title", return_value={}),
+        ):
+            self.assertEqual(M.hook_session_start(), 0)
+        set_title.assert_not_called()
+
+    def test_a_thread_without_a_title_is_left_for_the_stop_path(self):
+        payload = json.dumps({"session_id": SESSION_ID}).encode()
+        row = {"session_id": SESSION_ID, "title": "", "session_kind": "conversation"}
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value=""),
+            mock.patch.object(M, "letter_for", return_value="B"),
+            mock.patch.object(M, "set_title", return_value=True) as set_title,
+            mock.patch.object(M, "update_title", return_value={}),
+        ):
+            self.assertEqual(M.hook_session_start(), 0)
+        set_title.assert_not_called()
+
+    def test_a_title_with_a_credential_is_never_written_or_printed(self):
+        payload = json.dumps({"session_id": SESSION_ID}).encode()
+        row = {
+            "session_id": SESSION_ID,
+            "title": "Deploy with " + FIXTURE_SECRET,
+            "session_kind": "conversation",
+        }
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(sys, "stdout", stdout),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value=""),
+            mock.patch.object(M, "letter_for", return_value="B"),
+            mock.patch.object(M, "set_title", side_effect=ValueError("secret_detected")),
+            mock.patch.object(M, "update_title", return_value={}) as update_title,
+        ):
+            self.assertEqual(M.hook_session_start(), 0)
+        update_title.assert_not_called()
+        self.assertNotIn(FIXTURE_SECRET, stdout.getvalue())
+
+    def test_the_stop_hook_asks_for_a_real_topic_when_the_title_is_the_placeholder(self):
+        payload = json.dumps({"session_id": SESSION_ID}).encode()
+        row = {
+            "session_id": SESSION_ID,
+            "title": M.placeholder_title("B"),
+            "session_kind": "conversation",
+        }
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(sys, "stderr", stderr),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value="B"),
+        ):
+            self.assertEqual(M.hook_stop(), 2)
+        self.assertIn("placeholder topic", stderr.getvalue())
+
     def test_hooks_read_the_session_table_once(self):
         payload = json.dumps(
             {"session_id": SESSION_ID, "tool_name": "zulip_post", "tool_input": {"body": "M: hi"}}
@@ -441,10 +1038,115 @@ class MmSessionLetterTest(unittest.TestCase):
             self.assertEqual(M.hook_pre_tool_use(), 0)
         self.assertEqual(read.call_count, 1)
 
-    def test_space_for_row_reads_the_given_row(self):
-        self.assertEqual(M.space_for_row({"session_kind": "task"}), "double")
-        self.assertEqual(M.space_for_row({"parent_session_id": "p"}), "double")
-        self.assertEqual(M.space_for_row({"session_kind": "conversation"}), "single")
+    def test_parent_for_row_names_the_parent(self):
+        self.assertEqual(M.parent_for_row({"parent_session_id": "mvs_parent"}), "mvs_parent")
+        self.assertEqual(M.parent_for_row({"session_kind": "task"}), "")
+        self.assertEqual(M.parent_for_row({"parent_session_id": "not a session id"}), "")
+
+    # ---- a MiniMax thread is a pair, like every other platform (AFC-586) ----
+
+    def test_a_pair_letter_is_a_valid_prefix(self):
+        self.assertTrue(M.first_line_states_letter("AA: hello\nmore", "AA"))
+        self.assertTrue(M.title_ok("AA: Topic", "AA")[0])
+        self.assertFalse(M.title_ok("A: Topic", "AA")[0])
+
+    def test_wanted_title_strips_a_stale_prefix_from_a_held_letter(self):
+        # AFC-640: a title that still carries EH must not become "NN: EH: ..." after re-lettering.
+        self.assertEqual(M.wanted_title("EH", "EH: AFC-621 Topic", ("EH",)), "EH: AFC-621 Topic")
+        self.assertEqual(
+            M.wanted_title("EH", "NN: EH: AFC-621 Topic", ("EH", "NN")), "EH: AFC-621 Topic"
+        )
+
+    def test_wanted_title_drops_the_letter_the_title_already_carries(self):
+        # A thread that is re-lettered keeps its topic:  the old prefix goes, the new one comes.
+        self.assertEqual(M.wanted_title("AA", "A: Fix the sweep"), "AA: Fix the sweep")
+        self.assertEqual(M.wanted_title("AA", "AA: Fix the sweep"), "AA: Fix the sweep")
+        self.assertEqual(M.wanted_title("AA", "Fix the sweep"), "AA: Fix the sweep")
+        # A letter the thread does not hold is dropped when the thread says which one it was.
+        self.assertEqual(M.wanted_title("AA", "A: Fix the sweep", ("A",)), "AA: Fix the sweep")
+
+    def test_a_topic_that_starts_with_an_acronym_keeps_it(self):
+        # Two capitals that are not a pair are an acronym, not a letter.
+        self.assertEqual(M.wanted_title("AA", "HTTP: the protocol"), "AA: HTTP: the protocol")
+        self.assertEqual(M.wanted_title("AA", "AI: the model"), "AA: AI: the model")
+
+    def test_the_registration_asks_for_a_pair_and_names_the_parent(self):
+        seen = {}
+
+        def fake(args, **kwargs):
+            seen["args"] = list(args)
+            return {"label": "CD"}
+
+        with mock.patch.object(M, "registry_call", side_effect=fake):
+            M.register("sid", "Topic", "mvs_parent")
+        self.assertIn("--letter-space=double", seen["args"])
+        self.assertIn("--letter-pick=primary", seen["args"])
+        self.assertIn("--parent-session-id=mvs_parent", seen["args"])
+
+    def test_a_main_chat_registration_names_no_parent(self):
+        seen = {}
+
+        def fake(args, **kwargs):
+            seen["args"] = list(args)
+            return {"label": "AA"}
+
+        with mock.patch.object(M, "registry_call", side_effect=fake):
+            M.register("sid")
+        self.assertIn("--letter-space=double", seen["args"])
+        self.assertNotIn("--parent-session-id=mvs_parent", seen["args"])
+        self.assertFalse([a for a in seen["args"] if a.startswith("--parent-session-id=")])
+
+    def test_a_child_states_its_own_letter(self):
+        # A child has a letter of its own, one row after its parent's, so it states that one.
+        payload = json.dumps(
+            {
+                "session_id": SESSION_ID,
+                "tool_name": "zulip_post",
+                "tool_input": {"body": "AA: hi"},
+            }
+        ).encode()
+        row = {
+            "session_id": SESSION_ID,
+            "session_kind": "task",
+            "parent_session_id": "mvs_parent",
+        }
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value="CD"),
+        ):
+            self.assertEqual(M.hook_pre_tool_use(), 2)
+
+    def test_a_child_states_its_own_letter_and_passes_when_it_does(self):
+        payload = json.dumps(
+            {
+                "session_id": SESSION_ID,
+                "tool_name": "zulip_post",
+                "tool_input": {"body": "CD: hi"},
+            }
+        ).encode()
+        row = {
+            "session_id": SESSION_ID,
+            "session_kind": "task",
+            "parent_session_id": "mvs_parent",
+        }
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value="CD"),
+        ):
+            self.assertEqual(M.hook_pre_tool_use(), 0)
+
+    def test_a_cron_session_has_no_thread_and_is_not_blocked(self):
+        payload = json.dumps(
+            {"session_id": SESSION_ID, "tool_name": "zulip_post", "tool_input": {"body": "hi"}}
+        ).encode()
+        row = {"session_id": SESSION_ID, "session_kind": "cron"}
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(M, "session_row", return_value=row),
+        ):
+            self.assertEqual(M.hook_pre_tool_use(), 0)
 
     # ---- the Kody pass of Oct 29 ----
 
@@ -657,3 +1359,812 @@ class MmSessionLetterTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MmLetterReopenTest(unittest.TestCase):
+    """A session the registry swept while its chat was live gets its letter back.
+
+    The sweep ends a session's letter when the session has not been seen for the stale
+    window and another session for the same seat has taken over since.  The MiniMax
+    path has to reopen the session when the chat comes back to life:  without it the
+    registry keeps no letter for a live chat, so a reply addressed to this seat by its
+    pair has nothing to resolve to, and the next chat can take the same pair a second
+    time.
+
+    These tests use the real registry and the real registry CLI against a temporary
+    registry file, so the whole path is exercised rather than a stand-in for it.
+    """
+
+    # Synthetic:  the accepted session-ID shape, never a real native session.
+    OTHER_SESSION_ID = "mvs_test0000000000000000000000000002"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "registry.sqlite3")
+        self.scripts = os.path.dirname(os.path.abspath(M.__file__))
+        self.scope = os.path.join(self.tmp.name, "v2", "hook-data", "user", "session-letters")
+        # The script never brings a registry into being, so the file is created here.
+        from simple_tools import operator_registry as R
+
+        R.SessionRegistry(self.db).close_db()
+
+    def _env(self):
+        return mock.patch.dict(
+            os.environ,
+            {
+                "SIMPLE_TOOLS_OPERATOR_REGISTRY": self.db,
+                "MINIMAX_HOOKS_DATA": "",
+                "MINIMAX_DATA_DIR": self.tmp.name,
+            },
+        )
+
+    def _registry(self):
+        from simple_tools import operator_registry as R
+
+        reg = R.SessionRegistry(self.db)
+        self.addCleanup(reg.close_db)
+        return reg
+
+    def _write_cache(self, session_id, letter, topic=""):
+        os.makedirs(self.scope, exist_ok=True)
+        with open(os.path.join(self.scope, session_id + ".json"), "w", encoding="utf-8") as fh:
+            json.dump({"letter": letter, "topic": topic, "host": "mac", "space": "double"}, fh)
+
+    def _register(self, session_id):
+        with self._env(), mock.patch.object(M, "repo_scripts_dir", return_value=self.scripts):
+            return M.register(session_id, "AA: Swept thread", "")
+
+    def _letter_for(self, session_id):
+        with self._env(), mock.patch.object(M, "repo_scripts_dir", return_value=self.scripts):
+            return M.letter_for(session_id, "AA: Swept thread", "")
+
+    def test_a_swept_session_that_comes_back_to_life_gets_its_letter_back(self):
+        first = self._register(SESSION_ID)
+        self.assertEqual(first["label"], "AA")
+        reg = self._registry()
+        reg.close(first["record_id"], actor="MM", source="the test", reason="stale")
+        self.assertIsNotNone(reg._get(first["record_id"])["closed_at"])
+        # The cache still holds the letter the live chat had.
+        self._write_cache(SESSION_ID, "AA")
+        self.assertEqual(self._letter_for(SESSION_ID), "AA")
+        # The registry holds it again, so a reply addressed to the pair resolves.
+        self.assertIsNone(reg._get(first["record_id"])["closed_at"])
+
+    def test_a_reopened_session_holds_a_pair_again_when_its_letter_went_to_another_chat(self):
+        first = self._register(SESSION_ID)
+        reg = self._registry()
+        reg.close(first["record_id"], actor="MM", source="the test", reason="stale")
+        # Another chat takes AA while the first one is away.
+        second = self._register(self.OTHER_SESSION_ID)
+        self.assertEqual(second["label"], "AA")
+        self._write_cache(SESSION_ID, "AA")
+        letter = self._letter_for(SESSION_ID)
+        # The chat comes back with a pair, never with a single letter.
+        self.assertEqual(len(letter), 2)
+        self.assertNotEqual(letter, "AA")
+        # The cache is this seat's own copy of the letter, so it follows what the
+        # registry now says.
+        with self._env():
+            self.assertEqual(M.cached_letter(SESSION_ID), letter)
+
+    def test_the_reopened_letter_keeps_the_topic_the_cache_held(self):
+        first = self._register(SESSION_ID)
+        reg = self._registry()
+        reg.close(first["record_id"], actor="MM", source="the test", reason="stale")
+        # Another chat takes AA while the first one is away.
+        second = self._register(self.OTHER_SESSION_ID)
+        self.assertEqual(second["label"], "AA")
+        self._write_cache(SESSION_ID, "AA", "The topic this thread holds")
+        letter = self._letter_for(SESSION_ID)
+        self.assertNotEqual(letter, "AA")
+        with self._env():
+            self.assertEqual(M.cached_topic(SESSION_ID), "The topic this thread holds")
+            self.assertEqual(M.cached_letter(SESSION_ID), letter)
+
+    def test_a_cache_write_that_fails_with_an_oserror_still_returns_the_letter(self):
+        err = io.StringIO()
+        with (
+            mock.patch.object(
+                M, "touch_session", return_value={"record_id": "r1", "outcome": "closed"}
+            ),
+            mock.patch.object(M, "reopen_closed", return_value={"label": "BB"}),
+            mock.patch.object(M, "cached_letter", return_value="AA"),
+            mock.patch.object(M, "cached_topic", return_value="A topic"),
+            mock.patch.object(M, "cache_letter", side_effect=OSError("the disk is full")),
+            contextlib.redirect_stderr(err),
+        ):
+            self.assertEqual(M.letter_for(SESSION_ID, "AA: Swept thread", ""), "BB")
+        self.assertIn("Could not cache the reopened letter", err.getvalue())
+
+    def test_a_reopen_that_cannot_be_done_keeps_the_cached_letter(self):
+        err = io.StringIO()
+        with (
+            mock.patch.object(
+                M, "touch_session", return_value={"record_id": "r1", "outcome": "closed"}
+            ),
+            mock.patch.object(
+                M,
+                "reopen_closed",
+                side_effect=M.RegistryError("no letter", "space_lost", "reopen_refused"),
+            ),
+            mock.patch.object(M, "cached_letter", return_value="AA"),
+            contextlib.redirect_stderr(err),
+        ):
+            self.assertEqual(M.letter_for(SESSION_ID, "AA: Swept thread", ""), "AA")
+        self.assertIn("Could not reopen", err.getvalue())
+
+    def test_the_letter_command_reopens_a_closed_session(self):
+        first = self._register(SESSION_ID)
+        reg = self._registry()
+        reg.close(first["record_id"], actor="MM", source="the test", reason="stale")
+        out = io.StringIO()
+        with (
+            self._env(),
+            mock.patch.object(M, "repo_scripts_dir", return_value=self.scripts),
+            mock.patch.object(M, "sessions", return_value=[]),
+            contextlib.redirect_stdout(out),
+        ):
+            code = M.main(["letter", "--session-id", SESSION_ID])
+        self.assertEqual(code, 0)
+        answer = json.loads(out.getvalue())
+        self.assertEqual(answer["label"], "AA")
+        self.assertIsNone(reg._get(first["record_id"])["closed_at"])
+
+
+class MmReLetterTitleTest(unittest.TestCase):
+    """A thread that is re-lettered keeps one prefix, and a bare topic keeps its acronym.
+
+    A letter on this platform is a pair that need not be doubled:  a child of CC holds
+    CD.  A title starts with the letter the thread holds, so the first two capitals of a
+    title are that letter.  A bare topic is not a title, so an acronym at the start of one
+    is left alone.
+    """
+
+    def test_a_title_keeps_one_prefix_when_the_letter_changes(self):
+        # The session held CD and now holds CE, so the prefix of its title is its old
+        # letter and it goes before the new one.
+        held = ("CE", "CD")
+        self.assertEqual(M.title_topic("CD: Topic", "CE", held), "Topic")
+        self.assertEqual(M.wanted_title("CE", M.title_topic("CD: Topic", "CE", held)), "CE: Topic")
+
+    def test_a_doubled_pair_title_keeps_one_prefix_too(self):
+        held = ("CC", "AA")
+        self.assertEqual(M.title_topic("AA: Topic", "CC", held), "Topic")
+        self.assertEqual(M.wanted_title("CC", M.title_topic("AA: Topic", "CC", held)), "CC: Topic")
+
+    def test_a_title_whose_prefix_this_session_never_held_keeps_its_acronym(self):
+        # The session held only AA, so "AI:" is a topic that begins with an acronym and
+        # not a letter of this thread.
+        self.assertEqual(M.title_topic("AI: the model", "AA", ("AA",)), "AI: the model")
+        self.assertEqual(
+            M.wanted_title("AA", M.title_topic("AI: the model", "AA", ("AA",))),
+            "AA: AI: the model",
+        )
+
+    def test_a_title_with_no_prefix_keeps_its_topic(self):
+        self.assertEqual(M.title_topic("Topic", "CC"), "Topic")
+
+    def test_a_session_that_held_nothing_still_keeps_an_acronym(self):
+        # With no history the shape rules apply, and an acronym is not a letter shape
+        # this platform issues for a thread that never held one.
+        self.assertEqual(M.title_topic("AI: the model", "CC"), "AI: the model")
+
+    def test_a_bare_topic_that_starts_with_an_acronym_keeps_it(self):
+        # The topic is not a title, so the acronym is not a letter and stays.
+        self.assertEqual(M.wanted_title("AA", "AI: the model"), "AA: AI: the model")
+
+
+class MmRegistryLetterResolveTest(unittest.TestCase):
+    """registry_letter_for_session and rename_registry_context stay location-safe."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "registry.sqlite3")
+        from simple_tools import operator_registry as R
+
+        R.SessionRegistry(self.db).close_db()
+
+    def _env(self):
+        return mock.patch.dict(
+            os.environ,
+            {
+                "SIMPLE_TOOLS_OPERATOR_REGISTRY": self.db,
+                "MINIMAX_HOOKS_DATA": "",
+                "MINIMAX_DATA_DIR": self.tmp.name,
+            },
+            clear=False,
+        )
+
+    def test_registry_letter_from_rows_skips_empty_labels(self):
+        rows = [{"verified_host": "mac-1", "profile_scope": "default", "label": ""}]
+        self.assertEqual(
+            M._registry_letter_from_rows(rows, verified_host="mac-1", profile_scope="default"),
+            "",
+        )
+        rows = [{"verified_host": "mac-1", "profile_scope": "default", "label": "AA"}]
+        self.assertEqual(
+            M._registry_letter_from_rows(rows, verified_host="mac-1", profile_scope="default"),
+            "AA",
+        )
+
+    def test_registry_letter_for_session_matches_profile_scope(self):
+        from simple_tools import operator_registry as R
+
+        native = "mvs_scope_disambiguation"
+        with self._env(), mock.patch.object(M, "location", return_value="mac-1"):
+            R.register_session(
+                self.db,
+                platform="minimax",
+                native_session_id=native,
+                seat="MM",
+                source="test",
+                issuer=R.ISSUER_OPERATOR,
+                verified_host="mac-1",
+                profile_scope="scope-a",
+                letter_space="double",
+            )
+            R.register_session(
+                self.db,
+                platform="minimax",
+                native_session_id=native,
+                seat="MM",
+                source="test",
+                issuer=R.ISSUER_OPERATOR,
+                verified_host="mac-1",
+                profile_scope="default",
+                letter_space="double",
+            )
+            with mock.patch.object(M, "PROFILE_SCOPE", "default"):
+                letters = [
+                    R.lookup_label(self.db, "minimax", "mac-1", "scope-a", native),
+                    R.lookup_label(self.db, "minimax", "mac-1", "default", native),
+                ]
+                self.assertEqual(len(set(letters)), 2)
+                self.assertEqual(M.registry_letter_for_session(native), letters[1])
+
+    def test_rename_registry_context_opens_the_registry_once(self):
+        import simple_tools.operator_registry as OR
+
+        calls: list[bool] = []
+        original = OR.SessionRegistry
+
+        class _CountingRegistry(original):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                calls.append(kwargs.get("read_only"))
+
+        with (
+            self._env(),
+            mock.patch.object(M, "location", return_value="mac-1"),
+            mock.patch.object(OR, "SessionRegistry", _CountingRegistry),
+        ):
+            M.rename_registry_context(SESSION_ID)
+        self.assertEqual(calls, [True])
+
+
+class MmReopenStrictTouchTest(unittest.TestCase):
+    """The sweep sees a reopen that could not be done, so it keeps the session for a retry."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "registry.sqlite3")
+        # The script never brings a registry into being, so the file is created here.  A
+        # test that reads the registry of the host it runs on passes for the wrong
+        # reason on the seat's own Mac and fails on a runner that keeps none.
+        from simple_tools import operator_registry as R
+
+        R.SessionRegistry(self.db).close_db()
+
+    def _env(self):
+        return mock.patch.dict(
+            os.environ,
+            {
+                "SIMPLE_TOOLS_OPERATOR_REGISTRY": self.db,
+                "MINIMAX_HOOKS_DATA": "",
+                "MINIMAX_DATA_DIR": self.tmp.name,
+            },
+        )
+
+    def test_a_reopen_that_cannot_be_done_is_raised_when_strict_touch_is_set(self):
+        with (
+            mock.patch.object(
+                M, "touch_session", return_value={"record_id": "r1", "outcome": "closed"}
+            ),
+            mock.patch.object(
+                M,
+                "reopen_closed",
+                side_effect=M.RegistryError("no letter", "space_lost", "reopen_refused"),
+            ),
+            mock.patch.object(M, "cached_letter", return_value="AA"),
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(M.RegistryError),
+        ):
+            M.letter_for(SESSION_ID, "AA: Swept thread", "", strict_touch=True)
+
+    def test_a_reopen_that_cannot_be_done_is_quiet_without_strict_touch(self):
+        err = io.StringIO()
+        with (
+            mock.patch.object(
+                M, "touch_session", return_value={"record_id": "r1", "outcome": "closed"}
+            ),
+            mock.patch.object(
+                M,
+                "reopen_closed",
+                side_effect=M.RegistryError("no letter", "space_lost", "reopen_refused"),
+            ),
+            mock.patch.object(M, "cached_letter", return_value="AA"),
+            contextlib.redirect_stderr(err),
+        ):
+            self.assertEqual(M.letter_for(SESSION_ID, "AA: Swept thread", ""), "AA")
+        self.assertIn("Could not reopen", err.getvalue())
+
+    def test_a_reopen_that_fails_on_the_registry_is_a_registry_error(self):
+        # A raw storage failure out of the reopen travels as a RegistryError, so every
+        # caller handles it the same way.
+        from simple_tools import operator_registry as OR
+
+        with (
+            self._env(),
+            mock.patch.object(OR.SessionRegistry, "reopen", side_effect=OR.UnknownRecord("r1")),
+        ):
+            with self.assertRaises(M.RegistryError) as caught:
+                M.reopen_closed("r1")
+        self.assertEqual(caught.exception.code, "reopen_failed")
+
+    def test_a_reopen_without_a_registry_is_a_registry_error_too(self):
+        # A host that keeps no registry asks the host that holds one, and a host that
+        # holds none answers no_registry:  that travels as one error type as well.
+        with (
+            mock.patch.object(M, "registry_db", return_value=""),
+            mock.patch.object(
+                M,
+                "remote_registry_call",
+                return_value={
+                    "error": "no Operator registry on this host",
+                    "code": "no_registry",
+                },
+            ),
+            self.assertRaises(M.RegistryError) as caught,
+        ):
+            M.reopen_closed("r1")
+        self.assertEqual(caught.exception.code, "no_registry")
+
+
+class RemoteRegistryHopTest(unittest.TestCase):
+    """The hop to the host that holds the Operator's registry (AFC-412, server seat).
+
+    This host keeps no registry of its own, so it asks the host that holds one
+    through the transport command.  The transport is host configuration:  the helper
+    names the command and the command carries the host, so the helper names no host,
+    no user, no alias, no ssh flag and no remote path anywhere.
+    """
+
+    def _hop(self, **env: str):
+        """Run the hop with the environment given, and hand back the answer."""
+
+        def fake_run(cmd, **kwargs):
+            self.cmd = cmd
+            self.kwargs = kwargs
+            return subprocess.CompletedProcess(cmd, 0, stdout=self.stdout, stderr="")
+
+        self.stdout = '{"label": "AA"}\n'
+        self.cmd = []
+        self.kwargs = {}
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(M.subprocess, "run", side_effect=fake_run),
+        ):
+            answer = M.remote_registry_call(["history", "--platform=minimax"])
+        return answer
+
+    def test_the_transport_is_a_command_and_the_helper_names_nothing_else(self):
+        answer = self._hop(**{M.ENV_TRANSPORT: "mm-operator-registry"})
+        self.assertEqual(answer, {"label": "AA"})
+        # The whole command:  the transport and the registry CLI's own arguments.
+        # There is no host, no user, no alias, no ssh flag, no remote path and no
+        # remote interpreter in it.
+        self.assertEqual(self.cmd, ["mm-operator-registry", "history", "--platform=minimax"])
+
+    def test_the_default_transport_is_the_one_the_house_keeps(self):
+        # The transport defaults to the wrapper the house already installs, so a host
+        # that names no transport of its own still has one.
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(M.ENV_TRANSPORT, None)
+            with mock.patch.object(M.subprocess, "run") as run:
+                run.return_value = subprocess.CompletedProcess(
+                    [], 0, stdout='{"label": "AA"}', stderr=""
+                )
+                M.remote_registry_call(["history"])
+        self.assertEqual(M.DEFAULT_TRANSPORT, "mm-operator-registry")
+        self.assertEqual(run.call_args.args[0][0], M.DEFAULT_TRANSPORT)
+
+    def test_the_helper_names_no_host_and_no_ssh_in_its_source(self):
+        # The rule is about the source, not only about the command that comes out of
+        # it:  a host, a user, an alias or an ssh flag in this file is the thing the
+        # transport command exists to keep out.
+        source = pathlib.Path(M.__file__).read_text(encoding="utf-8")
+        for forbidden in ("BatchMode", "ConnectTimeout", "ProxyCommand"):
+            self.assertNotIn(forbidden, source)
+
+    def test_a_transport_that_is_not_a_plain_command_name_is_refused(self):
+        # The shell reads an option before a command, so a transport name that is not
+        # a plain command name is refused rather than run.
+        for name in ("-oProxyCommand=touch /tmp/x", "mac host", "mac;id", "a/b", "-mac"):
+            with self.subTest(name=name):
+                with mock.patch.dict(os.environ, {M.ENV_TRANSPORT: name}):
+                    answer = M.remote_registry_call(["history"])
+                self.assertIsNotNone(answer)
+                self.assertEqual(answer["code"], "remote_refused")
+
+    def test_the_transport_runs_the_registry_cli_s_own_arguments(self):
+        self._hop(**{M.ENV_TRANSPORT: "mm-operator-registry"})
+        self.assertEqual(self.cmd[1:], ["history", "--platform=minimax"])
+        # The hop has to finish inside the hook's own timeout.
+        self.assertEqual(self.kwargs["timeout"], M.REMOTE_TIMEOUT)
+        self.assertLess(M.REMOTE_TIMEOUT, 8)
+
+    def test_an_argument_that_holds_a_space_is_one_argument(self):
+        # The title is one argument on the far side, never two words the far shell
+        # would read as two arguments.
+        with (
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
+            mock.patch.object(
+                M.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    [], 0, stdout='{"label": "AA"}', stderr=""
+                ),
+            ) as run,
+        ):
+            M.remote_registry_call(["update", "--title=two words"])
+        cmd = run.call_args.args[0]
+        self.assertIn("--title=two words", cmd)
+        self.assertEqual(len([a for a in cmd if a.startswith("--title")]), 1)
+
+    def test_a_transport_that_cannot_start_is_unreachable(self):
+        with (
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
+            mock.patch.object(M.subprocess, "run", side_effect=OSError("no transport")),
+        ):
+            answer = M.remote_registry_call(["history"])
+        self.assertEqual(answer["code"], "remote_unreachable")
+
+    def test_a_missing_transport_is_its_own_failure(self):
+        # A host with no transport command at all is a different fault from one whose
+        # transport cannot reach the registry host, and the operator has to be able to
+        # tell them apart.
+        with (
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
+            mock.patch.object(
+                M.subprocess, "run", side_effect=FileNotFoundError(2, "No such file")
+            ),
+        ):
+            answer = M.remote_registry_call(["history"])
+        self.assertEqual(answer["code"], "missing_tool")
+        self.assertEqual(M._registry_exit_code(M.RegistryError("x", "missing_tool")), 127)
+
+    def test_a_hop_that_times_out_has_an_unknown_outcome(self):
+        # The write may have landed before the answer was lost, so this is an
+        # unknown outcome and never a call that never happened.
+        with (
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
+            mock.patch.object(
+                M.subprocess, "run", side_effect=subprocess.TimeoutExpired("transport", 6)
+            ),
+        ):
+            answer = M.remote_registry_call(["register"])
+        self.assertEqual(answer["code"], "timeout")
+        self.assertEqual(answer["outcome"], "outcome_unknown")
+        self.assertEqual(M._registry_exit_code(M.RegistryError("x", "timeout")), 124)
+
+    def test_a_hop_that_answers_with_nothing_has_an_unknown_outcome(self):
+        self.stdout = "   \n"
+        with (
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
+            mock.patch.object(
+                M.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, stdout=self.stdout, stderr=""),
+            ),
+        ):
+            answer = M.remote_registry_call(["register"])
+        self.assertEqual(answer["code"], "remote_empty")
+        self.assertEqual(answer["outcome"], "outcome_unknown")
+
+    def test_a_hop_that_answers_with_something_else_is_refused(self):
+        for payload in ("not json at all", "[1, 2, 3]", '"a string"'):
+            with self.subTest(payload=payload):
+                self.stdout = payload
+                with (
+                    mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
+                    mock.patch.object(
+                        M.subprocess,
+                        "run",
+                        return_value=subprocess.CompletedProcess([], 0, stdout=payload, stderr=""),
+                    ),
+                ):
+                    answer = M.remote_registry_call(["register"])
+                self.assertEqual(answer["code"], "remote_unparseable")
+                self.assertEqual(answer["outcome"], "outcome_unknown")
+
+    def test_a_far_host_that_exits_non_zero_with_a_success_answer_is_a_failure(self):
+        # The far side's exit code counts:  a call that failed with a non-zero exit is
+        # not a success, whatever its answer looks like.
+        with (
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
+            mock.patch.object(
+                M.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    [], 2, stdout='{"label": "AA"}', stderr=""
+                ),
+            ),
+        ):
+            answer = M.remote_registry_call(["register"])
+        self.assertIn("error", answer)
+        self.assertNotIn("label", answer)
+
+    def test_a_far_host_that_keeps_no_registry_is_a_configuration_state(self):
+        # The registry's own guard answers that the host that holds it keeps no
+        # registry:  that is a configuration state, not a fault of this call.
+        with (
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
+            mock.patch.object(
+                M.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    [], 3, stdout='{"error": "no Operator registry on this host"}', stderr=""
+                ),
+            ),
+        ):
+            answer = M.remote_registry_call(["history"])
+        self.assertEqual(answer["code"], "no_registry")
+
+    def test_the_local_registry_is_used_when_this_host_has_one(self):
+        # A host that keeps its own registry never goes over the wire.
+        with (
+            mock.patch.object(M, "registry_db", return_value="/tmp/registry.sqlite3"),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.object(M.subprocess, "Popen") as popen,
+            mock.patch.object(M.subprocess, "run") as run,
+        ):
+            popen.return_value.communicate.return_value = ('{"label": "AA"}', "")
+            popen.return_value.returncode = 0
+            answer = M.registry_call(["history"])
+        self.assertEqual(answer, {"label": "AA"})
+        run.assert_not_called()
+
+    def test_the_far_host_is_asked_when_this_host_has_no_registry(self):
+        with (
+            mock.patch.object(M, "registry_db", return_value=""),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.object(M, "remote_registry_call", return_value={"label": "AA"}) as hop,
+        ):
+            answer = M.registry_call(["history", "--platform=minimax"])
+        self.assertEqual(answer, {"label": "AA"})
+        hop.assert_called_once()
+        self.assertEqual(hop.call_args.args[0], ["history", "--platform=minimax"])
+
+    def test_a_refused_transport_is_a_fault_and_not_a_missing_registry(self):
+        # A host that names a transport the shell would read as an option has a
+        # misconfiguration, and that is not the same as having no registry at all.
+        with (
+            mock.patch.object(M, "registry_db", return_value=""),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "-oProxyCommand=touch /tmp/x"}),
+        ):
+            answer = M.registry_call(["history"])
+        self.assertEqual(answer["code"], "remote_refused")
+
+    def test_a_letter_is_issued_over_the_hop(self):
+        # The whole path a MiniMax chat walks when it has no local registry.
+        with (
+            mock.patch.object(M, "registry_db", return_value=""),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.object(
+                M, "remote_registry_call", return_value={"label": "AA", "created": True}
+            ) as hop,
+        ):
+            answer = M.register(SESSION_ID)
+        self.assertEqual(answer["label"], "AA")
+        args = hop.call_args.args[0]
+        self.assertEqual(args[0], "register")
+        self.assertIn("--platform=minimax", args)
+        self.assertIn("--session-id=" + SESSION_ID, args)
+
+
+class ReopenOverTheHopTest(unittest.TestCase):
+    """A chat that comes back to life gets its letter back, wherever the registry is.
+
+    The sweep ends a session's letter while its chat is live.  When the chat returns,
+    the reopen has to reach the registry:  on a host that keeps no copy, that is the
+    host that holds one.
+    """
+
+    def test_the_reopen_goes_to_the_far_host_when_this_host_has_no_registry(self):
+        with (
+            mock.patch.object(M, "registry_db", return_value=""),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.object(
+                M,
+                "remote_registry_call",
+                return_value={"record_id": "r1", "label": "AA", "outcome": "reopened"},
+            ) as hop,
+        ):
+            answer = M.reopen_closed("r1")
+        self.assertEqual(answer["label"], "AA")
+        args = hop.call_args.args[0]
+        self.assertEqual(args[0], "reopen")
+        self.assertIn("--record-id=r1", args)
+        self.assertIn("--letter-pick=" + M.LETTER_PICK, args)
+
+    def test_the_reopen_asks_for_the_parents_pair_when_there_is_one(self):
+        parent = "mvs_parent000000000000000000000000000001"
+        with (
+            mock.patch.object(M, "registry_db", return_value=""),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.object(
+                M, "remote_registry_call", return_value={"record_id": "r1", "label": "BB"}
+            ) as hop,
+        ):
+            M.reopen_closed("r1", parent)
+        self.assertIn("--parent-session-id=" + parent, hop.call_args.args[0])
+
+    def test_a_refused_reopen_keeps_its_own_code_and_outcome(self):
+        # The far host answers a refusal with the code and the outcome, and the
+        # caller reads them the same way it reads a local refusal.
+        with (
+            mock.patch.object(M, "registry_db", return_value=""),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.object(
+                M,
+                "remote_registry_call",
+                return_value={
+                    "error": "the pair AA went to another chat",
+                    "code": "space_lost",
+                    "outcome": "reopen_refused",
+                },
+            ),
+            self.assertRaises(M.RegistryError) as caught,
+        ):
+            M.reopen_closed("r1")
+        self.assertEqual(caught.exception.code, "space_lost")
+        self.assertEqual(caught.exception.outcome, "reopen_refused")
+
+
+class ScriptsDirTest(unittest.TestCase):
+    """The helper and the CLI it calls have to be the same version."""
+
+    def test_the_checkout_the_helper_runs_in_comes_first(self):
+        # A verb the helper sends has to be a verb the CLI knows, so the CLI comes
+        # from the checkout the helper itself is in.
+        here = os.path.dirname(os.path.abspath(M.__file__))
+        with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "/nowhere/at/all"}):
+            self.assertEqual(M.repo_scripts_dir(), here)
+
+    def test_a_host_that_names_no_checkout_still_finds_one(self):
+        here = os.path.dirname(os.path.abspath(M.__file__))
+        with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "", "FLEET_APPS_ROOT": ""}):
+            self.assertEqual(M.repo_scripts_dir(), here)
+
+
+class StopHookTest(unittest.TestCase):
+    """The Stop hook never blocks the agent over a registry that cannot be reached."""
+
+    def _payload(self):
+        return json.dumps({"session_id": SESSION_ID}).encode()
+
+    def _row(self):
+        return {"session_id": SESSION_ID, "title": "AA: A topic", "session_kind": "conversation"}
+
+    def test_a_registry_that_cannot_be_reached_does_not_block_the_stop(self):
+        # A far host that is asleep is not the agent's fault, and a Stop hook that
+        # exits 2 keeps the agent in a loop.
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(self._payload())),
+            mock.patch.object(sys, "stderr", stderr),
+            mock.patch.object(M, "session_row", return_value=self._row()),
+            mock.patch.object(M, "cached_letter", return_value="AA"),
+            mock.patch.object(
+                M,
+                "update_title",
+                side_effect=M.RegistryError("the registry host did not answer", "timeout"),
+            ),
+        ):
+            self.assertEqual(M.hook_stop(), 0)
+        self.assertIn("registry host did not answer", stderr.getvalue())
+
+    def test_a_title_that_carries_a_credential_still_blocks_the_stop(self):
+        # A bad title is the agent's to fix, so that one still says so.
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(self._payload())),
+            mock.patch.object(sys, "stderr", stderr),
+            mock.patch.object(M, "session_row", return_value=self._row()),
+            mock.patch.object(M, "cached_letter", return_value="AA"),
+            mock.patch.object(M, "update_title", side_effect=ValueError("secret_detected")),
+        ):
+            self.assertEqual(M.hook_stop(), 2)
+        self.assertIn("secret_detected", stderr.getvalue())
+
+
+class RegistryHttpsCallTest(unittest.TestCase):
+    """_registry_https_call:  the registry API's client discipline (Path B)."""
+
+    def _call(self, args, *, error=None, raw=b'{"label": "AA"}'):
+        captured = {}
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return raw
+
+        class _Opener:
+            def open(self, request, timeout=None):
+                captured["request"] = request
+                captured["timeout"] = timeout
+                if error is not None:
+                    raise error
+                return _Response()
+
+        env = {"SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY": "k" * 40}
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(M, "_REGISTRY_OPENER", _Opener()),
+        ):
+            answer = M._registry_https_call(args, "https://operator.example.test", timeout=5)
+        return answer, captured["request"]
+
+    def _http_error(self, code, body):
+        return urllib.error.HTTPError(
+            "https://operator.example.test", code, "error", None, io.BytesIO(body)
+        )
+
+    def test_the_request_carries_an_explicit_user_agent(self):
+        # The API's host is Cloudflare-fronted, and Cloudflare answers 1010 to
+        # Python's default urllib agent:  the call names itself instead.
+        _answer, request = self._call(["resolve", "--platform=minimax", "--letter=AA"])
+        self.assertEqual(request.get_header("User-agent"), "mm-session-letter/1.0")
+
+    def test_a_post_5xx_with_a_json_body_is_outcome_unknown(self):
+        answer, _request = self._call(
+            ["touch", "--platform=minimax"],
+            error=self._http_error(500, b'{"error": "boom"}'),
+        )
+        self.assertEqual(answer["code"], "http_500")
+        self.assertEqual(answer["outcome"], "outcome_unknown")
+
+    def test_a_post_5xx_without_a_json_body_is_outcome_unknown(self):
+        answer, _request = self._call(
+            ["touch", "--platform=minimax"],
+            error=self._http_error(502, b"bad gateway"),
+        )
+        self.assertEqual(answer["code"], "http_error")
+        self.assertEqual(answer["outcome"], "outcome_unknown")
+
+    def test_a_post_4xx_answer_is_a_definitive_refusal(self):
+        # A 4xx is the API speaking for itself:  the write was not applied, so
+        # the outcome is known and no idempotency re-check is owed.
+        answer, _request = self._call(
+            ["register", "--platform=minimax"],
+            error=self._http_error(403, b'{"error": "refused", "code": "issuer_refused"}'),
+        )
+        self.assertEqual(answer["code"], "issuer_refused")
+        self.assertNotIn("outcome", answer)
+
+    def test_a_get_5xx_is_not_a_write_outcome(self):
+        answer, _request = self._call(
+            ["resolve", "--platform=minimax", "--letter=AA"],
+            error=self._http_error(500, b'{"error": "boom"}'),
+        )
+        self.assertEqual(answer["code"], "http_500")
+        self.assertNotIn("outcome", answer)

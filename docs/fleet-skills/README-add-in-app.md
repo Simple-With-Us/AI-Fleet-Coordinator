@@ -5,7 +5,7 @@ Updated **2026-10-08**: the installer **specializes identity per seat** (Zulip b
 | Seat | Chat tag | Home / upload dir | Branches | Notes |
 | :--- | :--- | :--- | :--- | :--- |
 | Cursor IDE / Auto | `[CURSOR]` | `~/.cursor/skills` | `cursor/` | Cloud Grok Bot fork → `[GB-<NAME>]` (not `[GROK-BOT]`) |
-| Grok Bot (Cursor cloud) | `[GB-<NAME>]` | `docs/fleet-skills/by-seat/grok-bot/` | `cursor/` | GB-DIRECTOR / FIXER / DESIGNER / COMPILER / HOUSEKEEPER / PUBLISHER / DEPLOYER / MONITOR / PLUMBER / ORACLE / TRADER (from `scripts/agent_sync/mcp/gb-identities.json`).  Not `[GROK-BOT]`, not `[CURSOR]`, not Mac Grok TUI |
+| Grok Bot (Cursor cloud) | `[GB-<NAME>]` | `docs/fleet-skills/by-seat/grok-bot/` | `cursor/` | GB-DIRECTOR / FIXER / DESIGNER / COMPILER / HOUSEKEEPER / PUBLISHER / DEPLOYER / MONITOR / PLUMBER / ORACLE / TRADER (from `scripts/simple_tools/mcp/gb-identities.json`).  Not `[GROK-BOT]`, not `[CURSOR]`, not Mac Grok TUI |
 | Antigravity / Gemini | `[AG]` | `~/.gemini/skills` | `ag/` | Lane folders `antigravity-<slug>` |
 | Codex | `[CODEX]` | `~/.codex/skills` | `codex/` | |
 | fx TUI | `[FX]` | `~/.fx/skills` | `fx/` | Quote-safe YAML `>-` descriptions; set `context_limits.skill_catalog_bytes` to `off` in `~/.fx/settings.json` so the full catalog is not truncated |
@@ -37,6 +37,7 @@ Having explicit fleet skills installed significantly improves agent compliance w
 | **`secret-safety`** | Mandatory safeguards for handling secrets, API keys, tokens and credentials: redact inline, as part of the command that touches the secret, never as a judgment call about what to display after it ran.  Load before any command whose arguments or environment touch a credential. |
 | **`sentence-gap`** | Visible gap between sentences: a real U+00A0 plus a normal space on every surface (owner ruling 2026-10-23), never two plain ASCII spaces, and never the `&nbsp;` entity except in the one exception: the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the entity plus a normal space.  Product-copy source uses the per-language escapes. |
 | **`owner-copy`** | Human-facing copy standards:  a real U+00A0 plus a normal space between sentences (the `sentence-gap` rule above), system theme default (owner ruling 2026-09-19), Title Case headings, no agent names in ASC release notes. |
+| **`token-thrift`** | Token-efficiency habits for automated turns:  one-shot classify and gate wakes, filter no-op deliveries before the model, no canned status or "no change" heartbeats, start a job and end the turn, bounded tool output, a short MEMORY.md, recall before re-deriving. |
 | **`apple-notes`** | Owner-facing review docs, plans, rollouts, and completion notes in the `Coding` folder (local on this Mac). |
 | **`land-lane`** | App-specific verification gates, PR creation, auto-merge arming, and production deploy triggers. |
 | **`unstick-pr`** | Diagnosing and unblocking stuck PRs (phantom vs real conflicts with 2-arg `git merge-tree`, bot review threads, flakes). |

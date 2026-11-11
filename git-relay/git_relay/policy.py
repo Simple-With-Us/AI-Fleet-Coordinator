@@ -13,7 +13,7 @@ import json
 import threading
 import time
 
-from .app_tokens import MINT_PERMISSION_CEILING
+from .app_tokens import mint_permission_allowed
 
 
 class PolicyError(ValueError):
@@ -70,6 +70,8 @@ class SeatPolicy:
     VALID_ACTIONS = ("open_pr",)
     APP_ACTIONS = (
         "mint_token",
+        # Read-only fetch and clone over the relay's /git/ route (git_read.py).  The token stays in the relay.
+        "git_read",
         "merge_pr",
         "workflow_dispatch",
         "resolve_thread",
@@ -94,8 +96,9 @@ class SeatPolicy:
     )
     # Workflow verbs (workflow_verbs.SPECS): policy names a seat config may list, each
     # authorized once per call by WorkflowVerbs.for_action and minted at the least
-    # permission in SPECS.  They need the seat's own App, like APP_ACTIONS, but are not
-    # wired into the HTTP dispatch: the server refuses them as registered-not-wired.
+    # permission in SPECS.  They need the seat's own App, like APP_ACTIONS.  HTTP
+    # dispatch is gated by GIT_RELAY_ENABLE_WORKFLOW_VERBS=1 (server.py; default off):
+    # with it unset or any other value the server refuses them as registered-not-wired.
     WORKFLOW_ACTIONS = (
         "wf_git_blob_binary_get",
         "wf_issue_events",
@@ -158,6 +161,9 @@ class SeatPolicy:
         "wf_merge_queue_dequeue",
         "wf_git_blob_get",
         "wf_git_blob_create",
+        "wf_pr_create",
+        "wf_pr_edit",
+        "wf_pr_close",
         "wf_git_commit_get",
         "wf_git_tree_get",
         "wf_commit_statuses",
@@ -209,9 +215,16 @@ class SeatPolicy:
         "wf_tag_delete",
         "wf_pr_draft",
         "wf_pr_ready",
+        "wf_pr_reopen",
         "wf_automerge_enable",
         "wf_automerge_disable",
+        "wf_review_thread_comments",
         "wf_review_threads",
+        "wf_repo_hooks",
+        "wf_deploy_keys",
+        "wf_org_installations",
+        "wf_repo_list",
+        "wf_pr_search",
         "wf_assignees_add",
         "wf_assignees_remove",
         "wf_issue_lock",
@@ -226,6 +239,7 @@ class SeatPolicy:
         "wf_compare",
         "wf_branch_get",
         "wf_repo_get",
+        "wf_installation_metadata",
         "wf_labels",
         "wf_workflows",
         "wf_run_get",
@@ -263,6 +277,7 @@ class SeatPolicy:
         "wf_run_approve",
         "wf_file_put",
         "wf_files_put",
+        "wf_file_patch",
         "wf_merge_guarded",
     )
     ALL_ACTIONS = VALID_ACTIONS + APP_ACTIONS + REGISTERED_ACTIONS + WORKFLOW_ACTIONS
@@ -347,7 +362,7 @@ class SeatPolicy:
                     for k, v in mint_perms.items()
                 ):
                     raise PolicyError(f"seat {seat!r}: mint_permissions must be name: read|write")
-                outside = [k for k in mint_perms if k not in MINT_PERMISSION_CEILING]
+                outside = [k for k, v in mint_perms.items() if not mint_permission_allowed(k, v)]
                 if outside:
                     # Config load must refuse names the minter always rejects,
                     # so a bad seat entry cannot pass startup and fail every mint.
@@ -476,6 +491,14 @@ class SeatPolicy:
                 return True
         return False
 
+    def repo_allowed(self, seat: str, repo: str) -> bool:
+        """Public read of the seat allowlist: org-wide verbs filter results to it."""
+        return self._repo_allowed(seat, repo)
+
+    def repo_patterns(self, seat: str) -> tuple:
+        """The seat's repository allowlist patterns (read-only copy)."""
+        return tuple(self._seats[seat]["repos"])
+
     @classmethod
     def is_write(cls, action: str) -> bool:
         """Whether an authorized dispatch of this action can change something upstream.
@@ -485,7 +508,7 @@ class SeatPolicy:
         repository state.  Registered-but-unwired actions and any unclassified name count as writes, so the
         write bucket can only err toward counting.
         """
-        if action == "mint_token":
+        if action in ("mint_token", "git_read"):
             return False
         if action in cls.WORKFLOW_ACTIONS:
             # Imported here:  workflow_verbs imports server, which imports this module.
@@ -494,6 +517,19 @@ class SeatPolicy:
             spec = SPECS.get(action)
             return True if spec is None else bool(spec[1])
         return True
+
+    @classmethod
+    def audits(cls, action: str, outcome: str) -> bool:
+        """Whether a finished, authenticated call writes an audit row.
+
+        Owner ruling 2026-11-06:  successful reads leave the audit log.  A call is skipped only when
+        it ended "ok" and its action is a known read (is_write False).  Every failure, denial and
+        write still records, and so does mint_token:  it changes no repository state but issues a
+        credential, which the log must show.
+        """
+        if outcome != "ok" or action == "mint_token":
+            return True
+        return action not in cls.ALL_ACTIONS or cls.is_write(action)
 
     def _rate_ok(self, seat: str, now: float, write: bool = False) -> str | None:
         """Charge one call, and one write when `write`, or None and nothing charged when either bucket is full."""

@@ -370,7 +370,7 @@ class TestHttpSurface(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["number"], 1)
 
-    def test_unauthenticated_gets_401_and_no_audit_row(self):
+    def test_unauthenticated_gets_401(self):
         status, _ = self._post(
             "/v1/comment_pr",
             {"repo": "example/other-repo", "number": 1, "body": "x"},
@@ -571,7 +571,7 @@ class TestMcpWrapper(unittest.TestCase):
 
         if opener is None:
             opener = FakeOpener(payload or {"number": 9})
-        return RelayMcp("http://relay.test", SEAT_TOKEN, opener=opener)
+        return RelayMcp("https://relay.test", SEAT_TOKEN, opener=opener)
 
     def test_initialize_and_tools_list(self):
         server = self._server()
@@ -579,8 +579,10 @@ class TestMcpWrapper(unittest.TestCase):
         self.assertEqual(reply["result"]["serverInfo"]["name"], "GR-MCP")
         reply = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = [t["name"] for t in reply["result"]["tools"]]
+        # The original seven come first and unchanged;  the wf verbs follow (AFC-664 item 6,
+        # tested in test_mcp_wf_verbs).  mint_token stays HTTP-only: raw App tokens never cross stdio.
         self.assertEqual(
-            names,
+            names[:7],
             [
                 "open_pr",
                 "edit_pr",
@@ -589,8 +591,13 @@ class TestMcpWrapper(unittest.TestCase):
                 "merge_pr",
                 "workflow_dispatch",
                 "resolve_thread",
-            ],  # mint_token stays HTTP-only: raw App tokens never cross stdio
+            ],
         )
+        # mint_token stays HTTP-only: raw App tokens never cross stdio
+        from git_relay.mcp_server import WF_ACTIONS
+
+        self.assertEqual(set(names[7:]), set(WF_ACTIONS) | {"stage_chunk", "stage_abort"})
+        self.assertNotIn("mint_token", names)
 
     def test_tools_call_forwards_to_relay_with_seat_token(self):
         opener = FakeOpener({"number": 9, "url": "u"})
@@ -613,7 +620,7 @@ class TestMcpWrapper(unittest.TestCase):
             }
         )
         req = opener.requests[0]
-        self.assertEqual(req.full_url, "http://relay.test/v1/open_pr")
+        self.assertEqual(req.full_url, "https://relay.test/v1/open_pr")
         self.assertEqual(req.get_header("Authorization"), "Bearer " + SEAT_TOKEN)
         self.assertIn('"number": 9', reply["result"]["content"][0]["text"])
 
@@ -657,7 +664,7 @@ class TestMcpWriteUncertainty(unittest.TestCase):
     def call(self, opener):
         from git_relay.mcp_server import RelayMcp
 
-        return RelayMcp("http://relay.test", "private-seat-token", opener=opener).handle(
+        return RelayMcp("https://relay.test", "private-seat-token", opener=opener).handle(
             {
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -1463,13 +1470,17 @@ class TestFleetSecretsSourceAgainstTheRealCli(unittest.TestCase):
         finally:
             sys.path.remove(scripts)
 
-        def fake_export(path, env, project_name=None, token=None):
+        def fake_export(path, env, project_name=None, token=None, *, allow_session=False):
+            self.assertIs(allow_session, False)
             return dict(self.FOLDER)
 
         def runner(argv, capture_output, timeout):
             calls.append(argv)
             out, err = io.StringIO(), io.StringIO()
-            with unittest.mock.patch.object(core, "fetch_all", fake_export):
+            with (
+                unittest.mock.patch.object(core, "fetch_all", fake_export),
+                unittest.mock.patch.object(cli.sys, "stdin", io.StringIO()),
+            ):
                 code = cli.main(argv[1:], env={}, out=out, err=err)
             return subprocess.CompletedProcess(
                 argv, code, stdout=out.getvalue().encode(), stderr=err.getvalue().encode()
@@ -1972,7 +1983,7 @@ class TestPolicyMintPermissionsValidation(unittest.TestCase):
                             "actions": ["mint_token"],
                             "repos": ["a/b"],
                             "app_slug": "swu-echo",
-                            "mint_permissions": {"workflows": "write"},
+                            "mint_permissions": {"administration": "write"},
                         }
                     }
                 )
@@ -2060,7 +2071,7 @@ class TestMcpSchemaEnforcement(unittest.TestCase):
     def _server(self):
         from git_relay.mcp_server import RelayMcp
 
-        return RelayMcp("http://relay.test", "seat-token", opener=None)
+        return RelayMcp("https://relay.test", "seat-token", opener=None)
 
     def _call(self, name, args):
         return self._server().handle(
@@ -2910,7 +2921,7 @@ class TestVerifiedSecret(unittest.TestCase):
         self.assertEqual(child["INFISICAL_FLEET_OPS_PROJECT_ID"], "project-uuid")
         self.assertNotIn("ENVIRONMENT", child)
         self.assertNotIn("INFISICAL_PROJECT_ID", child)
-        self.assertNotIn("HOME", child)  # no incidental ~/.agent-sync resolution
+        self.assertNotIn("HOME", child)  # no incidental ~/.simple-tools resolution
         self.assertNotIn("GIT_RELAY_SEATS_JSON", child)
 
     def test_unreadable_credential_file_fails_closed(self):
@@ -3067,7 +3078,7 @@ class TestProductionCredentialBinding(unittest.TestCase):
 
 class TestScopedChildProjectBinding(unittest.TestCase):
     """The scoped CLI child must carry the SUPPORTED fleet-secrets variable
-    names and cannot fall through to ~/.agent-sync file resolution."""
+    names and cannot fall through to ~/.simple-tools file resolution."""
 
     def _creds(self):
         directory = pathlib.Path(tempfile.mkdtemp())

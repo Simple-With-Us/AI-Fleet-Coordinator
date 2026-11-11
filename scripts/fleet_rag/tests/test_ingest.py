@@ -157,6 +157,77 @@ class IngestTests(unittest.TestCase):
         self.assertTrue(self.logf.exists())
         self.assertTrue(self.state.exists())
 
+    def test_linear_delta_never_prunes_live_rows_even_with_full_flag(self) -> None:
+        # Persist a complete earlier document, then yield no delta documents.
+        with mock.patch.dict(ingest.GENERATORS, {"linear": lambda limit=None: iter([
+            make_doc("linear/unchanged", LONG_A, source="linear")
+        ])}):
+            ingest.run("linear", cfg={"x": "y"}, qd=self.qd, state_path=self.state,
+                       last_run_path=self.last, log_path=self.logf, log=lambda *a: None)
+        before = json.loads(self.state.read_text())
+        points = set(self.qd.points)
+        for full in ("", "1"):
+            with (mock.patch.object(sources, "NIGHTLY_SOURCES", ("linear",)),
+                  mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_FULL": full}),
+                  mock.patch.dict(ingest.GENERATORS, {"linear": lambda limit=None: iter([])})):
+                report = ingest.run("linear", prune=True, cfg={"x": "y"}, qd=self.qd,
+                                    state_path=self.state, last_run_path=self.last,
+                                    log_path=self.logf, log=lambda *a: None)
+            self.assertTrue(report["ok"])
+            self.assertEqual(json.loads(self.state.read_text()), before)
+            self.assertEqual(set(self.qd.points), points)
+            self.assertTrue(any("pruning skipped" in w for w in report["warnings"]))
+
+    def test_linear_receipt_separates_full_read_from_commit_and_dry_run(self) -> None:
+        from fleet_rag.tests.test_sources import _linear_node
+        for dry in (True, False):
+            with (mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+                  mock.patch.object(sources, "_linear_light_scan", return_value={
+                      "uuid-1": "2026-10-21T01:00:00Z"}),
+                  mock.patch.object(sources, "_linear_fetch_full", return_value=[_linear_node()]),
+                  mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_FULL": "1"})):
+                report = ingest.run("linear", dry_run=dry, cfg={"x": "y"}, qd=self.qd,
+                    state_path=self.state, last_run_path=self.last, log_path=self.logf,
+                    log=lambda *a: None)
+            receipt = report["linear_read_receipt"]
+            self.assertTrue(report["ok"])
+            self.assertTrue(receipt["source_complete"])
+            self.assertFalse(receipt["deletion_authorized"])
+            self.assertEqual(not dry, receipt["issues"]["uuid-1"]["state_hash_verified"])
+
+    def test_full_linear_skips_fail_after_complete_pending_docs_commit(self) -> None:
+        from fleet_rag.tests.test_sources import _linear_node
+        skipped = _linear_node(uid="uuid-skipped")
+        skipped["_linear_truncated"] = True
+        with (mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+              mock.patch.object(sources, "_linear_light_scan", return_value={
+                  "uuid-1": "2026-10-21", "uuid-skipped": "2026-10-21"}),
+              mock.patch.object(sources, "_linear_fetch_full", return_value=[_linear_node(), skipped]),
+              mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_FULL": "1"})):
+            report = ingest.run("linear", cfg={"x": "y"}, qd=self.qd,
+                state_path=self.state, last_run_path=self.last, log_path=self.logf,
+                log=lambda *a: None)
+        self.assertFalse(report["ok"])
+        state = json.loads(self.state.read_text())
+        self.assertIn("linear/uuid-1", state)
+        self.assertNotIn("linear/uuid-skipped", state)
+        receipt = report["linear_read_receipt"]
+        self.assertFalse(receipt["source_complete"])
+        self.assertTrue(receipt["issues"]["uuid-1"]["state_hash_verified"])
+        self.assertEqual("skipped", receipt["issues"]["uuid-skipped"]["status"])
+
+    def test_explicit_linear_prune_refused_before_any_write(self) -> None:
+        for full in ("", "1"):
+            with (mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_FULL": full}),
+                  mock.patch.dict(ingest.GENERATORS, {"linear": lambda limit=None: iter([])})):
+                with self.assertRaisesRegex(ingest.FleetRagError, "complete deletion inventory"):
+                    ingest.run("linear", prune=True, cfg={"x": "y"}, qd=self.qd,
+                               state_path=self.state, last_run_path=self.last,
+                               log_path=self.logf, log=lambda *a: None)
+            self.assertFalse(self.state.exists())
+            self.assertFalse(self.logf.exists())
+            self.assertFalse(self.qd.points)
+
     def test_first_run_then_idempotent(self) -> None:
         rep = self._run()
         self.assertTrue(rep["ok"])
@@ -382,6 +453,59 @@ class IngestTests(unittest.TestCase):
         rep = self._run(prune=True, since=1600000000000)
         self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 0)
         self.assertIn("doc/b", json.loads(self.state.read_text()))
+
+    def test_prune_deferred_and_skipped_when_any_later_source_fails(self) -> None:
+        # AFC-677:  a failure in ANY source of the run blocks every prune, including a
+        # source that ran (and finished cleanly) before the failure.
+        self._run()
+        self.docs["doc"] = [make_doc("doc/a", LONG_A)]
+
+        def gen(limit=None):  # noqa: ANN001
+            yield from self.docs["doc"]
+
+        def broken(limit=None):  # noqa: ANN001
+            raise RuntimeError("simple-board api query exited 4")
+            yield  # pragma: no cover
+
+        with mock.patch.object(sources, "NIGHTLY_SOURCES", ("doc", "linear")), \
+                mock.patch.object(ingest, "GENERATORS", {"doc": gen, "linear": broken}):
+            rep = ingest.run("doc,linear", cfg={"x": "y"}, qd=self.qd, state_path=self.state,
+                             last_run_path=self.last, log_path=self.logf, log=lambda *a: None,
+                             prune=True)
+        self.assertFalse(rep["ok"])
+        self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 0)
+        self.assertEqual(self.qd.deleted, [])
+        self.assertIn("doc/b", json.loads(self.state.read_text()))
+        self.assertTrue(any("prune skipped for every source" in w for w in rep["warnings"]))
+
+    def test_prune_refused_when_more_docs_would_go_than_were_yielded(self) -> None:
+        self.docs["doc"] = [make_doc(f"doc/x{i}", f"Body number {i} text here.", title=f"X{i}")
+                            for i in range(3)]
+        self._run()
+        self.docs["doc"] = [make_doc("doc/x0", "Body number 0 text here.", title="X0")]
+        rep = self._run(prune=True)
+        self.assertFalse(rep["ok"])
+        self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 0)
+        self.assertEqual(self.qd.deleted, [])
+        self.assertTrue(any("yielded only 1" in e for e in rep["errors"]))
+        self.assertEqual(set(json.loads(self.state.read_text())), {"doc/x0", "doc/x1", "doc/x2"})
+
+    def test_prune_refused_when_a_whole_repo_vanishes_unless_forced(self) -> None:
+        keep = [make_doc(f"doc/Keep/k{i}.md", f"Keep body {i} text.", title=f"K{i}") for i in range(8)]
+        lost = [make_doc(f"doc/Socratic-Trade/s{i}.md", f"Lost body {i} text.", title=f"S{i}")
+                for i in range(5)]
+        self.docs["doc"] = keep + lost
+        self._run()
+        self.docs["doc"] = keep
+        rep = self._run(prune=True)
+        self.assertFalse(rep["ok"])
+        self.assertEqual(self.qd.deleted, [])
+        self.assertTrue(any("doc/Socratic-Trade" in e and "missing" in e for e in rep["errors"]))
+        with mock.patch.dict(os.environ, {ingest.PRUNE_FORCE_ENV: "1"}):
+            rep = self._run(prune=True)
+        self.assertTrue(rep["ok"])
+        self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 5)
+        self.assertTrue(any("overridden" in w for w in rep["warnings"]))
 
     def test_duplicate_doc_id_is_an_error(self) -> None:
         self.docs["doc"] = [make_doc("doc/a", LONG_A), make_doc("doc/a", LONG_B)]
