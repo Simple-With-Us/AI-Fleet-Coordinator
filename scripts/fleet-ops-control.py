@@ -233,7 +233,9 @@ EAVESDROPPER_UNAVAILABLE = {
 OPERATOR_TARGET = "server"
 OPERATOR_PYTHON = "/usr/local/bin/python3"
 OPERATOR_REGISTRY_PATH = "/data/operator/registry.sqlite3"
-OPERATOR_LISTENER_ROOT = "/data/listener"
+# The daemon's state root (its SIMPLE_TOOLS_STATE_DIR):  one folder per seat sits directly under
+# it (`<SEAT>/wakes.jsonl` and the rest), beside `listener/`, `logs/` and `operator/`.
+OPERATOR_STATE_ROOT = "/data"
 OPERATOR_SCRIPTS_DIR = "/app/scripts"
 OPERATOR_READ_MAX_BYTES = 1024 * 1024
 OPERATOR_READ_TIMEOUT = 20
@@ -299,13 +301,13 @@ except Exception:
     answer = {"error": "reader_failed"}
 sys.stdout.write(json.dumps(answer))
 """.replace("__LIMIT__", str(OPERATOR_MAX_SESSIONS))
-# The wakes program:  argv[1] is the listener's folder (one folder per seat) and argv[2] the
-# folder that holds the container's own `simple_tools` package, whose read-only views
+# The wakes program:  argv[1] is the daemon's state root (one folder per seat, named in capitals,
+# so `listener`, `logs` and `operator` are never taken for one) and argv[2] the folder that holds the container's own `simple_tools` package, whose read-only views
 # (`listener_records`, the ones the listener's signed read API answers with) do the reading, so
 # the file formats stay the daemon's.  Those views carry Zulip-authored text;  this program
 # copies out only counts, ids, state and reason words and times, so no body, title, topic,
 # channel, sender or link is ever printed.  A seat whose records cannot be read is named and
-# skipped.
+# skipped, and a root with no seat folder at all is `store_missing`, never a count of zero.
 OPERATOR_WAKES_PROGRAM = (
     r"""
 import json
@@ -329,6 +331,8 @@ def read():
         for name in os.listdir(ROOT)
         if SEAT_RE.fullmatch(name) and os.path.isdir(os.path.join(ROOT, name))
     )
+    if not names:
+        return {"error": "store_missing"}
     answer = {"seat_count": len(names), "seats": [], "unreadable": []}
     for seat in names[:SEATS]:
         try:
@@ -394,7 +398,7 @@ OPERATOR_READS = {
     ),
     "operator-wakes": (
         OPERATOR_WAKES_PROGRAM,
-        (OPERATOR_LISTENER_ROOT, OPERATOR_SCRIPTS_DIR),
+        (OPERATOR_STATE_ROOT, OPERATOR_SCRIPTS_DIR),
         "wakes",
         "read-only summary of the server Operator's wakes",
     ),

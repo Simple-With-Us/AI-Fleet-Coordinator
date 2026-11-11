@@ -3766,7 +3766,7 @@ class OperatorReadTests(Base):
     KEYS = {"operator-sessions": "sessions", "operator-wakes": "wakes"}
     PLACES = {
         "operator-sessions": ["/data/operator/registry.sqlite3"],
-        "operator-wakes": ["/data/listener", "/app/scripts"],
+        "operator-wakes": ["/data", "/app/scripts"],
     }
     HIDDEN = (VALUE, PATH, EMAIL, SESSION, BODY)
     ISO = "2026-11-11T18:00:00.123Z"
@@ -3879,6 +3879,14 @@ class OperatorReadTests(Base):
         for column in ("native_session_id", "title", "thread_link", "apple_note_link", "project"):
             self.assertNotIn(column, sessions)
         self.assertIn("mode=ro", sessions)
+        # The seat folders sit directly under the daemon's state root, beside `listener/`.
+        self.assertEqual(
+            foc.OPERATOR_STATE_ROOT,
+            os.path.dirname(foc.EAVESDROPPER_STATUS_PATH)[: -len("/listener")],
+        )
+        self.assertEqual(
+            foc.OPERATOR_REGISTRY_PATH, foc.OPERATOR_STATE_ROOT + "/operator/registry.sqlite3"
+        )
         wakes = foc.OPERATOR_WAKES_PROGRAM
         for key in ('"body"', '"title"', '"topic"', '"channel"', "sender", "zulip_link", '"note"'):
             self.assertNotIn(key, wakes)
@@ -4475,6 +4483,8 @@ class OperatorFixtureStoreTests(Base):
             ("operator-sessions", [self.home / "absent.sqlite3"], "store_missing"),
             ("operator-wakes", [self.home / "absent", HERE], "store_missing"),
             ("operator-wakes", [self.listener()[0], self.home / "no-package"], "reader_failed"),
+            # A state root with no seat folder is not an Operator with zero wakes.
+            ("operator-wakes", [self.empty_root(), HERE], "store_missing"),
         )
         garbage = self.home / "garbage.sqlite3"
         garbage.write_bytes(b"this is not a database " * 64)
@@ -4491,13 +4501,25 @@ class OperatorFixtureStoreTests(Base):
                 self.assertNotIn("wakes", answer)
                 self.assertNotIn(str(self.home), text)
 
+    def empty_root(self):
+        """A state root that has the daemon's own folders and no seat folder."""
+        root = self.home / "empty-state"
+        for name in ("listener", "logs", "operator"):
+            (root / name).mkdir(parents=True, exist_ok=True)
+        (root / "listener" / "status.json").write_text("{}")
+        return root
+
     def listener(self):
-        """A listener folder with one seat the way the daemon writes it (700 folders, 600 files),
-        one seat whose folder is open to others, and the daemon's own status file."""
+        """The daemon's state root as it lays it out: its own `listener`, `logs` and `operator`
+        folders, one seat folder beside them the way the daemon writes it (700 folders, 600
+        files), and one seat whose folder is open to others."""
         now = time.time()
-        root = self.home / "listener"
+        root = self.home / "state"
         root.mkdir(mode=0o700, exist_ok=True)
-        (root / "status.json").write_text("{}")
+        for name in ("listener", "logs", "operator"):
+            (root / name).mkdir(exist_ok=True)
+        (root / "listener" / "status.json").write_text("{}")
+        (root / "listener.toml").write_text("")
         seat = root / "CLAUDE"
         seat.mkdir(mode=0o700, exist_ok=True)
         secret = " ".join((self.PATH, self.EMAIL, self.VALUE, self.BODY))
