@@ -1297,6 +1297,27 @@ def seat_tag(seat: str, sessions: list[str] | None) -> str:
     return f"[{seat}·{s8}]" if s8 else f"[{seat}]"
 
 
+def opens_with_own_intro(seat: str, text: str) -> bool:
+    """True when `text` already opens with this seat's own intro (`[SEAT]`, `[SEAT·s8 ...]`,
+    `[SEAT 📁AFC]`, `[SEAT: HH.1.C 📁AFC]`), optionally after 👀:  the hosted contract.js
+    ownIntro rule.  A foreign-seat or malformed bracket is content (AFC-692)."""
+    lead = re.match(r"(?:👀\s*)?\s*", text)
+    start = lead.end() if lead else 0
+    if not text.startswith("[" + seat, start):
+        return False
+    after = start + 1 + len(seat)
+    folder = re.match(r"\s*📁", text[after:]) is not None
+    if not folder and text[after : after + 1] not in ("]", " ", ":", "·", "→", "\t"):
+        return False
+    end = text.find("]", start)
+    return end >= 0 and not re.search(r"[\r\n\[]", text[start + 1 : end])
+
+
+def tagged(seat: str, sessions: list[str] | None, text: str) -> str:
+    """The seat tag in front of `text`, unless the seat already wrote its own intro (AFC-692)."""
+    return text if opens_with_own_intro(seat, text) else f"{seat_tag(seat, sessions)} {text}"
+
+
 # ----------------------------------------------------------------- input files and flat labels
 
 
@@ -3261,7 +3282,7 @@ def comment_body(
     where: str | None = None,
     env_label: str | None = None,
 ) -> str:
-    body = f"{seat_tag(seat, sessions)} {text.strip()}"
+    body = tagged(seat, sessions, text.strip())
     loc = ", ".join(x for x in (env_label, where) if x)
     extra = []
     if loc:
@@ -5392,7 +5413,7 @@ def parity_is_write(a) -> bool:
 
 def parity_tagger(seat: str, a):
     sessions = auto_sessions(getattr(a, "session_ids", None), seat)
-    return lambda text: f"{seat_tag(seat, sessions)} {text}"
+    return lambda text: tagged(seat, sessions, text)
 
 
 def run_mutation(L: "Linear", auth: "Auth", seat: str, a, prepared: dict, label: str):

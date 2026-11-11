@@ -1724,6 +1724,32 @@ class BearerTransportSeamTests(unittest.TestCase):
         self.assertNotIn(BEARER_ECHO, body.decode())
 
 
+class OwnIntroTagTests(unittest.TestCase):
+    """AFC-692:  a body that already opens with the seat's own intro gets no second seat tag."""
+
+    def test_own_intro_is_not_tagged_twice(self):
+        cli = load_cli()
+        for text in (
+            "[GB-PLUMBER 📁AFC] PR opened",
+            "👀 [GB-PLUMBER 📁AFC, OPS] quiet",
+            "[GB-PLUMBER] PR opened",
+            "[GB-PLUMBER: HH.1.C 📁AFC] status",
+            "[GB-PLUMBER·abcd1234 📁AFC] status",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(cli.tagged("GB-PLUMBER", ["abcd-1234-x"], text), text)
+                self.assertTrue(cli.comment_body("GB-PLUMBER", None, text).startswith(text))
+
+    def test_untagged_and_foreign_bodies_keep_the_seat_tag(self):
+        cli = load_cli()
+        self.assertEqual(cli.tagged("GB-PLUMBER", None, "PR opened"), "[GB-PLUMBER] PR opened")
+        self.assertEqual(
+            cli.tagged("GB-PLUMBER", None, "[GB-DIRECTOR 📁AFC] spoof"),
+            "[GB-PLUMBER] [GB-DIRECTOR 📁AFC] spoof",
+        )
+        self.assertEqual(cli.tagged("GB-PLUMBER", None, "[GB-PLUMBERX] x"), "[GB-PLUMBER] [GB-PLUMBERX] x")
+
+
 class SeatAliasTests(unittest.TestCase):
     """Any spelling of GROK followed by BUILD is the seat GROK (owner 2026-10-10);  nothing else is aliased."""
 

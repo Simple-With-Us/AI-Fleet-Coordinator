@@ -42,6 +42,7 @@ import {
   sessionTag,
   tagPrefix,
   composeBody,
+  ownIntro,
   seatTagFor,
   SEAT_TAG_EXPECTATIONS,
   formatTime,
@@ -1954,11 +1955,16 @@ export class HostedTools {
     }
   }
 
-  /** The seat tag line that opens every body it writes, as the Zulip tools do. */
+  /** The seat tag line that opens every body it writes, unless the body already opens with this seat's own intro
+   * (Policy › Post intro format, AFC-692):  a second `[SEAT]` / `[SEAT·session]` in front of `[SEAT 📁repos]` is the
+   * double tag Jay asked to stop.  A foreign-seat intro is still content and still gets this seat's tag, since every
+   * hosted Linear write shares one user and the tag is the attribution. */
   linearBody(text, session) {
+    const prefix = tagPrefix(this.seat, sessionTag(session));
+    const body = ownIntro(prefix, text) ? text : `${prefix}] ${text}`;
     // Linear records keep their ISO dates:  only the sentence gap is fixed here.  The fleet date format is a Zulip
     // rule, and a Linear issue that says "Blocked until 2026-11-02" means that date there, not "Mon, Nov 2".
-    return neutralizeLinearMentions(sentenceGap(`${tagPrefix(this.seat, sessionTag(session))}] ${text}`));
+    return neutralizeLinearMentions(sentenceGap(body));
   }
 
   /** The secret scan on everything the caller wrote, before any request. */

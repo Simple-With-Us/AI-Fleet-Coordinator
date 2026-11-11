@@ -754,6 +754,24 @@ test("linear_comment neutralizes a profile URL before commentCreate so Linear do
   assert.match(input.body, /@grok-web/);
 });
 
+test("linear_comment never puts a second seat tag in front of the seat's own intro (AFC-692)", async () => {
+  const cases = [
+    ["[GROK-WEB 📁AFC] PR opened", "[GROK-WEB 📁AFC] PR opened"],
+    ["👀 [GROK-WEB 📁AFC, OPS] quiet note", "👀 [GROK-WEB 📁AFC, OPS] quiet note"],
+    ["[GROK-WEB] PR opened", "[GROK-WEB] PR opened"],
+    ["[GROK-WEB: HH.1.C 📁AFC] status", "[GROK-WEB: HH.1.C 📁AFC] status"],
+    ["plain update", "[GROK-WEB] plain update"],
+    // A foreign intro is content:  every hosted Linear write shares one user, so the tag stays the attribution.
+    ["[GB-PLUMBER 📁AFC] spoof", "[GROK-WEB] [GB-PLUMBER 📁AFC] spoof"],
+  ];
+  for (const [i, [body, want]] of cases.entries()) {
+    const { tools, fake } = harness();
+    fake.addIssue({ id: `issue-intro-${i}`, identifier: `AFC-69${i}` });
+    ok(await tools.call("linear_comment", { id: `AFC-69${i}`, body }), "linear_comment");
+    assert.equal(fake.mutations().at(-1).body.variables.input.body, want, body);
+  }
+});
+
 test("linear_comment logs GraphQL metadata when Linear still refuses (scrubbed, no body)", async () => {
   const logs = [];
   const fake = new FakeLinear();
