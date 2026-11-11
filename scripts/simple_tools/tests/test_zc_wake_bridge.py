@@ -281,6 +281,8 @@ class UserAgentHeader(Base):
         sid = B.resolve_letter(env, "AA")
         self.assertEqual(sid, "sess_ua_check_0001")
         self.assertEqual(seen, [B.USER_AGENT])
+        B.registry_history(env)
+        self.assertEqual(seen, [B.USER_AGENT, B.USER_AGENT])
 
 
 class LetterAddress(Base):
