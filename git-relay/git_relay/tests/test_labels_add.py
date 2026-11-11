@@ -21,6 +21,42 @@ class Client(BaseClient):
         return super()._call(method, path, payload, bearer)
 
 
+class _IssuesOff(BaseClient):
+    """The label exists, and POST /issues/.../labels is the 404 Issues-disabled route."""
+
+    def __init__(self, graphql, missing_pr=False, lose_mutation=False, lose_read=False, node_id="LA_kwDOAbc"):
+        super().__init__()
+        self.graphql = graphql
+        self.missing_pr = missing_pr
+        self.lose_mutation = lose_mutation
+        self.lose_read = lose_read
+        self.node_id = node_id
+
+    def _call(self, method, path, payload=None, bearer=None):
+        self.calls.append((method, path, payload, bearer))
+        if method == "GET" and "/labels/" in path:
+            row = {"id": 7, "name": path.rsplit("/", 1)[1]}
+            if self.node_id is not None:
+                row["node_id"] = self.node_id
+            return row
+        if method == "POST" and path.endswith("/labels"):
+            raise RelayGitHubError(404, "Not Found")
+        if method == "GET" and "/pulls/" in path:
+            if self.missing_pr:
+                raise RelayGitHubError(404, "Not Found")
+            return {"node_id": "PR_kwDOAbc", "number": 2, "state": "open"}
+        query = "" if not isinstance(payload, dict) else str(payload.get("query") or "")
+        if query.startswith("mutation"):
+            if self.lose_mutation:
+                raise RelayGitHubError(502, "lost")
+            return self.graphql
+        if query.startswith("query"):
+            if self.lose_read:
+                raise RelayGitHubError(502, "lost")
+            return self.graphql
+        raise AssertionError((method, path))
+
+
 class AddLabels(unittest.TestCase):
     def args(self, **kw):
         return {"repo": REPO, "number": 2, "labels": ["hold"], **kw}
@@ -145,6 +181,119 @@ class AddLabels(unittest.TestCase):
 
         with self.assertRaises(PreReadUnavailable):
             self.handle(Down()).run("wf_labels_add", self.args())
+
+    def test_missing_label_is_a_definite_refusal_and_can_be_retried(self):
+        class Missing(BaseClient):
+            def _call(self, method, path, payload=None, bearer=None):
+                self.calls.append((method, path, payload, bearer))
+                raise RelayGitHubError(404, "Not Found")
+
+        with self.assertRaises(Refused) as caught:
+            self.handle(Missing()).run("wf_labels_add", self.args(labels=["needs-human-merge"]))
+        self.assertEqual(str(caught.exception), "additive label does not exist")
+        args = self.args(repo="example/x", labels=["needs-human-merge"])
+        with tempfile.TemporaryDirectory() as tmp:
+            c = Missing()
+            r = relay(tmp, client=c)
+            path = tmp + "/outcomes.json"
+            with (
+                patch.object(r.policy, "authorize", return_value=None),
+                patch.object(
+                    r.policy,
+                    "app_identity",
+                    return_value=("swu-wise", {"issues": "write", "metadata": "read"}),
+                ),
+            ):
+                status, body = r.handle(TOKEN, "wf_labels_add", args)
+                self.assertEqual(status, 400)
+                self.assertEqual(body["error"], "additive label does not exist")
+                r.outcomes = OutcomeStore(path)
+                self.assertEqual(r.handle(TOKEN, "wf_labels_add", args)[0], 400)
+        self.assertTrue(all(call[0] == "GET" for call in c.calls))
+        self.assertEqual(len(c.calls), 2)
+
+    def test_issues_route_404_uses_the_pull_request_mutation(self):
+        node = "LA_kwDOAbc"
+        applied = {
+            "data": {
+                "addLabelsToLabelable": {
+                    "labelable": {
+                        "__typename": "PullRequest",
+                        "number": 2,
+                        "labels": {
+                            "pageInfo": {"hasNextPage": False},
+                            "nodes": [{"id": node, "name": "needs-human-merge", "color": "FBCA04"}],
+                        },
+                    }
+                }
+            }
+        }
+        c = _IssuesOff(applied)
+        out = self.handle(c).run("wf_labels_add", self.args(labels=["needs-human-merge"]))
+        self.assertEqual(
+            out,
+            {
+                "number": 2,
+                "added": [{"id": 7, "name": "needs-human-merge", "color": "fbca04"}],
+            },
+        )
+        self.assertEqual(
+            [call[0] for call in c.calls],
+            ["GET", "POST", "GET", "POST"],
+        )
+        self.assertIn("addLabelsToLabelable", c.calls[3][2]["query"])
+        self.assertEqual(c.calls[3][2]["variables"]["labelIds"], [node])
+
+    def test_issues_route_404_without_a_label_node_id_does_not_guess(self):
+        c = _IssuesOff(None, node_id=None)
+        with self.assertRaises(Refused) as caught:
+            self.handle(c).run("wf_labels_add", self.args())
+        self.assertEqual(str(caught.exception), "additive label was not applied")
+        self.assertTrue(all(call[1] != "/graphql" for call in c.calls))
+
+    def test_issues_route_404_on_a_missing_pull_request_names_the_target(self):
+        c = _IssuesOff(None, missing_pr=True)
+        with self.assertRaises(Refused) as caught:
+            self.handle(c).run("wf_labels_add", self.args())
+        self.assertEqual(str(caught.exception), "additive label target not found")
+        self.assertTrue(all(call[1] != "/graphql" for call in c.calls))
+
+    def test_uncertain_label_mutation_is_settled_by_one_read(self):
+        present = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "labels": {
+                            "pageInfo": {"hasNextPage": False},
+                            "nodes": [{"id": "LA_kwDOAbc", "name": "hold", "color": "aabbcc"}],
+                        }
+                    }
+                }
+            }
+        }
+        absent = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "labels": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                    }
+                }
+            }
+        }
+        applied = self.handle(_IssuesOff(present, lose_mutation=True)).run(
+            "wf_labels_add", self.args()
+        )
+        self.assertEqual(applied["added"][0]["id"], 7)
+        with self.assertRaises(Refused) as caught:
+            self.handle(_IssuesOff(absent, lose_mutation=True)).run("wf_labels_add", self.args())
+        self.assertEqual(str(caught.exception), "additive label was not applied")
+        lost = _IssuesOff(None, lose_mutation=True, lose_read=True)
+        with self.assertRaises(RelayGitHubError):
+            self.handle(lost).run("wf_labels_add", self.args())
+        mutations = [
+            call for call in lost.calls if call[2] and "addLabelsToLabelable" in str(call[2].get("query"))
+        ]
+        self.assertEqual(len(mutations), 1)
 
     def test_label_path_dot_segments_refuse_before_read(self):
         for name in (".", "..", "a/../b"):

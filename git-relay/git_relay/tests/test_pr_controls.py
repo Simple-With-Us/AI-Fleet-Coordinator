@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 try:
     from .test_workflow_verbs import REPO, Client, Policy
@@ -351,6 +352,120 @@ class PrControls(unittest.TestCase):
             c.calls[0][2]["variables"],
             {"owner": "Example", "name": "demo", "number": 1, "cursor": None},
         )
+
+    def test_uncertain_enable_is_settled_by_reading_auto_merge_back(self):
+        from git_relay.outcomes import OutcomeStore
+        from git_relay.workflow_verbs import (
+            AUTO_MERGE_NOT_ARMED,
+            AUTO_MERGE_OTHER_METHOD,
+        )
+
+        from .test_workflow_wiring import TOKEN, relay
+
+        def read(arm):
+            return {
+                "data": {
+                    "repository": {
+                        "pullRequest": {"id": "PR_abc", "autoMergeRequest": arm}
+                    }
+                }
+            }
+
+        class Settle(Client):
+            def __init__(self, arm, lose_read=False):
+                super().__init__()
+                self.arm = arm
+                self.lose_read = lose_read
+
+            def _call(self, method, path, payload=None, bearer=None):
+                self.calls.append((method, path, payload, bearer))
+                if method == "GET":
+                    return {"node_id": "PR_abc", "number": 3037, "state": "open"}
+                query = "" if not isinstance(payload, dict) else str(payload.get("query") or "")
+                if query.startswith("mutation"):
+                    raise RelayGitHubError(502, "lost")
+                if self.lose_read:
+                    raise RelayGitHubError(502, "lost")
+                return read(self.arm)
+
+        def mutations(client):
+            return [
+                call
+                for call in client.calls
+                if call[2] and "enablePullRequestAutoMerge" in str(call[2].get("query"))
+            ]
+
+        off = Settle(None)
+        h = WorkflowVerbs(off, Policy(), "swu-wise", "private", "swu-wise", "wf_automerge_enable", REPO)
+        with self.assertRaises(Refused) as caught:
+            h.run("wf_automerge_enable", {"repo": REPO, "number": 3037, "method": "SQUASH"})
+        self.assertEqual(str(caught.exception), AUTO_MERGE_NOT_ARMED)
+        self.assertEqual(len(mutations(off)), 1)
+
+        armed = Settle({"enabledAt": "2026-11-11T00:00:00Z", "mergeMethod": "SQUASH"})
+        h = WorkflowVerbs(
+            armed, Policy(), "swu-wise", "private", "swu-wise", "wf_automerge_enable", REPO
+        )
+        self.assertEqual(
+            h.run("wf_automerge_enable", {"repo": REPO, "number": 3037, "method": "SQUASH"}),
+            {"pull": {"id": "PR_abc", "autoMergeRequest": {"enabledAt": "2026-11-11T00:00:00Z"}}},
+        )
+
+        other = Settle({"enabledAt": "2026-11-11T00:00:00Z", "mergeMethod": "MERGE"})
+        h = WorkflowVerbs(
+            other, Policy(), "swu-wise", "private", "swu-wise", "wf_automerge_enable", REPO
+        )
+        with self.assertRaises(Refused) as caught:
+            h.run("wf_automerge_enable", {"repo": REPO, "number": 3037, "method": "SQUASH"})
+        self.assertEqual(str(caught.exception), AUTO_MERGE_OTHER_METHOD)
+
+        args = {"repo": "example/x", "number": 3037, "method": "SQUASH"}
+        with tempfile.TemporaryDirectory() as tmp:
+            lost = Settle(None, lose_read=True)
+            r = relay(tmp, client=lost)
+            path = tmp + "/outcomes.json"
+            r.outcomes = OutcomeStore(path)
+            with (
+                patch.object(r.policy, "authorize", return_value=None),
+                patch.object(
+                    r.policy,
+                    "app_identity",
+                    return_value=(
+                        "swu-wise",
+                        {"pull_requests": "write", "contents": "write", "metadata": "read"},
+                    ),
+                ),
+            ):
+                status, body = r.handle(TOKEN, "wf_automerge_enable", args)
+                self.assertEqual(status, 502)
+                self.assertEqual(body["outcome"], "unknown")
+                r.outcomes = OutcomeStore(path)
+                self.assertEqual(r.handle(TOKEN, "wf_automerge_enable", args)[0], 409)
+        self.assertEqual(len(mutations(lost)), 1)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            definite = Settle(None)
+            r = relay(tmp, client=definite)
+            path = tmp + "/outcomes.json"
+            r.outcomes = OutcomeStore(path)
+            with (
+                patch.object(r.policy, "authorize", return_value=None),
+                patch.object(
+                    r.policy,
+                    "app_identity",
+                    return_value=(
+                        "swu-wise",
+                        {"pull_requests": "write", "contents": "write", "metadata": "read"},
+                    ),
+                ),
+            ):
+                status, body = r.handle(TOKEN, "wf_automerge_enable", args)
+                self.assertEqual((status, body["error"]), (400, AUTO_MERGE_NOT_ARMED))
+                r.outcomes = OutcomeStore(path)
+                again, body = r.handle(TOKEN, "wf_automerge_enable", args)
+                self.assertEqual(again, 400)
+                self.assertEqual(body["error"], AUTO_MERGE_NOT_ARMED)
+        self.assertEqual(len(mutations(definite)), 2)
 
     def test_invalid_method_refused_before_preread(self):
         c = Client()
