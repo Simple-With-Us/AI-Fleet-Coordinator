@@ -58,7 +58,9 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # simple_tools/platform_letter_fx.py (the Fx session-letter adapter, which registers from the fx session store).
 # The 165th is simple_tools/operator_linear.py (AFC-565, the Operator's Zulip-to-Linear living comments
 # service the daemon hosts).
-MAX_FILES = 165
+# The 166th and 167th are simple_tools/wake_router.py and simple_tools/claude_wake.py (OPS-1048, the shared wake
+# router and Claude's delivery;  `simple-chat wake-deliver` has to run on the Mac, so they ship).
+MAX_FILES = 167
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,

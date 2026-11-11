@@ -6,6 +6,8 @@ import json
 import fcntl
 import os
 import stat
+import shutil
+import subprocess
 import tempfile
 import time
 import unittest
@@ -19,6 +21,10 @@ from fleet_secrets.core import SecretsError
 TOKEN = "st." + ("a" * 24)
 SECRET = "ghp_" + ("b" * 36)
 REPO = Path(__file__).resolve().parents[3]
+
+
+LINEAR_PROJECT = "00000000-0000-4000-8000-00000000000a"
+RECALL_PROJECT = "00000000-0000-4000-8000-00000000000b"
 
 
 def _token(path: Path) -> None:
@@ -56,6 +62,7 @@ def _ready(tmp: Path) -> dict:
         "HOME": str(tmp),
         nightly_job.TOKEN_FILE_RECALL: str(recall),
         nightly_job.TOKEN_FILE_LINEAR: str(linear),
+        nightly_job.LINEAR_PROJECT_ENV: LINEAR_PROJECT,
         "FLEET_RAG_NIGHTLY_LOCK": str(tmp / "nightly.lock"),
         "FLEET_RAG_NIGHTLY_SUMMARY": str(tmp / "last.json"),
         "ZULIP_SITE": "https://example.zulipchat.com",
@@ -175,6 +182,32 @@ class NightlyJobTests(unittest.TestCase):
         self.assertEqual(summary["code_sync_exit"], 3)
         self.assertEqual(summary["alert"], "posted")
         self.assertIn("code-main-sync exited 3", posts[0]["content"])
+
+    def test_each_fetch_uses_its_own_project(self) -> None:
+        fetched: list[tuple] = []
+
+        def fetch(project, path, token, names):  # noqa: ANN001
+            fetched.append((project, path))
+            return {name: f"value-{name}" for name in names}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _ready(Path(tmp))
+            env[nightly_job.RECALL_PROJECT_ENV] = RECALL_PROJECT
+            nightly_job.load_credentials(env, read_file=nightly_job.read_token_file, fetch=fetch)
+        self.assertEqual(fetched, [(RECALL_PROJECT, "/"), (LINEAR_PROJECT, "/linear")])
+
+    def test_linear_project_falls_back_to_the_coordinator_file_then_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _ready(Path(tmp))
+            del env[nightly_job.LINEAR_PROJECT_ENV]
+            env.pop("INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID", None)
+            with self.assertRaises(nightly_job.NightlyError) as ctx:
+                nightly_job.linear_project_id(env)
+            self.assertEqual(ctx.exception.reason, "linear-project-unset")
+            sources = Path(tmp) / ".simple-tools"
+            sources.mkdir()
+            (sources / "ai-fleet-coordinator-project-id").write_text(LINEAR_PROJECT + "\n")
+            self.assertEqual(nightly_job.linear_project_id(env), LINEAR_PROJECT)
 
     def test_machine_identity_refuses_before_the_recall_fetch(self) -> None:
         fetched: list[tuple] = []
@@ -372,6 +405,28 @@ class MirrorTests(unittest.TestCase):
         self.assertTrue(argv[-1].startswith("host:/srv/incoming/"))
         kept = mirror.rsync_argv(Path("/tmp/skills"), "host:/srv/incoming/skills/claude/", delete=False)
         self.assertNotIn("--delete", kept)
+
+    def test_rsync_creates_the_nested_incoming_tree(self) -> None:
+        argv = mirror.rsync_argv(Path("/tmp/skills"), "host:/srv/incoming/skills/claude/", delete=True)
+        self.assertIn("--mkpath", argv)
+        rsync = shutil.which("rsync")
+        if not rsync:
+            self.skipTest("rsync not installed")
+        probe = subprocess.run([rsync, "--help"], capture_output=True, text=True, check=False)
+        if "--mkpath" not in probe.stdout:
+            self.skipTest("this rsync has no --mkpath")
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "src"
+            src.mkdir()
+            (src / "SKILL.md").write_text("x\n", encoding="utf-8")
+            incoming = Path(tmp) / "incoming"
+            incoming.mkdir()
+            dest = str(incoming / "skills" / "claude") + "/"
+            argv = mirror.rsync_argv(src, dest, delete=True)
+            argv[0] = rsync
+            proc = subprocess.run(argv, capture_output=True, text=True, check=False)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertTrue((incoming / "skills" / "claude" / "SKILL.md").is_file())
 
     def test_a_failed_rsync_does_not_promote(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

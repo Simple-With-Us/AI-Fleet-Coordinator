@@ -1,0 +1,33 @@
+# Claude's wake router (OPS-1048):  the webhook the listener's http wake reaches, which picks one
+# Claude Code chat and wakes it.  Template only:  nothing installs it.  To use it, copy to
+# /etc/systemd/system/afc-claude-wake-router.service, `systemctl daemon-reload`, `systemctl enable
+# --now afc-claude-wake-router.service`.  Install the checkout first (the fleet-cli current link
+# moves on every release, and this unit resolves it at start), and put the routine key in
+# ~/.local/state/claude-wake/routine-key, mode 0600:  a key shorter than 16 characters or a
+# group-readable one refuses every wake with 503.  Bind the tailnet address only.
+# Delivery stays off until ~/.local/state/claude-wake/config.json says delivery_enabled true;  until
+# then every wake is picked, receipted and held.
+[Unit]
+Description=Claude wake router: the listener's wake webhook for the CLAUDE seat (OPS-1048)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jay
+Group=jay
+Environment=HOME=/home/jay
+ExecStart=/bin/sh -c '. "$HOME/.local/bin/operator-registry-env" 2>/dev/null; exec /usr/bin/python3 -I /home/jay/.local/share/fleet-cli/current/scripts/simple-chat wake-router serve --bind "${CLAUDE_WAKE_BIND:-127.0.0.1}" --port 8793'
+EnvironmentFile=-/etc/claude-wake-router.env
+Restart=always
+RestartSec=10
+# SIGTERM goes only to the router, which stops new work and waits up to shutdown_wait_seconds
+# (1000) for running deliveries:  a resume (900) or a Mac delivery (974).  With the default
+# KillMode the same SIGTERM would reach the `claude` and `ssh` children and end the very turns it
+# is waiting for.  TimeoutStopSec is longer than that wait, so systemd never cuts it short.
+KillMode=mixed
+TimeoutStopSec=1030
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

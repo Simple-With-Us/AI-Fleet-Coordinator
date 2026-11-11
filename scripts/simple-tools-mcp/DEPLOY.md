@@ -284,7 +284,7 @@ The `eavesdropper_status`, `eavesdropper_inbox`, `eavesdropper_owner_queue`, `ea
 1. The eavesdropper half first:  `docs/protocols/eavesdropper-server.md`, "The Read API", steps 1 to 5 (redeploy, keys, `[listener_api]`, the proxy route, the checks).
 2. Set the var in `wrangler.jsonc`:  `"LISTENER_API_URL": "https://operator.simplewithus.com"` (an https origin with no path;  anything else reads as unset).  Open a PR and merge it.
    Set the fleet knob to the same origin before deploying:  `OPERATOR_API_URL` in Infisical (project "AI Fleet Coordinator", `prod`, root path) is what the Python clients read (simple-notes, the stdio `notes_*` tools, the Mac runner), and the contract is one origin for both (`docs/protocols/operator-notes.md`).  A deploy that moves only the var splits each notes request/response pair across two hosts.
-3. Make sure each seat that should read its records has `WAKE_HMAC_KEY_<SEAT>` (JET already does;  the others only if Jay chose to add them in the server doc's step 2):
+3. Make sure each seat that should read its records has `WAKE_HMAC_KEY_<SEAT>` (JET already does;  CLAUDE, CODEX, CURSOR and MA have a read key from Nov 10, 2026 (owner:  "make the wake key for everyone", each in `LISTENER_READ_SECRETS`), and a further hosted seat needs its own entry there and a Worker secret of the same name):
    ```bash
    fleet-secrets get JET_ROUTINE_KEY | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_JET >/dev/null && echo "set WAKE_HMAC_KEY_JET"
    ```

@@ -398,9 +398,11 @@ final class ListenerConfigFileTests: XCTestCase {
         XCTAssertNil(WakeSettingKey.usdPerDay.value(from: "-0.5"))
         XCTAssertNil(WakeSettingKey.liveLoopTurns.value(from: "nan"))
         XCTAssertNil(WakeSettingKey.liveLoopTurns.value(from: "inf"))
-        // Zero is read as a number;  the draft then refuses it where it would stop every wake.
+        // Zero is read as a number.  For a wake cap it is Paused and allowed;  the draft refuses it
+        // only for the live caps where it would stop every wake.
         XCTAssertEqual(WakeSettingKey.wakesPerHour.value(from: "0"), .number(0))
-        XCTAssertNotNil(WakeSettingKey.wakesPerHour.fieldProblem(.number(0)))
+        XCTAssertNil(WakeSettingKey.wakesPerHour.fieldProblem(.number(0)))
+        XCTAssertNotNil(WakeSettingKey.livePerHour.fieldProblem(.number(0)))
         XCTAssertNil(WakeSettingKey.liveLoopTurns.fieldProblem(.number(0)))
     }
 

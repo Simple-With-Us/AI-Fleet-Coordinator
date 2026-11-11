@@ -145,6 +145,23 @@ class ApiSide(unittest.TestCase):
         self.assertEqual(out["sessionTitle"], "QX: Fix the Build")
         self.assertIn("letter changed from %s to QX" % old, out["additionalContext"])
 
+    def test_the_issues_op_reaches_the_server_registry_through_its_update(self) -> None:
+        self.registry("register", "--location", "mac", "--session-id", SID)
+        issues = [{"id": "AFC-694", "seen_at": "2026-11-10T15:00:00Z"}]
+        code, answer = self.registry(
+            "issues", "--location", "mac", "--session-id", SID, "--issues=" + json.dumps(issues)
+        )
+        self.assertEqual(code, 0, answer)
+        self.assertEqual((answer["ok"], answer["issues"]), (True, issues))
+        code, touched = self.registry("touch", "--location", "mac", "--session-id", SID)
+        self.assertEqual(code, 0, touched)
+        found = OR.resolve_label(self.db, "claude", self.record()["label"])
+        self.assertEqual(found["issues"], issues)
+        # A closed chat's list is not changed:  the answer is the retired one the hook already knows.
+        self.registry("close", "--location", "mac", "--session-id", SID)
+        code, closed = self.registry("issues", "--location", "mac", "--session-id", SID, "--issues=[]")
+        self.assertEqual((code, closed.get("retired")), (0, True))
+
     def test_a_chat_that_comes_back_after_close_reopens(self) -> None:
         _, first = self.registry("register", "--location", "mac", "--session-id", SID)
         self.registry("close", "--location", "mac", "--session-id", SID)
@@ -191,6 +208,62 @@ class ApiSide(unittest.TestCase):
         # Every other op needs no lineage, so it calls the API in process.
         in_process = CL.Chat(env, "CLAUDE", "server", SID, runner=no_runner, now=time.time())
         self.assertEqual(in_process.registry("touch").get("error"), "this chat has no registration")
+
+    # ---- the archive sweep over the API (AFC-694) ----
+
+    def app_record(self, cli: str, archived: bool) -> None:
+        from simple_tools import claude_app_lineage as AL
+
+        folder = os.path.join(AL.store_root(self.home), "acct", "org")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "local_%s.json" % cli[:8]), "w", encoding="utf-8") as fh:
+            json.dump({"cliSessionId": cli, "isArchived": archived, "title": "Private"}, fh)
+
+    def sweep(self, *argv: str) -> tuple[int, str]:
+        out = io.StringIO()
+        code = CL.main(["sweep-archived", *argv], env=self.api_env, stdout=out)
+        return code, out.getvalue()
+
+    def test_the_archive_sweep_closes_through_the_api(self) -> None:
+        kept = "d-0002-0000-0000-0000-000000000000"
+        _, made = self.registry("register", "--location", "mac", "--session-id", SID)
+        self.registry("register", "--location", "mac", "--session-id", kept)
+        self.app_record(SID, archived=True)
+        self.app_record(kept, archived=False)
+        code, out = self.sweep("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertIn("closed %s (%s, mac)" % (made["label"], SID[:8]), out)
+        self.assertNotIn("Private", out)
+        self.assertEqual(self.record()["state"], "closed")
+        self.assertEqual(self.record(kept)["state"], "active")
+        self.assertFalse(os.path.exists(os.path.join(self.hook_state, "operator", "registry.sqlite3")))
+        code, again = self.sweep("--apply")  # idempotent:  the closed chat is no longer open
+        self.assertEqual(code, 0, again)
+        self.assertIn("0 archived", again)
+
+    def test_a_dry_run_sends_only_the_history_read(self) -> None:
+        from unittest import mock
+
+        from simple_tools import registry_api
+
+        self.registry("register", "--location", "mac", "--session-id", SID)
+        self.app_record(SID, archived=True)
+        real = registry_api.call
+        ops: list = []
+
+        def call(env, op, params=None, **kwargs):
+            ops.append(op)
+            return real(env, op, params, **kwargs)
+
+        with mock.patch.object(registry_api, "call", side_effect=call):
+            code, out = self.sweep()
+        self.assertEqual(code, 0, out)
+        self.assertIn("would close", out)
+        # The API drops other seats' rows after its window is cut, so a short answer is read once more with a
+        # wider window to be sure the history ended;  every call is still a read.
+        self.assertEqual(set(ops), {"history"})
+        self.assertLessEqual(len(ops), 2)
+        self.assertEqual(self.record()["state"], "active")
 
 
 if __name__ == "__main__":

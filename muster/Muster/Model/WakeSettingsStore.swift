@@ -244,11 +244,14 @@ final class WakeSettingsStore: ObservableObject {
         for key in WakeSettingKey.seatKeys {
             guard let text = values[key], before[key] != text else { continue }
             let trimmed = text.trimmingCharacters(in: .whitespaces)
-            let was = before[key] ?? WakeSetting.unsetText
+            let fileValue = before[key] ?? WakeSetting.unsetText
+            // A wake cap the file holds none of is No Limit, and one of 0 is Paused, so the
+            // confirmation says so in those words.
+            let was = key.isWakeCap ? Self.wakeCapWords(fileValue) : fileValue
             let saysNothing = trimmed.isEmpty || trimmed == WakeSetting.unsetText
             // A field cleared over a setting the file did not hold is no edit, as `changedKeys`
             // says:  there is nothing to take out.
-            if saysNothing, was == WakeSetting.unsetText { continue }
+            if saysNothing, fileValue == WakeSetting.unsetText { continue }
             if let reason = key.refusalReason {
                 reading.refusals.append("\(key.title): \(reason)")
                 continue
@@ -257,7 +260,9 @@ final class WakeSettingsStore: ObservableObject {
             // nothing.  Both mean take the setting out of the file.
             if saysNothing {
                 reading.edits.append(WakeSettingsWriter.Edit(seat: seat, key: key, value: nil))
-                reading.changes.append("\(key.title): \(was) to nothing set")
+                // For a wake cap, taking it out is how to choose No Limit.
+                let now = key.isWakeCap ? WakeSettingKey.noLimitText : "nothing set"
+                reading.changes.append("\(key.title): \(was) to \(now)")
                 continue
             }
             guard let value = key.value(from: trimmed) else {
@@ -269,9 +274,16 @@ final class WakeSettingsStore: ObservableObject {
                 continue
             }
             reading.edits.append(WakeSettingsWriter.Edit(seat: seat, key: key, value: value))
-            reading.changes.append("\(key.title): \(was) to \(trimmed)")
+            reading.changes.append("\(key.title): \(was) to \(key.isWakeCap ? Self.wakeCapWords(trimmed) : trimmed)")
         }
         return reading
+    }
+
+    /// A wake cap's text in the confirmation's words:  No Limit for none, and 0 marked Paused.
+    nonisolated static func wakeCapWords(_ text: String) -> String {
+        if text == WakeSetting.unsetText || text.isEmpty { return WakeSettingKey.noLimitText }
+        if Double(text) == 0 { return "0 (\(WakeSettingKey.pausedText))" }
+        return text
     }
 
     /// What the confirmation shows before an apply:  the changes, and a warning when one changes

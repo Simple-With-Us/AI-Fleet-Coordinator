@@ -133,7 +133,7 @@ class UnauthorizedAuditor:
         self._stamps: list[float] = []
         self._lock = threading.Lock()
 
-    def record(self, audit: AuditLog, action: object) -> bool:
+    def record(self, audit: AuditLog, action: object, cause: str = "unauthenticated") -> bool:
         now = self._clock()
         with self._lock:
             self._stamps = [t for t in self._stamps if now - t < self._window_s]
@@ -143,8 +143,11 @@ class UnauthorizedAuditor:
         safe_action = action if isinstance(action, str) else ""
         if find_secret(safe_action):
             safe_action = "<credential-shaped>"
+        detail = {}
+        if cause in ("seat_not_in_policy", "bearer_rejected", "verifier_unavailable"):
+            detail = {"cause": cause}
         try:
-            audit.record("unknown", safe_action[:64], "", "unauthenticated", {})
+            audit.record("unknown", safe_action[:64], "", "unauthenticated", detail)
         except OSError:
             return False
         return True

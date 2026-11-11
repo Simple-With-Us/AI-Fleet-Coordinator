@@ -629,6 +629,44 @@ class RoutineBodyTests(unittest.TestCase):
         self.assertIs(type(body({"stream_id": 7})["stream_id"]), int)
         self.assertIn(b'"stream_id":7', A.routine_bytes(body({"stream_id": 7})))
 
+    def test_a_reply_row_adds_the_letter_and_linked_by_and_nothing_else(self) -> None:
+        """Owner, Nov 10 2026:  an untagged reply wakes the chat it answers, and the router is told which.
+        The two fields are optional and additive:  a row that is not a reply sends neither (an explicit
+        letter in its own text is the router's to read), and a reply to a post with no letter sends
+        `linked_by` alone."""
+        base = {
+            "id": 9,
+            "type": "stream",
+            "channel": "simple-tools",
+            "topic": "t",
+            "stream_id": 7,
+            "sender_id": 11,
+            "content": "@**Seat** AB look",
+        }
+
+        def body(**row: object) -> dict:
+            return A.routine_body(
+                seat="GB-X",
+                wake_id="w9",
+                trigger_ids=[9],
+                row={**base, **row},
+                bot_user_id=16,
+                realm="https://z.test",
+                now=1790000000.0,
+                nonce="00ff",  # the excerpt's marker nonce is random otherwise
+            )
+
+        plain = body(classes=["eligible", "direct"])
+        self.assertTrue({"letter", "linked_by"}.isdisjoint(plain))
+        reply = body(classes=["eligible", "reply"], reply_target_letter="AA")
+        self.assertEqual(set(reply) - set(plain), {"letter", "linked_by"})
+        self.assertEqual((reply["letter"], reply["linked_by"]), ("AA", "reply"))
+        self.assertEqual({k: v for k, v in reply.items() if k not in ("letter", "linked_by")}, plain)
+        unlettered = body(classes=["eligible", "reply"], reply_target_letter="")
+        self.assertEqual(set(unlettered) - set(plain), {"linked_by"})
+        self.assertIn(b'"letter":"AA"', A.routine_bytes(reply))
+        self.assertIn(b'"linked_by":"reply"', A.routine_bytes(reply))
+
     def test_routine_url_rules(self) -> None:
         good = [
             "https://routines.grok.example/hooks/abc?token=1",

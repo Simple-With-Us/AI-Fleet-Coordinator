@@ -60,15 +60,28 @@ def private_dir(path: str) -> None:
         os.chmod(path, 0o700)
 
 
-def write_private(path: str, text: str) -> None:
-    """Atomically replace `path` with `text` (a temp file in the same directory, mode 0600, then rename)."""
+def write_private(path: str, text: str, *, durable: bool = False) -> None:
+    """Atomically replace the private file; durable=True also fsyncs file and directory.
+
+    A sync error propagates even if the rename landed. The caller must fail closed
+    before external I/O, not assume that a failed write left the old contents.
+    """
     directory = os.path.dirname(path)
     fd, tmp = tempfile.mkstemp(prefix=".tmp-", suffix=".json", dir=directory)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
+            if durable:
+                handle.flush()
+                os.fsync(handle.fileno())
         os.chmod(tmp, 0o600)
         os.replace(tmp, path)
+        if durable:
+            directory_fd = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp)

@@ -1000,14 +1000,25 @@ class HookTests(Base):
             self.assertEqual(self.lookup("s-0001")["state"], "active")
         self.assertEqual(self.note("s-0001")["ended"]["reason"], "resume")
 
-    def test_archive_closes_and_a_host_can_name_its_reasons(self) -> None:
+    def test_other_keeps_the_letter_and_a_host_can_name_its_reasons(self) -> None:
+        # `other` comes for an archive, but also for an app quit or a dropped ssh connection (AFC-694).
         self.start("s-0001")
         self.hook({"hook_event_name": "SessionEnd", "session_id": "s-0001", "reason": "other"})
-        self.assertEqual(self.lookup("s-0001")["state"], "closed")
+        self.assertEqual(self.lookup("s-0001")["state"], "active")
+        self.assertEqual(self.note("s-0001")["ended"]["reason"], "other")  # still recorded
+        self.assertEqual(self.note("s-0001")["state"], "open")
         self.start("s-0002")
-        env = self.server_env(CLAUDE_LETTER_CLOSE_ON="clear")
+        env = self.server_env(CLAUDE_LETTER_CLOSE_ON="other")
         self.hook({"hook_event_name": "SessionEnd", "session_id": "s-0002", "reason": "other"}, env=env)
-        self.assertEqual(self.lookup("s-0002")["state"], "active")
+        self.assertEqual(self.lookup("s-0002")["state"], "closed")
+
+    def test_clear_and_logout_still_close(self) -> None:
+        self.assertEqual(CL.CLOSE_REASONS, ("clear", "logout"))
+        for sid, reason in (("s-0001", "clear"), ("s-0002", "logout")):
+            self.start(sid)
+            self.hook({"hook_event_name": "SessionEnd", "session_id": sid, "reason": reason})
+            self.assertEqual(self.lookup(sid)["state"], "closed", reason)
+            self.assertEqual(self.note(sid)["state"], "closed", reason)
 
     def test_clear_start_ignores_the_inherited_name(self) -> None:
         out = self.start("s-0001", source="clear", session_title="ZZ: Previous Chat")
@@ -1498,6 +1509,103 @@ class HookTests(Base):
             kept = dict(note)
             self.assertEqual(CL._follow_letter(kept, answer, "AA: Words"), ("", ""))
             self.assertEqual(kept, note)
+
+    # ---- AFC-694:  the Linear issues a turn touched go to the registry ----
+
+    def transcript(self, *entries) -> str:
+        """Append transcript lines under ~/.claude/projects, as Claude Code writes them."""
+        path = os.path.join(self.home, ".claude", "projects", "chat.jsonl")
+        with open(path, "a", encoding="utf-8") as fh:
+            for entry in entries:
+                fh.write(json.dumps(entry) + "\n")
+        return path
+
+    def issues_held(self, sid: str = "s-0001") -> list[str]:
+        found = OR.resolve_label(self.db, CL.PLATFORM, self.lookup(sid)["label"]) or {}
+        return sorted(i["id"] for i in found.get("issues", []))
+
+    def turn(self, runner=None, now: float | None = None, **extra) -> dict | None:
+        return self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go",
+                          "session_title": "AA: Help Get All PR Issues Addressed", **extra},
+                         runner=runner, now=now)
+
+    def test_a_turn_records_the_issues_it_touched_and_sends_only_a_change(self) -> None:
+        self.titled()
+        repo = os.path.join(self.tmp.name, "repo")
+        os.makedirs(repo)
+        git = ["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+        subprocess.run(git + ["init", "-q", "-b", "claude/afc-701-letter-issues"], check=True)
+        subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "x"], check=True)
+        path = self.transcript(
+            {"type": "user", "message": {"role": "user", "content": "pick up OPS-12"}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "input": {"command": 'simple-chat post --topic "AFC-694 issues" --body x'}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "content": "a doc naming CT-99"}]}},
+        )
+        ssh = FakeSsh(self)
+        self.assertIsNone(self.turn(ssh, transcript_path=path, cwd=repo))  # the prompt shows nothing new
+        self.assertEqual(self.registry_ops(ssh), ["issues"])
+        self.assertEqual(self.issues_held(), ["AFC-694", "AFC-701", "OPS-12"])
+        # The same ids on the next turn (the branch is read again):  no registry call.
+        self.turn(ssh, transcript_path=path, cwd=repo)
+        self.assertEqual(self.registry_ops(ssh), ["issues"])
+        # Only the lines since the last turn are read:  a new id there is a change.
+        self.transcript({"type": "assistant", "message": {"content": "moving on to SWU-3"}})
+        self.turn(ssh, transcript_path=path, cwd=repo)
+        self.assertEqual(self.registry_ops(ssh), ["issues", "issues"])
+        self.assertEqual(self.issues_held(), ["AFC-694", "AFC-701", "OPS-12", "SWU-3"])
+        self.assertEqual(self.note("s-0001")["issues_scan"]["offset"], os.path.getsize(path))
+
+    def test_issues_reach_the_registry_from_the_mac_in_process(self) -> None:
+        def no_ssh(*a, **k):
+            raise AssertionError("the Mac never uses ssh")
+
+        self.hook({"hook_event_name": "SessionStart", "session_id": "m-0001", "source": "startup"},
+                  env=self.env(), runner=no_ssh, platform="darwin")
+        path = self.transcript({"type": "user", "message": {"content": "AFC-694"}})
+        out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "m-0001", "prompt": "go",
+                         "transcript_path": path, "session_title": "AA: New Chat"},
+                        env=self.env(), runner=no_ssh, platform="darwin")
+        self.assertEqual(out["sessionTitle"], "AA: Go")
+        record = OR.resolve_label(self.db, CL.PLATFORM, "AA")
+        self.assertEqual([i["id"] for i in record["issues"]], ["AFC-694"])
+
+    def test_a_transcript_outside_claudes_folder_is_never_read(self) -> None:
+        self.titled()
+        outside = os.path.join(self.tmp.name, "elsewhere.jsonl")
+        with open(outside, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "user", "message": {"content": "AFC-694"}}) + "\n")
+        ssh = FakeSsh(self)
+        self.turn(ssh, transcript_path=outside, cwd=os.path.join(self.tmp.name, "gone"))
+        self.assertEqual(ssh.calls, [])
+        self.assertNotIn("issues", self.note("s-0001"))
+
+    def test_an_old_registry_or_a_silent_one_never_touches_the_prompt(self) -> None:
+        class OldMac(FakeSsh):
+            """A Mac on a runtime from before the op:  its parser refuses the call."""
+
+            def __call__(self, cmd, **kwargs):
+                if shlex.split(cmd[8])[3] == "issues":
+                    self.calls.append(cmd)
+                    return SimpleNamespace(stdout='{"error": "bad arguments:  issues"}\n', returncode=2)
+                return super().__call__(cmd, **kwargs)
+
+        self.titled()
+        path = self.transcript({"type": "user", "message": {"content": "AFC-694"}})
+        start = time.time()
+        ssh = OldMac(self)
+        self.assertIsNone(self.turn(ssh, now=start, transcript_path=path))
+        self.assertIsNone(self.turn(ssh, now=start + 60, transcript_path=path))
+        self.assertEqual(self.registry_ops(ssh), ["issues"])  # asked once per wait
+        down = FakeSsh(self, fail=subprocess.TimeoutExpired("ssh", 12))
+        self.assertIsNone(self.turn(down, now=start + CL.RETRY_SECONDS + 5, transcript_path=path))
+        note = self.note("s-0001")
+        self.assertEqual([i["id"] for i in note["issues"]], ["AFC-694"])
+        self.assertNotIn("issues_sent", note)
+        # A touch answer from a registry with no `issues` field never clears the note's list.
+        later = start + CL.TOUCH_SECONDS + 5
+        self.assertIsNone(self.turn(OldMac(self), now=later))
+        self.assertEqual([i["id"] for i in self.note("s-0001")["issues"]], ["AFC-694"])
 
     def replace_the_registry(self) -> None:
         """The store moves under the chats:  a registry that has never heard of any of them (the API's, after the cutover)."""
@@ -2152,3 +2260,145 @@ class RegistryModuleDispatchTest(Base):
         self.assertEqual(code, 0)
         self.assertEqual(answer["outcome"], "reopened")
         self.assertEqual(answer["label"], made["label"])
+
+
+class ArchiveSweepTests(Base):
+    """`letter sweep-archived` frees the letter of a chat the desktop app has archived, read from the app's own
+    `isArchived` flag, and leaves every other chat alone (AFC-694).  The store and the registry are this test's own."""
+
+    def archived_record(self, host: str, cli: str, archived: bool = True, title: str = "Secret Title") -> str:
+        folder = os.path.join(AL.store_root(self.home), "acct", "org")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, host + ".json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"sessionId": host, "cliSessionId": cli, "isArchived": archived, "title": title}, fh)
+        return path
+
+    def sweep(self, *argv: str, env: dict | None = None) -> tuple[int, str]:
+        out = io.StringIO()
+        code = CL.main(["sweep-archived", *argv], env=env or self.env(), stdout=out)
+        return code, out.getvalue()
+
+    def test_an_archived_open_chat_is_closed_and_its_letter_freed(self) -> None:
+        made = self.register("s-0001", location="mac")
+        self.archived_record("local_aaaaaaaa-0001", "s-0001")
+        code, out = self.sweep("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertIn("closed %s (s-0001, mac)" % made["label"], out)
+        self.assertNotIn("Secret Title", out)
+        self.assertEqual(self.lookup("s-0001", "mac")["state"], "closed")
+
+    def test_a_server_chat_the_mac_app_runs_is_swept_too(self) -> None:
+        self.register("s-0002", location="server")
+        self.archived_record("local_aaaaaaaa-0002", "s-0002")
+        code, out = self.sweep("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.lookup("s-0002", "server")["state"], "closed")
+
+    def test_the_default_is_a_dry_run_that_closes_nothing(self) -> None:
+        made = self.register("s-0001", location="mac")
+        self.archived_record("local_aaaaaaaa-0001", "s-0001")
+        code, out = self.sweep()
+        self.assertEqual(code, 0, out)
+        self.assertIn("would close %s (s-0001, mac)" % made["label"], out)
+        self.assertIn("dry run", out)
+        self.assertEqual(self.lookup("s-0001", "mac")["state"], "active")
+
+    def test_unarchived_missing_and_unreadable_records_keep_their_letters(self) -> None:
+        for sid in ("s-0001", "s-0002", "s-0003"):
+            self.register(sid, location="mac")
+        self.archived_record("local_aaaaaaaa-0001", "s-0001", archived=False)
+        # s-0002 has no record at all:  a terminal chat.
+        broken = os.path.join(AL.store_root(self.home), "acct", "org", "local_aaaaaaaa-0003.json")
+        with open(broken, "w", encoding="utf-8") as fh:
+            fh.write('{"cliSessionId": "s-0003", "isArchived": tr')  # never finished
+        with mock.patch.object(AL, "RETRY_PAUSE", 0):
+            code, out = self.sweep("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertIn("kept 1 unarchived, 1 unreadable, 1 with no record", out)
+        for sid in ("s-0001", "s-0002", "s-0003"):
+            self.assertEqual(self.lookup(sid, "mac")["state"], "active", sid)
+
+    def test_one_unarchived_record_of_two_keeps_the_letter(self) -> None:
+        self.register("s-0001", location="mac")
+        self.archived_record("local_aaaaaaaa-0001", "s-0001")
+        self.archived_record("local_aaaaaaaa-0009", "s-0001", archived=False)
+        self.sweep("--apply")
+        self.assertEqual(self.lookup("s-0001", "mac")["state"], "active")
+
+    def test_a_record_caught_mid_write_is_read_again(self) -> None:
+        self.register("s-0001", location="mac")
+        path = self.archived_record("local_aaaaaaaa-0001", "s-0001")
+        with open(path, encoding="utf-8") as fh:
+            whole = fh.read()
+        reads = [whole[: whole.index('"isArchived"') + 5]]  # the id is written, the flag is not yet
+        real = AL._read
+
+        def read(p: str):
+            return reads.pop(0) if reads and p == path else real(p)
+
+        with mock.patch.object(AL, "_read", side_effect=read), mock.patch.object(AL, "RETRY_PAUSE", 0):
+            code, out = self.sweep("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.lookup("s-0001", "mac")["state"], "closed")
+
+    def test_no_app_store_means_nothing_to_sweep(self) -> None:
+        self.register("s-0001", location="mac")
+        code, out = self.sweep("--apply")
+        self.assertEqual(code, 0)
+        self.assertIn("no app store here", out)
+        self.assertEqual(self.lookup("s-0001", "mac")["state"], "active")
+
+    def test_it_is_idempotent(self) -> None:
+        self.register("s-0001", location="mac")
+        self.archived_record("local_aaaaaaaa-0001", "s-0001")
+        self.assertEqual(self.sweep("--apply")[0], 0)
+        code, out = self.sweep("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertIn("0 open, 0 archived, 0 closed", out)
+        self.assertEqual(self.lookup("s-0001", "mac")["state"], "closed")
+
+    def test_a_close_the_registry_already_made_is_a_no_op(self) -> None:
+        self.register("s-0001", location="mac")
+        self.archived_record("local_aaaaaaaa-0001", "s-0001")
+        rows = CL._open_registrations(OR, self.env(), self.db)
+        reg = OR.SessionRegistry(self.db)
+        try:
+            reg.close(self.lookup("s-0001", "mac")["record_id"], source="test")
+        finally:
+            reg.close_db()
+        with mock.patch.object(CL, "_open_registrations", return_value=rows):  # read before the close landed
+            code, out = self.sweep("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertIn("already closed", out)
+
+    def test_closed_rows_that_fill_the_first_window_do_not_hide_an_older_open_chat(self) -> None:
+        # Kody on #1754:  the newest window can be all closed rows, with the archived open chat behind it.
+        self.register("s-0001", location="mac")
+        self.archived_record("local_aaaaaaaa-0001", "s-0001")
+        for n in range(2, 6):
+            self.register("s-%04d" % n, location="mac")
+            reg = OR.SessionRegistry(self.db)
+            try:
+                reg.close(self.lookup("s-%04d" % n, "mac")["record_id"], source="test")
+            finally:
+                reg.close_db()
+        asked: list[int] = []
+        real = OR.letter_history
+
+        def history(db: str, platform: str, limit: int = 50):
+            asked.append(limit)
+            return real(db, platform, limit)
+
+        with mock.patch.object(CL, "HISTORY_LIMIT", 2), mock.patch.object(OR, "letter_history", side_effect=history):
+            code, out = self.sweep("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertGreater(len(asked), 1, asked)
+        self.assertEqual(self.lookup("s-0001", "mac")["state"], "closed")
+
+    def test_another_seat_is_never_closed(self) -> None:
+        self.registry("register", "--location", "mac", "--session-id", "s-0001", "--seat", "MM")
+        self.archived_record("local_aaaaaaaa-0001", "s-0001")
+        code, out = self.sweep("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.lookup("s-0001", "mac")["state"], "active")

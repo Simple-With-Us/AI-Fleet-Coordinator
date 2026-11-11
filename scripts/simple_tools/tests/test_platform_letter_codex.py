@@ -1743,12 +1743,250 @@ class SpecTests(unittest.TestCase):
             {"hook_event_name": "SessionStart", "source": "resume", "session_id": "p-0001"},
         )
 
+    def test_a_chat_codex_opened_from_another_chat_is_a_chat(self) -> None:
+        self.assertEqual(C.classify(C.Thread(id="x", originator="Codex Desktop", thread_source="agent_created_thread")),
+                         "chat")
+        self.assertEqual(C.classify(C.Thread(id="x", originator="Codex Desktop", thread_source="automation")),
+                         "headless")
+
     def test_the_library_finds_the_adapter_and_shows_a_chat_with_no_letter(self) -> None:
         with tempfile.TemporaryDirectory() as state:
             out = io.StringIO()
             code = PL.main(["show", "--platform", "codex", "--session-id", "nope-0001"],
                            env={"HOME": state, "SIMPLE_TOOLS_STATE_DIR": state}, stdout=out)
         self.assertEqual((code, json.loads(out.getvalue())["letter"]), (1, None))
+
+
+class ReleaseTests(HookBase):
+    """`release`:  a Codex archive frees the letter of a chat the registry holds, and nothing else."""
+
+    def chat(self, n: int) -> str:
+        sid = self.add(n)
+        self.start(sid)
+        return sid
+
+    def archive(self, sid: str) -> None:
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute("UPDATE threads SET archived = 1 WHERE id = ?", (sid,))
+        conn.close()
+
+    def release(self, *args: str, env: dict | None = None) -> tuple[int, dict]:
+        out = io.StringIO()
+        code = C.main(["release", "--location", "mac", *args], env=env or self.env(), stdout=out)
+        return code, json.loads(out.getvalue().strip().splitlines()[-1])
+
+    def reg_state(self, sid: str) -> str:
+        return self.lookup(sid)["state"]
+
+    def test_an_archived_chat_is_released_and_a_live_one_keeps_its_letter(self) -> None:
+        done, live = self.chat(1), self.chat(2)
+        self.archive(done)
+        code, dry = self.release()
+        self.assertEqual(code, 0)
+        self.assertEqual(dry["registered"], 2)
+        self.assertEqual(dry["released"], [{"session_id": done, "reason": "archived", "would_release": True}])
+        self.assertNotEqual(self.reg_state(done), "closed")  # a dry run writes nothing
+        code, out = self.release("--apply")
+        self.assertEqual(code, 0)
+        self.assertEqual([r["session_id"] for r in out["released"]], [done])
+        self.assertEqual(self.reg_state(done), "closed")
+        self.assertNotEqual(self.reg_state(live), "closed")
+        self.assertEqual(self.note(done)["state"], "released")
+        self.assertEqual(self.note(done)["released"]["reason"], "archived")
+        self.assertEqual(self.note(live)["state"], "open")
+        self.assertFalse(out["truncated"])
+
+    def test_a_released_chat_that_is_unarchived_and_used_again_registers_again(self) -> None:
+        sid = self.chat(1)
+        self.archive(sid)
+        self.release("--apply")
+        self.assertEqual(self.reg_state(sid), "closed")
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute("UPDATE threads SET archived = 0 WHERE id = ?", (sid,))
+        conn.close()
+        self.prompt(sid, "back to work")
+        self.assertNotEqual(self.reg_state(sid), "closed")
+        self.assertEqual(self.note(sid)["state"], "open")
+        self.assertRegex(self.note(sid)["label"], PAIR)
+
+    def test_a_full_history_page_is_reported_as_truncated(self) -> None:
+        sid = self.chat(1)
+        with mock.patch.object(C, "HISTORY_LIMIT", 1):
+            code, out = self.release()
+        self.assertEqual((code, out["registered"], out["truncated"]), (0, 1, True))
+        self.assertNotEqual(self.reg_state(sid), "closed")
+
+    def test_a_rerun_is_a_no_op(self) -> None:
+        done = self.chat(1)
+        self.archive(done)
+        self.release("--apply")
+        code, out = self.release("--apply")
+        self.assertEqual(code, 0)
+        self.assertEqual((out["registered"], out["released"], out["failed"]), (0, [], []))
+
+    def test_an_archived_thread_the_registry_does_not_hold_is_never_touched(self) -> None:
+        live = self.chat(1)
+        stranger = self.add(2)
+        self.archive(stranger)
+        with mock.patch.object(PL, "registry_main", wraps=PL.registry_main) as closes:
+            code, out = self.release("--apply")
+        self.assertEqual(code, 0)
+        self.assertEqual((out["registered"], out["released"]), (1, []))
+        closes.assert_not_called()
+        self.assertIsNone(self.lookup(stranger))
+        self.assertNotEqual(self.reg_state(live), "closed")
+
+    def test_a_registration_the_store_does_not_show_is_kept(self) -> None:
+        sid = self.chat(1)
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute("DELETE FROM threads WHERE id = ?", (sid,))
+        conn.close()
+        code, out = self.release("--apply")
+        self.assertEqual((code, out["released"]), (0, []))
+        self.assertNotEqual(self.reg_state(sid), "closed")
+
+    def test_a_chat_unarchived_before_its_close_keeps_its_letter(self) -> None:
+        sid = self.chat(1)
+        self.archive(sid)
+        with mock.patch.object(C, "archive_reason", side_effect=["archived", ""]):
+            code, out = self.release("--apply")
+        self.assertEqual((code, out["kept"], out["released"]), (0, [sid], []))
+        self.assertNotEqual(self.reg_state(sid), "closed")
+
+    def test_a_chat_still_archived_for_another_reason_is_released_with_the_current_one(self) -> None:
+        sid = self.chat(1)
+        self.archive(sid)
+        with mock.patch.object(C, "archive_reason", side_effect=["archived", "parent archived"]):
+            code, out = self.release("--apply")
+        self.assertEqual(code, 0)
+        self.assertEqual(out["kept"], [])
+        self.assertEqual([(r["session_id"], r["reason"]) for r in out["released"]], [(sid, "parent archived")])
+        self.assertEqual(self.reg_state(sid), "closed")
+
+    def test_a_registry_error_closes_the_store(self) -> None:
+        self.chat(1)
+        opened: list = []
+        real = C.open_store
+
+        def spy(path):
+            conn = real(path)
+            opened.append(conn)
+            return conn
+
+        with mock.patch.object(C, "open_store", side_effect=spy), \
+                mock.patch.object(C, "live_registrations", return_value=([], "the registry could not be read (x)")):
+            code, out = self.release("--apply")
+        self.assertEqual((code, out["error"]), (2, "the registry could not be read (x)"))
+        with self.assertRaises(sqlite3.ProgrammingError):  # closed
+            opened[0].execute("SELECT 1")
+
+    def test_a_store_that_fails_its_first_query_is_closed(self) -> None:
+        conns: list = []
+
+        class Broken:
+            def execute(self, *a):
+                raise sqlite3.DatabaseError("file is not a database")
+
+            def close(self):
+                conns.append("closed")
+
+        with mock.patch.object(C.sqlite3, "connect", return_value=Broken()):
+            with self.assertRaises(C.StoreUnreadable):
+                C.open_store(self.store)
+        self.assertEqual(conns, ["closed"])
+
+    def test_sub_threads_go_with_their_archived_parent(self) -> None:
+        parent = self.chat(1)
+        self.prompt(parent, "spawn a helper")
+        child = self.add_child(2, parent)
+        self.sub_start(parent, child)
+        other = self.chat(3)
+        self.archive(parent)
+        code, out = self.release("--apply")
+        self.assertEqual(code, 0)
+        self.assertEqual(sorted((r["session_id"], r["reason"]) for r in out["released"]),
+                         sorted([(parent, "archived"), (child, "parent archived")]))
+        self.assertEqual((self.reg_state(parent), self.reg_state(child)), ("closed", "closed"))
+        self.assertNotEqual(self.reg_state(other), "closed")
+
+    def test_another_hosts_registration_is_not_this_stores_to_release(self) -> None:
+        sid = self.add(1)
+        out = io.StringIO()
+        PL.registry_main(["register", "--platform", "codex", "--location", "server", "--session-id", sid,
+                          "--seat", "CODEX", "--source", C.SOURCE], env=self.env(), stdout=out)
+        self.archive(sid)
+        code, answer = self.release("--apply")
+        self.assertEqual((code, answer["registered"], answer["released"]), (0, 0, []))
+        self.assertNotEqual(self.lookup(sid, "server")["state"], "closed")
+
+    def test_a_store_without_the_archived_column_releases_nothing(self) -> None:
+        sid = self.chat(1)
+        old = os.path.join(self.tmp.name, "old.sqlite")
+        conn = sqlite3.connect(old)
+        with conn:
+            conn.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, source TEXT)")
+            conn.execute("INSERT INTO threads VALUES (?, 'vscode')", (sid,))
+        conn.close()
+        code, out = self.release("--apply", "--store", old)
+        self.assertEqual(code, 2)
+        self.assertIn("archived", out["error"])
+        self.assertNotEqual(self.reg_state(sid), "closed")
+
+    def test_no_registry_is_an_error_not_a_release(self) -> None:
+        sid = self.add(1)
+        self.archive(sid)
+        code, out = self.release("--apply", "--db", os.path.join(self.tmp.name, "missing.sqlite3"))
+        self.assertEqual(code, 2)
+        self.assertIn("registry", out["error"])
+
+    def test_over_the_registry_api_only_live_registrations_of_this_host_are_closed(self) -> None:
+        done, live, gone, server = self.add(1), self.add(2), self.add(3), self.add(4)
+        for sid in (done, gone, server):
+            self.archive(sid)
+        history = [
+            {"native_session_id": done, "verified_host": "mac", "state": "active", "live": True, "closed_at": None},
+            {"native_session_id": live, "verified_host": "mac", "state": "active", "live": True, "closed_at": None},
+            {"native_session_id": gone, "verified_host": "mac", "state": "closed", "live": False,
+             "closed_at": "2026-11-10T00:00:00Z"},
+            {"native_session_id": server, "verified_host": "server", "state": "active", "live": True,
+             "closed_at": None},
+        ]
+        calls: list = []
+
+        def fake(env, op, params=None, **kw):
+            calls.append((op, dict(params or {})))
+            if op == "history":
+                return {"items": history}
+            if op == "close":
+                return {"closed": True, "label": "AA"}
+            return {"error": "unexpected", "code": "bad_op"}
+
+        env = self.env(SIMPLE_TOOLS_OPERATOR_REGISTRY_URL="https://registry.invalid")
+        with mock.patch("simple_tools.registry_api.call", side_effect=fake):
+            code, out = self.release("--apply", env=env)
+        self.assertEqual(code, 0)
+        closes = [p for op, p in calls if op == "close"]
+        self.assertEqual([(p["session_id"], p["location"], p["source"]) for p in closes],
+                         [(done, "mac", C.RELEASE_SOURCE)])
+        self.assertEqual(out["registered"], 2)
+
+    def test_a_failed_close_is_reported_and_exits_1(self) -> None:
+        done = self.add(1)
+        self.archive(done)
+        history = [{"native_session_id": done, "verified_host": "mac", "state": "active", "live": True}]
+
+        def fake(env, op, params=None, **kw):
+            if op == "history":
+                return {"items": history}
+            return {"error": "the registry did not answer in time", "code": "timeout"}
+
+        env = self.env(SIMPLE_TOOLS_OPERATOR_REGISTRY_URL="https://registry.invalid")
+        with mock.patch("simple_tools.registry_api.call", side_effect=fake):
+            code, out = self.release("--apply", env=env)
+        self.assertEqual((code, out["failed"]), (1, [done]))
 
 
 if __name__ == "__main__":

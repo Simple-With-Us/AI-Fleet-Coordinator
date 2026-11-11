@@ -101,12 +101,24 @@ def query(
     graphql: str,
     *,
     max_chars: int,
+    timeout_s: float | None = None,
 ) -> dict:
-    """One read-only GraphQL query through the board stack for this seat's app."""
+    """One read-only GraphQL query through the board stack for this seat's app.
+
+    ``timeout_s`` is the caller's remaining budget for this attempt:  the client's
+    per-request socket timeout and retry deadline are clamped to it for this call
+    (the cached client's own limits are restored afterwards), so the budget binds
+    the blocking read itself instead of being dropped."""
     err_buf = io.StringIO()
     # Outside the try:  a board that cannot be loaded raises its own error, instead of the
     # `except B.GqlError` clause below hiding it behind an UnboundLocalError.
     B, linear = _client_for(seat, client_id, client_secret)
+    saved = None
+    if timeout_s is not None:
+        budget = max(0.001, float(timeout_s))
+        saved = (linear.timeout, linear.max_wait)
+        linear.timeout = min(linear.timeout, budget)
+        linear.max_wait = min(linear.max_wait, budget)
     try:
         with redirect_stderr(err_buf):
             data = B.clean_data(linear.call(graphql))
@@ -117,6 +129,9 @@ def query(
         raise BoardCliFailure(code, err_buf.getvalue()) from None
     except B.GqlError as exc:
         raise BoardCliFailure(B.EXIT_ERROR, f"Linear error: {B.gql_summary(exc)}") from None
+    finally:
+        if saved is not None:
+            linear.timeout, linear.max_wait = saved
 
 
 def clear_sessions_for_tests() -> None:

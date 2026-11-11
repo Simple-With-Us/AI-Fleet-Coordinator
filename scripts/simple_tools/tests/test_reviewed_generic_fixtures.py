@@ -25,6 +25,11 @@ class ReviewedGenericTests(unittest.TestCase):
                 "ios/CodeCapsCompanion/Widgets/WidgetPresentation.swift",
                 "d6bd7e7ff0a69af9cfd4002f1e21db90f66b87315a4dc69cbd2fc1c585be0b2b",
             ),
+            (
+                "Simple-With-Us/Usage-Monitor",
+                "scripts/lib/run-session-token-collector.mjs",
+                "e96f73542ff0a5923af4d53981f96693bb67f80444e54cf94a520737ac5418f4",
+            ),
         }))
         self.assertIsNotNone(secretscan.scan_file(self.repo, self.path, self.body))
 

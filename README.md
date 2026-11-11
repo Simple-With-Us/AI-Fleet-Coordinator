@@ -94,12 +94,12 @@ activity ICS and deploys the site to **GitHub Pages**.  The public feeds use an 
 | **Linear** (auth) | https://linear.app/simple-with-us |
 | **Board short link** | https://board.jays.services (Cloudflare redirect to Linear;  the old THE BOARD archive was retired 2026-10-19) |
 
-Raw-from-`main` fallbacks (no Pages required):
+Raw fallbacks on branch `published/fleet-activity` (refreshed by the workflow; `main` copies are no longer updated):
 
 ```text
-https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/main/calendar/daily-digest.ics
-https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/main/calendar/agent-activity.ics
-https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/main/site/digest.md
+https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/published/fleet-activity/calendar/daily-digest.ics
+https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/published/fleet-activity/calendar/agent-activity.ics
+https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/published/fleet-activity/site/digest.md
 ```
 
 ### Subscribe (Apple / Google / Outlook)
@@ -115,7 +115,7 @@ https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/main/site/
 CDN alternate for the commit feed (sometimes validates more cleanly on mobile):
 
 ```text
-https://cdn.jsdelivr.net/gh/Simple-With-Us/AI-Fleet-Coordinator@main/calendar/agent-activity.ics
+https://cdn.jsdelivr.net/gh/Simple-With-Us/AI-Fleet-Coordinator@published/fleet-activity/calendar/agent-activity.ics
 ```
 
 ### Enable GitHub Pages (one-time)
