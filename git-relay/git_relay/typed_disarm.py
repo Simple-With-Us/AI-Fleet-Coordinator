@@ -8,6 +8,7 @@ No caller token, URL, query, arbitrary path or hold-clear operation is accepted.
 import re
 import time
 
+from .policy import RATE_LIMIT_DENIALS
 from .server import _perm_within_ceiling
 
 STATE_QUERY = """query($owner:String!,$name:String!,$number:Int!){viewer{login}
@@ -98,7 +99,7 @@ class TypedDisarm:
         except ValueError:
             raise Refused("invalid repository") from None
         denial = policy.authorize(seat, action, repo)
-        if denial == "hourly rate limit reached for this seat":
+        if denial in RATE_LIMIT_DENIALS:
             raise RateLimited("quota exhausted")
         if denial:
             raise Refused("action or repository denied")

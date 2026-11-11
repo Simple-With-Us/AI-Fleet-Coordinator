@@ -115,6 +115,125 @@ class TestPolicy(unittest.TestCase):
         self.assertIsNone(policy.authorize("swu-echo", "open_pr", repo, now=4601.0))
 
 
+class TestWriteRate(unittest.TestCase):
+    REPO = "example/fixture-repo"
+
+    def test_default_write_cap_is_a_rolling_hour_bound_below_the_call_cap(self):
+        from git_relay.policy import DEFAULT_RATE_PER_HOUR, DEFAULT_WRITE_RATE_PER_HOUR
+
+        self.assertEqual(DEFAULT_WRITE_RATE_PER_HOUR, 500)
+        self.assertLess(DEFAULT_WRITE_RATE_PER_HOUR, DEFAULT_RATE_PER_HOUR)
+        self.assertEqual(SeatPolicy(SEATS_JSON)._write_rate_per_hour, 500)
+
+    def test_every_action_is_classified_from_structured_metadata(self):
+        from git_relay.workflow_verbs import SPECS
+
+        for action in SeatPolicy.ALL_ACTIONS:
+            self.assertIsInstance(SeatPolicy.is_write(action), bool, action)
+        for action in SeatPolicy.WORKFLOW_ACTIONS:
+            self.assertIn(action, SPECS, action)
+            self.assertEqual(SeatPolicy.is_write(action), bool(SPECS[action][1]), action)
+        self.assertFalse(SeatPolicy.is_write("mint_token"))
+        for action in (
+            "open_pr",
+            "merge_pr",
+            "workflow_dispatch",
+            "resolve_thread",
+            "edit_pr",
+            "reply_thread",
+            "comment_pr",
+        ):
+            self.assertTrue(SeatPolicy.is_write(action), action)
+        # registered but unwired, and unknown, names count as writes
+        for action in SeatPolicy.REGISTERED_ACTIONS + ("not_a_real_action",):
+            self.assertTrue(SeatPolicy.is_write(action), action)
+
+    def test_writes_stop_at_the_write_cap_while_reads_run_to_the_call_cap(self):
+        policy = SeatPolicy(SEATS_JSON, rate_per_hour=10, write_rate_per_hour=2)
+        repo = self.REPO
+        self.assertIsNone(policy.authorize("swu-echo", "open_pr", repo, now=1000.0))
+        self.assertIsNone(policy.authorize("swu-echo", "open_pr", repo, now=1001.0))
+        denial = policy.authorize("swu-echo", "open_pr", repo, now=1002.0)
+        self.assertEqual(denial, "hourly write limit reached for this seat")
+        # the window rolls after an hour
+        self.assertIsNone(policy.authorize("swu-echo", "open_pr", repo, now=4602.0))
+
+    def test_reads_and_mint_token_never_draw_from_the_write_bucket(self):
+        seats = json.dumps(
+            {
+                "swu-r": {
+                    "token": "r" * 32,
+                    "actions": ["mint_token", "wf_repo_languages"],
+                    "repos": ["example/*"],
+                    "app_slug": "swu-r",
+                    "mint_permissions": {"metadata": "read"},
+                }
+            }
+        )
+        policy = SeatPolicy(seats, rate_per_hour=50, write_rate_per_hour=1)
+        for i in range(40):
+            self.assertIsNone(
+                policy.authorize(
+                    "swu-r",
+                    "wf_repo_languages" if i % 2 else "mint_token",
+                    "example/x",
+                    now=100.0 + i,
+                )
+            )
+        self.assertEqual(policy._writes["swu-r"], [])
+        self.assertEqual(len(policy._calls["swu-r"]), 40)
+
+    def test_a_refused_write_charges_no_call_slot_and_a_full_call_bucket_charges_no_write(self):
+        policy = SeatPolicy(SEATS_JSON, rate_per_hour=3, write_rate_per_hour=1)
+        repo = self.REPO
+        self.assertIsNone(policy.authorize("swu-echo", "open_pr", repo, now=10.0))
+        self.assertIsNotNone(policy.authorize("swu-echo", "open_pr", repo, now=11.0))
+        self.assertIsNotNone(policy.authorize("swu-echo", "open_pr", repo, now=12.0))
+        self.assertEqual(len(policy._calls["swu-echo"]), 1)
+        policy = SeatPolicy(SEATS_JSON, rate_per_hour=1, write_rate_per_hour=5)
+        self.assertIsNone(policy.authorize("swu-echo", "open_pr", repo, now=10.0))
+        self.assertEqual(
+            policy.authorize("swu-echo", "open_pr", repo, now=11.0),
+            "hourly rate limit reached for this seat",
+        )
+        self.assertEqual(len(policy._writes["swu-echo"]), 1)
+
+    def test_write_cap_must_be_positive(self):
+        with self.assertRaises(PolicyError):
+            SeatPolicy(SEATS_JSON, write_rate_per_hour=0)
+
+    def test_typed_disarm_treats_both_rate_denials_as_retryable_quota(self):
+        from git_relay.policy import RATE_LIMIT_DENIALS
+
+        self.assertEqual(
+            set(RATE_LIMIT_DENIALS),
+            {"hourly rate limit reached for this seat", "hourly write limit reached for this seat"},
+        )
+
+
+class TestDefaultRate(unittest.TestCase):
+    def test_default_cap_is_generous_and_still_a_rolling_hour_bound(self):
+        from git_relay.policy import DEFAULT_RATE_PER_HOUR
+
+        self.assertEqual(DEFAULT_RATE_PER_HOUR, 3600)
+        # the write bucket has its own tests (TestWriteRate);  here only the all-calls bucket is under test
+        policy = SeatPolicy(SEATS_JSON, write_rate_per_hour=DEFAULT_RATE_PER_HOUR + 10)
+        repo = "example/fixture-repo"
+        for i in range(DEFAULT_RATE_PER_HOUR):
+            self.assertIsNone(policy.authorize("swu-echo", "open_pr", repo, now=1000.0 + i))
+        self.assertIsNotNone(policy.authorize("swu-echo", "open_pr", repo, now=1000.0 + 3599.5))
+        # the oldest call leaves the window an hour later
+        self.assertIsNone(policy.authorize("swu-echo", "open_pr", repo, now=1000.0 + 3600.5))
+
+    def test_the_server_default_is_the_policy_default(self):
+        import inspect
+
+        from git_relay import server
+
+        self.assertIn("DEFAULT_RATE_PER_HOUR", inspect.getsource(server))
+        self.assertNotIn('"120"', inspect.getsource(server))
+
+
 class TestAudit(unittest.TestCase):
     def test_rows_are_appended_and_bodies_are_hashed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -251,7 +370,7 @@ class TestHttpSurface(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["number"], 1)
 
-    def test_unauthenticated_gets_401_and_no_audit_row(self):
+    def test_unauthenticated_gets_401(self):
         status, _ = self._post(
             "/v1/comment_pr",
             {"repo": "example/other-repo", "number": 1, "body": "x"},
@@ -452,7 +571,7 @@ class TestMcpWrapper(unittest.TestCase):
 
         if opener is None:
             opener = FakeOpener(payload or {"number": 9})
-        return RelayMcp("http://relay.test", SEAT_TOKEN, opener=opener)
+        return RelayMcp("https://relay.test", SEAT_TOKEN, opener=opener)
 
     def test_initialize_and_tools_list(self):
         server = self._server()
@@ -460,8 +579,10 @@ class TestMcpWrapper(unittest.TestCase):
         self.assertEqual(reply["result"]["serverInfo"]["name"], "GR-MCP")
         reply = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = [t["name"] for t in reply["result"]["tools"]]
+        # The original seven come first and unchanged;  the wf verbs follow (AFC-664 item 6,
+        # tested in test_mcp_wf_verbs).  mint_token stays HTTP-only: raw App tokens never cross stdio.
         self.assertEqual(
-            names,
+            names[:7],
             [
                 "open_pr",
                 "edit_pr",
@@ -470,8 +591,13 @@ class TestMcpWrapper(unittest.TestCase):
                 "merge_pr",
                 "workflow_dispatch",
                 "resolve_thread",
-            ],  # mint_token stays HTTP-only: raw App tokens never cross stdio
+            ],
         )
+        # mint_token stays HTTP-only: raw App tokens never cross stdio
+        from git_relay.mcp_server import WF_ACTIONS
+
+        self.assertEqual(set(names[7:]), set(WF_ACTIONS) | {"stage_chunk", "stage_abort"})
+        self.assertNotIn("mint_token", names)
 
     def test_tools_call_forwards_to_relay_with_seat_token(self):
         opener = FakeOpener({"number": 9, "url": "u"})
@@ -494,7 +620,7 @@ class TestMcpWrapper(unittest.TestCase):
             }
         )
         req = opener.requests[0]
-        self.assertEqual(req.full_url, "http://relay.test/v1/open_pr")
+        self.assertEqual(req.full_url, "https://relay.test/v1/open_pr")
         self.assertEqual(req.get_header("Authorization"), "Bearer " + SEAT_TOKEN)
         self.assertIn('"number": 9', reply["result"]["content"][0]["text"])
 
@@ -538,7 +664,7 @@ class TestMcpWriteUncertainty(unittest.TestCase):
     def call(self, opener):
         from git_relay.mcp_server import RelayMcp
 
-        return RelayMcp("http://relay.test", "private-seat-token", opener=opener).handle(
+        return RelayMcp("https://relay.test", "private-seat-token", opener=opener).handle(
             {
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -1344,13 +1470,17 @@ class TestFleetSecretsSourceAgainstTheRealCli(unittest.TestCase):
         finally:
             sys.path.remove(scripts)
 
-        def fake_export(path, env, project_name=None, token=None):
+        def fake_export(path, env, project_name=None, token=None, *, allow_session=False):
+            self.assertIs(allow_session, False)
             return dict(self.FOLDER)
 
         def runner(argv, capture_output, timeout):
             calls.append(argv)
             out, err = io.StringIO(), io.StringIO()
-            with unittest.mock.patch.object(core, "fetch_all", fake_export):
+            with (
+                unittest.mock.patch.object(core, "fetch_all", fake_export),
+                unittest.mock.patch.object(cli.sys, "stdin", io.StringIO()),
+            ):
                 code = cli.main(argv[1:], env={}, out=out, err=err)
             return subprocess.CompletedProcess(
                 argv, code, stdout=out.getvalue().encode(), stderr=err.getvalue().encode()
@@ -1853,7 +1983,7 @@ class TestPolicyMintPermissionsValidation(unittest.TestCase):
                             "actions": ["mint_token"],
                             "repos": ["a/b"],
                             "app_slug": "swu-echo",
-                            "mint_permissions": {"workflows": "write"},
+                            "mint_permissions": {"administration": "write"},
                         }
                     }
                 )
@@ -1941,7 +2071,7 @@ class TestMcpSchemaEnforcement(unittest.TestCase):
     def _server(self):
         from git_relay.mcp_server import RelayMcp
 
-        return RelayMcp("http://relay.test", "seat-token", opener=None)
+        return RelayMcp("https://relay.test", "seat-token", opener=None)
 
     def _call(self, name, args):
         return self._server().handle(
@@ -2791,7 +2921,7 @@ class TestVerifiedSecret(unittest.TestCase):
         self.assertEqual(child["INFISICAL_FLEET_OPS_PROJECT_ID"], "project-uuid")
         self.assertNotIn("ENVIRONMENT", child)
         self.assertNotIn("INFISICAL_PROJECT_ID", child)
-        self.assertNotIn("HOME", child)  # no incidental ~/.agent-sync resolution
+        self.assertNotIn("HOME", child)  # no incidental ~/.simple-tools resolution
         self.assertNotIn("GIT_RELAY_SEATS_JSON", child)
 
     def test_unreadable_credential_file_fails_closed(self):
@@ -2948,7 +3078,7 @@ class TestProductionCredentialBinding(unittest.TestCase):
 
 class TestScopedChildProjectBinding(unittest.TestCase):
     """The scoped CLI child must carry the SUPPORTED fleet-secrets variable
-    names and cannot fall through to ~/.agent-sync file resolution."""
+    names and cannot fall through to ~/.simple-tools file resolution."""
 
     def _creds(self):
         directory = pathlib.Path(tempfile.mkdtemp())
@@ -2981,3 +3111,41 @@ class TestScopedChildProjectBinding(unittest.TestCase):
         )
         with self.assertRaises(AppTokenError):
             source.verified_secret("GITHUB_TOKEN")
+
+
+class TestRateEnvironmentErrors(unittest.TestCase):
+    def test_non_numeric_rate_configuration_has_clean_config_exit(self):
+        from unittest.mock import patch
+
+        from git_relay import server
+
+        for name in ("GIT_RELAY_RATE_PER_HOUR", "GIT_RELAY_WRITE_RATE_PER_HOUR"):
+            with (
+                self.subTest(name=name),
+                patch.dict("os.environ", {name: "not-a-number"}, clear=True),
+                patch.object(server, "seats_json_from_env", return_value=SEATS_JSON),
+                patch.object(server, "_build_shared_verifier", return_value=None),
+            ):
+                with self.assertRaisesRegex(SystemExit, "git-relay config:"):
+                    server.from_env()
+
+    def test_nonnumeric_rate_does_not_blame_a_valid_file_policy(self):
+        from unittest.mock import patch
+
+        from git_relay import server
+
+        for binding in ("GIT_RELAY_SEATS_FILE", "GIT_RELAY_SEATS_CREDENTIAL"):
+            for rate in ("GIT_RELAY_RATE_PER_HOUR", "GIT_RELAY_WRITE_RATE_PER_HOUR"):
+                with (
+                    self.subTest(binding=binding, rate=rate),
+                    patch.dict(
+                        "os.environ", {binding: "/valid/policy", rate: "not-a-number"}, clear=True
+                    ),
+                    patch.object(server, "seats_json_from_env", return_value=SEATS_JSON),
+                    patch.object(server, "_build_shared_verifier", return_value=None),
+                ):
+                    with self.assertRaises(SystemExit) as raised:
+                        server.from_env()
+                    self.assertIn("git-relay config:", str(raised.exception))
+                    self.assertIn("not-a-number", str(raised.exception))
+                    self.assertNotIn("file seat policy", str(raised.exception))

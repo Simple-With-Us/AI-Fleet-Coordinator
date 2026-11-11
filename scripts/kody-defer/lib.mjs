@@ -138,9 +138,11 @@ export function parseSeverity(body) {
  * Strip badge images, `<details>` blocks (and their contents), other HTML tags,
  * and HTML comments.  Collapse runs of 3+ blank lines down to two.  Trim.
  *
- * The `&nbsp;` entity is left alone:  a GitHub body renders it as the gap it stands
- * for (owner ruling 2026-10-22), so decoding it to a plain space would throw the gap
- * away.  The other entities are decoded, because they are content and not gaps.
+ * The `&nbsp;` entity outside a code fence is decoded to the character it stands for, a real U+00A0:
+ * a GitHub body takes the gap as a real U+00A0 plus a normal space and never as
+ * the entity (owner ruling 2026-10-23), so leaving the entity would show it as
+ * literal text in the body.  The other entities are decoded, because they are
+ * content and not gaps.
  */
 export function cleanFindingText(body) {
   let s = String(body ?? '');
@@ -150,6 +152,22 @@ export function cleanFindingText(body) {
   s = s.replace(new RegExp(`</?(?:${TAGS})\\b[^>]*>`, 'gi'), '');
   s = s.replace(/!\[[^\]]*\]\([^)]*\)/g, '');
   s = s.replace(/&#8203;|&#x200[Bb];|&ZeroWidthSpace;/gi, '');
+  // The gap entity becomes the character it stands for.  The lookbehind keeps an
+  // escaped entity as literal text, so the &amp; decode below cannot turn prose
+  // that merely mentions the entity into a gap.
+  // Only prose takes the decode:  inside a fence the entity is literal source text,
+  // so a quoted code sample still matches the file it came from.
+  let inFence = false;
+  s = s
+    .split('\n')
+    .map((line) => {
+      if (fenceToggle(line.trim().replace(/\r$/, ''))) {
+        inFence = !inFence;
+        return line;
+      }
+      return inFence ? line : line.replace(/(?<!&amp;)&nbsp;/gi, '\u00a0');
+    })
+    .join('\n');
   s = s.replace(/&amp;/gi, '&');
   s = s.replace(/&lt;/gi, '<');
   s = s.replace(/&gt;/gi, '>');
@@ -184,13 +202,17 @@ function stripLightMarkdown(s) {
  * First non-empty prose line (or its first sentence), with light markdown
  * stripped.  Longer text is cut at a word boundary and closed with an ellipsis.
  *
- * `&nbsp;` is decoded to a plain space here even though cleanFindingText keeps
- * it:  issue titles are plain text (GitHub does not decode entities in them),
- * so the raw entity would leak into the title and defeat the sentence split
- * below, which needs real whitespace after the punctuation.
+ * The gap is flattened to a plain space here, whether it arrives as the entity
+ * or as the real U+00A0 cleanFindingText now produces:  issue titles are plain
+ * text (GitHub does not decode entities in them), so the entity would leak into
+ * the title, and a U+00A0 would defeat the sentence split below, which needs
+ * real whitespace after the punctuation.
  */
 export function summarizeFinding(text, max = 80) {
-  const lines = String(text ?? '').replace(/&nbsp;/gi, ' ').split('\n');
+  const lines = String(text ?? '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/\u00a0/g, ' ')
+    .split('\n');
   let inFence = false;
   let prose = '';
   for (const raw of lines) {

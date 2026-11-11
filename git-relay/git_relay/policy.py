@@ -13,11 +13,31 @@ import json
 import threading
 import time
 
-from .app_tokens import MINT_PERMISSION_CEILING
+from .app_tokens import mint_permission_allowed
 
 
 class PolicyError(ValueError):
     """A seat config or request is invalid."""
+
+
+# Per-seat calls an hour the gateway admits before it refuses.  This is a seat-token blast-radius bound, not a
+# throttle for routine work:  the repo and action allowlists are the access control, and GitHub's own
+# 429/Retry-After is already returned to the caller as a retryable refusal (server.py), so GitHub's limits remain
+# the real ceiling.  3600 is one call a second on average for a full hour.  GIT_RELAY_RATE_PER_HOUR overrides it.
+DEFAULT_RATE_PER_HOUR = 3600
+# Per-seat state-changing calls an hour, a second rolling bound on top of the one above.  A stolen seat token
+# can read a lot but must not be able to write without limit, so every authorized state-changing dispatch also
+# draws from this bucket.  It counts LOGICAL writes (one authorized dispatch each), not GitHub requests:  one
+# write verb can issue more than one mutating request upstream, and GitHub's own content-creation guideline
+# (about 80 a minute and 500 an hour, lower on some endpoints, see docs.github.com/en/rest/using-the-rest-api/
+# rate-limits-for-the-rest-api) is a provider guideline, not what this number measures.  500 is a blast-radius
+# choice, generous for routine work (one write every 7 seconds for a full hour).  GIT_RELAY_WRITE_RATE_PER_HOUR
+# overrides it.  Reads, and mint_token (a credential issue, not a repository change), draw only from the
+# all-calls bucket.
+DEFAULT_WRITE_RATE_PER_HOUR = 500
+RATE_LIMIT_DENIAL = "hourly rate limit reached for this seat"
+WRITE_RATE_LIMIT_DENIAL = "hourly write limit reached for this seat"
+RATE_LIMIT_DENIALS = (RATE_LIMIT_DENIAL, WRITE_RATE_LIMIT_DENIAL)
 
 
 class SeatPolicy:
@@ -50,6 +70,8 @@ class SeatPolicy:
     VALID_ACTIONS = ("open_pr",)
     APP_ACTIONS = (
         "mint_token",
+        # Read-only fetch and clone over the relay's /git/ route (git_read.py).  The token stays in the relay.
+        "git_read",
         "merge_pr",
         "workflow_dispatch",
         "resolve_thread",
@@ -74,9 +96,78 @@ class SeatPolicy:
     )
     # Workflow verbs (workflow_verbs.SPECS): policy names a seat config may list, each
     # authorized once per call by WorkflowVerbs.for_action and minted at the least
-    # permission in SPECS.  They need the seat's own App, like APP_ACTIONS, but are not
-    # wired into the HTTP dispatch: the server refuses them as registered-not-wired.
+    # permission in SPECS.  They need the seat's own App, like APP_ACTIONS.  HTTP
+    # dispatch is gated by GIT_RELAY_ENABLE_WORKFLOW_VERBS=1 (server.py; default off):
+    # with it unset or any other value the server refuses them as registered-not-wired.
     WORKFLOW_ACTIONS = (
+        "wf_git_blob_binary_get",
+        "wf_issue_events",
+        "wf_issue_timeline",
+        "wf_pr_commits_page",
+        "wf_pr_review_get",
+        "wf_release_latest",
+        "wf_release_by_tag",
+        "wf_commit_comment_create",
+        "wf_commit_comment_update",
+        "wf_commit_comment_delete",
+        "wf_repo_variables",
+        "wf_repo_variable_get",
+        "wf_repo_variable_create",
+        "wf_repo_variable_update",
+        "wf_repo_variable_delete",
+        "wf_workflow_get",
+        "wf_artifact_get",
+        "wf_artifacts_page",
+        "wf_caches_page",
+        "wf_cache_usage",
+        "wf_run_attempt_get",
+        "wf_run_attempt_jobs",
+        "wf_run_pending_deployments",
+        "wf_job_get",
+        "wf_job_rerun",
+        "wf_run_rerun_all",
+        "wf_run_force_cancel",
+        "wf_run_logs_delete",
+        "wf_review_requests_add",
+        "wf_review_requests_remove",
+        "wf_review_requests_rerequest",
+        "wf_commit_comments_page",
+        "wf_commit_comment_get",
+        "wf_pr_requested_reviewers",
+        "wf_repo_tags",
+        "wf_repo_languages",
+        "wf_git_tree_create",
+        "wf_git_commit_create",
+        "wf_pr_list_page",
+        "wf_compare_commits_page",
+        "wf_pr_reviews_page",
+        "wf_pr_comments_page",
+        "wf_labels_add",
+        "wf_label_update",
+        "wf_issue_dependency_add",
+        "wf_issue_dependency_remove",
+        "wf_issue_parent",
+        "wf_issue_subissues",
+        "wf_issue_blocked_by",
+        "wf_issue_blocking",
+        "wf_check_runs_page",
+        "wf_check_run_get",
+        "wf_file_history",
+        "wf_runs_page",
+        "wf_workflows_page",
+        "wf_pr_files_page",
+        "wf_merge_queue_entry",
+        "wf_merge_queue_enqueue",
+        "wf_merge_queue_dequeue",
+        "wf_git_blob_get",
+        "wf_git_blob_create",
+        "wf_pr_create",
+        "wf_pr_edit",
+        "wf_pr_close",
+        "wf_git_commit_get",
+        "wf_git_tree_get",
+        "wf_commit_statuses",
+        "wf_commit_status_create",
         "wf_review_thread_resolve",
         "wf_review_thread_unresolve",
         "wf_review_update",
@@ -99,11 +190,11 @@ class SeatPolicy:
         "wf_labels_set",
         "wf_reviewers_request",
         "wf_reviewers_remove",
-        "wf_release_notes_preview",
         "wf_release_create",
         "wf_release_update",
         "wf_environments",
         "wf_environment_get",
+        "wf_file_rename",
         "wf_file_delete",
         "wf_issue_list",
         "wf_issue_get",
@@ -124,9 +215,18 @@ class SeatPolicy:
         "wf_tag_delete",
         "wf_pr_draft",
         "wf_pr_ready",
+        "wf_pr_reopen",
         "wf_automerge_enable",
         "wf_automerge_disable",
+        "wf_review_thread_comments",
         "wf_review_threads",
+        "wf_repo_hooks",
+        "wf_deploy_keys",
+        "wf_org_installations",
+        "wf_repo_list",
+        "wf_pr_search",
+        "wf_branch_rules",
+        "wf_rulesets",
         "wf_assignees_add",
         "wf_assignees_remove",
         "wf_issue_lock",
@@ -141,6 +241,7 @@ class SeatPolicy:
         "wf_compare",
         "wf_branch_get",
         "wf_repo_get",
+        "wf_installation_metadata",
         "wf_labels",
         "wf_workflows",
         "wf_run_get",
@@ -178,11 +279,19 @@ class SeatPolicy:
         "wf_run_approve",
         "wf_file_put",
         "wf_files_put",
+        "wf_file_patch",
         "wf_merge_guarded",
     )
     ALL_ACTIONS = VALID_ACTIONS + APP_ACTIONS + REGISTERED_ACTIONS + WORKFLOW_ACTIONS
 
-    def __init__(self, seats_json: str, rate_per_hour: int = 120, verifier=None):
+    def __init__(
+        self,
+        seats_json: str,
+        rate_per_hour: int = DEFAULT_RATE_PER_HOUR,
+        verifier=None,
+        write_rate_per_hour: int = DEFAULT_WRITE_RATE_PER_HOUR,
+        assertion_verifier=None,
+    ):
         if not seats_json:
             raise PolicyError("GIT_RELAY_SEATS_JSON is empty")
         try:
@@ -208,6 +317,15 @@ class SeatPolicy:
             identity = str(cfg.get("identity") or seat)
             if auth == "shared" and not identity:
                 raise PolicyError(f"seat {seat!r}: shared auth needs an identity")
+            # oauth_assert lets the Worker's hosted-OAuth path in for this seat:
+            # a short-lived HMAC assertion the Worker mints only after its own
+            # grant checks (git_relay/assertion.py).  Default off:  a seat
+            # without the flag refuses assertions exactly as before.
+            oauth_assert = cfg.get("oauth_assert", False)
+            if not isinstance(oauth_assert, bool):
+                raise PolicyError(f"seat {seat!r}: oauth_assert must be true or absent")
+            if oauth_assert and auth != "shared":
+                raise PolicyError(f"seat {seat!r}: oauth_assert needs shared auth")
             actions = cfg.get("actions") or []
             repos = cfg.get("repos") or []
             unknown = [a for a in actions if a not in self.ALL_ACTIONS]
@@ -246,7 +364,7 @@ class SeatPolicy:
                     for k, v in mint_perms.items()
                 ):
                     raise PolicyError(f"seat {seat!r}: mint_permissions must be name: read|write")
-                outside = [k for k in mint_perms if k not in MINT_PERMISSION_CEILING]
+                outside = [k for k, v in mint_perms.items() if not mint_permission_allowed(k, v)]
                 if outside:
                     # Config load must refuse names the minter always rejects,
                     # so a bad seat entry cannot pass startup and fail every mint.
@@ -256,6 +374,7 @@ class SeatPolicy:
             self._seats[seat] = {
                 "auth": auth,
                 "identity": identity,
+                "oauth_assert": oauth_assert,
                 "token_hash": hashlib.sha256(token.encode()).hexdigest() if token else None,
                 "actions": set(actions),
                 "repos": [str(r) for r in repos],
@@ -275,18 +394,27 @@ class SeatPolicy:
                 claimed[cfg["identity"]] = seat
         if rate_per_hour < 1:
             raise PolicyError("rate_per_hour must be at least 1")
+        if write_rate_per_hour < 1:
+            raise PolicyError("write_rate_per_hour must be at least 1")
         self._verifier = verifier
+        self._assertion_verifier = assertion_verifier
         self._rate_per_hour = rate_per_hour
+        self._write_rate_per_hour = write_rate_per_hour
         self._calls: dict[str, list[float]] = {}
+        self._writes: dict[str, list[float]] = {}
         self._lock = threading.Lock()
 
-    def authenticate(self, token: str) -> str | None:
+    def authenticate(self, token: str, proof: dict | None = None) -> str | None:
         """Return the seat the presented credential resolves to, or None.
 
         Static tokens compare constant-time over the seats that have one.
         With no static match and a shared verifier configured, the bearer is
         resolved through ST-MCP;  it must land on a seat in "shared" mode
         whose configured identity the verifier confirmed.
+
+        `proof` carries {"action", "body_sha256"} of the exact request the
+        token rides on;  only the assertion family binds to it.  Bearers and
+        static tokens are bearer-equivalent credentials and ignore it.
         """
         if not token:
             return None
@@ -297,6 +425,43 @@ class SeatPolicy:
                 match = seat
         if match is not None:
             return match
+        # Worker-minted OAuth assertions:  the Worker verifies the HMAC, the
+        # action/body binding, the live grant state and the one-use jti per
+        # call (git_relay/assertion.py);  the relay holds no mint-capable key.
+        # An assertion-shaped token is refused outright when the callback, the
+        # request binding or the seat flag fails, or when no configured
+        # oauth_assert seat claims the verified identity - it never falls
+        # through to another token family.
+        named_assertion = (
+            self._assertion_verifier.parse_identity(token)
+            if self._assertion_verifier is not None
+            else None
+        )
+        if named_assertion is not None:
+            # Refuse locally when no configured oauth_assert seat claims the
+            # identity the token names, BEFORE the blocking remote verify:
+            # every forged shape then costs no Worker callback (mirrors the
+            # bearer pre-check below).  A valid assertion always names its
+            # flagged seat, so this can never false-refuse one.
+            if not any(
+                cfg["auth"] == "shared"
+                and cfg["oauth_assert"]
+                and cfg["identity"] == named_assertion
+                for cfg in self._seats.values()
+            ):
+                return None
+            resolved = self._assertion_verifier.resolve(token, proof)
+            if resolved is None:
+                return None
+            identity, claims = resolved
+            # Scope authorization is inside the signature:  a grant approved
+            # without zulip:write can mint assertions, but never for a write.
+            if self.is_write(proof["action"]) and "zulip:write" not in claims.get("scopes", []):
+                return None
+            for seat, cfg in self._seats.items():
+                if cfg["auth"] == "shared" and cfg["oauth_assert"] and cfg["identity"] == identity:
+                    return seat
+            return None
         if self._verifier is None:
             return None
         # Refuse locally when no configured shared seat claims the identity the
@@ -328,14 +493,61 @@ class SeatPolicy:
                 return True
         return False
 
-    def _rate_ok(self, seat: str, now: float) -> bool:
+    def repo_allowed(self, seat: str, repo: str) -> bool:
+        """Public read of the seat allowlist: org-wide verbs filter results to it."""
+        return self._repo_allowed(seat, repo)
+
+    def repo_patterns(self, seat: str) -> tuple:
+        """The seat's repository allowlist patterns (read-only copy)."""
+        return tuple(self._seats[seat]["repos"])
+
+    @classmethod
+    def is_write(cls, action: str) -> bool:
+        """Whether an authorized dispatch of this action can change something upstream.
+
+        Read from structured metadata, never a name pattern:  wf_ verbs carry their own writes flag in
+        workflow_verbs.SPECS, native actions are listed here.  mint_token issues a credential and changes no
+        repository state.  Registered-but-unwired actions and any unclassified name count as writes, so the
+        write bucket can only err toward counting.
+        """
+        if action in ("mint_token", "git_read"):
+            return False
+        if action in cls.WORKFLOW_ACTIONS:
+            # Imported here:  workflow_verbs imports server, which imports this module.
+            from .workflow_verbs import SPECS
+
+            spec = SPECS.get(action)
+            return True if spec is None else bool(spec[1])
+        return True
+
+    @classmethod
+    def audits(cls, action: str, outcome: str) -> bool:
+        """Whether a finished, authenticated call writes an audit row.
+
+        Owner ruling 2026-11-06:  successful reads leave the audit log.  A call is skipped only when
+        it ended "ok" and its action is a known read (is_write False).  Every failure, denial and
+        write still records, and so does mint_token:  it changes no repository state but issues a
+        credential, which the log must show.
+        """
+        if outcome != "ok" or action == "mint_token":
+            return True
+        return action not in cls.ALL_ACTIONS or cls.is_write(action)
+
+    def _rate_ok(self, seat: str, now: float, write: bool = False) -> str | None:
+        """Charge one call, and one write when `write`, or None and nothing charged when either bucket is full."""
         with self._lock:
             window = [t for t in self._calls.get(seat, []) if now - t < 3600]
             self._calls[seat] = window
+            writes = [t for t in self._writes.get(seat, []) if now - t < 3600]
+            self._writes[seat] = writes
             if len(window) >= self._rate_per_hour:
-                return False
+                return RATE_LIMIT_DENIAL
+            if write and len(writes) >= self._write_rate_per_hour:
+                return WRITE_RATE_LIMIT_DENIAL
             window.append(now)
-            return True
+            if write:
+                writes.append(now)
+            return None
 
     def authorize(self, seat: str, action: str, repo: str, now: float | None = None) -> str | None:
         """Return None when allowed, else a short denial reason (safe to return to the caller)."""
@@ -345,9 +557,11 @@ class SeatPolicy:
             return f"action {action!r} not allowed for this seat"
         if not self._repo_allowed(seat, repo):
             return f"repo {repo!r} not allowed for this seat"
-        if not self._rate_ok(seat, now if now is not None else time.time()):
-            return "hourly rate limit reached for this seat"
-        return None
+        # One authorize is one dispatch:  the quota is charged here, once, before the idempotency gate, exactly as
+        # the all-calls bucket always was, so a replayed request still consumes quota.
+        return self._rate_ok(
+            seat, now if now is not None else time.time(), write=self.is_write(action)
+        )
 
     def app_identity(self, seat: str) -> tuple[str, dict]:
         """(app_slug, mintable permission ceiling) for a seat's App actions."""

@@ -1,0 +1,62 @@
+name: Kody first-review prompter (fleet, reusable)
+
+# Requests Kody's initial review on open PRs in the CALLER's repository that have
+# never had one and have no pending request. Thin per-repo callers run this on a
+# schedule with their own GITHUB_TOKEN, so no cross-repo credential exists.
+# Logic and rationale: scripts/kody-first-review/, docs/KODY-FIRST-REVIEW.md.
+
+on:
+  workflow_call:
+    inputs:
+      dry-run:
+        description: List decisions without commenting
+        type: boolean
+        default: false
+        required: false
+      tooling-ref:
+        description: Git ref of Simple-With-Us/AI-Fleet-Coordinator that provides scripts/kody-first-review
+        type: string
+        default: main
+        required: false
+
+# contents:read for both checkouts (private callers), pull-requests:read to list PRs
+# and reviews, issues:write to read and post the trigger comment.
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+
+concurrency:
+  group: kody-first-review-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  prompt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout the caller repo (GITHUB_TOKEN identity)
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Checkout the prompter tooling
+        uses: actions/checkout@v7
+        with:
+          repository: Simple-With-Us/AI-Fleet-Coordinator
+          ref: ${{ inputs.tooling-ref }}
+          sparse-checkout: scripts/kody-first-review
+          path: kody-first-review-tooling
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '26'
+
+      - name: Run the prompter
+        working-directory: kody-first-review-tooling/scripts/kody-first-review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: node prompter.mjs

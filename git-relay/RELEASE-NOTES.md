@@ -2,8 +2,10 @@
 
 Default-off own-App `wf_release_notes_preview` calls only GitHub's fixed
 `releases/generate-notes` endpoint. GitHub documents that generated notes are not
-saved anywhere. This is a non-mutating preview despite its required contents:write
-permission. It creates no outcome hold, tag, draft or published release.
+saved anywhere. The preview saves no tag, draft or published release, but it needs
+a contents:write token, so the relay and the hosted front classify it as a write:
+a read-scoped grant cannot reach it, each call is audited and charged to the write
+budget, and a verified preview may be generated again.
 
 Closed arguments require a target40-hex commit SHA and distinct previous/current
 tag names. No configuration path, arbitrary URL, author or publish option. GitHub
@@ -15,7 +17,7 @@ Returned name/body are untrusted repository-generated text, bounded to500/32,768
 UTF-8bytes and scanned for known credential shapes. Oversized or credential-shaped
 output is refused, not truncated. No instruction in the generated text is an
 execution request. Strict fixed receipts expose no extra provider fields.
-Transient generation failures are retryable reads, not UNKNOWN writes. Existing
+A lost generation response is held as UNKNOWN like any other write. Existing
 repository/action allowlists and App permission ceilings remain unchanged.
 Offline synthetic tests only; no preview was generated live or release saved.
 

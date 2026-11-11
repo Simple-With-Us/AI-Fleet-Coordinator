@@ -36,6 +36,12 @@ log = logging.getLogger("fleet_knobs")
 
 _UNSET = object()
 
+# Failures that belong to this one process, not to Infisical or the network:  a process with
+# no reader token of its own (Muster's Controls tab runs the engine without one) or no reader
+# helper.  They cost no wait, and recording them would make every sibling that does hold a
+# token skip its own fetch for the marker's 60 seconds, so they leave no marker.
+PROCESS_LOCAL_REASONS = frozenset({"service-token-required", "scoped-reader-unavailable"})
+
 
 class KnobError(Exception):
     """A programming or configuration error:  unknown knob, wrong kind, refused environment."""
@@ -152,7 +158,9 @@ def _load() -> None:
             )
             return
         try:
-            live = source.fetch([s.name for s in REGISTRY])
+            live = source.fetch_named(
+                [s.name for s in REGISTRY], project_id=source.PROJECT_ID, path="/"
+            )
             _refuse_empty_export(live, previous)
             st.live = live
             st.fetch = "ok"
@@ -168,10 +176,11 @@ def _load() -> None:
                 st.reason,
             )
             st.lkg, st.lkg_note = previous, previous_note
-            try:
-                lkg.record_failure(st.reason)
-            except Exception:  # noqa: BLE001 - the marker is a convenience
-                pass
+            if st.reason not in PROCESS_LOCAL_REASONS:
+                try:
+                    lkg.record_failure(st.reason)
+                except Exception:  # noqa: BLE001 - the marker is a convenience
+                    pass
             return
         try:
             lkg.clear_failure()

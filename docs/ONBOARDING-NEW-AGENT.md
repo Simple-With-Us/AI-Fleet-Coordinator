@@ -46,9 +46,12 @@ add a dedicated row.
 **Grok Bot is not onboarded this way.**  `GROK-BOT` is one fleet-wide identity
 that drives Cursor cloud agents.  It is not Mac Grok (GROK, which Grok Build shares), and it
 is **not** a per-app seat.  Do not run this script to create
-per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.  Its `GB-<ROLE>` personas need no
+per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.  Its `GB-<ROLE>` bots need no
 registry row:  `seatApps.patterns` covers them (and the `BF-<ROLE>` bots), and the
-`GROK-BOT` row has no branch prefix because it opens no lanes.
+`GROK-BOT` row has no branch prefix because it opens no lanes.  The roles do open
+lanes (AFC-620):  a pattern's `lane` block lists them and renders the lane folder and
+branch prefix, so `AGENT_SEAT=GB-DEPLOYER` plans under `gb-deployer/` and signs
+`gb-deployer/<slug>` branches, and `BF-FIXER` does the same under `bf-fixer/`.
 
 ---
 
@@ -57,7 +60,7 @@ registry row:  `seatApps.patterns` covers them (and the `BF-<ROLE>` bots), and t
 `fleet-apps.json` has a top-level `seatApps` key that says which **app** each seat runs
 in (`claude-code`, `codex`, `grok-terminal`, `grok-web`, `botfleet`, ...).  Code that
 counts apps instead of models (a consult quorum, claim ownership) reads it through two
-functions in `scripts/agent_sync/identity.py`:
+functions in `scripts/simple_tools/identity.py`:
 
 | Function | What it does |
 |----------|--------------|
@@ -73,7 +76,11 @@ The key has three parts:
   owner-run (`JET` is `chatgpt`, `ECHO` and `WISE` are one app, `instinct`).
 - `patterns`:  families made of a role.  `BF-*` is `botfleet` (bot `bf-<role>-bot@`)
   and `GB-*` is `grok-bot` (bot `<role>-grok-bot@`).  The patterns accept any
-  well-formed role, so they cannot catch a misspelled one.
+  well-formed role, so they cannot catch a misspelled one.  A pattern's `lane`
+  block (AFC-620) names the roles that open lanes and their folder and branch
+  templates;  an unlisted role is refused with the known roles, and a role whose
+  rendered folder or branch prefix collides with a seat row or another pattern
+  fails the registry check.
 
 Two seats on one model are two apps when they are two products (`GROK` the
 terminal and `GROK-WEB`), and two seats in one product are one app (`ECHO` and
@@ -171,7 +178,7 @@ with the top-level `apps` (the acronyms) and `--app`.
      (`~/.minimax/.builtin-skills/mavis/references/skill-management.md` and
      `references/agent.md` § Skill Discovery.)
    - **A custom agent (`~/.minimax/agents/<name>/agent.md`) — always-on, but
-     only for that agent.**  An agent definition's `system_prompt` / `persona`
+     only for that agent.**  An agent definition's `system_prompt` / `bot`
      does load every turn, but only in sessions where the user picked that
      agent.  The shipped definitions under `agents/.builtin/` (`explore`,
      `worker`, `verifier`) are sub-agent roles, so a fleet pointer parked
@@ -236,7 +243,7 @@ Never echo the key.
 
 Cloud / no Mac FS: the seat's bot credential comes from Infisical Fleet-OPS `/zulip`
 (`<BOT>_ZULIP_EMAIL` / `_KEY` / `_SITE`), read by the CLI through `fleet-secrets`
-vars (not setup-only) and run `python3 scripts/agent-sync` from any clone of this repo, or
+vars (not setup-only) and run `python3 scripts/simple-chat` from any clone of this repo, or
 follow `docs/protocols/zulip-fleet-guide.md` § Core Actions over plain HTTP.  State that
 cadence in the intro. Apple Notes is Mac-only — put a handoff body in the
 PR so a Mac seat can publish the note.
@@ -301,14 +308,14 @@ Then, by hand and with the owner's approval of each live install (read the `plan
 
    | Tool | Seat | Rules (`install_rules`) | Skills (`install-fleet-skills.py`) | MCP server (`install_mcp`) | Deny hook (`install_tools`) |
    |---|---|---|---|---|---|
-   | Clutch | CLUTCH, a launcher's seat wins | `clutch`, `~/.clutch/dsh/AGENTS.md` | `~/.clutch/dsh/skills` | `agent-sync` only, the Zulip server (`simple-chat` is the CLI, not a server name; `fleet-recall` is a native preset) | `clutch`, a bridge plugin in the cordis patch |
-   | Muse Code | MC | covered by `claude` (its fallback) | `~/.config/muse/skills` | `muse`: `fleet-recall`, `agent-sync` (the Zulip server) | `muse`, a plugin the owner installs |
+   | Clutch | CLUTCH, a launcher's seat wins | `clutch`, `~/.clutch/dsh/AGENTS.md` | `~/.clutch/dsh/skills` | `simple-tools` only, the Zulip server (`simple-chat` is the CLI, not a server name; `fleet-recall` is a native preset) | `clutch`, a bridge plugin in the cordis patch |
+   | Muse Code | MC | covered by `claude` (its fallback) | `~/.config/muse/skills` | `muse`: `fleet-recall`, `simple-tools` (the Zulip server) | `muse`, a plugin the owner installs |
    | Kimi Code | none | `kimi`, `~/.kimi-code/AGENTS.md` | none (reads the shared `~/.agents/skills`) | `kimi`: `fleet-recall` | `kimi`, a `[[hooks]]` block |
    | Copilot CLI | none | `copilot`, `~/.copilot/copilot-instructions.md` (UNVERIFIED) | none | `copilot`: `fleet-recall` | `copilot`, a file this tool owns under `~/.copilot/hooks/` |
    | OpenCode | none | `opencode`, `~/.config/opencode/AGENTS.md` (the owner's row, #438; it may also read `~/AGENTS.md`) | none | `opencode`: `fleet-recall` | `opencode`, a local plugin in the stable dir |
    | Conductor | none | none: its Claude Code and Codex read theirs | none | none: each harness inside reads its own | none: the Claude and Codex guards fire inside it |
-   | MiniMax Code | MM | `minimax` (`memory/user.md`) | `~/.minimax/skills` | `minimax`: `fleet-recall`, `agent-sync` (the Zulip server) | `minimax` (alias `mm`, in `all`), a local plugin directory `~/.minimax/plugins/fleet-guard/` with the lane and secret guard |
-   | fx | FX | `fx` | `~/.fx/skills` | `fx`: `fleet-recall`, `agent-sync` (the Zulip server) | none |
+   | MiniMax Code | MM | `minimax` (`memory/user.md`) | `~/.minimax/skills` | `minimax`: `fleet-recall`, `simple-tools` (the Zulip server) | `minimax` (alias `mm`, in `all`), a local plugin directory `~/.minimax/plugins/fleet-guard/` with the lane and secret guard |
+   | fx | FX | `fx` | `~/.fx/skills` | `fx`: `fleet-recall`, `simple-tools` (the Zulip server) | none |
 
    Not tools to wire: Muse Assist (a cloud assistant, the card in `docs/MUSE-ONBOARDING.md`), BotFleet and Grok Bot (launchers: they
    pass their own seat, so nothing user-level may pin one), `~/.dsh` (BotFleet owns it), Cherry Studio, OpenClaw (not configured), and

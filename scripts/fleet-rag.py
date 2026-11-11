@@ -2,14 +2,14 @@
 """Query and ingest the fleet-agents knowledge corpus (thin CLI over the fleet_rag package).
 
 Credentials come from the environment when set (QDRANT_URL, QDRANT_API_KEY, TEI_URL,
-TEI_API_KEY, QDRANT_FLEET_COLLECTION are enough on their own), otherwise from Infisical via a
-machine identity in the environment, otherwise from `fleet-secrets`.  Values are never printed.
+TEI_API_KEY, QDRANT_FLEET_COLLECTION are enough on their own), or from Infisical through the
+dedicated FLEET_RECALL_INFISICAL_TOKEN binding.  Values are never printed.
 
     fleet-rag.py stats
     fleet-rag.py search "how do I avoid leaking credentials?" --limit 5
     fleet-rag.py search "vector database" --category infrastructure --since-days 30
     fleet-rag.py ingest notes.jsonl --source doc --app fleet --category lesson [--dry-run]
-    fleet-rag.py ingest-all [--source board,doc,...] [--dry-run] [--limit N] [--since 7d] [--prune]
+    fleet-rag.py ingest-all [--source linear,doc,...] [--dry-run] [--limit N] [--since 7d] [--prune]
     fleet-rag.py ingest-all --fix-seeds
 
 See docs/RAG-FLEET-INFRA.md.  Search is hybrid (dense + keyword, RRF) per the recall tool
@@ -40,8 +40,7 @@ from fleet_rag.core import (
 from fleet_rag.scrub import GitleaksError
 
 KNOWN_SOURCES = (
-    "board",
-    "effort-log",
+    "linear",
     "apple-note",
     "doc",
     "skill",
@@ -313,7 +312,7 @@ def main() -> int:
 
     a = sub.add_parser("ingest-all", help="run the full source pipeline (fleet_rag.ingest)")
     a.add_argument(
-        "--source", help="comma-separated subset: board,effort-log,doc,skill,memory,apple-note"
+        "--source", help="comma-separated subset: linear,doc,skill,memory,apple-note,chat-log"
     )
     a.add_argument("--dry-run", action="store_true")
     a.add_argument("--limit", type=int)
