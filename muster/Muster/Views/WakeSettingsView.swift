@@ -742,7 +742,8 @@ struct WakeSettingsView: View {
             parts.append("use not known")
         } else {
             let floor = seat.usage.atLeast ? "at least " : ""
-            let cap = seat.cap(.wakesPerHour).map { " of \($0)" } ?? ""
+            // The same limit the grid and the usage line read, so No Limit is never shown as a cap.
+            let cap = seat.capLimit(.wakesPerHour).usageSuffix
             parts.append("\(floor)\(seat.usage.wakesThisHour)\(cap) wakes in the last hour")
         }
         // Worded in the model, so an old status's counts say they are not current.
@@ -921,37 +922,11 @@ struct WakeSettingsView: View {
         }
     }
 
-    /// The counters beside their caps.  A count at or over its cap is emphasised.
+    /// The counters beside the limits the seat is held to.  Worded in the model
+    /// (`WakeSeat.usageFacts`), from the same limit the grid shows, so the line never names a cap
+    /// the eavesdropper is not using.
     private func usageFacts(_ seat: WakeSeat) -> [(text: String, emphasised: Bool)] {
-        let usage = seat.usage
-        let floor = usage.atLeast ? "at least " : ""
-        func of(_ count: Int, _ key: WakeSettingKey, _ what: String) -> (text: String, emphasised: Bool) {
-            let cap = seat.cap(key)
-            let capped = cap.flatMap { Double($0) }.map { Double(count) >= $0 } ?? false
-            let limit: String
-            if key.isWakeCap {
-                // A wake cap the seat holds none of is No Limit, and one of 0 is Paused.
-                switch cap {
-                case nil: limit = " (\(WakeSettingKey.noLimitText))"
-                case "0"?: limit = " of 0 (\(WakeSettingKey.pausedText))"
-                case let value?: limit = " of \(value)"
-                }
-            } else {
-                limit = cap.map { " of \($0)" } ?? " (no cap read)"
-            }
-            return ("\(floor)\(count)\(limit) \(what)", capped)
-        }
-        var facts = [
-            of(usage.wakesThisHour, .wakesPerHour, "wakes in the last hour"),
-            of(usage.wakesThisDay, .wakesPerDay, "wakes in the last 24 hours"),
-            of(usage.ownerThisDay, .ownerPerDay, "owner wakes in the last 24 hours"),
-            of(usage.worstTopicThisHour, .perTopicPerHour, "on the busiest topic, last hour"),
-            of(usage.worstOwnerTopicThisHour, .ownerPerTopicPerHour, "on the busiest owner topic, last hour"),
-        ]
-        if usage.failedThisDay > 0 {
-            facts.append(("\(floor)\(usage.failedThisDay) failed in the last 24 hours", true))
-        }
-        return facts
+        seat.usageFacts.map { (text: $0.text, emphasised: $0.emphasised) }
     }
 
     /// Deferred and held-back wakes, chat nudges, and provider quota.
@@ -1099,6 +1074,14 @@ private struct WakeSettingRow: View {
         )
     }
 
+    /// What an empty field says.  A wake cap the file holds none of is No Limit, and clearing the
+    /// field is the plain way to choose it.  A file that was not read is never No Limit, so its
+    /// empty field says what the file's column would.
+    private var fieldPrompt: String {
+        guard setting.key.isWakeCap else { return "not set, default" }
+        return setting.fileLimit == .notKnown ? setting.fileWords : WakeSettingKey.noLimitText
+    }
+
     /// Whether the field holds 0, which for a wake cap is Paused.
     private var isPausedDraft: Bool {
         Double(draft.trimmingCharacters(in: .whitespaces)) == 0
@@ -1120,13 +1103,7 @@ private struct WakeSettingRow: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 if editable {
-                    // A wake cap left empty is No Limit, so the empty field says so, and clearing
-                    // it is the plain way to choose No Limit.
-                    TextField(
-                        setting.title,
-                        text: fieldText,
-                        prompt: Text(setting.key.isWakeCap ? WakeSettingKey.noLimitText : "not set, default")
-                    )
+                    TextField(setting.title, text: fieldText, prompt: Text(fieldPrompt))
                     .labelsHidden()
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 11, design: .monospaced))

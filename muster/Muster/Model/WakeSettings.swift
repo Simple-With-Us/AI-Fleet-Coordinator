@@ -744,9 +744,7 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
     /// How a wake cap's value reads:  No Limit when the seat holds none, Paused at 0, and the
     /// number otherwise.
     static func wakeCapText(_ value: ListenerConfigValue?) -> String {
-        guard let value else { return noLimitText }
-        if case .number(let number) = value, number == 0 { return pausedText }
-        return value.displayText
+        WakeCapLimit(value).text
     }
 
     /// What a wake cap's field says about its three kinds of value.
@@ -890,6 +888,69 @@ enum ListenerRunState: Equatable {
 
 // MARK: - The rows
 
+/// The limit a wake cap holds a seat to.  The grid's two columns, the drift note and the usage
+/// line all read it from here, so they never say different things about one cap.
+enum WakeCapLimit: Equatable {
+    /// No cap:  the seat's budget holds none, so any number of wakes of this kind is allowed.
+    case noLimit
+    /// 0:  no wake of this kind is allowed.
+    case paused
+    /// A cap.
+    case cap(ListenerConfigValue)
+    /// Nothing read says what the limit is, such as a file that was not read beside a status with
+    /// no budget.  It is never shown as No Limit.
+    case notKnown
+
+    /// The limit a wake cap's value sets:  none is No Limit, 0 is Paused, and any other value is a
+    /// cap.
+    init(_ value: ListenerConfigValue?) {
+        guard let value else {
+            self = .noLimit
+            return
+        }
+        if case .number(let number) = value, number == 0 {
+            self = .paused
+            return
+        }
+        self = .cap(value)
+    }
+
+    /// The limit in the panel's words.
+    var text: String {
+        switch self {
+        case .noLimit: return WakeSettingKey.noLimitText
+        case .paused: return WakeSettingKey.pausedText
+        case .cap(let value): return value.displayText
+        case .notKnown: return "not known"
+        }
+    }
+
+    /// What follows a count of wakes on the usage line:  " of 6", " of 0 (Paused)", " (No Limit)",
+    /// or " (limit not known)".
+    var usageSuffix: String {
+        switch self {
+        case .noLimit: return " (\(WakeSettingKey.noLimitText))"
+        case .paused: return " of 0 (\(WakeSettingKey.pausedText))"
+        case .cap(let value): return " of \(value.displayText)"
+        case .notKnown: return " (limit not known)"
+        }
+    }
+
+    /// Whether a count has reached the limit.  Paused is always reached, and No Limit, or a limit
+    /// that is not known, never is.
+    func isReached(by count: Int) -> Bool {
+        switch self {
+        case .paused:
+            return true
+        case .cap(let value):
+            guard case .number(let number) = value else { return false }
+            return Double(count) >= number
+        case .noLimit, .notKnown:
+            return false
+        }
+    }
+}
+
 /// One setting of one seat,  as the panel shows it.
 struct WakeSetting: Identifiable, Equatable {
     /// What a field shows for a setting the file does not hold.
@@ -916,20 +977,48 @@ struct WakeSetting: Identifiable, Equatable {
     /// is No Limit in effect.
     var liveNoLimit: Bool = false
 
+    /// The limit the file sets for a wake cap.  A file that was read and holds none is No Limit,
+    /// whether the eavesdropper agrees (`unset`), publishes a cap (`drift`), or did so in a status
+    /// that is not current (`stale`).  A file that was not read (`unknown`), a seat the Mac's
+    /// eavesdropper does not run (`seatOff`) and one held elsewhere make no claim.
+    var fileLimit: WakeCapLimit {
+        if let configured { return WakeCapLimit(configured) }
+        switch state {
+        case .unset, .drift, .stale:
+            return .noLimit
+        case .match, .notOwned, .unpublished, .off, .unknown, .heldElsewhere, .seatOff:
+            return .notKnown
+        }
+    }
+
+    /// The limit the eavesdropper published for a wake cap:  the cap its budget holds, No Limit
+    /// when its budget leaves the cap out, and not known when it published no budget.
+    var liveLimit: WakeCapLimit {
+        if let live { return WakeCapLimit(live) }
+        return liveNoLimit ? .noLimit : .notKnown
+    }
+
+    /// The limit a wake cap holds the seat to, the way the grid reads it:  what the eavesdropper
+    /// published when it reported a budget, and otherwise what a file that was read holds.  A file
+    /// that was not read beside a status with no budget leaves it not known, never No Limit.
+    var effectiveLimit: WakeCapLimit {
+        let published = liveLimit
+        return published == .notKnown ? fileLimit : published
+    }
+
     /// What the file's column shows when it is not a field:  a wake cap reads No Limit when the
     /// file was read and holds none, and Paused at 0.  A file that was not read is never No Limit.
     var fileWords: String {
-        if key.isWakeCap, configured != nil || state == .unset {
-            return WakeSettingKey.wakeCapText(configured)
+        if key.isWakeCap, fileLimit != .notKnown {
+            return fileLimit.text
         }
         return configured?.displayText ?? "not set"
     }
 
     /// What the eavesdropper's column shows.
     var liveWords: String {
-        if key.isWakeCap {
-            if let live { return WakeSettingKey.wakeCapText(live) }
-            if liveNoLimit { return WakeSettingKey.noLimitText }
+        if key.isWakeCap, liveLimit != .notKnown {
+            return liveLimit.text
         }
         return live?.displayText ?? "not reported"
     }
@@ -1118,10 +1207,34 @@ struct WakeSeat: Identifiable, Equatable {
         settings.filter { $0.contractDifference != nil }
     }
 
-    /// The value a cap is held at:  the eavesdropper's when it published one, else the file's.
-    func cap(_ key: WakeSettingKey) -> String? {
-        guard let setting = settings.first(where: { $0.key == key }) else { return nil }
-        return setting.live?.displayText ?? setting.configured?.displayText
+    /// The limit a wake cap holds the seat to, read the way its row reads it
+    /// (`WakeSetting.effectiveLimit`), or not known for a seat with no such row.
+    func capLimit(_ key: WakeSettingKey) -> WakeCapLimit {
+        guard key.isWakeCap, let setting = settings.first(where: { $0.key == key }) else { return .notKnown }
+        return setting.effectiveLimit
+    }
+
+    /// The wake counts beside the limits their caps hold the seat to, and the failed wakes.  A
+    /// count that has reached its limit is emphasised, and one under No Limit, or under a limit
+    /// that is not known, never is.  The windows are rolling:  the last hour and the last 24 hours,
+    /// counted the way the runtime counts them.
+    var usageFacts: [WakeFact] {
+        let floor = usage.atLeast ? "at least " : ""
+        func of(_ count: Int, _ key: WakeSettingKey, _ what: String) -> WakeFact {
+            let held = capLimit(key)
+            return WakeFact(text: "\(floor)\(count)\(held.usageSuffix) \(what)", emphasised: held.isReached(by: count))
+        }
+        var facts = [
+            of(usage.wakesThisHour, .wakesPerHour, "wakes in the last hour"),
+            of(usage.wakesThisDay, .wakesPerDay, "wakes in the last 24 hours"),
+            of(usage.ownerThisDay, .ownerPerDay, "owner wakes in the last 24 hours"),
+            of(usage.worstTopicThisHour, .perTopicPerHour, "on the busiest topic, last hour"),
+            of(usage.worstOwnerTopicThisHour, .ownerPerTopicPerHour, "on the busiest owner topic, last hour"),
+        ]
+        if usage.failedThisDay > 0 {
+            facts.append(WakeFact(text: "\(floor)\(usage.failedThisDay) failed in the last 24 hours", emphasised: true))
+        }
+        return facts
     }
 
     /// Whether a current status says the seat's routine cannot be reached.
@@ -1890,7 +2003,8 @@ enum WakeSettingsBuilder {
     ///   * a setting the engine does not enforce:  never a pass
     ///   * the eavesdropper says the file turns this seat off:  it is using nothing,  and that is the
     ///     file's own choice,  not a problem
-    ///   * the file holds nothing:  the live value is the default
+    ///   * the file holds nothing:  the live value is the default, except for a wake cap, which is
+    ///     then No Limit, so a cap the eavesdropper published differs from it:  DRIFT
     ///   * the eavesdropper reported nothing for this seat:  what it is using is unknown,  and that is
     ///     a problem,  because its status could not be read or it is not running the seat
     ///   * the eavesdropper reported the seat and not this setting:  it does not publish it
@@ -1914,7 +2028,13 @@ enum WakeSettingsBuilder {
         }
         // The file first:  a setting nobody holds is the eavesdropper's default,  and a
         // setting only the file holds is one the eavesdropper does not publish.
-        guard let configured else { return .unset }
+        guard let configured else {
+            // Since #1735 a wake cap the file holds none of is No Limit, so a cap the eavesdropper
+            // published is not what the file chooses:  the two differ.  Every other setting the
+            // file leaves out is the eavesdropper's default.
+            if key.isWakeCap, live != nil { return .drift }
+            return .unset
+        }
         guard let live else {
             // A wake cap the eavesdropper's budget leaves out is No Limit in effect, so a cap the
             // file holds is not what it uses.
@@ -1941,6 +2061,10 @@ enum WakeSettingsBuilder {
                 using = WakeSettingKey.wakeCapText(live)
             } else {
                 using = live?.displayText ?? "something else"
+            }
+            // A wake cap the file leaves out is No Limit, and the note says so in those words.
+            if key.isWakeCap, configured == nil {
+                return "The eavesdropper is using \(using),  and the file holds no cap, so it says No Limit."
             }
             return "The eavesdropper is using \(using),  and the file holds \(file)."
         case .notOwned:
