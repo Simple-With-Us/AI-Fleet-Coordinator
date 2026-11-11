@@ -201,6 +201,7 @@ class SeatPolicy:
         "wf_issue_create",
         "wf_issue_update",
         "wf_issue_comment",
+        "wf_issue_state_set",
         "wf_issue_comment_update",
         "wf_issue_comment_delete",
         "wf_review_comment_update",
