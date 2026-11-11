@@ -1743,7 +1743,11 @@ def _transcript_strings(
         (quoted if inside else own).append(value)
     elif isinstance(value, Mapping):
         kind = value.get("type")
-        hidden = inside or (isinstance(kind, str) and kind in _QUOTED_TYPES) or value.get("isMeta") is True
+        hidden = (
+            inside
+            or (isinstance(kind, str) and kind in _QUOTED_TYPES)
+            or value.get("isMeta") is True
+        )
         for key, item in value.items():
             _transcript_strings(item, own, quoted, hidden or key in _QUOTED_KEYS, depth + 1)
     elif isinstance(value, list):
