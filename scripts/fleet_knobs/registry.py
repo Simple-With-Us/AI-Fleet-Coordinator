@@ -14,6 +14,11 @@ secret by name.  Each entry carries what the loader and the narrowing rules need
             number is (idle hours before a commit)
   local     "narrow" (a local file or STOP file may make the knob narrower) or "deny" (no
             local override at all:  an owner id or a launch timestamp)
+  folder    the Infisical folder (prod, AI Fleet Coordinator) that holds it, "/" by default.
+            A process fetches each folder its reads need, and only those, so a reader whose
+            knobs sit in their own folder can run on a token scoped to that folder alone (a
+            token scoped to "/" reaches every folder under it).  Each folder has its own
+            last-known-good copy and its own failed-fetch marker (lkg.py).
 
 What the owner reads in Muster's Controls tab comes from the same entry:
 
@@ -43,11 +48,17 @@ from ``scripts/`` and commit all three.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
 KINDS = ("str", "int", "bool", "enum", "list", "caps")
 HOSTS = ("mac", "server", "both", "unknown")
+ROOT_FOLDER = "/"
+# "/" or lower-case segments under it:  the same text names a file in lkg.py, so nothing else.
+FOLDER_PATTERN = re.compile(r"^/(?:[a-z0-9][a-z0-9-]{0,62}(?:/[a-z0-9][a-z0-9-]{0,62}){0,3})?$")
+# The wake router's own folder (OPS-1048):  its read token is scoped to prod:/wake-router only.
+WAKE_ROUTER_FOLDER = "/wake-router"
 
 # Linear user ids are UUIDs.  The launch timestamp is ISO 8601 with an offset or Z.
 UUID_PATTERN = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -85,10 +96,13 @@ class Spec:
     example: str = ""
     once: bool = False
     requires_explicit: bool = False
+    folder: str = ROOT_FOLDER
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
             raise ValueError(f"{self.name}: unknown kind {self.kind!r}")
+        if not FOLDER_PATTERN.match(self.folder):
+            raise ValueError(f"{self.name}: folder must be / or lower-case segments under it")
         if self.kind == "enum" and (not self.choices or self.default not in self.choices):
             raise ValueError(f"{self.name}: an enum needs choices and a default among them")
         if self.kind == "bool" and (
@@ -604,7 +618,8 @@ REGISTRY: tuple[Spec, ...] = (
     ),
     # W2 the wake router (scripts/simple_tools/wake_settings.py, OPS-1048).  The one long-running
     # reader:  it loads these at startup and refreshes them in the background.  A test keeps the
-    # defaults equal to wake_router.ROUTER_DEFAULTS and claude_wake.DEFAULTS.
+    # defaults equal to wake_router.ROUTER_DEFAULTS and claude_wake.DEFAULTS.  Every one is in
+    # /wake-router, so the router's read token is scoped to that folder and reads nothing else.
     _S(
         "WAKE_ROUTER_DELIVERY_ENABLED",
         "bool",
@@ -617,6 +632,7 @@ REGISTRY: tuple[Spec, ...] = (
         label="Wake Delivery On",
         hosts="server",
         consumers=_WAKE,
+        folder=WAKE_ROUTER_FOLDER,
         requires=(("true", "WAKE_ROUTER_DELIVERY_SEATS"),),
         consequences=(("true", "The wake router delivers wakes for the seats listed."),),
     ),
@@ -631,6 +647,7 @@ REGISTRY: tuple[Spec, ...] = (
         label="Seats Wake Delivery Covers",
         hosts="server",
         consumers=_WAKE,
+        folder=WAKE_ROUTER_FOLDER,
     ),
     _S(
         "WAKE_ROUTER_WORKERS",
@@ -645,6 +662,7 @@ REGISTRY: tuple[Spec, ...] = (
         label="Wake Router Workers",
         hosts="server",
         consumers=_WAKE,
+        folder=WAKE_ROUTER_FOLDER,
         unit="threads",
     ),
     _S(
@@ -660,6 +678,7 @@ REGISTRY: tuple[Spec, ...] = (
         label="Most Wake Deliveries At Once",
         hosts="server",
         consumers=_WAKE,
+        folder=WAKE_ROUTER_FOLDER,
         unit="deliveries",
     ),
     _S(
@@ -675,6 +694,7 @@ REGISTRY: tuple[Spec, ...] = (
         label="Most Wake Delivery Tries",
         hosts="server",
         consumers=_WAKE,
+        folder=WAKE_ROUTER_FOLDER,
         unit="tries",
     ),
     _S(
@@ -689,6 +709,7 @@ REGISTRY: tuple[Spec, ...] = (
         label="Wake Retry Backoff",
         hosts="server",
         consumers=_WAKE,
+        folder=WAKE_ROUTER_FOLDER,
         format="whole seconds separated by commas",
         example="30,120,300,900",
     ),
@@ -705,6 +726,7 @@ REGISTRY: tuple[Spec, ...] = (
         label="Busy Chat Retry Wait",
         hosts="server",
         consumers=_WAKE,
+        folder=WAKE_ROUTER_FOLDER,
         unit="seconds",
     ),
     _S(
@@ -720,6 +742,7 @@ REGISTRY: tuple[Spec, ...] = (
         label="Unreachable Host Retry Wait",
         hosts="server",
         consumers=_WAKE,
+        folder=WAKE_ROUTER_FOLDER,
         unit="seconds",
     ),
     _S(
@@ -735,6 +758,7 @@ REGISTRY: tuple[Spec, ...] = (
         label="Longest A Wake May Wait",
         hosts="server",
         consumers=_WAKE,
+        folder=WAKE_ROUTER_FOLDER,
         unit="seconds",
     ),
     _S(
@@ -751,6 +775,7 @@ REGISTRY: tuple[Spec, ...] = (
         label="Wake Router Shutdown Wait",
         hosts="server",
         consumers=_WAKE,
+        folder=WAKE_ROUTER_FOLDER,
         unit="seconds",
     ),
     _S(
@@ -766,6 +791,7 @@ REGISTRY: tuple[Spec, ...] = (
         label="Wake Resume Time Limit",
         hosts="both",
         consumers=_WAKE,
+        folder=WAKE_ROUTER_FOLDER,
         unit="seconds",
     ),
     _S(
@@ -781,6 +807,7 @@ REGISTRY: tuple[Spec, ...] = (
         label="Wake Confirmation Wait",
         hosts="both",
         consumers=_WAKE,
+        folder=WAKE_ROUTER_FOLDER,
         unit="seconds",
     ),
     _S(
@@ -796,6 +823,7 @@ REGISTRY: tuple[Spec, ...] = (
         label="Wake Router Settings Refresh",
         hosts="server",
         consumers=_WAKE,
+        folder=WAKE_ROUTER_FOLDER,
         unit="seconds",
     ),
     _S(
@@ -810,12 +838,37 @@ REGISTRY: tuple[Spec, ...] = (
         label="Wake Router Mac Destination",
         hosts="server",
         consumers=_WAKE,
+        folder=WAKE_ROUTER_FOLDER,
         format="an ssh destination, with no options",
+    ),
+    _S(
+        "WAKE_ROUTER_CLAUDE_KEY",
+        "str",
+        "W2",
+        secret=True,
+        pattern=r"^[!-~]{16,512}$",
+        note="the bearer Claude's wake router checks on every request, the same value as the listener's "
+        "CLAUDE_ROUTINE_KEY;  never cached, and while it cannot be read the router refuses every request "
+        "and says why on /health",
+        group="Wake Router",
+        label="Claude Wake Router Bearer",
+        hosts="server",
+        consumers=_WAKE,
+        folder=WAKE_ROUTER_FOLDER,
     ),
 )
 
 BY_NAME: dict[str, Spec] = {s.name: s for s in REGISTRY}
 assert len(BY_NAME) == len(REGISTRY), "duplicate knob name in REGISTRY"
+# Every folder a knob lives in, root first and then in name order.
+FOLDERS: tuple[str, ...] = tuple(
+    sorted({s.folder for s in REGISTRY}, key=lambda f: (f != ROOT_FOLDER, f))
+)
+
+
+def names_in(folder: str) -> list[str]:
+    """The registered names one folder holds, in registry order."""
+    return [s.name for s in REGISTRY if s.folder == folder]
 
 
 def spec_for(name: str) -> Spec:

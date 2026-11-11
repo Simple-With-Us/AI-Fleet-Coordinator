@@ -592,15 +592,13 @@ def _same_shape(value: object, default: object) -> bool:
     return isinstance(value, str)
 
 
-def read_key(path: Path) -> str:
-    """The routine key, from a 0600 file, on every request.  "" when it is missing, short or open
-    to anyone else."""
-    try:
-        key = path.read_text(encoding="utf-8").strip()
-        mode = os.stat(path).st_mode & 0o777
-    except OSError:
-        return ""
-    return "" if mode & 0o077 or len(key) < 16 else key
+# The shortest routine key the router accepts, as the old key file check enforced.
+KEY_MIN_LENGTH = 16
+# Where the router gets its routine key:  a callable answering (key, why), with the key empty and
+# `why` a short reason token when there is none.  The router asks on every request and never
+# keeps the answer.  The service passes the settings' secret knob (wake_settings.routine_key);
+# a test passes a fixed key.
+KeySource = Callable[[], tuple[str, str]]
 
 
 def command_platform(
@@ -683,7 +681,7 @@ class Router:
         env: Mapping[str, str],
         config: Mapping[str, Any],
         state: Path,
-        key_file: Path,
+        key: KeySource,
         consult: Consult | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -691,7 +689,7 @@ class Router:
         self.env = env
         self.config = config
         self.state = state
-        self.key_file = key_file
+        self._key = key
         self.consult = consult
         self.clock = clock
         self._entries: dict[str, dict[str, Any]] = {}
@@ -700,6 +698,17 @@ class Router:
         self._stopping = False
         self._threads: list[threading.Thread] = []
         self._retiring: set[threading.Thread] = set()
+
+    def routine_key(self) -> tuple[str, str]:
+        """(key, why) for this request:  the key, or "" and a reason token.  A source that fails
+        or answers a short key gives no key, so nothing is ever let through unchecked."""
+        try:
+            key, why = self._key()
+        except Exception as exc:  # noqa: BLE001 - no key is the answer, never a crash
+            return "", "key-error-%s" % type(exc).__name__
+        if not isinstance(key, str) or len(key) < KEY_MIN_LENGTH:
+            return "", (why if isinstance(why, str) and why else "key-short")
+        return key, ""
 
     # ---- the pick ---------------------------------------------------------------------------
 
@@ -1589,9 +1598,10 @@ def make_handler(router: Router) -> type[BaseHTTPRequestHandler]:
                 self.close_connection = True  # the client left, or the deadline cut it off
 
         def _authorized(self) -> bool:
-            key = read_key(router.key_file)
+            key, why = router.routine_key()
             if not key:
-                self._answer(503, {"error": "the routine key is missing or unreadable"})
+                # Without the key nothing can be checked, so nothing is let in.
+                self._answer(503, {"error": "the routine key is unavailable (%s)" % why})
                 return False
             given = (self.headers.get("Authorization") or "").encode("utf-8")
             # Constant time:  the bearer is the only thing between the network and a wake.
@@ -1602,7 +1612,18 @@ def make_handler(router: Router) -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self) -> None:
             if self.path == "/health":
-                self._answer(200, {"seat": seat, "healthy": True})
+                key, why = router.routine_key()
+                if key:
+                    self._answer(200, {"seat": seat, "healthy": True})
+                else:  # a reason token only, never a value
+                    self._answer(
+                        503,
+                        {
+                            "seat": seat,
+                            "healthy": False,
+                            "reason": "routine-key-unavailable:" + why,
+                        },
+                    )
                 return
             found = re.fullmatch(r"/receipt/([A-Za-z0-9][A-Za-z0-9._-]{0,127})", self.path or "")
             if not found:
@@ -1659,14 +1680,14 @@ def make_handler(router: Router) -> type[BaseHTTPRequestHandler]:
 
 
 def serve(router: Router, bind: str, port: int) -> int:
-    """Run the router.  It refuses to start without its registry configuration or its key:  a
-    router missing either would answer every wake and look healthy doing it.  The port is bound
-    before anything is replayed, so a second instance stops there and touches no pending wake.
-    SIGTERM closes the port, stops new work and waits for running deliveries."""
+    """Run the router.  It refuses to start without its registry configuration:  a router missing
+    it would answer every wake and look healthy doing it.  It starts without its routine key, but
+    then refuses every request with 503 and says why on /health, so an Infisical outage at start
+    leaves a router that tells the truth and takes the key once a refresh reads it.  The port is
+    bound before anything is replayed, so a second instance stops there and touches no pending
+    wake.  SIGTERM closes the port, stops new work and waits for running deliveries."""
     if not registry_api.base_url(router.env):
         raise SystemExit("wake-router: the registry API URL is not set")
-    if not read_key(router.key_file):
-        raise SystemExit("wake-router: the routine key file is missing, short or group-readable")
     try:
         server = ThreadingHTTPServer((bind, port), make_handler(router))
     except OSError as exc:
