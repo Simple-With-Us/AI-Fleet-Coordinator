@@ -35,7 +35,7 @@ marked seen only after the POST is answered.
   `delivery.jsonl`.  `zc-wake-bridge deliver --wake-id ... --topic ...` runs one delivery by
   hand, the same code the POST path runs.
 - `scripts/simple_tools/server/zc-wake-bridge.service`  the unit template.  It sources the shared
-  registry env file (`~/.local/bin/mm-registry-env`) exactly as the letter hooks do, binds the
+  registry env file (`~/.local/bin/operator-registry-env`) exactly as the letter hooks do, binds the
   address `/etc/zc-wake-bridge.env` names (the tailnet IP;  loopback without one), and runs the
   checkout out of fleet-cli `current`, so a release move never leaves a dead path.
 - Target rules:  a subagent session never wins (the store's `task_type` says so), a session on
