@@ -8,6 +8,7 @@ No prefix/path exemption, caller override, baseline inference or diff-only scan.
 from collections.abc import Iterable
 from hashlib import sha256
 
+from .patch_secretscan import scan_file
 from .secret_scan import find_secret
 
 # Source of truth: the corrected rename checkpoint
@@ -110,19 +111,21 @@ def unreviewed_file_secret(
 ) -> str | None:
     """Scan all bytes; accept a match only for an exact reviewed attestation.
 
-    Loaded credential values are absolute: they refuse before the shape scan
-    and an attestation never waives them. The ordinary scanner is unchanged
-    for messages, titles, binary assets and every unattested file. A byte
-    change, new secret, different repo or moved destination invalidates the
-    attestation and is refused before any write.
+    Every nonempty loaded credential value is absolute, even if short: loaded
+    values refuse before the shape scan and an attestation never waives them.
+    Legacy attestations keep their full-byte contract for the dedicated fake
+    shapes they reviewed.  Bytes no legacy review attested also pass through
+    the owning generic-fixture scanner: its exact (repo, path, sha256)
+    admission waives assigned credential and assigned secret labels only,
+    while dedicated shapes and Zulip-shaped keys stay absolute on that path.
     """
     text = raw.decode("utf-8", "replace")
     for value in known:
-        if value and len(value) >= 8 and value in text:
+        if value and value in text:
             return "a loaded credential"
-    category = find_secret(text)
-    if category is None:
-        return None
     if (repo, path, sha256(raw).hexdigest()) in _REVIEWED_FIXTURES:
         return None
-    return category
+    category = find_secret(text)
+    if category is not None and category not in ("assigned credential", "assigned secret"):
+        return category
+    return scan_file(repo, path, text, known=())

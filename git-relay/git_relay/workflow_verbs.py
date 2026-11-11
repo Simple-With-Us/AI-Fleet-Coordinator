@@ -962,6 +962,10 @@ class WorkflowVerbs:
         # The handle is minted for exactly one authorized action and repository.
         self.action, self.repo = action, repo
         self.workflow_write_allowed = False
+        # Real loaded-credential population for the file-publication scan: the
+        # installation token this handle sends, plus the caller-presented
+        # credential when for_action threads it.  The syntax probe sets ().
+        self.loaded_known = (bearer,) if bearer else ()
 
     @classmethod
     def check_shape(cls, action, args, repo):
@@ -998,13 +1002,14 @@ class WorkflowVerbs:
         )
         handle.action, handle.repo = action, repo
         handle.workflow_write_allowed = True  # syntax probe only, no bearer or I/O
+        handle.loaded_known = ()  # a syntax probe carries no real credential
         try:
             handle.run(action, args)
         except _Reached:
             return
 
     @classmethod
-    def for_action(cls, client, policy, minter, seat, action, repo, preauthorized=False, args=None):
+    def for_action(cls, client, policy, minter, seat, action, repo, preauthorized=False, args=None, caller_token=None):
         """Seat is already authenticated by the broker; authorize once, mint least permission.
 
         preauthorized is for Relay.handle only: it has just run policy.authorize for this
@@ -1041,6 +1046,9 @@ class WorkflowVerbs:
         except Exception:
             raise Unknown("own App credential unavailable") from None
         handle = cls(client, policy, seat, token, app_slug, action, repo)
+        # Thread the caller-presented credential for the loaded-credential
+        # scan only; it is never logged or returned.
+        handle.loaded_known = tuple(v for v in (caller_token, token) if v)
         handle.workflow_write_allowed = needs_workflows
         # Kept so merge/update-branch can elevate for a PR that edits workflow files.
         handle._elevation = (minter, app_slug, ceiling)
@@ -6941,7 +6949,7 @@ class WorkflowVerbs:
                     validated_blobs[sha] = decoded_raw
                 decoded_raw = validated_blobs[sha]
                 # Cache verified bytes only, not path-dependent scan approvals.
-                if unreviewed_file_secret(repo, path, decoded_raw, known=[self.bearer]):
+                if unreviewed_file_secret(repo, path, decoded_raw, known=self.loaded_known):
                     raise Refused("credential-shaped content refused")
                 try:
                     decoded = decoded_raw.decode("utf-8")
@@ -7505,7 +7513,7 @@ class WorkflowVerbs:
             raise Refused("invalid content") from None
         if len(raw) > MAX_FILE_RAW:
             raise Refused("file too large")
-        if find_secret(message) or unreviewed_file_secret(repo, path, raw, known=[self.bearer]):
+        if find_secret(message) or unreviewed_file_secret(repo, path, raw, known=self.loaded_known):
             raise Refused("credential-shaped content refused")
         payload = {"message": message, "content": content, "branch": branch}
         if "prior_sha" in args:
@@ -7811,7 +7819,7 @@ class WorkflowVerbs:
             total_raw += len(raw)
             if len(raw) > MAX_FILE_RAW or total_raw > MAX_FILES_RAW:
                 raise Refused("files too large")
-            if unreviewed_file_secret(repo, path, raw, known=[self.bearer]):
+            if unreviewed_file_secret(repo, path, raw, known=self.loaded_known):
                 raise Refused("credential-shaped content refused")
             plan.append((path, content))
         if find_secret(message):
