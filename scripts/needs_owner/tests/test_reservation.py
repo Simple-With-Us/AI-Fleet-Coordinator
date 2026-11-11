@@ -126,3 +126,18 @@ class PostWriteTests(BarCase):
         self.assertEqual(failed.code,6,failed.err)
         self.assertEqual(len(w.board_state()["issues"]),1)
         self.assertEqual(bar.filings_in_window(w.env(),"CLAUDE",w.now.timestamp()),1)
+
+    def test_rate_limit_after_file_output_keeps_created_issue_count(self):
+        from needs_owner.proc import Runner,Result
+        w=self.world("enforce",1)
+        real=Runner.board
+        def partial(runner,*args):
+            result=real(runner,*args)
+            if args[0]=="file" and result.ok:
+                return Result(5,result.out,"attachment rate limit")
+            return result
+        with mock.patch.object(Runner,"board",partial):
+            failed=self.file(why="money",w=w)
+        self.assertEqual(failed.code,5,failed.err)
+        self.assertEqual(len(w.board_state()["issues"]),1)
+        self.assertEqual(bar.filings_in_window(w.env(),"CLAUDE",w.now.timestamp()),1)
