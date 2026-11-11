@@ -12,7 +12,7 @@ policy drift, not as a lesson miner.  DeepSeek's read-only corpus advice is reje
   a rare policy scan.
 - `iter_chat_logs` yields only **user** turns that look like an owner ruling / infra policy
   (seat `OWNER`, category `preference` or `infrastructure`).  Full sessions are not Docs.
-- fleet-recall skill + AGENT-SYNC: contribute every reusable lesson; do not treat contribute as
+- fleet-recall skill + FLEET-PROTOCOL: contribute every reusable lesson; do not treat contribute as
   last-resort after board/Notes.
 - Staged `~/apps/fleet-rag/mined/chat/*.jsonl` (~50k session dumps) is **not** ingested into
   `fleet-agents`.  Extra markdown staging can still ride the expanded `doc` walker.

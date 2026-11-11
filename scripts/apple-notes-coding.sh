@@ -67,7 +67,7 @@
 # The action log (AFC-486):  every run that gets past argument parsing appends one JSON line to
 # $APPLE_NOTES_ACTION_LOG (default ~/Library/Logs/fleet/apple-notes-actions.jsonl, "off" turns it off):  what was
 # asked, how it ended and how long it took, never a note's text.  AGENT_NOTES_CALLER (default script),
-# AGENT_NOTES_REQUEST_ID and AGENT_NOTES_REQUESTER name who asked;  the callers in scripts/agent_sync/notes.py set
+# AGENT_NOTES_REQUEST_ID and AGENT_NOTES_REQUESTER name who asked;  the callers in scripts/simple_tools/notes.py set
 # them.  A preview (APPLE_NOTES_PRINT_HTML=1 on a create or update) writes nothing to Notes and logs nothing.
 #
 # Exit codes:  0 done (a create/update whose pin was skipped is still 0), 2 usage or session error,
@@ -541,7 +541,7 @@ fi
 # Data copy of fleet-apps.json `sessionIds`;  scripts/test_session_ids_parity.py keeps it equal.
 SESSION_ID_PATTERN='^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$'
 SESSION_GENERIC_ENV="AGENT_SESSION"
-SESSION_FALLBACK_ENV="CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID CURSOR_CONVERSATION_ID CURSOR_AGENT_CHAT_ID GROK_SESSION_ID OPENCODE_SESSION_ID __MAVIS_RUNTIME_SESSION_ID"
+SESSION_FALLBACK_ENV="ANTIGRAVITY_CONVERSATION_ID CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID CURSOR_CONVERSATION_ID CURSOR_AGENT_CHAT_ID GROK_SESSION_ID OPENCODE_SESSION_ID __MAVIS_RUNTIME_SESSION_ID"
 
 _session_seat_token() {  # $1 = a seat or Notes name -> the canonical seat tag, upper case ("" when nothing usable)
   local t
@@ -579,6 +579,7 @@ _session_exempt() {  # $1 = seat tag:  one thread with the owner, so no session 
 
 _session_envs() {  # $1 = seat tag -> the platform variables to try, in order
   case "$1" in
+    AG) echo ANTIGRAVITY_CONVERSATION_ID ;;
     CLAUDE) echo CLAUDE_CODE_SESSION_ID ;;
     CODEX) echo CODEX_THREAD_ID ;;
     CURSOR) echo CURSOR_CONVERSATION_ID CURSOR_AGENT_CHAT_ID ;;
@@ -591,6 +592,7 @@ _session_envs() {  # $1 = seat tag -> the platform variables to try, in order
 
 _session_own_var() {  # $1 = seat tag -> its own variable, for the refusal text
   case "$1" in
+    AG) echo ANTIGRAVITY_CONVERSATION_ID ;;
     CLAUDE) echo CLAUDE_CODE_SESSION_ID ;; CODEX) echo CODEX_THREAD_ID ;; CURSOR) echo CURSOR_CONVERSATION_ID ;;
     GROK) echo GROK_SESSION_ID ;; MM) echo __MAVIS_RUNTIME_SESSION_ID ;; OPENCODE) echo OPENCODE_SESSION_ID ;;
   esac
@@ -780,7 +782,7 @@ _pin_retry_on() {
   if [[ -z "${_PIN_RETRY:-}" ]]; then
     local knob="" here candidate
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
-    for candidate in "$here" "$HOME/apps/needs-owner" "${AGENT_SYNC_RUNTIME:-$HOME/apps/lanes/_managed/fleet/agent-sync-runtime}/scripts"; do
+    for candidate in "$here" "$HOME/apps/needs-owner" "${SIMPLE_TOOLS_RUNTIME:-$HOME/apps/lanes/_managed/fleet/simple-tools-runtime}/scripts"; do
       if [[ -n "$candidate" && -d "$candidate/fleet_knobs" ]] && command -v python3 >/dev/null 2>&1; then
         knob="$(cd "$candidate" && python3 -m fleet_knobs get APPLE_NOTES_PIN_RETRY 2>/dev/null)" || knob=""
         [[ -n "$knob" ]] && break
@@ -1103,17 +1105,16 @@ def inline(s: str) -> str:
         return "\x00code" + str(len(code_spans) - 1) + "\x00"
     s = re.sub(r"`[^`]+`", hold_code_span, s)
     # Notes.app is an HTML renderer — two ASCII spaces collapse.
-    # Sentence gap in HTML is the numeric reference for a NARROW NO-BREAK SPACE, `&#8239; ` + space.
+    # Sentence gap in HTML is the numeric reference `&#160; ` + space, the same U+00A0 plus a
+    # normal space as every other surface.
     # Owner ruling 2026-10-23:  never the named `&nbsp;` entity.  The numeric reference adds no
     # raw non-ASCII byte to the note HTML.
-    # AFC-552:  the character the reference names decides whether the gap arrives.  Apple Notes
-    # normalises a NO-BREAK space away on import, so `&#160; ` came back as two ordinary spaces,
-    # which the renderer collapses to one, and the gap never reached the note at all.  The NARROW
-    # NO-BREAK SPACE survives the import unchanged.  Measured Oct 26, 2026 by writing ten candidate
-    # mechanisms into a real note and reading them back:  the no-break space, the named entity
-    # and two of them all come back as ordinary spaces, and the narrow no-break, en, em, thin and
-    # ideographic spaces all come back as themselves.
-    s = re.sub(r"([.!?]) {2,}", r"\1&#8239; ", s)
+    # Oct 29, 2026, measured through this writer:  Apple Notes stores the no-break space as an
+    # ordinary space on import, so the note holds two ordinary spaces after a sentence end, and
+    # Notes.app shows two ordinary spaces as a wide gap (the owner's screenshot of the gap
+    # sample note).  A one-space gap is the thing that reads as no gap.  The AFC-552 premise that
+    # the renderer collapses a run of ordinary spaces was never checked on screen.
+    s = re.sub(r"([.!?]) {2,}", r"\1&#160; ", s)
     s = re.sub(r"\x00code(\d+)\x00", lambda m: code_spans[int(m.group(1))], s)
     # links [text](url) — after escape brackets still match
     s = re.sub(
@@ -1330,13 +1331,11 @@ PY
 }
 
 # Notes.app collapses ASCII double spaces.  Turn leftover `.  ` / `!  ` / `?  `
-# into `&#8239; ` so sentence gaps survive.  Skip <pre>, <code>, <style>, <script>.
+# into `&#160; ` so sentence gaps survive.  Skip <pre>, <code>, <style>, <script>.
 # Owner ruling 2026-10-23:  never the named `&nbsp;` entity.  The numeric reference adds no
 # raw non-ASCII byte to the note HTML.
-# AFC-552:  the character the reference names decides whether the gap arrives.  Apple Notes
-# normalises a NO-BREAK space away on import, so `&#160; ` came back as two ordinary spaces,
-# which the renderer collapses to one, and the gap never reached the note at all.  The NARROW
-# NO-BREAK SPACE survives the import unchanged.
+# Notes stores the no-break space as an ordinary space on import and still shows the pair as a
+# wide gap, so U+00A0 plus a normal space is the gap here too (measured Oct 29, 2026).
 # A sentence that ends INSIDE inline markup puts the closing tag between the punctuation
 # and the run of spaces (`Bold end.</b>  Next`), so the run never sits next to the
 # punctuation and the gap was lost.  The optional tag group carries the closing tag
@@ -1351,7 +1350,7 @@ for i, part in enumerate(parts):
     if i % 2 == 1:
         out.append(part)
         continue
-    out.append(re.sub(r"([.!?])(</[a-zA-Z][^>]*>)? {2,}", r"\1\2&#8239; ", part))
+    out.append(re.sub(r"([.!?])(</[a-zA-Z][^>]*>)? {2,}", r"\1\2&#160; ", part))
 sys.stdout.write("".join(out))
 '
 }
@@ -1501,25 +1500,32 @@ TEAM_TO_REPO = {
 #  under the workspace.  A reference that is not in this table is left as plain text.  It is never
 #  guessed at, because a project reference that links to the wrong thing is worse than one that does
 #  not link, and it is never treated as an issue, because the number in it is a project number and
-#  not an issue number.  A new project is added here and in scripts/zulip_linkifiers.py TARGET
-#  together:  the parity test fails until both sides name it.
+#  not an issue number.  The entries between the BEGIN and END lines are generated from Linear
+#  (Project.identifier and slugId) by scripts/linear_project_linkifiers.py, which the Operator runs
+#  on the Linear project webhook (AFC-565);  each path is the project id alone, which Linear opens
+#  even after a rename.  The same run updates scripts/zulip_linkifiers.py TARGET, and the parity
+#  test fails until both sides name the same projects.
 PROJECT_PATHS = {
-    #  The Muster fleet admin Mac app, which the fleet calls P-AFC-7.
-    "P-AFC-7": "muster-fleet-admin-mac-app-9c28cf61dcc8",
+    # BEGIN linear-projects:  generated by scripts/linear_project_linkifiers.py;  do not edit by hand
+    #  Muster: Fleet Admin Mac App, which the fleet calls P-AFC-7.
+    "P-AFC-7": "9c28cf61dcc8",
     #  Fleet GitOps, which the fleet calls P-AFC-8.
-    "P-AFC-8": "fleet-gitops-272cdd72e951",
-    #  The system prompt receipt port, which the fleet calls P-BF-1.
-    "P-BF-1": "system-prompt-receipt-port-bf-1411-cc08b4cf163b",
-    #  The BotFleet native macOS rewrite, which the fleet calls P-BF-6.
-    "P-BF-6": "botfleet-native-macos-rewrite-5afcbc055535",
-    #  The CTS shared dependency, which the fleet calls P-CTS-5.
-    "P-CTS-5": "cts-shared-dependency-a04bf2274b2d",
-    #  Mac resource management, which the fleet calls P-OPS-2.
-    "P-OPS-2": "mac-resource-mgmt-22f992634f02",
-    #  Fleet hygiene, which the fleet calls P-OPS-4.
-    "P-OPS-4": "fleet-hygiene-cross-team-32fd751b0b36",
-    #  The public websites, which the fleet calls P-SWU-3.
-    "P-SWU-3": "public-websites-6e26b4c70c72",
+    "P-AFC-8": "272cdd72e951",
+    #  System Prompt Receipt Port (BF-1411), which the fleet calls P-BF-1.
+    "P-BF-1": "cc08b4cf163b",
+    #  BotFleet Native macOS Rewrite, which the fleet calls P-BF-6.
+    "P-BF-6": "5afcbc055535",
+    #  CTS Shared Dependency, which the fleet calls P-CTS-5.
+    "P-CTS-5": "a04bf2274b2d",
+    #  Mac Resource Mgmt, which the fleet calls P-OPS-2.
+    "P-OPS-2": "22f992634f02",
+    #  Fleet hygiene (cross-team), which the fleet calls P-OPS-4.
+    "P-OPS-4": "32fd751b0b36",
+    #  Public Websites, which the fleet calls P-SWU-3.
+    "P-SWU-3": "6e26b4c70c72",
+    #  Telemetry for AI Platforms, which the fleet calls P-UM-9.
+    "P-UM-9": "dd28b9b2ee11",
+    # END linear-projects
 }
 
 #  A team that owns more than one repository.  A CTS issue is implemented in the shared congress
@@ -1903,7 +1909,7 @@ SENTRY_PROJECTS = (
     "FLEET-INFRA",
     "FLEETLINK",
     "HOGHUNTER",
-    "PERSONAL-SITE",
+    "BOTL-SITE",
     "SOCRATIC-TRADE",
     "USAGE-MONITOR",
 )
@@ -2452,7 +2458,7 @@ def fleet_dates(markup, gap_entity=False):
             parts[i] = _one_space_gaps(_ISO.sub(_fleet_date, part), gap_entity)
     return ''.join(parts)
 
-# Owner 2026-10-19:  a one-space sentence gap is widened too (the same rule as scripts/agent_sync/textfmt.py
+# Owner 2026-10-19:  a one-space sentence gap is widened too (the same rule as scripts/simple_tools/textfmt.py
 # single_gaps), so
 # a note reads the same whoever wrote it.  Known abbreviations, dotted words, initials and list markers are skipped.
 _ABBREV = frozenset('mr mrs ms dr st jr sr vs etc e.g i.e eg ie cf al approx dept est fig no nos vol ca mt ft sq'.split())
@@ -2469,12 +2475,12 @@ def _one_space_gaps(segment, gap_entity=False):
             if re.fullmatch(r'\s*\d{1,9}', segment[:m.start()]):
                 return m.group(0)
         _changes['gaps'] += 1
-        #  AFC-552:  the note body is HTML, so the gap is the numeric reference,
+        #  The note body is HTML, so the gap is the numeric reference for a no-break space,
         #  like the two HTML passes and with no raw non-ASCII byte in the note HTML.
         #  The mobile quick view is plain text that is embedded with html.escape, so
-        #  a reference there would reach the owner as the literal six characters.
-        #  It carries the character itself, which Notes keeps byte-intact.
-        return m.group(1) + ('&#8239; ' if gap_entity else '\u202f ')
+        #  a reference there would reach the owner as the literal five characters.
+        #  It carries the no-break space itself.
+        return m.group(1) + ('&#160; ' if gap_entity else '\xa0 ')
     return _GAP1.sub(repl, segment)
 
 inner = fleet_dates(inner, gap_entity=True)
@@ -2506,12 +2512,18 @@ if summary_text:
 sys.stdout.write('<div>' + stamp_p + extra_blocks + inner + '</div>')
 ")
 
-FULL_HTML=$(/usr/bin/python3 -c '
-import html, sys
-title = sys.argv[1]
-body = sys.argv[2]
-print("<h1>" + html.escape(title) + "</h1>" + body)
-' "$TITLE" "$BODY_HTML")
+#  The body goes in on stdin and only the title travels as an argument.  macOS gives a process
+#  1048576 bytes for the whole command line, the arguments and the environment together, and the
+#  Background Jobs Master List is about 1 MB of HTML, so an argument body did not fit:  it died
+#  with "Argument list too long" (exit 126) before the linkifier ran and before the note was
+#  written, so the pinned master list silently went stale.  The Notes write itself was never at
+#  risk, because osascript reads the HTML from a file.
+FULL_HTML=$(printf '%s' "$BODY_HTML" | NOTE_TITLE="$TITLE" /usr/bin/python3 -c '
+import html, os, sys
+title = os.environ.get("NOTE_TITLE", "")
+body = sys.stdin.read()
+sys.stdout.write("<h1>" + html.escape(title) + "</h1>" + body)
+')
 
 #  The linkifier runs on the whole note, so the date row and its pull request suffix are covered as well as the body.
 if [[ "$SKIP_BODY" == "0" ]]; then
@@ -2656,7 +2668,7 @@ if [[ "$MODE" == "pin" ]]; then
 else
   _pin_outcome="note saved unpinned"
 fi
-#  The "pin skipped:" line is read back by agent_sync.notes, which keeps the first 200 characters of the
+#  The "pin skipped:" line is read back by simple_tools.notes, which keeps the first 200 characters of the
 #  reason.  Each reason ends with $_pin_outcome, which tells a caller the note was saved, so every reason
 #  has to fit in 200 characters with a long lock path or that tail is cut off
 #  (scripts/test_apple_notes_pin.py checks the length of each one).

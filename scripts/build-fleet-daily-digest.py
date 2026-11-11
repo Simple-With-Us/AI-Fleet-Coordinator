@@ -868,6 +868,7 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
         return f"<li>{lead}{body}</li>"
 
     sections: list[str] = []
+    first = True
     for day in days:
         if day.is_empty():
             continue
@@ -892,11 +893,23 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
         list_block("Issues opened", day.issues_opened, "opened")
 
         day_label = esc(_format_day_heading(day.day))
-        sections.append(
-            f'<section class="day" id="{day.day.isoformat()}">'
-            f"<h2>{day_label}</h2>"
-            f'<p class="meta">{esc(day.counts_line())}</p>' + "".join(blocks) + "</section>"
-        )
+        if first:
+            first = False
+            sections.append(
+                f'<section class="day" id="{day.day.isoformat()}">'
+                f"<h2>{day_label}</h2>"
+                f'<p class="meta">{esc(day.counts_line())}</p>' + "".join(blocks) + "</section>"
+            )
+        else:
+            # Older days collapse so the page stays scannable; content is
+            # still in the DOM (and search-indexed) without rendering cost.
+            sections.append(
+                f'<details class="day" id="{day.day.isoformat()}">'
+                f"<summary><h2>{day_label}</h2>"
+                f'<p class="meta">{esc(day.counts_line())}</p></summary>'
+                + "".join(blocks)
+                + "</details>"
+            )
 
     body = "\n".join(sections) if sections else "<p>No activity in the lookback window.</p>"
 
@@ -917,17 +930,17 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
       --border: #e2e8f0;
       --st: #2563eb;
       --ct: #7c3aed;
-      --um: #ea580c;
+      --um: #c2410c;
       --dd: #b45309;
       --ps: #be123c;
-      --ar: #059669;
-      --cl: #6366f1;
-      --shared: #0d9488;
+      --ar: #047857;
+      --cl: #4f46e5;
+      --shared: #0f766e;
       --fleet: #475569;
-      --bf: #0284c7;
+      --bf: #0369a1;
       --hh: #92400e;
-      --clutch: #0ea5e9;
-      --cc: #0d9488;
+      --clutch: #0e7490;
+      --cc: #0f766e;
     }}
     * {{ box-sizing: border-box; }}
     body {{
@@ -945,8 +958,9 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
     h3 {{ font-size: 0.8rem; margin: 1rem 0 0.4rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }}
     .lede {{ color: var(--muted); margin: 0 0 2rem; }}
     .links {{ display: flex; flex-wrap: wrap; gap: 0.75rem 1.25rem; margin-bottom: 1.75rem; font-size: 0.95rem; }}
-    a {{ color: var(--link); text-decoration: none; }}
-    a:hover {{ text-decoration: underline; }}
+    a {{ color: var(--link); text-decoration: underline; }}
+    a:hover {{ text-decoration-thickness: 2px; }}
+    a:focus-visible {{ outline: 2px solid var(--link); outline-offset: 2px; border-radius: 2px; }}
     .day {{
       background: var(--card);
       border: 1px solid var(--border);
@@ -954,7 +968,10 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
       padding: 1rem 1.15rem 1.15rem;
       margin-bottom: 1rem;
       box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+      content-visibility: auto;
+      contain-intrinsic-size: auto 40rem;
     }}
+    details.day > summary {{ cursor: pointer; }}
     .meta {{ color: var(--muted); font-size: 0.9rem; margin: 0 0 0.5rem; }}
     ul {{ margin: 0.25rem 0 0; padding-left: 0; list-style: none; }}
     li {{
@@ -979,6 +996,7 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
     .item-body {{
       flex: 1 1 14rem;
       min-width: min(100%, 12rem);
+      overflow-wrap: anywhere;
     }}
     .repo {{
       display: inline-flex;
@@ -1090,6 +1108,23 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
     }}
     .legend-item .legend-label {{ color: var(--muted); }}
     .legend .agent {{ width: 1.15rem; height: 1.15rem; }}
+    @media (prefers-color-scheme: dark) {{
+      :root {{
+        --bg: #0f172a;
+        --card: #1e293b;
+        --text: #e2e8f0;
+        --muted: #94a3b8;
+        --link: #7dd3fc;
+        --border: #334155;
+      }}
+      h1 {{ color: #f1f5f9; }}
+      li:nth-child(even) {{ background: #0f172a; }}
+      code {{ background: #334155; color: #e2e8f0; }}
+      .repo.repo-with-icon {{ background: #0f172a; color: #e2e8f0; }}
+      .repo-app-icon {{ background: #0f172a; }}
+      .agent {{ background: #0f172a; }}
+      .legend-heading {{ color: #cbd5e1; }}
+    }}
   </style>
 </head>
 <body>
@@ -1240,13 +1275,20 @@ def main() -> int:
     (site_out / ".nojekyll").write_text("", encoding="utf-8")
     ics_out.write_bytes(ics_body.encode("utf-8"))
 
-    # Agent logo assets (Grok/Codex/Claude/…) — required for HTML chips
+    # Agent logo assets (Grok/Codex/Claude/…) — required for HTML chips.
+    # Copy only the basenames the generated page actually references so the
+    # published tree stays small when the source folder grows.
     logos_src = Path(__file__).resolve().parent.parent / "agent-logos"
     if logos_src.is_dir():
         logos_dst = site_out / "agent-logos"
         if logos_dst.exists():
             shutil.rmtree(logos_dst)
-        shutil.copytree(logos_src, logos_dst)
+        logos_dst.mkdir(parents=True, exist_ok=True)
+        referenced = set(re.findall(r"agent-logos/([A-Za-z0-9][A-Za-z0-9_.-]*)", html_doc))
+        for name in sorted(referenced):
+            src = logos_src / name
+            if src.is_file():
+                shutil.copy2(src, logos_dst / name)
 
     # Copies under site/ so Pages hosts HTML + both ICS feeds from one root
     cal_site = site_out / "calendar"

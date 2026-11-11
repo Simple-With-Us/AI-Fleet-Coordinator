@@ -2,9 +2,10 @@
 # fleet-recall-service bootstrap for a plain python:3.14-slim container (no git, no curl, no pip).
 #
 # 1. Fetch the public repo tarball with python urllib (reused if RECALL_TARBALL already exists).
-# 2. Extract scripts/fleet_rag and scripts/fleet-recall-service into RECALL_APP_DIR.
+# 2. Extract fleet_rag, the service and only the low-level scoped verifier library into RECALL_APP_DIR.
 # 3. Install the pinned gitleaks release so recall_contribute is gated exactly as on the Mac
-#    (download failure is logged and tolerated: recall_api then reports gitleaks-unavailable).
+#    (a failed install ABORTS by default; set RECALL_GITLEAKS_REQUIRED=0 to explicitly opt out
+#    and continue degraded, with recall_api reporting gitleaks-unavailable).
 # 4. exec python3 RECALL_APP_DIR/fleet-recall-service/server.py
 #
 # Env:
@@ -18,7 +19,8 @@
 #   RECALL_GITLEAKS_URL      override the release tarball URL (tests / mirrors)
 #   RECALL_GITLEAKS_SHA256   optional: refuse the tarball unless its sha256 matches
 #   RECALL_GITLEAKS_MIN_BYTES smallest plausible tarball (default 1000000; tests lower it)
-#   RECALL_GITLEAKS_REQUIRED 1 = a failed install aborts (the Dockerfile build); default continue
+#   RECALL_GITLEAKS_REQUIRED a failed install aborts by default (and with 1); 0 = explicit
+#                            opt-out, continue WITHOUT gitleaks (degraded secret scrubbing)
 #   RECALL_GITLEAKS_SKIP     1 = do not touch gitleaks at all
 #   RECALL_GITLEAKS_ONLY     1 = only run the gitleaks step (the Dockerfile RUN), no source fetch, no server
 # Everything else (RECALL_API_TOKEN, QDRANT_*, TEI_*, PORT) is read by server.py.  Nothing here
@@ -47,18 +49,24 @@ else:
     print(f"bootstrap: reusing {tarball}", flush=True)
 
 wanted = ("fleet_rag/", "fleet-recall-service/")
+verifier_files = ("fleet_secrets/__init__.py", "fleet_secrets/core.py")
 n = 0
 os.makedirs(app, exist_ok=True)
 with tarfile.open(tarball, "r:gz") as t:
     members = []
     for m in t.getmembers():
         parts = m.name.split("/", 2)          # <repo-ref>/scripts/<rest>
-        if len(parts) != 3 or parts[1] != "scripts" or not parts[2].startswith(wanted):
+        if len(parts) != 3 or parts[1] != "scripts":
+            continue
+        if not (parts[2].startswith(wanted) or parts[2] in verifier_files):
             continue
         if not (m.isfile() or m.isdir()):
             continue
         m.name = parts[2]
         members.append(m)
+    if not set(verifier_files) <= {m.name for m in members if m.isfile()}:
+        print("bootstrap: scoped verifier library missing from source; aborting", flush=True)
+        sys.exit(1)
     kwargs = {"filter": "data"} if sys.version_info >= (3, 12) else {}
     t.extractall(app, members=members, **kwargs)
     n = sum(1 for m in members if m.isfile())
@@ -81,7 +89,8 @@ import hashlib, io, os, shutil, subprocess, sys, tarfile, urllib.request
 ver = os.environ.get("GITLEAKS_VERSION", "8.30.1").strip().lstrip("v") or "8.30.1"
 dest_dir = os.environ.get("RECALL_GITLEAKS_DIR") or "/usr/local/bin"
 dest = os.path.join(dest_dir, "gitleaks")
-required = os.environ.get("RECALL_GITLEAKS_REQUIRED") == "1"
+# Abort is the default: only an explicit RECALL_GITLEAKS_REQUIRED=0 opts out.
+required = os.environ.get("RECALL_GITLEAKS_REQUIRED") != "0"
 min_bytes = int(os.environ.get("RECALL_GITLEAKS_MIN_BYTES") or 1_000_000)
 max_bytes = 200_000_000
 want_sha = (os.environ.get("RECALL_GITLEAKS_SHA256") or "").strip().lower()
@@ -93,9 +102,11 @@ def say(msg):
 
 def give_up(msg):
     if required:
-        say(msg + " -- RECALL_GITLEAKS_REQUIRED=1, aborting")
+        say(msg + " -- aborting (gitleaks is required by default; set "
+                  "RECALL_GITLEAKS_REQUIRED=0 to explicitly opt out)")
         sys.exit(1)
-    say(msg + " -- continuing WITHOUT gitleaks; recall_contribute will report gitleaks-unavailable")
+    say(msg + " -- RECALL_GITLEAKS_REQUIRED=0, continuing WITHOUT gitleaks; "
+              "recall_contribute will report gitleaks-unavailable")
     sys.exit(0)
 
 

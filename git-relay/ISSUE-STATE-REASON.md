@@ -6,9 +6,11 @@ reopened. Exact issue ID/number pre-read refuses pull requests. No title/body,
 labels, transfer, comments or arbitrary fields. Only numeric issue/state/reason
 returns, not untrusted title/body text.
 
-GitHub ignores state_reason unless state changes. A same-state different-reason
-request is refused without a write, not hidden reopen/reclose. A same-state exact
-reason is verified as already satisfied. For actual state changes the PATCH
+GitHub ignores state_reason unless state changes. A closed issue with a different
+reason is refused without a write, not hidden reopen/reclose. A closed issue with
+the exact reason is verified as already satisfied, and so is any issue already
+open, because a never-closed issue carries a null state_reason and reopened is
+the only reason open accepts. For actual state changes the PATCH
 receipt must match exact issue ID/number, state and reason. A silently ignored
 reason is an unverifiable write, not success. Pre-read is not atomic CAS.
 

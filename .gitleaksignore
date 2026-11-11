@@ -1,3 +1,9 @@
+# Muster failure banner PR (#1323), first commit:  a made-up value in the scrubber's test table was read as a curl
+# auth header.  The line is reworded from the next commit on, and the PR is squash-merged, so it never reaches main.
+dedf2890342441357894a7f057c27cb4674b2097:muster/MusterTests/FleetViewCollectorTests.swift:curl-auth-header:124
+# Same PR, scrubber leak fixes:  a piece of a vendor's published example value was read as a generic API key, because the
+# variable's name held "Key".  The variable is renamed from the next commit on, and fingerprints are per commit.
+d7fde0d2d2ea15677e9b176d917351ee783b21ac:muster/MusterTests/FleetViewCollectorTests.swift:generic-api-key:206
 # Dummy credentials in redaction-test fixtures, first commit of the Lane Map tooling PR (#359).
 # The values are made-up strings used to prove the installer redacts them; the fixtures are
 # split in the source from the next commit on.  Fingerprints are per commit, so these two lines
@@ -59,3 +65,59 @@ ef42f132ad746c13dbe89c058d9e895ef64790a8:scripts/agent-sync-mcp/wrangler.jsonc:g
 # strings that prove the send seam withholds secret-looking bodies;  never real credentials.
 7b9d9bd387538decfe9a79eebd3190d8fb096b4e:scripts/agent_sync/tests/test_operator_registration_dm.py:generic-api-key:141
 01b5657a917497809d0c83c1a9148587f2b0363f:scripts/agent_sync/tests/test_operator_registration.py:generic-api-key:195
+
+# PR #1109 historical private-key HEADER ONLY in synthetic refusal tests, never a key.
+# Runtime marker is split in current source; exempt this exact old fixture finding only.
+1719f8b78a2ec9e235371cca7c3a76dbddf393fb:git-relay/git_relay/tests/test_file_request_limits.py:private-key:46
+
+# Made-up npm-shaped token in the AFC-564 title tests (PR #1127):  it proves a prefixed key never reaches a session
+# title, and is not a credential.  Split in source from the next commit on, so this fingerprint silences the
+# historical commit only (same convention as above).
+7cb8beb1a2e42498623a489dcdc2164516f7d51d:scripts/agent_sync/tests/test_claude_letter.py:npm-access-token:115
+# Made-up 20 character value in the AFC-564 title tests (PR #1127), assigned to a constant whose name held "TOKEN"
+# (generic-api-key read the name as the keyword).  It is not a credential;  the constant is renamed and the value is
+# built at run time from the next commit on, so this fingerprint silences the historical commit only.
+8c22abaa83c0a72ded6140f21ca12bd185f9e6ca:scripts/agent_sync/tests/test_claude_letter.py:generic-api-key:175
+
+# PR1190 synthetic cross-language assertion test key, never a deployed credential.
+# Exact historical commit/file/rule/line only; keep scanning all other material.
+9018a538594f7756c7dd4ecc6cb3a3d7aacf7db0:git-relay/git_relay/tests/test_assertion.py:generic-api-key:36
+9018a538594f7756c7dd4ecc6cb3a3d7aacf7db0:scripts/agent-sync-mcp/test/gr-assert.test.mjs:generic-api-key:25
+# PR #1190 squash commit on main (c3917b4b): same synthetic vector key at rest.
+# Built at runtime from the next commit on, so these silence the historical commit only.
+c3917b4bf6b2b045fa4089ab3ae8f725922d4396:git-relay/git_relay/tests/test_assertion.py:generic-api-key:36
+c3917b4bf6b2b045fa4089ab3ae8f725922d4396:scripts/agent-sync-mcp/test/gr-assert.test.mjs:generic-api-key:25
+# Dummy long token-shaped fixture in the relay audit redaction tests, squashed-commit of
+# the Muster overhaul PR (#1239). The value is made up to prove the audit log hashes
+# credential-shaped strings; assembled at runtime from the next commit on.
+49c3d7345030419da934356240448c7ac9c45622:git-relay/git_relay/tests/test_b9_hardening.py:generic-api-key:112
+# Made-up assignment in a Muster unit test (PR #1377) that proves a hook id never starts at a
+# NAME=value assignment. The next commit replaces it with a plain value.
+f4a3c683da987f3f3cd5afbe669988a67d79ecd7:muster/MusterTests/MiniMaxSurfaceTests.swift:generic-api-key:770
+# Made-up token-shaped value in the seat inventory test (PR #1416), proving no config value reaches an answer.
+# The next commit assembles it at runtime, so this silences the one historical commit only.
+fd45e8fcde90f68f0900e3d57e29bb01d0558a92:scripts/test_fleet_seat_inventory.py:generic-api-key:14
+# Made-up token, API-key and Basic-header values in the config reader's redaction tests (PR #1477), proving
+# the reader hides them.  The next commit splits each value into two string pieces, so this silences the one historical commit only.
+ac764c34b5d3eb5b9eaa949a195e2152cfcad617:muster/MusterTests/ConfigFileReaderTests.swift:generic-api-key:219
+ac764c34b5d3eb5b9eaa949a195e2152cfcad617:muster/MusterTests/ConfigFileReaderTests.swift:generic-api-key:311
+ac764c34b5d3eb5b9eaa949a195e2152cfcad617:muster/MusterTests/ConfigFileReaderTests.swift:curl-auth-header:329
+146b582e95374699d93f905d8cfd8a8db33ab074:muster/MusterTests/ConfigFileReaderTests.swift:generic-api-key:219
+# A variable named key in the Muster route's trust-file reader (PR #1505, its first commit):  the scanner read
+# the attribute test on the line as a generic assignment.  It holds a loaded public key object and no credential.
+# The next commit renames it, so this silences the one historical commit only.
+2806257467c58038e67c191580bb9a1665f48422:scripts/muster_agent/muster_trust_files.py:generic-api-key:101
+
+# Restore commit 7e147fd4 on PR #1662 (Nov 9).  78adf2f2 was an empty-tree commit
+# by GB-DEPLOYER that removed every file, and 7e147fd4 put back the exact tree of
+# 75246328.  These fixture lines are unchanged from main; they are flagged only
+# because the restore commit re-adds them.  The PR squash-merges, so neither
+# commit reaches main.
+7e147fd4f9fbdf20ef342cff9f5afdb23613c7e1:scripts/fleet_rag/tests/test_ingest.py:generic-api-key:771
+7e147fd4f9fbdf20ef342cff9f5afdb23613c7e1:scripts/fleet_rag/tests/test_ingest.py:generic-api-key:841
+7e147fd4f9fbdf20ef342cff9f5afdb23613c7e1:scripts/fleet_rag/tests/test_recall.py:generic-api-key:271
+7e147fd4f9fbdf20ef342cff9f5afdb23613c7e1:scripts/fleet_rag/tests/test_recall.py:generic-api-key:343
+7e147fd4f9fbdf20ef342cff9f5afdb23613c7e1:scripts/fleet_rag/tests/test_scrub.py:aws-access-token:21
+7e147fd4f9fbdf20ef342cff9f5afdb23613c7e1:scripts/fleet_rag/tests/test_scrub.py:generic-api-key:24
+7e147fd4f9fbdf20ef342cff9f5afdb23613c7e1:scripts/fleet_rag/tests/test_scrub.py:generic-api-key:45
+7e147fd4f9fbdf20ef342cff9f5afdb23613c7e1:scripts/fleet_rag/tests/test_scrub.py:generic-api-key:66

@@ -1,6 +1,6 @@
 import Foundation
 
-/// The seat's wake ledger:  `~/.agent-sync/<SEAT>/wakes.jsonl`.
+/// The seat's wake ledger:  `~/.simple-tools/<SEAT>/wakes.jsonl`.
 ///
 /// One row per state change of one wake.  The panel counts the wakes the runtime counts,
 /// so the number it shows is the number the budget is measured against.
@@ -75,10 +75,21 @@ enum WakeLedger {
         /// silent either:  the reader says how many rows it could not read,  so a ledger that
         /// has gone bad is visible instead of quietly under-counting the budget.
         var malformed: Int = 0
+        /// How many of those rows could fall inside the last 24 hours, the window the counters
+        /// cover:  a row followed by a row from that window, or the last row of the file.  An old
+        /// torn row the eavesdropper has long skipped says nothing about today's counts.  It is
+        /// only counted when the parse was given the time to judge by.
+        var malformedRecent: Int = 0
+        /// The time of the oldest row that could be read.
+        var oldest: Date?
     }
 
     /// Reads the ledger in one pass.
-    static func parse(_ text: String, limit: Int = 8) -> Parsed {
+    ///
+    /// Only a line feed ends a row:  the eavesdropper writes rows with `ensure_ascii=False`, so a
+    /// topic may hold U+2028, U+2029 or U+0085, and splitting on every Unicode newline cut such a
+    /// row in two, lost its state change and reported a sound ledger as damaged.
+    static func parse(_ text: String, limit: Int = 8, now: Date? = nil) -> Parsed {
         var states: [String: String] = [:]
         var statesReached: [String: [String]] = [:]
         var owners: [String: Bool] = [:]
@@ -89,16 +100,26 @@ enum WakeLedger {
         var lastAt: [String: Double] = [:]
         var order: [String] = []
         var malformed = 0
+        // Torn rows not yet placed in time:  the next readable row says whether they could be
+        // inside the window, and the end of the file says they could.
+        var unplaced = 0
+        var malformedRecent = 0
+        var oldest: Double?
+        let windowStart = now.map { $0.timeIntervalSince1970 - 86_400 }
         let decoder = JSONDecoder()
 
-        for line in text.split(whereSeparator: \.isNewline) {
+        for line in SeatActivityReader.records(text) {
             guard let data = line.data(using: .utf8),
                   let row = try? decoder.decode(Row.self, from: data),
                   let identifier = row.wake_id, !identifier.isEmpty,
                   let ts = row.ts, ts.isFinite else {
                 malformed += 1
+                unplaced += 1
                 continue
             }
+            if let windowStart, ts >= windowStart { malformedRecent += unplaced }
+            unplaced = 0
+            oldest = min(oldest ?? ts, ts)
             if times[identifier] == nil {
                 times[identifier] = [:]
                 order.append(identifier)
@@ -119,6 +140,9 @@ enum WakeLedger {
 
         var parsed = Parsed()
         parsed.malformed = malformed
+        if windowStart != nil { malformedRecent += unplaced }
+        parsed.malformedRecent = malformedRecent
+        parsed.oldest = oldest.map { Date(timeIntervalSince1970: $0) }
         for identifier in order {
             let accepted = times[identifier]?["accepted"] ?? times[identifier]?["started"]
             let latest = lastAt[identifier].map { Date(timeIntervalSince1970: $0) }
@@ -217,6 +241,30 @@ enum WakeLedger {
             }
         }
         return usage
+    }
+
+    /// A ledger state, in words.  A state this app does not know keeps its own word, with its
+    /// underscores read as spaces, rather than being dropped.
+    static func words(forState state: String) -> String {
+        switch state {
+        case "accepted": return "accepted"
+        case "started": return "started"
+        case "done": return "answered"
+        case "failed": return "failed"
+        case "held_back": return "held back"
+        case "dropped": return "dropped"
+        case "skipped": return "skipped"
+        case "expired": return "expired"
+        case "queued": return "queued"
+        case "": return "no state recorded"
+        default: return state.replacingOccurrences(of: "_", with: " ")
+        }
+    }
+
+    /// A ledger reason, in words.  Reasons are the eavesdropper's own codes, such as `host_busy`
+    /// or `operator_unavailable`, so they are read with spaces and never invented.
+    static func words(forReason reason: String) -> String {
+        reason.replacingOccurrences(of: "_", with: " ")
     }
 
     /// The busiest topic's count.

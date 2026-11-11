@@ -55,6 +55,18 @@ class State(unittest.TestCase):
         )
         self.assertEqual(len(c.calls), 1)
 
+    def test_already_open_is_satisfied_without_a_write(self):
+        for stored in ({}, {"state_reason": None}, {"state_reason": "reopened"}):
+            c = Client({"id": 7, "number": 2, "state": "open", **stored})
+            self.assertEqual(
+                self.handle(c).run(
+                    "wf_issue_state_set", self.args(state="open", reason="reopened")
+                ),
+                {"issue_number": 2, "state": "open", "reason": "reopened"},
+            )
+            self.assertEqual(len(c.calls), 1)
+            self.assertEqual(c.calls[0][0], "GET")
+
     def test_invalid_or_pr_target_before_write(self):
         for bad in [
             {"state": "open", "reason": "completed"},

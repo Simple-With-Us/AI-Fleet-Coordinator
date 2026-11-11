@@ -184,7 +184,7 @@ class FakeZulip:
         if method == "POST":
             self.posts += 1
             if self.posts == self.fail_post:
-                raise SystemExit("POST realm/filters:  HTTP 400 refused")
+                raise L.ZulipError("POST realm/filters:  HTTP 400 refused")
             rule = {"id": 9000 + self.posts, **data}
             self.live.append(rule)
         elif method == "PATCH" and path == "realm/linkifiers":
@@ -205,7 +205,7 @@ class ApplyTest(unittest.TestCase):
     def test_failure_part_way_still_moves_the_generic_rule_last(self):
         zulip, live = self.two_missing()
         steps, _ = L.plan(live)
-        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(L.ZulipError):
             L.apply_plan(zulip, steps, [])
         self.assertEqual(zulip.live[-1]["id"], L.GENERIC_ID)
         self.assertEqual(len(zulip.live), len(live) + 1)
@@ -213,7 +213,7 @@ class ApplyTest(unittest.TestCase):
     def test_rerun_after_a_failure_adds_only_what_is_left(self):
         zulip, live = self.two_missing()
         steps, _ = L.plan(live)
-        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(L.ZulipError):
             L.apply_plan(zulip, steps, [])
         rerun, unlisted = L.plan(zulip.linkifiers())
         self.assertEqual([s[0] for s in rerun], ["add"])
@@ -223,6 +223,33 @@ class ApplyTest(unittest.TestCase):
             L.apply_plan(zulip, rerun, [])
         self.assertEqual(L.plan(zulip.linkifiers()), ([], []))
         self.assertIsNone(L.order(zulip.linkifiers()))
+
+
+class ZulipErrorTests(unittest.TestCase):
+    def test_call_raises_zulip_error_not_system_exit(self):
+        import urllib.error
+
+        body = io.BytesIO(b'{"msg": "refused"}')
+        err = urllib.error.HTTPError("https://x/api/v1/realm/filters", 400, "Bad Request", {}, body)
+        zulip = L.Zulip("e", "k", L.REALM)
+        with mock.patch.object(L.urllib.request, "urlopen", side_effect=err):
+            with self.assertRaises(L.ZulipError) as caught:
+                zulip.call("POST", "realm/filters", {"pattern": "P-X-1"})
+        self.assertIsInstance(caught.exception, Exception)
+        self.assertNotIsInstance(caught.exception, SystemExit)
+        self.assertIn("HTTP 400", str(caught.exception))
+
+    def test_main_reports_zulip_errors_with_exit_1_not_a_traceback(self):
+        with (
+            mock.patch.object(L, "credentials", return_value=("e", "k", L.REALM)),
+            mock.patch.object(
+                L.Zulip, "linkifiers", side_effect=L.ZulipError("GET x: HTTP 400 bad")
+            ),
+        ):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(L.main([]), 1)
+            self.assertIn("zulip:", err.getvalue())
 
 
 class CredentialTests(unittest.TestCase):

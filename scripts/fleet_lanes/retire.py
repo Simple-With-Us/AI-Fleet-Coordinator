@@ -29,7 +29,13 @@ A lane is removable only when ALL of these hold (each is a reason in the table w
     `HEAD:<pr head>`) or for HEAD is MERGED or CLOSED with none still OPEN and its head is HEAD, or contains HEAD
     while the lane has commits of its own (a PR that only used the same branch name, or whose head merely sits
     on today's origin/<default>, is no evidence), or HEAD is merged into origin/<default>, or its upstream
-    branch no longer exists on origin.
+    branch no longer exists on origin.  A MERGED PR that used the branch name also counts when HEAD's tree is
+    exactly the tree of a commit on origin/<default>: a squash merge rewrites the commits, so the head can
+    never hold HEAD, but the tree it landed is identical (AFC-647).  It also counts when every path the lane
+    changed since its merge base with origin/<default> is byte-identical in a commit of that MERGED PR (its head
+    or one of its own commits):  a lane published through the GitHub API never pushes its own commits, and the
+    PR may be revised on GitHub or squash-merged onto a moved origin/<default>.  That PR head is fetched from
+    refs/pull/<n>/head into the object store only (no ref, no FETCH_HEAD) when it is not already here.
     A review checkout (review-pr-<n>) is done when PR <n> is MERGED or CLOSED; prune keeps one of an OPEN PR,
     and an explicit `lane retire` may remove it (it is read-only by design).
 
@@ -48,14 +54,15 @@ external disk is not mounted: prune would delete the registry entries of every l
 docs/protocols/lane-map.md, External Lanes).  It never runs rm, never forces, never pushes, and never deletes a
 remote branch.
 
-Every git, gh and lsof call goes through `Runner`, whose allowlist is `check_allowed` below (a separate list
-from `lane new`'s, which still refuses every remove).  The gh calls are one bulk `gh pr list --state all` per
-repo, plus `gh pr list --head <name>` only for a lane the bulk list could not place.
+Every git, simple-git and lsof call goes through `Runner`, whose allowlist is `check_allowed` below (a
+separate list from `lane new`'s, which still refuses every remove).  PR state comes from the seat's own
+relay:  paged `gr_wf_pr_list_page` calls through the seat's `simple-git` (state all), plus a `--head`-style
+page only for a lane the bulk pages could not place.  No gh and no owner credential is involved (AFC-647).
 
 Exit codes: 0 ok (some lanes may be kept: read the table), 64 usage or refusal (`lane retire` of a lane that is
-not removable is a refusal), 69 git, gh or lsof failed, or a removal failed.
+not removable is a refusal), 69 git, relay or lsof failed, or a removal failed.
 
-Python 3.9 safe.  Tests: fleet_lanes/tests/test_retire.py (real git, a local bare origin, gh and lsof faked).
+Python 3.9 safe.  Tests: fleet_lanes/tests/test_retire.py (real git, a local bare origin, the relay and lsof faked).
 """
 
 from __future__ import annotations
@@ -78,8 +85,8 @@ from . import layout as L
 
 __all__ = [
     "EMPTY_LANE_HOURS",
-    "GH_BULK_LIMIT",
     "RECENT_MINUTES",
+    "RELAY_BULK_LIMIT",
     "Facts",
     "PrView",
     "Runner",
@@ -90,22 +97,48 @@ __all__ = [
 
 RECENT_MINUTES = 15
 EMPTY_LANE_HOURS = 24
-GH_BULK_LIMIT = 1000
-GH_FIELDS = "number,state,headRefName,headRefOid,mergedAt,closedAt"
+# PR state comes from the seat's own relay verb (gr_wf_pr_list_page through the
+# seat's simple-git), never from gh:  a seat without the owner's gh credential
+# can retire its own lanes, and the state it reads is its own identity's
+# (AFC-647).  Pages of 50, at most 20 pages — the same 1000-row bound the gh
+# bulk list had.
+RELAY_PAGE = 50
+RELAY_MAX_PAGES = 20
+RELAY_HEAD_PAGE = 20
+RELAY_BULK_LIMIT = RELAY_PAGE * RELAY_MAX_PAGES
+# How far back along origin/<default> the squash-merge tree comparison looks.
+TREE_LANDED_COMMITS = 100
+# How many commits of a merged PR (those not on origin/<default>) the content comparison reads.
+PR_CONTENT_COMMITS = 50
+# How many MERGED PRs on a reused branch name (newest first) that comparison tries.
+PR_CONTENT_PRS = 2
 WORKERS = 8
 
-_CAPS = {"git": 30.0, "remove": 600.0, "net": 90.0, "gh": 90.0, "lsof": 30.0}
+_CAPS = {"git": 30.0, "remove": 600.0, "net": 90.0, "relay": 90.0, "lsof": 30.0}
 _SHA = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _GH_REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _REVIEW = re.compile(r"^review-pr-([0-9]{1,9})(?:-([a-z0-9]+(?:-[a-z0-9]+)*))?$")
 _BRANCH_KEY = re.compile(r"^branch\.(.+)\.(merge|remote)$")
-_REVPARSE_SOLO = frozenset({"--absolute-git-dir", "--git-common-dir", "--show-toplevel"})
+_ORIGIN_BLOB = re.compile(r"^refs/remotes/origin/([^:]+):(.+)$")
+_PULL_HEAD = re.compile(r"^refs/pull/[1-9][0-9]{0,8}/head$")
+_REVPARSE_SOLO = frozenset(
+    {"--absolute-git-dir", "--git-common-dir", "--show-toplevel"}
+)
 
 
 # --------------------------------------------------------------------------- the allowlist and the runner
 
 
-def _git_key(args: Sequence[str], write_root: str | None, fold: Callable[[str], str]) -> str | None:
+def _rel_path_ok(path: str) -> bool:
+    """A plain repo-relative path: no NUL or newline, not absolute, not option-like, no `.` or `..` part."""
+    if not path or "\x00" in path or "\n" in path or path[0] in "/-":
+        return False
+    return not any(part in ("", ".", "..") for part in path.split("/"))
+
+
+def _git_key(
+    args: Sequence[str], write_root: str | None, fold: Callable[[str], str]
+) -> str | None:
     """The timeout key for an allowed git command, else None.  Exact shapes only."""
     a = list(args)
     if a == ["worktree", "list", "--porcelain"] or a == ["worktree", "prune"]:
@@ -118,13 +151,36 @@ def _git_key(args: Sequence[str], write_root: str | None, fold: Callable[[str], 
         return "git"
     if len(a) == 5 and a[:4] == ["rev-list", "--count", "HEAD", "--not"]:
         return "git" if _SHA.match(a[4]) else None
-    if len(a) >= 5 and a[:5] == ["rev-list", "--count", "--ignore-missing", "HEAD", "--not"]:
+    if len(a) >= 5 and a[:5] == [
+        "rev-list",
+        "--count",
+        "--ignore-missing",
+        "HEAD",
+        "--not",
+    ]:
         return "git" if all(_SHA.match(x) for x in a[5:]) else None
     if len(a) == 2 and a[0] == "rev-parse" and a[1] in _REVPARSE_SOLO:
         return "git"
     if len(a) == 4 and a[:3] == ["rev-parse", "--verify", "-q"]:
-        rev = a[3].removesuffix("^{commit}")
-        return "git" if (rev == "HEAD" or _SHA.match(rev)) else None
+        rev = a[3]
+        for suffix in ("^{commit}", "^{tree}"):
+            if rev.endswith(suffix):
+                rev = rev[: -len(suffix)]
+                break
+        if rev == "HEAD" or _SHA.match(rev):
+            return "git"
+        if a[3].endswith("^{tree}") and rev.startswith("refs/remotes/origin/") and K.valid_ref_name(rev):
+            return "git"
+        m = _ORIGIN_BLOB.match(a[3])
+        return (
+            "git"
+            if (
+                m
+                and _rel_path_ok(m.group(2))
+                and K.valid_ref_name("origin/" + m.group(1))
+            )
+            else None
+        )
     if len(a) == 3 and a[:2] == ["config", "--get"]:
         if a[2] == "remote.origin.url":
             return "git"
@@ -132,34 +188,100 @@ def _git_key(args: Sequence[str], write_root: str | None, fold: Callable[[str], 
         return "git" if (m and K.valid_ref_name(m.group(1))) else None
     if len(a) == 4 and a[:3] == ["merge-base", "--is-ancestor", "HEAD"]:
         ref = a[3]
-        return "git" if (ref.startswith("refs/remotes/origin/") and K.valid_ref_name(ref)) else None
+        return (
+            "git"
+            if (ref.startswith("refs/remotes/origin/") and K.valid_ref_name(ref))
+            else None
+        )
     if a == ["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"]:
         return "git"
+    if a == ["status", "--porcelain", "--untracked-files=all"]:
+        return "git"
+    if len(a) == 3 and a[:2] == ["hash-object", "--"]:
+        return "git" if _rel_path_ok(a[2]) else None
+    if len(a) == 3 and a[:2] == ["checkout", "--"]:
+        return "git" if _rel_path_ok(a[2]) else None
     if a == ["ls-remote", "--heads", "origin"]:
         return "net"
+    # The one fetch: a merged PR's head commits, into the object store only (no ref, no FETCH_HEAD, no tags).
+    if (
+        len(a) == 7
+        and a[:6]
+        == [
+            "fetch",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "--no-recurse-submodules",
+            "--quiet",
+            "origin",
+        ]
+        and _PULL_HEAD.match(a[6])
+    ):
+        return "net"
+    if len(a) == 3 and a[:2] == ["merge-base", "HEAD"]:
+        ref = a[2]
+        return (
+            "git"
+            if (ref.startswith("refs/remotes/origin/") and K.valid_ref_name(ref))
+            else None
+        )
+    if (
+        len(a) == 6
+        and a[:4] == ["diff", "--name-only", "-z", "--no-renames"]
+        and _SHA.match(a[4])
+        and a[5] == "HEAD"
+    ):
+        return "git"
+    if (
+        len(a) == 5
+        and a[0] == "rev-list"
+        and a[1] == f"--max-count={PR_CONTENT_COMMITS}"
+        and _SHA.match(a[2])
+        and a[3] == "--not"
+        and a[4].startswith("refs/remotes/origin/")
+        and K.valid_ref_name(a[4])
+    ):
+        return "git"
+    if (
+        len(a) == 4
+        and a[0] == "rev-list"
+        and a[1] == f"--max-count={TREE_LANDED_COMMITS}"
+        and a[2] == "--format=%T"
+        and a[3].startswith("refs/remotes/origin/")
+        and K.valid_ref_name(a[3])
+    ):
+        return "git"
     return None
 
 
-def _gh_ok(args: Sequence[str]) -> bool:
+def _relay_ok(args: Sequence[str]) -> bool:
+    """The one relay call this tool makes:  simple-git call gr_wf_pr_list_page --args-json <json> --json,
+    where the JSON is exactly {repo, state: "all", per_page, page?} for a bulk page or
+    {repo, state: "all", head, per_page} for the per-head fallback.  Nothing else is a relay call."""
     a = list(args)
-    if (
-        len(a) == 10
-        and a[:2] == ["pr", "list"]
-        and a[2] == "--repo"
-        and a[4:7] == ["--state", "all", "--limit"]
-        and a[8] == "--json"
-    ):
-        return bool(_GH_REPO.match(a[3])) and a[7] == str(GH_BULK_LIMIT) and a[9] == GH_FIELDS
-    if (
-        len(a) == 12
-        and a[:2] == ["pr", "list"]
-        and a[2] == "--repo"
-        and a[4:7] == ["--state", "all", "--head"]
-        and a[8:10] == ["--limit", "20"]
-        and a[10] == "--json"
-    ):
-        return bool(_GH_REPO.match(a[3])) and K.valid_ref_name(a[7]) and a[11] == GH_FIELDS
-    return False
+    if len(a) != 5 or a[:2] != ["call", "gr_wf_pr_list_page"] or a[2] != "--args-json" or a[4] != "--json":
+        return False
+    try:
+        query = json.loads(a[3])
+    except ValueError:
+        return False
+    if not isinstance(query, dict) or not _GH_REPO.match(str(query.get("repo", ""))):
+        return False
+    if query.get("state") != "all":
+        return False
+    keys = set(query)
+    if "head" in keys:
+        return (
+            keys == {"repo", "state", "head", "per_page"}
+            and query["per_page"] == RELAY_HEAD_PAGE
+            and K.valid_ref_name(str(query["head"]))
+        )
+    return (
+        keys == {"repo", "state", "per_page", "page"}
+        and query["per_page"] == RELAY_PAGE
+        and type(query["page"]) is int
+        and 1 <= query["page"] <= RELAY_MAX_PAGES
+    )
 
 
 def check_allowed(
@@ -172,24 +294,34 @@ def check_allowed(
 
     git: worktree list --porcelain | worktree remove <path inside the lanes root> (never --force) | worktree prune |
     branch -d <ref> (never -D) | status --porcelain --ignored --untracked-files=normal | rev-list --count HEAD
-    --not <sha> | rev-list --count --ignore-missing HEAD --not <sha>... | rev-parse (--absolute-git-dir | --git-common-dir | --show-toplevel | --verify -q
-    HEAD-or-sha) | config --get (remote.origin.url | branch.<ref>.merge | branch.<ref>.remote) | merge-base
-    --is-ancestor HEAD refs/remotes/origin/<ref> | symbolic-ref -q --short refs/remotes/origin/HEAD | ls-remote
-    --heads origin.  gh: pr list --repo O/R --state all (--limit 1000 | --head <ref> --limit 20) --json <fields>.
+    --not <sha> | rev-list --count --ignore-missing HEAD --not <sha>... | rev-list --max-count=100
+    --format=%T refs/remotes/origin/<ref> | rev-parse (--absolute-git-dir | --git-common-dir | --show-toplevel | --verify -q
+    HEAD-or-sha[^{commit}|^{tree}]) | config --get (remote.origin.url | branch.<ref>.merge | branch.<ref>.remote) | merge-base
+    --is-ancestor HEAD refs/remotes/origin/<ref> | merge-base HEAD refs/remotes/origin/<ref> | diff --name-only -z
+    --no-renames <sha> HEAD | rev-list --max-count=50 <sha> --not refs/remotes/origin/<ref> | symbolic-ref -q --short
+    refs/remotes/origin/HEAD | ls-remote --heads origin | fetch --no-tags --no-write-fetch-head --no-recurse-submodules
+    --quiet origin refs/pull/<n>/head (objects only: no ref and no FETCH_HEAD is written).  simple-git: call
+    gr_wf_pr_list_page --args-json <the two bounded shapes> --json.
     lsof: -d cwd -Fpcn."""
-    if not argv or not all(isinstance(a, str) for a in argv) or any("\x00" in a for a in argv):
+    if (
+        not argv
+        or not all(isinstance(a, str) for a in argv)
+        or any("\x00" in a for a in argv)
+    ):
         raise K.CommandRefused("empty, non-string or NUL-bearing command")
     fold = fold or (lambda s: s)
     root = os.fspath(write_root) if write_root is not None else None
     key: str | None = None
     if argv[0] == "git":
         key = _git_key(argv[1:], root, fold)
-    elif argv[0] == "gh":
-        key = "gh" if _gh_ok(argv[1:]) else None
+    elif argv[0] == "simple-git":
+        key = "relay" if _relay_ok(argv[1:]) else None
     elif argv[0] == "lsof":
         key = "lsof" if list(argv[1:]) == ["-d", "cwd", "-Fpcn"] else None
     if key is None:
-        raise K.CommandRefused("not on the lane retire allowlist: " + " ".join(argv[:5]))
+        raise K.CommandRefused(
+            "not on the lane retire allowlist: " + " ".join(argv[:5])
+        )
     return _CAPS[key]
 
 
@@ -218,8 +350,16 @@ class Runner:
         cap = check_allowed(argv, write_root=self._write_root, fold=self._fold)
         full = list(argv)
         if full[0] == "git":
-            full = ["git", "--no-optional-locks", "-c", "core.fsmonitor=false", *full[1:]]
-        return self._exec(full, os.fspath(cwd) if cwd is not None else None, self._env, cap)
+            full = [
+                "git",
+                "--no-optional-locks",
+                "-c",
+                "core.fsmonitor=false",
+                *full[1:],
+            ]
+        return self._exec(
+            full, os.fspath(cwd) if cwd is not None else None, self._env, cap
+        )
 
 
 # --------------------------------------------------------------------------- facts and the decision
@@ -233,7 +373,9 @@ class PrView:
     open_number: int | None = None
     done_number: int | None = None  # a MERGED or CLOSED PR for the branch name or HEAD
     done_state: str = ""
-    covers_head: bool = False  # that PR's head is HEAD or contains it
+    covers_head: bool = False  # that PR's head is HEAD or contains it (or HEAD's tree landed: see below)
+    tree_landed: bool = False  # covers_head came from tree equality with origin/<default>, not the PR head
+    content_landed: bool = False  # covers_head came from the lane's own paths matching a commit of the merged PR
     review_state: str = ""  # review checkouts: the state of PR <n>
     # a MERGED or CLOSED PR that used this branch name but whose head does not hold HEAD (a reused slug, or new
     # commits after the merge): it is not evidence that this lane's work is done
@@ -253,6 +395,9 @@ class Facts:
     git_ops: list[str] = field(default_factory=list)
     keep_marker: bool = False
     dirty: int | None = None
+    # dirty paths whose bytes equal origin/<default>'s blob at the same path (published through the GitHub API
+    # rather than pushed); they are not in `dirty`, and `_apply` restores exactly these before removing
+    published: list[str] = field(default_factory=list)
     ignored_local: list[str] = field(
         default_factory=list
     )  # git-ignored files that are not build output
@@ -290,13 +435,18 @@ def decide(f: Facts, *, prune: bool) -> tuple[str, str]:
     if f.dirty is None:
         return "keep", "git status failed"
     if f.dirty:
-        return "keep", f"{f.dirty} uncommitted or untracked file{'s' if f.dirty != 1 else ''}"
+        return (
+            "keep",
+            f"{f.dirty} uncommitted or untracked file{'s' if f.dirty != 1 else ''}",
+        )
     if f.ignored_local:
         shown = ", ".join(f.ignored_local[:3])
         more = len(f.ignored_local) - 3
-        return "keep", "ignored local state: " + shown + (f" (+{more} more)" if more > 0 else "")
+        return "keep", "ignored local state: " + shown + (
+            f" (+{more} more)" if more > 0 else ""
+        )
     if not f.pr.found:
-        return "keep", "PR lookup failed (gh)"
+        return "keep", "PR lookup failed (relay)"
     if f.kind == "review":
         state = f.pr.review_state
         if prune and state == "OPEN":
@@ -311,7 +461,9 @@ def decide(f: Facts, *, prune: bool) -> tuple[str, str]:
         if f.unpushed is None:
             return "keep", "could not count unpushed commits"
         where = "on no remote ref" + (
-            " (the deleted upstream's stale local copy does not count)" if f.upstream_gone else ""
+            " (the deleted upstream's stale local copy does not count)"
+            if f.upstream_gone
+            else ""
         )
         return "keep", (
             f"{f.unpushed} commit{'s' if f.unpushed != 1 else ''} {where}, and no merged or "
@@ -354,7 +506,15 @@ def decide(f: Facts, *, prune: bool) -> tuple[str, str]:
                 "keep",
                 f"no commits of its own and never pushed; kept until idle {EMPTY_LANE_HOURS}h",
             )
-    safe = "HEAD is the PR head" if f.pr.covers_head and f.unpushed != 0 else "HEAD on a remote ref"
+    safe = (
+        f"HEAD's tree is on origin/{f.default_branch} (squash-merged)"
+        if f.pr.tree_landed
+        else f"every path the lane changed is byte-identical in a commit of PR #{f.pr.done_number}"
+        if f.pr.content_landed
+        else "HEAD is the PR head"
+        if f.pr.covers_head and f.unpushed != 0
+        else "HEAD on a remote ref"
+    )
     return "remove", "; ".join(done) + "; " + safe
 
 
@@ -402,6 +562,10 @@ def _lookup_seat(registry: L.Registry, text: str) -> L.Seat | None:
     seat = registry.seat_by_name(t)
     if seat is None:
         seat = registry.seat_by_suffix(t.lower())
+    if seat is None:
+        # Role lanes (AFC-620): a BF-<ROLE>/GB-<ROLE> tag or its folder names the synthesized role
+        # lane seat (shared canonical lookup), so prune/doctor can scope to its lanes.
+        seat = L.role_lane_seat(t, registry)
     return seat
 
 
@@ -435,7 +599,9 @@ def _classify(
         seat = res.seat.lower() if res.seat else None
         return _Lane(app, tree, rec, "lane", seat, None)
     if cls is L.LocationClass.MANAGED:
-        return _Lane(app, tree, rec, "managed", L.seat_from_branch(rec.branch, registry), None)
+        return _Lane(
+            app, tree, rec, "managed", L.seat_from_branch(rec.branch, registry), None
+        )
     return _Lane(app, tree, rec, "other", None, None)
 
 
@@ -480,7 +646,9 @@ def _processes_inside(
     return out
 
 
-def _manifest_seat(manifest: Mapping[str, object] | None, registry: L.Registry) -> str | None:
+def _manifest_seat(
+    manifest: Mapping[str, object] | None, registry: L.Registry
+) -> str | None:
     """The seat folder name a lane.json names (its `seat` field, else the folder name of its `tag`), or None."""
     if not manifest:
         return None
@@ -525,28 +693,45 @@ def _inspect(
     owner = _manifest_seat(manifest, ctx.registry)
     if owner is not None:
         if lane.seat is None and lane.kind == "review":
-            lane.seat = f.seat = owner  # plain review-pr-<n>: the manifest is the only owner record
+            lane.seat = f.seat = (
+                owner  # plain review-pr-<n>: the manifest is the only owner record
+            )
         elif lane.seat is not None and owner != lane.seat:
             f.owner_conflict = owner
     f.processes = _processes_inside(ctx, lsof_rows, rec.path)
     f.git_ops = D.git_ops_in_progress(gitdir) if gitdir else ["unreadable git dir"]
     f.keep_marker = os.path.lexists(os.path.join(rec.path, D.KEEP_MARKER))
     st = run(
-        ["git", "status", "--porcelain", "--ignored", "--untracked-files=normal"], cwd=rec.path
+        ["git", "status", "--porcelain", "--ignored", "--untracked-files=normal"],
+        cwd=rec.path,
     )
     f.dirty = _dirty_count(st.out) if st.ok else None
     f.ignored_local = D.split_ignored(st.out)[0] if st.ok else []
+    if st.ok and f.dirty:
+        split = _split_published(run, rec.path, default_branch)
+        if split is not None:
+            f.dirty, f.published = split
     mb = run(
-        ["git", "merge-base", "--is-ancestor", "HEAD", f"refs/remotes/origin/{default_branch}"],
+        [
+            "git",
+            "merge-base",
+            "--is-ancestor",
+            "HEAD",
+            f"refs/remotes/origin/{default_branch}",
+        ],
         cwd=rec.path,
     )
     f.merged_default = (
-        True if mb.ok else (False if (mb.rc == 1 and not mb.timed_out and not mb.error) else None)
+        True
+        if mb.ok
+        else (False if (mb.rc == 1 and not mb.timed_out and not mb.error) else None)
     )
     branch = rec.branch if not rec.detached else None
     if branch:
         merge = run(["git", "config", "--get", f"branch.{branch}.merge"], cwd=rec.path)
-        remote = run(["git", "config", "--get", f"branch.{branch}.remote"], cwd=rec.path)
+        remote = run(
+            ["git", "config", "--get", f"branch.{branch}.remote"], cwd=rec.path
+        )
         up = merge.out.strip() if merge.ok else ""
         rname = remote.out.strip() if remote.ok else "origin"
         if up.startswith("refs/heads/") and rname == "origin":
@@ -556,7 +741,8 @@ def _inspect(
     # Unpushed means "on no LIVE origin branch": the shas `git ls-remote --heads origin` reported, never a local
     # remote-tracking ref.  Those can be stale (a branch deleted on origin without a `fetch --prune`, the
     # deleted upstream's or any other; a force-pushed branch), and another remote (a peer lane, a scratch bare
-    # repo) never vouches for a push.  This tool never fetches.  --ignore-missing drops a live sha that was
+    # repo) never vouches for a push.  This tool never fetches a ref (its one fetch, of a merged PR's head,
+    # writes objects only; see _pr_content_landed).  --ignore-missing drops a live sha that was
     # never fetched here, which can only overcount (the safe side).  Without ls-remote nothing vouches (None),
     # and only a PR that holds HEAD can.
     if remote_heads is not None:
@@ -594,16 +780,195 @@ def _inspect(
 
 def _dirty_count(porcelain: str) -> int:
     """Tracked edits and untracked files in `git status --porcelain --ignored` (the `!!` ignored lines excluded)."""
-    return len([ln for ln in porcelain.splitlines() if ln.strip() and not ln.startswith("!! ")])
+    return len(
+        [ln for ln in porcelain.splitlines() if ln.strip() and not ln.startswith("!! ")]
+    )
+
+
+def _split_published(
+    run: Runner, path: str, default_branch: str
+) -> tuple[int, list[str]] | None:
+    """(unpublished dirty count, published paths) for a lane whose edits went out through the GitHub API.
+
+    A dirty path is published only when HEAD is already in origin/<default> and the path is a plain tracked edit
+    (` M`) or an untracked regular file (`??`) whose working-tree bytes hash to the blob at the same path on
+    origin/<default>.  Everything else (a staged change, a rename, a deletion, a quoted or odd path, a symlink, a
+    missing blob, differing bytes) counts as dirty.  None when git status could not be read."""
+    st = run(["git", "status", "--porcelain", "--untracked-files=all"], cwd=path)
+    if not st.ok:
+        return None
+    lines = [ln for ln in st.out.splitlines() if ln.strip()]
+    mb = run(
+        [
+            "git",
+            "merge-base",
+            "--is-ancestor",
+            "HEAD",
+            f"refs/remotes/origin/{default_branch}",
+        ],
+        cwd=path,
+    )
+    if not mb.ok:
+        return len(lines), []
+    blocking, published = 0, []
+    for ln in lines:
+        code, rel = ln[:2], ln[3:]
+        full = os.path.join(path, rel)
+        if (
+            code not in (" M", "??")
+            or not _rel_path_ok(rel)
+            or " -> " in rel
+            or os.path.islink(full)
+            or not os.path.isfile(full)
+        ):
+            blocking += 1
+            continue
+        mine = run(["git", "hash-object", "--", rel], cwd=path)
+        theirs = run(
+            [
+                "git",
+                "rev-parse",
+                "--verify",
+                "-q",
+                f"refs/remotes/origin/{default_branch}:{rel}",
+            ],
+            cwd=path,
+        )
+        if (
+            mine.ok
+            and theirs.ok
+            and _SHA.match(mine.out.strip())
+            and mine.out.strip() == theirs.out.strip()
+        ):
+            published.append(rel)
+        else:
+            blocking += 1
+    return blocking, published
+
+
+def _restore_published(run: Runner, path: str, paths: Sequence[str]) -> str | None:
+    """Put each published path back to HEAD's state (checkout for a tracked edit, delete for an untracked file),
+    so `git worktree remove` runs without --force.  The error text on the first failure, else None."""
+    for rel in paths:
+        full = os.path.join(path, rel)
+        if run(["git", "checkout", "--", rel], cwd=path).ok:
+            continue
+        # an untracked file has nothing to check out: remove just that regular file
+        try:
+            if os.path.islink(full) or not os.path.isfile(full):
+                return f"{rel}: not a regular file"
+            os.remove(full)
+        except OSError as exc:
+            return f"{rel}: {exc}"
+    return None
 
 
 def _contains(run: Runner, path: str, oid: str) -> bool:
     """True when the PR head `oid` is a local commit that contains HEAD (no commit of HEAD is outside it)."""
     if not _SHA.match(oid or ""):
         return False
-    if not run(["git", "rev-parse", "--verify", "-q", f"{oid}^{{commit}}"], cwd=path).ok:
+    if not run(
+        ["git", "rev-parse", "--verify", "-q", f"{oid}^{{commit}}"], cwd=path
+    ).ok:
         return False
-    return _int(run(["git", "rev-list", "--count", "HEAD", "--not", oid], cwd=path)) == 0
+    return (
+        _int(run(["git", "rev-list", "--count", "HEAD", "--not", oid], cwd=path)) == 0
+    )
+
+
+def _tree_landed(run: Runner, path: str, default_branch: str) -> bool:
+    """HEAD's tree is exactly the tree of a commit on origin/<default> — the squash-merge signature.
+
+    A squash merge rewrites the lane's commits into one new commit on the default branch, so neither
+    the PR head nor ancestry can ever name HEAD afterwards; the tree is the only thing that survives
+    the rewrite.  Equality over the whole tree means no file content is lost by retiring the lane.
+    Any failed read answers False: this gate only ever adds evidence, never guesses it."""
+    head = run(["git", "rev-parse", "--verify", "-q", "HEAD^{tree}"], cwd=path)
+    if not head.ok or not _SHA.match(head.out.strip()):
+        return False
+    # One call lists every candidate commit with its tree ("commit <sha>" then the tree sha, per
+    # commit), so the comparison is done here instead of one git process per commit.
+    commits = run(
+        [
+            "git",
+            "rev-list",
+            f"--max-count={TREE_LANDED_COMMITS}",
+            "--format=%T",
+            f"refs/remotes/origin/{default_branch}",
+        ],
+        cwd=path,
+    )
+    if not commits.ok:
+        return False
+    want = head.out.strip()
+    for line in commits.out.splitlines():
+        if line.strip() == want:
+            return True
+    return False
+
+
+def _paths_differing(run: Runner, path: str, oid: str) -> set[str] | None:
+    """The paths whose content differs between commit `oid` and HEAD, or None when git could not say."""
+    res = run(["git", "diff", "--name-only", "-z", "--no-renames", oid, "HEAD"], cwd=path)
+    if not res.ok:
+        return None
+    return {p for p in res.out.split("\x00") if p}
+
+
+def _pr_content_landed(
+    run: Runner, path: str, default_branch: str, number: int, head_oid: str
+) -> bool:
+    """Every path the lane changed since its merge base with origin/<default> is byte-identical in a commit of
+    merged PR `number` (its head `head_oid` or one of the PR's own commits behind it, at most PR_CONTENT_COMMITS).
+
+    This is the publish-through-the-API case:  the lane's commits never reach GitHub (the API makes new ones),
+    the PR may be revised there afterwards, and the squash merge lands on a moved origin/<default>, so neither
+    ancestry nor whole-tree equality can see it.  The PR head is fetched from refs/pull/<n>/head into the object
+    store only when it is not already here; no ref and no FETCH_HEAD is written.  A lane with no change of its
+    own, or any failed read, answers False:  this gate only ever adds evidence, never guesses it."""
+    # The same bound the fetch allowlist holds (refs/pull/<1-9 digits>/head), so no refusal is ever raised here.
+    if not _SHA.match(head_oid or "") or not _PULL_HEAD.match(f"refs/pull/{number}/head"):
+        return False
+    have = ["git", "rev-parse", "--verify", "-q", f"{head_oid}^{{commit}}"]
+    if not run(have, cwd=path).ok:
+        run(
+            [
+                "git",
+                "fetch",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "--no-recurse-submodules",
+                "--quiet",
+                "origin",
+                f"refs/pull/{number}/head",
+            ],
+            cwd=path,
+        )
+        if not run(have, cwd=path).ok:
+            return False
+    base_ref = f"refs/remotes/origin/{default_branch}"
+    mb = run(["git", "merge-base", "HEAD", base_ref], cwd=path)
+    base = mb.out.strip() if mb.ok else ""
+    if not _SHA.match(base):
+        return False
+    mine = _paths_differing(run, path, base)
+    if not mine:
+        return False
+    cands = run(
+        ["git", "rev-list", f"--max-count={PR_CONTENT_COMMITS}", head_oid, "--not", base_ref],
+        cwd=path,
+    )
+    if not cands.ok:
+        return False
+    for oid in cands.out.split():
+        if not _SHA.match(oid):
+            return False
+        differ = _paths_differing(run, path, oid)
+        if differ is None:
+            return False
+        if not (mine & differ):
+            return True
+    return False
 
 
 def _pr_view(
@@ -612,6 +977,7 @@ def _pr_view(
     prs: list[dict] | None,
     fallback: Callable[[str], list[dict] | None],
     truncated: bool,
+    default_branch: str = "main",
 ) -> PrView:
     rec = lane.rec
     head = rec.head or ""
@@ -678,77 +1044,141 @@ def _pr_view(
     covering = [p for p in done if head and p.get("headRefOid") == head]
     own_work = lane.facts is not None and lane.facts.merged_default is False
     if not covering and own_work:
-        covering = [p for p in done if _contains(run, rec.path, str(p.get("headRefOid") or ""))]
+        covering = [
+            p for p in done if _contains(run, rec.path, str(p.get("headRefOid") or ""))
+        ]
     if not covering:
+        # A squash merge rewrites the commits, so no PR head can hold HEAD afterwards; the tree can.
+        # When a MERGED PR used this branch name and HEAD's tree is the tree of a commit already on
+        # origin/<default>, the lane's content landed even though its commits did not (AFC-647).
+        merged = [p for p in done if p.get("state") == "MERGED"]
+        if merged and own_work and _tree_landed(run, rec.path, default_branch):
+            pick = max(merged, key=lambda p: int(p.get("number") or 0))
+            view.done_number = int(pick.get("number") or 0) or None
+            view.done_state = "MERGED"
+            view.covers_head = True
+            view.tree_landed = True
+            return view
+        # The tree check fails when origin/<default> moved between the lane's last merge of it and the
+        # squash merge, or when the PR was revised after the lane's last commit (published through the
+        # GitHub API, which makes new commits, then fixed on GitHub).  The lane's own changes still sit,
+        # byte for byte, in a commit of that merged PR: that commit is on GitHub for good.
+        if merged and own_work:
+            newest = sorted(merged, key=lambda p: int(p.get("number") or 0), reverse=True)
+            for pick in newest[:PR_CONTENT_PRS]:
+                number = int(pick.get("number") or 0)
+                if number and _pr_content_landed(
+                    run, rec.path, default_branch, number, str(pick.get("headRefOid") or "")
+                ):
+                    view.done_number = number
+                    view.done_state = "MERGED"
+                    view.covers_head = True
+                    view.content_landed = True
+                    return view
         view.stale_number = max(int(p.get("number") or 0) for p in done) or None
         return view
-    pick = max(covering, key=lambda p: (p.get("state") == "MERGED", int(p.get("number") or 0)))
+    pick = max(
+        covering, key=lambda p: (p.get("state") == "MERGED", int(p.get("number") or 0))
+    )
     view.done_number = int(pick.get("number") or 0) or None
     view.done_state = str(pick.get("state") or "")
     view.covers_head = True
     return view
 
 
-def _bulk_prs(run: Runner, repo: str, tree: Path) -> tuple[list[dict] | None, bool]:
+def _relay_row(row: object) -> dict | None:
+    """One gr_wf_pr_list_page row in the shape the rest of this module reads, or None when malformed.
+
+    The relay page carries state open|closed plus merged_at; the gh vocabulary this module was
+    written against keeps MERGED distinct from CLOSED, so a closed row with a merged_at is MERGED."""
+    if not isinstance(row, dict):
+        return None
+    number, state = row.get("number"), row.get("state")
+    head_ref, head_sha = row.get("head_ref"), row.get("head_sha")
+    merged_at = row.get("merged_at")
+    if (
+        type(number) is not int
+        or number < 1
+        or state not in ("open", "closed")
+        or not isinstance(head_ref, str)
+        or not head_ref
+        or not isinstance(head_sha, str)
+        or not _SHA.match(head_sha)
+        or (merged_at is not None and not isinstance(merged_at, str))
+    ):
+        return None
+    return {
+        "number": number,
+        "state": "OPEN" if state == "open" else ("MERGED" if merged_at else "CLOSED"),
+        "headRefName": head_ref,
+        "headRefOid": head_sha,
+        "mergedAt": merged_at,
+        "closedAt": None,
+    }
+
+
+def _relay_page(run: Runner, repo: str, tree: Path, query: dict) -> tuple[list[dict], bool] | None:
+    """One page of relay PR rows (mapped), or None when the call or its answer failed."""
     res = run(
         [
-            "gh",
-            "pr",
-            "list",
-            "--repo",
-            repo,
-            "--state",
-            "all",
-            "--limit",
-            str(GH_BULK_LIMIT),
+            "simple-git",
+            "call",
+            "gr_wf_pr_list_page",
+            "--args-json",
+            json.dumps(query, separators=(",", ":"), sort_keys=True),
             "--json",
-            GH_FIELDS,
         ],
         cwd=tree,
     )
     if not res.ok:
-        return None, False
+        return None
     try:
-        data = json.loads(res.out or "[]")
+        data = json.loads(res.out or "{}")
     except ValueError:
-        return None, False
-    if not isinstance(data, list):
-        return None, False
-    return data, len(data) >= GH_BULK_LIMIT
+        return None
+    structured = data.get("structured") if isinstance(data, dict) else None
+    if not isinstance(structured, dict) or not isinstance(structured.get("pulls"), list):
+        return None
+    rows = []
+    for row in structured["pulls"]:
+        mapped = _relay_row(row)
+        if mapped is None:
+            return None
+        rows.append(mapped)
+    return rows, structured.get("has_more") is True
+
+
+def _bulk_prs(run: Runner, repo: str, tree: Path) -> tuple[list[dict] | None, bool]:
+    """Every PR the relay page verb returns (state all), paged to the old bulk bound."""
+    pulls: list[dict] = []
+    for page in range(1, RELAY_MAX_PAGES + 1):
+        got = _relay_page(
+            run, repo, tree, {"repo": repo, "state": "all", "per_page": RELAY_PAGE, "page": page}
+        )
+        if got is None:
+            return None, False
+        rows, has_more = got
+        pulls.extend(rows)
+        if not has_more:
+            return pulls, False
+    return pulls, True
 
 
 def _head_prs(run: Runner, repo: str, tree: Path, name: str) -> list[dict] | None:
     if not K.valid_ref_name(name):
         return None
-    res = run(
-        [
-            "gh",
-            "pr",
-            "list",
-            "--repo",
-            repo,
-            "--state",
-            "all",
-            "--head",
-            name,
-            "--limit",
-            "20",
-            "--json",
-            GH_FIELDS,
-        ],
-        cwd=tree,
+    got = _relay_page(
+        run, repo, tree, {"repo": repo, "state": "all", "head": name, "per_page": RELAY_HEAD_PAGE}
     )
-    if not res.ok:
+    if got is None:
         return None
-    try:
-        data = json.loads(res.out or "[]")
-    except ValueError:
-        return None
-    return data if isinstance(data, list) else None
+    return got[0]
 
 
 def _default_branch(run: Runner, tree: Path) -> str:
-    res = run(["git", "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"], cwd=tree)
+    res = run(
+        ["git", "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"], cwd=tree
+    )
     out = res.out.strip()
     if res.ok and out.startswith("origin/") and K.valid_ref_name(out[len("origin/") :]):
         return out[len("origin/") :]
@@ -763,7 +1193,11 @@ def _remote_heads(run: Runner, tree: Path) -> dict[str, str] | None:
     heads: dict[str, str] = {}
     for line in res.out.splitlines():
         parts = line.split()
-        if len(parts) == 2 and parts[1].startswith("refs/heads/") and _SHA.match(parts[0]):
+        if (
+            len(parts) == 2
+            and parts[1].startswith("refs/heads/")
+            and _SHA.match(parts[0])
+        ):
             heads[parts[1][len("refs/heads/") :]] = parts[0]
     return heads
 
@@ -771,7 +1205,14 @@ def _remote_heads(run: Runner, tree: Path) -> dict[str, str] | None:
 def _owner_repo(run: Runner, app: L.App, tree: Path) -> str | None:
     res = run(["git", "config", "--get", "remote.origin.url"], cwd=tree)
     found = D.parse_owner_repo(res.out.strip()) if res.ok else None
-    return found or (app.owner_repo or None)
+    known = app.owner_repo or None
+    # GitHub ignores case in owner and repo names, but the relay's seat policy matches them
+    # exactly, and the server's origin reads github.com/simple-with-us/...  So when the remote
+    # names the registry's repo, use the registry's spelling;  a remote naming another repo
+    # (a fork) keeps its own.
+    if found and known and found.casefold() == known.casefold():
+        return known
+    return found or known
 
 
 def _lane_apps(ctx: K.Ctx, repo_filter: str | None) -> list[L.App]:
@@ -811,12 +1252,18 @@ def _gather(
     prune: bool,
     only_path: str | None = None,
 ) -> tuple[_Plan, Runner]:
-    run = Runner(ctx.env, write_root=ctx.roots.lanes_root, fold=ctx.fold(), exec_fn=ctx.exec_fn)
+    run = Runner(
+        ctx.env, write_root=ctx.roots.lanes_root, fold=ctx.fold(), exec_fn=ctx.exec_fn
+    )
     errors: list[str] = []
     notes: list[str] = []
     lsof = run(["lsof", "-d", "cwd", "-Fpcn"])
     # lsof exits 1 when some process could not be read but still prints the rest; only no output at all is a failure.
-    lsof_rows = D.parse_lsof(lsof.out) if (lsof.ok or (lsof.rc == 1 and lsof.out.strip())) else None
+    lsof_rows = (
+        D.parse_lsof(lsof.out)
+        if (lsof.ok or (lsof.rc == 1 and lsof.out.strip()))
+        else None
+    )
     if lsof_rows is None:
         errors.append(
             f"lsof failed ({K._why(lsof)}); nothing is removed while it cannot be checked"
@@ -825,7 +1272,9 @@ def _gather(
     lanes_out: list[_Lane] = []
     others = 0
     for app in apps:
-        tree = Path(os.path.realpath(Path(ctx.roots.code_root) / app.integration_dir_name))
+        tree = Path(
+            os.path.realpath(Path(ctx.roots.code_root) / app.integration_dir_name)
+        )
         try:
             recs = K._worktrees(run, tree)
         except K.ToolFailure as exc:
@@ -858,7 +1307,7 @@ def _gather(
         prs, truncated = _bulk_prs(run, repo, tree) if repo else (None, False)
         if prs is None:
             errors.append(
-                f"{app.lane_dir}: gh pr list failed for {repo or 'an unknown GitHub repo'}"
+                f"{app.lane_dir}: relay PR list failed for {repo or 'an unknown GitHub repo'}"
             )
 
         def work(
@@ -884,17 +1333,25 @@ def _gather(
                 def fallback(name: str) -> list[dict] | None:
                     return _head_prs(run, repo, tree, name) if repo else None
 
-                ln.facts.pr = _pr_view(run, ln, prs, fallback, truncated)
+                ln.facts.pr = _pr_view(run, ln, prs, fallback, truncated, default)
             return ln
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as pool:
             done = list(pool.map(work, lanes))
         for ln in done:
-            if seats is not None and ln.kind == "review" and (ln.seat or "") not in seats:
+            if (
+                seats is not None
+                and ln.kind == "review"
+                and (ln.seat or "") not in seats
+            ):
                 others += 1
                 continue
-            action, reason = decide(ln.facts, prune=prune) if ln.facts else ("keep", "no facts")
-            pr = ln.facts.pr.open_number or ln.facts.pr.done_number if ln.facts else None
+            action, reason = (
+                decide(ln.facts, prune=prune) if ln.facts else ("keep", "no facts")
+            )
+            pr = (
+                ln.facts.pr.open_number or ln.facts.pr.done_number if ln.facts else None
+            )
             rows.append(
                 Row(
                     app.lane_dir,
@@ -924,15 +1381,60 @@ def _apply(ctx: K.Ctx, run: Runner, plan: _Plan, seats: set | None) -> None:
         with K._repo_lock(ctx, run, tree):
             for row, ln in items:
                 st = run(
-                    ["git", "status", "--porcelain", "--ignored", "--untracked-files=normal"],
+                    [
+                        "git",
+                        "status",
+                        "--porcelain",
+                        "--ignored",
+                        "--untracked-files=normal",
+                    ],
                     cwd=ln.rec.path,
                 )
-                if not st.ok or _dirty_count(st.out) or D.split_ignored(st.out)[0]:
-                    row.action, row.reason = "keep", "changed since it was inspected (git status)"
+                split = (
+                    _split_published(run, ln.rec.path, ln.facts.default_branch)
+                    if st.ok and _dirty_count(st.out)
+                    else (0, [])
+                )
+                if (
+                    not st.ok
+                    or split is None
+                    or split[0]
+                    or D.split_ignored(st.out)[0]
+                ):
+                    row.action, row.reason = (
+                        "keep",
+                        "changed since it was inspected (git status)",
+                    )
                     continue
+                if split[1]:
+                    err = _restore_published(run, ln.rec.path, split[1])
+                    st2 = run(
+                        [
+                            "git",
+                            "status",
+                            "--porcelain",
+                            "--ignored",
+                            "--untracked-files=normal",
+                        ],
+                        cwd=ln.rec.path,
+                    )
+                    if err or not st2.ok or _dirty_count(st2.out):
+                        row.action, row.reason = (
+                            "keep",
+                            "could not restore published files"
+                            + (f" ({err})" if err else ""),
+                        )
+                        continue
+                    row.note = (
+                        f"restored {len(split[1])} file"
+                        f"{'s' if len(split[1]) != 1 else ''} identical to origin/{ln.facts.default_branch}"
+                    )
                 res = run(["git", "worktree", "remove", ln.rec.path], cwd=tree)
                 if not res.ok:
-                    row.action, row.reason = "error", "git worktree remove failed: " + K._why(res)
+                    row.action, row.reason = (
+                        "error",
+                        "git worktree remove failed: " + K._why(res),
+                    )
                     plan.errors.append(f"{row.path}: {row.reason}")
                     continue
                 row.removed = True
@@ -940,12 +1442,20 @@ def _apply(ctx: K.Ctx, run: Runner, plan: _Plan, seats: set | None) -> None:
                     bd = run(["git", "branch", "-d", ln.rec.branch], cwd=tree)
                     row.branch_deleted = bd.ok
                     if not bd.ok:
-                        row.note = "branch kept: git branch -d refused (" + K._why(bd) + ")"
+                        row.note = (
+                            "branch kept: git branch -d refused (" + K._why(bd) + ")"
+                        )
             _maybe_prune(ctx, run, app, tree, seats, dangling, plan)
 
 
 def _maybe_prune(
-    ctx: K.Ctx, run: Runner, app: L.App, tree: Path, seats: set | None, dangling, plan: _Plan
+    ctx: K.Ctx,
+    run: Runner,
+    app: L.App,
+    tree: Path,
+    seats: set | None,
+    dangling,
+    plan: _Plan,
 ) -> None:
     """`git worktree prune` only for stale entries that are lanes of the chosen seat, and never while a lanes
     symlink is dangling (the external disk is not mounted)."""
@@ -987,14 +1497,19 @@ def _render(ctx: K.Ctx, plan: _Plan, *, apply: bool, title: str) -> str:
     lines = [title, ""]
     head = ("DECISION", "REPO", "LANE", "BRANCH", "REASON")
     table = []
-    for r in sorted(plan.rows, key=lambda r: (r.action != "remove", r.repo.lower(), r.path)):
+    for r in sorted(
+        plan.rows, key=lambda r: (r.action != "remove", r.repo.lower(), r.path)
+    ):
         action = r.action
         if apply and r.action == "remove":
             action = "removed" if r.removed else "remove"
         reason = r.reason + (f"  [{r.note}]" if r.note else "")
-        table.append((action, r.repo, os.path.basename(r.path), r.branch or "(detached)", reason))
+        table.append(
+            (action, r.repo, os.path.basename(r.path), r.branch or "(detached)", reason)
+        )
     widths = [
-        max(len(head[i]), *(len(t[i]) for t in table)) if table else len(head[i]) for i in range(4)
+        max(len(head[i]), *(len(t[i]) for t in table)) if table else len(head[i])
+        for i in range(4)
     ]
     fmt = "  ".join("{:<%d}" % w for w in widths) + "  {}"
     lines.append(fmt.format(*head))
@@ -1012,7 +1527,9 @@ def _render(ctx: K.Ctx, plan: _Plan, *, apply: bool, title: str) -> str:
     if apply:
         summary += f"; {removed} removed, {counts.get('error', 0)} failed"
     else:
-        summary += ".  Dry run: nothing changed; add --apply to remove the removable ones"
+        summary += (
+            ".  Dry run: nothing changed; add --apply to remove the removable ones"
+        )
     if plan.others:
         summary += f"; {plan.others} lane(s) of other seats not considered"
     lines.append(summary)
@@ -1054,29 +1571,41 @@ def _parser(command: str) -> _Parser:
             prog="lane retire",
             description="Remove one lane of your seat once its work is safe on GitHub.  "
             "Run it from outside the lane.  Exit 0 removed (or would be, with --dry-run), 64 refused or kept, "
-            "69 git, gh or lsof failed.",
+            "69 git, relay or lsof failed.",
         )
-        p.add_argument("target", help="the lane path, or its slug (the part after <seat>-)")
-        p.add_argument("--repo", metavar="APP", help="the repo when a slug alone is ambiguous")
         p.add_argument(
-            "--dry-run", action="store_true", help="say what would happen; change nothing"
+            "target", help="the lane path, or its slug (the part after <seat>-)"
+        )
+        p.add_argument(
+            "--repo", metavar="APP", help="the repo when a slug alone is ambiguous"
+        )
+        p.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="say what would happen; change nothing",
         )
         p.add_argument("--json", action="store_true", help="print the decision as JSON")
         return p
     p = _Parser(
         prog="lane prune",
         description="List a seat's lanes with a decision and a reason for each; remove the "
-        "removable ones with --apply.  Exit 0 ok, 64 usage or refusal, 69 git, gh or lsof failed.",
+        "removable ones with --apply.  Exit 0 ok, 64 usage or refusal, 69 git, relay or lsof failed.",
     )
-    p.add_argument("--seat", metavar="NAME", help="seat tag or folder name (default: AGENT_SEAT)")
+    p.add_argument(
+        "--seat", metavar="NAME", help="seat tag or folder name (default: AGENT_SEAT)"
+    )
     p.add_argument(
         "--all-seats",
         action="store_true",
         help="allow a --seat other than yours; alone, every seat",
     )
-    p.add_argument("--repo", metavar="APP", help="only this repo (name, folder, prefix or acronym)")
     p.add_argument(
-        "--apply", action="store_true", help="remove the removable lanes (the default is a dry run)"
+        "--repo", metavar="APP", help="only this repo (name, folder, prefix or acronym)"
+    )
+    p.add_argument(
+        "--apply",
+        action="store_true",
+        help="remove the removable lanes (the default is a dry run)",
     )
     p.add_argument("--json", action="store_true", help="print the table as JSON")
     return p
@@ -1119,7 +1648,9 @@ def _find_by_path(ctx: K.Ctx, target: str) -> tuple[L.App, str]:
             f"{target} is not a lane under {ctx.roots.lanes_root}; lane retire removes nothing else."
         )
     if ctx.key(str(root)) != ctx.key(path):
-        raise K.Refusal(f"{target} is inside the lane {root}; give the lane folder itself.")
+        raise K.Refusal(
+            f"{target} is inside the lane {root}; give the lane folder itself."
+        )
     folder = root.parent.name
     app = ctx.registry.app_by_lane_dir(folder, case_insensitive=True)
     if app is None:
@@ -1132,7 +1663,9 @@ def _find_by_path(ctx: K.Ctx, target: str) -> tuple[L.App, str]:
 
 def _retire(ctx: K.Ctx, args: argparse.Namespace, now: float) -> int:
     seat = K.resolve_seat(ctx.env, ctx.registry)
-    run = Runner(ctx.env, write_root=ctx.roots.lanes_root, fold=ctx.fold(), exec_fn=ctx.exec_fn)
+    run = Runner(
+        ctx.env, write_root=ctx.roots.lanes_root, fold=ctx.fold(), exec_fn=ctx.exec_fn
+    )
     t = args.target.strip()
     if "/" in t or t.startswith((".", "~")):
         app, path = _find_by_path(ctx, t)
@@ -1144,7 +1677,9 @@ def _retire(ctx: K.Ctx, args: argparse.Namespace, now: float) -> int:
         app, path = _find_by_slug(ctx, run, seat, t, args.repo)
     K._require_lane_app(app)
     seats = {seat.suffix.lower()}
-    plan, run = _gather(ctx, apps=[app], seats=None, now=now, prune=False, only_path=path)
+    plan, run = _gather(
+        ctx, apps=[app], seats=None, now=now, prune=False, only_path=path
+    )
     if not plan.rows:
         raise K.Refusal(
             f"{path} is not a worktree that git lists in {Path(ctx.roots.code_root) / app.integration_dir_name}; "
@@ -1159,7 +1694,9 @@ def _retire(ctx: K.Ctx, args: argparse.Namespace, now: float) -> int:
     if row.action == "remove" and not args.dry_run:
         _apply(ctx, run, plan, seats)
     if args.json:
-        ctx.out.write(_json(plan, apply=not args.dry_run, seats=seats, command="retire"))
+        ctx.out.write(
+            _json(plan, apply=not args.dry_run, seats=seats, command="retire")
+        )
     if row.action == "error":
         _say(ctx.err, f"error: {row.reason}")
         return K.EXIT_TOOL
@@ -1169,7 +1706,10 @@ def _retire(ctx: K.Ctx, args: argparse.Namespace, now: float) -> int:
             _say(ctx.err, "error: " + e)
         return (
             K.EXIT_TOOL
-            if (plan.errors and row.reason.startswith(("PR lookup failed", "could not check")))
+            if (
+                plan.errors
+                and row.reason.startswith(("PR lookup failed", "could not check"))
+            )
             else K.EXIT_USAGE
         )
     if args.dry_run:
@@ -1194,7 +1734,11 @@ def _prune(ctx: K.Ctx, args: argparse.Namespace, now: float) -> int:
     registry = ctx.registry
     own: L.Seat | None = None
     raw_own = (ctx.env.get(K.ENV_SEAT) or "").strip()
-    if raw_own:
+    launched = bool(
+        (ctx.env.get("AGENT_LAUNCHER") or "").strip()
+        or (ctx.env.get("AGENT_LAUNCH_SEAT") or "").strip()
+    )
+    if raw_own or launched:
         own = K.resolve_seat(ctx.env, registry)
     seats: set | None
     if args.seat:
@@ -1209,7 +1753,11 @@ def _prune(ctx: K.Ctx, args: argparse.Namespace, now: float) -> int:
                 f"{K.ENV_SEAT} is not set, so lane cannot tell whether {target.name} is your seat.  Set it, "
                 "or add --all-seats to look at another seat's lanes on purpose."
             )
-        if own is not None and target.suffix.lower() != own.suffix.lower() and not args.all_seats:
+        if (
+            own is not None
+            and target.suffix.lower() != own.suffix.lower()
+            and not args.all_seats
+        ):
             raise K.Refusal(
                 f"--seat {target.name} is not your seat ({own.name}).  Add --all-seats to look at another "
                 "seat's lanes on purpose; never remove a peer's lane without the owner's word."

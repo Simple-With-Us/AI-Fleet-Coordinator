@@ -3,8 +3,8 @@
 
 Run:  python3 scripts/linear-board/test_board_parity.py   (stdlib only, under a minute)
 
-The catalogs in catalog/*.json and the fixtures in testdata/agent-sync-fixtures.json are exported from
-the hosted server's JavaScript (scripts/agent-sync-mcp/scripts/export-linear-catalog.mjs), and the node
+The catalogs in catalog/*.json and the fixtures in testdata/simple-tools-fixtures.json are exported from
+the hosted server's JavaScript (scripts/simple-tools-mcp/scripts/export-linear-catalog.mjs), and the node
 test linear-catalog-parity pins them to a fresh export.  These tests close the loop on the Python side:
 the CLI serves exactly the catalog's commands, builds byte-identical documents for every named command,
 and its ports of the GraphQL guards, the public-input allowlist and the argument schema check give the
@@ -27,10 +27,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from test_board import BoardTest, MockLinear, load_cli, make_handler
+from test_board import CLIENT_ID, CLIENT_SECRET, BoardTest, MockLinear, load_cli, make_handler
 
 CATALOG = HERE / "catalog"
-FIXTURES = json.loads((HERE / "testdata" / "agent-sync-fixtures.json").read_text())
+FIXTURES = json.loads((HERE / "testdata" / "simple-tools-fixtures.json").read_text())
 CLI = load_cli()
 
 
@@ -62,7 +62,7 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, 2)
 
     def test_every_named_command_matches_the_servers_document(self):
-        """Python builds the same AgentSyncNamed document and variables as buildNamedOperation, and
+        """Python builds the same SimpleToolsNamed document and variables as buildNamedOperation, and
         the guards give the same verdict, for every command (required args, all args, save create)."""
         by = {c["name"]: c for c in CLI.named_commands()}
         self.assertEqual({r["name"] for r in FIXTURES["named"]}, set(by))
@@ -240,7 +240,7 @@ class CatalogTests(unittest.TestCase):
 
             def call(self, q, v):
                 self.calls.append(v)
-                if "AgentSyncLabel" in q:
+                if "SimpleToolsLabel" in q:
                     return {
                         "issueLabel": {"id": v["id"], "name": self.labels[v["id"]]}
                         if v["id"] in self.labels
@@ -304,7 +304,7 @@ class ParityMock(MockLinear):
     def __init__(self):
         super().__init__()
         self.api_requests: list = []  # (operation, query, variables) of parity operations
-        self.api_data = None  # canned data for AgentSyncNamed / ad-hoc operations
+        self.api_data = None  # canned data for SimpleToolsNamed / ad-hoc operations
         self.http500_ops: dict = {}  # operation -> times to answer HTTP 500
         self.mcp_requests: list = []  # (headers, body)
         self.mcp_mode = "sse"
@@ -313,10 +313,10 @@ class ParityMock(MockLinear):
         }
 
     def handle(self, op, q, v):
-        if op == "AgentSyncLabel":
+        if op == "SimpleToolsLabel":
             lb = self.labels.get(v["id"])
             return {"issueLabel": {"id": lb["id"], "name": lb["name"]} if lb else None}, None
-        if op == "AgentSyncSchema":
+        if op == "SimpleToolsSchema":
             self.api_requests.append((op, q, v))
             if v["name"] != "Issue":
                 return {"__type": None}, None
@@ -483,9 +483,16 @@ class CommandsCliTests(ParityCliTest):
 
 class RunCliTests(ParityCliTest):
     def test_run_read_sends_the_named_document(self):
-        p = self.board("run", "get_issue", "--arg", "id=123", drop=("AGENT_SEAT",))
+        p = self.board(
+            "run",
+            "get_issue",
+            "--arg",
+            "id=123",
+            drop=("AGENT_SEAT",),
+            extra={"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET},
+        )
         ((op, q, v),) = self.mock.api_requests
-        self.assertEqual(op, "AgentSyncNamed")
+        self.assertEqual(op, "SimpleToolsNamed")
         doc, variables = CLI.build_named_operation(CLI.named_command("get_issue"), {"id": "123"})
         self.assertEqual((q, v), (doc, variables))
         self.assertEqual(v, {"id": "123"})  # an id stays a string
@@ -564,7 +571,7 @@ class RunCliTests(ParityCliTest):
         )
         first = self.board(*args)
         ((op, q, v),) = self.mock.api_requests
-        self.assertTrue(q.startswith("mutation AgentSyncNamed($input: CommentCreateInput!)"))
+        self.assertTrue(q.startswith("mutation SimpleToolsNamed($input: CommentCreateInput!)"))
         self.assertEqual(v["input"]["body"], "[CLAUDE·6db9ee77] hello")
         second = self.board(*args)
         self.assertEqual(
@@ -583,28 +590,30 @@ class RunCliTests(ParityCliTest):
         )
         self.assertIn("belongs to a different request", p.stderr)
         self.assertEqual(len(self.mock.api_requests), 1)
-        record = self.tmp / "cache" / "Fleet.linear-api.json"
+        record = (
+            self.tmp / "cache" / "CLAUDE.linear-api.json"
+        )  # the idempotency file is named for the acting seat app now, not the retired shared "Fleet" app
         self.assertEqual(oct(record.stat().st_mode & 0o777), "0o600")
 
     def test_an_unknown_outcome_is_never_replayed(self):
-        self.mock.http500_ops["AgentSyncNamed"] = 1
+        self.mock.http500_ops["SimpleToolsNamed"] = 1
         args = ("run", "archive_issue", "--arg", "id=OPS-10", "--idempotency-key", "arch-1")
         p = self.board(*args, code=1)
         self.assertIn("may have reached Linear", p.stderr)
-        self.assertEqual(self.parity_ops(), ["AgentSyncNamed"])  # one attempt, never retried
+        self.assertEqual(self.parity_ops(), ["SimpleToolsNamed"])  # one attempt, never retried
         p = self.board(*args, code=1)
         self.assertIn("unknown outcome", p.stderr)
-        self.assertEqual(self.parity_ops(), ["AgentSyncNamed"])
+        self.assertEqual(self.parity_ops(), ["SimpleToolsNamed"])
         self.board("run", "archive_issue", "--arg", "id=OPS-10", "--idempotency-key", "arch-2")
-        self.assertEqual(self.parity_ops(), ["AgentSyncNamed", "AgentSyncNamed"])
+        self.assertEqual(self.parity_ops(), ["SimpleToolsNamed", "SimpleToolsNamed"])
 
     def test_a_definitive_refusal_frees_the_key(self):
-        self.mock.limit_ops["AgentSyncNamed"] = 1  # 400 RATELIMITED:  certainly not applied
+        self.mock.limit_ops["SimpleToolsNamed"] = 1  # 400 RATELIMITED:  certainly not applied
         args = ("run", "archive_issue", "--arg", "id=OPS-10", "--idempotency-key", "arch-1")
         p = self.board(*args, code=5)
         self.assertIn("Not applied", p.stderr)
         self.board(*args)
-        self.assertEqual(self.parity_ops(), ["AgentSyncNamed"])
+        self.assertEqual(self.parity_ops(), ["SimpleToolsNamed"])
 
     def test_claim_labels_are_protected(self):
         claimed = self.mock.lid("claimed:CODEX")
@@ -618,7 +627,7 @@ class RunCliTests(ParityCliTest):
             code=2,
         )
         self.assertIn("board claim", p.stderr)
-        self.assertNotIn("AgentSyncNamed", self.parity_ops())
+        self.assertNotIn("SimpleToolsNamed", self.parity_ops())
         ordinary = self.mock.lid("imported")
         self.board(
             "run",
@@ -628,13 +637,13 @@ class RunCliTests(ParityCliTest):
             "--idempotency-key",
             "k2",
         )
-        self.assertEqual(self.parity_ops(), ["AgentSyncNamed"])
+        self.assertEqual(self.parity_ops(), ["SimpleToolsNamed"])
 
     def test_writes_check_the_seat_apps_identity(self):
         cid, secret = "claude-app-client-id", "claude-app-client-secret-value"
         self.mock.add_client(cid, secret, "Codex")  # swapped credentials
-        self.ops_put("CLAUDE_LINEAR_CLIENT_ID", cid)
-        self.ops_put("CLAUDE_LINEAR_CLIENT_SECRET", secret)
+        self.afc_put("LINEAR_CLAUDE_CLIENT_ID", cid)
+        self.afc_put("LINEAR_CLAUDE_CLIENT_SECRET", secret)
         out = self.board(
             "run", "archive_issue", "--arg", "id=OPS-10", "--idempotency-key", "k", code=4
         )
@@ -652,6 +661,7 @@ class ApiCliTests(ParityCliTest):
             "query Q($n: Int) { viewer { id } }",
             "--vars",
             '{"n": 2}',
+            extra={"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET},
             drop=("AGENT_SEAT",),
         )
         self.assertEqual(
@@ -728,7 +738,13 @@ class ApiCliTests(ParityCliTest):
         self.assertIn('body: "[CLAUDE\\u00b75e55105a] inline \\"quoted\\""', sent)
 
     def test_api_schema(self):
-        p = self.board("api", "schema", "Issue", drop=("AGENT_SEAT",))
+        p = self.board(
+            "api",
+            "schema",
+            "Issue",
+            drop=("AGENT_SEAT",),
+            extra={"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET},
+        )
         self.assertIn("Issue  (OBJECT)  4 fields", p.stdout)
         self.assertIn("  id: ID!", p.stdout)
         self.assertIn("  comments(first: Int): CommentConnection", p.stdout)
@@ -749,6 +765,7 @@ class McpCliTests(ParityCliTest):
             "search_documentation",
             "--args-json",
             '{"query": "cycles"}',
+            extra={"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET},
             drop=("AGENT_SEAT",),
         )
         self.assertEqual(p.stdout.strip(), "Cycles group issues into time boxes.")
