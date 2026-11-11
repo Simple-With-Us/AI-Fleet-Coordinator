@@ -686,6 +686,10 @@ jobs:
     - name: PR Autofix reusable workflow contract
       timeout-minutes: 10
       run: node --test .github/pr-autofix-reusable.node-test.mjs
+    # Same-repo PRs push the Ruff fix as the autofix App, whoever authored the head, and never with github.token.
+    - name: autofix.ci workflow contract
+      timeout-minutes: 10
+      run: node --test .github/autofix-ci.node-test.mjs
     # The shared auto-merge armer against a fake `gh`:  a merge queue refuses
     # --delete-branch, and the armer has to arm again without the flag instead of
     # failing every PR in the repo (AFC-413).  No network:  the fake records its
