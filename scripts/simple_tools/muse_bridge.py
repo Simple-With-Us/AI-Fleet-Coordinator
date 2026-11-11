@@ -184,7 +184,7 @@ def export(root: str, cfg: C.Config, cursors: Mapping[str, Any]) -> dict[str, An
                     "owner": row.get("owner") is True,
                     "ts": row.get("ts"),
                     "stale": row.get("stale") is True,
-                    "native": cfg.seats[seat].wake == "http",
+                    "native": cfg.seats[seat].routine is not None,
                     "blocked": source_blocked(root, cfg, row),
                     "paused": L.paused(root, seat, wakes=True),
                 }
@@ -456,7 +456,7 @@ def submit(root: str, cfg: C.Config, request: Mapping[str, Any]) -> dict[str, An
         raise Refused("source inbox row is missing or changed")
     if kind not in ("native", "chat", "hold"):
         raise Refused("invalid bridge decision")
-    if kind == "native" and cfg.seats[seat].wake != "http":
+    if kind == "native" and cfg.seats[seat].routine is None:
         raise Refused("source seat has no configured native routine")
     if kind != "hold" and source_blocked(root, cfg, row):
         raise Refused("source loop guard blocks delivery")

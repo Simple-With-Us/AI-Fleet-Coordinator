@@ -816,12 +816,19 @@ class MacBridge:
     def _budget_reason(
         item: Mapping[str, Any], budget: Mapping[str, Any], decisions: Mapping[str, Any]
     ) -> str | None:
+        # Every budget the seat always has must arrive as a number.  A wake count cap may be absent
+        # (no limit) but is never accepted damaged:  a cap that is present must be a number too.
         if not isinstance(budget, dict) or any(
-            k not in budget
-            or isinstance(budget[k], bool)
-            or not isinstance(budget[k], (int, float))
-            or budget[k] < 0
-            for k in C.BUDGET_DEFAULTS
+            (k not in budget and k not in C.WAKE_CAP_KEYS)
+            or (
+                k in budget
+                and (
+                    isinstance(budget[k], bool)
+                    or not isinstance(budget[k], (int, float))
+                    or budget[k] < 0
+                )
+            )
+            for k in (*C.BUDGET_DEFAULTS, *C.WAKE_CAP_KEYS)
         ):
             return "budget_unavailable"
         views = {}

@@ -8885,7 +8885,7 @@ class Daemon:
             runner is None
             or row is None
             or row.get("seq") != decision.get("seq")
-            or runner.cfg.wake != "http"
+            or runner.cfg.routine is None
         ):
             MB.finish_native(self.root, receipt, "held")
             self.log.write("muse-bridge-held", seat=seat, id=message_id, reason="source_changed")
