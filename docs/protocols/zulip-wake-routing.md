@@ -40,6 +40,13 @@ AND WAKES the picked chat, each platform using whatever it needs to do that.
 - Response:  one JSON object, HTTP 200 once the wake id has been seen (the listener does
   not retry a 200);  the receipt fields are the router's own record:
   `{wake_id, letter, session_id, thread_link, picked: letter|topic-match|most-recent|"", reason}`.
+  A delivered receipt adds `{delivered, reason}`;  a FAILED delivery command also adds the
+  classifier's allowlisted typed metadata `{failure_code, failure_stage, exit_code}` - e.g.
+  `failure_code: model-auth-login-failed` for the runtime's documented pre-accept provider
+  login failure (`project_token_login_failed`).  The classifier parses a bounded tail of the
+  child's output in memory for documented literal signatures;  raw process output is never
+  persisted (it can quote private prompt/session content), an unmatched failure records
+  `unknown`, and classification never activates a retry by itself.
 - Dedupe:  one receipt per wake id, under a lock;  a repeated id answers the record.
 - Determinism first:  the rules above, in order.  ONE headless decider for every platform
   (the Operator's preset, via OpenRouter - the owner's words:  not "a bunch of different

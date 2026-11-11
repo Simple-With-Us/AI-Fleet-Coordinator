@@ -429,5 +429,97 @@ class DeliverCli(Base):
         self.assertEqual(log["wake_id"], "w-cli-1")
 
 
+class FailureClassification(Base):
+    """A failed delivery command records allowlisted typed metadata only:  the classifier
+    parses a bounded tail of the child's output in memory, and raw output - which can quote
+    private prompt content or tokens - never reaches the durable receipt.  Classification
+    records;  it never activates a retry."""
+
+    def _receipt(self) -> dict:
+        return {
+            "at": time.time(),
+            "wake_id": "w-fc",
+            "letter": "",
+            "session_id": "sess_fc",
+            "thread_link": "",
+            "picked": "topic-match",
+            "reason": "",
+            "delivered": None,
+            "channel": "c",
+            "topic": "t",
+            "zulip_link": "",
+        }
+
+    def _deliver(self, script_body: str):
+        fake = os.path.join(self.tmp.name, "fake-cmd")
+        marker = os.path.join(self.tmp.name, "invocations")
+        with open(fake, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\necho run >> \"%s\"\n%s" % (marker, script_body))
+        os.chmod(fake, 0o700)
+        cfg = dict(self.config)
+        cfg["delivery_enabled"] = True
+        cfg["command_template"] = [fake, "--resume", "{session_id}", "-p", "{wake_text}"]
+        log_path = Path(self.state) / "wakes.jsonl"
+        B.deliver_receipt(self.env(), cfg, self._receipt(), log_path)
+        receipt = json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1])
+        runs = Path(marker).read_text(encoding="utf-8").splitlines() if os.path.exists(marker) else []
+        return receipt, json.dumps(receipt), len(runs)
+
+    def test_documented_pre_accept_signature_records_typed_code(self) -> None:
+        receipt, raw, runs = self._deliver(
+            "echo 'Error: project_token_login_failed' >&2\nexit 1\n"
+        )
+        self.assertEqual(receipt["reason"], "command-failed-1")
+        self.assertFalse(receipt["delivered"])
+        self.assertEqual(receipt["failure_code"], "model-auth-login-failed")
+        self.assertEqual(receipt["failure_stage"], "model-auth")
+        self.assertEqual(receipt["exit_code"], 1)
+        self.assertEqual(runs, 1)  # a command-failed exit is never retried
+
+    def test_unmatched_failure_is_unknown_and_raw_output_never_persists(self) -> None:
+        receipt, raw, runs = self._deliver(
+            "echo 'boom SENTINEL_PRIVATE_SESSION_CONTENT' >&2\nexit 1\n"
+        )
+        self.assertEqual(receipt["failure_code"], "unknown")
+        self.assertEqual(receipt["failure_stage"], "unknown")
+        self.assertEqual(receipt["exit_code"], 1)
+        self.assertNotIn("SENTINEL_PRIVATE_SESSION_CONTENT", raw)
+        self.assertEqual(runs, 1)
+
+    def test_silent_failure_is_unknown(self) -> None:
+        receipt, raw, runs = self._deliver("exit 1\n")
+        self.assertEqual(receipt["failure_code"], "unknown")
+        self.assertEqual(receipt["exit_code"], 1)
+
+    def test_scan_window_is_bounded(self) -> None:
+        # The signature only classifies inside the bounded tail:  a match older than the
+        # cap is not read (the scan never walks unbounded output).
+        receipt, raw, runs = self._deliver(
+            "printf 'project_token_login_failed ' >&2\n"
+            "printf 'x%.0s' $(seq 9000) >&2\nexit 1\n"
+        )
+        self.assertEqual(receipt["failure_code"], "unknown")
+
+    def test_success_records_no_failure_fields(self) -> None:
+        receipt, raw, runs = self._deliver("exit 0\n")
+        self.assertEqual(receipt["reason"], "ok")
+        self.assertTrue(receipt["delivered"])
+        self.assertNotIn("failure_code", receipt)
+        self.assertNotIn("exit_code", receipt)
+        self.assertEqual(runs, 1)
+
+    def test_classifier_unit_edges(self) -> None:
+        self.assertEqual(
+            B.classify_command_failure(1, "project_token_login_failed"),
+            {"failure_code": "model-auth-login-failed", "failure_stage": "model-auth",
+             "exit_code": 1},
+        )
+        self.assertEqual(
+            B.classify_command_failure(2, "anything else")["failure_code"], "unknown"
+        )
+        self.assertEqual(B.classify_command_failure(1, "")["failure_code"], "unknown")
+        self.assertEqual(B.classify_command_failure(1, None)["exit_code"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
