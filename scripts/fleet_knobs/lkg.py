@@ -42,7 +42,7 @@ def state_dir() -> str:
 
 
 def _suffix(folder: str) -> str:
-    """"" for the root folder, else "-" and the folder's name (``-wake-router``)."""
+    """The empty string for the root folder, else "-" and the folder's name (``-wake-router``)."""
     if not FOLDER_PATTERN.match(folder):
         raise ValueError("not a knob folder")
     return "" if folder == ROOT_FOLDER else "-" + folder.strip("/").replace("/", "--")
@@ -239,9 +239,7 @@ def recent_failure(now: float | None = None, *, folder: str = ROOT_FOLDER) -> st
     return _clean_reason(doc.get("reason", "unknown"))
 
 
-def record_failure(
-    reason: str, now: float | None = None, *, folder: str = ROOT_FOLDER
-) -> None:
+def record_failure(reason: str, now: float | None = None, *, folder: str = ROOT_FOLDER) -> None:
     """Atomically write one folder's marker (0600):  a timestamp and a reason token, nothing
     else."""
     now = time.time() if now is None else now

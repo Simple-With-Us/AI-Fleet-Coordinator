@@ -88,7 +88,9 @@ class FetchTests(KnobTestCase):
 
     def test_one_folders_failure_leaves_the_other_live(self):
         self.fake.set(
-            secrets={}, folders={"/": ROOT_VALUES, ROUTER: ROUTER_VALUES}, folder_modes={"/": "fail"}
+            secrets={},
+            folders={"/": ROOT_VALUES, ROUTER: ROUTER_VALUES},
+            folder_modes={"/": "fail"},
         )
         self.assertEqual(knobs.resolve("LANE_SWEEP_MODE").source, "default")
         self.assertTrue(knobs.resolve("LANE_SWEEP_MODE").stale)

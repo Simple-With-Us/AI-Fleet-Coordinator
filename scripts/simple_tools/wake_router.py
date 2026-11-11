@@ -1618,7 +1618,11 @@ def make_handler(router: Router) -> type[BaseHTTPRequestHandler]:
                 else:  # a reason token only, never a value
                     self._answer(
                         503,
-                        {"seat": seat, "healthy": False, "reason": "routine-key-unavailable:" + why},
+                        {
+                            "seat": seat,
+                            "healthy": False,
+                            "reason": "routine-key-unavailable:" + why,
+                        },
                     )
                 return
             found = re.fullmatch(r"/receipt/([A-Za-z0-9][A-Za-z0-9._-]{0,127})", self.path or "")

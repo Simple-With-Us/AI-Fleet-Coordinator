@@ -50,6 +50,8 @@ def folder_of(name: str) -> str:
     """The Infisical folder that holds `name`, the root for a name the registry does not have."""
     spec = BY_NAME.get(name)
     return spec.folder if spec is not None else KNOB_PATH
+
+
 ENV_WRITE_TOKEN = "FLEET_KNOBS_WRITE_TOKEN"
 WRITE_TIMEOUT = 30
 MAX_TOKEN = 2048
