@@ -87,9 +87,7 @@ COMPARE_FILES_CAP = 300  # GitHub returns at most 300 files from the compare end
 # Fixed public refusal for an unverifiable workflow-touch pre-read.  The hosted
 # front maps exactly this fixed string to a caller-visible reason, so keep it
 # byte-stable:  rewording it silently returns callers to a bare relay_refused.
-TOO_LARGE_TO_VERIFY = (
-    "PR changes too large to verify for workflow files; no write attempted"
-)
+TOO_LARGE_TO_VERIFY = "PR changes too large to verify for workflow files; no write attempted"
 MAX_PROJECT = 100
 MAX_WORKFLOW_TEXT = 40000
 # Opt-in bounded larger-text class (covers the 83854-byte mirror document class);
@@ -1121,15 +1119,11 @@ class WorkflowVerbs:
                 data = None
             files = data.get("files") if isinstance(data, dict) else None
             if files is None:
-                touches = self._base_changes_touch_workflows_via_trees(
-                    read, repo, pr, head_sha
-                )
+                touches = self._base_changes_touch_workflows_via_trees(read, repo, pr, head_sha)
             else:
                 scan(files)
                 if not touches and len(files) >= COMPARE_FILES_CAP:
-                    touches = self._base_changes_touch_workflows_via_trees(
-                        read, repo, pr, head_sha
-                    )
+                    touches = self._base_changes_touch_workflows_via_trees(read, repo, pr, head_sha)
         else:
             for page in range(1, 31):
                 rows = read(f"/repos/{repo}/pulls/{number}/files?per_page=100&page={page}")

@@ -366,7 +366,12 @@ class WorkflowPrElevation(unittest.TestCase):
 
     def test_update_branch_trees_fallback_detects_added_workflow_file(self):
         files = [{"filename": f"src/f{i}.py"} for i in range(300)]
-        added = {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "2" * 40, "mode": "100644"}
+        added = {
+            "type": "blob",
+            "path": ".github/workflows/ci.yml",
+            "sha": "2" * 40,
+            "mode": "100644",
+        }
         client, minter, handle, args = self.update_branch_trees(files, head_rows=[added])
         handle.run("wf_update_branch", args)
         self.assertEqual(len(minter.calls), 2)
@@ -375,7 +380,12 @@ class WorkflowPrElevation(unittest.TestCase):
 
     def test_update_branch_trees_fallback_detects_removed_workflow_file(self):
         files = [{"filename": f"src/f{i}.py"} for i in range(300)]
-        removed = {"type": "blob", "path": ".github/workflows/old.yml", "sha": "3" * 40, "mode": "100644"}
+        removed = {
+            "type": "blob",
+            "path": ".github/workflows/old.yml",
+            "sha": "3" * 40,
+            "mode": "100644",
+        }
         client, minter, handle, args = self.update_branch_trees(files, base_rows=[removed])
         handle.run("wf_update_branch", args)
         self.assertEqual(len(minter.calls), 2)
@@ -383,8 +393,18 @@ class WorkflowPrElevation(unittest.TestCase):
 
     def test_update_branch_trees_fallback_detects_changed_workflow_blob(self):
         files = [{"filename": f"src/f{i}.py"} for i in range(300)]
-        head_row = {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "2" * 40, "mode": "100644"}
-        base_row = {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "3" * 40, "mode": "100644"}
+        head_row = {
+            "type": "blob",
+            "path": ".github/workflows/ci.yml",
+            "sha": "2" * 40,
+            "mode": "100644",
+        }
+        base_row = {
+            "type": "blob",
+            "path": ".github/workflows/ci.yml",
+            "sha": "3" * 40,
+            "mode": "100644",
+        }
         client, minter, handle, args = self.update_branch_trees(
             files, head_rows=[head_row], base_rows=[base_row]
         )
@@ -450,8 +470,18 @@ class WorkflowPrElevation(unittest.TestCase):
 
     def test_update_branch_trees_fallback_detects_mode_only_workflow_change(self):
         files = [{"filename": f"src/f{i}.py"} for i in range(300)]
-        head_row = {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "2" * 40, "mode": "100755"}
-        base_row = {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "2" * 40, "mode": "100644"}
+        head_row = {
+            "type": "blob",
+            "path": ".github/workflows/ci.yml",
+            "sha": "2" * 40,
+            "mode": "100755",
+        }
+        base_row = {
+            "type": "blob",
+            "path": ".github/workflows/ci.yml",
+            "sha": "2" * 40,
+            "mode": "100644",
+        }
         client, minter, handle, args = self.update_branch_trees(
             files, head_rows=[head_row], base_rows=[base_row]
         )
@@ -539,7 +569,12 @@ class WorkflowPrElevation(unittest.TestCase):
             "truncated": False,
             "tree": [
                 {"type": "blob", "path": "src/a.py", "sha": "1" * 40, "mode": "100644"},
-                {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "2" * 40, "mode": "100644"},
+                {
+                    "type": "blob",
+                    "path": ".github/workflows/ci.yml",
+                    "sha": "2" * 40,
+                    "mode": "100644",
+                },
             ],
         }
         base_tree = {
