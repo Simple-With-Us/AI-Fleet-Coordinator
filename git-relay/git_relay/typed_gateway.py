@@ -4,8 +4,8 @@ Injected only in offline contract tests until review and host qualification.
 """
 
 from .audit import UnauthorizedAuditor
-from .policy import auth_failure_response
 from .outcomes import OutcomeStoreError, key_for
+from .policy import auth_failure_response
 from .typed_disarm import PreflightUnavailable, RateLimited, Refused, TypedDisarm
 
 ACTIONS = ("pr_state", "pr_hold_state", "pr_automerge_disable")

@@ -21,9 +21,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from git_relay.app_tokens import (
-    AppTokenError,
     MINT_PERMISSION_CEILING,
     MINT_READ_ONLY_PERMISSIONS,
+    AppTokenError,
     mint_permission_allowed,
 )
 from git_relay.audit import AuditLog

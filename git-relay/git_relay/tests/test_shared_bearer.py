@@ -489,9 +489,7 @@ class PolicySharedAuthTest(unittest.TestCase):
             json.dumps({"swu-fixer": {"auth": "shared", "identity": IDENTITY, **SEAT_CFG}})
         )
         self.assertIsNone(policy.authenticate(TOKEN))
-        self.assertEqual(
-            policy.authenticate_with_reason(TOKEN), (None, "verifier_unavailable")
-        )
+        self.assertEqual(policy.authenticate_with_reason(TOKEN), (None, "verifier_unavailable"))
 
     def test_a_bearer_outside_the_loaded_map_is_seat_not_in_policy(self):
         v = verifier_for(ok_answer())
