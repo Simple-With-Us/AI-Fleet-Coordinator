@@ -5,6 +5,7 @@
       {"label": "com.jay.botfleet-server", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.fleet-gdrive-backup", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.fleet-mac-services", "actions": ["start", "stop", "restart"], "role": "reporting", "stopConsequence": "Stopping this stops the Mac's agent report, so Muster's Services panel goes out of date and the Mac's jobs read as not known."},
+      {"label": "com.jay.fleet-rag-mirror", "actions": ["start", "stop", "restart"], "stopConsequence": "Stopping this stops the Mac push of skill and memory files, so the server nightly keeps the last mirror."},
       {"label": "com.jay.fleet-tools-doctor", "actions": ["start", "stop", "restart"], "role": "reporting", "stopConsequence": "Stopping this stops the fleet tools report, so Muster's Fleet Tools rows go out of date and then read as not known."},
       {"label": "com.jay.fleet-work-backup", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.fleet-worker-health", "actions": ["start", "stop", "restart"], "role": "reporting", "stopConsequence": "Stopping this stops the worker health report, so Muster's worker card goes out of date."},

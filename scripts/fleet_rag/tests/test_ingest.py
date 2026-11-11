@@ -13,7 +13,7 @@ import time
 import unittest
 from unittest import mock
 
-from fleet_rag import health, ingest, sources
+from fleet_rag import health, ingest, mirror, sources
 from fleet_rag.core import content_hash, point_id
 from fleet_rag.scrub import GitleaksError
 
@@ -510,6 +510,7 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 0)
         self.assertEqual(self.qd.deleted, [])
         self.assertTrue(any("yielded only 1" in e for e in rep["errors"]))
+        self.assertTrue(any(t.get("reason") == "prune-refused" for t in rep["guard_trips"]))
         self.assertEqual(set(json.loads(self.state.read_text())), {"doc/x0", "doc/x1", "doc/x2"})
 
     def test_prune_refused_when_a_whole_repo_vanishes_unless_forced(self) -> None:
@@ -927,6 +928,132 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(res2["written"], 0)
         self.assertEqual(res2["already_present"], 2)
         self.assertEqual(self.qd.payload_sets, [])     # raw rows never re-point existing chunks
+
+    def _gens(self, **by_source):
+        def make(name):
+            rows = by_source.get(name, [])
+
+            def gen(limit=None):  # noqa: ANN001
+                yield from rows[:limit] if limit else rows
+
+            return gen
+
+        return {
+            name: make(name)
+            for name in ("linear", "doc", "skill", "memory", "apple-note", "chat-log")
+        }
+
+    def _multi(self, selection, **kw):
+        return ingest.run(
+            selection,
+            cfg={"x": "y"},
+            qd=self.qd,
+            state_path=self.state,
+            last_run_path=self.last,
+            log_path=self.logf,
+            log=lambda *a: None,
+            **kw,
+        )
+
+    def test_a_partial_linear_prune_stays_refused_and_the_server_set_is_allowed(self) -> None:
+        with self.assertRaises(ingest.FleetRagError):
+            self._multi("linear,doc", prune=True)
+        with mock.patch.object(ingest, "GENERATORS", self._gens()):
+            rep = self._multi("linear,doc,skill,memory", prune=True)
+        self.assertTrue(rep["ok"], rep["errors"])
+        self.assertTrue(any("linear: pruning skipped" in w for w in rep["warnings"]))
+        self.assertTrue(
+            ingest._attests_health(["linear", "doc", "skill", "memory"], True, None, None)
+        )
+
+    def test_apple_note_is_never_pruned_even_when_force_is_set(self) -> None:
+        one = make_doc("apple-note/one", LONG_A, source="apple-note")
+        two = make_doc("apple-note/two", LONG_B, source="apple-note")
+        with mock.patch.object(ingest, "GENERATORS", self._gens(**{"apple-note": [one, two]})):
+            first = self._multi("apple-note", prune=True)
+        self.assertTrue(first["ok"], first["errors"])
+        with (
+            mock.patch.object(ingest, "GENERATORS", self._gens(**{"apple-note": [one]})),
+            mock.patch.dict(os.environ, {ingest.PRUNE_FORCE_ENV: "1"}),
+        ):
+            second = self._multi("apple-note", prune=True)
+        self.assertTrue(second["ok"], second["errors"])
+        self.assertIn("apple-note/two", json.loads(self.state.read_text()))
+        self.assertTrue(any("write-time upserts" in w for w in second["warnings"]))
+        self.assertFalse(any(t["source"] == "apple-note" for t in second["guard_trips"]))
+
+    def test_stale_or_missing_mirror_skips_skill_and_memory_prune(self) -> None:
+        doc_a = make_doc("doc/a", LONG_A)
+        doc_b = make_doc("doc/b", LONG_B)
+        skill_a = make_doc("skill/claude/alpha", LONG_A, source="skill")
+        skill_b = make_doc("skill/claude/beta", LONG_B, source="skill")
+        memory = make_doc("memory/codex/a.md", LONG_A, source="memory")
+        with mock.patch.object(
+            ingest,
+            "GENERATORS",
+            self._gens(doc=[doc_a, doc_b], skill=[skill_a, skill_b], memory=[memory]),
+        ):
+            first = self._multi("linear,doc,skill,memory", prune=True)
+        self.assertTrue(first["ok"], first["errors"])
+        mirror_dir = pathlib.Path(self.tmp.name) / "mirror"
+        mirror_dir.mkdir()
+        (mirror_dir / ".complete").write_text(
+            json.dumps({"complete": True, "at": int(time.time()) - 40 * 3600, "files": {}}) + "\n"
+        )
+        env = {mirror.MIRROR_ENV: str(mirror_dir), ingest.PRUNE_FORCE_ENV: "1"}
+        with (
+            mock.patch.object(
+                ingest,
+                "GENERATORS",
+                self._gens(doc=[doc_a], skill=[skill_a], memory=[]),
+            ),
+            mock.patch.dict(os.environ, env),
+        ):
+            second = self._multi("linear,doc,skill,memory", prune=True)
+        self.assertTrue(second["ok"], second["errors"])
+        state = json.loads(self.state.read_text())
+        self.assertNotIn("doc/b", state)
+        self.assertIn("skill/claude/beta", state)
+        self.assertIn("memory/codex/a.md", state)
+        reasons = {(t["source"], t["reason"]) for t in second["guard_trips"]}
+        self.assertEqual(reasons, {("skill", "stale"), ("memory", "stale")})
+
+    def test_a_fresh_mirror_and_an_unset_mirror_still_prune_skill(self) -> None:
+        skill_a = make_doc("skill/claude/alpha", LONG_A, source="skill")
+        skill_b = make_doc("skill/claude/beta", LONG_B, source="skill")
+        with mock.patch.object(ingest, "GENERATORS", self._gens(skill=[skill_a, skill_b])):
+            first = self._multi("skill", prune=True)
+        self.assertTrue(first["ok"], first["errors"])
+        with mock.patch.object(ingest, "GENERATORS", self._gens(skill=[skill_a])):
+            unset = self._multi("skill", prune=True)
+        self.assertTrue(unset["ok"], unset["errors"])
+        self.assertNotIn("skill/claude/beta", json.loads(self.state.read_text()))
+        self.assertEqual(unset["guard_trips"], [])
+
+        with mock.patch.object(ingest, "GENERATORS", self._gens(skill=[skill_a, skill_b])):
+            self._multi("skill", prune=True)
+        mirror_dir = pathlib.Path(self.tmp.name) / "fresh"
+        mirror_dir.mkdir()
+        (mirror_dir / ".complete").write_text(
+            json.dumps({"complete": True, "at": int(time.time()), "files": {}}) + "\n"
+        )
+        with (
+            mock.patch.object(ingest, "GENERATORS", self._gens(skill=[skill_a])),
+            mock.patch.dict(os.environ, {mirror.MIRROR_ENV: str(mirror_dir)}),
+        ):
+            fresh = self._multi("skill", prune=True)
+        self.assertTrue(fresh["ok"], fresh["errors"])
+        self.assertNotIn("skill/claude/beta", json.loads(self.state.read_text()))
+        self.assertEqual(fresh["guard_trips"], [])
+
+    def test_server_job_skips_doc_prune_when_the_code_root_is_unset(self) -> None:
+        self._run()
+        self.docs["doc"] = [make_doc("doc/a", LONG_A)]
+        with mock.patch.dict(os.environ, {"FLEET_RAG_REQUIRE_CODE_ROOT": "1", "FLEET_CODE_ROOT": ""}):
+            rep = self._run(prune=True)
+        self.assertTrue(rep["ok"], rep["errors"])
+        self.assertIn("doc/b", json.loads(self.state.read_text()))
+        self.assertTrue(any(t["reason"] == "code-root-unset" for t in rep["guard_trips"]))
 
 
 if __name__ == "__main__":

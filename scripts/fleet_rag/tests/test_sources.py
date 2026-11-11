@@ -14,7 +14,7 @@ import time
 import unittest
 from unittest import mock
 
-from fleet_rag import linear_board, notes_export, sources
+from fleet_rag import ingest, linear_board, notes_export, sources
 from fleet_rag.notes_export import html_to_text, strip_title_line
 
 FINDINGS_DDL = """
@@ -2467,3 +2467,81 @@ class LinearSourceTests(unittest.TestCase):
         self.assertEqual(first[0].doc_id, second[0].doc_id)
         self.assertNotEqual(first[0].text_markdown, second[0].text_markdown)
         self.assertLess(first[0].updated_at_ms, second[0].updated_at_ms)
+
+
+class ServerNightlySources(unittest.TestCase):
+    def test_the_server_set_attests_and_a_truncated_run_does_not(self) -> None:
+        names = list(sources.SERVER_NIGHTLY_SOURCES)
+        self.assertEqual(names, ["linear", "doc", "skill", "memory"])
+        self.assertNotIn("apple-note", names)
+        self.assertTrue(ingest._attests_health(names, True, None, None))
+        self.assertTrue(ingest._attests_health(list(sources.NIGHTLY_SOURCES), True, None, None))
+        self.assertFalse(ingest._attests_health(names, True, None, 5))
+        self.assertFalse(ingest._attests_health(names, False, None, None))
+        self.assertFalse(ingest._attests_health(names, True, None, None, dry_run=True))
+        self.assertFalse(ingest._attests_health(["linear", "doc"], True, None, None))
+
+    def test_default_checkouts_follow_the_code_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            code = root / "server-code"
+            repo = code / "AI-Fleet-Coordinator"
+            repo.mkdir(parents=True)
+            (repo / "README.md").write_text("# Fleet\n\nThe server clone.\n")
+            ops = code / "fleet-ops"
+            ops.mkdir()
+            (ops / "HANDBOOK.md").write_text("# Handbook\n\nThe server handbook.\n")
+            decoy = root / "home-code" / "AI-Fleet-Coordinator"
+            decoy.mkdir(parents=True)
+            (decoy / "README.md").write_text("# Decoy\n\nNot the server clone.\n")
+            with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": str(code)}):
+                seen = list(sources.iter_docs(extra=[], code_dir=None, apps_dir=None, grok_home=None))
+                pinned = list(
+                    sources.iter_docs(decoy, root / "missing-ops", [], code_dir=None, apps_dir=None, grok_home=None)
+                )
+            paths = [d.path for d in seen]
+            self.assertTrue(any(path.endswith("server-code/AI-Fleet-Coordinator/README.md") for path in paths))
+            self.assertTrue(any(path.endswith("server-code/fleet-ops/HANDBOOK.md") for path in paths))
+            self.assertFalse(any("home-code" in path for path in paths))
+            self.assertTrue(any("home-code" in d.path for d in pinned))
+            self.assertFalse(any("server-code" in d.path for d in pinned))
+
+    def test_omitted_code_dir_reads_the_env_and_none_skips_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            code = root / "code"
+            repo = code / "DealDex"
+            repo.mkdir(parents=True)
+            (repo / "README.md").write_text("# DealDex\n\nHello from the configured root.\n")
+            empty = root / "empty"
+            with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": str(code)}):
+                skipped = list(
+                    sources.iter_docs(empty, empty, [], code_dir=None, apps_dir=None, grok_home=None)
+                )
+                seen = list(sources.iter_docs(empty, empty, [], apps_dir=None, grok_home=None))
+            self.assertFalse(any("DealDex" in d.path for d in skipped))
+            self.assertTrue(any("DealDex" in d.path and d.path.endswith("README.md") for d in seen))
+
+    def test_skills_and_memory_read_the_mirror_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            skill = root / "skills" / "claude" / "afc687-mirror-skill"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("---\nname: Mirror skill\n---\n# Mirror skill\n")
+            memory = root / "memory" / "claude-projects" / "-Users-jay-DealDex" / "memory"
+            memory.mkdir(parents=True)
+            (memory / "MEMORY.md").write_text("# index\n")
+            (memory / "note.md").write_text("# Note\n\nA lesson.\n")
+            codex = root / "memory" / "codex"
+            codex.mkdir()
+            (codex / "keep.md").write_text("# Keep\n")
+            with mock.patch.dict(os.environ, {"FLEET_RAG_MIRROR": str(root)}):
+                skills = {d.doc_id for d in sources.iter_skills()}
+                memories = {d.doc_id for d in sources.iter_memory()}
+            self.assertIn("skill/claude/afc687-mirror-skill", skills)
+            self.assertIn("memory/claude/dealdex/note.md", memories)
+            self.assertNotIn("memory/claude/dealdex/MEMORY.md", memories)
+            self.assertIn("memory/codex/keep.md", memories)
+            without = {d.doc_id for d in sources.iter_skills()}
+            self.assertNotIn("skill/claude/afc687-mirror-skill", without)
+
