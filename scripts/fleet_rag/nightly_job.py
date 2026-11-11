@@ -359,9 +359,62 @@ def send_alert(summary: dict, env: dict, *, post: Callable | None = None) -> str
     return "posted"
 
 
-def code_sync(runner: Callable[[], int] | None = None) -> int:
+# Set by fleet-rag-nightly.service, which pulls code-main-sync in with Wants= and After=.
+# systemd has then already run the sync before this process starts, so the job only reads
+# the result.  Starting a unit from a User= service needs polkit, which the job does not get.
+SYNC_BY_UNIT_ENV = "FLEET_RAG_CODE_SYNC_BY_UNIT"
+SYNC_UNIT = "code-main-sync.service"
+
+
+SYNC_MAX_AGE_S = 3600  # the sync systemd ran for this start must be this recent
+
+
+def unit_sync_result(
+    show: Callable[[list[str]], str] | None = None,
+    now_monotonic: Callable[[], float] = time.monotonic,
+) -> int:
+    """0 only when code-main-sync's last run succeeded and started within the last hour.
+
+    systemd keeps Result from the previous run, so a skipped start would otherwise look
+    like tonight's success.  The start time is CLOCK_MONOTONIC in microseconds, the clock
+    behind time.monotonic() on Linux.  Read-only;  any doubt fails closed."""
+    argv = [
+        "systemctl",
+        "show",
+        SYNC_UNIT,
+        "--property=Result,ExecMainStatus,ExecMainStartTimestampMonotonic",
+    ]
+    try:
+        if show is not None:
+            out = show(argv)
+        else:
+            out = subprocess.run(
+                argv, capture_output=True, text=True, timeout=60, check=False
+            ).stdout
+    except subprocess.TimeoutExpired:
+        return 124
+    except OSError:
+        return 127
+    props = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    if props.get("Result", "").strip() != "success":
+        return 1
+    if props.get("ExecMainStatus", "").strip() != "0":
+        return 1
+    try:
+        started_us = int(props.get("ExecMainStartTimestampMonotonic", "").strip())
+    except ValueError:
+        return 1
+    age_s = now_monotonic() - started_us / 1_000_000
+    if started_us <= 0 or age_s < 0 or age_s > SYNC_MAX_AGE_S:
+        return 1
+    return 0
+
+
+def code_sync(runner: Callable[[], int] | None = None, env: dict | None = None) -> int:
     if runner is not None:
         return runner()
+    if (env or {}).get(SYNC_BY_UNIT_ENV, "").strip() == "1":
+        return unit_sync_result()
     try:
         proc = subprocess.run(
             ["systemctl", "start", "--wait", "code-main-sync.service"],
@@ -505,7 +558,7 @@ def _locked(summary, env, *, read_file, fetch, sync, ingest_runner, post, now) -
         summary["errors"] = [_public(str(exc))]
         summary["alert"] = send_alert(summary, env, post=post)
         return summary
-    sync_exit = code_sync(sync)
+    sync_exit = code_sync(sync, env)
     summary["code_sync_exit"] = sync_exit
     if sync_exit != 0:
         summary["ok"] = False
