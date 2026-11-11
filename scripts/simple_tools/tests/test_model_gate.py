@@ -1881,13 +1881,16 @@ def claude_fallback_setup(case: OpenRouterHarness) -> None:
 #: stubbing the call cannot remove it, still shows.  A key that is absent was never called.  When a change
 #: to the daemon legitimately changes its own pattern, re-measure on the new base: a scratch copy of this
 #: module with `create=True` on `Replay.patch`, one `off` replay per scenario, `calls` printed.
+#: Re-measured Nov 10 2026 for reply wakes:  `zulip_get_messages` is one higher in every scenario, the one
+#: read of the seat's own latest posts that seeds the topic ledger at the seat's first connect
+#: (`Daemon._seed_topic_ledger`).  Nothing else moved.
 BASE_CALLS = {
-    "basic": {"append": 19, "append_jsonl": 25, "history": 4, "lease_views": 20, "spawns": 5, "takeover": 12, "zulip_get_messages": 4},
-    "fallback": {"append": 16, "append_jsonl": 20, "history": 4, "lease_views": 18, "spawns": 3, "takeover": 12, "zulip_get_messages": 4},
-    "inspect": {"append": 6, "append_jsonl": 7, "lease_views": 5, "takeover": 5, "zulip_get_messages": 0},
-    "tagged": {"append": 16, "append_jsonl": 20, "history": 4, "lease_views": 18, "operator_candidates": 4, "spawns": 4, "takeover": 12, "zulip_get_messages": 4},
-    "bound": {"append": 8, "append_jsonl": 10, "history": 2, "lease_views": 9, "spawns": 2, "takeover": 6, "zulip_get_messages": 2},
-    "routine": {"append": 8, "append_jsonl": 10, "lease_views": 7, "takeover": 4, "zulip_get_messages": 0},
+    "basic": {"append": 19, "append_jsonl": 25, "history": 4, "lease_views": 20, "spawns": 5, "takeover": 12, "zulip_get_messages": 5},
+    "fallback": {"append": 16, "append_jsonl": 20, "history": 4, "lease_views": 18, "spawns": 3, "takeover": 12, "zulip_get_messages": 5},
+    "inspect": {"append": 6, "append_jsonl": 7, "lease_views": 5, "takeover": 5, "zulip_get_messages": 1},
+    "tagged": {"append": 16, "append_jsonl": 20, "history": 4, "lease_views": 18, "operator_candidates": 4, "spawns": 4, "takeover": 12, "zulip_get_messages": 5},
+    "bound": {"append": 8, "append_jsonl": 10, "history": 2, "lease_views": 9, "spawns": 2, "takeover": 6, "zulip_get_messages": 3},
+    "routine": {"append": 8, "append_jsonl": 10, "lease_views": 7, "takeover": 4, "zulip_get_messages": 1},
 }
 
 

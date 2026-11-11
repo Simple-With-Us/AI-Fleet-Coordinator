@@ -70,6 +70,7 @@ from . import outgoing_webhook as OW
 from . import router as R
 from . import session_ids as SI
 from . import subscribe_all as SUB
+from . import topic_ledger as TL
 from . import typing_signal as TYPING
 from . import wakes as W
 from . import zulip as Z
@@ -91,6 +92,8 @@ DEAD_QUEUE_SECONDS = 180.0
 DOWN_NOTIFY_SECONDS = 30 * 60.0
 CLOCK_JUMP_SECONDS = 120.0
 TOPIC_BACKFILL_CAP = 200
+#: How many of a seat's own latest posts seed the topic ledger at its first connect (one request).
+LEDGER_SEED_POSTS = 200
 PAGE = 100
 #: Session letters that are also ordinary English words.  They count as a tagged address only when
 #: they stand alone at the end of the message;  inside a sentence ("@**MiniMax** I think we ship")
@@ -313,6 +316,8 @@ class SeatRunner:
         self.users: dict[int, dict[str, Any]] = {}
         self.users_version = 0  # bumped on every change to `users`, so the fleet-bot set is cached
         self.fleet_cache: tuple[Any, set[int]] | None = None
+        self.bot_names_cache: tuple[Any, dict[str, str]] | None = None
+        self.ledger_seeded = False  # the topic ledger was seeded from this seat's own recent posts
         self.streams: dict[int, str] = {}
         self.muted: set[str] = set()
         self.followed: set[str] = set()
@@ -869,6 +874,10 @@ class Daemon:
             enabled=self.config.wake_loop_prevention,
         )
         self.global_ring = Ring()
+        # Who posted recently in each topic, as which chat and tagging whom (topic_ledger.py).  It is
+        # what turns an untagged reply into a wake for the chat it answers (router `reply_to_chat`).
+        # In memory only:  a restart empties it, and it fills again as posts arrive.
+        self.topic_ledger = TL.TopicLedger()
         self.agents_cache: tuple[float, dict[int, str] | None] = (-1e9, None)
         self.start_cache: dict[int, tuple[float, int]] = {}
         self.children: set[subprocess.Popen[Any]] = (
@@ -2011,7 +2020,48 @@ class Daemon:
             followed=runner.followed,
             operator_user_id=OPV.pinned_user_id(self.env),
             seat_has_routine=runner.cfg.routine is not None,
+            topic_ledger=self.topic_ledger,
         )
+
+    def fleet_bot_names(self, runner: SeatRunner) -> dict[str, str]:
+        """The fleet bots' full names (case-folded) mapped to their seat tags, so a loud `@**Name**`
+        mention in a post reads as a tagged seat.  Cached until the user list, the tags or the owner pin
+        changes, like `eligible_ids`.  Only the realm's own fleet bots count (router.fleet_bots_by_seat)."""
+        key = (runner.users_version, self.fleet_tags, self.config.owner_user_id)
+        if runner.bot_names_cache is None or runner.bot_names_cache[0] != key:
+            names: dict[str, str] = {}
+            by_seat = R.fleet_bots_by_seat(
+                runner.users,
+                self.fleet_tags,
+                self.config.owner_user_id,
+                outgoing_webhook_seats=self.config.outgoing_webhook_seats,
+            )
+            for seat, bots in by_seat.items():
+                for bot in bots:
+                    name = str(bot.get("full_name") or "").strip().casefold()
+                    if name:
+                        names.setdefault(name, seat)
+            runner.bot_names_cache = (key, names)
+        return runner.bot_names_cache[1]
+
+    def record_topic_post(self, runner: SeatRunner, message: Mapping[str, Any]) -> None:
+        """Keep one stream message in the topic ledger, once (the ledger dedupes by message id, so the
+        same message arriving on every seat's queue, an edit's re-route and a retry change nothing).  A
+        direct message is never kept.  The seat of the sender is the realm's own answer, never the
+        message's:  only a fleet bot has one."""
+        message_id = message.get("id")
+        if message.get("type") == "private" or not isinstance(message_id, int):
+            return
+        key = L.topic_key(Z.message_channel(message), Z.message_topic(message))
+        if self.topic_ledger.seen(key, message_id):
+            return  # the first seat to route it kept it
+        sender = message.get("sender_id")
+        seat = ""
+        if isinstance(sender, int) and sender in self.eligible_ids(runner):
+            seat = seat_tag_for({"is_bot": True, "email": message.get("sender_email")})
+        post = R.topic_post(message, seat=seat, names=self.fleet_bot_names(runner))
+        if post is not None:
+            self.topic_ledger.record(key, post)
 
     def handle_events(self, runner: SeatRunner, events: Iterable[Mapping[str, Any]]) -> None:
         for event in events:
@@ -2272,7 +2322,7 @@ class Daemon:
             if c.dm
             else []
         )
-        return {
+        item: dict[str, Any] = {
             "kind": "message",
             "id": message.get("id"),
             "type": "private" if c.dm else "stream",
@@ -2299,6 +2349,12 @@ class Daemon:
             ),
             "routed_at": self.clock.time(),
         }
+        if c.reply_to_chat is not None:
+            # Why this untagged post reached the seat:  it answers the seat's own earlier post in the
+            # topic.  The letter is that post's chat ("" when it had none) and the id is that post.
+            item["reply_target_letter"] = c.reply_to_chat.letter
+            item["reply_target_id"] = c.reply_to_chat.message_id
+        return item
 
     def _route(
         self,
@@ -2317,6 +2373,18 @@ class Daemon:
         done = set() if done is None else done
         now = self.clock.time()
         views = self.lease_views(runner)
+        # The ledger takes the message before it is classified, and the classification reads only posts
+        # strictly earlier than the message, so the order of the seats' queues never changes an answer.
+        # A failure here costs one reply wake and never the routing of the message itself.
+        try:
+            self.record_topic_post(runner, message)
+        except Exception as exc:  # noqa: BLE001 - the ledger must never quarantine a message
+            self.log.write(
+                "topic-ledger-error",
+                seat=runner.seat,
+                id=message.get("id"),
+                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+            )
         c, d = R.route(message, runner.me, self.context(runner), views)
         first_seen = message["id"] not in self.global_ring
         if first_seen:
@@ -2596,6 +2664,9 @@ class Daemon:
         if not old_channel:
             return
         old_key = L.topic_key(old_channel, old_topic)
+        # The posts the ledger kept follow the topic to its new name, so a reply after a rename still
+        # finds the chat it answers.  Every seat's queue brings this event, and the second move is a no-op.
+        self.topic_ledger.rename(old_key, L.topic_key(new_channel, new_topic))
         renamed = 0
         for lease_id in L.list_lease_ids(runner.paths):
 
@@ -8628,7 +8699,7 @@ class Daemon:
             classes = set(item.get("classes") or [])
             key = L.topic_key(str(item.get("channel") or ""), str(item.get("topic") or ""))
             if (
-                not (classes & {"direct", "dm", "fleet", "owner", "wildcard"})
+                not (classes & {"direct", "dm", "fleet", "owner", "wildcard", "reply"})
                 and key not in runner.followed
             ):
                 continue
@@ -9150,7 +9221,55 @@ class Daemon:
         runner.failures = 0
         runner.down_since = None
         self.log.write("connected", seat=runner.seat, backfill=len(messages))
+        self._seed_topic_ledger(runner)
         return messages
+
+    def _seed_topic_ledger(self, runner: SeatRunner) -> None:
+        """Fill the topic ledger from the seat's own latest posts, once per seat per run.
+
+        The ledger is memory only, so after a restart a chat that tagged a peer an hour ago would not be
+        woken by the peer's reply until that chat posted again.  The seat's own posts are all the reply
+        rule ever reads (`TopicLedger.reply_target`), and one bounded page of them (`LEDGER_SEED_POSTS`,
+        newest first, one request, no paging) puts the recent ones back.  This runs on the seat's own
+        connect thread, never the router's, and only records:  nothing is routed, no lease or inbox is
+        touched and no wake can follow.  A failed read is logged and costs only that restart's gap."""
+        if (
+            runner.ledger_seeded
+            or runner.me is None
+            or runner.client is None
+            or runner.seat in R.NO_REPLY_WAKE_SEATS
+        ):
+            return
+        try:
+            page = runner.fetch(
+                [{"operator": "sender", "operand": runner.me.user_id}],
+                anchor="newest",
+                before=LEDGER_SEED_POSTS,
+            )
+        except (Z.SimpleToolsError, ValueError, OSError) as exc:
+            self.log.write(
+                "topic-ledger-seed-error",
+                seat=runner.seat,
+                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+            )
+            return
+        runner.ledger_seeded = True
+        kept = 0
+        for message in sorted(
+            (m for m in page if isinstance(m, dict) and isinstance(m.get("id"), int)),
+            key=lambda m: m["id"],
+        ):
+            try:
+                self.record_topic_post(runner, message)
+                kept += 1
+            except Exception as exc:  # noqa: BLE001 - one odd message never costs the rest
+                self.log.write(
+                    "topic-ledger-error",
+                    seat=runner.seat,
+                    id=message.get("id"),
+                    error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+                )
+        self.log.write("topic-ledger-seed", seat=runner.seat, posts=kept)
 
     def _refuse(self, runner: SeatRunner, text: str) -> None:
         """A credential or role problem:  no queue, retried slowly (every 5 minutes), never spun."""

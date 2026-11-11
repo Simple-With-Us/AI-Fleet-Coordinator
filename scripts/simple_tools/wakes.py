@@ -294,6 +294,11 @@ class Pending:
             None  # the newest trigger's message time, for the stale check
         )
         self.route_tagged = False  # a trigger is a `·route` post:  this wake never routes again
+        # The triggers that reached the seat because they answer one of its chats (router class
+        # `reply_to_chat`, owner Nov 10 2026), each with the session letter of that chat ("" when the post
+        # it answers carried none).  The wake row says so (`linked_by`, `reply_target_letter`), so a wrong
+        # pick can be read back.
+        self.reply_links: dict[int, str] = {}
         # A catch-up wake (daemon._catch_up):  built from a held-back record, with no trigger_ts, because
         # the record's TTL bounds its age instead of the stale rule.
         self.catch_up = False
@@ -348,6 +353,8 @@ class Pending:
             )
         if "route_tag" in (item.get("classes") or []):
             self.route_tagged = True
+        if isinstance(message_id, int) and "reply" in (item.get("classes") or []):
+            self.reply_links[message_id] = str(item.get("reply_target_letter") or "")
         sender = item.get("sender_id")
         if isinstance(sender, int) and not isinstance(sender, bool) and self.sender_id is None:
             # The FIRST trigger's sender, which is the one whose question this wake answers.  Kept on
@@ -383,6 +390,8 @@ class Pending:
                 else max(self.trigger_ts, other.trigger_ts)
             )
         self.route_tagged = self.route_tagged or other.route_tagged
+        for message_id, letter in other.reply_links.items():
+            self.reply_links.setdefault(message_id, letter)
         self.stale = self.stale or other.stale
         self.owner = self.owner or other.owner
         if self.sender_id is None:
@@ -391,6 +400,14 @@ class Pending:
         self.due = min(self.due, other.due)
         if other.catch_up and self.trigger_ts is None:
             self.catch_up = True
+
+    def reply_link(self) -> tuple[str, str] | None:
+        """("reply", the chat's session letter) when the trigger this wake is about answers one of the
+        seat's chats, else None.  The trigger is the one the routine body is built from:  the newest
+        owner trigger when the owner is among them, else the newest trigger."""
+        ids = self.owner_ids or self.trigger_ids
+        letter = self.reply_links.get(ids[-1]) if ids else None
+        return None if letter is None else ("reply", letter)
 
     def row(self, state: str, now: float, **extra: Any) -> dict[str, Any]:
         row = {
@@ -419,6 +436,9 @@ class Pending:
         }
         if self.catch_up:
             row["catch_up"] = True
+        link = self.reply_link()
+        if link is not None:
+            row["linked_by"], row["reply_target_letter"] = link
         # The model gate's record, on every row written after the start was decided (a row from before
         # it, or from a daemon that predates it, has none of these keys).
         if self.gate is not None:
@@ -464,6 +484,10 @@ class Pending:
             int(sender) if isinstance(sender, int) and not isinstance(sender, bool) else None
         )
         pending.route_tagged = view.get("route_tagged") is True
+        if view.get("linked_by") == "reply":
+            ids = pending.owner_ids or pending.trigger_ids
+            if ids:
+                pending.reply_links[ids[-1]] = str(view.get("reply_target_letter") or "")
         pending.catch_up = view.get("catch_up") is True
         # Restoring the gate record is for a wake that is restored AFTER its start was decided.  Today
         # only `queued` and `accepted` wakes are reloaded (a `started` one is marked failed and never
