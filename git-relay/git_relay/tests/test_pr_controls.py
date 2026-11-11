@@ -465,6 +465,58 @@ class PrControls(unittest.TestCase):
                 self.assertEqual(body["error"], AUTO_MERGE_NOT_ARMED)
         self.assertEqual(len(mutations(definite)), 2)
 
+    def test_a_typed_graphql_refusal_is_not_a_retryable_miss(self):
+        from git_relay.workflow_verbs import AUTO_MERGE_NOT_ARMED, AUTO_MERGE_REFUSED
+
+        class Typed(Client):
+            def __init__(self, kind, arm):
+                super().__init__()
+                self.kind = kind
+                self.arm = arm
+
+            def _call(self, method, path, payload=None, bearer=None):
+                self.calls.append((method, path, payload, bearer))
+                if method == "GET":
+                    return {"node_id": "PR_abc", "number": 3037, "state": "open"}
+                query = "" if not isinstance(payload, dict) else str(payload.get("query") or "")
+                if query.startswith("mutation"):
+                    return {"errors": [{"type": self.kind}]}
+                return {
+                    "data": {
+                        "repository": {
+                            "pullRequest": {"id": "PR_abc", "autoMergeRequest": self.arm}
+                        }
+                    }
+                }
+
+        args = {"repo": REPO, "number": 3037, "method": "SQUASH"}
+        refused = Typed("UNPROCESSABLE", None)
+        h = WorkflowVerbs(
+            refused, Policy(), "swu-wise", "private", "swu-wise", "wf_automerge_enable", REPO
+        )
+        with self.assertRaises(Refused) as caught:
+            h.run("wf_automerge_enable", args)
+        self.assertEqual(str(caught.exception), AUTO_MERGE_REFUSED)
+
+        limited = Typed("RATE_LIMITED", None)
+        h = WorkflowVerbs(
+            limited, Policy(), "swu-wise", "private", "swu-wise", "wf_automerge_enable", REPO
+        )
+        with self.assertRaises(Refused) as caught:
+            h.run("wf_automerge_enable", args)
+        self.assertEqual(str(caught.exception), AUTO_MERGE_NOT_ARMED)
+
+        applied = Typed(
+            "UNPROCESSABLE", {"enabledAt": "2026-11-11T00:00:00Z", "mergeMethod": "SQUASH"}
+        )
+        h = WorkflowVerbs(
+            applied, Policy(), "swu-wise", "private", "swu-wise", "wf_automerge_enable", REPO
+        )
+        self.assertEqual(
+            h.run("wf_automerge_enable", args)["pull"]["autoMergeRequest"]["enabledAt"],
+            "2026-11-11T00:00:00Z",
+        )
+
     def test_invalid_method_refused_before_preread(self):
         c = Client()
         h = WorkflowVerbs(

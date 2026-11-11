@@ -66,6 +66,7 @@ LABEL_NOT_FOUND = "additive label does not exist"
 LABEL_TARGET_NOT_FOUND = "additive label target not found"
 LABEL_NOT_APPLIED = "additive label was not applied"
 AUTO_MERGE_NOT_ARMED = "auto-merge is not armed"
+AUTO_MERGE_REFUSED = "auto-merge enable was refused"
 AUTO_MERGE_OTHER_METHOD = "auto-merge is armed with a different method"
 _NODE_ID = re.compile(r"[A-Za-z0-9_/=+-]{1,200}")
 
@@ -4227,6 +4228,11 @@ class WorkflowVerbs:
             if settled == "mismatch":
                 raise Refused(AUTO_MERGE_OTHER_METHOD)
             if settled is False:
+                # A typed GraphQL refusal (forbidden, not found, unprocessable)
+                # is permanent.  A lost response, or a rate limit, can be sent again.
+                code = exc.code if isinstance(exc.code, str) else ""
+                if code in ("graphql_forbidden", "graphql_not_found", "graphql_unprocessable"):
+                    raise Refused(AUTO_MERGE_REFUSED)
                 raise Refused(AUTO_MERGE_NOT_ARMED)
             return {"pull": settled}
 

@@ -84,6 +84,7 @@ const MAPPED = [
   ["additive label target not found", 400, "bad_request_label_target_not_found"],
   ["additive label was not applied", 400, "bad_request_label_not_applied"],
   ["auto-merge is not armed", 400, "bad_request_auto_merge_not_armed"],
+  ["auto-merge enable was refused", 400, "bad_request_auto_merge_refused"],
   ["auto-merge is armed with a different method", 400, "bad_request_auto_merge_method_mismatch"],
 ];
 

@@ -44,6 +44,7 @@ const BAD_REQUEST_REASONS = new Map([
   ["additive label target not found", "bad_request_label_target_not_found"],
   ["additive label was not applied", "bad_request_label_not_applied"],
   ["auto-merge is not armed", "bad_request_auto_merge_not_armed"],
+  ["auto-merge enable was refused", "bad_request_auto_merge_refused"],
   ["auto-merge is armed with a different method", "bad_request_auto_merge_method_mismatch"],
 ]);
 
@@ -195,6 +196,7 @@ const REASON_TEXT = Object.freeze({
   bad_request_label_target_not_found: "That number is not a pull request this call can label.",
   bad_request_label_not_applied: "The label is still absent after the pull-request path.  Nothing further was written.",
   bad_request_auto_merge_not_armed: "A follow-up read shows squash, merge, or rebase auto-merge is off.  Sending the call again is safe.",
+  bad_request_auto_merge_refused: "GitHub refused the enable, and a follow-up read shows auto-merge is off.",
   bad_request_auto_merge_method_mismatch: "A follow-up read shows auto-merge is on with a different merge method.  Read the pull request before enabling again.",
 });
 
