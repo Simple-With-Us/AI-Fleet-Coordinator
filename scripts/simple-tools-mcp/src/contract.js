@@ -407,7 +407,6 @@ const MENTION_RE = /@(?!_)\*\*/g;
 const GROUP_RE = /@_?\*(?!\*)[^*\n]{1,100}\*/g;
 const LOUD_RE = /@(?!_)\*/g;
 const LOUD_SINGLE_STAR_RE = /@(?!_)\*(?!\*)/g;
-const WILDCARD_RE = /@\*\*(all|everyone|stream|channel|topic)\*\*/gi;
 
 /** @**X** becomes silent @_**X**;  group mentions are removed, until stable. */
 export function neutralizeMentions(text) {
@@ -419,15 +418,15 @@ export function neutralizeMentions(text) {
   return text.replace(LOUD_RE, "@_*");
 }
 
-/** Group mentions are removed, wildcards and stray @* tokens silenced;  @** user mentions stay loud (AFC-689).
- * Group removal runs first, because removing a group can rebuild a wildcard (@@*x***all**). */
+/** Group mentions are removed and stray @* tokens silenced;  every @** mention stays real, wildcards
+ * included (owner, Nov 10 2026, AFC-689). */
 export function sanitizeComposeMentions(text) {
   for (;;) {
     const changed = text.replace(GROUP_RE, "");
     if (changed === text) break;
     text = changed;
   }
-  return text.replace(WILDCARD_RE, "@_**$1**").replace(LOUD_SINGLE_STAR_RE, "@_*");
+  return text.replace(LOUD_SINGLE_STAR_RE, "@_*");
 }
 
 // ---------------------------------------------------------------- seats and tags (cli.py, zulip.py)
@@ -489,8 +488,34 @@ export function ownIntro(prefix, text) {
   return { end, intro, rest: text.slice(end + 1) };
 }
 
+// A body mention counts only where Zulip would notify:  outside code and block quotes, and with
+// only whitespace or opening punctuation before the @.  Same rule as cli.py _mentions_missing_from.
+const CODE_BLOCK_RE = /^(```|~~~)[\s\S]*?(?:^\1\s*$|(?![\s\S]))/gm;
+const CODE_SPAN_RE = /`[^`\n]*`/g;
+const LIVE_MENTION_RE = /(?<![^\s'"({[/<])@\*\*([^*\n]+)\*\*/g;
+
+/** A mention's identity:  its name, any case, and its user id when it carries one. */
+function mentionIdentity(inner) {
+  const match = /^(.*)\|(\d+)$/su.exec(inner);
+  return { name: (match ? match[1] : inner).trim().toLowerCase(), id: match ? match[2] : "" };
+}
+
+function sameMention(a, b) {
+  return a.name === b.name && (!a.id || !b.id || a.id === b.id);
+}
+
+/** The `to` mentions the text does not already make live, each at most once. */
 function mentionsMissingFrom(text, mentions) {
-  return mentions.filter((mention) => mention && !text.includes(mention));
+  const visible = text.replace(CODE_BLOCK_RE, "").replace(CODE_SPAN_RE, "")
+    .split("\n").filter((line) => !/^\s*>/u.test(line)).join("\n");
+  const present = [...visible.matchAll(LIVE_MENTION_RE)].map((match) => mentionIdentity(match[1]));
+  return mentions.filter((mention) => {
+    if (!mention) return false;
+    const wanted = mentionIdentity(mention.slice(3, -2));
+    if (present.some((seen) => sameMention(seen, wanted))) return false;
+    present.push(wanted);
+    return true;
+  });
 }
 
 /** Preserve an existing own-seat intro, adding resolved recipients without a second attribution.

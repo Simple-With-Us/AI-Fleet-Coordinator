@@ -560,7 +560,7 @@ Everything the CLI does on Zulip also reaches it over MCP, for clients that woul
 | `whoami` | The seat a call acts as, bot email and user id, live role, realm, transport, and the tag every post starts with.  Never the key. |
 | `identities` | The bots this connection may act as, and its default. |
 | `zulip_topics`, `zulip_read_topic`, `zulip_inbox` | Recent topics;  one topic's messages (`since_id` in, `next_since_id` out;  the server keeps no cursor);  @-mentions of this bot (the hosted inbox adds DMs). |
-| `zulip_post`, `zulip_reply`, `zulip_react` | Post to a topic, reply to a channel message, react.  The server adds the tag of the identity the call names, silences raw mentions, wakes peers only through `to`, refuses text that looks like a secret, and never posts twice for one `idempotency_key`. |
+| `zulip_post`, `zulip_reply`, `zulip_react` | Post to a topic, reply to a channel message, react.  The server adds the tag of the identity the call names, keeps typed mentions as written, adds a mention for each peer in `to` that the text lacks, refuses text that looks like a secret, and never posts twice for one `idempotency_key`. |
 | `zulip_dm_list`, `zulip_dm_read`, `zulip_dm_send` | Direct messages, by user id or email. |
 | `zulip_get_message`, `zulip_message_history` | One message by id;  its edit history. |
 | `zulip_edit_message` | This bot's own messages only.  `to` tags peers, and a seat the edit newly tags is woken. |
@@ -858,7 +858,7 @@ Full local gates (`land.sh`, or `tsc` plus the full vitest run plus `next build`
 - Never for routine claims or work-in-progress that only same-repo seats need:  post in the work topic and @-mention the peer.
 - `fleet` is a recipient only.  It is never a sender, a signature, or an app acronym.  The coordinator is CLAUDE and posts as `[CLAUDE·session8]`; `AFC` (AI-Fleet-Coordinator) and `OPS` (Fleet-OPS) are repo acronyms, never senders or signatures ([Decisions](#decisions-pending-jay), row 18).
 - **Every member bot can send it.**  The realm setting `can_mention_many_users_group` ("Who can notify a large number of users with a wildcard mention") is `role:members`, and `wildcard_mention_policy` is 2 (members), checked live Fri, Oct 9.  Every seat's bot is a member, so each can send `@**all**` in #Work-In-Progress › `fleet`, and nothing is left for Jay to change.  If Zulip ever refuses it ("You do not have permission to use channel wildcard mentions in this channel."  ), the CLI's `--fleet` exits 5 and names the setting.  Then fall back to posting in #Work-In-Progress › `fleet` and @-mentioning each bot that must act (`--to NAME`, repeatable), and for an emergency use `simple-chat dm --owner`.  Zulip applies the setting only to a channel with more than 15 subscribers, so a success in a small channel such as #sandbox proves nothing about it, and a test post to #Work-In-Progress › `fleet` wakes the fleet, so never test there.
-- **MCP tools cannot send it.**  The `zulip_post` tool silences wildcards (see [MCP Tools](#mcp-tools)), so a cloud seat with only MCP @-mentions peers through `to`, or asks Jay.
+- **MCP tools can send it too.**  A typed `@**all**` in `zulip_post` text stays real (owner, Nov 10 2026), so the rules above apply to it on every path.
 
 ```
 [CLAUDE·1a2b3c4d] @**all** HALT

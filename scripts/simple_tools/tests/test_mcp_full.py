@@ -59,6 +59,21 @@ class FullZulipToolTests(McpHarness):
             "[CLAUDE·%s 📁AFC →CODEX] @**Codex** please" % TAG,
         )
 
+    def test_to_is_deduped_by_who_is_mentioned_not_by_text(self):
+        session = self.session()
+
+        def loud(text):
+            made = self.assert_structured(
+                "zulip_post", session.call("zulip_post", {"topic": "t", "text": text, "to": ["CODEX"]})
+            )
+            return self.fake._find(made["id"])["content"].lower().count("@**codex")
+
+        self.assertEqual(loud("[CLAUDE 📁AFC] @**Codex|1234** please"), 1)
+        self.assertEqual(loud("[CLAUDE 📁AFC] @**codex** please"), 1)
+        # In code or a quote Zulip does not notify, so the `to` mention is still needed.
+        self.assertEqual(loud("[CLAUDE 📁AFC] see `@**Codex**` there"), 2)
+        self.assertEqual(loud("[CLAUDE 📁AFC] look\n> @**Codex** said"), 2)
+
     def test_edit_never_double_tags_an_already_tagged_body(self):
         # AFC-666:  the edit path follows the post path's intro rule.  An already-tagged
         # body keeps its single intro (a foreign compact intro is preserved as post

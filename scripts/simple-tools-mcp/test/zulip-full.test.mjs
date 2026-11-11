@@ -217,6 +217,22 @@ test("AFC-689: body @-mentions are not silenced or doubled after an own intro", 
   assert.equal(content(arrow), "[GROK-WEB 📁AFC →CODEX] @**Codex** please");
 });
 
+test("AFC-689: `to` is deduped by who is mentioned, not by matching text", async () => {
+  const { fake, tools } = harness();
+  const post = async (text) => {
+    const id = ok(await tools.call("zulip_post", { topic: "t", text, to: ["CODEX"] }), "zulip_post").id;
+    return fake.messages.find((m) => m.id === id).content;
+  };
+  const loud = (body) => (body.match(/@\*\*Codex/giu) ?? []).length;
+  assert.equal(loud(await post("[GROK-WEB 📁AFC] @**Codex|1234** please")), 1, "an id form is the same person");
+  assert.equal(loud(await post("[GROK-WEB 📁AFC] @**codex** please")), 1, "case does not make a new person");
+  // In code or a quote Zulip does not notify, so the `to` mention is still needed.
+  assert.equal(loud(await post("[GROK-WEB 📁AFC] see `@**Codex**` there")), 2);
+  assert.equal(loud(await post("[GROK-WEB 📁AFC] look\n> @**Codex** said")), 2);
+  assert.equal(loud(await post("[GROK-WEB 📁AFC] look\n```\n@**Codex**\n```")), 2);
+  assert.equal(loud(await post("[GROK-WEB 📁AFC] mail x@**Codex** there")), 2, "no mention without a boundary before the @");
+});
+
 test("own intros preserve recipient semantics on named post, reply and edit entrypoints", async () => {
   const { fake, tools } = harness();
   const id = ok(await tools.call("zulip_post", { topic: "t", text: "👀 [GROK-WEB: HH.1.M 📁AFC, OPS] status", to: ["CODEX"] }), "zulip_post").id;
