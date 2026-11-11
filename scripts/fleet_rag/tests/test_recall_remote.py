@@ -37,7 +37,11 @@ class RemoteRecall(unittest.TestCase):
         calls = []
 
         def fake(url, headers, body, timeout):
-            calls.append((url, headers, json.loads(body)))
+            msg = json.loads(body)
+            if msg["params"]["name"] == "identities":
+                return reply({"authenticated_seat": "CODEX", "default_identity": "CODEX",
+                              "identities": [{"identity": "CODEX"}]})
+            calls.append((url, headers, msg))
             return answer
 
         def boom(*a, **k):
@@ -116,13 +120,13 @@ class RemoteRecall(unittest.TestCase):
         self.assertEqual((code, calls), (2, []))
         self.assertIn("SIMPLE_RECALL_REMOTE_WRITES", err)
 
-    def test_contribute_maps_to_recall_contribute_without_a_caller_seat(self):
+    def test_contribute_asserts_authenticated_identity_without_a_caller_seat(self):
         code, out, err, calls = self.run_cli(
             ["contribute", self.LESSON, "--category", "lesson", "--app", "fleet", "--title", "pm2", "--url", "https://x.example/1"],
             reply({"id": "1", "doc_id": "d", "seat": "CODEX", "duplicate": False}, "stored"), env=self.W)
         self.assertEqual(code, 0, err)
         self.assertEqual(calls[0][2]["params"], {"name": "recall_contribute", "arguments": {
-            "text": self.LESSON, "category": "lesson", "app": "fleet", "title": "pm2", "url": "https://x.example/1"}})
+            "text": self.LESSON, "category": "lesson", "app": "fleet", "title": "pm2", "url": "https://x.example/1", "identity": "CODEX"}})
         self.assertNotIn("idempotency_key", calls[0][2]["params"]["arguments"])
         self.assertNotIn("seat", calls[0][2]["params"]["arguments"])
 
@@ -140,20 +144,20 @@ class RemoteRecall(unittest.TestCase):
             self.assertEqual((code, calls), (2, []))
             self.assertIn("SIMPLE_RECALL_REMOTE_WRITES", err)
 
-    def test_correct_and_retract_map_without_a_caller_seat(self):
+    def test_correct_and_retract_assert_authenticated_identity(self):
         doc = "contrib/CODEX/2026-11-05/472fc36e"
         code, _, err, calls = self.run_cli(
             ["correct", doc, self.LESSON, "--reason", "make it current", "--expected-revision", "2"],
             reply({"id": "1", "doc_id": doc, "status": "completed"}, "corrected"), env=self.W)
         self.assertEqual(code, 0, err)
         self.assertEqual(calls[0][2]["params"], {"name": "recall_correct", "arguments": {
-            "doc_id": doc, "text": self.LESSON, "reason": "make it current", "expected_revision": 2}})
+            "doc_id": doc, "text": self.LESSON, "reason": "make it current", "expected_revision": 2, "identity": "CODEX"}})
         self.assertNotIn("seat", calls[0][2]["params"]["arguments"])
         code, _, err, calls = self.run_cli(["retract", doc, "--reason", "obsolete now"],
             reply({"id": "1", "doc_id": doc, "retracted": True}, "retracted"), env=self.W)
         self.assertEqual(code, 0, err)
         self.assertEqual(calls[0][2]["params"], {"name": "recall_retract", "arguments": {
-            "doc_id": doc, "reason": "obsolete now"}})
+            "doc_id": doc, "reason": "obsolete now", "identity": "CODEX"}})
 
     def test_mutations_refuse_a_caller_seat(self):
         doc = "contrib/CODEX/2026-11-05/472fc36e"

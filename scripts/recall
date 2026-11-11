@@ -984,8 +984,49 @@ def _remote_scanner():
         ) from None
 
 
-def remote_call(tool: str, arguments: dict, write: bool = False) -> dict:
-    bearer = os.environ.get(REMOTE_BEARER_ENV, "").strip()
+def _remote_principal(result: dict) -> str:
+    """The one seat assigned by this same bearer's authenticated identities answer.
+
+    Neither the caller's --seat nor the bearer token's spelling selects an actor.
+    Match the strict principal checks used by git-tools, before any write is sent.
+    """
+    sc = result.get("structuredContent")
+    if not isinstance(sc, dict):
+        raise FleetRagError("the hosted server sent no structured identities result")
+    usable = []
+    for key in ("authenticated_seat", "default_identity"):
+        value = sc.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str) or re.fullmatch(r"[A-Z][A-Z0-9-]{1,30}", value) is None:
+            raise FleetRagError("the hosted server reported a malformed seat field")
+        usable.append(value)
+    if not usable or len(set(usable)) != 1:
+        raise FleetRagError("the hosted server reported missing or contradictory seats")
+    seat = usable[0]
+    advertised = sc.get("identities")
+    if not isinstance(advertised, list) or not advertised or not all(
+        isinstance(entry, dict)
+        and isinstance(entry.get("identity"), str)
+        and re.fullmatch(r"[A-Z][A-Z0-9-]{1,30}", entry["identity"])
+        for entry in advertised
+    ):
+        raise FleetRagError("the hosted server advertised no usable identities")
+    if seat not in [entry["identity"] for entry in advertised]:
+        raise FleetRagError("the advertised identities omit the authenticated seat")
+    launcher = os.environ.get("AGENT_LAUNCHER", "").strip()
+    launch_seat = os.environ.get("AGENT_LAUNCH_SEAT", "").strip().upper()
+    if bool(launcher) != bool(launch_seat):
+        raise FleetRagError("launcher and bound seat must both be set or both be absent")
+    for name in ("AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG"):
+        hint = os.environ.get(name, "").strip().upper()
+        if hint and hint != seat:
+            raise FleetRagError("the authenticated seat conflicts with this process's identity")
+    return seat
+
+
+def remote_call(tool: str, arguments: dict, write: bool = False, *, _bearer: str | None = None) -> dict:
+    bearer = os.environ.get(REMOTE_BEARER_ENV, "").strip() if _bearer is None else _bearer
     if not bearer:
         raise FleetRagError(
             f"remote mode needs this bot's own bearer in {REMOTE_BEARER_ENV}; there is no fallback "
@@ -998,6 +1039,13 @@ def remote_call(tool: str, arguments: dict, write: bool = False) -> dict:
     hit = _remote_scan_arguments(_remote_scanner(), arguments, bearer)
     if hit:
         raise FleetRagError(f"refused before sending: {hit}")
+    if write:
+        # Capture one bearer for both calls. A failed discovery never reaches a
+        # mutation and never falls back to direct/public credentials.
+        seat = _remote_principal(remote_call("identities", {}, _bearer=bearer))
+        if "identity" in arguments and arguments["identity"] != seat:
+            raise FleetRagError("the requested identity differs from the authenticated seat")
+        arguments = {**arguments, "identity": seat}
     body = json.dumps(
         {
             "jsonrpc": "2.0",
@@ -1039,7 +1087,7 @@ def remote_main(a: argparse.Namespace) -> int:
             "search, stats, contribute, correct and retract); it is not run directly either"
         )
     if a.cmd in ("contribute", "correct", "retract"):
-        # A write: its own switch, the hosted recall_contribute tool only, and never a seat of the caller's choosing
+        # A write: its own switch and an authenticated identity assertion, never a caller-selected seat
         # (the hosted server attributes the lesson to the bearer's seat).  The near-duplicate guard is local and
         # has no hosted equivalent, so --force is refused rather than ignored.
         if os.environ.get("SIMPLE_RECALL_REMOTE_WRITES") != "1":
