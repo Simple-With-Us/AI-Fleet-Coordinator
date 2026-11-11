@@ -19,11 +19,14 @@ on:
         default: main
         required: false
 
-# contents:read for both checkouts (private callers), pull-requests:read to list PRs
-# and reviews, issues:write to read and post the trigger comment.
+# contents:read for both checkouts (private callers), pull-requests:write to list
+# PRs and reviews AND to post the trigger comment: on a PR resource the Actions
+# token requires pull-requests:write for issue-comment POSTs - issues:write
+# covers real issues only (AFC-681: every prompt POST 403s without it).
+# issues:write stays for issue-side reads.
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
   issues: write
 
 concurrency:
