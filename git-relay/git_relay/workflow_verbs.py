@@ -87,7 +87,9 @@ COMPARE_FILES_CAP = 300  # GitHub returns at most 300 files from the compare end
 # Fixed public refusal for an unverifiable workflow-touch pre-read.  The hosted
 # front maps exactly this fixed string to a caller-visible reason, so keep it
 # byte-stable:  rewording it silently returns callers to a bare relay_refused.
-TOO_LARGE_TO_VERIFY = "PR changes too large to verify for workflow files; no write attempted"
+TOO_LARGE_TO_VERIFY = (
+    "PR changes too large to verify for workflow files; no write attempted"
+)
 MAX_PROJECT = 100
 MAX_WORKFLOW_TEXT = 40000
 # Opt-in bounded larger-text class (covers the 83854-byte mirror document class);
@@ -1119,11 +1121,15 @@ class WorkflowVerbs:
                 data = None
             files = data.get("files") if isinstance(data, dict) else None
             if files is None:
-                touches = self._base_changes_touch_workflows_via_trees(read, repo, pr, head_sha)
+                touches = self._base_changes_touch_workflows_via_trees(
+                    read, repo, pr, head_sha
+                )
             else:
                 scan(files)
                 if not touches and len(files) >= COMPARE_FILES_CAP:
-                    touches = self._base_changes_touch_workflows_via_trees(read, repo, pr, head_sha)
+                    touches = self._base_changes_touch_workflows_via_trees(
+                        read, repo, pr, head_sha
+                    )
         else:
             for page in range(1, 31):
                 rows = read(f"/repos/{repo}/pulls/{number}/files?per_page=100&page={page}")
@@ -1157,31 +1163,41 @@ class WorkflowVerbs:
     def _tree_blob_rows(read, repo, ref_sha):
         """{path: (sha, mode, type)} for blob rows of one whole-tree read.
 
-        recursive=1 is a single response with an explicit truncation flag, so a
-        truncated or oversized tree is as unverifiable as an oversized compare:
-        same refusal, nothing written.  Every row must be well formed and every
-        path unique, and the response must carry a valid tree sha:  a skipped
-        malformed row could silently drop a workflow path from the diff, which
-        would fail open.
+        The commit's root tree sha is read first and the tree response must
+        return exactly that sha:  the proof is bound to the requested commit,
+        not to any syntactically valid tree.  recursive=1 is a single response
+        with an explicit truncation flag, so a truncated or oversized tree is
+        as unverifiable as an oversized compare:  same refusal, nothing
+        written.  Every row must be well formed and every path unique:  a
+        skipped malformed row could silently drop a workflow path from the
+        diff, which would fail open.  Paths are bounded Git paths, not the
+        publication allowlist:  spaces and non-ASCII are valid here.
         """
         if not isinstance(ref_sha, str) or not _SHA.fullmatch(ref_sha):
             raise Refused(TOO_LARGE_TO_VERIFY)
-        data = read(f"/repos/{repo}/git/trees/{ref_sha}?recursive=1")
+        commit = read(f"/repos/{repo}/git/commits/{ref_sha}")
+        tree = commit.get("tree") if isinstance(commit, dict) else None
+        tree_sha = tree.get("sha") if isinstance(tree, dict) else None
+        if not isinstance(tree_sha, str) or not _SHA.fullmatch(tree_sha):
+            raise Refused(TOO_LARGE_TO_VERIFY)
+        data = read(f"/repos/{repo}/git/trees/{tree_sha}?recursive=1")
         if (
             not isinstance(data, dict)
             or data.get("truncated") is not False
-            or not isinstance(data.get("sha"), str)
-            or not _SHA.fullmatch(data["sha"])
+            or data.get("sha") != tree_sha
             or not isinstance(data.get("tree"), list)
         ):
             raise Refused(TOO_LARGE_TO_VERIFY)
         out = {}
         seen = set()
         for row in data["tree"]:
+            path = row.get("path") if isinstance(row, dict) else None
             if not (
                 isinstance(row, dict)
-                and isinstance(row.get("path"), str)
-                and _PATH.fullmatch(row["path"])
+                and isinstance(path, str)
+                and 1 <= len(path) <= 1024
+                and "\x00" not in path
+                and not path.startswith("/")
                 and isinstance(row.get("sha"), str)
                 and _SHA.fullmatch(row["sha"])
                 and isinstance(row.get("mode"), str)
@@ -1189,11 +1205,11 @@ class WorkflowVerbs:
                 and row.get("type") in ("blob", "tree", "commit")
             ):
                 raise Refused(TOO_LARGE_TO_VERIFY)
-            if row["path"] in seen:
+            if path in seen:
                 raise Refused(TOO_LARGE_TO_VERIFY)
-            seen.add(row["path"])
+            seen.add(path)
             if row["type"] == "blob":
-                out[row["path"]] = (row["sha"], row["mode"], row["type"])
+                out[path] = (row["sha"], row["mode"], row["type"])
         return out
 
     def _base_changes_touch_workflows_via_trees(self, read, repo, pr, head_sha):
