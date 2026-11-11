@@ -70,7 +70,10 @@
   // aws:eu-central-1 is Frankfurt, so the fetch handler runs in the Cloudflare data
   // center with the lowest latency to that region instead of wherever each request
   // lands (Cloudflare docs, "Configure explicit Placement Hints").  It moves only the
-  // fetch handler:  SeatGate keeps the placement Durable Objects get on their own.
+  // fetch handler:  SeatGate keeps the placement Durable Objects get on their own, so an
+  // object that was created far from Frankfurt is now called from Frankfurt.  After a
+  // deploy, compare wall time per seat with a production tail from before it
+  // (docs/cloudflare-workers.md), and take the key out if that regresses.
   // Like the limits above it takes effect only when this config is deployed, and
   // dropping the key takes it off at the next deploy.  The key takes exactly one of
   // region, host, hostname or mode.
