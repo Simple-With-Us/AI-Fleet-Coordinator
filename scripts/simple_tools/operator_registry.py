@@ -1414,6 +1414,152 @@ def _session_row_for_update(
     )
 
 
+# ---- the Linear issues a session works on (AFC-694) ---------------------------------
+#
+# Each session may carry `issues`:  at most MAX_ISSUES entries {"id": "AFC-694", "seen_at":
+# "<ISO 8601 UTC>"}, newest first, kept in the session_issues side table.  The wake router
+# reads them to link a wake to the chat that works on its issue.  The session-letter hooks
+# (claude_letter, platform_letter) find the ids and send the whole list through `update`.
+
+#: The fleet's Linear team keys, copied from TEAM_KEYS in scripts/linear-board/board (the board's
+#: routing table, which the skill and MCP copies are already pinned to).  A literal, because the
+#: registry runs where the board script may not be, and a test pins it to the board's.
+LINEAR_TEAM_KEYS = (
+    "ST",
+    "CT",
+    "UM",
+    "CTS",
+    "DD",
+    "AFC",
+    "PS",
+    "AR",
+    "CL",
+    "BF",
+    "HH",
+    "OPS",
+    "C",
+    "FL",
+    "CC",
+    "SWU",
+)
+MAX_ISSUES = 8
+# Longest key first, so "CTS-1" is never read as "CT" and a stray "S".
+ISSUE_KEYS_PATTERN = "|".join(sorted(LINEAR_TEAM_KEYS, key=len, reverse=True))
+ISSUE_ID_RE = re.compile(r"^(?:%s)-[0-9]{1,7}$" % ISSUE_KEYS_PATTERN)
+
+
+def issue_instant(when: float | datetime) -> str:
+    """An instant as an issue's `seen_at` holds it:  UTC, to the second, with a Z."""
+    if not isinstance(when, datetime):
+        when = datetime.fromtimestamp(float(when), UTC)
+    return when.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _zoned_instant(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None  # an instant with no zone could be any instant
+    return parsed.astimezone(UTC)
+
+
+def valid_issue_id(value: object) -> str:
+    """The issue id in the form Linear writes it ("AFC-694"), or "" when it is not one."""
+    if not isinstance(value, str):
+        return ""
+    text = value.strip().upper()
+    return text if ISSUE_ID_RE.fullmatch(text) else ""
+
+
+def normalize_issues(value: object, now: float | None = None) -> list[dict[str, str]]:
+    """A list of issues as the registry keeps it:  valid ids only, one entry per id with its newest
+    `seen_at`, newest first, at most MAX_ISSUES.
+
+    An entry is {"id", "seen_at"};  a bare id string counts as seen `now` when `now` is given.  An
+    entry whose id is not a known team's, or whose `seen_at` is not an instant with a zone, is dropped
+    without a word, as the contract says.  A value that is not a list raises ValueError."""
+    if not isinstance(value, list):
+        raise ValueError("issues must be a list")
+    newest: dict[str, datetime] = {}
+    for item in value:
+        if isinstance(item, str) and now is not None:
+            ident, seen = valid_issue_id(item), datetime.fromtimestamp(float(now), UTC)
+        elif isinstance(item, Mapping):
+            ident, seen = valid_issue_id(item.get("id")), _zoned_instant(item.get("seen_at"))
+        else:
+            continue
+        if not ident or seen is None:
+            continue
+        if ident not in newest or seen > newest[ident]:
+            newest[ident] = seen
+    ordered = sorted(newest.items(), key=lambda pair: (pair[1], pair[0]), reverse=True)
+    return [{"id": ident, "seen_at": issue_instant(seen)} for ident, seen in ordered[:MAX_ISSUES]]
+
+
+def issue_ids(issues: object) -> list[str]:
+    """The ids of an issues list, in its order;  anything malformed is left out."""
+    if not isinstance(issues, list):
+        return []
+    return [i["id"] for i in issues if isinstance(i, Mapping) and valid_issue_id(i.get("id"))]
+
+
+def merge_issues(old: object, seen: Any, now: float) -> list[dict[str, str]]:
+    """`old` with every id in `seen` marked seen `now`, normalized."""
+    stamp = issue_instant(now)
+    base = [i for i in old if isinstance(i, Mapping)] if isinstance(old, list) else []
+    return normalize_issues(base + [{"id": ident, "seen_at": stamp} for ident in seen])
+
+
+def _stored_issues(conn: sqlite3.Connection, record_id: str) -> list[dict[str, str]]:
+    """The issues one session holds, or [] (none stored, or a registry from before the table:  a
+    read-only handle runs no DDL, so an old file has no session_issues table to read)."""
+    return _stored_issues_many(conn, [record_id]).get(record_id, [])
+
+
+def _stored_issues_many(
+    conn: sqlite3.Connection, record_ids: list[str]
+) -> dict[str, list[dict[str, str]]]:
+    ids = [rid for rid in dict.fromkeys(record_ids) if rid]
+    if not ids:
+        return {}
+    try:
+        rows = conn.execute(
+            "SELECT record_id, issues FROM session_issues WHERE record_id IN (%s)"
+            % ",".join("?" * len(ids)),
+            ids,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    out: dict[str, list[dict[str, str]]] = {}
+    for row in rows:
+        try:
+            issues = normalize_issues(json.loads(row["issues"] or "[]"))
+        except ValueError:
+            continue
+        if issues:
+            out[row["record_id"]] = issues
+    return out
+
+
+def _store_issues(
+    conn: sqlite3.Connection, record_id: str, issues: list[dict[str, str]], at: str
+) -> bool:
+    """Replace one session's issues;  True when the stored list changed."""
+    if issues == _stored_issues(conn, record_id):
+        return False
+    conn.execute(
+        "INSERT INTO session_issues(record_id, issues, updated_at) VALUES (?, ?, ?)"
+        " ON CONFLICT(record_id) DO UPDATE SET issues = excluded.issues,"
+        " updated_at = excluded.updated_at",
+        (record_id, json.dumps(issues, separators=(",", ":")), at),
+    )
+    return True
+
+
 def update_session(
     db_path: str,
     *,
@@ -1426,6 +1572,7 @@ def update_session(
     thread_link: str | None = None,
     apple_note_link: str | None = None,
     wake_capability: str | None = None,
+    issues: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Update the mutable fields of one registered session, found by its session id.
 
@@ -1439,6 +1586,11 @@ def update_session(
 
     A session id that is not registered raises ValueError:  a caller that wants a
     letter must register first, and a miss here is not a reason to invent a row.
+
+    `issues` (AFC-694), when given, replaces the Linear issues the session holds:  it is
+    normalized first (normalize_issues:  invalid ids dropped, one entry per id, newest
+    first, at most MAX_ISSUES), and an update without it leaves them as they are.  The
+    answer carries `issues` whenever the session holds any.
     """
     for name, value in (
         ("verified_host", verified_host),
@@ -1454,7 +1606,8 @@ def update_session(
         "wake_capability": wake_capability,
     }
     wanted = {k: v for k, v in fields.items() if v is not None}
-    if not wanted:
+    new_issues = None if issues is None else normalize_issues(issues, now=time.time())
+    if not wanted and new_issues is None:
         raise ValueError("nothing to update: name at least one field")
     bad = [k for k in wanted if k not in MUTABLE_ATTRS]
     if bad:
@@ -1478,7 +1631,7 @@ def update_session(
                 # Answer with the closed state instead of raising:  a caller that
                 # only carries the title (the seat's stop hook) would otherwise be
                 # blocked forever by a row that cannot change.
-                return {
+                closed = {
                     "record_id": record_id,
                     "label": letter,
                     "generation": generation,
@@ -1487,16 +1640,24 @@ def update_session(
                     "changed": [],
                     "title_display": display_title(letter, str(row["title"] or "")),
                 }
+                held_issues = _stored_issues(conn, record_id)
+                if held_issues:
+                    closed["issues"] = held_issues
+                return closed
             letter, generation = registry._active_alias(conn, record_id)
             if title is not None:
                 wanted["title"] = registry_title(letter, title)
             changed = {k: v for k, v in wanted.items() if (row[k] or "") != v}
-            if changed:
-                sets = ", ".join(f"{k} = ?" for k in changed)
-                conn.execute(
-                    f"UPDATE sessions SET {sets} WHERE record_id = ?",
-                    (*changed.values(), record_id),
-                )
+            issues_moved = new_issues is not None and _store_issues(
+                conn, record_id, new_issues, _utcnow()
+            )
+            if changed or issues_moved:
+                if changed:
+                    sets = ", ".join(f"{k} = ?" for k in changed)
+                    conn.execute(
+                        f"UPDATE sessions SET {sets} WHERE record_id = ?",
+                        (*changed.values(), record_id),
+                    )
                 now = _utcnow()
                 registry._enqueue_session_upsert(conn, record_id, now)
                 registry._insert_event(
@@ -1507,7 +1668,7 @@ def update_session(
                     "registry",
                     "updated",
                     "registry",
-                    ", ".join(sorted(changed)),
+                    ", ".join(sorted([*changed, *(["issues"] if issues_moved else [])])),
                     now,
                 )
                 outcome = "updated"
@@ -1521,6 +1682,7 @@ def update_session(
             current = conn.execute(
                 "SELECT * FROM sessions WHERE record_id = ?", (record_id,)
             ).fetchone()
+            held_issues = _stored_issues(conn, record_id)
     finally:
         registry.close_db()
     out = {
@@ -1529,8 +1691,10 @@ def update_session(
         "generation": generation,
         "title": current["title"],
         "outcome": outcome,
-        "changed": sorted(changed),
+        "changed": sorted([*changed, *(["issues"] if issues_moved else [])]),
     }
+    if held_issues:
+        out["issues"] = held_issues
     out["title_display"] = display_title(letter, str(current["title"] or ""))
     return out
 
@@ -1585,6 +1749,9 @@ def touch_session(
         if letter:
             out["label"] = letter
             out["generation"] = generation
+        held_issues = _stored_issues(registry._conn, row["record_id"])
+        if held_issues:
+            out["issues"] = held_issues  # AFC-694:  an addition, like the letter
         return out
     finally:
         registry.close_db()
@@ -1748,7 +1915,10 @@ def letter_history(db_path: str, platform: str, limit: int = 50) -> list[dict[st
             "SELECT a.letter AS letter, a.generation AS generation, a.record_id AS record_id,"
             " a.assigned_at AS assigned_at, a.retired_at AS retired_at,"
             " s.native_session_id AS native_session_id, s.seat AS seat, s.title AS title,"
-            " s.state AS state, s.verified_host AS verified_host, s.closed_at AS closed_at"
+            " s.state AS state, s.verified_host AS verified_host, s.closed_at AS closed_at,"
+            # The session's last activity (every touch, title and update stamps it), so the wake
+            # router can rank sessions by recency rather than by when they were lettered.
+            " s.last_seen_at AS last_seen_at"
             " FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
             " WHERE a.platform = ? ORDER BY a.assigned_at DESC LIMIT ?",
             (namespace, max(1, int(limit))),
@@ -1767,6 +1937,7 @@ def letter_history(db_path: str, platform: str, limit: int = 50) -> list[dict[st
                 rid = event["session_record_id"]
                 if rid not in close_by_id:
                     close_by_id[rid] = event
+        issues_by_id = _stored_issues_many(registry._conn, record_ids)
         for row in rows:
             event = close_by_id.get(row["record_id"])
             item = dict(row)
@@ -1774,6 +1945,8 @@ def letter_history(db_path: str, platform: str, limit: int = 50) -> list[dict[st
             item["ended_at"] = (event["recorded_at"] if event else None) or row["retired_at"]
             item["title_display"] = display_title(row["letter"], str(row["title"] or ""))
             item["live"] = row["retired_at"] is None
+            if row["record_id"] in issues_by_id:
+                item["issues"] = issues_by_id[row["record_id"]]  # AFC-694, when the session has any
             out.append(item)
         return out
     finally:
@@ -1860,6 +2033,7 @@ def resolve_label(
                 " WHERE a.platform = ? AND a.letter = ? AND a.generation = ?" % columns,
                 (namespace, want, int(generation)),
             ).fetchone()
+        held_issues = _stored_issues(registry._conn, row["record_id"]) if row is not None else []
     except Exception as exc:
         raise RegistryUnavailable(type(exc).__name__) from exc
     finally:
@@ -1878,6 +2052,8 @@ def resolve_label(
     )
     found["title_display"] = display_title(label, str(found.get("title") or ""))
     found["found"] = True
+    if held_issues:
+        found["issues"] = held_issues  # AFC-694, when the session has any
     return found
 
 
@@ -2340,6 +2516,15 @@ def default_db(env: Mapping[str, str] | None = None) -> str:
     return registry_db_path(root, env)
 
 
+def _issues_arg(text: str) -> Any:
+    """The --issues value read as JSON.  Text that is not JSON is passed on as it is, so the
+    registry refuses it as it refuses any value that is not a list, instead of storing nothing."""
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
 def _api_call_for(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
     """The API call one parsed CLI invocation names:  the op and its fields, under the
     names the registry API folds (registry_api drops the unset ones)."""
@@ -2387,7 +2572,7 @@ def _api_call_for(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
             "force": args.force,
         }
     if command == "update":
-        return "update", {
+        payload = {
             **identity,
             "title": args.title,
             "project": args.project,
@@ -2395,6 +2580,9 @@ def _api_call_for(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
             "apple_note_link": args.apple_note_link,
             "wake_capability": args.wake_capability,
         }
+        if args.issues is not None:
+            payload["issues"] = _issues_arg(args.issues)
+        return "update", payload
     if command == "close":
         return "close", {
             **identity,
@@ -2566,6 +2754,11 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
     u.add_argument("--thread-link", default=None)
     u.add_argument("--apple-note-link", default=None)
     u.add_argument("--wake-capability", default=None)
+    u.add_argument(
+        "--issues",
+        default=None,
+        help='the Linear issues, as a JSON list of {"id", "seen_at"};  replaces the stored list',
+    )
     c = sub.add_parser("close", help="end one session's letter and keep its history")
     c.add_argument("--db", default="", help="the registry file (default: the shared path)")
     c.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
@@ -2760,6 +2953,7 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
                 thread_link=args.thread_link,
                 apple_note_link=args.apple_note_link,
                 wake_capability=args.wake_capability,
+                issues=None if args.issues is None else _issues_arg(args.issues),
             )
         except ValueError as exc:
             print(json.dumps({"error": str(exc)}))

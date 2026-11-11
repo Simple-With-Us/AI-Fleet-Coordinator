@@ -1108,6 +1108,184 @@ class HookTests(Base):
         self.assertEqual((body["label"], body["title"]), ("QX", "QX: Fresh Name"))
         self.assertIn("letter changed from %s to QX" % old, body["context"])
 
+    # ---- AFC-694:  the Linear issues a turn touched go to the registry ----
+
+    def transcript(self, *entries, name: str = "t.jsonl") -> str:
+        """Append transcript lines (dicts as JSON, strings as they are) under the platform's home folder."""
+        folder = os.path.join(self.home, ".codex", "sessions")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, name)
+        with open(path, "a", encoding="utf-8") as fh:
+            for entry in entries:
+                fh.write((json.dumps(entry) if isinstance(entry, dict) else entry) + "\n")
+        return path
+
+    def issues_held(self, sid: str = "s-0001") -> list[str]:
+        found = OR.resolve_label(self.db, "codex", self.label(sid)) or {}
+        return sorted(i["id"] for i in found.get("issues", []))
+
+    def turn(self, ssh, text: str = "go", **extra) -> dict | None:
+        label = self.label("s-0001")
+        return self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": text,
+                          "session_title": "%s: Fix the Build" % label, **extra}, runner=ssh)
+
+    def test_a_turn_records_the_issues_its_transcript_names_and_sends_only_a_change(self) -> None:
+        self.titled_chat()
+        path = self.transcript(
+            {"type": "user", "message": {"role": "user", "content": "please fix AFC-694 today"}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "input": {"command": 'simple-chat post --topic "OPS-12 rollout" --body x'}}]}},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "content": "a file that names AFC-999 and posted id 5 to #WIP › CT-7 notes"}]},
+             "toolUseResult": {"stdout": "AFC-998"}},
+        )
+        ssh = FakeSsh(self)
+        self.assertIsNone(self.turn(ssh, transcript_path=path))  # nothing changes on screen
+        self.assertEqual(ssh.ops(), ["issues"])
+        self.assertEqual(self.issues_held(), ["AFC-694", "CT-7", "OPS-12"])  # not what a tool's output read
+        note = self.note("s-0001")
+        self.assertEqual(note["issues_sent"], ["AFC-694", "CT-7", "OPS-12"])
+        self.assertEqual(note["issues_scan"]["offset"], os.path.getsize(path))
+        # No new lines, or only ids it already sent:  no registry call.
+        self.turn(ssh, transcript_path=path)
+        self.transcript({"type": "assistant", "message": {"content": "still on AFC-694"}})
+        self.turn(ssh, transcript_path=path)
+        self.assertEqual(ssh.ops(), ["issues"])
+        # A new id is a change, and it goes first.
+        self.transcript({"type": "assistant", "message": {"content": "now SWU-3"}})
+        self.turn(ssh, transcript_path=path)
+        self.assertEqual(ssh.ops(), ["issues", "issues"])
+        self.assertEqual(self.issues_held(), ["AFC-694", "CT-7", "OPS-12", "SWU-3"])
+        self.assertEqual(self.note("s-0001")["issues"][0]["id"], "SWU-3")
+
+    def test_a_turn_records_the_issue_its_branch_names(self) -> None:
+        self.titled_chat()
+        repo = os.path.join(self.tmp.name, "repo")
+        os.makedirs(repo)
+        git = ["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+        subprocess.run(git + ["init", "-q", "-b", "codex/afc-701-letter-issues"], check=True)
+        subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "x"], check=True)
+        ssh = FakeSsh(self)
+        self.turn(ssh, cwd=repo)
+        self.assertEqual(ssh.ops(), ["issues"])
+        self.assertEqual(self.issues_held(), ["AFC-701"])
+        # A folder that is no git tree, or no folder at all, gives nothing.
+        self.assertEqual(PL.branch_issue_ids(self.tmp.name), set())
+        self.assertEqual(PL.branch_issue_ids(os.path.join(self.tmp.name, "gone")), set())
+
+    def test_hook_data_with_neither_a_transcript_nor_a_folder_sends_nothing(self) -> None:
+        self.titled_chat()
+        ssh = FakeSsh(self)
+        self.turn(ssh)
+        self.assertEqual(ssh.ops(), [])
+        self.assertNotIn("issues", self.note("s-0001"))
+
+    def test_a_transcript_outside_the_home_folder_is_never_read(self) -> None:
+        self.titled_chat()
+        outside = os.path.join(self.tmp.name, "elsewhere.jsonl")
+        with open(outside, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "user", "message": {"content": "AFC-694"}}) + "\n")
+        ssh = FakeSsh(self)
+        self.turn(ssh, transcript_path=outside)
+        self.assertEqual(ssh.ops(), [])
+
+    def test_a_registry_that_fails_or_does_not_know_the_op_is_silent_and_asked_again_later(self) -> None:
+        class OldMac(FakeSsh):
+            """A Mac on a runtime from before the op:  its parser refuses the whole call."""
+
+            def __call__(self, cmd, **kwargs):
+                if shlex.split(cmd[8])[2] == "issues":
+                    self.calls.append(cmd)
+                    return SimpleNamespace(stdout='{"error": "bad arguments"}\n', returncode=2)
+                return super().__call__(cmd, **kwargs)
+
+        label = self.titled_chat()
+        path = self.transcript({"type": "user", "message": {"content": "AFC-694"}})
+        ssh = OldMac(self)
+        start = time.time()
+        out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go",
+                         "session_title": "%s: Fix the Build" % label, "transcript_path": path},
+                        runner=ssh, now=start)
+        self.assertIsNone(out)  # the prompt is untouched
+        note = self.note("s-0001")
+        self.assertEqual([i["id"] for i in note["issues"]], ["AFC-694"])
+        self.assertNotIn("issues_sent", note)
+        self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go",
+                   "session_title": "%s: Fix the Build" % label, "transcript_path": path}, runner=ssh, now=start + 60)
+        self.assertEqual(ssh.ops(), ["issues"])  # not again inside the wait
+        self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go",
+                   "session_title": "%s: Fix the Build" % label, "transcript_path": path},
+                  runner=FakeSsh(self), now=start + PL.RETRY_SECONDS + 5)
+        self.assertEqual(self.issues_held(), ["AFC-694"])
+
+    def test_issue_ids_in_lines_reads_the_chats_own_words_and_any_posted_topic(self) -> None:
+        lines = [
+            json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "AFC-1 and CTS-2"}]}}),
+            json.dumps({"type": "function_call_output", "output": "OPS-3"}),
+            json.dumps({"isMeta": True, "message": {"content": "OPS-4"}}),
+            json.dumps({"type": "tool_result", "content": "simple-chat post --topic 'CC-5 x'"}),
+            "plain text names UM-6, afc-7 and XAFC-8",
+            json.dumps({"input": {"command": "simple-chat post --topic=FL-9"}}),
+        ]
+        self.assertEqual(PL.issue_ids_in_lines(lines), {"AFC-1", "CTS-2", "CC-5", "UM-6", "FL-9"})
+
+    def test_read_new_lines_reads_only_new_whole_lines_within_its_cap(self) -> None:
+        root = os.path.join(self.home, ".codex")
+        path = self.transcript("one AFC-1", "two AFC-2")
+        lines, scan = PL.read_new_lines(path, root, None)
+        self.assertEqual(lines, ["one AFC-1", "two AFC-2"])
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("three AFC-3\nfour, half writ")
+        lines, scan = PL.read_new_lines(path, root, scan)
+        self.assertEqual(lines, ["three AFC-3"])  # the line still being written waits
+        self.assertEqual(PL.read_new_lines(path, root, scan)[0], [])
+        with mock.patch.object(PL, "ISSUE_SCAN_BYTES", 16):
+            big = self.transcript(*["line %d AFC-%d" % (n, n) for n in range(50)], name="big.jsonl")
+            lines, scan = PL.read_new_lines(big, root, None)
+        self.assertEqual(lines, ["line 49 AFC-49"])  # only the tail, from its first whole line
+        self.assertEqual(scan["offset"], os.path.getsize(big))
+        with self.assertRaises(ValueError):
+            PL.read_new_lines(path, os.path.join(self.home, "other"), None)
+
+    def test_branch_issue_ids_is_silent_on_every_failure(self) -> None:
+        def answer(stdout: str = "", code: int = 0, raises: Exception | None = None):
+            def run(*args, **kwargs):
+                self.assertEqual(kwargs["timeout"], PL.ISSUE_GIT_TIMEOUT)
+                if raises:
+                    raise raises
+                return SimpleNamespace(stdout=stdout, returncode=code)
+            return run
+
+        here = self.tmp.name
+        self.assertEqual(PL.branch_issue_ids(here, answer("claude/ops-12-x\n")), {"OPS-12"})
+        self.assertEqual(PL.branch_issue_ids(here, answer("HEAD\n")), set())
+        self.assertEqual(PL.branch_issue_ids(here, answer("", 128)), set())
+        self.assertEqual(PL.branch_issue_ids(here, answer(raises=subprocess.TimeoutExpired("git", 2))), set())
+        self.assertEqual(PL.branch_issue_ids(here, answer(raises=OSError("no git"))), set())
+
+    def test_sync_issues_sends_on_change_only_and_reads_an_old_answer_as_taken(self) -> None:
+        sent: list[str] = []
+
+        def send(text: str) -> dict:
+            sent.append(text)
+            return {"ok": True}  # an answer with no `issues` field:  the registry took what it was sent
+
+        note: dict = {}
+        path = self.transcript("AFC-1")
+        PL.sync_issues(note, {"transcript_path": path}, self.home, 1000.0, send)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(json.loads(sent[0]), [{"id": "AFC-1", "seen_at": "1970-01-01T00:16:40Z"}])
+        self.assertEqual(note["issues_sent"], ["AFC-1"])
+        PL.sync_issues(note, {"transcript_path": path}, self.home, 2000.0, send)
+        self.assertEqual(len(sent), 1)
+
+        def broken(text: str) -> dict:
+            raise RuntimeError("boom")
+
+        self.transcript("AFC-2")
+        PL.sync_issues(note, {"transcript_path": path}, self.home, 3000.0, broken)  # never raises
+        self.assertEqual(note["issues_sent"], ["AFC-1"])
+
     def test_a_rename_event(self) -> None:
         spec = make_spec(events={"session.created": "start", "session.renamed": "rename", "session.deleted": "end"},
                          output="json")

@@ -689,6 +689,11 @@ def _on_record(OR: Any, db: str, args: Any, sid: str) -> dict[str, Any]:
                 "closed": reg.close(rid, actor=args.seat, source=args.source),
                 "label": rec["label"],
             }
+        elif args.op == "issues":
+            from . import platform_letter as PL
+
+            identity = {"platform": PLATFORM, "location": args.location, "scope": SCOPE, "session_id": sid}
+            return PL.record_issues_local(OR, db, identity, args.issues)
         return {
             "ok": True,
             "label": rec["label"],
@@ -822,6 +827,8 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
         if out.get("outcome") == "already_closed":
             return {"retired": True, "record_id": out.get("record_id", "")}
         return {"closed": bool(out.get("closed")), "label": out.get("label", "")}
+    if args.op == "issues":
+        return PL.record_issues_api(env, identity, args.issues)
     probe = PL._call_api(env, "touch", identity)
     error = PL._api_error(probe)
     if error is not None:
@@ -854,11 +861,12 @@ def registry_main(
     from . import registry_api
 
     parser = argparse.ArgumentParser(prog="simple-chat letter registry", add_help=True)
-    parser.add_argument("op", choices=("register", "title", "touch", "close"))
+    parser.add_argument("op", choices=("register", "title", "touch", "close", "issues"))
     parser.add_argument("--location", required=True, choices=LOCATIONS)
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--seat", default=SEAT_DEFAULT)
     parser.add_argument("--title", default="")
+    parser.add_argument("--issues", default="[]")  # the `issues` op's list, as JSON (AFC-694)
     parser.add_argument("--source", default=SOURCE)
     parser.add_argument("--parent-session-id", default="")
     parser.add_argument("--host-session-id", default="")
@@ -1007,7 +1015,9 @@ class Chat:
 
     # ---- the registry ----------------------------------------------------------------------
 
-    def registry(self, op: str, title: str = "", after_clear: bool = False) -> dict[str, Any]:
+    def registry(
+        self, op: str, title: str = "", after_clear: bool = False, issues: str = ""
+    ) -> dict[str, Any]:
         argv = [
             op,
             "--location",
@@ -1017,6 +1027,8 @@ class Chat:
             "--seat",
             self.seat,
         ]
+        if issues and op == "issues":
+            argv += ["--issues=" + issues]  # the list as JSON (AFC-694)
         if title:
             # One argument in the --flag=VALUE form:  a chat renamed "-v" or "--db x" must reach the registry as a
             # title, not be read by its parser as an option.
@@ -1523,6 +1535,19 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
                     % (held, what, str(note.get("error") or "no answer"), held, RETRY_SECONDS // 60)
                 )
     context = _join_context(context, _agent_title_fix(chat, note))
+    if note.get("state") == "open" and note.get("label"):
+        # The Linear issues the turn before touched (AFC-694):  its new transcript lines (only a transcript under
+        # ~/.claude is read) and its folder's branch.  Sent only when the set of ids changed;  silent on any failure.
+        from . import platform_letter as PL
+
+        home = str(chat.env.get("HOME") or os.path.expanduser("~"))
+        PL.sync_issues(
+            note,
+            data,
+            os.path.join(home, ".claude"),
+            chat.now,
+            lambda text: chat.registry("issues", issues=text),
+        )
     chat.write(note)
     if (title and title != current) or context:
         _hook_out(

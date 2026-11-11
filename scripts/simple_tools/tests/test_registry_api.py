@@ -127,6 +127,36 @@ class ClientTests(ApiBase):
         )
         self.assertEqual(found.get("native_session_id"), "mm-1")
 
+    def test_update_takes_issues_and_the_reads_return_them(self) -> None:
+        env = self.api_env()
+        identity = {"platform": "minimax", "location": "server", "scope": "default", "session_id": "mm-issues-1"}
+        made = registry_api.call(env, "register", {**identity, "seat": "MM", "source": "test"})
+        self.assertNotIn("error", made)
+        issues = [{"id": "AFC-694", "seen_at": "2026-11-10T15:00:00Z"}]
+        updated = registry_api.call(env, "update", {**identity, "issues": issues + [{"id": "NOPE-1"}]})
+        self.assertEqual((updated["changed"], updated["issues"]), (["issues"], issues))
+        history = registry_api.call(env, "history", {"platform": "minimax"})
+        self.assertEqual(history["items"][0]["issues"], issues)
+        # The session's last activity rides on history too, and a touch moves it forward.
+        conn = sqlite3.connect(self.server_db)
+        with conn:
+            conn.execute("UPDATE sessions SET last_seen_at = '2026-01-01T00:00:00.000Z'")
+        conn.close()
+        before = registry_api.call(env, "history", {"platform": "minimax"})["items"][0]["last_seen_at"]
+        self.assertEqual(before, "2026-01-01T00:00:00.000Z")
+        registry_api.call(env, "touch", identity)
+        after = registry_api.call(env, "history", {"platform": "minimax"})["items"][0]["last_seen_at"]
+        self.assertGreater(after, before)
+        found = registry_api.call(env, "resolve", {"platform": "minimax", "letter": made["label"]})
+        self.assertEqual(found["issues"], issues)
+        touched = registry_api.call(env, "touch", identity)
+        self.assertEqual((touched["outcome"], touched["issues"]), ("seen", issues))
+        # An update without the field leaves it;  one that is not a list is refused.
+        again = registry_api.call(env, "update", {**identity, "title": "Words"})
+        self.assertEqual(again["issues"], issues)
+        refused = registry_api.call(env, "update", {**identity, "issues": "AFC-694"})
+        self.assertIn("must be a list", refused.get("error", ""))
+
     def test_a_malformed_url_and_a_truncated_answer_are_error_answers(self) -> None:
         env = self.api_env(**{registry_api.URL_ENV: "http://[::1"})
         answer = registry_api.call(env, "resolve", {"platform": "minimax", "letter": "A"})

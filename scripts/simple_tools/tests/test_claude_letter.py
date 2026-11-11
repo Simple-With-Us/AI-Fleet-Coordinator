@@ -1499,6 +1499,103 @@ class HookTests(Base):
             self.assertEqual(CL._follow_letter(kept, answer, "AA: Words"), ("", ""))
             self.assertEqual(kept, note)
 
+    # ---- AFC-694:  the Linear issues a turn touched go to the registry ----
+
+    def transcript(self, *entries) -> str:
+        """Append transcript lines under ~/.claude/projects, as Claude Code writes them."""
+        path = os.path.join(self.home, ".claude", "projects", "chat.jsonl")
+        with open(path, "a", encoding="utf-8") as fh:
+            for entry in entries:
+                fh.write(json.dumps(entry) + "\n")
+        return path
+
+    def issues_held(self, sid: str = "s-0001") -> list[str]:
+        found = OR.resolve_label(self.db, CL.PLATFORM, self.lookup(sid)["label"]) or {}
+        return sorted(i["id"] for i in found.get("issues", []))
+
+    def turn(self, runner=None, now: float | None = None, **extra) -> dict | None:
+        return self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go",
+                          "session_title": "AA: Help Get All PR Issues Addressed", **extra},
+                         runner=runner, now=now)
+
+    def test_a_turn_records_the_issues_it_touched_and_sends_only_a_change(self) -> None:
+        self.titled()
+        repo = os.path.join(self.tmp.name, "repo")
+        os.makedirs(repo)
+        git = ["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+        subprocess.run(git + ["init", "-q", "-b", "claude/afc-701-letter-issues"], check=True)
+        subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "x"], check=True)
+        path = self.transcript(
+            {"type": "user", "message": {"role": "user", "content": "pick up OPS-12"}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "input": {"command": 'simple-chat post --topic "AFC-694 issues" --body x'}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "content": "a doc naming CT-99"}]}},
+        )
+        ssh = FakeSsh(self)
+        self.assertIsNone(self.turn(ssh, transcript_path=path, cwd=repo))  # the prompt shows nothing new
+        self.assertEqual(self.registry_ops(ssh), ["issues"])
+        self.assertEqual(self.issues_held(), ["AFC-694", "AFC-701", "OPS-12"])
+        # The same ids on the next turn (the branch is read again):  no registry call.
+        self.turn(ssh, transcript_path=path, cwd=repo)
+        self.assertEqual(self.registry_ops(ssh), ["issues"])
+        # Only the lines since the last turn are read:  a new id there is a change.
+        self.transcript({"type": "assistant", "message": {"content": "moving on to SWU-3"}})
+        self.turn(ssh, transcript_path=path, cwd=repo)
+        self.assertEqual(self.registry_ops(ssh), ["issues", "issues"])
+        self.assertEqual(self.issues_held(), ["AFC-694", "AFC-701", "OPS-12", "SWU-3"])
+        self.assertEqual(self.note("s-0001")["issues_scan"]["offset"], os.path.getsize(path))
+
+    def test_issues_reach_the_registry_from_the_mac_in_process(self) -> None:
+        def no_ssh(*a, **k):
+            raise AssertionError("the Mac never uses ssh")
+
+        self.hook({"hook_event_name": "SessionStart", "session_id": "m-0001", "source": "startup"},
+                  env=self.env(), runner=no_ssh, platform="darwin")
+        path = self.transcript({"type": "user", "message": {"content": "AFC-694"}})
+        out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "m-0001", "prompt": "go",
+                         "transcript_path": path, "session_title": "AA: New Chat"},
+                        env=self.env(), runner=no_ssh, platform="darwin")
+        self.assertEqual(out["sessionTitle"], "AA: Go")
+        record = OR.resolve_label(self.db, CL.PLATFORM, "AA")
+        self.assertEqual([i["id"] for i in record["issues"]], ["AFC-694"])
+
+    def test_a_transcript_outside_claudes_folder_is_never_read(self) -> None:
+        self.titled()
+        outside = os.path.join(self.tmp.name, "elsewhere.jsonl")
+        with open(outside, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "user", "message": {"content": "AFC-694"}}) + "\n")
+        ssh = FakeSsh(self)
+        self.turn(ssh, transcript_path=outside, cwd=os.path.join(self.tmp.name, "gone"))
+        self.assertEqual(ssh.calls, [])
+        self.assertNotIn("issues", self.note("s-0001"))
+
+    def test_an_old_registry_or_a_silent_one_never_touches_the_prompt(self) -> None:
+        class OldMac(FakeSsh):
+            """A Mac on a runtime from before the op:  its parser refuses the call."""
+
+            def __call__(self, cmd, **kwargs):
+                if shlex.split(cmd[8])[3] == "issues":
+                    self.calls.append(cmd)
+                    return SimpleNamespace(stdout='{"error": "bad arguments:  issues"}\n', returncode=2)
+                return super().__call__(cmd, **kwargs)
+
+        self.titled()
+        path = self.transcript({"type": "user", "message": {"content": "AFC-694"}})
+        start = time.time()
+        ssh = OldMac(self)
+        self.assertIsNone(self.turn(ssh, now=start, transcript_path=path))
+        self.assertIsNone(self.turn(ssh, now=start + 60, transcript_path=path))
+        self.assertEqual(self.registry_ops(ssh), ["issues"])  # asked once per wait
+        down = FakeSsh(self, fail=subprocess.TimeoutExpired("ssh", 12))
+        self.assertIsNone(self.turn(down, now=start + CL.RETRY_SECONDS + 5, transcript_path=path))
+        note = self.note("s-0001")
+        self.assertEqual([i["id"] for i in note["issues"]], ["AFC-694"])
+        self.assertNotIn("issues_sent", note)
+        # A touch answer from a registry with no `issues` field never clears the note's list.
+        later = start + CL.TOUCH_SECONDS + 5
+        self.assertIsNone(self.turn(OldMac(self), now=later))
+        self.assertEqual([i["id"] for i in self.note("s-0001")["issues"]], ["AFC-694"])
+
     def replace_the_registry(self) -> None:
         """The store moves under the chats:  a registry that has never heard of any of them (the API's, after the cutover)."""
         for suffix in ("", "-wal", "-shm"):
