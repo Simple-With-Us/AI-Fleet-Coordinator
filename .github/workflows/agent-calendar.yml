@@ -11,7 +11,8 @@ permissions:
   contents: write
 
 concurrency:
-  group: agent-activity-calendar
+  # Shared with fleet-activity-site.yml so data-branch publishes cannot interleave.
+  group: published-fleet-activity
   cancel-in-progress: true
 
 jobs:
@@ -33,14 +34,49 @@ jobs:
           CALENDAR_OUT: calendar/agent-activity.ics
         run: python3 scripts/build-agent-calendar.py
 
-      - name: Restore site tree from published branch for snapshot push
+      - name: Restore site and daily-digest ICS from published branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FLEET_OWNER: Simple-With-Us
+          FLEET_REPOS: Socratic-Trade,Congress.Trade,Usage-Monitor,congress-trading-shared,AI-Fleet-Coordinator,DealDex,Autorotate,ContactLogo,Personal-Site,BotFleet,HogHunter,Clutch,codecaps
+          DIGEST_LOOKBACK_DAYS: "21"
+          DIGEST_TZ: America/Chicago
+          SITE_OUT: site
+          ICS_OUT: calendar/daily-digest.ics
+          SITE_BASE_URL: https://simple-with-us.github.io/AI-Fleet-Coordinator
         run: |
           set -euo pipefail
           git fetch --no-tags origin published/fleet-activity 2>/dev/null || true
-          if git show-ref --verify --quiet refs/remotes/origin/published/fleet-activity; then
-            git archive origin/published/fleet-activity site | tar -x
-          else
+          if ! git show-ref --verify --quiet refs/remotes/origin/published/fleet-activity; then
+            rm -rf site
             python3 scripts/build-fleet-daily-digest.py
+            exit 0
+          fi
+          rm -rf .publish-restore
+          mkdir -p .publish-restore
+          restored_site=0
+          if git archive origin/published/fleet-activity site calendar/daily-digest.ics \
+            | tar -x -C .publish-restore 2>/dev/null; then
+            if [[ -d .publish-restore/site ]]; then
+              rm -rf site
+              mv .publish-restore/site site
+              restored_site=1
+            fi
+            if [[ -f .publish-restore/calendar/daily-digest.ics ]]; then
+              mkdir -p calendar
+              cp -a .publish-restore/calendar/daily-digest.ics calendar/daily-digest.ics
+            fi
+          fi
+          rm -rf .publish-restore
+          if [[ "${restored_site}" != 1 ]]; then
+            rm -rf site
+            python3 scripts/build-fleet-daily-digest.py
+            exit 0
+          fi
+          mkdir -p site/calendar
+          cp -a calendar/agent-activity.ics site/calendar/agent-activity.ics
+          if [[ -f calendar/daily-digest.ics ]]; then
+            cp -a calendar/daily-digest.ics site/calendar/daily-digest.ics
           fi
 
       - name: Publish artifacts to data branch

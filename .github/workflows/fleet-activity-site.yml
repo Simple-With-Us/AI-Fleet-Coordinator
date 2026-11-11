@@ -25,7 +25,8 @@ permissions:
   id-token: write
 
 concurrency:
-  group: fleet-activity-site
+  # Shared with agent-calendar.yml so data-branch publishes cannot interleave.
+  group: published-fleet-activity
   cancel-in-progress: true
 
 jobs:
@@ -84,6 +85,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: fleet-digest-site
+          path: site
 
       - name: Setup Pages
         uses: actions/configure-pages@v6

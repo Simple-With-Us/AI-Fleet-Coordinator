@@ -68,5 +68,24 @@ if [[ "${FLEET_ACTIVITY_SKIP_PUSH:-}" == "1" ]]; then
   exit 0
 fi
 
-git -C "${WORKTREE}" push origin "HEAD:${BRANCH}"
+# Workflows serialize via published-fleet-activity concurrency; retry if a push
+# still races (for example a manual dispatch against a finishing scheduled run).
+push_ok=0
+for attempt in 1 2 3 4 5; do
+  if git -C "${WORKTREE}" push origin "HEAD:${BRANCH}"; then
+    push_ok=1
+    break
+  fi
+  if [[ "${attempt}" == 5 ]]; then
+    echo "error: push to ${BRANCH} failed after ${attempt} attempts" >&2
+    git -C "${ROOT}" worktree remove --force "${WORKTREE}" 2>/dev/null || rm -rf "${WORKTREE}"
+    exit 1
+  fi
+  sleep 5
+  git -C "${ROOT}" fetch --no-tags origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
+  if ! git -C "${WORKTREE}" rebase -X theirs "origin/${BRANCH}"; then
+    git -C "${WORKTREE}" rebase --abort 2>/dev/null || true
+  fi
+done
+
 git -C "${ROOT}" worktree remove --force "${WORKTREE}" 2>/dev/null || rm -rf "${WORKTREE}"
