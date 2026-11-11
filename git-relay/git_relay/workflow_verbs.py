@@ -5202,7 +5202,10 @@ class WorkflowVerbs:
             nodes[name.casefold()] = node_id
         try:
             data = self.client._call(
-                "POST", f"/repos/{repo}/issues/{number}/labels", {"labels": labels}, bearer=self.bearer
+                "POST",
+                f"/repos/{repo}/issues/{number}/labels",
+                {"labels": labels},
+                bearer=self.bearer,
             )
         except RelayGitHubError as exc:
             # Issues disabled:  GitHub 404s this route.  The label exists, so try

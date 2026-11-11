@@ -364,11 +364,7 @@ class PrControls(unittest.TestCase):
 
         def read(arm):
             return {
-                "data": {
-                    "repository": {
-                        "pullRequest": {"id": "PR_abc", "autoMergeRequest": arm}
-                    }
-                }
+                "data": {"repository": {"pullRequest": {"id": "PR_abc", "autoMergeRequest": arm}}}
             }
 
         class Settle(Client):
@@ -396,7 +392,9 @@ class PrControls(unittest.TestCase):
             ]
 
         off = Settle(None)
-        h = WorkflowVerbs(off, Policy(), "swu-wise", "private", "swu-wise", "wf_automerge_enable", REPO)
+        h = WorkflowVerbs(
+            off, Policy(), "swu-wise", "private", "swu-wise", "wf_automerge_enable", REPO
+        )
         with self.assertRaises(Refused) as caught:
             h.run("wf_automerge_enable", {"repo": REPO, "number": 3037, "method": "SQUASH"})
         self.assertEqual(str(caught.exception), AUTO_MERGE_NOT_ARMED)

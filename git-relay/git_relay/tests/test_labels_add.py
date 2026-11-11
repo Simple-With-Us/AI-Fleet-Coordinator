@@ -24,7 +24,9 @@ class Client(BaseClient):
 class _IssuesOff(BaseClient):
     """The label exists, and POST /issues/.../labels is the 404 Issues-disabled route."""
 
-    def __init__(self, graphql, missing_pr=False, lose_mutation=False, lose_read=False, node_id="LA_kwDOAbc"):
+    def __init__(
+        self, graphql, missing_pr=False, lose_mutation=False, lose_read=False, node_id="LA_kwDOAbc"
+    ):
         super().__init__()
         self.graphql = graphql
         self.missing_pr = missing_pr
@@ -274,9 +276,7 @@ class AddLabels(unittest.TestCase):
         absent = {
             "data": {
                 "repository": {
-                    "pullRequest": {
-                        "labels": {"pageInfo": {"hasNextPage": False}, "nodes": []}
-                    }
+                    "pullRequest": {"labels": {"pageInfo": {"hasNextPage": False}, "nodes": []}}
                 }
             }
         }
@@ -291,7 +291,9 @@ class AddLabels(unittest.TestCase):
         with self.assertRaises(RelayGitHubError):
             self.handle(lost).run("wf_labels_add", self.args())
         mutations = [
-            call for call in lost.calls if call[2] and "addLabelsToLabelable" in str(call[2].get("query"))
+            call
+            for call in lost.calls
+            if call[2] and "addLabelsToLabelable" in str(call[2].get("query"))
         ]
         self.assertEqual(len(mutations), 1)
 

@@ -76,7 +76,11 @@ def ensure_hold_labels(repo: str, transport, labels=STANDARD_LABELS) -> dict:
         name = spec["name"]
         path = "/repos/" + repo + "/labels/" + quote(name, safe="")
         status, body = transport("GET", path, None)
-        if status == 200 and isinstance(body, dict) and body.get("name", "").casefold() == name.casefold():
+        if (
+            status == 200
+            and isinstance(body, dict)
+            and body.get("name", "").casefold() == name.casefold()
+        ):
             rows.append({"name": name, "result": "present"})
             continue
         if status == 403:
@@ -84,7 +88,11 @@ def ensure_hold_labels(repo: str, transport, labels=STANDARD_LABELS) -> dict:
         if status != 404:
             raise ProvisionError("label_read_failed")
         created, payload = transport("POST", "/repos/" + repo + "/labels", dict(spec))
-        if created == 201 and isinstance(payload, dict) and payload.get("name", "").casefold() == name.casefold():
+        if (
+            created == 201
+            and isinstance(payload, dict)
+            and payload.get("name", "").casefold() == name.casefold()
+        ):
             rows.append({"name": name, "result": "created"})
             continue
         if created in (200, 422):
@@ -138,7 +146,9 @@ def main() -> int:
         print("hold label provisioning is missing REPO or GH_TOKEN", file=sys.stderr)
         return 2
     try:
-        result = ensure_hold_labels(repo, lambda method, path, payload: _github(token, method, path, payload))
+        result = ensure_hold_labels(
+            repo, lambda method, path, payload: _github(token, method, path, payload)
+        )
     except ProvisionError as exc:
         print("hold label provisioning failed: " + exc.code, file=sys.stderr)
         return 1

@@ -38,7 +38,9 @@ class ProvisionTests(unittest.TestCase):
 
     def test_present_labels_are_not_rewritten(self):
         names = [spec["name"] for spec in self.mod.STANDARD_LABELS]
-        fake = Fake([(200, {"name": name, "color": "ffffff", "description": "kept"}) for name in names])
+        fake = Fake(
+            [(200, {"name": name, "color": "ffffff", "description": "kept"}) for name in names]
+        )
         result = self.mod.ensure_hold_labels(self.repo, fake)
         self.assertFalse(result["denied"])
         self.assertEqual([row["result"] for row in result["labels"]], ["present"] * len(names))
@@ -103,7 +105,9 @@ class ProvisionTests(unittest.TestCase):
 
     def test_standard_set_covers_the_workflow_default_and_the_guard_spellings(self):
         names = {spec["name"] for spec in self.mod.STANDARD_LABELS}
-        self.assertTrue({"do-not-automerge", "needs-human-merge", "do-not-auto-merge", "do-not-merge"} <= names)
+        self.assertTrue(
+            {"do-not-automerge", "needs-human-merge", "do-not-auto-merge", "do-not-merge"} <= names
+        )
         for spec in self.mod.STANDARD_LABELS:
             self.assertRegex(spec["color"], r"^[0-9A-F]{6}$")
 
