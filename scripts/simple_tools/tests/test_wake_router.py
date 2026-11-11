@@ -29,6 +29,7 @@ from unittest import mock
 
 from simple_tools import claude_wake as CW
 from simple_tools import wake_router as WR
+from simple_tools import wake_service as SVC
 
 SID_A = "aaaaaaaa-0000-4000-8000-000000000001"
 SID_B = "bbbbbbbb-0000-4000-8000-000000000002"
@@ -1483,8 +1484,11 @@ class Shutdown(Base):
         self.assertEqual(self.delivered, [])
         self.assertTrue(self.pending().exists())
 
+    def unit(self) -> str:
+        return (Path(CW.__file__).parent / "server" / "afc-wake-router.service").read_text()
+
     def test_the_unit_gives_the_wait_room_and_spares_the_children(self) -> None:
-        unit = (Path(CW.__file__).parent / "server" / "claude-wake-router.service").read_text()
+        unit = self.unit()
         stop = int(re.search(r"^TimeoutStopSec=(\d+)$", unit, re.M).group(1))
         wait = CW.DEFAULTS["shutdown_wait_seconds"]
         longest = CW.DEFAULTS["resume_timeout_seconds"] + CW.SSH_MARGIN_SECONDS
@@ -1492,12 +1496,30 @@ class Shutdown(Base):
         self.assertGreater(stop, wait)
         self.assertRegex(unit, r"(?m)^KillMode=mixed$")
 
-    def test_the_unit_keeps_off_the_port_zc_already_uses(self) -> None:
-        unit = (Path(CW.__file__).parent / "server" / "claude-wake-router.service").read_text()
-        start = re.search(r"(?m)^ExecStart=(.*)$", unit).group(1)
-        self.assertIn('--port "${CLAUDE_WAKE_PORT:-8794}"', start)
+    def test_the_unit_serves_loopback_8794_and_keeps_off_the_port_zc_uses(self) -> None:
+        start = re.search(r"(?m)^ExecStart=(.*)$", self.unit()).group(1)
+        self.assertIn("wake-router serve --bind 127.0.0.1 --port 8794'", start)
         self.assertNotIn("8793", start)
         self.assertIn('. "$HOME/.local/bin/operator-registry-env"', start)
+        self.assertEqual((SVC.DEFAULT_BIND, SVC.DEFAULT_PORT), ("127.0.0.1", 8794))
+
+    def test_the_old_claude_only_unit_is_gone(self) -> None:
+        old = Path(CW.__file__).parent / "server" / "claude-wake-router.service"
+        self.assertFalse(old.exists())
+        self.assertFalse(hasattr(CW, "main"), "the CLI verb is the one service's")
+
+    def test_the_unit_is_a_user_unit_whose_env_file_holds_only_the_token(self) -> None:
+        unit = self.unit()
+        settings = [line for line in unit.splitlines() if line and not line.startswith("#")]
+        self.assertFalse([line for line in settings if line.startswith(("User=", "Group="))])
+        self.assertIn("WantedBy=default.target", settings)
+        self.assertIn("EnvironmentFile=-%h/.config/afc-wake-router/env", settings)
+        self.assertIn("ExecReload=/bin/kill -HUP $MAINPID", settings)
+        self.assertNotIn("/etc/", "\n".join(settings))
+        self.assertIn("systemctl --user", unit)
+        self.assertIn("holds only\n# FLEET_KNOBS_INFISICAL_TOKEN", unit)
+        self.assertIn("afc-wake-router-ro", unit)
+        self.assertIn("prod:/wake-router", unit)
 
 
 class Generations(Base):
@@ -2401,7 +2423,13 @@ class Http(Base):
     def test_health_needs_no_key_and_says_nothing(self) -> None:
         port = self.serve(self.router())
         status, answer = self.request(port, "/health", method="GET")
-        self.assertEqual((status, answer), (200, {"seat": "CLAUDE", "healthy": True}))
+        every = {"CLAUDE": {"healthy": True, "delivery": True}}
+        self.assertEqual((status, answer), (200, {"healthy": True, "seats": every}))
+        status, answer = self.request(port, "/health/CLAUDE", method="GET")
+        self.assertEqual(
+            (status, answer), (200, {"seat": "CLAUDE", "healthy": True, "delivery": True})
+        )
+        self.assertEqual(self.request(port, "/health/ZC", method="GET")[0], 404)
 
     def test_refusals(self) -> None:
         port = self.serve(self.router())
@@ -2426,14 +2454,14 @@ class Http(Base):
         status, _ = self.request(port, "/receipt/w-1", key=self.key, method="GET")
         self.assertEqual(status, 503)
         status, answer = self.request(port, "/health", method="GET")
+        reason = "routine-key-unavailable:unreachable:scoped-read-failed"
         self.assertEqual(
             (status, answer),
             (
                 503,
                 {
-                    "seat": "CLAUDE",
                     "healthy": False,
-                    "reason": "routine-key-unavailable:unreachable:scoped-read-failed",
+                    "seats": {"CLAUDE": {"healthy": False, "delivery": True, "reason": reason}},
                 },
             ),
         )
@@ -2449,7 +2477,7 @@ class Http(Base):
         short = "k" * (WR.KEY_MIN_LENGTH - 1)
         self.key_answer = (short, "")
         self.assertEqual(self.request(port, body=self.body(), key=short)[0], 503)
-        _, answer = self.request(port, "/health", method="GET")
+        _, answer = self.request(port, "/health/CLAUDE", method="GET")
         self.assertEqual(answer["reason"], "routine-key-unavailable:key-short")
         self.key_answer = ("k" * WR.KEY_MIN_LENGTH, "")
         status, _ = self.request(port, body=self.body(test=True), key="k" * WR.KEY_MIN_LENGTH)
@@ -2669,6 +2697,237 @@ class Http(Base):
         self.assertNotIn(BODY_MARK, kept)
         self.assertNotIn(secret_topic, kept)
         self.assertIn(WR.secretscan.WITHHELD, kept)
+
+
+ZC_SID = "sess_zc0000bbbb"
+ZC_RE = re.compile(r"sess_[A-Za-z0-9._-]{1,123}")
+
+
+class ManySeats(Base):
+    """One process and one port for every platform, with a router per seat (owner ruling, Nov 11,
+    2026).  The fake registry answers every seat's rows to every router, as a shared registry
+    could, so each router must keep to its own seat."""
+
+    serve = Http.serve
+    request = Http.request
+    body = Http.body
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.registry.rows = [
+            row(SID_A, "AA", "Claude chat"),
+            row(ZC_SID, "BB", "ZCode chat", seat="ZC"),
+        ]
+        self.zc_key = secrets.token_hex(24)
+        self.zc_key_answer = (self.zc_key, "")
+        self.zc_delivered: list[tuple[str, str]] = []
+        self.zc_release: threading.Event | None = None
+        self.zc_state = Path(self.tmp) / "zc-state"
+        self.zc_state.mkdir(mode=0o700)
+
+    def zc_router(self, **config) -> WR.Router:
+        def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
+            self.zc_delivered.append((target.session_id, wake.wake_id))
+            if self.zc_release is not None:
+                self.zc_release.wait(timeout=20)
+            return WR.Delivery("completed", "fake", ack="confirmed")
+
+        platform = WR.Platform(
+            seat="ZC", platform="zcode", mention="ZCode", target_re=ZC_RE, deliver=deliver
+        )
+        return WR.Router(
+            platform,
+            {"HOME": self.tmp},
+            self.config(**config),
+            self.zc_state,
+            lambda: self.zc_key_answer,
+            clock=self.clock,
+        )
+
+    def zc_body(self, **over) -> dict:
+        return self.body(seat="ZC", **over)
+
+    def get(self, port: int, path: str, key: str | None = None):
+        return self.request(port, path, key=key, method="GET")
+
+    def test_two_seats_on_one_port_keep_their_own_bearers_queues_and_receipts(self) -> None:
+        claude, zc = self.router(), self.zc_router()
+        port = self.serve(WR.Seats([claude, zc]))
+        # Each seat's bearer opens that seat's path only.
+        self.assertEqual(self.request(port, "/wake/ZC", self.zc_body(), self.key)[0], 401)
+        self.assertEqual(self.request(port, "/wake/CLAUDE", self.body(), self.zc_key)[0], 401)
+        status, mine = self.request(port, "/wake/CLAUDE", self.body(), self.key)
+        self.assertEqual(status, 202)
+        status, theirs = self.request(port, "/wake/ZC", self.zc_body(), self.zc_key)
+        self.assertEqual(status, 202)
+        # The same wake id is two wakes, one in each seat's own queue.
+        self.assertNotEqual(mine["receipt_id"], theirs["receipt_id"])
+        self.assertTrue((self.state / "pending" / "w-1.json").exists())
+        self.assertTrue((self.zc_state / "pending" / "w-1.json").exists())
+        self.drain(claude)
+        self.drain(zc)
+        self.assertEqual(self.delivered, [(SID_A, "w-1")])
+        self.assertEqual(self.zc_delivered, [(ZC_SID, "w-1")])
+        status, record = self.get(port, "/receipt/CLAUDE/w-1", self.key)
+        self.assertEqual((status, record["seat"], record["session_id"]), (200, "CLAUDE", SID_A))
+        status, record = self.get(port, "/receipt/ZC/w-1", self.zc_key)
+        self.assertEqual((status, record["seat"], record["session_id"]), (200, "ZC", ZC_SID))
+        self.assertEqual(record["receipt_id"], theirs["receipt_id"])
+        self.assertEqual(self.get(port, "/receipt/ZC/w-1", self.key)[0], 401)
+        self.assertEqual(self.get(port, "/receipt/CLAUDE/w-1", self.zc_key)[0], 401)
+        # The form from before a seat was in the path is CLAUDE's.
+        self.assertEqual(self.get(port, "/receipt/w-1", self.key), (200, self.done()))
+        self.assertEqual(self.get(port, "/receipt/w-1", self.zc_key)[0], 401)
+
+    def test_a_body_for_another_seat_is_refused(self) -> None:
+        claude, zc = self.router(), self.zc_router()
+        port = self.serve(WR.Seats([claude, zc]))
+        self.assertEqual(self.request(port, "/wake/ZC", self.body(), self.zc_key)[0], 403)
+        self.assertEqual(self.request(port, "/wake/CLAUDE", self.zc_body(), self.key)[0], 403)
+        self.assertEqual((claude._entries, zc._entries), ({}, {}))
+
+    def test_routing_is_by_path(self) -> None:
+        port = self.serve(WR.Seats([self.router(), self.zc_router()]))
+        for path in ("/wake/GROK", "/wake/claude", "/wake/", "/wake/CLAUDE/x", "/wake", "/"):
+            with self.subTest(path=path):
+                self.assertEqual(self.request(port, path, self.body(), self.key)[0], 404)
+        for path in ("/receipt/GROK/w-1", "/health/GROK", "/receipt/", "/receipt/ZC/"):
+            with self.subTest(path=path):
+                self.assertEqual(self.get(port, path, self.key)[0], 404)
+        status, answer = self.request(port, "/wake/ZC", self.zc_body(test=True), self.zc_key)
+        self.assertEqual((status, answer["seat"], answer["session_id"]), (200, "ZC", ZC_SID))
+        status, answer = self.request(port, "/wake/CLAUDE", self.body(test=True), self.key)
+        self.assertEqual((status, answer["seat"], answer["session_id"]), (200, "CLAUDE", SID_A))
+
+    def test_a_seat_without_its_key_refuses_and_the_other_takes_wakes(self) -> None:
+        claude, zc = self.router(), self.zc_router()
+        port = self.serve(WR.Seats([claude, zc]))
+        self.zc_key_answer = ("", "unset")
+        status, answer = self.request(port, "/wake/ZC", self.zc_body(), self.zc_key)
+        self.assertEqual((status, answer["error"]), (503, "the routine key is unavailable (unset)"))
+        self.assertEqual(self.request(port, "/wake/CLAUDE", self.body(), self.key)[0], 202)
+        self.assertEqual(zc._entries, {})
+        status, answer = self.get(port, "/health")
+        self.assertEqual(status, 503)
+        self.assertEqual(
+            answer,
+            {
+                "healthy": False,
+                "seats": {
+                    "CLAUDE": {"healthy": True, "delivery": True},
+                    "ZC": {
+                        "healthy": False,
+                        "delivery": True,
+                        "reason": "routine-key-unavailable:unset",
+                    },
+                },
+            },
+        )
+        self.assertEqual(self.get(port, "/health/CLAUDE")[0], 200)
+        self.assertEqual(self.get(port, "/health/ZC")[0], 503)
+
+    def test_a_seat_that_was_not_built_answers_503_and_the_other_is_served(self) -> None:
+        claude = self.router()
+        port = self.serve(WR.Seats([claude], {"ZC": "builder-error-RuntimeError"}))
+        status, answer = self.request(port, "/wake/ZC", self.zc_body(), self.zc_key)
+        self.assertEqual(status, 503)
+        self.assertIn("builder-error-RuntimeError", answer["error"])
+        self.assertEqual(self.get(port, "/receipt/ZC/w-1", self.zc_key)[0], 503)
+        self.assertEqual(self.request(port, "/wake/CLAUDE", self.body(), self.key)[0], 202)
+        status, answer = self.get(port, "/health")
+        self.assertEqual(status, 503)
+        self.assertEqual(
+            answer["seats"]["ZC"],
+            {"healthy": False, "reason": "seat-not-served:builder-error-RuntimeError"},
+        )
+        self.assertIs(answer["seats"]["CLAUDE"]["healthy"], True)
+        self.assertEqual(self.get(port, "/health/ZC")[0], 503)
+
+    def test_health_is_healthy_only_when_every_seat_is(self) -> None:
+        port = self.serve(WR.Seats([self.router(), self.zc_router(delivery_enabled=False)]))
+        status, answer = self.get(port, "/health")
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            answer,
+            {
+                "healthy": True,
+                "seats": {
+                    "CLAUDE": {"healthy": True, "delivery": True},
+                    "ZC": {"healthy": True, "delivery": False},
+                },
+            },
+        )
+        self.assertEqual(WR.Seats().health(), (503, {"healthy": False, "seats": {}}))
+
+    def test_a_busy_seat_does_not_hold_up_another(self) -> None:
+        claude, zc = self.router(workers=1), self.zc_router(workers=1)
+        seats = WR.Seats([claude, zc])
+        self.zc_release = threading.Event()
+        seats.start()
+        self.addCleanup(seats.stop)
+        self.addCleanup(self.zc_release.set)  # runs first, so the stop never waits on it
+        zc.accept(self.wake("w-zc", seat="ZC"))
+        deadline = time.time() + 15
+        while time.time() < deadline and not self.zc_delivered:
+            time.sleep(0.02)
+        self.assertEqual(self.zc_delivered, [(ZC_SID, "w-zc")])  # and it hangs there
+        claude.accept(self.wake("w-claude"))
+        deadline = time.time() + 15
+        while time.time() < deadline and not (self.state / "done" / "w-claude.json").exists():
+            time.sleep(0.02)
+        self.assertEqual(self.done("w-claude")["status"], "delivered")
+        self.assertFalse((self.zc_state / "done" / "w-zc.json").exists())
+        self.zc_release.set()
+
+    def test_a_seat_that_cannot_start_is_down_and_the_other_runs(self) -> None:
+        claude, zc = self.router(), self.zc_router()
+        seats = WR.Seats([claude, zc])
+        with mock.patch.object(zc, "start", side_effect=OSError("unreadable folder")):
+            seats.start()
+        self.addCleanup(seats.stop)
+        self.assertEqual(seats.down, {"ZC": "start-error-OSError"})
+        self.assertEqual(list(seats.routers), ["CLAUDE"])
+        self.assertTrue(claude._threads)
+        self.assertTrue(zc._stopping)
+        self.assertIn("ZC - start-error-OSError", self.stderr.getvalue())
+
+    def test_stop_stops_every_seat(self) -> None:
+        claude, zc = self.router(), self.zc_router()
+        seats = WR.Seats([claude, zc])
+        seats.start()
+        self.assertTrue(seats.stop())
+        self.assertTrue(claude._stopping and zc._stopping)
+
+    def test_a_second_instance_touches_no_seat(self) -> None:
+        claude, zc = self.router(), self.zc_router()
+        claude.accept(self.wake())
+        zc.accept(self.wake(seat="ZC"))
+        fresh = WR.Seats([self.router(), self.zc_router()])
+        with (
+            mock.patch.object(WR.registry_api, "base_url", return_value="http://r.invalid"),
+            socket.socket() as taken,
+        ):
+            taken.bind(("127.0.0.1", 0))
+            taken.listen(1)
+            with self.assertRaises(SystemExit), contextlib.redirect_stdout(io.StringIO()):
+                WR.serve(fresh, "127.0.0.1", taken.getsockname()[1])
+        for router in fresh.routers.values():
+            self.assertEqual((router._threads, router._entries), ([], {}))
+        self.assertTrue((self.state / "pending" / "w-1.json").exists())
+        self.assertTrue((self.zc_state / "pending" / "w-1.json").exists())
+
+    def test_one_router_per_seat(self) -> None:
+        with self.assertRaises(ValueError):
+            WR.Seats([self.router(), self.router()])
+        with self.assertRaises(ValueError):
+            WR.Seats([self.router()], {"CLAUDE": "builder-error-RuntimeError"})
+        with self.assertRaises(ValueError):
+            WR.Seats([], {"not a seat": "x"})
+
+    def test_each_seat_logs_under_its_own_name(self) -> None:
+        zc = self.zc_router()
+        zc._log("pending-unreadable", "w-bad")
+        self.assertIn("wake-router: ZC w-bad pending-unreadable", self.stderr.getvalue())
 
 
 class WorkerPool(Base):

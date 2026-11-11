@@ -1,9 +1,26 @@
-"""The wake router every multithreaded platform shares (OPS-1048;  owner design, Nov 10, 2026).
+"""The wake router every platform shares (OPS-1048;  owner design, Nov 10, 2026;  owner ruling,
+Nov 11, 2026:  "the router is supposed to be for every platform").
 
 The chain.  The listener captures a tagged message to the seat inbox and POSTs one signed
-simple-tools-wake/1 body to the platform's router.  The router picks the chat deterministically,
-then delivers and wakes it.  A platform supplies only how to wake one of its chats:  a `Platform`
-that names its seat, its mention and its `deliver` function.
+simple-tools-wake/1 body to `/wake/<SEAT>` on the one router service (`wake_service`:  one
+process, one loopback port, every platform).  That seat's `Router` picks the chat
+deterministically, then delivers and wakes it.  A platform supplies only how to wake one of its
+chats:  a `Platform` that names its seat, its mention and its `deliver` function, registered by
+one line in `wake_service.BUILDERS`.
+
+One process, a router per seat.  Each seat served has its own `Router`, with its own state
+folder, pending queue, workers, delivery cap, bearer and receipts, so a fault, an outage or a
+busy chat in one seat cannot reach another seat's wakes.  `Seats` holds them and routes by path:
+
+    POST /wake/<SEAT>             a wake for that seat, checked against that seat's bearer
+    GET  /receipt/<SEAT>/<id>     that seat's record of a wake, with the same bearer
+    GET  /receipt/<id>            the CLAUDE seat's record, the form from before
+    GET  /health                  every seat, no bearer:  200 only when every seat is healthy
+    GET  /health/<SEAT>           one seat
+
+A seat that is registered and not served (its module is missing, its builder failed) answers
+503 with a reason token, and `/health` names it;  a seat nobody registered is 404.  The body's
+`seat` must equal the path's, so one seat's bearer can never place a wake in another's queue.
 
 The pick.  An addressed letter;  then a fragment of a session id, at least 8 hex characters, that
 identifies exactly one live chat;  then a Linear issue id from the topic or the excerpt, found in a
@@ -96,7 +113,8 @@ start.
 One chat's wakes run in the order they came.  A later wake waits behind an earlier one for the same
 chat until that one is settled;  it is not failed as busy.  A wake that still cannot be delivered,
 or is older than `max_age_seconds` when its turn comes, ends in a `dead` receipt, visible in the
-state directory and at GET /receipt/<id>, and its message is in the seat inbox regardless.
+seat's state directory and at GET /receipt/<SEAT>/<id>, and its message is in the seat inbox
+regardless.
 
 A delivery can run for many minutes, so it does not keep a place in the worker pool:  a worker that
 starts one hands its place to a fresh thread and ends once that wake is settled, and a chat that
@@ -191,6 +209,15 @@ UNREADABLE_ROW = "registry-row-unreadable"
 # A seat tag as the fleet writes one (identity._SEAT_RE).  A registry row must name its seat:  a
 # missing one is never read as this platform's.
 SEAT_RE = re.compile(r"[A-Z0-9][A-Z0-9_-]{0,31}")
+# The paths the one service answers.  A seat in a path is a seat tag and a wake id is what
+# WAKE_ID_RE allows, so no path can name a folder.  `/receipt/<id>` with no seat is CLAUDE's, the
+# form from before the service served every platform.
+WAKE_PATH_RE = re.compile(r"/wake/(%s)" % SEAT_RE.pattern)
+RECEIPT_PATH_RE = re.compile(
+    r"/receipt/(?:(%s)/)?([A-Za-z0-9][A-Za-z0-9._-]{0,127})" % SEAT_RE.pattern
+)
+HEALTH_PATH_RE = re.compile(r"/health/(%s)" % SEAT_RE.pattern)
+LEGACY_RECEIPT_SEAT = "CLAUDE"
 UNCONFIRMED = "settings-unconfirmed"
 # The `refused` codes that can only come before anything ran.  It is a list of what is known safe,
 # so a new code reads as unknown until someone adds it here.
@@ -673,7 +700,8 @@ def command_platform(
 
 
 class Router:
-    """The pick, the durable queue, the workers and the receipts for one platform."""
+    """The pick, the durable queue, the workers and the receipts for one seat.  The service runs
+    one per seat (`Seats`), and none shares a folder, a queue, a worker or a key with another."""
 
     def __init__(
         self,
@@ -1368,10 +1396,9 @@ class Router:
         except OSError as exc:
             self._log("log-write-failed-%s" % type(exc).__name__, str(receipt.get("wake_id")))
 
-    @staticmethod
-    def _log(code: str, wake_id: str) -> None:
-        """Codes and wake ids only:  no payload, no names, no key."""
-        sys.stderr.write("wake-router: %s %s\n" % (wake_id, code))
+    def _log(self, code: str, wake_id: str) -> None:
+        """The seat, codes and wake ids only:  no payload, no names, no key."""
+        sys.stderr.write("wake-router: %s %s %s\n" % (self.platform.seat, wake_id, code))
 
 
 def _closed(row: Mapping[str, Any]) -> bool:
@@ -1556,9 +1583,91 @@ def _most_recent(targets: list[Target], seen: Mapping[str, float | None]) -> Tar
     return min(targets, key=key)
 
 
-def make_handler(router: Router) -> type[BaseHTTPRequestHandler]:
-    seat = router.platform.seat
-    wake_path = "/wake/%s" % seat
+class Seats:
+    """Every seat one service serves:  a `Router` for each seat that was built, and a reason token
+    for each registered seat that was not.  Nothing here is shared between seats but the port:
+    each Router keeps its own folder, queue, workers, bearer and receipts."""
+
+    def __init__(
+        self, routers: Sequence[Router] = (), down: Mapping[str, str] | None = None
+    ) -> None:
+        self.routers: dict[str, Router] = {}
+        for router in routers:
+            seat = router.platform.seat
+            if not SEAT_RE.fullmatch(seat) or seat in self.routers:
+                raise ValueError("Seats:  each router needs a seat tag of its own")
+            self.routers[seat] = router
+        self.down: dict[str, str] = {}
+        for seat, reason in (down or {}).items():
+            if not SEAT_RE.fullmatch(seat) or seat in self.routers:
+                raise ValueError("Seats:  a seat is served or down, never both")
+            self.down[seat] = str(reason) or "unknown"
+
+    def names(self) -> list[str]:
+        return sorted({*self.routers, *self.down})
+
+    def seat_health(self, seat: str) -> tuple[int, dict[str, Any]]:
+        """One seat's state:  reason tokens only, never a value."""
+        router = self.routers.get(seat)
+        if router is None:
+            reason = "seat-not-served:" + self.down.get(seat, "unknown")
+            return 503, {"seat": seat, "healthy": False, "reason": reason}
+        delivery = router.config.get("delivery_enabled") is True
+        answer: dict[str, Any] = {"seat": seat, "delivery": delivery}
+        key, why = router.routine_key()
+        if not key:
+            reason = "routine-key-unavailable:" + why
+            return 503, {**answer, "healthy": False, "reason": reason}
+        return 200, {**answer, "healthy": True}
+
+    def health(self) -> tuple[int, dict[str, Any]]:
+        """Every seat, healthy only when each one served is and at least one is."""
+        every = {}
+        for seat in self.names():
+            state = dict(self.seat_health(seat)[1])
+            state.pop("seat")
+            every[seat] = state
+        healthy = bool(every) and all(state["healthy"] for state in every.values())
+        return (200 if healthy else 503), {"healthy": healthy, "seats": every}
+
+    def start(self) -> None:
+        """Start each seat's router.  One that cannot start (its folder cannot be read, say) is
+        stopped and reported down;  the others start regardless."""
+        for seat, router in sorted(self.routers.items()):
+            try:
+                router.start()
+            except Exception as exc:  # noqa: BLE001 - one seat's fault stays that seat's
+                router.stop(0.0)
+                del self.routers[seat]
+                self.down[seat] = "start-error-%s" % type(exc).__name__
+                router._log(self.down[seat], "-")
+
+    def stop(self) -> bool:
+        """Stop every seat at once, each waiting up to its own `shutdown_wait_seconds` for its
+        running deliveries, and answer whether all of them finished."""
+        finished: dict[str, bool] = {}
+
+        def one(seat: str, router: Router) -> None:
+            default = ROUTER_DEFAULTS["shutdown_wait_seconds"]
+            finished[seat] = router.stop(float(router.config.get("shutdown_wait_seconds", default)))
+
+        threads = [
+            threading.Thread(target=one, args=item, daemon=True) for item in self.routers.items()
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        for seat, done in sorted(finished.items()):
+            if not done:
+                self.routers[seat]._log("shutdown-left-deliveries-running", "-")
+        return all(finished.values())
+
+
+def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
+    """The HTTP handler for one service:  each path goes to the seat it names (module docstring,
+    One process, a router per seat).  A single Router is served as the only seat."""
+    seats = target if isinstance(target, Seats) else Seats([target])
     limit = REQUEST_TIMEOUT
 
     class Handler(BaseHTTPRequestHandler):
@@ -1597,7 +1706,21 @@ def make_handler(router: Router) -> type[BaseHTTPRequestHandler]:
             except OSError:
                 self.close_connection = True  # the client left, or the deadline cut it off
 
-        def _authorized(self) -> bool:
+        def _router_for(self, seat: str) -> Router | None:
+            """The seat's router, or None once a 404 (nobody registered it) or a 503 (it is
+            registered and not served, with why) has been answered."""
+            router = seats.routers.get(seat)
+            if router is not None:
+                return router
+            reason = seats.down.get(seat)
+            if reason is None:
+                self._answer(404, {"error": "not found"})
+            else:
+                self._answer(503, {"error": "the seat %s is not served (%s)" % (seat, reason)})
+            return None
+
+        def _authorized(self, router: Router) -> bool:
+            """Checked against this seat's own bearer, and no other seat's."""
             key, why = router.routine_key()
             if not key:
                 # Without the key nothing can be checked, so nothing is let in.
@@ -1611,37 +1734,38 @@ def make_handler(router: Router) -> type[BaseHTTPRequestHandler]:
             return True
 
         def do_GET(self) -> None:
-            if self.path == "/health":
-                key, why = router.routine_key()
-                if key:
-                    self._answer(200, {"seat": seat, "healthy": True})
-                else:  # a reason token only, never a value
-                    self._answer(
-                        503,
-                        {
-                            "seat": seat,
-                            "healthy": False,
-                            "reason": "routine-key-unavailable:" + why,
-                        },
-                    )
+            path = self.path or ""
+            if path == "/health":
+                self._answer(*seats.health())
                 return
-            found = re.fullmatch(r"/receipt/([A-Za-z0-9][A-Za-z0-9._-]{0,127})", self.path or "")
+            found = HEALTH_PATH_RE.fullmatch(path)
+            if found:
+                if found.group(1) in seats.names():
+                    self._answer(*seats.seat_health(found.group(1)))
+                else:
+                    self._answer(404, {"error": "not found"})
+                return
+            found = RECEIPT_PATH_RE.fullmatch(path)
             if not found:
                 self._answer(404, {"error": "not found"})
                 return
-            if not self._authorized():
+            router = self._router_for(found.group(1) or LEGACY_RECEIPT_SEAT)
+            if router is None or not self._authorized(router):
                 return
-            record = router.receipt(found.group(1))
+            record = router.receipt(found.group(2))
             if record is None:
                 self._answer(404, {"error": "no such wake"})
             else:
                 self._answer(200, record)
 
         def do_POST(self) -> None:
-            if not self._authorized():
-                return
-            if self.path != wake_path:
+            found = WAKE_PATH_RE.fullmatch(self.path or "")
+            if not found:
                 self._answer(404, {"error": "not found"})
+                return
+            seat = found.group(1)
+            router = self._router_for(seat)
+            if router is None or not self._authorized(router):
                 return
             raw_length = (self.headers.get("Content-Length") or "").strip()
             if not raw_length.isdigit() or len(raw_length) > 9:
@@ -1679,17 +1803,19 @@ def make_handler(router: Router) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-def serve(router: Router, bind: str, port: int) -> int:
-    """Run the router.  It refuses to start without its registry configuration:  a router missing
-    it would answer every wake and look healthy doing it.  It starts without its routine key, but
-    then refuses every request with 503 and says why on /health, so an Infisical outage at start
-    leaves a router that tells the truth and takes the key once a refresh reads it.  The port is
-    bound before anything is replayed, so a second instance stops there and touches no pending
-    wake.  SIGTERM closes the port, stops new work and waits for running deliveries."""
-    if not registry_api.base_url(router.env):
+def serve(target: Router | Seats, bind: str, port: int) -> int:
+    """Run every seat's router on one port.  It refuses to start without the registry
+    configuration:  a router missing it would answer every wake and look healthy doing it.  A seat
+    starts without its routine key, but then refuses its requests with 503 and says why on
+    /health, so an Infisical outage at start leaves a router that tells the truth and takes the key
+    once a refresh reads it.  The port is bound before anything is replayed, so a second instance
+    stops there and touches no pending wake.  SIGTERM closes the port, stops new work and waits
+    for running deliveries, in every seat at once."""
+    seats = target if isinstance(target, Seats) else Seats([target])
+    if not all(registry_api.base_url(router.env) for router in seats.routers.values()):
         raise SystemExit("wake-router: the registry API URL is not set")
     try:
-        server = ThreadingHTTPServer((bind, port), make_handler(router))
+        server = ThreadingHTTPServer((bind, port), make_handler(seats))
     except OSError as exc:
         raise SystemExit(
             "wake-router: cannot bind %s:%d (%s)" % (bind, port, type(exc).__name__)
@@ -1702,9 +1828,12 @@ def serve(router: Router, bind: str, port: int) -> int:
 
     previous = signal.signal(signal.SIGTERM, on_term)
     try:
-        router.start()
+        seats.start()
+        served = ", ".join(sorted(seats.routers)) or "none"
+        down = ", ".join("%s (%s)" % item for item in sorted(seats.down.items())) or "none"
         print(
-            "wake-router listening on %s:%d for seat %s" % (bind, port, router.platform.seat),
+            "wake-router listening on %s:%d for seats %s;  not served:  %s"
+            % (bind, port, served, down),
             flush=True,
         )
         server.serve_forever()
@@ -1712,8 +1841,6 @@ def serve(router: Router, bind: str, port: int) -> int:
         pass
     finally:
         server.server_close()
-        wait = router.config.get("shutdown_wait_seconds", ROUTER_DEFAULTS["shutdown_wait_seconds"])
-        if not router.stop(float(wait)):
-            router._log("shutdown-left-deliveries-running", "-")
+        seats.stop()
         signal.signal(signal.SIGTERM, previous)
     return 0

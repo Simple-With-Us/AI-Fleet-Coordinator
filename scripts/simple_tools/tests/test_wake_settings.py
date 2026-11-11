@@ -8,9 +8,11 @@ import contextlib
 import io
 import json
 import os
+import re
 import signal
 import threading
 import time
+from types import SimpleNamespace
 from unittest import mock
 
 from fleet_knobs import knobs, source
@@ -19,6 +21,7 @@ from fleet_knobs.registry import BY_NAME
 from fleet_knobs.tests._fake import KnobTestCase
 from simple_tools import claude_wake as CW
 from simple_tools import wake_router as WR
+from simple_tools import wake_service as SVC
 from simple_tools import wake_settings as WS
 
 ARMED = {WS.DELIVERY_ENABLED: "true", WS.DELIVERY_SEATS: "CLAUDE"}
@@ -84,6 +87,18 @@ class Registered(Settings):
         self.assertEqual(WR.KEY_MIN_LENGTH, 16)
         self.assertIsNone(knob_values.lenient(spec, "x" * 15)[1])
         self.assertEqual(knob_values.lenient(spec, "x" * 16), (True, "x" * 16))
+
+    def test_every_seat_has_a_bearer_of_its_own(self) -> None:
+        self.assertEqual(set(WS.KEY_KNOBS), {"CLAUDE", "CODEX", "MC", "ZC"})
+        self.assertEqual(len(set(WS.KEY_KNOBS.values())), len(WS.KEY_KNOBS), "never shared")
+        for seat, name in WS.KEY_KNOBS.items():
+            with self.subTest(seat=seat):
+                self.assertEqual(name, "WAKE_ROUTER_%s_KEY" % seat)
+                spec = BY_NAME[name]
+                self.assertTrue(spec.secret)
+                self.assertEqual(spec.folder, WS.FOLDER)
+                self.assertEqual(spec.pattern, BY_NAME[KEY_KNOB].pattern)
+                self.assertIn("%s_ROUTINE_KEY" % seat, spec.note)
 
 
 class Folder(Settings):
@@ -197,9 +212,15 @@ class Key(Settings):
 
     def test_a_seat_with_no_key_knob_has_no_key(self) -> None:
         self.fake.set(secrets={KEY_KNOB: KEY})
-        settings = WS.WakeSettings("CODEX", WR.ROUTER_DEFAULTS, self.local_path)
+        settings = WS.WakeSettings("GROK", WR.ROUTER_DEFAULTS, self.local_path)
         settings.load()
         self.assertEqual(settings.routine_key(), ("", "no-key-knob"))
+
+    def test_a_seat_never_reads_another_seats_key(self) -> None:
+        self.fake.set(secrets={KEY_KNOB: KEY})
+        settings = WS.WakeSettings("ZC", WR.ROUTER_DEFAULTS, self.local_path)
+        settings.load()
+        self.assertEqual(settings.routine_key(), ("", "unset"))
 
 
 class Reading(Settings):
@@ -577,9 +598,11 @@ class Wiring(Settings):
         seen = {}
         before = signal.getsignal(signal.SIGHUP)
 
-        def serve(router, bind, port):
+        def serve(seats, bind, port):
+            router = seats.routers[CW.SEAT]
             seen.update(config=router.config, hup=signal.getsignal(signal.SIGHUP))
-            seen.update(thread=router.config._thread, attempts=router.config["max_attempts"])
+            seen.update(threads=refresh_threads(), attempts=router.config["max_attempts"])
+            seen.update(address=(bind, port))
             return 0
 
         with (
@@ -587,12 +610,14 @@ class Wiring(Settings):
             mock.patch.object(CW, "state_dir", return_value=self.state),
             mock.patch.object(WR, "serve", side_effect=serve),
         ):
-            self.assertEqual(CW.main(["serve"]), 0)
+            self.assertEqual(SVC.main(["serve"]), 0)
         self.assertIsInstance(seen["config"], WS.WakeSettings)
         self.assertIs(seen["config"]["delivery_enabled"], False)
         self.assertEqual(seen["attempts"], 9)  # loaded before the router serves
+        self.assertEqual(seen["address"], ("127.0.0.1", 8794))
         self.assertIsNot(seen["hup"], before)
-        self.assertFalse(seen["thread"].is_alive())
+        self.assertEqual(len(seen["threads"]), 1, "one refresh thread for every seat")
+        self.assertFalse(seen["threads"][0].is_alive())
         self.assertEqual(signal.getsignal(signal.SIGHUP), before)
 
     def test_the_router_checks_the_bearer_from_the_knob_and_reads_no_file(self) -> None:
@@ -602,7 +627,8 @@ class Wiring(Settings):
         self.fake.set(secrets={**ARMED, KEY_KNOB: KEY})
         seen = {}
 
-        def serve(router, bind, port):
+        def serve(seats, bind, port):
+            router = seats.routers[CW.SEAT]
             seen["key"] = router.routine_key()
             self.fake.set(mode="fail")
             router.config.refresh()  # an outage on a later refresh
@@ -614,7 +640,7 @@ class Wiring(Settings):
             mock.patch.object(CW, "state_dir", return_value=self.state),
             mock.patch.object(WR, "serve", side_effect=serve),
         ):
-            self.assertEqual(CW.main(["serve"]), 0)
+            self.assertEqual(SVC.main(["serve"]), 0)
         self.assertEqual(seen["key"], (KEY, ""))
         self.assertEqual(seen["after"], ("", "unreachable:scoped-read-failed"))
 
@@ -622,7 +648,8 @@ class Wiring(Settings):
         self.fake.set(secrets={})
         seen = {}
 
-        def serve(router, bind, port):
+        def serve(seats, bind, port):
+            router = seats.routers[CW.SEAT]
             self.fake.set(secrets=ARMED)
             os.kill(os.getpid(), signal.SIGHUP)
             deadline = time.monotonic() + 10
@@ -635,8 +662,187 @@ class Wiring(Settings):
             mock.patch.object(CW, "state_dir", return_value=self.state),
             mock.patch.object(WR, "serve", side_effect=serve),
         ):
-            CW.main(["serve"])
+            SVC.main(["serve"])
         self.assertIs(seen["armed"], True)
+
+    def test_every_registered_seat_is_served_whatever_the_delivery_seats_say(self) -> None:
+        self.fake.set(secrets={WS.DELIVERY_ENABLED: "true", WS.DELIVERY_SEATS: "ZC"})
+        seen = {}
+
+        def serve(seats, bind, port):
+            seen.update(served=sorted(seats.routers), down=dict(seats.down))
+            seen["delivery"] = seats.routers[CW.SEAT].config["delivery_enabled"]
+            return 0
+
+        with (
+            mock.patch.object(CW, "state_dir", return_value=self.state),
+            mock.patch.object(WR, "serve", side_effect=serve),
+        ):
+            SVC.main(["serve"])
+        self.assertEqual(seen["served"], sorted(SVC.BUILDERS))
+        self.assertEqual(seen["down"], {})
+        self.assertIs(seen["delivery"], False, "served, and held until the knob names it")
+
+    def test_a_non_prod_environment_stops_the_service(self) -> None:
+        os.environ[source.ENV_NAMES[0]] = "dev"
+        self.addCleanup(os.environ.pop, source.ENV_NAMES[0], None)
+        with (
+            mock.patch.object(WR, "serve", side_effect=AssertionError("served")),
+            self.assertRaises(SystemExit),
+        ):
+            SVC.main(["serve"])
+
+
+def refresh_threads() -> list[threading.Thread]:
+    return [t for t in threading.enumerate() if t.name == "wake-settings-refresh"]
+
+
+def fake_module(seat: str, state, *, build=None, defaults=None) -> SimpleNamespace:
+    """A platform module as the service imports it:  its SEAT, its builder and its state folder."""
+
+    def make_platform(env, settings):
+        return WR.Platform(
+            seat=seat,
+            platform=seat.lower(),
+            mention=seat.title(),
+            target_re=re.compile(r"sess_[a-z0-9]{4,40}"),
+            deliver=mock.Mock(return_value=WR.Delivery("completed")),
+        )
+
+    module = SimpleNamespace(SEAT=seat, make_platform=build or make_platform)
+    module.state_dir = lambda env: state / seat.lower()
+    if defaults is not None:
+        module.DEFAULTS = defaults
+    return module
+
+
+ZC_KEY_KNOB = "WAKE_ROUTER_ZC_KEY"
+ZC_KEY = "zc-" + "fedcba9876543210" * 2  # synthetic, and not CLAUDE's
+
+
+class OneService(Settings):
+    """The one service:  every registered seat built on its own, refreshed together."""
+
+    def build(self, modules: dict, builders: dict | None = None) -> SVC.Served:
+        def importer(name: str):
+            if name not in modules:
+                raise ImportError(name)
+            found = modules[name]
+            if isinstance(found, Exception):
+                raise found
+            return found
+
+        table = builders or {
+            seat: SVC.Builder("fake.%s" % seat.lower()) for seat in modules_seats(modules)
+        }
+        return SVC.build({"HOME": str(self.home)}, table, importer=importer)
+
+    def two_seats(self, **build) -> SVC.Served:
+        return self.build(
+            {
+                "fake.claude": fake_module("CLAUDE", self.state),
+                "fake.zc": fake_module("ZC", self.state, **build),
+            }
+        )
+
+    def test_two_seats_have_their_own_folders_settings_and_keys(self) -> None:
+        self.fake.set(secrets={**ARMED, KEY_KNOB: KEY, ZC_KEY_KNOB: ZC_KEY})
+        served = self.two_seats()
+        claude, zc = served.seats.routers["CLAUDE"], served.seats.routers["ZC"]
+        self.assertEqual(served.seats.down, {})
+        self.assertEqual((claude.state, zc.state), (self.state / "claude", self.state / "zc"))
+        self.assertEqual(claude.routine_key(), (KEY, ""))
+        self.assertEqual(zc.routine_key(), (ZC_KEY, ""))
+        self.assertIsNot(claude.config, zc.config)
+        self.assertIs(claude.config["delivery_enabled"], True)
+        self.assertIs(zc.config["delivery_enabled"], False, "ZC is not in the delivery seats")
+        self.assertEqual([m.seat for m in served.settings.members], ["CLAUDE", "ZC"])
+
+    def test_one_refresh_is_one_fetch_for_every_seat(self) -> None:
+        self.fake.set(secrets={KEY_KNOB: KEY, ZC_KEY_KNOB: ZC_KEY})
+        served = self.two_seats()
+        before = len(self.fake.calls())
+        self.fake.set(secrets={WS.DELIVERY_ENABLED: "true", WS.DELIVERY_SEATS: "CLAUDE,ZC"})
+        self.assertTrue(served.settings.refresh())
+        self.assertEqual(len(self.fake.calls()), before + 1)
+        for router in served.seats.routers.values():
+            self.assertIs(router.config["delivery_enabled"], True)
+            self.assertEqual(router.routine_key()[1], "unset")
+
+    def test_a_seat_without_its_key_leaves_the_other_its_own(self) -> None:
+        self.fake.set(secrets={KEY_KNOB: KEY})
+        served = self.two_seats()
+        self.assertEqual(served.seats.routers["CLAUDE"].routine_key(), (KEY, ""))
+        self.assertEqual(served.seats.routers["ZC"].routine_key(), ("", "unset"))
+        self.assertIn("key-unavailable unset seat=ZC", self.stderr.getvalue())
+
+    def test_a_failing_builder_downs_only_its_seat(self) -> None:
+        self.fake.set(secrets={KEY_KNOB: KEY})
+
+        def broken(env, settings):
+            raise RuntimeError("no workspace")
+
+        served = self.two_seats(build=broken)
+        self.assertEqual(sorted(served.seats.routers), ["CLAUDE"])
+        self.assertEqual(served.seats.down, {"ZC": "builder-error-RuntimeError"})
+        self.assertEqual([m.seat for m in served.settings.members], ["CLAUDE"])
+
+    def test_each_way_a_seat_cannot_be_built_is_named(self) -> None:
+        self.fake.set(secrets={})
+        wrong_platform = fake_module("ZC", self.state, build=lambda env, s: object())
+        cases = {
+            "platform-not-installed": {},
+            "import-error-ValueError": {"fake.zc": ValueError("bad module")},
+            "seat-mismatch": {"fake.zc": fake_module("CODEX", self.state)},
+            "no-builder": {"fake.zc": SimpleNamespace(SEAT="ZC", state_dir=lambda env: self.state)},
+            "bad-defaults": {"fake.zc": fake_module("ZC", self.state, defaults={"workers": 1})},
+            "builder-bad-platform": {"fake.zc": wrong_platform},
+        }
+        for reason, modules in cases.items():
+            with self.subTest(reason=reason):
+                served = self.build(
+                    {"fake.claude": fake_module("CLAUDE", self.state), **modules},
+                    {"CLAUDE": SVC.Builder("fake.claude"), "ZC": SVC.Builder("fake.zc")},
+                )
+                self.assertEqual(served.seats.down, {"ZC": reason})
+                self.assertEqual(sorted(served.seats.routers), ["CLAUDE"])
+
+    def test_a_seat_whose_local_file_is_refused_is_down_and_the_other_served(self) -> None:
+        self.fake.set(secrets={})
+        (self.state / "zc").mkdir()
+        (self.state / "zc" / "config.json").write_text("{not json", encoding="utf-8")
+        served = self.two_seats()
+        self.assertEqual(served.seats.down, {"ZC": "settings-refused"})
+        self.assertEqual(sorted(served.seats.routers), ["CLAUDE"])
+
+    def test_one_seats_broken_local_file_holds_only_that_seat(self) -> None:
+        self.fake.set(secrets={})
+        served = self.two_seats()
+        self.fake.set(secrets={**ARMED, WS.DELIVERY_SEATS: "CLAUDE,ZC"})
+        (self.state / "zc").mkdir(exist_ok=True)
+        (self.state / "zc" / "config.json").write_text("{not json", encoding="utf-8")
+        self.assertFalse(served.settings.refresh(), "not every seat took it")
+        self.assertIs(served.seats.routers["CLAUDE"].config["delivery_enabled"], True)
+        self.assertIs(served.seats.routers["ZC"].config["delivery_enabled"], False)
+
+    def test_the_seat_folder_defaults_under_the_routers_own(self) -> None:
+        module = fake_module("ZC", self.state)
+        del module.state_dir
+        self.fake.set(secrets={})
+        served = self.build({"fake.zc": module}, {"ZC": SVC.Builder("fake.zc")})
+        expected = self.home / ".local" / "state" / "wake-router" / "zc"
+        self.assertEqual(served.seats.routers["ZC"].state, expected)
+
+    def test_the_table_registers_claude_from_its_own_module(self) -> None:
+        self.assertEqual(SVC.BUILDERS["CLAUDE"], SVC.Builder("simple_tools.claude_wake"))
+        for seat, builder in SVC.BUILDERS.items():
+            with self.subTest(seat=seat):
+                self.assertIn(seat, WS.KEY_KNOBS, "a served seat needs a bearer knob")
+                self.assertTrue(builder.module.startswith("simple_tools."))
+
+
+def modules_seats(modules: dict) -> list[str]:
+    return [name.split(".", 1)[1].upper() for name in modules]
 
     def test_a_router_on_unconfirmed_settings_keeps_its_wakes(self) -> None:
         del os.environ[source.ENV_KNOBS_TOKEN]

@@ -32,21 +32,30 @@ cannot hold, so they are still read from the file.
 What is not per-seat.  The knob registry is flat, with one name per value, so a seat is not a
 dimension of it.  The seats are a list of their own:  delivery runs for a seat only when
 WAKE_ROUTER_DELIVERY_ENABLED is true AND WAKE_ROUTER_DELIVERY_SEATS names it, and an empty list
-delivers for nobody.
+delivers for nobody.  The numbers (workers, the delivery cap, retries) are the same knob for every
+seat, and each seat's router applies them to itself:  four workers is four for each seat.
 
 `workers` is read when the router starts, so a new value needs a restart.  Every other setting
 takes effect at the next refresh.
 
+Every seat in one process.  The service (`wake_service`) holds one `WakeSettings` per seat, each
+with its own local file, and one `SettingsGroup` refreshes them together:  one thread, one SIGHUP,
+and one fetch of the folder per refresh, because `fleet_knobs` keeps one cache for the whole
+process and a refresh of it per seat would race.  One seat's broken local file holds that seat's
+values and nobody else's.
+
 One folder, one token.  Every knob here, and nothing else, is in the Infisical folder
 /wake-router, so `fleet_knobs` fetches that folder alone and the router's read token is scoped to
 prod:/wake-router only (a token scoped to "/" would reach every folder under it).  "A fetch that
-worked" above means a fetch of that folder.
+worked" above means a fetch of that folder.  The service's token is `afc-wake-router-ro`.
 
-The routine key.  The bearer the listener sends is the secret knob WAKE_ROUTER_CLAUDE_KEY in the
-same folder, read at load and again on every refresh, and held in memory only:  `fleet_knobs`
-never writes a secret anywhere and fails it closed.  When a read of it fails (an outage, an unset
-or malformed value), the key is dropped, so the router refuses every request with 503 and says
-why on /health until a later refresh reads it.  There is no key file.
+The routine keys, one per seat.  The bearer the listener sends for a seat is that seat's secret
+knob WAKE_ROUTER_<SEAT>_KEY in the same folder (KEY_KNOBS), the same value as the listener's
+<SEAT>_ROUTINE_KEY, and never one key shared across seats.  Each is read at load and again on
+every refresh, and held in memory only:  `fleet_knobs` never writes a secret anywhere and fails
+it closed.  When a read of a seat's key fails (an outage, an unset or malformed value), that key
+is dropped, so that seat refuses its requests with 503 and says why on /health until a later
+refresh reads it;  every other seat goes on with its own.  There is no key file.
 
 Python 3.11+, standard library only (fleet_knobs is too).
 """
@@ -57,7 +66,7 @@ import os
 import select
 import sys
 import threading
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -87,9 +96,15 @@ NARROWABLE = {"delivery_enabled": DELIVERY_ENABLED, **INT_KNOBS}
 NOT_NARROWABLE = {"retry_backoff": RETRY_BACKOFF, "mac_ssh": MAC_SSH}
 HOST_FACTS = ("local_host", "claude_bin")
 JOIN_SECONDS = 10  # longer than one fleet_knobs fetch can take
-# Each seat's routine key, a secret knob in the router's folder.  A seat not named has none, so
-# its router refuses every request.
-KEY_KNOBS = {"CLAUDE": "WAKE_ROUTER_CLAUDE_KEY"}
+# Each seat's routine key, a secret knob in the router's folder, one per seat and never shared.  A
+# seat not named has none, so its router refuses every request.  A platform joining the service
+# adds its seat here and its knob to fleet_knobs/registry.py.
+KEY_KNOBS = {
+    "CLAUDE": "WAKE_ROUTER_CLAUDE_KEY",
+    "CODEX": "WAKE_ROUTER_CODEX_KEY",
+    "MC": "WAKE_ROUTER_MC_KEY",
+    "ZC": "WAKE_ROUTER_ZC_KEY",
+}
 # The one folder every setting above lives in;  a test keeps them, and the keys, all in it.
 FOLDER = BY_NAME[DELIVERY_ENABLED].folder
 
@@ -175,110 +190,29 @@ def read_once(seat: str, defaults: Mapping[str, Any], local_path: Path) -> dict[
     return narrowed(from_knobs(seat, defaults), local)[0]
 
 
-class WakeSettings(Mapping[str, Any]):
-    """A router's settings, as the mapping it reads, kept current in the background.  Each change
-    swaps in a whole new dict, so a reader never sees half of one."""
+def preflight() -> None:
+    """Stop the service when this process may not read the knobs at all, such as in a non-prod
+    environment.  That is true of every seat at once, so it is not one seat's fault to report."""
+    try:
+        knobs.resolve(REFRESH_SECONDS)
+    except knobs.KnobError as exc:
+        raise SystemExit("wake-router: %s" % exc) from None
 
-    def __init__(
-        self,
-        seat: str,
-        defaults: Mapping[str, Any],
-        local_path: Path,
-        *,
-        required: bool = False,
-    ) -> None:
-        self.seat = seat
-        self.defaults = defaults
-        self.local_path = local_path
-        self.required = required
-        self.interval = 300.0
-        self._confirmed = False
-        self._base: dict[str, Any] = {**defaults, "delivery_enabled": False}
-        self._values: dict[str, Any] = dict(self._base)
-        # (key, why), swapped whole like the values, so a request never sees half of one.
-        self._key: tuple[str, str] = ("", "not-read")
+
+class _Refresher:
+    """The background refresh:  a daemon thread that calls `refresh` every `interval` seconds, and
+    `kick`, safe in a signal handler, for one now."""
+
+    interval: float = 300.0
+
+    def __init__(self) -> None:
         self._refreshing = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._kick_write: int | None = None
 
-    def __getitem__(self, key: str) -> Any:
-        return self._values[key]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._values)
-
-    def __len__(self) -> int:
-        return len(self._values)
-
-    @property
-    def confirmed(self) -> bool:
-        """Whether a fetch has worked in this process.  Until one has, nobody knows whether delivery
-        should be on, which is not the same as knowing it is off."""
-        return self._confirmed
-
-    def routine_key(self) -> tuple[str, str]:
-        """The router's `KeySource`:  the key the last read gave, or "" and why.  Memory only."""
-        return self._key
-
-    def _take_key(self) -> None:
-        """Read the key again from what `fleet_knobs` fetched, and drop it if that fails."""
-        self._key = read_key(self.seat)
-        if not self._key[0]:
-            _log("key-unavailable %s" % self._key[1])
-
-    def _local(self) -> dict[str, Any]:
-        return WR.read_local_config(self.local_path, self.defaults, required=self.required)
-
-    def load(self) -> None:
-        """Read at startup.  A bad local file or a refused environment stops the router here."""
-        try:
-            local = self._local()
-            base = from_knobs(self.seat, self.defaults)
-            self.interval = float(knobs.resolve(REFRESH_SECONDS).value)
-        except knobs.KnobError as exc:
-            raise SystemExit("wake-router: %s" % exc) from None
-        self._confirmed = _fetched()
-        self._base = base
-        self._values, ignored = narrowed(base, local)
-        self._take_key()
-        if not self._confirmed:
-            _log("unconfirmed %s" % _fetch_reason())
-        for knob in ignored:
-            _log("local-ignored %s" % knob)
-
     def refresh(self) -> bool:
-        """Apply the local file, read again, and answer whether the read took.  Only a good fetch
-        replaces the values held:  a failed one would otherwise answer with an old copy or the
-        defaults, and an outage would turn delivery off, or back on.  The routine key is not held
-        over like the values:  it is whatever this read gave, so a read that fails drops it."""
-        with self._refreshing:
-            try:
-                local = self._local()
-            except (Exception, SystemExit) as exc:  # noqa: BLE001 - staleness beats a dead thread
-                _log("refresh-error %s" % type(exc).__name__)
-                return False
-            # First, and whatever the fetch does:  this is the brake that works in an outage.
-            self._values = narrowed(self._base, local)[0]
-            try:
-                knobs.refresh()
-                base = from_knobs(self.seat, self.defaults)
-                interval = float(knobs.resolve(REFRESH_SECONDS).value)
-                fetched = _fetched()
-                reason = _fetch_reason()
-            except Exception as exc:  # noqa: BLE001 - staleness beats a dead thread
-                self._key = ("", "refresh-error-%s" % type(exc).__name__)
-                _log("refresh-error %s" % type(exc).__name__)
-                return False
-            self._take_key()
-            if not fetched:
-                _log("refresh-kept-last-good %s" % reason)
-                return False
-            self._base = base
-            self._values = narrowed(base, local)[0]
-            self.interval = interval
-            self._confirmed = True
-            return True
+        raise NotImplementedError
 
     def kick(self) -> None:
         """Refresh now.  This runs in a signal handler, where taking a lock can deadlock against the
@@ -323,3 +257,152 @@ class WakeSettings(Mapping[str, Any]):
         os.close(write_end)
         if finished:  # a thread still in a refresh goes on to read this, so it keeps it
             os.close(self._read_end)
+
+
+class WakeSettings(_Refresher, Mapping[str, Any]):
+    """One seat's settings, as the mapping its router reads, kept current in the background.  Each
+    change swaps in a whole new dict, so a reader never sees half of one."""
+
+    def __init__(
+        self,
+        seat: str,
+        defaults: Mapping[str, Any],
+        local_path: Path,
+        *,
+        required: bool = False,
+    ) -> None:
+        super().__init__()
+        self.seat = seat
+        self.defaults = defaults
+        self.local_path = local_path
+        self.required = required
+        self.interval = 300.0
+        self._confirmed = False
+        self._base: dict[str, Any] = {**defaults, "delivery_enabled": False}
+        self._values: dict[str, Any] = dict(self._base)
+        # (key, why), swapped whole like the values, so a request never sees half of one.
+        self._key: tuple[str, str] = ("", "not-read")
+
+    def __getitem__(self, key: str) -> Any:
+        return self._values[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    @property
+    def confirmed(self) -> bool:
+        """Whether a fetch has worked in this process.  Until one has, nobody knows whether delivery
+        should be on, which is not the same as knowing it is off."""
+        return self._confirmed
+
+    def routine_key(self) -> tuple[str, str]:
+        """The router's `KeySource`:  the key the last read gave, or "" and why.  Memory only."""
+        return self._key
+
+    def _take_key(self) -> None:
+        """Read the key again from what `fleet_knobs` fetched, and drop it if that fails."""
+        self._key = read_key(self.seat)
+        if not self._key[0]:
+            _log("key-unavailable %s seat=%s" % (self._key[1], self.seat))
+
+    def _local(self) -> dict[str, Any]:
+        return WR.read_local_config(self.local_path, self.defaults, required=self.required)
+
+    def load(self) -> None:
+        """Read at startup.  A bad local file or a refused environment stops the router here."""
+        try:
+            local = self._local()
+            base = from_knobs(self.seat, self.defaults)
+            self.interval = float(knobs.resolve(REFRESH_SECONDS).value)
+        except knobs.KnobError as exc:
+            raise SystemExit("wake-router: %s" % exc) from None
+        self._confirmed = _fetched()
+        self._base = base
+        self._values, ignored = narrowed(base, local)
+        self._take_key()
+        if not self._confirmed:
+            _log("unconfirmed %s" % _fetch_reason())
+        for knob in ignored:
+            _log("local-ignored %s seat=%s" % (knob, self.seat))
+
+    def _brake(self) -> dict[str, Any] | None:
+        """Apply the local file to the values held, before any fetch and whatever it does:  this is
+        the brake that works in an outage.  None when the file cannot be read, and then nothing
+        held changes."""
+        try:
+            local = self._local()
+        except (Exception, SystemExit) as exc:  # noqa: BLE001 - staleness beats a dead thread
+            _log("refresh-error %s seat=%s" % (type(exc).__name__, self.seat))
+            return None
+        self._values = narrowed(self._base, local)[0]
+        return local
+
+    def _apply(self, local: Mapping[str, Any], fetched: bool, interval: float) -> bool:
+        """Take what the shared fetch gave.  Only a good fetch replaces the values held:  a failed
+        one would otherwise answer with an old copy or the defaults, and an outage would turn
+        delivery off, or back on.  The routine key is not held over like the values:  it is
+        whatever this read gave, so a read that fails drops it."""
+        try:
+            base = from_knobs(self.seat, self.defaults)
+        except Exception as exc:  # noqa: BLE001 - staleness beats a dead thread
+            self._key = ("", "refresh-error-%s" % type(exc).__name__)
+            _log("refresh-error %s seat=%s" % (type(exc).__name__, self.seat))
+            return False
+        self._take_key()
+        if not fetched:
+            return False
+        self._base = base
+        self._values = narrowed(base, local)[0]
+        self.interval = interval
+        self._confirmed = True
+        return True
+
+    def refresh(self) -> bool:
+        """Apply the local file, read again, and answer whether the read took (refresh_together,
+        for this seat alone)."""
+        with self._refreshing:
+            return refresh_together([self])
+
+
+def refresh_together(members: Sequence[WakeSettings]) -> bool:
+    """Refresh these seats' settings with one fetch of the folder, and answer whether every one of
+    them took it.  Each seat's local brake goes first.  A seat whose local file cannot be read
+    keeps what it held and is left out, and only that seat;  the fetch happens once for the rest,
+    because `fleet_knobs` keeps one cache per process."""
+    held = [(member, local) for member in members if (local := member._brake()) is not None]
+    if not held:
+        return False
+    try:
+        knobs.refresh()
+        interval = float(knobs.resolve(REFRESH_SECONDS).value)
+        fetched = _fetched()
+        reason = _fetch_reason()
+    except Exception as exc:  # noqa: BLE001 - staleness beats a dead thread
+        for member, _local in held:
+            member._key = ("", "refresh-error-%s" % type(exc).__name__)
+        _log("refresh-error %s" % type(exc).__name__)
+        return False
+    if not fetched:
+        _log("refresh-kept-last-good %s" % reason)
+    took = [member._apply(local, fetched, interval) for member, local in held]
+    return len(held) == len(members) and all(took)
+
+
+class SettingsGroup(_Refresher):
+    """Every seat's settings in one process, refreshed together:  one thread, one SIGHUP and one
+    fetch per refresh (module docstring, Every seat in one process)."""
+
+    def __init__(self, members: Sequence[WakeSettings]) -> None:
+        super().__init__()
+        self.members = list(members)
+
+    @property
+    def interval(self) -> float:  # every member reads the same knob
+        return min((member.interval for member in self.members), default=300.0)
+
+    def refresh(self) -> bool:
+        with self._refreshing:
+            return refresh_together(self.members)
