@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import socket
@@ -22,6 +23,8 @@ PLATFORM = "codex"
 MENTION = "Codex"
 SESSION_RE = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
 MAX_REQUEST_BYTES = 64 * 1024
+MAX_REQUEST_DEPTH = 16
+MAX_REQUEST_NODES = 1000
 LETTER_RE = re.compile(r"^[A-Z]{1,2}$")
 WAKE_TEXT = (
     "You were tagged in Zulip.\u00a0 Read the message identified in the data below "
@@ -181,7 +184,7 @@ class CodexDelivery:
 
         try:
             host = self.hostname()
-        except OSError:
+        except Exception:  # noqa: BLE001 - hostname lookup is an injected platform boundary
             return WR.Delivery("busy", route="codex-desktop", code="hostname-unavailable")
 
         binding = {
@@ -258,13 +261,16 @@ class CodexDelivery:
         letter = current.get("label") or current.get("letter")
         generation = current.get("generation")
         host = current.get("verified_host")
-        seat = str(current.get("seat") or SEAT).upper()
+        seat_value = current.get("seat")
         if (
             not isinstance(session_id, str)
             or not isinstance(letter, str)
             or type(generation) is not int
             or generation <= 0
             or not isinstance(host, str)
+            or not isinstance(seat_value, str)
+            or not seat_value.strip()
+            or seat_value.strip() != seat_value
         ):
             return WR.Delivery("busy", route="codex-desktop", code="registry-unavailable")
         if (
@@ -272,7 +278,7 @@ class CodexDelivery:
             or letter != target.letter
             or generation != target.generation
             or host != target.host
-            or seat != SEAT
+            or seat_value.upper() != SEAT
         ):
             return WR.Delivery("refused", route="codex-desktop", code="target-released")
         return None
@@ -486,23 +492,26 @@ def deliver_request(
 ) -> dict[str, Any]:
     """Deliver one already-parsed, fixed-schema CODEX request and return its correlated result."""
     correlation = _correlation(request)
-    target, wake, error = _request_objects(request)
-    if error:
-        delivery = WR.Delivery("refused", route="codex-desktop", code=error)
+    if not _bounded_json(request):
+        delivery = WR.Delivery("refused", route="codex-desktop", code="request-too-complex")
     else:
-        native = (
-            transport
-            if transport is not None
-            else CT.CodexChatTransport(home=env.get("HOME") or None)
-        )
-        delivery = CodexDelivery(
-            native,
-            env,
-            metadata_lookup,
-            local_host="mac",
-            hostname=hostname,
-            registry_lookup=registry_lookup,
-        )(target, wake)
+        target, wake, error = _request_objects(request)
+        if error:
+            delivery = WR.Delivery("refused", route="codex-desktop", code=error)
+        else:
+            native = (
+                transport
+                if transport is not None
+                else CT.CodexChatTransport(home=env.get("HOME") or None)
+            )
+            delivery = CodexDelivery(
+                native,
+                env,
+                metadata_lookup,
+                local_host="mac",
+                hostname=hostname,
+                registry_lookup=registry_lookup,
+            )(target, wake)
     return {**correlation, "delivery": asdict(delivery)}
 
 
@@ -519,35 +528,23 @@ def delivery_entry(
     hostname: Callable[[], str] = socket.gethostname,
 ) -> dict[str, Any]:
     """Read at most MAX_REQUEST_BYTES plus one sentinel byte, then handle one JSON request."""
+    chunks = bytearray()
     try:
-        raw = stdin.read(MAX_REQUEST_BYTES + 1)
+        while len(chunks) <= MAX_REQUEST_BYTES:
+            chunk = stdin.read(MAX_REQUEST_BYTES + 1 - len(chunks))
+            if not isinstance(chunk, bytes):
+                return _entry_failure("request-unreadable")
+            if not chunk:
+                break
+            chunks.extend(chunk)
+            if len(chunks) > MAX_REQUEST_BYTES:
+                return _entry_failure("request-too-large")
     except OSError:
-        return {
-            "wake_id": "",
-            "session_id": "",
-            "generation": None,
-            "delivery": asdict(
-                WR.Delivery("refused", route="codex-desktop", code="request-unreadable")
-            ),
-        }
-    if not isinstance(raw, bytes) or len(raw) > MAX_REQUEST_BYTES:
-        return {
-            "wake_id": "",
-            "session_id": "",
-            "generation": None,
-            "delivery": asdict(
-                WR.Delivery("refused", route="codex-desktop", code="request-too-large")
-            ),
-        }
+        return _entry_failure("request-unreadable")
     try:
-        request = json.loads(raw, object_pairs_hook=_unique_object)
+        request = json.loads(bytes(chunks), object_pairs_hook=_unique_object)
     except (ValueError, RecursionError):
-        return {
-            "wake_id": "",
-            "session_id": "",
-            "generation": None,
-            "delivery": asdict(WR.Delivery("refused", route="codex-desktop", code="invalid-json")),
-        }
+        return _entry_failure("invalid-json")
     return deliver_request(
         request,
         env=env,
@@ -565,3 +562,54 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise ValueError("duplicate JSON key")
         result[key] = value
     return result
+
+
+def _entry_failure(code: str) -> dict[str, Any]:
+    return {
+        "wake_id": "",
+        "session_id": "",
+        "generation": None,
+        "delivery": asdict(WR.Delivery("refused", route="codex-desktop", code=code)),
+    }
+
+
+def _bounded_json(value: object) -> bool:
+    """Bound depth and node count without recursion; reject cycles in direct parsed calls too."""
+    pending: list[tuple[object, int, bool]] = [(value, 1, False)]
+    active: set[int] = set()
+    nodes = 0
+    while pending:
+        item, depth, leaving = pending.pop()
+        if leaving:
+            active.remove(id(item))
+            continue
+        nodes += 1
+        if nodes > MAX_REQUEST_NODES or depth > MAX_REQUEST_DEPTH:
+            return False
+        if isinstance(item, dict):
+            identity = id(item)
+            if identity in active or any(not isinstance(key, str) for key in item):
+                return False
+            if nodes + len(item) > MAX_REQUEST_NODES or (item and depth >= MAX_REQUEST_DEPTH):
+                return False
+            active.add(identity)
+            pending.append((item, depth, True))
+            pending.extend((child, depth + 1, False) for child in item.values())
+        elif isinstance(item, list):
+            identity = id(item)
+            if identity in active:
+                return False
+            if nodes + len(item) > MAX_REQUEST_NODES or (item and depth >= MAX_REQUEST_DEPTH):
+                return False
+            active.add(identity)
+            pending.append((item, depth, True))
+            pending.extend((child, depth + 1, False) for child in item)
+        elif (
+            item is None
+            or type(item) in (str, bool, int)
+            or (type(item) is float and math.isfinite(item))
+        ):
+            continue
+        else:
+            return False
+    return True

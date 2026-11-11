@@ -72,7 +72,12 @@ def assess(
         raise ValueError("invalid expected session") from None
     if type(generation) is not int or generation <= 0:
         raise ValueError("invalid expected generation")
-    if not re.fullmatch(r"[A-Z][A-Z0-9-]{0,31}", seat) or not mention:
+    if (
+        not isinstance(seat, str)
+        or not re.fullmatch(r"[A-Z][A-Z0-9-]{0,31}", seat)
+        or not isinstance(mention, str)
+        or not mention
+    ):
         raise ValueError("invalid expected seat")
 
     checks: dict[str, str] = {}

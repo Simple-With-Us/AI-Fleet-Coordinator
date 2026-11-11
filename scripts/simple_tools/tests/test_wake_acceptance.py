@@ -110,6 +110,18 @@ class AcceptanceTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 WA.assess(**{**self.args, "generation": value})
 
+    def test_expected_seat_and_mention_types_raise_value_error(self):
+        for key in ("seat", "mention"):
+            for value in (None, 1, True, [], {}, b"Codex"):
+                with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                    WA.assess(**{**self.args, key: value})
+
+    def test_non_boolean_router_test_flags_cannot_prove_a_real_wake(self):
+        for value in (0, 1, None, "false", {}, []):
+            with self.subTest(value=value):
+                self.args["receipt"]["test"] = value
+                self.assertIn("router-is-not-a-real-wake", self.check("rejected")["errors"])
+
     def test_boolean_source_id_cannot_equal_integer_message_id(self):
         self.args["message_id"] = 1
         self.args["source"]["id"] = True

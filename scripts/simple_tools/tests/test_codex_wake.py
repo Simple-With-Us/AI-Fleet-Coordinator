@@ -57,6 +57,22 @@ class FakeTransport:
         return self.send_result
 
 
+class ShortReadStream(io.BytesIO):
+    def __init__(self, value, limit=7):
+        super().__init__(value)
+        self.limit = limit
+        self.requested = []
+
+    def read(self, size=-1):
+        self.requested.append(size)
+        return super().read(min(size, self.limit) if size >= 0 else self.limit)
+
+
+class NonBytesStream:
+    def read(self, size=-1):
+        return "{}"
+
+
 class CodexWakeTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -214,13 +230,12 @@ class CodexWakeTests(unittest.TestCase):
         self.assertEqual(self.transport.calls, [])
 
     def test_hostname_lookup_failure_is_retryable_without_transport_calls(self):
-        def unavailable_hostname():
-            raise OSError("private hostname detail")
-
-        self.adapter.hostname = unavailable_hostname
-        result = self.deliver()
-        self.assertEqual((result.outcome, result.code), ("busy", "hostname-unavailable"))
-        self.assertEqual(self.transport.calls, [])
+        for exc in (OSError("private hostname detail"), RuntimeError("hostname plugin failed")):
+            with self.subTest(exception=type(exc).__name__):
+                self.adapter.hostname = lambda error=exc: (_ for _ in ()).throw(error)
+                result = self.deliver()
+                self.assertEqual((result.outcome, result.code), ("busy", "hostname-unavailable"))
+                self.assertEqual(self.transport.calls, [])
 
     def test_exclusion_continues_after_one_classification_error(self):
         first = WR.Target(SID, host="mac")
@@ -353,6 +368,20 @@ class CodexWakeTests(unittest.TestCase):
                 )
                 self.assertEqual(self.transport.queue_add_calls, 0)
 
+    def test_registry_requires_explicit_well_formed_codex_seat(self):
+        for seat in (None, "", "  ", 42, ["CODEX"]):
+            with self.subTest(seat=seat):
+                self.registry_result = {**self.registry_result, "seat": seat}
+                result = self.deliver()
+                self.assertEqual((result.outcome, result.code), ("busy", "registry-unavailable"))
+                self.assertEqual(self.transport.queue_add_calls, 0)
+                self.transport.calls.clear()
+                self.transport.events.clear()
+        self.registry_result = {**self.registry_result, "seat": "ZC"}
+        result = self.deliver()
+        self.assertEqual((result.outcome, result.code), ("refused", "target-released"))
+        self.assertEqual(self.transport.queue_add_calls, 0)
+
     def test_registry_is_rechecked_at_native_permit_after_binding_validation(self):
         original_send = self.transport.send
 
@@ -445,6 +474,49 @@ class CodexWakeTests(unittest.TestCase):
             transport=self.transport,
         )
         self.assertEqual(oversized["delivery"]["code"], "request-too-large")
+
+    def test_delivery_entry_handles_short_reads_and_rejects_nonbytes(self):
+        stream = ShortReadStream(json.dumps(self.wire_request()).encode(), limit=5)
+        with self.with_chat():
+            result = CW.delivery_entry(
+                stream,
+                env={"HOME": self.tmp.name},
+                transport=self.transport,
+                metadata_lookup=lambda env, sid: self.meta,
+                registry_lookup=lambda env, letter: self.registry_result,
+                hostname=lambda: "jay-mac.local",
+            )
+        self.assertEqual(result["delivery"]["code"], "queued")
+        self.assertGreater(len(stream.requested), 1)
+        self.assertTrue(all(size <= CW.MAX_REQUEST_BYTES + 1 for size in stream.requested))
+        self.assertEqual(
+            CW.delivery_entry(NonBytesStream(), env={"HOME": self.tmp.name}, transport=self.transport)[
+                "delivery"
+            ]["code"],
+            "request-unreadable",
+        )
+        oversized = ShortReadStream(b" " * (CW.MAX_REQUEST_BYTES + 10), limit=8192)
+        result = CW.delivery_entry(oversized, env={"HOME": self.tmp.name}, transport=self.transport)
+        self.assertEqual(result["delivery"]["code"], "request-too-large")
+        self.assertEqual(oversized.tell(), CW.MAX_REQUEST_BYTES + 1)
+        self.assertTrue(all(size <= CW.MAX_REQUEST_BYTES + 1 for size in oversized.requested))
+
+    def test_delivery_entry_bounds_json_depth_and_node_count_and_parsed_cycles(self):
+        deep = ("[" * (CW.MAX_REQUEST_DEPTH + 1)) + "0" + ("]" * (CW.MAX_REQUEST_DEPTH + 1))
+        fanout = "[" + ",".join("0" for _ in range(CW.MAX_REQUEST_NODES + 1)) + "]"
+        for payload in (deep, fanout):
+            with self.subTest(size=len(payload)):
+                result = CW.delivery_entry(io.BytesIO(payload.encode()), env={}, transport=self.transport)
+                self.assertEqual(result["delivery"]["code"], "request-too-complex")
+
+        cycle = []
+        cycle.append(cycle)
+        result = CW.deliver_request(
+            {"platform": "codex", "target": cycle, "wake": {}},
+            env={},
+            transport=self.transport,
+        )
+        self.assertEqual(result["delivery"]["code"], "request-too-complex")
 
         malformed_identity = self.wire_request()
         malformed_identity["target"]["session_id"] = "not-a-uuid"
