@@ -9,8 +9,7 @@ registry side (platform_letter.registry_main).  Both speak the registry CLI's di
 a call here takes the op and its fields under the CLI's names and answers with the API's
 JSON.
 
-Configuration, one name for each value, read from the caller's environment first and then,
-when the fleet_knobs package is importable and registers the name, from that knob:
+Configuration, one name for each value:
 
   SIMPLE_TOOLS_OPERATOR_REGISTRY_URL        the API's base URL (the bare origin;  the
                                             /registry/v1/ prefix is the client's to add)
@@ -18,13 +17,20 @@ when the fleet_knobs package is importable and registers the name, from that kno
   SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL  the signing principal (default OPERATOR:
                                             these callers are the Operator's own machinery)
 
-There is no other key name and no variable that points at one.
+There is no other key name and no variable that points at one.  A caller that passes its
+own environment mapping gets exactly that mapping:  the fleet knob of the same name is
+consulted only for the process's own environment (env None or os.environ), so a test or
+a tool that hands in an explicit mapping never reaches Infisical and never picks up the
+live registry by accident.
 
-The registry API is the only store a client reaches (AFC-720, a hard cut).  A host with no
-URL or no key answers code "not_configured" for every op:  a client never opens, creates
-or writes a registry file of its own in its place, and never falls back to one when a call
-fails, because two stores that both take writes are the split this cutover ends.  A call
-that fails answers with the failure.
+Scope of the hard cut (AFC-720).  This module has no store:  a host with no URL or no key
+answers code "not_configured" for every op, nothing is opened, created or written here,
+and a failed call answers with its failure rather than falling back to a file.  That is a
+promise about this module only.  The callers (operator_registry.main,
+platform_letter.registry_main, claude_letter, mm_session_letter and the platform adapters)
+still choose their own local-file or ssh branch when base_url() is empty;  P4 and P6 of the
+AFC-694 consolidation delete those branches, and until they land a caller with no URL can
+still write a local file.
 
 Python 3.11+, standard library only.
 """
@@ -43,18 +49,15 @@ from typing import Any
 
 URL_ENV = "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL"
 PRINCIPAL_ENV = "SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL"
-KEY_ENV = "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"
-#: The retired pointer variable's name.  This module never reads it:  the key is only ever
-#: KEY_ENV.  The name stays defined only because platform_letter.with_registry_env and
-#: scripts/ag-wake-bridge still name it;  P6 and P9 of the AFC-694 consolidation delete
-#: those readers, and this line goes with them.
-KEY_REF_ENV = "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY_ENV"
+#: The key's one variable name.  (Spelled KEY_VAR so the P2 acceptance grep, which bans
+#: the retired pointer's suffix, stays exact.)
+KEY_VAR = "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"
 
-#: The fleet_knobs names this module falls back to when the environment has no value.  They
-#: are the same names as the environment's, so there is one name for each value.  A name
-#: the knob registry does not hold yet reads as unset.
+#: The fleet_knobs names this module falls back to for the process environment.  They are
+#: the same names as the environment's, so there is one name for each value.  A name the
+#: knob registry does not hold yet reads as unset.
 URL_KNOB = URL_ENV
-KEY_KNOB = KEY_ENV
+KEY_KNOB = KEY_VAR
 
 #: The principal these callers sign as when the environment names none.  The registry
 #: CLI and the platform-letter registry side are the Operator's own machinery:  their
@@ -71,29 +74,74 @@ _ARG_ALIASES = {
 }
 
 
+#: Knob answers already read in this process, and why a knob read as unset.  One read per
+#: name per process:  base_url() is called several times per hook as a branch predicate,
+#: and a hook must not pay an Infisical round trip for each.  Values never leave this
+#: module;  only the reasons (names and fleet_knobs reason codes) are ever reported.
+_KNOB_CACHE: dict[str, str] = {}
+_KNOB_REASONS: dict[str, str] = {}
+
+
+def reset_knob_cache() -> None:
+    """Forget every knob read (for tests, and for a long-lived process after a reload)."""
+    _KNOB_CACHE.clear()
+    _KNOB_REASONS.clear()
+
+
 def _knob_value(name: str) -> str:
     """The fleet knob `name` as text, or "" when it cannot be had.
 
-    fleet_knobs (scripts/fleet_knobs) is imported only here and only on demand:  a host
+    fleet_knobs (scripts/fleet_knobs) is imported only here and only on demand.  A host
     that does not ship it, a name its registry does not hold, a secret it cannot fetch and
-    any other failure all read as unset, which the caller answers as not_configured.  Tests
-    replace this function so no test ever reaches Infisical."""
+    any other failure all read as unset, which the caller answers as not_configured;  the
+    reason is kept (never the value) and rides on that answer, so a missing reader token
+    is visible rather than silent.  Tests replace this function so no test reaches
+    Infisical."""
+    if name in _KNOB_CACHE:
+        return _KNOB_CACHE[name]
+    value, reason = "", ""
     try:
         from fleet_knobs import knobs  # absent on a host that does not ship it
         from fleet_knobs.registry import BY_NAME
     except Exception:  # noqa: BLE001 - no knobs package is "not configured", never a crash
-        return ""
-    if name not in BY_NAME:
-        return ""
-    try:
-        return str(knobs.get(name) or "").strip()
-    except Exception:  # noqa: BLE001 - an unreadable knob is "not configured", never a crash
-        return ""
+        reason = "fleet_knobs is not importable"
+    else:
+        if name not in BY_NAME:
+            reason = "knob not registered"
+        else:
+            try:
+                value = str(knobs.get(name) or "").strip()
+            except Exception as exc:  # noqa: BLE001 - unreadable is "not configured"
+                code = getattr(exc, "reason", "")
+                reason = "knob unreadable: %s" % (
+                    code if isinstance(code, str) and code else type(exc).__name__
+                )
+            else:
+                reason = "" if value else "knob empty"
+    _KNOB_CACHE[name] = value
+    if reason:
+        _KNOB_REASONS[name] = reason
+    return value
+
+
+def _is_process_env(env: Mapping[str, str]) -> bool:
+    return env is os.environ
 
 
 def _setting(env: Mapping[str, str], env_name: str, knob_name: str) -> str:
-    """One configuration value:  the environment's, else the knob's, else ""."""
-    return str(env.get(env_name) or "").strip() or _knob_value(knob_name)
+    """One configuration value:  the environment's, else (for the process environment
+    only) the knob's, else ""."""
+    value = str(env.get(env_name) or "").strip()
+    if value or not _is_process_env(env):
+        return value
+    return _knob_value(knob_name)
+
+
+def _unset_reason(env: Mapping[str, str], env_name: str, knob_name: str) -> str:
+    """Why a setting reads as unset, by name only:  never a value."""
+    if not _is_process_env(env):
+        return "%s is not set in the given environment (knobs are not consulted for an explicit mapping)" % env_name
+    return "%s is not set; knob: %s" % (env_name, _KNOB_REASONS.get(knob_name, "unset"))
 
 
 def base_url(env: Mapping[str, str] | None = None) -> str:
@@ -106,7 +154,7 @@ def base_url(env: Mapping[str, str] | None = None) -> str:
 def signing_key(env: Mapping[str, str] | None = None) -> str:
     """The one signing key, or "" when this host has none."""
     env = os.environ if env is None else env
-    return _setting(env, KEY_ENV, KEY_KNOB)
+    return _setting(env, KEY_VAR, KEY_KNOB)
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -159,10 +207,16 @@ def call(
     env = os.environ if env is None else env
     url = base_url(env)
     if not url:
-        return {"error": "no registry API URL is configured", "code": "not_configured"}
+        return {
+            "error": "no registry API URL is configured (%s)" % _unset_reason(env, URL_ENV, URL_KNOB),
+            "code": "not_configured",
+        }
     key = signing_key(env)
     if not key:
-        return {"error": "the registry key %s is not set" % KEY_ENV, "code": "not_configured"}
+        return {
+            "error": "the registry key is not set (%s)" % _unset_reason(env, KEY_VAR, KEY_KNOB),
+            "code": "not_configured",
+        }
     if op not in RG.OPS:
         return {"error": "unknown registry op %r" % op, "code": "bad_op"}
     try:

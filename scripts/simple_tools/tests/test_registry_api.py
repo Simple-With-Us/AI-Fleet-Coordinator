@@ -20,12 +20,15 @@ import io
 import json
 import os
 import sqlite3
+import sys
 import tempfile
 import time
+import types
 import unittest
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+from unittest import mock
 
 from simple_tools import listener_registry as LREG
 from simple_tools import operator_registry as OR
@@ -98,7 +101,7 @@ class ApiBase(unittest.TestCase):
             "HOME": self.tmp.name,
             "SIMPLE_TOOLS_STATE_DIR": self.state,
             registry_api.URL_ENV: self.url,
-            registry_api.KEY_ENV: KEY,
+            registry_api.KEY_VAR: KEY,
         }
         env.update(extra)
         return env
@@ -204,14 +207,14 @@ class ClientTests(ApiBase):
         env = self.api_env()
         self.assertEqual(registry_api.call(env, "frobnicate")["code"], "bad_op")
         no_key = self.api_env()
-        del no_key[registry_api.KEY_ENV]
+        del no_key[registry_api.KEY_VAR]
         self.assertEqual(
             registry_api.call(no_key, "resolve", {"platform": "minimax", "letter": "A"})[
                 "code"
             ],
             "not_configured",
         )
-        wrong_key = self.api_env(**{registry_api.KEY_ENV: "x" * 40})
+        wrong_key = self.api_env(**{registry_api.KEY_VAR: "x" * 40})
         refused = registry_api.call(
             wrong_key, "resolve", {"platform": "minimax", "letter": "A"}
         )
@@ -624,11 +627,12 @@ class HardCutTests(unittest.TestCase):
             with self.subTest(op=op):
                 answer = registry_api.call(env, op, {"platform": "codex", "seat": "CODEX"})
                 self.assertEqual(answer.get("code"), "not_configured", answer)
-        # Nothing was created under the caller's home or state:  no store, no folder.
+        # registry_api itself made nothing under the caller's home or state.  This is a
+        # module-level promise only:  callers keep their own local branches until P4/P6.
         self.assertEqual(os.listdir(self.home), [])
 
     def test_no_url_is_not_configured_for_every_op(self) -> None:
-        env = {"HOME": self.home, "SIMPLE_TOOLS_STATE_DIR": self.home, registry_api.KEY_ENV: KEY}
+        env = {"HOME": self.home, "SIMPLE_TOOLS_STATE_DIR": self.home, registry_api.KEY_VAR: KEY}
         self.assertEqual(registry_api.base_url(env), "")
         self.assert_every_op_not_configured(env)
 
@@ -646,11 +650,19 @@ class HardCutTests(unittest.TestCase):
         env = {
             "HOME": self.home,
             registry_api.URL_ENV: "https://registry.example.invalid",
-            registry_api.KEY_REF_ENV: "SOME_OTHER_KEY",
+            "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY_ENV": "SOME_OTHER_KEY",
             "SOME_OTHER_KEY": KEY,
         }
         self.assertEqual(registry_api.signing_key(env), "")
         self.assert_every_op_not_configured(env)
+
+    def _process_env_without_registry(self) -> None:
+        """os.environ itself, with the registry names removed for this test."""
+        patcher = mock.patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for name in (registry_api.URL_ENV, registry_api.KEY_VAR, registry_api.PRINCIPAL_ENV):
+            os.environ.pop(name, None)
 
     def test_the_environment_wins_over_the_knob_and_the_knob_fills_a_gap(self) -> None:
         knobs = {
@@ -658,19 +670,74 @@ class HardCutTests(unittest.TestCase):
             registry_api.KEY_KNOB: "k" * 40,
         }
         registry_api._knob_value = lambda name: knobs.get(name, "")  # type: ignore[assignment]
-        self.assertEqual(registry_api.base_url({}), "https://knob.example.invalid")
-        self.assertEqual(registry_api.signing_key({}), "k" * 40)
-        env = {registry_api.URL_ENV: "https://env.example.invalid", registry_api.KEY_ENV: KEY}
-        self.assertEqual(registry_api.base_url(env), "https://env.example.invalid")
-        self.assertEqual(registry_api.signing_key(env), KEY)
+        self._process_env_without_registry()
+        # The process environment (env None, or os.environ itself) falls back to the knob.
+        self.assertEqual(registry_api.base_url(), "https://knob.example.invalid")
+        self.assertEqual(registry_api.signing_key(os.environ), "k" * 40)
+        os.environ[registry_api.URL_ENV] = "https://env.example.invalid"
+        os.environ[registry_api.KEY_VAR] = KEY
+        self.assertEqual(registry_api.base_url(), "https://env.example.invalid")
+        self.assertEqual(registry_api.signing_key(), KEY)
         # One name for each value:  the knob is looked up under the environment's name.
         self.assertEqual(
             (registry_api.URL_KNOB, registry_api.KEY_KNOB),
-            (registry_api.URL_ENV, registry_api.KEY_ENV),
+            (registry_api.URL_ENV, registry_api.KEY_VAR),
         )
+
+    def test_an_explicit_mapping_never_consults_the_knob(self) -> None:
+        # A caller's own mapping is authoritative:  no URL in it means no API, whatever
+        # Infisical holds, so a local test can never reach the live registry.
+        def must_not_run(name: str) -> str:
+            raise AssertionError("an explicit mapping consulted the knob %s" % name)
+
+        registry_api._knob_value = must_not_run  # type: ignore[assignment]
+        self.assertEqual(registry_api.base_url({}), "")
+        self.assertEqual(registry_api.signing_key({"HOME": self.home}), "")
+        self.assertEqual(registry_api.base_url(dict(os.environ, **{registry_api.URL_ENV: ""})), "")
+        answer = registry_api.call({"HOME": self.home}, "resolve", {"platform": "codex"})
+        self.assertEqual(answer.get("code"), "not_configured", answer)
+        self.assertIn("explicit mapping", answer["error"])
+
+    def test_a_knob_failure_reason_rides_on_not_configured_and_is_read_once(self) -> None:
+        registry_api._knob_value = _ORIGINAL_KNOB_VALUE  # type: ignore[assignment]
+        registry_api.reset_knob_cache()
+        self.addCleanup(registry_api.reset_knob_cache)
+        self._process_env_without_registry()
+
+        class Unavailable(Exception):
+            reason = "service-token-required"
+
+        calls: list[str] = []
+
+        def failing_get(name: str) -> str:
+            calls.append(name)
+            raise Unavailable("secret-value-must-not-appear")
+
+        fake_knobs = types.SimpleNamespace(get=failing_get)
+        fake_registry = types.SimpleNamespace(
+            BY_NAME={registry_api.URL_KNOB: object(), registry_api.KEY_KNOB: object()}
+        )
+        fake_pkg = types.ModuleType("fleet_knobs")
+        fake_pkg.knobs = fake_knobs  # type: ignore[attr-defined]
+        fake_pkg.registry = fake_registry  # type: ignore[attr-defined]
+        with mock.patch.dict(
+            sys.modules,
+            {"fleet_knobs": fake_pkg, "fleet_knobs.knobs": fake_knobs, "fleet_knobs.registry": fake_registry},
+        ):
+            for _ in range(3):
+                self.assertEqual(registry_api.base_url(), "")
+            answer = registry_api.call(None, "resolve", {"platform": "codex"})
+        self.assertEqual(answer.get("code"), "not_configured", answer)
+        self.assertIn("service-token-required", answer["error"])
+        self.assertIn(registry_api.URL_ENV, answer["error"])
+        self.assertNotIn("secret-value-must-not-appear", answer["error"])
+        # One knob read per name per process, however often base_url() is asked.
+        self.assertEqual(calls, [registry_api.URL_KNOB])
 
     def test_an_unregistered_knob_reads_as_unset(self) -> None:
         real = _ORIGINAL_KNOB_VALUE
+        registry_api.reset_knob_cache()
+        self.addCleanup(registry_api.reset_knob_cache)
         # A name the knob registry does not hold reads as unset, before any fetch.
         self.assertEqual(real("NO_SUCH_REGISTRY_KNOB_AFC_720"), "")
         try:
@@ -724,7 +791,7 @@ class FakeRegistryTests(unittest.TestCase):
             self.assertEqual([method for method, _ in fake.requests], ["POST", "GET"])
             # A wrong key is the API's own refusal, folded to an http_ code.
             refused = registry_api.call(
-                fake.env(**{registry_api.KEY_ENV: "x" * 40}), "resolve", lookup
+                fake.env(**{registry_api.KEY_VAR: "x" * 40}), "resolve", lookup
             )
             self.assertIn("error", refused)
             self.assertTrue(str(refused.get("code", "")).startswith("http_"), refused)
@@ -733,6 +800,12 @@ class FakeRegistryTests(unittest.TestCase):
                 fake.env(**{registry_api.URL_ENV: "https://elsewhere.invalid"}), "resolve", lookup
             )
             self.assertEqual(dead.get("code"), "timeout")
+            # A principal the fake has no key for is the API's refusal, not a KeyError.
+            stranger = registry_api.call(fake.env("NOBODY"), "resolve", lookup)
+            self.assertTrue(str(stranger.get("code", "")).startswith("http_"), stranger)
+        # The fake's URL is a bare origin, as the registry URL is by contract.
+        with self.assertRaises(ValueError):
+            FakeRegistry(url="https://registry.example.invalid/some/path")
         # Uninstalled, the module's seams are its own again.
         self.assertIs(registry_api._knob_value, _ORIGINAL_KNOB_VALUE)
         self.assertEqual(registry_api._open.__name__, "_open")
@@ -741,8 +814,10 @@ class FakeRegistryTests(unittest.TestCase):
 class KnobLatencyTests(unittest.TestCase):
     """The per-hook cost of reading the URL and key from Infisical (owner decision 2).
 
-    Runs only where it can be measured:  the knob names are registered and this process
-    holds a fleet_knobs reader token.  Elsewhere it skips.  It prints no value."""
+    NOT YET MEASURED:  it runs only where it can be, the knob names are registered, this
+    process holds a fleet_knobs reader token and REGISTRY_API_LIVE_LATENCY=1 opts in to a
+    live Infisical read.  None of that holds anywhere today, so it skips in CI and locally,
+    and owner decision 2 stays open until someone runs it.  It prints no value."""
 
     def test_a_knob_sourced_configuration_read_is_under_three_seconds(self) -> None:
         try:
@@ -754,10 +829,15 @@ class KnobLatencyTests(unittest.TestCase):
             self.skipTest("the registry URL and key knobs are not registered yet")
         if not (os.environ.get("FLEET_KNOBS_INFISICAL_TOKEN") or "").strip():
             self.skipTest("no fleet_knobs reader token in this environment")
+        if os.environ.get("REGISTRY_API_LIVE_LATENCY") != "1":
+            self.skipTest("live Infisical probe is opt-in: set REGISTRY_API_LIVE_LATENCY=1")
         knobs.reset_for_tests()
+        registry_api.reset_knob_cache()
+        self.addCleanup(knobs.reset_for_tests)
+        self.addCleanup(registry_api.reset_knob_cache)
         started = time.monotonic()
-        url = registry_api.base_url({})
-        key = registry_api.signing_key({})
+        url = registry_api._knob_value(registry_api.URL_KNOB)
+        key = registry_api._knob_value(registry_api.KEY_KNOB)
         elapsed = time.monotonic() - started
         self.assertTrue(url and key, "the knobs did not answer")
         self.assertLess(elapsed, 3.0, "knob-sourced configuration took %.2fs" % elapsed)
