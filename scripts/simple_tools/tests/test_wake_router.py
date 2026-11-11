@@ -45,6 +45,7 @@ def row(sid: str, letter: str, title: str, host: str = "server", **over) -> dict
         "state": "active",
         "retired_at": None,
         "closed_at": None,
+        "generation": 1,
     }
     base.update(over)
     return base
@@ -65,6 +66,9 @@ class FakeRegistry:
             return {"error": "the registry did not answer in time", "code": "timeout"}
         if op == "resolve":
             found = self.letters.get(params["letter"])
+            if found is None:  # as the registry does:  a live alias answers, whoever asked for it
+                live = [r for r in self.rows if r["letter"] == params["letter"]]
+                found = next((r for r in live if not r["retired_at"]), None)
             if found is None:
                 return {"label": params["letter"], "found": False}
             return {**found, "label": params["letter"], "found": True}
@@ -338,7 +342,8 @@ class Durability(Base):
         first = self.router()
         first.accept(self.wake())
         self.drain(first)
-        self.registry.rows = []  # the chat is gone from the registry;  the pick stands
+        # A fresh pick would now be undecided, so a delivery proves the saved pick was kept.
+        self.registry.rows = [row(SID_A, "AA", "Only chat"), row(SID_B, "BB", "Another")]
         self.clock.now += 1000
         fresh = self.router()
         fresh.replay()
@@ -620,6 +625,193 @@ class Shutdown(Base):
         self.assertGreaterEqual(wait, longest + CW.SSH_PREFLIGHT_SECONDS)
         self.assertGreater(stop, wait)
         self.assertRegex(unit, r"(?m)^KillMode=mixed$")
+
+
+class Generations(Base):
+    """A pick can go stale while its wake waits.  Each test picks, waits on a busy answer, changes
+    the registry, and lets the retry reach the check before delivery."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.registry.rows = [row(SID_A, "AA", "Only chat", generation=3)]
+
+    def queued(self, wake: WR.Wake | None = None, **config) -> WR.Router:
+        self.results = [WR.Delivery("busy", code="session-locked")]
+        router = self.router(busy_retry_seconds=30, **config)
+        router.accept(wake or self.wake())
+        self.drain(router)
+        self.assertEqual(len(self.delivered), 1)
+        self.clock.now += 31
+        return router
+
+    def lettered(self, **config) -> WR.Router:
+        self.registry.letters = {"AA": row(SID_A, "AA", "Only chat", generation=3)}
+        return self.queued(self.wake(letter="AA"), **config)
+
+    def assert_released(self, router: WR.Router) -> None:
+        self.drain(router)
+        self.assertEqual(len(self.delivered), 1)  # only the try before the wait
+        receipt = self.done()
+        self.assertEqual((receipt["status"], receipt["code"]), ("dead", WR.RELEASED))
+        self.assertIs(receipt["delivered"], False)
+        self.assertEqual((receipt["session_id"], receipt["picked_generation"]), (SID_A, 3))
+        self.assertFalse(self.pending().exists())
+
+    def test_a_target_carries_the_generation_on_the_letter_path(self) -> None:
+        self.registry.letters = {"AA": row(SID_A, "AA", "Other", generation=7)}
+        pick = self.router().pick(self.wake(letter="AA"))
+        self.assertEqual((pick.picked, pick.target.generation), ("letter", 7))
+
+    def test_a_target_carries_the_generation_on_the_history_path(self) -> None:
+        pick = self.router().pick(self.wake())
+        self.assertEqual(pick.target.generation, 3)
+
+    def test_a_target_defaults_to_no_generation(self) -> None:
+        self.assertEqual(WR.Target(SID_A).generation, 0)
+
+    def test_a_row_with_no_generation_is_not_a_target(self) -> None:
+        for bad in (None, 0, "3", True):
+            self.registry.rows = [row(SID_A, "AA", "Only chat", generation=bad)]
+            self.assertEqual(self.router().pick(self.wake()).reason, "no-live-session")
+
+    def test_the_pick_and_receipt_keep_the_generation(self) -> None:
+        router = self.queued()
+        saved = json.loads(self.pending().read_text(encoding="utf-8"))
+        self.assertEqual(saved["pick"]["target"]["generation"], 3)
+        self.drain(router)
+        self.assertEqual(self.done()["picked_generation"], 3)
+
+    def test_a_held_receipt_names_the_generation(self) -> None:
+        router = self.router(delivery_enabled=False)
+        router.accept(self.wake())
+        self.drain(router)
+        self.assertEqual(self.done()["picked_generation"], 3)
+
+    def test_a_receipt_with_no_target_has_no_generation(self) -> None:
+        self.registry.rows = []
+        router = self.router()
+        router.accept(self.wake())
+        self.drain(router)
+        self.assertEqual(self.done()["picked_generation"], 0)
+
+    def test_an_unchanged_chat_is_delivered(self) -> None:
+        router = self.queued()
+        self.drain(router)
+        self.assertEqual(len(self.delivered), 2)
+        self.assertEqual(self.done()["status"], "delivered")
+
+    def test_the_check_comes_before_the_in_flight_mark(self) -> None:
+        seen: list[tuple[str, bool]] = []
+        real = self.registry
+
+        def call(env, op, params=None, *, timeout=25):
+            saved = json.loads(self.pending().read_text(encoding="utf-8"))
+            seen.append((op, "in_flight" in saved))
+            return real(env, op, params, timeout=timeout)
+
+        router = self.router()
+        router.accept(self.wake())
+        with mock.patch.object(WR.registry_api, "call", call):
+            self.drain(router)
+        self.assertEqual(seen, [("history", False), ("resolve", False)])
+        self.assertEqual(len(self.delivered), 1)
+
+    def test_a_lettered_wake_on_a_closed_chat_is_final(self) -> None:
+        router = self.lettered()
+        self.registry.letters = {}
+        self.registry.rows = []
+        self.assert_released(router)
+
+    def test_a_lettered_wake_on_a_chat_marked_closed_is_final(self) -> None:
+        router = self.lettered()
+        self.registry.letters = {"AA": row(SID_A, "AA", "x", generation=3, state="closed")}
+        self.assert_released(router)
+
+    def test_a_lettered_wake_on_a_new_generation_is_final(self) -> None:
+        router = self.lettered()
+        self.registry.letters = {"AA": row(SID_A, "AA", "x", generation=4)}
+        self.assert_released(router)
+
+    def test_a_lettered_wake_on_a_letter_now_held_by_another_is_final(self) -> None:
+        router = self.lettered()
+        self.registry.letters = {"AA": row(SID_B, "AA", "x", generation=3)}
+        self.assert_released(router)
+
+    def test_a_letterless_wake_on_a_closed_chat_is_picked_again(self) -> None:
+        router = self.queued()
+        self.registry.rows = [row(SID_B, "BB", "Replacement", generation=2)]
+        self.drain(router)
+        self.assertEqual(self.delivered[-1], (SID_B, "w-1"))
+        receipt = self.done()
+        self.assertEqual((receipt["session_id"], receipt["picked_generation"]), (SID_B, 2))
+        self.assertEqual(receipt["status"], "delivered")
+
+    def test_a_letterless_wake_on_a_new_generation_is_picked_again(self) -> None:
+        router = self.queued()
+        self.registry.rows = [row(SID_A, "AA", "Only chat", generation=4)]
+        self.drain(router)
+        self.assertEqual(len(self.delivered), 2)
+        self.assertEqual(self.done()["picked_generation"], 4)
+
+    def test_a_letterless_wake_with_nowhere_to_go_is_held(self) -> None:
+        router = self.queued()
+        self.registry.rows = []
+        self.drain(router)
+        self.assertEqual(len(self.delivered), 1)
+        receipt = self.done()
+        self.assertEqual((receipt["status"], receipt["reason"]), ("held", "no-live-session"))
+
+    def test_picking_again_uses_no_attempt(self) -> None:
+        router = self.queued()
+        self.registry.rows = [row(SID_A, "AA", "Only chat", generation=4)]
+        self.drain(router)
+        receipt = self.done()
+        self.assertEqual(receipt["picked_generation"], 4)  # it did go back through the pick
+        self.assertEqual(receipt["attempts"], 2)  # the busy try and the delivery, and nothing more
+
+    def test_two_registry_reads_that_disagree_cannot_spin(self) -> None:
+        self.registry.letters = {"AA": row(SID_A, "AA", "Only chat", generation=9)}
+        router = self.router(max_attempts=3)
+        router.accept(self.wake())
+        self.drain(router)
+        self.assertEqual(self.delivered, [])
+        self.assertEqual(self.done()["code"], WR.RELEASED)
+        resolves = [op for op, _ in self.registry.calls if op == "resolve"]
+        self.assertEqual(len(resolves), 4)
+
+    def test_an_unreadable_registry_waits_and_does_not_deliver(self) -> None:
+        router = self.queued()
+        self.registry.down = True
+        self.drain(router)
+        self.assertEqual(len(self.delivered), 1)
+        saved = json.loads(self.pending().read_text(encoding="utf-8"))
+        self.assertNotIn("in_flight", saved)
+        self.assertEqual(saved["failures"], 1)
+        self.assertEqual(saved["pick"]["target"]["session_id"], SID_A)
+        self.registry.down = False
+        self.clock.now += 2000
+        self.drain(router)
+        self.assertEqual(len(self.delivered), 2)
+        self.assertEqual(self.done()["status"], "delivered")
+
+    def test_an_unreadable_registry_is_bounded(self) -> None:
+        router = self.queued(max_attempts=2)
+        self.registry.down = True
+        for _ in range(6):
+            self.drain(router)
+            self.clock.now += 2000
+        self.assertEqual(len(self.delivered), 1)
+        receipt = self.done()
+        self.assertEqual((receipt["status"], receipt["code"]), ("dead", "registry-unavailable"))
+        self.assertEqual(receipt["picked_generation"], 3)
+
+    def test_a_replay_is_checked_too(self) -> None:
+        self.queued()
+        self.registry.rows = [row(SID_A, "AA", "Only chat", generation=4)]
+        fresh = self.router()
+        fresh.replay()
+        self.drain(fresh)
+        self.assertEqual(self.done()["picked_generation"], 4)
 
 
 class Dedupe(Base):
@@ -1046,6 +1238,18 @@ class Http(Base):
         # It reserved nothing:  a real wake with the same id is still accepted.
         self.assertEqual(self.request(port, body=self.body(), key=self.key)[0], 202)
         self.assertEqual(asked, [])
+
+    def test_the_test_flag_reports_the_generation_and_touches_nothing(self) -> None:
+        self.registry.rows = [row(SID_A, "AA", "Only chat", generation=5)]
+        router = self.router()
+        port = self.serve(router)
+        _, answer = self.request(port, body=self.body(test=True), key=self.key)
+        self.assertEqual(answer["picked_generation"], 5)
+        self.assertEqual([op for op, _ in self.registry.calls], ["history"])  # no check, no write
+        self.assertEqual(router._entries, {})
+        self.assertFalse(self.pending().exists())
+        self.assertFalse((self.state / "done").exists())
+        self.assertEqual(self.delivered, [])
 
     def test_a_test_wake_never_calls_the_consultant(self) -> None:
         self.registry.rows = [row(SID_A, "AA", "One"), row(SID_B, "BB", "Two")]
