@@ -22,7 +22,7 @@ recall ingest --source linear,doc,skill,memory --prune --no-heartbeat
 
 `--no-heartbeat` keeps the process off `fleet-secrets`.  That reader can use a machine identity.  This job never calls it.
 
-Before the ingest, the job runs `systemctl start --wait code-main-sync.service`.  A non-zero exit skips the ingest, writes the summary, posts an alert, and exits 1. The captured sync output is discarded.
+The unit owns the code sync.  `fleet-rag-nightly.service` has `Wants=code-main-sync.service` and `After=code-main-sync.service`, so systemd runs the sync first and starts the job when it finishes.  The unit sets `FLEET_RAG_CODE_SYNC_BY_UNIT=1`, and the job then reads the sync's `Result` with `systemctl show` instead of starting it.  A `User=` service cannot start another unit without polkit (the first night failed with "interactive authentication required").  A result other than `success` skips the ingest, writes the summary, posts an alert, and exits 1.  Without the flag, the job still runs `systemctl start --wait code-main-sync.service` itself, for a manual run as root.
 
 Prune uses the guards from AFC-677. Nothing is pruned when any source in the run failed.  A prune is refused when the source yielded nothing and documents would go, when more documents would go than were yielded, or when a whole `doc/<repo>/` of 5 or more documents would vanish.  `FLEET_RAG_PRUNE_FORCE=1` lifts only the second and third of those.  Linear rows are still skipped, because that generator is not a deletion inventory.
 

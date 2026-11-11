@@ -359,9 +359,37 @@ def send_alert(summary: dict, env: dict, *, post: Callable | None = None) -> str
     return "posted"
 
 
-def code_sync(runner: Callable[[], int] | None = None) -> int:
+# Set by fleet-rag-nightly.service, which pulls code-main-sync in with Wants= and After=.
+# systemd has then already run the sync before this process starts, so the job only reads
+# the result.  Starting a unit from a User= service needs polkit, which the job does not get.
+SYNC_BY_UNIT_ENV = "FLEET_RAG_CODE_SYNC_BY_UNIT"
+SYNC_UNIT = "code-main-sync.service"
+
+
+def unit_sync_result(show: Callable[[list[str]], str] | None = None) -> int:
+    """0 when the last code-main-sync run succeeded, else non-zero.  Read-only."""
+    argv = ["systemctl", "show", SYNC_UNIT, "--property=Result", "--value"]
+    try:
+        if show is not None:
+            out = show(argv)
+        else:
+            out = subprocess.run(
+                argv, capture_output=True, text=True, timeout=60, check=False
+            ).stdout
+    except subprocess.TimeoutExpired:
+        return 124
+    except OSError:
+        return 127
+    return 0 if out.strip() == "success" else 1
+
+
+def code_sync(
+    runner: Callable[[], int] | None = None, env: dict | None = None
+) -> int:
     if runner is not None:
         return runner()
+    if (env or {}).get(SYNC_BY_UNIT_ENV, "").strip() == "1":
+        return unit_sync_result()
     try:
         proc = subprocess.run(
             ["systemctl", "start", "--wait", "code-main-sync.service"],
@@ -505,7 +533,7 @@ def _locked(summary, env, *, read_file, fetch, sync, ingest_runner, post, now) -
         summary["errors"] = [_public(str(exc))]
         summary["alert"] = send_alert(summary, env, post=post)
         return summary
-    sync_exit = code_sync(sync)
+    sync_exit = code_sync(sync, env)
     summary["code_sync_exit"] = sync_exit
     if sync_exit != 0:
         summary["ok"] = False

@@ -160,6 +160,34 @@ class NightlyJobTests(unittest.TestCase):
         self.assertNotIn(SECRET, posts[0]["content"])
         self.assertIn("failed", posts[0]["content"])
 
+    def test_unit_owned_sync_reads_the_result_instead_of_starting_it(self) -> None:
+        seen: list[list[str]] = []
+
+        def show(out):  # noqa: ANN001
+            def run(argv):  # noqa: ANN001
+                seen.append(argv)
+                return out
+            return run
+
+        self.assertEqual(nightly_job.unit_sync_result(show("success\n")), 0)
+        self.assertEqual(nightly_job.unit_sync_result(show("exit-code\n")), 1)
+        self.assertEqual(nightly_job.unit_sync_result(show("")), 1)
+        self.assertTrue(all("start" not in argv for argv in seen))
+        self.assertEqual(seen[0][:3], ["systemctl", "show", "code-main-sync.service"])
+
+    def test_unit_flag_routes_code_sync_to_the_result_read(self) -> None:
+        with mock.patch.object(nightly_job, "unit_sync_result", return_value=0) as read, mock.patch.object(
+            nightly_job.subprocess, "run", side_effect=AssertionError("started a unit")
+        ):
+            self.assertEqual(nightly_job.code_sync(None, {nightly_job.SYNC_BY_UNIT_ENV: "1"}), 0)
+        read.assert_called_once_with()
+
+    def test_service_unit_owns_the_code_sync_dependency(self) -> None:
+        unit = (REPO / "scripts" / "systemd" / "fleet-rag-nightly.service").read_text(encoding="utf-8")
+        self.assertIn("Wants=code-main-sync.service", unit)
+        self.assertRegex(unit, r"(?m)^After=.*code-main-sync\.service")
+        self.assertIn(f"Environment={nightly_job.SYNC_BY_UNIT_ENV}=1", unit)
+
     def test_code_sync_failure_does_not_ingest(self) -> None:
         called = []
 
