@@ -1742,7 +1742,8 @@ def _transcript_strings(
     if isinstance(value, str):
         (quoted if inside else own).append(value)
     elif isinstance(value, Mapping):
-        hidden = inside or value.get("type") in _QUOTED_TYPES or value.get("isMeta") is True
+        kind = value.get("type")
+        hidden = inside or (isinstance(kind, str) and kind in _QUOTED_TYPES) or value.get("isMeta") is True
         for key, item in value.items():
             _transcript_strings(item, own, quoted, hidden or key in _QUOTED_KEYS, depth + 1)
     elif isinstance(value, list):
@@ -1846,7 +1847,7 @@ def collect_issue_ids(
         try:
             lines, note["issues_scan"] = read_new_lines(path, root, note.get("issues_scan"))
             found |= issue_ids_in_lines(lines)
-        except (OSError, ValueError):
+        except (OSError, ValueError, TypeError):
             pass
     try:
         found |= branch_issue_ids(data.get("cwd"), run)

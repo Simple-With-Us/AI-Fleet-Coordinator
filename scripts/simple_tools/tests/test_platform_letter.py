@@ -1229,6 +1229,15 @@ class HookTests(Base):
         ]
         self.assertEqual(PL.issue_ids_in_lines(lines), {"AFC-1", "CTS-2", "CC-5", "UM-6", "FL-9"})
 
+    def test_issue_ids_in_lines_reads_past_a_type_that_is_not_a_string(self) -> None:
+        # A tool input that carries a JSON schema has "type" holding a list or a mapping;  it must not
+        # stop the scan (Sentry on #1762).
+        lines = [
+            json.dumps({"input": {"schema": {"type": ["string", "null"]}, "note": "AFC-11"}}),
+            json.dumps({"type": {"nested": True}, "text": "CTS-12"}),
+        ]
+        self.assertEqual(PL.issue_ids_in_lines(lines), {"AFC-11", "CTS-12"})
+
     def test_read_new_lines_reads_only_new_whole_lines_within_its_cap(self) -> None:
         root = os.path.join(self.home, ".codex")
         path = self.transcript("one AFC-1", "two AFC-2")
