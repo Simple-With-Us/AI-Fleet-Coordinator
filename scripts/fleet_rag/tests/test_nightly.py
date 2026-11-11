@@ -21,6 +21,10 @@ SECRET = "ghp_" + ("b" * 36)
 REPO = Path(__file__).resolve().parents[3]
 
 
+LINEAR_PROJECT = "00000000-0000-4000-8000-00000000000a"
+RECALL_PROJECT = "00000000-0000-4000-8000-00000000000b"
+
+
 def _token(path: Path) -> None:
     path.write_text(TOKEN + "\n", encoding="utf-8")
     os.chmod(path, 0o600)
@@ -56,6 +60,7 @@ def _ready(tmp: Path) -> dict:
         "HOME": str(tmp),
         nightly_job.TOKEN_FILE_RECALL: str(recall),
         nightly_job.TOKEN_FILE_LINEAR: str(linear),
+        nightly_job.LINEAR_PROJECT_ENV: LINEAR_PROJECT,
         "FLEET_RAG_NIGHTLY_LOCK": str(tmp / "nightly.lock"),
         "FLEET_RAG_NIGHTLY_SUMMARY": str(tmp / "last.json"),
         "ZULIP_SITE": "https://example.zulipchat.com",
@@ -175,6 +180,32 @@ class NightlyJobTests(unittest.TestCase):
         self.assertEqual(summary["code_sync_exit"], 3)
         self.assertEqual(summary["alert"], "posted")
         self.assertIn("code-main-sync exited 3", posts[0]["content"])
+
+    def test_each_fetch_uses_its_own_project(self) -> None:
+        fetched: list[tuple] = []
+
+        def fetch(project, path, token, names):  # noqa: ANN001
+            fetched.append((project, path))
+            return {name: f"value-{name}" for name in names}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _ready(Path(tmp))
+            env[nightly_job.RECALL_PROJECT_ENV] = RECALL_PROJECT
+            nightly_job.load_credentials(env, read_file=nightly_job.read_token_file, fetch=fetch)
+        self.assertEqual(fetched, [(RECALL_PROJECT, "/"), (LINEAR_PROJECT, "/linear")])
+
+    def test_linear_project_falls_back_to_the_coordinator_file_then_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _ready(Path(tmp))
+            del env[nightly_job.LINEAR_PROJECT_ENV]
+            env.pop("INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID", None)
+            with self.assertRaises(nightly_job.NightlyError) as ctx:
+                nightly_job.linear_project_id(env)
+            self.assertEqual(ctx.exception.reason, "linear-project-unset")
+            sources = Path(tmp) / ".simple-tools"
+            sources.mkdir()
+            (sources / "ai-fleet-coordinator-project-id").write_text(LINEAR_PROJECT + "\n")
+            self.assertEqual(nightly_job.linear_project_id(env), LINEAR_PROJECT)
 
     def test_machine_identity_refuses_before_the_recall_fetch(self) -> None:
         fetched: list[tuple] = []
