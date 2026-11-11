@@ -42,6 +42,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 
+from . import linear_board
 from .core import FleetRagError, now_ms
 
 HOME = pathlib.Path.home()
@@ -1764,9 +1765,9 @@ def iter_chat_logs(
 # THE BOARD was retired 2026-10-19 (AFC-363);  the frozen findings.db keeps the old rows
 # searchable, but nothing new can ever arrive from it, so the corpus has missed every board
 # point since the freeze.  Linear is the live board now (docs/protocols/linear-migration.md).
-# This generator reads Linear through the installed `simple-board` CLI - read verbs only,
-# which need no bearer and run as the shared Fleet app - so credential lookup, token caching
-# and rate limiting stay in the one sanctioned place instead of being duplicated here.
+# This generator reads Linear through the board CLI stack (in-process, read-only GraphQL)
+# so credential lookup, per-run token reuse, refresh on expiry or 401, and rate limiting
+# stay in the one sanctioned place instead of being duplicated here.
 #
 # Linear replaces the frozen board corpus. Every live or archived issue is eligible,
 # including imported issues untouched since the freeze. Only committed ingest state may
@@ -1774,7 +1775,6 @@ def iter_chat_logs(
 # only by explicit migration verification, never by the normal Linear source.
 
 LINEAR_FREEZE = os.environ.get("FLEET_RAG_LINEAR_FREEZE", "2026-10-19T00:00:00.000Z")
-SIMPLE_BOARD_CLI = os.environ.get("FLEET_RAG_SIMPLE_BOARD", "simple-board")
 LINEAR_PAGE = 250
 LINEAR_FULL_PAGE = 50  # full nodes are heavy (descriptions + comments);  keep each call modest
 # Keep the CLI cap. Halve issue chunks, then retry a single issue with one node per
@@ -1879,6 +1879,7 @@ def reset_linear_seat_state() -> None:
     global LINEAR_SEAT_USED
     _linear_failed_seats.clear()
     LINEAR_SEAT_USED = None
+    linear_board.reset_sessions()
 
 
 def _linear_seat_names() -> list[str]:
@@ -1941,58 +1942,86 @@ def _linear_is_auth_failure(proc: subprocess.CompletedProcess) -> bool:
     return proc.returncode == 4 or bool(_LINEAR_AUTH_RE.search(proc.stderr or ""))
 
 
-def _linear_run(query: str, timeout_s: int) -> subprocess.CompletedProcess:
-    """Run one simple-board read as the first configured seat whose credentials have not failed
-    this run, falling back seat by seat on a credential failure (and only on one)."""
+def _linear_is_auth_failure_board(err: linear_board.BoardCliFailure) -> bool:
+    if err.code in (4, 6):
+        return True
+    return bool(_LINEAR_AUTH_RE.search(err.stderr or ""))
+
+
+def _linear_board_failure(err: linear_board.BoardCliFailure) -> LinearSourceError:
+    stderr = err.stderr or ""
+    if "exceeds --max-chars" in stderr:
+        return LinearSourceError(
+            f"linear: simple-board api query exited {err.code}: response exceeds the CLI size cap",
+            overflow=True,
+        )
+    if "no Linear app credentials" in stderr or err.code == 4:
+        return LinearSourceError(
+            f"linear: simple-board api query exited {err.code}: no Linear app identity "
+            f"for this run (the shared Fleet app was retired 2026-11-05;  export "
+            f"LINEAR_BF_ORACLE_CLIENT_ID/_SECRET or LINEAR_GB_ORACLE_CLIENT_ID/_SECRET, or "
+            f"LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET)"
+        )
+    return LinearSourceError(f"linear: simple-board api query exited {err.code}")
+
+
+def _linear_run(query: str, timeout_s: int) -> dict:
+    """One board GraphQL read as the first configured seat whose credentials have not failed
+    this run, falling back seat by seat on a credential failure (and only on one).  ``timeout_s``
+    is kept for call-site compatibility;  the board client enforces its own HTTP timeouts."""
+    del timeout_s  # board ``Linear`` owns per-request limits
     global LINEAR_SEAT_USED
-    argv = [SIMPLE_BOARD_CLI, "api", "query", "--max-chars", str(LINEAR_MAX_CHARS), query]
     candidates = _linear_seat_envs()
     if not candidates:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s)
+        cid = os.environ.get("LINEAR_CLIENT_ID", "").strip()
+        sec = os.environ.get("LINEAR_CLIENT_SECRET", "").strip()
+        if not (cid and sec):
+            raise _linear_board_failure(
+                linear_board.BoardCliFailure(4, "no Linear app credentials")
+            )
+        try:
+            return linear_board.query(
+                "LINEAR_CLIENT_ID", cid, sec, query, max_chars=LINEAR_MAX_CHARS
+            )
+        except linear_board.BoardCliFailure as err:
+            raise _linear_board_failure(err) from None
     live = [c for c in candidates if c[0] not in _linear_failed_seats] or candidates[-1:]
-    proc = None
+    last_err: linear_board.BoardCliFailure | None = None
     for n, (seat, env) in enumerate(live):
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s, env=env)
-        if not _linear_is_auth_failure(proc):
-            if LINEAR_SEAT_USED != seat:
-                LINEAR_SEAT_USED = seat
-                warn(f"linear: reading Linear as {seat}")
-            return proc
-        _linear_failed_seats.add(seat)
-        if n + 1 < len(live):
-            warn(f"linear: {seat} credentials failed (exit {proc.returncode});  falling back")
-    return proc
+        try:
+            data = linear_board.query(
+                seat,
+                env["LINEAR_CLIENT_ID"],
+                env["LINEAR_CLIENT_SECRET"],
+                query,
+                max_chars=LINEAR_MAX_CHARS,
+            )
+        except linear_board.BoardCliFailure as err:
+            last_err = err
+            if not _linear_is_auth_failure_board(err):
+                raise _linear_board_failure(err) from None
+            _linear_failed_seats.add(seat)
+            if n + 1 < len(live):
+                warn(f"linear: {seat} credentials failed (exit {err.code});  falling back")
+            continue
+        if LINEAR_SEAT_USED != seat:
+            LINEAR_SEAT_USED = seat
+            warn(f"linear: reading Linear as {seat}")
+        return data
+    if last_err is not None:
+        raise _linear_board_failure(last_err)
+    raise LinearSourceError("linear: no configured Linear seat credentials")
 
 
 def _linear_query(query: str, timeout_s: int = LINEAR_QUERY_TIMEOUT_S) -> dict:
-    """One GraphQL read through the simple-board CLI.  Fail-closed:  any transport, exit-code or
+    """One GraphQL read through the board stack.  Fail-closed:  any transport, exit-code or
     GraphQL error raises LinearSourceError so a broken read can never look like an empty board."""
     try:
-        proc = _linear_run(query, timeout_s)
-    except (OSError, subprocess.TimeoutExpired) as e:
+        data = _linear_run(query, timeout_s)
+    except LinearSourceError:
+        raise
+    except Exception as e:
         raise LinearSourceError(f"linear: simple-board api query failed to run: {e}") from None
-    if proc.returncode != 0:
-        # stderr can carry request data or credentials, so it never reaches the error:  only
-        # the exit code plus a normalized reason from an allow-list of fixed CLI messages.
-        stderr = proc.stderr or ""
-        if "exceeds --max-chars" in stderr:
-            raise LinearSourceError(
-                f"linear: simple-board api query exited {proc.returncode}: response exceeds "
-                f"the CLI size cap",
-                overflow=True,
-            )
-        if "no Linear app credentials" in stderr:
-            raise LinearSourceError(
-                f"linear: simple-board api query exited {proc.returncode}: no Linear app identity "
-                f"for this run (the shared Fleet app was retired 2026-11-05;  export "
-                f"LINEAR_BF_ORACLE_CLIENT_ID/_SECRET or LINEAR_GB_ORACLE_CLIENT_ID/_SECRET, or "
-                f"LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET)"
-            )
-        raise LinearSourceError(f"linear: simple-board api query exited {proc.returncode}")
-    try:
-        data = json.loads(proc.stdout)
-    except ValueError as e:
-        raise LinearSourceError(f"linear: unreadable JSON from simple-board: {e}") from None
     if isinstance(data, dict) and data.get("errors"):
         raise LinearSourceError(f"linear: GraphQL errors: {str(data['errors'])[:300]}")
     if not isinstance(data, dict):
