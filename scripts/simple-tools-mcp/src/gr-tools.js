@@ -199,6 +199,9 @@ export class GrRelayClient {
       const outcomeUnknown=()=>({status:502,body:{error:"workflow_outcome_unknown",outcome:"unknown",retryable:false,...(githubCode?{github_code:githubCode}:{})}});
       // Never reflect upstream error prose; a duplicate can be pending/unknown.
       if(response.status===409 && ['pending','unknown'].includes(parsed.outcome)) return outcomeUnknown();
+      if (parsed.error === "verifier_unavailable") {
+        return {status: response.status, body: {error: "workflow_request_refused", reason: "verifier_unavailable", retryable: true}};
+      }
       if(response.status>=500 && parsed.retryable!==true) {
         if (response.status === 502 && parsed.outcome === "unknown" && githubCode) return outcomeUnknown();
         return unavailable();

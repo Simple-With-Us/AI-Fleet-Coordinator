@@ -33,11 +33,17 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import git_read
-from .app_tokens import AppTokenError
+from .app_tokens import AppTokenError, missing_app_credential
 from .audit import AuditLog, UnauthorizedAuditor
 from .github_client import DispatchPreReadUnavailable, GitHubClient, RelayGitHubError
 from .outcomes import OutcomeStore, OutcomeStoreError, key_for
-from .policy import DEFAULT_RATE_PER_HOUR, DEFAULT_WRITE_RATE_PER_HOUR, PolicyError, SeatPolicy
+from .policy import (
+    DEFAULT_RATE_PER_HOUR,
+    DEFAULT_WRITE_RATE_PER_HOUR,
+    PolicyError,
+    SeatPolicy,
+    auth_failure_response,
+)
 from .policy_input import seats_json_from_env
 from .secret_scan import MAX_SCAN_NODES, find_secret, reject_secrets, scan_args
 
@@ -303,12 +309,14 @@ class Relay:
 
             if action in ACTIONS:
                 return self.typed_gateway.handle(token, action, args, proof=proof)
-        seat = self.policy.authenticate(token, proof)
+        seat, auth_reason = self.policy.authenticate_with_reason(token, proof)
         if seat is None:
             # One bounded, rate-limited row (seat unknown, no token material)
             # so a credential spray is visible without filling the log.
-            self._unauth_auditor.record(self.audit, action)
-            return 401, {"error": "unauthenticated"}
+            # The cause is a closed word (seat_not_in_policy, bearer_rejected,
+            # verifier_unavailable, unauthenticated), never the credential.
+            self._unauth_auditor.record(self.audit, action, auth_reason)
+            return auth_failure_response(auth_reason)
         # The action string comes from the URL path:  a credential-shaped one
         # must never be persisted in the audit row or echoed in an error.
         if find_secret(action):
@@ -438,12 +446,16 @@ class Relay:
                 detail = {"reason": str(exc)}
                 return 503, {"error": str(exc)}
             except AppTokenError as exc:
-                # The mint failed before any GitHub write was attempted:  definite
-                # refusal, the key is released, the seat can retry as-is.  The
-                # message names the missing variable but never carries a value
-                # (AppTokenError's contract).
+                # The mint failed before any GitHub write was attempted: definite
+                # refusal, the key is released. A missing or unusable App id or
+                # key is a closed reason and the exception text (which names the
+                # variable) is not returned. Other mint failures keep the
+                # existing 503; that text names a variable and never a value.
                 self._release(key, "refused")
                 outcome = "unavailable"
+                if missing_app_credential(exc):
+                    detail = {"error": "no_app_credential"}
+                    return 403, {"error": "no_app_credential"}
                 detail = {"error": "app_token_error"}
                 return 503, {"error": f"app-token minting failed: {exc}"}
             except ValueError as exc:
@@ -790,6 +802,7 @@ def _is_workflow_read(self, action: str) -> bool:
 
 def _dispatch_workflow(self, seat: str, action: str, args: dict, repo: str) -> dict:
     # Imported here: workflow_verbs imports this module.
+    from .app_tokens import AppTokenError, InstallationReadError
     from .workflow_verbs import CeilingDenied, Unknown, WorkflowVerbs
 
     if self.app_minter is None:
@@ -800,15 +813,15 @@ def _dispatch_workflow(self, seat: str, action: str, args: dict, repo: str) -> d
             raise PolicyDenied("seat permission ceiling insufficient")
         if app_slug != seat:
             raise PolicyDenied("own App required")
-        from .app_tokens import AppTokenError, InstallationReadError
-
         try:
             return self.app_minter.installation_metadata(app_slug, repo)
         except InstallationReadError as exc:
             raise RelayGitHubError(
                 exc.status, "installation metadata read failed", retry_after=exc.retry_after
             ) from None
-        except AppTokenError:
+        except AppTokenError as exc:
+            if missing_app_credential(exc):
+                raise
             raise ServerUnavailable("own installation metadata unavailable") from None
     try:
         # handle() has already run policy.authorize for this exact seat, action and repo
@@ -825,6 +838,8 @@ def _dispatch_workflow(self, seat: str, action: str, args: dict, repo: str) -> d
             args=args,
         )
         return handle.run(action, args)
+    except AppTokenError:
+        raise
     except Unknown:
         raise ServerUnavailable("the seat's own App credential is unavailable") from None
     except CeilingDenied as exc:

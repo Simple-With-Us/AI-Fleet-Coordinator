@@ -1548,6 +1548,15 @@ export class HostedTools {
     // own pre-write app-token outage, which it marks retryable:  only that
     // marker keeps "nothing was written".
     if (status >= 500) {
+      // The verifier being unreachable is a definite pre-write answer, not a
+      // mint failure and not an unknown GitHub outcome.  It must be named
+      // before the generic retryable-5xx mint message.
+      if (body && typeof body === "object" && (body.error === "verifier_unavailable" || body.reason === "verifier_unavailable")) {
+        throw new ToolError("relay_refused", refusalReasonText("verifier_unavailable"), {
+          retryable: true,
+          extra: { reason: "verifier_unavailable" },
+        });
+      }
       if (body && typeof body === "object" && body.retryable === true) {
         throw new ToolError("unavailable", "git-relay cannot mint a GitHub App token right now (retryable).  Nothing was written;  try again shortly.");
       }

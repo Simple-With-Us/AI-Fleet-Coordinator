@@ -15,17 +15,20 @@ import re
 import stat
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
 from git_relay.app_tokens import (
+    AppTokenError,
     MINT_PERMISSION_CEILING,
     MINT_READ_ONLY_PERMISSIONS,
     mint_permission_allowed,
 )
+from git_relay.audit import AuditLog
 from git_relay.policy import SeatPolicy
-from git_relay.server import ACTION_REQUIRED_PERMISSIONS
+from git_relay.server import ACTION_REQUIRED_PERMISSIONS, Relay
 from git_relay.shared_bearer import SharedBearerVerifier
 from git_relay.tests.test_bot_compatibility import BOT_IDENTITIES
 from git_relay.workflow_verbs import SPECS
@@ -479,3 +482,125 @@ class HostedOAuthReviewedPolicyTests(unittest.TestCase):
             flagged, {"CLAUDE", "CODEX", "CURSOR", "ECHO", "GROK-WEB", "JET-CHAT", "WISE"}
         )
         self.assertNotIn("JET", flagged)
+
+
+class _Calls:
+    def __init__(self):
+        self.calls = []
+
+    def comment_pr(self, *args, **kwargs):
+        self.calls.append(("comment_pr", args, kwargs))
+
+
+class _OkMinter:
+    def token_for(self, slug, repo, perms):
+        return "ghs_test", time.time() + 3600
+
+    def installation_metadata(self, slug, repo):
+        return {"slug": slug}
+
+
+class _MissingApp:
+    def token_for(self, slug, repo, perms):
+        raise AppTokenError("fleet-secrets has no value for GH_APP_SWU_ZC_ID")
+
+    def installation_metadata(self, slug, repo):
+        raise AppTokenError("fleet-secrets has no value for GH_APP_SWU_ZC_PRIVATE_KEY")
+
+
+class _TimeoutApp:
+    def token_for(self, slug, repo, perms):
+        raise AppTokenError("fleet-secrets lookup timed out for GH_APP_SWU_ZC_ID")
+
+
+class ZcAuthReasonTests(unittest.TestCase):
+    """A seat ST-MCP accepts (ZC) must not collapse to a bare unauthenticated."""
+
+    REPO = "Simple-With-Us/AI-Fleet-Coordinator"
+    ARGS = {"repo": REPO, "number": 1, "body": "hello"}
+
+    def relay(self, seats, verifier, minter):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        return Relay(
+            SeatPolicy(seat_policy.compact(seats), verifier=verifier),
+            _Calls(),
+            AuditLog(os.path.join(self.tmp.name, "a.jsonl")),
+            app_minter=minter,
+            workflow_verbs_enabled=True,
+        )
+
+    def rows(self):
+        path = os.path.join(self.tmp.name, "a.jsonl")
+        with open(path, encoding="utf-8") as fh:
+            return [json.loads(line) for line in fh if line.strip()]
+
+    def test_a_confirmed_zc_bearer_is_its_own_app(self):
+        policy = SeatPolicy(seat_policy.compact(SEATS), verifier=_Verifier())
+        self.assertEqual(policy.authenticate_with_reason(bearer_for("ZC")), ("swu-zc", ""))
+        # MA stays admitted on the same loaded policy: the disagreement is per seat.
+        self.assertEqual(policy.authenticate_with_reason(bearer_for("MA")), ("swu-rob", ""))
+
+    def test_zc_missing_from_the_loaded_policy_is_seat_not_in_policy(self):
+        without = {slug: cfg for slug, cfg in SEATS.items() if slug != "swu-zc"}
+        verifier = _Verifier()
+        policy = SeatPolicy(seat_policy.compact(without), verifier=verifier)
+        token = bearer_for("ZC")
+        self.assertEqual(policy.authenticate_with_reason(token), (None, "seat_not_in_policy"))
+        relay = self.relay(without, verifier, _OkMinter())
+        status, body = relay.handle(token, "comment_pr", self.ARGS)
+        self.assertEqual(status, 401)
+        self.assertEqual(body, {"error": "seat_not_in_policy"})
+        self.assertEqual(relay.client.calls, [])
+        row = self.rows()[-1]
+        self.assertEqual(row["result"], "unauthenticated")
+        self.assertEqual(row["cause"], "seat_not_in_policy")
+        self.assertNotIn(token, json.dumps(row))
+        # A seat that is in the loaded map still authenticates.
+        self.assertEqual(policy.authenticate(bearer_for("MA")), "swu-rob")
+
+    def test_a_worker_refusal_of_zc_is_bearer_rejected(self):
+        policy = SeatPolicy(seat_policy.compact(SEATS), verifier=_Verifier(confirmed=False))
+        token = bearer_for("ZC")
+        self.assertEqual(policy.authenticate_with_reason(token), (None, "bearer_rejected"))
+        relay = self.relay(SEATS, _Verifier(confirmed=False), _OkMinter())
+        status, body = relay.handle(token, "comment_pr", self.ARGS)
+        self.assertEqual((status, body["error"]), (401, "bearer_rejected"))
+
+    def test_a_garbage_token_stays_unauthenticated(self):
+        policy = SeatPolicy(seat_policy.compact(SEATS), verifier=_Verifier())
+        self.assertEqual(policy.authenticate_with_reason("wrong" * 8), (None, "unauthenticated"))
+        relay = self.relay(SEATS, _Verifier(), _OkMinter())
+        status, body = relay.handle("wrong" * 8, "comment_pr", self.ARGS)
+        self.assertEqual((status, body), (401, {"error": "unauthenticated"}))
+        row = self.rows()[-1]
+        self.assertEqual(row["result"], "unauthenticated")
+        self.assertNotIn("cause", row)
+
+    def test_zc_with_no_verifier_is_verifier_unavailable(self):
+        policy = SeatPolicy(seat_policy.compact(SEATS))
+        self.assertEqual(
+            policy.authenticate_with_reason(bearer_for("ZC")), (None, "verifier_unavailable")
+        )
+        relay = self.relay(SEATS, None, _OkMinter())
+        status, body = relay.handle(bearer_for("ZC"), "comment_pr", self.ARGS)
+        self.assertEqual(status, 503)
+        self.assertEqual(body, {"error": "verifier_unavailable", "retryable": True})
+
+    def test_a_missing_zc_app_credential_is_named_and_not_echoed(self):
+        relay = self.relay(SEATS, _Verifier(), _MissingApp())
+        status, body = relay.handle(bearer_for("ZC"), "comment_pr", self.ARGS)
+        self.assertEqual((status, body), (403, {"error": "no_app_credential"}))
+        self.assertEqual(relay.client.calls, [])
+        status, body = relay.handle(
+            bearer_for("ZC"), "wf_installation_metadata", {"repo": self.REPO}
+        )
+        self.assertEqual((status, body), (403, {"error": "no_app_credential"}))
+        self.assertNotIn("GH_APP", json.dumps(body))
+
+    def test_a_transient_mint_failure_is_not_called_a_missing_credential(self):
+        relay = self.relay(SEATS, _Verifier(), _TimeoutApp())
+        status, body = relay.handle(bearer_for("ZC"), "comment_pr", self.ARGS)
+        self.assertEqual(status, 503)
+        self.assertNotEqual(body.get("error"), "no_app_credential")
+        self.assertTrue(body["error"].startswith("app-token minting failed:"))

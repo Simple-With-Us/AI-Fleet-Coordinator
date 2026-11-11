@@ -489,6 +489,40 @@ class PolicySharedAuthTest(unittest.TestCase):
             json.dumps({"swu-fixer": {"auth": "shared", "identity": IDENTITY, **SEAT_CFG}})
         )
         self.assertIsNone(policy.authenticate(TOKEN))
+        self.assertEqual(
+            policy.authenticate_with_reason(TOKEN), (None, "verifier_unavailable")
+        )
+
+    def test_a_bearer_outside_the_loaded_map_is_seat_not_in_policy(self):
+        v = verifier_for(ok_answer())
+        policy = SeatPolicy(
+            json.dumps({"swu-fixer": {"auth": "shared", "identity": IDENTITY, **SEAT_CFG}}),
+            verifier=v,
+        )
+        self.assertEqual(
+            policy.authenticate_with_reason("gbb_oracle_" + "c" * 43),
+            (None, "seat_not_in_policy"),
+        )
+        self.assertEqual(v._transport.calls, [])
+        self.assertEqual(policy.authenticate_with_reason("not-a-bearer"), (None, "unauthenticated"))
+
+    def test_a_worker_refusal_and_an_outage_are_different_causes(self):
+        refused = verifier_for(lambda body: (401, b'{"ok":false,"reason":"mismatch"}'))
+        policy = SeatPolicy(
+            json.dumps({"swu-fixer": {"auth": "shared", "identity": IDENTITY, **SEAT_CFG}}),
+            verifier=refused,
+        )
+        self.assertEqual(policy.authenticate_with_reason(TOKEN), (None, "bearer_rejected"))
+        self.assertIsNone(refused.resolve(TOKEN))
+        self.assertEqual(len(refused._transport.calls), 1, "a refusal is cached")
+        down = verifier_for(lambda body: (503, b"down"))
+        policy = SeatPolicy(
+            json.dumps({"swu-fixer": {"auth": "shared", "identity": IDENTITY, **SEAT_CFG}}),
+            verifier=down,
+        )
+        self.assertEqual(down.resolve_detail(TOKEN), (None, "verifier_unavailable"))
+        self.assertEqual(policy.authenticate_with_reason(TOKEN), (None, "verifier_unavailable"))
+        self.assertEqual(len(down._transport.calls), 2, "an outage is not cached")
 
     def test_verified_identity_without_a_matching_seat_is_denied(self):
         v = verifier_for(ok_answer(identity="GB-ORACLE"))

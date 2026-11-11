@@ -73,6 +73,33 @@ class AppTokenError(Exception):
     """A mint or credential lookup failed;  never carries secret material."""
 
 
+# Messages that mean this seat's App material is missing or unusable, not a
+# transient lookup or an upstream mint glitch.  Matched on the fixed prefixes
+# AppTokenError uses.  The HTTP answer is the closed reason, never this text.
+_NO_APP_CREDENTIAL_EXACT = frozenset(
+    {
+        "app key belongs to a different app",
+        "app installation is missing, suspended, or on another account",
+        "own App identity unverifiable",
+        "invalid installation lookup",
+    }
+)
+
+
+def missing_app_credential(exc: BaseException) -> bool:
+    """True when the mint failed because the seat's own App id or key is absent or unusable."""
+    text = str(exc)
+    if text in _NO_APP_CREDENTIAL_EXACT:
+        return True
+    if text.startswith("fleet-secrets has no value for "):
+        return True
+    if text.startswith("fleet-secrets returned an empty value for "):
+        return True
+    if text.startswith("app id for ") and text.endswith(" is not an integer"):
+        return True
+    return False
+
+
 def _b64(data: bytes) -> bytes:
     return base64.urlsafe_b64encode(data).rstrip(b"=")
 
