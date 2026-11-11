@@ -10,7 +10,11 @@ on:
 # instead of racing the newest one to the required check.
 concurrency:
   group: ci-${{ github.repository }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Main is the release source: once a main CI run starts it is never cancelled
+  # (the single pending slot simply moves to the newest push), so a merge storm
+  # cannot starve the release gate of a completed CI run (AFC-653).  Pull
+  # request runs keep the supersede-cancel behavior.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 # Least privilege: every job below only reads the checkout and the toolchains,  so the
 # workflow grants contents read and nothing else.
