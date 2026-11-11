@@ -79,7 +79,28 @@ THREAD_LINK_FORM = "zcode://session/{sid}"
 WAKE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{2,}")
 STOP_WORDS = frozenset(
-    ["the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with", "at", "by", "from", "zcode", "ops", "ale", "the", "this", "that"]
+    [
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "of",
+        "to",
+        "in",
+        "on",
+        "for",
+        "with",
+        "at",
+        "by",
+        "from",
+        "zcode",
+        "ops",
+        "ale",
+        "the",
+        "this",
+        "that",
+    ]
 )
 
 #: Dedupe is check-and-mutate against one file:  one lock guards both halves, so two posts of
