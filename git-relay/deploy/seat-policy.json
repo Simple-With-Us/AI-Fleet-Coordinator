@@ -182,7 +182,14 @@
         "wf_issue_dependency_remove",
         "wf_installation_metadata",
         "wf_branch_rules",
-        "wf_rulesets"
+        "wf_rulesets",
+        "wf_pr_search",
+        "wf_repo_list",
+        "wf_review_thread_comments",
+        "wf_file_patch",
+        "wf_issue_state_set",
+        "wf_issue_milestone_set",
+        "wf_release_notes_preview"
       ],
       "mint_permissions": {
         "actions": "write",
@@ -395,7 +402,14 @@
         "wf_run_logs",
         "wf_artifact_download",
         "wf_branch_rules",
-        "wf_rulesets"
+        "wf_rulesets",
+        "wf_pr_search",
+        "wf_repo_list",
+        "wf_review_thread_comments",
+        "wf_file_patch",
+        "wf_issue_state_set",
+        "wf_issue_milestone_set",
+        "wf_release_notes_preview"
       ],
       "mint_permissions": "fleet",
       "repos": "fleet"
@@ -582,7 +596,14 @@
         "wf_issue_dependency_add",
         "wf_issue_dependency_remove",
         "wf_branch_rules",
-        "wf_rulesets"
+        "wf_rulesets",
+        "wf_pr_search",
+        "wf_repo_list",
+        "wf_review_thread_comments",
+        "wf_file_patch",
+        "wf_issue_state_set",
+        "wf_issue_milestone_set",
+        "wf_release_notes_preview"
       ],
       "mint_permissions": "fleet",
       "repos": "fleet"

@@ -15,7 +15,9 @@ class PatchPolicyTests(unittest.TestCase):
         self.assertEqual(set(result), set(SEATS))
         for name, before in SEATS.items():
             expected = copy.deepcopy(before)
-            expected["actions"].append(ACTION)
+            # Idempotent: the canonical file now grants wf_file_patch already.
+            if ACTION not in expected["actions"]:
+                expected["actions"].append(ACTION)
             self.assertEqual(result[name], expected)
         self.assertEqual(prepare(result, digest(result)), result)
 
