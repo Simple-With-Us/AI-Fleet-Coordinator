@@ -800,9 +800,10 @@ def trust_main(
 # --------------------------------------------------------------------------------------------
 
 RELEASE_SOURCE = "codex-archive-release"
-# One page of the registry's letter history:  the API pages by limit only, so more live Codex registrations than
-# this means a missed release (the 36 hour sweep still frees it), never a wrong one.
-HISTORY_LIMIT = 1000
+# One page of the registry's letter history, newest letter first:  the API pages by limit only and has no live-only
+# filter, so a live registration whose letter is older than the newest HISTORY_LIMIT letters of Codex is missed (the
+# 36 hour sweep still frees it), never wrongly closed.  A full page is reported as `truncated`.
+HISTORY_LIMIT = 5000
 ANCESTOR_DEPTH = 8  # how far up a sub-thread's parents are followed to find an archived chat
 SID_SHAPE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 USAGE = (
@@ -876,7 +877,8 @@ def open_store(path: str) -> sqlite3.Connection:
 def live_registrations(
     env: Mapping[str, str], location: str, db: str
 ) -> tuple[list[dict[str, Any]], str]:
-    """The live Codex registrations of this host, newest letter first, and "" (or [] and an error).
+    """The live Codex registrations of this host, newest letter first, and "" (or [] and an error).  When the page of
+    history was full, a last row `{"truncated": True}` says older letters were not read.
 
     The registry API answers when its URL is configured (the server's store, the one store now), else the local
     registry file;  a host with neither has nothing to release."""
@@ -911,11 +913,13 @@ def live_registrations(
         ):
             seen.add(sid)
             out.append(row)
+    if len(items) >= HISTORY_LIMIT:
+        out.append({"truncated": True})  # a full page:  older live registrations were not read
     return out, ""
 
 
 def _close_note(env: Mapping[str, str], sid: str, reason: str) -> None:
-    """Mark the hook's note for a released chat closed, so `show` no longer names its old letter.  Best effort:  the
+    """Mark the hook's note for a released chat released, so it no longer reads as holding its old letter.  Best effort:  the
     registry is the record, and the chat's next start or prompt registers it again if it is opened."""
     path = PL.note_path(env, SEAT, sid)
     try:
@@ -923,7 +927,10 @@ def _close_note(env: Mapping[str, str], sid: str, reason: str) -> None:
             note = json.load(fh)
         if not isinstance(note, dict) or note.get("state") != "open":
             return
-        note["state"] = "closed"
+        # Not "closed":  a closed note makes the hook ignore the chat's prompts, while any state that is not "open"
+        # makes its next prompt (or a sub-agent's next SubagentStop) register it again, which is what a chat that
+        # is unarchived and used again needs.
+        note["state"] = "released"
         note["released"] = {"reason": reason, "at": time.time()}
         PL._write_private(path, (json.dumps(note, sort_keys=True) + "\n").encode("utf-8"), 0o600)
     except (OSError, ValueError):
@@ -969,6 +976,8 @@ def release_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int
         rows, error = live_registrations(env, location, db)
         if error:
             return _emit(stdout, {"error": error}, 2)
+        truncated = any(row.get("truncated") for row in rows)
+        rows = [row for row in rows if not row.get("truncated")]
         due: list[tuple[str, str]] = []
         for row in rows:
             sid = _s(row.get("native_session_id"))
@@ -1036,6 +1045,7 @@ def release_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int
         "location": location,
         "applied": bool(args.apply),
         "registered": len(rows),
+        "truncated": truncated,
         "released": released,
         "kept": kept,
         "absent": absent,

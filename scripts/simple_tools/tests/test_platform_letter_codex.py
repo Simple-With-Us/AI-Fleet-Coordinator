@@ -1792,9 +1792,31 @@ class ReleaseTests(HookBase):
         self.assertEqual([r["session_id"] for r in out["released"]], [done])
         self.assertEqual(self.reg_state(done), "closed")
         self.assertNotEqual(self.reg_state(live), "closed")
-        self.assertEqual(self.note(done)["state"], "closed")
+        self.assertEqual(self.note(done)["state"], "released")
         self.assertEqual(self.note(done)["released"]["reason"], "archived")
         self.assertEqual(self.note(live)["state"], "open")
+        self.assertFalse(out["truncated"])
+
+    def test_a_released_chat_that_is_unarchived_and_used_again_registers_again(self) -> None:
+        sid = self.chat(1)
+        self.archive(sid)
+        self.release("--apply")
+        self.assertEqual(self.reg_state(sid), "closed")
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute("UPDATE threads SET archived = 0 WHERE id = ?", (sid,))
+        conn.close()
+        self.prompt(sid, "back to work")
+        self.assertNotEqual(self.reg_state(sid), "closed")
+        self.assertEqual(self.note(sid)["state"], "open")
+        self.assertRegex(self.note(sid)["label"], PAIR)
+
+    def test_a_full_history_page_is_reported_as_truncated(self) -> None:
+        sid = self.chat(1)
+        with mock.patch.object(C, "HISTORY_LIMIT", 1):
+            code, out = self.release()
+        self.assertEqual((code, out["registered"], out["truncated"]), (0, 1, True))
+        self.assertNotEqual(self.reg_state(sid), "closed")
 
     def test_a_rerun_is_a_no_op(self) -> None:
         done = self.chat(1)
