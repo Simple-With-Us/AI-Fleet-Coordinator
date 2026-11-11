@@ -75,11 +75,15 @@ class InstallTests(ListenerHarness):
         self.assertEqual(mode_of(self.home / ".simple-tools" / "listener.toml"), 0o600)
         # One listener, on the server, holds every seat (owner, Tue, Nov 10):  the Mac sample
         # holds no [seat.*] table, and keeps [daemon] and [platform.claude-code] for the CLI.
-        self.assertNotIn("[seat.", sample.replace("No [seat.*] table", ""))
+        # The comments name the table ("no [seat.*] table");  no line outside a comment opens one.
+        self.assertEqual(
+            [line for line in sample.splitlines() if "[seat." in line and not line.lstrip().startswith("#")],
+            [],
+        )
         self.assertIn(
-            "no reader on this Mac (left out on purpose): CODEX, MM, BF-BUILDER",
+            "no reader on this Mac (left out on purpose): CLAUDE, CODEX, MM, BF-BUILDER\n",
             sample,
-            "a bot with a credential file is named, and AG (no file) is not",
+            "a bot with a credential file is named (CLAUDE too, now a server seat), and AG (no file) is not",
         )
         cfg = C.from_dict(__import__("tomllib").loads(sample))
         self.assertEqual((sorted(cfg.seats), sorted(cfg.disabled)), ([], []))
@@ -211,6 +215,15 @@ class InitAndTestWakeTests(ListenerHarness):
         self.assertEqual(cfg.owner_user_id, 12)
         # claude, codex, cursor and grok-bot@ (tag GROK) are pinned; Sentry and minimax-bot@ (tag MINIMAX) are not.
         self.assertEqual(sorted(cfg.eligible_user_ids), [10, 11, 13, 14])
+        # The sample init writes holds no seat since the one-listener cutover (owner, Tue, Nov 10),
+        # so the CLAUDE credential is named as present and not checked as an enabled seat.
+        self.assertIn("credentials present (not enabled by this command): CLAUDE\n", result.out)
+        self.assertNotIn("CLAUDE: file mode ok", result.out)
+        # An enabled seat is still checked:  a Mac config holding [seat.CLAUDE], on the
+        # two-instance fixture the harness reads.
+        self.write_config()
+        result = self.run_cli("daemon", "init", "--yes")
+        self.assertEqual(result.code, 0, result.err)
         self.assertIn("CLAUDE: file mode ok, role 400", result.out)
 
     def codex_rc(self) -> Path:

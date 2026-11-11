@@ -1214,14 +1214,22 @@ class PartitionTests(ServerHarness):
         self.assertEqual(self.fake.registrations, [])
 
     def test_the_cli_run_returns_2_without_waiting(self) -> None:
+        # A seat of the other instance, on the two-instance fixture:  the live partition gives CLAUDE
+        # to the server since the one-listener cutover (owner, Tue, Nov 10), and there the config
+        # would load and the run would never return.
         self.write_server_config(seats='[seat.CLAUDE]\nbot = "Claude"\n')
-        result = self.run_cli("daemon", "run", "--wait-lock", env=self.server_env())
+        result = self.run_cli(
+            "daemon", "run", "--wait-lock",
+            env=self.server_env(SIMPLE_TOOLS_PARTITION=str(TWO_INSTANCE_PARTITION)),
+        )
         self.assertEqual(result.code, 2)
         self.assertIn("refusing to start", result.err)
         self.assertEqual(self.fake.registrations, [])
 
     def test_a_reload_that_adds_a_seat_of_the_other_instance_keeps_the_running_config(self) -> None:
-        daemon = self.started()
+        # The mechanics, on the two-instance fixture:  the live partition has given CLAUDE to the
+        # server since the one-listener cutover (owner, Tue, Nov 10).
+        daemon = self.started(env=self.server_env(SIMPLE_TOOLS_PARTITION=str(TWO_INSTANCE_PARTITION)))
         self.write_server_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n')
         daemon.reload()
         self.assertEqual(sorted(daemon.seats), [SEAT])
