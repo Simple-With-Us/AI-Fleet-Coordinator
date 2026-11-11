@@ -156,8 +156,10 @@ def _router_key(name: str, seat: str, label: str) -> Spec:
         secret=True,
         pattern=r"^[!-~]{16,512}$",
         note="the bearer the wake router checks on every %s request, the same value as the "
-        "listener's %s_ROUTINE_KEY;  never cached, and while it cannot be read the router refuses "
-        "that seat's requests and says why on /health, and every other seat goes on" % (seat, seat),
+        "listener's %s_ROUTINE_KEY;  never written to disk, held in memory through a failed "
+        "refresh and changed only by a fetch that worked, and while the router holds none it "
+        "refuses that seat's requests and says why on /health, and every other seat goes on"
+        % (seat, seat),
         group="Wake Router",
         label="%s Wake Router Bearer" % label,
         hosts="server",

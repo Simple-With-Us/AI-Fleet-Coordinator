@@ -176,34 +176,51 @@ class Key(Settings):
         self.assertNotIn(KEY_KNOB, blob.replace("key-unavailable", ""))
         self.assertNotIn(KEY, json.dumps(knobs.report()))
 
-    def test_a_refresh_reads_a_new_key(self) -> None:
+    # Only a refresh whose fetch worked may change the key (AGENTS.md:  a background refresh keeps
+    # last-known-good on failure).  An Infisical outage must not turn every seat away.
+
+    def test_a_good_key_survives_a_failed_refresh(self) -> None:
+        settings = self.loaded(**ARMED, **{KEY_KNOB: KEY})
+        self.fake.set(mode="fail")
+        self.assertFalse(settings.refresh())
+        self.assertEqual(settings.routine_key(), (KEY, ""))
+        self.assertIs(settings["delivery_enabled"], True, "the other settings are still held")
+        self.assertIn("key-kept refresh-failed seat=CLAUDE key=held", self.stderr.getvalue())
+        self.fake.set(secrets={**ARMED, KEY_KNOB: KEY})
+        self.assertTrue(settings.refresh())
+        self.assertEqual(settings.routine_key(), (KEY, ""))
+
+    def test_a_good_key_survives_a_refresh_that_raises(self) -> None:
+        settings = self.loaded(**{KEY_KNOB: KEY})
+        with mock.patch.object(WS, "from_knobs", side_effect=RuntimeError("boom")):
+            self.assertFalse(settings.refresh())
+        self.assertEqual(settings.routine_key(), (KEY, ""))
+        with mock.patch.object(knobs, "refresh", side_effect=RuntimeError("boom")):
+            self.assertFalse(settings.refresh())
+        self.assertEqual(settings.routine_key(), (KEY, ""))
+        self.assertIn("key-kept refresh-error seat=CLAUDE key=held", self.stderr.getvalue())
+
+    def test_a_good_fetch_without_the_knob_drops_the_key(self) -> None:
+        settings = self.loaded(**{KEY_KNOB: KEY})
+        self.fake.set(secrets={})
+        self.assertTrue(settings.refresh())
+        self.assertEqual(settings.routine_key(), ("", "unset"))
+
+    def test_a_good_fetch_with_a_new_value_takes_it(self) -> None:
         settings = self.loaded(**{KEY_KNOB: KEY})
         rotated = KEY[::-1]
         self.fake.set(secrets={KEY_KNOB: rotated})
         self.assertTrue(settings.refresh())
         self.assertEqual(settings.routine_key(), (rotated, ""))
 
-    def test_a_failed_refresh_drops_the_key_and_a_good_one_brings_it_back(self) -> None:
-        settings = self.loaded(**ARMED, **{KEY_KNOB: KEY})
-        self.fake.set(mode="fail")
-        self.assertFalse(settings.refresh())
-        self.assertEqual(settings.routine_key(), ("", "unreachable:scoped-read-failed"))
-        self.assertIs(settings["delivery_enabled"], True, "the other settings are still held")
-        self.fake.set(secrets={**ARMED, KEY_KNOB: KEY})
-        self.assertTrue(settings.refresh())
-        self.assertEqual(settings.routine_key(), (KEY, ""))
-
-    def test_a_refresh_that_errors_drops_the_key(self) -> None:
-        settings = self.loaded(**{KEY_KNOB: KEY})
-        with mock.patch.object(WS, "from_knobs", side_effect=RuntimeError("boom")):
-            self.assertFalse(settings.refresh())
-        self.assertEqual(settings.routine_key(), ("", "refresh-error-RuntimeError"))
-
-    def test_the_key_is_dropped_when_it_is_unset_later(self) -> None:
+    def test_a_failed_refresh_does_not_bring_back_a_revoked_key(self) -> None:
         settings = self.loaded(**{KEY_KNOB: KEY})
         self.fake.set(secrets={})
-        self.assertTrue(settings.refresh())
+        self.assertTrue(settings.refresh())  # revoked
+        self.fake.set(mode="fail")
+        self.assertFalse(settings.refresh())
         self.assertEqual(settings.routine_key(), ("", "unset"))
+        self.assertIn("key-kept refresh-failed seat=CLAUDE key=none", self.stderr.getvalue())
 
     def test_the_mac_reader_never_asks_for_the_key(self) -> None:
         self.fake.set(secrets={KEY_KNOB: KEY})
@@ -632,7 +649,7 @@ class Wiring(Settings):
             router = seats.routers[CW.SEAT]
             seen["key"] = router.routine_key()
             self.fake.set(mode="fail")
-            router.config.refresh()  # an outage on a later refresh
+            router.config.refresh()  # an outage on a later refresh keeps the key held
             seen["after"] = router.routine_key()
             return 0
 
@@ -643,7 +660,7 @@ class Wiring(Settings):
         ):
             self.assertEqual(SVC.main(["serve"]), 0)
         self.assertEqual(seen["key"], (KEY, ""))
-        self.assertEqual(seen["after"], ("", "unreachable:scoped-read-failed"))
+        self.assertEqual(seen["after"], (KEY, ""))
 
     def test_sighup_refreshes(self) -> None:
         self.fake.set(secrets={})
@@ -811,6 +828,15 @@ class OneService(Settings):
         for router in served.seats.routers.values():
             self.assertIs(router.config["delivery_enabled"], True)
             self.assertEqual(router.routine_key()[1], "unset")
+
+    def test_an_outage_keeps_every_seats_key(self) -> None:
+        self.fake.set(secrets={KEY_KNOB: KEY, ZC_KEY_KNOB: ZC_KEY})
+        served = self.two_seats()
+        self.fake.set(mode="fail")
+        self.assertFalse(served.settings.refresh())
+        self.assertEqual(served.seats.routers["CLAUDE"].routine_key(), (KEY, ""))
+        self.assertEqual(served.seats.routers["ZC"].routine_key(), (ZC_KEY, ""))
+        self.assertEqual(served.seats.health()[0], 200, "no seat is turned away by the outage")
 
     def test_a_seat_without_its_key_leaves_the_other_its_own(self) -> None:
         self.fake.set(secrets={KEY_KNOB: KEY})

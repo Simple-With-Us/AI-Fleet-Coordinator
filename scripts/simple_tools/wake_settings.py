@@ -53,9 +53,13 @@ The routine keys, one per seat.  The bearer the listener sends for a seat is tha
 knob WAKE_ROUTER_<SEAT>_KEY in the same folder (KEY_KNOBS), the same value as the listener's
 <SEAT>_ROUTINE_KEY, and never one key shared across seats.  Each is read at load and again on
 every refresh, and held in memory only:  `fleet_knobs` never writes a secret anywhere and fails
-it closed.  When a read of a seat's key fails (an outage, an unset or malformed value), that key
-is dropped, so that seat refuses its requests with 503 and says why on /health until a later
-refresh reads it;  every other seat goes on with its own.  There is no key file.
+it closed.  Only a refresh whose fetch worked may change a key, the same last-known-good rule as
+the values (AGENTS.md, the service contract).  That fetch takes whatever it gives, so an unset or
+malformed value drops the key and a revocation takes effect at the next refresh.  A failed fetch
+or an error keeps the key already held in memory and logs the failure, so an Infisical outage
+does not turn every seat away.  With no key at all (none read since start, or one revoked), that
+seat refuses its requests with 503 and says why on /health until a refresh reads one;  every
+other seat goes on with its own.  There is no key file.
 
 Python 3.11+, standard library only (fleet_knobs is too).
 """
@@ -303,10 +307,17 @@ class WakeSettings(_Refresher, Mapping[str, Any]):
         return self._key
 
     def _take_key(self) -> None:
-        """Read the key again from what `fleet_knobs` fetched, and drop it if that fails."""
+        """Read the key again from what `fleet_knobs` fetched, and drop it if that fails.  Only
+        `load` and a refresh whose fetch worked call this."""
         self._key = read_key(self.seat)
         if not self._key[0]:
             _log("key-unavailable %s seat=%s" % (self._key[1], self.seat))
+
+    def _keep_key(self, why: str) -> None:
+        """A refresh that did not fetch leaves the key as it was.  Names the seat and whether it
+        holds a key, never the key."""
+        held = "held" if self._key[0] else "none"
+        _log("key-kept %s seat=%s key=%s" % (why, self.seat, held))
 
     def _local(self) -> dict[str, Any]:
         return WR.read_local_config(self.local_path, self.defaults, required=self.required)
@@ -343,17 +354,19 @@ class WakeSettings(_Refresher, Mapping[str, Any]):
     def _apply(self, local: Mapping[str, Any], fetched: bool, interval: float) -> bool:
         """Take what the shared fetch gave.  Only a good fetch replaces the values held:  a failed
         one would otherwise answer with an old copy or the defaults, and an outage would turn
-        delivery off, or back on.  The routine key is not held over like the values:  it is
-        whatever this read gave, so a read that fails drops it."""
+        delivery off, or back on.  The routine key follows the same rule:  a good fetch takes
+        whatever it gives, an empty key included, so a revocation takes effect, and a failed
+        fetch or an error keeps the key held in memory."""
+        if not fetched:
+            self._keep_key("refresh-failed")
+            return False
         try:
             base = from_knobs(self.seat, self.defaults)
         except Exception as exc:  # noqa: BLE001 - staleness beats a dead thread
-            self._key = ("", "refresh-error-%s" % type(exc).__name__)
             _log("refresh-error %s seat=%s" % (type(exc).__name__, self.seat))
+            self._keep_key("refresh-error")
             return False
         self._take_key()
-        if not fetched:
-            return False
         self._base = base
         self._values = narrowed(base, local)[0]
         self.interval = interval
@@ -381,9 +394,9 @@ def refresh_together(members: Sequence[WakeSettings]) -> bool:
         fetched = _fetched()
         reason = _fetch_reason()
     except Exception as exc:  # noqa: BLE001 - staleness beats a dead thread
-        for member, _local in held:
-            member._key = ("", "refresh-error-%s" % type(exc).__name__)
         _log("refresh-error %s" % type(exc).__name__)
+        for member, _local in held:
+            member._keep_key("refresh-error")  # no fetch worked, so nothing held changes
         return False
     if not fetched:
         _log("refresh-kept-last-good %s" % reason)

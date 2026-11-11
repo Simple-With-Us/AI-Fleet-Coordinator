@@ -16,9 +16,10 @@
 # scoped to prod:/wake-router (AI Fleet Coordinator) and nothing else.  Every setting and every
 # seat's bearer is a knob in that folder.  There is no key file:  a seat's bearer is its secret
 # knob WAKE_ROUTER_<SEAT>_KEY (the same value as the listener's <SEAT>_ROUTINE_KEY, at least 16
-# characters), read at start and on every refresh and held in memory only.  While a seat's key
-# cannot be read, that seat refuses its requests with 503 and /health says why;  the other seats
-# go on.  Delivery is switched by WAKE_ROUTER_DELIVERY_ENABLED and WAKE_ROUTER_DELIVERY_SEATS (it
+# characters), read at start and on every refresh and held in memory only.  A failed refresh keeps
+# the key held;  only a fetch that worked changes it, so a revocation lands at the next refresh.
+# While a seat holds no key, that seat refuses its requests with 503 and /health says why;  the
+# other seats go on.  Delivery is switched by WAKE_ROUTER_DELIVERY_ENABLED and WAKE_ROUTER_DELIVERY_SEATS (it
 # runs for a seat only when the first is true and the second names it).  Until then every wake is
 # picked, receipted and held.  A seat's local <state>/config.json can only narrow them.  SIGHUP
 # (`systemctl --user reload afc-wake-router.service`) reads the knobs again at once.

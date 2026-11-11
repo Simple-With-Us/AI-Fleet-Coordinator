@@ -1805,7 +1805,7 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "the bearer the wake router checks on every CLAUDE request, the same value as the listener's CLAUDE_ROUTINE_KEY;  never cached, and while it cannot be read the router refuses that seat's requests and says why on /health, and every other seat goes on",
+   "note": "the bearer the wake router checks on every CLAUDE request, the same value as the listener's CLAUDE_ROUTINE_KEY;  never written to disk, held in memory through a failed refresh and changed only by a fetch that worked, and while the router holds none it refuses that seat's requests and says why on /health, and every other seat goes on",
    "folder": "/wake-router"
   },
   {
@@ -1842,7 +1842,7 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "the bearer the wake router checks on every CODEX request, the same value as the listener's CODEX_ROUTINE_KEY;  never cached, and while it cannot be read the router refuses that seat's requests and says why on /health, and every other seat goes on",
+   "note": "the bearer the wake router checks on every CODEX request, the same value as the listener's CODEX_ROUTINE_KEY;  never written to disk, held in memory through a failed refresh and changed only by a fetch that worked, and while the router holds none it refuses that seat's requests and says why on /health, and every other seat goes on",
    "folder": "/wake-router"
   },
   {
@@ -1879,7 +1879,7 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "the bearer the wake router checks on every MC request, the same value as the listener's MC_ROUTINE_KEY;  never cached, and while it cannot be read the router refuses that seat's requests and says why on /health, and every other seat goes on",
+   "note": "the bearer the wake router checks on every MC request, the same value as the listener's MC_ROUTINE_KEY;  never written to disk, held in memory through a failed refresh and changed only by a fetch that worked, and while the router holds none it refuses that seat's requests and says why on /health, and every other seat goes on",
    "folder": "/wake-router"
   },
   {
@@ -1916,7 +1916,7 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "the bearer the wake router checks on every ZC request, the same value as the listener's ZC_ROUTINE_KEY;  never cached, and while it cannot be read the router refuses that seat's requests and says why on /health, and every other seat goes on",
+   "note": "the bearer the wake router checks on every ZC request, the same value as the listener's ZC_ROUTINE_KEY;  never written to disk, held in memory through a failed refresh and changed only by a fetch that worked, and while the router holds none it refuses that seat's requests and says why on /health, and every other seat goes on",
    "folder": "/wake-router"
   }
  ]
