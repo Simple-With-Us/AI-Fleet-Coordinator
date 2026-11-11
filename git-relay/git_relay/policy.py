@@ -42,6 +42,10 @@ AUTH_FAILURE_REASONS = frozenset(
 # bounds come first:  an unbounded set of parsed identities must not multiply
 # the budget by rotating names.  A refused probe behaves exactly like an
 # unverifiable bearer - the ordinary bounded denial row, no verifier call.
+# Scope, stated exactly:  the bound is per relay PROCESS (one SeatPolicy
+# instance's window);  a restart resets it.  That is sufficient only while
+# the relay runs as a single process - a multi-process deployment must move
+# the bound into shared state before relying on it.
 BOOTSTRAP_VERIFY_GLOBAL = 6
 BOOTSTRAP_VERIFY_IDENTITIES = 8
 BOOTSTRAP_VERIFY_PER_IDENTITY = 2

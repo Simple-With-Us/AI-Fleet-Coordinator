@@ -351,19 +351,18 @@ class BootstrapProof(RuntimeProof):
             or result.get("error") != BOOTSTRAP_CAUSE
         ):
             return dict(record, outcome=REFUSED, stage="read", status=status)
+        # Byte-identical to ExternalProof's negative probe for the same proof
+        # id:  the flat wf_file_patch request whose NULL_OID preconditions
+        # (expected_head_sha, base_blob_sha) make a mutation impossible, so
+        # only the refusal differs between the two proofs.
         probe = {
             "repo": self.REPO,
-            "base_sha": NULL_OID,
-            "head_sha": NULL_OID,
-            "merged_into_default": True,
-            "proof_id": proof_id,
-            "patches": [
-                {
-                    "path": path,
-                    "action": "create",
-                    "content": f"bootstrap {proof_id}",
-                }
-            ],
+            "branch": "main",
+            "path": path,
+            "message": "Bounded external negative probe %s: default branch must refuse" % proof_id,
+            "expected_head_sha": NULL_OID,
+            "base_blob_sha": NULL_OID,
+            "edits": [{"start": 0, "end": 0, "text": ""}],
         }
         try:
             status, result = self.call("wf_file_patch", probe)
@@ -593,21 +592,16 @@ def verify_bootstrap_receipt(
     """
     url = BootstrapProof.URL if url is None else url
     repo = BootstrapProof.REPO if repo is None else repo
-    if not isinstance(receipt, dict):
-        raise ValueError("receipt unreadable")
-    record = receipt.get("record")
-    mac = receipt.get("mac")
-    if not isinstance(record, dict) or not isinstance(mac, str):
-        raise ValueError("receipt unreadable")
-    expected = hmac.new(
-        key,
-        json.dumps(record, sort_keys=True, separators=(",", ":")).encode(),
-        hashlib.sha256,
-    ).hexdigest()
-    if not hmac.compare_digest(expected, mac):
+    if not isinstance(receipt, dict) or set(receipt) != {"record", "hmac"}:
+        raise ValueError("receipt shape")
+    record, signature = receipt["record"], receipt["hmac"]
+    if not isinstance(record, dict) or not isinstance(signature, str):
+        raise ValueError("receipt shape")
+    expected = hmac.new(key, _canonical(record), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, signature):
         raise ValueError("receipt forged")
     if record.get("outcome") != PROVEN:
-        raise ValueError("proof inconclusive")
+        raise ValueError("receipt is not a proof")
     if (
         record.get("v") != BootstrapProof.VERSION
         or record.get("url") != url

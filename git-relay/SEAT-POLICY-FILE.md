@@ -148,3 +148,30 @@ never overwrites an existing one (rotation would orphan outstanding
 receipts). Any offline backup, for example a Fleet-OPS /git-relay-owner
 folder, is a separate, explicitly authorized operational step and is not
 part of the mint command.
+
+### Bootstrap limits, stated exactly
+
+- The verifier bounds are per relay PROCESS (one SeatPolicy instance's
+  window): a relay restart resets them. That is sufficient only while the
+  relay runs as a single process; a multi-process deployment must move the
+  bound into shared state before relying on it.
+- Replay safety is the install-seat transaction lock plus the durable replay
+  store: receipt verification alone is not serialized, and the receipt is
+  consumed under the same lock that performs the CAS and the write. A
+  receipt verified outside that lock is a dry-run check, not an acceptance.
+- The audit binding requires EXACTLY ONE matching bootstrap row for the
+  proof-id path: none or two both refuse. The bound row budget (4 per
+  minute, separate from the spray-row budget) means an over-budget probe
+  leaves no row and cannot be bound; rerun the proof with a fresh id inside
+  budget.
+- The verifier-confirmed identity is the Worker's answer about the bearer's
+  parsed identity: the Worker is sent the bearer hash inside its signed
+  request, never the raw bearer, and the answer is checked to equal the
+  parsed identity. No App mint or provider write happens in the denial
+  branch; the request is refused either way.
+- Proof-key custody is enforced at both ends: the mint refuses a non-root
+  caller, a non-root-owned or group/world-writable directory, a symlinked
+  path and any existing file (never overwrites); the loader refuses a
+  symlink, a non-regular file, an owner other than its operator, a
+  group/world-writable directory, an empty file, and (as root) any mode
+  wider than 0600.

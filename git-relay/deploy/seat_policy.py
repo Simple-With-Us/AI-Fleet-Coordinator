@@ -603,16 +603,55 @@ def _restore_file(unit: Unit, wait: int, before: str, path: str, backup: str, st
     return 3
 
 
+def _load_proof_key(path):
+    """Read the operator proof key from a custody-checked file;  never logs it.
+
+    Custody:  a regular file, never a symlink, owned by the current euid (so
+    under root - where install-seat runs - it is root-owned), non-empty, in a
+    directory that is not group- or world-writable.  Mode 0600 is enforced
+    when running as root, mirroring this file's require_root_owned pattern:
+    production is strict, dev fixtures stay usable.  Any deviation refuses
+    closed:  a writable or substituted key silently forges every receipt
+    gate downstream of it.
+    """
+    try:
+        st = os.lstat(path)
+    except OSError:
+        raise ValueError("proof-key file unreadable")
+    if stat.S_ISLNK(st.st_mode):
+        raise ValueError("proof-key file must not be a symlink")
+    if not stat.S_ISREG(st.st_mode):
+        raise ValueError("proof-key file must be a regular file")
+    if st.st_uid != os.geteuid():
+        raise ValueError("proof-key file must be owned by its operator")
+    if os.geteuid() == 0 and st.st_mode & 0o077:
+        raise ValueError("proof-key file must be private (0600)")
+    parent = os.path.dirname(os.path.abspath(path)) or "/"
+    try:
+        pst = os.stat(parent)
+    except OSError:
+        raise ValueError("proof-key directory unreadable")
+    if pst.st_mode & 0o022:
+        raise ValueError("proof-key directory must not be group/world-writable")
+    with open(path, "rb") as fh:
+        key = fh.read().strip()
+    if not key:
+        raise ValueError("proof-key file empty")
+    return key
+
+
 def proof_key(args) -> int:
     """Mint the operator proof key into a root-owned 0600 file;  never prints it.
 
     Custody rule (a proposal requiring the host owner's approval to enact):
     one 0600 file owned by root on the relay host, named by
-    GIT_RELAY_PROOF_KEY_FILE.  Any offline backup - for example the
-    Fleet-OPS /git-relay-owner folder - is a separate, explicitly authorized
+    GIT_RELAY_PROOF_KEY_FILE, in a root-owned directory that is not group- or
+    world-writable.  Any offline backup - for example the Fleet-OPS
+    /git-relay-owner folder - is a separate, explicitly authorized
     operational step, never part of this command.  A non-root caller is
-    refused (the file must be root-owned), and an existing key is never
-    overwritten:  rotating the key would orphan outstanding receipts.
+    refused (the file must be root-owned), a symlinked path is refused, and
+    an existing key is never overwritten:  rotating the key would orphan
+    outstanding receipts.
     """
     path = os.environ.get(PROOF_KEY_FILE_VAR) or args.key_file
     if not path:
@@ -621,13 +660,32 @@ def proof_key(args) -> int:
     if os.geteuid() != 0:
         print("refusing:  proof-key runs as root so the key file is root-owned 0600")
         return 2
+    parent = os.path.dirname(os.path.abspath(path)) or "/"
+    try:
+        pst = os.stat(parent)
+    except OSError:
+        print("refusing:  the proof-key directory is unreadable")
+        return 2
+    if pst.st_uid != 0 or pst.st_mode & 0o022:
+        print("refusing:  the proof-key directory must be root-owned and not group/world-writable")
+        return 2
     material = os.urandom(32).hex() + "\n"
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        fd = os.open(
+            path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600
+        )
     except FileExistsError:
         print(f"refusing:  {path} exists;  never overwrite the proof key, receipts bind to it")
         return 2
+    except OSError:
+        print(f"refusing:  could not create {path} exclusively")
+        return 2
     try:
+        st = os.fstat(fd)
+        if st.st_uid != 0 or st.st_mode & 0o777 != 0o600:
+            os.close(fd)
+            print(f"refusing:  {path} is not root-owned 0600 after creation")
+            return 2
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(material)
             fh.flush()
@@ -741,8 +799,11 @@ def _install_seat_locked(
     if not key_path:
         print(f"refusing:  {PROOF_KEY_FILE_VAR} names no proof-key file;  the proof gate stays on")
         return 2
-    with open(key_path, "rb") as fh:
-        key = fh.read().strip()
+    try:
+        key = _load_proof_key(key_path)
+    except ValueError as exc:
+        print(f"refusing:  {exc}")
+        return 2
     bootstrap = getattr(args, "bootstrap_receipt", None)
     with open(args.receipt or bootstrap, encoding="utf-8") as fh:
         receipt = json.load(fh)
