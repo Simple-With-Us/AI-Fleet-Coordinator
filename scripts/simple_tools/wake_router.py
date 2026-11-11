@@ -85,6 +85,7 @@ Python 3.11+, standard library only.
 
 from __future__ import annotations
 
+import errno
 import hmac
 import json
 import math
@@ -92,12 +93,13 @@ import os
 import re
 import secrets
 import signal
+import socket
 import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, fields, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from re import Pattern
@@ -120,6 +122,9 @@ MAX_WAKE_ISSUES = 8
 MAX_ROW_ISSUES = 8
 # A piece of a session id:  lower-case hex, hyphens allowed where the id has them.
 FRAGMENT_RE = re.compile(r"(?<![0-9A-Za-z_-])[0-9a-f]+(?:-[0-9a-f]+)*(?![0-9A-Za-z_-])")
+# A fleet post header's inside:  a seat tag, then its own fragment or one of the marks below.
+HEADER_RE = re.compile(r"[A-Z][A-Z0-9_-]*(·[0-9a-f-]{8,})?(.*)", re.S)
+HEADER_SESSION_RE = re.compile(r":\s*[A-Z]{1,2}\.[0-9]+\.[A-Z]\b")
 FRAGMENT_MIN_HEX = 8
 FRAGMENT_MAX_CHARS = 36
 # A longer unbroken run of hex is a commit or a key, not a stated session id, and is not kept.
@@ -284,6 +289,21 @@ def link_note_ok(text: object) -> bool:
     return False
 
 
+def _is_post_header(inner: str) -> bool:
+    """Whether a leading bracket is a fleet post header and not ordinary text.  It starts with a
+    seat tag, then has the sender's fragment (`[SEAT·4984a346]`, with or without more after it), a
+    session token (`[SEAT: AA.4.S`), a repo mark or an arrow."""
+    found = HEADER_RE.fullmatch(inner.strip())
+    if found is None:
+        return False
+    rest = found.group(2).lstrip()
+    return (
+        found.group(1) is not None
+        or rest.startswith(("\U0001f4c1", "→"))
+        or HEADER_SESSION_RE.match(rest) is not None
+    )
+
+
 def split_excerpt(excerpt: str) -> tuple[str, str]:
     """(the sender's part of a leading post header, the text that may address a chat).  The
     untrusted-text marker lines carry a nonce, so they are dropped.  Text after the header's arrow
@@ -295,7 +315,7 @@ def split_excerpt(excerpt: str) -> tuple[str, str]:
     ]
     body = "\n".join(lines).lstrip()
     header = re.match(r"(?:\U0001F440\s*)?\[([^\]\n]*)\]", body)
-    if header is None:
+    if header is None or not _is_post_header(header.group(1)):
         return "", body
     sender, _, addressee = header.group(1).partition("→")
     return sender, addressee + "\n" + body[header.end() :]
@@ -336,10 +356,18 @@ def wake_from_payload(payload: Mapping[str, Any], mention: str) -> Wake:
     )
 
 
+def private_dir(folder: Path) -> None:
+    """Make this private state folder, refusing a symlink that would send its files elsewhere.  An
+    OSError, like any other failure to write here, so every caller already handles it."""
+    if folder.is_symlink():
+        raise OSError(errno.ELOOP, "refusing a symlinked state folder", str(folder))
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+
 def atomic_write(path: Path, obj: Any) -> None:
     """One private file, fsynced, then renamed into place and its folder fsynced:  it survives a
     crash whole or not at all."""
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    private_dir(path.parent)
     tmp = path.with_name("%s.%d.%d.tmp" % (path.name, os.getpid(), threading.get_ident()))
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -1078,7 +1106,7 @@ class Router:
     def _append_log(self, receipt: Mapping[str, Any]) -> None:
         path = self.state / "wakes.jsonl"
         try:
-            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            private_dir(path.parent)
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
             with os.fdopen(fd, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(receipt, sort_keys=True) + "\n")
@@ -1152,7 +1180,7 @@ def _instant(value: object) -> float | None:
         try:
             parsed = datetime.fromisoformat(text[:-1] + "+00:00" if text[-1:] in "Zz" else text)
             if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
+                parsed = parsed.replace(tzinfo=UTC)
             return parsed.timestamp()
         except (ValueError, OverflowError, OSError):
             return None
@@ -1162,7 +1190,8 @@ def _instant(value: object) -> float | None:
 
 
 def _is_sender(target: Target, wake: Wake) -> bool:
-    return bool(wake.sender_fragment) and target.session_id.startswith(wake.sender_fragment)
+    bare = wake.sender_fragment.replace("-", "")
+    return bool(bare) and target.session_id.replace("-", "").startswith(bare)
 
 
 def _named_session(wake: Wake, live: Mapping[str, Target]) -> str:
@@ -1213,21 +1242,43 @@ def _most_recent(targets: list[Target], seen: Mapping[str, float | None]) -> Tar
 def make_handler(router: Router) -> type[BaseHTTPRequestHandler]:
     seat = router.platform.seat
     wake_path = "/wake/%s" % seat
+    limit = REQUEST_TIMEOUT
 
     class Handler(BaseHTTPRequestHandler):
-        timeout = REQUEST_TIMEOUT  # a client that never finishes its request cannot hold a thread
+        timeout = limit  # a client that goes silent cannot hold a thread
+
+        def setup(self) -> None:
+            super().setup()
+            # The socket timeout restarts on every byte, so a client that dribbles its headers or
+            # its body needs one deadline for the whole request.
+            self._deadline = threading.Timer(limit, self._cut_off)
+            self._deadline.daemon = True
+            self._deadline.start()
+
+        def finish(self) -> None:
+            self._deadline.cancel()
+            super().finish()
+
+        def _cut_off(self) -> None:
+            try:
+                self.connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
 
         def log_message(self, fmt: str, *args: Any) -> None:  # the default prints paths
             pass
 
         def _answer(self, code: int, payload: Mapping[str, Any]) -> None:
             body = (json.dumps(payload) + "\n").encode("utf-8")
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+            except OSError:
+                self.close_connection = True  # the client left, or the deadline cut it off
 
         def _authorized(self) -> bool:
             key = read_key(router.key_file)
@@ -1271,8 +1322,12 @@ def make_handler(router: Router) -> type[BaseHTTPRequestHandler]:
             if length <= 0 or length > MAX_BODY:
                 self._answer(413, {"error": "body size refused"})
                 return
+            raw_body = self.rfile.read(length)
+            if len(raw_body) != length:
+                self.close_connection = True  # cut off part way:  never act on part of a body
+                return
             try:
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                payload = json.loads(raw_body.decode("utf-8"))
             except (ValueError, UnicodeDecodeError):
                 self._answer(400, {"error": "body is not JSON"})
                 return

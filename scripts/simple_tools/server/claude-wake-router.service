@@ -17,7 +17,7 @@ Type=simple
 User=jay
 Group=jay
 Environment=HOME=/home/jay
-ExecStart=/bin/sh -c '. "$HOME/.local/bin/mm-registry-env" 2>/dev/null; exec /usr/bin/python3 -I /home/jay/.local/share/fleet-cli/current/scripts/simple-chat wake-router serve --bind "${CLAUDE_WAKE_BIND:-127.0.0.1}" --port 8793'
+ExecStart=/bin/sh -c '. "$HOME/.local/bin/operator-registry-env" 2>/dev/null; exec /usr/bin/python3 -I /home/jay/.local/share/fleet-cli/current/scripts/simple-chat wake-router serve --bind "${CLAUDE_WAKE_BIND:-127.0.0.1}" --port 8793'
 EnvironmentFile=-/etc/claude-wake-router.env
 Restart=always
 RestartSec=10
