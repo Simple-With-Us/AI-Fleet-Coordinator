@@ -11,6 +11,12 @@ stale.  Rules, all enforced here:
   * a copy older than MAX_AGE_SECONDS is ignored, so an emergency brake set in Infisical
     cannot be hidden for long by an unreachable Infisical
   * writes are atomic (a temp file in the same directory, then rename)
+
+Each Infisical folder has its own copy and its own failed-fetch marker, because each is fetched
+on its own and each copy's age must be the age of its own fetch.  The root folder keeps the
+original names (``lkg.json``, ``fetch-failed.json``) and shape;  another folder's files carry its
+name (``lkg-wake-router.json`` for /wake-router), and its copy records the folder and is refused
+for any other.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ import tempfile
 import time
 from collections.abc import Iterable
 
+from .registry import FOLDER_PATTERN, ROOT_FOLDER
 from .source import ENVIRONMENT, PROJECT_ID
 
 SCHEMA = 1
@@ -34,16 +41,23 @@ def state_dir() -> str:
     return os.path.join(os.path.expanduser("~"), ".local", "state", "fleet-knobs")
 
 
-def path() -> str:
-    return os.path.join(state_dir(), "lkg.json")
+def _suffix(folder: str) -> str:
+    """"" for the root folder, else "-" and the folder's name (``-wake-router``)."""
+    if not FOLDER_PATTERN.match(folder):
+        raise ValueError("not a knob folder")
+    return "" if folder == ROOT_FOLDER else "-" + folder.strip("/").replace("/", "--")
 
 
-def read(now: float | None = None) -> tuple[dict | None, str]:
-    """(document, note).  The document is None when there is no usable copy;  the note says
-    why in one token (``absent``, ``unsafe``, ``unreadable``, ``wrong-project``, ``expired``)
-    or is ``ok``."""
+def path(*, folder: str = ROOT_FOLDER) -> str:
+    return os.path.join(state_dir(), "lkg%s.json" % _suffix(folder))
+
+
+def read(now: float | None = None, *, folder: str = ROOT_FOLDER) -> tuple[dict | None, str]:
+    """(document, note) for one folder's copy.  The document is None when there is no usable
+    copy;  the note says why in one token (``absent``, ``unsafe``, ``unreadable``,
+    ``wrong-project``, ``wrong-folder``, ``expired``) or is ``ok``."""
     now = time.time() if now is None else now
-    target = path()
+    target = path(folder=folder)
     try:
         fd = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except FileNotFoundError:
@@ -80,6 +94,9 @@ def read(now: float | None = None) -> tuple[dict | None, str]:
         return None, "unreadable"
     if doc.get("project") != PROJECT_ID or doc.get("environment") != ENVIRONMENT:
         return None, "wrong-project"
+    # The root copy has never carried a folder, so a missing one means the root.
+    if doc.get("path", ROOT_FOLDER) != folder:
+        return None, "wrong-folder"
     age = now - float(doc["saved_epoch"])
     if age < -300 or age > MAX_AGE_SECONDS:
         return None, "expired"
@@ -115,12 +132,17 @@ def _ensure_dir() -> None:
 
 
 def write(
-    knobs: dict[str, str], secret_values: Iterable[str] = (), now: float | None = None
+    knobs: dict[str, str],
+    secret_values: Iterable[str] = (),
+    now: float | None = None,
+    *,
+    folder: str = ROOT_FOLDER,
 ) -> None:
-    """Atomically replace the copy with `knobs` (name -> raw string).
+    """Atomically replace one folder's copy with `knobs` (name -> raw string).
 
     Raises ValueError, naming no value, if any of `secret_values` appears in the bytes."""
     now = time.time() if now is None else now
+    target = path(folder=folder)
     doc = {
         "schema": SCHEMA,
         "project": PROJECT_ID,
@@ -129,6 +151,8 @@ def write(
         "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
         "knobs": dict(sorted(knobs.items())),
     }
+    if folder != ROOT_FOLDER:
+        doc["path"] = folder
     blob = json.dumps(doc, indent=1, sort_keys=True).encode("utf-8") + b"\n"
     for secret in secret_values:
         if secret and len(secret) >= 8 and secret.encode("utf-8") in blob:
@@ -140,7 +164,7 @@ def write(
             fh.write(blob)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, path())
+        os.replace(tmp, target)
     except BaseException:
         try:
             os.close(fd)
@@ -167,8 +191,8 @@ FAILURE_MAX_BYTES = 1024
 _REASON_OK = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-_:")
 
 
-def failure_path() -> str:
-    return os.path.join(state_dir(), "fetch-failed.json")
+def failure_path(*, folder: str = ROOT_FOLDER) -> str:
+    return os.path.join(state_dir(), "fetch-failed%s.json" % _suffix(folder))
 
 
 def _clean_reason(reason: str) -> str:
@@ -178,11 +202,12 @@ def _clean_reason(reason: str) -> str:
     return "".join(c if c in _REASON_OK else "-" for c in text) or "unknown"
 
 
-def recent_failure(now: float | None = None) -> str | None:
-    """The reason token of a failed fetch less than FAILURE_TTL_SECONDS old, else None."""
+def recent_failure(now: float | None = None, *, folder: str = ROOT_FOLDER) -> str | None:
+    """The reason token of a failed fetch of `folder` less than FAILURE_TTL_SECONDS old, else
+    None."""
     now = time.time() if now is None else now
     try:
-        fd = os.open(failure_path(), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        fd = os.open(failure_path(folder=folder), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except OSError:
         return None
     try:
@@ -214,16 +239,20 @@ def recent_failure(now: float | None = None) -> str | None:
     return _clean_reason(doc.get("reason", "unknown"))
 
 
-def record_failure(reason: str, now: float | None = None) -> None:
-    """Atomically write the marker (0600):  a timestamp and a reason token, nothing else."""
+def record_failure(
+    reason: str, now: float | None = None, *, folder: str = ROOT_FOLDER
+) -> None:
+    """Atomically write one folder's marker (0600):  a timestamp and a reason token, nothing
+    else."""
     now = time.time() if now is None else now
+    target = failure_path(folder=folder)
     blob = json.dumps({"failed_epoch": now, "reason": _clean_reason(reason)}).encode("utf-8")
     _ensure_dir()
     fd, tmp = tempfile.mkstemp(prefix=".failed.", suffix=".tmp", dir=state_dir())
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(blob + b"\n")
-        os.replace(tmp, failure_path())
+        os.replace(tmp, target)
     except BaseException:
         try:
             os.unlink(tmp)
@@ -232,9 +261,9 @@ def record_failure(reason: str, now: float | None = None) -> None:
         raise
 
 
-def clear_failure() -> None:
-    """Forget the marker after a good fetch."""
+def clear_failure(*, folder: str = ROOT_FOLDER) -> None:
+    """Forget one folder's marker after a good fetch of it."""
     try:
-        os.unlink(failure_path())
+        os.unlink(failure_path(folder=folder))
     except FileNotFoundError:
         pass
