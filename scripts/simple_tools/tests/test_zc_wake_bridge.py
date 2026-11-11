@@ -166,9 +166,10 @@ class Receiver(Base):
              "closed_at": None},
         )))
         status, answer = self.post(self.wake(), env, key=self.key)
-        self.assertEqual(status, 200)
+        self.assertEqual(status, 202)  # accepted and routed; the worker delivers
         self.assertEqual(answer["session_id"], "sess_a", answer)
         self.assertEqual(answer["picked"], "topic-match")
+        self.assertFalse(answer["delivered"])  # delivery off in this fixture: recorded, not run
         # a second identical wake is a no-op
         status, answer = self.post(self.wake(), env, key=self.key)
         self.assertEqual(status, 200)
@@ -199,7 +200,7 @@ class Receiver(Base):
              "state": "open", "assigned_at": 9, "retired_at": None, "closed_at": None},
         )))
         status, answer = self.post(self.wake(), env, key=self.key)
-        self.assertEqual(status, 200, answer)
+        self.assertEqual(status, 503, answer)  # routed to nothing: not accepted
         self.assertIn(answer.get("reason"), ("no-live-session",))
         self.assertEqual(answer.get("session_id"), "")
 

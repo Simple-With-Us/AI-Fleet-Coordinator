@@ -463,37 +463,67 @@ def record(
         picked = ""
     elif letter and not letter_sid:
         reason = "letter-not-live-fell-back"
-    delivered = False
-    delivery_reason = reason
     if sid and not config.get("delivery_enabled"):
-        delivery_reason = "delivery-disabled"
-    elif sid:
-        # The corrected ruling (Nov 10, via Claude AA):  every path DELIVERS AND WAKES the
-        # picked chat - "why would I want to route things and not deliver them" - and each
-        # platform uses whatever it needs to wake its chat, a headless resume included.  The
-        # one headless DECIDER (OpenRouter, the Operator's preset) is a different thing and
-        # lives with the Operator;  this delivery runs the platform's own turn.
+        pass  # the receipt below finalizes as delivery-disabled
+
+    receipt = {
+        "at": time.time(),
+        "wake_id": wake_id,
+        "letter": letter or "",
+        "session_id": sid,
+        "thread_link": THREAD_LINK_FORM.format(sid=sid) if sid else "",
+        "picked": picked,
+        "reason": "delivery-disabled" if (sid and not config.get("delivery_enabled")) else reason,
+        "delivered": None if (sid and config.get("delivery_enabled")) else False,
+        "channel": channel or "-",
+        "topic": topic or "-",
+        "zulip_link": link or "",
+    }
+    _append_receipt(env, receipt, log_path)
+    return receipt
+
+
+def _append_receipt(env, receipt, log_path) -> None:
+    if log_path is None:
+        log_path = state_dir(env) / "wakes.jsonl"
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(receipt, sort_keys=True) + "\n")
+    except OSError:
+        pass
+
+
+def deliver_receipt(env, config, receipt, log_path=None):
+    """The worker side of accept-then-deliver (BB's shape): the POST answers 202 once the
+    wake is deduped, in-flight-checked and routed; this runs the resume off the handler
+    thread, owns the retries the listener no longer makes, and finalizes the receipt."""
+    import fcntl
+    import subprocess
+
+    sid = str(receipt.get("session_id") or "")
+    attempts = 3
+    while True:
+        delivered = False
+        delivery_reason = "no-command"
         text = WAKE_TEXT.format(
-            seat=SEAT, channel=channel or "-", topic=topic or "-", link=link or "", wake_id=wake_id
+            seat=SEAT,
+            channel=receipt.get("channel") or "-",
+            topic=receipt.get("topic") or "-",
+            link=receipt.get("zulip_link") or "",
+            wake_id=receipt.get("wake_id") or "",
         )
         argv = [
             str(part).replace("{session_id}", sid).replace("{wake_text}", text)
             for part in (config.get("command_template") or [])
         ]
-        delivered = False
-        if argv:
-            import fcntl
-            import subprocess
-
+        if argv and sid:
             with session_lock(state_dir(env), sid) as lock:
                 try:
                     fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except OSError:
                     delivered, delivery_reason = False, "session-busy"
                 else:
-                    # The child runs with a minimal environment:  HOME and PATH to live, the
-                    # launcher mark so the letter hook knows a wake run started it.  Nothing
-                    # else crosses - the registry signing key never reaches a woken chat.
                     spawn_env = {
                         "HOME": env.get("HOME") or os.path.expanduser("~"),
                         "PATH": env.get("PATH") or "/usr/local/bin:/usr/bin:/bin",
@@ -514,27 +544,12 @@ def record(
                         delivered, delivery_reason = False, "command-timeout"
                     except OSError as exc:
                         delivered, delivery_reason = False, "command-error-%s" % type(exc).__name__
-    receipt = {
-        "at": time.time(),
-        "wake_id": wake_id,
-        "letter": letter or "",
-        "session_id": sid,
-        "thread_link": THREAD_LINK_FORM.format(sid=sid) if sid else "",
-        "picked": picked,
-        "reason": delivery_reason,
-        "delivered": delivered,
-        "channel": channel or "-",
-        "topic": topic or "-",
-        "zulip_link": link or "",
-    }
-    if log_path is None:
-        log_path = state_dir(env) / "wakes.jsonl"
-    try:
-        log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with open(log_path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(receipt, sort_keys=True) + "\n")
-    except OSError:
-        pass
+        receipt = dict(receipt, delivered=delivered, reason=delivery_reason)
+        attempts -= 1
+        if delivered or attempts <= 0 or delivery_reason not in ("session-busy", "command-timeout"):
+            break
+        time.sleep(5)
+    _append_receipt(env, receipt, log_path)
     return receipt
 
 
@@ -623,19 +638,12 @@ def make_handler(env: dict[str, str], config: dict[str, Any], receipts: list[dic
                     link=str(payload.get("zulip_link") or ""),
                     letter=letter_of(payload),
                 )
-                # Handled = delivered, or recorded with nothing a retry could fix (no pick,
-                # or delivery switched off).  A delivery that FAILED is not handled:  the
-                # listener retries it, and the id stays unmarked so it can.
-                handled = bool(receipt.get("delivered")) or receipt.get("reason") in (
-                    "no-live-session",
-                    "no-command",
-                    "letter-target-is-subagent",
-                    "letter-not-live-fell-back" if not receipt.get("session_id") else "never",
-                    "delivery-disabled",
-                )
+                # BB's shape: the POST answers as soon as the wake is deduped, in-flight-checked
+                # and ROUTED; the delivery runs off the handler thread (the listener's own
+                # timeout is 15-60s and cannot wait a resume).  Accepted-and-routed is 202;
+                # every not-handled case keeps the id unmarked so the listener retries.
+                handled = bool(receipt.get("session_id"))
             finally:
-                # Release the reservation and record a handled wake in one step, so no other
-                # post of this id can slip between the two.
                 with _SEEN_LOCK:
                     _INFLIGHT.discard(wake_id)
                     if handled:
@@ -643,7 +651,15 @@ def make_handler(env: dict[str, str], config: dict[str, Any], receipts: list[dic
             receipts.append({"wake_id": wake_id, **receipt})
             del receipts[:-50]
             if handled:
-                self._answer(200, {"wake_id": wake_id, **receipt})
+                if receipt.get("delivered") is None and config.get("delivery_enabled"):
+                    import threading
+
+                    threading.Thread(
+                        target=deliver_receipt,
+                        args=(env, config, dict(receipt)),
+                        daemon=True,
+                    ).start()
+                self._answer(202, {"wake_id": wake_id, **receipt})
             else:
                 self._answer(503, {"wake_id": wake_id, **receipt})
 
