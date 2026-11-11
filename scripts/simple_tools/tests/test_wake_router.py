@@ -2981,6 +2981,58 @@ class Remote(RemoteBase):
                 result = self.deliver_remote()
                 self.assertEqual((result.outcome, result.code), ("refused", "remote-exit-0"))
 
+    OLD_MAC = '{"outcome": "refused", "route": "", "ack": "unknown", "code": "bad-request", "note": ""}\n'
+
+    def test_a_mac_on_older_code_is_a_retry(self) -> None:
+        # Byte for byte what the pre-envelope wake-deliver prints for the new request, before it
+        # has done anything.
+        result = self.answered(2, self.OLD_MAC)
+        self.assertEqual((result.outcome, result.code), ("failed", "remote-needs-update"))
+        self.assertEqual(len(self.runs), 2)  # no second send in the old format
+
+    def answered(self, exit_code: int, stdout: str) -> WR.Delivery:
+        """A delivery whose preflight passes and whose real command answers this."""
+        runner = self.scripted(
+            SimpleNamespace(returncode=0, stdout=""),
+            SimpleNamespace(returncode=exit_code, stdout=stdout),
+        )
+        return CW.deliver_remote(self.env, self.cfg, self.target, self.w, runner=runner)
+
+    def test_the_router_keeps_a_wake_for_a_mac_on_older_code(self) -> None:
+        runner = self.scripted(
+            SimpleNamespace(returncode=0, stdout=""),
+            SimpleNamespace(returncode=2, stdout=self.OLD_MAC),
+        )
+        router = self.router(
+            deliver=lambda target, wake: CW.deliver_remote(
+                self.env, self.cfg, target, wake, runner=runner
+            )
+        )
+        self.registry.rows = [row(SID_A, "AA", "letters", host="mac", generation=3)]
+        router.accept(self.wake(letter="AA"))
+        self.assertTrue(router.run_once())
+        self.assertEqual(len(self.runs), 2)  # it got as far as the real command
+        self.assertTrue(self.pending().exists())
+        self.assertFalse((self.state / "done" / "w-1.json").exists())
+        kept = json.loads(self.pending().read_text(encoding="utf-8"))
+        self.assertEqual(kept["failures"], 1)
+        self.assertNotIn("in_flight", kept)
+
+    def test_only_the_exact_old_refusal_is_retried(self) -> None:
+        old = json.loads(self.OLD_MAC)
+        cases = {
+            "the right text with another exit": (1, old),
+            "the right text with exit 0": (0, old),
+            "another code": (2, {**old, "code": "bad-session-id"}),
+            "another outcome": (2, {**old, "outcome": "sent"}),
+            "an extra field": (2, {**old, "wake_id": self.w.wake_id}),
+        }
+        for label, (exit_code, body) in cases.items():
+            with self.subTest(label):
+                result = self.answered(exit_code, json.dumps(body))
+                self.assertEqual(result.outcome, "refused")
+                self.assertEqual(result.code, "remote-exit-%d" % exit_code)
+
     def test_a_matching_answer_that_can_be_retried_is_kept(self) -> None:
         self.answer = SimpleNamespace(returncode=0, stdout=self.reply("failed"))
         self.assertEqual(self.deliver_remote().outcome, "failed")
@@ -3142,12 +3194,66 @@ class Remote(RemoteBase):
         )
 
     def test_a_codex_answer_of_the_wrong_shape_is_final(self) -> None:
-        for reply in (None, {"outcome": "sent"}, {"delivery": "sent"}):
+        ids = {"wake_id": self.w.wake_id, "session_id": SID_A, "generation": 3}
+        replies = (None, {"outcome": "sent"}, {"delivery": "sent"}, {**ids, "delivery": {"outcome": "maybe"}})
+        for reply in replies:
             with self.subTest(reply=reply):
-                module = self.codex_module(lambda request, *, env, reply=reply: reply)
-                with mock.patch.dict(sys.modules, {CW.CODEX_MODULE: module}):
-                    _, answer = self.run_main(self.envelope(platform="codex"))
+                answer = self.codex_answer(reply)
                 self.assertEqual(answer["delivery"]["code"], "platform-bad-answer")
+                self.assertEqual(answer["delivery"]["outcome"], "refused")
+
+    def codex_answer(self, reply) -> dict:
+        module = self.codex_module(lambda request, *, env: reply)
+        with mock.patch.dict(sys.modules, {CW.CODEX_MODULE: module}):
+            return self.run_main(self.envelope(platform="codex"))[1]
+
+    def test_a_codex_answer_about_anything_else_is_final(self) -> None:
+        ids = {"wake_id": self.w.wake_id, "session_id": SID_A, "generation": 3}
+        mismatches = {
+            "another wake": {**ids, "wake_id": "w-other"},
+            "another chat": {**ids, "session_id": SID_B},
+            "another generation": {**ids, "generation": 4},
+            "a float generation": {**ids, "generation": 3.0},
+            "a string generation": {**ids, "generation": "3"},
+            "no ids": {},
+        }
+        for label, wrong in mismatches.items():
+            # Even an answer saying the wake can be retried:  it says nothing about this wake.
+            for outcome in ("sent", "failed", "busy", "unreachable"):
+                with self.subTest(label, outcome=outcome):
+                    answer = self.codex_answer({**wrong, "delivery": {"outcome": outcome}})
+                    self.assertEqual(
+                        (answer["delivery"]["outcome"], answer["delivery"]["code"]),
+                        ("refused", "platform-mismatch"),
+                    )
+                    # What goes back is about this request, so the sender reads the refusal.
+                    self.assertEqual(
+                        (answer["wake_id"], answer["session_id"], answer["generation"]),
+                        (self.w.wake_id, SID_A, 3),
+                    )
+
+    def test_a_bool_is_not_a_codex_generation(self) -> None:
+        request = self.envelope(platform="codex")
+        request["target"]["generation"] = 1
+        reply = {"wake_id": self.w.wake_id, "session_id": SID_A, "generation": True,
+                 "delivery": {"outcome": "failed"}}
+        module = self.codex_module(lambda request, *, env: reply)
+        with mock.patch.dict(sys.modules, {CW.CODEX_MODULE: module}):
+            _, answer = self.run_main(request)
+        self.assertEqual(answer["delivery"]["code"], "platform-mismatch")
+
+    def test_a_correlated_codex_retry_stays_a_retry(self) -> None:
+        ids = {"wake_id": self.w.wake_id, "session_id": SID_A, "generation": 3}
+        answer = self.codex_answer({**ids, "delivery": {"outcome": "busy", "route": "codex-desktop"}})
+        self.assertEqual((answer["delivery"]["outcome"], answer["delivery"]["route"]), ("busy", "codex-desktop"))
+
+    def test_only_known_codex_fields_go_back_and_each_is_short(self) -> None:
+        ids = {"wake_id": self.w.wake_id, "session_id": SID_A, "generation": 3}
+        delivery = {"outcome": "sent", "note": "free text, not a code", "extra": "x"}
+        answer = self.codex_answer({**ids, "delivery": delivery, "extra": "x"})
+        self.assertEqual(set(answer), {"wake_id", "session_id", "generation", "delivery"})
+        self.assertEqual(set(answer["delivery"]), {"outcome", "route", "ack", "code", "note"})
+        self.assertEqual(answer["delivery"]["note"], "unreadable")
 
     def test_the_mac_asks_the_registry_just_before_delivering(self) -> None:
         def deliver(*args, **kwargs):

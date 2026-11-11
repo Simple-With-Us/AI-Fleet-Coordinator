@@ -46,7 +46,10 @@ and the answer is `{"wake_id", "session_id", "generation", "delivery": {"outcome
 "code", "note"}}`.  `platform` is looked up in `PLATFORMS`, a fixed table:  it arrives over the wire,
 so it never names a module or a path, and an unknown one is refused.  With no `platform` the request
 is Claude's.  The sender takes an answer only if its three ids are exactly what it sent:  anything
-else is final, because the turn may have run.
+else is final, because the turn may have run.  The one exception is a Mac the runtime sync has not
+reached yet.  Its older `wake-deliver` rejects the envelope before it does anything, with exactly
+`OLD_MAC_REFUSAL` and exit 2, so that is `failed`, a bounded retry.  The sender never falls back to
+the old request, which would skip the Mac's recheck and the ids.
 
 The Mac asks the registry again immediately before delivering, as the router did before sending.  A
 letter that no longer holds that session at that generation, or is closed, is `refused`.  A registry
@@ -111,7 +114,10 @@ ENV_SSH_COMMAND = "SSH_ORIGINAL_COMMAND"
 GATE_REFUSED = 126  # never ssh's own 255, which the sender reads as a host that did not answer
 CODEX_MODULE = "simple_tools.codex_wake"
 BAD_REQUEST = "bad-request"
+BAD_REQUEST_EXIT = 2
 UNKNOWN_PLATFORM = "unknown-platform"
+# All that a `wake-deliver` from before the envelope can say to one, before it has done anything.
+OLD_MAC_REFUSAL = asdict(WR.Delivery("refused", code=BAD_REQUEST))
 LETTER_RE = re.compile(r"[A-Z]{1,2}")
 TARGET_FIELDS = frozenset(WR.Target.__dataclass_fields__)
 BYPASS_NOTE = "receiver-bypasses-prompts-inbound-default-may-hold"
@@ -570,6 +576,8 @@ def deliver_remote(
     if proc.returncode == SSH_UNREACHABLE:
         return WR.Delivery("refused", "ssh", code="ssh-dropped")
     answer = _last_json(str(proc.stdout or ""))
+    if answer == OLD_MAC_REFUSAL and proc.returncode == BAD_REQUEST_EXIT:
+        return WR.Delivery("failed", "ssh", code="remote-needs-update")  # nothing ran on the Mac
     delivery = answer.get("delivery") if answer is not None else None
     if not isinstance(delivery, dict) or delivery.get("outcome") not in WR.OUTCOMES:
         return WR.Delivery("refused", "ssh", code="remote-exit-%d" % proc.returncode)
@@ -585,14 +593,21 @@ def deliver_remote(
 
 
 def _answers(answer: Mapping[str, Any], target: WR.Target, wake: WR.Wake) -> bool:
-    """Whether an answer is about exactly this delivery.  A bool or a float can equal a generation
-    in Python, so its type is checked too."""
-    generation = answer.get("generation")
-    return (
-        answer.get("wake_id") == wake.wake_id
-        and answer.get("session_id") == target.session_id
-        and type(generation) is int
-        and generation == target.generation
+    """Whether an answer is about exactly this delivery."""
+    expected = {
+        "wake_id": wake.wake_id,
+        "session_id": target.session_id,
+        "generation": target.generation,
+    }
+    return _same_ids(answer, expected)
+
+
+def _same_ids(answer: Mapping[str, Any], expected: Mapping[str, Any]) -> bool:
+    """Whether an answer repeats these ids exactly.  A bool or a float can equal a generation in
+    Python, so each value's type is checked too."""
+    return all(
+        type(answer.get(name)) is type(value) and answer.get(name) == value
+        for name, value in expected.items()
     )
 
 
@@ -785,9 +800,23 @@ def _deliver_codex(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[s
         return _answer(
             request, WR.Delivery("refused", code="platform-error-%s" % type(exc).__name__)
         )
-    if not isinstance(answer, Mapping) or not isinstance(answer.get("delivery"), Mapping):
+    delivery = answer.get("delivery") if isinstance(answer, Mapping) else None
+    if not isinstance(delivery, Mapping) or delivery.get("outcome") not in WR.OUTCOMES:
         return _answer(request, WR.Delivery("refused", code="platform-bad-answer"))
-    return dict(answer)
+    # Not just re-stamped with this request's ids:  an answer about something else says nothing
+    # about whether this wake ran, so even one that reads as retryable is final.
+    if not _same_ids(answer, _correlation(request)):
+        return _answer(request, WR.Delivery("refused", code="platform-mismatch"))
+    return _answer(
+        request,
+        WR.Delivery(
+            str(delivery["outcome"]),
+            _short(delivery.get("route")),
+            ack=_short(delivery.get("ack")) or "unknown",
+            code=_short(delivery.get("code")),
+            note=_short(delivery.get("note")),
+        ),
+    )
 
 
 #: Every platform a request may name.  Only a key of this table is ever acted on.
@@ -833,7 +862,7 @@ def wake_deliver_main(stdin: TextIO, stdout: TextIO, env: Mapping[str, str]) -> 
         answer = _handle(request, env)
     stdout.write(json.dumps(answer) + "\n")
     delivery = answer.get("delivery", answer)
-    return 2 if delivery.get("code") in (BAD_REQUEST, UNKNOWN_PLATFORM) else 0
+    return BAD_REQUEST_EXIT if delivery.get("code") in (BAD_REQUEST, UNKNOWN_PLATFORM) else 0
 
 
 def wake_ssh_gate_main(
