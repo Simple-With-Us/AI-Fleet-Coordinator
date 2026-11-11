@@ -56,7 +56,9 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # unit template stays repo-only under simple_tools/server/).
 # The 163rd is simple_tools/platform_letter_clutch.py (the Clutch session-letter adapter) and the 164th is
 # simple_tools/platform_letter_fx.py (the Fx session-letter adapter, which registers from the fx session store).
-MAX_FILES = 164
+# The 165th is simple_tools/operator_linear.py (AFC-565, the Operator's Zulip-to-Linear living comments
+# service the daemon hosts).
+MAX_FILES = 165
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,
