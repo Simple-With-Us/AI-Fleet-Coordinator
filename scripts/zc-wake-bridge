@@ -68,6 +68,12 @@ TARGET_RE = re.compile(r"^sess_[A-Za-z0-9._-]{1,123}$")
 #: ZCode has no public thread URL today (no share links are minted, and the app has no URI
 #: scheme), so a thread's link is the stable locator convention the registry records.  The
 #: day the app grows a real link, this one form is replaced and rows rewrite from session ids.
+WAKE_TEXT = (
+    "[{seat}\u00b7wake] You were tagged in Zulip:  #{channel} / {topic}.  {link}\n"
+    "Wake id {wake_id}.  Read your inbox with `simple-chat inbox --peek`, respond in that "
+    "thread, and follow your seat rules.  This prompt was delivered by the Operator's wake "
+    "bridge;  the message text is not quoted here on purpose."
+)
 THREAD_LINK_FORM = "zcode://session/{sid}"
 WAKE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{2,}")
@@ -90,6 +96,9 @@ ENV_KEY = "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"
 
 
 DEFAULT_CONFIG = {
+    "delivery_enabled": True,
+    "command_template": ["zcode", "--resume", "{session_id}", "-p", "{wake_text}"],
+    "timeout_seconds": 900,
     "target_host": "server",
 }
 
@@ -126,7 +135,22 @@ def load_config(path: Path, *, required: bool = False) -> dict[str, Any]:
         if key not in loaded:
             continue
         value = loaded[key]
-        if key == "target_host":
+        if key == "delivery_enabled":
+            if not isinstance(value, bool):
+                raise SystemExit("zc-wake-bridge: %s: delivery_enabled must be a boolean" % path)
+        elif key == "command_template":
+            if (
+                not isinstance(value, list)
+                or not value
+                or not all(isinstance(part, str) and part for part in value)
+            ):
+                raise SystemExit(
+                    "zc-wake-bridge: %s: command_template must be a non-empty list of strings" % path
+                )
+        elif key == "timeout_seconds":
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise SystemExit("zc-wake-bridge: %s: timeout_seconds must be a positive whole number" % path)
+        elif key == "target_host":
             if value not in ("mac", "server", ""):
                 raise SystemExit("zc-wake-bridge: %s: target_host must be mac, server or empty" % path)
         config[key] = value
@@ -389,6 +413,13 @@ def remember_id(path: Path, wake_id: str) -> None:
         raise
 
 
+def session_lock(store_dir: Path, sid: str):
+    """An exclusive mark per target session, so one wake waits rather than two turns clobber
+    one thread.  The lock lives on a descriptor this process holds for the delivery."""
+    store_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return open(os.open(str(store_dir / ("session-%s.lock" % sid)), os.O_CREAT | os.O_RDWR, 0o600), "w")
+
+
 def record(
     env: dict[str, str],
     config: dict[str, Any],
@@ -432,6 +463,57 @@ def record(
         picked = ""
     elif letter and not letter_sid:
         reason = "letter-not-live-fell-back"
+    delivered = False
+    delivery_reason = reason
+    if sid and not config.get("delivery_enabled"):
+        delivery_reason = "delivery-disabled"
+    elif sid:
+        # The corrected ruling (Nov 10, via Claude AA):  every path DELIVERS AND WAKES the
+        # picked chat - "why would I want to route things and not deliver them" - and each
+        # platform uses whatever it needs to wake its chat, a headless resume included.  The
+        # one headless DECIDER (OpenRouter, the Operator's preset) is a different thing and
+        # lives with the Operator;  this delivery runs the platform's own turn.
+        text = WAKE_TEXT.format(
+            seat=SEAT, channel=channel or "-", topic=topic or "-", link=link or "", wake_id=wake_id
+        )
+        argv = [
+            str(part).replace("{session_id}", sid).replace("{wake_text}", text)
+            for part in (config.get("command_template") or [])
+        ]
+        delivered = False
+        if argv:
+            import fcntl
+            import subprocess
+
+            with session_lock(state_dir(env), sid) as lock:
+                try:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    delivered, delivery_reason = False, "session-busy"
+                else:
+                    # The child runs with a minimal environment:  HOME and PATH to live, the
+                    # launcher mark so the letter hook knows a wake run started it.  Nothing
+                    # else crosses - the registry signing key never reaches a woken chat.
+                    spawn_env = {
+                        "HOME": env.get("HOME") or os.path.expanduser("~"),
+                        "PATH": env.get("PATH") or "/usr/local/bin:/usr/bin:/bin",
+                        "AGENT_LAUNCHER": "simple-tools-wake",
+                        "AGENT_LAUNCH_SEAT": SEAT,
+                    }
+                    try:
+                        proc = subprocess.run(
+                            argv,
+                            env=spawn_env,
+                            capture_output=True,
+                            timeout=int(config.get("timeout_seconds") or 900),
+                            check=False,
+                        )
+                        delivered = proc.returncode == 0
+                        delivery_reason = "ok" if delivered else "command-failed-%d" % proc.returncode
+                    except subprocess.TimeoutExpired:
+                        delivered, delivery_reason = False, "command-timeout"
+                    except OSError as exc:
+                        delivered, delivery_reason = False, "command-error-%s" % type(exc).__name__
     receipt = {
         "at": time.time(),
         "wake_id": wake_id,
@@ -439,7 +521,8 @@ def record(
         "session_id": sid,
         "thread_link": THREAD_LINK_FORM.format(sid=sid) if sid else "",
         "picked": picked,
-        "reason": reason,
+        "reason": delivery_reason,
+        "delivered": delivered,
         "channel": channel or "-",
         "topic": topic or "-",
         "zulip_link": link or "",
@@ -540,11 +623,16 @@ def make_handler(env: dict[str, str], config: dict[str, Any], receipts: list[dic
                     link=str(payload.get("zulip_link") or ""),
                     letter=letter_of(payload),
                 )
-                # The wake is handled:  routed and receipted (owner ruling, Nov 10 - the
-                # bridge never delivers a turn, so there is no failure mode that a retry
-                # could fix;  an unpicked wake is still recorded, its message held by the
-                # seat inbox and the Operator, the receipt saying no chat was picked).
-                handled = True
+                # Handled = delivered, or recorded with nothing a retry could fix (no pick,
+                # or delivery switched off).  A delivery that FAILED is not handled:  the
+                # listener retries it, and the id stays unmarked so it can.
+                handled = bool(receipt.get("delivered")) or receipt.get("reason") in (
+                    "no-live-session",
+                    "no-command",
+                    "letter-target-is-subagent",
+                    "letter-not-live-fell-back" if not receipt.get("session_id") else "never",
+                    "delivery-disabled",
+                )
             finally:
                 # Release the reservation and record a handled wake in one step, so no other
                 # post of this id can slip between the two.

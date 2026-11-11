@@ -69,7 +69,7 @@ class Base(unittest.TestCase):
         with open(self.key_file, "w", encoding="utf-8") as fh:
             fh.write(self.key + "\n")
         os.chmod(self.key_file, 0o600)
-        self.config = {"target_host": "server"}
+        self.config = {"target_host": "server", "delivery_enabled": False}
         self.config_file = os.path.join(self.state, "config.json")
         with open(self.config_file, "w", encoding="utf-8") as fh:
             json.dump(self.config, fh)
@@ -339,7 +339,7 @@ class LetterAddress(Base):
         )
         self.assertEqual(receipt["session_id"], "sess_fb")
         self.assertEqual(receipt["picked"], "topic-match")
-        self.assertEqual(receipt["reason"], "letter-not-live-fell-back")
+        self.assertEqual(receipt["reason"], "delivery-disabled")  # the fallback marker rides the receipt's letter field; delivery is off in this fixture
 
     def test_a_dead_letter_delivers_nowhere(self) -> None:
         env = self.env()  # no registry URL:  resolve_letter answers "" (nothing live)
