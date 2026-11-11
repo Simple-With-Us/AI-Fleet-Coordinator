@@ -203,6 +203,8 @@ NEVER_RAN = frozenset(
         "no-ssh-destination",
         "no-transcript",
         "platform-not-installed",
+        "workspace-mismatch",
+        "workspace-unknown",
         "session-cwd-gone",
         "unknown-host",
         "unknown-platform",
