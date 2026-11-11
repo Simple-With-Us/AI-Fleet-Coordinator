@@ -84,6 +84,12 @@ MAX_FILE_B64 = 4 * ((MAX_FILE_RAW + 2) // 3)
 MAX_REF_BLOB_RAW = 700 * 1024
 MAX_PAGE = 50
 COMPARE_FILES_CAP = 300  # GitHub returns at most 300 files from the compare endpoint
+# Fixed public refusal for an unverifiable workflow-touch pre-read.  The hosted
+# front maps exactly this fixed string to a caller-visible reason, so keep it
+# byte-stable:  rewording it silently returns callers to a bare relay_refused.
+TOO_LARGE_TO_VERIFY = (
+    "PR changes too large to verify for workflow files; no write attempted"
+)
 MAX_PROJECT = 100
 MAX_WORKFLOW_TEXT = 40000
 # Opt-in bounded larger-text class (covers the 83854-byte mirror document class);
@@ -1072,7 +1078,13 @@ class WorkflowVerbs:
         changes .github/workflows/* unless the token also holds workflows:write, so read what
         the write will change first and mint the extra scope only when that touches the
         directory. Merge: the PR file list. Update-branch: the base changes it pulls in
-        (compare head...base), after checking the PR head is still the expected sha.
+        (compare head...base, with a complete two-tree diff when the compare itself is
+        unverifiable), after checking the PR head is still the expected sha.  The
+        update-branch write itself always runs under the workflow ceiling:  the
+        provider endpoint fences only the head, so the base tip cannot be fenced
+        atomically and a base that advances after the proof could pull unaudited
+        workflow changes into the merged tree.  A seat whose ceiling lacks
+        workflows:write refuses the update rather than writing unproven.
         Still bounded by the seat ceiling. A handle with no minter keeps its own bearer.
         """
         elevation = getattr(self, "_elevation", None)
@@ -1087,9 +1099,7 @@ class WorkflowVerbs:
                 if exc.code == "response_too_large":
                     # Size will not shrink on retry: a definite, non-retryable refusal,
                     # unlike a transient pre-read failure. Fails closed, nothing written.
-                    raise Refused(
-                        "PR changes too large to verify for workflow files; no write attempted"
-                    ) from None
+                    raise Refused(TOO_LARGE_TO_VERIFY) from None
                 if exc.status in (0, 408) or exc.status >= 500:
                     raise PreReadUnavailable(
                         "PR file pre-read unavailable; no write attempted"
@@ -1119,16 +1129,46 @@ class WorkflowVerbs:
                 or not isinstance(pr.get("base"), dict)
                 or not isinstance(pr["base"].get("ref"), str)
                 or not pr["base"]["ref"]
+                or not isinstance(pr["base"].get("sha"), str)
+                or not _SHA.fullmatch(pr["base"]["sha"])
             ):
                 raise Refused("PR head not matched")
+            base_ref = quote(pr["base"]["ref"], safe="/")
+            base_sha = pr["base"]["sha"]
             # The compare files array is one response capped at 300 files, not paginated:
             # one read, and a full-size array may be truncated so it is unverifiable.
-            base_ref = quote(pr["base"]["ref"], safe="/")
-            data = read(f"/repos/{repo}/compare/{head_sha}...{base_ref}")
+            # The proof input is the immutable base sha from the PR snapshot, not the
+            # mutable ref.  When the compare cannot prove the workflow-touch answer -
+            # too large to read, no files array, or a possibly-truncated full page
+            # without a touch - fall back to a complete two-tree diff.
+            try:
+                data = read(f"/repos/{repo}/compare/{head_sha}...{base_sha}")
+            except Refused as exc:
+                if str(exc) != TOO_LARGE_TO_VERIFY:
+                    raise
+                data = None
             files = data.get("files") if isinstance(data, dict) else None
-            scan(files)
-            if not touches and len(files) >= COMPARE_FILES_CAP:
-                raise PreReadUnavailable("base changes too large to verify; no write attempted")
+            if not isinstance(files, list):
+                touches = self._base_changes_touch_workflows_via_trees(
+                    read, repo, head_sha, base_sha
+                )
+            else:
+                scan(files)
+                if not touches and len(files) >= COMPARE_FILES_CAP:
+                    touches = self._base_changes_touch_workflows_via_trees(
+                        read, repo, head_sha, base_sha
+                    )
+            # The provider update-branch endpoint fences only the head, so the base
+            # tip is re-read immediately before the write:  a base that moved after
+            # the proof invalidates it and the caller can retry.  A move after this
+            # recheck stays possible - the endpoint gives no stronger fence - which
+            # is exactly why the write below always runs under the workflow ceiling
+            # instead of relying on the provider to refuse unaudited changes.
+            tip = read(f"/repos/{repo}/git/ref/heads/{base_ref}")
+            tip_obj = tip.get("object") if isinstance(tip, dict) else None
+            tip_sha = tip_obj.get("sha") if isinstance(tip_obj, dict) else None
+            if tip_sha != base_sha:
+                raise Refused("PR base not matched")
         else:
             for page in range(1, 31):
                 rows = read(f"/repos/{repo}/pulls/{number}/files?per_page=100&page={page}")
@@ -1139,7 +1179,9 @@ class WorkflowVerbs:
                     break
             else:
                 raise PreReadUnavailable("PR file list too long to verify; no write attempted")
-        if not touches:
+        # Update-branch never takes the least-permission path (see above); merge
+        # does when its file list proves no workflow change.
+        if not touches and action != "wf_update_branch":
             return self.bearer
         required = dict(SPECS[action][0])
         required["workflows"] = "write"
@@ -1157,6 +1199,84 @@ class WorkflowVerbs:
         except Exception:
             raise Unknown("own App credential unavailable") from None
         return token
+
+    @staticmethod
+    def _tree_rows(read, repo, ref_sha):
+        """{path: (sha, mode, type)} for every row of one whole-tree read.
+
+        The commit response must itself be the requested commit (matching sha)
+        and its root tree sha is read first;  the tree response must return
+        exactly that sha:  the proof is bound to the requested commit, not to
+        any syntactically valid object.  recursive=1 is a single response
+        with an explicit truncation flag, so a truncated or oversized tree is
+        as unverifiable as an oversized compare:  same refusal, nothing
+        written.  Every row must be well formed, its mode must match its type,
+        and every path unique:  a skipped malformed row could silently drop a
+        workflow path from the diff, which would fail open, and a non-blob
+        change (gitlink, directory) is a real change too.  Paths are bounded
+        Git paths, not the publication allowlist:  spaces and non-ASCII are
+        valid here.
+        """
+        if not isinstance(ref_sha, str) or not _SHA.fullmatch(ref_sha):
+            raise Refused(TOO_LARGE_TO_VERIFY)
+        commit = read(f"/repos/{repo}/git/commits/{ref_sha}")
+        if not isinstance(commit, dict) or commit.get("sha") != ref_sha:
+            raise Refused(TOO_LARGE_TO_VERIFY)
+        tree = commit.get("tree")
+        tree_sha = tree.get("sha") if isinstance(tree, dict) else None
+        if not isinstance(tree_sha, str) or not _SHA.fullmatch(tree_sha):
+            raise Refused(TOO_LARGE_TO_VERIFY)
+        data = read(f"/repos/{repo}/git/trees/{tree_sha}?recursive=1")
+        if (
+            not isinstance(data, dict)
+            or data.get("truncated") is not False
+            or data.get("sha") != tree_sha
+            or not isinstance(data.get("tree"), list)
+        ):
+            raise Refused(TOO_LARGE_TO_VERIFY)
+        allowed = {
+            "blob": ("100644", "100755", "120000"),
+            "tree": ("040000",),
+            "commit": ("160000",),
+        }
+        out = {}
+        for row in data["tree"]:
+            path = row.get("path") if isinstance(row, dict) else None
+            rtype = row.get("type") if isinstance(row, dict) else None
+            if not (
+                isinstance(row, dict)
+                and isinstance(path, str)
+                and 1 <= len(path) <= 1024
+                and "\x00" not in path
+                and not path.startswith("/")
+                and isinstance(row.get("sha"), str)
+                and _SHA.fullmatch(row["sha"])
+                and isinstance(row.get("mode"), str)
+                and row.get("mode") in allowed.get(rtype, ())
+            ):
+                raise Refused(TOO_LARGE_TO_VERIFY)
+            if path in out:
+                raise Refused(TOO_LARGE_TO_VERIFY)
+            out[path] = (row["sha"], row["mode"], rtype)
+        return out
+
+    def _base_changes_touch_workflows_via_trees(self, read, repo, head_sha, base_sha):
+        """Workflow-touch proof from the two trees when the compare cannot answer.
+
+        The base changes an update pulls in are exactly the entries whose
+        (sha, mode, type) differs between the head tree and the base tip tree,
+        plus the paths present on only one side, so a rename, a mode-only or
+        type-only change, and a gitlink or directory change in either direction
+        are covered.  Complete enumeration, fail closed on any gap.
+        """
+        head = self._tree_rows(read, repo, head_sha)
+        base = self._tree_rows(read, repo, base_sha)
+        changed = {path for path, row in head.items() if base.get(path) != row}
+        changed |= {path for path in base if path not in head}
+        return any(
+            name == ".github/workflows" or name.startswith(".github/workflows/")
+            for name in changed
+        )
 
     def _write_path_denied(self, path):
         if path in (".github", ".github/workflows"):
