@@ -5,6 +5,7 @@ reaches a real store, and no router is started."""
 from __future__ import annotations
 
 import contextlib
+import importlib
 import io
 import json
 import os
@@ -670,7 +671,7 @@ class Wiring(Settings):
         seen = {}
 
         def serve(seats, bind, port):
-            seen.update(served=sorted(seats.routers), down=dict(seats.down))
+            seen.update(names=seats.names(), served=sorted(seats.routers))
             seen["delivery"] = seats.routers[CW.SEAT].config["delivery_enabled"]
             return 0
 
@@ -679,9 +680,51 @@ class Wiring(Settings):
             mock.patch.object(WR, "serve", side_effect=serve),
         ):
             SVC.main(["serve"])
-        self.assertEqual(seen["served"], sorted(SVC.BUILDERS))
-        self.assertEqual(seen["down"], {})
+        # Every registered seat is either served or named down with a reason.
+        self.assertEqual(seen["names"], sorted(SVC.BUILDERS))
+        self.assertIn(CW.SEAT, seen["served"])
         self.assertIs(seen["delivery"], False, "served, and held until the knob names it")
+
+    def test_muse_code_missing_or_failing_disables_only_mc(self) -> None:
+        """MC is registered before muse_wake.router_platform exists on main (PR #1815):  its
+        import fails, so only MC is down, /health names it, and CLAUDE is served."""
+        self.fake.set(secrets={**ARMED, KEY_KNOB: KEY})
+        real = importlib.import_module
+
+        def failing(env, settings):
+            raise RuntimeError("no muse workspace")
+
+        muse_cases = {
+            "platform-not-installed": None,
+            "no-builder": SimpleNamespace(SEAT="MC"),
+            "builder-error-RuntimeError": SimpleNamespace(SEAT="MC", router_platform=failing),
+        }
+        for reason, muse in muse_cases.items():
+            with self.subTest(reason=reason):
+
+                def importer(name, muse=muse):
+                    if name == "simple_tools.muse_wake":
+                        if muse is None:
+                            raise ImportError(name)
+                        return muse
+                    return real(name)
+
+                with mock.patch.object(CW, "state_dir", return_value=self.state):
+                    served = SVC.build({"HOME": str(self.home)}, importer=importer)
+                self.assertEqual(served.seats.down, {"MC": reason})
+                self.assertEqual(sorted(served.seats.routers), [CW.SEAT])
+                status, health = served.seats.health()
+                self.assertEqual(status, 503)
+                self.assertEqual(
+                    health["seats"]["MC"],
+                    {"healthy": False, "reason": "seat-not-served:" + reason},
+                )
+                self.assertEqual(health["seats"][CW.SEAT], {"healthy": True, "delivery": True})
+                self.assertEqual(served.seats.seat_health(CW.SEAT)[0], 200)
+                claude = served.seats.routers[CW.SEAT]
+                wake = WR.Wake(wake_id="w-%s" % reason, seat=CW.SEAT)
+                self.assertEqual(claude.accept(wake)[0], 202)
+                self.assertEqual([m.seat for m in served.settings.members], [CW.SEAT])
 
     def test_a_non_prod_environment_stops_the_service(self) -> None:
         os.environ[source.ENV_NAMES[0]] = "dev"
@@ -833,8 +876,12 @@ class OneService(Settings):
         expected = self.home / ".local" / "state" / "wake-router" / "zc"
         self.assertEqual(served.seats.routers["ZC"].state, expected)
 
-    def test_the_table_registers_claude_from_its_own_module(self) -> None:
+    def test_the_table_registers_claude_and_muse_code(self) -> None:
         self.assertEqual(SVC.BUILDERS["CLAUDE"], SVC.Builder("simple_tools.claude_wake"))
+        self.assertEqual(
+            SVC.BUILDERS["MC"], SVC.Builder("simple_tools.muse_wake", "router_platform")
+        )
+        self.assertEqual(WS.KEY_KNOBS["MC"], "WAKE_ROUTER_MC_KEY")
         for seat, builder in SVC.BUILDERS.items():
             with self.subTest(seat=seat):
                 self.assertIn(seat, WS.KEY_KNOBS, "a served seat needs a bearer knob")

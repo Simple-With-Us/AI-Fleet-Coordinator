@@ -80,6 +80,9 @@ class Builder:
 #: docstring, Registering a platform).
 BUILDERS: dict[str, Builder] = {
     "CLAUDE": Builder("simple_tools.claude_wake"),
+    # Muse Code (PR #1815 adds muse_wake.router_platform).  Until that lands the import fails, and
+    # only MC is down, with the reason on /health.
+    "MC": Builder("simple_tools.muse_wake", "router_platform"),
 }
 
 
