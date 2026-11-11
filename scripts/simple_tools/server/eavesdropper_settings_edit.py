@@ -32,14 +32,21 @@ What it promises:
   * The write is a temporary file in the same folder, fsync, then one rename.  The old file is
     first copied to `<file>.bak-settings-<UTC stamp>` (mode 600).
   * After the rename the Eavesdropper is told to reload (SIGHUP) and its status is read back.  A
-    refused reload, or a reload that cannot be sent, puts the old bytes back the same atomic way
-    and reloads again.  The file on disk and the config the Eavesdropper runs then agree.
+    refused reload, a reload that cannot be sent, or a file step that fails after the rename puts
+    the old bytes back the same atomic way and reloads again.  The file on disk and the config the
+    Eavesdropper runs then agree.  When the old bytes cannot be put back either, the answer says so
+    (`rolledBack` false, `replaced` true) and names the backup that holds them.  A reload whose
+    status never moves inside the readback window is `reload_unconfirmed`:  the change is on disk
+    and the apply stands, but nothing has confirmed that the Eavesdropper runs it.
+  * A setting is rewritten only where it is a plain `key = value` line under its own `[table]`
+    header.  One the file writes as a sub-table header (`[seat.X.budget]`), a dotted key
+    (`budget.wakes_per_day = 0`) or a quoted key is refused (`form_not_editable`), not guessed at.
   * One edit at a time:  an exclusive lock on the file's folder, refused at once when held.
   * `apply` is off unless the allowlist says `"applyEnabled": true`.
 
 The request is one JSON document on standard input (`--request-stdin`) and the answer is one JSON
-document on standard output.  Exit status:  0 done, planned or unchanged;  1 a step failed and the
-old file is back;  2 refused.
+document on standard output.  Exit status:  0 done, planned or unchanged;  1 a step failed (the
+answer's `replaced` and `rolledBack` say what is on disk);  2 refused.
 
 Only the standard library is used, and nothing is imported from `simple_tools`, so the file can be
 run with `python3 -I` and loaded from its bytes by `fleet-ops-control.py`.  The daemon's check and
@@ -167,13 +174,15 @@ class Refusal(Exception):
 
 
 class StepFailed(Exception):
-    """A step after the write failed and the old file was put back."""
+    """A step after the live file was replaced failed.  `rolled_back` says whether the old bytes
+    are back in place, and `backup` names the copy of them the apply made."""
 
-    def __init__(self, code, detail, rolled_back):
+    def __init__(self, code, detail, rolled_back, backup=None):
         super().__init__(detail)
         self.code = code
         self.detail = detail
         self.rolled_back = rolled_back
+        self.backup = backup
 
 
 # MARK: - The allowlist
@@ -660,6 +669,26 @@ def _key_text(table, name):
     return ".".join(table + (name,))
 
 
+def _check_editable_form(text, have, todo):
+    """Refuse a setting the file holds in a form this editor does not rewrite.
+
+    `edit_text` finds a setting only as a plain `key = value` statement under its own `[table]`
+    header.  One the file writes as a sub-table header (`[seat.ZC.budget]`), a dotted key
+    (`budget.wakes_per_day = 0`), a quoted key or inside an inline parent table is in the parsed
+    file but not found that way, and adding a second definition beside it would not parse.  That
+    is said here in its own word, so it is never read as a broken live file."""
+    _, found = scan(text)
+    plain = {(s["table"], s["key"]) for s in found if s["kind"] == "pair" and s["key"] is not None}
+    for table, name, _ in todo:
+        if (table, name) in have and (table, name) not in plain:
+            raise Refusal(
+                "form_not_editable",
+                "%s is written as a sub-table, a dotted key or a quoted key;  this editor only "
+                "rewrites a plain `%s = ...` line under [%s].  Nothing was written"
+                % (_key_text(table, name), name, ".".join(table)),
+            )
+
+
 def _removal_names(remove):
     """The `remove` list of a request as a set of `table.key.subkey` names, or Refusal."""
     if remove is None:
@@ -724,6 +753,7 @@ def build_plan(text, allowlist, requested, remove=None):
     todo = [w for w in wanted if (w[0], w[1]) not in have or not same(have[(w[0], w[1])], w[2])]
     if not todo:
         return text, []
+    _check_editable_form(text, have, todo)
     new_text = edit_text(text, todo)
     after = settings_of(_parse(new_text, "the edited file"))
     expected = {(table, name): value for table, name, value in todo}
@@ -863,6 +893,30 @@ def _replace(path, data, info):
             pass
         raise
     _fsync_dir(path.parent)
+
+
+def _roll_back(path, data, info, reloader, wanted):
+    """Put the old bytes back and, when the Eavesdropper was to be told, tell it again.
+
+    True when the live file holds the old bytes again.  A rename that happened but could not be
+    synced still counts, which is why the file is read back before giving up.  When the old bytes
+    cannot be put back the Eavesdropper is not signalled:  it still runs the old config, and a
+    reload would only move it onto a file this apply has just failed on."""
+    try:
+        _replace(path, data, info)
+    except OSError:
+        try:
+            current, _ = read_live(path)
+        except (Refusal, OSError):
+            return False
+        if current != data:
+            return False
+    if wanted:
+        try:
+            reloader(path)
+        except Exception:  # noqa: BLE001, S110 - the file is back;  the second reload is best effort
+            pass
+    return True
 
 
 def _prune_backups(path):
@@ -1175,11 +1229,11 @@ def apply(
                 )
             os.replace(candidate, str(path))
             candidate = None
-            _fsync_dir(path.parent)
-        except Refusal:
+        except (Refusal, OSError):
             if backup is not None:
-                # Refused after the backup was made (the file changed underneath):  the live file was
-                # not replaced, so the backup made here is of no use and is removed.
+                # Stopped after the backup was made (the file changed underneath, or a file step
+                # failed):  the live file was not replaced, so the backup made here is of no use
+                # and is removed.
                 try:
                     os.unlink(str(backup))
                 except OSError:
@@ -1191,33 +1245,45 @@ def apply(
                     os.unlink(candidate)
                 except OSError:
                     pass
+        # From here the live file holds the new bytes.  Whatever fails below, the old bytes go
+        # back the same atomic way and the answer names the backup, so no failure leaves the new
+        # file in place behind an answer that reads as "nothing happened".
         answer["backup"] = backup.name
-        _prune_backups(path)
         wanted = reload == "always" or (reload == "auto" and _is_daemon_file(path))
-        if not wanted:
-            answer.update(
-                result="applied", reload={"ok": True, "confirmed": False, "code": "reload_skipped"}
+        failure = None
+        try:
+            _fsync_dir(path.parent)
+        except OSError:
+            failure = ("io_error", "a file step failed after the live file was replaced")
+        if failure is None:
+            _prune_backups(path)
+            if not wanted:
+                answer.update(
+                    result="applied",
+                    reload={"ok": True, "confirmed": False, "code": "reload_skipped"},
+                )
+                return answer
+            try:
+                outcome = reloader(path)
+            except Exception:  # noqa: BLE001 - any failure to reload is the same answer:  roll back
+                outcome = {"ok": False, "confirmed": False, "code": "reload_failed"}
+            answer["reload"] = outcome
+            if outcome.get("ok"):
+                answer["result"] = "applied"
+                return answer
+            # The Eavesdropper did not take it (or could not be told).
+            failure = (
+                str(outcome.get("code") or "reload_failed"),
+                "the Eavesdropper did not take the reload",
             )
-            return answer
-        try:
-            outcome = reloader(path)
-        except Exception:  # noqa: BLE001 - any failure to reload is the same answer:  roll back
-            outcome = {"ok": False, "confirmed": False, "code": "reload_failed"}
-        answer["reload"] = outcome
-        if outcome.get("ok"):
-            answer["result"] = "applied"
-            return answer
-        # The Eavesdropper did not take it (or could not be told).  The old bytes go back the same
-        # atomic way, and the Eavesdropper is told again so what it runs is what is on disk.
-        _replace(path, data, info)
-        try:
-            reloader(path)
-        except Exception:  # noqa: BLE001, S110 - the file is back;  the second reload is best effort
-            pass
+        if _roll_back(path, data, info, reloader, wanted):
+            raise StepFailed(failure[0], failure[1] + ";  the old file is back", True, backup.name)
         raise StepFailed(
-            str(outcome.get("code") or "reload_failed"),
-            "the Eavesdropper did not take the reload;  the old file is back",
-            True,
+            failure[0],
+            failure[1] + ";  the old bytes could NOT be put back:  the new file is in place, the "
+            "Eavesdropper was not told again, and the old bytes are in the named backup",
+            False,
+            backup.name,
         )
 
 
@@ -1286,6 +1352,10 @@ def run_request(request, path=None, checker=None, reloader=None, reload="auto"):
                 errorCode=exc.code,
                 detail=exc.detail,
                 rolledBack=exc.rolled_back,
+                # The live file was replaced before this step failed;  it holds the new bytes
+                # now only when they could not be put back.
+                replaced=not exc.rolled_back,
+                backup=exc.backup,
             ),
             1,
         )
@@ -1297,8 +1367,11 @@ def run_request(request, path=None, checker=None, reloader=None, reload="auto"):
                 ok=False,
                 result="failed",
                 errorCode="io_error",
-                detail="a file step failed;  see the folder for a backup",
+                # Every failure after the live file is replaced is a StepFailed, so this one was
+                # before it:  the live file was never replaced.
+                detail="a file step failed before the live file was replaced;  it is unchanged",
                 rolledBack=False,
+                replaced=False,
             ),
             1,
         )

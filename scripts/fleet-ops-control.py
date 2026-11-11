@@ -74,7 +74,10 @@ What it promises:
     input, so no word of a request reaches an argv.  Over ssh the verb is
     `server eavesdropper-settings server` with `--plan` (a get, or a plan when standard input holds
     `{"set": {...}}`) or `--yes` (the apply, which may carry the plan's hash as
-    `expectPlanSHA256`);  `--file` and `--set` are not offered there.  A table such as a
+    `expectPlanSHA256`);  `--file` and `--set` are not offered there.  A get is "standard input
+    ended with nothing on it", so the caller must close it (`ssh -n ...`, or `</dev/null`):  a
+    plain `ssh` from a terminal keeps it open, and the request is then refused (`usage`) after
+    the bounded read's five seconds.  A table such as a
     seat's `budget` is set whole, and a value that would drop a sub-key the file has is refused
     unless the request names it (`--remove`, or `remove` on standard input).  An apply holds the one
     action lock and writes one audit row with the target `eavesdropper settings` and no setting or
@@ -1440,11 +1443,15 @@ def eavesdropper_settings_request_from_stdin(ctx, mode):
 
     Standard input is empty (a get, with `--plan` only) or one JSON object with `set`, an
     optional `remove` list (the sub-keys a whole-table value is meant to drop) and, for an
-    apply, an optional `expectPlanSHA256`.  Anything else is refused."""
+    apply, an optional `expectPlanSHA256`.  Anything else is refused.  Empty means it ended:
+    an input the caller leaves open (a plain `ssh` from a terminal, without `-n` or
+    `</dev/null`) is refused when the bounded read gives up, never taken for a get."""
     raw = ctx.stdin()
     if raw is None:
         raise Refused(
-            "the request on standard input is too large or did not end", error_code="usage"
+            "the request on standard input is too large or did not end;  for a get, close it "
+            "(ssh -n, or </dev/null)",
+            error_code="usage",
         )
     if not raw.strip():
         if mode != "plan":

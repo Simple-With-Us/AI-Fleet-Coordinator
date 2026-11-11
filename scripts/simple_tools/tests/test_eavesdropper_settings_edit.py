@@ -579,10 +579,11 @@ class EditTests(Case):
         )
         with self.assertRaises(M.Refusal) as caught:
             self.plan_text({"seat.JET.budget": {"usd_per_day": 5.0}}, dotted)
-        self.assertIn(caught.exception.code, ("edit_unsafe", "file_not_toml"))
+        self.assertEqual(caught.exception.code, "form_not_editable")
         sub = FIXTURE + "\n[seat.ZC.live]\nper_hour = 3\n"
-        with self.assertRaises(M.Refusal):
+        with self.assertRaises(M.Refusal) as caught:
             self.plan_text({"seat.ZC.live": {"per_hour": 9}}, sub)
+        self.assertEqual(caught.exception.code, "form_not_editable")
 
     def test_a_file_that_is_not_toml_is_refused(self) -> None:
         with self.assertRaises(M.Refusal) as caught:
@@ -611,6 +612,58 @@ class EditTests(Case):
             with self.subTest(bad=bad):
                 with self.assertRaises(M.Refusal):
                     M.parse_assignment(bad)
+
+
+class FormTests(Case):
+    """A setting the file writes in a form the editor does not rewrite is refused in its own word."""
+
+    def with_zc(self, extra: str) -> None:
+        text = FIXTURE.replace('[seat.ZC]\ninstance = "server"\n', '[seat.ZC]\ninstance = "server"\n' + extra)
+        self.assertNotEqual(text, FIXTURE)
+        self.live.write_text(text, encoding="utf-8")
+        os.chmod(self.live, 0o640)
+        self.before = self.live.read_bytes()
+
+    def assert_form_refused(self, changes) -> None:
+        for action in ("plan", "apply"):
+            answer, status = self.run_request(action, changes)
+            self.assertEqual(
+                (status, answer["result"], answer["errorCode"]),
+                (2, "refused", "form_not_editable"),
+                action,
+            )
+            self.assertNotIn("TOML", answer["detail"])
+        self.assert_untouched()
+
+    def test_a_sub_table_header_is_refused_as_a_form_not_as_a_broken_file(self) -> None:
+        text = FIXTURE.replace(
+            "[seat.GB-FIXER]", "[seat.ZC.budget]\nwakes_per_day = 0\n\n[seat.GB-FIXER]"
+        )
+        self.live.write_text(text, encoding="utf-8")
+        os.chmod(self.live, 0o640)
+        self.before = self.live.read_bytes()
+        self.assert_form_refused({"seat.ZC.budget": {"wakes_per_day": 5}})
+
+    def test_a_dotted_key_is_refused_as_a_form(self) -> None:
+        self.with_zc("budget.wakes_per_day = 0\n")
+        self.assert_form_refused({"seat.ZC.budget": {"wakes_per_day": 5}})
+
+    def test_a_quoted_key_is_refused_as_a_form(self) -> None:
+        self.with_zc('"enabled" = true\n')
+        self.assert_form_refused({"seat.ZC.enabled": False})
+
+    def test_another_setting_of_the_same_seat_is_still_editable(self) -> None:
+        self.with_zc("budget.wakes_per_day = 0\n")
+        answer, status = self.run_request("apply", {"seat.ZC.wake": "http"})
+        self.assertEqual((status, answer["result"]), (0, "applied"))
+        doc = tomllib.loads(self.live.read_text(encoding="utf-8"))
+        self.assertEqual(doc["seat"]["ZC"]["wake"], "http")
+        self.assertEqual(doc["seat"]["ZC"]["budget"], {"wakes_per_day": 0})
+
+    def test_a_setting_already_as_asked_is_unchanged_whatever_its_form(self) -> None:
+        self.with_zc("budget.wakes_per_day = 0\n")
+        answer, status = self.run_request("plan", {"seat.ZC.budget": {"wakes_per_day": 0}})
+        self.assertEqual((status, answer["result"]), (0, "unchanged"))
 
 
 class GetAndPlanTests(Case):
@@ -762,6 +815,111 @@ class ApplyTests(Case):
         )
         self.assertEqual((status, answer["errorCode"]), (1, "reload_failed"))
         self.assertEqual(self.live.read_bytes(), self.before)
+
+    def _failing_dir_sync(self, fail_on):
+        """Make the editor's folder sync raise on the calls numbered in `fail_on` (1 is the first).
+        The count of calls so far is the returned list's length."""
+        real = M._fsync_dir
+        calls = []
+
+        def fsync_dir(directory):
+            calls.append(directory)
+            if len(calls) in fail_on:
+                raise OSError(5, "Input/output error")
+            return real(directory)
+
+        M._fsync_dir = fsync_dir
+        self.addCleanup(setattr, M, "_fsync_dir", real)
+        return calls
+
+    def test_a_file_step_that_fails_after_the_replace_rolls_back_and_reloads(self) -> None:
+        # Sync 1 follows the backup, sync 2 the replace of the live file.  The second one failing
+        # used to answer a bare io_error with the new file left in place and no reload.
+        self._failing_dir_sync({2})
+        calls = []
+
+        def reloader(path):
+            calls.append(Path(path).read_bytes())
+            return {"ok": True, "confirmed": True, "code": "reloaded"}
+
+        answer, status = self.run_request(
+            "apply", {"seat.ZC.enabled": False}, reloader=reloader, reload="always"
+        )
+        self.assertEqual((status, answer["result"], answer["errorCode"]), (1, "failed", "io_error"))
+        self.assertIs(answer["rolledBack"], True)
+        self.assertIs(answer["replaced"], False)
+        self.assertEqual(self.live.read_bytes(), self.before)
+        self.assertEqual(stat.S_IMODE(self.live.stat().st_mode), 0o640)
+        # The Eavesdropper is told once, after the old bytes are back, and never sees the new file.
+        self.assertEqual(calls, [self.before])
+        # The backup is named and holds the old bytes;  no temporary file is left.
+        self.assertEqual((self.dir / answer["backup"]).read_bytes(), self.before)
+        self.assertEqual(self.names(), sorted(["listener.toml", answer["backup"]]))
+
+    def test_a_failed_step_after_the_replace_does_not_reload_a_file_that_is_not_the_eavesdroppers(self) -> None:
+        self._failing_dir_sync({2})
+        calls = []
+        answer, status = self.run_request(
+            "apply", {"seat.ZC.enabled": False}, reloader=calls.append, reload="never"
+        )
+        self.assertEqual((status, answer["errorCode"], answer["rolledBack"]), (1, "io_error", True))
+        self.assertEqual(self.live.read_bytes(), self.before)
+        self.assertEqual(calls, [])
+
+    def test_a_rollback_that_cannot_be_written_says_so_and_names_the_backup(self) -> None:
+        real = M._write_temp
+
+        def write_temp(directory, prefix, data, mode, owner=None):
+            if ".new-" in prefix:
+                raise OSError(28, "No space left on device")
+            return real(directory, prefix, data, mode, owner)
+
+        M._write_temp = write_temp
+        self.addCleanup(setattr, M, "_write_temp", real)
+        calls = []
+
+        def reloader(path):
+            calls.append(Path(path).read_bytes())
+            return {"ok": False, "confirmed": True, "code": "reload_refused"}
+
+        answer, status = self.run_request(
+            "apply", {"seat.ZC.enabled": False}, reloader=reloader, reload="always"
+        )
+        self.assertEqual(
+            (status, answer["result"], answer["errorCode"]), (1, "failed", "reload_refused")
+        )
+        self.assertIs(answer["rolledBack"], False)
+        self.assertIs(answer["replaced"], True)
+        self.assertIn("could NOT be put back", answer["detail"])
+        # The new file is in place, the old bytes are in the backup the answer names, and the
+        # Eavesdropper was not signalled a second time onto a file this apply failed on.
+        self.assertNotEqual(self.live.read_bytes(), self.before)
+        self.assertEqual((self.dir / answer["backup"]).read_bytes(), self.before)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_rollback_whose_rename_happened_but_did_not_sync_still_counts(self) -> None:
+        # Sync 3 is the one after the rollback's own rename:  the old bytes are back by then.
+        self._failing_dir_sync({3})
+        answer, status = self.run_request(
+            "apply",
+            {"seat.ZC.enabled": False},
+            reloader=lambda path: {"ok": False, "confirmed": True, "code": "reload_refused"},
+            reload="always",
+        )
+        self.assertEqual((status, answer["errorCode"]), (1, "reload_refused"))
+        self.assertIs(answer["rolledBack"], True)
+        self.assertIs(answer["replaced"], False)
+        self.assertEqual(self.live.read_bytes(), self.before)
+
+    def test_a_file_step_that_fails_before_the_replace_leaves_the_file_and_no_backup(self) -> None:
+        # Sync 1 is the one after the backup is written, before the live file is replaced.
+        self._failing_dir_sync({1})
+        answer, status = self.run_request("apply", {"seat.ZC.enabled": False})
+        self.assertEqual((status, answer["result"], answer["errorCode"]), (1, "failed", "io_error"))
+        self.assertIs(answer["rolledBack"], False)
+        self.assertIs(answer["replaced"], False)
+        self.assertNotIn("backup", answer)
+        self.assert_untouched()
 
     def test_an_accepted_reload_keeps_the_new_file(self) -> None:
         answer, status = self.run_request(
