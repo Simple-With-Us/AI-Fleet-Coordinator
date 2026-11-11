@@ -283,6 +283,7 @@ jobs:
       timeout-minutes: 12
       run: |
         cd scripts && python3 -m unittest discover -s simple_tools/tests -t . -v
+        python3 -m unittest discover -s simple_tools/stdio_launcher/tests -t . -v
         python3 -m unittest discover -s whatsapp_bridge/tests -t . -v
     # The Operator's session registry and the MM seat's letter hook:  the letter
     # allocation, the two letter spaces, the registry CLI, and the secret scan that
