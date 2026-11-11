@@ -39,7 +39,7 @@ VERIFY_CONTRACT = "gr-bearer-verify/1"
 SIGNATURE_HEADER = "X-Simple-Tools-Signature"
 
 # The bearer families this resolver understands, both admin-minted:
-#   gbb_<role>_<43>      a Grok Bot persona (identity GB-<ROLE>)
+#   gbb_<role>_<43>      a Grok bot (identity GB-<ROLE>)
 #   sbt_<seat>_<43>      an OAuth-capable seat (identity is its KNOWN_SEATS name)
 # Further families join here when the admin panel mints them.
 TOKEN_RES = (
@@ -131,7 +131,7 @@ class SharedBearerVerifier:
     def parse_identity(token: str) -> str | None:
         """The identity a bearer names, or None when malformed.
 
-        gbb_ names a persona (GB-<ROLE>);  sbt_ names a seat exactly as its
+        gbb_ names a bot (GB-<ROLE>);  sbt_ names a seat exactly as its
         KNOWN_SEATS entry (JET-CHAT included, hyphen preserved).
         """
         if not isinstance(token, str):

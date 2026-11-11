@@ -44,11 +44,11 @@ const JET_KEY = zulipShapedKey(11);
 // openai-dot tag mapping and seatProblem accept no other address, so a synthetic one cannot stand in (kody, PR 889).
 const JET_EMAIL = wranglerConfig().vars.ZULIP_EMAIL_JET;
 const CURSOR_KEY = zulipShapedKey(12);
-// One enabled Grok Bot persona, wired through the legacy per-role variables loadDelegatedCredentials reads.
-const PERSONA = GB_IDENTITIES.find((name) => name === "GB-FIXER") ?? GB_IDENTITIES[0];
-const PERSONA_NAMES = delegatedNames(PERSONA);
-const PERSONA_EMAIL = `${PERSONA.slice(3).toLowerCase()}-grok-bot@simplewithus.zulipchat.com`;
-const PERSONA_KEY = zulipShapedKey(41);
+// One enabled Grok bot, wired through the legacy per-role variables loadDelegatedCredentials reads.
+const BOT = GB_IDENTITIES.find((name) => name === "GB-FIXER") ?? GB_IDENTITIES[0];
+const BOT_NAMES = delegatedNames(BOT);
+const BOT_EMAIL = `${BOT.slice(3).toLowerCase()}-grok-bot@simplewithus.zulipchat.com`;
+const BOT_KEY = zulipShapedKey(41);
 const CURSOR_REDIRECT = "https://www.cursor.com/agents/mcp/oauth/callback";
 const CURSOR_CIMD_CLIENT = "https://cursor.com/oauth/mcp-client.json";
 // Public metadata shape copied from Cursor's published document; never fetched live in this test.
@@ -73,7 +73,7 @@ const zulip = new FakeZulip({ bots: [
   // the fake users/me carries the same owner id the committed var pins.
   { email: JET_EMAIL, full_name: "Jet", key: JET_KEY, bot_owner_id: Number(wranglerConfig().vars.OWNER_USER_ID) },
   { email: "cursor-bot@simplewithus.zulipchat.com", full_name: "Cursor", key: CURSOR_KEY },
-  { email: PERSONA_EMAIL, full_name: PERSONA.slice(3), key: PERSONA_KEY },
+  { email: BOT_EMAIL, full_name: BOT.slice(3), key: BOT_KEY },
   { email: "claude-bot@simplewithus.zulipchat.com", full_name: "Claude", key: CLAUDE_KEY },
 ] });
 const linear = new FakeLinear();
@@ -280,7 +280,7 @@ function startWorker(upstream, bindingOverrides = {}) {
         compatibilityFlags: w.compatibility_flags,
         kvNamespaces: ["OAUTH_KV"],
         durableObjects: { SEAT_GATE: { className: "SeatGate", useSQLite: true } },
-        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,JET-CHAT,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE", EVENTS_ONLY_SEATS: "JET", SEATS: { ...wranglerConfig().vars.SEATS, "JET-CHAT": { redirect_uris: [JETCHAT_REDIRECT], cimd_client_ids: [JETCHAT_CLIENT] } }, ZULIP_KEY_JET_CHAT: JET_KEY, ZULIP_EMAIL_JET_CHAT: JET_EMAIL, ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_CLAUDE_API_KEY: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, [PERSONA_NAMES.zulipEmail]: PERSONA_EMAIL, [PERSONA_NAMES.zulipKey]: PERSONA_KEY, [PERSONA_NAMES.linearClientId]: "workerd-persona-linear-id", [PERSONA_NAMES.linearClientSecret]: "workerd-persona-linear-secret", WAKE_HMAC_KEY_JET: WAKE_KEY_JET, SPIKE_HMAC_KEY: SPIKE_KEY, LINEAR_GROK_WEB_CLIENT_ID: "workerd-linear-client-id", LINEAR_GROK_WEB_CLIENT_SECRET: "workerd-linear-client-secret", LINEAR_TOOLS_WRITES: "1", ...bindingOverrides }),
+        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,JET-CHAT,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE", EVENTS_ONLY_SEATS: "JET", SEATS: { ...wranglerConfig().vars.SEATS, "JET-CHAT": { redirect_uris: [JETCHAT_REDIRECT], cimd_client_ids: [JETCHAT_CLIENT] } }, ZULIP_KEY_JET_CHAT: JET_KEY, ZULIP_EMAIL_JET_CHAT: JET_EMAIL, ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_CLAUDE_API_KEY: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, [BOT_NAMES.zulipEmail]: BOT_EMAIL, [BOT_NAMES.zulipKey]: BOT_KEY, [BOT_NAMES.linearClientId]: "workerd-bot-linear-id", [BOT_NAMES.linearClientSecret]: "workerd-bot-linear-secret", WAKE_HMAC_KEY_JET: WAKE_KEY_JET, SPIKE_HMAC_KEY: SPIKE_KEY, LINEAR_GROK_WEB_CLIENT_ID: "workerd-linear-client-id", LINEAR_GROK_WEB_CLIENT_SECRET: "workerd-linear-client-secret", LINEAR_TOOLS_WRITES: "1", ...bindingOverrides }),
         outboundService: outboundFetch,
       },
     ],
@@ -1126,7 +1126,7 @@ try {
     const off = await call(t.body.access_token, "zulip_post", { channel: "general", topic: "t", text: "x", identity: "GROK-WEB" });
     assert.equal(off.json.result._meta["simple-tools/error"].code, "channel_not_allowed");
 
-    await step("GROK-WEB OAuth credential is server-bound: CURSOR and every persona are refused before backend writes", async () => {
+    await step("GROK-WEB OAuth credential is server-bound: CURSOR and every bot are refused before backend writes", async () => {
       const listed = (await mcp(t.body.access_token, "tools/list")).json.result.tools;
       const enumOf = listed.find((tool) => tool.name === "zulip_post").inputSchema.properties.identity.enum;
       assert.deepEqual(enumOf, ["GROK-WEB"]);
@@ -1723,8 +1723,8 @@ try {
     await own.arrayBuffer();
   });
 
-  await step(`a per-bot bearer: minted once on /admin, hash-only, acts only as ${PERSONA}, rotates and revokes`, async () => {
-    const minted = await adminAction("mint_gb_bearer", { identity: PERSONA });
+  await step(`a per-bot bearer: minted once on /admin, hash-only, acts only as ${BOT}, rotates and revokes`, async () => {
+    const minted = await adminAction("mint_gb_bearer", { identity: BOT });
     assert.equal(minted.status, 200);
     assert.match(minted.headers.get("cache-control"), /no-store/);
     const html = await minted.text();
@@ -1734,69 +1734,69 @@ try {
     const page = await (await browser("/admin")).text();
     assert.ok(!page.includes(bearer));
     assert.match(page, /Per-Identity Bearers/);
-    // A matched persona hash is not enough: explicit false refuses /mcp.
+    // A matched bot hash is not enough: explicit false refuses /mcp.
     const ns = await mf.getDurableObjectNamespace("SEAT_GATE", "simple-tools-mcp");
-    const personaGate = ns.get(ns.idFromName(PERSONA));
+    const personaGate = ns.get(ns.idFromName(BOT));
     const bearerHash = createHash("sha256").update(bearer).digest("hex");
     await personaGate.gbBearerMint({hash:bearerHash, by:"test", expiresAt:Date.now()+600000, mcpAccept:false});
-    assert.equal((await mcp(bearer,"tools/list")).status,401,"GR-only persona must refuse hosted MCP");
+    assert.equal((await mcp(bearer,"tools/list")).status,401,"GR-only bot must refuse hosted MCP");
     await personaGate.gbBearerMint({hash:bearerHash, by:"test", expiresAt:Date.now()+600000, mcpAccept:true});
     const who = (await call(bearer, "whoami")).json.result;
     assert.equal(who.isError, undefined, JSON.stringify(who));
-    assert.equal(who.structuredContent.seat, PERSONA);
-    assert.equal(who.structuredContent.email, PERSONA_EMAIL);
-    const other = GB_IDENTITIES.find((name) => name !== PERSONA);
+    assert.equal(who.structuredContent.seat, BOT);
+    assert.equal(who.structuredContent.email, BOT_EMAIL);
+    const other = GB_IDENTITIES.find((name) => name !== BOT);
     const wrong = await call(bearer, "whoami", { identity: other });
     assert.equal(wrong.json.result._meta["simple-tools/error"].code, "identity_not_allowed");
     const echo = await call(bearer, "whoami", { identity: "ECHO" });
     assert.equal(echo.json.result._meta["simple-tools/error"].code, "identity_not_allowed");
-    const posted = await call(bearer, "zulip_post", { channel: "sandbox", topic: "bearer", text: "From a bearer.", identity: PERSONA });
+    const posted = await call(bearer, "zulip_post", { channel: "sandbox", topic: "bearer", text: "From a bearer.", identity: BOT });
     assert.equal(posted.json.result.isError, undefined, JSON.stringify(posted.json));
-    assert.equal(zulip.messages.at(-1).sender_email, PERSONA_EMAIL);
+    assert.equal(zulip.messages.at(-1).sender_email, BOT_EMAIL);
     // A malformed or unknown token is the same 401.
     for (const bad of ["gbb_fixer_" + "A".repeat(43), "gbb_echo_" + "A".repeat(43), "gbb_nobody_x", "gbb_"]) {
       const refused = await mcp(bad, "tools/list");
       assert.equal(refused.status, 401, bad);
     }
-    // The wrong gbb_fixer secret counted against the persona end to end
+    // The wrong gbb_fixer secret counted against the bot end to end
     // (route -> DO counter -> /admin).  The first mismatch on a cold counter
     // flushes immediately, so exactly one attempt is visible here.
     const counterPage = await (await browser("/admin")).text();
     assert.match(counterPage, /1 wrong-secret attempt, last /);
     assert.match(counterPage, /approximate; updates at most once a minute/);
     // Rotating replaces it at once.
-    const rotated = await adminAction("mint_gb_bearer", { identity: PERSONA });
+    const rotated = await adminAction("mint_gb_bearer", { identity: BOT });
     const next = (await rotated.text()).match(/gbb_[a-z0-9]+_[A-Za-z0-9_-]{43}/)[0];
     assert.ok(next !== bearer, "a rotation mints a different token");
     assert.equal((await mcp(bearer, "tools/list")).status, 401, "the old bearer is dead");
-    assert.equal((await call(next, "whoami")).json.result.structuredContent.seat, PERSONA);
+    assert.equal((await call(next, "whoami")).json.result.structuredContent.seat, BOT);
     // Revoke.
-    const revoked = await adminAction("revoke_gb_bearer", { identity: PERSONA });
+    const revoked = await adminAction("revoke_gb_bearer", { identity: BOT });
     assert.equal(revoked.status, 303);
     assert.equal((await mcp(next, "tools/list")).status, 401, "a revoked bearer is dead");
-    // A persona with no credentials cannot mint.
+    // A bot with no credentials cannot mint.
     const none = await adminAction("mint_gb_bearer", { identity: other });
     assert.equal(none.status, 400);
   });
 
-  await step(`wrong bearer guesses count against the claimed persona - counter only, visible on /admin`, async () => {
+  await step(`wrong bearer guesses count against the claimed bot - counter only, visible on /admin`, async () => {
     // Regression for the roles-map bug (Tailnet review, 2026-10-25):  the
     // public GB route's mismatch counter call must read the roles MAP.  A
     // single-role lookup object has no .roles, the TypeError was swallowed by
     // the observability catch, and every increment silently skipped.
-    const minted = await adminAction("mint_gb_bearer", { identity: PERSONA });
+    const minted = await adminAction("mint_gb_bearer", { identity: BOT });
     assert.equal(minted.status, 200);
     const countLine = (html) => html.match(/(\d+) wrong-secret attempts?/);
     const before = Number(countLine(await (await browser("/admin")).text())?.[1] ?? "0");
     for (let n = 1; n <= 2; n++) {
-      const wrong = `gbb_${PERSONA.slice(3).toLowerCase()}_${String(n)}${"A".repeat(42)}`;
+      const wrong = `gbb_${BOT.slice(3).toLowerCase()}_${String(n)}${"A".repeat(42)}`;
       const refused = await mcp(wrong, "tools/list");
       assert.equal(refused.status, 401, "a wrong secret is refused, never served");
     }
     const page = await (await browser("/admin")).text();
     const after = Number(countLine(page)?.[1] ?? "0");
     // Write-throttled (fresh-head review):  these two guesses land within
-    // the flush window of the persona step's writes, so they buffer in the
+    // the flush window of the bot step's writes, so they buffer in the
     // DO instance's memory and persist NOTHING yet - the visible count is
     // unchanged, proving a guess storm cannot force a storage write each.
     // The alarm persists the tail at its due time - exercised for real in the lifecycle step below.
@@ -1805,7 +1805,7 @@ try {
     assert.match(page, /approximate; updates at most once a minute/);
     const line = page.split("wrong-secret attempts")[1] ?? "";
     assert.ok(!/[0-9a-f]{64}/.test(line.slice(0, 200)), "the count line carries no token hash");
-    await adminAction("revoke_gb_bearer", { identity: PERSONA });
+    await adminAction("revoke_gb_bearer", { identity: BOT });
   });
 
   await step("input-gate qualification: concurrent RPCs during a real mismatch flush (classification, not assumed)", async () => {
@@ -1957,7 +1957,7 @@ try {
     const pageText = await page.text();
     const csrf = pageText.match(/name="csrf" value="([0-9a-f]{64})"/)[1];
     const mintId = pageText.match(/name="mint_id" value="([0-9a-f]{32})"/)[1];
-    const form = { csrf, mint_id: mintId, action: "mint_gb_bearer", identity: PERSONA };
+    const form = { csrf, mint_id: mintId, action: "mint_gb_bearer", identity: BOT };
     const first = await browser("/admin/action", { method: "POST", form });
     assert.equal(first.status, 200);
     const bearer = (await first.text()).match(/gbb_[a-z0-9]+_[A-Za-z0-9_-]{43}/)[0];
@@ -1971,20 +1971,20 @@ try {
     assert.ok(!secondHtml.includes('id="gb-bearer-token"'), "no token element on the ack page");
     assert.ok(!secondHtml.includes(bearer), "the original token is never echoed");
     const who = (await call(bearer, "whoami")).json.result;
-    assert.equal(who.structuredContent.seat, PERSONA, "the original bearer survived the resubmit");
+    assert.equal(who.structuredContent.seat, BOT, "the original bearer survived the resubmit");
     // A stale form (rendered over an hour ago, never used): refused, no mutation.
     const staleId = (Date.now() - 2 * 3600_000).toString(16).padStart(12, "0") + "0".repeat(20);
     const stale = await browser("/admin/action", { method: "POST", form: { ...form, mint_id: staleId } });
     assert.match(await stale.text(), /Nothing Was Minted/);
     const who2 = (await call(bearer, "whoami")).json.result;
-    assert.equal(who2.structuredContent.seat, PERSONA, "the stale replay changed nothing");
+    assert.equal(who2.structuredContent.seat, BOT, "the stale replay changed nothing");
     // A fresh deliberate mint (newly rendered page) still rotates on purpose.
-    const deliberate = await adminAction("mint_gb_bearer", { identity: PERSONA });
+    const deliberate = await adminAction("mint_gb_bearer", { identity: BOT });
     assert.equal(deliberate.status, 200);
     const next = (await deliberate.text()).match(/gbb_[a-z0-9]+_[A-Za-z0-9_-]{43}/)[0];
     assert.ok(next !== bearer, "a fresh form mints a replacement");
     assert.equal((await mcp(bearer, "tools/list")).status, 401, "the deliberate rotation ended the old bearer");
-    await adminAction("revoke_gb_bearer", { identity: PERSONA });
+    await adminAction("revoke_gb_bearer", { identity: BOT });
   });
 
   await step("the seat rotation form states that an unticked rotation drops existing /mcp access", async () => {

@@ -6,8 +6,8 @@ import { GB_IDENTITIES } from "./delegated-identities.js";
 import { countedStub } from "./invocation.js";
 
 /**
- * The SeatGate of a seat, an enabled Grok Bot persona, or the refusal log.  GB_IDENTITIES is the one list of
- * personas (delegated-identities.js, scripts/simple_tools/mcp/gb-identities.json):  a persona has its own gate for
+ * The SeatGate of a seat, an enabled Grok bot, or the refusal log.  GB_IDENTITIES is the one list of
+ * bots (delegated-identities.js, scripts/simple_tools/mcp/gb-identities.json):  a bot has its own gate for
  * its spacing, idempotency rows and budget, so createIdentity must be able to open it.  Any other name throws.
  */
 export function gate(env, name) {
@@ -19,7 +19,7 @@ export function gate(env, name) {
 //
 // A provider quota is not a seat.  Its bucket lives in a SeatGate instance of the same class under a reserved
 // name, `providerquota:<provider>:<identity>`, opened ONLY through this factory (gate() above still refuses the
-// name, so no seat, persona or tool path can reach it).  The name is built from a validated provider and a
+// name, so no seat, bot or tool path can reach it).  The name is built from a validated provider and a
 // validated identity, never from caller text, and only the two quota methods are ever called on it.
 export const PROVIDER_QUOTA_PREFIX = "providerquota:";
 const QUOTA_PROVIDERS = Object.freeze(["linear"]);

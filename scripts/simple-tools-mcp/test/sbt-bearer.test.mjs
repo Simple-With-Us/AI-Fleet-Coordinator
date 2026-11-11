@@ -61,7 +61,7 @@ test("minting without mcp_accept never serves the consent-bypassing route", asyn
   assert.ok(checked.mcp_accept !== true);
 });
 
-test("a wrong seat bearer refuses exactly like a wrong persona bearer", async () => {
+test("a wrong seat bearer refuses exactly like a wrong bot bearer", async () => {
   const store = S.memoryStore();
   const a = await newSeatBearer(SEAT);
   await S.gbBearerMint(store, { hash: a.hash, by: "j", expiresAt: NOW + 1e9, mcpAccept: true }, NOW);
