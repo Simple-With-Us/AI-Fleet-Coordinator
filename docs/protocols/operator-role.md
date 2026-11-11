@@ -255,6 +255,8 @@ Three concrete changes carry that:
     status messages, the `@all` reminder, tagged `[OPERATOR·note]`) keep their own tags.  See
     `simple-tools-listener.md`, "The Operator's voice".
 
+    **Nov 10, 2026 supersession.**  The relay above is gone.  The owner ruled that "The operator should never be answering on behalf of a platform", so the Operator posts no wake reply, no owner ack, no route page and no quota notice, in a channel or in a direct message, for any seat and any wake type.  It sends its own alerts and notes and asks no question (owner ruling, Nov 10, 2026:  the Operator does not ask clarifying questions).  `Daemon.post` is a refusal that records `operator_never_answers` on the wake's ledger row.
+
 3.  **The pairing test decides whether the Operator speaks, and the direct message carries what
     it says.**  A message that pairs with a thread gets the Operator's own message, and that
     message travels by direct message to the seat that asked, with a link to the thread, because a

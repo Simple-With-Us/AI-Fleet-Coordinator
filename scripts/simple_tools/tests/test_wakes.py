@@ -336,10 +336,8 @@ class ContractTests(unittest.TestCase):
             "queued for the owner to confirm in one of this seat's next sessions", text
         )
         self.assertNotIn("Claude", text)
-        self.assertNotIn("Claude", W.OWNER_ACK)
-        self.assertIn("seat's next sessions", W.OWNER_ACK)
 
-    def test_the_listener_protocol_describes_the_ack_the_daemon_posts(self) -> None:
+    def test_the_listener_protocol_says_the_daemon_posts_no_reply_and_no_ack(self) -> None:
         path = os.path.join(
             os.path.dirname(W.CONTRACT_PATH),
             "..",
@@ -351,23 +349,30 @@ class ContractTests(unittest.TestCase):
         )
         with open(path, encoding="utf-8") as fh:
             doc = fh.read()
-        self.assertIn("seat's next sessions", doc)
         self.assertNotIn("queued for confirmation in a Claude session", doc)
+        self.assertNotIn("posts a fixed one-line ack", doc, "the owner ack is gone with the reply")
+        self.assertIn("The operator should never be answering on behalf of a platform", doc)
+        self.assertIn("operator_never_answers", doc)
+        self.assertFalse(hasattr(W, "OWNER_ACK"), "the fixed ack the Operator used to post is gone")
 
 
 class ReplyTextTests(unittest.TestCase):
+    """What is left of the reply text helpers:  the mention neutralizer the Operator's notes still
+    use, and the secret scanner.  Nothing builds a wake reply any more (`operator_never_answers`)."""
+
     def test_mentions_are_neutralized_and_groups_removed(self) -> None:
-        text = W.compose_reply(
-            4821,
-            "@**Codex** and @**Jay Wedgeworth|12**, ping @*fleet* and @_*ops* @**all**",
+        body = W.neutralize_mentions(
+            "@**Codex** and @**Jay Wedgeworth|12**, ping @*fleet* and @_*ops* @**all**"
         )
-        first, body = text.split("\n", 1)
-        self.assertEqual(first, "[OPERATOR·wake] re=4821")
         self.assertNotIn("@**", body)
         self.assertIn("@_**Codex**", body)
         self.assertIn("@_**Jay Wedgeworth|12**", body)
         self.assertNotIn("fleet", body)
         self.assertNotIn("ops", body)
+
+    def test_nothing_builds_a_wake_reply_or_a_route_page_any_more(self) -> None:
+        for name in ("compose_reply", "compose_route", "OWNER_ACK", "loud_mentions"):
+            self.assertFalse(hasattr(W, name), name)
 
     def test_removing_a_group_mention_never_rebuilds_a_live_mention(self) -> None:
         cases = [
