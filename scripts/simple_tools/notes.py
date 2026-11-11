@@ -83,6 +83,8 @@ SCRIPT_NAME = "apple-notes-coding.sh"
 #  instead of outliving it by the wait.
 #  scripts/test_apple_notes_timeout.py holds the two together (AFC-436).
 SCRIPT_TIMEOUT_S = 1200.0
+RAG_UPSERT_TIMEOUT_S = 180.0
+_SCRIPTS_ROOT = Path(__file__).resolve().parent.parent
 READ_TIMEOUT_S = 180.0  # a read or a list changes nothing, so it is not held to the write cap
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
 SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,31}$")
@@ -1119,6 +1121,28 @@ def _note_id(stdout: str) -> str | None:
     return match.group(1)[:200] if match else None
 
 
+def _fleet_rag_upsert(request: Mapping[str, Any], note_id: str, env: Mapping[str, str]) -> None:
+    """Best-effort Fleet RAG upsert after a successful write (AFC-685).  Failures are ignored."""
+    if request.get("action") not in BODY_ACTIONS or not note_id:
+        return
+    payload = json.dumps(
+        {"request": dict(request), "note_id": note_id},
+        ensure_ascii=False,
+    ).encode("utf-8")
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "fleet_rag.note_upsert"],
+            input=payload,
+            capture_output=True,
+            timeout=RAG_UPSERT_TIMEOUT_S,
+            cwd=str(_SCRIPTS_ROOT),
+            env=child_env(env, {}),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+
+
 def run_direct(
     request: Mapping[str, Any],
     script: Path,
@@ -1242,6 +1266,8 @@ def run_direct(
         note_id = _note_id(stdout)
         if note_id:
             result["note_id"] = note_id
+            if action in BODY_ACTIONS:
+                _fleet_rag_upsert(request, note_id, env)
         skipped = _pin_skipped(proc.stderr)
         if skipped:
             result["pin_skipped"] = skipped

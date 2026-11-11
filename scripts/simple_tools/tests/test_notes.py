@@ -17,6 +17,7 @@ import tempfile
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 from pathlib import Path
 
 from simple_tools import notes as N
@@ -487,8 +488,27 @@ class DirectRunnerTests(unittest.TestCase):
         "APPLE_NOTES_ACTION_LOG": "/logs/actions.jsonl",
     }
 
+    def setUp(self) -> None:
+        self._rag = mock.patch.object(N, "_fleet_rag_upsert")
+        self._rag_mock = self._rag.start()
+
+    def tearDown(self) -> None:
+        self._rag.stop()
+
     def run_direct(self, req, runner, **kwargs):
         return N.run_direct(req, self.SCRIPT, env=self.ENV, runner=runner, **kwargs)
+
+    def test_fleet_rag_upsert_swallows_subprocess_errors(self):
+        with mock.patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("cmd", 1)):
+            N._fleet_rag_upsert(request(markdown="x" * 40), "note-id", self.ENV)
+
+    def test_successful_write_triggers_fleet_rag_upsert(self):
+        run = FakeRun()
+        body = "Fleet RAG upsert integration body with enough text to index."
+        self.run_direct(request(markdown=body), run)
+        self._rag_mock.assert_called_once()
+        args = self._rag_mock.call_args[0]
+        self.assertEqual(args[1], "x-coredata://abc")
 
     def test_markdown_goes_on_stdin_and_never_on_argv(self):
         run = FakeRun()

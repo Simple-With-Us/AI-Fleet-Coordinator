@@ -142,7 +142,8 @@ SOURCES = ("linear", "doc", "skill", "memory", "apple-note", "chat-log")
 # (owner 2026-09-02).  Pass `--source chat-log` explicitly.
 # board and effort-log are retired sources (owner 2026-11-03: Linear is the only issue home).
 # Their iter_* readers stay for tests until the data is deleted;  they are not registered.
-NIGHTLY_SOURCES = ("linear", "doc", "skill", "memory", "apple-note")
+# apple-note is write-time upsert only (AFC-685); nightly ingest must not read Apple Notes.
+NIGHTLY_SOURCES = ("linear", "doc", "skill", "memory")
 
 WARNINGS: list[str] = []
 
