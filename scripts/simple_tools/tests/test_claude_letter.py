@@ -1372,6 +1372,86 @@ class HookTests(Base):
         self.assertNotIn("went to another chat", out["additionalContext"])
         self.assertEqual(self.lookup("s-0001")["label"], "AA")
 
+    def replace_the_registry(self) -> None:
+        """The store moves under the chats:  a registry that has never heard of any of them (the API's, after the cutover)."""
+        for suffix in ("", "-wal", "-shm"):
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(self.db + suffix)
+        OR.SessionRegistry(self.db).close_db()
+
+    def test_a_chat_the_registry_never_held_registers_again_on_its_next_touch(self) -> None:
+        self.titled()  # AA, registered in the store that has since been replaced
+        self.replace_the_registry()
+        self.assertIsNone(self.lookup("s-0001"))
+        later = time.time() + CL.TOUCH_SECONDS + 5
+        out = self.hook(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more",
+             "session_title": "AA: Help Get All PR Issues Addressed"},
+            now=later,
+        )
+        # The new registry hands the lowest free pair, AA again, so the chat's title and what the model was told stand.
+        self.assertIsNone(out)
+        record = self.lookup("s-0001")
+        self.assertEqual(record["label"], "AA")
+        self.assertEqual(record["state"], "active")
+        self.assertEqual(record["title"], "Help Get All PR Issues Addressed")
+        self.assertEqual(self.note("s-0001")["state"], "open")
+
+    def test_a_chat_the_registry_never_held_is_told_when_it_comes_back_as_another_pair(self) -> None:
+        self.titled()  # AA
+        self.replace_the_registry()
+        self.start("s-0002")  # the new registry gives AA to another chat first
+        later = time.time() + CL.TOUCH_SECONDS + 5
+        out = self.hook(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more",
+             "session_title": "AA: Help Get All PR Issues Addressed"},
+            now=later,
+        )
+        self.assertEqual(out["sessionTitle"], "BB: Help Get All PR Issues Addressed")
+        self.assertIn("Claude BB", out["additionalContext"])
+        self.assertEqual(self.lookup("s-0001")["label"], "BB")
+        self.assertEqual(self.lookup("s-0002")["label"], "AA")
+        self.assertEqual(self.note("s-0001")["label"], "BB")
+
+    def test_a_chat_the_registry_never_held_and_cannot_be_registered_is_not_told_its_letter_was_retired(self) -> None:
+        with self.small_space("AA"):
+            self.titled()  # AA
+            self.replace_the_registry()
+            OR.register_session(  # the new registry gives its only pair to a chat the hook may never evict
+                self.db, platform=CL.PLATFORM, verified_host="server", profile_scope=CL.SCOPE,
+                native_session_id="op-0001", seat="CLAUDE", source="operator-registration",
+                issuer=OR.ISSUER_OPERATOR, letter_space="double",
+            )
+            later = time.time() + CL.TOUCH_SECONDS + 5
+            out = self.hook(
+                {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more",
+                 "session_title": "AA: Help Get All PR Issues Addressed"},
+                now=later,
+            )
+        self.assertIn("is not in the Operator's registry", out["additionalContext"])
+        self.assertNotIn("was retired", out["additionalContext"])
+        self.assertIsNone(self.lookup("s-0001"))
+
+    def test_a_chat_the_registry_never_held_waits_for_the_next_touch(self) -> None:
+        self.titled()
+        self.replace_the_registry()
+        out = self.prompt("s-0001", "more", session_title="AA: Help Get All PR Issues Addressed")
+        self.assertIsNone(out)  # inside the touch interval nothing asks the registry, so nothing is registered yet
+        self.assertIsNone(self.lookup("s-0001"))
+
+    def test_an_unreachable_registry_is_not_taken_for_a_chat_it_never_held(self) -> None:
+        self.titled()
+        later = time.time() + CL.TOUCH_SECONDS + 5
+        out = self.hook(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more",
+             "session_title": "AA: Help Get All PR Issues Addressed"},
+            runner=FakeSsh(self, fail=subprocess.TimeoutExpired("ssh", 8)),
+            now=later,
+        )
+        self.assertIsNone(out)
+        self.assertEqual(self.lookup("s-0001")["label"], "AA")  # the row is still the one it was
+        self.assertEqual(self.note("s-0001")["label"], "AA")
+
     def test_a_title_the_registry_never_took_is_not_sent_over_a_newer_one(self) -> None:
         class TitleDown(FakeSsh):
             """The Mac does not answer a title call."""
