@@ -934,26 +934,47 @@ def _emit(stdout: TextIO, payload: Mapping[str, Any], code: int) -> int:
 # --------------------------------------------------------------------------------------------
 
 ARCHIVE_SOURCE = "claude-letter-archive-sweep"
-#: The most letter rows one sweep reads from the registry's history, newest first (as the Z Code sweep reads it).
+#: The letter rows the first read asks for, newest first (as the Z Code sweep reads it).  Closed rows count against
+#: the window too, so the window doubles until the history is read to its end (fewer rows came back than were asked
+#: for, or a doubling brought no more), up to HISTORY_MAX.
 HISTORY_LIMIT = 1000
+#: The largest window:  the registry builds one placeholder per row in a single query, and SQLite allows 32,766.
+HISTORY_MAX = 32000
+
+
+def _read_history(OR: Any, env: Mapping[str, str], db: str, registry_api: Any) -> list | str:
+    """Every letter-history row of the platform, newest first, or the reason it could not be read.  A window that
+    comes back full may hide older open registrations behind closed ones, so it is doubled until the history ends."""
+    limit, prev = HISTORY_LIMIT, -1
+    while True:
+        if registry_api.base_url(env):
+            answer = registry_api.call(env, "history", {"platform": PLATFORM, "limit": limit})
+            rows = answer.get("items") if isinstance(answer, dict) else None
+            if not isinstance(rows, list):
+                return str((answer or {}).get("error") or "the registry gave no history")[:200]
+        else:
+            try:
+                rows = OR.letter_history(db, PLATFORM, limit)
+            except (sqlite3.Error, OR.RegistryUnavailable) as exc:
+                return type(exc).__name__
+        # The API drops other seats' rows after the window is cut, so a short answer is not always the end;  a
+        # doubling that brings no more rows is.
+        if len(rows) < limit and (not registry_api.base_url(env) or len(rows) == prev):
+            return rows
+        if limit >= HISTORY_MAX:
+            return rows
+        prev, limit = len(rows), min(limit * 2, HISTORY_MAX)
 
 
 def _open_registrations(OR: Any, env: Mapping[str, str], db: str) -> list[dict[str, str]] | str:
     """The open CLAUDE-seat Claude registrations that hold a letter, as {location, session_id, letter}, or the reason
-    they could not be read.  Read from the registry's letter history, over the API when its URL is configured and
-    from the local file otherwise, the same choice `registry_main` makes."""
+    they could not be read.  Read from the registry's whole letter history (`_read_history`), over the API when its
+    URL is configured and from the local file otherwise, the same choice `registry_main` makes."""
     from . import registry_api
 
-    if registry_api.base_url(env):
-        answer = registry_api.call(env, "history", {"platform": PLATFORM, "limit": HISTORY_LIMIT})
-        rows = answer.get("items") if isinstance(answer, dict) else None
-        if not isinstance(rows, list):
-            return str((answer or {}).get("error") or "the registry gave no history")[:200]
-    else:
-        try:
-            rows = OR.letter_history(db, PLATFORM, HISTORY_LIMIT)
-        except (sqlite3.Error, OR.RegistryUnavailable) as exc:
-            return type(exc).__name__
+    rows = _read_history(OR, env, db, registry_api)
+    if isinstance(rows, str):
+        return rows
     out: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for row in rows:

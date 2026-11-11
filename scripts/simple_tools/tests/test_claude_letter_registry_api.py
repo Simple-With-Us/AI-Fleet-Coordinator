@@ -242,7 +242,10 @@ class ApiSide(unittest.TestCase):
             code, out = self.sweep()
         self.assertEqual(code, 0, out)
         self.assertIn("would close", out)
-        self.assertEqual(ops, ["history"])
+        # The API drops other seats' rows after its window is cut, so a short answer is read once more with a
+        # wider window to be sure the history ended;  every call is still a read.
+        self.assertEqual(set(ops), {"history"})
+        self.assertLessEqual(len(ops), 2)
         self.assertEqual(self.record()["state"], "active")
 
 

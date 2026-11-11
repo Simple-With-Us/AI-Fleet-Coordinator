@@ -2275,6 +2275,30 @@ class ArchiveSweepTests(Base):
         self.assertEqual(code, 0, out)
         self.assertIn("already closed", out)
 
+    def test_closed_rows_that_fill_the_first_window_do_not_hide_an_older_open_chat(self) -> None:
+        # Kody on #1754:  the newest window can be all closed rows, with the archived open chat behind it.
+        self.register("s-0001", location="mac")
+        self.archived_record("local_aaaaaaaa-0001", "s-0001")
+        for n in range(2, 6):
+            self.register("s-%04d" % n, location="mac")
+            reg = OR.SessionRegistry(self.db)
+            try:
+                reg.close(self.lookup("s-%04d" % n, "mac")["record_id"], source="test")
+            finally:
+                reg.close_db()
+        asked: list[int] = []
+        real = OR.letter_history
+
+        def history(db: str, platform: str, limit: int = 50):
+            asked.append(limit)
+            return real(db, platform, limit)
+
+        with mock.patch.object(CL, "HISTORY_LIMIT", 2), mock.patch.object(OR, "letter_history", side_effect=history):
+            code, out = self.sweep("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertGreater(len(asked), 1, asked)
+        self.assertEqual(self.lookup("s-0001", "mac")["state"], "closed")
+
     def test_another_seat_is_never_closed(self) -> None:
         self.registry("register", "--location", "mac", "--session-id", "s-0001", "--seat", "MM")
         self.archived_record("local_aaaaaaaa-0001", "s-0001")
