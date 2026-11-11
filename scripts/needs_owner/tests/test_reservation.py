@@ -104,6 +104,20 @@ class ReservationTests(unittest.TestCase):
             with self.slot() as a:a.check();a.record("AFC-1")
         self.assertEqual(calls,["file","dir","file","dir"])
 
+    def test_directory_sync_failure_removes_only_unused_reservation(self):
+        import os,stat
+        real=bar.ledger.os.fsync;failed=[]
+        def sync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode) and not failed:
+                failed.append(True);raise OSError("directory sync failed")
+            return real(fd)
+        with mock.patch.object(bar.ledger.os,"fsync",side_effect=sync):
+            with self.assertRaises(Refusal):
+                with self.slot() as a:a.check()
+        self.assertEqual(self.count(),0)
+        with self.slot() as a:a.check();a.record("AFC-1")
+        self.assertEqual(self.count(),1)
+
 from .test_bar import BarCase,Q
 from needs_owner import verbs
 
@@ -141,3 +155,16 @@ class PostWriteTests(BarCase):
         self.assertEqual(failed.code,5,failed.err)
         self.assertEqual(len(w.board_state()["issues"]),1)
         self.assertEqual(bar.filings_in_window(w.env(),"CLAUDE",w.now.timestamp()),1)
+
+    def test_duplicate_with_unreadable_readback_releases_reservation(self):
+        from needs_owner.proc import Runner,Result
+        w=self.world("enforce",1);real=Runner.board
+        def duplicate(runner,*args):
+            result=real(runner,*args)
+            if args[0]=="file" and result.ok:
+                return Result(0,result.out.rstrip()+"  (already filed; unchanged)\n")
+            return result
+        with mock.patch.object(Runner,"board",duplicate),mock.patch.object(verbs.itemsmod,"fetch",return_value=None):
+            failed=self.file(why="money",w=w)
+        self.assertEqual(failed.code,1,failed.err)
+        self.assertEqual(bar.filings_in_window(w.env(),"CLAUDE",w.now.timestamp()),0)
