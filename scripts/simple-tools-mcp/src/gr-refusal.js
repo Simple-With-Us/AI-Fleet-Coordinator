@@ -91,6 +91,10 @@ const REFUSAL_BASE_REASONS = Object.freeze([
   "github_refused",
   "fence_mismatch",
   "unauthenticated",
+  "seat_not_in_policy",
+  "bearer_rejected",
+  "verifier_unavailable",
+  "no_app_credential",
   "repository_moved",
   "read_too_large",
 ]);
@@ -155,6 +159,10 @@ export function classifyRelayRefusal(error, githubStatus) {
     return status === undefined ? null : { reason: "github_refused", github_status: status };
   }
   if (error === "unauthenticated") return { reason: "unauthenticated" };
+  if (error === "seat_not_in_policy") return { reason: "seat_not_in_policy" };
+  if (error === "bearer_rejected") return { reason: "bearer_rejected" };
+  if (error === "verifier_unavailable") return { reason: "verifier_unavailable" };
+  if (error === "no_app_credential") return { reason: "no_app_credential" };
   if (error === REPOSITORY_MOVED_ERROR) return { reason: "repository_moved" };
   if (error === READ_TOO_LARGE_ERROR) return { reason: "read_too_large" };
   if (SEAT_RATE_LIMIT_ERRORS.has(error)) return { reason: "seat_rate_limit" };
@@ -172,6 +180,10 @@ const REASON_TEXT = Object.freeze({
   github_refused: "GitHub itself refused the request (see github_status:  403 is permission or a branch rule, 405 is a merge block, 422 is a rejected change).  The relay passed it on;  fix the cause on GitHub, not in the seat policy.",
   fence_mismatch: "The pull request, branch, comment or check no longer matches the head, base or state the call expected.  Read the current state, then send the call again with the fresh value.",
   unauthenticated: "git-relay did not accept this seat's credential.  Nothing was written.",
+  seat_not_in_policy: "git-relay has no shared seat for the identity this credential names.  The loaded seat policy has to include that seat.  Nothing was written.",
+  bearer_rejected: "git-relay knows this seat, and the credential check did not confirm this bearer.  Nothing was written.",
+  verifier_unavailable: "git-relay could not ask the credential checker, so this bearer was not confirmed.  Nothing was written.  Try again shortly.",
+  no_app_credential: "git-relay authenticated this seat, but its GitHub App id or private key is missing or unusable.  Nothing was written.",
   repository_moved: repositoryMovedText(),
   read_too_large: "GitHub's answer to this read is larger than git-relay's read bound.  Ask for less per call:  a smaller per_page, or the paged verb (for example gr_wf_pr_reviews_page, gr_wf_pr_comments_page or gr_wf_compare_commits_page).",
   bad_request_pr_not_issue_target: "The target is a pull request, not an issue.  Use the pull-request tool for it.",
