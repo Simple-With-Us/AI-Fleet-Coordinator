@@ -413,6 +413,7 @@ class Context:
         muted: Iterable[str] = (),
         followed: Iterable[str] = (),
         operator_user_id: int = 0,
+        seat_has_routine: bool = False,
     ) -> None:
         self.owner_user_id = owner_user_id
         self.owner_clients = set(owner_clients)
@@ -427,6 +428,10 @@ class Context:
         self.presence = presence
         self.muted = set(muted)
         self.followed = set(followed)
+        # True when the seat has a `routine` (an HTTP POST to a router that picks the right chat,
+        # delivers and wakes).  Only that router can honour a session letter (`@**Claude** AB`), so
+        # such a seat never takes the newest-lease hand-off for a mention-class message (`route`).
+        self.seat_has_routine = seat_has_routine
 
 
 class LeaseView:
@@ -723,7 +728,10 @@ def route(
             or (c.eligible and c.broadcast_all and not c.owner_topic)
         )
     )
-    if mention_class:
+    # A seat with a routine never takes the newest-lease hand-off (one wake path):  the message falls
+    # through to the seat inbox and the wake below, so the routine's router can pick the chat and
+    # honour a letter.  A seat without a routine behaves as before.
+    if mention_class and not ctx.seat_has_routine:
         candidates = [
             l
             for l in leases

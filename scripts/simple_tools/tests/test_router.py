@@ -457,6 +457,70 @@ class LeaseRoutingTests(unittest.TestCase):
         self.assertEqual(R.route(msg(topic="afc work"), ME, ctx(), [a])[1].lease_items, [("A", "passive", "message")])
 
 
+class RoutineSeatTests(unittest.TestCase):
+    """One wake path (OPS-1048):  a seat with a routine never takes the newest-lease hand-off, because only the
+    router its routine posts to can pick the chat and honour a letter (`@**Claude** AB`).  Its mention-class
+    messages fall through to the seat inbox and the wake.  A seat without a routine keeps the hand-off."""
+
+    LEASES = [lease("old", last_prompt=50.0, created=1.0), lease("recent", last_prompt=90.0, created=2.0)]
+    MENTION_CLASS = [
+        ("a peer's direct mention", msg(content=DIRECT[0], flags=DIRECT[1]), "peer"),
+        ("a peer's DM", msg(dm=True), "peer"),
+        ("the owner's direct mention", msg(sender=OWNER, content=DIRECT[0], flags=DIRECT[1]), "owner"),
+        ("the owner's DM", msg(sender=OWNER, dm=True), "owner"),
+        ("the owner's fleet wake", msg(sender=OWNER, content="@**all** HALT", **FLEET_KW), "owner"),
+        ("a peer's fleet wake", msg(content="@**all** HALT", **FLEET_KW), "peer"),
+    ]
+
+    def test_the_flag_defaults_to_false_and_reaches_the_router(self) -> None:
+        self.assertFalse(ctx().seat_has_routine)
+        self.assertTrue(ctx(seat_has_routine=True).seat_has_routine)
+
+    def test_a_direct_mention_is_not_handed_to_a_lease_and_wakes_the_routine(self) -> None:
+        c, d = R.route(msg(content=DIRECT[0], flags=DIRECT[1]), ME, ctx(seat_has_routine=True), self.LEASES)
+        self.assertTrue(c.direct and c.eligible)
+        self.assertEqual((d.lease_items, d.delivered_to), ([], None))
+        self.assertNotEqual(d.wake_block, "delivered_to_lease")
+        self.assertEqual((d.seat_inbox, d.wake, d.wake_block), (True, "peer", None))
+        self.assertTrue(d.wake_worthy)
+
+    def test_a_seat_without_a_routine_still_gives_the_newest_lease_the_mention(self) -> None:
+        for options in ({}, {"seat_has_routine": False}):
+            with self.subTest(options=options):
+                c, d = R.route(msg(content=DIRECT[0], flags=DIRECT[1]), ME, ctx(**options), self.LEASES)
+                self.assertEqual(d.lease_items, [("recent", "interrupt", "message")])
+                self.assertEqual((d.seat_inbox, d.delivered_to, d.wake, d.wake_block),
+                                 (True, "recent", None, "delivered_to_lease"))
+
+    def test_every_mention_class_message_falls_through_for_a_routine_seat_only(self) -> None:
+        for name, message, kind in self.MENTION_CLASS:
+            with self.subTest(name, seat="routine"):
+                c, d = R.route(message, ME, ctx(seat_has_routine=True), self.LEASES)
+                self.assertEqual((d.lease_items, d.seat_inbox, d.delivered_to), ([], True, None))
+                self.assertEqual((d.wake, d.wake_block, d.wake_owner), (kind, None, kind == "owner"))
+            with self.subTest(name, seat="plain"):
+                c, d = R.route(message, ME, ctx(), self.LEASES)
+                self.assertEqual(d.lease_items, [("recent", "interrupt", "message")])
+                self.assertEqual((d.seat_inbox, d.delivered_to, d.wake, d.wake_block),
+                                 (True, "recent", None, "delivered_to_lease"))
+
+    def test_a_routine_seat_with_no_usable_lease_behaves_like_any_other_seat(self) -> None:
+        unusable = [[], [lease("nc", capable=False)], [lease("nm", mentions=False)], [lease("cx", platform="codex")]]
+        for leases in unusable:
+            for name, message, kind in self.MENTION_CLASS:
+                with self.subTest(name, leases=[v.lease_id for v in leases]):
+                    d = R.route(message, ME, ctx(seat_has_routine=True), leases)[1]
+                    self.assertEqual(d.describe(), R.route(message, ME, ctx(), leases)[1].describe())
+                    self.assertEqual((d.lease_items, d.seat_inbox, d.delivered_to, d.wake, d.wake_block),
+                                     ([], True, None, kind, None))
+
+    def test_a_marker_message_and_plain_chatter_are_the_same_for_a_routine_seat(self) -> None:
+        for message in (msg(content="\U0001f440 " + DIRECT[0], flags=DIRECT[1]), msg(content="just chatter")):
+            with self.subTest(content=message["content"]):
+                self.assertEqual(R.route(message, ME, ctx(seat_has_routine=True), self.LEASES)[1].describe(),
+                                 R.route(message, ME, ctx(), self.LEASES)[1].describe())
+
+
 if __name__ == "__main__":
     unittest.main()
 
