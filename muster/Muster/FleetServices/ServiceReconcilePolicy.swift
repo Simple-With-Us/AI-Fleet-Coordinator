@@ -80,7 +80,7 @@ public enum ServicePolicyTable {
         row("app.botfleet.companion", .leaveAlone,
             "It only serves BotFleet Server, which Muster leaves alone, so Muster leaves it alone too."),
         row("com.jay.operator", .leaveAlone,
-            "launchd keeps the Mac's eavesdropper alive itself, so a stop is deliberate and Muster never starts it on its own."),
+            "The Mac's eavesdropper was retired at the Nov 10 one-listener cutover, and the server listener holds every seat, so Muster never starts or stops it."),
         row("shellular", .keepRunning,
             "A long-running job in the pm2 ecosystem file, and starting it again is safe."),
         row("code-main-keeper", .keepRunning,

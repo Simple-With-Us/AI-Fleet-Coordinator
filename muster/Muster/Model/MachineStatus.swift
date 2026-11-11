@@ -289,18 +289,23 @@ enum MachineMenuCopy {
         entry.needsAttention
     }
 
-    private static func serviceCounts(_ entries: [FleetServiceEntry]) -> String {
+    /// The services by state.  A retired service that is stopped or gone is counted as retired
+    /// and never as stopped,  so the line does not read as something being down.
+    static func serviceCounts(_ entries: [FleetServiceEntry]) -> String {
         let order: [(ManagedServiceState, String)] = [
             (.running, "running"), (.failed, "failed"), (.stopped, "stopped"),
             (.notInstalled, "not installed"), (.notInPM2, "not in this Mac's pm2"),
             (.unknown, "not known"),
         ]
-        let parts = order.compactMap { state, word -> String? in
-            let count = entries.filter { $0.state == state }.count
+        let counted = entries.filter { !$0.isRetiredAndDown }
+        var parts = order.compactMap { state, word -> String? in
+            let count = counted.filter { $0.state == state }.count
             // Running and stopped are always said,  so a list of none is not a blank.
             if count == 0, state != .running, state != .stopped { return nil }
             return "\(count) \(word)"
         }
+        let retired = entries.count - counted.count
+        if retired > 0 { parts.append("\(retired) retired") }
         return parts.joined(separator: ", ")
     }
 
