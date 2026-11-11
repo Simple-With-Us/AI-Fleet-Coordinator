@@ -5,6 +5,11 @@ on:
     # Every 6 hours (aligned with agent-calendar)
     - cron: "25 1,7,13,19 * * *"
   workflow_dispatch:
+    inputs:
+      reason:
+        description: Optional audit note (avoids duplicate-dispatch dedupe)
+        required: false
+        type: string
   push:
     branches: [main]
     paths:
