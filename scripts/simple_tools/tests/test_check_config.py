@@ -160,7 +160,8 @@ class CheckConfig(ListenerHarness):
         code, answer = self.check(
             self.current
             + "\n[registry]\nsweep_enabled = false\nsweep_interval_minutes = 30\n"
-            "stale_after_hours = 48\ngone_report_max_share = 0.25\n"
+            "stale_after_hours = 48\nsweep_max_share = 0.4\ngone_report_max_share = 0.25\n"
+            "gone_report_window_minutes = 120\n"
         )
         self.assertEqual(code, 0, answer)
         self.assertEqual(answer["new_errors"], [])
@@ -174,6 +175,10 @@ class CheckConfig(ListenerHarness):
             ('stale_after_hours = "36"', "registry.stale_after_hours"),
             ("gone_report_max_share = 0", "registry.gone_report_max_share"),
             ("gone_report_max_share = 1.5", "registry.gone_report_max_share"),
+            ("sweep_max_share = 0", "registry.sweep_max_share"),
+            ("sweep_max_share = true", "registry.sweep_max_share"),
+            ("gone_report_window_minutes = 0", "registry.gone_report_window_minutes"),
+            ("gone_report_window_minutes = 2.5", "registry.gone_report_window_minutes"),
             ("sweep_every = 5", "[registry] has unknown setting"),
         ):
             code, answer = self.check(self.current + "\n[registry]\n%s\n" % body)
@@ -183,8 +188,8 @@ class CheckConfig(ListenerHarness):
 
 class RegistrySettingsDefaults(unittest.TestCase):
     """AFC-721:  the one sweeper's defaults live in code, so a file with no [registry] table runs
-    it:  every 15 minutes, a 36-hour stale window for every platform, and a gone report may close
-    at most half of a host's live rows."""
+    it:  every 15 minutes, a 36-hour stale window for every platform, a pass ends at most half of a
+    host's open rows, and gone reports may close at most half of a host's live rows per hour."""
 
     def test_the_defaults(self) -> None:
         from simple_tools import config as C
@@ -194,6 +199,8 @@ class RegistrySettingsDefaults(unittest.TestCase):
         self.assertEqual(cfg.registry_sweep_interval_minutes, 15)
         self.assertEqual(cfg.registry_stale_after_hours, 36.0)
         self.assertEqual(cfg.registry_gone_report_max_share, 0.5)
+        self.assertEqual(cfg.registry_sweep_max_share, 0.5)
+        self.assertEqual(cfg.registry_gone_report_window_minutes, 60)
 
     def test_a_table_sets_them(self) -> None:
         from simple_tools import config as C
@@ -206,6 +213,8 @@ class RegistrySettingsDefaults(unittest.TestCase):
                     "sweep_interval_minutes": 5,
                     "stale_after_hours": 12,
                     "gone_report_max_share": 0.2,
+                    "sweep_max_share": 0.3,
+                    "gone_report_window_minutes": 90,
                 },
             }
         )
@@ -213,6 +222,8 @@ class RegistrySettingsDefaults(unittest.TestCase):
         self.assertEqual(cfg.registry_sweep_interval_minutes, 5)
         self.assertEqual(cfg.registry_stale_after_hours, 12.0)
         self.assertEqual(cfg.registry_gone_report_max_share, 0.2)
+        self.assertEqual(cfg.registry_sweep_max_share, 0.3)
+        self.assertEqual(cfg.registry_gone_report_window_minutes, 90)
         self.assertFalse([e for e in cfg.errors if "registry" in e])
 
 class ReloadAnswer(ListenerHarness):

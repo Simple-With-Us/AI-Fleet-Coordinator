@@ -92,12 +92,15 @@ BUDGET_DEFAULTS: dict[str, float] = {
     "route_topic_minutes": 30,
 }
 # [registry] (AFC-721):  one stale window for every platform (36 hours), one sweep every 15 minutes,
-# and a host's gone report may close at most half of that host's live rows for a platform at once.
+# and one sweep pass may end at most half of a (platform, host)'s open rows.  Host gone reports may
+# close at most half of a host's live rows for a platform within any 60 minute window.
 REGISTRY_DEFAULTS: dict[str, Any] = {
     "sweep_enabled": True,
     "sweep_interval_minutes": 15,
     "stale_after_hours": 36.0,
+    "sweep_max_share": 0.5,
     "gone_report_max_share": 0.5,
+    "gone_report_window_minutes": 60,
 }
 # The `[seat.X]` keys (step 1 of the one wake path, owner Nov 10, 2026:  a seat either has a `routine`,
 # an HTTP POST to a router that decides, delivers and wakes, or it only captures into its inbox).
@@ -693,7 +696,9 @@ class Config:
         self.registry_sweep_enabled = REGISTRY_DEFAULTS["sweep_enabled"]
         self.registry_sweep_interval_minutes = REGISTRY_DEFAULTS["sweep_interval_minutes"]
         self.registry_stale_after_hours = REGISTRY_DEFAULTS["stale_after_hours"]
+        self.registry_sweep_max_share = REGISTRY_DEFAULTS["sweep_max_share"]
         self.registry_gone_report_max_share = REGISTRY_DEFAULTS["gone_report_max_share"]
+        self.registry_gone_report_window_minutes = REGISTRY_DEFAULTS["gone_report_window_minutes"]
         self.listener_api_bind = "127.0.0.1"
         self.listener_api_port = LISTENER_API_DEFAULT_PORT
         # Mac-only wake backpressure during host saturation (OPS-950).  Peer wakes are held back
@@ -986,16 +991,22 @@ def _parse_registry(raw: Mapping[str, Any], cfg: Config, errors: list[str]) -> N
         errors.append("registry.stale_after_hours must be a number of hours from 1 to 720")
     else:
         cfg.registry_stale_after_hours = float(stale)
-    share = section.get("gone_report_max_share", REGISTRY_DEFAULTS["gone_report_max_share"])
-    if (
-        isinstance(share, bool)
-        or not isinstance(share, (int, float))
-        or not math.isfinite(share)
-        or not 0 < share <= 1
-    ):
-        errors.append("registry.gone_report_max_share must be a number above 0 and at most 1")
+    for name in ("sweep_max_share", "gone_report_max_share"):
+        share = section.get(name, REGISTRY_DEFAULTS[name])
+        if (
+            isinstance(share, bool)
+            or not isinstance(share, (int, float))
+            or not math.isfinite(share)
+            or not 0 < share <= 1
+        ):
+            errors.append("registry.%s must be a number above 0 and at most 1" % name)
+        else:
+            setattr(cfg, "registry_" + name, float(share))
+    window = section.get("gone_report_window_minutes", REGISTRY_DEFAULTS["gone_report_window_minutes"])
+    if isinstance(window, bool) or not isinstance(window, int) or not 1 <= window <= 1440:
+        errors.append("registry.gone_report_window_minutes must be a whole number from 1 to 1440")
     else:
-        cfg.registry_gone_report_max_share = float(share)
+        cfg.registry_gone_report_window_minutes = window
 
 
 def from_dict(raw: Mapping[str, Any]) -> Config:

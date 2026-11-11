@@ -16,6 +16,7 @@ Run:  cd scripts && python3 -m unittest simple_tools.tests.test_listener_registr
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import secrets
@@ -77,6 +78,8 @@ class RegistryApiTest(unittest.TestCase):
         self.db = os.path.join(self.tmp.name, "operator", "registry.sqlite3")
         self.clock = FakeClock()
         self.service = RG.RegistryService(self.db, KEYS, clock=self.clock)
+        # The one stale sweeper (AFC-721), which the `sweep` op runs.
+        RG.Sweeper(self.service, interval_minutes=15, stale_after_hours=36)
 
     # ---- one signed call ---------------------------------------------------
 
@@ -717,6 +720,7 @@ class OneWriterTest(RegistryApiTest):
         status, answer = self.gone(["sess-1", "sess-2", "sess-3"])
         self.assertEqual(status, 409, answer)
         self.assertEqual(answer["code"], "gone_share_exceeded")
+        self.assertEqual(answer["allowed_now"], 2, answer)
         self.assertEqual(self.open_sids(), {"sess-1", "sess-2", "sess-3", "sess-4"})
         # Half is allowed at the default share.
         status, answer = self.gone(["sess-1", "sess-2"])
@@ -735,6 +739,7 @@ class OneWriterTest(RegistryApiTest):
             {"platform": "minimax", "verified_host": "mac", "native_session_ids": "x"},
             {"platform": "minimax", "verified_host": "mac", "native_session_ids": [""]},
             {"platform": "minimax", "native_session_ids": ["x"]},
+            {"platform": "minimax", "verified_host": "laptop", "native_session_ids": ["x"]},
             {
                 "platform": "minimax",
                 "verified_host": "mac",
@@ -752,11 +757,7 @@ class OneWriterTest(RegistryApiTest):
     # ---- the one sweeper ----------------------------------------------------------
 
     def sweeper(self, **overrides: Any) -> RG.Sweeper:
-        settings: dict[str, Any] = {
-            "interval_minutes": 15,
-            "stale_after_hours": 36,
-            "status_path": os.path.join(self.tmp.name, "listener", "registry-sweep.json"),
-        }
+        settings: dict[str, Any] = {"interval_minutes": 15, "stale_after_hours": 36}
         settings.update(overrides)
         return RG.Sweeper(self.service, **settings)
 
@@ -794,8 +795,6 @@ class OneWriterTest(RegistryApiTest):
         self.assertEqual(result["ended"], 2)
         self.assertEqual(set(result["platforms"]), {"minimax", "cursor"})
         self.assertEqual(self.open_sids(), {"new-1", "quiet-1", "cursor-new"})
-        written = json.loads(Path(sweeper.status_path).read_text(encoding="utf-8"))
-        self.assertEqual(written["ended"], 2)
         self.assertEqual(sweeper.last, result)
         # Not due again until the interval has passed.
         self.assertIsNone(sweeper.maybe_run(self.clock.now + 60))
@@ -815,39 +814,206 @@ class OneWriterTest(RegistryApiTest):
         self.assertFalse(result["ok"])
         self.assertFalse(os.path.exists(self.db))
 
+    def register_at(self, seat: str, sid: str, host: str, platform: str = "minimax") -> None:
+        OR.register_session(
+            self.db,
+            platform=platform,
+            verified_host=host,
+            profile_scope="default",
+            native_session_id=sid,
+            seat=seat,
+            source="test",
+            issuer=OR.ISSUER_OPERATOR,
+        )
+
+    def test_a_new_chat_on_one_host_never_ends_another_hosts_chats(self) -> None:
+        # The review's case:  eight quiet Mac chats, then one new chat of the seat on the
+        # server.  The replaced test is scoped to the host, so none of the Mac chats end.
+        self.create_store()
+        mac = ["mac-%d" % n for n in range(8)]
+        for sid in mac:
+            self.register_at("CLAUDE", sid, "mac")
+        stamp = (datetime.now(UTC) - timedelta(hours=40)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        conn = sqlite3.connect(self.db)
+        try:
+            with conn:
+                # One quiet moment for all eight, so none of them replaced another.
+                conn.execute(
+                    "UPDATE sessions SET last_seen_at = ?, registered_at = ?", (stamp, stamp)
+                )
+        finally:
+            conn.close()
+        self.register_at("CLAUDE", "server-new", "server")
+        result = self.sweeper().run(self.clock.now)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["ended"], 0, result)
+        self.assertEqual(self.open_sids(), set(mac) | {"server-new"})
+
+    def test_the_sweeper_refuses_a_pass_that_would_end_most_of_a_host(self) -> None:
+        # After an outage or a weekend every chat of a host looks stale at once.  A pass
+        # that would end more than half of a (platform, host)'s open rows ends none.
+        self.create_store()
+        old = ["old-%d" % n for n in range(8)]
+        for sid in old:
+            self.register_at("CLAUDE", sid, "mac")
+            self.age(sid, 40)
+        self.register_at("CLAUDE", "new-1", "mac")
+        result = self.sweeper().run(self.clock.now)
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["error"], "sweep_share_exceeded")
+        self.assertEqual(result["ended"], 0)
+        self.assertEqual(
+            result["refused"], [{"platform": "minimax", "host": "mac", "would_end": 8, "open": 9}]
+        )
+        self.assertEqual(self.open_sids(), set(old) | {"new-1"})
+        # A share set to allow it ends them.
+        result = self.sweeper(max_share=1.0).run(self.clock.now)
+        self.assertEqual((result["ok"], result["ended"]), (True, 8), result)
+
+    def test_the_sweeper_records_a_sqlite_error_and_never_raises(self) -> None:
+        os.makedirs(os.path.dirname(self.db), exist_ok=True)
+        Path(self.db).write_bytes(b"this is not a registry" * 64)
+        sweeper = self.sweeper()
+        result = sweeper.run(self.clock.now)
+        self.assertFalse(result["ok"], result)
+        self.assertIn("Error", result["error"])
+        self.assertEqual(sweeper.last, result)
+
+    def test_the_sweep_op_runs_the_one_sweep_with_its_window(self) -> None:
+        # A caller's stale_after_minutes is ignored:  one window (36 hours) for every caller.
+        self.create_store()
+        self.register("CLAUDE", "old-1")
+        self.age("old-1", 3)
+        self.register("CLAUDE", "new-1")
+        self.register("CODEX", "other-1")
+        status, answer = self.call(
+            "CLAUDE",
+            "POST",
+            "sweep",
+            {"platform": "minimax", "seat": "CLAUDE", "stale_after_minutes": 60},
+        )
+        self.assertEqual((status, answer["count"]), (200, 0), answer)
+        self.age("old-1", 40)
+        status, answer = self.call(
+            "CLAUDE", "POST", "sweep", {"platform": "minimax", "seat": "CLAUDE"}
+        )
+        self.assertEqual((status, answer["count"]), (200, 1), answer)
+        self.assertEqual(self.open_sids(), {"new-1", "other-1"})
+
+    def test_the_sweep_op_answers_503_when_the_sweep_is_off(self) -> None:
+        self.create_store()
+        self.service.sweeper = None
+        status, answer = self.call(
+            "CLAUDE", "POST", "sweep", {"platform": "minimax", "seat": "CLAUDE"}
+        )
+        self.assertEqual((status, answer.get("code")), (503, "sweep_off"), answer)
+
+    def test_report_gone_share_holds_across_split_reports(self) -> None:
+        # The review's bypass:  six one-id reports used to close all six rows.  The share is
+        # measured over a window, so the fourth report is refused and three rows stay open.
+        self.create_store()
+        sids = ["sess-%d" % n for n in range(6)]
+        for sid in sids:
+            self.register("CLAUDE", sid)
+        answers = [self.gone([sid]) for sid in sids]
+        self.assertEqual([status for status, _ in answers], [200, 200, 200, 409, 409, 409])
+        self.assertEqual(answers[3][1]["allowed_now"], 0, answers[3])
+        self.assertEqual(answers[3][1]["recent"], 3, answers[3])
+        self.assertEqual(self.open_sids(), set(sids[3:]))
+        # Once the window has passed, the host may report again.
+        stamp = (datetime.now(UTC) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        conn = sqlite3.connect(self.db)
+        try:
+            with conn:
+                conn.execute("UPDATE events SET recorded_at = ? WHERE event = 'close'", (stamp,))
+        finally:
+            conn.close()
+        status, answer = self.gone([sids[3]])
+        self.assertEqual((status, answer["count"]), (200, 1), answer)
+
+    def test_report_gone_folds_the_host(self) -> None:
+        self.create_store()
+        for sid in ("gone-1", "keep-1", "keep-2"):
+            self.register("CLAUDE", sid)
+        status, answer = self.call(
+            "OPERATOR",
+            "POST",
+            "report-gone",
+            {"platform": "minimax", "verified_host": " MAC ", "native_session_ids": ["gone-1"]},
+        )
+        self.assertEqual((status, answer["count"]), (200, 1), answer)
+
 
 class OneWriterGuardTest(unittest.TestCase):
     """AFC-721 guard:  the files this change made single-writer stay that way.  The daemon and
-    the Operator's registration CLI issue letters only through listener_registry, and neither
-    constructs a write-mode registry handle.  The fleet-wide guard (every client module) is
+    the Operator's registration CLI write the registry only through listener_registry:  an AST
+    walk finds no call to a registry write function under any spelling (`OR.x(`, an imported
+    `x(`, an alias), no import of one, and no SessionRegistry built without read_only=True, so a
+    handle in either file can never write.  The fleet-wide guard (every client module) is
     test_one_assigner, added when the clients become API-only."""
 
-    WRITE_CALLS = (
-        "OR.register_session(",
-        "OR.relabel_session(",
-        "OR.update_session(",
-        "OR.close_session(",
-        "OR.touch_session(",
-        "OR.sweep_stale(",
-        "OR.mark_exported(",
+    WRITE_FUNCTIONS = frozenset(
+        {
+            "register_session",
+            "relabel_session",
+            "update_session",
+            "close_session",
+            "touch_session",
+            "sweep_stale",
+            "mark_exported",
+            "record_export_attempt",
+            "record_export_attempts",
+        }
     )
 
-    def source(self, name: str) -> str:
-        return (Path(RG.__file__).resolve().parent / name).read_text(encoding="utf-8")
+    def tree(self, name: str) -> ast.AST:
+        path = Path(RG.__file__).resolve().parent / name
+        return ast.parse(path.read_text(encoding="utf-8"), filename=name)
+
+    def offences(self, tree: ast.AST) -> list[str]:
+        found = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").endswith("operator_registry"):
+                for alias in node.names:
+                    if alias.name in self.WRITE_FUNCTIONS or alias.name == "*":
+                        found.append("imports %s (line %d)" % (alias.name, node.lineno))
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if name in self.WRITE_FUNCTIONS:
+                found.append("calls %s (line %d)" % (name, node.lineno))
+            if name == "SessionRegistry":
+                read_only = [kw for kw in node.keywords if kw.arg == "read_only"]
+                if not (
+                    read_only
+                    and isinstance(read_only[0].value, ast.Constant)
+                    and read_only[0].value.value is True
+                ):
+                    found.append("a write-mode SessionRegistry (line %d)" % node.lineno)
+        return found
 
     def test_the_daemon_writes_the_registry_only_through_listener_registry(self) -> None:
-        text = self.source("daemon.py")
-        for call in self.WRITE_CALLS:
-            self.assertNotIn(call, text, call)
-        for line in text.splitlines():
-            if "SessionRegistry(" in line:
-                self.assertIn("read_only=True", line, line)
+        self.assertEqual(self.offences(self.tree("daemon.py")), [])
 
-    def test_the_registration_cli_registers_only_through_listener_registry(self) -> None:
-        text = self.source("operator_registration.py")
-        for call in ("register_session(", "relabel_session(", "SessionRegistry("):
-            self.assertNotIn(call, text, call)
-        self.assertIn("operator_register(", text)
+    def test_the_registration_cli_never_writes_the_registry(self) -> None:
+        self.assertEqual(self.offences(self.tree("operator_registration.py")), [])
+        # The CLI issues no letter at all:  only the Eavesdropper takes an answer.
+        source = ast.unparse(self.tree("operator_registration.py"))
+        self.assertNotIn("operator_register", source)
+
+    def test_the_guard_catches_every_spelling(self) -> None:
+        snippet = ast.parse(
+            "from .operator_registry import register_session as reg\n"
+            "reg(db)\n"
+            "register_session(db)\n"
+            "OR.sweep_stale(db)\n"
+            "x = OR.SessionRegistry(\n    db,\n)\n"
+            "y = OR.SessionRegistry(db, read_only=False)\n"
+            "z = OR.SessionRegistry(db, read_only=True)\n"
+        )
+        found = self.offences(snippet)
+        self.assertEqual(len(found), 5, found)
 
 
 if __name__ == "__main__":

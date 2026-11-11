@@ -47,10 +47,11 @@ Authority, enforced here and in `operator_registry` itself:
 
 Op mapping (the registry's 12 ops):  register -> register_session, relabel -> relabel_session,
 resolve -> resolve_label, update -> update_session, close -> close_session, sweep ->
-sweep_stale, history -> letter_history, touch -> touch_session, reopen ->
+Sweeper.sweep (the one guarded stale sweep, with the Eavesdropper's own window), history ->
+letter_history, touch -> touch_session, reopen ->
 SessionRegistry.reopen (through operator_reopen below, so a pair letter stays a pair),
 held -> SessionRegistry.letters_held, pending-outbox -> pending_outbox, mark-exported ->
-mark_exported, report-gone -> SessionRegistry.close for the named rows.  `reopen` and `held`
+mark_exported, report-gone -> the named rows closed under one guarded transaction.  `reopen` and `held`
 have no CLI verb on this tree;  their answers follow the shapes the existing callers already
 use (reopen_closed in mm_session_letter.py, and a plain letters list for held).
 
@@ -60,7 +61,8 @@ location-answer flow (RegistryService.operator_register), and the one stale swee
 (Sweeper, below), which the Eavesdropper runs on a timer for every platform.  A host never
 sweeps or closes rows itself;  it names the chats it knows are gone with an OPERATOR-signed
 report-gone call, and that call refuses to close more than a set share of the host's live
-rows at once, so one broken host report cannot end every letter of a platform.
+rows within a window, so one broken host report, or many small ones, cannot end every letter
+of a platform.  The sweeper has the same kind of guard per platform and host.
 
 Python 3.11+, standard library only.
 """
@@ -72,10 +74,12 @@ import hmac
 import json
 import os
 import re
-import tempfile
+import math
+import sqlite3
 import threading
 import time
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
@@ -123,6 +127,12 @@ SOURCE_HOST_REPORT = "host-report"
 MAX_GONE_IDS = 500
 #: The default share of a host's live rows (for one platform) a single report may close.
 DEFAULT_GONE_REPORT_MAX_SHARE = 0.5
+#: The window over which that share is measured, so a split report cannot get around it.
+DEFAULT_GONE_REPORT_WINDOW_MINUTES = 60
+#: The most of a (platform, host)'s open rows one stale sweep pass may end.
+DEFAULT_SWEEP_MAX_SHARE = 0.5
+#: The hosts a session is registered at (the client letter module's REGISTRY_LOCATIONS).
+HOSTS = ("mac", "server", "cloud")
 
 
 def body_hash(body: bytes) -> str:
@@ -219,9 +229,13 @@ class RegistryService:
         clock: Callable[[], float] = time.time,
         log: Callable[..., None] | None = None,
         gone_report_max_share: float = DEFAULT_GONE_REPORT_MAX_SHARE,
+        gone_report_window_minutes: int = DEFAULT_GONE_REPORT_WINDOW_MINUTES,
     ) -> None:
         self.db_path = str(db_path)
         self.gone_report_max_share = float(gone_report_max_share)
+        self.gone_report_window_minutes = int(gone_report_window_minutes)
+        # The one stale sweeper (Sweeper sets itself here), which the `sweep` op runs.
+        self.sweeper: Sweeper | None = None
         self.keys = {
             principal.upper(): key
             for principal, key in keys.items()
@@ -522,17 +536,28 @@ class RegistryService:
         return 200, out
 
     def _op_sweep(self, principal: str, payload: Mapping[str, Any]) -> Answer:
+        """Run the one stale sweep for one platform and seat (AFC-721).
+
+        The same guarded pass as the Eavesdropper's timer, with its window:  a caller's
+        `stale_after_minutes` is ignored, so there is one sweep and one stale window."""
         seat = str(payload.get("seat") or "")
         if principal != OPERATOR and seat.strip().upper() != principal:
             return _error(403, "forbidden", "a seat may sweep only its own sessions")
         self._require_store()
-        ended = OR.sweep_stale(
-            self.db_path,
-            platform=str(payload.get("platform") or ""),
-            seat=seat,
-            stale_after_minutes=int(payload.get("stale_after_minutes") or 120),
-        )
-        return 200, {"ended": ended, "count": len(ended)}
+        platform = str(payload.get("platform") or "")
+        if not platform.strip() or not seat.strip():
+            return _error(400, "invalid_argument", "platform and seat are required")
+        sweeper = self.sweeper
+        if sweeper is None:
+            return 503, {"error": "the stale sweep is off on this instance", "code": "sweep_off"}
+        outcome = sweeper.sweep(platform, seat)
+        if outcome["refused"]:
+            return 409, {
+                "error": "the sweep would end more than the allowed share of a host's open rows",
+                "code": "sweep_share_exceeded",
+                "refused": outcome["refused"],
+            }
+        return 200, {"ended": outcome["ended"], "count": len(outcome["ended"])}
 
     def _op_reopen(self, principal: str, payload: Mapping[str, Any]) -> Answer:
         self._require_store()
@@ -589,24 +614,38 @@ class RegistryService:
     def _op_report_gone(self, principal: str, payload: Mapping[str, Any]) -> Answer:
         """Close the rows of chats a host reports gone (OPERATOR only).
 
-        The body names one platform, the host (`verified_host`, or `location`), optionally one
-        `profile_scope`, and `native_session_ids`:  the chats the host's letter hook knows have
-        ended.  Only open rows of that platform and host whose session id is named are closed,
-        each with source host-report.  The guard:  a report that would close more than
-        `gone_report_max_share` of that host's live rows for the platform is refused whole,
-        with nothing written, so one broken host report cannot end every letter at once.  A
-        report that closes a single row is always allowed (a host with one live chat must be
-        able to report it)."""
+        The body names one platform, the host (`verified_host`, or `location`:  mac, server or
+        cloud), optionally one `profile_scope`, and `native_session_ids`:  the chats the host's
+        letter hook knows have ended.  Only open rows of that platform and host whose session id
+        is named are closed, each with source host-report.
+
+        The guard is measured over a window, not per call, so splitting a report cannot get
+        around it:  the rows this report would close plus the rows host reports already closed
+        for the same platform and host in the last `gone_report_window_minutes` may be at most
+        `gone_report_max_share` of the host's live rows plus those recent closes.  A report past
+        that is refused whole, with nothing written, and the answer says how many the host may
+        still report now (`allowed_now`), so a large legitimate report goes through over several
+        windows while one broken host cannot end every letter of a platform.  A host whose only
+        live row is named may always report it.
+
+        The count, the guard and the closes run in one write transaction, so two reports for the
+        same host cannot both pass the guard on the same count, and a row reopened in between is
+        seen as it is.  Trust:  every host-side client holds the one OPERATOR key, so the host in
+        the body is the caller's claim, as it is for register."""
         refused = self._operator_only(principal)
         if refused:
             return refused
         self._require_store()
         platform = OR.normalize_platform(str(payload.get("platform") or ""))
-        host = str(payload.get("verified_host") or payload.get("location") or "").strip()
+        host = str(payload.get("verified_host") or payload.get("location") or "").strip().lower()
         scope = str(payload.get("profile_scope") or payload.get("scope") or "").strip()
         ids = payload.get("native_session_ids")
-        if not platform or not host:
-            return _error(400, "invalid_argument", "platform and verified_host are required")
+        if not platform or host not in HOSTS:
+            return _error(
+                400,
+                "invalid_argument",
+                "platform is required and verified_host must be one of %s" % ", ".join(HOSTS),
+            )
         if (
             not isinstance(ids, list)
             or not all(isinstance(item, str) and item.strip() for item in ids)
@@ -618,60 +657,115 @@ class RegistryService:
                 "native_session_ids must be a list of at most %d session ids" % MAX_GONE_IDS,
             )
         named = {item.strip() for item in ids}
-        reader = OR.SessionRegistry(self.db_path, read_only=True)
+        cutoff = _instant(
+            datetime.now(UTC) - timedelta(minutes=max(1, int(self.gone_report_window_minutes)))
+        )
+        closed: list[dict[str, Any]] = []
+        registry = OR.SessionRegistry(self.db_path)
         try:
-            live = [
-                dict(row)
-                for row in reader._conn.execute(
+            with registry._write_txn() as conn:
+                live = conn.execute(
                     "SELECT record_id, profile_scope, native_session_id FROM sessions"
                     " WHERE platform = ? AND verified_host = ? AND closed_at IS NULL",
                     (platform, host),
                 ).fetchall()
-            ]
-        finally:
-            reader.close_db()
-        doomed = [
-            row
-            for row in live
-            if row["native_session_id"] in named and (not scope or row["profile_scope"] == scope)
-        ]
-        if len(doomed) > 1 and len(doomed) > self.gone_report_max_share * len(live):
-            self.log(
-                "registry-report-gone-refused",
-                platform=platform,
-                host=host,
-                named=len(doomed),
-                live=len(live),
-            )
-            return 409, {
-                "error": "the report would close %d of %d live rows, more than the allowed share"
-                % (len(doomed), len(live)),
-                "code": "gone_share_exceeded",
-                "named": len(doomed),
-                "live": len(live),
-            }
-        closed: list[dict[str, Any]] = []
-        registry = OR.SessionRegistry(self.db_path)
-        try:
-            for row in doomed:
-                letter, generation = registry._active_alias(registry._conn, row["record_id"])
-                if registry.close(
-                    row["record_id"],
-                    actor=principal,
-                    source=SOURCE_HOST_REPORT,
-                    reason="the host reported the chat gone",
-                ):
-                    closed.append(
-                        {
-                            "record_id": row["record_id"],
-                            "label": letter,
-                            "generation": generation,
-                            "native_session_id": row["native_session_id"],
+                recent = int(
+                    conn.execute(
+                        "SELECT COUNT(DISTINCT e.session_record_id) FROM events e"
+                        " JOIN sessions s ON s.record_id = e.session_record_id"
+                        " WHERE e.event = 'close' AND e.source = ? AND e.recorded_at >= ?"
+                        " AND s.platform = ? AND s.verified_host = ?",
+                        (SOURCE_HOST_REPORT, cutoff, platform, host),
+                    ).fetchone()[0]
+                )
+                doomed = [
+                    row
+                    for row in live
+                    if row["native_session_id"] in named
+                    and (not scope or row["profile_scope"] == scope)
+                ]
+                if doomed and len(live) > 1:
+                    allowed_total = self.gone_report_max_share * (len(live) + recent)
+                    if recent + len(doomed) > allowed_total:
+                        allowed_now = max(0, math.floor(allowed_total) - recent)
+                        self.log(
+                            "registry-report-gone-refused",
+                            platform=platform,
+                            host=host,
+                            named=len(doomed),
+                            live=len(live),
+                            recent=recent,
+                        )
+                        return 409, {
+                            "error": "the report would close %d of %d live rows, with %d closed by"
+                            " host reports in the last %d minutes:  more than the allowed share"
+                            % (len(doomed), len(live), recent, self.gone_report_window_minutes),
+                            "code": "gone_share_exceeded",
+                            "named": len(doomed),
+                            "live": len(live),
+                            "recent": recent,
+                            "allowed_now": allowed_now,
+                            "window_minutes": self.gone_report_window_minutes,
                         }
+                now = OR._utcnow()
+                for row in doomed:
+                    done = _close_row_in_txn(
+                        registry,
+                        conn,
+                        row["record_id"],
+                        actor=principal,
+                        source=SOURCE_HOST_REPORT,
+                        reason="the host reported the chat gone",
+                        now=now,
                     )
+                    if done is not None:
+                        closed.append(
+                            {
+                                "record_id": row["record_id"],
+                                "label": done[0],
+                                "generation": done[1],
+                                "native_session_id": row["native_session_id"],
+                            }
+                        )
         finally:
             registry.close_db()
         return 200, {"closed": closed, "count": len(closed), "live": len(live)}
+
+
+def _instant(moment: datetime) -> str:
+    """An instant in the registry's stored form (operator_registry._utcnow), so it compares as text."""
+    return moment.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _close_row_in_txn(
+    registry: Any,
+    conn: Any,
+    record_id: str,
+    *,
+    actor: str,
+    source: str,
+    reason: str,
+    now: str,
+) -> tuple[str, int] | None:
+    """SessionRegistry.close, inside a write transaction the caller already holds.
+
+    The same four writes as close (the row, the alias, the event and the export upsert), so a
+    caller can count, guard and close under one lock.  A row already closed is left alone and
+    answers None."""
+    row = conn.execute("SELECT closed_at FROM sessions WHERE record_id = ?", (record_id,)).fetchone()
+    if row is None or row["closed_at"]:
+        return None
+    letter, generation = registry._active_alias(conn, record_id)
+    conn.execute(
+        "UPDATE sessions SET closed_at = ?, state = 'closed' WHERE record_id = ?", (now, record_id)
+    )
+    conn.execute(
+        "UPDATE alias_assignments SET retired_at = ? WHERE record_id = ? AND retired_at IS NULL",
+        (now, record_id),
+    )
+    registry._insert_event(conn, record_id, letter, "close", actor, "closed", source, reason, now)
+    registry._enqueue_session_upsert(conn, record_id, now)
+    return letter, generation
 
 
 def operator_reopen(
@@ -701,16 +795,22 @@ def operator_reopen(
 class Sweeper:
     """The one stale sweeper, run by the Eavesdropper beside its registry service (AFC-721).
 
-    Every `interval_minutes` it calls operator_registry.sweep_stale for each (platform, seat)
-    that has open rows, with one stale window for every platform (`stale_after_hours`), and
-    writes the last result to `status_path` (status.json beside the listener's own status).
-    sweep_stale ends a letter only when its chat is stale AND replaced by a newer chat of the
-    same seat, so a quiet chat nobody replaced keeps its letter.  No host runs a sweep:  the
-    Mac's LaunchAgent and every per-platform sweep verb are retired by the same change set.
+    Every `interval_minutes` it ends the letters of chats that are stale (not seen for
+    `stale_after_hours`, one window for every platform) AND replaced by a newer chat of the same
+    seat on the same host and profile scope.  A quiet chat nobody replaced keeps its letter, and a
+    new chat on one host never ends the chats of another.  The `sweep` API op runs the same pass
+    for one platform and seat, with the same window, so there is one sweep and one window.
 
-    `maybe_run(now)` is called from the daemon's tick, so the sweeper has no thread of its own
-    and stops when the service it belongs to is dropped.  It never creates the store:  with no
-    store it records that and sweeps nothing."""
+    The guard:  a pass that would end more than `max_share` of a (platform, host)'s open rows
+    ends none of them and records the refusal (an outage, a weekend, or rows arriving with old
+    stamps make every chat look stale at once;  that is not a reason to end them all).  The
+    pass reads, guards and closes in one write transaction.
+
+    The daemon's tick asks `claim(now)` and runs a due pass on a short-lived thread of its own
+    (one at a time), so a pass waiting on the store's lock never stalls routing, and no pass
+    starts once the service it belongs to is dropped.  The last result is in `last`, which
+    the daemon publishes in status.json as `registry_sweep`.  It never creates the store:  with
+    no store it records that and sweeps nothing."""
 
     def __init__(
         self,
@@ -718,89 +818,170 @@ class Sweeper:
         *,
         interval_minutes: int,
         stale_after_hours: float,
-        status_path: str,
+        max_share: float = DEFAULT_SWEEP_MAX_SHARE,
         log: Callable[..., None] | None = None,
     ) -> None:
         self.service = service
         self.interval_s = max(1, int(interval_minutes)) * 60.0
         self.stale_after_minutes = max(1, round(float(stale_after_hours) * 60))
-        self.status_path = str(status_path)
+        self.max_share = float(max_share)
         self.log = log or (lambda *_args, **_kwargs: None)
         self.next_at = 0.0
         self.last: dict[str, Any] | None = None
         self._lock = threading.Lock()
+        service.sweeper = self
+
+    def claim(self, now: float) -> bool:
+        """True, and the next pass booked an interval later, when a pass is due at `now`."""
+        if now < self.next_at:
+            return False
+        self.next_at = now + self.interval_s
+        return True
 
     def maybe_run(self, now: float) -> dict[str, Any] | None:
-        if now < self.next_at:
+        if not self.claim(now):
             return None
-        self.next_at = now + self.interval_s
         return self.run(now)
 
-    def _open_pairs(self) -> list[tuple[str, str]]:
-        reader = OR.SessionRegistry(self.service.db_path, read_only=True)
-        try:
-            rows = reader._conn.execute(
-                "SELECT DISTINCT platform, seat FROM sessions WHERE closed_at IS NULL"
-                " ORDER BY platform, seat"
-            ).fetchall()
-        finally:
-            reader.close_db()
-        return [(str(row[0]), str(row[1])) for row in rows]
-
     def run(self, now: float) -> dict[str, Any]:
-        with self._lock:
-            result: dict[str, Any] = {
-                "ran_at": now,
-                "stale_after_minutes": self.stale_after_minutes,
-                "platforms": {},
-                "ended": 0,
-                "ok": True,
-            }
-            if not os.path.isfile(self.service.db_path):
-                result.update(ok=False, error="no registry store on this host")
-            else:
-                try:
-                    for platform, seat in self._open_pairs():
-                        ended = OR.sweep_stale(
-                            self.service.db_path,
-                            platform=platform,
-                            seat=seat,
-                            stale_after_minutes=self.stale_after_minutes,
-                        )
-                        if ended:
-                            entry = result["platforms"].setdefault(platform, {})
-                            entry[seat] = [
-                                {"label": item.get("label"), "record_id": item.get("record_id")}
-                                for item in ended
-                            ]
-                            result["ended"] += len(ended)
-                except (OR.RegistryUnavailable, OSError, ValueError) as exc:
-                    result.update(ok=False, error=type(exc).__name__ + ": " + str(exc)[:200])
-            self.last = result
-            self._write_status(result)
-            self.log(
-                "registry-sweep",
-                ok=result["ok"],
-                ended=result["ended"],
-                error=result.get("error", ""),
-            )
-            return result
-
-    def _write_status(self, result: Mapping[str, Any]) -> None:
-        """Write the result to status_path atomically;  a failed write is logged, never raised."""
+        """One timed pass over every platform;  never raises for a store problem."""
+        result: dict[str, Any] = {
+            "ran_at": now,
+            "stale_after_minutes": self.stale_after_minutes,
+            "platforms": {},
+            "ended": 0,
+            "refused": [],
+            "ok": True,
+        }
         try:
-            folder = os.path.dirname(self.status_path) or "."
-            os.makedirs(folder, exist_ok=True)
-            fd, tmp = tempfile.mkstemp(prefix=".registry-sweep.", dir=folder)
+            outcome = self.sweep()
+        except (OR.RegistryUnavailable, OSError, ValueError, sqlite3.Error) as exc:
+            result.update(ok=False, error=type(exc).__name__ + ": " + str(exc)[:200])
+        else:
+            for item in outcome["ended"]:
+                entry = result["platforms"].setdefault(item["platform"], {})
+                entry.setdefault(item["seat"], []).append(
+                    {"label": item.get("label"), "record_id": item.get("record_id")}
+                )
+            result["ended"] = len(outcome["ended"])
+            result["refused"] = outcome["refused"]
+            if outcome["refused"]:
+                result.update(ok=False, error="sweep_share_exceeded")
+        self.last = result
+        self.log(
+            "registry-sweep",
+            ok=result["ok"],
+            ended=result["ended"],
+            refused=len(result["refused"]),
+            error=result.get("error", ""),
+        )
+        return result
+
+    def sweep(self, platform: str = "", seat: str = "") -> dict[str, Any]:
+        """One guarded pass, for every platform or for one platform and seat.
+
+        Answers {"ended": [...], "refused": [...]}.  Raises RegistryUnavailable when there is no
+        store (it never creates one) and lets a sqlite error through to the caller."""
+        if not os.path.isfile(self.service.db_path):
+            raise OR.RegistryUnavailable("the registry %s is not there" % self.service.db_path)
+        only_platform = OR.normalize_platform(platform) if platform else ""
+        only_seat = seat.strip()
+        cutoff = datetime.now(UTC) - timedelta(minutes=self.stale_after_minutes)
+        ended: list[dict[str, Any]] = []
+        refused: list[dict[str, Any]] = []
+        with self._lock:
+            registry = OR.SessionRegistry(self.service.db_path)
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                    json.dump(result, handle, sort_keys=True)
-                os.replace(tmp, self.status_path)
-            except BaseException:
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-                raise
-        except OSError as exc:
-            self.log("registry-sweep-status-error", error=type(exc).__name__)
+                with registry._write_txn() as conn:
+                    rows = conn.execute(
+                        "SELECT * FROM sessions WHERE closed_at IS NULL ORDER BY registered_at ASC"
+                    ).fetchall()
+                    groups: dict[tuple[str, str, str, str], list[Any]] = {}
+                    hosts: dict[tuple[str, str], int] = {}
+                    for row in rows:
+                        key = (row["platform"], row["seat"], row["verified_host"], row["profile_scope"])
+                        groups.setdefault(key, []).append(row)
+                        pair = (row["platform"], row["verified_host"])
+                        hosts[pair] = hosts.get(pair, 0) + 1
+                    doomed: dict[tuple[str, str], list[Any]] = {}
+                    for (pf, st, host, _scope), members in groups.items():
+                        if only_platform and pf != only_platform:
+                            continue
+                        if only_seat and st != only_seat:
+                            continue
+                        for row in _stale_and_replaced(members, cutoff):
+                            doomed.setdefault((pf, host), []).append(row)
+                    now = OR._utcnow()
+                    for (pf, host), members in sorted(doomed.items()):
+                        open_count = hosts.get((pf, host), 0)
+                        if len(members) > 1 and len(members) > self.max_share * open_count:
+                            refused.append(
+                                {
+                                    "platform": pf,
+                                    "host": host,
+                                    "would_end": len(members),
+                                    "open": open_count,
+                                }
+                            )
+                            self.log(
+                                "registry-sweep-refused",
+                                platform=pf,
+                                host=host,
+                                would_end=len(members),
+                                open=open_count,
+                            )
+                            continue
+                        for row in members:
+                            done = _close_row_in_txn(
+                                registry,
+                                conn,
+                                row["record_id"],
+                                actor="registry",
+                                source="stale_sweep",
+                                reason="stale and replaced by a newer session",
+                                now=now,
+                            )
+                            if done is not None:
+                                ended.append(
+                                    {
+                                        "record_id": row["record_id"],
+                                        "label": done[0],
+                                        "generation": done[1],
+                                        "platform": pf,
+                                        "seat": row["seat"],
+                                        "verified_host": host,
+                                        "native_session_id": row["native_session_id"],
+                                        "title": row["title"],
+                                        "last_seen_at": row["last_seen_at"],
+                                        "reason": "stale and replaced by a newer session",
+                                    }
+                                )
+            finally:
+                registry.close_db()
+        return {"ended": ended, "refused": refused}
+
+
+def _stale_and_replaced(members: list[Any], cutoff: datetime) -> list[Any]:
+    """The rows of one (platform, seat, host, scope) group that are stale and replaced.
+
+    The test is operator_registry.sweep_stale's, scoped to the group:  a row is stale when it
+    was last seen before the cutoff, and replaced when another open row of the group was both
+    seen and registered after it."""
+    seen = {row["record_id"]: OR._parse_instant(row["last_seen_at"]) for row in members}
+    registered = {row["record_id"]: OR._parse_instant(row["registered_at"]) for row in members}
+    out = []
+    for row in members:
+        last_seen = seen.get(row["record_id"])
+        if last_seen is None or last_seen >= cutoff:
+            continue
+        for other in members:
+            if other["record_id"] == row["record_id"]:
+                continue
+            other_seen = seen.get(other["record_id"])
+            other_registered = registered.get(other["record_id"])
+            if (other_seen is None or other_seen > last_seen) and (
+                other_registered is None or other_registered > last_seen
+            ):
+                out.append(row)
+                break
+    return out

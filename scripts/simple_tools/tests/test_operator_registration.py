@@ -140,7 +140,7 @@ class OperatorRegistrationTest(unittest.TestCase):
         self.assertIn("reg-aaaaaaaaaaaa", text)
 
     def test_cli_registrations_read_a_missing_file_as_empty(self):
-        registrations, _ = OREG._registry_functions(os.path.join(self.tmp.name, "no-such.db"))
+        registrations = OREG._registrations_reader(os.path.join(self.tmp.name, "no-such.db"))
         self.assertEqual(registrations("minimax", _session_id()), [])
 
     def test_mark_refused_drops_a_live_asked_entry_terminally(self):
@@ -766,63 +766,42 @@ class QueueValidationAndPruningTests(unittest.TestCase):
 
 
 class AnswerVerbOneWriterTests(unittest.TestCase):
-    """AFC-721:  the CLI's answer verb issues a letter only on the server instance, and only
-    through the Eavesdropper's register path, which never creates a store."""
+    """AFC-721:  the CLI issues no letter.  Its old `answer` verb, a second process that could
+    register one, is gone;  only the Eavesdropper takes a location answer, in the chat's topic."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.db = os.path.join(self.tmp.name, "operator", "registry.sqlite3")
 
-    def run_main(self, argv, instance):
-        env = {OREG.INSTANCE_ENV: instance} if instance is not None else {}
+    def test_the_answer_verb_is_gone(self) -> None:
+        for instance in (None, "mac", "server"):
+            env = {"SIMPLE_TOOLS_INSTANCE": instance} if instance is not None else {}
+            with mock.patch.dict(os.environ, env, clear=False):
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
+                    OREG.main(
+                        ["--db", self.db, "answer", "--entry", "reg-0123456789ab", "--location", "mac"]
+                    )
+            self.assertEqual(cm.exception.code, 2, instance)
+        self.assertFalse(os.path.exists(self.db))
+
+    def test_ask_still_records_a_question_and_writes_no_registry(self) -> None:
         out = io.StringIO()
-        with mock.patch.dict(os.environ, env, clear=False):
-            if instance is None:
-                os.environ.pop(OREG.INSTANCE_ENV, None)
-            with contextlib.redirect_stdout(out):
-                code = OREG.main(["--db", self.db, *argv])
-        return code, json.loads(out.getvalue())
-
-    def ask(self):
-        code, out = self.run_main(
-            [
-                "ask",
-                "--platform", "minimax",
-                "--scope", "default",
-                "--session-id", _session_id(),
-                "--seat", "MM",
-                "--requester", "jay",
-            ],
-            "server",
-        )
-        self.assertEqual(code, 0, out)
-        return out["entry"]["entry_id"]
-
-    def test_the_answer_verb_refuses_off_the_server(self) -> None:
-        for instance in (None, "mac", "cloud"):
-            code, out = self.run_main(
-                ["answer", "--entry", "reg-0123456789ab", "--location", "mac"], instance
+        with contextlib.redirect_stdout(out):
+            code = OREG.main(
+                [
+                    "--db", self.db,
+                    "ask",
+                    "--platform", "minimax",
+                    "--scope", "default",
+                    "--session-id", _session_id(),
+                    "--seat", "MM",
+                    "--requester", "jay",
+                ]
             )
-            self.assertEqual((code, out.get("code")), (2, "not_server"), (instance, out))
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertIn("entry", json.loads(out.getvalue()))
         self.assertFalse(os.path.exists(self.db))
-
-    def test_the_answer_verb_never_creates_the_store(self) -> None:
-        entry_id = self.ask()
-        code, out = self.run_main(["answer", "--entry", entry_id, "--location", "mac"], "server")
-        self.assertEqual(code, 2, out)
-        self.assertIn("error", out)
-        self.assertFalse(os.path.exists(self.db))
-
-    def test_the_answer_verb_registers_through_the_eavesdropper_path(self) -> None:
-        from simple_tools import operator_registry as OR
-
-        entry_id = self.ask()
-        OR.SessionRegistry(self.db).close_db()
-        code, out = self.run_main(["answer", "--entry", entry_id, "--location", "mac"], "server")
-        self.assertEqual(code, 0, out)
-        self.assertEqual(out["status"], "registered", out)
-        self.assertEqual(len(out["label"]), 2)
 
 
 if __name__ == "__main__":

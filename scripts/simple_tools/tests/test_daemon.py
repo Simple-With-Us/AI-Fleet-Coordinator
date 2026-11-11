@@ -2464,14 +2464,20 @@ class HostWakeTests(DaemonHarness):
 
 
 class ServerRegistryHarness(DaemonHarness):
-    """A daemon that holds the registry service, as only the server instance does (AFC-721).
+    """A daemon on the server instance, which alone holds the registry service (AFC-721).
 
-    The answer flow issues a letter only through that service, so the answer tests attach one
-    over the daemon's own registry path;  the service, not the harness, decides the outcome."""
+    The service is built by the daemon's own _configure_registry, through the instance gate and
+    with no key at all (the answer flow runs in process and needs none), so the answer tests
+    exercise the same construction the Eavesdropper uses.  The instance is set back afterwards
+    only because these tests pin the discovery location (the daemon's own location) to mac."""
 
     def daemon(self, *args, **kwargs):
         daemon = super().daemon(*args, **kwargs)
-        daemon.registry_service = D.LREG.RegistryService(daemon._registration_db(), {})
+        instance = daemon.config.instance
+        daemon.config.instance = "server"
+        service = daemon._configure_registry()
+        daemon.config.instance = instance
+        assert service is not None and service.db_path == daemon._registration_db()
         return daemon
 
 
@@ -3674,6 +3680,12 @@ class OneRegistryWriterTests(DaemonHarness):
         return daemon
 
     def _pending_entry(self, daemon):
+        # Only the server instance asks, so the question is recorded there;  a test that
+        # needs an instance without the service drops it afterwards.
+        instance = daemon.config.instance
+        daemon.config.instance = "server"
+        daemon._configure_registry()
+        daemon.config.instance = instance
         self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("simple-tools", "AFC Work")])
         db = daemon._registration_db()
         registry = D.OR.SessionRegistry(db)
@@ -3706,21 +3718,98 @@ class OneRegistryWriterTests(DaemonHarness):
         daemon._configure_registry()
         self.assertIsNone(daemon.registry_sweeper)
 
+    def test_a_mac_instance_asks_no_location_question(self):
+        # The ask half follows the answer half:  an instance that cannot take the answer never
+        # asks, so the owner is never asked a question no process can act on.
+        daemon = self.daemon()
+        daemon.config.instance = "mac"
+        daemon._configure_registry()
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("simple-tools", "AFC Work")])
+        rows = [{
+            "id": "row-1", "platform": "claude", "profile_scope": "default",
+            "session_id": "sess-aaaaaaaa", "seat": "CLAUDE", "status": "available",
+        }]
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            daemon.maybe_ask_registrations(rows, {})
+            daemon.maybe_ask_registrations(rows, {})
+        self.assertEqual(send.call_count, 0)
+        self.assertEqual(D.OREG.pending_entries(daemon._registration_db()), [])
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertEqual(log.count("operator-registration-ask-off"), 1)
+
+    def test_the_server_service_needs_no_key_and_outlives_the_api(self):
+        # Sentry 4544409379:  the service and its sweeper do not depend on a key, on the
+        # listener API being on, or on the API binding.
+        daemon = self.daemon()
+        daemon.env.pop(D.LREG.OPERATOR_KEY_ENV, None)
+        daemon.config.instance = "server"
+        daemon.config.listener_api_enabled = False
+        daemon._configure_listener_api()
+        self.assertIsNotNone(daemon.registry_service)
+        self.assertEqual(daemon.registry_service.keys, {})
+        self.assertIs(daemon.registry_sweeper.service, daemon.registry_service)
+        self.assertIsNone(daemon.listener_api_server)
+        daemon.config.listener_api_enabled = True
+        daemon.env[D.LREG.OPERATOR_KEY_ENV] = "k" * 40  # now the API has a principal to serve
+        with mock.patch.object(D.LAPI, "ListenerReadApi", side_effect=OSError("in use")) as api:
+            daemon._configure_listener_api()
+        self.assertEqual(api.call_count, 1)
+        self.assertIsNone(daemon.listener_api_server)
+        self.assertIsNotNone(daemon.registry_service)
+        self.assertIs(daemon.registry_sweeper.service, daemon.registry_service)
+
+    def test_the_status_carries_the_sweepers_last_pass(self):
+        daemon = self._operator_daemon("server")
+        daemon._configure_registry()
+        self.assertIsNone(daemon.status()["registry_sweep"])
+        daemon.registry_sweeper.last = {"ok": True, "ended": 0}
+        self.assertEqual(daemon.status()["registry_sweep"], {"ok": True, "ended": 0})
+        mac = self._operator_daemon("mac")
+        mac._configure_registry()
+        self.assertIsNone(mac.status()["registry_sweep"])
+
     def test_the_tick_runs_the_sweeper_only_with_its_own_service(self):
         daemon = self._operator_daemon("server")
         daemon._configure_registry()
         sweeper = daemon.registry_sweeper
         with mock.patch.object(sweeper, "run", return_value={}) as run:
             daemon.tick()
+            daemon._registry_sweep_thread.join(5)
             self.assertEqual(run.call_count, 1)
-            daemon.registry_service = None  # the listener API went away
+            daemon.registry_service = None  # the service was dropped (a reload, a shutdown)
             sweeper.next_at = 0.0
             daemon.tick()
+            daemon._registry_sweep_thread.join(5)
+            self.assertEqual(run.call_count, 1)
+
+    def test_a_sweep_pass_runs_off_the_tick_and_one_at_a_time(self):
+        # kody 4544460899:  a pass waiting on the store's lock never stalls the tick.
+        daemon = self._operator_daemon("server")
+        daemon._configure_registry()
+        sweeper = daemon.registry_sweeper
+        release = threading.Event()
+        started = threading.Event()
+
+        def slow_run(now):
+            started.set()
+            release.wait(5)
+            return {}
+
+        with mock.patch.object(sweeper, "run", side_effect=slow_run) as run:
+            daemon.tick()  # returns while the pass is still running
+            self.assertTrue(started.wait(5))
+            sweeper.next_at = 0.0
+            daemon.tick()  # a pass is running:  no second one starts, and none is claimed
+            self.assertEqual(sweeper.next_at, 0.0)
+            release.set()
+            daemon._registry_sweep_thread.join(5)
             self.assertEqual(run.call_count, 1)
 
     def test_an_answer_on_an_instance_without_the_service_writes_nothing(self):
         daemon = self.daemon()
         entry = self._pending_entry(daemon)
+        daemon.config.instance = "mac"
+        self.assertIsNone(daemon._configure_registry())
         with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
             consumed = daemon._maybe_registration_answer(
                 {"content": "mac %s" % entry["entry_id"], "sender_id": 12, "client": "website"},
@@ -3735,12 +3824,33 @@ class OneRegistryWriterTests(DaemonHarness):
         log = (self.state_dir / "logs" / "listener.log").read_text()
         self.assertIn("no registry service on this instance", log)
 
+    def test_a_minted_letter_still_gets_its_confirmation_after_the_service_goes(self):
+        # kody 4544460563:  the route retry that only resends the confirmation needs no
+        # service, so losing the service between the mutation and the retry never leaves a
+        # minted letter unconfirmed.
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        done = set()
+        message = {"id": 42, "content": "mac %s" % entry["entry_id"], "sender_id": 12, "client": "website"}
+        with mock.patch.object(D.ORASK, "send_location_question", side_effect=RuntimeError("zulip down")):
+            with self.assertRaises(RuntimeError):
+                daemon._maybe_registration_answer(
+                    message, 2000.0, channel="simple-tools", topic="AFC Work", done=done
+                )
+        daemon.registry_service = None
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            consumed = daemon._maybe_registration_answer(
+                message, 2001.0, channel="simple-tools", topic="AFC Work", done=done
+            )
+        self.assertTrue(consumed)
+        self.assertEqual(send.call_count, 1)
+        self.assertIn((42, "send-confirmation"), done)
+
     def test_the_answer_path_never_creates_the_store(self):
         daemon = self.daemon()
         entry = self._pending_entry(daemon)
         db = daemon._registration_db()
         os.unlink(db)
-        daemon.registry_service = D.LREG.RegistryService(db, {})
         with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
             consumed = daemon._maybe_registration_answer(
                 {"content": "mac %s" % entry["entry_id"], "sender_id": 12, "client": "website"},
