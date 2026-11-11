@@ -6,6 +6,8 @@ import json
 import fcntl
 import os
 import stat
+import shutil
+import subprocess
 import tempfile
 import time
 import unittest
@@ -403,6 +405,28 @@ class MirrorTests(unittest.TestCase):
         self.assertTrue(argv[-1].startswith("host:/srv/incoming/"))
         kept = mirror.rsync_argv(Path("/tmp/skills"), "host:/srv/incoming/skills/claude/", delete=False)
         self.assertNotIn("--delete", kept)
+
+    def test_rsync_creates_the_nested_incoming_tree(self) -> None:
+        argv = mirror.rsync_argv(Path("/tmp/skills"), "host:/srv/incoming/skills/claude/", delete=True)
+        self.assertIn("--mkpath", argv)
+        rsync = shutil.which("rsync")
+        if not rsync:
+            self.skipTest("rsync not installed")
+        probe = subprocess.run([rsync, "--help"], capture_output=True, text=True, check=False)
+        if "--mkpath" not in probe.stdout:
+            self.skipTest("this rsync has no --mkpath")
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "src"
+            src.mkdir()
+            (src / "SKILL.md").write_text("x\n", encoding="utf-8")
+            incoming = Path(tmp) / "incoming"
+            incoming.mkdir()
+            dest = str(incoming / "skills" / "claude") + "/"
+            argv = mirror.rsync_argv(src, dest, delete=True)
+            argv[0] = rsync
+            proc = subprocess.run(argv, capture_output=True, text=True, check=False)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertTrue((incoming / "skills" / "claude" / "SKILL.md").is_file())
 
     def test_a_failed_rsync_does_not_promote(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

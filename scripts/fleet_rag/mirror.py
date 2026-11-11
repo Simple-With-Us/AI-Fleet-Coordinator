@@ -289,6 +289,9 @@ def rsync_argv(
     argv = [
         "rsync",
         "-a",
+        # The destination is incoming/<group>/<tree>/ and incoming starts empty;  without
+        # --mkpath rsync creates only the last component and exits 11 (AFC-687).
+        "--mkpath",
         "--timeout=120",
         "-e",
         "ssh -o BatchMode=yes -o ConnectTimeout=20",
