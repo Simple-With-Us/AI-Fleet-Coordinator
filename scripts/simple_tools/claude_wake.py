@@ -100,6 +100,8 @@ DEFAULT_PORT = 8793
 SESSION_RE = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
 # A Codex thread id is a bare UUID too:  the same shape `codex_wake.SESSION_RE` checks.
 CODEX_SESSION_RE = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
+# A zcode chat id is `sess_` and then the bridge's own character set, at most 123 of it.
+ZCODE_SESSION_RE = re.compile(r"^sess_[A-Za-z0-9._-]{1,123}$")
 SESSION_FILE_RE = re.compile(r"^[0-9]+\.json$")
 SESSION_FILE_BYTES = 64 * 1024
 TAIL_BYTES = 256 * 1024
@@ -118,6 +120,7 @@ PREFLIGHT_COMMAND = "true"
 ENV_SSH_COMMAND = "SSH_ORIGINAL_COMMAND"
 GATE_REFUSED = 126  # never ssh's own 255, which the sender reads as a host that did not answer
 CODEX_MODULE = "simple_tools.codex_wake"
+ZCODE_MODULE = "simple_tools.zcode_wake"
 BAD_REQUEST = "bad-request"
 BAD_REQUEST_EXIT = 2
 UNKNOWN_PLATFORM = "unknown-platform"
@@ -872,6 +875,9 @@ class DeliveryPlatform:
 PLATFORMS: dict[str, DeliveryPlatform] = {
     PLATFORM: DeliveryPlatform(_deliver_claude, SESSION_RE),
     "codex": DeliveryPlatform(_module_delivery(CODEX_MODULE), CODEX_SESSION_RE),
+    "zcode": DeliveryPlatform(_module_delivery(ZCODE_MODULE), ZCODE_SESSION_RE),
+}
+>>>>>>> c570e42a9 (zcode_wake: the thin ZC delivery platform for the shared router (OPS-1048))
 }
 
 
