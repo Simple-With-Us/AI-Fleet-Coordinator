@@ -83,7 +83,9 @@ delivery, ahead of the in-flight mark.  If the letter no longer names that sessi
 picked, nothing is delivered:  a wake addressed to a letter ends in a `dead` receipt with the code
 `target-released`, because the letter's new holder is not who the sender meant, and any other wake
 goes back through the pick.  A registry that cannot be read is a bounded retry, never a blind
-delivery.  Receipts name the selected generation as `picked_generation`.
+delivery, and so is a live row that does not name a well-formed chat of this seat:  a row with no
+seat, or a malformed one, is no target and no proof of release either.  Receipts name the selected
+generation as `picked_generation`.
 
 Settings not yet confirmed.  A router whose settings have not come from a successful read in this
 process does not know whether delivery is on, and "off" would close every pending wake as `held`.
@@ -184,6 +186,11 @@ OUTCOMES = ("sent", "completed", "busy", "unreachable", "failed", "refused")
 INTERRUPTED = "interrupted-during-delivery"
 EXPIRED = "wake-expired"
 RELEASED = "target-released"
+# A live registry row the check before delivery cannot read as a chat of this seat.
+UNREADABLE_ROW = "registry-row-unreadable"
+# A seat tag as the fleet writes one (identity._SEAT_RE).  A registry row must name its seat:  a
+# missing one is never read as this platform's.
+SEAT_RE = re.compile(r"[A-Z0-9][A-Z0-9_-]{0,31}")
 UNCONFIRMED = "settings-unconfirmed"
 # The `refused` codes that can only come before anything ran.  It is a list of what is known safe,
 # so a new code reads as unknown until someone adds it here.
@@ -1133,12 +1140,12 @@ class Router:
         # The chat stays held until the outcome is settled, so a later wake cannot start between
         # this delivery ending and its result being recorded.
         try:
-            still_held = self._still_held(pick.target)
-            if still_held is None:
-                self._retry(entry, counted=True, code="registry-unavailable", pick=pick)
-                return
-            if not still_held:
+            stale = self._stale(pick.target)
+            if stale == RELEASED:
                 self._released(entry, pick, wake)
+                return
+            if stale:
+                self._retry(entry, counted=True, code=stale, pick=pick)
                 return
             entry["attempts"] += 1
             entry["in_flight"] = True
@@ -1161,9 +1168,10 @@ class Router:
                 self._active.discard(session)
                 self._cond.notify_all()
 
-    def _still_held(self, target: Target) -> bool | None:
-        """Whether the registry still has this letter on this session at the generation picked.
-        None when it cannot be read:  that is not a yes, and not a no."""
+    def _stale(self, target: Target) -> str:
+        """Empty when the registry still has this letter on this session at the generation picked,
+        else why not:  `RELEASED` when it says so, or the code of a bounded retry when it cannot be
+        read or its row cannot be read as a chat of this seat.  Neither of those is a yes or a no."""
         answer = registry_api.call(
             self.env,
             "resolve",
@@ -1171,8 +1179,11 @@ class Router:
             timeout=REGISTRY_TIMEOUT,
         )
         if "error" in answer:
-            return None
-        return holds(answer, target, self.platform.seat, self.platform.target_re)
+            return "registry-unavailable"
+        held = holds(answer, target, self.platform.seat, self.platform.target_re)
+        if held is None:
+            return UNREADABLE_ROW
+        return "" if held else RELEASED
 
     def _released(self, entry: dict[str, Any], pick: Pick, wake: Wake) -> None:
         """The picked chat is gone or re-registered, and nothing was delivered.  A wake addressed
@@ -1356,12 +1367,22 @@ def _closed(row: Mapping[str, Any]) -> bool:
     return bool(row.get("retired_at") or row.get("closed_at") or row.get("state") == "closed")
 
 
+def row_seat(row: Mapping[str, Any]) -> str:
+    """The seat a registry row names, upper-cased, or "" when it names none or a malformed one."""
+    raw = row.get("seat")
+    if not isinstance(raw, str) or not raw.isascii():
+        return ""
+    tag = raw.upper()
+    return tag if SEAT_RE.fullmatch(tag) else ""
+
+
 def target_from_row(row: Mapping[str, Any], seat: str, target_re: Pattern[str]) -> Target | None:
-    """The chat a registry row describes, or None if it is not one a wake can go to."""
+    """The chat a registry row describes, or None if it is not one a wake can go to.  The row has
+    to name this seat itself:  a row with no seat is not taken to be this platform's."""
     sid = str(row.get("native_session_id") or "")
     if not target_re.fullmatch(sid):
         return None  # a crafted row can never steer an argv token a child reads as a flag
-    if str(row.get("seat") or seat).upper() != seat:
+    if not seat or row_seat(row) != seat:
         return None
     letter = str(row.get("label") or row.get("letter") or "")
     generation = row.get("generation")
@@ -1377,16 +1398,21 @@ def target_from_row(row: Mapping[str, Any], seat: str, target_re: Pattern[str]) 
     )
 
 
-def holds(answer: Mapping[str, Any], target: Target, seat: str, target_re: Pattern[str]) -> bool:
+def holds(
+    answer: Mapping[str, Any], target: Target, seat: str, target_re: Pattern[str]
+) -> bool | None:
     """Whether a registry `resolve` answer still has this letter open on this session at this
-    generation.  The caller has already ruled out an answer that is an error."""
-    live = answer.get("found") and not _closed(answer)
-    current = target_from_row(answer, seat, target_re) if live else None
-    return (
-        current is not None
-        and current.session_id == target.session_id
-        and current.generation == target.generation
-    )
+    generation.  False only when the registry says it does not:  the letter has no live holder, its
+    chat is closed, or a well-formed chat of this seat holds it at another session or generation.
+    None when a live answer is not a well-formed chat of this seat (no seat, a malformed one,
+    another seat's, or a bad id or generation), because a row that cannot be read proves no
+    release.  The caller has already ruled out an answer that is an error."""
+    if not answer.get("found") or _closed(answer):
+        return False
+    current = target_from_row(answer, seat, target_re)
+    if current is None:
+        return None
+    return current.session_id == target.session_id and current.generation == target.generation
 
 
 def _session_of(entry: Mapping[str, Any]) -> str:
