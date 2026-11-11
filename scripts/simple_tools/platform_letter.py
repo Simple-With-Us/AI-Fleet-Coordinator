@@ -1866,9 +1866,10 @@ _SHELL_PUNCTUATION = ";&|()\n"
 # The words that may stand before the program in the command that runs it:  a wrapper (and its flags and their
 # values) or a shell keyword.  `echo simple-chat post ...` only names the program, so it is not a post.
 _PREFIX_WORDS = frozenset(
-    {"sudo", "env", "command", "nohup", "time", "exec", "then", "do", "else", "if", "while", "!"}
+    {"sudo", "env", "command", "nohup", "time", "exec", "timeout", "nice", "ionice", "stdbuf", "then", "do", "else", "if", "while", "!"}
 )
 _ASSIGNMENT = re.compile("^[A-Za-z_][A-Za-z0-9_]*=")
+_DURATION = re.compile("^[0-9]+(?:[.][0-9]+)?[smhd]?$")  # `timeout 10 simple-chat ...`
 
 
 def _clean_topic(text: object) -> str:
@@ -1880,7 +1881,12 @@ def _clean_topic(text: object) -> str:
 def _runs_program(before: list[str]) -> bool:
     """True when the words before a program name only wrap it (`sudo`, `env A=b`, a shell keyword), so it is run."""
     for i, word in enumerate(before):
-        if word in _PREFIX_WORDS or _ASSIGNMENT.match(word) or word.startswith("-"):
+        if (
+            os.path.basename(word) in _PREFIX_WORDS
+            or _ASSIGNMENT.match(word)
+            or word.startswith("-")
+            or _DURATION.match(word)
+        ):
             continue
         if i > 0 and before[i - 1].startswith("-") and "=" not in before[i - 1]:
             continue  # the value of a wrapper's flag, such as `sudo -u jay`
@@ -1927,7 +1933,9 @@ def _command_posts(command: object) -> list[str] | None:
                     topic = arg[len("--topic=") :]
             # A shell variable or a substitution is not the topic the command posted to:  only the printed line says
             # that.  (A hosted call's topic and a printed line's never went through a shell, so `$` is just text.)
-            posts.append("" if any(mark in topic for mark in ("$", "`")) else _clean_topic(topic))
+            # A topic in single quotes is literal, so it is kept (the lexer has already removed the quotes).
+            expands = any(mark in topic for mark in ("$", "`")) and f"'{topic}'" not in command
+            posts.append("" if expands else _clean_topic(topic))
             break
     return posts or None
 

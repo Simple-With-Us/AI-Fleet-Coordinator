@@ -1430,6 +1430,9 @@ class HookTests(Base):
                          ("c", "posted id 4 to #Work-In-Progress › Price $6", False)),
         ]
         self.assertEqual(PL.topics_in_lines(lines), ["Price $5", "Cost `x`", "Price $6"])
+        single = [self.calls(("a", "Bash", {"command": "simple-chat post --topic 'Price $5' -b y"})),
+                  self.results(("a", "{}", False))]
+        self.assertEqual(PL.topics_in_lines(single), ["Price $5"])
         # A literal `$VAR` in the command is not the topic, and with no printed line it names nothing.
         bare = [self.calls(("a", "Bash", {"command": 'simple-chat post --topic "$T" -b y'})),
                 self.results(("a", "{}", False))]
@@ -1445,7 +1448,10 @@ class HookTests(Base):
                 self.assertEqual(topics(command), [])
         for command in ("sudo -u jay simple-chat post --topic Demo -b x", "env A=b simple-chat reply --topic Demo -b x",
                         "A=b ~/.local/bin/simple-chat post --topic Demo -b x",
-                        "if true; then simple-chat post --topic Demo -b x; fi"):
+                        "if true; then simple-chat post --topic Demo -b x; fi",
+                        "/usr/bin/sudo simple-chat post --topic Demo -b x",
+                        "timeout 10 simple-chat post --topic Demo -b x",
+                        "nice -n 5 /usr/bin/env A=b simple-chat post --topic Demo -b x"):
             with self.subTest(command):
                 self.assertEqual(topics(command), ["Demo"])
 
