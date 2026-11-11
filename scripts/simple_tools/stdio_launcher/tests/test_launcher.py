@@ -61,9 +61,15 @@ class Installed:
         self.transport = os.path.join(root, "transport.py")
         with open(self.transport, "w", encoding="utf-8") as target:
             target.write(FAKE_TRANSPORT)
+        # A hosted runner's interpreter can sit in a group-writable tree, which the
+        # custody check rightly refuses, so run it through a wrapper this user owns.
+        self.python = os.path.join(root, "python")
+        with open(self.python, "w", encoding="utf-8") as target:
+            target.write(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+        os.chmod(self.python, 0o755)
         self.path = os.path.join(root, f"{seat.lower()}-simple-tools")
         with open(self.path, "w", encoding="utf-8") as target:
-            target.write(install.render(seat, self.bearer, sys.executable, self.transport, root))
+            target.write(install.render(seat, self.bearer, self.python, self.transport, root))
 
     def run(self, env, messages=(INITIALIZE,)):
         child_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": self.tmp.name, **env}
