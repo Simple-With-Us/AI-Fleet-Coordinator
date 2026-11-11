@@ -922,6 +922,10 @@ def answer_reply(result: Mapping[str, Any]) -> str:
 # ---- the Operator's CLI:  ask, answer, sweep, pending -----------------------------------
 
 
+#: The instance this process belongs to (the listener's own variable:  the container image sets server).
+INSTANCE_ENV = "SIMPLE_TOOLS_INSTANCE"
+
+
 def _registry_functions(db_path: str):
     # Imported lazily so the queue module and its tests never need the registry's 3.11+
     # import surface, and the read handle stays read-only by behaviour (operator_registry).
@@ -936,11 +940,12 @@ def _registry_functions(db_path: str):
         return OR.registrations_for_native_id(db_path, platform, session_id)
 
     def register(**identity: Any) -> dict[str, Any]:
-        return OR.register_session(
-            db_path,
-            source="operator-registration",
-            issuer=OR.ISSUER_OPERATOR,
-            **identity,
+        # One writer (AFC-721):  the letter is issued through the Eavesdropper's own register
+        # path, which refuses a missing store instead of creating one.
+        from . import listener_registry as LREG
+
+        return LREG.RegistryService(db_path, {}).operator_register(
+            source="operator-registration", **identity
         )
 
     return registrations, register
@@ -981,6 +986,18 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"pending": pending_entries(db_path)}))
         return 0
 
+    if args.command == "answer" and os.environ.get(INSTANCE_ENV, "").strip() != "server":
+        # One writer (AFC-721):  a letter is issued only inside the Eavesdropper's container,
+        # where the registry lives.  Anywhere else the verb refuses before it reads anything.
+        print(
+            json.dumps(
+                {
+                    "error": "the answer verb runs only on the server instance, where the registry lives",
+                    "code": "not_server",
+                }
+            )
+        )
+        return 2
     registrations, register = _registry_functions(db_path)
     try:
         if args.command == "ask":

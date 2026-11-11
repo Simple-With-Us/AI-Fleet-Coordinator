@@ -1,7 +1,8 @@
 """The Operator's session registry API (listener_registry.py, Path B):  every one of the
 registry's 12 ops through the HTTP adapter against a temporary registry, the HMAC
 discipline (bad signature 401, wrong method 405, unknown route 404), the Operator-only
-register path, cross-seat refusal, and the client transport selection in
+register path, cross-seat refusal, the one-writer pieces (operator_register, report-gone, the
+in-process reopen and the one Sweeper, AFC-721), and the client transport selection in
 mm_session_letter.registry_call (URL unset falls back to the existing behaviour;  URL set
 uses HTTPS;  an explicit transport wins over a local file).
 
@@ -18,12 +19,14 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import sqlite3
 import sys
 import tempfile
 import time
 import unittest
 import urllib.error
 import urllib.request
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -585,6 +588,266 @@ class RegistryTransportTest(unittest.TestCase):
         with self._env(SIMPLE_TOOLS_OPERATOR_REGISTRY_URL="https://operator.example.test"):
             answer = self.M.registry_call(["resolve", "--platform=minimax", "--letter=A"])
         self.assertEqual(answer.get("code"), "not_configured", answer)
+
+
+class OneWriterTest(RegistryApiTest):
+    """AFC-721:  the Eavesdropper is the only registry writer.  Its register path refuses a
+    missing store, report-gone closes only what a host names (within the share guard), the
+    reopen no longer imports a client module, and the one Sweeper ends stale replaced letters
+    for every platform."""
+
+    def gone(self, sids: list[str], **extra: Any) -> tuple[int, dict[str, Any]]:
+        return self.call(
+            "OPERATOR",
+            "POST",
+            "report-gone",
+            {"platform": "minimax", "verified_host": "mac", "native_session_ids": sids, **extra},
+        )
+
+    def age(self, sid: str, hours: float) -> None:
+        stamp = (datetime.now(UTC) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        conn = sqlite3.connect(self.db)
+        try:
+            with conn:
+                conn.execute(
+                    "UPDATE sessions SET last_seen_at = ?, registered_at = ?"
+                    " WHERE native_session_id = ?",
+                    (stamp, stamp, sid),
+                )
+        finally:
+            conn.close()
+
+    def open_sids(self) -> set[str]:
+        conn = sqlite3.connect(self.db)
+        try:
+            return {
+                row[0]
+                for row in conn.execute(
+                    "SELECT native_session_id FROM sessions WHERE closed_at IS NULL"
+                )
+            }
+        finally:
+            conn.close()
+
+    # ---- operator_register ----------------------------------------------------
+
+    def test_operator_register_never_creates_a_store(self) -> None:
+        with self.assertRaises(OR.RegistryUnavailable):
+            self.service.operator_register(
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id=SID_CLAUDE,
+                seat="CLAUDE",
+                source="test",
+            )
+        self.assertFalse(os.path.exists(self.db))
+
+    def test_operator_register_always_issues_as_the_operator(self) -> None:
+        self.create_store()
+        out = self.service.operator_register(
+            platform="minimax",
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id=SID_CLAUDE,
+            seat="CLAUDE",
+            source="test",
+            issuer="CLAUDE",
+        )
+        self.assertEqual(out["outcome"], "registered", out)
+
+    # ---- reopen ---------------------------------------------------------------
+
+    def test_reopen_does_not_import_the_client_module(self) -> None:
+        source = Path(RG.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("platform_letter", source)
+        self.create_store()
+        record_id = self.register("CLAUDE", SID_CLAUDE)["record_id"]
+        self.call("CLAUDE", "POST", "close", {**identity(SID_CLAUDE), "reason": "test"})
+        with mock.patch.dict(sys.modules, {"simple_tools.platform_letter": None}):
+            status, reopened = self.call("CLAUDE", "POST", "reopen", {"record_id": record_id})
+        self.assertEqual(status, 200, reopened)
+        self.assertEqual(len(reopened["label"]), 2)
+
+    # ---- report-gone ------------------------------------------------------------
+
+    def test_report_gone_is_the_operators_alone(self) -> None:
+        self.create_store()
+        self.register("CLAUDE", SID_CLAUDE)
+        status, answer = self.call(
+            "CLAUDE",
+            "POST",
+            "report-gone",
+            {"platform": "minimax", "verified_host": "mac", "native_session_ids": [SID_CLAUDE]},
+        )
+        self.assertEqual(status, 403, answer)
+        self.assertIn(SID_CLAUDE, self.open_sids())
+
+    def test_report_gone_closes_only_the_named_rows_of_that_host(self) -> None:
+        self.create_store()
+        for sid in ("gone-1", "keep-1", "keep-2", "keep-3"):
+            self.register("CLAUDE", sid)
+        status, answer = self.gone(["gone-1", "not-registered"])
+        self.assertEqual(status, 200, answer)
+        self.assertEqual(answer["count"], 1)
+        self.assertEqual(answer["closed"][0]["native_session_id"], "gone-1")
+        self.assertEqual(self.open_sids(), {"keep-1", "keep-2", "keep-3"})
+        conn = sqlite3.connect(self.db)
+        try:
+            sources = [
+                row[0] for row in conn.execute("SELECT source FROM events WHERE event = 'close'")
+            ]
+        finally:
+            conn.close()
+        self.assertIn(RG.SOURCE_HOST_REPORT, sources)
+        # Another host's rows are never touched by this host's report.
+        status, answer = self.call(
+            "OPERATOR",
+            "POST",
+            "report-gone",
+            {"platform": "minimax", "verified_host": "server", "native_session_ids": ["keep-1"]},
+        )
+        self.assertEqual((status, answer["count"]), (200, 0), answer)
+        self.assertIn("keep-1", self.open_sids())
+
+    def test_report_gone_refuses_more_than_the_share_and_writes_nothing(self) -> None:
+        self.create_store()
+        for sid in ("sess-1", "sess-2", "sess-3", "sess-4"):
+            self.register("CLAUDE", sid)
+        status, answer = self.gone(["sess-1", "sess-2", "sess-3"])
+        self.assertEqual(status, 409, answer)
+        self.assertEqual(answer["code"], "gone_share_exceeded")
+        self.assertEqual(self.open_sids(), {"sess-1", "sess-2", "sess-3", "sess-4"})
+        # Half is allowed at the default share.
+        status, answer = self.gone(["sess-1", "sess-2"])
+        self.assertEqual((status, answer["count"]), (200, 2), answer)
+
+    def test_report_gone_may_close_a_hosts_last_chat(self) -> None:
+        self.create_store()
+        self.register("CLAUDE", "only-1")
+        status, answer = self.gone(["only-1"])
+        self.assertEqual((status, answer["count"]), (200, 1), answer)
+        self.assertEqual(self.open_sids(), set())
+
+    def test_report_gone_validates_its_body(self) -> None:
+        self.create_store()
+        for body in (
+            {"platform": "minimax", "verified_host": "mac", "native_session_ids": "x"},
+            {"platform": "minimax", "verified_host": "mac", "native_session_ids": [""]},
+            {"platform": "minimax", "native_session_ids": ["x"]},
+            {
+                "platform": "minimax",
+                "verified_host": "mac",
+                "native_session_ids": ["x"] * (RG.MAX_GONE_IDS + 1),
+            },
+        ):
+            status, answer = self.call("OPERATOR", "POST", "report-gone", body)
+            self.assertEqual(status, 400, (body, answer))
+
+    def test_report_gone_never_creates_a_store(self) -> None:
+        status, answer = self.gone(["x"])
+        self.assertEqual(status, 503, answer)
+        self.assertFalse(os.path.exists(self.db))
+
+    # ---- the one sweeper ----------------------------------------------------------
+
+    def sweeper(self, **overrides: Any) -> RG.Sweeper:
+        settings: dict[str, Any] = {
+            "interval_minutes": 15,
+            "stale_after_hours": 36,
+            "status_path": os.path.join(self.tmp.name, "listener", "registry-sweep.json"),
+        }
+        settings.update(overrides)
+        return RG.Sweeper(self.service, **settings)
+
+    def test_the_sweeper_ends_stale_replaced_letters_on_every_platform(self) -> None:
+        self.create_store()
+        self.register("CLAUDE", "old-1")
+        self.age("old-1", 40)
+        self.register("CLAUDE", "new-1")
+        self.register("CODEX", "quiet-1")
+        self.age("quiet-1", 40)  # stale, but nobody replaced it:  it keeps its letter
+        OR.register_session(
+            self.db,
+            platform="cursor",
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id="cursor-old",
+            seat="CURSOR",
+            source="test",
+            issuer=OR.ISSUER_OPERATOR,
+        )
+        self.age("cursor-old", 40)
+        OR.register_session(
+            self.db,
+            platform="cursor",
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id="cursor-new",
+            seat="CURSOR",
+            source="test",
+            issuer=OR.ISSUER_OPERATOR,
+        )
+        sweeper = self.sweeper()
+        result = sweeper.maybe_run(self.clock.now)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["ended"], 2)
+        self.assertEqual(set(result["platforms"]), {"minimax", "cursor"})
+        self.assertEqual(self.open_sids(), {"new-1", "quiet-1", "cursor-new"})
+        written = json.loads(Path(sweeper.status_path).read_text(encoding="utf-8"))
+        self.assertEqual(written["ended"], 2)
+        self.assertEqual(sweeper.last, result)
+        # Not due again until the interval has passed.
+        self.assertIsNone(sweeper.maybe_run(self.clock.now + 60))
+        self.assertIsNotNone(sweeper.maybe_run(self.clock.now + 15 * 60))
+
+    def test_the_sweeper_keeps_letters_inside_the_window(self) -> None:
+        self.create_store()
+        self.register("CLAUDE", "old-1")
+        self.age("old-1", 30)
+        self.register("CLAUDE", "new-1")
+        result = self.sweeper().run(self.clock.now)
+        self.assertEqual(result["ended"], 0)
+        self.assertEqual(self.open_sids(), {"old-1", "new-1"})
+
+    def test_the_sweeper_never_creates_a_store(self) -> None:
+        result = self.sweeper().run(self.clock.now)
+        self.assertFalse(result["ok"])
+        self.assertFalse(os.path.exists(self.db))
+
+
+class OneWriterGuardTest(unittest.TestCase):
+    """AFC-721 guard:  the files this change made single-writer stay that way.  The daemon and
+    the Operator's registration CLI issue letters only through listener_registry, and neither
+    constructs a write-mode registry handle.  The fleet-wide guard (every client module) is
+    test_one_assigner, added when the clients become API-only."""
+
+    WRITE_CALLS = (
+        "OR.register_session(",
+        "OR.relabel_session(",
+        "OR.update_session(",
+        "OR.close_session(",
+        "OR.touch_session(",
+        "OR.sweep_stale(",
+        "OR.mark_exported(",
+    )
+
+    def source(self, name: str) -> str:
+        return (Path(RG.__file__).resolve().parent / name).read_text(encoding="utf-8")
+
+    def test_the_daemon_writes_the_registry_only_through_listener_registry(self) -> None:
+        text = self.source("daemon.py")
+        for call in self.WRITE_CALLS:
+            self.assertNotIn(call, text, call)
+        for line in text.splitlines():
+            if "SessionRegistry(" in line:
+                self.assertIn("read_only=True", line, line)
+
+    def test_the_registration_cli_registers_only_through_listener_registry(self) -> None:
+        text = self.source("operator_registration.py")
+        for call in ("register_session(", "relabel_session(", "SessionRegistry("):
+            self.assertNotIn(call, text, call)
+        self.assertIn("operator_register(", text)
 
 
 if __name__ == "__main__":

@@ -2463,7 +2463,19 @@ class HostWakeTests(DaemonHarness):
             self.assertIsNone(daemon._wake_block(runner, retry, self.clock.time()))
 
 
-class OperatorRegistrationWiringTests(DaemonHarness):
+class ServerRegistryHarness(DaemonHarness):
+    """A daemon that holds the registry service, as only the server instance does (AFC-721).
+
+    The answer flow issues a letter only through that service, so the answer tests attach one
+    over the daemon's own registry path;  the service, not the harness, decides the outcome."""
+
+    def daemon(self, *args, **kwargs):
+        daemon = super().daemon(*args, **kwargs)
+        daemon.registry_service = D.LREG.RegistryService(daemon._registration_db(), {})
+        return daemon
+
+
+class OperatorRegistrationWiringTests(ServerRegistryHarness):
     """The daemon's ask-before-letter wiring:  the registering chat is asked in its own
     channel/topic and answers there before its letter is issued (owner direction, Oct 23
     2026).  The send is mocked at the module seam (the send itself is covered end to end in
@@ -3336,7 +3348,7 @@ class OperatorRegistrationRouteTests(DaemonHarness):
         )
 
 
-class OperatorRegistrationAnswerAuthorityTests(DaemonHarness):
+class OperatorRegistrationAnswerAuthorityTests(ServerRegistryHarness):
     """The bound topic says WHERE an answer counts;  the sender says WHO may answer
     (the owner, or the bot of the seat the registration belongs to).  Another chat's bot,
     or any other poster in the same topic, cannot claim this registration's location."""
@@ -3558,7 +3570,7 @@ class OperatorRegistrationAnswerAuthorityTests(DaemonHarness):
         )
 
 
-class OperatorRegistrationRouteFollowTests(DaemonHarness):
+class OperatorRegistrationRouteFollowTests(ServerRegistryHarness):
     """A pending question is re-pointed by a whole-topic rename EVENT (handle_update's
     own provenance), kept beside unrelated new attachments, and never posted to a dead
     topic name when the topic vanishes with no rename event."""
@@ -3649,6 +3661,95 @@ class OperatorRegistrationRouteFollowTests(DaemonHarness):
         entry = D.OREG.pending_entries(db)[0]
         self.assertTrue(entry.get("route_lost"))
         self.assertEqual(entry["route"], {"channel": "simple-tools", "topic": "AFC Work"})
+
+
+class OneRegistryWriterTests(DaemonHarness):
+    """AFC-721:  the Eavesdropper (the server instance) is the only registry writer.  Any other
+    instance builds no registry service, answers no registration and runs no sweeper."""
+
+    def _operator_daemon(self, instance):
+        daemon = self.daemon()
+        daemon.env[D.LREG.OPERATOR_KEY_ENV] = "k" * 40
+        daemon.config.instance = instance
+        return daemon
+
+    def _pending_entry(self, daemon):
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("simple-tools", "AFC Work")])
+        db = daemon._registration_db()
+        registry = D.OR.SessionRegistry(db)
+        registry.close_db()
+        rows = [{
+            "id": "row-1", "platform": "claude", "profile_scope": "default",
+            "session_id": "sess-aaaaaaaa", "seat": "CLAUDE", "status": "available",
+        }]
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
+            daemon.maybe_ask_registrations(rows, {})
+        return D.OREG.pending_entries(db)[0]
+
+    def test_a_mac_instance_builds_no_registry_service(self):
+        daemon = self._operator_daemon("mac")
+        self.assertIsNone(daemon._configure_registry())
+        self.assertIsNone(daemon.registry_service)
+        self.assertIsNone(daemon.registry_sweeper)
+
+    def test_the_server_instance_builds_the_service_and_the_sweeper(self):
+        daemon = self._operator_daemon("server")
+        service = daemon._configure_registry()
+        self.assertIsNotNone(service)
+        self.assertIs(daemon.registry_sweeper.service, service)
+        self.assertEqual(daemon.registry_sweeper.stale_after_minutes, 36 * 60)
+        # A reload with the same settings keeps both objects.
+        sweeper = daemon.registry_sweeper
+        self.assertIs(daemon._configure_registry(), service)
+        self.assertIs(daemon.registry_sweeper, sweeper)
+        daemon.config.registry_sweep_enabled = False
+        daemon._configure_registry()
+        self.assertIsNone(daemon.registry_sweeper)
+
+    def test_the_tick_runs_the_sweeper_only_with_its_own_service(self):
+        daemon = self._operator_daemon("server")
+        daemon._configure_registry()
+        sweeper = daemon.registry_sweeper
+        with mock.patch.object(sweeper, "run", return_value={}) as run:
+            daemon.tick()
+            self.assertEqual(run.call_count, 1)
+            daemon.registry_service = None  # the listener API went away
+            sweeper.next_at = 0.0
+            daemon.tick()
+            self.assertEqual(run.call_count, 1)
+
+    def test_an_answer_on_an_instance_without_the_service_writes_nothing(self):
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            consumed = daemon._maybe_registration_answer(
+                {"content": "mac %s" % entry["entry_id"], "sender_id": 12, "client": "website"},
+                2000.0,
+                channel="simple-tools",
+                topic="AFC Work",
+            )
+        self.assertFalse(consumed)
+        self.assertEqual(send.call_count, 0)
+        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
+        self.assertEqual(rows, [])
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertIn("no registry service on this instance", log)
+
+    def test_the_answer_path_never_creates_the_store(self):
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        db = daemon._registration_db()
+        os.unlink(db)
+        daemon.registry_service = D.LREG.RegistryService(db, {})
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
+            consumed = daemon._maybe_registration_answer(
+                {"content": "mac %s" % entry["entry_id"], "sender_id": 12, "client": "website"},
+                2000.0,
+                channel="simple-tools",
+                topic="AFC Work",
+            )
+        self.assertFalse(consumed)
+        self.assertFalse(os.path.exists(db))
 
 
 class FallbackPromptBoundTests(DaemonHarness):

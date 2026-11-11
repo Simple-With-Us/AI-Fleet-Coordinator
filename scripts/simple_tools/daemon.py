@@ -918,6 +918,9 @@ class Daemon:
         # no principal has a key.
         self.registry_service: LREG.RegistryService | None = None
         self._registry_spec: tuple[Any, ...] | None = None
+        # The one stale sweeper (AFC-721), built with the registry service and run from the
+        # tick only while it belongs to the live service, so it stops when the service does.
+        self.registry_sweeper: LREG.Sweeper | None = None
         self.backfill_lock = threading.Lock()
         self.started_at = self.clock.time()
         self.last_tick = {
@@ -1527,11 +1530,20 @@ class Daemon:
         whose key is the value of the env var listener_registry.OPERATOR_KEY_ENV when it is set.  Every key
         value is hidden from the log by listener_api_keys / here, before anything can print it.  A reload that
         leaves the principals and the store as they were keeps the same service object.  Construction opens
-        no file:  the service opens the registry per call, through the registry's own functions."""
+        no file:  the service opens the registry per call, through the registry's own functions.
+
+        One writer (AFC-721):  only the server instance builds the service, and with it the one stale
+        sweeper ([registry] settings);  every other instance gets None and writes no registry row."""
         old = getattr(self, "registry_service", None)
         old_spec = getattr(self, "_registry_spec", None)
+        old_sweeper = getattr(self, "registry_sweeper", None)
         self.registry_service = None
         self._registry_spec = None
+        self.registry_sweeper = None
+        # One writer (AFC-721):  only the server instance, the Eavesdropper, holds the registry.
+        # Any other instance serves no registry API and writes no row, whatever keys it has.
+        if getattr(self.config, "instance", "mac") != "server":
+            return None
         keys = self.listener_api_keys()
         operator_key = Z._strip_quotes(self.env.get(LREG.OPERATOR_KEY_ENV) or "")
         if operator_key:
@@ -1541,13 +1553,38 @@ class Daemon:
         if not usable:
             return None
         db_path = OR.registry_db_path(self.root, self.env)
-        spec = (db_path, tuple(sorted((name, key) for name, key in keys.items())))
+        share = self.config.registry_gone_report_max_share
+        spec = (db_path, share, tuple(sorted((name, key) for name, key in keys.items())))
         if old is not None and old_spec == spec:
             service = old
         else:
-            service = LREG.RegistryService(db_path, keys, clock=self.clock.time, log=self.log.write)
+            service = LREG.RegistryService(
+                db_path,
+                keys,
+                clock=self.clock.time,
+                log=self.log.write,
+                gone_report_max_share=share,
+            )
         self.registry_service = service
         self._registry_spec = spec
+        if self.config.registry_sweep_enabled:
+            interval = self.config.registry_sweep_interval_minutes
+            stale = self.config.registry_stale_after_hours
+            if (
+                old_sweeper is not None
+                and old_sweeper.service is service
+                and old_sweeper.interval_s == interval * 60.0
+                and old_sweeper.stale_after_minutes == max(1, round(stale * 60))
+            ):
+                self.registry_sweeper = old_sweeper
+            else:
+                self.registry_sweeper = LREG.Sweeper(
+                    service,
+                    interval_minutes=interval,
+                    stale_after_hours=stale,
+                    status_path=os.path.join(L.listener_dir(self.root), "registry-sweep.json"),
+                    log=self.log.write,
+                )
         return service
 
     def _configure_listener_api(self) -> None:
@@ -6795,8 +6832,9 @@ class Daemon:
         First run:  nothing has ever registered, so the file does not exist yet, and the
         registry layer fails closed on that (its wake-path rule:  never let a lookup
         bring a registry into being).  At this boundary a missing file is the truthful
-        "no letters yet" - asking is harmless, and the answer path's register creates
-        the file.  A file that exists but cannot be read still raises
+        "no letters yet" - asking is harmless.  The answer path never creates the file
+        (AFC-721):  it registers only through the Eavesdropper's registry service, which
+        refuses a missing store.  A file that exists but cannot be read still raises
         RegistryUnavailable:  that is a broken identity source, not an empty one.
         """
         if not os.path.isfile(str(db)):
@@ -7104,6 +7142,18 @@ class Daemon:
                 and sender_id_raw == operator_id
             ):
                 return True
+            # One writer (AFC-721):  only the Eavesdropper's registry service issues a
+            # letter.  An instance without one never answers a registration, so the
+            # message follows its normal wake path and nothing is written here.
+            service = getattr(self, "registry_service", None)
+            if service is None:
+                self.log.write(
+                    "operator-registration-answer",
+                    entry_id=parsed["entry_id"],
+                    status="refused",
+                    reason="no registry service on this instance",
+                )
+                return False
             message_id = message.get("id")
             recorded = None
             if done is not None and message_id is not None:
@@ -7211,8 +7261,8 @@ class Daemon:
                 entry_id=parsed["entry_id"],
                 location=parsed["location"],
                 registrations=lambda pf, sid: self._registrations(db, pf, sid),
-                register=lambda **identity: OR.register_session(
-                    db, source="chat-topic-answer", issuer=OR.ISSUER_OPERATOR, **identity
+                register=lambda **identity: service.operator_register(
+                    source="chat-topic-answer", **identity
                 ),
                 # Only the pinned owner's own answer attests an uncorroborated location;
                 # the seat bot's word needs discovery evidence (kody 4366047282).
@@ -8643,6 +8693,14 @@ class Daemon:
                 )
         for runner in self.seats.values():
             runner.flush_cursor()
+        sweeper = getattr(self, "registry_sweeper", None)
+        if sweeper is not None and sweeper.service is getattr(self, "registry_service", None):
+            try:
+                sweeper.maybe_run(now)
+            except Exception as exc:  # noqa: BLE001 - a sweep must never stop the router
+                self.log.write(
+                    "registry-sweep-error", error=self.scrub(type(exc).__name__ + ": " + str(exc))
+                )
         if now - self.last_tick["status"] >= STATUS_TICK_SECONDS:
             self.last_tick["status"] = now
             self.write_status()
