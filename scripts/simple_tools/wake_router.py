@@ -2,9 +2,22 @@
 
 The chain.  The listener captures a tagged message to the seat inbox and POSTs one signed
 simple-tools-wake/1 body to the platform's router.  The router picks the chat deterministically,
-asks the one consultant in the Operator only when the rules cannot decide, and then delivers and
-wakes the picked chat.  A platform supplies only how to wake one of its chats:  a `Platform` that
-names its seat, its mention and its `deliver` function.
+then delivers and wakes it.  A platform supplies only how to wake one of its chats:  a `Platform`
+that names its seat, its mention and its `deliver` function.
+
+The pick.  An addressed letter;  then a fragment of a session id, at least 8 hex characters, that
+identifies exactly one live chat;  then a Linear issue id from the topic or the excerpt, found in a
+chat's registry `issues` (newest `seen_at` first) or, for a record with no `issues`, in its title;
+then the topic's words in a chat's title;  then recency.  A tie within a step goes to the most
+recent of the tied chats.  An optional decider (`Consult`, off by default) may choose before
+recency.  Nobody is asked to clarify and an ambiguous wake is never held:  only `no-live-session`
+and an unreadable registry do not deliver.  The receiving chat is always told how it was linked
+(`Wake.link_note`), and for recency that the router is not sure the wake is meant for it.
+
+The sender is never the target.  A fleet post header carries the sender's own fragment, as in
+`[SEAT·4984a346: AA.4.S → OTHER]`.  So a leading header is not searched for a fragment, except the
+text after its arrow, which is an addressee, and no step picks a chat whose session id starts with
+the fragment in that header.
 
 Writing a platform's `deliver`.  It is one plain function:
 
@@ -12,9 +25,10 @@ Writing a platform's `deliver`.  It is one plain function:
 
 `target` is the picked chat (`session_id`, `letter`, `host`, `title`, `thread_link`, `generation`).
 `wake` is metadata only (`wake_id`, `message_id`, `channel`, `topic`, `zulip_link`, `sender`, `dm`,
-`letter`), and never holds the message body:  a platform's prompt names the thread and says to read it.  It
-runs on a worker thread, may take as long as it needs, and is never called twice at once for the
-same `session_id`.  It returns a `Delivery` whose `outcome` is one of:
+`letter`, `picked`, `reason`, `link_note`), and never holds the message body:  a platform's prompt
+names the thread, says to read it and includes `link_note` as it stands.  It runs on a worker
+thread, may take as long as it needs, and is never called twice at once for the same `session_id`.
+It returns a `Delivery` whose `outcome` is one of:
 
     sent         handed over, with no proof it was read;  set `ack` to "confirmed" if you have proof
     completed    the chat ran the wake to the end (a headless resume that exited 0)
@@ -55,15 +69,16 @@ chat until that one is settled;  it is not failed as busy.  A wake that still ca
 or is older than `max_age_seconds` when its turn comes, ends in a `dead` receipt, visible in the
 state directory and at GET /receipt/<id>, and its message is in the seat inbox regardless.
 
-The test flag.  A body with `"test": true` is answered at once with the pick and its reason (the
+The test flag.  A body with `"test": true` is answered at once with the whole pick and its note (the
 fields in `test_answer`), writes a receipt marked as a test and delivers nothing.  It never calls
-the consultant and never reserves its id.
+the decider and never reserves its id.
 
 The answers carry no `ok` field on purpose:  the listener reads a body with a boolean `ok` as the
 hosted Worker's settled outcome (adapters.routine_answer), which this is not.
 
-No message body is stored, logged or forwarded.  The excerpt is read for an addressed letter and
-then dropped;  Zulip-authored names pass the secret scanner before they are kept.
+No message body is stored, logged or forwarded.  The excerpt is read for an addressed letter, issue
+ids and session-id fragments, and then dropped:  only those validated tokens are kept.
+Zulip-authored names pass the secret scanner before they are kept.
 
 Python 3.11+, standard library only.
 """
@@ -72,6 +87,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import math
 import os
 import re
 import secrets
@@ -80,7 +96,8 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, fields, replace
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from re import Pattern
@@ -94,7 +111,22 @@ WAKE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{2,}")
 STOP_WORDS = frozenset(["the", "and", "for", "with", "from", "this", "that", "ops", "afc"])
 NAME_CHARS = 200
-QUESTION_CHARS = 500
+# A Linear issue id as the fleet writes it.  Its own pattern, because STOP_WORDS drops `ops` and
+# `afc` and the id must not depend on the topic's words.  The edges keep `P-BF-6` from reading as
+# `BF-6`.
+ISSUE_ID = r"[A-Z][A-Z0-9]{1,9}-[0-9]{1,7}"
+ISSUE_RE = re.compile(r"(?<![A-Za-z0-9_-])%s(?![A-Za-z0-9_-])" % ISSUE_ID)
+MAX_WAKE_ISSUES = 8
+MAX_ROW_ISSUES = 8
+# A piece of a session id:  lower-case hex, hyphens allowed where the id has them.
+FRAGMENT_RE = re.compile(r"(?<![0-9A-Za-z_-])[0-9a-f]+(?:-[0-9a-f]+)*(?![0-9A-Za-z_-])")
+FRAGMENT_MIN_HEX = 8
+FRAGMENT_MAX_CHARS = 36
+# A longer unbroken run of hex is a commit or a key, not a stated session id, and is not kept.
+FRAGMENT_MAX_PLAIN = 12
+MAX_FRAGMENTS = 8
+# The registry's times for a row, best first.  letter_history returns only `assigned_at` today.
+RECENCY_FIELDS = ("last_seen_at", "assigned_at")
 HISTORY_LIMIT = 200
 # Short enough that two reads fit inside the listener's default 15-second wait on a test wake.
 TEST_REGISTRY_TIMEOUT = 6
@@ -106,6 +138,24 @@ OUTCOMES = ("sent", "completed", "busy", "unreachable", "failed", "refused")
 INTERRUPTED = "interrupted-during-delivery"
 EXPIRED = "wake-expired"
 RELEASED = "target-released"
+# What the receiving chat is told, by pick reason.  Fixed sentences on purpose:  the only thing that
+# can vary is {issue}, and that has matched ISSUE_ID, so no Zulip text reaches a chat's prompt.
+UNSURE = "and the router is not sure this wake is meant for this chat."
+LINK_NOTES = {
+    "letter": "The router linked this wake to this chat because the sender addressed its letter.",
+    "session-id": "This wake was linked by session id.",
+    "linear-issue": "This wake was linked by Linear issue {issue}.",
+    "linear-issue-tie": "This wake was linked by Linear issue {issue}, "
+    "as the most recent of several chats on it.",
+    "topic-match": "The router linked this wake to this chat because its title matches the topic.",
+    "topic-tie": "The router linked this wake to this chat because its title matches the topic, "
+    "as the most recent of several equal matches.",
+    "consultant-pick": "The router's decider chose this chat for this wake, " + UNSURE,
+    "sole-live-chat": "The router could not link this wake to any chat and this is the only "
+    "live one, " + UNSURE,
+    "most-recent": "The router could not link this wake to any chat and this is the most "
+    "recent live one, " + UNSURE,
+}
 
 ROUTER_DEFAULTS: dict[str, Any] = {
     # Off until someone arms it:  with this false the router picks and receipts, and delivers nothing.
@@ -148,6 +198,14 @@ class Wake:
     sender: str = ""
     dm: bool = False
     letter: str = ""
+    # The router fills these three just before `deliver`;  they are empty until then.
+    picked: str = ""
+    reason: str = ""
+    link_note: str = ""
+    # Tokens read from the excerpt and validated.  The excerpt itself is never kept.
+    issue_ids: tuple[str, ...] = ()
+    session_fragments: tuple[str, ...] = ()
+    sender_fragment: str = ""
 
 
 @dataclass(frozen=True)
@@ -175,22 +233,21 @@ class Platform:
     stop_words: frozenset[str] = frozenset()
 
 
-#: The seam for the Operator's one consultant.  It receives the candidates and the wake's metadata
-#: and returns {"session_id": id} (a pick), {"question": text} (ask the sender) or None.  It decides;
-#: it never answers.  A missing consultant, a None or an exception holds the wake with a receipt.
+#: The seam for an optional decider, off by default.  It receives the candidates and the wake's
+#: metadata and returns {"session_id": id} or None.  A missing decider, a None, an exception or an
+#: id that is not a candidate all fall through to recency.
 Consult = Callable[[list[Target], Wake], Mapping[str, Any] | None]
 
 
 @dataclass(frozen=True)
 class Pick:
     target: Target | None = None
-    picked: str = ""  # letter | topic-match | most-recent | consultant | ""
+    picked: str = ""  # letter | linear-issue | topic-match | consultant | most-recent | ""
     reason: str = ""
     letter_live: bool = False
     retry: bool = False
-    undecided: str = ""  # topic-tie | ambiguous, when the rules could not decide
-    question: str = ""
     candidates: tuple[str, ...] = ()
+    link_note: str = ""
 
 
 def clean(value: object, limit: int = NAME_CHARS) -> str:
@@ -218,8 +275,51 @@ def letter_of(payload: Mapping[str, Any], mention: str) -> str:
     return found.group(1) if found else ""
 
 
+def link_note_ok(text: object) -> bool:
+    """Whether this is a sentence the router could have written."""
+    for note in LINK_NOTES.values():
+        pattern = re.escape(note).replace(re.escape("{issue}"), ISSUE_ID)
+        if isinstance(text, str) and re.fullmatch(pattern, text):
+            return True
+    return False
+
+
+def split_excerpt(excerpt: str) -> tuple[str, str]:
+    """(the sender's part of a leading post header, the text that may address a chat).  The
+    untrusted-text marker lines carry a nonce, so they are dropped.  Text after the header's arrow
+    names an addressee, so it stays with the body;  the rest of the header is the sender's."""
+    lines = [
+        line
+        for line in excerpt.split("\n")
+        if not line.startswith(("BEGIN_UNTRUSTED", "END_UNTRUSTED"))
+    ]
+    body = "\n".join(lines).lstrip()
+    header = re.match(r"(?:\U0001F440\s*)?\[([^\]\n]*)\]", body)
+    if header is None:
+        return "", body
+    sender, _, addressee = header.group(1).partition("→")
+    return sender, addressee + "\n" + body[header.end() :]
+
+
+def fragments_in(text: str) -> tuple[str, ...]:
+    """The tokens in this text shaped like part of a session id, bounded."""
+    found: dict[str, None] = {}
+    for token in FRAGMENT_RE.findall(text):
+        hex_chars = len(token.replace("-", ""))
+        if hex_chars < FRAGMENT_MIN_HEX or len(token) > FRAGMENT_MAX_CHARS:
+            continue
+        if ("-" not in token and hex_chars > FRAGMENT_MAX_PLAIN) or secretscan.scan(token):
+            continue
+        found[token] = None
+        if len(found) == MAX_FRAGMENTS:
+            break
+    return tuple(found)
+
+
 def wake_from_payload(payload: Mapping[str, Any], mention: str) -> Wake:
     message_id = payload.get("message_id")
+    excerpt = str(payload.get("excerpt") or "")
+    sender_part, addressing = split_excerpt(excerpt)
     return Wake(
         wake_id=str(payload.get("wake_id") or ""),
         seat=str(payload.get("seat") or ""),
@@ -230,6 +330,9 @@ def wake_from_payload(payload: Mapping[str, Any], mention: str) -> Wake:
         sender=clean(payload.get("sender_full_name")),
         dm=payload.get("dm") is True,
         letter=letter_of(payload, mention),
+        issue_ids=tuple(dict.fromkeys(ISSUE_RE.findall(excerpt)))[:MAX_WAKE_ISSUES],
+        session_fragments=fragments_in(addressing),
+        sender_fragment=next(iter(fragments_in(sender_part)), ""),
     )
 
 
@@ -379,10 +482,24 @@ class Router:
         return {w.lower() for w in WORD_RE.findall(text or "") if w.lower() not in stop}
 
     def pick(self, wake: Wake, *, consult: bool = True, timeout: int = REGISTRY_TIMEOUT) -> Pick:
-        """The rules, in order:  an addressed letter;  the one chat whose title best shares the
-        topic's words;  the only live chat.  A tie or several chats with no match go to the
-        consultant.  A registry that cannot be read asks for a retry:  it is not "no live chat"."""
+        """The rules, in order:  an addressed letter;  a session-id fragment;  a Linear issue;  the
+        chat whose title best shares the topic's words;  the optional decider;  recency.  A tie goes
+        to the most recent of the tied, and no step picks the sender's own chat.  A registry that
+        cannot be read asks for a retry:  it is not "no live chat"."""
         letter_live = False
+
+        def chosen(
+            target: Target, picked: str, reason: str, among: Any = (), issue: str = ""
+        ) -> Pick:
+            return Pick(
+                target=target,
+                picked=picked,
+                reason=reason,
+                letter_live=letter_live,
+                candidates=tuple(t.letter for t in among),
+                link_note=LINK_NOTES[reason].format(issue=issue),
+            )
+
         if wake.letter:
             answer = registry_api.call(
                 self.env,
@@ -396,9 +513,11 @@ class Router:
             target = self._valid(answer) if live else None
             if target is not None:
                 letter_live = True
-                if target.session_id in self._excluded([target]):
-                    return Pick(reason="letter-target-excluded", letter_live=True)
-                return Pick(target=target, picked="letter", reason="letter", letter_live=True)
+                # An excluded chat is not a place a wake can go, so the chain carries on without it.
+                if target.session_id not in self._excluded([target]) and not _is_sender(
+                    target, wake
+                ):
+                    return chosen(target, "letter", "letter")
         answer = registry_api.call(
             self.env,
             "history",
@@ -408,6 +527,8 @@ class Router:
         if "error" in answer:
             return Pick(reason="registry-unavailable", retry=True)
         live: dict[str, Target] = {}
+        seen: dict[str, float | None] = {}
+        row_issues: dict[str, list[tuple[str, float | None]]] = {}
         for row in answer.get("items") or []:
             if not isinstance(row, dict):
                 continue
@@ -416,52 +537,88 @@ class Router:
             target = self._valid(row)
             if target is not None and target.session_id not in live:
                 live[target.session_id] = target
+                seen[target.session_id] = _row_time(row)
+                row_issues[target.session_id] = _issues_of(row)
         excluded = self._excluded(list(live.values()))
-        candidates = [t for sid, t in live.items() if sid not in excluded]
+        candidates = [
+            t for sid, t in live.items() if sid not in excluded and not _is_sender(t, wake)
+        ]
+        if not candidates:
+            return Pick(reason="no-live-session", letter_live=letter_live)
+
+        named = _named_session(wake, live)
+        target = next((t for t in candidates if t.session_id == named), None)
+        if target is not None:
+            return chosen(target, "session-id", "session-id")
+
+        wanted = list(dict.fromkeys(ISSUE_RE.findall(wake.topic) + list(wake.issue_ids)))
+        linked = self._on_issue(candidates, wanted, row_issues, seen)
+        if linked is not None:
+            target, issue, among = linked
+            reason = "linear-issue-tie" if len(among) > 1 else "linear-issue"
+            return chosen(target, "linear-issue", reason, among if len(among) > 1 else (), issue)
+
         topic_words = self._words(wake.topic)
         scored = [(len(topic_words & self._words(t.title)), t) for t in candidates]
-        best = max((score for score, _ in scored), default=0)
+        best = max(score for score, _ in scored)
         if best > 0:
             top = [t for score, t in scored if score == best]
             if len(top) == 1:
-                return Pick(target=top[0], picked="topic-match", reason="topic-match")
-            return self._ask(top, wake, "topic-tie", consult)
+                return chosen(top[0], "topic-match", "topic-match")
+            return chosen(_most_recent(top, seen), "topic-match", "topic-tie", top)
+
         if len(candidates) == 1:
-            return Pick(target=candidates[0], picked="most-recent", reason="sole-live-chat")
-        if not candidates:
-            return Pick(reason="no-live-session", letter_live=letter_live)
-        return self._ask(candidates, wake, "ambiguous", consult)
+            return chosen(candidates[0], "most-recent", "sole-live-chat")
+        decided = self._decide(candidates, wake) if consult else None
+        if decided is not None:
+            return chosen(decided, "consultant", "consultant-pick", candidates)
+        return chosen(_most_recent(candidates, seen), "most-recent", "most-recent", candidates)
 
-    def _ask(self, candidates: list[Target], wake: Wake, why: str, consult: bool) -> Pick:
-        letters = tuple(t.letter for t in candidates)
+    @staticmethod
+    def _on_issue(
+        candidates: list[Target],
+        wanted: list[str],
+        row_issues: Mapping[str, list[tuple[str, float | None]]],
+        seen: Mapping[str, float | None],
+    ) -> tuple[Target, str, list[Target]] | None:
+        """The chat linked by one of these issue ids, the id, and all the chats that matched.  The
+        registry's `issues` come first, newest `seen_at` first.  A chat's title is the fallback, and
+        only for a record that has no `issues`."""
+        if not wanted:
+            return None
+        newest: dict[str, tuple[float | None, str]] = {}
+        for target in candidates:
+            hits = [(when, i) for i, when in row_issues[target.session_id] if i in wanted]
+            if hits:
+                newest[target.session_id] = max(hits, key=lambda h: (h[0] or 0.0, h[1]))
+        if newest:
+            among = [t for t in candidates if t.session_id in newest]
+            best = _most_recent(among, {sid: hit[0] for sid, hit in newest.items()})
+            return best, newest[best.session_id][1], among
+        titled = {}
+        for target in candidates:
+            in_title = set(ISSUE_RE.findall(target.title))
+            issue = next((i for i in wanted if i in in_title), "")
+            if issue and not row_issues[target.session_id]:
+                titled[target.session_id] = issue
+        if not titled:
+            return None
+        among = [t for t in candidates if t.session_id in titled]
+        best = _most_recent(among, seen)
+        return best, titled[best.session_id], among
 
-        def hold(reason: str, question: str = "") -> Pick:
-            return Pick(reason=reason, undecided=why, question=question, candidates=letters)
-
-        if not consult:
-            return hold("needs-consultant")
+    def _decide(self, candidates: list[Target], wake: Wake) -> Target | None:
+        """The optional decider's choice, or None for anything but one of these candidates."""
         if self.consult is None:
-            return hold("consultant-missing")
+            return None
         try:
             answer = self.consult(list(candidates), wake)
-        except Exception:  # noqa: BLE001 - an Operator failure holds the wake, never crashes a worker
-            return hold("consultant-unavailable")
+        except Exception as exc:  # noqa: BLE001 - a decider's failure only means recency decides
+            self._log("consultant-error-%s" % type(exc).__name__, wake.wake_id)
+            return None
         if not isinstance(answer, Mapping):
-            return hold("consultant-none")
-        sid = answer.get("session_id")
-        if sid:
-            for target in candidates:
-                if target.session_id == sid:
-                    return Pick(
-                        target=target,
-                        picked="consultant",
-                        reason="consultant-pick",
-                        undecided=why,
-                        candidates=letters,
-                    )
-            return hold("consultant-invalid")
-        question = clean(answer.get("question"), QUESTION_CHARS)
-        return hold("consultant-asked", question) if question else hold("consultant-none")
+            return None
+        return next((t for t in candidates if t.session_id == answer.get("session_id")), None)
 
     # ---- accepting --------------------------------------------------------------------------
 
@@ -509,8 +666,8 @@ class Router:
 
     def test_answer(self, wake: Wake) -> dict[str, Any]:
         """A test wake's answer:  `test`, `wake_id`, `receipt_id`, `picked`, `picked_letter`,
-        `picked_generation`, `session_id`, `reason`, `delivered`.  It delivers nothing and reserves
-        nothing."""
+        `picked_generation`, `session_id`, `reason`, `candidates`, `link_note`, `delivered`.  It
+        delivers nothing and reserves nothing."""
         pick = self.pick(wake, consult=False, timeout=TEST_REGISTRY_TIMEOUT)
         answer = self._receipt(
             {"wake": asdict(wake), "receipt_id": secrets.token_hex(8), "attempts": 0},
@@ -728,8 +885,9 @@ class Router:
                 waiting = Delivery("busy", code="in-flight-mark-failed")
                 self._retry(entry, counted=False, code=waiting.code, pick=pick, result=waiting)
                 return
+            told = replace(wake, picked=pick.picked, reason=pick.reason, link_note=pick.link_note)
             try:
-                result = self.platform.deliver(pick.target, wake)
+                result = self.platform.deliver(pick.target, told)
             except Exception as exc:  # noqa: BLE001 - a platform's failure is a failed try
                 result = Delivery("failed", code="deliver-error-%s" % type(exc).__name__)
             self._settle(entry, pick, result)
@@ -862,9 +1020,8 @@ class Router:
             "host": target.host if target else "",
             "thread_link": target.thread_link if target else "",
             "reason": pick.reason,
-            "undecided": pick.undecided,
             "candidates": list(pick.candidates),
-            "question": pick.question,
+            "link_note": pick.link_note,
             "delivered": delivered,
             "route": result.route if result else "",
             "ack": result.ack if result else "",
@@ -973,11 +1130,84 @@ def _loadable(entry: object, wake_id: str) -> bool:
 
 
 def _pick_from(record: Mapping[str, Any]) -> Pick:
-    fields = dict(record)
-    target = fields.get("target")
-    fields["target"] = Target(**target) if target else None
-    fields["candidates"] = tuple(fields.get("candidates") or ())
-    return Pick(**fields)
+    known = {field.name for field in fields(Pick)}  # a file from an older router may have more
+    values = {name: value for name, value in dict(record).items() if name in known}
+    target = values.get("target")
+    values["target"] = Target(**target) if target else None
+    values["candidates"] = tuple(values.get("candidates") or ())
+    return Pick(**values)
+
+
+def _instant(value: object) -> float | None:
+    """A registry time as epoch seconds, or None if it is not one.  Numbers, numeric strings and
+    ISO strings with or without `Z` all occur;  a naive ISO string is UTC."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    except ValueError:
+        text = str(value).strip()
+        try:
+            parsed = datetime.fromisoformat(text[:-1] + "+00:00" if text[-1:] in "Zz" else text)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+        except (ValueError, OverflowError, OSError):
+            return None
+    if not math.isfinite(number) or number <= 0:
+        return None
+    return number / 1000 if number >= 1e11 else number  # milliseconds, from a JavaScript writer
+
+
+def _is_sender(target: Target, wake: Wake) -> bool:
+    return bool(wake.sender_fragment) and target.session_id.startswith(wake.sender_fragment)
+
+
+def _named_session(wake: Wake, live: Mapping[str, Target]) -> str:
+    """The one live chat the wake's session-id fragments name, or "".  A fragment that fits several
+    chats names none, two fragments that name different chats name none, and the sender's own chat
+    is never the one named."""
+    named: set[str] = set()
+    for fragment in wake.session_fragments:
+        bare = fragment.replace("-", "")
+        fits = [sid for sid in live if bare in sid.replace("-", "")]
+        if len(fits) == 1 and not _is_sender(live[fits[0]], wake):
+            named.add(fits[0])
+    return named.pop() if len(named) == 1 else ""
+
+
+def _issues_of(row: Mapping[str, Any]) -> list[tuple[str, float | None]]:
+    """A registry record's `issues`, as (id, seen_at).  A record may have none, and a malformed
+    item is skipped."""
+    value = row.get("issues")
+    if not isinstance(value, list):
+        return []
+    found: list[tuple[str, float | None]] = []
+    for item in value[:MAX_ROW_ISSUES]:
+        issue = item.get("id") if isinstance(item, Mapping) else None
+        if isinstance(issue, str) and ISSUE_RE.fullmatch(issue):
+            found.append((issue, _instant(item.get("seen_at"))))
+    return found
+
+
+def _row_time(row: Mapping[str, Any]) -> float | None:
+    for name in RECENCY_FIELDS:
+        found = _instant(row.get(name))
+        if found is not None:
+            return found
+    return None
+
+
+def _most_recent(targets: list[Target], seen: Mapping[str, float | None]) -> Target:
+    """The newest of these chats.  One with no usable time sorts last;  the id breaks a tie."""
+
+    def key(target: Target) -> tuple[bool, float, str]:
+        when = seen.get(target.session_id)
+        return when is None, -(when or 0.0), target.session_id
+
+    return min(targets, key=key)
 
 
 def make_handler(router: Router) -> type[BaseHTTPRequestHandler]:

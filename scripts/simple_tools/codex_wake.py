@@ -64,7 +64,7 @@ def cleaned_routing_metadata(wake: WR.Wake) -> dict[str, str] | None:
         if not isinstance(value, str):
             return None
         value = WR.clean(value, limit)
-        if not value:
+        if not value or (name == "link_note" and not WR.link_note_ok(value)):
             return None
         cleaned[name] = value
     return cleaned

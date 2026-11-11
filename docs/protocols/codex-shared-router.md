@@ -32,7 +32,9 @@ simple-chat wake-acceptance --help
 
 The router binds to loopback by default.  Its existing shared defaults leave delivery disabled.  The local state is under `~/.local/state/codex-wake`; `CODEX_WAKE_STATE` chooses its parent directory, `CODEX_WAKE_CONFIG` selects the config file and `CODEX_WAKE_KEY_FILE` selects the protected routine-key file.  The routine signing key is supplied through the fleet's scoped secret delivery path and must never be put in argv, logs or source.  Live activation still needs the reviewed runtime, the listener routine binding and the process inventory entry.
 
-The service uses the shared registry API environment and router.  An ambiguous target remains held while the Operator consultant seam is unavailable.  No additional per-platform model is introduced.
+The service uses the shared registry API environment and router.  Selection tries letters, a unique session-id fragment, Linear issues, topic words and then recency.  The optional consultant is off by default; its absence falls through to recency.  The Operator sends no questions or replies.
+
+Every delivered prompt carries the router's `picked`, `reason` and validated `link_note`, together with the exact session, letter and generation.  A recency note tells the receiving chat that the router is unsure the wake is meant for it.  Recency uses registry `last_seen_at`, falling back to `assigned_at` while the activity field is absent; that fallback reflects assignment order rather than actual recent activity.
 
 ## End-To-End Acceptance
 
@@ -56,6 +58,6 @@ The file-only LaunchAgent template is `scripts/launchd/com.jay.codex-wake-router
 
 The runtime sync helper preserves the existing listener restart and sends SIGTERM to an already-loaded Codex router when shared runtime code changes.  It never loads or starts an absent Codex job.  The router settles running deliveries and keeps its durable state; launchd's KeepAlive starts the next process with the updated runtime.  The live sync helper is a regular deployed copy outside the checkout, so installing the router also requires deploying the reviewed sync-helper update.
 
-Before activation, register the new router as Always-on in the Mac process inventory and refresh its Background Jobs Master List note.  Confirm the exact installed runtime head, the updated sync-helper copy, scoped registry environment, approved Infisical settings and key delivery, and the shared consultant contract.  An absent consultant continues to hold ambiguous wakes.
+Before activation, register the new router as Always-on in the Mac process inventory and refresh its Background Jobs Master List note.  Confirm the exact installed runtime head, the updated sync-helper copy, scoped registry environment, approved Infisical settings and key delivery.  The listener binding uses `CODEX_ROUTINE_URL` and `CODEX_ROUTINE_KEY` in Fleet-OPS `/zulip`; the listener owner provisions them after this adapter lands.  Shared router settings still need the authoritative fleet-knobs loader before activation; local config alone is insufficient for deployed knobs.
 
 This source change does not itself establish activation.  Record the deployed head, listener routine, one real peer mention, final receipt and target-chat observation under AFC-694 before marking Codex delivery functioning.  Claude DD owns authoritative Codex archive release separately, and Claude CC owns registry-touch title reconciliation.
