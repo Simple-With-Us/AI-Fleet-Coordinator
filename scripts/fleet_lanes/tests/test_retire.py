@@ -492,6 +492,7 @@ class AllowlistTests(unittest.TestCase):
                 "--json",
             ],
             ["git", "rev-parse", "--verify", "-q", "HEAD^{tree}"],
+            ["git", "rev-parse", "--verify", "-q", "refs/remotes/origin/main^{commit}"],
             ["git", "rev-parse", "--verify", "-q", self.SHA + "^{tree}"],
             ["git", "rev-list", "--max-count=100", "--format=%T", "refs/remotes/origin/main"],
             [
@@ -1673,6 +1674,45 @@ class RetireTests(WorldCase):
         res = self.w.run("retire", "busywork")
         self.assertEqual(res.rc, 64)
         self.assertIn("on no remote ref", res.err)
+        self.assertTrue(lane.exists())
+
+    # --- AFC-696: the relay refuses or is unreachable, so only the lane's own git state can vouch
+
+    @staticmethod
+    def _relay_down(a: list[str]) -> D.CmdResult | None:
+        return D.CmdResult(1, "", "relay_refused seat_policy") if a[0] == "simple-git" else None
+
+    def test_relay_refused_and_a_zero_work_lane_retires_on_local_evidence(self) -> None:
+        lane = self.w.new_lane("zerowork")
+        res = self.w.run("retire", "zerowork", override=self._relay_down)
+        self.assertEqual(res.rc, 0, res.err)
+        self.assertFalse(lane.exists())
+        self.assertIn("relay PR lookup unavailable; local evidence", res.err)
+        self.assertIn("zero diff", res.err)
+
+    def test_relay_refused_and_work_already_on_main_retires_naming_the_evidence(self) -> None:
+        lane = self.w.new_lane("landedloc")
+        self.w.commit(lane)
+        tree = self.w.trees["DealDex"]
+        (tree / "claude-landedloc.txt").write_text("claude-landedloc.txt\n", encoding="utf-8")
+        self.w.git(["add", "claude-landedloc.txt"], tree)
+        self.w.git(["commit", "-q", "-m", "squash"], tree)
+        (tree / "later.txt").write_text("later\n", encoding="utf-8")
+        self.w.git(["add", "later.txt"], tree)
+        self.w.git(["commit", "-q", "-m", "moved on"], tree)
+        self.w.git(["push", "-q", "origin", "main"], tree)
+        self.w.git(["fetch", "-q", "origin"], lane)
+        res = self.w.run("retire", "landedloc", override=self._relay_down)
+        self.assertEqual(res.rc, 0, res.err)
+        self.assertFalse(lane.exists())
+        self.assertIn("byte-identical on origin/main", res.err)
+
+    def test_relay_refused_and_unmerged_work_refuses(self) -> None:
+        lane = self.w.new_lane("realwork")
+        self.w.commit(lane)
+        res = self.w.run("retire", "realwork", override=self._relay_down)
+        self.assertEqual(res.rc, 69)
+        self.assertIn("PR lookup failed (relay)", res.err)
         self.assertTrue(lane.exists())
 
     def test_retire_refuses_another_seats_lane_and_unknown_or_ambiguous_slugs(

@@ -58,6 +58,10 @@ Every git, simple-git and lsof call goes through `Runner`, whose allowlist is `c
 separate list from `lane new`'s, which still refuses every remove).  PR state comes from the seat's own
 relay:  paged `gr_wf_pr_list_page` calls through the seat's `simple-git` (state all), plus a `--head`-style
 page only for a lane the bulk pages could not place.  No gh and no owner credential is involved (AFC-647).
+When the relay refuses or cannot be reached, a lane (never a review checkout) is retired only on local proof
+(AFC-696): no net change against its merge base with origin/<default>, every path it changed byte-identical at
+origin/<default>'s tip, or HEAD's tree equal to a recent origin/<default> commit.  The reason names the
+evidence used; anything else keeps failing closed ("PR lookup failed (relay)", exit 69).
 
 Exit codes: 0 ok (some lanes may be kept: read the table), 64 usage or refusal (`lane retire` of a lane that is
 not removable is a refusal), 69 git, relay or lsof failed, or a removal failed.
@@ -169,7 +173,11 @@ def _git_key(
                 break
         if rev == "HEAD" or _SHA.match(rev):
             return "git"
-        if a[3].endswith("^{tree}") and rev.startswith("refs/remotes/origin/") and K.valid_ref_name(rev):
+        if (
+            a[3].endswith(("^{tree}", "^{commit}"))
+            and rev.startswith("refs/remotes/origin/")
+            and K.valid_ref_name(rev)
+        ):
             return "git"
         m = _ORIGIN_BLOB.match(a[3])
         return (
@@ -296,7 +304,7 @@ def check_allowed(
     branch -d <ref> (never -D) | status --porcelain --ignored --untracked-files=normal | rev-list --count HEAD
     --not <sha> | rev-list --count --ignore-missing HEAD --not <sha>... | rev-list --max-count=100
     --format=%T refs/remotes/origin/<ref> | rev-parse (--absolute-git-dir | --git-common-dir | --show-toplevel | --verify -q
-    HEAD-or-sha[^{commit}|^{tree}]) | config --get (remote.origin.url | branch.<ref>.merge | branch.<ref>.remote) | merge-base
+    HEAD-or-sha[^{commit}|^{tree}] or refs/remotes/origin/<ref>[^{commit}|^{tree}]) | config --get (remote.origin.url | branch.<ref>.merge | branch.<ref>.remote) | merge-base
     --is-ancestor HEAD refs/remotes/origin/<ref> | merge-base HEAD refs/remotes/origin/<ref> | diff --name-only -z
     --no-renames <sha> HEAD | rev-list --max-count=50 <sha> --not refs/remotes/origin/<ref> | symbolic-ref -q --short
     refs/remotes/origin/HEAD | ls-remote --heads origin | fetch --no-tags --no-write-fetch-head --no-recurse-submodules
@@ -380,6 +388,9 @@ class PrView:
     # a MERGED or CLOSED PR that used this branch name but whose head does not hold HEAD (a reused slug, or new
     # commits after the merge): it is not evidence that this lane's work is done
     stale_number: int | None = None
+    # Set only when the relay PR lookup was refused or unreachable and the lane's own git state proved its
+    # work is already on origin/<default> (see _local_evidence).  It names which evidence was used.
+    local_evidence: str = ""
 
 
 @dataclass
@@ -473,6 +484,8 @@ def decide(f: Facts, *, prune: bool) -> tuple[str, str]:
     if f.kind == "review":
         done.append(f"review checkout, PR {(f.pr.review_state or 'unknown').lower()}")
     else:
+        if f.pr.local_evidence:
+            done.append("relay PR lookup unavailable; local evidence: " + f.pr.local_evidence)
         if f.pr.done_number is not None:
             done.append(f"PR #{f.pr.done_number} {f.pr.done_state.lower()}")
         if f.upstream_gone:
@@ -507,7 +520,9 @@ def decide(f: Facts, *, prune: bool) -> tuple[str, str]:
                 f"no commits of its own and never pushed; kept until idle {EMPTY_LANE_HOURS}h",
             )
     safe = (
-        f"HEAD's tree is on origin/{f.default_branch} (squash-merged)"
+        "no PR evidence needed"
+        if f.pr.local_evidence
+        else f"HEAD's tree is on origin/{f.default_branch} (squash-merged)"
         if f.pr.tree_landed
         else f"every path the lane changed is byte-identical in a commit of PR #{f.pr.done_number}"
         if f.pr.content_landed
@@ -971,6 +986,41 @@ def _pr_content_landed(
     return False
 
 
+def _local_evidence(run: Runner, path: str, default_branch: str) -> str | None:
+    """Proof, from the lane's own git state alone, that retiring it loses no work; None when there is none.
+
+    Used only when the relay PR lookup is refused or unreachable (AFC-696), so retire no longer depends on the
+    relay for a lane with nothing left to lose.  Three signs, each answering None on any failed read (fail
+    closed):  the lane has no net change against its merge base with origin/<default> (zero work);  every path
+    it changed is byte-identical at origin/<default>'s tip (the work landed, however it was merged);  or
+    HEAD's tree is the tree of a recent origin/<default> commit (a squash merge).  Nothing here asks GitHub, so
+    it never knows about an open PR, and it does not need to: an open PR holds no work this lane lacks.
+    Compared against the local refs/remotes/origin/<default>, which this tool never fetches; a stale ref can
+    only hide landed work (keep), never invent it."""
+    base_ref = f"refs/remotes/origin/{default_branch}"
+    mb = run(["git", "merge-base", "HEAD", base_ref], cwd=path)
+    base = mb.out.strip() if mb.ok else ""
+    if not _SHA.match(base):
+        return None
+    mine = _paths_differing(run, path, base)
+    if mine is None:
+        return None
+    if not mine:
+        return f"no change of its own against origin/{default_branch} (zero diff)"
+    tip = run(["git", "rev-parse", "--verify", "-q", f"{base_ref}^{{commit}}"], cwd=path)
+    tip_oid = tip.out.strip() if tip.ok else ""
+    if _SHA.match(tip_oid):
+        differ = _paths_differing(run, path, tip_oid)
+        if differ is not None and not (mine & differ):
+            return (
+                f"all {len(mine)} path{'s' if len(mine) != 1 else ''} the lane changed are "
+                f"byte-identical on origin/{default_branch}"
+            )
+    if _tree_landed(run, path, default_branch):
+        return f"HEAD's tree is on origin/{default_branch} (squash-merged)"
+    return None
+
+
 def _pr_view(
     run: Runner,
     lane: _Lane,
@@ -1027,6 +1077,12 @@ def _pr_view(
             found_any = True
             cands.extend(matches(more))
         if not found_any:
+            # The relay refused or was unreachable.  A lane (not a review checkout) whose own git state proves
+            # nothing is left to lose may still go; anything else keeps failing closed.
+            if lane.kind == "lane":
+                ev = _local_evidence(run, rec.path, default_branch)
+                if ev:
+                    return PrView(found=True, covers_head=True, local_evidence=ev)
             return PrView(found=False)
     view = PrView(found=True)
     opens = [p for p in cands if p.get("state") == "OPEN"]
