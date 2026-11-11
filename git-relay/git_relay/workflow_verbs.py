@@ -179,6 +179,7 @@ SPECS = {
     "wf_labels_set": ({"issues": "write"}, True),
     "wf_reviewers_request": ({"pull_requests": "write"}, True),
     "wf_reviewers_remove": ({"pull_requests": "write"}, True),
+    "wf_release_notes_preview": ({"contents": "write"}, True),
     "wf_release_create": ({"contents": "write"}, True),
     "wf_release_update": ({"contents": "write"}, True),
     "wf_environments": ({"actions": "read"}, False),
@@ -187,8 +188,10 @@ SPECS = {
     "wf_issue_list": ({"issues": "read"}, False),
     "wf_issue_get": ({"issues": "read"}, False),
     "wf_issue_create": ({"issues": "write"}, True),
+    "wf_issue_milestone_set": ({"issues": "write"}, True),
     "wf_issue_update": ({"issues": "write"}, True),
     "wf_issue_comment": ({"issues": "write"}, True),
+    "wf_issue_state_set": ({"issues": "write"}, True),
     "wf_issue_comment_update": ({"issues": "write"}, True),
     "wf_issue_comment_delete": ({"issues": "write"}, True),
     "wf_review_comment_update": ({"pull_requests": "write"}, True),
@@ -1906,6 +1909,66 @@ class WorkflowVerbs:
             raise
         return self._issue_summary(data)
 
+    def wf_issue_milestone_set(self, repo, args):
+        """Set/remove an issue milestone only after exact issue and milestone pre-reads."""
+        _only(args, ("repo", "number", "milestone_number"))
+        number = _int(args, "number")
+        value = _int(args, "milestone_number", 0, 1000000000000)
+        milestone = None if value == 0 else value
+        try:
+            issue = self._get(f"/repos/{repo}/issues/{number}")
+            if (
+                not isinstance(issue, dict)
+                or "pull_request" in issue
+                or type(issue.get("number")) is not int
+                or issue["number"] != number
+                or type(issue.get("id")) is not int
+                or issue["id"] <= 0
+            ):
+                raise Refused("exact issue identity not matched")
+            if milestone is not None:
+                target = self._get(f"/repos/{repo}/milestones/{milestone}")
+                if (
+                    not isinstance(target, dict)
+                    or type(target.get("number")) is not int
+                    or target["number"] != milestone
+                    or type(target.get("id")) is not int
+                    or target["id"] <= 0
+                ):
+                    raise Refused("exact milestone identity not matched")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "milestone pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        result = self.client._call(
+            "PATCH", f"/repos/{repo}/issues/{number}", {"milestone": milestone}, bearer=self.bearer
+        )
+        if (
+            not isinstance(result, dict)
+            or "pull_request" in result
+            or type(result.get("number")) is not int
+            or result["number"] != number
+            or type(result.get("id")) is not int
+            or result["id"] != issue["id"]
+            or "milestone" not in result
+        ):
+            raise RelayGitHubError(502, "issue milestone receipt unverifiable")
+        actual = result["milestone"]
+        if milestone is None:
+            if actual is not None:
+                raise RelayGitHubError(502, "milestone removal receipt unverifiable")
+        elif (
+            not isinstance(actual, dict)
+            or type(actual.get("number")) is not int
+            or actual["number"] != milestone
+            or type(actual.get("id")) is not int
+            or actual["id"] != target["id"]
+        ):
+            raise RelayGitHubError(502, "milestone assignment receipt unverifiable")
+        return {"issue_number": number, "milestone_number": milestone}
+
     def wf_issue_update(self, repo, args):
         _only(args, ("repo", "number", "title", "body", "state"))
         number = _int(args, "number")
@@ -1933,6 +1996,56 @@ class WorkflowVerbs:
         except (Refused, KeyError, TypeError) as exc:
             raise WriteOutcomeUnknown("issue write outcome unverifiable") from exc
         return {"issue": summary}
+
+    def wf_issue_state_set(self, repo, args):
+        """Set issue lifecycle state/reason with a closed, correlated numeric receipt."""
+        _only(args, ("repo", "number", "state", "reason"))
+        number = _int(args, "number")
+        state = _enum(args, "state", ("open", "closed"))
+        reason = _enum(args, "reason", ("completed", "not_planned", "duplicate", "reopened"))
+        if (state == "open") != (reason == "reopened"):
+            raise Refused("issue state/reason mismatch")
+        try:
+            issue = self._get(f"/repos/{repo}/issues/{number}")
+            if (
+                not isinstance(issue, dict)
+                or "pull_request" in issue
+                or type(issue.get("number")) is not int
+                or issue["number"] != number
+                or type(issue.get("id")) is not int
+                or issue["id"] <= 0
+                or issue.get("state") not in ("open", "closed")
+            ):
+                raise Refused("exact issue identity not matched")
+            if issue["state"] == state:
+                # An issue that was never closed carries a null state_reason, and
+                # "reopened" is the only reason open accepts, so an open issue
+                # already satisfies the request whatever its stored reason is.
+                if state != "open" and issue.get("state_reason") != reason:
+                    raise Refused("provider ignores state_reason unless state changes")
+                return {"issue_number": number, "state": state, "reason": reason}
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable("issue pre-read unavailable; no write attempted") from None
+            raise
+        result = self.client._call(
+            "PATCH",
+            f"/repos/{repo}/issues/{number}",
+            {"state": state, "state_reason": reason},
+            bearer=self.bearer,
+        )
+        if (
+            not isinstance(result, dict)
+            or "pull_request" in result
+            or type(result.get("number")) is not int
+            or result["number"] != number
+            or type(result.get("id")) is not int
+            or result["id"] != issue["id"]
+            or result.get("state") != state
+            or result.get("state_reason") != reason
+        ):
+            raise RelayGitHubError(502, "issue state receipt unverifiable")
+        return {"issue_number": number, "state": state, "reason": reason}
 
     def wf_issue_comment(self, repo, args):
         _only(args, ("repo", "number", "body"))
@@ -3549,6 +3662,47 @@ class WorkflowVerbs:
         if requested & observed:
             raise RelayGitHubError(502, "reviewer receipt membership unverifiable")
         return {"result": result}
+
+    def wf_release_notes_preview(self, repo, args):
+        """GitHub generates text only: no tag or release is saved by this endpoint."""
+        _only(args, ("repo", "tag", "target_sha", "previous_tag"))
+        tag, previous = _ref(args, "tag"), _ref(args, "previous_tag")
+        target = _sha(args, "target_sha")
+        if (
+            tag == previous
+            or tag.startswith("refs/")
+            or previous.startswith("refs/")
+            or find_secret(tag)
+            or find_secret(previous)
+        ):
+            raise Refused("invalid release notes range")
+        value = self.client._call(
+            "POST",
+            f"/repos/{repo}/releases/generate-notes",
+            {"tag_name": tag, "target_commitish": target, "previous_tag_name": previous},
+            bearer=self.bearer,
+        )
+        if not isinstance(value, dict):
+            raise RelayGitHubError(502, "release notes preview unverifiable")
+
+        def text(key, limit):
+            value_text = value.get(key)
+            if not isinstance(value_text, str) or "\x00" in value_text:
+                raise RelayGitHubError(502, "release notes preview unverifiable")
+            try:
+                raw = value_text.encode("utf-8")
+            except UnicodeEncodeError:
+                raise RelayGitHubError(502, "release notes preview unverifiable") from None
+            if len(raw) > limit:
+                raise Refused("release notes preview exceeds supported size")
+            if find_secret(value_text) or re.search(
+                r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
+                value_text,
+            ):
+                raise Refused("credential-shaped release notes withheld")
+            return value_text
+
+        return {"preview": {"name": text("name", 500), "body": text("body", 32768)}, "saved": False}
 
     def wf_release_create(self, repo, args):
         _only(

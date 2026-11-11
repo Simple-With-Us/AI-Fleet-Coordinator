@@ -77,12 +77,13 @@ class AppTokenError(Exception):
 # transient lookup or an upstream mint glitch.  Matched on the fixed prefixes
 # AppTokenError uses.  The HTTP answer is the closed reason, never this text.
 # A missing, suspended or mismatched installation is not here:  the id and key are
-# fine and adding them again would not help, so it stays a 503 that says so.
+# fine and adding them again would not help, so it stays a 503 that says so.  A
+# slug or repo that fails the shape check ("invalid installation lookup") is not a
+# credential problem either.
 _NO_APP_CREDENTIAL_EXACT = frozenset(
     {
         "app key belongs to a different app",
         "own App identity unverifiable",
-        "invalid installation lookup",
     }
 )
 

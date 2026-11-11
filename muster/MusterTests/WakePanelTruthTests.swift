@@ -20,35 +20,35 @@ final class OperatorVoiceStaleNotTriedTests: XCTestCase {
 }
 
 /// The wake panel tells the truth:  a status it could not read is not a stopped eavesdropper, an old
-/// status is not current, each seat's model and pin are judged by its own runtime, a ledger it could
-/// not read is not zero use, edits survive a read, and a test wake's answer is kept for the owner
-/// to read before pinning.
+/// status is not current, a seat Wakes or Captures Only by its routine table alone, a ledger it
+/// could not read is not zero use, and edits survive a read.
 final class WakePanelTruthTests: XCTestCase {
     // MARK: Fixtures
 
+    /// MM holds its routine inline, CLAUDE under its own header, OLD keeps a wake line left over
+    /// from the old wake types and no routine, and QUIET has neither.
     private let config = """
     [daemon]
     host_wake_load_per_core = 0
 
     [seat.MM]
     bot = "MM"
-    wake = "muse"
-    model = "muse-spark-1.3-contributor"
-    fallback = "mcode"
+    wake = "http"
+    routine = { url_env = "MM_ROUTINE_URL", key_env = "MM_ROUTINE_KEY" }
     budget = { wakes_per_hour = 5, wakes_per_day = 80 }
 
     [seat.CLAUDE]
     bot = "CLAUDE"
-    wake = "claude"
-    model = "sonnet"
-    fallback = "mcode"
+    wake = "http"
 
-    [seat.ROUTER]
-    bot = "ROUTER"
+    [seat.CLAUDE.routine]
+    url_env = "CLAUDE_ROUTINE_URL"
+    key_env = "CLAUDE_ROUTINE_KEY"
+
+    [seat.OLD]
+    bot = "OLD"
     wake = "openrouter"
     model = "openai/gpt-5"
-    fallback = "openrouter"
-    fallback_model = "anthropic/claude-sonnet-4"
 
     [seat.QUIET]
     bot = "QUIET"
@@ -56,21 +56,20 @@ final class WakePanelTruthTests: XCTestCase {
     """
 
     private let partition = ListenerPartition(seats: [
-        "MM": "mac", "CLAUDE": "mac", "ROUTER": "mac", "QUIET": "mac", "MA": "server",
+        "MM": "mac", "CLAUDE": "mac", "OLD": "mac", "QUIET": "mac", "MA": "server",
     ])
 
     private func status(_ json: String) -> ListenerStatus {
         try! JSONDecoder().decode(ListenerStatus.self, from: Data(json.utf8))
     }
 
-    private func sources(status json: String?, pins: [String: [String: PinEvidence]] = [:]) -> WakeSettingsSources {
+    private func sources(status json: String?) -> WakeSettingsSources {
         var sources = WakeSettingsSources()
         sources.config = ListenerConfigDocument(text: config)
         sources.configReadable = true
         sources.partition = partition
-        sources.seats = ["MM", "CLAUDE", "ROUTER", "QUIET"]
+        sources.seats = ["MM", "CLAUDE", "OLD", "QUIET"]
         sources.status = json.map(status)
-        sources.pins = pins
         return sources
     }
 
@@ -87,14 +86,6 @@ final class WakePanelTruthTests: XCTestCase {
         }
         return setting
     }
-
-    private func pin(_ runtime: String, binary: String? = "/bin/x", model: String? = nil) -> PinEvidence {
-        PinEvidence(
-            runtime: runtime, binary: binary, model: model,
-            verifiedAt: Date(timeIntervalSince1970: 1_792_535_804), pinned: true, why: nil
-        )
-    }
-
     // MARK: Whether the eavesdropper is running
 
     /// A status that could not be read is a third state with its reason, never "not running".
@@ -141,31 +132,45 @@ final class WakePanelTruthTests: XCTestCase {
         XCTAssertNil(decoded.pid)
         XCTAssertNil(decoded.status?.updated)
         XCTAssertEqual(decoded.status?.instance, "mac")
-        XCTAssertEqual(decoded.seat("MM")?.wake, "muse")
         XCTAssertNil(decoded.seat("MM")?.wakes24h)
         XCTAssertEqual(decoded.seat("MM")?.connected, true)
         XCTAssertEqual(decoded.seat("MM")?.budget?["wakes_per_hour"], .number(5))
     }
 
-    /// The newer fields the eavesdropper publishes are read:  the model, the fallback, the routine
-    /// and the pin's own verdict.
-    func test_the_published_model_fallback_routine_and_pin_are_read() throws {
+    /// The routine's readiness and the seat's other newer fields are read.  The old fields an
+    /// eavesdropper still publishes, such as the wake word, a model, a pin or a fallback, are not
+    /// part of the model at all, so they cannot change what the panel says.
+    func test_the_published_routine_is_read() throws {
         let json = """
-        {"running": true, "status": {"seats": {"ROUTER": {"wake": "openrouter", "model": "openai/gpt-5",
-          "pin": {"pinned": false, "why": "pin_stale", "pinned_model": "openai/gpt-4", "model": "openai/gpt-5"},
-          "fallback": {"runtime": "openrouter", "model": "anthropic/claude-sonnet-4", "pinned": true, "ready": true},
+        {"running": true, "status": {"seats": {"MM": {"wake": "openrouter", "model": "openai/gpt-5",
+          "pin": {"pinned": false, "why": "pin_stale"},
+          "fallback": {"runtime": "openrouter", "pinned": true, "stands_in": true},
           "routine": {"ready": false, "why": "no_target", "detail": "no routine host"},
           "route_enabled": true,
           "held_back": {"count": 2, "oldest_age": 840, "reasons": {"host_busy": 2}}}}}}
         """
-        let seat = try XCTUnwrap(status(json).seat("ROUTER"))
-        XCTAssertEqual(seat.model, "openai/gpt-5")
-        XCTAssertEqual(seat.pin?.why, "pin_stale")
-        XCTAssertEqual(seat.pin?.pinned_model, "openai/gpt-4")
-        XCTAssertEqual(seat.fallback?.pinned, true)
-        XCTAssertEqual(seat.routine?.detail, "no routine host")
-        XCTAssertEqual(seat.routeEnabled, true)
-        XCTAssertEqual(seat.heldBack?.oldest_age, 840)
+        let decoded = try XCTUnwrap(status(json).seat("MM"))
+        XCTAssertEqual(decoded.routine?.detail, "no routine host")
+        XCTAssertEqual(decoded.routeEnabled, true)
+        XCTAssertEqual(decoded.heldBack?.oldest_age, 840)
+
+        let mm = seat("MM", in: WakeSettingsBuilder.build(sources(status: json)))
+        XCTAssertEqual(mm.kind, .wakes)
+        XCTAssertTrue(mm.routineNotReady)
+        XCTAssertTrue(mm.needsAttention)
+        XCTAssertEqual(mm.routineReadiness, WakeFact(text: "Routine not ready:  no routine host", emphasised: true))
+
+        let ready = #"{"running": true, "status": {"seats": {"MM": {"routine": {"ready": true, "host": "routines.example"}}}}}"#
+        let fine = seat("MM", in: WakeSettingsBuilder.build(sources(status: ready)))
+        XCTAssertEqual(fine.routineReadiness, WakeFact(text: "Routine ready at routines.example", emphasised: false))
+        XCTAssertFalse(fine.routineNotReady)
+
+        // A seat that Wakes, reported with no routine at all, is said to be so.
+        let none = #"{"running": true, "status": {"seats": {"MM": {"bot": "MM"}}}}"#
+        let missing = seat("MM", in: WakeSettingsBuilder.build(sources(status: none)))
+        XCTAssertTrue(missing.routineReadiness?.text.contains("reports no routine") == true)
+        // A seat that Captures Only has no routine to report.
+        XCTAssertNil(seat("QUIET", in: WakeSettingsBuilder.build(sources(status: ready))).routineReadiness)
     }
 
     // MARK: How old the status is
@@ -174,7 +179,7 @@ final class WakePanelTruthTests: XCTestCase {
     func test_an_old_status_is_not_current() {
         let published = 1_792_657_970.0
         let json = """
-        {"running": true, "status": {"updated": \(published), "seats": {"MM": {"wake": "muse",
+        {"running": true, "status": {"updated": \(published), "seats": {"MM": {
           "budget": {"wakes_per_hour": 5, "wakes_per_day": 80}}}}}
         """
         var old = sources(status: json)
@@ -193,50 +198,23 @@ final class WakePanelTruthTests: XCTestCase {
         XCTAssertEqual(setting(.wakesPerHour, of: seat("MM", in: current)).state, .match)
     }
 
-    /// A stopped eavesdropper's file is its last word, not what anything uses now.
+    /// A stopped eavesdropper's file is its last word, not what anything uses now.  A routine that
+    /// was not ready then is not called not ready now.
     func test_a_stopped_eavesdroppers_values_are_not_current() {
-        let json = #"{"running": false, "status": {"seats": {"MM": {"wake": "muse", "budget": {"wakes_per_hour": 5}}}}}"#
+        let json = #"{"running": false, "status": {"seats": {"MM": {"budget": {"wakes_per_hour": 5}, "routine": {"ready": false, "why": "no_target"}}}}}"#
         let model = WakeSettingsBuilder.build(sources(status: json))
-        let row = setting(.wakesPerHour, of: seat("MM", in: model))
+        let mm = seat("MM", in: model)
+        let row = setting(.wakesPerHour, of: mm)
         XCTAssertEqual(row.state, .stale)
         XCTAssertTrue(row.note.contains("not running"))
-    }
-
-    /// A row whose value Muster read from a pin file is not the eavesdropper's word, so a stopped
-    /// eavesdropper does not turn it into NOT CURRENT with a note that it published the value.
-    func test_pin_backed_rows_keep_their_own_state_when_the_status_is_old() {
-        let json = #"{"running": false, "status": {"seats": {"MM": {"wake": "muse", "budget": {"wakes_per_hour": 5}}}}}"#
-        let pins = ["MM": ["muse": pin("muse", model: "muse-spark-1.3-contributor")]]
-        let mm = seat("MM", in: WakeSettingsBuilder.build(sources(status: json, pins: pins)))
-        let model = setting(.model, of: mm)
-        XCTAssertEqual(model.state, .match)
-        XCTAssertFalse(model.note.contains("last value it published"))
-        XCTAssertEqual(setting(.wakesPerHour, of: mm).state, .stale)
-        XCTAssertTrue(WakeSettingsBuilder.liveComesFromStatus(.model, wake: "openrouter"))
-        XCTAssertFalse(WakeSettingsBuilder.liveComesFromStatus(.model, wake: "muse"))
-        XCTAssertFalse(WakeSettingsBuilder.liveComesFromStatus(.mcodePath, wake: "claude"))
-        XCTAssertFalse(WakeSettingsBuilder.liveComesFromStatus(.fallback, wake: "claude"))
-        XCTAssertFalse(WakeSettingsBuilder.liveComesFromStatus(.fallback, wake: "claude", fallback: "mcode"))
-        XCTAssertTrue(WakeSettingsBuilder.liveComesFromStatus(.fallback, wake: "claude", fallback: "openrouter"))
-    }
-
-    /// An OpenRouter fallback's pass is the eavesdropper's own published verdict, so a stopped or
-    /// old eavesdropper cannot keep it PASS.
-    func test_an_openrouter_fallback_pass_is_not_kept_under_an_old_status() {
-        let body = #""seats": {"ROUTER": {"wake": "openrouter", "model": "openai/gpt-5", "fallback": {"runtime": "openrouter", "pinned": true}}}"#
-        let current = WakeSettingsBuilder.build(sources(status: #"{"running": true, "status": {\#(body)}}"#))
-        XCTAssertEqual(setting(.fallback, of: seat("ROUTER", in: current)).state, .match)
-
-        let stopped = WakeSettingsBuilder.build(sources(status: #"{"running": false, "status": {\#(body)}}"#))
-        let row = setting(.fallback, of: seat("ROUTER", in: stopped))
-        XCTAssertEqual(row.state, .stale)
-        XCTAssertTrue(row.note.contains("not running"))
+        XCTAssertFalse(mm.routineNotReady)
+        XCTAssertTrue(mm.routineReadiness?.text.hasSuffix("(not current)") == true)
     }
 
     /// A seat's connected flag is a last-known value under an old or stopped status, so it is not
     /// shown as connected, and it is not counted in the connected seats.
     func test_connected_is_not_claimed_from_an_old_status() {
-        let body = #""seats": {"MM": {"wake": "muse", "connected": true}}"#
+        let body = #""seats": {"MM": {"connected": true}}"#
         let stopped = WakeSettingsBuilder.build(sources(status: #"{"running": false, "status": {\#(body)}}"#))
         XCTAssertNil(seat("MM", in: stopped).connected)
         XCTAssertEqual(stopped.reportingSeats, 0)
@@ -255,169 +233,314 @@ final class WakePanelTruthTests: XCTestCase {
         XCTAssertEqual(running.connectedSeats, 1)
     }
 
-    // MARK: The model and the pin, by the seat's own runtime
+    // MARK: Wakes or Captures Only
 
-    /// A Claude seat's model is reported by nothing, so it is not reported:  never UNPROVEN, and
-    /// never compared with the mcode fallback's model.
-    func test_a_claude_seat_model_is_not_compared_with_the_fallback() {
-        let json = #"{"running": true, "status": {"seats": {"CLAUDE": {"wake": "claude", "claude": "/bin/claude"}}}}"#
-        let pins = ["CLAUDE": ["mcode": pin("mcode", model: "minimax/minimax-m2"), "claude": pin("claude")]]
-        let model = WakeSettingsBuilder.build(sources(status: json, pins: pins))
+    /// A seat Wakes when its section holds a routine table, inline or under its own header.  With
+    /// no routine, an old wake line other than inbox is one today's listener still wakes the seat
+    /// by, so the seat is an Old Wake Setting, and only a seat with neither Captures Only.  What the
+    /// eavesdropper publishes as the seat's wake decides nothing.
+    func test_a_seat_wakes_by_its_routine_table_alone() {
+        let json = #"{"running": true, "status": {"seats": {"OLD": {"wake": "openrouter"}, "QUIET": {"wake": "http"}}}}"#
+        let model = WakeSettingsBuilder.build(sources(status: json))
+        let mm = seat("MM", in: model)
+        XCTAssertEqual(mm.kind, .wakes)
+        XCTAssertEqual(mm.routineForm, .inline)
+        XCTAssertEqual(mm.kind.title, "Wakes")
         let claude = seat("CLAUDE", in: model)
-        let row = setting(.model, of: claude)
-        XCTAssertEqual(row.state, .unpublished)
-        XCTAssertNil(row.live)
-        XCTAssertFalse(row.state.isProblem)
-        XCTAssertFalse(row.note.contains("minimax"))
-        XCTAssertEqual(claude.claudeBinary, "/bin/claude")
-    }
-
-    /// An OpenRouter wake's model is the one the eavesdropper publishes.
-    func test_an_openrouter_model_is_the_published_one() {
-        let same = #"{"running": true, "status": {"seats": {"ROUTER": {"wake": "openrouter", "model": "openai/gpt-5"}}}}"#
-        XCTAssertEqual(setting(.model, of: seat("ROUTER", in: WakeSettingsBuilder.build(sources(status: same)))).state, .match)
-        let other = #"{"running": true, "status": {"seats": {"ROUTER": {"wake": "openrouter", "model": "openai/gpt-4"}}}}"#
-        XCTAssertEqual(setting(.model, of: seat("ROUTER", in: WakeSettingsBuilder.build(sources(status: other)))).state, .drift)
-    }
-
-    /// The pin is chosen by the seat's wake:  a leftover muse pin on a Claude seat proves nothing.
-    func test_the_pin_is_the_seat_wakes_own() {
-        let json = #"{"running": true, "status": {"seats": {"CLAUDE": {"wake": "claude", "pin": {"pinned": false, "why": "not_pinned"}}}}}"#
-        let pins = ["CLAUDE": ["muse": pin("muse"), "mcode": pin("mcode")]]
-        let claude = seat("CLAUDE", in: WakeSettingsBuilder.build(sources(status: json, pins: pins)))
-        XCTAssertEqual(claude.pinState, .missing(runtime: "claude", why: "not_pinned"))
-        XCTAssertNil(claude.pin)
-        XCTAssertTrue(claude.needsAttention)
-    }
-
-    /// The eavesdropper's own verdict decides whether a pin holds, not the file being there.
-    func test_a_stale_pin_does_not_read_as_holding() {
-        let json = #"{"running": true, "status": {"seats": {"MM": {"wake": "muse", "pin": {"pinned": false, "why": "pin_stale"}}}}}"#
-        let pins = ["MM": ["muse": pin("muse", model: "muse-spark-1.3-contributor")]]
-        let mm = seat("MM", in: WakeSettingsBuilder.build(sources(status: json, pins: pins)))
-        guard case .notHolding(let evidence, let why) = mm.pinState else {
-            return XCTFail("expected a pin that does not hold, got \(mm.pinState)")
-        }
-        XCTAssertEqual(why, "pin_stale")
-        XCTAssertFalse(evidence.pinned)
-        XCTAssertTrue(PinEvidence.words(forWhy: why).contains("stale"))
-
-        let holding = #"{"running": true, "status": {"seats": {"MM": {"wake": "muse", "pin": {"pinned": true}}}}}"#
-        let pinned = seat("MM", in: WakeSettingsBuilder.build(sources(status: holding, pins: pins)))
-        XCTAssertEqual(pinned.pinState, .pinned(pins["MM"]!["muse"]!))
-    }
-
-    /// A pin file that is there is never a pin that holds without the eavesdropper's current word:
-    /// not when the status could not be read, not when it is old, and not when it gave no verdict.
-    func test_a_pin_file_without_a_current_verdict_is_not_pinned() {
-        let pins = ["MM": ["muse": pin("muse", model: "muse-spark-1.3-contributor")]]
-
-        var unread = sources(status: nil, pins: pins)
-        unread.statusProblem = "The eavesdropper's status command failed:  boom"
-        let blind = seat("MM", in: WakeSettingsBuilder.build(unread))
-        guard case .fileOnly(let evidence, let why, let needsLook) = blind.pinState else {
-            return XCTFail("expected a pin file with no verdict, got \(blind.pinState)")
-        }
-        XCTAssertEqual(evidence, pins["MM"]!["muse"]!)
-        XCTAssertTrue(why.contains("could not read"))
-        XCTAssertTrue(needsLook)
-        XCTAssertTrue(blind.pinState.isProblem)
-        XCTAssertEqual(blind.pin, pins["MM"]!["muse"]!)
-
-        let published = 1_792_657_970.0
-        let holding = #"{"running": true, "status": {"updated": \#(published), "seats": {"MM": {"wake": "muse", "pin": {"pinned": true}}}}}"#
-        var old = sources(status: holding, pins: pins)
-        old.readAt = Date(timeIntervalSince1970: published + 14 * 60)
-        guard case .fileOnly(_, let oldWhy, true) = seat("MM", in: WakeSettingsBuilder.build(old)).pinState else {
-            return XCTFail("an old verdict must not say the pin holds now")
-        }
-        XCTAssertTrue(oldWhy.contains("not current"))
-
-        let silent = #"{"running": true, "status": {"seats": {"MM": {"wake": "muse"}}}}"#
-        let quiet = seat("MM", in: WakeSettingsBuilder.build(sources(status: silent, pins: pins)))
+        XCTAssertEqual(claude.kind, .wakes)
+        XCTAssertEqual(claude.routineForm, .subTable)
+        XCTAssertEqual(setting(.routineURLEnv, of: claude).configured, .text("CLAUDE_ROUTINE_URL"))
+        let old = seat("OLD", in: model)
+        XCTAssertEqual(old.kind, .oldWakeSetting(.stillWakes("openrouter")))
+        XCTAssertEqual(old.kind.title, "Old Wake Setting")
         XCTAssertEqual(
-            quiet.pinState,
-            .fileOnly(pins["MM"]!["muse"]!, why: "The eavesdropper did not say whether it holds.", needsLook: false)
+            old.kind.help,
+            "The listener still wakes this seat through its old wake = \"openrouter\" setting until the listener change lands.\u{00A0} Muster no longer edits it."
         )
-        XCTAssertFalse(quiet.pinState.isProblem)
-    }
-
-    /// The fallback's own pin:  an mcode pin file is only a file, one that cannot be read is
-    /// unreadable and not missing, and an OpenRouter fallback goes by the eavesdropper's verdict.
-    func test_the_fallback_pin_state_is_its_own() {
-        let json = #"{"running": true, "status": {"seats": {"MM": {"wake": "muse"}}}}"#
-        let filed = seat("MM", in: WakeSettingsBuilder.build(sources(status: json, pins: ["MM": ["mcode": pin("mcode")]])))
-        guard case .fileOnly(_, let why, false) = filed.fallbackPinState else {
-            return XCTFail("expected an mcode pin file with no verdict, got \(String(describing: filed.fallbackPinState))")
-        }
-        XCTAssertTrue(why.contains("does not publish"))
-        XCTAssertEqual(setting(.fallback, of: filed).state, .unpublished)
-
-        var unreadable = sources(status: json)
-        unreadable.unreadablePins = ["MM": ["mcode": "boom"]]
-        let broken = seat("MM", in: WakeSettingsBuilder.build(unreadable))
-        XCTAssertEqual(broken.fallbackPinState, .unreadable(runtime: "mcode", problem: "boom"))
-
-        let missing = seat("MM", in: WakeSettingsBuilder.build(sources(status: json)))
-        XCTAssertEqual(missing.fallbackPinState, .missing(runtime: "mcode", why: nil))
-
-        let routerKey = WakeType.fallbackPinKey("openrouter")
-        let routerPins = ["ROUTER": [routerKey: pin(routerKey, binary: nil, model: "anthropic/claude-sonnet-4")]]
-        let pinned = #"{"running": true, "status": {"seats": {"ROUTER": {"wake": "openrouter", "fallback": {"pinned": true}}}}}"#
-        let router = seat("ROUTER", in: WakeSettingsBuilder.build(sources(status: pinned, pins: routerPins)))
-        XCTAssertEqual(router.fallbackPinState, .pinned(routerPins["ROUTER"]![routerKey]!))
-
-        let quiet = seat("QUIET", in: WakeSettingsBuilder.build(sources(status: json)))
-        XCTAssertNil(quiet.fallbackPinState)
-    }
-
-    /// An inbox seat needs no pin and has nothing to test, and says so.
-    func test_an_inbox_seat_needs_no_pin_and_no_test() {
-        let json = #"{"running": true, "status": {"seats": {"QUIET": {"wake": "inbox"}}}}"#
-        let quiet = seat("QUIET", in: WakeSettingsBuilder.build(sources(status: json)))
-        guard case .notNeeded(let why) = quiet.pinState else {
-            return XCTFail("expected no pin needed, got \(quiet.pinState)")
-        }
-        XCTAssertTrue(why.contains("runs no worker"))
-        XCTAssertNil(quiet.testRuntime)
-        XCTAssertNil(WakeType.http.testRuntime)
-        XCTAssertEqual(WakeType.openrouter.testRuntime, "openrouter")
+        XCTAssertEqual(old.leftoverWake, "openrouter")
+        let quiet = seat("QUIET", in: model)
+        XCTAssertEqual(quiet.kind, .capturesOnly)
+        XCTAssertEqual(quiet.leftoverWake, "inbox")
         XCTAssertFalse(quiet.needsAttention)
+        XCTAssertEqual(mm.leftoverWake, "http")
+        XCTAssertTrue(WakeSeatKind.wakes.help.contains("wakes the right chat"))
+        XCTAssertTrue(WakeSeatKind.capturesOnly.help.contains("kept in the seat's inbox"))
     }
 
-    /// A fallback is proved by its own pin;  an OpenRouter fallback by the eavesdropper's verdict.
-    /// A seat with no fallback has no fallback pin, whatever files lie about.
-    func test_the_fallback_is_proved_by_its_own_pin() {
-        let unpinned = #"{"running": true, "status": {"seats": {"ROUTER": {"wake": "openrouter", "fallback": {"pinned": false, "pin": {"why": "not_pinned"}}}}}}"#
-        let router = seat("ROUTER", in: WakeSettingsBuilder.build(sources(status: unpinned)))
-        let row = setting(.fallback, of: router)
-        XCTAssertEqual(row.state, .unproven)
-        XCTAssertTrue(row.note.contains("No passing test wake"))
-
-        let pinned = #"{"running": true, "status": {"seats": {"ROUTER": {"wake": "openrouter", "fallback": {"pinned": true}}}}}"#
-        XCTAssertEqual(setting(.fallback, of: seat("ROUTER", in: WakeSettingsBuilder.build(sources(status: pinned)))).state, .match)
-
-        let json = #"{"running": true, "status": {"seats": {"QUIET": {"wake": "inbox"}}}}"#
-        let quiet = seat("QUIET", in: WakeSettingsBuilder.build(sources(status: json, pins: ["QUIET": ["mcode": pin("mcode")]])))
-        XCTAssertNil(quiet.fallbackPin)
+    /// With no routine, an old wake today's listener still runs (claude, muse, openrouter) is an
+    /// Old Wake Setting it still wakes;  `http` with no routine, or a word the listener does not
+    /// know, is one it refuses, and the seat only captures.  No wake line or `wake = "inbox"`
+    /// Captures Only.
+    func test_an_old_wake_line_with_no_routine_is_an_old_wake_setting() {
+        for wake in ["claude", "muse", "openrouter"] {
+            let document = ListenerConfigDocument(text: "[seat.MM]\nbot = \"MM\"\nwake = \"\(wake)\"\n")
+            XCTAssertEqual(document.routineForm(seat: "MM"), .absent, wake)
+            XCTAssertEqual(document.leftoverWake(seat: "MM"), wake)
+            let kind = WakeSettingsBuilder.kind(
+                form: document.routineForm(seat: "MM"), configProblem: nil,
+                leftoverWake: document.leftoverWake(seat: "MM")
+            )
+            XCTAssertEqual(kind, .oldWakeSetting(.stillWakes(wake)), wake)
+            XCTAssertEqual(kind.title, "Old Wake Setting", wake)
+            XCTAssertTrue(kind.isWoken, wake)
+            XCTAssertFalse(kind.hasRoutine, wake)
+            XCTAssertEqual(
+                kind.help,
+                "The listener still wakes this seat through its old wake = \"\(wake)\" setting until the listener change lands.\u{00A0} Muster no longer edits it.",
+                wake
+            )
+        }
+        for wake in ["http", "brand_new", "Claude", ""] {
+            let kind = WakeSettingsBuilder.kind(form: .absent, configProblem: nil, leftoverWake: wake)
+            XCTAssertEqual(kind, .oldWakeSetting(.refused(wake)), wake)
+            XCTAssertFalse(kind.isWoken, wake)
+            XCTAssertEqual(
+                kind.help,
+                "The listener refuses this old wake = \"\(wake)\" line, so this seat only captures until it is removed.",
+                wake
+            )
+        }
+        for wake in ["inbox", nil] as [String?] {
+            XCTAssertEqual(WakeSettingsBuilder.kind(form: .absent, configProblem: nil, leftoverWake: wake), .capturesOnly, wake ?? "no line")
+        }
+        // An empty inline table is still a routine table:  every key takes its default.
+        let empty = ListenerConfigDocument(text: "[seat.MM]\nroutine = {}\n")
+        XCTAssertEqual(empty.routineForm(seat: "MM"), .inline)
+        XCTAssertEqual(empty.routineTable(seat: "MM"), [:])
     }
 
-    /// Only the settings a wake uses apply to it, by the eavesdropper's own rules.
-    func test_settings_apply_by_wake_type() {
-        XCTAssertTrue(WakeSettingKey.musePath.applies(toWake: "muse", fallback: nil))
-        XCTAssertFalse(WakeSettingKey.musePath.applies(toWake: "claude", fallback: nil))
-        XCTAssertFalse(WakeSettingKey.mcodePath.applies(toWake: "openrouter", fallback: nil))
-        XCTAssertTrue(WakeSettingKey.fallbackUncontained.applies(toWake: "claude", fallback: "mcode"))
-        XCTAssertFalse(WakeSettingKey.fallbackUncontained.applies(toWake: "claude", fallback: "openrouter"))
-        XCTAssertFalse(WakeSettingKey.wakesPerHour.applies(toWake: "inbox", fallback: nil))
-        XCTAssertFalse(WakeSettingKey.wakesPerHour.applies(toWake: nil, fallback: nil))
-        XCTAssertTrue(WakeSettingKey.wakesPerHour.applies(toWake: "http", fallback: nil))
-        XCTAssertTrue(WakeSettingKey.wakeType.applies(toWake: nil, fallback: nil))
-        // `WORKER_WAKES` lets an HTTP wake name a fallback, and an inbox wake never does.
-        XCTAssertTrue(WakeSettingKey.fallback.applies(toWake: "http", fallback: nil))
-        XCTAssertFalse(WakeSettingKey.fallback.applies(toWake: "inbox", fallback: nil))
+    /// Today's listener reads a routine only with `wake = "http"`, and drops any other wake beside
+    /// a routine to inbox, so `wake = "inbox"` or `wake = "claude"` beside a routine is an Old Wake
+    /// Setting that only captures.  A routine with no wake line Wakes, as the one-wake-path schema
+    /// reads it, so the panel keeps working when the live files drop the line.
+    func test_a_routine_with_the_wrong_wake_only_captures() {
+        let none = WakeSettingsBuilder.kind(form: .inline, configProblem: nil, leftoverWake: nil)
+        XCTAssertEqual(none, .wakes)
+        XCTAssertTrue(none.isWoken)
+        XCTAssertTrue(none.hasRoutine)
+        XCTAssertEqual(WakeSettingsBuilder.kind(form: .subTable, configProblem: nil, leftoverWake: nil), .wakes)
+        for wake in ["inbox", "claude"] {
+            let kind = WakeSettingsBuilder.kind(form: .subTable, configProblem: nil, leftoverWake: wake)
+            XCTAssertEqual(kind, .oldWakeSetting(.routineNeedsHTTP(wake: wake)), wake)
+            XCTAssertTrue(kind.help.contains("has wake = \"\(wake)\""), kind.help)
+            XCTAssertTrue(kind.help.contains("Today's listener uses a routine only with wake = \"http\", so this seat only captures until the listener change lands."), kind.help)
+            XCTAssertFalse(kind.isWoken, wake)
+            XCTAssertFalse(kind.hasRoutine, wake)
+        }
+        XCTAssertEqual(WakeSettingsBuilder.kind(form: .inline, configProblem: nil, leftoverWake: "http"), .wakes)
+        XCTAssertTrue(WakeSeatKind.wakes.isWoken)
+
+        // Built from a file:  the routine rows of a seat with the wrong wake are shown, and never
+        // offered.
+        var input = sources(status: nil)
+        input.config = ListenerConfigDocument(text: "[seat.MM]\nbot = \"MM\"\nwake = \"inbox\"\nroutine = { url_env = \"MM_ROUTINE_URL\" }\n")
+        input.seats = ["MM"]
+        let mm = seat("MM", in: WakeSettingsBuilder.build(input))
+        XCTAssertEqual(mm.kind, .oldWakeSetting(.routineNeedsHTTP(wake: "inbox")))
+        XCTAssertNil(mm.routineReadiness)
+        XCTAssertFalse(WakeSettingKey.routineURLEnv.applies(to: mm.kind))
+        XCTAssertFalse(WakeSettingKey.wakesPerHour.applies(to: mm.kind))
+
+        // The same seat with no wake line Wakes, and its routine and caps are offered.
+        var bare = sources(status: nil)
+        bare.config = ListenerConfigDocument(text: "[seat.MM]\nbot = \"MM\"\nroutine = { url_env = \"MM_ROUTINE_URL\" }\n")
+        bare.seats = ["MM"]
+        let woken = seat("MM", in: WakeSettingsBuilder.build(bare))
+        XCTAssertEqual(woken.kind, .wakes)
+        XCTAssertTrue(WakeSettingKey.routineURLEnv.applies(to: woken.kind))
+        XCTAssertTrue(WakeSettingKey.wakesPerHour.applies(to: woken.kind))
+    }
+    /// Muster cannot say what a seat is when another eavesdropper holds it, when the Mac's file has
+    /// no section for it, or when its section holds a line Muster cannot read, such as a dotted
+    /// `routine.url_env` key:  each is Not Known, never Captures Only.
+    func test_a_seat_muster_cannot_describe_is_not_known() {
+        var input = sources(status: #"{"running": true, "status": {"seats": {}}}"#)
+        input.config = ListenerConfigDocument(text: "[seat.MM]\nbot = \"MM\"\nrouting = 1\nroutine.url_env = \"MM_ROUTINE_URL\"\n")
+        input.seats = ["MM", "QUIET", "MA"]
+        let model = WakeSettingsBuilder.build(input)
+
+        let dotted = seat("MM", in: model)
+        guard case .notKnown(let why) = dotted.kind else {
+            return XCTFail("a dotted routine key is not one Muster can read, got \(dotted.kind)")
+        }
+        XCTAssertTrue(why.contains("a line Muster can't read"), why)
+        XCTAssertEqual(dotted.kind.title, "Not Known")
+        // A seat with a section whose kind is not known needs a look:  it is under Problems Only,
+        // and never reads "No problem found".
+        XCTAssertTrue(dotted.needsAttention)
+
+        let noSection = seat("QUIET", in: model)
+        XCTAssertFalse(noSection.hasSection)
+        guard case .notKnown(let none) = noSection.kind else {
+            return XCTFail("a Mac seat with no section is not Captures Only, got \(noSection.kind)")
+        }
+        XCTAssertTrue(none.contains("no section"), none)
+        // With no section there is nothing in the file to look at:  its notices say so.
+        XCTAssertFalse(noSection.needsAttention)
+
+        let server = seat("MA", in: model)
+        XCTAssertTrue(server.host.isElsewhere)
+        guard case .notKnown(let elsewhere) = server.kind else {
+            return XCTFail("a seat the server holds is not Captures Only, got \(server.kind)")
+        }
+        XCTAssertTrue(elsewhere.contains("Another eavesdropper holds this seat"), elsewhere)
+
+        XCTAssertEqual(
+            WakeSettingsBuilder.kind(form: .absent, configProblem: nil, host: .server),
+            .notKnown("Another eavesdropper holds this seat, and Muster does not read its file, so whether it Wakes is not known here.")
+        )
+        XCTAssertEqual(WakeSettingsBuilder.kind(form: .inline, configProblem: nil, hasSection: false).title, "Not Known")
+    }
+    /// The listener upper-cases a seat's section name, so `[seat.mm]` and `[seat.mm.routine]` are
+    /// the MM seat's, whatever case the roster uses, and a seat the file spells two ways is Not
+    /// Known, with a note naming both headers.  The reader does not show `[seat.mm]` again as a
+    /// seat beside the roster's MM.
+    func test_a_seat_section_is_matched_without_regard_to_case() {
+        var input = sources(status: nil)
+        input.config = ListenerConfigDocument(text: """
+        [seat.mm]
+        bot = "MM"
+        wake = "http"
+
+        [seat.mm.routine]
+        url_env = "MM_ROUTINE_URL"
+
+        [seat.mm.budget]
+        wakes_per_hour = 4
+
+        [seat.Claude]
+        bot = "CLAUDE"
+        wake = "muse"
+
+        [seat.CLAUDE]
+        live = { per_day = 3 }
+        """)
+        input.seats = ["MM", "CLAUDE"]
+        let model = WakeSettingsBuilder.build(input)
+        let mm = seat("MM", in: model)
+        XCTAssertTrue(mm.hasSection)
+        XCTAssertEqual(mm.bot, "MM")
+        XCTAssertEqual(mm.routineForm, .subTable)
+        XCTAssertEqual(mm.kind, .wakes)
+        XCTAssertEqual(mm.leftoverWake, "http")
+        XCTAssertEqual(setting(.routineURLEnv, of: mm).configured, .text("MM_ROUTINE_URL"))
+        XCTAssertEqual(setting(.wakesPerHour, of: mm).configured, .number(4))
+        XCTAssertEqual(input.config.seatSection("MM"), "seat.mm")
+        XCTAssertEqual(WakeSettingKey.wakesPerHour.location(seat: "MM", in: input.config).section, "seat.mm.budget")
+
+        let claude = seat("CLAUDE", in: model)
+        guard case .notKnown(let why) = claude.kind else {
+            return XCTFail("a seat spelled two ways is Not Known, got \(claude.kind)")
+        }
+        XCTAssertTrue(why.contains("[seat.Claude] and [seat.CLAUDE]"), why)
+        XCTAssertTrue(claude.needsAttention)
+        XCTAssertEqual(input.config.spellings(ofSeat: "claude"), ["Claude", "CLAUDE"])
     }
 
+    /// The listener compares the wake exactly, with no trimming and no case folding, so `"HTTP"`,
+    /// `" http"` and `"Claude"` are words it does not know:  refused with no routine, and with a
+    /// routine an Old Wake Setting that only captures.  Only `"http"` with a routine Wakes.
+    func test_the_wake_value_is_compared_exactly() {
+        for wake in ["HTTP", " http", "http ", "Claude", " claude"] {
+            XCTAssertEqual(
+                WakeSettingsBuilder.kind(form: .absent, configProblem: nil, leftoverWake: wake),
+                .oldWakeSetting(.refused(wake)),
+                "[\(wake)]"
+            )
+            XCTAssertEqual(
+                WakeSettingsBuilder.kind(form: .inline, configProblem: nil, leftoverWake: wake),
+                .oldWakeSetting(.routineNeedsHTTP(wake: wake)),
+                "[\(wake)]"
+            )
+        }
+        // The file's own value is read as written, spaces included.
+        let spaced = ListenerConfigDocument(text: "[seat.MM]\nwake = \" http\"\nroutine = { url_env = \"MM_ROUTINE_URL\" }\n")
+        XCTAssertEqual(spaced.leftoverWake(seat: "MM"), " http")
+        XCTAssertEqual(
+            WakeSettingsBuilder.kind(form: spaced.routineForm(seat: "MM"), configProblem: nil, leftoverWake: spaced.leftoverWake(seat: "MM")),
+            .oldWakeSetting(.routineNeedsHTTP(wake: " http"))
+        )
+        XCTAssertEqual(WakeSettingsBuilder.kind(form: .inline, configProblem: nil, leftoverWake: "http"), .wakes)
+    }
+
+    /// A routine Muster cannot read is not known, never Captures Only, and needs a look:  a
+    /// routine line that is not a table, or both forms at once.  A file that was not read leaves
+    /// every seat's kind not known.
+    func test_a_routine_muster_cannot_read_is_not_known() {
+        let line = ListenerConfigDocument(text: "[seat.MM]\nroutine = \"https://x\"\n")
+        guard case .unreadable = line.routineForm(seat: "MM") else {
+            return XCTFail("a routine line that is not a table is not one Muster can read")
+        }
+        let both = ListenerConfigDocument(text: "[seat.MM]\nroutine = { url_env = \"A\" }\n\n[seat.MM.routine]\nkey_env = \"B\"\n")
+        guard case .unreadable(let why) = both.routineForm(seat: "MM") else {
+            return XCTFail("both forms at once are not one Muster can read")
+        }
+        XCTAssertTrue(why.contains("TOML refuses"))
+        XCTAssertNil(both.routineTable(seat: "MM"))
+
+        var input = sources(status: #"{"running": true, "status": {"seats": {}}}"#)
+        input.config = line
+        input.seats = ["MM"]
+        let mm = seat("MM", in: WakeSettingsBuilder.build(input))
+        guard case .notKnown = mm.kind else { return XCTFail("expected a kind not known, got \(mm.kind)") }
+        XCTAssertTrue(mm.needsAttention)
+
+        guard case .notKnown(let unread) = WakeSettingsBuilder.kind(form: .inline, configProblem: "denied") else {
+            return XCTFail("a file that was not read says nothing about the kind")
+        }
+        XCTAssertTrue(unread.contains("was not read"))
+    }
+
+    /// The routine and the caps apply to a seat that Wakes, the caps alone to one the listener
+    /// still wakes through an old wake line, and none of them to one that Captures Only, whose
+    /// file values are still shown when it holds them.
+    func test_settings_apply_by_kind() {
+        XCTAssertTrue(WakeSettingKey.wakesPerHour.applies(to: .oldWakeSetting(.stillWakes("muse"))))
+        XCTAssertTrue(WakeSettingKey.liveLoopTurns.applies(to: .oldWakeSetting(.stillWakes("claude"))))
+        XCTAssertFalse(WakeSettingKey.routineURLEnv.applies(to: .oldWakeSetting(.stillWakes("muse"))))
+        XCTAssertFalse(WakeSettingKey.routineTimeout.applies(to: .oldWakeSetting(.stillWakes("openrouter"))))
+        // A seat today's listener drops to inbox is not woken, so its caps bind nothing.
+        XCTAssertFalse(WakeSettingKey.wakesPerHour.applies(to: .oldWakeSetting(.refused("http"))))
+        XCTAssertFalse(WakeSettingKey.wakesPerHour.applies(to: .oldWakeSetting(.routineNeedsHTTP(wake: nil))))
+        XCTAssertTrue(WakeSettingKey.routineURLEnv.applies(to: .wakes))
+        XCTAssertTrue(WakeSettingKey.wakesPerHour.applies(to: .wakes))
+        XCTAssertTrue(WakeSettingKey.liveLoopTurns.applies(to: .wakes))
+        XCTAssertFalse(WakeSettingKey.routineURLEnv.applies(to: .capturesOnly))
+        XCTAssertFalse(WakeSettingKey.wakesPerHour.applies(to: .capturesOnly))
+        XCTAssertFalse(WakeSettingKey.wakesPerHour.applies(to: .notKnown("x")))
+        XCTAssertTrue(WakeSettingKey.hostLoadGate.applies(to: .capturesOnly))
+    }
+
+    /// The method, the signing and the header are the router contract's, so they are shown and
+    /// refused, and a value other than the contract's is named plainly.  A file that holds none
+    /// takes the eavesdropper's defaults, which are the contract.
+    @MainActor
+    func test_the_router_contract_keys_are_shown_and_never_offered() {
+        for key in [WakeSettingKey.routineMethod, .routineAuth, .routineHeader] {
+            XCTAssertTrue(key.isFixedByContract, key.rawValue)
+            XCTAssertNotNil(key.refusalReason, key.rawValue)
+        }
+        for key in [WakeSettingKey.routineURLEnv, .routineKeyEnv, .routineTimeout] {
+            XCTAssertFalse(key.isFixedByContract, key.rawValue)
+            XCTAssertNil(key.refusalReason, key.rawValue)
+        }
+        let model = WakeSettingsBuilder.build(sources(status: nil))
+        XCTAssertTrue(seat("MM", in: model).contractDifferences.isEmpty)
+
+        var input = sources(status: nil)
+        input.config = ListenerConfigDocument(text: "[seat.MM]\nroutine = { url_env = \"A\", key_env = \"B\", auth = \"hmac-sha256\", method = \"post\" }\n")
+        input.seats = ["MM"]
+        let mm = seat("MM", in: WakeSettingsBuilder.build(input))
+        let differing = mm.contractDifferences.map(\.key)
+        // The method is upper-cased by the eavesdropper, so "post" is POST.  The header the file
+        // leaves out follows the signing, so it differs too.
+        XCTAssertEqual(Set(differing), [.routineAuth, .routineHeader])
+        XCTAssertTrue(setting(.routineAuth, of: mm).contractDifference?.contains("Differs from the router contract") == true)
+        XCTAssertTrue(mm.needsAttention)
+        let reading = WakeSettingsStore.readDraft(seat: "MM", values: [.routineAuth: "bearer"], before: [.routineAuth: "hmac-sha256"])
+        XCTAssertEqual(reading.edits, [])
+        XCTAssertEqual(reading.refusals.count, 1)
+    }
     // MARK: The ledger
 
     /// A topic holding U+2028 is one row, as the eavesdropper wrote it, and is counted.
@@ -480,14 +603,12 @@ final class WakePanelTruthTests: XCTestCase {
         return home
     }
 
-    /// A stand-in for `simple-chat` that answers the status and the test wake.
+    /// A stand-in for `simple-chat` that answers the status.
     private final class Fake: SimpleToolsRunning, @unchecked Sendable {
         private let lock = NSLock()
         private var calls: [[String]] = []
         var status = #"{"running": true, "status": {"seats": {}, "pause": {}}}"#
         var statusExit: Int32 = 0
-        var testWake = SimpleToolsCLIResult(exitCode: 0, stdout: "", stderr: "")
-        var pin = SimpleToolsCLIResult(exitCode: 0, stdout: "", stderr: "")
 
         var commands: [String] {
             lock.lock()
@@ -501,7 +622,6 @@ final class WakePanelTruthTests: XCTestCase {
             calls.append(invocation.arguments)
             switch invocation.arguments.count > 1 ? invocation.arguments[1] : "" {
             case "status": return SimpleToolsCLIResult(exitCode: statusExit, stdout: status, stderr: "")
-            case "test-wake": return invocation.arguments.contains("--pin") ? pin : testWake
             default: return SimpleToolsCLIResult(exitCode: 0, stdout: "", stderr: "")
             }
         }
@@ -546,27 +666,6 @@ final class WakePanelTruthTests: XCTestCase {
         XCTAssertTrue(mm.needsAttention)
     }
 
-    /// A pin file that cannot be read is said to be unreadable, not missing.
-    func test_an_unreadable_pin_is_not_called_missing() async throws {
-        let home = try makeHome(config: "[seat.MM]\nbot = \"MM\"\nwake = \"muse\"\n")
-        let location = ListenerStateLocation(home: home)
-        let pinURL = location.pinURL(seat: "MM", runtime: "muse")
-        try FileManager.default.createDirectory(at: pinURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try "not json".write(to: pinURL, atomically: true, encoding: .utf8)
-        let candidate = location.candidateURL(seat: "MM", runtime: "muse")
-        try #"{"at": 1792535804.0, "muse": "/bin/muse"}"#.write(to: candidate, atomically: true, encoding: .utf8)
-        let sources = await WakeSettingsReader(
-            location: location, runner: Fake(), roster: ["MM"],
-            partitionURL: home.appendingPathComponent("partition.toml")
-        ).read()
-        let mm = seat("MM", in: WakeSettingsBuilder.build(sources))
-        guard case .unreadable(let runtime, _) = mm.pinState else {
-            return XCTFail("expected an unreadable pin, got \(mm.pinState)")
-        }
-        XCTAssertEqual(runtime, "muse")
-        XCTAssertEqual(mm.candidates["muse"], Date(timeIntervalSince1970: 1_792_535_804))
-    }
-
     /// A ledger too large to read whole is read from its end, from the first whole row.
     func test_a_large_file_is_read_from_its_end() throws {
         let home = try makeHome(config: nil)
@@ -596,7 +695,7 @@ final class WakePanelTruthTests: XCTestCase {
         return store
     }
 
-    private let mmConfig = "[seat.MM]\nbot = \"MM\"\nwake = \"muse\"\nbudget = { wakes_per_hour = 5 }\n"
+    private let mmConfig = "[seat.MM]\nbot = \"MM\"\nwake = \"http\"\nroutine = { url_env = \"MM_ROUTINE_URL\", key_env = \"MM_ROUTINE_KEY\" }\nbudget = { wakes_per_hour = 5 }\n"
 
     /// A read keeps an edit the owner has not applied, marks it when the file moved under it,
     /// and Revert puts the file's value back.
@@ -629,67 +728,43 @@ final class WakePanelTruthTests: XCTestCase {
         XCTAssertNil(store.movedUnderneath["MM"])
     }
 
-    /// A change to the wake type or the container rule asks for the owner's Touch ID;  a cap does not.
+    /// A change to the routine's address or key variable asks for the owner's Touch ID, and so
+    /// does taking one out;  a cap or the timeout does not, and the signing is never offered.
     @MainActor
-    func test_what_runs_needs_the_owner() async throws {
+    func test_where_wakes_go_needs_the_owner() async throws {
         let home = try makeHome(config: mmConfig)
         let store = await makeStore(Fake(), home: home)
         store.draft["MM", default: [:]][.wakesPerHour] = "8"
+        store.draft["MM", default: [:]][.routineTimeout] = "20"
         XCTAssertFalse(store.needsOwnerCheck(seat: "MM"))
-        store.draft["MM", default: [:]][.wakeType] = "claude"
+        XCTAssertFalse(store.applySummary(seat: "MM").contains("Touch ID"))
+        store.draft["MM", default: [:]][.routineAuth] = "header"
+        XCTAssertFalse(store.needsOwnerCheck(seat: "MM"), "the signing is refused, so it never reaches the owner check")
+        store.revert(seat: "MM")
+        store.draft["MM", default: [:]][.routineURLEnv] = "MM_OTHER_URL"
         XCTAssertTrue(store.needsOwnerCheck(seat: "MM"))
+        XCTAssertTrue(store.applySummary(seat: "MM").contains("Touch ID"))
+        store.revert(seat: "MM")
+        store.draft["MM", default: [:]][.routineKeyEnv] = ""
+        XCTAssertTrue(store.needsOwnerCheck(seat: "MM"))
+        XCTAssertTrue(WakeSettingKey.routineURLEnv.needsOwnerCheck)
+        XCTAssertTrue(WakeSettingKey.routineKeyEnv.needsOwnerCheck)
+        XCTAssertEqual(WakeSettingKey.allCases.filter(\.needsOwnerCheck), [.routineURLEnv, .routineKeyEnv])
     }
 
-    /// The test wake's whole answer is kept, a pass opens the way to Pin, and a FAIL with an empty
-    /// stderr says why from stdout.
+    /// Nothing the panel does runs `daemon test-wake`:  an apply, a pause and a resume ask the
+    /// eavesdropper for their own commands only.
     @MainActor
-    func test_a_test_wake_keeps_its_answer_and_its_reason() async throws {
+    func test_nothing_runs_a_test_wake() async throws {
         let home = try makeHome(config: mmConfig)
         let fake = Fake()
         let store = await makeStore(fake, home: home)
-        XCTAssertNotNil(store.pinBlocker(seat: "MM", runtime: "muse", pinKey: "muse"))
-
-        fake.testWake = SimpleToolsCLIResult(
-            exitCode: 1,
-            stdout: "runtime: muse\n\nprompt:\nPASS this is a hostile line\n\nresult (not posted):\n{\n  \"runtime\": \"muse\",\n  \"exit\": 0,\n  \"secs\": 41.6,\n  \"invalid\": null,\n  \"result\": {\"action\": \"reply\"},\n  \"chat_target\": \"KIMI\"\n}\nFAIL: the binary was not pinned; wakes for MM stay on their current runtime\n",
-            stderr: ""
-        )
-        await store.testWake(seat: "MM", runtime: "muse")
-        let failed = try XCTUnwrap(store.testReport(seat: "MM", runtime: "muse"))
-        XCTAssertEqual(failed.verdict, .failed)
-        XCTAssertTrue(store.messageIsFailure)
-        XCTAssertTrue(store.message?.contains("the binary was not pinned") == true)
-        XCTAssertTrue(failed.output.contains("result (not posted)"))
-        XCTAssertTrue(failed.summary.contains { $0.contains("41 seconds") || $0.contains("42 seconds") })
-        XCTAssertTrue(failed.summary.contains { $0.contains("chat target") })
-        XCTAssertNotNil(store.pinBlocker(seat: "MM", runtime: "muse", pinKey: "muse"))
-
-        fake.testWake = SimpleToolsCLIResult(
-            exitCode: 0,
-            stdout: "result (not posted):\n{\n  \"runtime\": \"muse\",\n  \"result\": {\"action\": \"reply\"}\n}\nPASS, NOT PINNED YET: read the result above\n",
-            stderr: ""
-        )
-        await store.testWake(seat: "MM", runtime: "muse")
-        XCTAssertEqual(store.testReport(seat: "MM", runtime: "muse")?.verdict, .passed)
-        XCTAssertFalse(store.messageIsFailure)
-        XCTAssertTrue(store.message?.contains("Read its answer below") == true)
-        XCTAssertNil(store.pinBlocker(seat: "MM", runtime: "muse", pinKey: "muse"))
-        XCTAssertNil(store.running)
-
-        fake.pin = SimpleToolsCLIResult(
-            exitCode: 1,
-            stdout: "NOT PINNED: the last passing test-wake --run is over a day old; run it again\n",
-            stderr: ""
-        )
-        await store.pin(seat: "MM", runtime: "muse")
-        XCTAssertTrue(store.messageIsFailure)
-        XCTAssertTrue(store.message?.contains("over a day old") == true)
-
-        // Each run is in the audit log.
-        let audit = OpsAuditLog.read(at: home.appendingPathComponent("audit/ops-audit.jsonl"))
-        XCTAssertEqual(audit.entries.map(\.verb), ["wake-pin", "wake-test", "wake-test"])
-        XCTAssertEqual(audit.entries.first?.result, "refused")
-        XCTAssertEqual(audit.entries.first?.via, "muster")
+        store.draft["MM", default: [:]][.routineTimeout] = "20"
+        await store.apply(seat: "MM")
+        await store.pause(seat: "MM")
+        await store.resume(seat: "MM")
+        XCTAssertFalse(fake.commands.contains("test-wake"), "\(fake.commands)")
+        XCTAssertTrue(WakeSeatKind.testWakeWaits.contains("without waking it"))
     }
 
     /// A seat under a full pause is not given a wakes-only pause, which would loosen it.
@@ -745,142 +820,6 @@ final class WakePanelTruthTests: XCTestCase {
         XCTAssertEqual(WakeSettingsStore.ownPauseEntry(seat: "mm", at: pauseURL), .full)
     }
 
-    /// A stand-in whose test wake runs until the test lets it finish.
-    private final class SlowFake: SimpleToolsRunning, @unchecked Sendable {
-        private let lock = NSLock()
-        private var calls: [String] = []
-        private var released = false
-        private var started = false
-
-        var commands: [String] {
-            lock.lock()
-            defer { lock.unlock() }
-            return calls
-        }
-
-        var testWakeStarted: Bool {
-            lock.lock()
-            defer { lock.unlock() }
-            return started
-        }
-
-        private var isReleased: Bool {
-            lock.lock()
-            defer { lock.unlock() }
-            return released
-        }
-
-        func release() {
-            lock.lock()
-            released = true
-            lock.unlock()
-        }
-
-        private func note(_ command: String) {
-            lock.lock()
-            calls.append(command)
-            if command == "test-wake" { started = true }
-            lock.unlock()
-        }
-
-        func run(_ invocation: SimpleToolsInvocation) async throws -> SimpleToolsCLIResult {
-            let command = invocation.arguments.count > 1 ? invocation.arguments[1] : ""
-            note(command)
-            switch command {
-            case "status":
-                return SimpleToolsCLIResult(exitCode: 0, stdout: #"{"running": true, "status": {"seats": {}, "pause": {}}}"#, stderr: "")
-            case "test-wake":
-                var waited = 0
-                while !isReleased, waited < 1000 {
-                    try await Task.sleep(nanoseconds: 10_000_000)
-                    waited += 1
-                }
-                return SimpleToolsCLIResult(exitCode: 0, stdout: "PASS, NOT PINNED YET: read the result above\n", stderr: "")
-            default:
-                return SimpleToolsCLIResult(exitCode: 0, stdout: "", stderr: "")
-            }
-        }
-    }
-
-    /// A test wake runs for minutes, so it holds only its own gate:  the panel is not busy, and the
-    /// pause, the kill switch, still runs while it does.
-    @MainActor
-    func test_a_running_test_wake_leaves_the_pause_working() async throws {
-        let home = try makeHome(config: mmConfig)
-        let fake = SlowFake()
-        let store = await makeStore(fake, home: home)
-        let run = Task { await store.testWake(seat: "MM", runtime: "muse") }
-        var waited = 0
-        while !fake.testWakeStarted, waited < 500 {
-            try await Task.sleep(nanoseconds: 10_000_000)
-            waited += 1
-        }
-        XCTAssertTrue(fake.testWakeStarted)
-        XCTAssertNotNil(store.running)
-        XCTAssertFalse(store.isBusy)
-        await store.pause(seat: "MM")
-        XCTAssertTrue(fake.commands.contains("pause"))
-        XCTAssertFalse(store.messageIsFailure)
-        fake.release()
-        await run.value
-        XCTAssertNil(store.running)
-        XCTAssertEqual(store.testReport(seat: "MM", runtime: "muse")?.verdict, .passed)
-    }
-
-    /// Pin let through by a candidate from a test run elsewhere says Muster never saw its answer;
-    /// one let through by a test shown here does not need to.
-    @MainActor
-    func test_a_candidate_from_elsewhere_is_named_as_unseen() async throws {
-        let home = try makeHome(config: mmConfig)
-        let location = ListenerStateLocation(home: home)
-        let candidate = location.candidateURL(seat: "MM", runtime: "muse")
-        try FileManager.default.createDirectory(at: candidate.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let at = (Date().timeIntervalSince1970 - 3600).rounded()
-        try #"{"at": \#(at), "muse": "/bin/muse"}"#.write(to: candidate, atomically: true, encoding: .utf8)
-        let fake = Fake()
-        let store = await makeStore(fake, home: home)
-
-        let gate = store.pinGate(seat: "MM", runtime: "muse", pinKey: "muse")
-        XCTAssertEqual(gate, .candidate(Date(timeIntervalSince1970: at)))
-        XCTAssertNil(store.pinBlocker(seat: "MM", runtime: "muse", pinKey: "muse"))
-        let note = try XCTUnwrap(gate.confirmationNote)
-        XCTAssertTrue(note.contains("Muster did not see this test's answer"))
-        XCTAssertTrue(note.contains(FleetTime.clock(Date(timeIntervalSince1970: at))))
-        XCTAssertTrue(note.contains("\u{00A0} Pin only if you read it there."))
-
-        fake.testWake = SimpleToolsCLIResult(exitCode: 0, stdout: "PASS, NOT PINNED YET: read the result above\n", stderr: "")
-        await store.testWake(seat: "MM", runtime: "muse")
-        let shown = store.pinGate(seat: "MM", runtime: "muse", pinKey: "muse")
-        XCTAssertEqual(shown, .inSession)
-        XCTAssertNil(shown.confirmationNote)
-    }
-
-    /// A passing test wake run here is good for a day, as the candidate it left is, and a pin that
-    /// goes through spends it.
-    @MainActor
-    func test_a_passing_test_wake_run_here_does_not_offer_pin_for_ever() async throws {
-        let home = try makeHome(config: mmConfig)
-        let partitionURL = home.appendingPathComponent("partition.toml")
-        try "version = 1\n\n[seats]\nMM = \"mac\"\n".write(to: partitionURL, atomically: true, encoding: .utf8)
-        let fake = Fake()
-        let store = await makeStore(fake, home: home)
-        fake.testWake = SimpleToolsCLIResult(exitCode: 0, stdout: "PASS, NOT PINNED YET: read the result above\n", stderr: "")
-        await store.testWake(seat: "MM", runtime: "muse")
-        let now = Date()
-        XCTAssertEqual(store.pinGate(seat: "MM", runtime: "muse", pinKey: "muse", now: now), .inSession)
-
-        let later = now.addingTimeInterval(WakeSettingsStore.pinOfferWindow + 60)
-        let old = store.pinGate(seat: "MM", runtime: "muse", pinKey: "muse", now: later)
-        XCTAssertNotNil(old.blocker)
-        XCTAssertNotEqual(old, .inSession)
-
-        fake.pin = SimpleToolsCLIResult(exitCode: 0, stdout: "pinned muse /bin/muse\n", stderr: "")
-        await store.pin(seat: "MM", runtime: "muse")
-        XCTAssertFalse(store.messageIsFailure)
-        XCTAssertNil(store.testReport(seat: "MM", runtime: "muse"))
-        XCTAssertNotNil(store.pinGate(seat: "MM", runtime: "muse", pinKey: "muse", now: now).blocker)
-    }
-
     /// Resume reads a pause on every seat from the pause file, as Pause reads a seat's own entry,
     /// so an old status that does not show it cannot turn it into a lifted pause.
     @MainActor
@@ -914,8 +853,8 @@ final class WakePanelTruthTests: XCTestCase {
     func test_a_cleared_field_over_nothing_is_no_edit() {
         let reading = WakeSettingsStore.readDraft(
             seat: "MM",
-            values: [.model: "", .musePath: " ", .usdPerDay: ""],
-            before: [.model: WakeSetting.unsetText, .musePath: WakeSetting.unsetText, .usdPerDay: WakeSetting.unsetText]
+            values: [.routineURLEnv: "", .routineTimeout: " ", .usdPerDay: ""],
+            before: [.routineURLEnv: WakeSetting.unsetText, .routineTimeout: WakeSetting.unsetText, .usdPerDay: WakeSetting.unsetText]
         )
         XCTAssertEqual(reading, WakeSettingsStore.DraftReading())
     }
@@ -935,29 +874,6 @@ final class WakePanelTruthTests: XCTestCase {
 
     // MARK: The first review round
 
-    /// A wake this app does not know leaves the pin unknown, and the seat needs a look.
-    func test_an_unknown_wake_needs_a_look() {
-        let json = #"{"running": true, "status": {"seats": {"MM": {"wake": "brand_new"}}}}"#
-        let mm = seat("MM", in: WakeSettingsBuilder.build(sources(status: json)))
-        XCTAssertEqual(mm.pinState, .unknownWake)
-        XCTAssertTrue(mm.pinState.isProblem)
-        XCTAssertTrue(mm.needsAttention)
-    }
-
-    /// The eavesdropper's word that the muse pin does not hold means the model it recorded proves
-    /// nothing, so the Model row is not a pass beside a Pin line that says the pin is stale.
-    func test_a_stale_muse_pin_does_not_pass_the_model() {
-        let json = #"{"running": true, "status": {"seats": {"MM": {"wake": "muse", "pin": {"pinned": false, "why": "pin_stale"}}}}}"#
-        let pins = ["MM": ["muse": pin("muse", model: "muse-spark-1.3-contributor")]]
-        let row = setting(.model, of: seat("MM", in: WakeSettingsBuilder.build(sources(status: json, pins: pins))))
-        XCTAssertEqual(row.state, .unproven)
-        XCTAssertTrue(row.note.contains("does not hold"))
-        XCTAssertTrue(row.note.contains("stale"))
-
-        let holding = #"{"running": true, "status": {"seats": {"MM": {"wake": "muse", "pin": {"pinned": true}}}}}"#
-        XCTAssertEqual(setting(.model, of: seat("MM", in: WakeSettingsBuilder.build(sources(status: holding, pins: pins)))).state, .match)
-    }
-
     /// A configuration file that was not read is never DEFAULT:  each row is not known, and the
     /// eavesdropper's own value is still shown.
     func test_an_unread_file_is_not_the_default() {
@@ -970,45 +886,6 @@ final class WakePanelTruthTests: XCTestCase {
         XCTAssertNil(row.configured)
         XCTAssertEqual(row.live, .number(5))
         XCTAssertTrue(row.note.contains("was not read"))
-    }
-
-    /// The seat's own test and its fallback's test each keep their answer, so testing the fallback
-    /// never takes away the seat's own way to Pin.
-    @MainActor
-    func test_the_fallback_test_keeps_the_seats_own_answer() async throws {
-        let home = try makeHome(config: mmConfig)
-        let fake = Fake()
-        let store = await makeStore(fake, home: home)
-        fake.testWake = SimpleToolsCLIResult(exitCode: 0, stdout: "PASS, NOT PINNED YET: read the result above\n", stderr: "")
-        await store.testWake(seat: "MM", runtime: "muse")
-        fake.testWake = SimpleToolsCLIResult(exitCode: 1, stdout: "FAIL: the fallback answered badly\n", stderr: "")
-        await store.testWake(seat: "MM", runtime: "fallback")
-        XCTAssertEqual(store.pinGate(seat: "MM", runtime: "muse", pinKey: "muse"), .inSession)
-        XCTAssertNotNil(store.pinGate(seat: "MM", runtime: "fallback", pinKey: "mcode").blocker)
-        XCTAssertEqual(store.allTestReports(seat: "MM").count, 2)
-        XCTAssertEqual(store.testReport(seat: "MM", runtime: "fallback")?.verdict, .failed)
-    }
-
-    /// A pin candidate that is there and cannot be read is not the same as none:  Pin says why it
-    /// is not offered.
-    @MainActor
-    func test_an_unreadable_candidate_is_not_no_candidate() async throws {
-        let home = try makeHome(config: mmConfig)
-        let location = ListenerStateLocation(home: home)
-        let candidate = location.candidateURL(seat: "MM", runtime: "muse")
-        try FileManager.default.createDirectory(at: candidate.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try #"{"at": "soon", "muse": "/bin/muse"}"#.write(to: candidate, atomically: true, encoding: .utf8)
-        let reader = WakeSettingsReader(location: location, runner: Fake(), roster: ["MM"])
-        guard case .unreadable(let why) = reader.readCandidate(seat: "MM", runtime: "muse") else {
-            return XCTFail("a candidate with no usable time must be unreadable")
-        }
-        XCTAssertTrue(why.contains("no time"))
-        XCTAssertEqual(reader.readCandidate(seat: "MM", runtime: "claude"), .missing)
-
-        let store = await makeStore(Fake(), home: home)
-        XCTAssertNotNil(store.model.seats.first(where: { $0.seat == "MM" })?.unreadableCandidates["muse"])
-        let blocker = try XCTUnwrap(store.pinBlocker(seat: "MM", runtime: "muse", pinKey: "muse"))
-        XCTAssertTrue(blocker.contains("could not be read"))
     }
 
     /// An unchanged ledger is not decoded again on the next read, and a changed one is.  The
@@ -1055,8 +932,8 @@ final class WakePanelTruthTests: XCTestCase {
 
     /// A run that failed with nothing on stderr shows the end of stdout instead of nothing.
     func test_a_failure_with_an_empty_stderr_shows_stdout() {
-        let result = SimpleToolsCLIResult(exitCode: 1, stdout: "line one\nNOT PINNED: why\n", stderr: "")
-        XCTAssertEqual(result.failureTail, "line one\nNOT PINNED: why")
+        let result = SimpleToolsCLIResult(exitCode: 1, stdout: "line one\nFAIL: why\n", stderr: "")
+        XCTAssertEqual(result.failureTail, "line one\nFAIL: why")
         let both = SimpleToolsCLIResult(exitCode: 1, stdout: "out", stderr: "err")
         XCTAssertEqual(both.failureTail, "err")
     }
@@ -1412,29 +1289,6 @@ final class WakePanelTruthTests: XCTestCase {
         let json = #"{"running": true, "status": {"seats": {"QUIET": {"wake": "inbox", "quota": {"known": true, "exhausted": false, "remaining": 40, "reset_at": "2026-11-09T21:00:00Z"}}}}}"#
         let quiet = seat("QUIET", in: WakeSettingsBuilder.build(sources(status: json)))
         XCTAssertTrue(quiet.liveFacts(now: auditNow).contains { $0.text.contains("resets Mon, Nov 9, 3:00 PM") })
-    }
-
-    /// F11.  While a current status says the OpenRouter fallback answers in the seat's place, the
-    /// panel says so beside the quota, and an exhausted quota is not a problem on its own.  An old
-    /// status's word is only that it was answering.
-    func test_the_fallback_answering_for_a_quota_held_seat_is_shown() {
-        let seatJSON = #""QUIET": {"wake": "inbox", "quota": {"known": true, "exhausted": true, "source": "codecaps"}, "fallback": {"runtime": "openrouter", "ready": true, "stands_in": true, "primary_hold": "quota exhausted until Monday"}}"#
-        let quiet = seat("QUIET", in: WakeSettingsBuilder.build(sources(status: #"{"running": true, "status": {"seats": {\#(seatJSON)}}}"#)))
-        XCTAssertTrue(quiet.fallbackStandsIn)
-        XCTAssertTrue(quiet.fallbackIsAnswering)
-        XCTAssertEqual(quiet.fallbackPrimaryHold, "quota exhausted until Monday")
-        XCTAssertFalse(quiet.needsAttention)
-        let facts = quiet.liveFacts(now: auditNow)
-        XCTAssertTrue(facts.contains(WakeFact(text: "the OpenRouter fallback is answering in this seat's place:  quota exhausted until Monday", emphasised: false)), "\(facts)")
-        XCTAssertTrue(facts.contains { $0.text.hasPrefix("quota exhausted") && !$0.emphasised })
-
-        let stopped = seat("QUIET", in: WakeSettingsBuilder.build(sources(status: #"{"running": false, "status": {"seats": {\#(seatJSON)}}}"#)))
-        XCTAssertFalse(stopped.fallbackIsAnswering)
-        XCTAssertTrue(stopped.needsAttention)
-        XCTAssertTrue(stopped.liveFacts(now: auditNow).contains { $0.text.hasPrefix("the OpenRouter fallback was answering") })
-
-        let held = seat("QUIET", in: WakeSettingsBuilder.build(sources(status: #"{"running": true, "status": {"seats": {"QUIET": {"wake": "inbox", "quota": {"known": true, "exhausted": true}}}}}"#)))
-        XCTAssertTrue(held.needsAttention)
     }
 
     /// F12.  A file with no host load gate shows nothing in the file's column, and says the

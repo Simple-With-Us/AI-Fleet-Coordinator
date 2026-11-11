@@ -25,6 +25,7 @@ from git_relay.app_tokens import (
     MINT_READ_ONLY_PERMISSIONS,
     AppTokenError,
     mint_permission_allowed,
+    missing_app_credential,
 )
 from git_relay.audit import AuditLog
 from git_relay.policy import SeatPolicy
@@ -609,6 +610,9 @@ class ZcAuthReasonTests(unittest.TestCase):
         self.assertEqual(status, 503)
         self.assertNotEqual(body.get("error"), "no_app_credential")
         self.assertTrue(body["error"].startswith("app-token minting failed:"))
+
+    def test_a_shape_check_failure_is_not_a_missing_credential(self):
+        self.assertFalse(missing_app_credential(AppTokenError("invalid installation lookup")))
 
     def test_a_suspended_installation_is_not_called_a_missing_credential(self):
         relay = self.relay(SEATS, _Verifier(), _SuspendedApp())

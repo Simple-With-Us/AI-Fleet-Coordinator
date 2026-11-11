@@ -1,7 +1,7 @@
 import Foundation
 
-// Reading the wake settings:  the configuration file,  the eavesdropper's own status,  the pins
-// that prove a binary works,  and the ledger that says how much of the budget is used.
+// Reading the wake settings:  the configuration file,  the eavesdropper's own status,  the kill
+// switch,  and the ledger that says how much of the budget is used.
 //
 // Nothing here decides anything.  It reads,  and hands what it read to the builder.
 
@@ -34,18 +34,6 @@ struct ListenerStateLocation: Equatable {
     /// One seat's directory.
     func seatDirectory(_ tag: String) -> URL {
         root.appendingPathComponent(tag, isDirectory: true)
-    }
-
-    /// The pin file for a runtime.
-    func pinURL(seat: String, runtime: String) -> URL {
-        let name = runtime == "claude" ? "wake-pin.json" : "wake-pin-\(runtime).json"
-        return seatDirectory(seat).appendingPathComponent(name)
-    }
-
-    /// The candidate a passing `test-wake --run` leaves for a runtime, waiting to be pinned.
-    func candidateURL(seat: String, runtime: String) -> URL {
-        let name = runtime == "claude" ? "wake-pin-candidate.json" : "wake-pin-candidate-\(runtime).json"
-        return seatDirectory(seat).appendingPathComponent(name)
     }
 
     /// The seat's wake ledger.
@@ -160,7 +148,7 @@ struct WakeSettingsReader {
         self.ledgerCache = ledgerCache
     }
 
-    /// The maximum size of the configuration and pin files this reads.
+    /// The maximum size of the configuration and pause files this reads.
     static let maximumFileBytes = 32 * 1024 * 1024
     /// The most of a wake ledger this reads, from its end.  The counters cover one day and the
     /// list shows eight wakes, while the ledger grows for the life of the seat, so only its tail
@@ -241,49 +229,26 @@ struct WakeSettingsReader {
 
         // The seats to show:  the roster,  then every seat the file or the eavesdropper knows.
         var tags = roster
-        for tag in sources.config.seatTags where !tags.contains(tag) {
+        // The listener folds a section's name to upper case, so `[seat.mm]` is the roster's MM and
+        // is not shown again as a seat of its own.
+        for tag in sources.config.seatTags where !tags.contains(where: { $0.uppercased() == tag.uppercased() }) {
             tags.append(tag)
         }
-        for tag in status?.seatTags ?? [] where !tags.contains(tag) {
+        for tag in status?.seatTags ?? [] where !tags.contains(where: { $0.uppercased() == tag.uppercased() }) {
             tags.append(tag)
         }
         sources.seats = tags
 
-        // The pins,  the pin candidates,  and the ledgers.
-        var pins: [String: [String: PinEvidence]] = [:]
-        var unreadablePins: [String: [String: String]] = [:]
-        var candidates: [String: [String: Date]] = [:]
-        var unreadableCandidates: [String: [String: String]] = [:]
+        // The ledgers.
         var usage: [String: WakeUsage] = [:]
         var recent: [String: [WakeLedger.Outcome]] = [:]
         var usageProblems: [String: String] = [:]
         var tornRows: [String: Int] = [:]
         // The builder's own answer decides which seats have them,  so a seat it shows live data for
-        // never shows zero usage or no pins for want of a read.
+        // never shows zero usage for want of a read.
         for tag in tags where !WakeSettingsBuilder.host(of: tag, sources: sources).isElsewhere {
             // The eavesdropper keeps a seat's files under its upper-cased name.
             let directoryName = tag.uppercased()
-            var seatPins: [String: PinEvidence] = [:]
-            var seatUnreadable: [String: String] = [:]
-            var seatCandidates: [String: Date] = [:]
-            var seatUnreadableCandidates: [String: String] = [:]
-            for runtime in WakeType.pinKeys {
-                switch readPin(seat: directoryName, runtime: runtime) {
-                case .found(let evidence): seatPins[runtime] = evidence
-                case .unreadable(let why): seatUnreadable[runtime] = why
-                case .missing: break
-                }
-                switch readCandidate(seat: directoryName, runtime: runtime) {
-                case .found(let at): seatCandidates[runtime] = at
-                case .unreadable(let why): seatUnreadableCandidates[runtime] = why
-                case .missing: break
-                }
-            }
-            pins[tag] = seatPins
-            if !seatUnreadable.isEmpty { unreadablePins[tag] = seatUnreadable }
-            if !seatCandidates.isEmpty { candidates[tag] = seatCandidates }
-            if !seatUnreadableCandidates.isEmpty { unreadableCandidates[tag] = seatUnreadableCandidates }
-
             let ledgerURL = location.ledgerURL(seat: directoryName)
             switch readLedger(ledgerURL, at: readAt) {
             case .missing:
@@ -310,10 +275,6 @@ struct WakeSettingsReader {
                 recent[tag] = parsed.outcomes
             }
         }
-        sources.pins = pins
-        sources.unreadablePins = unreadablePins
-        sources.candidates = candidates
-        sources.unreadableCandidates = unreadableCandidates
         sources.usage = usage
         sources.recentWakes = recent
         sources.usageProblems = usageProblems
@@ -351,78 +312,6 @@ struct WakeSettingsReader {
             )
         }
         return .entries(entries)
-    }
-
-    /// What reading a pin file found.
-    enum PinRead: Equatable {
-        case missing
-        case found(PinEvidence)
-        case unreadable(String)
-    }
-
-    /// The pin that proves a seat's binary works.  A Claude, muse or mcode pin names a binary;  an
-    /// OpenRouter pin names a model and a request, and no binary.
-    private func readPin(seat: String, runtime: String) -> PinRead {
-        let url = location.pinURL(seat: seat, runtime: runtime)
-        let text: String
-        switch readFile(url, limit: Self.maximumFileBytes) {
-        case .missing: return .missing
-        case .unreadable(let why): return .unreadable(why)
-        case .text(let read, _): text = read
-        }
-        struct PinFile: Decodable {
-            var at: Double?
-            var model: String?
-            var claude: String?
-            var muse: String?
-            var mcode: String?
-        }
-        guard let data = text.data(using: .utf8),
-              let file = try? JSONDecoder().decode(PinFile.self, from: data) else {
-            return .unreadable("The pin file at \(url.path) is not a pin this app can read.")
-        }
-        let binary = file.claude ?? file.muse ?? file.mcode
-        let isOpenRouter = runtime.hasPrefix("openrouter")
-        guard binary != nil || (isOpenRouter && file.model != nil) else {
-            return .unreadable("The pin file at \(url.path) names no binary or model.")
-        }
-        return .found(PinEvidence(
-            runtime: runtime,
-            binary: binary,
-            model: file.model,
-            verifiedAt: file.at.map { Date(timeIntervalSince1970: $0) },
-            pinned: true,
-            why: nil
-        ))
-    }
-
-    /// What reading a pin candidate found.
-    enum CandidateRead: Equatable {
-        case missing
-        /// When the passing test wake left it.
-        case found(Date)
-        /// The file is there and is not a candidate this app can read.  The text says why.
-        case unreadable(String)
-    }
-
-    /// When a passing test wake of a runtime left its candidate.  A file that is there and cannot
-    /// be read, or holds no usable time, is unreadable and never the same as no candidate.
-    func readCandidate(seat: String, runtime: String) -> CandidateRead {
-        let url = location.candidateURL(seat: seat, runtime: runtime)
-        let text: String
-        switch readFile(url, limit: Self.maximumFileBytes) {
-        case .missing: return .missing
-        case .unreadable(let why): return .unreadable(why)
-        case .text(let read, _): text = read
-        }
-        guard let data = text.data(using: .utf8),
-              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-            return .unreadable("The pin candidate at \(url.path) is not a JSON object.")
-        }
-        guard let at = object["at"] as? Double, at.isFinite, at > 0 else {
-            return .unreadable("The pin candidate at \(url.path) holds no time it was made.")
-        }
-        return .found(Date(timeIntervalSince1970: at))
     }
 
     /// What reading a wake ledger found.

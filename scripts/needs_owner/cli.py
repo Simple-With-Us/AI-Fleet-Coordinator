@@ -2,7 +2,7 @@
 
   needs-owner file  --by SEAT --app APP --question TEXT --option TEXT [--option TEXT ...]
                     [--low-stakes N ...] [--recommend N] [--parent ID] [--context TEXT]
-                    [--urgent] [--again] [--mirror-of TOPIC_LINK] [--dry-run] [--json]
+                    [--urgent] [--again] [--mirror-of TOPIC_LINK] [--why-owner CLASS] [--dry-run] [--json]
   needs-owner adopt ID --by SEAT --option TEXT [...] [--question TEXT] [--low-stakes N ...] [--recommend N]
                     [--parent ID] [--context TEXT] [--no-notify] [--json]
   needs-owner list  [--open | --replied | --all] [--seat SEAT] [--json]
@@ -78,6 +78,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="the question for Jay (at most 200 characters)",
     )
     p.add_argument("--urgent", action="store_true", help="file as P1")
+    p.add_argument(
+        "--why-owner",
+        metavar="CLASS",
+        help="why this needs Jay:  identity, credential, money, legal, irreversible or "
+        "policy (required when NEEDS_OWNER_BAR is enforce;  everything else you decide, or post to Side-Chats or Pending-for-Jay)",
+    )
     p.add_argument(
         "--again",
         action="store_true",

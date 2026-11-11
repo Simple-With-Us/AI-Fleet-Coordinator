@@ -1555,7 +1555,13 @@ def touch_session(
     profile_scope: str,
     native_session_id: str,
 ) -> dict[str, Any]:
-    """Stamp last_seen_at for a live session without changing its fields."""
+    """Stamp last_seen_at for a live session without changing its fields.
+
+    A live session's answer also names the letter and generation it holds now, so a hook
+    that touches on a schedule learns of a letter the registry changed in place (a relabel,
+    or a restore that moved records between letters) and retitles its chat.  The fields are
+    additions only: `record_id` and `outcome` keep their meaning, a closed session's answer
+    is unchanged, and a live row with no live letter (none to name) answers without them."""
     for name, value in (
         ("verified_host", verified_host),
         ("profile_scope", profile_scope),
@@ -1574,7 +1580,12 @@ def touch_session(
         if row["closed_at"]:
             return {"record_id": row["record_id"], "outcome": "closed"}
         registry.mark_seen(row["record_id"])
-        return {"record_id": row["record_id"], "outcome": "seen"}
+        out: dict[str, Any] = {"record_id": row["record_id"], "outcome": "seen"}
+        letter, generation = registry._active_alias(registry._conn, row["record_id"])
+        if letter:
+            out["label"] = letter
+            out["generation"] = generation
+        return out
     finally:
         registry.close_db()
 

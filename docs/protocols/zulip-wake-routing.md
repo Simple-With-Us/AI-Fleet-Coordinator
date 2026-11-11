@@ -1,12 +1,13 @@
 # Zulip wake routing: the one way
 
-Owner rulings, Nov 10 (verbatim in the OPS-1048 Zulip topic):  one wake path for every
-multithreaded platform;  the routing portion simply does not exist for single-threaded
-platforms;  no per-platform models and no headless platform runs, ever;  the model's only
-role is the PICK in the minority of cases deterministic code cannot decide, and its only
-permitted message is a clarification question, which travels as the Operator's own DM to
-the wake's sender or tagger (the only DM any party sends;  anything DM-shaped goes to
-Side-Chats).
+Owner rulings, Nov 10, as corrected the same day (verbatim in the OPS-1048 Zulip topic,
+including the corrections relayed by Claude AA):  one wake path for every multithreaded
+platform;  the routing portion simply does not exist for single-threaded platforms;  ONE
+headless decider for all platforms (OpenRouter on the Operator's preset) used only when
+the deterministic rules cannot decide, whose only permitted message is a clarification
+question traveling as the Operator's own DM to the wake's sender or tagger (the only DM
+any party sends;  anything DM-shaped goes to Side-Chats);  and every path then DELIVERS
+AND WAKES the picked chat, each platform using whatever it needs to do that.
 
 ## The chain
 
@@ -20,10 +21,14 @@ Side-Chats).
            2. else the live registration whose title shares the wake topic's words
            3. else the most recently seen live registration on the host
            (a sub-agent session is never picked)
-      -> the pick is receipted (wakes.jsonl);  the wake ENDS there
-      -> surfacing, not delivery:  the message sits in the seat inbox, the Operator's
-         pending-inbox tells a live session, the owner queue tells the owner.  Nothing
-         composes a reply, nothing runs a turn inside a chat.
+      -> the picked chat is DELIVERED TO AND WOKEN - on every path, the deterministic one
+         included ("why would I want to route things and not deliver them").  Each platform
+         uses whatever it needs to wake its chat (for ZCode, a headless resume of the picked
+         session);  the delivery prompt carries metadata and the thread link, never the
+         message body quoted.
+      -> the pick and the delivery are receipted (wakes.jsonl);  a failed delivery retries
+         through the listener.  The message also sits in the seat inbox and the Operator's
+         pending-inbox, so a live session sees it either way.
 
 ## The router contract (what every platform's router implements)
 
@@ -36,10 +41,12 @@ Side-Chats).
   not retry a 200);  the receipt fields are the router's own record:
   `{wake_id, letter, session_id, thread_link, picked: letter|topic-match|most-recent|"", reason}`.
 - Dedupe:  one receipt per wake id, under a lock;  a repeated id answers the record.
-- Determinism first:  the rules above, in order.  The consultant (the Operator's preset,
-  via OpenRouter) is called ONLY when they cannot decide, its output is a PICK (a session
-  id) or ONE clarification question (relayed by the Operator as its own DM to the
-  sender/tagger) - never reply text, never any other message.
+- Determinism first:  the rules above, in order.  ONE headless decider for every platform
+  (the Operator's preset, via OpenRouter - the owner's words:  not "a bunch of different
+  headless models on a per platform basis"), called ONLY when the deterministic rules
+  cannot decide.  It DECIDES - its output is a pick (a session id) or ONE clarification
+  question (relayed by the Operator as its own DM to the sender/tagger) - it never writes
+  reply text.  It never answers;  the woken chat answers.
 - No secrets in the router's answer, none in its logs;  the signing key never leaves it.
 
 The reference implementation is `scripts/zc-wake-bridge` (ZCode, both hosts lettered) and

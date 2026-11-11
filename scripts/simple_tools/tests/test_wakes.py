@@ -416,7 +416,16 @@ class ReplyTextTests(unittest.TestCase):
 
 
 class BudgetTests(unittest.TestCase):
-    budget = dict(BUDGET_DEFAULTS)
+    # The five wake count caps have no default since Nov 10, 2026 (an unset cap is no limit, see
+    # test_seat_schema.py), so these tests set them, as a seat does, to the numbers they pin.
+    budget = dict(
+        BUDGET_DEFAULTS,
+        wakes_per_hour=6,
+        wakes_per_day=40,
+        per_topic_per_hour=2,
+        owner_per_day=20,
+        owner_per_topic_per_hour=6,
+    )
 
     def view(self, wake_id, at, *, owner=False, key="k", state="done", cost=0.03):
         return {

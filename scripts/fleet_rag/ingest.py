@@ -26,9 +26,10 @@ and re-embeds nothing that already landed.  A non-blocking flock on
 
 A full untruncated `ingest --all --prune` run ends by upserting the ingest sentinel
 (fleet_rag.health) with ok=true/false so the Hetzner health rows see the outcome;  the
-heartbeat-URL GET is an optional extra.  That nightly pass is the only run that attests health:
-a partial or unpruned one still writes its log and state, but leaves the sentinel and
-last-run.json alone, so it cannot hide a stale or failed night.
+heartbeat-URL GET is an optional extra.  That nightly pass attests health, and so does
+the server nightly set (linear, doc, skill, memory).  A partial or unpruned run still
+writes its log and state, but leaves the sentinel and last-run.json alone, so it cannot
+hide a stale or failed night.  Apple Notes stay in `--all` and are never pruned.
 
 Known limitation — shared chunks: identical chunk text collapses to ONE point (the id is the
 content hash), and a point carries a single doc_id.  When a group writes a row whose id is
@@ -60,7 +61,7 @@ import uuid
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from . import core, health, sources, telemetry
+from . import core, health, mirror, sources, telemetry
 from .chunk import chunk_markdown
 from .core import FleetRagError, Qdrant, build_point, content_hash, eprint, match_filter, now_ms
 from .scrub import GitleaksError, gitleaks_flagged, scrub
@@ -627,10 +628,14 @@ def _attests_health(
     must not claim the queue either, or a diagnostic would lock the partial refreshes
     out for the length of the claim (Sentry review, PR #813).
     """
+    nightly_sets = {
+        frozenset(sources.NIGHTLY_SOURCES),
+        frozenset(sources.SERVER_NIGHTLY_SOURCES),
+    }
     return (
         not dry_run
         and prune
-        and set(names) == set(sources.NIGHTLY_SOURCES)
+        and frozenset(names) in nightly_sets
         and since_ms is None
         and limit is None
     )
@@ -662,7 +667,11 @@ def run(
         raise FleetRagError(
             f"unknown source(s): {', '.join(unknown)}; known: {', '.join(GENERATORS)}"
         )
-    if prune and "linear" in names and set(names) != set(sources.NIGHTLY_SOURCES):
+    allowed_linear_prune = {
+        frozenset(sources.NIGHTLY_SOURCES),
+        frozenset(sources.SERVER_NIGHTLY_SOURCES),
+    }
+    if prune and "linear" in names and frozenset(names) not in allowed_linear_prune:
         raise FleetRagError(
             "Linear prune requires a separately verified complete deletion inventory; "
             "this generator is incremental even with FLEET_RAG_LINEAR_FULL. "
@@ -751,6 +760,7 @@ def _run_locked(
         "per_source": {},
         "errors": [],
         "warnings": [],
+        "guard_trips": [],
     }
 
     if cfg is None or (qd is None and not dry_run):
@@ -881,11 +891,22 @@ def _run_locked(
             report["warnings"].append(
                 "linear: pruning skipped; generator is not a complete deletion inventory"
             )
-        if prune and source_ok and name != "linear":
+        if prune and source_ok and name == "apple-note":
+            # Notes are upserted at write time (AFC-685).  Force does not override this:
+            # the source never enters the pending prune list.
+            report["warnings"].append(
+                "apple-note: pruning skipped; write-time upserts own the corpus"
+            )
+        if prune and source_ok and name not in ("linear", "apple-note"):
             # Deferred:  no source prunes until every source in the run has finished
             # cleanly (AFC-677).  A failure anywhere means the run cannot vouch that a
             # missing document is really gone.
-            pending_prunes.append((name, yielded, stats))
+            gate = _prune_gate(name)
+            if gate:
+                report["warnings"].append(gate[0])
+                report["guard_trips"].append({"source": name, "reason": gate[1]})
+            else:
+                pending_prunes.append((name, yielded, stats))
         log(f"[{name}] done in {time.monotonic() - t0:.1f}s: {json.dumps(stats)}")
 
     if pending_prunes:
@@ -917,6 +938,28 @@ def _run_locked(
 # deliberate one-off cleanup;  nothing lifts (1).
 PRUNE_FORCE_ENV = "FLEET_RAG_PRUNE_FORCE"
 PRUNE_ROOT_MIN_DOCS = 5  # a repo with fewer tracked docs may legitimately empty out
+
+
+def _prune_gate(name: str) -> tuple[str, str] | None:
+    """Why this source must not be pruned, as (warning, guard reason), or None.
+
+    A stale or missing skill/memory mirror is a guard trip and is not a failed
+    source, so doc and linear can still prune.  Force does not lift the gate.
+    The code-root gate applies only when the server job asks for it, so a Mac
+    nightly that reads ~/Code keeps its current prune behavior.
+    """
+    if name == "doc" and os.environ.get("FLEET_RAG_REQUIRE_CODE_ROOT") == "1":
+        if not (os.environ.get("FLEET_CODE_ROOT") or "").strip():
+            return ("doc: pruning skipped; FLEET_CODE_ROOT is unset", "code-root-unset")
+    if name not in mirror.MIRROR_SOURCES:
+        return None
+    root = mirror.mirror_root()
+    if root is None:
+        return None
+    status = mirror.mirror_status(root, time.time(), mirror.max_age_s())
+    if status.fresh:
+        return None
+    return (f"{name}: pruning skipped; mirror {status.reason}", status.reason)
 
 
 def _prune_candidates(name: str, yielded: set[str], state: dict) -> list[str]:
@@ -988,6 +1031,7 @@ def _run_pending_prunes(
         if refusal and not force:
             report["errors"].append(refusal)
             report["ok"] = False
+            report.setdefault("guard_trips", []).append({"source": name, "reason": "prune-refused"})
             log(f"[{name}] ERROR {refusal}")
             continue
         if refusal:
@@ -1156,8 +1200,8 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument(
         "--all",
         action="store_true",
-        help="nightly sources (linear, doc, skill, memory, apple-note; "
-        "excludes chat-log — pass --source chat-log for the rare policy scan)",
+        help="nightly sources (linear, doc, skill, memory; apple-note is write-time only — "
+        "pass --source apple-note for a manual refresh; excludes chat-log)",
     )
     g.add_argument("--source", help="comma-separated: " + ",".join(GENERATORS))
     g.add_argument(
