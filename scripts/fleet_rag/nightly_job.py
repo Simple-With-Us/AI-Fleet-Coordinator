@@ -383,9 +383,7 @@ def unit_sync_result(show: Callable[[list[str]], str] | None = None) -> int:
     return 0 if out.strip() == "success" else 1
 
 
-def code_sync(
-    runner: Callable[[], int] | None = None, env: dict | None = None
-) -> int:
+def code_sync(runner: Callable[[], int] | None = None, env: dict | None = None) -> int:
     if runner is not None:
         return runner()
     if (env or {}).get(SYNC_BY_UNIT_ENV, "").strip() == "1":
