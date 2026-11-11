@@ -142,9 +142,20 @@ export const WAKE_SECRETS = Object.freeze({
 // reads the same value as MA_ROUTINE_KEY (listener_api_keys:  a seat with no hmac routine falls
 // back to <CODE>_ROUTINE_KEY), so it is the existing per-seat read-key mechanism, not a new
 // credential family.
+// Owner, Nov 10 2026 ("make the wake key for everyone"):  every hosted seat gets a read key.  CLAUDE, CODEX and CURSOR have
+// no wake route either (their wake is `inbox`), so they are listed here like MA.  Each is the same value as the listener's
+// <CODE>_ROUTINE_KEY (Infisical AI Fleet Coordinator, prod, /zulip) and is installed as a Worker secret of this name.
 export const LISTENER_READ_SECRETS = Object.freeze({
   MA: "WAKE_HMAC_KEY_MA",
+  CLAUDE: "WAKE_HMAC_KEY_CLAUDE",
+  CODEX: "WAKE_HMAC_KEY_CODEX",
+  CURSOR: "WAKE_HMAC_KEY_CURSOR",
 });
+
+// Every secret name that holds a seat's listener key, wake or read-only.  The spike, health and WhatsApp keys must never equal
+// any of them (key separation), so their reuse guards compare against this list and not against WAKE_SECRETS alone (kody on
+// #1768:  a read key reused as one of those keys would otherwise pass silently).
+export const LISTENER_KEY_SECRET_NAMES = Object.freeze([...Object.values(WAKE_SECRETS), ...Object.values(LISTENER_READ_SECRETS)]);
 
 // The Operator notes API key (AFC-486, docs/protocols/operator-notes.md):  the Worker signs every notes_* request
 // to <LISTENER_API_URL>/notes/v1/ as the principal WORKER with this secret, the Infisical key
