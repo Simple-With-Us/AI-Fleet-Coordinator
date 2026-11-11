@@ -2014,6 +2014,7 @@ class Daemon:
             muted=runner.muted,
             followed=runner.followed,
             operator_user_id=OPV.pinned_user_id(self.env),
+            seat_has_routine=runner.cfg.routine is not None,
         )
 
     def handle_events(self, runner: SeatRunner, events: Iterable[Mapping[str, Any]]) -> None:
@@ -3603,10 +3604,17 @@ class Daemon:
 
     def takeover(self, runner: SeatRunner, pending: W.Pending) -> str | None:
         """A live session that took over:  a lease on the topic, or for a mention trigger, a
-        wake-capable claude-code lease with mentions.  A lease the trigger came back from (grace
-        release or reap) never takes it again, so the headless wake runs instead of looping."""
+        wake-capable claude-code lease with mentions.  Never for a seat with a routine.  A lease
+        the trigger came back from (grace release or reap) never takes it again, so the headless
+        wake runs instead of looping."""
         skip = set(pending.skip_leases)
         views = [v for v in self.lease_views(runner) if v.lease_id not in skip]
+        if runner.cfg.routine is not None:
+            # One wake path:  every wake a routine seat runs was triggered by a mention-class
+            # message, and router.route never hands one to a lease, neither the newest session nor a
+            # lease on the topic.  A session letter must reach its chat whoever follows the topic,
+            # and only the routine's router can honour it.
+            return None
         if pending.type == "stream":
             on_topic = [v for v in views if pending.key in v.topics]
             if on_topic:
