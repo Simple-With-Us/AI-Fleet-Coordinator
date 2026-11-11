@@ -363,7 +363,9 @@ def _read_token_file() -> str | None:
 
 def _read_token_bound() -> bool:
     """Whether a reader binding is configured (the variable, a named file, or the default file), without reading it."""
-    if (os.environ.get(INFISICAL_READ_TOKEN) or "").strip() or (os.environ.get(INFISICAL_READ_TOKEN_FILE) or "").strip():
+    if (os.environ.get(INFISICAL_READ_TOKEN) or "").strip() or (
+        os.environ.get(INFISICAL_READ_TOKEN_FILE) or ""
+    ).strip():
         return True
     home = (os.environ.get("HOME") or "").strip()
     return bool(home) and os.path.lexists(os.path.join(home, *DEFAULT_READ_TOKEN_FILE))
