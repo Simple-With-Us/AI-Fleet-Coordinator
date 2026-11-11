@@ -962,9 +962,11 @@ def main(argv: list[str]) -> int:
         SEAT, DEFAULTS, Path(named or state / "config.json"), required=bool(named)
     )
     settings.load()
-    key_file = Path(env.get("CLAUDE_WAKE_KEY_FILE") or state / "routine-key")
+    # The routine key is the secret knob the settings read from Infisical:  there is no key file.
     # No decider is configured:  a wake the rules cannot link goes to the most recent live chat.
-    router = WR.Router(make_platform(env, settings), env, settings, state, key_file, consult=None)
+    router = WR.Router(
+        make_platform(env, settings), env, settings, state, settings.routine_key, consult=None
+    )
     previous = signal.signal(signal.SIGHUP, lambda _signum, _frame: settings.kick())
     settings.start_refresh()
     try:

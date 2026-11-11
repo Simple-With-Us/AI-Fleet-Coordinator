@@ -839,3 +839,19 @@ jobs:
           xcodebuild -project Muster.xcodeproj -scheme Muster -configuration Debug \
             -destination 'platform=macOS' -derivedDataPath .build/CITest \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= test
+      # Every panel rendered to a PNG, light and dark, at the window's default and minimum size
+      # (AFC-707).  The test host renders off screen and never comes forward, and no panel's
+      # reader starts a process or reaches the network.  No pixel baselines, but a layout gate:
+      # a missing, blank or wrong-size PNG or a split view outside the window fails the job.
+      - name: Render the Muster panels
+        working-directory: muster
+        timeout-minutes: 15
+        run: script/render_panels.sh
+      - name: Upload the panel screenshots
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: panel-screenshots
+          path: muster/.build/panel-screenshots
+          if-no-files-found: error
+          retention-days: 14
