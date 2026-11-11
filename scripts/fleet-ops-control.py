@@ -10,6 +10,9 @@
   python3 scripts/fleet-ops-control.py server unit-status UNIT            --plan [--json]
   python3 scripts/fleet-ops-control.py server redeploy RESOURCE_UUID      (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py server eavesdropper-status server --plan [--json]
+  python3 scripts/fleet-ops-control.py server listener-settings server    (--plan | --yes) [--json]
+  python3 scripts/fleet-ops-control.py listener-settings get|plan|apply [--set KEY=VALUE ...]
+                                       [--file PATH] [--expect SHA256] [--yes] [--json]
   python3 scripts/fleet-ops-control.py --from-ssh                         (the forced command)
   python3 scripts/fleet-ops-control.py --from-muster                      (the forced command of muster-exec)
   python3 scripts/fleet-ops-control.py --check-token                      (install check, not over ssh)
@@ -56,6 +59,23 @@ What it promises:
     takes no lock, writes no audit row for a plan and refuses `--yes`.  When the status cannot be
     read the result is `unavailable` with an `errorCode` word (never a path or docker's own
     text) and the exit status is 1, although no command failed.
+  * `listener-settings` changes allowlisted settings of the server listener's live config
+    (`/data/listener.toml` in the `eavesdropper` container) and nothing else.  The work is
+    `scripts/simple_tools/server/listener_settings_edit.py`, and `scripts/fleet-ops-listener-settings.json`
+    is its one allowlist, read from beside this helper with the same owner and mode rule as the
+    reducer module.  `get` answers the allowlisted settings (never the file), `plan` the settings
+    and lines that would change with the listener's own check-config verdict, and `apply` backs
+    up, writes atomically, reloads and reads back, putting the old file back when the listener
+    refuses.  `apply` is refused (`apply_disabled`) until the allowlist says `"applyEnabled": true`,
+    which is the owner's switch.  With `--file PATH` the editor runs in this process on that file
+    (a copy, a fixture);  without it, on the server only, it runs inside the container with one
+    fixed `docker exec -i --user simpletools eavesdropper` argv and the request on its standard
+    input, so no word of a request reaches an argv.  Over ssh the verb is
+    `server listener-settings server` with `--plan` (a get, or a plan when standard input holds
+    `{"set": {...}}`) or `--yes` (the apply, which may carry the plan's hash as
+    `expectPlanSHA256`);  `--file` and `--set` are not offered there.  An apply holds the one
+    action lock and writes one audit row with the target `listener settings` and no setting or
+    value.  The `--from-muster` route does not offer it.
   * `server unit-status UNIT --plan` reads one listed unit (an entry of the allowlist's server `units`
     or its `watch` list, in the scope the entry names) with one fixed `systemctl [--user] show`, no
     sudo, and answers its ActiveState, SubState, Result, last exit time and (for a timer) last
@@ -197,6 +217,25 @@ TRUSTED_MODULE_UID = 0
 REDUCED_STATUS_NAME = "reduced_status.py"
 REDUCED_STATUS_MAX_BYTES = 256 * 1024
 # The reason words an unavailable answer may carry, each with the plain sentence for `detail`.
+# `listener-settings`:  the editor module and its allowlist sit beside this helper;  inside the
+# container the module is at its image path.  Every word of the docker argv is a constant here.
+LISTENER_SETTINGS_VERB = "listener-settings"
+LISTENER_SETTINGS_TARGET = "server"
+LISTENER_SETTINGS_ACTIONS = ("get", "plan", "apply")
+LISTENER_ALLOWLIST_NAME = "fleet-ops-listener-settings.json"
+LISTENER_ALLOWLIST_MAX_BYTES = 64 * 1024
+LISTENER_EDITOR_PARTS = ("simple_tools", "server", "listener_settings_edit.py")
+LISTENER_EDITOR_MAX_BYTES = 256 * 1024
+LISTENER_EDITOR_PYTHON = "/usr/local/bin/python3"
+LISTENER_EDITOR_PATH = "/app/scripts/simple_tools/server/listener_settings_edit.py"
+LISTENER_REQUEST_MAX_BYTES = 32 * 1024
+LISTENER_ANSWER_MAX_BYTES = 512 * 1024
+LISTENER_EDIT_TIMEOUT = 180
+LISTENER_STDIN_TIMEOUT = 5
+LISTENER_AUDIT_TARGET = "listener settings"
+LISTENER_CODE_RE = re.compile(r"[a-z][a-z0-9_]{0,47}")
+LISTENER_RESULTS = ("read", "planned", "unchanged", "applied", "refused", "failed")
+
 EAVESDROPPER_UNAVAILABLE = {
     "docker_unavailable": "docker could not be run",
     "timeout": "reading the status took too long",
@@ -673,8 +712,26 @@ def _kill_and_reap(proc):
         pass
 
 
-def run_bounded_read(argv, timeout, env, max_bytes, stderr_max=DOCKER_STDERR_MAX):
-    """(exit status, stdout, stderr, over).  An argv list, never a shell, stdin closed.
+def _send_input(proc, data):
+    """Write `data` to the child's standard input and close it.  True when every byte went.
+
+    The write never waits:  the caller keeps `data` under a pipe's capacity, and a child that
+    does not take it is reported, not waited for."""
+    try:
+        os.set_blocking(proc.stdin.fileno(), False)
+        return os.write(proc.stdin.fileno(), data) == len(data)
+    except OSError:
+        return False
+    finally:
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
+
+
+def run_bounded_read(argv, timeout, env, max_bytes, stderr_max=DOCKER_STDERR_MAX, data=None):
+    """(exit status, stdout, stderr, over).  An argv list, never a shell, stdin closed, or, with
+    `data`, a pipe that is given those bytes and then closed (126 when the child did not take them).
 
     Stdout is never held beyond `max_bytes`: the first byte past the limit kills the child at
     once and answers `over` (True) with no stdout, so a huge file costs neither memory nor the
@@ -687,7 +744,7 @@ def run_bounded_read(argv, timeout, env, max_bytes, stderr_max=DOCKER_STDERR_MAX
     try:
         proc = subprocess.Popen(
             argv,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL if data is None else subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
@@ -702,6 +759,9 @@ def run_bounded_read(argv, timeout, env, max_bytes, stderr_max=DOCKER_STDERR_MAX
     timed_out = False
     selector = selectors.DefaultSelector()
     try:
+        if data is not None and not _send_input(proc, data):
+            _kill_and_reap(proc)
+            return 126, b"", b"", False
         deadline = time.monotonic() + timeout
         selector.register(proc.stdout, selectors.EVENT_READ, "out")
         selector.register(proc.stderr, selectors.EVENT_READ, "err")
@@ -823,6 +883,7 @@ class Context:
         sleep=None,
         monotonic=None,
         reader=None,
+        stdin=None,
     ):
         self.platform = platform or sys.platform
         self.uid = os.getuid() if uid is None else uid
@@ -848,6 +909,8 @@ class Context:
         self.monotonic = monotonic or time.monotonic
         # The bounded reader of `server eavesdropper-status` (see run_bounded_read).
         self.reader = reader or run_bounded_read
+        # The bounded read of this process's own standard input (`server listener-settings`).
+        self.stdin = stdin or read_bounded_stdin
 
     def child_env(self):
         env = {k: v for k, v in self.environ.items() if k in CHILD_ENV_KEEP}
@@ -1135,6 +1198,247 @@ def read_eavesdropper_status(ctx):
     if not isinstance(document, dict):
         return None, "not_json"
     return document, None
+
+
+def read_bounded_stdin(max_bytes=LISTENER_REQUEST_MAX_BYTES, timeout=LISTENER_STDIN_TIMEOUT):
+    """The bytes on standard input, or None when there are more than `max_bytes` or they do not
+    end inside `timeout` seconds.  Nothing to read (closed, a terminal, /dev/null) is b""."""
+    try:
+        fd = sys.stdin.fileno()
+        if os.isatty(fd):
+            return b""
+    except (AttributeError, OSError, ValueError):
+        return b""
+    chunks = []
+    total = 0
+    deadline = time.monotonic() + timeout
+    selector = selectors.DefaultSelector()
+    try:
+        try:
+            selector.register(fd, selectors.EVENT_READ)
+        except (OSError, ValueError):
+            return b""
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not selector.select(remaining):
+                return None
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                return None
+            if not chunk:
+                return b"".join(chunks)
+            total += len(chunk)
+            if total > max_bytes:
+                return None
+            chunks.append(chunk)
+    finally:
+        selector.close()
+
+
+def load_listener_allowlist(ctx):
+    """The listener settings allowlist document, or Refused.
+
+    It is read from beside this helper by `_read_module_source`, so the same owner and mode rule
+    holds as for a module:  a file another account could write is not an allowlist.  Only its
+    outer shape is judged here;  the editor judges every entry, and refuses the whole file for a
+    key that can never be listed."""
+    raw = _read_module_source(ctx, (LISTENER_ALLOWLIST_NAME,), LISTENER_ALLOWLIST_MAX_BYTES)
+    if raw is None:
+        raise Refused(
+            "the listener settings allowlist is missing or not trusted",
+            error_code="allowlist_unavailable",
+        )
+    try:
+        doc = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        doc = None
+    if not isinstance(doc, dict) or not isinstance(doc.get("applyEnabled"), bool):
+        raise Refused(
+            "the listener settings allowlist cannot be read", error_code="allowlist_invalid"
+        )
+    return doc
+
+
+def _load_listener_editor(ctx):
+    """The editor module, loaded from its judged bytes like the reducer, or Refused.
+
+    It needs Python 3.11 (`tomllib`):  an older interpreter is refused here, by name, and the
+    container route, which runs the module inside the image, does not come this way."""
+    source = _read_module_source(ctx, LISTENER_EDITOR_PARTS, LISTENER_EDITOR_MAX_BYTES)
+    module = None
+    if source is not None:
+        try:
+            code = compile(source, LISTENER_EDITOR_PARTS[-1], "exec", dont_inherit=True)
+            module = types.ModuleType("listener_settings_edit")
+            # The module finds this checkout's `simple_tools` from its own place.
+            module.__file__ = str(HELPER_DIR.joinpath(*LISTENER_EDITOR_PARTS))
+            exec(code, module.__dict__)  # noqa: S102 - the bytes were just judged trusted
+        except (Exception, SystemExit):  # noqa: BLE001 - any load failure is the same answer
+            module = None
+    if module is None or not callable(getattr(module, "run_request", None)):
+        raise Refused(
+            "the listener settings editor is missing, not trusted or needs Python 3.11",
+            error_code="editor_unavailable",
+        )
+    return module
+
+
+def run_listener_editor_in_container(ctx, request):
+    """(the editor's answer document, its exit status) for `request`, run inside the eavesdropper
+    container, or Failed.
+
+    One argv, no shell, no sudo:  `docker exec -i --user simpletools eavesdropper
+    /usr/local/bin/python3 -I <the image's editor> --request-stdin`.  The request goes in on
+    standard input, so no setting, value or path from a caller is ever a word of the argv, and the
+    file it edits is the one the container's own SIMPLE_TOOLS_CONFIG names.  The environment is
+    the pinned docker one.  Docker's own words are only classified, never kept."""
+    payload = json.dumps(request, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if len(payload) > LISTENER_REQUEST_MAX_BYTES:
+        raise Refused("the request is too large", error_code="request_too_large")
+    argv = [
+        _docker(),
+        "exec",
+        "-i",
+        "--user",
+        EAVESDROPPER_USER,
+        EAVESDROPPER_CONTAINER,
+        LISTENER_EDITOR_PYTHON,
+        "-I",
+        LISTENER_EDITOR_PATH,
+        "--request-stdin",
+    ]
+    try:
+        scratch = tempfile.TemporaryDirectory(prefix="fleet-ops-docker-")
+    except OSError:
+        raise Failed("docker cannot be run", error_code="docker_unavailable") from None
+    with scratch as config_dir:
+        status, out, err, over = ctx.reader(
+            argv,
+            timeout=LISTENER_EDIT_TIMEOUT,
+            env=_docker_env(config_dir),
+            max_bytes=LISTENER_ANSWER_MAX_BYTES,
+            data=payload,
+        )
+    if over:
+        raise Failed("the editor's answer is too large", error_code="too_large")
+    if status == 127:
+        raise Failed("docker cannot be run", error_code="docker_unavailable")
+    if status == 124:
+        # The edit may have been made:  the caller reads the settings back before trying again.
+        raise Failed("the editor did not finish in time", error_code="timeout", timed_out=True)
+    try:
+        document = json.loads((out or b"").decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        document = None
+    if not isinstance(document, dict) or document.get("tool") != LISTENER_SETTINGS_VERB:
+        if status != 0 and _docker_failure(err) == "container_not_running":
+            raise Failed(
+                "the eavesdropper container is not running", error_code="container_not_running"
+            )
+        raise Failed(
+            "the image has no listener settings editor, or it gave no answer",
+            error_code="editor_unavailable",
+        )
+    return document, (status if status in (0, 1, 2) else 1)
+
+
+def listener_settings(ctx, action, changes, expect=None, file=None):
+    """(answer fields, exit status) of one listener-settings request, or Refused / Failed.
+
+    `file` runs the editor in this process on that file;  without it the editor runs in the
+    server's container.  The fields are the usual `ok`, `result`, `detail` (and `errorCode`), the
+    editor's whole answer as `listenerSettings`, and a plain-text `output` for a terminal."""
+    if action not in LISTENER_SETTINGS_ACTIONS:
+        raise Refused("the listener settings action is get, plan or apply")
+    request = {"action": action, "allowlist": load_listener_allowlist(ctx)}
+    if action != "get":
+        if not isinstance(changes, dict) or not changes:
+            raise Refused("name at least one setting to change", error_code="usage")
+        request["set"] = changes
+    if action == "apply" and expect is not None:
+        request["expectPlanSHA256"] = expect
+    if file is not None:
+        module = _load_listener_editor(ctx)
+        try:
+            document, code = module.run_request(request, path=file)
+        except Exception:  # noqa: BLE001 - the editor answers its own refusals;  this is a fault
+            raise Failed(
+                "the listener settings editor failed", error_code="editor_failed"
+            ) from None
+    else:
+        _server_only(ctx)
+        document, code = run_listener_editor_in_container(ctx, request)
+    result = document.get("result")
+    if result not in LISTENER_RESULTS or not isinstance(document.get("ok"), bool):
+        raise Failed("the editor's answer is not one this helper knows", error_code="editor_failed")
+    fields = {"ok": document["ok"], "result": result, "listenerSettings": document}
+    error = document.get("errorCode")
+    if isinstance(error, str) and LISTENER_CODE_RE.fullmatch(error):
+        fields["errorCode"] = error
+    check = document.get("check") if isinstance(document.get("check"), dict) else {}
+    lines = []
+    if result == "read":
+        settings = document.get("settings") if isinstance(document.get("settings"), dict) else {}
+        fields["detail"] = "%d allowlisted settings" % len(settings)
+        lines = [
+            "%s = %s" % (key, json.dumps(settings[key], sort_keys=True)) for key in sorted(settings)
+        ]
+    elif document["ok"]:
+        changed = document.get("changes") if isinstance(document.get("changes"), list) else []
+        if result == "unchanged":
+            fields["detail"] = "every setting is already as asked"
+        elif result == "planned":
+            fields["detail"] = "%d setting(s) would change; the listener would %s the result" % (
+                len(changed),
+                "take" if check.get("ok") else "NOT take",
+            )
+        else:
+            reload = document.get("reload") if isinstance(document.get("reload"), dict) else {}
+            fields["detail"] = "%d setting(s) changed; %s" % (
+                len(changed),
+                str(reload.get("code") or "reload_skipped").replace("_", " "),
+            )
+        lines = [str(line) for line in document.get("diff") or []]
+    else:
+        fields["detail"] = str(document.get("detail") or result)[:400]
+    lines += ["check: " + str(problem) for problem in check.get("problems") or []]
+    if lines:
+        fields["output"] = "\n".join(lines) + "\n"
+    return fields, code
+
+
+def listener_request_from_stdin(ctx, mode):
+    """(action, changes, expected plan hash) of a `server listener-settings` request.
+
+    Standard input is empty (a get, with `--plan` only) or one JSON object with `set` and, for
+    an apply, an optional `expectPlanSHA256`.  Anything else is refused."""
+    raw = ctx.stdin()
+    if raw is None:
+        raise Refused(
+            "the request on standard input is too large or did not end", error_code="usage"
+        )
+    if not raw.strip():
+        if mode != "plan":
+            raise Refused("an apply needs the changes on standard input", error_code="usage")
+        return "get", None, None
+    try:
+        request = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        request = None
+    if (
+        not isinstance(request, dict)
+        or set(request) - {"set", "expectPlanSHA256"}
+        or not isinstance(request.get("set"), dict)
+        or not request["set"]
+    ):
+        raise Refused(
+            "standard input must be one JSON object with a non-empty set", error_code="usage"
+        )
+    expect = request.get("expectPlanSHA256")
+    if expect is not None and (mode != "yes" or not isinstance(expect, str)):
+        raise Refused("expectPlanSHA256 belongs to an apply", error_code="usage")
+    return ("plan" if mode == "plan" else "apply"), request["set"], expect
 
 
 def _pm2_prefix(ctx):
@@ -2298,6 +2602,27 @@ def handle(
                 status=reduced,
             )
             return answer, 0
+        if scope == "server" and action == LISTENER_SETTINGS_VERB:
+            # Allowlisted settings of the server listener's live config.  `--plan` reads or plans
+            # and takes no lock and writes no audit row;  `--yes` is the apply, under the one
+            # action lock, with one audit row that names no setting and no value.  The request
+            # itself is on standard input, never in the command.  The `--from-muster` route has no
+            # approval form for this verb, so it is refused there outright.
+            audit_target = LISTENER_AUDIT_TARGET
+            if require_approval:
+                raise Refused("listener-settings is not offered on this route")
+            _server_only(ctx)
+            if target != LISTENER_SETTINGS_TARGET:
+                raise Refused("only the server's listener has settings here")
+            edit_action, changes, expect = listener_request_from_stdin(ctx, mode)
+            with contextlib.ExitStack() as held:
+                if mode == "yes" and not lock_held:
+                    held.enter_context(action_lock(ctx))
+                fields, code = listener_settings(ctx, edit_action, changes, expect)
+            answer.update(fields)
+            if mode == "yes":
+                audit_run(ctx, scope, action, target, audit_target, answer, None, extra)
+            return answer, code
         if scope == "server" and action in ("resource-status", "resource-policy"):
             if not config["resourcePolicy"]:
                 raise Refused(
@@ -2850,6 +3175,7 @@ def parse_ssh_command(text):
         "resource-policy",
         "seat-inventory",
         "eavesdropper-status",
+        LISTENER_SETTINGS_VERB,
     ):
         raise Refused("unknown server verb")
     if words[:3] != plain:
@@ -2859,6 +3185,84 @@ def parse_ssh_command(text):
     if ("--plan" in flags) == ("--yes" in flags):
         raise Refused("pass exactly one of --plan or --yes")
     return words
+
+
+def run_listener_settings(argv, ctx, out):
+    """`listener-settings get|plan|apply ...` from a command line (never from ssh):  the exit status.
+
+    `--set KEY=VALUE` (repeatable) names a change, its value read as TOML.  `--file PATH` is the
+    file to act on, edited by the module in this process;  without it the server's container is
+    used, on the server only.  `apply` needs `--yes`, holds the one action lock and writes one
+    audit row.  `--expect` is a plan's `planSHA256`."""
+    as_json = "--json" in argv
+    answer = {
+        "ok": False,
+        "verb": LISTENER_SETTINGS_VERB,
+        "target": LISTENER_AUDIT_TARGET,
+        "commands": [],
+        "result": "refused",
+        "detail": "",
+    }
+    action = None
+    code = 2
+    try:
+        parser = _QuietParser(prog=TOOL, add_help=False)
+        parser.add_argument("action", choices=LISTENER_SETTINGS_ACTIONS)
+        parser.add_argument("--set", action="append", default=[], dest="changes")
+        parser.add_argument("--file")
+        parser.add_argument("--expect")
+        parser.add_argument("--yes", action="store_true")
+        parser.add_argument("--json", action="store_true")
+        try:
+            args = parser.parse_args(argv)
+        except Refused:
+            raise Refused(
+                "usage: listener-settings get|plan|apply [--set KEY=VALUE ...] [--file PATH] "
+                "[--expect SHA256] [--yes] [--json]"
+            ) from None
+        action = args.action
+        answer["verb"] = "%s %s" % (LISTENER_SETTINGS_VERB, action)
+        if action == "get" and (args.changes or args.expect or args.yes):
+            raise Refused("get takes no --set, --expect or --yes")
+        if action == "plan" and (args.expect or args.yes):
+            raise Refused("plan takes no --expect or --yes")
+        if action == "apply" and not args.yes:
+            raise Refused("pass --yes to apply, or use plan to see the changes")
+        if args.file is None and not ctx.platform.startswith("linux"):
+            raise Refused("pass --file PATH:  the live file is in the server's container")
+        changes = None
+        if action != "get":
+            module = _load_listener_editor(ctx)
+            changes = {}
+            for text in args.changes:
+                try:
+                    key, value = module.parse_assignment(text)
+                except module.Refusal as exc:
+                    raise Refused(exc.detail, error_code=exc.code) from None
+                if key in changes:
+                    raise Refused("a setting is named twice", error_code="usage")
+                changes[key] = value
+        with contextlib.ExitStack() as held:
+            if action == "apply":
+                held.enter_context(action_lock(ctx))
+            fields, code = listener_settings(ctx, action, changes, args.expect, file=args.file)
+        answer.update(fields)
+    except Refused as exc:
+        answer.update(ok=False, result="refused", detail=str(exc))
+        if exc.error_code:
+            answer["errorCode"] = exc.error_code
+        code = 2
+    except Failed as exc:
+        answer.update(ok=False, result="failed", detail=str(exc))
+        if exc.error_code:
+            answer["errorCode"] = exc.error_code
+        code = 1
+    if action == "apply":
+        audit_run(
+            ctx, LISTENER_SETTINGS_VERB, action, "", LISTENER_AUDIT_TARGET, answer, None, None
+        )
+    emit(answer, as_json, out)
+    return code
 
 
 def sanitize_for_terminal(text):
@@ -2910,6 +3314,10 @@ def main(argv=None, ctx=None, out=None, muster=None):
         return run_from_muster(argv, ctx, out, muster)
     ctx = ctx or Context()
     out = out or sys.stdout
+    if argv and argv[0] == LISTENER_SETTINGS_VERB:
+        # A command-line verb of its own shape.  The ssh gate below never comes here:  its words
+        # replace `argv` after this line and must begin with `server`.
+        return run_listener_settings(argv[1:], ctx, out)
     if "--from-ssh" in argv:
         # The forced command: nothing but --from-ssh may come from the command line, and
         # the answer is always JSON.

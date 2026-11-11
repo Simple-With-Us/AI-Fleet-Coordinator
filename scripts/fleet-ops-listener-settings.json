@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "notes": [
+    "The one allowlist of scripts/simple_tools/server/listener_settings_edit.py: the settings of the server listener's live config (/data/listener.toml) a tool may change, and the type and range each may take.",
+    "applyEnabled is false until the owner turns it on. While it is false, get and plan work and every apply is refused (apply_disabled).",
+    "A seat's instance, creds, bot, bearer and environment-variable names, the [daemon] instance and owner pins, and any key that reads as a secret, a token, a path or a URL can never be listed here: the editor refuses the whole file if one is."
+  ],
+  "applyEnabled": false,
+  "seat": {
+    "enabled": {"type": "bool"},
+    "wake": {"type": "enum", "values": ["inbox", "http"]},
+    "routine": {
+      "type": "table",
+      "keys": {
+        "url_env": {"type": "seat-env"},
+        "key_env": {"type": "seat-env"},
+        "method": {"type": "enum", "values": ["POST", "PUT", "PATCH"]},
+        "auth": {"type": "enum", "values": ["header", "bearer", "hmac-sha256"]},
+        "header": {"type": "string", "pattern": "[A-Za-z0-9-]{1,64}", "maxLength": 64},
+        "timeout_seconds": {"type": "number", "min": 1, "max": 60},
+        "cost_usd": {"type": "number", "min": 0, "max": 0.25},
+        "signature_prefix": {"type": "string", "pattern": "[A-Za-z0-9=:_.-]{0,32}", "maxLength": 32}
+      }
+    },
+    "budget": {
+      "type": "table",
+      "keys": {
+        "wakes_per_hour": {"type": "int", "min": 0, "max": 10000},
+        "wakes_per_day": {"type": "int", "min": 0, "max": 100000},
+        "per_topic_per_hour": {"type": "int", "min": 0, "max": 10000},
+        "owner_per_day": {"type": "int", "min": 0, "max": 100000},
+        "owner_per_topic_per_hour": {"type": "int", "min": 0, "max": 10000},
+        "usd_per_day": {"type": "number", "min": 0, "max": 100},
+        "board_per_day": {"type": "int", "min": 0, "max": 1000},
+        "routes_per_hour": {"type": "int", "min": 0, "max": 1000},
+        "routes_per_day": {"type": "int", "min": 0, "max": 10000},
+        "route_topic_minutes": {"type": "int", "min": 0, "max": 1440}
+      }
+    },
+    "live": {
+      "type": "table",
+      "keys": {
+        "per_hour": {"type": "int", "min": 0, "max": 10000},
+        "per_day": {"type": "int", "min": 0, "max": 100000},
+        "per_topic_minutes": {"type": "int", "min": 0, "max": 1440},
+        "owner_per_day": {"type": "int", "min": 0, "max": 100000},
+        "loop_turns": {"type": "int", "min": 0, "max": 100}
+      }
+    }
+  },
+  "tables": {
+    "daemon": {
+      "coalesce_seconds": {"type": "number", "min": 0, "max": 3600},
+      "coalesce_max_seconds": {"type": "number", "min": 0, "max": 3600},
+      "owner_coalesce_seconds": {"type": "number", "min": 0, "max": 3600},
+      "stale_after_minutes": {"type": "number", "min": 1, "max": 10080},
+      "held_alert_minutes": {"type": "number", "min": 0, "max": 1440},
+      "held_back_catch_up": {"type": "bool"},
+      "peer_broadcast_reminder_minutes": {"type": "number", "min": 0, "max": 1440},
+      "presence_topics": {"type": "pairs", "maxItems": 32, "maxLength": 60},
+      "host_wake_load_per_core": {"type": "number", "min": 0, "max": 100}
+    },
+    "linear_comments": {"enabled": {"type": "bool"}},
+    "linear_projects": {"enabled": {"type": "bool"}},
+    "notes_queue": {"enabled": {"type": "bool"}},
+    "listener_api": {"enabled": {"type": "bool"}}
+  }
+}
