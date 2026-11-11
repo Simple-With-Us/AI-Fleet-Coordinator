@@ -364,7 +364,9 @@ class Slot:
                         if any(r.get("reservation") == reservation for r in current):
                             self._save([r for r in current if r.get("reservation") != reservation])
                     except OSError:
-                        self.warn("could not remove an unused daily cap reservation; it may still count")
+                        self.warn(
+                            "could not remove an unused daily cap reservation; it may still count"
+                        )
                     if self.policy.mode == ENFORCE and self.policy.cap > 0:
                         raise Refusal(
                             "the daily cap place cannot be reserved safely, so nothing was filed"
