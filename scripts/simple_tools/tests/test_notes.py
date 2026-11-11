@@ -498,6 +498,12 @@ class DirectRunnerTests(unittest.TestCase):
     def run_direct(self, req, runner, **kwargs):
         return N.run_direct(req, self.SCRIPT, env=self.ENV, runner=runner, **kwargs)
 
+    def test_rag_subprocess_env_forwards_recall_binding_only(self):
+        env = {**self.ENV, "FLEET_RECALL_INFISICAL_TOKEN": "st.test", "ZULIP_API_KEY": "z"}
+        got = N.rag_subprocess_env(env)
+        self.assertEqual(got.get("FLEET_RECALL_INFISICAL_TOKEN"), "st.test")
+        self.assertNotIn("ZULIP_API_KEY", got)
+
     def test_fleet_rag_upsert_swallows_subprocess_errors(self):
         with mock.patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("cmd", 1)):
             N._fleet_rag_upsert(request(markdown="x" * 40), "note-id", self.ENV)

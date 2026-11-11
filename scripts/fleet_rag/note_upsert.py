@@ -23,6 +23,7 @@ from .ingest import STATE_PATH, IngestLock, IngestLocked, load_state, process_gr
 from .notes_export import html_to_text, strip_title_line
 
 MIN_BODY = 20  # matches iter_apple_notes
+DEFAULT_LOCK_TIMEOUT_S = 120.0  # wait for nightly ingest.lock before deferring (AFC-685)
 
 
 def note_doc_id(raw_note_id: str) -> str:
@@ -79,7 +80,7 @@ def upsert_written_note(
     request: Mapping[str, Any],
     note_id: str,
     *,
-    lock_timeout_s: float = 0,
+    lock_timeout_s: float = DEFAULT_LOCK_TIMEOUT_S,
     log=eprint,
 ) -> dict[str, Any]:
     """Upsert one note into Qdrant and the ingest state file.  Never raises to callers."""
@@ -152,8 +153,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--lock-timeout",
         type=float,
-        default=0.0,
-        help="seconds to wait for ingest.lock (default 0: skip when nightly ingest runs)",
+        default=DEFAULT_LOCK_TIMEOUT_S,
+        help="seconds to wait for ingest.lock before deferring (default "
+        f"{DEFAULT_LOCK_TIMEOUT_S:g}; 0 fails fast when the lock is held)",
     )
     args = ap.parse_args(argv)
     try:

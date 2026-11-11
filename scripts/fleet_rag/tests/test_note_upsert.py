@@ -71,6 +71,10 @@ class NoteUpsertTests(unittest.TestCase):
         self.assertIn("QDRANT", result.get("error", ""))
 
 
+    def test_default_lock_timeout_waits_before_deferring(self) -> None:
+        self.assertEqual(note_upsert.DEFAULT_LOCK_TIMEOUT_S, 120.0)
+
+
 class AppleNotePruneTests(unittest.TestCase):
     def test_nightly_sources_exclude_apple_note(self) -> None:
         self.assertNotIn("apple-note", sources.NIGHTLY_SOURCES)
