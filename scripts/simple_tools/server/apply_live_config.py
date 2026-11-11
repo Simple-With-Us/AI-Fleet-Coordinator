@@ -55,12 +55,28 @@ ADD_ONLY = ("listener_api", "notes_queue", "linear_projects", "linear_comments")
 
 # The Mac CLI seats the server has held since the Nov 10 one-listener cutover.
 MAC_CLI_SEATS = frozenset(
-    {"CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "OPENCODE", "ZC", "KIMI", "AMP"}
+    {
+        "CLAUDE",
+        "CODEX",
+        "AG",
+        "CURSOR",
+        "GROK",
+        "CLUTCH",
+        "FX",
+        "MM",
+        "MC",
+        "OPENCODE",
+        "ZC",
+        "KIMI",
+        "AMP",
+    }
 )
 
 
 def target(seat: str) -> bool:
-    return seat == "JET" or seat.startswith("GB-") or seat.startswith("BF-") or seat in MAC_CLI_SEATS
+    return (
+        seat == "JET" or seat.startswith("GB-") or seat.startswith("BF-") or seat in MAC_CLI_SEATS
+    )
 
 
 def blocks(text: str) -> tuple[list[str], list[tuple[str, list[str]]]]:
