@@ -1190,6 +1190,40 @@ class ControlVerbTests(Case):
         self.assert_untouched()
         self.assertEqual(self.audit_rows(), [])
 
+    def test_a_value_json_cannot_carry_is_refused_on_every_route(self) -> None:
+        # TOML reads a date, a time, `inf` and `nan`;  JSON, which carries the request into the
+        # container, has none of them.  Each is a refusal, never a fault, and nothing is sent.
+        values = ("2026-01-01", "07:32:00", "2026-01-01T07:32:00Z", "inf", "nan", "[1, 2026-01-01]", "{ a = nan }")
+        for value in values:
+            reader = FakeReader({"tool": "eavesdropper-settings", "ok": True, "result": "planned"})
+            for extra, ctx in (
+                (["--file", str(self.live)], self.ctx()),
+                ([], self.ctx(platform="linux", reader=reader)),
+            ):
+                code, answer = self.run_main(
+                    ["eavesdropper-settings", "plan", "--set", "daemon.coalesce_seconds=" + value, "--json"] + extra,
+                    ctx,
+                )
+                self.assertEqual(
+                    (code, answer["result"], answer.get("errorCode")),
+                    (2, "refused", "value_not_allowed"),
+                    (value, extra),
+                )
+            self.assertEqual(reader.calls, [])
+        self.assert_untouched()
+
+    def test_the_container_route_refuses_a_request_json_cannot_carry(self) -> None:
+        # The guard at the boundary itself, for a caller that builds `changes` some other way.
+        import datetime
+
+        reader = FakeReader({"tool": "eavesdropper-settings", "ok": True, "result": "planned"})
+        ctx = self.ctx(platform="linux", reader=reader)
+        for value in (datetime.date(2026, 1, 1), float("nan"), float("inf")):
+            with self.assertRaises(self.foc.Refused) as caught:
+                self.foc.eavesdropper_settings(ctx, "plan", {"daemon.coalesce_seconds": value})
+            self.assertEqual(caught.exception.error_code, "value_not_allowed")
+        self.assertEqual(reader.calls, [])
+
     def test_plan_as_json_carries_the_editors_answer(self) -> None:
         code, answer = self.run_main(
             ["eavesdropper-settings", "plan", "--set", "daemon.coalesce_seconds=33", "--file", str(self.live), "--json"]

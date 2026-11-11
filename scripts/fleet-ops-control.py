@@ -1313,7 +1313,19 @@ def run_eavesdropper_settings_editor_in_container(ctx, request):
     standard input, so no setting, value or path from a caller is ever a word of the argv, and the
     file it edits is the one the container's own SIMPLE_TOOLS_CONFIG names.  The environment is
     the pinned docker one.  Docker's own words are only classified, never kept."""
-    payload = json.dumps(request, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    try:
+        payload = json.dumps(
+            request, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        # A `--set` value is read as TOML, which has dates, times, `inf` and `nan`;  JSON has
+        # none of them.  The editor refuses those at the source;  this is the same refusal at the
+        # boundary, so a value that cannot travel is never a fault.
+        raise Refused(
+            "the request holds a value that cannot be sent:  a date, a time or a number that is "
+            "not finite",
+            error_code="value_not_allowed",
+        ) from None
     if len(payload) > EAVESDROPPER_SETTINGS_REQUEST_MAX_BYTES:
         raise Refused("the request is too large", error_code="request_too_large")
     argv = [

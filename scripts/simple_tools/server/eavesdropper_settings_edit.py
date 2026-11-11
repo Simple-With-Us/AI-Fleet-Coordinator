@@ -485,6 +485,20 @@ def render(value):
     raise Refusal("value_not_allowed", "a value of that kind cannot be written")
 
 
+def _json_safe(value):
+    """True when JSON carries `value` exactly.  TOML also reads dates, times, `inf` and `nan`;
+    a request travels as JSON, and no allowlisted setting takes one of those."""
+    if isinstance(value, (bool, int, str)):
+        return True
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, list):
+        return all(_json_safe(item) for item in value)
+    if isinstance(value, dict):
+        return all(isinstance(k, str) and _json_safe(v) for k, v in value.items())
+    return False
+
+
 def parse_assignment(text):
     """`seat.ZC.enabled=false` -> ("seat.ZC.enabled", False).  The value is read as TOML, so a string
     needs its quotes and a table is `{ a = 1 }`."""
@@ -497,9 +511,16 @@ def parse_assignment(text):
     if "\n" in raw or "\r" in raw or len(raw) > 4096:
         raise Refusal("value_not_allowed", "the value of %s must be one short line of TOML" % key)
     try:
-        return key, tomllib.loads("v = " + raw)["v"]
+        value = tomllib.loads("v = " + raw)["v"]
     except (tomllib.TOMLDecodeError, KeyError, RecursionError):
         raise Refusal("value_not_allowed", "the value of %s is not TOML" % key) from None
+    if not _json_safe(value):
+        raise Refusal(
+            "value_not_allowed",
+            "the value of %s holds a date, a time or a number that is not finite;  no setting "
+            "takes one" % key,
+        )
+    return key, value
 
 
 # MARK: - Reading the text
