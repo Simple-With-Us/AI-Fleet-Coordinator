@@ -701,6 +701,7 @@ jobs:
       timeout-minutes: 10
       run: |
         node --test scripts/ios-fleet/ios_testflight_freshness.test.mjs
+        node --test scripts/ios-fleet/asc_scoped_creds.test.mjs
         node --test scripts/ios-fleet/build_number_audit.test.mjs
         bash -n scripts/ios-fleet/install-testflight-freshness.sh
     # The fleet iOS version manifest publisher (AFC-540).  It publishes as a

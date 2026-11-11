@@ -15,7 +15,10 @@
  *
  * Exit 0 unless --strict and the report has findings.  No App Store Connect writes.
  *
- * Credentials:  same asc-api.mjs path as ios_testflight_freshness.mjs (imported).
+ * Credentials:  same makeDeps().asc path as ios_testflight_freshness.mjs.
+ * That path verifies the read-only prod:/asc service token before asc-api.mjs
+ * runs, and does not fall back to fleet-secrets /asc or a legacy key folder
+ * unless IOS_TF_ALLOW_LEGACY_ASC_CREDS=1.
  */
 import fs from "node:fs";
 import path from "node:path";
