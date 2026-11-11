@@ -28,13 +28,14 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ class RouterSpec:
     """A platform's ONLY unique parts:  its seat tag, its display name (how senders
     address it), and its delivery mechanism - the command template the worker runs to wake
     the picked chat ({session_id} and {wake_text} substitute)."""
+
     seat: str
     display: str
     delivery_argv: tuple[str, ...] = ()
@@ -77,7 +79,7 @@ THREAD_LINK_FORM = "zcode://session/{sid}"
 WAKE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{2,}")
 STOP_WORDS = frozenset(
-    "the a an and or of to in on for with at by from zcode ops ale the this that".split()
+    ["the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with", "at", "by", "from", "zcode", "ops", "ale", "the", "this", "that"]
 )
 
 #: Dedupe is check-and-mutate against one file:  one lock guards both halves, so two posts of
@@ -123,7 +125,9 @@ def load_config(path: Path, *, required: bool = False) -> dict[str, Any]:
             raise SystemExit("zc-wake-bridge: the config file %s is not there" % path)
         return config
     except OSError as exc:
-        raise SystemExit("zc-wake-bridge: the config file %s is unreadable (%s)" % (path, type(exc).__name__))
+        raise SystemExit(
+            "zc-wake-bridge: the config file %s is unreadable (%s)" % (path, type(exc).__name__)
+        )
     try:
         loaded = json.loads(text)
     except ValueError as exc:
@@ -144,14 +148,19 @@ def load_config(path: Path, *, required: bool = False) -> dict[str, Any]:
                 or not all(isinstance(part, str) and part for part in value)
             ):
                 raise SystemExit(
-                    "zc-wake-bridge: %s: command_template must be a non-empty list of strings" % path
+                    "zc-wake-bridge: %s: command_template must be a non-empty list of strings"
+                    % path
                 )
         elif key == "timeout_seconds":
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                raise SystemExit("zc-wake-bridge: %s: timeout_seconds must be a positive whole number" % path)
+                raise SystemExit(
+                    "zc-wake-bridge: %s: timeout_seconds must be a positive whole number" % path
+                )
         elif key == "target_host":
             if value not in ("mac", "server", ""):
-                raise SystemExit("zc-wake-bridge: %s: target_host must be mac, server or empty" % path)
+                raise SystemExit(
+                    "zc-wake-bridge: %s: target_host must be mac, server or empty" % path
+                )
         config[key] = value
     return config
 
@@ -224,18 +233,16 @@ USER_AGENT = "simple-tools-registry/1.0"
 #: How a letter is read out of a wake:  the mention forms first (the daemon escapes the
 #: display copy, so both the @**ZCode** AA form and a plain "ZCode AA" are accepted), and an
 #: explicit payload field wins over both when a later daemon sends one.
-def _letter_re() -> "re.Pattern[str]":
+def _letter_re() -> re.Pattern[str]:
     if SPEC.letter_pattern:
         return re.compile(SPEC.letter_pattern)
     return letter_re(SPEC.display)
 
 
-def letter_re(display: str) -> "re.Pattern[str]":
+def letter_re(display: str) -> re.Pattern[str]:
     star = re.escape(display)
     plain = re.escape(display.split()[0])
-    return re.compile(
-        r"@\*\*" + star + r"\*\*\s*([A-Z]{2})\b|\b" + plain + r"[ \t]+([A-Z]{2})\b"
-    )
+    return re.compile(r"@\*\*" + star + r"\*\*\s*([A-Z]{2})\b|\b" + plain + r"[ \t]+([A-Z]{2})\b")
 
 
 def letter_of(payload: Mapping[str, Any]) -> str:
@@ -371,7 +378,8 @@ def _subagent_ids(store: Path, sids: list[str]) -> set[str]:
     try:
         placeholders = ",".join("?" * len(sids))
         rows = conn.execute(
-            "SELECT id FROM session WHERE task_type = 'subagent_child' AND id IN (%s)" % placeholders,
+            "SELECT id FROM session WHERE task_type = 'subagent_child' AND id IN (%s)"
+            % placeholders,
             sids,
         ).fetchall()
         return {str(r[0]) for r in rows if r and r[0]}
@@ -427,7 +435,9 @@ def session_lock(store_dir: Path, sid: str):
     """An exclusive mark per target session, so one wake waits rather than two turns clobber
     one thread.  The lock lives on a descriptor this process holds for the delivery."""
     store_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    return open(os.open(str(store_dir / ("session-%s.lock" % sid)), os.O_CREAT | os.O_RDWR, 0o600), "w")
+    return open(
+        os.open(str(store_dir / ("session-%s.lock" % sid)), os.O_CREAT | os.O_RDWR, 0o600), "w"
+    )
 
 
 def record(
@@ -448,9 +458,12 @@ def record(
 
     The picked chat is surfaced, not delivered:  the message is already in the seat's inbox,
     the Operator's pending-inbox tells a live session, and this receipt is the record."""
-    store = Path(env.get("ZC_WAKE_STORE") or os.path.join(
-        str(env.get("HOME") or os.path.expanduser("~")), ".zcode", "cli", "db", "db.sqlite"
-    ))
+    store = Path(
+        env.get("ZC_WAKE_STORE")
+        or os.path.join(
+            str(env.get("HOME") or os.path.expanduser("~")), ".zcode", "cli", "db", "db.sqlite"
+        )
+    )
     letter_sid = resolve_letter(env, letter) if letter else ""
     reason = ""
     sid = ""
@@ -549,7 +562,9 @@ def deliver_receipt(env, config, receipt, log_path=None):
                             check=False,
                         )
                         delivered = proc.returncode == 0
-                        delivery_reason = "ok" if delivered else "command-failed-%d" % proc.returncode
+                        delivery_reason = (
+                            "ok" if delivered else "command-failed-%d" % proc.returncode
+                        )
                     except subprocess.TimeoutExpired:
                         delivered, delivery_reason = False, "command-timeout"
                     except OSError as exc:
@@ -604,9 +619,7 @@ def make_handler(env: dict[str, str], config: dict[str, Any], receipts: list[dic
                 return
             auth = self.headers.get("Authorization") or ""
             # Constant time:  the bearer is the only thing between the tailnet and a wake.
-            if not hmac.compare_digest(
-                auth.encode("utf-8"), ("Bearer %s" % key).encode("utf-8")
-            ):
+            if not hmac.compare_digest(auth.encode("utf-8"), ("Bearer %s" % key).encode("utf-8")):
                 self._answer(401, {"error": "bad bearer"})
                 return
             if not re.fullmatch(r"/wake/[A-Z0-9][A-Z0-9_-]{0,31}", self.path or ""):
@@ -638,7 +651,9 @@ def make_handler(env: dict[str, str], config: dict[str, Any], receipts: list[dic
             seen_path = state_dir(env) / "seen.json"
             with _SEEN_LOCK:
                 if wake_id in seen_ids(seen_path):
-                    self._answer(200, {"delivered": False, "reason": "already-seen", "wake_id": wake_id})
+                    self._answer(
+                        200, {"delivered": False, "reason": "already-seen", "wake_id": wake_id}
+                    )
                     return
                 if wake_id in _INFLIGHT:
                     # The first post of this id is still routing;  its own answer is the
@@ -704,7 +719,10 @@ def serve(env: dict[str, str], bind: str, port: int, config: dict[str, Any]) -> 
     receipts: list[dict[str, Any]] = []
     server = ThreadingHTTPServer((bind, port), make_handler(env, config, receipts))
     server.daemon_threads = True
-    print("wake_router listening on %s:%d for seat %s" % (bind, port, SPEC.seat if SPEC else "-"), flush=True)
+    print(
+        "wake_router listening on %s:%d for seat %s" % (bind, port, SPEC.seat if SPEC else "-"),
+        flush=True,
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -731,9 +749,7 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--config", default="")
     args = parser.parse_args(argv)
     config_path = Path(
-        args.config
-        or env.get("ZC_WAKE_CONFIG")
-        or str(state_dir(env) / "config.json")
+        args.config or env.get("ZC_WAKE_CONFIG") or str(state_dir(env) / "config.json")
     )
     config = load_config(config_path, required=bool(args.config or env.get("ZC_WAKE_CONFIG")))
     if SPEC is not None:
