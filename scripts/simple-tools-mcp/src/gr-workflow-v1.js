@@ -480,7 +480,8 @@ const artifactObject=objectWith({id:positive,name:z.string(),size_in_bytes:z.num
 const workflowObject=objectWith({id:positive,name:z.string(),path:z.string(),state:z.string()});
 const pullObject=objectWith({id:positive,number:positive,state:z.enum(['open','closed']),head:objectWith({sha:shaValue}),base:objectWith({sha:shaValue})});
 const reviewObject=objectWith({id:positive,state:z.string().max(100),commit_id:shaValue});
-const commentObject=objectWith({id:positive,body:z.string().max(32768)});
+// GitHub's own comment limit is 65,536 characters;  the relay accepts the same (a long Kody summary is real).
+const commentObject=objectWith({id:positive,body:z.string().max(65536)});
 const labelObject=objectWith({id:positive,name:z.string().max(100),color:z.string().regex(/^[0-9a-fA-F]{6}$/)});
 const readResponseSchemas={
  wf_installation_metadata:z.object({installation:z.object({app_slug:z.string().regex(/^swu-[a-z0-9-]{1,90}$/),installation_id:positive.max(Number.MAX_SAFE_INTEGER),account:z.object({id:positive.max(Number.MAX_SAFE_INTEGER),login:z.string().regex(/^[A-Za-z0-9_.-]{1,100}$/)}).strict(),accepted_permissions:z.record(z.string().regex(/^[a-z][a-z0-9_]{0,99}$/),z.enum(["read","write"])).refine(v=>Object.keys(v).length<=256),suspended:z.boolean()}).strict()}).strict(),
