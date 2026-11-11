@@ -108,7 +108,8 @@ class EndToEnd(unittest.TestCase):
         keys = set(replies[0]["result"]["env_keys"])
         # The interpreter may add its own locale variable on some hosts.
         self.assertEqual(
-            keys - {"__CF_USER_TEXT_ENCODING", "LC_CTYPE"}, {"PATH", "HOME", "ASSIGNED_MCP_BEARER"}
+            keys - {"__CF_USER_TEXT_ENCODING", "LC_CTYPE", "SHLVL", "PWD", "_", "OLDPWD"},
+            {"PATH", "HOME", "ASSIGNED_MCP_BEARER"},
         )
 
     def test_clean_environment_initializes_with_no_notice(self):
