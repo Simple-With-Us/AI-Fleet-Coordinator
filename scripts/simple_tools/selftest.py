@@ -56,6 +56,7 @@ else:
 
 REPO = "Simple-With-Us/AI-Fleet-Coordinator"
 HINT_VARS = ("AGENT_SEAT", "AGENT_TAG", "AGENT_LAUNCH_SEAT")
+STALE_VARS = ("AGENT_SEAT", "AGENT_TAG")
 
 # The relay's closed refusal vocabulary (scripts/simple-tools-mcp/src/gr-refusal.js).
 RELAY_CAUSES = (
@@ -66,6 +67,7 @@ RELAY_CAUSES = (
     "seat_policy",
 )
 _CODE = re.compile(r"[a-z][a-z0-9_]{0,59}")
+_VERSION_KEYS = ("worker_version", "relay_version")
 _VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,63}")
 
 # (step name, tool, arguments, required)
@@ -117,10 +119,13 @@ def http_transport(body: bytes, token: str, timeout: float) -> "tuple[int, str, 
 
 
 def clean_env(env: Mapping[str, str]) -> dict[str, str]:
-    """Drop the ambient identity hints unless a launcher bound them."""
+    """Drop the ambient AGENT_SEAT and AGENT_TAG unless a launcher bound them.
+
+    AGENT_LAUNCH_SEAT is always kept:  fleet_bearer.Client treats it as a restriction even
+    without a launcher, so the self-test must refuse the same conflicts the real client does."""
     out = dict(env)
     if not out.get("AGENT_LAUNCHER"):
-        for name in HINT_VARS:
+        for name in STALE_VARS:
             out.pop(name, None)
     return out
 
@@ -192,7 +197,7 @@ class Probe:
         ).encode()
         try:
             status, ctype, raw = self.transport(body, self.token, self.timeout)
-        except (OSError, ValueError):
+        except Exception:  # OSError, ValueError, http.client.HTTPException (IncompleteRead, BadStatusLine)
             raise Refusal("gateway_unavailable", "the gateway could not be reached") from None
         if status in (401, 403):
             raise Refusal("bearer_rejected", "the gateway refused the bearer (HTTP %d)" % status)
@@ -225,9 +230,9 @@ def _version_fields(source: Any, relay_only: bool = False) -> dict[str, str]:
     for key, value in source.items():
         if not isinstance(key, str) or not re.fullmatch(r"[a-z_]{1,40}", key):
             continue
-        if "version" not in key:
+        if key not in _VERSION_KEYS:
             continue
-        if relay_only and "relay" not in key:
+        if relay_only and key != "relay_version":
             continue
         if isinstance(value, (str, int)) and not isinstance(value, bool):
             text = str(value)
@@ -276,6 +281,9 @@ def run(
     except F.FleetError as exc:
         add("bearer", "FAIL", "bearer file is missing, unsafe or malformed", exc.code)
         return report
+    except BG.Refused:
+        add("bearer", "FAIL", "not a seat name this server can authenticate", "bad_seat_name")
+        return report
     # 2. env
     removed = [n for n in HINT_VARS if env.get(n) and n not in environment]
     try:
@@ -308,11 +316,12 @@ def run(
         who = probe.tool("whoami", {})
         if who.get("authenticated_seat") != want or who.get("seat") != want:
             add("whoami", "FAIL", "the gateway named a different seat", "seat_mismatch")
-            ok = False
-        else:
-            add("whoami", "PASS", "the gateway authenticated this bearer as " + want)
-            for key, value in _version_fields(who).items():
-                versions["relay" if "relay" in key else "worker"] = value
+            report["ok"] = False
+            _finish(report, steps)
+            return report
+        add("whoami", "PASS", "the gateway authenticated this bearer as " + want)
+        for key, value in _version_fields(who).items():
+            versions["relay" if key == "relay_version" else "worker"] = value
     except Refusal as exc:
         add("whoami", "FAIL", exc.detail, exc.cause)
         report["ok"] = False

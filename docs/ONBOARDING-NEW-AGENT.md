@@ -226,12 +226,13 @@ with the top-level `apps` (the acronyms) and `--app`.
    python3 scripts/simple_tools/selftest.py --seat <TAG>
    ```
 
-   It strips a stale `AGENT_SEAT`, `AGENT_TAG` and `AGENT_LAUNCH_SEAT` (a
-   launcher's own hints are kept and must agree), reads your own bearer file,
+   It strips a stale `AGENT_SEAT` and `AGENT_TAG` (a launcher's
+   hints, and any `AGENT_LAUNCH_SEAT`, are kept and must agree), reads your own bearer file,
    and checks `whoami`, one hosted git read (`gr_wf_repo_get`) and one
    seat-policy-gated read (`gr_wf_pr_list_page`).  On a refusal it names the
    exact cause: `seat_not_in_policy`, `bearer_rejected`,
-   `verifier_unavailable`, `no_app_credential` or `seat_policy`.  It also
+   `verifier_unavailable`, `no_app_credential`, `seat_policy` or
+   `unauthenticated`, or another closed gateway code such as `not_authorized`.  It also
    prints the Worker version, and a relay version if one is exposed.  Reads
    that need a relay policy grant (`gr_wf_pr_search`, `gr_wf_repo_list`) show
    as `WARN`, and fail the run only with `--strict`.  Exit code 0 means every

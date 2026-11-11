@@ -78,7 +78,7 @@ class SelfTestBase(unittest.TestCase):
 class HappyPathTests(SelfTestBase):
     def test_passes_with_a_leaked_agent_seat_and_prints_no_bearer(self):
         gw = Gateway(tools={"gr_wf_pr_search": refusal("relay_refused", "seat_policy")})
-        code, text = self.run_selftest(gw, env={"AGENT_SEAT": "ZC", "AGENT_TAG": "ZC", "AGENT_LAUNCH_SEAT": "ZC"})
+        code, text = self.run_selftest(gw, env={"AGENT_SEAT": "ZC", "AGENT_TAG": "ZC"})
         self.assertEqual(code, 0, text)
         self.assertNotIn(TOKEN, text)
         self.assertNotIn("qqqq", text)
@@ -200,11 +200,47 @@ class BearerAndEnvTests(SelfTestBase):
         self.assertEqual(code, 1)
         self.assertIn("launcher_seat_conflict", text)
 
-    def test_clean_env_strips_hints_only_without_a_launcher(self):
+    def test_clean_env_strips_stale_hints_only_without_a_launcher(self):
         env = {"AGENT_SEAT": "ZC", "AGENT_TAG": "ZC", "AGENT_LAUNCH_SEAT": "ZC", "PATH": "/bin"}
-        self.assertEqual(S.clean_env(env), {"PATH": "/bin"})
+        self.assertEqual(S.clean_env(env), {"AGENT_LAUNCH_SEAT": "ZC", "PATH": "/bin"})
         env["AGENT_LAUNCHER"] = "x"
         self.assertEqual(S.clean_env(env), env)
+
+    def test_a_lone_launch_seat_for_another_seat_is_refused(self):
+        code, text = self.run_selftest(Gateway(), env={"AGENT_LAUNCH_SEAT": "ZC"})
+        self.assertEqual(code, 1)
+        self.assertRegex(text, r"FAIL env\s+cause=launcher_seat_conflict")
+
+    def test_invalid_seat_is_a_bearer_failure_not_a_traceback(self):
+        for bad in ("bad seat", ""):
+            out = io.StringIO()
+            code = S.main(["--seat", bad], env={}, home=self.home, transport=Gateway(), out=out)
+            self.assertEqual(code, 1)
+            self.assertRegex(out.getvalue(), r"FAIL bearer\s+cause=bad_seat_name")
+            self.assertIn("RESULT failed", out.getvalue())
+
+    def test_http_exception_is_gateway_unavailable(self):
+        import http.client
+
+        def broken(body, token, timeout):
+            raise http.client.IncompleteRead(b"x")
+
+        out = io.StringIO()
+        code = S.main(["--seat", SEAT], env={}, home=self.home, transport=broken, out=out)
+        self.assertEqual(code, 1)
+        self.assertIn("cause=gateway_unavailable", out.getvalue())
+
+    def test_whoami_seat_mismatch_stops_before_the_git_reads(self):
+        gw = Gateway(whoami_seat="ZC")
+        code, text = self.run_selftest(gw)
+        self.assertEqual(code, 1)
+        self.assertRegex(text, r"FAIL whoami\s+cause=seat_mismatch")
+        names = [c.get("params", {}).get("name") for c in gw.calls]
+        self.assertEqual(names, [None, "whoami"])
+
+    def test_only_exact_version_keys_are_read_from_whoami(self):
+        self.assertEqual(S._version_fields({"protocol_version": "2025-06-18"}), {})
+        self.assertEqual(S._version_fields({"worker_version": "1.2.3"}), {"worker_version": "1.2.3"})
 
 
 if __name__ == "__main__":
