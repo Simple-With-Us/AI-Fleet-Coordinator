@@ -361,6 +361,14 @@ def _read_token_file() -> str | None:
     raise FleetRagError(f"the recall reader token file has no {INFISICAL_READ_TOKEN} line")
 
 
+def _read_token_bound() -> bool:
+    """Whether a reader binding is configured (the variable, a named file, or the default file), without reading it."""
+    if (os.environ.get(INFISICAL_READ_TOKEN) or "").strip() or (os.environ.get(INFISICAL_READ_TOKEN_FILE) or "").strip():
+        return True
+    home = (os.environ.get("HOME") or "").strip()
+    return bool(home) and os.path.lexists(os.path.join(home, *DEFAULT_READ_TOKEN_FILE))
+
+
 def read_token_binding() -> str | None:
     """The recall reader's service token:  the environment variable, else its token file, else None."""
     return (os.environ.get(INFISICAL_READ_TOKEN) or "").strip() or _read_token_file()
@@ -419,7 +427,7 @@ def load_config(need_write: bool = False, extra: Iterable[str] = ()) -> dict[str
     required = list(READ_KEYS) + (list(WRITE_KEYS) if need_write else []) + list(extra)
     # A complete environment is supported standalone, so an unrelated service-token
     # binding must not turn an offline configuration into an Infisical authentication attempt.
-    if all(k in cfg for k in required) and not (os.environ.get(INFISICAL_READ_TOKEN) or "").strip():
+    if all(k in cfg for k in required) and not _read_token_bound():
         return cfg
     tok = infisical_login()
     if all(k in cfg for k in required) and (

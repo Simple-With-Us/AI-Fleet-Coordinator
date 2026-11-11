@@ -382,6 +382,20 @@ class ReadTokenFileTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HOME": str(self.home), "INFISICAL_TOKEN": "st." + "z" * 40}, clear=True):
             self.assertEqual(core.infisical_login(), self.TOKEN)
 
+    def test_complete_environment_with_a_bound_file_still_fills_optional_keys(self) -> None:
+        self.write(self.default, f"FLEET_RECALL_INFISICAL_TOKEN={self.TOKEN}\n")
+        env = {"HOME": str(self.home), **BYO}
+        with (mock.patch.dict(os.environ, env, clear=True),
+              mock.patch.object(core, "infisical_login", return_value=self.TOKEN) as login,
+              mock.patch.object(core, "infisical_fetch", return_value={"TEI_RERANK_URL": "https://r.invalid"})):
+            cfg = core.load_config()
+        login.assert_called_once()
+        self.assertEqual(cfg.get("TEI_RERANK_URL"), "https://r.invalid")
+        self.default.unlink()
+        with (mock.patch.dict(os.environ, env, clear=True),
+              mock.patch.object(core, "infisical_login", side_effect=AssertionError("offline config touched Infisical"))):
+            self.assertNotIn("TEI_RERANK_URL", core.load_config())
+
 
 if __name__ == "__main__":
     unittest.main()
