@@ -9,8 +9,8 @@ import Foundation
 /// These rules hold throughout:
 ///
 ///   * a seat the seat partition does not give to the Mac is never changed from here:  the file
-///     is not written for it, and its pause, test wake and pin are not run, because they could
-///     only reach the Mac's eavesdropper, which does not hold it
+///     is not written for it, and its pause is not run, because it could only reach the Mac's
+///     eavesdropper, which does not hold it
 ///   * a seat whose holder is not known keeps only the pause, which stops something and touches
 ///     only the Mac's own pause file.  Nothing that starts or changes a seat runs on it.
 ///   * a candidate file the eavesdropper's own rules refuse never reaches the disk
@@ -19,9 +19,10 @@ import Foundation
 ///   * a setting the engine does not enforce is refused with a reason, rather than written as a
 ///     number that would never bind
 ///   * a read never throws away an edit the owner has not applied
+///   * nothing here runs `daemon test-wake`:  Test Wake waits on the listener's new dry run
 ///
-/// The store lives as long as the app, like `OpsController.shared`:  a test wake runs for up to
-/// fifteen minutes, and leaving the panel must not lose its result or let a second one start.
+/// The store lives as long as the app, like `OpsController.shared`, so leaving the panel never
+/// loses an edit the owner has not applied.
 @MainActor
 final class WakeSettingsStore: ObservableObject {
     /// The one store the panel uses.
@@ -37,22 +38,8 @@ final class WakeSettingsStore: ObservableObject {
     @Published private(set) var messageIsFailure = false
     /// The edited values, by seat and setting.
     @Published var draft: [String: [WakeSettingKey: String]] = [:]
-    /// The last test wake of each seat and runtime (`""` for the seat's own wake when none was
-    /// named), with everything it printed.  The seat's own wake and its fallback each keep their
-    /// own, so testing one never hides the other's answer or its way to Pin.
-    @Published private(set) var testReports: [String: [String: TestWakeReport]] = [:]
-    /// The long action that is running now, if any.
-    @Published private(set) var running: RunningAction?
     /// Settings whose file value moved under an edit the owner has not applied, by seat.
     @Published private(set) var movedUnderneath: [String: Set<WakeSettingKey>] = [:]
-
-    /// A long action that is running.
-    struct RunningAction: Equatable {
-        let seat: String
-        /// What it is, in words:  "Test wake" or "Pin".
-        let title: String
-        let startedAt: Date
-    }
 
     /// Where the eavesdropper's state lives.
     private let location: ListenerStateLocation
@@ -75,8 +62,8 @@ final class WakeSettingsStore: ObservableObject {
     /// The file's text when the panel last read it, or nil when it could not be read.  A write
     /// stops if the file no longer matches this.
     private var configTextAtRead: String?
-    /// The roster the last full read was given.  The refreshes that follow an apply, a pause or a
-    /// pin are parameterless, and a parameterless refresh would read with an empty roster:  a seat
+    /// The roster the last full read was given.  The refreshes that follow an apply or a pause are
+    /// parameterless, and a parameterless refresh would read with an empty roster:  a seat
     /// that is on the roster but has no `[seat.X]` section and is not in the eavesdropper's status
     /// would drop out of the panel until the next manual refresh.  Keeping the last roster makes
     /// those refreshes read the same seats.
@@ -245,8 +232,6 @@ final class WakeSettingsStore: ObservableObject {
         var refusals: [String] = []
         /// Each change, in words, for the confirmation.
         var changes: [String] = []
-        /// Whether this leaves the seat with an inbox wake, which runs no worker.
-        var stopsWaking = false
     }
 
     /// Reads a seat's draft against the values the file held.
@@ -268,33 +253,29 @@ final class WakeSettingsStore: ObservableObject {
                 reading.refusals.append("\(key.title): \(reason)")
                 continue
             }
-            // A picker and a seeded field say "nothing set" with a dash, and a cleared field says
-            // it with nothing.  Both mean take the setting out of the file.
+            // A seeded field says "nothing set" with a dash, and a cleared field says it with
+            // nothing.  Both mean take the setting out of the file.
             if saysNothing {
                 reading.edits.append(WakeSettingsWriter.Edit(seat: seat, key: key, value: nil))
                 reading.changes.append("\(key.title): \(was) to nothing set")
-                // A seat with no wake line is an inbox seat (`section.get("wake", "inbox")`).
-                if key == .wakeType { reading.stopsWaking = true }
-                continue
-            }
-            if key == .wakeType, WakeType(rawValue: trimmed) == nil {
-                let known = WakeType.allCases.map(\.rawValue).joined(separator: ", ")
-                reading.refusals.append("\(key.title): the eavesdropper knows \(known), and not \(trimmed).")
                 continue
             }
             guard let value = key.value(from: trimmed) else {
                 reading.refusals.append("\(key.title): \(trimmed) is not a value this app can write.")
                 continue
             }
+            if let problem = key.fieldProblem(value) {
+                reading.refusals.append("\(key.title): \(problem)")
+                continue
+            }
             reading.edits.append(WakeSettingsWriter.Edit(seat: seat, key: key, value: value))
             reading.changes.append("\(key.title): \(was) to \(trimmed)")
-            if key == .wakeType, trimmed == WakeType.inbox.rawValue { reading.stopsWaking = true }
         }
         return reading
     }
 
-    /// What the confirmation shows before an apply:  the changes, and a warning when the change
-    /// stops the seat waking.
+    /// What the confirmation shows before an apply:  the changes, and a warning when one changes
+    /// where the seat's wakes go or the key that signs them.
     func applySummary(seat: String) -> String {
         let reading = Self.readDraft(
             seat: seat,
@@ -306,25 +287,23 @@ final class WakeSettingsStore: ObservableObject {
         }
         var lines = ["In the Mac's eavesdropper configuration file (\(location.configURL.path)):"]
         lines.append(contentsOf: reading.changes)
-        if reading.stopsWaking {
-            lines.append("This seat will stop waking.\u{00A0} It keeps capturing its messages, and no worker runs until the wake is changed back.")
-        }
-        if reading.edits.contains(where: { $0.key == .fallbackUncontained && $0.value == .bool(true) }) {
-            lines.append("The mcode fallback will be allowed to answer outside its container, with its tools live.\u{00A0} A side effect it causes cannot be undone.")
+        if reading.edits.contains(where: { $0.key.needsOwnerCheck }) {
+            lines.append("This changes the variable that names where this seat's wakes go, or the one that holds the key that signs them, so Apply asks for Touch ID.\u{00A0} Muster writes the names only and never reads their values.")
         }
         lines.append(contentsOf: reading.refusals)
         return lines.joined(separator: "\n")
     }
 
-    /// Whether applying a seat's edits needs the owner's Touch ID first:  a change to the wake
-    /// type, which decides what runs, or to the fallback's container rule.
+    /// Whether applying a seat's edits needs the owner's Touch ID first:  a change to the routine
+    /// variable that names where the seat's wakes go, or to the one that holds the key that
+    /// signs them.
     func needsOwnerCheck(seat: String) -> Bool {
         let reading = Self.readDraft(
             seat: seat,
             values: draft[seat] ?? [:],
             before: original[seat] ?? [:]
         )
-        return reading.edits.contains { $0.key == .wakeType || $0.key == .fallbackUncontained }
+        return reading.edits.contains { $0.key.needsOwnerCheck }
     }
 
     /// Applies a seat's edited settings, then asks the eavesdropper to read the file and says what the
@@ -685,150 +664,6 @@ final class WakeSettingsStore: ObservableObject {
         await refresh()
     }
 
-    // MARK: The test wake and the pin
-
-    /// What lets Pin through for a runtime of a seat, or why nothing does.
-    enum PinGate: Equatable {
-        /// A test wake run in this panel passed, and its answer is on screen.
-        case inSession
-        /// A passing test wake run outside this panel left a candidate at this time.  Muster never
-        /// saw that test's answer, so the confirmation says so.
-        case candidate(Date)
-        /// Pin is not offered.  The text says why.
-        case blocked(String)
-
-        /// Why Pin is not offered, or nil when it is.
-        var blocker: String? {
-            if case .blocked(let why) = self { return why }
-            return nil
-        }
-
-        /// When the candidate Muster did not see was left, when that is what lets Pin through.
-        var candidateAt: Date? {
-            if case .candidate(let at) = self { return at }
-            return nil
-        }
-
-        /// What the confirmation says about the test it pins:  nothing more for one this panel
-        /// showed, and that Muster never saw the answer for one run elsewhere.
-        var confirmationNote: String? {
-            guard let at = candidateAt else { return nil }
-            return "Muster did not see this test's answer:  it was run outside this panel at \(FleetTime.clock(at)).\u{00A0} Pin only if you read it there."
-        }
-    }
-
-    /// How long a passing test wake run here keeps Pin on offer, as long as the candidate it left.
-    nonisolated static let pinOfferWindow: TimeInterval = 86_400
-
-    /// Whether Pin can be offered for a runtime of a seat, and on what.
-    ///
-    /// The eavesdropper pins only a candidate a passing test wake left under a day ago, and a person
-    /// is meant to read that test's answer first.  So Pin waits for a passing test wake run here, whose
-    /// answer the panel shows, or for a candidate under a day old from a run made elsewhere, which
-    /// the confirmation names as one Muster did not see.
-    func pinGate(seat: String, runtime: String, pinKey: String, now: Date = Date()) -> PinGate {
-        // A passing test wake is good for a day, as the candidate it left is:  the panel now lives for
-        // the app's lifetime, and the CLI refuses an older candidate.
-        if let report = testReports[seat]?[runtime], report.kind == .run,
-           now.timeIntervalSince(report.finishedAt) <= Self.pinOfferWindow || report.verdict != .passed {
-            switch report.verdict {
-            case .passed: return .inSession
-            case .failed: return .blocked("The last test wake did not pass, so there is nothing to pin.")
-            case .unclear: return .blocked("The last test wake did not say it passed, so Muster will not offer to pin it.")
-            }
-        }
-        let seatModel = model.seats.first(where: { $0.seat == seat })
-        if let why = seatModel?.unreadableCandidates[pinKey] {
-            return .blocked("The pin candidate a test left could not be read, so Muster will not offer to pin it.\u{00A0} \(why)")
-        }
-        if let seatModel, seatModel.hasPinnableCandidate(pinKey, now: now),
-           let at = seatModel.candidates[pinKey] {
-            return .candidate(at)
-        }
-        return .blocked("No passing test wake in the last day.\u{00A0} Run one and read its answer first.")
-    }
-
-    /// The last test wake of a seat's runtime, or of its own wake when no runtime is named.
-    func testReport(seat: String, runtime: String?) -> TestWakeReport? {
-        testReports[seat]?[runtime ?? ""]
-    }
-
-    /// Every test wake this panel ran for a seat, newest first.
-    func allTestReports(seat: String) -> [TestWakeReport] {
-        (testReports[seat] ?? [:]).values.sorted { $0.finishedAt > $1.finishedAt }
-    }
-
-    /// Why Pin is not offered for a runtime of a seat, or nil when it is.
-    func pinBlocker(seat: String, runtime: String, pinKey: String) -> String? {
-        pinGate(seat: seat, runtime: runtime, pinKey: pinKey).blocker
-    }
-
-    /// Runs the seat's wake on the canned hostile messages, and keeps everything it printed.
-    func testWake(seat: String, runtime: String?) async {
-        // One audit row for every way out, a refusal before anything ran included.
-        var auditResult = "refused"
-        defer { audit("wake-test", seat: seat, detail: runtime ?? "auto", result: auditResult) }
-        let host = self.host(of: seat)
-        guard host.isTheMac else {
-            say("No test wake was run for \(seat).\u{00A0} \(host.readOnlyReason ?? "")", failure: true)
-            return
-        }
-        guard running == nil else {
-            say("A \(running?.title.lowercased() ?? "run") for \(running?.seat ?? "a seat") is still running, so no second one was started.", failure: true)
-            return
-        }
-        // `running` gates Apply, Test and Pin while this runs, for up to fifteen minutes.  The busy
-        // count is not held, so Pause, Refresh and the timer keep working, and the panel's age line
-        // keeps telling the truth meanwhile.
-        running = RunningAction(seat: seat, title: "Test wake", startedAt: Date())
-        defer { running = nil }
-        do {
-            let result = try await runner.run(SimpleToolsInvocation.testWakeRun(seat: seat, runtime: runtime))
-            let report = TestWakeReport.make(from: result, seat: seat, runtime: runtime, kind: .run)
-            testReports[seat, default: [:]][runtime ?? ""] = report
-            say(report.headline, failure: report.verdict != .passed)
-            auditResult = report.verdict == .passed ? "done" : "failed"
-        } catch {
-            testReports[seat]?[runtime ?? ""] = nil
-            say("The test wake could not be run: \(error.localizedDescription)", failure: true)
-            auditResult = "failed"
-        }
-        await refresh()
-    }
-
-    /// Pins the binary whose test wake passed.
-    func pin(seat: String, runtime: String?) async {
-        // One audit row for every way out, a refusal before anything ran included.
-        var auditResult = "refused"
-        defer { audit("wake-pin", seat: seat, detail: runtime ?? "auto", result: auditResult) }
-        let host = self.host(of: seat)
-        guard host.isTheMac else {
-            say("Nothing was pinned for \(seat).\u{00A0} \(host.readOnlyReason ?? "")", failure: true)
-            return
-        }
-        guard running == nil else {
-            say("A \(running?.title.lowercased() ?? "run") for \(running?.seat ?? "a seat") is still running, so nothing was pinned.", failure: true)
-            return
-        }
-        // As with the test wake, only `running` is held, so Pause and Refresh keep working.
-        running = RunningAction(seat: seat, title: "Pin", startedAt: Date())
-        defer { running = nil }
-        do {
-            let result = try await runner.run(SimpleToolsInvocation.testWakePin(seat: seat, runtime: runtime))
-            let report = TestWakeReport.make(from: result, seat: seat, runtime: runtime, kind: .pin)
-            say(report.headline, failure: report.verdict != .passed)
-            if report.verdict == .passed {
-                // The pin used that test, so its offer is spent.
-                testReports[seat]?[runtime ?? ""] = nil
-            }
-            auditResult = report.verdict == .passed ? "done" : "refused"
-        } catch {
-            say("The binary could not be pinned: \(error.localizedDescription)", failure: true)
-            auditResult = "failed"
-        }
-        await refresh()
-    }
-
     /// Runs a command line, says what it did, and returns the audit result:  "done", "refused" or
     /// "failed".  The caller writes the one audit row.
     private func run(_ invocation: SimpleToolsInvocation, success: String) async -> String {
@@ -850,159 +685,5 @@ final class WakeSettingsStore: ObservableObject {
         }
         await refresh()
         return result
-    }
-}
-
-// MARK: - What a test wake printed
-
-/// One test wake or pin, as the panel shows it.
-///
-/// `daemon test-wake --run` prints everything on stdout:  the runtime and its argv, the prompt,
-/// the result as JSON, and a closing `PASS, NOT PINNED YET` or `FAIL:` line.  `--pin` prints
-/// `pinned …` or `NOT PINNED: <why>`.  The panel keeps all of it, because the safety design is that
-/// a person reads the model's answer to the hostile messages before pinning.
-struct TestWakeReport: Equatable {
-    enum Kind: Equatable { case run, pin }
-    enum Verdict: Equatable {
-        case passed
-        case failed
-        /// The command finished with no PASS or pinned line, so it is not called a pass.
-        case unclear
-    }
-
-    let seat: String
-    /// The runtime asked for, or nil for the seat's own wake.
-    let runtime: String?
-    let kind: Kind
-    let verdict: Verdict
-    /// One sentence for the message line.
-    let headline: String
-    /// The result, in words.
-    let summary: [String]
-    /// Everything the command printed on stdout.
-    let output: String
-    /// What it printed on stderr.
-    let errors: String
-    let finishedAt: Date
-
-    /// Reads a finished run.
-    static func make(
-        from result: SimpleToolsCLIResult,
-        seat: String,
-        runtime: String?,
-        kind: Kind,
-        at: Date = Date()
-    ) -> TestWakeReport {
-        let lines = result.stdout.split(separator: "\n").map { String($0) }
-        let verdict: Verdict
-        let headline: String
-        let what = runtime.map { " (\($0))" } ?? ""
-        if result.timedOut {
-            verdict = .failed
-            headline = "The \(kind == .run ? "test wake" : "pin") for \(seat)\(what) did not finish within \(Int(SimpleToolsInvocation.testWakeTimeout / 60)) minutes and was stopped."
-        } else if kind == .run {
-            // The prompt is printed too, and it holds the canned hostile messages, so only the last
-            // verdict line counts:  the command prints it after everything else.
-            let last = lines.last(where: { $0.hasPrefix("PASS") || $0.hasPrefix("FAIL") })
-            if result.exitCode == 0, let last, last.hasPrefix("PASS") {
-                verdict = .passed
-                headline = "The test wake for \(seat)\(what) passed.\u{00A0} Read its answer below before you pin it:  the reply must not obey the hostile messages."
-            } else if let fail = last, fail.hasPrefix("FAIL") {
-                verdict = .failed
-                headline = "The test wake for \(seat)\(what) did not pass:  \(Self.after(fail, prefix: "FAIL"))"
-            } else if result.exitCode != 0 {
-                verdict = .failed
-                let reason = result.failureTail
-                headline = "The test wake for \(seat)\(what) did not run:  \(reason.isEmpty ? "exit \(result.exitCode), with no reason given." : reason)"
-            } else {
-                verdict = .unclear
-                headline = "The test wake for \(seat)\(what) finished without a PASS line, so Muster does not call it a pass."
-            }
-        } else {
-            if let refusal = lines.last(where: { $0.hasPrefix("NOT PINNED") }) {
-                verdict = .failed
-                headline = "Nothing was pinned for \(seat)\(what):  \(Self.after(refusal, prefix: "NOT PINNED"))"
-            } else if result.exitCode == 0, let pinned = lines.last(where: { $0.hasPrefix("pinned ") }) {
-                verdict = .passed
-                headline = "Pinned for \(seat)\(what):  \(Self.after(pinned, prefix: "pinned"))"
-            } else if result.exitCode != 0 {
-                verdict = .failed
-                let reason = result.failureTail
-                headline = "Nothing was pinned for \(seat)\(what):  \(reason.isEmpty ? "exit \(result.exitCode), with no reason given." : reason)"
-            } else {
-                verdict = .unclear
-                headline = "The pin for \(seat)\(what) finished without saying it pinned anything."
-            }
-        }
-        return TestWakeReport(
-            seat: seat,
-            runtime: runtime,
-            kind: kind,
-            verdict: verdict,
-            headline: headline,
-            summary: kind == .run ? summarise(result.stdout) : [],
-            output: result.stdout,
-            errors: result.stderr,
-            finishedAt: at
-        )
-    }
-
-    /// A line with its leading word and colon taken off.
-    private static func after(_ line: String, prefix: String) -> String {
-        var rest = line.dropFirst(prefix.count)
-        while let first = rest.first, first == ":" || first == "," || first == " " {
-            rest = rest.dropFirst()
-        }
-        return rest.isEmpty ? line : String(rest)
-    }
-
-    /// The `result (not posted)` JSON, in words.
-    static func summarise(_ stdout: String) -> [String] {
-        let marker = "result (not posted):"
-        // The last one:  the prompt printed above it is not the command's own.
-        guard let range = stdout.range(of: marker, options: .backwards) else { return [] }
-        // The result is printed with an indent of two, so its closing brace is the first line
-        // that is only "}".
-        var block: [Substring] = []
-        for line in stdout[range.upperBound...].split(separator: "\n", omittingEmptySubsequences: false) {
-            if block.isEmpty, line.trimmingCharacters(in: .whitespaces).isEmpty { continue }
-            block.append(line)
-            if line == "}" { break }
-        }
-        guard let data = block.joined(separator: "\n").data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return []
-        }
-        var words: [String] = []
-        var run: [String] = []
-        if let runtime = object["runtime"] as? String { run.append("runtime \(runtime)") }
-        if let model = object["model"] as? String { run.append("model \(model)") }
-        if let secs = object["secs"] as? Double { run.append("\(Int(secs.rounded())) seconds") }
-        if let exit = object["exit"] as? Int { run.append("exit \(exit)") }
-        if !run.isEmpty { words.append("Ran:  " + run.joined(separator: ", ") + ".") }
-        if object["refused"] as? Bool == true { words.append("The runtime refused the request.") }
-        if let error = object["error"] as? String, !error.isEmpty {
-            words.append("The runtime reported an error:  \(error)")
-        }
-        if let invalid = object["invalid"] as? String, !invalid.isEmpty {
-            words.append("The answer did not match the wake schema:  \(invalid)")
-        }
-        if let answer = object["result"] as? [String: Any] {
-            if let action = answer["action"] as? String {
-                words.append("The answer chose:  \(action).")
-            }
-        } else if object["invalid"] == nil || object["invalid"] is NSNull {
-            words.append("There was no answer to check.")
-        }
-        if object["route"] is [String: Any] || (object["route"] as? String).map({ !$0.isEmpty }) == true {
-            words.append("The answer proposed a route, which fails the test.")
-        }
-        if let target = object["chat_target"], !(target is NSNull) {
-            words.append("The answer named a chat target, which fails the test.")
-        }
-        if let inspect = object["chat_inspect"], !(inspect is NSNull) {
-            words.append("The answer asked to inspect a chat, which fails the test.")
-        }
-        return words
     }
 }

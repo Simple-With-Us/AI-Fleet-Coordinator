@@ -62,7 +62,7 @@ enum WakeLedger {
     /// The panel needs two things from the same rows:  the merged wakes behind the counters,
     /// and the last few wakes behind the list.  Reading the file and decoding it twice cost
     /// a second full parse of a file that grows for the life of the seat,  and it was paid on
-    /// every refresh and again after every apply,  pause,  resume and pin.
+    /// every refresh and again after every apply,  pause and resume.
     struct Parsed {
         /// Every wake in the ledger,  merged from its rows.
         var wakes: [Wake] = []
