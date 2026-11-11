@@ -92,7 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--mirror-of",
         metavar="TOPIC_LINK",
-        help="mirror an OWNER topic a Grok Bot persona already opened (no post of its own)",
+        help="mirror an OWNER topic a Grok bot already opened (no post of its own)",
     )
     p.add_argument(
         "--dry-run", action="store_true", help="check everything and print the plan, change nothing"

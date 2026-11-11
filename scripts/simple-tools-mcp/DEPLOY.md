@@ -511,7 +511,7 @@ Verify production CURSOR audit outcomes for writes and failed calls after deploy
 
 ## Per-Call Identity (AFC-322, AFC-331)
 
-Every grant offers per-call `identity` selection (`docs/protocols/per-call-identity.md`).  A CURSOR or GROK-WEB grant may act as CURSOR, GROK-WEB and the twelve enabled Grok Bot personas;  every other grant only as its own seat.  `identities` reports the set with Zulip and Linear configured or missing states.  The personas are the `enabled` list in `scripts/simple_tools/mcp/gb-identities.json`:  `GB-DIRECTOR`, `GB-FIXER`, `GB-DESIGNER`, `GB-COMPILER`, `GB-HOUSEKEEPER`, `GB-PUBLISHER`, `GB-DEPLOYER`, `GB-MONITOR`, `GB-PLUMBER`, `GB-ORACLE` and `GB-TRADER`.  `BF-*` identities belong to BotFleet, so they do not appear.  Writes must name their identity;  a client that omits it gets `identity_required`, so the Cursor and Grok connector instructions must say to pass it.  No OAuth client, callback, token, grant, scope or `HOSTED_SEATS` entry is added for a GB identity.
+Every grant offers per-call `identity` selection (`docs/protocols/per-call-identity.md`).  A CURSOR or GROK-WEB grant may act as CURSOR, GROK-WEB and the twelve enabled Grok bots;  every other grant only as its own seat.  `identities` reports the set with Zulip and Linear configured or missing states.  the bots are the `enabled` list in `scripts/simple_tools/mcp/gb-identities.json`:  `GB-DIRECTOR`, `GB-FIXER`, `GB-DESIGNER`, `GB-COMPILER`, `GB-HOUSEKEEPER`, `GB-PUBLISHER`, `GB-DEPLOYER`, `GB-MONITOR`, `GB-PLUMBER`, `GB-ORACLE` and `GB-TRADER`.  `BF-*` identities belong to BotFleet, so they do not appear.  Writes must name their identity;  a client that omits it gets `identity_required`, so the Cursor and Grok connector instructions must say to pass it.  No OAuth client, callback, token, grant, scope or `HOSTED_SEATS` entry is added for a GB identity.
 
 The source remains the 24 `ZULIP_GB_<ROLE>_EMAIL` and `ZULIP_GB_<ROLE>_API_KEY` values in the **AI Fleet Coordinator** Infisical project, `prod` `/zulip`, plus the 24 `LINEAR_GB_<ROLE>_CLIENT_ID` and `LINEAR_GB_<ROLE>_CLIENT_SECRET` values in that project's `prod` `/linear`.  The earlier separate **Fleet Linear Seats** project guidance does not apply to these GB pairs.  Each role's email must equal `<role>-grok-bot@simplewithus.zulipchat.com`;  its Zulip key must authenticate that member bot (role 400), and its Linear viewer must name the selected `GB-ROLE` app.
 
@@ -542,18 +542,18 @@ Check with `fleetlink_whoami` from any seat:  `user.id` is `usr_agent_<seat>` an
 
 ## Linear token health (AFC-478 follow-up, deploy step)
 
-`POST /internal/health/linear` answers each seat's Linear token state (age, days to the day-28 re-mint, expiry, mint count, last mint ok and failure kind, and `state` ok, warn or fail) for the six Linear seats and the twelve Grok Bot personas.  It holds no token, client id, secret or upstream message text.  It is signed with its own `HEALTH_HMAC_KEY` (at least 32 characters, never a seat's wake key; equal to one means 404) and is outside Access like the wake.  Without the secret the route is a 404.
+`POST /internal/health/linear` answers each seat's Linear token state (age, days to the day-28 re-mint, expiry, mint count, last mint ok and failure kind, and `state` ok, warn or fail) for the six Linear seats and the twelve Grok bots.  It holds no token, client id, secret or upstream message text.  It is signed with its own `HEALTH_HMAC_KEY` (at least 32 characters, never a seat's wake key; equal to one means 404) and is outside Access like the wake.  Without the secret the route is a 404.
 
 Deploy step (by hand, after the merge, with Jay's go): `openssl rand -hex 32 | wrangler secret put HEALTH_HMAC_KEY`, store the same value in Fleet-OPS as `HEALTH_HMAC_KEY`, then deploy.  Muster reads the file written by `scripts/fleet-worker-health.py` (`--dry-run` first), run on the Mac by a launchd job like `com.jay.fleet-tools-doctor`, to `~/.local/state/fleet-tools/worker-health.json` (0600, atomic, `schemaVersion` 1, unknown when older than 45 minutes).  No timer is installed by this change.
 
-## Per-bot MCP bearers for the Grok Bot personas
+## Per-bot MCP bearers for the Grok bots
 
-Each GB persona can have one bearer token, minted on `/admin` ("Grok Bot Bearers"), which sits behind the Cloudflare Access gate.  No new secret and no new machine identity is needed.
+Each GB bot can have one bearer token, minted on `/admin` ("Grok Bot Bearers"), which sits behind the Cloudflare Access gate.  No new secret and no new machine identity is needed.
 
-- The token looks like `gbb_<role>_<43 characters>`.  It is shown once, on the response to the mint button (no-store).  The Worker keeps only its SHA-256 hash in the persona's Durable Object.  It is not in Infisical, KV, logs or audit rows.
-- A bearer works on `/mcp` only, and only as its own persona.  Any other `identity` is refused.  It cannot create identities and cannot reach ECHO, JET or any hosted seat.
-- Rotate is mint again: the old token stops at once.  Revoke is the Revoke button.  Tokens expire after 90 days.  A paused persona is refused.
-- A persona with no credentials in the bindings cannot mint.
+- The token looks like `gbb_<role>_<43 characters>`.  It is shown once, on the response to the mint button (no-store).  The Worker keeps only its SHA-256 hash in the bot's Durable Object.  It is not in Infisical, KV, logs or audit rows.
+- A bearer works on `/mcp` only, and only as its own bot.  Any other `identity` is refused.  It cannot create identities and cannot reach ECHO, JET or any hosted seat.
+- Rotate is mint again: the old token stops at once.  Revoke is the Revoke button.  Tokens expire after 90 days.  A paused bot is refused.
+- A bot with no credentials in the bindings cannot mint.
 - Leak paths to know: whoever holds an Access session for the admin email can mint; the page response is the only place the token appears.
 - Deploy is normal.  Nothing to configure first.
 

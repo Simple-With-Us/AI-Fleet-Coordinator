@@ -275,7 +275,7 @@ def run_file(args, io: Streams) -> int:
     mirror = linkmod.parse_topic_link(args.mirror_of, dict(io.environ)) if args.mirror_of else None
     if mirror and args.again:
         raise Refusal(
-            "--again and --mirror-of do not go together:  a mirrored item is one persona request"
+            "--again and --mirror-of do not go together:  a mirrored item is one bot request"
         )
     runner = Runner(seat, io.environ)
     runner.require_board()
@@ -336,7 +336,7 @@ def run_file(args, io: Streams) -> int:
 
     # The owner bar (bar.py) meets only a NEW filing, so it comes after the lookup of the item a rerun would find:
     # an item that already exists behaves exactly as in off (no class needed, nothing counted, no knob read).  A Grok
-    # Bot mirror is exempt too:  the persona already opened its own OWNER topic.
+    # Bot mirror is exempt too:  the Grok bot already opened its own OWNER topic.
     if existing is None and not mirror:
         policy = bar.read_policy(io.knobs)
         fields.why_owner, class_warning = bar.check_class(

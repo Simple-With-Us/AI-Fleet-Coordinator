@@ -768,7 +768,7 @@ class NotifierUntouchedTests(MirrorCase):
     def test_the_fallback_notifier_still_mirrors_in_enforce_and_reads_only_its_own_knobs(self) -> None:
         self.w.knobs.values["NEEDS_OWNER_BAR"] = "enforce"
         self.w.knobs.values["NEEDS_OWNER_SEAT_DAILY_MAX"] = 1
-        message = self.persona(content=request_text())
+        message = self.bot(content=request_text())
         result = self.run_notify()
         (mirrored,) = self.events(result, "mirrored")
         self.assertEqual(mirrored["msg"], message)

@@ -43,7 +43,7 @@ Infisical, project "AI Fleet Coordinator", prod only, read through `fleet_knobs`
 | `NEEDS_OWNER_SEAT_DAILY_MAX` | a whole number from 0 to 50 (the default is 0) | The most items one seat may file in 24 hours.  0 means no cap.  In `warn` an item over the cap is filed with one warning line; in `enforce` it is refused (exit 2).  It does nothing in `off`. |
 
 - A knob that cannot be read, or that holds anything but `off`, `warn` or `enforce`, behaves as `off`: the bar never stops a filing it cannot be sure about.  A `needs-owner` process with no knob reader token and no fresh last-known-good copy reads the defaults, so the bar is `off` there.
-- **Exempt.**  A Grok Bot mirror (`file --mirror-of`, which the fallback notifier runs as CLAUDE) is never held to the bar, because the persona already opened its own OWNER topic.  `adopt` and the fallback notifier are not changed.
+- **Exempt.**  A Grok Bot mirror (`file --mirror-of`, which the fallback notifier runs as CLAUDE) is never held to the bar, because the Grok bot already opened its own OWNER topic.  `adopt` and the fallback notifier are not changed.
 - **The cap's count** is this host's own filings, kept in `~/apps/needs-owner/filings/filings.json` (mode 0600, seat, time and Linear identifier only, never a word the filer wrote).  A closed item still counts, because the filer removes the label when it closes one and Linear alone would forget it.  A rerun that files nothing new is neither counted nor stopped by the cap, `--again` is a new filing and counts, and `--dry-run` checks the cap but records nothing.  Filings from before the bar was first on are not counted, and two hosts count separately.
 - **An item that already exists is not a new filing.**  `file` looks it up first, the way a rerun always has, and only then applies the class rule and the cap.  A rerun of an item that is already filed behaves exactly as in `off`: it needs no class, reads no knob, prints no warning and counts for nothing, whatever the mode and however full the cap is.  Only a new filing (or an `--again` that really asks again) meets the bar.
 - **The lock.**  The cap's check, the Linear filing and the record are one critical section under an exclusive advisory lock (`flock` on `~/apps/needs-owner/filings/filings.lock`, mode 0600, beside the count), so two filings racing for the last slot cannot both pass, and a filing that fails records nothing.  A waiting filing polls for up to 60 seconds, and the lock dies with its process, so nothing is left to expire.  A lock that cannot be taken (no `fcntl`, the file cannot be opened, or the 60 seconds pass) fails open in `warn`: the item is filed, with one warning line.  In `enforce` it fails closed when a cap is set: nothing is filed, and the refusal names the reason.  With no cap there is nothing the lock protects, so `enforce` fails open too.  `off` never takes it.
@@ -217,10 +217,10 @@ tap reaction key on the bot's own post and Jay's answer counts as newer than it.
 states live in `records.py` and `items.py`:  import them rather than copying the patterns.
 
 **A Grok Bot item** (`file --mirror-of <topic link> --context "for GB-<ROLE>"`, used by the C6-2 notifier as
-CLAUDE):  files as above, posts **no** new topic, records the persona's own message as the notice
-(`notified msg <the persona's message id>` with that topic), and replies in that topic with the Linear link.
+CLAUDE):  files as above, posts **no** new topic, records the bot's own message as the notice
+(`notified msg <the bot's message id>` with that topic), and replies in that topic with the Linear link.
 The link must be on this realm, in #Work-In-Progress, in a topic that starts `OWNER `, and name its message
-(`/near/<id>`);  the message id is folded into the uid, so two personas asking one question are two items and
+(`/near/<id>`);  the message id is folded into the uid, so two bots asking one question are two items and
 a repeat of the same request is not.  The caller has already checked who opened the topic.
 
 **Adopting** (`adopt ID --by SEAT --option ...`):  for an issue the seat filed earlier (the day-0 items,
@@ -305,7 +305,7 @@ a Grok Bot request) one Linear item.  It reads no secret.  A failed read of Line
    (5 minutes, then doubling up to an hour).
 4. **Notes.**  The record is followed by one directed note in the item's topic that wakes the filer:  `simple-chat --as CLAUDE --session needsown post --topic "OWNER <ID> ..." --to <SEAT>`,
    saying "Jay replied on <ID>:  <Linear link>" and where the reply is (the message, the message a tap is on, or the Linear comment), "verify it before you act", and that
-   the item stays open.  It never repeats the answer.  For a Grok Bot item the note goes to the persona (`for GB-<ROLE>`).  For **CLAUDE's own items** a post that mentions
+   the item stays open.  It never repeats the answer.  For a Grok Bot item the note goes to the bot (`for GB-<ROLE>`).  For **CLAUDE's own items** a post that mentions
    yourself wakes nobody, so the entry goes into `~/apps/needs-owner/state/pending-CLAUDE.json` (identifier, link, kind, message or comment id, option, topic and time;
    no words) for the CLAUDE session-start skill to read, and is removed once the item is closed.  A note that cannot go out (the seat has no bot, the caps are full, the pause)
    stays due and is retried, 12 times at the most.
@@ -322,7 +322,7 @@ and the file for CLAUDE's items is still written.  To stop it at once:  `launchc
 (one run at a time;  a lock older than 30 minutes, or whose process is gone, is taken over) and `pending-CLAUDE.json`.  The log is `~/Library/Logs/needs-owner-notify.log`:  a line per
 event with an identifier and reason words (`notified`, `replied`, `note-sent`, `skip why=edited_after_filing`, `deferred cap=per_hour`, ...), nothing else.
 
-**The Grok Bot mirror.**  A Grok Bot persona cannot run the Mac CLI and has no Linear write, so it opens its own OWNER topic by REST and puts a fenced block in the message:
+**The Grok Bot mirror.**  A Grok bot cannot run the Mac CLI and has no Linear write, so it opens its own OWNER topic by REST and puts a fenced block in the message:
 
 ````text
 ```needs-owner-request
@@ -331,13 +331,13 @@ event with an identifier and reason words (`notified`, `replied`, `note-sent`, `
 ````
 
 Each run lists the recent OWNER topics (`simple-chat topics --json`), skips the topics of existing items and the ones already read at their last message, and for the others requires
-that the topic's first message is from a **Grok Bot persona** (a bot whose seat is `GB-<ROLE>`, whose `seat_app` is `grok-bot` and whose email is exactly `<role>-grok-bot@<this realm>`),
-and that the block is in a message from that same persona, once, with only the keys above (`app` and `format` are accepted and ignored).  The question is 1 to 200 characters, there are
+that the topic's first message is from a **Grok bot** (a bot whose seat is `GB-<ROLE>`, whose `seat_app` is `grok-bot` and whose email is exactly `<role>-grok-bot@<this realm>`),
+and that the block is in a message from that same bot, once, with only the keys above (`app` and `format` are accepted and ignored).  The question is 1 to 200 characters, there are
 1 to 5 different options, `seat` equals the sender's seat, `low_stakes` and `recommend` name real options, `urgent` never comes with `low_stakes`, and the same secret and personal-data
 refusals as `file` apply.  An accepted request becomes `needs-owner file --by CLAUDE --app AFC --mirror-of <topic link> --context "for GB-<ROLE>: ..."` (in process, with `AGENT_SEAT=CLAUDE`),
-which posts no topic of its own, records the persona's message as the notice and replies in the topic with the Linear link.  Three requests a run at the most, once per message (the uid folds
+which posts no topic of its own, records the bot's message as the notice and replies in the topic with the Linear link.  Three requests a run at the most, once per message (the uid folds
 in the message id, and the message ids already mirrored are kept in the state), so within about 5 minutes of the post.  A block that is wrong gets **one** reply with a reason word
-(`seat_is_not_the_sender`, `not_json`, `secret_or_personal_data`, ...) and no Linear item.  A topic opened by anyone else is ignored, and so is a persona's block in a topic someone else opened.
+(`seat_is_not_the_sender`, `not_json`, `secret_or_personal_data`, ...) and no Linear item.  A topic opened by anyone else is ignored, and so is a bot's block in a topic someone else opened.
 
 **The router rule** (`scripts/simple_tools/router.py`, described in `docs/protocols/simple-tools-listener.md`):  nothing a peer posts in a topic that starts `OWNER ` wakes anyone, except this
 notifier's note (CLAUDE's bot, tag `[CLAUDE·needsown→`).  The owner's own message there wakes only the seats it mentions.

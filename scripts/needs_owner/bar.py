@@ -12,7 +12,7 @@ the class is stored in the block (`Why owner:`) and the knobs decide how hard th
 
 Both knobs are read once, through `fleet_knobs` (the tests pass a fake reader).  A knob that cannot be read, or
 holds anything but one of the three modes, is `off`:  the bar never stops a filing it cannot be sure about.
-A Grok Bot mirror (`--mirror-of`) is exempt:  the persona already opened its own OWNER topic, so there is
+A Grok Bot mirror (`--mirror-of`) is exempt:  the Grok bot already opened its own OWNER topic, so there is
 nothing left to keep from Jay.  So is an item that already exists:  a rerun of it is looked up first and behaves
 exactly as in `off` (it needs no class and is never counted), so only a NEW filing meets the bar.
 

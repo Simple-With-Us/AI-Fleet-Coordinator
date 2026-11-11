@@ -92,12 +92,12 @@ quote line is text about a mention, not a mention.
 
 ## The Seat Map
 
-For every enabled Grok Bot persona (the 12 `GB-*` seats in `GB_ENABLED_IDENTITIES`) and every BotFleet
+For every enabled Grok bot (the 12 `GB-*` seats in `GB_ENABLED_IDENTITIES`) and every BotFleet
 role seat (the 11 `BF-*` seats), the Worker resolves that seat's OWN Linear app pair from Fleet-OPS
 `/linear`:
 
-- `LINEAR_GB_<ROLE>_CLIENT_ID` and `LINEAR_GB_<ROLE>_CLIENT_SECRET` for a GB persona, the same names
-  `delegatedNames()` derives (so a persona's pair can never be another persona's);
+- `LINEAR_GB_<ROLE>_CLIENT_ID` and `LINEAR_GB_<ROLE>_CLIENT_SECRET` for a GB bot, the same names
+  `delegatedNames()` derives (so a bot's pair can never be another bot's);
 - `LINEAR_BF_<ROLE>_CLIENT_ID` and `LINEAR_BF_<ROLE>_CLIENT_SECRET` for a BF role seat, the seat tag
   with hyphens as underscores.
 
@@ -118,9 +118,9 @@ never wakes, and the log says which one and why.
 At most **6 wakes per rolling hour per seat**, in-isolate.  A seat over its budget is logged
 `linear_wake_rate_limited` and is left out of the answer.
 
-**A GB persona** is woken by a POST to Fleet-OPS `/zulip:ZULIP_ALERT_GB_<ROLE>_ENDPOINT` with
+**A GB bot** is woken by a POST to Fleet-OPS `/zulip:ZULIP_ALERT_GB_<ROLE>_ENDPOINT` with
 `Authorization: Bearer <ZULIP_ALERT_GB_<ROLE>_KEY>`.  That is the same endpoint the server listener's
-`http` wake adapter already uses for the persona, so the persona's routine sees one contract.
+`http` wake adapter already uses for the bot, so the bot's routine sees one contract.
 
 **A BF role seat** is woken by a POST to Fleet-OPS `/linear:BF_LINEAR_WAKE_<ROLE>_URL` (a BotFleet
 `/hooks/<endpointId>` url, WITHOUT the secret in it) with `Authorization: Bearer
@@ -169,10 +169,10 @@ status).  Never a token, a key, a url with a secret, or body text.
    its secret in `/linear:BF_LINEAR_WAKE_<ROLE>_SECRET`.  The url must NOT carry the secret:  the
    secret travels in the `Authorization` header.
 3. **The GB endpoints** are already there:  `/zulip:ZULIP_ALERT_GB_<ROLE>_ENDPOINT` and
-   `/zulip:ZULIP_ALERT_GB_<ROLE>_KEY` exist for the personas the listener wakes.  This feature
+   `/zulip:ZULIP_ALERT_GB_<ROLE>_KEY` exist for the bots the listener wakes.  This feature
    reuses them and reads no new name.
 4. **The mode.**  `INFISICAL_MODE=required` on the Worker.  The door refuses anything else.
-5. **The Linear app pairs.**  Each GB persona's pair is already in Fleet-OPS `/linear`.  Each BF role
+5. **The Linear app pairs.**  Each GB bot's pair is already in Fleet-OPS `/linear`.  Each BF role
    seat needs its own `LINEAR_BF_<ROLE>_CLIENT_ID` and `_CLIENT_SECRET` pair, or that seat stays
    unmapped (it logs `linear_wake_seat_unmapped` and never wakes).
 
