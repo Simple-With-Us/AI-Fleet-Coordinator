@@ -1742,7 +1742,9 @@ class Seats:
         for seat, thread in threads.items():
             deadline = began + waits[seat] + STOP_MARGIN_SECONDS
             thread.join(timeout=max(0.0, deadline - time.monotonic()))
-        done = {seat: finished.get(seat, False) and not threads[seat].is_alive() for seat in threads}
+        done = {
+            seat: finished.get(seat, False) and not threads[seat].is_alive() for seat in threads
+        }
         for seat in sorted(seat for seat, ok in done.items() if not ok):
             self.routers[seat]._log("shutdown-left-deliveries-running", "-")
         return all(done.values())

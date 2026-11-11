@@ -446,7 +446,9 @@ class WakeSettings(_Refresher, Mapping[str, Any]):
         try:
             local = self._local()
         except (Exception, SystemExit) as exc:  # noqa: BLE001 - staleness beats a dead thread
-            _log("local-file-unreadable %s seat=%s kept-last-good" % (type(exc).__name__, self.seat))
+            _log(
+                "local-file-unreadable %s seat=%s kept-last-good" % (type(exc).__name__, self.seat)
+            )
             local, read = self._last_local, False
         else:
             self._last_local, read = local, True
