@@ -3739,7 +3739,7 @@ class LocalStoreReader:
             "-I",
             "-c",
         ], argv
-        done = subprocess.run(  # noqa: S603 - the helper's own constant program
+        done = subprocess.run(
             [sys.executable, "-I", "-c", argv[8]] + self.places,
             stdin=subprocess.DEVNULL,
             capture_output=True,
