@@ -446,7 +446,9 @@ def file_new(
             raise BoardFailed(
                 "board file failed:  %s" % (first_line(result.err) or "exit %d" % result.code),
                 result.code,
-                outcome_unknown=result.timed_out or bool(_FILED_RE.search(result.out)) or result.code not in (4, 5, 6),
+                outcome_unknown=result.timed_out
+                or bool(_FILED_RE.search(result.out))
+                or result.code not in (4, 5, 6),
             )
         match = _FILED_RE.search(result.out)
         if not match:
