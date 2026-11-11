@@ -1702,6 +1702,65 @@ class Generations(Base):
                         pick = self.router().pick(wake)
                     self.assertEqual((pick.reason, pick.retry), ("registry-unavailable", True))
 
+    # `found` values that are not the registry's own True or False.  "absent" drops the key.
+    ODD_FOUND = ("absent", None, 0, 1, 1.0, "", "true", "false", [True])
+
+    def resolve_with_found(self, odd):
+        """A registry whose `resolve` gives a valid row for AA with `found` replaced by `odd`."""
+        real = self.registry
+        valid = row(SID_A, "AA", "Only chat", generation=3)
+
+        def call(env, op, params=None, *, timeout=25):
+            if op != "resolve":
+                return real(env, op, params, timeout=timeout)
+            return valid if odd == "absent" else {**valid, "found": odd}
+
+        return mock.patch.object(WR.registry_api, "call", call)
+
+    def test_a_found_that_is_not_a_boolean_is_a_retry_not_a_release(self) -> None:
+        for odd in self.ODD_FOUND:
+            with self.subTest(found=odd):
+                self.delivered.clear()
+                for leftover in (self.state / "pending", self.state / "done"):
+                    shutil.rmtree(leftover, ignore_errors=True)
+                router = self.lettered()
+                with self.resolve_with_found(odd):
+                    self.drain(router)
+                self.assertEqual(len(self.delivered), 1)
+                saved = json.loads(self.pending().read_text(encoding="utf-8"))
+                self.assertNotIn("in_flight", saved)
+                self.assertEqual((saved["failures"], saved.get("repicks", 0)), (1, 0))
+                self.clock.now += 2000
+                self.drain(router)
+                self.assertEqual(len(self.delivered), 2)
+                self.assertEqual(self.done()["status"], "delivered")
+
+    def test_a_found_that_is_not_a_boolean_is_bounded_and_never_delivered(self) -> None:
+        router = self.lettered(max_attempts=2)
+        with self.resolve_with_found(1):
+            for _ in range(6):
+                self.drain(router)
+                self.clock.now += 2000
+        self.assertEqual(len(self.delivered), 1)
+        receipt = self.done()
+        self.assertEqual((receipt["status"], receipt["code"]), ("dead", WR.UNREADABLE_ROW))
+        self.assertIs(receipt["delivered"], False)
+
+    def test_a_letter_pick_on_a_found_that_is_not_a_boolean_is_a_retry(self) -> None:
+        for odd in self.ODD_FOUND:
+            with self.subTest(found=odd), self.resolve_with_found(odd):
+                pick = self.router().pick(self.wake(letter="AA"))
+                self.assertEqual((pick.reason, pick.retry), ("registry-unavailable", True))
+
+    def test_holds_needs_found_to_be_exactly_a_boolean(self) -> None:
+        target = WR.Target(SID_A, letter="AA", generation=3)
+        valid = row(SID_A, "AA", "x", generation=3)
+        self.assertIs(WR.holds({**valid, "found": True}, target, "CLAUDE", CW.SESSION_RE), True)
+        self.assertIs(WR.holds({**valid, "found": False}, target, "CLAUDE", CW.SESSION_RE), False)
+        for odd in self.ODD_FOUND:
+            answer = valid if odd == "absent" else {**valid, "found": odd}
+            self.assertIsNone(WR.holds(answer, target, "CLAUDE", CW.SESSION_RE), repr(odd))
+
     def test_holds_tells_a_release_from_a_row_it_cannot_read(self) -> None:
         target = WR.Target(SID_A, letter="AA", generation=3)
 
