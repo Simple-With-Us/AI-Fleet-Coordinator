@@ -10,6 +10,8 @@ import sqlite3
 import stat
 import subprocess
 import tempfile
+import signal
+import threading
 import time
 import unittest
 from unittest import mock
@@ -1901,14 +1903,14 @@ class LinearSourceTests(unittest.TestCase):
             with self.assertRaises(sources.LinearSourceError):
                 sources._linear_light_scan()
 
-        def gql_err(seat, cid, sec, q, *, max_chars):
+        def gql_err(seat, cid, sec, q, *, max_chars, timeout_s=None):
             return {"errors": [{"message": "boom"}]}
 
         with mock.patch.object(sources.linear_board, "query", side_effect=gql_err):
             with self.assertRaises(sources.LinearSourceError):
                 sources._linear_query("query { x }")
 
-        def bad_rc(seat, cid, sec, q, *, max_chars):
+        def bad_rc(seat, cid, sec, q, *, max_chars, timeout_s=None):
             raise linear_board.BoardCliFailure(4, "no Fleet credentials")
 
         with mock.patch.object(sources.linear_board, "query", side_effect=bad_rc):
@@ -1918,7 +1920,7 @@ class LinearSourceTests(unittest.TestCase):
     def test_missing_linear_identity_is_named_without_echoing_stderr(self) -> None:
         """AFC-677:  the retired shared app makes simple-board exit 4;  the error says why."""
 
-        def no_identity(seat, cid, sec, q, *, max_chars):
+        def no_identity(seat, cid, sec, q, *, max_chars, timeout_s=None):
             raise linear_board.BoardCliFailure(
                 4,
                 "simple-board: no Linear app credentials: LINEAR_CLIENT_ID ... secret-ish-tail",
@@ -1939,7 +1941,7 @@ class LinearSourceTests(unittest.TestCase):
         }
         calls = []
 
-        def fake(seat, cid, sec, q, *, max_chars):
+        def fake(seat, cid, sec, q, *, max_chars, timeout_s=None):
             calls.append(cid)
             if cid == "bf-id" and bf_fails:
                 raise linear_board.BoardCliFailure(1, "invalid_client")
@@ -2346,14 +2348,14 @@ class LinearSourceTests(unittest.TestCase):
         self.assertIn("map.tsv", str(ctx.exception))
 
     def test_empty_scan_is_a_broken_read_not_an_empty_board(self) -> None:
-        def empty_page(seat, cid, sec, q, *, max_chars):
+        def empty_page(seat, cid, sec, q, *, max_chars, timeout_s=None):
             return {"issues": {"nodes": [], "pageInfo": {"hasNextPage": False}}}
 
         with mock.patch.object(sources.linear_board, "query", side_effect=empty_page):
             with self.assertRaises(sources.LinearSourceError):
                 sources._linear_light_scan()
 
-        def no_connection(seat, cid, sec, q, *, max_chars):
+        def no_connection(seat, cid, sec, q, *, max_chars, timeout_s=None):
             return {}
 
         with mock.patch.object(sources.linear_board, "query", side_effect=no_connection):
@@ -2545,3 +2547,156 @@ class ServerNightlySources(unittest.TestCase):
             without = {d.doc_id for d in sources.iter_skills()}
             self.assertNotIn("skill/claude/afc687-mirror-skill", without)
 
+
+
+class LinearBudgetTests(unittest.TestCase):
+    """_linear_run forwards the caller's remaining budget and never touches process timers."""
+
+    def setUp(self) -> None:
+        sources._linear_failed_seats.clear()
+        linear_board.clear_sessions_for_tests()
+
+    def _env(self):
+        return mock.patch.dict(
+            os.environ,
+            {"LINEAR_CLIENT_ID": "cid", "LINEAR_CLIENT_SECRET": "sec"},
+            clear=False,
+        )
+
+    def test_remaining_budget_is_forwarded_to_the_board_query(self) -> None:
+        seen = {}
+
+        def fake_query(seat, cid, sec, query, *, max_chars, timeout_s=None):
+            seen["timeout_s"] = timeout_s
+            return {"ok": True}
+
+        with (
+            self._env(),
+            mock.patch.object(sources, "_linear_seat_envs", return_value=[]),
+            mock.patch.object(sources.linear_board, "query", side_effect=fake_query),
+        ):
+            result = sources._linear_run("{ viewer { id } }", 30)
+        self.assertEqual(result, {"ok": True})
+        self.assertIsNotNone(seen["timeout_s"])
+        self.assertGreater(seen["timeout_s"], 0)
+        self.assertLessEqual(seen["timeout_s"], 30)
+
+    def test_an_expired_budget_refuses_before_any_board_call(self) -> None:
+        called = []
+
+        def fake_query(*args, **kwargs):
+            called.append(args)
+            return {"ok": True}
+
+        with (
+            self._env(),
+            mock.patch.object(sources, "_linear_seat_envs", return_value=[]),
+            mock.patch.object(sources.linear_board, "query", side_effect=fake_query),
+            mock.patch.object(sources.time, "monotonic", side_effect=[1000.0, 2000.0]),
+        ):
+            with self.assertRaises(Exception):
+                sources._linear_run("{ viewer { id } }", 30)
+        self.assertEqual(called, [])
+
+    def test_worker_thread_gets_the_same_budget_enforcement(self) -> None:
+        called = []
+        outcome = []
+
+        def fake_query(*args, **kwargs):
+            called.append(args)
+            return {"ok": True}
+
+        def run():
+            try:
+                with (
+                    self._env(),
+                    mock.patch.object(sources, "_linear_seat_envs", return_value=[]),
+                    mock.patch.object(sources.linear_board, "query", side_effect=fake_query),
+                    mock.patch.object(sources.time, "monotonic", side_effect=[1000.0, 2000.0]),
+                ):
+                    sources._linear_run("{ viewer { id } }", 30)
+            except Exception as exc:  # noqa: BLE001 - asserting the failure surfaces in-thread
+                outcome.append(exc)
+
+        worker = threading.Thread(target=run)
+        worker.start()
+        worker.join(30)
+        self.assertEqual(len(outcome), 1)
+        self.assertEqual(called, [])
+
+    def test_no_process_timer_is_created_or_destroyed(self) -> None:
+        if not hasattr(signal, "ITIMER_REAL"):
+            self.skipTest("posix only")
+        previous_handler = signal.getsignal(signal.SIGALRM)
+        signal.setitimer(signal.ITIMER_REAL, 30.0, 7.0)
+        try:
+            def fake_query(seat, cid, sec, query, *, max_chars, timeout_s=None):
+                return {"ok": True}
+
+            with (
+                self._env(),
+                mock.patch.object(sources, "_linear_seat_envs", return_value=[]),
+                mock.patch.object(sources.linear_board, "query", side_effect=fake_query),
+            ):
+                sources._linear_run("{ viewer { id } }", 30)
+            value, interval = signal.getitimer(signal.ITIMER_REAL)
+            self.assertGreater(value, 0)  # the caller's own timer is untouched
+            self.assertEqual(interval, 7.0)
+            self.assertIs(signal.getsignal(signal.SIGALRM), previous_handler)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_handler)
+
+
+class LinearBoardBudgetClampTests(unittest.TestCase):
+    """linear_board.query clamps the cached client for one call and restores it after."""
+
+    def setUp(self) -> None:
+        linear_board.clear_sessions_for_tests()
+
+    def _client(self):
+        class FakeLinear:
+            def __init__(self) -> None:
+                self.timeout = 60.0
+                self.max_wait = 90.0
+                self.seen = []
+
+            def call(self, graphql):
+                self.seen.append((self.timeout, self.max_wait))
+                return {"data": {"ok": True}}
+
+        return FakeLinear()
+
+    def test_clamp_applies_during_the_call_and_is_restored(self) -> None:
+        fake = self._client()
+        B = mock.Mock()
+        B.clean_data.side_effect = lambda d: d
+        B.output_limited.side_effect = lambda d, n: None
+        with mock.patch.object(linear_board, "_client_for", return_value=(B, fake)):
+            linear_board.query("SEAT", "cid", "sec", "{ q }", max_chars=1000, timeout_s=5.0)
+        self.assertEqual(fake.seen, [(5.0, 5.0)])
+        self.assertEqual((fake.timeout, fake.max_wait), (60.0, 90.0))
+
+    def test_restore_happens_on_failure(self) -> None:
+        fake = self._client()
+
+        def boom(graphql):
+            raise SystemExit(2)
+
+        fake.call = boom
+        B = mock.Mock()
+        with (
+            mock.patch.object(linear_board, "_client_for", return_value=(B, fake)),
+            self.assertRaises(linear_board.BoardCliFailure),
+        ):
+            linear_board.query("SEAT", "cid", "sec", "{ q }", max_chars=1000, timeout_s=5.0)
+        self.assertEqual((fake.timeout, fake.max_wait), (60.0, 90.0))
+
+    def test_no_budget_leaves_the_client_alone(self) -> None:
+        fake = self._client()
+        B = mock.Mock()
+        B.clean_data.side_effect = lambda d: d
+        B.output_limited.side_effect = lambda d, n: None
+        with mock.patch.object(linear_board, "_client_for", return_value=(B, fake)):
+            linear_board.query("SEAT", "cid", "sec", "{ q }", max_chars=1000)
+        self.assertEqual(fake.seen, [(60.0, 90.0)])

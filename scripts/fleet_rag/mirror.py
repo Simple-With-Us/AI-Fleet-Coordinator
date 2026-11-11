@@ -199,10 +199,15 @@ def _fsync_dir(directory: Path) -> None:
 
 
 def write_stamp(directory: Path, now: float, counts: dict[str, int]) -> None:
-    payload = {"complete": True, "at": int(now), "files": counts}
+    payload = json.dumps({"complete": True, "at": int(now), "files": counts}) + "\n"
     tmp = directory / ".complete.tmp"
     path = directory / COMPLETE_NAME
-    tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    try:
+        os.write(fd, payload.encode("utf-8"))
+        os.fsync(fd)  # the stamp's contents must be durable before the rename publishes it
+    finally:
+        os.close(fd)
     os.chmod(tmp, 0o644)
     os.replace(tmp, path)
     _fsync_dir(directory)
@@ -245,23 +250,29 @@ def promote(
     if previous.exists():
         shutil.rmtree(previous)
     moved = False
+    swapped = False
     try:
         if live.exists():
             os.rename(live, previous)
             moved = True
         os.rename(incoming, live)
+        swapped = True
+        _fsync_dir(live.parent)
     except OSError:
-        if moved and previous.exists() and not live.exists():
+        if swapped:
+            # The durability step failed after the swap:  put every directory back,
+            # so a raised promote still leaves live exactly as it was.
+            os.rename(live, incoming)
+            if moved and previous.exists():
+                os.rename(previous, live)
+        elif moved and previous.exists() and not live.exists():
             os.rename(previous, live)
-            _fsync_dir(live.parent)
         raise
-    _fsync_dir(live.parent)
     if not (live / COMPLETE_NAME).is_file():
         if moved and previous.exists():
             if live.exists():
                 shutil.rmtree(live)
             os.rename(previous, live)
-            _fsync_dir(live.parent)
         raise MirrorError("stamp-missing")
     if previous.exists():
         shutil.rmtree(previous)

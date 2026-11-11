@@ -38,10 +38,8 @@ import json
 import os
 import pathlib
 import re
-import signal
 import sqlite3
 import subprocess
-import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
@@ -2022,40 +2020,25 @@ def _linear_board_failure(err: linear_board.BoardCliFailure) -> LinearSourceErro
     return LinearSourceError(f"linear: simple-board api query exited {err.code}")
 
 
-class _LinearDeadline(Exception):
-    """The caller's Linear query budget expired mid-read."""
+def _linear_budget_left(deadline: float, timeout_s: int) -> float:
+    """The caller's remaining budget for this read, or a fail-closed budget error.
 
-
-def _linear_alarm(signum, frame):
-    raise _LinearDeadline()
-
-
-def _linear_query_deadline(deadline: float, *args, **kwargs) -> dict:
-    """One board query under the caller's remaining budget, enforced as a real deadline.
-
-    The board client owns per-request HTTP timeouts but nothing binds the caller's
-    ``timeout_s`` budget, so callers passing different budgets silently got the same
-    internal default.  SIGALRM only works on the main thread;  anywhere else the
-    budget cannot interrupt a blocking read, so the call proceeds with the board
-    client's own limits (same behavior as before this fix) rather than crashing."""
-    if threading.current_thread() is not threading.main_thread():
-        return linear_board.query(*args, **kwargs)
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        raise _LinearDeadline()
-    previous = signal.signal(signal.SIGALRM, _linear_alarm)
-    signal.setitimer(signal.ITIMER_REAL, remaining)
-    try:
-        return linear_board.query(*args, **kwargs)
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous)
+    Every board attempt is forwarded the remaining budget as its own socket/retry
+    deadline, so the budget binds the blocking read itself on any thread and no
+    process-wide timer is ever touched."""
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise _linear_board_failure(
+            linear_board.BoardCliFailure(124, f"linear: query exceeded {timeout_s}s budget")
+        )
+    return left
 
 
 def _linear_run(query: str, timeout_s: int) -> dict:
     """One board GraphQL read as the first configured seat whose credentials have not failed
     this run, falling back seat by seat on a credential failure (and only on one).  ``timeout_s``
-    is the caller's total budget for the read, seat fallbacks included."""
+    is the caller's total budget for the read, seat fallbacks included:  each attempt gets
+    the remaining budget, never the board client's unrelated default."""
     deadline = time.monotonic() + max(1, timeout_s)
     global LINEAR_SEAT_USED
     candidates = _linear_seat_envs()
@@ -2067,31 +2050,28 @@ def _linear_run(query: str, timeout_s: int) -> dict:
                 linear_board.BoardCliFailure(4, "no Linear app credentials")
             )
         try:
-            return _linear_query_deadline(
-                deadline, "LINEAR_CLIENT_ID", cid, sec, query, max_chars=LINEAR_MAX_CHARS
+            return linear_board.query(
+                "LINEAR_CLIENT_ID",
+                cid,
+                sec,
+                query,
+                max_chars=LINEAR_MAX_CHARS,
+                timeout_s=_linear_budget_left(deadline, timeout_s),
             )
-        except _LinearDeadline:
-            raise _linear_board_failure(
-                linear_board.BoardCliFailure(124, f"linear: query exceeded {timeout_s}s budget")
-            ) from None
         except linear_board.BoardCliFailure as err:
             raise _linear_board_failure(err) from None
     live = [c for c in candidates if c[0] not in _linear_failed_seats] or candidates[-1:]
     last_err: linear_board.BoardCliFailure | None = None
     for n, (seat, env) in enumerate(live):
         try:
-            data = _linear_query_deadline(
-                deadline,
+            data = linear_board.query(
                 seat,
                 env["LINEAR_CLIENT_ID"],
                 env["LINEAR_CLIENT_SECRET"],
                 query,
                 max_chars=LINEAR_MAX_CHARS,
+                timeout_s=_linear_budget_left(deadline, timeout_s),
             )
-        except _LinearDeadline:
-            raise _linear_board_failure(
-                linear_board.BoardCliFailure(124, f"linear: query exceeded {timeout_s}s budget")
-            ) from None
         except linear_board.BoardCliFailure as err:
             last_err = err
             if not _linear_is_auth_failure_board(err):
