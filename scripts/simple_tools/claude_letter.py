@@ -994,7 +994,9 @@ def sweep_archived(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> i
     from . import registry_api
 
     parser = argparse.ArgumentParser(prog="simple-chat letter sweep-archived")
-    parser.add_argument("--apply", action="store_true", help="close them (without it, only say what would close)")
+    parser.add_argument(
+        "--apply", action="store_true", help="close them (without it, only say what would close)"
+    )
     args = parser.parse_args(argv)
     home = str(env.get("HOME") or os.path.expanduser("~"))
     if not os.path.isdir(AL.store_root(home)):
