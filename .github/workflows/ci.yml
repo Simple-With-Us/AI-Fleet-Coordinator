@@ -838,3 +838,17 @@ jobs:
           xcodebuild -project Muster.xcodeproj -scheme Muster -configuration Debug \
             -destination 'platform=macOS' -derivedDataPath .build/CITest \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= test
+      # Every panel rendered to a PNG, light and dark, at the window's default and minimum size
+      # (AFC-707).  The test host renders off screen and never comes forward.  Report only:
+      # no baselines, so the PNGs are evidence for review, not a gate on pixels.
+      - name: Render the Muster panels
+        working-directory: muster
+        run: script/render_panels.sh "$RUNNER_TEMP/panel-screenshots"
+      - name: Upload the panel screenshots
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: panel-screenshots
+          path: ${{ runner.temp }}/panel-screenshots
+          if-no-files-found: error
+          retention-days: 14
