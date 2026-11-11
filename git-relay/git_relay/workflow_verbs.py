@@ -188,6 +188,7 @@ SPECS = {
     "wf_issue_create": ({"issues": "write"}, True),
     "wf_issue_update": ({"issues": "write"}, True),
     "wf_issue_comment": ({"issues": "write"}, True),
+    "wf_issue_state_set": ({"issues": "write"}, True),
     "wf_issue_comment_update": ({"issues": "write"}, True),
     "wf_issue_comment_delete": ({"issues": "write"}, True),
     "wf_review_comment_update": ({"pull_requests": "write"}, True),
@@ -1928,6 +1929,56 @@ class WorkflowVerbs:
         except (Refused, KeyError, TypeError) as exc:
             raise WriteOutcomeUnknown("issue write outcome unverifiable") from exc
         return {"issue": summary}
+
+    def wf_issue_state_set(self, repo, args):
+        """Set issue lifecycle state/reason with a closed, correlated numeric receipt."""
+        _only(args, ("repo", "number", "state", "reason"))
+        number = _int(args, "number")
+        state = _enum(args, "state", ("open", "closed"))
+        reason = _enum(args, "reason", ("completed", "not_planned", "duplicate", "reopened"))
+        if (state == "open") != (reason == "reopened"):
+            raise Refused("issue state/reason mismatch")
+        try:
+            issue = self._get(f"/repos/{repo}/issues/{number}")
+            if (
+                not isinstance(issue, dict)
+                or "pull_request" in issue
+                or type(issue.get("number")) is not int
+                or issue["number"] != number
+                or type(issue.get("id")) is not int
+                or issue["id"] <= 0
+                or issue.get("state") not in ("open", "closed")
+            ):
+                raise Refused("exact issue identity not matched")
+            if issue["state"] == state:
+                # An issue that was never closed carries a null state_reason, and
+                # "reopened" is the only reason open accepts, so an open issue
+                # already satisfies the request whatever its stored reason is.
+                if state != "open" and issue.get("state_reason") != reason:
+                    raise Refused("provider ignores state_reason unless state changes")
+                return {"issue_number": number, "state": state, "reason": reason}
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable("issue pre-read unavailable; no write attempted") from None
+            raise
+        result = self.client._call(
+            "PATCH",
+            f"/repos/{repo}/issues/{number}",
+            {"state": state, "state_reason": reason},
+            bearer=self.bearer,
+        )
+        if (
+            not isinstance(result, dict)
+            or "pull_request" in result
+            or type(result.get("number")) is not int
+            or result["number"] != number
+            or type(result.get("id")) is not int
+            or result["id"] != issue["id"]
+            or result.get("state") != state
+            or result.get("state_reason") != reason
+        ):
+            raise RelayGitHubError(502, "issue state receipt unverifiable")
+        return {"issue_number": number, "state": state, "reason": reason}
 
     def wf_issue_comment(self, repo, args):
         _only(args, ("repo", "number", "body"))
