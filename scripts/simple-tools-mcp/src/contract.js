@@ -470,7 +470,7 @@ export function tagPrefix(seat, tag) {
 }
 
 /** Locate a complete, single-line own-seat intro. Foreign-seat and malformed markers are content. */
-function ownIntro(prefix, text) {
+export function ownIntro(prefix, text) {
   const seat = prefix.slice(1).split("·", 1)[0];
   const leading = text.match(/^(?:👀\s*)?\s*/u)[0];
   const start = leading.length;
