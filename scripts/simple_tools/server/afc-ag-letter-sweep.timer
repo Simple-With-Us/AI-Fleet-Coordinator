@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the Antigravity letter sweep hourly (AFC-694)
+
+[Timer]
+OnBootSec=10min
+# Measured from the end of the last run, so a slow run is followed by a full quiet hour.
+OnUnitInactiveSec=1h
+Persistent=true
+Unit=afc-ag-letter-sweep.service
+
+[Install]
+WantedBy=timers.target

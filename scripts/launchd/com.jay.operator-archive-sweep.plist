@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.jay.operator-archive-sweep:  once an hour, free the Operator letter of every Claude chat the
+  desktop app has archived (`simple-chat letter sweep-archived`, AFC-694).  Archiving fires no
+  SessionEnd reason of its own, so without this the letter stays held until the 36-hour stale sweep.
+
+  Each run does a logged dry run first.  The apply pass runs only when OPERATOR_ARCHIVE_SWEEP_APPLY
+  below is 1, and the installer writes 0 unless it is given the apply flag, so a plain install is inert:
+  it logs what it would close and closes nothing.  A dry run that names more than
+  OPERATOR_ARCHIVE_SWEEP_MAX chats is refused (exit 4).
+
+  No secret lives here:  the CLI reads the registry URL and signing key from
+  ~/.local/bin/operator-registry-env itself.  The label is not com.jay.operator-letter-sweep:  that
+  one is already installed on this Mac (the 15-minute stale-and-replaced sweep for MiniMax letters).
+  Install:  scripts/launchd/install-operator-archive-sweep.sh [apply flag]
+  Stop:     launchctl bootout gui/$(id -u)/com.jay.operator-archive-sweep
+  Log:      ~/.local/state/operator/archive-sweep.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jay.operator-archive-sweep</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>/Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime/scripts/operator-archive-sweep.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/jay</string>
+    <key>OPERATOR_ARCHIVE_SWEEP_APPLY</key>
+    <string>0</string>
+    <key>OPERATOR_ARCHIVE_SWEEP_MAX</key>
+    <string>25</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>3600</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/jay/.local/state/operator/archive-sweep.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/jay/.local/state/operator/archive-sweep.out.log</string>
+</dict>
+</plist>

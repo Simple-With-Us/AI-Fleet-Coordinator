@@ -18,6 +18,7 @@
       {"label": "com.jay.mac-resource-watch", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.mac-seat-watch", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.needs-owner-notify", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.operator-archive-sweep", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.operator-notes-runner", "actions": ["start", "stop", "restart"], "stopConsequence": "Stopping this stops the Mac answering Apple Notes requests from the server and cloud seats, and they wait in the Operator's queue for up to 24 hours."},
       {"label": "com.jay.operator-wake-alerter", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.sim-idle-reaper", "actions": ["start", "stop", "restart"]},

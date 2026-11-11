@@ -1,0 +1,25 @@
+# Close the Operator registrations of Antigravity sessions that were archived or deleted (a chat the
+# store drops fires no hook of its own).  Template:  copy afc-ag-letter-sweep.service and
+# afc-ag-letter-sweep.timer to /etc/systemd/system/, `systemctl daemon-reload`,
+# `systemctl enable --now afc-ag-letter-sweep.timer`.  Install the fleet-cli checkout first:  the
+# unit resolves its `current` link at start, like the wake bridges.  Root install is owner-gated.
+# DRY RUN ONLY, on purpose:  what the summaries store's `killed` flag means (an archived chat, or a
+# chat whose process ended) has not been confirmed by the Antigravity seat.  Until it is, this unit
+# only reports what it would close.  To turn it on, add --apply to ExecStart after AG answers.
+[Unit]
+Description=Antigravity letter sweep: free the letters of archived or deleted sessions (AFC-694)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=jay
+Group=jay
+Environment=HOME=/home/jay
+Environment=PYTHONPATH=/home/jay/.local/share/fleet-cli/current/scripts
+# The shared registry env file is sourced first, exactly as the letter hooks and the wake bridges
+# source it:  the sweep signs its registry reads and closes as the OPERATOR principal.  No -I:  it
+# would drop PYTHONPATH, and the package is found through it.
+ExecStart=/bin/sh -c '. "$HOME/.local/bin/operator-registry-env" 2>/dev/null; exec /usr/bin/python3 -m simple_tools.platform_letter_antigravity sweep --location server'
+TimeoutStartSec=5min
+Nice=10
