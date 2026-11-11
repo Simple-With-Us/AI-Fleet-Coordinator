@@ -462,6 +462,15 @@ class Config:
         # The Linear project webhook (AFC-565, linear_projects_hook.py), served under
         # /linear/v1/ by the listener API.  Off by default;  the server instance only.
         self.linear_projects_enabled = False
+        # The Operator's Zulip -> Linear living comments (operator_linear.py), hosted by
+        # the daemon in place of the retired standalone relay process.  Off by default;
+        # the server instance only, so two instances can never stack comments.
+        self.linear_comments_enabled = False
+        # [linear_comments] infisical_token_file:  where the scoped read-only Infisical
+        # service token for the Operator's Linear developer token lives, when the host
+        # does not bind OPERATOR_LINEAR_INFISICAL_TOKEN.  "" means operator_linear's
+        # default.
+        self.linear_comments_infisical_token_file = ""
         self.listener_api_bind = "127.0.0.1"
         self.listener_api_port = LISTENER_API_DEFAULT_PORT
         # Mac-only wake backpressure during host saturation (OPS-950).  Peer wakes are held back
@@ -950,6 +959,33 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         cfg.linear_projects_enabled = linear_section.get("enabled", False)
     if len(errors) > linear_errors_before:
         cfg.linear_projects_enabled = False  # a section with a problem never turns the hook on
+    comments_errors_before = len(errors)
+    comments_section = raw.get("linear_comments", {})
+    if not isinstance(comments_section, dict):
+        errors.append("[linear_comments] must be a table")
+        comments_section = {}
+    unknown_comments = set(comments_section) - {"enabled", "infisical_token_file"}
+    if unknown_comments:
+        errors.append(
+            "[linear_comments] has unknown setting(s): %s" % ", ".join(sorted(unknown_comments))
+        )
+    if not isinstance(comments_section.get("enabled", False), bool):
+        errors.append("linear_comments.enabled must be true or false")
+    else:
+        cfg.linear_comments_enabled = comments_section.get("enabled", False)
+    token_file = comments_section.get("infisical_token_file", "")
+    if not isinstance(token_file, str):
+        errors.append("linear_comments.infisical_token_file must be a string")
+    else:
+        cfg.linear_comments_infisical_token_file = token_file.strip()
+    if len(errors) > comments_errors_before:
+        cfg.linear_comments_enabled = False  # a section with a problem never turns the engine on
+    if cfg.linear_comments_enabled and cfg.instance != "server":
+        errors.append(
+            "linear_comments.enabled applies to the server instance only:  one instance "
+            "writes the topics' Linear comments, so they can never be stacked"
+        )
+        cfg.linear_comments_enabled = False
     cfg.presence = L.presence_topics(raw)
     platform = (
         ((raw.get("platform") or {}).get("claude-code") or {})

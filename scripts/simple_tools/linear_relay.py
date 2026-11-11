@@ -4,7 +4,9 @@
 Any message in a PUBLIC Zulip stream whose TOPIC TITLE or BODY names a Linear issue ID (AFC-123
 and the other team keys) is mirrored onto that issue as ONE comment per (issue, topic), written by
 a dedicated Linear app identity.  Later hits in the same topic edit that comment in place (a list
-of permalinks), at most once per EDIT_INTERVAL seconds per comment.  Direct messages and private
+of permalinks), at most once per EDIT_INTERVAL seconds per comment.  Once a topic has a standing
+comment, every later message in the topic joins it, key or not (the whole-topic scope the owner
+ruled on 2026-11-03, with the backfill in operator_linear.py's hosting).  Direct messages and private
 streams are never relayed: the relay bot is a plain member that only joins public streams, and the
 worker drops any message whose stream is not in the public set it loaded.  Until that set has
 loaded, the worker relays, writes and drops nothing.
@@ -23,6 +25,15 @@ What this build does NOT claim (Echo's reviewer addendum, 2026-10-23):
   - Comment-edit permission under the Linear scopes `read` + `comments:create` is UNVERIFIED.  The
     relay is written for it; the sandbox test that proves it comes later, after Jay approves the
     app.
+
+Operator hosting (2026-11-03):  the listener daemon can host this worker instead of the
+standalone process (operator_linear.py).  Hosted, the worker is fed the messages the listener
+already routes, writes under the Operator's own Linear credential, and is given a topic-history
+reader:  when a topic's first mention creates an entry, the topic's earlier messages are pulled
+into it, so the comment covers the whole topic and not only the thread from the mention on
+(owner ruling, 2026-11-03:  the poster often did not know an issue existed).  The standalone
+process passes no history reader, so it gets no backfill;  the whole-topic continuation above
+applies to both.
 
 Run (server instance, stdlib only, Python 3.11+):
 
@@ -105,6 +116,7 @@ DEFAULT_TEAMS = (
 EDIT_INTERVAL = 600  # seconds between edits of one comment (owner: 10 minute batching)
 MAX_LINKS_SHOWN = 20
 MAX_SEEN = 200  # message ids remembered per comment, for idempotency
+MAX_BACKFILL = 1000  # topic messages pulled into a new entry (whole-topic scope, owner 2026-11-03)
 MAX_ISSUES_PER_MESSAGE = 5
 QUOTE_CHARS = 280
 LINEAR_URL = "https://api.linear.app/graphql"
@@ -376,6 +388,19 @@ class Ledger:
         """Ask the next tick() to write the file, so one cycle costs one write."""
         self.dirty = True
 
+    def close(self) -> None:
+        """Release the ledger flock.  Entries dirtied since the last save are saved
+        first (every save is atomic and fsynced), so closing loses nothing;  a host
+        that rebuilds its worker on a credential change closes the old ledger before
+        opening the new one."""
+        fh, self._lock_fh = self._lock_fh, None
+        if fh is not None:
+            try:
+                if self.dirty:
+                    self.save()
+            finally:
+                fh.close()
+
     def save(self) -> None:
         text = self._render()
         tmp = self.path.with_suffix(".tmp")
@@ -554,8 +579,15 @@ class LinearClient:
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
         opener: Any = None,
+        auth_scheme: str = "bearer",
     ) -> None:
+        # "bearer" sends `Authorization: Bearer <token>` (an OAuth access token, the
+        # standalone relay's form);  "api_key" sends the token bare, Linear's form for
+        # a personal API key (the Operator-hosted engine's developer token).
+        if auth_scheme not in ("bearer", "api_key"):
+            raise ValueError("unknown Linear auth scheme %r" % (auth_scheme,))
         self._token = token
+        self.auth_scheme = auth_scheme
         self.dry_run = dry_run
         self.sleep = sleep
         self.monotonic = monotonic
@@ -623,7 +655,9 @@ class LinearClient:
                 data=body,
                 method="POST",
                 headers={
-                    "Authorization": "Bearer " + self._token,
+                    "Authorization": (
+                        self._token if self.auth_scheme == "api_key" else "Bearer " + self._token
+                    ),
                     "Content-Type": "application/json",
                     "User-Agent": USER_AGENT,
                 },
@@ -766,7 +800,7 @@ class LinearClient:
 # ------------------------------------------------------------------------------------------
 # Worker
 # ------------------------------------------------------------------------------------------
-def render_comment(entry: Mapping[str, Any], realm: str) -> str:
+def render_comment(entry: Mapping[str, Any], realm: str, byline: str = "the relay") -> str:
     links = entry["links"][-MAX_LINKS_SHOWN:]
     earlier = max(0, int(entry["count"]) - len(links))
     lines = [
@@ -789,7 +823,7 @@ def render_comment(entry: Mapping[str, Any], realm: str) -> str:
         )
         lines.append('%s: "%s"' % (head, item["quote"]) if item["quote"] else head)
     # Rendered copy: the sentence gap is a no-break space plus a space.
-    lines += ["", "_Mirrored one way from Zulip by the relay.\u00a0 Edit in Zulip, not here._"]
+    lines += ["", "_Mirrored one way from Zulip by %s.\u00a0 Edit in Zulip, not here._" % byline]
     return "\n".join(lines)
 
 
@@ -811,6 +845,8 @@ class RelayWorker:
         monotonic: Callable[[], float] = time.monotonic,
         log: Callable[[str], None] | None = None,
         public_streams: Mapping[int, str] | Iterable[int] | None = None,
+        history: Callable[[int, str], list[Mapping[str, Any]]] | None = None,
+        byline: str = "the relay",
     ) -> None:
         self.realm = zulip_realm
         self.own_email = own_email.lower()
@@ -820,6 +856,14 @@ class RelayWorker:
         self.clock = clock  # wall time, for the timestamps the ledger keeps
         self.monotonic = monotonic  # for the cycle budget, which a clock step must not move
         self.log = log or (lambda m: print(m, file=sys.stderr, flush=True))
+        # A topic-history reader, given by the Operator hosting (operator_linear.py): called
+        # with (stream id, topic) when a first mention creates an entry, so the topic's earlier
+        # messages join the comment.  None in the standalone process: no backfill there.
+        self.history = history
+        # Whose name the comment footer carries: "the relay" standalone, "the Operator" hosted.
+        # The marker line itself never changes, so a hosted worker adopts the comments the
+        # standalone relay created instead of stacking new ones.
+        self.byline = byline
         # None until the public-stream set has loaded: nothing is known about any stream yet.
         self.public_streams: set[int] | None = None
         self.stream_names: dict[int, str] = {}
@@ -919,6 +963,14 @@ class RelayWorker:
         content = str(msg.get("content", ""))
         sender = str(msg.get("sender_full_name", "someone"))
         ids = find_issue_ids(self.regex, topic, content)
+        # Whole-topic scope (owner ruling, 2026-11-03):  once a topic has a standing comment
+        # for an issue, every later message in the topic belongs to that comment, whether or
+        # not it repeats the key, so an edit reflects the whole current thread and not only
+        # its mentioning messages.  A topic with no standing entry still records nothing
+        # until a real mention creates one.
+        for _key, standing in self._entries_for(int(sid), topic):
+            if standing["issue"] not in ids:
+                ids.append(standing["issue"])
         if not ids:
             return
         withheld = [
@@ -1110,6 +1162,73 @@ class RelayWorker:
             self.ledger.mark_dirty()
             self.log("carried %d standing comment(s) over a topic move" % moved)
 
+    def _append(
+        self, entry: dict[str, Any], mid: int, sender: str, content: str, when: float
+    ) -> bool:
+        """Record one message on an entry.  False when the message is already there: a replay
+        (the same message routed for several seats, or delivered twice) counts once."""
+        if mid in entry["seen"]:
+            return False
+        entry["seen"] = (entry["seen"] + [mid])[-MAX_SEEN:]
+        entry["count"] = int(entry["count"]) + 1
+        entry["links"].append(
+            {
+                "mid": mid,
+                "sender": safe_text(sender),
+                "when": time.strftime("%b %d %H:%M UTC", time.gmtime(when)),
+                "quote": neutralise(content),
+            }
+        )
+        entry["links"] = entry["links"][-MAX_LINKS_SHOWN:]
+        entry["dirty"] = True
+        entry["last_touch"] = self.clock()
+        return True
+
+    def _backfill(
+        self,
+        entry: dict[str, Any],
+        stream_id: int,
+        topic: str,
+        before_mid: int,
+        cache: dict[tuple[int, str], list[Mapping[str, Any]]],
+    ) -> None:
+        """Pull a topic's earlier messages into a brand-new entry, so the comment covers the
+        whole topic and not only the thread from its first mention on (owner ruling,
+        2026-11-03).  Best-effort: a history read that fails is logged and the entry keeps
+        what the live path records; a create is never blocked on history.  Only messages
+        older than the mentioning one are taken (later ones arrive live), the writer's own
+        posts are skipped as on the live path, and the fetch is shared by every entry one
+        message creates through the caller's cache."""
+        if self.history is None:
+            return
+        cache_key = (stream_id, topic)
+        if cache_key not in cache:
+            try:
+                cache[cache_key] = list(self.history(stream_id, topic) or [])
+            except Exception as exc:  # noqa: BLE001 - history must never stop a create
+                cache[cache_key] = []
+                self.log(
+                    "topic history for %s could not be read (%s); its comment starts at the "
+                    "first mention" % (self._label(entry), type(exc).__name__)
+                )
+        earlier = [
+            message
+            for message in cache[cache_key]
+            if _is_int(message.get("id")) and int(message["id"]) < before_mid
+        ]
+        for message in sorted(earlier, key=lambda m: int(m["id"]))[:MAX_BACKFILL]:
+            if str(message.get("sender_email", "")).lower() == self.own_email:
+                continue
+            stamp = message.get("timestamp")
+            when = float(stamp) if _is_number(stamp) else self.clock()
+            self._append(
+                entry,
+                int(message["id"]),
+                str(message.get("sender_full_name", "someone")),
+                str(message.get("content", "")),
+                when,
+            )
+
     def _record(
         self,
         ids: list[str],
@@ -1123,28 +1242,16 @@ class RelayWorker:
         if not ids:
             return
         now = self.clock()
+        history_cache: dict[tuple[int, str], list[Mapping[str, Any]]] = {}
         for ident in ids:
             key = ledger_key(ident, stream_id, topic)
             entry = self.ledger.entries.get(key)
             if entry is None:
                 entry = new_entry(ident, stream_id, stream, topic, mid)
                 self.ledger.entries[key] = entry
-            if mid in entry["seen"]:
-                continue
-            entry["seen"] = (entry["seen"] + [mid])[-MAX_SEEN:]
-            entry["count"] = int(entry["count"]) + 1
-            entry["links"].append(
-                {
-                    "mid": mid,
-                    "sender": safe_text(sender),
-                    "when": time.strftime("%b %d %H:%M UTC", time.gmtime(now)),
-                    "quote": neutralise(content),
-                }
-            )
-            entry["links"] = entry["links"][-MAX_LINKS_SHOWN:]
-            entry["dirty"] = True
-            entry["last_touch"] = now
-            self._flush(key, now)  # creates at once; edits wait for the interval
+                self._backfill(entry, stream_id, topic, mid, history_cache)
+            if self._append(entry, mid, sender, content, now):
+                self._flush(key, now)  # creates at once; edits wait for the interval
         # tick() writes the whole file once per cycle, not once per message.  A create still
         # writes its intent ahead of the call, inside _flush.
         self.ledger.mark_dirty()
@@ -1193,7 +1300,7 @@ class RelayWorker:
         self.ledger.save()
         try:
             entry["comment_id"] = self.linear.create_comment(
-                uuid, render_comment(entry, self.realm)
+                uuid, render_comment(entry, self.realm, self.byline)
             )
         except LinearUncertain:
             raise  # the outcome is unknown: the entry stays pending
@@ -1215,7 +1322,9 @@ class RelayWorker:
 
     def _edit(self, uuid: str, entry: dict[str, Any]) -> str:
         try:
-            self.linear.update_comment(entry["comment_id"], render_comment(entry, self.realm))
+            self.linear.update_comment(
+                entry["comment_id"], render_comment(entry, self.realm, self.byline)
+            )
             return "updated the"
         except (LinearNotFound, LinearRejected, LinearPermanentError) as exc:
             refusal = exc

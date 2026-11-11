@@ -14,7 +14,7 @@ import time
 import unittest
 from unittest import mock
 
-from fleet_rag import notes_export, sources
+from fleet_rag import linear_board, notes_export, sources
 from fleet_rag.notes_export import html_to_text, strip_title_line
 
 FINDINGS_DDL = """
@@ -1475,7 +1475,7 @@ class ChatLogTests(unittest.TestCase):
 
     def test_retired_sources_are_explicit_only_and_linear_refreshes_by_default(self) -> None:
         self.assertEqual(
-            sources.NIGHTLY_SOURCES, ("linear", "doc", "skill", "memory", "apple-note")
+            sources.NIGHTLY_SOURCES, ("linear", "doc", "skill", "memory")
         )
         self.assertIn("linear", sources.SOURCES)
         from fleet_rag.ingest import _resolve_names, _attests_health
@@ -1894,37 +1894,37 @@ class LinearSourceTests(unittest.TestCase):
 
     def test_scan_and_fetch_fail_closed(self) -> None:
         with mock.patch.object(
-            sources.subprocess,
-            "run",
+            sources.linear_board,
+            "query",
             side_effect=OSError("no simple-board here"),
         ):
             with self.assertRaises(sources.LinearSourceError):
                 sources._linear_light_scan()
 
-        def ok_proc(*a, **k):
-            return subprocess.CompletedProcess(a, 0, stdout='{"errors": [{"message": "boom"}]}', stderr="")
+        def gql_err(seat, cid, sec, q, *, max_chars):
+            return {"errors": [{"message": "boom"}]}
 
-        with mock.patch.object(sources.subprocess, "run", side_effect=ok_proc):
+        with mock.patch.object(sources.linear_board, "query", side_effect=gql_err):
             with self.assertRaises(sources.LinearSourceError):
                 sources._linear_query("query { x }")
 
-        def bad_rc(*a, **k):
-            return subprocess.CompletedProcess(a, 4, stdout="", stderr="no Fleet credentials")
+        def bad_rc(seat, cid, sec, q, *, max_chars):
+            raise linear_board.BoardCliFailure(4, "no Fleet credentials")
 
-        with mock.patch.object(sources.subprocess, "run", side_effect=bad_rc):
+        with mock.patch.object(sources.linear_board, "query", side_effect=bad_rc):
             with self.assertRaises(sources.LinearSourceError):
                 sources._linear_query("query { x }")
 
     def test_missing_linear_identity_is_named_without_echoing_stderr(self) -> None:
         """AFC-677:  the retired shared app makes simple-board exit 4;  the error says why."""
 
-        def no_identity(*a, **k):
-            return subprocess.CompletedProcess(
-                a, 4, stdout="",
-                stderr="simple-board: no Linear app credentials: LINEAR_CLIENT_ID ... secret-ish-tail",
+        def no_identity(seat, cid, sec, q, *, max_chars):
+            raise linear_board.BoardCliFailure(
+                4,
+                "simple-board: no Linear app credentials: LINEAR_CLIENT_ID ... secret-ish-tail",
             )
 
-        with mock.patch.object(sources.subprocess, "run", side_effect=no_identity):
+        with mock.patch.object(sources.linear_board, "query", side_effect=no_identity):
             with self.assertRaises(sources.LinearSourceError) as ctx:
                 sources._linear_query("query { x }")
         msg = str(ctx.exception)
@@ -1939,16 +1939,16 @@ class LinearSourceTests(unittest.TestCase):
         }
         calls = []
 
-        def fake(argv, **k):
-            calls.append(k["env"]["LINEAR_CLIENT_ID"])
-            if k["env"]["LINEAR_CLIENT_ID"] == "bf-id" and bf_fails:
-                return subprocess.CompletedProcess(argv, 1, stdout="", stderr="invalid_client")
-            return subprocess.CompletedProcess(argv, 0, stdout='{"viewer": {}}', stderr="")
+        def fake(seat, cid, sec, q, *, max_chars):
+            calls.append(cid)
+            if cid == "bf-id" and bf_fails:
+                raise linear_board.BoardCliFailure(1, "invalid_client")
+            return {"viewer": {}}
 
         for bf_fails, want in ((False, ["bf-id"]), (True, ["bf-id", "gb-id"])):
             calls.clear()
             with mock.patch.dict(os.environ, env, clear=False), \
-                    mock.patch.object(sources.subprocess, "run", side_effect=fake):
+                    mock.patch.object(sources.linear_board, "query", side_effect=fake):
                 os.environ.pop("LINEAR_CLIENT_ID", None)
                 os.environ.pop("LINEAR_CLIENT_SECRET", None)
                 os.environ.pop(sources.LINEAR_SEATS_ENV, None)
@@ -1960,6 +1960,37 @@ class LinearSourceTests(unittest.TestCase):
                     sources._linear_query("query { y }")
                     self.assertEqual(calls, ["gb-id"])
         sources.take_warnings()
+
+    def test_linear_reuses_one_board_client_per_seat_per_run(self) -> None:
+        """AFC-688:  many queries in one ingest share one in-process Auth client (one mint)."""
+        linear_board.reset_sessions()
+        lin = mock.Mock()
+        lin.call.return_value = {"n": 1}
+        B = mock.Mock()
+        B.endpoint.return_value = "http://127.0.0.1/mock"
+        B.ENV_PAIR = "env"
+        B.seat_app_names.return_value = ()
+        B.Identity = mock.Mock(side_effect=lambda *a, **k: mock.Mock())
+        B.Auth = mock.Mock()
+        B.Linear = mock.Mock(return_value=lin)
+        B.clean_data.side_effect = lambda data: data
+        B.output_limited.return_value = None
+        B.GqlError = Exception
+        with mock.patch.object(linear_board, "load_board", return_value=B):
+            linear_board.query("BF-ORACLE", "bf-id", "bf-sec", "query { a }", max_chars=100)
+            linear_board.query("BF-ORACLE", "bf-id", "bf-sec", "query { b }", max_chars=100)
+        self.assertEqual(B.Auth.call_count, 1)
+        self.assertEqual(B.Linear.call_count, 1)
+        self.assertEqual(lin.call.call_count, 2)
+
+    def test_linear_board_auth_failure_detection(self) -> None:
+        err401 = linear_board.BoardCliFailure(1, "HTTP 401 from token endpoint")
+        err403 = linear_board.BoardCliFailure(1, "403 Forbidden")
+        err_misc = linear_board.BoardCliFailure(1, "timeout")
+        self.assertTrue(sources._linear_is_auth_failure_board(err401))
+        self.assertTrue(sources._linear_is_auth_failure_board(err403))
+        self.assertTrue(sources._linear_is_auth_failure_board(linear_board.BoardCliFailure(4, "")))
+        self.assertFalse(sources._linear_is_auth_failure_board(err_misc))
 
     def test_linear_non_auth_errors_never_fall_back(self) -> None:
         def proc(rc, err):
@@ -2307,19 +2338,17 @@ class LinearSourceTests(unittest.TestCase):
         self.assertIn("map.tsv", str(ctx.exception))
 
     def test_empty_scan_is_a_broken_read_not_an_empty_board(self) -> None:
-        def empty_page(*a, **k):
-            return subprocess.CompletedProcess(
-                a, 0, stdout='{"issues": {"nodes": [], "pageInfo": {"hasNextPage": false}}}', stderr=""
-            )
+        def empty_page(seat, cid, sec, q, *, max_chars):
+            return {"issues": {"nodes": [], "pageInfo": {"hasNextPage": False}}}
 
-        with mock.patch.object(sources.subprocess, "run", side_effect=empty_page):
+        with mock.patch.object(sources.linear_board, "query", side_effect=empty_page):
             with self.assertRaises(sources.LinearSourceError):
                 sources._linear_light_scan()
 
-        def no_connection(*a, **k):
-            return subprocess.CompletedProcess(a, 0, stdout="{}", stderr="")
+        def no_connection(seat, cid, sec, q, *, max_chars):
+            return {}
 
-        with mock.patch.object(sources.subprocess, "run", side_effect=no_connection):
+        with mock.patch.object(sources.linear_board, "query", side_effect=no_connection):
             with self.assertRaises(sources.LinearSourceError):
                 sources._linear_light_scan()
 

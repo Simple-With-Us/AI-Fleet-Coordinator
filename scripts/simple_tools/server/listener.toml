@@ -22,7 +22,7 @@
 # owner and nothing wakes.  A reload re-reads only this file:  a new or changed environment
 # variable reaches the listener only when the container restarts.  A section changed here never reaches a live
 # volume by itself:  server/apply_live_config.py copies the JET, GB and BF sections into /data/listener.toml, adds
-# [listener_api], [notes_queue] and [linear_projects] only where the live file has none (it never changes one that
+# [listener_api], [notes_queue], [linear_projects] and [linear_comments] only where the live file has none (it never changes one that
 # is there), and leaves [daemon] (the pins) untouched.  Never mount this file as a single file, because `daemon init` replaces it
 # atomically.  Every seat here must be "server" in docs/protocols/simple-tools-partition.toml:  a seat is never
 # configured in both instances.
@@ -116,6 +116,20 @@ server_seats = ["CLAUDE", "CODEX"]
 # reverse proxy routes /linear/v1/ to port 8788, then restart the app.
 [linear_projects]
 enabled = false
+
+# The Operator's Zulip -> Linear living comments (scripts/agent_sync/operator_linear.py):
+# one standing, edited-in-place comment per (Zulip topic, Linear issue mentioned in it),
+# covering the whole topic.  This replaces the standalone linear_relay process and its
+# own bot.  Its writes use the owner's Linear developer token (a personal API key with
+# Write permission) in Infisical (AI Fleet Coordinator, prod, /linear), fetched at
+# daemon start through ONE scoped read-only Infisical service token — bound as the
+# runtime-only variable OPERATOR_LINEAR_INFISICAL_TOKEN, or held in the
+# infisical_token_file below (a 0600 file;  see docs/operator-linear-comments.md).
+# Server instance only.  Enable only after the service token is in place, then
+# restart the app.
+[linear_comments]
+enabled = false
+# infisical_token_file = "/data/operator/linear-service-token"
 
 [seat.MA]
 instance = "server"

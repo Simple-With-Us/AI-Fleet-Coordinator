@@ -27,6 +27,7 @@ from simple_tools import live as L
 from simple_tools import wakes as W
 from simple_tools import zulip as Z
 from simple_tools.daemon import LIVE_DIR_KEEP
+from simple_tools.tests.fake_routine import FakeRoutine
 from simple_tools.tests.fake_zulip import EPOCH
 from simple_tools.tests.harness import write_rc
 from simple_tools.tests.listener_harness import (
@@ -385,6 +386,122 @@ class RoutingTests(DaemonHarness):
         self.pump_until(daemon, lambda: len(self.inbox()) >= 1)
         self.assertEqual(self.live_items("nowatcher"), [])
         self.assertIsNone(self.inbox()[0]["delivered_to"])
+
+
+class RoutineSeatLeaseTests(DaemonHarness):
+    """One wake path (OPS-1048):  a seat with a routine never hands a mention to a session, neither the
+    newest one nor one that follows the topic, at route time (router.route) or at wake time
+    (Daemon.takeover), so its routine's router picks the chat and a session letter beats topic ownership."""
+
+    ROUTINE_SEAT = textwrap.dedent("""\
+        [seat.CLAUDE]
+        bot = "Claude"
+        wake = "http"
+        routine = {}
+        """)
+
+    def wake_capable(self, *lease_ids) -> None:
+        for n, lease_id in enumerate(lease_ids):
+            self.write_lease(lease_id, last_prompt=10.0 * (n + 1))
+            self.addCleanup(os.close, fake_watcher(self.seat_paths(), lease_id))
+
+    def test_the_context_of_a_seat_without_a_routine_says_so(self) -> None:
+        daemon = self.started()
+        self.assertFalse(daemon.context(daemon.seats["CLAUDE"]).seat_has_routine)
+
+    def test_the_context_of_a_seat_with_a_routine_says_so(self) -> None:
+        self.write_config(rewake=True, seats=self.ROUTINE_SEAT)
+        daemon = self.started()
+        self.assertTrue(daemon.context(daemon.seats["CLAUDE"]).seat_has_routine)
+
+    def test_a_mention_stays_off_the_session_and_the_routine_wake_is_queued(self) -> None:
+        self.write_config(rewake=True, seats=self.ROUTINE_SEAT)
+        daemon = self.started()
+        self.wake_capable("old", "new")
+        mid = self.fake.add_message("Codex", "other", "elsewhere", MENTION)
+        self.pump_until(daemon, lambda: len(self.inbox()) >= 1)
+        self.assertEqual((self.live_items("old"), self.live_items("new")), ([], []))
+        self.assertIsNone(self.inbox()[0]["delivered_to"])
+        self.assertEqual([(r["state"], r["trigger_ids"]) for r in self.ledger()], [("queued", [mid])])
+
+    def test_the_wake_reaches_the_routine_and_the_newest_session_does_not_take_it_over(self) -> None:
+        routine = FakeRoutine()
+        routine.start()
+        self.addCleanup(routine.stop)
+        self.write_config(rewake=True, seats=self.ROUTINE_SEAT)
+        daemon = self.started(
+            env=self.env(
+                CLAUDE_ROUTINE_URL=routine.url + "/hook?token=t", CLAUDE_ROUTINE_KEY="rk-test-key"
+            )
+        )
+        self.wake_capable("old", "new")
+        mid = self.fake.add_message("Codex", "other", "elsewhere", MENTION)
+        self.pump_until(daemon, lambda: len(self.inbox()) >= 1)
+        self.wake_cycle(daemon)
+        self.assertTrue(routine.wait_for(1, timeout=10), "the routine was never posted to")
+        self.assertEqual(routine.received[0].json()["message_id"], mid)
+        self.assertNotIn("skipped", [r["state"] for r in self.ledger()], "no lease took the wake")
+        self.assertEqual((self.live_items("old"), self.live_items("new")), ([], []))
+
+    def pending(self, topic: str) -> W.Pending:
+        now = self.clock.time()
+        return W.Pending("w-%s" % topic, "CLAUDE",
+                         {"type": "stream", "channel": "simple-tools", "topic": topic},
+                         owner=False, now=now, due=now)
+
+    def test_takeover_never_hands_a_routine_seats_wake_to_a_lease(self) -> None:
+        self.write_config(rewake=True, seats=self.ROUTINE_SEAT)
+        daemon = self.started()
+        self.wake_capable("recent")
+        self.write_lease("owner", topics=[("simple-tools", "owned")], posted=[400], last_prompt=1)
+        runner = daemon.seats["CLAUDE"]
+        self.assertIsNone(daemon.takeover(runner, self.pending("owned")), "not the lease on the topic")
+        self.assertIsNone(daemon.takeover(runner, self.pending("unleased")), "not the newest session")
+
+    def test_takeover_still_hands_a_plain_seats_wake_to_the_topic_lease_or_the_newest_session(self) -> None:
+        self.write_config(rewake=True)
+        daemon = self.started()
+        self.wake_capable("recent")
+        self.write_lease("owner", topics=[("simple-tools", "owned")], posted=[400], last_prompt=1)
+        runner = daemon.seats["CLAUDE"]
+        self.assertEqual(daemon.takeover(runner, self.pending("owned")), "owner")
+        self.assertEqual(daemon.takeover(runner, self.pending("unleased")), "recent")
+
+    LETTERED = "@**Claude** AB can you check the AFC cutover?"
+
+    def test_a_lettered_mention_in_a_topic_another_session_follows_reaches_the_routine(self) -> None:
+        routine = FakeRoutine()
+        routine.start()
+        self.addCleanup(routine.stop)
+        self.write_config(rewake=True, seats=self.ROUTINE_SEAT)
+        daemon = self.started(
+            env=self.env(
+                CLAUDE_ROUTINE_URL=routine.url + "/hook?token=t", CLAUDE_ROUTINE_KEY="rk-test-key"
+            )
+        )
+        self.write_lease("CD", topics=[("simple-tools", "t")], posted=[401], last_prompt=90.0)
+        mid = self.fake.add_message("Codex", "simple-tools", "t", self.LETTERED)
+        self.pump_until(daemon, lambda: len(self.inbox()) >= 1)
+
+        def classes() -> list[str]:
+            return [i["class"] for i in self.live_items("CD") if i["kind"] == "message"]
+
+        self.assertEqual(classes(), ["passive"], "the topic's session gets context, never an interrupt")
+        self.assertIsNone(self.inbox()[0]["delivered_to"])
+        self.assertEqual([(r["state"], r["trigger_ids"]) for r in self.ledger()], [("queued", [mid])])
+        self.wake_cycle(daemon)
+        self.assertTrue(routine.wait_for(1, timeout=10), "the routine was never posted to")
+        self.assertEqual(routine.received[0].json()["message_id"], mid)
+        self.assertNotIn("skipped", [r["state"] for r in self.ledger()], "no lease took the wake")
+        self.assertEqual(classes(), ["passive"])
+
+    def test_a_seat_without_a_routine_still_interrupts_the_topic_lease_for_a_lettered_mention(self) -> None:
+        daemon = self.started()
+        self.write_lease("CD", topics=[("simple-tools", "t")], posted=[401], last_prompt=90.0)
+        mid = self.fake.add_message("Codex", "simple-tools", "t", self.LETTERED)
+        self.pump_until(daemon, lambda: len(self.live_items("CD")) >= 1)
+        self.assertEqual([(i["id"], i["class"]) for i in self.live_items("CD")], [(mid, "interrupt")])
+        self.assertEqual((self.inbox(), self.ledger()), ([], []), "no inbox copy and no wake")
 
 
 class LeaseLifecycleTests(DaemonHarness):

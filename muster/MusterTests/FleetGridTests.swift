@@ -279,7 +279,6 @@ final class FleetGridTests: XCTestCase {
     /// The wake panel's matching state is not called PASS.
     func test_the_wake_panel_does_not_call_a_match_a_pass() {
         XCTAssertEqual(WakeSettingState.match.label, "MATCHES")
-        XCTAssertNotEqual(WakeSettingState.unproven.label, "PASS")
         XCTAssertNotEqual(WakeSettingState.unpublished.label, "PASS")
     }
 

@@ -881,7 +881,11 @@ def _run_locked(
             report["warnings"].append(
                 "linear: pruning skipped; generator is not a complete deletion inventory"
             )
-        if prune and source_ok and name != "linear":
+        if prune and source_ok and name == "apple-note":
+            report["warnings"].append(
+                "apple-note: pruning skipped; write-time upserts own the corpus"
+            )
+        if prune and source_ok and name not in ("linear", "apple-note"):
             # Deferred:  no source prunes until every source in the run has finished
             # cleanly (AFC-677).  A failure anywhere means the run cannot vouch that a
             # missing document is really gone.
@@ -1156,8 +1160,8 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument(
         "--all",
         action="store_true",
-        help="nightly sources (linear, doc, skill, memory, apple-note; "
-        "excludes chat-log — pass --source chat-log for the rare policy scan)",
+        help="nightly sources (linear, doc, skill, memory; apple-note is write-time only — "
+        "pass --source apple-note for a manual refresh; excludes chat-log)",
     )
     g.add_argument("--source", help="comma-separated: " + ",".join(GENERATORS))
     g.add_argument(
