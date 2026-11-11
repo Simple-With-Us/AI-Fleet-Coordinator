@@ -10,9 +10,9 @@ Writing a platform's `deliver`.  It is one plain function:
 
     def deliver(target: Target, wake: Wake) -> Delivery
 
-`target` is the picked chat (`session_id`, `letter`, `host`, `title`, `thread_link`).  `wake` is
-metadata only (`wake_id`, `message_id`, `channel`, `topic`, `zulip_link`, `sender`, `dm`, `letter`),
-and never holds the message body:  a platform's prompt names the thread and says to read it.  It
+`target` is the picked chat (`session_id`, `letter`, `host`, `title`, `thread_link`, `generation`).
+`wake` is metadata only (`wake_id`, `message_id`, `channel`, `topic`, `zulip_link`, `sender`, `dm`,
+`letter`), and never holds the message body:  a platform's prompt names the thread and says to read it.  It
 runs on a worker thread, may take as long as it needs, and is never called twice at once for the
 same `session_id`.  It returns a `Delivery` whose `outcome` is one of:
 
@@ -42,6 +42,13 @@ recorded.  A replay that finds the mark writes a `dead` receipt with the code
 A wake the router never started is replayed and delivered, and its receipt says `replayed`.  SIGTERM
 stops new work and waits up to `shutdown_wait_seconds` for running deliveries, so a normal restart
 interrupts none of them.
+
+A pick can go stale while its wake waits, so the registry is asked again immediately before the
+delivery, ahead of the in-flight mark.  If the letter no longer names that session at the generation
+picked, nothing is delivered:  a wake addressed to a letter ends in a `dead` receipt with the code
+`target-released`, because the letter's new holder is not who the sender meant, and any other wake
+goes back through the pick.  A registry that cannot be read is a bounded retry, never a blind
+delivery.  Receipts name the selected generation as `picked_generation`.
 
 One chat's wakes run in the order they came.  A later wake waits behind an earlier one for the same
 chat until that one is settled;  it is not failed as busy.  A wake that still cannot be delivered,
@@ -98,6 +105,7 @@ REQUEST_TIMEOUT = 30
 OUTCOMES = ("sent", "completed", "busy", "unreachable", "failed", "refused")
 INTERRUPTED = "interrupted-during-delivery"
 EXPIRED = "wake-expired"
+RELEASED = "target-released"
 
 ROUTER_DEFAULTS: dict[str, Any] = {
     # Off until someone arms it:  with this false the router picks and receipts, and delivers nothing.
@@ -124,6 +132,7 @@ class Target:
     host: str = ""
     title: str = ""
     thread_link: str = ""
+    generation: int = 0  # the registry's generation of `letter`;  0 only when built outside a pick
 
 
 @dataclass(frozen=True)
@@ -349,12 +358,17 @@ class Router:
             return None  # a crafted row can never steer an argv token a child reads as a flag
         if str(row.get("seat") or self.platform.seat).upper() != self.platform.seat:
             return None
+        letter = str(row.get("label") or row.get("letter") or "")
+        generation = row.get("generation")
+        if not letter or type(generation) is not int or generation < 1:
+            return None  # the check before delivery needs both, so it could never pass
         return Target(
             session_id=sid,
-            letter=str(row.get("label") or row.get("letter") or ""),
+            letter=letter,
             host=str(row.get("verified_host") or ""),
             title=str(row.get("title") or ""),
             thread_link=str(row.get("thread_link") or ""),
+            generation=generation,
         )
 
     def _excluded(self, targets: list[Target]) -> set[str]:
@@ -495,7 +509,8 @@ class Router:
 
     def test_answer(self, wake: Wake) -> dict[str, Any]:
         """A test wake's answer:  `test`, `wake_id`, `receipt_id`, `picked`, `picked_letter`,
-        `session_id`, `reason`, `delivered`.  It delivers nothing and reserves nothing."""
+        `picked_generation`, `session_id`, `reason`, `delivered`.  It delivers nothing and reserves
+        nothing."""
         pick = self.pick(wake, consult=False, timeout=TEST_REGISTRY_TIMEOUT)
         answer = self._receipt(
             {"wake": asdict(wake), "receipt_id": secrets.token_hex(8), "attempts": 0},
@@ -697,6 +712,13 @@ class Router:
         # The chat stays held until the outcome is settled, so a later wake cannot start between
         # this delivery ending and its result being recorded.
         try:
+            still_held = self._still_held(pick.target)
+            if still_held is None:
+                self._retry(entry, counted=True, code="registry-unavailable", pick=pick)
+                return
+            if not still_held:
+                self._released(entry, pick, wake)
+                return
             entry["attempts"] += 1
             entry["in_flight"] = True
             if not self._save(entry):
@@ -715,6 +737,39 @@ class Router:
             with self._cond:
                 self._active.discard(session)
                 self._cond.notify_all()
+
+    def _still_held(self, target: Target) -> bool | None:
+        """Whether the registry still has this letter on this session at the generation picked.
+        None when it cannot be read:  that is not a yes, and not a no."""
+        answer = registry_api.call(
+            self.env,
+            "resolve",
+            {"platform": self.platform.platform, "letter": target.letter},
+            timeout=REGISTRY_TIMEOUT,
+        )
+        if "error" in answer:
+            return None
+        current = self._valid(answer) if answer.get("found") and not _closed(answer) else None
+        return (
+            current is not None
+            and current.session_id == target.session_id
+            and current.generation == target.generation
+        )
+
+    def _released(self, entry: dict[str, Any], pick: Pick, wake: Wake) -> None:
+        """The picked chat is gone or re-registered, and nothing was delivered.  A wake addressed
+        to a letter ends here.  Any other goes back through the pick, a bounded number of times so
+        a registry whose two reads disagree cannot spin a worker."""
+        entry["repicks"] = entry.get("repicks", 0) + 1
+        if wake.letter or entry["repicks"] > int(self.config["max_attempts"]):
+            result = Delivery("refused", code=RELEASED)
+            self._finish(entry, pick, status="dead", delivered=False, result=result)
+            return
+        entry["pick"] = None
+        self._save(entry)
+        with self._cond:
+            entry["running"] = False
+            self._cond.notify_all()
 
     def _settle(self, entry: dict[str, Any], pick: Pick, result: Delivery) -> None:
         outcome = result.outcome if result.outcome in OUTCOMES else "failed"
@@ -802,6 +857,7 @@ class Router:
             "letter_live": pick.letter_live,
             "picked": pick.picked,
             "picked_letter": target.letter if target else "",
+            "picked_generation": target.generation if target else 0,
             "session_id": target.session_id if target else "",
             "host": target.host if target else "",
             "thread_link": target.thread_link if target else "",
@@ -909,6 +965,7 @@ def _loadable(entry: object, wake_id: str) -> bool:
             and type(entry["next_at"]) in (int, float)
             and type(entry["attempts"]) is int
             and type(entry["failures"]) is int
+            and type(entry.get("repicks", 0)) is int
             and isinstance(entry.get("receipt"), (dict, type(None)))
         )
     except (KeyError, TypeError, ValueError):
