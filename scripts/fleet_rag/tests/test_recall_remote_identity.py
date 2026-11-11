@@ -66,6 +66,31 @@ class RemoteIdentityTests(unittest.TestCase):
             self.assertEqual(calls[1][1]['params']['arguments']['identity'], 'ZC')
             self.assertTrue(all(call[0]['Authorization'] == 'Bearer ' + bearer for call in calls))
 
+    def test_generic_write_keeps_the_plain_transport_contract(self):
+        # No recall tool backs a generic hosted write, so no identity pre-call fires for
+        # it, and the transport-outcome wording stays exact (the shared hardening contract).
+        bearer = 'sbt_zc_' + 'x' * 43
+        scanner = SimpleNamespace(scan=lambda *a, **k: None)
+        for sent, want, notwant in (
+            (True, 'may or may not have been applied', None),
+            (False, 'could not be reached', 'may or may not'),
+        ):
+            calls = []
+
+            def post(url, headers, body, timeout, _sent=sent):
+                calls.append(json.loads(body))
+                raise recall._TransportError(_sent, 'transport')
+
+            with mock.patch.dict(os.environ, {'SIMPLE_TOOLS_BEARER': bearer, 'AGENT_SEAT': 'ZC'}, clear=True), \
+                    mock.patch.object(recall, '_remote_post', post), \
+                    mock.patch.object(recall, '_remote_scanner', return_value=scanner), \
+                    self.subTest(sent=sent), self.assertRaises(recall.FleetRagError) as ctx:
+                recall.remote_call('zulip_post', {'text': 'hi'}, write=True)
+            self.assertIn(want, str(ctx.exception))
+            if notwant:
+                self.assertNotIn(notwant, str(ctx.exception))
+            self.assertEqual([c['params']['name'] for c in calls], ['zulip_post'])
+
     def test_bad_identity_probe_never_sends_write(self):
         calls = []
         def post(url, headers, body, timeout):
