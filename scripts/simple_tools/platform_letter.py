@@ -1865,7 +1865,9 @@ _POSTED_LINE = re.compile("^posted id [0-9]+ to #[^\\n]*? › ([^\\n]+)$", re.MU
 _SHELL_PUNCTUATION = ";&|()\n"
 # The words that may stand before the program in the command that runs it:  a wrapper (and its flags and their
 # values) or a shell keyword.  `echo simple-chat post ...` only names the program, so it is not a post.
-_PREFIX_WORDS = frozenset({"sudo", "env", "command", "nohup", "time", "exec", "then", "do", "else", "if", "while", "!"})
+_PREFIX_WORDS = frozenset(
+    {"sudo", "env", "command", "nohup", "time", "exec", "then", "do", "else", "if", "while", "!"}
+)
 _ASSIGNMENT = re.compile("^[A-Za-z_][A-Za-z0-9_]*=")
 
 
@@ -1939,7 +1941,9 @@ def _result_text(value: Any, depth: int = 0) -> str:
     if isinstance(value, list):
         return "\n".join(_result_text(item, depth + 1) for item in value)
     if isinstance(value, Mapping):
-        return _result_text(value.get("text") if "text" in value else value.get("content"), depth + 1)
+        return _result_text(
+            value.get("text") if "text" in value else value.get("content"), depth + 1
+        )
     return ""
 
 
@@ -1960,7 +1964,12 @@ def _walk_topics(
     kind = value.get("type")
     if kind == "tool_use":
         call_id, name, args = value.get("id"), value.get("name"), value.get("input")
-        if not (isinstance(call_id, str) and call_id and isinstance(name, str) and isinstance(args, Mapping)):
+        if not (
+            isinstance(call_id, str)
+            and call_id
+            and isinstance(name, str)
+            and isinstance(args, Mapping)
+        ):
             return
         if _POST_TOOLS.search(name):
             pending[call_id] = ("hosted", [_clean_topic(args.get("topic"))])
@@ -1970,12 +1979,18 @@ def _walk_topics(
                 pending[call_id] = ("command", posts)
         return
     if kind == "tool_result":
-        call = pending.pop(value.get("tool_use_id"), None) if isinstance(value.get("tool_use_id"), str) else None
+        call = (
+            pending.pop(value.get("tool_use_id"), None)
+            if isinstance(value.get("tool_use_id"), str)
+            else None
+        )
         if call is None or value.get("is_error") is True:
             return
         how, topics = call
         if how == "command":
-            printed = [m.group(1) for m in _POSTED_LINE.finditer(_result_text(value.get("content")))]
+            printed = [
+                m.group(1) for m in _POSTED_LINE.finditer(_result_text(value.get("content")))
+            ]
             topics = [_clean_topic(t) for t in printed] if printed else topics
         found.extend(topics)
         return
