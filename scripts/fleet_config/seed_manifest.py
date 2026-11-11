@@ -74,9 +74,9 @@ PACK_SKILLS_DIR = "docs/fleet-skills"
 
 # The hook ids the check derives from an installed config.  A hook id is the entry's
 # own name, else its group name, else the script its command runs, and a trailing
-# "-hook" is ignored when two ids are compared.
-LANE_GUARD_HOOK = "lane-guard-hook"  # the five config-file platforms:  from the command
-FLEET_GUARD_HOOK = "fleet-guard-hook"  # the clutch block and the minimax bundle
+# "-hook" is ignored when two ids are compared.  Every id that is a script name comes
+# from the installer's own constants (HOOK_NAME, FLEET_HOOK_NAME and
+# MINIMAX_HOOK_NAME), so the seed cannot name a hook the installer never writes.
 NAMED_GROUP_HOOK = "lane-guard"  # the antigravity group, and the muse plugin hook
 
 # The seat to platform mapping.  Nothing in the registry maps a seat tag to a
@@ -96,6 +96,8 @@ SEAT_PLATFORMS: dict[str, tuple[str, ...]] = {
     "MA": ("muse",),
     "MC": ("muse-code",),
     "OPENCODE": ("opencode",),
+    "KIMI": ("kimi",),
+    "ZC": ("zcode",),
     "GROK-WEB": (),
     "GROK-BOT": (),
     "ECHO": (),
@@ -518,21 +520,70 @@ def _hooks_rule(
     description: str,
     proof_level: str = "L1",
 ) -> dict[str, object]:
-    """The rule that pins the guard hook of a platform."""
+    """The rule that pins the shell guard hook of a platform.
+
+    It asks for shell guarding and nothing else:  the hook is registered with a matcher
+    that delivers the shell tools, and a shell sentinel sent to it is denied.  PASS here
+    means exactly that.  File guarding has its own rule (``_file_guard_rule``), so a
+    guard that only watches the shell reads PASS for what it does and partly proven for
+    what the fleet also asks of it.
+    """
     return _rule(
         "%s-hooks-lane-guard" % seat.lower(),
         "hooks",
         [platform],
         {"type": "hook_registered", "target": target, "detail": event},
         {
-            "description": "The fleet guard hook is registered for %s in %s" % (event, target),
+            "description": "The fleet guard hook is registered for %s in %s and denies "
+            "a shell command that writes into a forbidden tree" % (event, target),
             "present": True,
             "names": list(names),
             "timeoutSeconds": timeout_seconds,
+            "guards": ["shell"],
         },
         seat,
         description,
         proof_level=proof_level,
+    )
+
+
+def _file_guard_rule(
+    seat: str,
+    platform: str,
+    target: str,
+    event: str,
+    names: Sequence[str],
+    timeout_seconds: int,
+) -> dict[str, object]:
+    """The rule that pins the file guard of a platform.
+
+    The fleet also asks that a file write into a forbidden tree is policed, and most
+    installs register their hook for the shell tools alone.  This rule is the one that
+    says so:  it passes only when the harness delivers the file tools to the hook and a
+    Write/Edit-shaped payload naming a path in a forbidden tree (the secrets folder
+    under the home) is denied by it.  A hook registered for the shell tools alone, so
+    the harness never delivers a file write to it, reads UNPROVEN, naming the matcher
+    that is missing, and is not failing.  A hook the harness does deliver the file tools
+    to that lets the forbidden write through reads FAIL.
+    """
+    return _rule(
+        "%s-hooks-file-guard" % seat.lower(),
+        "hooks",
+        [platform],
+        {"type": "hook_registered", "target": target, "detail": event},
+        {
+            "description": "The fleet guard hook is registered for %s in %s with a matcher "
+            "that delivers the file tools to it, and it denies a file write into a "
+            "forbidden tree" % (event, target),
+            "present": True,
+            "names": list(names),
+            "timeoutSeconds": timeout_seconds,
+            "guards": ["file"],
+        },
+        seat,
+        "Shell guarding has its own rule.  This one asks the same hook to police file "
+        "writes too, which needs a matcher that delivers the file tools to it.",
+        proof_level="L1",
     )
 
 
@@ -664,6 +715,20 @@ def _permissions_mode_rule(seat: str, platform: str, target: str) -> dict[str, o
 # --------------------------------------------------------------------------- the seats
 
 
+def _file_guard_hook(platform: str, hook_id: str, timeout: int) -> tuple[str, int]:
+    """The (hook id, timeout) the file-guard rule of a platform expects.
+
+    Most platforms police files, if at all, with the same hook as the shell.  Claude Code has a file
+    guard of its own, in its own PreToolUse group of the same settings file (the installer's
+    CLAUDE_FILE_HOOK_NAME, matcher CLAUDE_FILE_MATCHER), so its file rule names that hook and its
+    timeout, read from the installer.
+    """
+    if platform == "claude":
+        install_tools = _install_tools()
+        return install_tools.CLAUDE_FILE_HOOK_NAME, install_tools.CLAUDE_FILE_HOOK_TIMEOUT_S
+    return hook_id, timeout
+
+
 def _hook_target(platform: str) -> tuple[str, str, int, str]:
     """The (target, event, timeout, hook id) of a platform's guard hook.
 
@@ -675,12 +740,19 @@ def _hook_target(platform: str) -> tuple[str, str, int, str]:
     row = install_tools.PLATFORMS.get(platform)
     if row is None:
         raise ValueError("the platform %r has no hook surface" % platform)
-    if platform in ("claude", "codex", "grok", "antigravity", "cursor"):
+    if platform in ("claude", "codex", "grok", "antigravity", "cursor", "zcode"):
         timeout = install_tools.HOOK_TIMEOUT_S
         # Antigravity keeps one named group per hook, so its id is the group name;
         # the others name the hook after the script their command runs.
-        hook_id = NAMED_GROUP_HOOK if platform == "antigravity" else LANE_GUARD_HOOK
+        hook_id = NAMED_GROUP_HOOK if platform == "antigravity" else install_tools.HOOK_NAME
         return "~/" + row.config_rel, row.event, timeout, hook_id
+    if platform == "kimi":
+        return (
+            "~/" + row.config_rel,
+            row.event,
+            install_tools.HOOK_TIMEOUT_S,
+            install_tools.FLEET_HOOK_NAME,
+        )
     if platform == "clutch":
         # The Clutch cordis patch is YAML, which the standard library cannot read.
         # The hook loads a JSON file in the stable dir instead, and that JSON is what
@@ -689,16 +761,17 @@ def _hook_target(platform: str) -> tuple[str, str, int, str]:
             "~/apps/lane-tools/" + install_tools.CLUTCH_HOOKS_FILE,
             "PreToolUse",
             install_tools.HOOK_TIMEOUT_S,
-            FLEET_GUARD_HOOK,
+            install_tools.FLEET_HOOK_NAME,
         )
     if platform == "minimax":
         # MiniMax Code reads no settings file for hooks:  it loads them from a local
-        # plugin bundle, whose hooks.json holds the fleet hook.
+        # plugin bundle, whose hooks.json holds its own hook shim.  The id is the one
+        # the installer writes there, so a correct install is not a hook "not registered".
         return (
             "~/" + install_tools.MINIMAX_PLUGIN_REL + "/" + install_tools.MINIMAX_HOOKS_FILE,
             "PreToolUse",
             install_tools.MINIMAX_HOOK_TIMEOUT_S,
-            FLEET_GUARD_HOOK,
+            install_tools.MINIMAX_HOOK_NAME,
         )
     raise ValueError("the platform %r has no hook config file" % platform)
 
@@ -739,7 +812,7 @@ def _mcp_servers(platform: str) -> tuple[str, ...]:
     the platforms with a fixed seat, and the installer's own note holds it back for
     OpenCode, whose seat is shared with a Conductor session that has no default.
     """
-    fixed_seat = ("muse-code", "minimax", "fx")
+    fixed_seat = ("muse-code", "minimax", "fx", "kimi", "zcode")
     if platform == "muse":
         # The muse target of install_mcp carries the fixed seat MC, so the simple-chat
         # entry is registered as MC and never as MA.
@@ -765,8 +838,10 @@ def _no_hooks_rule(seat: str, platform: str, target: str, description: str) -> d
     """The rule that pins the absence of a hook, for a harness with no hook mechanism.
 
     ``expected.present`` false inverts the check:  the target must hold no hook for
-    the event.  The rule passes while the harness has no hook surface, and reports
-    drift the moment one is registered there.
+    the event.  While the harness has no hook surface the rule reads UNSUPPORTED with
+    the reason code ``not-applicable``:  there is no guard to prove, so it is never a
+    PASS, and the verdict leaves it out.  It reports drift the moment a hook is
+    registered there.
     """
     return _rule(
         "%s-hooks-none" % seat.lower(),
@@ -825,6 +900,8 @@ def _harness_seat(
                 "and the timeout is the one the installer writes.",
             )
         )
+        file_hook, file_timeout = _file_guard_hook(platform, hook_id, timeout)
+        rules.append(_file_guard_rule(seat, platform, target, event, [file_hook], file_timeout))
     else:
         rules.append(_no_hooks_rule(seat, platform, hook_absent_target, hook_absent_description))
     if skip_mcp_reason is None:
@@ -1047,33 +1124,49 @@ def _build_seats() -> dict[str, dict[str, object]]:
         ],
     )
 
+    # Kimi Code and Z Code
+    seats["KIMI"] = _harness_seat("KIMI", "kimi", subagents=None)
+    seats["ZC"] = _harness_seat("ZC", "zcode", subagents=None)
+
     # The seats with no Mac config surface.
     seats["GROK-WEB"] = _hosted_seat(
         "GROK-WEB",
         "Grok Web runs in the web app and the iOS app",
-        "Grok Web's credential is held by the server listener's secret store, not by "
+        "Grok Web's credential is held by the server eavesdropper's secret store, not by "
         "a Mac file of its own.",
     )
     seats["GROK-BOT"] = _hosted_seat(
         "GROK-BOT",
-        "The Grok Bot personas run as Cursor cloud agents",
-        "Grok Bot has no Zulip credential of its own:  its GB-<ROLE> personas are "
+        "Grok Bot runs as Cursor cloud agents",
+        "Grok Bot has no Zulip credential of its own:  its GB-<ROLE> bots are "
         "owner-managed and hold no zuliprc.",
     )
     seats["ECHO"] = _hosted_seat(
         "ECHO",
         "Echo runs on the Instinct app's own computer and reaches the fleet through "
         "the hosted ST-MCP bridge",
-        "Echo's credential is held by the hosted listener's secret store, not by a Mac "
+        "Echo's credential is held by the hosted eavesdropper's secret store, not by a Mac "
         "file of its own.",
     )
     seats["WISE"] = _hosted_seat(
         "WISE",
         "Wise runs on the Instinct app's own computer and reaches the fleet through "
         "the hosted ST-MCP bridge",
-        "Wise's credential is held by the hosted listener's secret store, not by a Mac "
+        "Wise's credential is held by the hosted eavesdropper's secret store, not by a Mac "
         "file of its own.",
     )
+    # Where a seat runs, only where the fleet has said so.  A seat left out here reads as "place not known"
+    # in Muster's grid:  that is the honest value, not a gap to fill by guessing.
+    #   CLAUDE:  Claude Code sessions run on the Mac (the Claude desktop) and on the server (EE, Nov 8).
+    #   ZC:  its sessions live on both hosts (ZC, Nov 7:  the server's ZCode app drives its chat there,
+    #        and the Mac desktop keeps local chats of its own).
+    #   MA:  "Muse Assist runs on a cloud VM" (its skills cover above);  the MA rules read the Mac only as
+    #        evidence, so the seat itself is not a Mac seat (EE, Nov 8).
+    #   GROK-BOT:  "Grok Bot runs as Cursor cloud agents" (its not-applicable reasons above).
+    seats["CLAUDE"]["runsOn"] = ["mac", "server"]
+    seats["ZC"]["runsOn"] = ["mac", "server"]
+    seats["MA"]["runsOn"] = ["vm"]
+    seats["GROK-BOT"]["runsOn"] = ["cloud"]
     return seats
 
 

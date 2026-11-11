@@ -54,12 +54,12 @@ Local administration (keep the caller's own seat in `--as`; `--target-seat` sele
 ```sh
 simple-chat --as CODEX daemon chats list --target-seat GROK
 simple-chat --as CODEX daemon chats bind --target-seat GROK \
-  --channel agent-sync --topic 'ISSUE-123 Work Topic' \
+  --channel Work-In-Progress --topic 'ISSUE-123 Work Topic' \
   --session-id '<discovered-session-id>' --cwd '<discovered-workspace>'
 simple-chat --as CODEX daemon chats status --target-seat GROK
 simple-chat --as CODEX daemon chats cancel --target-seat GROK --item-id '<held-item-id>'
 simple-chat --as CODEX daemon chats unbind --target-seat GROK \
-  --channel agent-sync --topic 'ISSUE-123 Work Topic'
+  --channel Work-In-Progress --topic 'ISSUE-123 Work Topic'
 ```
 
 AFC-307 separately tracks the older shared Grok prompt helper's uncorrelated `queued: true` result.  The new nudge transport bypasses that acceptance path.
@@ -69,6 +69,8 @@ Topic renames and channel moves migrate explicit chat bindings and pending nudge
 ## Muse Chat Catalog And Selection
 
 The tool-less Muse router first receives metadata for up to 24 relevant records from a bounded read-only catalog, with a 24,000-character context ceiling.  If metadata is insufficient, `chat_inspect` requests one exact readable record and the listener supplies up to four recent user/assistant messages for one final decision.  A wake permits at most two Muse calls, with no recursive inspection.  The collector scans native stores without starting another ACP owner, excludes tool output and reasoning, and scrubs text before sending it to Muse.  Every direct message or explicit bot mention can initiate this Muse routing path, from Jay or a peer.  Trigger text is untrusted input and may rank bounded metadata, but it cannot grant transcript access or override deterministic safety gates.  Muse may request one excerpt for either sender; Muse makes the relevance and safety judgment, while the listener enforces exact listed/read-capable targets and fixed bounds.  Peer-triggered chat selection still requires Muse to return `risk: low`.
+
+> **Note added Nov 7, 2026.**  This audit is the Oct 13 record and is not rewritten.  Two of its statements are superseded:  that every direct message or explicit bot mention can start this Muse routing path, and the owner preference at the top for a Muse-then-mcode router chain.  The owner ruled (owner, Nov 7, 2026) "Seat wake doesn't need an agent" and "Only the operator does headless runs sometimes":  the Operator's consultant runs only when deterministic code cannot decide, on a preset the owner made on OpenRouter.  The per-seat model wakes still run until Phase 2, which is not built;  PR #1506 only records each model start and whether a deterministic rule could have decided it.  The current state is in [Zulip Message Routing And Wake Flow](zulip-wake-routing.md) and [the listener design, section 3.4a](simple-tools-listener.md#34a-model-gate-phase-1-record-only).
 
 The output field `chat_target` selects one opaque ID from that exact snapshot.  The listener requires a Muse wake, refreshes the record, rejects stale/read-only/unknown targets, verifies unchanged host/platform/workspace, and queues one fixed Zulip reminder.  Peer-triggered selection additionally requires `risk: low`; a private DM can target only a chat belonging to the addressed seat.  The model cannot choose the prompt text, create a chat, change its model, or select a host.  A simultaneous seat route is rejected to prevent duplicate handoffs.  Busy targets stay queued behind existing work; uncertain sends require receipts or explicit cancellation.
 

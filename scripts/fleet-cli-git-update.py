@@ -58,7 +58,14 @@ SMOKE_CASES = (
     ("simple_chat_mcp_help", "scripts/simple-chat", ["mcp", "--help"], 0),
     ("simple_notes_version", "scripts/simple-notes", ["--version"], 0),
     ("simple_board_help", "scripts/simple-board", ["--help"], 0),
-    ("simple_board_missing_credentials", "scripts/simple-board", ["whoami"], 4),
+    # A usage error exits 2 before any credential is read, with or without the host's seat helper (see the same case in
+    # fleet-cli-release.py).  The earlier `whoami` case expected exit 4 and failed on a host that has the helper and a
+    # bearer for the smoke seat.
+    ("simple_board_usage_error", "scripts/simple-board", ["show"], 2),
+    # Same shape as the board cases:  --help prints and exits 0, and a usage error exits 2, with a blank
+    # HOME and no credentials, with or without the host's seat helper.
+    ("simple_git_help", "scripts/simple-git", ["--help"], 0),
+    ("simple_git_usage_error", "scripts/simple-git", ["call"], 2),
     ("recall_help", "scripts/recall", ["--help"], 0),
     ("lane_help", "scripts/fleet_lanes/bin/lane", ["--help"], 0),
     ("fleet_mode_block", "scripts/fleet-mode", [], 0),
@@ -170,7 +177,7 @@ def smoke_settings(
     The running updater's settings are not the right ones:  when a release removes a CLI, the
     installed updater still asks for it, the target checkout no longer ships it, and the smoke
     fails on a file that is meant to be gone.  That deadlock held a host on an old commit for
-    hours (the Oct 22, 2026 cutover from agent-sync to simple-chat).  The target's own settings
+    hours.  The target's own settings
     are what must work, so read them from the target;  fall back to the running ones when the
     target has no updater to read.
     """

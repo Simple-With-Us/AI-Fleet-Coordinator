@@ -40,20 +40,22 @@ jobs:
           PUSH_AFTER: ${{ github.sha }}
         run: |
           set -euo pipefail
-          if [ "$EVENT_NAME" = "pull_request" ]; then
+          if [ "$EVENT_NAME" = "pull_request" ] && [ -n "$PR_BASE_SHA" ] && [ -n "$PR_HEAD_SHA" ] \
+               && git cat-file -e "${PR_BASE_SHA}^{commit}" 2>/dev/null \
+               && git cat-file -e "${PR_HEAD_SHA}^{commit}" 2>/dev/null; then
             range="${PR_BASE_SHA}..${PR_HEAD_SHA}"
+            log_opts="--no-merges $range"
           elif [ -n "$PUSH_BEFORE" ] && ! [[ "$PUSH_BEFORE" =~ ^0+$ ]] \
                && git cat-file -e "${PUSH_BEFORE}^{commit}" 2>/dev/null; then
             range="${PUSH_BEFORE}..${PUSH_AFTER}"
+            log_opts="--no-merges $range"
           else
-            # New branch or a before-commit this clone cannot see: scan the tip only.
-            range="-1"
+            # Range unprovable (new branch, unseen before-SHA, or a PR end the
+            # clone cannot see):  scan full reachable history rather than the
+            # tip alone,  so a secret planted before the window is still found.
+            range="full history"
+            log_opts=""
           fi
           echo "gitleaks log range: $range"
-          if [ "$range" = "-1" ]; then
-            log_opts="-1"
-          else
-            log_opts="--no-merges --first-parent $range"
-          fi
           "$RUNNER_TEMP/gitleaks" git --redact -v --no-banner --exit-code 2 \
             --log-opts="$log_opts" .

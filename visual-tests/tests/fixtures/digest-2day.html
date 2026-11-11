@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <base href="/" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Jay's Daily Log</title>
+  <style>
+    :root {
+      --bg: #f4f6f9;
+      --card: #ffffff;
+      --text: #1a2332;
+      --muted: #5b6b82;
+      --accent: #0f766e;
+      --link: #0369a1;
+      --border: #e2e8f0;
+      --st: #2563eb;
+      --ct: #7c3aed;
+      --um: #ea580c;
+      --dd: #b45309;
+      --ps: #be123c;
+      --ar: #059669;
+      --cl: #6366f1;
+      --shared: #0d9488;
+      --fleet: #475569;
+      --bf: #0284c7;
+      --hh: #92400e;
+      --clutch: #0ea5e9;
+      --cc: #0d9488;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 1.5rem clamp(1rem, 4vw, 2.5rem) 3rem;
+      max-width: 54rem;
+      margin-inline: auto;
+    }
+    h1 { font-size: 1.6rem; margin: 0 0 0.35rem; letter-spacing: -0.02em; color: #0f172a; }
+    h2 { font-size: 1.2rem; margin: 0 0 0.35rem; color: var(--accent); }
+    h3 { font-size: 0.8rem; margin: 1rem 0 0.4rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+    .lede { color: var(--muted); margin: 0 0 2rem; }
+    .links { display: flex; flex-wrap: wrap; gap: 0.75rem 1.25rem; margin-bottom: 1.75rem; font-size: 0.95rem; }
+    a { color: var(--link); text-decoration: underline; }
+    a:hover { text-decoration-thickness: 2px; }
+    a:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; border-radius: 2px; }
+    .day {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem 1.15rem 1.15rem;
+      margin-bottom: 1rem;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+      content-visibility: auto;
+      contain-intrinsic-size: auto 40rem;
+    }
+    details.day > summary { cursor: pointer; }
+    .meta { color: var(--muted); font-size: 0.9rem; margin: 0 0 0.5rem; }
+    ul { margin: 0.25rem 0 0; padding-left: 0; list-style: none; }
+    li {
+      margin: 0.35rem 0;
+      padding: 0.35rem 0.5rem;
+      border-radius: 8px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      gap: 0.35rem 0.55rem;
+      line-height: 1.4;
+    }
+    li:nth-child(even) { background: #f8fafc; }
+    .item-lead {
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.2rem;
+      flex-shrink: 0;
+      min-width: 1.5rem;
+    }
+    .item-body {
+      flex: 1 1 14rem;
+      min-width: min(100%, 12rem);
+    }
+    .repo {
+      display: inline-flex;
+      align-items: center;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      color: #fff;
+      border-radius: 4px;
+      padding: 0.12rem 0.45rem;
+      vertical-align: middle;
+      flex-shrink: 0;
+    }
+    .repo-st { background: var(--st); }
+    .repo-ct { background: var(--ct); }
+    .repo-um { background: var(--um); }
+    .repo-dd { background: var(--dd); }
+    .repo-ps { background: var(--ps); }
+    .repo-ar { background: var(--ar); }
+    .repo-cl { background: var(--cl); }
+    .repo-shared { background: var(--shared); }
+    .repo-fleet { background: var(--fleet); }
+    .repo-bf { background: var(--bf); }
+    .repo-hh { background: var(--hh); }
+    .repo-clutch { background: var(--clutch); }
+    .repo-cc { background: var(--cc); }
+    .repo.repo-with-icon {
+      gap: 0;
+      padding: 0.1rem;
+      background: #fff;
+      color: #0f172a;
+      border: 1px solid var(--border);
+      font-weight: 700;
+    }
+    .repo.repo-icon-only {
+      padding: 0.08rem;
+      border-radius: 5px;
+    }
+    .repo-app-icon {
+      width: 1.15rem;
+      height: 1.15rem;
+      border-radius: 4px;
+      object-fit: cover;
+      display: block;
+      flex-shrink: 0;
+      background: #fff;
+    }
+    .agents {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.2rem;
+      flex-shrink: 0;
+    }
+    .agent {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.15rem;
+      height: 1.15rem;
+      border-radius: 5px;
+      border: 1px solid var(--border);
+      background: #fff;
+      padding: 1px;
+    }
+    .agent img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+    footer { margin-top: 2rem; color: var(--muted); font-size: 0.85rem; }
+    code { font-size: 0.85em; background: #e2e8f0; padding: 0.1em 0.35em; border-radius: 4px; color: #0f172a; }
+    /* Hidden 2-col table: left = Repos/Agents labels; right = chips (wrap stays indented) */
+    .legend {
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
+      margin: 0 0 1.25rem;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .legend-section {
+      display: grid;
+      grid-template-columns: 4.75rem minmax(0, 1fr);
+      column-gap: 0.9rem;
+      align-items: start;
+    }
+    .legend-heading {
+      font-weight: 600;
+      color: #475569;
+      line-height: 1.35rem;
+      padding-top: 0.05rem;
+      flex-shrink: 0;
+    }
+    .legend-items {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.45rem 1.05rem;
+      min-width: 0;
+    }
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      white-space: nowrap;
+      line-height: 1.2;
+    }
+    .legend-item .legend-label { color: var(--muted); }
+    .legend .agent { width: 1.15rem; height: 1.15rem; }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --card: #1e293b;
+        --text: #e2e8f0;
+        --muted: #94a3b8;
+        --link: #7dd3fc;
+        --border: #334155;
+      }
+      h1 { color: #f1f5f9; }
+      li:nth-child(even) { background: #0f172a; }
+      code { background: #334155; color: #e2e8f0; }
+      .repo.repo-with-icon { background: #0f172a; color: #e2e8f0; }
+      .repo-app-icon { background: #0f172a; }
+      .agent { background: #0f172a; }
+      .legend-heading { color: #cbd5e1; }
+    }
+  </style>
+</head>
+<body>
+  <h1>Jay's Daily Log</h1>
+  <p class="lede">Created: Oct 28, 2026 at 4:00am</p>
+  <div class="legend" aria-label="Legend">
+    <div class="legend-section" aria-label="Repositories">
+      <span class="legend-heading">Repos</span>
+      <div class="legend-items">
+        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-st" title="Socratic.Trade"><img class="repo-app-icon" src="agent-logos/app-st.svg" alt="Socratic.Trade" width="14" height="14" /></span><span class="legend-label">Socratic.Trade</span></span>
+        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-ct" title="Congress.Trade"><img class="repo-app-icon" src="agent-logos/app-ct.png" alt="Congress.Trade" width="14" height="14" /></span><span class="legend-label">Congress.Trade</span></span>
+        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-um" title="Usage Monitor"><img class="repo-app-icon" src="agent-logos/app-um.png" alt="Usage Monitor" width="14" height="14" /></span><span class="legend-label">Usage Monitor</span></span>
+        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-dd" title="DealDex.net"><img class="repo-app-icon" src="agent-logos/app-dd.png" alt="DealDex.net" width="14" height="14" /></span><span class="legend-label">DealDex.net</span></span>
+        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-ar" title="Autorotate.Codes"><img class="repo-app-icon" src="agent-logos/app-ar.png" alt="Autorotate.Codes" width="14" height="14" /></span><span class="legend-label">Autorotate.Codes</span></span>
+        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-cl" title="ContactLogo"><img class="repo-app-icon" src="agent-logos/app-cl.png" alt="ContactLogo" width="14" height="14" /></span><span class="legend-label">ContactLogo</span></span>
+        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-ps" title="Personal Site"><img class="repo-app-icon" src="agent-logos/app-ps.png" alt="Personal Site" width="14" height="14" /></span><span class="legend-label">Personal Site</span></span>
+        <span class="legend-item"><span class="repo repo-shared">CTS</span><span class="legend-label">congress-trading-shared</span></span>
+        <span class="legend-item"><span class="repo repo-fleet">AFC</span><span class="legend-label">AI Fleet Coordinator</span></span>
+        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-bf" title="BotFleet.app"><img class="repo-app-icon" src="agent-logos/app-bf.png" alt="BotFleet.app" width="14" height="14" /></span><span class="legend-label">BotFleet.app</span></span>
+        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-hh" title="Hog Hunter"><img class="repo-app-icon" src="agent-logos/app-hh.png" alt="Hog Hunter" width="14" height="14" /></span><span class="legend-label">Hog Hunter</span></span>
+        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-clutch" title="Clutch"><img class="repo-app-icon" src="agent-logos/app-clutch.png" alt="Clutch" width="14" height="14" /></span><span class="legend-label">Clutch</span></span>
+        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-cc" title="CodeCaps"><img class="repo-app-icon" src="agent-logos/app-cc.png" alt="CodeCaps" width="14" height="14" /></span><span class="legend-label">CodeCaps</span></span>
+      </div>
+    </div>
+    <div class="legend-section" aria-label="Agents">
+      <span class="legend-heading">Agents</span>
+      <div class="legend-items">
+        <span class="legend-item"><span class="agent" title="Grok"><img src="agent-logos/grok.svg" alt="" width="12" height="12" /></span><span class="legend-label">Grok</span></span>
+        <span class="legend-item"><span class="agent" title="Grok Bot"><img src="agent-logos/grok-bot.svg" alt="" width="12" height="12" /></span><span class="legend-label">Grok Bot</span></span>
+        <span class="legend-item"><span class="agent" title="Codex"><img src="agent-logos/codex.svg" alt="" width="12" height="12" /></span><span class="legend-label">Codex</span></span>
+        <span class="legend-item"><span class="agent" title="Claude"><img src="agent-logos/claude.svg" alt="" width="12" height="12" /></span><span class="legend-label">Claude</span></span>
+        <span class="legend-item"><span class="agent" title="Cursor"><img src="agent-logos/cursor.png" alt="" width="12" height="12" /></span><span class="legend-label">Cursor</span></span>
+        <span class="legend-item"><span class="agent" title="Antigravity"><img src="agent-logos/ag.svg" alt="" width="12" height="12" /></span><span class="legend-label">Antigravity</span></span>
+        <span class="legend-item"><span class="agent" title="Gemini"><img src="agent-logos/gemini.svg" alt="" width="12" height="12" /></span><span class="legend-label">Gemini</span></span>
+        <span class="legend-item"><span class="agent" title="Kimi"><img src="agent-logos/kimi.svg" alt="" width="12" height="12" /></span><span class="legend-label">Kimi</span></span>
+        <span class="legend-item"><span class="agent" title="DeepSeek"><img src="agent-logos/deepseek.svg" alt="" width="12" height="12" /></span><span class="legend-label">DeepSeek</span></span>
+        <span class="legend-item"><span class="agent" title="MiniMax"><img src="agent-logos/minimax.png" alt="" width="12" height="12" /></span><span class="legend-label">MiniMax</span></span>
+        <span class="legend-item"><span class="agent" title="Muse Code"><img src="agent-logos/muse.svg" alt="" width="12" height="12" /></span><span class="legend-label">Muse Code</span></span>
+        <span class="legend-item"><span class="agent" title="Muse Assist"><img src="agent-logos/muse-assist.png" alt="" width="12" height="12" /></span><span class="legend-label">Muse Assist</span></span>
+        <span class="legend-item"><span class="agent" title="Sentry"><img src="agent-logos/sentry.svg" alt="" width="12" height="12" /></span><span class="legend-label">Sentry</span></span>
+      </div>
+    </div>
+  </div>
+  <nav class="links">
+    <a href="digest.md">Markdown</a>
+    <a href="https://example.com/calendar/daily-digest.ics">ICS - daily</a>
+    <a href="https://example.com/calendar/agent-activity.ics">ICS - per commit</a>
+  </nav>
+  <section class="day" id="2026-10-28"><h2>October 28, 2026</h2><p class="meta">2 PRs merged · 1 issues opened · 0 issues closed</p><h3>Merged PRs</h3><ul class="prs"><li><span class="item-lead"><span class="repo repo-with-icon repo-icon-only repo-bf" title="BotFleet"><img class="repo-app-icon" src="agent-logos/app-bf.png" alt="BotFleet" width="16" height="16" loading="lazy" decoding="async" /></span><span class="agents" aria-label="Agents: Codex"><span class="agent" title="Codex"><img src="agent-logos/codex.svg" alt="Codex" width="14" height="14" loading="lazy" decoding="async" /></span></span></span><span class="item-body"><a href="https://github.com/Simple-With-Us/BotFleet/pull/700">#700</a>: Fix composer paste</span></li><li><span class="item-lead"><span class="repo repo-with-icon repo-icon-only repo-clutch" title="Clutch"><img class="repo-app-icon" src="agent-logos/app-clutch.png" alt="Clutch" width="16" height="16" loading="lazy" decoding="async" /></span><span class="agents" aria-label="Agents: Antigravity"><span class="agent" title="Antigravity"><img src="agent-logos/ag.svg" alt="Antigravity" width="14" height="14" loading="lazy" decoding="async" /></span></span></span><span class="item-body"><a href="https://github.com/Simple-With-Us/Clutch/pull/31">#31</a>: Shellular path fix</span></li></ul><h3>Issues opened</h3><ul class="opened"><li><span class="item-lead"><span class="repo repo-with-icon repo-icon-only repo-st" title="Socratic-Trade"><img class="repo-app-icon" src="agent-logos/app-st.svg" alt="Socratic-Trade" width="16" height="16" loading="lazy" decoding="async" /></span></span><span class="item-body"><a href="https://github.com/Simple-With-Us/Socratic-Trade/issues/3900">#3900</a>: Tighten public links</span></li></ul></section>
+<details class="day" id="2026-10-27"><summary><h2>October 27, 2026</h2><p class="meta">0 PRs merged · 0 issues opened · 1 issues closed</p></summary><h3>Issues closed</h3><ul class="closed"><li><span class="item-lead"><span class="repo repo-fleet" title="AI-Fleet-Coordinator">AFC</span></span><span class="item-body"><a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/issues/600">#600</a>: Refresh digest pipeline</span></li></ul></details>
+  <footer>
+    Built by <code>scripts/build-fleet-daily-digest.py</code> in
+    <code>AI-Fleet-Coordinator</code>. Agent seat names (Grok/Codex/Claude/…) are
+    shown as logos only. Owner/Jay is not badged (not a coding seat). Subscribe
+    to the daily ICS in Apple Calendar (Add Subscription Calendar) or Google
+    Calendar (From URL).
+
+  </footer>
+</body>
+</html>

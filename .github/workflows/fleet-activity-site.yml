@@ -67,7 +67,13 @@ jobs:
             echo "No artifact changes."
           else
             git commit -m "chore(site): refresh fleet daily digest + calendars [skip ci]"
-            git push || echo "Direct push to main skipped (branch rules require PR); proceeding to deploy Pages artifact."
+            # A rejected push (branch rules) must be a red run, not a silent
+            # frozen site - but it must not stop tonight's Pages deploy of the
+            # artifact this job just built, so record it and fail after deploy.
+            if ! git push; then
+              echo "PUSH_FAILED=1" >> "$GITHUB_ENV"
+              echo "::error::commit-back push rejected; deploying the built artifact, then failing the run"
+            fi
           fi
 
       - name: Setup Pages
@@ -82,3 +88,9 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
+
+      - name: Fail the run when the commit-back push was rejected
+        if: env.PUSH_FAILED == '1'
+        run: |
+          echo "::error::artifacts deployed to Pages but could not be committed back to main"
+          exit 1
