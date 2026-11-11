@@ -192,3 +192,62 @@ const REASON_TEXT = Object.freeze({
 export function refusalReasonText(reason) {
   return isRefusalReason(reason) ? (REASON_TEXT[reason] ?? null) : null;
 }
+
+// Same allowlist git_relay/github_client.py safe_error_diagnostics keeps.
+// A present field that fails the shape drops the whole object.  message is
+// never a field here, so GitHub's refusal prose cannot ride along.
+const DIAGNOSTIC_CATEGORIES = new Set([
+  "resource_not_accessible",
+  "rate_limit",
+  "bad_credentials",
+  "not_found",
+  "unknown",
+]);
+const DIAGNOSTIC_PERMISSIONS = new Set([
+  "actions",
+  "administration",
+  "checks",
+  "contents",
+  "issues",
+  "metadata",
+  "pull_requests",
+  "statuses",
+  "workflows",
+]);
+const REQUEST_ID_RE = /^[0-9A-Fa-f]{4,8}(?::[0-9A-Fa-f]{4,8}){3}$/;
+
+function permissionMap(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const out = {};
+  for (const [name, level] of Object.entries(value)) {
+    if (!DIAGNOSTIC_PERMISSIONS.has(name) || (level !== "read" && level !== "write")) return null;
+    out[name] = level;
+  }
+  return out;
+}
+
+/** Allowlisted github_diagnostics, or null.  Unknown keys are ignored. */
+export function allowlistedGithubDiagnostics(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (!DIAGNOSTIC_CATEGORIES.has(value.category)) return null;
+  const out = { category: value.category };
+  if (value.request_id !== undefined) {
+    if (typeof value.request_id !== "string" || !REQUEST_ID_RE.test(value.request_id)) return null;
+    out.request_id = value.request_id;
+  }
+  const hasPermissions = value.accepted_permissions !== undefined;
+  const hasSets = value.accepted_permission_sets !== undefined;
+  if (hasPermissions && hasSets) return null;
+  if (hasPermissions) {
+    const permissions = permissionMap(value.accepted_permissions);
+    if (!permissions) return null;
+    out.accepted_permissions = permissions;
+  }
+  if (hasSets) {
+    if (!Array.isArray(value.accepted_permission_sets)) return null;
+    const sets = value.accepted_permission_sets.map(permissionMap);
+    if (sets.some((item) => item === null)) return null;
+    out.accepted_permission_sets = sets;
+  }
+  return out;
+}
