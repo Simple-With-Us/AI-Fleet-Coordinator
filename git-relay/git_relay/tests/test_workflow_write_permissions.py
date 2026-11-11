@@ -195,8 +195,8 @@ class WorkflowPrElevation(unittest.TestCase):
         if action == "wf_merge_guarded":
             client = Client(files, {"merged": True, "sha": "b" * 40})
         else:
-            pr = {"head": {"sha": SHA}, "base": {"ref": "main"}}
-            client = Client(pr, {"files": files}, {"message": "ok"})
+            pr = {"head": {"sha": SHA}, "base": {"ref": "main", "sha": "b" * 40}}
+            client = Client(pr, {"files": files}, {"object": {"sha": "b" * 40}}, {"message": "ok"})
         args = (
             self.MERGE
             if action == "wf_merge_guarded"
@@ -221,7 +221,7 @@ class WorkflowPrElevation(unittest.TestCase):
             self.assertEqual(client.calls[-2][0], "GET")
             self.assertEqual(client.calls[-1][0], "PUT")
             if action == "wf_update_branch":
-                self.assertIn(f"/compare/{SHA}...main", client.calls[1][1])
+                self.assertIn(f"/compare/{SHA}...{'b' * 40}", client.calls[1][1])
 
     def test_ordinary_pr_does_not_elevate(self):
         for action in ("wf_merge_guarded", "wf_update_branch"):
@@ -268,7 +268,7 @@ class WorkflowPrElevation(unittest.TestCase):
 
     def test_update_branch_refuses_moved_head_before_any_mint_or_write(self):
         minter = Minter()
-        client = Client({"head": {"sha": "c" * 40}, "base": {"ref": "main"}})
+        client = Client({"head": {"sha": "c" * 40}, "base": {"ref": "main", "sha": "b" * 40}})
         args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
         handle = WorkflowVerbs.for_action(
             client,
@@ -287,8 +287,9 @@ class WorkflowPrElevation(unittest.TestCase):
     def update_branch(self, files, ceiling=None):
         minter = Minter()
         client = Client(
-            {"head": {"sha": SHA}, "base": {"ref": "release/2026 nov"}},
+            {"head": {"sha": SHA}, "base": {"ref": "release/2026 nov", "sha": "b" * 40}},
             {"files": files},
+            {"object": {"sha": "b" * 40}},
             {"message": "ok"},
         )
         args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
@@ -317,7 +318,7 @@ class WorkflowPrElevation(unittest.TestCase):
         files = [{"filename": f"src/f{i}.py"} for i in range(100)]
         client, minter, handle, args = self.update_branch(files)
         handle.run("wf_update_branch", args)
-        self.assertEqual(len(client.calls), 3)
+        self.assertEqual(len(client.calls), 4)
         self.assertEqual(len(minter.calls), 1)
 
     def update_branch_trees(self, files, head_rows=(), base_rows=(), base_sha="b" * 40):
@@ -343,7 +344,14 @@ class WorkflowPrElevation(unittest.TestCase):
         head_commit = {"tree": {"sha": "c" * 40}}
         base_commit = {"tree": {"sha": "d" * 40}}
         client = Client(
-            pr, compare, head_commit, head_tree, base_commit, base_tree, {"message": "ok"}
+            pr,
+            compare,
+            head_commit,
+            head_tree,
+            base_commit,
+            base_tree,
+            {"object": {"sha": "b" * 40}},
+            {"message": "ok"},
         )
         args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
         handle = WorkflowVerbs.for_action(
@@ -488,6 +496,41 @@ class WorkflowPrElevation(unittest.TestCase):
         self.assertEqual(client.calls[-1][0], "PUT")
         self.assertEqual(len(minter.calls), 1)
 
+    def test_update_branch_trees_fallback_detects_workflow_gitlink_change(self):
+        files = [{"filename": f"src/f{i}.py"} for i in range(300)]
+        head_row = {"type": "commit", "path": ".github/workflows/sub", "sha": "2" * 40, "mode": "160000"}
+        base_row = {"type": "commit", "path": ".github/workflows/sub", "sha": "3" * 40, "mode": "160000"}
+        client, minter, handle, args = self.update_branch_trees(
+            files, head_rows=[head_row], base_rows=[base_row]
+        )
+        handle.run("wf_update_branch", args)
+        self.assertEqual(len(minter.calls), 2)
+        self.assertEqual(minter.calls[1][2].get("workflows"), "write")
+
+    def test_update_branch_trees_fallback_detects_added_workflow_tree_entry(self):
+        files = [{"filename": f"src/f{i}.py"} for i in range(300)]
+        added = {"type": "tree", "path": ".github/workflows", "sha": "2" * 40, "mode": "040000"}
+        client, minter, handle, args = self.update_branch_trees(files, head_rows=[added])
+        handle.run("wf_update_branch", args)
+        self.assertEqual(len(minter.calls), 2)
+        self.assertEqual(minter.calls[1][2].get("workflows"), "write")
+
+    def test_update_branch_trees_fallback_refuses_bad_mode_type_pair(self):
+        files = [{"filename": f"src/f{i}.py"} for i in range(300)]
+        bad = {"type": "commit", "path": "src/sub", "sha": "2" * 40, "mode": "100644"}
+        client, minter, handle, args = self.update_branch_trees(files, head_rows=[bad])
+        with self.assertRaises(Refused):
+            handle.run("wf_update_branch", args)
+        self.assertNotIn("PUT", [c[0] for c in client.calls])
+
+    def test_update_branch_refuses_when_base_tip_moved_after_proof(self):
+        client, minter, handle, args = self.update_branch([{"filename": "docs/a.md"}])
+        client.replies[2] = {"object": {"sha": "9" * 40}}
+        with self.assertRaises(Refused):
+            handle.run("wf_update_branch", args)
+        self.assertNotIn("PUT", [c[0] for c in client.calls])
+        self.assertEqual(len(minter.calls), 1)
+
     def test_update_branch_compare_without_files_falls_back_to_trees(self):
         minter = Minter()
         pr = {"head": {"sha": SHA}, "base": {"ref": "main", "sha": "b" * 40}}
@@ -497,7 +540,16 @@ class WorkflowPrElevation(unittest.TestCase):
             "tree": [{"type": "blob", "path": "a.py", "sha": "1" * 40, "mode": "100644"}],
         }
         commit = {"tree": {"sha": "c" * 40}}
-        client = Client(pr, {"total_commits": 5}, commit, tree, commit, tree, {"message": "ok"})
+        client = Client(
+            pr,
+            {"total_commits": 5},
+            commit,
+            tree,
+            commit,
+            tree,
+            {"object": {"sha": "b" * 40}},
+            {"message": "ok"},
+        )
         args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
         handle = WorkflowVerbs.for_action(
             client,
@@ -522,7 +574,8 @@ class WorkflowPrElevation(unittest.TestCase):
     def test_update_branch_slashed_base_ref_keeps_slash(self):
         client, _, handle, args = self.update_branch([{"filename": "a"}])
         handle.run("wf_update_branch", args)
-        self.assertIn(f"/compare/{SHA}...release/2026%20nov", client.calls[1][1])
+        self.assertIn(f"/compare/{SHA}...{'b' * 40}", client.calls[1][1])
+        self.assertIn("/git/ref/heads/release/2026%20nov", client.calls[2][1])
 
     def test_oversized_compare_is_a_nonretryable_refusal_not_a_503(self):
         from git_relay.github_client import RelayGitHubError
@@ -580,7 +633,13 @@ class WorkflowPrElevation(unittest.TestCase):
         head_commit = {"tree": {"sha": "c" * 40}}
         base_commit = {"tree": {"sha": "d" * 40}}
         minter, client = Minter(), Big(
-            pr, head_commit, head_tree, base_commit, base_tree, {"message": "ok"}
+            pr,
+            head_commit,
+            head_tree,
+            base_commit,
+            base_tree,
+            {"object": {"sha": "b" * 40}},
+            {"message": "ok"},
         )
         args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
         handle = WorkflowVerbs.for_action(
@@ -615,7 +674,9 @@ class WorkflowPrElevation(unittest.TestCase):
             "tree": [{"type": "blob", "path": "a.py", "sha": "1" * 40, "mode": "100644"}],
         }
         commit = {"tree": {"sha": "c" * 40}}
-        minter, client = Minter(), Big(pr, commit, tree, commit, tree, {"message": "ok"})
+        minter, client = Minter(), Big(
+            pr, commit, tree, commit, tree, {"object": {"sha": "b" * 40}}, {"message": "ok"}
+        )
         args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
         handle = WorkflowVerbs.for_action(
             client,
@@ -640,7 +701,7 @@ class WorkflowPrElevation(unittest.TestCase):
                 self.calls.append((method, path))
                 if "/compare/" in path:
                     raise RelayGitHubError(503, "down")
-                return {"head": {"sha": SHA}, "base": {"ref": "main"}}
+                return {"head": {"sha": SHA}, "base": {"ref": "main", "sha": "b" * 40}}
 
         client = Flaky()
         args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}

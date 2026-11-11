@@ -1105,16 +1105,20 @@ class WorkflowVerbs:
                 or not isinstance(pr.get("base"), dict)
                 or not isinstance(pr["base"].get("ref"), str)
                 or not pr["base"]["ref"]
+                or not isinstance(pr["base"].get("sha"), str)
+                or not _SHA.fullmatch(pr["base"]["sha"])
             ):
                 raise Refused("PR head not matched")
+            base_ref = quote(pr["base"]["ref"], safe="/")
+            base_sha = pr["base"]["sha"]
             # The compare files array is one response capped at 300 files, not paginated:
             # one read, and a full-size array may be truncated so it is unverifiable.
-            # When the compare cannot prove the workflow-touch answer - too large to
-            # read, no files array, or a possibly-truncated full page without a touch -
-            # fall back to a complete two-tree diff instead of refusing the update.
-            base_ref = quote(pr["base"]["ref"], safe="/")
+            # The proof input is the immutable base sha from the PR snapshot, not the
+            # mutable ref.  When the compare cannot prove the workflow-touch answer -
+            # too large to read, no files array, or a possibly-truncated full page
+            # without a touch - fall back to a complete two-tree diff.
             try:
-                data = read(f"/repos/{repo}/compare/{head_sha}...{base_ref}")
+                data = read(f"/repos/{repo}/compare/{head_sha}...{base_sha}")
             except Refused as exc:
                 if str(exc) != TOO_LARGE_TO_VERIFY:
                     raise
@@ -1122,14 +1126,22 @@ class WorkflowVerbs:
             files = data.get("files") if isinstance(data, dict) else None
             if files is None:
                 touches = self._base_changes_touch_workflows_via_trees(
-                    read, repo, pr, head_sha
+                    read, repo, head_sha, base_sha
                 )
             else:
                 scan(files)
                 if not touches and len(files) >= COMPARE_FILES_CAP:
                     touches = self._base_changes_touch_workflows_via_trees(
-                        read, repo, pr, head_sha
+                        read, repo, head_sha, base_sha
                     )
+            # The provider update-branch endpoint fences only the head, so the base
+            # tip is re-read immediately before the write:  a base that moved after
+            # the proof invalidates it.  A move after this recheck stays possible;
+            # the endpoint gives no stronger fence.
+            tip = read(f"/repos/{repo}/git/ref/heads/{base_ref}")
+            tip_sha = tip.get("object", {}).get("sha") if isinstance(tip, dict) else None
+            if tip_sha != base_sha:
+                raise Refused("PR base not matched")
         else:
             for page in range(1, 31):
                 rows = read(f"/repos/{repo}/pulls/{number}/files?per_page=100&page={page}")
@@ -1160,18 +1172,20 @@ class WorkflowVerbs:
         return token
 
     @staticmethod
-    def _tree_blob_rows(read, repo, ref_sha):
-        """{path: (sha, mode, type)} for blob rows of one whole-tree read.
+    def _tree_rows(read, repo, ref_sha):
+        """{path: (sha, mode, type)} for every row of one whole-tree read.
 
         The commit's root tree sha is read first and the tree response must
         return exactly that sha:  the proof is bound to the requested commit,
         not to any syntactically valid tree.  recursive=1 is a single response
         with an explicit truncation flag, so a truncated or oversized tree is
         as unverifiable as an oversized compare:  same refusal, nothing
-        written.  Every row must be well formed and every path unique:  a
-        skipped malformed row could silently drop a workflow path from the
-        diff, which would fail open.  Paths are bounded Git paths, not the
-        publication allowlist:  spaces and non-ASCII are valid here.
+        written.  Every row must be well formed, its mode must match its type,
+        and every path unique:  a skipped malformed row could silently drop a
+        workflow path from the diff, which would fail open, and a non-blob
+        change (gitlink, directory) is a real change too.  Paths are bounded
+        Git paths, not the publication allowlist:  spaces and non-ASCII are
+        valid here.
         """
         if not isinstance(ref_sha, str) or not _SHA.fullmatch(ref_sha):
             raise Refused(TOO_LARGE_TO_VERIFY)
@@ -1188,10 +1202,15 @@ class WorkflowVerbs:
             or not isinstance(data.get("tree"), list)
         ):
             raise Refused(TOO_LARGE_TO_VERIFY)
+        allowed = {
+            "blob": ("100644", "100755", "120000"),
+            "tree": ("040000",),
+            "commit": ("160000",),
+        }
         out = {}
-        seen = set()
         for row in data["tree"]:
             path = row.get("path") if isinstance(row, dict) else None
+            rtype = row.get("type") if isinstance(row, dict) else None
             if not (
                 isinstance(row, dict)
                 and isinstance(path, str)
@@ -1201,32 +1220,31 @@ class WorkflowVerbs:
                 and isinstance(row.get("sha"), str)
                 and _SHA.fullmatch(row["sha"])
                 and isinstance(row.get("mode"), str)
-                and re.fullmatch(r"[0-7]{6}", row["mode"])
-                and row.get("type") in ("blob", "tree", "commit")
+                and row.get("mode") in allowed.get(rtype, ())
             ):
                 raise Refused(TOO_LARGE_TO_VERIFY)
-            if path in seen:
+            if path in out:
                 raise Refused(TOO_LARGE_TO_VERIFY)
-            seen.add(path)
-            if row["type"] == "blob":
-                out[path] = (row["sha"], row["mode"], row["type"])
+            out[path] = (row["sha"], row["mode"], rtype)
         return out
 
-    def _base_changes_touch_workflows_via_trees(self, read, repo, pr, head_sha):
+    def _base_changes_touch_workflows_via_trees(self, read, repo, head_sha, base_sha):
         """Workflow-touch proof from the two trees when the compare cannot answer.
 
-        The base changes an update pulls in are exactly the blobs whose
+        The base changes an update pulls in are exactly the entries whose
         (sha, mode, type) differs between the head tree and the base tip tree,
-        plus the paths present on only one side, so a rename or a mode-only or
-        type-only change in either direction is covered.  Complete enumeration,
-        fail closed on any gap.
+        plus the paths present on only one side, so a rename, a mode-only or
+        type-only change, and a gitlink or directory change in either direction
+        are covered.  Complete enumeration, fail closed on any gap.
         """
-        base_sha = pr["base"].get("sha")
-        head = self._tree_blob_rows(read, repo, head_sha)
-        base = self._tree_blob_rows(read, repo, base_sha)
+        head = self._tree_rows(read, repo, head_sha)
+        base = self._tree_rows(read, repo, base_sha)
         changed = {path for path, row in head.items() if base.get(path) != row}
         changed |= {path for path in base if path not in head}
-        return any(name.startswith(".github/workflows/") for name in changed)
+        return any(
+            name == ".github/workflows" or name.startswith(".github/workflows/")
+            for name in changed
+        )
 
     def _write_path_denied(self, path):
         if path in (".github", ".github/workflows"):
