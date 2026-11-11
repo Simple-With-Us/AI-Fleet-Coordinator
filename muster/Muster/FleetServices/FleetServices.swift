@@ -249,7 +249,12 @@ public struct FleetServiceEntry: Equatable {
     /// there is nothing to add.
     public var stateNote: String? {
         if isRetired {
-            let lines = [ownerStopLine, retiredLine].compactMap { $0 }
+            var lines = [ownerStopLine, retiredLine].compactMap { $0 }
+            // A problem Muster saw (what it tried that did not hold) is what makes a retired row
+            // need attention, so it is shown too, never hidden behind the retired sentence.
+            if reconcileNote?.isProblem == true, let problem = reconcileNote?.line {
+                lines.append(problem)
+            }
             return lines.joined(separator: "\u{00A0} ")
         }
         if let line = ownerStopLine { return line }
@@ -265,6 +270,8 @@ public struct FleetServiceEntry: Equatable {
 
     /// The same note in a few words,  for a menu row.
     public var menuNote: String? {
+        // A retired listener found running is the most important thing to say, owner stop or not.
+        if isRetiredButLive { return "running, but retired:  the server listener holds every seat" }
         if stoppedByOwner {
             switch state {
             case .running, .unknown: return "you asked for it to stop"
@@ -273,7 +280,6 @@ public struct FleetServiceEntry: Equatable {
             }
         }
         if isRetired {
-            if isRetiredButLive { return "the server listener holds every seat" }
             return isRetiredAndDown ? "since \(FleetServiceRegistry.retiredSince)" : nil
         }
         return reconcileNote?.shortLine

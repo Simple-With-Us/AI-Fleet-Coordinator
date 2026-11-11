@@ -99,7 +99,7 @@ final class FleetServicesTests: XCTestCase {
         XCTAssertTrue(entry.stateNoteIsWarning)
         XCTAssertEqual(entry.stateNote,
                        "It is running, but it was retired at the Nov 10 one-listener cutover and should hold no seat.\u{00A0} The server listener holds every seat.")
-        XCTAssertEqual(entry.menuNote, "the server listener holds every seat")
+        XCTAssertEqual(entry.menuNote, "running, but retired:  the server listener holds every seat")
         XCTAssertEqual(entry.availableActions, [.stop])
         // A running listener is not down,  so it is not counted as down.
         XCTAssertFalse(entry.needsAttention)
@@ -119,6 +119,14 @@ final class FleetServicesTests: XCTestCase {
         XCTAssertEqual(failed.marker.word, "Failed")
         XCTAssertEqual(failed.availableActions, [])
         XCTAssertTrue(failed.stateNote?.contains("retired at the Nov 10 one-listener cutover") == true)
+    }
+
+    /// A retired listener found running says so in the menu even after an owner stop was asked
+    /// for, because something is running that should hold no seat (Kody on #1788).
+    func testARunningRetiredListenerWarnsInTheMenuEvenAfterAnOwnerStop() throws {
+        let entry = try XCTUnwrap(operatorEntry(.running, stoppedByOwner: true))
+        XCTAssertTrue(entry.isRetiredButLive)
+        XCTAssertEqual(entry.menuNote, "running, but retired:  the server listener holds every seat")
     }
 
     /// A stop the owner asked for stays on its row,  beside why the listener is retired.
