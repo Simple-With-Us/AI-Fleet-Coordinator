@@ -599,6 +599,9 @@ class Router:
             self._retry(entry, counted=True, code="worker-error-%s" % type(exc).__name__)
 
     def _process(self, entry: dict[str, Any]) -> None:
+        if entry.get("receipt") is not None:
+            self._write_receipt(entry)  # already settled:  only its receipt is outstanding
+            return
         wake = Wake(**entry["wake"])
         if entry["pick"] is None:
             pick = self.pick(wake)
@@ -747,12 +750,20 @@ class Router:
     ) -> None:
         """Write the final receipt, then drop the pending entry, in that order:  a crash between
         the two leaves a pending file that replay removes, never a wake with no record."""
-        wake_id = entry["wake"]["wake_id"]
         receipt = self._receipt(entry, pick, status=status, delivered=delivered, result=result)
+        # The outcome is kept on the entry first:  from here on only the receipt is retried, and
+        # the wake is never delivered again, even if the disk is full or the router restarts.
+        entry["receipt"] = receipt
+        self._save(entry)
+        self._write_receipt(entry)
+
+    def _write_receipt(self, entry: dict[str, Any]) -> None:
+        wake_id = entry["wake"]["wake_id"]
+        receipt = entry["receipt"]
         try:
             atomic_write(self._done(wake_id), receipt)
         except OSError as exc:
-            # The wake stays pending and tries to finish again;  it is not lost.
+            # The wake stays pending and tries to write its receipt again;  it is not lost.
             self._log("receipt-write-failed-%s" % type(exc).__name__, wake_id)
             with self._cond:
                 entry["next_at"] = self.clock() + float(self.config["busy_retry_seconds"])
@@ -764,7 +775,7 @@ class Router:
             self._pending(wake_id).unlink(missing_ok=True)
             self._entries.pop(wake_id, None)
             self._cond.notify_all()
-        self._log("%s %s" % (status, receipt["reason"] or receipt["code"]), wake_id)
+        self._log("%s %s" % (receipt["status"], receipt["reason"] or receipt["code"]), wake_id)
 
     def _append_log(self, receipt: Mapping[str, Any]) -> None:
         path = self.state / "wakes.jsonl"

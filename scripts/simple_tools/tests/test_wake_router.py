@@ -365,6 +365,45 @@ class Durability(Base):
             router.run_once()
         self.assertTrue(self.pending().exists())
 
+    def test_a_failed_receipt_write_never_delivers_again(self) -> None:
+        router = self.router()
+        router.accept(self.wake())
+        real = WR.atomic_write
+
+        def fail_done(path, obj):
+            if path.parent.name == "done":
+                raise OSError
+            real(path, obj)
+
+        with mock.patch.object(WR, "atomic_write", side_effect=fail_done):
+            for _ in range(4):
+                router.run_once()
+                self.clock.now += 100
+        self.assertEqual(len(self.delivered), 1)
+        self.drain(router)
+        self.assertEqual(len(self.delivered), 1)
+        self.assertEqual(self.done()["status"], "delivered")
+        self.assertFalse(self.pending().exists())
+
+    def test_a_restart_with_an_unwritten_receipt_does_not_redeliver(self) -> None:
+        router = self.router()
+        router.accept(self.wake())
+        real = WR.atomic_write
+
+        def fail_done(path, obj):
+            if path.parent.name == "done":
+                raise OSError
+            real(path, obj)
+
+        with mock.patch.object(WR, "atomic_write", side_effect=fail_done):
+            router.run_once()
+        self.clock.now += 100
+        fresh = self.router()
+        self.assertEqual(fresh.replay(), 1)
+        self.drain(fresh)
+        self.assertEqual(len(self.delivered), 1)
+        self.assertEqual(self.done()["status"], "delivered")
+
 
 class Dedupe(Base):
     def setUp(self) -> None:
