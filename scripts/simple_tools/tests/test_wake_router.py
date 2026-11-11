@@ -14,6 +14,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -1137,7 +1138,13 @@ class FakeInbox:
         self.server.close()
 
 
+#: The Mac has no /proc, so a record's start time cannot be compared there and a live pid counts.
+HAS_PROC = os.path.exists("/proc/self/stat")
+
+
 def proc_start(pid: int) -> str:
+    if not HAS_PROC:
+        return ""
     with open("/proc/%d/stat" % pid, encoding="utf-8") as fh:
         return fh.read().rsplit(")", 1)[1].split()[19]
 
@@ -1369,12 +1376,13 @@ class Resume(ClaudeBase):
         self.assertEqual(self.runs, [])
 
     def test_a_dead_process_does_not_hold(self) -> None:
-        child = subprocess.Popen(["/bin/true"])
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
         child.wait()
         self.holder_file(pid=child.pid, procStart="1")
         self.transcript()
         self.assertEqual(self.deliver().route, "resume")
 
+    @unittest.skipUnless(HAS_PROC, "a reused pid is only detectable through /proc")
     def test_a_reused_pid_does_not_hold(self) -> None:
         self.holder_file(procStart="1")
         self.transcript()
@@ -1503,7 +1511,7 @@ class HolderFailsClosed(ClaudeBase):
             self.assert_busy()
 
     def test_a_torn_leftover_of_a_dead_pid_blocks_nothing(self) -> None:
-        child = subprocess.Popen(["/bin/true"])
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
         child.wait()
         (self.sessions / ("%d.json" % child.pid)).write_text("{torn", encoding="utf-8")
         self.assertEqual(self.deliver().route, "resume")
@@ -1625,12 +1633,13 @@ class Exclude(ClaudeBase):
         self.assertEqual(exclude([WR.Target(SID_A, host="mac")]), set())
 
     def test_a_stale_record_excludes_nothing(self) -> None:
-        child = subprocess.Popen(["/bin/true"])
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
         child.wait()
         self.holder_file(pid=child.pid, procStart="1", kind="print")
         exclude = CW.exclude_non_interactive(self.env, "server")
         self.assertEqual(exclude([WR.Target(SID_A, host="server")]), set())
 
+    @unittest.skipUnless(HAS_PROC, "a reused pid is only detectable through /proc")
     def test_a_reused_pid_excludes_nothing(self) -> None:
         self.holder_file(procStart="1", kind="print")
         exclude = CW.exclude_non_interactive(self.env, "server")
