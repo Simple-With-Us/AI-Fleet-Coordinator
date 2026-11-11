@@ -1,0 +1,27 @@
+# Fleet RAG nightly ingest (AFC-687).  Disabled until both of these are true:
+# the env file exists, and FLEET_RAG_NIGHTLY=1 inside it.  Copying this unit
+# does not enable the timer.  The service has no install section on purpose.
+#
+# The account that owns the ingest state is a host drop-in, not this file:
+#   sudo systemctl edit fleet-rag-nightly.service
+#   [Service]
+#   User=<account>
+#   Group=<account>
+# HOME in the env file must be that account's home.  The code and apps roots
+# stay in /etc/fleet/lanes.conf.  This file does not name a volume path.
+[Unit]
+Description=Fleet RAG nightly ingest (no-op until FLEET_RAG_NIGHTLY=1)
+ConditionPathExists=/etc/fleet/rag-nightly.env
+After=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=4h
+UMask=0077
+Nice=10
+EnvironmentFile=-/etc/fleet/lanes.conf
+EnvironmentFile=/etc/fleet/rag-nightly.env
+Environment=FLEET_RAG_REQUIRE_CODE_ROOT=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -I ${FLEET_RAG_CHECKOUT}/scripts/fleet_rag/nightly_job.py
+SyslogIdentifier=fleet-rag-nightly
