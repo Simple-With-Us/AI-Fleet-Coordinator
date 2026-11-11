@@ -55,8 +55,26 @@ def thread_metadata(env: Mapping[str, str], session_id: str) -> dict[str, Any] |
         conn.close()
 
 
-def wake_text(target: WR.Target, wake: WR.Wake) -> str:
+def cleaned_routing_metadata(wake: WR.Wake) -> dict[str, str] | None:
+    """Return non-empty, secret-scanned router selection metadata or None if incomplete."""
+    limits = {"picked": WR.NAME_CHARS, "reason": WR.NAME_CHARS, "link_note": 500}
+    cleaned: dict[str, str] = {}
+    for name, limit in limits.items():
+        value = getattr(wake, name, None)
+        if not isinstance(value, str):
+            return None
+        value = WR.clean(value, limit)
+        if not value or (name == "link_note" and not WR.link_note_ok(value)):
+            return None
+        cleaned[name] = value
+    return cleaned
+
+
+def wake_text(target: WR.Target, wake: WR.Wake, *, routing: Mapping[str, str] | None = None) -> str:
     """Metadata-only prompt. Zulip-authored values are cleaned and secret-scanned."""
+    routing = routing if routing is not None else cleaned_routing_metadata(wake)
+    if routing is None:
+        raise ValueError("invalid routing metadata")
     fields = {
         "wake_id": wake.wake_id,
         "message_id": wake.message_id,
@@ -68,6 +86,7 @@ def wake_text(target: WR.Target, wake: WR.Wake) -> str:
         "topic": WR.clean(wake.topic),
         "dm": wake.dm is True,
         "link": WR.clean(wake.zulip_link, 500),
+        **routing,
     }
     return WAKE_TEXT.format(fields=json.dumps(fields, ensure_ascii=False, sort_keys=True))
 
@@ -106,6 +125,9 @@ class CodexDelivery:
             return WR.Delivery("refused", route="codex-desktop", code="invalid-wake-id")
         if type(wake.message_id) is not int or wake.message_id <= 0:
             return WR.Delivery("refused", route="codex-desktop", code="invalid-message-id")
+        routing = cleaned_routing_metadata(wake)
+        if routing is None:
+            return WR.Delivery("refused", route="codex-desktop", code="invalid-routing-metadata")
         generation = getattr(target, "generation", 0)
         if type(generation) is not int or generation <= 0:
             return WR.Delivery("refused", route="codex-desktop", code="invalid-generation")
@@ -144,15 +166,20 @@ class CodexDelivery:
         if not os.path.isdir(meta["cwd"]):
             return WR.Delivery("busy", route="codex-desktop", code="workspace-unavailable")
 
+        try:
+            host = self.hostname()
+        except OSError:
+            return WR.Delivery("busy", route="codex-desktop", code="hostname-unavailable")
+
         binding = {
             "platform": PLATFORM,
             # Router host is a registry location ("mac"); transport needs the actual hostname.
-            "host": self.hostname(),
+            "host": host,
             "session_id": sid,
-            # The original thread cwd is authoritative; router title/link metadata is not.
+            # Store cwd is a candidate; native preflight and send confirm the exact writable loaded binding.
             "cwd": meta["cwd"],
         }
-        text = wake_text(target, wake)
+        text = wake_text(target, wake, routing=routing)
         try:
             preflight = self.transport.preflight(binding)
         except Exception:  # noqa: BLE001 - plugin errors must keep a safe delivery outcome
@@ -221,8 +248,12 @@ def exclude_non_interactive(env: Mapping[str, str]):
         for target in targets:
             if target.host != "mac":
                 continue
-            row = PLC.thread_row(env, target.session_id)
-            if row is not None and PLC.classify(row) != "chat":
+            try:
+                row = PLC.thread_row(env, target.session_id)
+                classification = PLC.classify(row) if row is not None else None
+            except Exception:  # noqa: BLE001 - one unreadable row must not hide later exclusions
+                classification = None
+            if classification is not None and classification != "chat":
                 excluded.add(target.session_id)
         return excluded
 
