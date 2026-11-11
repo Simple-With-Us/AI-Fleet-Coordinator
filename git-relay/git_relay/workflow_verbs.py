@@ -227,6 +227,11 @@ SPECS = {
     "wf_org_installations": ({"organization_administration": "read"}, False),
     "wf_repo_list": ({"metadata": "read"}, False),
     "wf_pr_search": ({"pull_requests": "read"}, False),
+    # Rulesets that apply to a branch, and the repository's ruleset list:  both are
+    # GitHub metadata reads.  Classic branch protection needs administration:read,
+    # which the fleet ceiling does not hold, so it has no verb here.
+    "wf_branch_rules": ({"metadata": "read"}, False),
+    "wf_rulesets": ({"metadata": "read"}, False),
     "wf_labels": ({"issues": "read"}, False),
     "wf_workflows": ({"actions": "read"}, False),
     "wf_run_get": ({"actions": "read"}, False),
@@ -500,36 +505,104 @@ _NEW_READS = frozenset(
         "wf_org_installations",
         "wf_repo_list",
         "wf_pr_search",
+        "wf_branch_rules",
+        "wf_rulesets",
     }
 )
 
 
-def _bound_read_json(result):
+# The bound for one raw-JSON read answer.  It matches the hosted front's own response bound
+# (scripts/simple-tools-mcp/src/gr-workflow-v1.js validWfV1Response:  depth 12, 50,000 nodes,
+# 1,000 keys, 1 MiB), with headroom under the front's 1 MiB stream cap.  The old bound (500 nodes,
+# depth 6, 64 KiB) refused ordinary GitHub objects:  14 reviews, one large pull request or any compare
+# with a handful of commits, and the front showed that refusal as "git-relay answered in a way this
+# server could not read".
+READ_MAX_DEPTH = 12
+READ_MAX_NODES = 50_000
+READ_MAX_KEYS = 1_000
+READ_MAX_BYTES = 900_000
+READ_TOO_LARGE = "workflow read result too large"
+
+
+class ReadTooLarge(Refused):
+    """A well-formed read answer over the size bound:  definite, and retrying will not help."""
+
+    def __init__(self):
+        super().__init__(READ_TOO_LARGE)
+
+
+def _read_size(result) -> int:
+    return len(json.dumps(result, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+
+
+def _bound_read_json(result, max_bytes=READ_MAX_BYTES):
+    """Bound untrusted JSON:  structure first (a wrong shape is unverifiable), then size.
+
+    ``max_bytes`` is the bound on the serialized answer;  None leaves only the structural bound
+    (for a raw GitHub page the relay projects down before answering, already capped by the
+    client's response bound).
+    """
+
     def bad():
         raise RelayGitHubError(502, "workflow read receipt unverifiable")
 
     stack = [(result, 0)]
-    nodes = size = 0
+    nodes = 0
     while stack:
         value, depth = stack.pop()
         nodes += 1
-        if nodes > 500 or depth > 6:
+        if nodes > READ_MAX_NODES:
+            raise ReadTooLarge()
+        if depth > READ_MAX_DEPTH:
             bad()
-        if isinstance(value, str):
-            size += len(value.encode("utf-8"))
-        elif isinstance(value, dict):
-            if len(value) > 100 or not all(isinstance(k, str) for k in value):
+        if isinstance(value, dict):
+            if len(value) > READ_MAX_KEYS or not all(isinstance(k, str) for k in value):
                 bad()
-            size += sum(len(k) for k in value)
             stack.extend((v, depth + 1) for v in value.values())
         elif isinstance(value, list):
-            if len(value) > 250:
+            if len(value) > READ_MAX_KEYS:
                 bad()
             stack.extend((v, depth + 1) for v in value)
-        elif value is not None and type(value) not in (bool, int, float):
+        elif value is not None and type(value) not in (bool, int, float, str):
             bad()
-        if size > 65536:
-            bad()
+        elif type(value) is float and (value != value or value in (float("inf"), float("-inf"))):
+            bad()  # NaN or Infinity is not JSON the front can parse
+    if max_bytes is not None and _read_size(result) > max_bytes:
+        raise ReadTooLarge()
+
+
+def _fit_comparison(comparison):
+    """A compare answer bounded to READ_MAX_BYTES, saying what it left out.
+
+    Far-diverged branches (Congress.Trade, Socratic-Trade) answer with up to 250 full commit
+    objects and 300 files with patches, well over any read bound.  The counts and status are kept;
+    first the file list goes (``files_omitted``), then trailing commits (``commits_truncated``), so
+    the caller still gets ahead_by, behind_by, status and the commits that fit.  The full commit
+    list is paged by gr_wf_compare_commits_page.
+    """
+    if not isinstance(comparison, dict) or _read_size({"comparison": comparison}) <= READ_MAX_BYTES:
+        return comparison
+    fitted = dict(comparison)
+    if "files" in fitted:
+        fitted.pop("files")
+        fitted["files_omitted"] = True
+    commits = fitted.get("commits")
+    if isinstance(commits, list):
+        # Serialize the envelope once and each commit once, not the whole answer per step:
+        # k commits cost the empty-list envelope (with the truncation flag), their own bytes
+        # and k-1 commas.
+        base = _read_size({"comparison": {**fitted, "commits": [], "commits_truncated": True}})
+        keep = total = 0
+        for item in commits:
+            extra = _read_size(item) + (1 if keep else 0)
+            if base + total + extra > READ_MAX_BYTES:
+                break
+            total += extra
+            keep += 1
+        if keep < len(commits):
+            fitted["commits"] = commits[:keep]
+            fitted["commits_truncated"] = True
+    return fitted
 
 
 def _validate_read(action, result):
@@ -564,7 +637,8 @@ def _validate_read(action, result):
             "parents": lambda x: seq(x, lambda y: fields(y, {"sha": sha}), 100),
         },
     )
-    comment = lambda v: fields(v, {"id": positive, "body": lambda x: text(x) and len(x) <= 32768})
+    # GitHub's own comment limit is 65,536 characters;  a long Kody summary is a real comment.
+    comment = lambda v: fields(v, {"id": positive, "body": lambda x: text(x) and len(x) <= 65536})
     schemas = {
         "wf_pr_get": {
             "pull": lambda v: fields(
@@ -664,6 +738,42 @@ def _validate_read(action, result):
             "total_count": nonnegative,
             "complete": boolean,
             "page": positive,
+        },
+        "wf_branch_rules": {
+            "branch": lambda v: text(v) and bool(v),
+            "rules": lambda v: seq(
+                v,
+                lambda x: fields(
+                    x,
+                    {
+                        "type": lambda y: text(y) and bool(y),
+                        "ruleset_id": positive,
+                        "ruleset_source_type": text,
+                        "ruleset_source": text,
+                        "parameters": lambda y: y is None or isinstance(y, dict),
+                    },
+                ),
+            ),
+            "page": positive,
+            "has_more": boolean,
+        },
+        "wf_rulesets": {
+            "rulesets": lambda v: seq(
+                v,
+                lambda x: fields(
+                    x,
+                    {
+                        "id": positive,
+                        "name": lambda y: text(y) and bool(y),
+                        "target": lambda y: y is None or text(y),
+                        "source_type": text,
+                        "source": text,
+                        "enforcement": text,
+                    },
+                ),
+            ),
+            "page": positive,
+            "has_more": boolean,
         },
         "wf_issue_comments": {
             "comments": lambda v: seq(v, comment),
@@ -800,6 +910,15 @@ _HOOK_SECRET_HOSTS = (
 )
 _HOOK_TOKEN_SEGMENT = re.compile(r"[A-Za-z0-9_~.-]{20,}")
 
+# The merge settings wf_repo_get copies from its settings-read response, and nothing else.
+_REPO_MERGE_SETTINGS = (
+    "allow_merge_commit",
+    "allow_squash_merge",
+    "allow_rebase_merge",
+    "allow_auto_merge",
+    "delete_branch_on_merge",
+)
+
 
 def _hook_url_carries_secret(url):
     try:
@@ -894,6 +1013,12 @@ class WorkflowVerbs:
             cls.check_shape(action, args, repo)
         try:
             token, _ = minter.token_for(app_slug, repo, required)
+        except RelayGitHubError as exc:
+            # A renamed or transferred repository is a definite answer about the repo, not a
+            # credential outage:  the server reports where it moved (OPS-1036).
+            if exc.code == "repository_moved":
+                raise
+            raise Unknown("own App credential unavailable") from None
         except Exception:
             raise Unknown("own App credential unavailable") from None
         handle = cls(client, policy, seat, token, app_slug, action, repo)
@@ -985,6 +1110,10 @@ class WorkflowVerbs:
             raise CeilingDenied("seat permission ceiling insufficient")
         try:
             token, _ = minter.token_for(app_slug, repo, required)
+        except RelayGitHubError as exc:
+            if exc.code == "repository_moved":
+                raise
+            raise Unknown("own App credential unavailable") from None
         except Exception:
             raise Unknown("own App credential unavailable") from None
         return token
@@ -2143,7 +2272,9 @@ class WorkflowVerbs:
         data = self._get(f"/repos/{repo}/issues/{number}/{suffix}?per_page={limit}&page={page}")
         if not isinstance(data, list):
             raise RelayGitHubError(502, "issue history page unverifiable")
-        _bound_read_json(data)
+        # The raw page is GitHub's (comment bodies, commit objects) and is projected down to
+        # metadata below, so only its structure is bounded here;  the client already capped its bytes.
+        _bound_read_json(data, max_bytes=None)
         return {
             "events": [self._issue_event(x, timeline=timeline) for x in data[:limit]],
             "page": page,
@@ -4554,7 +4685,7 @@ class WorkflowVerbs:
         base = quote(_ref(args, "base"), safe="")
         head = quote(_ref(args, "head"), safe="")
         data = self._get(f"/repos/{repo}/compare/{base}...{head}")
-        return {"comparison": _obj(data)}
+        return {"comparison": _fit_comparison(_obj(data))}
 
     def wf_branch_get(self, repo, args):
         _only(
@@ -4575,10 +4706,150 @@ class WorkflowVerbs:
         self._get("/installation-metadata-shape-only")
         raise Refused("installation metadata requires authenticated dispatcher")
 
+    def _repo_settings_bearer(self, repo):
+        """Bearer for wf_repo_get that lets GitHub show the merge settings.
+
+        GitHub leaves allow_merge_commit, allow_squash_merge, allow_rebase_merge,
+        allow_auto_merge and delete_branch_on_merge out of GET /repos/{repo} unless the
+        token can read the repository's settings (Administration read).  The least
+        permission for wf_repo_get is metadata:read, so those keys were absent (callers
+        saw null).  When the seat's ceiling already holds administration, mint
+        metadata + administration read for this one call;  otherwise, or when that mint
+        fails, keep the least-permission bearer and the keys stay absent.  This never
+        exceeds the seat's ceiling.
+        """
+        elevation = getattr(self, "_elevation", None)
+        if elevation is None:
+            return self.bearer
+        minter, app_slug, ceiling = elevation
+        required = {"metadata": "read", "administration": "read"}
+        if _perm_within_ceiling(required, ceiling):
+            return self.bearer
+        try:
+            token, _ = minter.token_for(app_slug, repo, required)
+        except Exception:
+            return self.bearer
+        return token or self.bearer
+
     def wf_repo_get(self, repo, args):
         _only(args, ("repo",))
-        data = self._get(f"/repos/{repo}")
-        return {"repository": _obj(data)}
+        # The repository object always comes from the least-permission (metadata:read)
+        # token.  The settings-read token is used for one more read, and only the five
+        # merge settings are copied from it:  any other field GitHub shows only to a
+        # settings reader (security_and_analysis, a filled temp_clone_token, ...) is
+        # discarded with that response.
+        data = dict(_obj(self._get(f"/repos/{repo}")))
+        bearer = self._repo_settings_bearer(repo)
+        if bearer is not self.bearer:
+            try:
+                wide = self.client._call("GET", f"/repos/{repo}", None, bearer=bearer)
+            except RelayGitHubError:
+                wide = None
+            if isinstance(wide, dict) and wide.get("id") == data.get("id"):
+                for key in _REPO_MERGE_SETTINGS:
+                    if type(wide.get(key)) is bool:
+                        data[key] = wide[key]
+        # temp_clone_token is a short-lived clone credential;  it never leaves the relay.
+        if data.get("temp_clone_token"):
+            del data["temp_clone_token"]
+        return {"repository": data}
+
+    def wf_branch_rules(self, repo, args):
+        """Rules from every active ruleset that applies to one branch.
+
+        GET /repos/{repo}/rules/branches/{branch}:  each row names the rule type, its
+        parameters (for a pull_request rule, allowed_merge_methods and the review
+        requirements) and the ruleset that supplies it.  Classic branch protection is
+        not included;  it needs administration:read.
+        """
+        _only(args, ("repo", "branch", "per_page", "page"))
+        name = _ref(args, "branch")
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        branch = quote(name, safe="")
+        data = self._get(f"/repos/{repo}/rules/branches/{branch}?per_page={limit}&page={page}")
+        if not isinstance(data, list) or len(data) > limit:
+            raise RelayGitHubError(502, "branch rules page unverifiable")
+        rules = []
+        for item in data:
+            params = item.get("parameters") if isinstance(item, dict) else None
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("type"), str)
+                or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", item["type"])
+                or type(item.get("ruleset_id")) is not int
+                or item["ruleset_id"] <= 0
+                or not isinstance(item.get("ruleset_source_type"), str)
+                or not re.fullmatch(r"[A-Za-z]{1,32}", item["ruleset_source_type"])
+                or not isinstance(item.get("ruleset_source"), str)
+                or not 1 <= len(item["ruleset_source"]) <= 201
+                or not (params is None or isinstance(params, dict))
+            ):
+                raise RelayGitHubError(502, "branch rule unverifiable")
+            if params is not None:
+                encoded = json.dumps(params, sort_keys=True)
+                if len(encoded) > 16384:
+                    raise RelayGitHubError(502, "branch rule parameters unverifiable")
+                if find_secret(encoded) or self._provider_token_text(encoded):
+                    raise Refused("credential-shaped branch rule parameters refused")
+            rules.append(
+                {
+                    "type": item["type"],
+                    "ruleset_id": item["ruleset_id"],
+                    "ruleset_source_type": item["ruleset_source_type"],
+                    "ruleset_source": item["ruleset_source"],
+                    "parameters": params,
+                }
+            )
+        return {"branch": name, "rules": rules, "page": page, "has_more": len(rules) == limit}
+
+    def wf_rulesets(self, repo, args):
+        """The repository's rulesets (summary rows:  no rules, conditions or bypass list).
+
+        GET /repos/{repo}/rulesets.  includes_parents (default true) also lists the
+        organization rulesets that target this repository.
+        """
+        _only(args, ("repo", "per_page", "page", "includes_parents"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        parents = args.get("includes_parents", True)
+        if type(parents) is not bool:
+            raise Refused("invalid includes_parents")
+        flag = "true" if parents else "false"
+        data = self._get(
+            f"/repos/{repo}/rulesets?per_page={limit}&page={page}&includes_parents={flag}"
+        )
+        if not isinstance(data, list) or len(data) > limit:
+            raise RelayGitHubError(502, "ruleset page unverifiable")
+        rulesets = []
+        for item in data:
+            if (
+                not isinstance(item, dict)
+                or type(item.get("id")) is not int
+                or item["id"] <= 0
+                or not isinstance(item.get("source_type"), str)
+                or not re.fullmatch(r"[A-Za-z]{1,32}", item["source_type"])
+                or not isinstance(item.get("source"), str)
+                or not 1 <= len(item["source"]) <= 201
+                or item.get("enforcement") not in ("disabled", "active", "evaluate")
+                or not (
+                    item.get("target") is None
+                    or isinstance(item["target"], str)
+                    and re.fullmatch(r"[a-z_]{1,32}", item["target"])
+                )
+            ):
+                raise RelayGitHubError(502, "ruleset unverifiable")
+            rulesets.append(
+                {
+                    "id": item["id"],
+                    "name": self._metadata_name(item.get("name"), 255),
+                    "target": item.get("target"),
+                    "source_type": item["source_type"],
+                    "source": item["source"],
+                    "enforcement": item["enforcement"],
+                }
+            )
+        return {"rulesets": rulesets, "page": page, "has_more": len(rulesets) == limit}
 
     def wf_labels(self, repo, args):
         _only(

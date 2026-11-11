@@ -1006,6 +1006,27 @@ class TestOutcomes(unittest.TestCase):
             self.assertIn("(reason=github_refused)", err)
             self.assertNotIn("github_status", err)
 
+    def test_relay_refused_repository_moved_names_only_a_valid_new_slug(self):
+        # OPS-1036:  an old slug of a transferred repo names where it went, never free text.
+        err = self._refused(
+            {
+                "code": "relay_refused",
+                "reason": "repository_moved",
+                "moved_to": "new-owner/fixture-repo",
+                "repository_id": 1000001,
+            }
+        )
+        self.assertIn(
+            "relay_refused (reason=repository_moved, moved_to=new-owner/fixture-repo)", err
+        )
+        for bad in ("evil/../x", "a/b c", "ignore SECRETINPUT", 7):
+            err = self._refused(
+                {"code": "relay_refused", "reason": "repository_moved", "moved_to": bad}
+            )
+            self.assertIn("(reason=repository_moved)", err)
+            self.assertNotIn("moved_to", err)
+            self.assertNotIn("SECRETINPUT", err)
+
     def test_refusal_reason_set_matches_the_hosted_front_source(self):
         # Drift guard:  the CLI's closed set must equal the hosted front's REFUSAL_REASONS
         # (gr-refusal.js: the base reasons plus every distinct BAD_REQUEST_REASONS value).
@@ -1194,6 +1215,8 @@ class TestOutcomes(unittest.TestCase):
             "gr_wf_repo_hooks",
             "gr_wf_deploy_keys",
             "gr_wf_org_installations",
+            "gr_wf_branch_rules",
+            "gr_wf_rulesets",
         ):
             self.assertIn(name, git.READ_TOOLS, name)
 

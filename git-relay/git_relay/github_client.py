@@ -141,6 +141,30 @@ def _signed_download_url(location) -> str:
     return location
 
 
+_MOVED_STATUSES = frozenset({301, 302, 307, 308})
+_MOVED_PATH = re.compile(r"/repositories/([1-9][0-9]{0,15})(?:/[A-Za-z0-9_.~%/-]*)?(?:\?[^#\s]*)?")
+
+
+def moved_repository_id(base: str, status, headers) -> int | None:
+    """The repository id a GitHub redirect for a renamed or transferred repo names, else None.
+
+    GitHub answers a repository's old owner/name with a 301 (reads) or 307 (writes) whose Location
+    is ``<api base>/repositories/<id>/<rest of the path>``.  Only that exact form, on the same API
+    base, counts;  any other redirect stays an ordinary refusal.
+    """
+    if status not in _MOVED_STATUSES or headers is None:
+        return None
+    location = headers.get("Location")
+    prefix = base.rstrip("/")
+    if not isinstance(location, str) or len(location) > 2048 or not location.startswith(prefix):
+        return None
+    match = _MOVED_PATH.fullmatch(location[len(prefix) :])
+    if not match:
+        return None
+    value = int(match.group(1))
+    return value if 0 < value <= 2**53 - 1 else None
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """A 3xx must never be followed:  redirects can carry the bearer to another origin."""
 
@@ -165,11 +189,19 @@ class RelayGitHubError(Exception):
         retry_after=None,
         credential_preview: str | None = None,
         diagnostics: dict | None = None,
+        moved_repository_id: int | None = None,
     ):
         super().__init__(f"github {status}: {message}")
         self.status = status
         self.message = message
         self.code = code
+        # Set only with code "repository_moved":  the numeric id GitHub's redirect named
+        # (Location /repositories/<id>/...).  A number, never upstream text.
+        self.moved_repository_id = (
+            moved_repository_id
+            if type(moved_repository_id) is int and 0 < moved_repository_id <= 2**53 - 1
+            else None
+        )
         self.retry_after = retry_after
         # First-eight/last-four of the bearer GitHub refused, when the failure
         # is about the credential itself;  identifies the dead key without
@@ -289,6 +321,18 @@ class GitHubClient:
                 ):
                     raise RelayGitHubError(502, "unexpected upstream completion status or body")
         except urllib.error.HTTPError as exc:
+            moved = moved_repository_id(self._base, exc.code, exc.headers)
+            if moved is not None:
+                # A renamed or transferred repository:  GitHub answers its old slug with a
+                # redirect to /repositories/<id>.  The redirect is never followed (it could carry
+                # the bearer elsewhere) and nothing ran upstream;  the caller learns the repo moved
+                # instead of seeing an outage (OPS-1036).
+                raise RelayGitHubError(
+                    exc.code,
+                    "repository moved",
+                    code="repository_moved",
+                    moved_repository_id=moved,
+                ) from exc
             preview = exc.read(MAX_ERROR_PREVIEW).decode("utf-8", "replace")
             code = None
             try:

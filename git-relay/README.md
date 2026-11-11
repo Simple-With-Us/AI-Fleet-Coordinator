@@ -135,7 +135,7 @@ every seat is `auth: shared` and signs in with its own admin-minted bearer.  It
 for each of the 41 identities in this file (source, not live: the live seats file differs, for example it also carries BF-BUILDER, which is omitted here), each acting as the `swu-` App
 whose GitHub description names that seat.  Five slugs are not `swu-<identity>`:  MA is
 `swu-rob`, GROK is `swu-grok-build`, MM is `swu-minimax`, JET-CHAT is `swu-jet` and AMP is `swu-amp-agent` (`swu-amp` is reserved for an account).  JET-CHAT is the full Jet login on its own policy entry; the original JET wake-only login has no Git entry (Q7).  Seats share the `fleet` profile
-(the same actions, repositories and permission ceiling);  Since the 2026-11-01 every-repo widening (owner instruction) the fleet profile names the two verified namespaces, `Simple-With-Us/*` and `jaywedgeworth22/*`;  Echo's profile survives but resolves to the same set.  The fleet profile carries a 178-action list (8 relay actions, including `git_read`, plus 170 workflow actions, including `wf_pr_close` and `wf_pr_reopen`) and the live 10-key mint ceiling.  `swu-amp-agent` and `swu-wise` keep the host's exact live action ordering through their own pinned profiles (the same set, ceiling and repositories as fleet).  BF-BUILDER is dropped (owner 2026-11-01:  BF-ENGINEER replaced it):  it has no entry, so the relay authenticates no BF-BUILDER bearer.  Every GB seat and every BF bot, including BF-TRADER and BF-ENGINEER, is on the fleet profile.  `git_relay/tests/test_seat_policy_file.py` holds the file to the relay's SeatPolicy, the
+(the same actions, repositories and permission ceiling);  Since the 2026-11-01 every-repo widening (owner instruction) the fleet profile names the two verified namespaces, `Simple-With-Us/*` and `jaywedgeworth22/*`;  Echo's profile survives but resolves to the same set.  The fleet profile carries a 180-action list (8 relay actions, including `git_read`, plus 172 workflow actions, including `wf_pr_close`, `wf_pr_reopen` and the metadata-read rule reads `wf_branch_rules` and `wf_rulesets`) and the live 10-key mint ceiling.  The two rule reads reach a seat only once the live seats file on the relay host carries them, so they are added there at relay install.  `swu-amp-agent` and `swu-wise` keep the host's exact live action ordering through their own pinned profiles (the same set, ceiling and repositories as fleet).  BF-BUILDER is dropped (owner 2026-11-01:  BF-ENGINEER replaced it):  it has no entry, so the relay authenticates no BF-BUILDER bearer.  Every GB seat and every BF bot, including BF-TRADER and BF-ENGINEER, is on the fleet profile.  `git_relay/tests/test_seat_policy_file.py` holds the file to the relay's SeatPolicy, the
 Worker's identity lists and each action's permission needs.
 
 On the relay host, as root.  Root runs only a root-owned copy that only root can write, never
@@ -260,7 +260,16 @@ Request bodies are capped at 64 KiB, text fields at 32 KiB, GitHub responses at 
 paged GET other than a compare, whose raw rows are far larger than the rows the relay returns), and every
 GitHub call has a 30 s timeout.  Workflow-dispatch inputs are a flat object of at most 32 scalar
 values (strings capped at 1024 characters).  Neither the GitHub client nor the Infisical client
-follows 3xx redirects, so a bearer can never be forwarded to another origin.  Errors: 401
+follows 3xx redirects, so a bearer can never be forwarded to another origin.  A redirect GitHub
+uses for a renamed or transferred repository (Location `/repositories/<id>/...`) answers 400
+`{"error": "repository moved", "github_status": 301, "repository_id": <id>}`, plus `moved_to`
+(the current owner/name) when the seat's own App can read it and the seat's repo allowlist covers
+it.  The name is read with one installation token limited to that repository and `metadata: read`,
+revoked after the read (OPS-1036).  A raw-JSON read answer is bounded like the hosted front's own
+check (depth 12, 50,000 nodes, 1,000 keys per object or list, 900,000 serialized bytes):  a
+compare over the bound drops its file list (`files_omitted`) and then trailing commits
+(`commits_truncated`), and any other read over it answers 400 `workflow read result too large`.
+Errors: 401
 unauthenticated, 403 policy denial, 400 bad request or terminal GitHub refusal, 409 idempotent
 replay refusal (an identical request is in flight or its outcome is unknown), 429 GitHub rate
 limit (retryable), 502 GitHub outcome unknown (NOT retryable - see the outcome store), 503
