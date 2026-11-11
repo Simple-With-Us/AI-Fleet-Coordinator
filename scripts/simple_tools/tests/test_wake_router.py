@@ -4129,6 +4129,44 @@ class PlatformSessionPatterns(RemoteBase):
                 self.assertEqual((result.outcome, result.code), ("refused", "bad-session-id"))
         self.assertEqual(self.runs, [])
 
+    NOT_STRINGS = (None, 7, 3.5, True, ["sess_x"], {"id": SESS_SID}, b"sess_x")
+
+    def test_the_sender_refuses_a_session_id_that_is_not_a_string_before_ssh(self) -> None:
+        for platform in ("sessplat", "claude", "codex"):
+            for session_id in self.NOT_STRINGS:
+                with self.subTest(platform, session_id=session_id):
+                    result = self.send(WR.Target(session_id, letter="AA", host="mac", generation=3), platform)
+                    self.assertEqual((result.outcome, result.code), ("refused", "bad-session-id"))
+        self.assertEqual(self.runs, [])
+
+    def test_the_mac_refuses_a_session_id_that_is_not_a_string_before_anything_runs(self) -> None:
+        json_values = [value for value in self.NOT_STRINGS if not isinstance(value, bytes)]
+        for platform in ("sessplat", "claude", "codex"):
+            for session_id in json_values:  # what can arrive over the wire
+                with self.subTest(platform, session_id=session_id):
+                    request = self.envelope(platform=platform)
+                    request["target"]["session_id"] = session_id
+                    with (
+                        mock.patch.object(CW, "deliver_local") as spy,
+                        mock.patch.object(CW.importlib, "import_module") as importing,
+                    ):
+                        code, answer = self.run_main(request)
+                    self.assertEqual(
+                        (code, answer["delivery"]["outcome"], answer["delivery"]["code"]),
+                        (2, "refused", "bad-request"),
+                    )
+                    self.assertEqual(answer["session_id"], "")
+                    spy.assert_not_called()
+                    importing.assert_not_called()
+        self.assertEqual(self.seen, [])
+
+    def test_a_local_delivery_refuses_a_session_id_that_is_not_a_string(self) -> None:
+        for session_id in self.NOT_STRINGS:
+            with self.subTest(session_id=session_id):
+                result = CW.deliver_local(self.env, self.cfg, session_id, self.w, runner=self.remote)
+                self.assertEqual((result.outcome, result.code), ("refused", "bad-session-id"))
+        self.assertEqual(self.runs, [])
+
     def test_the_sender_refuses_an_unknown_platform_before_ssh(self) -> None:
         result = self.send(platform="nosuch")
         self.assertEqual((result.outcome, result.code), ("refused", "unknown-platform"))

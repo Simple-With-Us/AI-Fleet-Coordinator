@@ -501,7 +501,7 @@ def deliver_local(
 ) -> WR.Delivery:
     """Deliver one wake to a chat on this host:  the inbox socket when a process holds the chat,
     else a resume under the per-session lock.  Not knowing whether a process holds it is `busy`."""
-    if not SESSION_RE.fullmatch(session_id):
+    if not isinstance(session_id, str) or not SESSION_RE.fullmatch(session_id):
         return WR.Delivery("refused", code="bad-session-id")
     try:
         holder = find_holder(env, session_id)
@@ -537,7 +537,8 @@ def deliver_remote(
     entry = PLATFORMS.get(platform)
     if entry is None:
         return WR.Delivery("refused", "ssh", code=UNKNOWN_PLATFORM)
-    if not entry.session_re.fullmatch(target.session_id):
+    session_id = target.session_id
+    if not isinstance(session_id, str) or not entry.session_re.fullmatch(session_id):
         return WR.Delivery("refused", "ssh", code="bad-session-id")
     dest = str(config.get("mac_ssh") or env.get(ENV_REMOTE) or "").strip()
     if not SSH_DEST_RE.fullmatch(dest):
