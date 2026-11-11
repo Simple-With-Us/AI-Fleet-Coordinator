@@ -1547,8 +1547,9 @@ def untitled_context(
     body: Mapping[str, Any], env: Mapping[str, str], seat: str, sid: str, display: str, product: str
 ) -> str:
     """The context line for a platform whose hooks cannot set a chat's title (such as Cursor), from one `json` style
-    answer (`{"context", "label"}`):  the chat is told its letter and how it is addressed, and that its title does not
-    carry the letter.  Any other line (no letter yet, another seat's) is the library's own, as it is."""
+    answer (`{"context", "label"}`):  the Operator has already issued the letter, and the chat is told to put that
+    letter at the front of its title at the start, when rename-chat is available.  Any other line (no letter yet,
+    another seat's) is the library's own, as it is."""
     context = _text(
         body.get("context")
     )  # not `tidy`:  the library's sentence gaps stay as they are
@@ -1571,9 +1572,10 @@ def untitled_context(
     )
     # Rendered copy:  a sentence gap is U+00A0 plus a space.
     return (
-        '%sOperator session letter: %s, on the %s.  This chat is addressed as "@**%s** %s".  %s gives a '
-        "hook no way to set a chat's title, so the title does not carry the letter; a name the owner gives this chat "
-        'should start with "%s: ".' % (head, ref, where, display, label, product, label)
+        '%sOperator session letter: %s, on the %s.  This chat is addressed as "@**%s** %s".  %s cannot set the '
+        "title from a hook.  At the start of this chat, call rename-chat once if that tool is available, so the title "
+        'starts with "%s: " and then the topic.  Keep that prefix if the chat is renamed.'
+        % (head, ref, where, display, label, product, label)
     )
 
 
