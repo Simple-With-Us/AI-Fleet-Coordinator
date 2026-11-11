@@ -80,8 +80,8 @@ class RealIngressLoadedTests(unittest.TestCase):
             workflow_verbs_enabled=True,
         )
 
-    def _args(self, action, content_b64):
-        base = {"repo": REPO, "branch": "feat/x", "message": "test"}
+    def _args(self, action, content_b64, message="test"):
+        base = {"repo": REPO, "branch": "feat/x", "message": message}
         if action == "wf_file_put":
             return dict(base, path="tests/x.py", content_b64=content_b64)
         return dict(
@@ -102,6 +102,25 @@ class RealIngressLoadedTests(unittest.TestCase):
                     client = _Client()
                     status, _payload = self._relay(client, log).handle(
                         CALLER, action, self._args(action, content_b64)
+                    )
+                    self.assertEqual(status, 400)
+                    self.assertEqual(client.calls, [])
+                    with open(log) as fh:
+                        audit = fh.read()
+                    self.assertNotIn(CALLER, audit)
+                    self.assertNotIn(INSTALL, audit)
+
+    def test_caller_and_installation_refused_in_commit_message(self):
+        # The message is published in git history: a loaded value there must
+        # refuse before any upstream call too.
+        clean = base64.b64encode(b"x = 1\n").decode()
+        for token in (CALLER, INSTALL):
+            for action in ("wf_file_put", "wf_files_put"):
+                with self.subTest(token=token[:8], action=action), tempfile.TemporaryDirectory() as td:
+                    log = os.path.join(td, "audit.jsonl")
+                    client = _Client()
+                    status, _payload = self._relay(client, log).handle(
+                        CALLER, action, self._args(action, clean, message="ship " + token)
                     )
                     self.assertEqual(status, 400)
                     self.assertEqual(client.calls, [])

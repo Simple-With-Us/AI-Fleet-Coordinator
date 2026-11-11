@@ -7524,7 +7524,11 @@ class WorkflowVerbs:
             raise Refused("invalid content") from None
         if len(raw) > MAX_FILE_RAW:
             raise Refused("file too large")
-        if find_secret(message) or unreviewed_file_secret(repo, path, raw, known=self.loaded_known):
+        if (
+            find_secret(message)
+            or any(v and v in message for v in self.loaded_known)
+            or unreviewed_file_secret(repo, path, raw, known=self.loaded_known)
+        ):
             raise Refused("credential-shaped content refused")
         payload = {"message": message, "content": content, "branch": branch}
         if "prior_sha" in args:
@@ -7833,7 +7837,7 @@ class WorkflowVerbs:
             if unreviewed_file_secret(repo, path, raw, known=self.loaded_known):
                 raise Refused("credential-shaped content refused")
             plan.append((path, content))
-        if find_secret(message):
+        if find_secret(message) or any(v and v in message for v in self.loaded_known):
             raise Refused("credential-shaped content refused")
         default = _obj(self._get(f"/repos/{repo}")).get("default_branch")
         if not isinstance(default, str) or not default or branch == default:
