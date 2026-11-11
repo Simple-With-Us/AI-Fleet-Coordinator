@@ -537,13 +537,14 @@ def _bootstrap_row_binds(record, rows, identity):
     match is as much a refusal as none:  the binding must name one run.
     """
     matches = 0
+    identity_sha256 = hashlib.sha256(identity.encode()).hexdigest()
     for row in rows or ():
         if (
             isinstance(row, dict)
             and row.get("cause") == BOOTSTRAP_CAUSE
             and (
                 row.get("identity") == identity
-                or row.get("identity_sha256") == hashlib.sha256(identity.encode()).hexdigest()
+                or row.get("identity_sha256") == identity_sha256
             )
             and row.get("action") == "wf_file_patch"
             and row.get("repo") == record["repo"]
