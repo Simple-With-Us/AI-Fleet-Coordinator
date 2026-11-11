@@ -110,7 +110,7 @@ mode_word() {
 
 install_files() {
   local missing=0
-  for f in fleet_rag recall recall-tunnel fleet-recall-mcp.py fleet-rag.py fleet_secrets/__init__.py fleet_secrets/core.py; do
+  for f in fleet_rag recall recall-tunnel fleet-recall-mcp.py fleet-rag.py fleet_secrets/__init__.py fleet_secrets/core.py linear-board/board simple_tools/secretscan.py; do
     if [[ ! -e "$SRC/$f" ]]; then
       say "MISSING $SRC/$f (this checkout is incomplete; the install would fail)"
       missing=1
@@ -135,12 +135,19 @@ install_files() {
   mkdir -p "$DST/fleet_secrets"
   cp "$SRC/fleet_secrets/__init__.py" "$SRC/fleet_secrets/core.py" "$DST/fleet_secrets/"
   chmod 644 "$DST/fleet_secrets/__init__.py" "$DST/fleet_secrets/core.py"
+  # fleet_rag.linear_board loads the board CLI from ../linear-board, and recall's remote mode loads
+  # ../simple_tools/secretscan.py;  both are code the installed copy needs (AFC-677).
+  rsync -a --delete --exclude 'test_*.py' --exclude '__pycache__' --exclude 'testdata' \
+    "$SRC/linear-board/" "$DST/linear-board/"
+  mkdir -p "$DST/simple_tools"
+  cp "$SRC/simple_tools/secretscan.py" "$DST/simple_tools/secretscan.py"
+  chmod 644 "$DST/simple_tools/secretscan.py"
   cp -p "$SRC/recall" "$DST/recall"
   cp -p "$SRC/recall-tunnel" "$DST/recall-tunnel"
   cp -p "$SRC/fleet-recall-mcp.py" "$DST/fleet-recall-mcp.py"
   cp -p "$SRC/fleet-rag.py" "$DST/fleet-rag.py"
   chmod +x "$DST/recall" "$DST/recall-tunnel" "$DST/fleet-recall-mcp.py" "$DST/fleet-rag.py"
-  say "installed $DST (fleet_rag/, recall, recall-tunnel, fleet-recall-mcp.py, fleet-rag.py, state/ cache/ logs/)"
+  say "installed $DST (fleet_rag/, linear-board/, simple_tools/secretscan.py, recall, recall-tunnel, fleet-recall-mcp.py, fleet-rag.py, state/ cache/ logs/)"
   note "$DST" "installed"
 }
 

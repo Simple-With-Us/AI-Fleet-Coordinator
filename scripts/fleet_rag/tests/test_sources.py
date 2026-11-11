@@ -1983,6 +1983,14 @@ class LinearSourceTests(unittest.TestCase):
         self.assertEqual(B.Linear.call_count, 1)
         self.assertEqual(lin.call.call_count, 2)
 
+    def test_missing_board_cli_is_a_board_failure_not_an_unbound_local(self) -> None:
+        from fleet_rag import linear_board as LB
+
+        with (mock.patch.object(LB, "_board_mod", None), mock.patch.object(LB, "_BOARD_PATH", pathlib.Path("/nonexistent/board"))):
+            with self.assertRaises(LB.BoardCliFailure) as ctx:
+                LB.query("BF-ORACLE", "id", "secret", "{ viewer { id } }", max_chars=100)
+        self.assertEqual(ctx.exception.code, 4)
+
     def test_linear_board_auth_failure_detection(self) -> None:
         err401 = linear_board.BoardCliFailure(1, "HTTP 401 from token endpoint")
         err403 = linear_board.BoardCliFailure(1, "403 Forbidden")
