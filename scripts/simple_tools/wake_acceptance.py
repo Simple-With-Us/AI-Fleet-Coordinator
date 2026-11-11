@@ -63,7 +63,12 @@ def assess(
     the work requested by the original message.  The caller supplies expected identity,
     rather than trusting the router's pick as its own acceptance criterion.
     """
-    if not WAKE_ID.fullmatch(wake_id) or type(message_id) is not int or message_id <= 0:
+    if (
+        not isinstance(wake_id, str)
+        or not WAKE_ID.fullmatch(wake_id)
+        or type(message_id) is not int
+        or message_id <= 0
+    ):
         raise ValueError("invalid expected wake identity")
     try:
         if str(uuid.UUID(session_id)) != session_id:

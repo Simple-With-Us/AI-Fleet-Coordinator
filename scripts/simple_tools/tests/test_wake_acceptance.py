@@ -110,6 +110,11 @@ class AcceptanceTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 WA.assess(**{**self.args, "generation": value})
 
+    def test_expected_wake_id_must_be_a_string(self):
+        for value in (None, 1, True, [], {}, b"w-123"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                WA.assess(**{**self.args, "wake_id": value})
+
     def test_expected_seat_and_mention_types_raise_value_error(self):
         for key in ("seat", "mention"):
             for value in (None, 1, True, [], {}, b"Codex"):
