@@ -14,6 +14,7 @@ import time
 from unittest import mock
 
 from fleet_knobs import knobs, source
+from fleet_knobs import values as knob_values
 from fleet_knobs.registry import BY_NAME
 from fleet_knobs.tests._fake import KnobTestCase
 from simple_tools import claude_wake as CW
@@ -21,6 +22,8 @@ from simple_tools import wake_router as WR
 from simple_tools import wake_settings as WS
 
 ARMED = {WS.DELIVERY_ENABLED: "true", WS.DELIVERY_SEATS: "CLAUDE"}
+KEY_KNOB = "WAKE_ROUTER_CLAUDE_KEY"
+KEY = "k3y-" + "0123456789abcdef" * 2  # synthetic, long enough
 
 
 class Settings(KnobTestCase):
@@ -32,6 +35,11 @@ class Settings(KnobTestCase):
         stderr = contextlib.redirect_stderr(io.StringIO())
         self.stderr = stderr.__enter__()
         self.addCleanup(stderr.__exit__, None, None, None)
+
+    @property
+    def router_copy(self):
+        """The last-known-good copy of the router's folder (the root's is `lkg_file`)."""
+        return self.state_dir / "lkg-wake-router.json"
 
     def local(self, **values) -> None:
         self.local_path.write_text(json.dumps(values), encoding="utf-8")
@@ -61,6 +69,137 @@ class Registered(Settings):
     def test_every_tunable_is_a_knob_or_a_named_host_fact(self) -> None:
         handled = {*WS.INT_KNOBS, *WS.HOST_FACTS, "delivery_enabled", "retry_backoff", "mac_ssh"}
         self.assertEqual(set(CW.DEFAULTS), handled)
+
+    def test_every_router_knob_and_only_those_live_in_its_own_folder(self) -> None:
+        names = {*WS.INT_KNOBS.values(), WS.DELIVERY_ENABLED, WS.DELIVERY_SEATS}
+        names |= {WS.RETRY_BACKOFF, WS.MAC_SSH, WS.REFRESH_SECONDS, *WS.KEY_KNOBS.values()}
+        self.assertEqual(WS.FOLDER, "/wake-router")
+        in_folder = {name for name, spec in BY_NAME.items() if spec.folder == WS.FOLDER}
+        self.assertEqual(in_folder, names, "the router's token must reach every knob it reads")
+
+    def test_the_key_is_a_secret_knob_with_the_old_minimum(self) -> None:
+        spec = BY_NAME[KEY_KNOB]
+        self.assertTrue(spec.secret)
+        self.assertEqual(WS.KEY_KNOBS[CW.SEAT], KEY_KNOB)
+        self.assertEqual(WR.KEY_MIN_LENGTH, 16)
+        self.assertIsNone(knob_values.lenient(spec, "x" * 15)[1])
+        self.assertEqual(knob_values.lenient(spec, "x" * 16), (True, "x" * 16))
+
+
+class Folder(Settings):
+    def test_the_router_fetches_its_folder_and_nothing_else(self) -> None:
+        settings = self.loaded(**ARMED)
+        self.assertTrue(settings.confirmed)
+        self.assertEqual({call["path"] for call in self.fake.calls()}, {"/wake-router"})
+        asked = set(self.fake.calls()[0]["names"])
+        self.assertIn(KEY_KNOB, asked)
+        self.assertFalse(any(not name.startswith("WAKE_ROUTER_") for name in asked))
+
+    def test_root_knobs_cannot_arm_or_confirm_the_router(self) -> None:
+        # Infisical holds the switch only at the root:  the router does not read it there.
+        self.fake.set(secrets={}, folders={"/": ARMED, "/wake-router": {}})
+        settings = WS.WakeSettings(CW.SEAT, CW.DEFAULTS, self.local_path)
+        settings.load()
+        self.assertTrue(settings.confirmed)
+        self.assertIs(settings["delivery_enabled"], False)
+
+    def test_a_failed_root_fetch_does_not_unconfirm_the_router(self) -> None:
+        self.fake.set(secrets=ARMED, folder_modes={"/": "fail"})
+        self.assertEqual(knobs.get("LANE_SWEEP_MODE"), "report")  # a root read, and it fails
+        self.assertEqual(knobs.report()["fetch"], "failed")
+        settings = WS.WakeSettings(CW.SEAT, CW.DEFAULTS, self.local_path)
+        settings.load()
+        self.assertTrue(settings.confirmed)
+        self.assertIs(settings["delivery_enabled"], True)
+
+    def test_a_failed_router_fetch_is_unconfirmed_whatever_the_root_did(self) -> None:
+        self.fake.set(secrets=ARMED, folder_modes={"/wake-router": "fail"})
+        self.assertEqual(knobs.resolve("LANE_SWEEP_MODE").source, "default")
+        settings = WS.WakeSettings(CW.SEAT, CW.DEFAULTS, self.local_path)
+        settings.load()
+        self.assertFalse(settings.confirmed)
+        self.assertIn("unconfirmed scoped-read-failed", self.stderr.getvalue())
+
+
+class Key(Settings):
+    def test_the_key_comes_from_the_secret_knob(self) -> None:
+        settings = self.loaded(**{KEY_KNOB: KEY})
+        self.assertEqual(settings.routine_key(), (KEY, ""))
+
+    def test_no_key_until_it_is_read(self) -> None:
+        settings = WS.WakeSettings(CW.SEAT, CW.DEFAULTS, self.local_path)
+        self.assertEqual(settings.routine_key(), ("", "not-read"))
+
+    def test_an_unset_short_or_unreadable_key_is_no_key(self) -> None:
+        cases = (
+            ("unset", {"mode": "ok", "secrets": {}}),
+            ("malformed", {"mode": "ok", "secrets": {KEY_KNOB: "x" * 15}}),
+            ("malformed", {"mode": "ok", "secrets": {KEY_KNOB: "has a space in it ok"}}),
+            ("unreachable:scoped-read-failed", {"mode": "fail"}),
+        )
+        for reason, cfg in cases:
+            with self.subTest(reason=reason, cfg=cfg):
+                self.new_process()
+                self.fake.set(**cfg)
+                settings = WS.WakeSettings(CW.SEAT, CW.DEFAULTS, self.local_path)
+                settings.load()
+                self.assertEqual(settings.routine_key(), ("", reason))
+                self.assertIn("key-unavailable %s" % reason, self.stderr.getvalue())
+
+    def test_the_key_is_never_written_or_logged(self) -> None:
+        settings = self.loaded(**ARMED, **{KEY_KNOB: KEY})
+        settings.refresh()
+        self.assertTrue((self.state_dir / "lkg-wake-router.json").exists(), "a copy was written")
+        blob = self.stderr.getvalue()
+        for top in (self.home, self.state):  # the fake's own config sits beside them, not in them
+            for directory, _dirs, files in os.walk(top):
+                for name in files:
+                    with open(os.path.join(directory, name), "rb") as fh:
+                        blob += fh.read().decode("utf-8", "replace")
+        self.assertNotIn(KEY, blob)
+        self.assertNotIn(KEY_KNOB, blob.replace("key-unavailable", ""))
+        self.assertNotIn(KEY, json.dumps(knobs.report()))
+
+    def test_a_refresh_reads_a_new_key(self) -> None:
+        settings = self.loaded(**{KEY_KNOB: KEY})
+        rotated = KEY[::-1]
+        self.fake.set(secrets={KEY_KNOB: rotated})
+        self.assertTrue(settings.refresh())
+        self.assertEqual(settings.routine_key(), (rotated, ""))
+
+    def test_a_failed_refresh_drops_the_key_and_a_good_one_brings_it_back(self) -> None:
+        settings = self.loaded(**ARMED, **{KEY_KNOB: KEY})
+        self.fake.set(mode="fail")
+        self.assertFalse(settings.refresh())
+        self.assertEqual(settings.routine_key(), ("", "unreachable:scoped-read-failed"))
+        self.assertIs(settings["delivery_enabled"], True, "the other settings are still held")
+        self.fake.set(secrets={**ARMED, KEY_KNOB: KEY})
+        self.assertTrue(settings.refresh())
+        self.assertEqual(settings.routine_key(), (KEY, ""))
+
+    def test_a_refresh_that_errors_drops_the_key(self) -> None:
+        settings = self.loaded(**{KEY_KNOB: KEY})
+        with mock.patch.object(WS, "from_knobs", side_effect=RuntimeError("boom")):
+            self.assertFalse(settings.refresh())
+        self.assertEqual(settings.routine_key(), ("", "refresh-error-RuntimeError"))
+
+    def test_the_key_is_dropped_when_it_is_unset_later(self) -> None:
+        settings = self.loaded(**{KEY_KNOB: KEY})
+        self.fake.set(secrets={})
+        self.assertTrue(settings.refresh())
+        self.assertEqual(settings.routine_key(), ("", "unset"))
+
+    def test_the_mac_reader_never_asks_for_the_key(self) -> None:
+        self.fake.set(secrets={KEY_KNOB: KEY})
+        with mock.patch.object(WS, "read_key", side_effect=AssertionError("read_key")):
+            WS.read_once(CW.SEAT, CW.DEFAULTS, self.local_path)
+        self.assertNotIn(KEY_KNOB, knobs.report()["knobs"])
+
+    def test_a_seat_with_no_key_knob_has_no_key(self) -> None:
+        self.fake.set(secrets={KEY_KNOB: KEY})
+        settings = WS.WakeSettings("CODEX", WR.ROUTER_DEFAULTS, self.local_path)
+        settings.load()
+        self.assertEqual(settings.routine_key(), ("", "no-key-knob"))
 
 
 class Reading(Settings):
@@ -137,7 +276,8 @@ class Reading(Settings):
     def armed_copy_on_disk(self) -> None:
         """A good fetch with delivery on, which leaves it in the last-known-good copy."""
         self.assertIs(self.loaded(**ARMED)["delivery_enabled"], True)
-        self.assertTrue(self.lkg_file.exists())
+        self.assertTrue(self.router_copy.exists())
+        self.assertFalse(self.lkg_file.exists(), "the router never fetches or copies the root")
 
     def assert_not_armed_by_the_copy(self, settings: WS.WakeSettings) -> None:
         self.assertIs(settings["delivery_enabled"], False)
@@ -269,7 +409,7 @@ class Service(Settings):
         settings = self.loaded(
             WAKE_ROUTER_WORKERS="8", WAKE_ROUTER_SETTINGS_REFRESH_SECONDS="60", **ARMED
         )
-        self.lkg_file.unlink()
+        self.router_copy.unlink()
         self.fake.set(mode="fail")
         self.assertFalse(settings.refresh())
         self.assertIs(settings["delivery_enabled"], True)
@@ -455,6 +595,29 @@ class Wiring(Settings):
         self.assertFalse(seen["thread"].is_alive())
         self.assertEqual(signal.getsignal(signal.SIGHUP), before)
 
+    def test_the_router_checks_the_bearer_from_the_knob_and_reads_no_file(self) -> None:
+        planted = "f1le-" + "fedcba9876543210" * 2
+        (self.state / "routine-key").write_text(planted, encoding="utf-8")
+        os.chmod(self.state / "routine-key", 0o600)
+        self.fake.set(secrets={**ARMED, KEY_KNOB: KEY})
+        seen = {}
+
+        def serve(router, bind, port):
+            seen["key"] = router.routine_key()
+            self.fake.set(mode="fail")
+            router.config.refresh()  # an outage on a later refresh
+            seen["after"] = router.routine_key()
+            return 0
+
+        with (
+            mock.patch.dict(os.environ, {"CLAUDE_WAKE_KEY_FILE": str(self.state / "routine-key")}),
+            mock.patch.object(CW, "state_dir", return_value=self.state),
+            mock.patch.object(WR, "serve", side_effect=serve),
+        ):
+            self.assertEqual(CW.main(["serve"]), 0)
+        self.assertEqual(seen["key"], (KEY, ""))
+        self.assertEqual(seen["after"], ("", "unreachable:scoped-read-failed"))
+
     def test_sighup_refreshes(self) -> None:
         self.fake.set(secrets={})
         seen = {}
@@ -486,7 +649,7 @@ class Wiring(Settings):
             target_re=CW.SESSION_RE,
             deliver=mock.Mock(),
         )
-        router = WR.Router(platform, {}, settings, self.state, self.state / "key")
+        router = WR.Router(platform, {}, settings, self.state, settings.routine_key)
         router.accept(WR.Wake(wake_id="w-1", seat=CW.SEAT))
         self.assertTrue(router.run_once())
         self.assertTrue((self.state / "pending" / "w-1.json").exists())
