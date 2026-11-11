@@ -1747,7 +1747,9 @@ class OwnIntroTagTests(unittest.TestCase):
             cli.tagged("GB-PLUMBER", None, "[GB-DIRECTOR 📁AFC] spoof"),
             "[GB-PLUMBER] [GB-DIRECTOR 📁AFC] spoof",
         )
-        self.assertEqual(cli.tagged("GB-PLUMBER", None, "[GB-PLUMBERX] x"), "[GB-PLUMBER] [GB-PLUMBERX] x")
+        self.assertEqual(
+            cli.tagged("GB-PLUMBER", None, "[GB-PLUMBERX] x"), "[GB-PLUMBER] [GB-PLUMBERX] x"
+        )
 
 
 class SeatAliasTests(unittest.TestCase):
