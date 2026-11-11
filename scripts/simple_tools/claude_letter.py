@@ -298,9 +298,15 @@ def bare(title: object, label: str = "") -> str:
 def own_words(current: object, note: Mapping[str, Any]) -> str:
     """The words of a title as someone wrote them, with this chat's letters dropped:  its own, and the one it held
     before the Operator reissued it (a chat whose registration failed keeps showing the old letter until it takes a
-    new one).  The words are kept whole;  only the copy sent to the registry is cut and scanned."""
+    new one), and every earlier letter the note remembers (`held_labels`: a letter the registry moved twice in place
+    leaves the first one on a title the app did not retitle).  The words are kept whole;  only the copy sent to the
+    registry is cut and scanned."""
     words = one_line(current)
-    for held in (note.get("label"), note.get("prior_label")):
+    for held in (
+        note.get("label"),
+        note.get("prior_label"),
+        *reversed(note.get("held_labels") or []),
+    ):
         if held:
             words = bare(words, str(held))
     return words
@@ -683,7 +689,12 @@ def _on_record(OR: Any, db: str, args: Any, sid: str) -> dict[str, Any]:
                 "closed": reg.close(rid, actor=args.seat, source=args.source),
                 "label": rec["label"],
             }
-        return {"ok": True, "label": rec["label"], "generation": rec["generation"]}
+        return {
+            "ok": True,
+            "label": rec["label"],
+            "generation": rec["generation"],
+            "record_id": rid,
+        }
     finally:
         reg.close_db()
 
@@ -819,12 +830,18 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
         return {"retired": True, "record_id": probe.get("record_id", "")}
     title = clean_title(args.title) if args.op == "title" else ""
     if args.op == "touch" or not title:
-        return {"ok": True, "record_id": probe.get("record_id", "")}
+        # The letter and generation go on when the registry named them, as the local path's answer does.
+        return PL._touch_answer(probe)
     updated = PL._call_api(env, "update", {**identity, "title": title})
     error = PL._api_error(updated)
     if error is not None:
         return error
-    return {"ok": True, "label": updated.get("label", ""), "generation": updated.get("generation")}
+    out = {"ok": True, "label": updated.get("label", ""), "generation": updated.get("generation")}
+    if updated.get("record_id"):
+        out["record_id"] = updated[
+            "record_id"
+        ]  # as a touch's answer carries it, for the hook's note
+    return out
 
 
 def registry_main(
@@ -1218,6 +1235,39 @@ def _reissued(answer: Mapping[str, Any]) -> str:
     return ""
 
 
+def _follow_letter(note: dict[str, Any], answer: Mapping[str, Any], shown: str) -> tuple[str, str]:
+    """(title, context) for a chat whose letter the registry changed in place, read from a touch or title answer, or
+    ("", "") when it did not.
+
+    `platform_letter.follow_letter` folds the answer into the note: a different letter moves the note to it, and the
+    same letter under another generation only updates the generation, with no title and nothing said, because a chat
+    registered by hand can differ from its note by generation alone.  An answer with no letter (an error, a retired
+    letter, or a registry from before the touch named one) changes nothing.  For a new letter the title is the words of
+    `shown` with this chat's letters taken off (its old one is kept as `prior_label` for that), else the note's own
+    words, under the new letter, and the model is told how the chat is addressed now, as a reissued letter is."""
+    from . import platform_letter as PL
+
+    prior = PL.follow_letter(note, answer)
+    if not prior:
+        return "", ""
+    label = str(note["label"])
+    # Every letter this chat held stays in `held_labels`, in the shape `_agent_title_fix` keeps it (the letter it
+    # holds last), so a title that still shows any of them, not only the latest, has it taken off.
+    earlier = [*(note.get("held_labels") or []), note.get("prior_label"), prior]
+    kept: list[str] = []
+    for letter in earlier:
+        if letter and str(letter) != label and str(letter) not in kept:
+            kept.append(str(letter))
+    note["held_labels"] = kept[-(HELD_LABELS - 1) :] + [label]
+    note["prior_label"] = prior  # the title on screen still carries it
+    note["placeholder"] = "%s: %s" % (label, PLACEHOLDER)
+    words = own_words(shown, note)
+    if not words or words == PLACEHOLDER:
+        words = str(note.get("title") or "") or PLACEHOLDER
+    context = PL.relabeled(prior, label) + reminder(note) + _title_check(answer, label)
+    return "%s: %s" % (label, words), context
+
+
 def on_start(chat: Chat, data: Mapping[str, Any], stdout: TextIO, home: str) -> int:
     source = str(data.get("source") or "startup")
     current = one_line(data.get("session_title"))
@@ -1415,6 +1465,12 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
     if not sent and chat.now - float(note.get("touched_at") or 0) >= TOUCH_SECONDS:
         answer = chat.registry("touch")
         note["touched_at"] = chat.now
+    # The registry may have changed this chat's letter in place (a relabel, or a restore that moved records between
+    # letters): the title and the model follow it.  The words are the title this prompt sets, else the one on screen.
+    followed, moved = _follow_letter(note, answer, title or current)
+    if followed:
+        title = followed
+        context = _join_context(context, moved)
     # A chat that holds a letter in its note but has no row in the registry it now asks is the same case as a retired
     # letter:  the store moved under it (the registry API took over from the Mac's file, and a chat opened before that
     # was never copied), so nothing could ever resolve its letter.  It registers again, with the title it has.
