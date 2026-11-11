@@ -1,12 +1,14 @@
 import tempfile
 import unittest
 from unittest.mock import patch
+
 from git_relay.github_client import RelayGitHubError
 from git_relay.outcomes import OutcomeStore
 from git_relay.policy import SeatPolicy
-from git_relay.workflow_verbs import Refused, SPECS, WorkflowVerbs
-from .test_workflow_verbs import REPO, SHA, Client, Policy, Minter
-from .test_workflow_wiring import relay, TOKEN
+from git_relay.workflow_verbs import SPECS, Refused, WorkflowVerbs
+
+from .test_workflow_verbs import REPO, SHA, Client, Minter, Policy
+from .test_workflow_wiring import TOKEN, relay
 
 
 class Notes(unittest.TestCase):
