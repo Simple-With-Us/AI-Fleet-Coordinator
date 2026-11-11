@@ -643,14 +643,13 @@ class LoopGuard:
 # own consultant, sometimes, only when the deterministic code cannot decide.  So every model start
 # records WHY it was needed, and the counts show how often the consultant fires and which rule to
 # make deterministic next.  This phase only records:  `model_gate_verdict` is a pure rule table, the
-# daemon and the Mac bridge store its answer next to the start, and nothing is blocked, removed or
+# daemon stores its answer next to the start, and nothing is blocked, removed or
 # rerouted.  The row fields and the code vocabulary are in docs/protocols/simple-tools-listener.md.
 
 GATE_PURPOSES = (
     "select_destination",  # the model is asked which listed chat or session should take the message
     "compose_reply",  # a seat wake:  the model composes the reply the Operator posts
-    "bridge_consult",  # the Mac Muse bridge's one decision per source message
-    "routine",  # an http routine wake (a Grok Bot routine, or the server's bridge-native dispatch)
+    "routine",  # an http routine wake (a Grok Bot routine, for one)
     "fallback",  # the second runtime after the primary failed or could not run
     "inspect",  # the second Muse call that reads one listed chat's excerpt
 )
@@ -658,8 +657,7 @@ GATE_PURPOSES = (
 #: Every token a record can carry, with the rule it names.  `det_*` means the facts the caller held
 #: satisfied a deterministic rule that Phase 2 could act on before a model starts (the exact conditions
 #: are in `model_gate_verdict`, and each says what it proves and what it does not); `model_*` means the
-#: code could not decide; `no_model` marks a bridge record that no model start produced (a pre-check
-#: held it); `gate_error` marks a start whose verdict could not be computed (the wake still ran).
+#: code could not decide; `gate_error` marks a start whose verdict could not be computed (the wake still ran).
 #: `det_routine_forward` is the odd `det_*` one: an `http` routine forward is a deterministic delivery
 #: by design, so it is never `avoidable` and is counted as a forward, never as a model start.
 GATE_RULES: dict[str, str] = {
@@ -668,15 +666,11 @@ GATE_RULES: dict[str, str] = {
     "det_bound_chat": "bound_chat_nudge",
     "det_tagged_letter_single": "tagged_letter_one_candidate",
     "det_exact_chat_id": "exact_chat_id_in_text",
-    "det_native_only": "native_only_one_target",
-    "det_private_dm_no_resource": "private_dm_no_same_seat_resource",
     "det_routine_forward": "routine_forward_is_delivery",
     "model_letter_ambiguous": "tagged_letter_two_or_more_candidates",
     "model_select_destination": "addressee_unresolved",
     "model_compose_reply": "reply_composition_is_the_model_job",
-    "model_bridge_consult": "no_deterministic_outcome",
     "model_fallback": "primary_failed",
-    "no_model": "no_model_started",
     "gate_error": "gate_failed",
 }
 GATE_CODES = tuple(GATE_RULES)
@@ -725,20 +719,14 @@ def model_gate_verdict(purpose: str, facts: Mapping[str, Any] | None = None) -> 
       enabled, and for a private message the same seat) and have their id in the trigger text.
     - `risk_screen_needed`:  the model's risk answer would still decide whether the message may be
       routed (a peer-triggered message).  False only when none is needed.
-    - `native_only`:  a native item whose only legal target is the seat's own routine.
-    - `private_dm` and `same_seat_wake_resources`:  a private message, and how many wake-capable
-      resources the source seat has (the native routine counts).
     - `fallback_reason`:  one of GATE_FALLBACK_REASONS, used by the `fallback` purpose.
 
     The first `det_*` rule that applies wins, in the order above; with none, the purpose decides, in this
-    order: a bridge consult, a routine forward, a fallback, then an ambiguous letter, a reply, a
-    destination.  What each `det_*` proves: `det_eyes` that no wake should have started; `det_live_lease`
+    order: a routine forward, a fallback, then an ambiguous letter, a reply, a destination.  What each `det_*` proves: `det_eyes` that no wake should have started; `det_live_lease`
     that a session was there to take it; `det_bound_chat` that the router's own binding rule applied and
     did not stop the wake; `det_tagged_letter_single` that the address names one live session of the
-    tagged seat (not that routing the request is safe); `det_exact_chat_id` and `det_native_only` that
-    one legal destination exists and no risk answer is needed for it; `det_private_dm_no_resource` that
-    the bridge's own check would refuse the message whatever the model said.  A routine forward is a
-    delivery (`det_routine_forward`, never avoidable).  `avoidable` is true for the `det_*` codes except
+    tagged seat (not that routing the request is safe); `det_exact_chat_id` that one legal destination
+    exists and no risk answer is needed for it.  A routine forward is a delivery (`det_routine_forward`, never avoidable).  `avoidable` is true for the `det_*` codes except
     the delivery."""
     if purpose not in GATE_PURPOSES:
         raise ValueError("unknown model gate purpose")
@@ -757,12 +745,6 @@ def model_gate_verdict(purpose: str, facts: Mapping[str, Any] | None = None) -> 
         code = "det_tagged_letter_single"
     elif _gate_count(f.get("exact_chat_ids")) == 1 and no_risk_screen:
         code = "det_exact_chat_id"
-    elif f.get("native_only") is True and no_risk_screen:
-        code = "det_native_only"
-    elif f.get("private_dm") is True and _gate_count(f.get("same_seat_wake_resources")) == 0:
-        code = "det_private_dm_no_resource"
-    elif purpose == "bridge_consult":
-        code = "model_bridge_consult"
     elif purpose == "routine":
         code = "det_routine_forward"
     elif purpose == "fallback":
@@ -868,12 +850,10 @@ def gate_counts(
 ) -> dict[str, dict[str, Any]]:
     """Model starts per seat over the last `window` seconds, read back from the rows.
 
-    A start is a wake-ledger `started` row that carries `gate`, or a Mac bridge decision with
-    `model_attempted` that carries `gate`; a row without the field (every row from before the gate)
-    is ignored, and so is a bridge record no model produced.  A routine forward (an `http` wake, or the
-    code `det_routine_forward`) is a delivery: it is counted under `forwards`, never under `starts`.  So a
-    bridge-native message counts once as a start, from the Mac's decision record, and its server
-    routine row counts only as a forward.  A fallback and a chat inspection are counted apart, from
+    A start is a wake-ledger `started` row that carries `gate`; a row without the field (every row
+    from before the gate) is ignored, and so is a row with no `state`.  A routine forward (an `http`
+    wake, or the code `det_routine_forward`) is a delivery: it is counted under `forwards`, never under
+    `starts`.  A fallback and a chat inspection are counted apart, from
     the `gate_fallback` and `gate_inspect` fields of the wake's closing row and in the window of THAT
     row's time, so a wake is one start however many runs it took.  Per seat: `starts`, `avoidable`
     (a `det_*` rule applied and the model started anyway), `codes` (a count per gate code), `fallbacks`,
@@ -901,21 +881,14 @@ def gate_counts(
         if not isinstance(row, Mapping):
             continue
         state = row.get("state")
-        forward = False
-        if state is None:  # a bridge decision, not a ledger row
-            if row.get("model_attempted") is not True:
-                continue
-            seat, at = row.get("source_seat"), _gate_number(row.get("at"))
-            code = _gate_token(row.get("gate"))
-        else:
-            seat, at = row.get("seat"), _gate_number(row.get("ts"))
-            code = _gate_token(row.get("gate")) if state == "started" else None
-            forward = code is not None and (
-                code in GATE_DELIVERY_CODES or row.get("adapter") == "http"
-            )
+        if state is None:
+            continue
+        seat, at = row.get("seat"), _gate_number(row.get("ts"))
+        code = _gate_token(row.get("gate")) if state == "started" else None
+        forward = code is not None and (code in GATE_DELIVERY_CODES or row.get("adapter") == "http")
         if not isinstance(seat, str) or not seat or at is None or not 0 <= now_f - at < window_f:
             continue
-        if code is not None and code != "no_model":
+        if code is not None:
             counts = entry(seat)
             if forward:
                 counts["forwards"] += 1
@@ -951,16 +924,6 @@ def gate_line(counts: Mapping[str, Any] | None, hours: int = 24) -> str:
         if counts.get(key)
     ]
     return line + (", " + ", ".join(extra) if extra else "")
-
-
-def bridge_line(counts: Mapping[str, Any] | None, hours: int = 24) -> str:
-    """The Mac bridge's line from one seat's `gate_counts` entry over its decision records."""
-    counts = counts or {}
-    return "bridge consults %dh %d (avoidable %d)" % (
-        hours,
-        int(counts.get("starts") or 0),
-        int(counts.get("avoidable") or 0),
-    )
 
 
 # --------------------------------------------------------------------------------------------

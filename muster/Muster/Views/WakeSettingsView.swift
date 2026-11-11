@@ -419,7 +419,7 @@ struct WakeSettingsView: View {
     }
 
     /// The decider every platform shares, for when a seat's routine cannot pick a chat:  its
-    /// runtime and its model slug, read only, from `[muse_bridge] consult_backup`.  No key is ever
+    /// runtime and its model slug, read only, from `[decider.consult_backup]`.  No key is ever
     /// shown, and there are no controls:  changing it is a deliberate edit of the file.
     private var deciderLine: some View {
         let decider = store.model.operatorOptions.decider
