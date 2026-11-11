@@ -321,5 +321,67 @@ class StandaloneScopedReaderTests(unittest.TestCase):
                 self.assertEqual(api.requests, ["/api/v2/service-token"])
 
 
+class ReadTokenFileTests(unittest.TestCase):
+    """FLEET_RECALL_INFISICAL_TOKEN can come from a mode-600 file of the caller's own (AFC-677)."""
+
+    TOKEN = "st." + "a" * 36 + "." + "b" * 32 + "." + "c" * 32
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = pathlib.Path(self.tmp.name)
+        (self.home / ".secrets").mkdir()
+        self.default = self.home / ".secrets" / "fleet-recall-infisical.env"
+
+    def write(self, path: pathlib.Path, text: str, mode: int = 0o600) -> pathlib.Path:
+        path.write_text(text)
+        path.chmod(mode)
+        return path
+
+    def binding(self, **env: str) -> str | None:
+        with mock.patch.dict(os.environ, {"HOME": str(self.home), **env}, clear=True):
+            return core.read_token_binding()
+
+    def test_default_file_supplies_the_token(self) -> None:
+        self.write(self.default, f"# recall reader\nexport FLEET_RECALL_INFISICAL_TOKEN='{self.TOKEN}'\n")
+        self.assertEqual(self.binding(), self.TOKEN)
+
+    def test_environment_variable_wins_and_no_file_is_none(self) -> None:
+        self.assertIsNone(self.binding())
+        self.write(self.default, "FLEET_RECALL_INFISICAL_TOKEN=st.fromfile0000000000000\n")
+        self.assertEqual(self.binding(FLEET_RECALL_INFISICAL_TOKEN=self.TOKEN), self.TOKEN)
+
+    def test_no_home_means_no_default_file(self) -> None:
+        self.write(self.default, f"FLEET_RECALL_INFISICAL_TOKEN={self.TOKEN}\n")
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(core.read_token_binding())
+
+    def test_named_file_must_exist(self) -> None:
+        with self.assertRaises(core.FleetRagError):
+            self.binding(FLEET_RECALL_INFISICAL_TOKEN_FILE=str(self.home / "missing.env"))
+        named = self.write(self.home / "other.env", f"FLEET_RECALL_INFISICAL_TOKEN={self.TOKEN}\n")
+        self.assertEqual(self.binding(FLEET_RECALL_INFISICAL_TOKEN_FILE=str(named)), self.TOKEN)
+
+    def test_open_mode_symlink_and_missing_line_are_refused_without_the_value(self) -> None:
+        self.write(self.default, f"FLEET_RECALL_INFISICAL_TOKEN={self.TOKEN}\n", mode=0o644)
+        with self.assertRaises(core.FleetRagError) as ctx:
+            self.binding()
+        self.assertNotIn(self.TOKEN, str(ctx.exception))
+        self.default.unlink()
+        real = self.write(self.home / "real.env", f"FLEET_RECALL_INFISICAL_TOKEN={self.TOKEN}\n")
+        self.default.symlink_to(real)
+        with self.assertRaises(core.FleetRagError):
+            self.binding()
+        self.default.unlink()
+        self.write(self.default, "OTHER=1\n")
+        with self.assertRaises(core.FleetRagError):
+            self.binding()
+
+    def test_infisical_login_uses_the_file(self) -> None:
+        self.write(self.default, f"FLEET_RECALL_INFISICAL_TOKEN={self.TOKEN}\n")
+        with mock.patch.dict(os.environ, {"HOME": str(self.home), "INFISICAL_TOKEN": "st." + "z" * 40}, clear=True):
+            self.assertEqual(core.infisical_login(), self.TOKEN)
+
+
 if __name__ == "__main__":
     unittest.main()

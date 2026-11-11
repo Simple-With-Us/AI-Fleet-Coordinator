@@ -24,6 +24,7 @@ import os
 import pathlib
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -47,6 +48,12 @@ NAMESPACE = uuid.UUID("00000000-0000-0000-0000-00000000fee7")
 
 READ_KEYS = ("TEI_URL", "TEI_API_KEY", "QDRANT_URL", "QDRANT_FLEET_COLLECTION")
 INFISICAL_READ_TOKEN = "FLEET_RECALL_INFISICAL_TOKEN"
+# The same binding kept in a file of the caller's own, so every caller of recall (the CLI, the MCP servers, the
+# nightly) gets it without the value sitting in a config file or a shell profile.  FLEET_RECALL_INFISICAL_TOKEN_FILE
+# names it;  otherwise ~/.secrets/fleet-recall-infisical.env is used when it exists.  The variable always wins.
+INFISICAL_READ_TOKEN_FILE = "FLEET_RECALL_INFISICAL_TOKEN_FILE"
+DEFAULT_READ_TOKEN_FILE = (".secrets", "fleet-recall-infisical.env")
+READ_TOKEN_FILE_MAX = 16384
 WRITE_KEYS = ("QDRANT_API_KEY",)
 OPTIONAL_KEYS = (
     "QDRANT_READONLY_API_KEY",
@@ -302,12 +309,65 @@ def fleet_secret_get(name: str) -> str | None:
     return value or None
 
 
+def _read_token_file() -> str | None:
+    """FLEET_RECALL_INFISICAL_TOKEN from the reader's token file, or None when there is no file.
+
+    The file holds `FLEET_RECALL_INFISICAL_TOKEN=<st. token>` (an `export ` prefix and quotes are allowed).  It must be a
+    regular file, not a symlink, owned by this user and closed to group and other (mode 600);  anything else is refused
+    rather than read.  A file named by FLEET_RECALL_INFISICAL_TOKEN_FILE must exist.  The value is never logged."""
+    named = (os.environ.get(INFISICAL_READ_TOKEN_FILE) or "").strip()
+    home = (os.environ.get("HOME") or "").strip()
+    if named:
+        path = pathlib.Path(named).expanduser()
+    elif home:
+        path = pathlib.Path(home, *DEFAULT_READ_TOKEN_FILE)
+    else:
+        return None
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+    except FileNotFoundError:
+        if named:
+            raise FleetRagError(f"{INFISICAL_READ_TOKEN_FILE} names a file that does not exist") from None
+        return None
+    except OSError as exc:
+        raise FleetRagError(f"the recall reader token file cannot be opened ({type(exc).__name__})") from None
+    try:
+        info = os.fstat(fd)
+        owner_ok = not hasattr(os, "getuid") or info.st_uid == os.getuid()
+        if not stat.S_ISREG(info.st_mode) or not owner_ok or info.st_mode & 0o077:
+            raise FleetRagError(
+                "the recall reader token file must be a regular file owned by this user with mode 600"
+            )
+        data = os.read(fd, READ_TOKEN_FILE_MAX + 1)
+    finally:
+        os.close(fd)
+    if len(data) > READ_TOKEN_FILE_MAX:
+        raise FleetRagError("the recall reader token file is too large")
+    for line in data.decode("utf-8", "replace").splitlines():
+        line = line.strip()
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == INFISICAL_READ_TOKEN:
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            if value:
+                return value
+    raise FleetRagError(f"the recall reader token file has no {INFISICAL_READ_TOKEN} line")
+
+
+def read_token_binding() -> str | None:
+    """The recall reader's service token:  the environment variable, else its token file, else None."""
+    return (os.environ.get(INFISICAL_READ_TOKEN) or "").strip() or _read_token_file()
+
+
 def infisical_login() -> str | None:
     """The explicit read-only service-token binding, without a login."""
     from fleet_secrets import core as secrets
 
     env = dict(os.environ)
-    token = (env.get(INFISICAL_READ_TOKEN) or "").strip()
+    token = (read_token_binding() or "").strip()
     if not token:
         if any(
             (env.get(name) or "").strip()
@@ -334,7 +394,7 @@ def infisical_fetch(wanted: Iterable[str]) -> dict[str, str]:
     env[secrets.ENV_API] = infisical_api()
     try:
         return secrets.fetch_project(
-            infisical_project(), "/", env, token=env.get(INFISICAL_READ_TOKEN), names=wanted
+            infisical_project(), "/", env, token=read_token_binding(), names=wanted
         )
     except secrets.SecretsError as exc:
         raise FleetRagError("Infisical scoped read failed: " + exc.message) from None
@@ -345,8 +405,8 @@ def load_config(need_write: bool = False, extra: Iterable[str] = ()) -> dict[str
 
     Environment-only operation is fully supported: when QDRANT_URL, QDRANT_API_KEY, TEI_URL,
     TEI_API_KEY and QDRANT_FLEET_COLLECTION are all set (plus any `extra`), no Infisical call
-    is needed.  Otherwise Infisical reads require the dedicated FLEET_RECALL_INFISICAL_TOKEN,
-    whose exact project, prod environment, and folder scope are verified before reading.
+    is needed.  Otherwise Infisical reads require the dedicated FLEET_RECALL_INFISICAL_TOKEN
+    (the variable, or its mode-600 token file), whose exact project, prod environment, and folder scope are verified before reading.
 
     Raises FleetRagError listing the missing required keys (never their values).
     """
