@@ -1,4 +1,4 @@
-# Zulip wake routing:  the one way
+# Zulip Wake Routing:  The One Way
 
 Owner rulings, Nov 10, as corrected through the same evening (verbatim in the OPS-1048 and
 AFC-594 Zulip topics):  one wake path for every multithreaded platform;  the routing portion
@@ -10,7 +10,7 @@ and no destination for one, Side-Chats included);  and when the deterministic ru
 decide, the wake still goes to the most recent live chat, whose delivered prompt says how
 the wake was linked and, for recency, that the router is not sure.  Nobody is ever asked to
 clarify and an ambiguous wake is never held.
-## The chain
+## The Chain
 
     a message tags a seat (any channel;  a direct mention in a presence topic still
     wakes when no session follows it), or answers
@@ -56,7 +56,7 @@ clarify and an ambiguous wake is never held.
          also sits in the seat inbox and the Operator's pending-inbox, so a live session
          sees it either way.
 
-## The router contract (what every platform's router implements)
+## The Router Contract (What Every Platform's Router Implements)
 
 - Transport:  HTTPS POST, bearer auth, the listener's existing routine line
   (`routine = { url_env, key_env, method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`).
@@ -108,11 +108,11 @@ declared_at = 1762575240                     # epoch seconds
 
 The values above show the shape;  the live server listener's settings hold the owner's real reason and time.  The loader (`config.py`:  `parse_decider_declaration`, `select_decider_runtime`, `Config.decider_declaration`) applies the validation the deleted Muse inbox bridge used for the same table (AFC-649):  `runtime`, `model`, `reason` and `declared_at` are required;  an `@preset/` model also needs a non-empty `expected_models` of plain `provider/name` ids, because a preset's model list lives on the dashboard and this list is the only code-side fingerprint of it;  a `review_by` that is given must be a finite time after `declared_at`, and once it passes the decider holds.  No declaration selects the primary.  A declaration that is there but malformed is a warning in `simple-chat daemon check-config`, never an error, and the decider holds on it rather than calling anything.  An unknown key in `[decider]` is an error.
 
-## Single-threaded platforms (the Grok bots GB-*, MA, JET, WISE, ECHO)
+## Single-Threaded Platforms (The Grok Bots GB-*, MA, JET, WISE, ECHO)
 
 No router and no letters:  the seat is woken through its `wake = "http"` routine directly,
 not by capture and surfacing alone;  there is no pick to make.
-## What this replaces
+## What This Replaces
 
 The per-seat wake types (inbox, claude, muse, openrouter as listener options), their
 fallbacks, and any per-platform delivery executor.  The listener-side removal and the
