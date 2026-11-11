@@ -317,6 +317,8 @@ def select_decider_runtime(
     if decl.review_by is not None and moment >= decl.review_by:
         return DECIDER_HOLD, decl, DECIDER_REVIEW_DUE
     return DECIDER_OPENROUTER, decl, None
+
+
 # Wakes the budget holds back (heldback.py), per seat:  `held_back = { max = 200, overflow_max = 1000,
 # ttl_hours = 24, items_in_wake = 20, owner_digest_minutes = 60, catch_up = true }`.  max is the records
 # with names;  past it the oldest move to a compact overflow tier (still listed by id), and only past
@@ -915,7 +917,9 @@ def _decider_from_dict(cfg: Config, raw: Mapping[str, Any]) -> None:
                 % name
             )
         else:
-            cfg.warnings.append("[muse_bridge] is left over from %s and is ignored;  it can be deleted" % name)
+            cfg.warnings.append(
+                "[muse_bridge] is left over from %s and is ignored;  it can be deleted" % name
+            )
     if backup is None:
         return
     # A non-table value is kept as an empty table, so it reads as configured and malformed (a hold),
@@ -926,7 +930,11 @@ def _decider_from_dict(cfg: Config, raw: Mapping[str, Any]) -> None:
         cfg.warnings.append(
             "%s is misconfigured, so the decider holds instead of calling OpenRouter:  it needs runtime = "
             '"openrouter", model, reason and declared_at, and an @preset/ model also needs expected_models'
-            % ("decider.consult_backup" if cfg.decider_source == "decider" else "muse_bridge.consult_backup")
+            % (
+                "decider.consult_backup"
+                if cfg.decider_source == "decider"
+                else "muse_bridge.consult_backup"
+            )
         )
 
 
