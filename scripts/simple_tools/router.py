@@ -430,7 +430,7 @@ class Context:
         self.followed = set(followed)
         # True when the seat has a `routine` (an HTTP POST to a router that picks the right chat,
         # delivers and wakes).  Only that router can honour a session letter (`@**Claude** AB`), so
-        # such a seat never takes the newest-lease hand-off for a mention-class message (`route`).
+        # such a seat never hands a mention-class message to a lease, whoever follows the topic (`route`).
         self.seat_has_routine = seat_has_routine
 
 
@@ -684,6 +684,26 @@ def route(
         if not d.lease_items:
             d.drop_reason = "own"
         return c, d
+    # A marker message never takes a lease:  it falls through to the seat inbox below, so the
+    # tagged seat still gets its copy and no session is woken to take it.
+    mention_class = (
+        c.eligible
+        and not c.no_wake
+        and (
+            c.direct
+            or c.dm
+            or (c.owner and c.fleet)
+            # The owner's and a fleet bot's channel-wide mention (owner, Oct 27 2026):  both take a
+            # claude-code lease with `mentions`, and the seat-inbox copy is marked delivered_to.
+            or (c.eligible and c.broadcast_all and not c.owner_topic)
+        )
+    )
+    # One wake path:  a seat with a routine never hands a mention-class message to a session, neither
+    # the newest lease below nor a lease that follows the topic.  A session letter (`@**Claude** AB`)
+    # must reach its chat whoever follows the topic, and only the routine's router can honour it, so
+    # the message falls through to the seat inbox and the wake.  The leases on the topic still get a
+    # passive item, as for any message that does not interrupt.  A seat without a routine is unchanged.
+    routine_mention = ctx.seat_has_routine and mention_class
     if on_topic:
         presence = is_presence(c.channel, c.topic, ctx.presence)
         for lease in on_topic:
@@ -692,6 +712,7 @@ def route(
             wants = (
                 c.eligible
                 and not c.no_wake
+                and not routine_mention
                 and (
                     (c.owner and not c.everyone_inert)
                     or c.direct
@@ -713,24 +734,8 @@ def route(
                 else:
                     d.throttled.append((lease.lease_id, reason))
             d.lease_items.append((lease.lease_id, klass, "message"))
-        return c, d
-    # A marker message never takes a lease:  it falls through to the seat inbox below, so the
-    # tagged seat still gets its copy and no session is woken to take it.
-    mention_class = (
-        c.eligible
-        and not c.no_wake
-        and (
-            c.direct
-            or c.dm
-            or (c.owner and c.fleet)
-            # The owner's and a fleet bot's channel-wide mention (owner, Oct 27 2026):  both take a
-            # claude-code lease with `mentions`, and the seat-inbox copy is marked delivered_to.
-            or (c.eligible and c.broadcast_all and not c.owner_topic)
-        )
-    )
-    # A seat with a routine never takes the newest-lease hand-off (one wake path):  the message falls
-    # through to the seat inbox and the wake below, so the routine's router can pick the chat and
-    # honour a letter.  A seat without a routine behaves as before.
+        if not routine_mention:
+            return c, d
     if mention_class and not ctx.seat_has_routine:
         candidates = [
             l

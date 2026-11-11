@@ -458,11 +458,34 @@ class LeaseRoutingTests(unittest.TestCase):
 
 
 class RoutineSeatTests(unittest.TestCase):
-    """One wake path (OPS-1048):  a seat with a routine never takes the newest-lease hand-off, because only the
-    router its routine posts to can pick the chat and honour a letter (`@**Claude** AB`).  Its mention-class
-    messages fall through to the seat inbox and the wake.  A seat without a routine keeps the hand-off."""
+    """One wake path (OPS-1048):  a seat with a routine never hands a mention-class message to a lease, neither
+    the newest one nor one that follows the topic, because only the router its routine posts to can pick the
+    chat and honour a letter (`@**Claude** AB`), so letters beat topic ownership.  Such a message falls through to
+    the seat inbox and the wake, and the leases on the topic get a passive item.  A seat without a routine keeps
+    both hand-offs."""
 
     LEASES = [lease("old", last_prompt=50.0, created=1.0), lease("recent", last_prompt=90.0, created=2.0)]
+    LETTERED = "@**Claude** AB please look"
+    ALL_FLAGS = ["wildcard_mentioned", "stream_wildcard_mentioned"]
+    # Stream messages of the mention class, each in a topic the leases below follow.
+    IN_TOPIC = [
+        ("a peer's direct mention", msg(content=DIRECT[0], flags=DIRECT[1]), "peer"),
+        ("a peer's lettered mention", msg(content=LETTERED, flags=["mentioned"]), "peer"),
+        ("the owner's lettered mention", msg(sender=OWNER, content=LETTERED, flags=["mentioned"]), "owner"),
+        ("a lettered mention replying to a lease's post",
+         msg(content="[CODEX] re=400 " + LETTERED, flags=["mentioned"]), "peer"),
+        ("a peer's @all", msg(content="@**all** hi", flags=ALL_FLAGS), "peer"),
+        ("the owner's @all", msg(sender=OWNER, content="@**all** hi", flags=ALL_FLAGS), "owner"),
+        ("the owner's fleet wake", msg(sender=OWNER, content="@**all** HALT", **FLEET_KW), "owner"),
+        ("a peer's fleet wake", msg(content="@**all** HALT", **FLEET_KW), "peer"),
+    ]
+
+    @staticmethod
+    def followers(message):
+        """Two sessions that follow the message's topic:  AB posted 400, CD (the newer) posted 401."""
+        topic = [(message["display_recipient"], message["subject"])]
+        return [lease("AB", topics=topic, posted=[400], last_prompt=50.0),
+                lease("CD", topics=topic, posted=[401], last_prompt=90.0)]
     MENTION_CLASS = [
         ("a peer's direct mention", msg(content=DIRECT[0], flags=DIRECT[1]), "peer"),
         ("a peer's DM", msg(dm=True), "peer"),
@@ -519,6 +542,58 @@ class RoutineSeatTests(unittest.TestCase):
             with self.subTest(content=message["content"]):
                 self.assertEqual(R.route(message, ME, ctx(seat_has_routine=True), self.LEASES)[1].describe(),
                                  R.route(message, ME, ctx(), self.LEASES)[1].describe())
+
+    def test_a_mention_in_a_followed_topic_never_interrupts_a_lease_for_a_routine_seat(self) -> None:
+        for name, message, kind in self.IN_TOPIC:
+            with self.subTest(name):
+                c, d = R.route(message, ME, ctx(seat_has_routine=True), self.followers(message))
+                self.assertTrue(c.eligible)
+                self.assertEqual(d.lease_items, [("AB", "passive", "message"), ("CD", "passive", "message")])
+                self.assertEqual((d.throttled, d.delivered_to), ([], None))
+                self.assertEqual((d.seat_inbox, d.wake, d.wake_block, d.wake_owner),
+                                 (True, kind, None, kind == "owner"))
+                self.assertTrue(d.wake_worthy)
+
+    def test_a_lettered_mention_reaches_the_inbox_and_the_wake_whoever_follows_the_topic(self) -> None:
+        message = msg(content=self.LETTERED, flags=["mentioned"])
+        other_session = [lease("CD", topics=[("simple-tools", "t")], posted=[401], last_prompt=90.0)]
+        c, d = R.route(message, ME, ctx(seat_has_routine=True), other_session)
+        self.assertTrue(c.direct and c.eligible)
+        self.assertEqual(d.lease_items, [("CD", "passive", "message")])
+        self.assertEqual((d.seat_inbox, d.delivered_to, d.wake, d.wake_block), (True, None, "peer", None))
+
+    def test_a_seat_without_a_routine_still_interrupts_the_leases_that_follow_the_topic(self) -> None:
+        for name, message, kind in self.IN_TOPIC:
+            with self.subTest(name):
+                c, d = R.route(message, ME, ctx(), self.followers(message))
+                self.assertEqual(d.lease_items, [("AB", "interrupt", "message"), ("CD", "interrupt", "message")])
+                self.assertEqual((d.seat_inbox, d.delivered_to, d.wake), (False, None, None))
+                self.assertTrue(d.wake_worthy, "the grace release uses this later")
+
+    def test_other_traffic_in_a_followed_topic_is_unchanged_for_a_routine_seat(self) -> None:
+        cases = [
+            ("peer chatter", msg(content="just chatter"), ["passive", "passive"]),
+            ("a plain note from the owner", msg(sender=OWNER, content="a plain note"), ["interrupt", "interrupt"]),
+            ("a reply to a lease's post", msg(content="[CODEX] re=400 done"), ["interrupt", "passive"]),
+            ("an ineligible sender's mention", msg(sender=SENTRY, content=DIRECT[0], flags=DIRECT[1]),
+             ["passive", "passive"]),
+            ("a marker message", msg(content="\U0001f440 " + DIRECT[0], flags=DIRECT[1]), ["passive", "passive"]),
+        ]
+        for name, message, classes in cases:
+            with self.subTest(name):
+                d = R.route(message, ME, ctx(seat_has_routine=True), self.followers(message))[1]
+                self.assertEqual([k for _, k, _ in d.lease_items], classes)
+                self.assertFalse(d.seat_inbox)
+                self.assertEqual(d.describe(), R.route(message, ME, ctx(), self.followers(message))[1].describe())
+
+    def test_a_mention_in_a_presence_topic_reaches_a_routine_seats_inbox_like_an_unleased_one(self) -> None:
+        message = msg(content=DIRECT[0], flags=DIRECT[1], topic="roll call")
+        plain = R.route(message, ME, ctx(), self.followers(message))[1]
+        self.assertEqual(([k for _, k, _ in plain.lease_items], plain.seat_inbox), (["passive", "passive"], False))
+        c, d = R.route(message, ME, ctx(seat_has_routine=True), self.followers(message))
+        self.assertEqual(([k for _, k, _ in d.lease_items], d.seat_inbox, d.wake), (["passive", "passive"], True, "peer"))
+        unleased = R.route(message, ME, ctx(seat_has_routine=True), [])[1]
+        self.assertEqual((unleased.seat_inbox, unleased.wake), (True, "peer"))
 
 
 if __name__ == "__main__":
