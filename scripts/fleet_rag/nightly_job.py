@@ -35,7 +35,13 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from fleet_secrets.core import ENV_API, SecretsError, check_service_token, fetch_project
+from fleet_secrets.core import (
+    ENV_API,
+    SecretsError,
+    check_service_token,
+    fetch_project,
+    infisical_project_id,
+)
 from simple_tools.secretscan import scan as scan_secrets
 
 from fleet_rag import ingest, mirror
@@ -62,9 +68,10 @@ LINEAR_KEYS = (
 TOKEN_FILE_RECALL = "FLEET_RECALL_INFISICAL_TOKEN_FILE"
 TOKEN_FILE_LINEAR = "FLEET_RAG_LINEAR_INFISICAL_TOKEN_FILE"
 # The seat Linear app pairs live in AI Fleet Coordinator prod /linear, not in the shared
-# project that holds the Qdrant and TEI keys.  The env var overrides the project id.
+# project that holds the Qdrant and TEI keys.  The id is not committed:  it comes from this
+# variable, else from the fleet_secrets AI Fleet Coordinator source (env or ~/.simple-tools).
 LINEAR_PROJECT_ENV = "FLEET_RAG_LINEAR_INFISICAL_PROJECT"
-LINEAR_PROJECT_DEFAULT = "9bf7417a-fbbb-42ca-870c-2b45207233f5"
+RECALL_PROJECT_ENV = "FLEET_RAG_INFISICAL_PROJECT"
 TOKEN_FILE_ZULIP = "FLEET_RAG_ZULIP_INFISICAL_TOKEN_FILE"
 # The server file from AFC-677 (#1729).  It holds FLEET_RECALL_INFISICAL_TOKEN=...
 # An export prefix and quotes are allowed.  TOKEN_FILE_RECALL overrides this path.
@@ -163,6 +170,18 @@ def _fetch(project: str, path: str, token: str, names: tuple[str, ...]) -> dict[
     return {key: value for key, value in found.items() if key in names and value}
 
 
+def linear_project_id(env: dict) -> str:
+    """AI Fleet Coordinator project id for the Linear fetch.  Fails closed, without the value."""
+    value = (env.get(LINEAR_PROJECT_ENV) or "").strip()
+    if value:
+        return value
+    home = Path(env.get("HOME") or str(Path.home()))
+    try:
+        return infisical_project_id(env, home, "ai-fleet-coordinator")
+    except SecretsError as exc:
+        raise NightlyError("linear-project-unset") from exc
+
+
 def load_credentials(
     env: dict, *, read_file: Callable[[Path], str], fetch: Callable
 ) -> dict[str, str]:
@@ -177,8 +196,8 @@ def load_credentials(
     linear_file = (env.get(TOKEN_FILE_LINEAR) or "").strip()
     if not linear_file:
         raise NightlyError("token-file-unset")
-    project = infisical_project()
-    linear_project = (env.get(LINEAR_PROJECT_ENV) or "").strip() or LINEAR_PROJECT_DEFAULT
+    project = (env.get(RECALL_PROJECT_ENV) or "").strip() or infisical_project()
+    linear_project = linear_project_id(env)
     recall = _call_fetch(fetch, project, "/", read_file(recall_token_path(env)), RECALL_KEYS)
     linear = _call_fetch(
         fetch, linear_project, "/linear", read_file(Path(linear_file)), LINEAR_KEYS
