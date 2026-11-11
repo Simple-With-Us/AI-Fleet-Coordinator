@@ -19,14 +19,18 @@ import XCTest
 /// What the fixtures cannot reach:  a few panels read through app singletons
 /// (`OpsController.shared`, `FleetViewStore.shared`, `SeatActivityStore.shared`,
 /// `WakeSettingsStore.shared`, `ServerEavesdropperStatusStore.shared`) from a `.task` when
-/// they appear.  Those reads are the app's own read-only readers and run as they would in
-/// the app;  the PNG is taken before most of them land, so those panels show their loading
-/// or not-read state.  Giving them fixtures needs an injection point in the view, which this
-/// harness leaves to a follow-up rather than changing a view.
+/// they appear.  Those reads are real:  they start the app's own read-only readers, which
+/// launch processes, among them `ssh` to the server for `eavesdropper-status --plan`
+/// (`ServerEavesdropperStatusReader`) and the Seats panel's local sources
+/// (`SeatActivityReader`).  On a GitHub runner they fail at once;  on a Mac with the fleet's
+/// ssh route they reach the server, read only.  A read that lands inside the settle time can
+/// make that panel's PNG differ from run to run.  Giving those stores fixtures needs an
+/// injection point in the views, which this harness leaves to a follow-up rather than
+/// changing a view.
 ///
-/// This is report only:  no pixel baselines.  The checks are that every PNG was written,
-/// that it is not one flat colour, and that the split view stays inside the window (the
-/// AFC-616 overflow).  The PNGs go to `MUSTER_PANEL_SNAPSHOT_DIR` when it is set
+/// No pixel baselines.  It is still a layout gate:  every PNG must be written at the size
+/// asked for, must not be one flat colour, and must keep the split view inside the window
+/// (the AFC-616 overflow), and any of those fails the CI job.  The PNGs go to `MUSTER_PANEL_SNAPSHOT_DIR` when it is set
 /// (`script/render_panels.sh` sets it through `TEST_RUNNER_`), else to a temporary folder.
 @MainActor
 final class PanelSnapshotTests: XCTestCase {
@@ -120,7 +124,7 @@ final class PanelSnapshotTests: XCTestCase {
                 .filter { $0.hasSuffix(".png") }
             XCTAssertEqual(pngs.count, MusterDestination.allCases.count * Theme.allCases.count,
                            "\(size.name):  one PNG per MusterDestination per theme")
-            XCTAssertEqual(written[size.name]?.count, MusterDestination.allCases.count * 2)
+            XCTAssertEqual(written[size.name]?.count, MusterDestination.allCases.count * Theme.allCases.count)
         }
         print("PROBE panel-snapshots dir=\(output.path) count=\(written.values.map(\.count).reduce(0, +))")
     }
@@ -242,17 +246,26 @@ final class PanelSnapshotTests: XCTestCase {
     }
 
     /// True when every sampled pixel has the same colour:  a blank window, not a panel.
+    ///
+    /// It reads a grid about 200 samples across the short side, and every pixel of the middle
+    /// row and the middle column, so a thin divider or a line of text is not missed.
     private static func isOneColour(_ rep: NSBitmapImageRep) -> Bool {
-        let step = max(1, min(rep.pixelsWide, rep.pixelsHigh) / 40)
+        let width = rep.pixelsWide, height = rep.pixelsHigh
+        guard width > 0, height > 0 else { return true }
+        let step = max(1, min(width, height) / 200)
+        var points: [(Int, Int)] = []
+        for y in stride(from: 0, to: height, by: step) {
+            for x in stride(from: 0, to: width, by: step) { points.append((x, y)) }
+        }
+        for x in 0..<width { points.append((x, height / 2)) }
+        for y in 0..<height { points.append((width / 2, y)) }
         var first: NSColor?
-        for y in stride(from: 0, to: rep.pixelsHigh, by: step) {
-            for x in stride(from: 0, to: rep.pixelsWide, by: step) {
-                guard let colour = rep.colorAt(x: x, y: y) else { continue }
-                if let first {
-                    if first != colour { return false }
-                } else {
-                    first = colour
-                }
+        for (x, y) in points {
+            guard let colour = rep.colorAt(x: x, y: y) else { continue }
+            if let first {
+                if first != colour { return false }
+            } else {
+                first = colour
             }
         }
         return true
