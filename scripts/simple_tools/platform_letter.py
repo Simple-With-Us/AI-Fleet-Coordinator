@@ -891,11 +891,11 @@ _NOT_REGISTERED_MARK = "is not registered on"
 #: listener answers in well under a second.  The batch callers of registry_api (the
 #: operator-registry CLI) keep its longer default.
 _API_TIMEOUT = 6
-REGISTRY_ENV_SUBPATH = os.path.join(".local", "bin", "mm-registry-env")
+REGISTRY_ENV_SUBPATH = os.path.join(".local", "bin", "operator-registry-env")
 
 
 def with_registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
-    """Return `env` enriched from `$HOME/.local/bin/mm-registry-env` when no registry API URL or SSH remote is set.
+    """Return `env` enriched from `$HOME/.local/bin/operator-registry-env` when no registry API URL or SSH remote is set.
 
     Hook processes launched by Antigravity, Codex, OpenCode, Muse and ZCode inherit no login profile, so on both the
     server and the Mac the shared registry env file is where `SIMPLE_TOOLS_OPERATOR_REGISTRY_URL` and the signing key
@@ -927,7 +927,7 @@ def with_registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
     ) % (" ".join(names), RA.KEY_REF_ENV)
     try:
         proc = subprocess.run(
-            ["/bin/sh", "-c", script, "mm-registry-env", path],
+            ["/bin/sh", "-c", script, "operator-registry-env", path],
             env=dict(env),
             capture_output=True,
             timeout=5,

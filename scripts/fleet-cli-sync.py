@@ -53,8 +53,9 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # The 163rd and 164th are the Clutch and Fx session-letter adapters;  fleet-cli-release.py carries the
 # same ledger.
 # The 166th and 167th are simple_tools/wake_router.py and simple_tools/claude_wake.py (OPS-1048).
-# The 168th and 169th are Codex's delivery seam and the read-only acceptance helper (AFC-694).
-MAX_FILES = 169
+# The 168th is simple_tools/wake_settings.py (OPS-1048).
+# The 169th and 170th are Codex delivery and the read-only acceptance helper (AFC-694).
+MAX_FILES = 170
 MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65
