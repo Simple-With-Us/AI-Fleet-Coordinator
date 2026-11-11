@@ -1,18 +1,24 @@
+"""The decider's OpenRouter declaration (`[decider.consult_backup]`) and how the loader reads it.
+
+The declaration moved from the deleted Muse inbox bridge (`[muse_bridge] consult_backup`) with the same
+validation.  A config that still holds the old table keeps loading:  the leftover is ignored with one
+warning, and its consult_backup is read until `[decider.consult_backup]` exists."""
+
 import json
 import time
 import unittest
 
 from simple_tools import adapters as A
-
-from simple_tools.muse_bridge import (
-    HOLD,
-    MUSE,
-    OPENROUTER,
-    MISCONFIGURED,
-    REVIEW_DUE,
-    BackupDeclaration,
-    parse_declaration,
-    select_consult_runtime,
+from simple_tools import config as C
+from simple_tools.config import (
+    DECIDER_HOLD as HOLD,
+    DECIDER_MISCONFIGURED as MISCONFIGURED,
+    DECIDER_OPENROUTER as OPENROUTER,
+    DECIDER_PRIMARY as PRIMARY,
+    DECIDER_REVIEW_DUE as REVIEW_DUE,
+    DeciderDeclaration as BackupDeclaration,
+    parse_decider_declaration as parse_declaration,
+    select_decider_runtime as select_consult_runtime,
 )
 
 NOW = 1_760_000_000.0
@@ -130,8 +136,8 @@ class ParseTest(unittest.TestCase):
 
 class SelectTest(unittest.TestCase):
     def test_never_enabled_selects_primary(self):
-        # Absent or null declaration:  the mode was never enabled, primary runs as today.
-        self.assertEqual(select_consult_runtime(None, now=NOW), (MUSE, None, None))
+        # Absent or null declaration:  nothing was declared, so the primary is selected.
+        self.assertEqual(select_consult_runtime(None, now=NOW), (PRIMARY, None, None))
 
     def test_configured_but_malformed_fails_closed(self):
         # A configured declaration that is partial or malformed HOLDS:  it never silently
@@ -178,6 +184,125 @@ class SelectTest(unittest.TestCase):
         )
         self.assertEqual(runtime, OPENROUTER)
         self.assertIsNone(hold)
+
+
+def _load(raw: dict) -> C.Config:
+    return C.from_dict({"daemon": {"instance": "mac", "owner_user_id": 1}, **raw})
+
+
+class LoaderTest(unittest.TestCase):
+    """Live configs keep loading after the bridge was deleted (owner, Nov 10, 2026)."""
+
+    def test_the_new_table_is_parsed_with_the_same_validation(self):
+        cfg = _load({"decider": {"consult_backup": dict(GOOD)}})
+        self.assertEqual(cfg.errors, [])
+        self.assertEqual(cfg.warnings, [])
+        self.assertEqual(cfg.decider_source, "decider")
+        self.assertEqual(cfg.decider_consult_backup, GOOD)
+        self.assertIsInstance(cfg.decider_declaration, BackupDeclaration)
+        self.assertEqual(cfg.decider_declaration.model, "@preset/operator-inbox-router")
+        self.assertEqual(select_consult_runtime(cfg.decider_consult_backup, now=NOW)[0], OPENROUTER)
+
+    def test_no_declaration_is_none(self):
+        cfg = _load({})
+        self.assertEqual((cfg.errors, cfg.warnings), ([], []))
+        self.assertIsNone(cfg.decider_consult_backup)
+        self.assertIsNone(cfg.decider_declaration)
+        self.assertIsNone(cfg.decider_source)
+
+    def test_a_leftover_bridge_table_is_ignored_with_one_warning(self):
+        for table in ({"enabled": False, "remote_seats": [], "remote_app": "x"}, {"enabled": "yes"}, False):
+            cfg = _load({"muse_bridge": table})
+            self.assertEqual(cfg.errors, [], table)
+            self.assertEqual(len(cfg.warnings), 1, table)
+            self.assertIn("[muse_bridge] is left over", cfg.warnings[0])
+            self.assertIn("can be deleted", cfg.warnings[0])
+            self.assertIsNone(cfg.decider_consult_backup)
+
+    def test_a_leftover_seat_key_is_ignored_with_one_warning(self):
+        for value in (False, True, "yes"):
+            cfg = _load({"seat": {"CLAUDE": {"bot": "Claude", "wake": "inbox", "muse_bridge": value}}})
+            self.assertEqual(cfg.errors, [], value)
+            self.assertIn("CLAUDE", cfg.seats)
+            self.assertEqual(cfg.seats["CLAUDE"].config_problems, [], value)
+            self.assertFalse(hasattr(cfg.seats["CLAUDE"], "muse_bridge"))
+            leftover = [w for w in cfg.warnings if "muse_bridge" in w]
+            self.assertEqual(len(leftover), 1, cfg.warnings)
+            self.assertIn("seat.CLAUDE.muse_bridge is left over", leftover[0])
+            self.assertIn("can be deleted", leftover[0])
+
+    def test_the_old_consult_backup_location_is_read_while_the_new_one_is_absent(self):
+        # The Mac's live file today:  the bridge switched off, and the owner's preset declared under it.
+        cfg = _load({"muse_bridge": {"enabled": False, "remote_seats": [], "consult_backup": dict(GOOD)}})
+        self.assertEqual(cfg.errors, [])
+        self.assertEqual(cfg.decider_source, "muse_bridge")
+        self.assertEqual(cfg.decider_consult_backup, GOOD)
+        self.assertIsInstance(cfg.decider_declaration, BackupDeclaration)
+        self.assertEqual(len(cfg.warnings), 1)
+        self.assertIn("[decider.consult_backup]", cfg.warnings[0])
+        self.assertIn("can be deleted", cfg.warnings[0])
+
+    def test_the_new_location_wins_over_the_old_one(self):
+        new = {**GOOD, "reason": "the new table"}
+        old = {**GOOD, "reason": "the old table"}
+        cfg = _load({"decider": {"consult_backup": new}, "muse_bridge": {"consult_backup": old}})
+        self.assertEqual(cfg.errors, [])
+        self.assertEqual(cfg.decider_source, "decider")
+        self.assertEqual(cfg.decider_declaration.reason, "the new table")
+        self.assertEqual(len(cfg.warnings), 1)
+        self.assertIn("it can be deleted", cfg.warnings[0])
+
+    def test_a_malformed_declaration_is_a_warning_and_holds(self):
+        for where in ("decider", "muse_bridge"):
+            for raw in ({"runtime": "openrouter"}, "openrouter"):
+                cfg = _load({where: {"consult_backup": raw}})
+                self.assertEqual(cfg.errors, [], (where, raw))
+                self.assertIsNone(cfg.decider_declaration)
+                self.assertTrue(any("misconfigured" in w for w in cfg.warnings), cfg.warnings)
+                runtime, _, hold = select_consult_runtime(cfg.decider_consult_backup, now=NOW)
+                self.assertEqual((runtime, hold), (HOLD, MISCONFIGURED))
+
+    def test_the_decider_table_refuses_what_it_does_not_know(self):
+        self.assertEqual(_load({"decider": "x"}).errors, ["[decider] must be a table"])
+        self.assertEqual(
+            _load({"decider": {"model": "x"}}).errors, ["[decider] has unknown setting(s): model"]
+        )
+
+    def test_a_toml_file_with_the_leftovers_loads(self):
+        import os
+        import tempfile
+
+        text = """[daemon]
+instance = "mac"
+owner_user_id = 1
+
+[muse_bridge]
+enabled = false
+remote_seats = []
+remote_app = "example-application"
+
+[muse_bridge.consult_backup]
+runtime = "openrouter"
+model = "@preset/operator-inbox-router"
+expected_models = ["meta/muse-spark-1.3-contributor", "minimax/minimax-m3.1"]
+reason = "the owner's words"
+declared_at = 1762575240
+
+[seat.CLAUDE]
+bot = "Claude"
+wake = "inbox"
+muse_bridge = false
+"""
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "listener.toml")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            cfg = C.load(root, path)
+        self.assertEqual(cfg.errors, [])
+        self.assertIn("CLAUDE", cfg.seats)
+        self.assertEqual(cfg.decider_source, "muse_bridge")
+        self.assertEqual(cfg.decider_declaration.model, "@preset/operator-inbox-router")
+        self.assertEqual(len([w for w in cfg.warnings if "muse_bridge" in w]), 2, cfg.warnings)
 
 
 class PresetRequestShapeTests(unittest.TestCase):

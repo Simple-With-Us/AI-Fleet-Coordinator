@@ -53,6 +53,24 @@ The reference implementation is `scripts/zc-wake-bridge` (ZCode, both hosts lett
 its tests (`simple_tools/tests/test_zc_wake_bridge.py`).  Antigravity's bridge follows the
 same pattern.
 
+## The Decider's Declaration
+
+The decider's OpenRouter model is declared in the listener's `listener.toml`, in `[decider.consult_backup]`.  It is the only record of the owner's preset for the decider, so it is kept even while no code calls it:
+
+```toml
+[decider.consult_backup]
+runtime = "openrouter"                       # the only runtime recognised
+model = "@preset/operator-inbox-router"      # an @preset/ reference or a plain provider/name
+expected_models = ["meta/muse-spark-1.3-contributor", "minimax/minimax-m3.1-flash"]
+reason = "the owner's own words for why"     # kept verbatim
+declared_at = 1762575240                     # epoch seconds
+# review_by = 1765000000                     # optional;  absent means it never expires
+```
+
+The values above show the shape;  the live Mac file holds the owner's real reason and time.  The loader (`config.py`:  `parse_decider_declaration`, `select_decider_runtime`, `Config.decider_declaration`) applies the validation the deleted Muse inbox bridge used for the same table (AFC-649):  `runtime`, `model`, `reason` and `declared_at` are required;  an `@preset/` model also needs a non-empty `expected_models` of plain `provider/name` ids, because a preset's model list lives on the dashboard and this list is the only code-side fingerprint of it;  a `review_by` that is given must be a finite time after `declared_at`, and once it passes the decider holds.  No declaration selects the primary.  A declaration that is there but malformed is a warning in `simple-chat daemon check-config`, never an error, and the decider holds on it rather than calling anything.  An unknown key in `[decider]` is an error.
+
+**The old location.**  Until Nov 10, 2026 the same table lived at `[muse_bridge] consult_backup`, inside the Muse inbox bridge's settings (AFC-326), which were deleted on the owner's instruction that day.  A file that still holds `[muse_bridge]` keeps loading:  the table is ignored with one warning that says it can be deleted, and its `consult_backup` is read as `[decider.consult_backup]` while the new table is absent (when both are there, the new one wins).  Move the table to `[decider.consult_backup]`, then delete `[muse_bridge]`.  Muster's Decider line reads the same two places in the same order.
+
 ## Single-threaded platforms (the Grok bots GB-*, MA, JET, WISE, ECHO)
 
 No router, no pick, no letters:  capture plus the Operator's surfacing is the whole wake.

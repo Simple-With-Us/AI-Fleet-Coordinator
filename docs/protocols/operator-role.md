@@ -64,8 +64,8 @@ does it today.
     hopefully".  The preset is his own, built on the Muse spark 1.3 contributor ("Not just normal
     one").  ECHO reports it as `@preset/operator-inbox-router` version 3 (served by
     `meta/muse-spark-1.3-contributor`, backup `minimax/minimax-m3.1-flash`);  it was held when this
-    was written, and the Mac has declared it as the bridge consult backup since Nov 7, 2026, 10:14 PM
-    (section 3.2).  Jay also objected to the Operator ever being
+    was written, and the Mac has declared it since Nov 7, 2026, 10:14 PM, now as the decider's
+    `[decider.consult_backup]` (section 3.2).  Jay also objected to the Operator ever being
     called "MM-wake":  the wake tag is `[OPERATOR·wake]`, and a wake is not tied to MM or to any
     seat.  This is a ruling, not current behaviour:  per-seat model wakes still run until Phase 2,
     and PR #1506 only records how often each start was avoidable (section 3.2).
@@ -306,16 +306,21 @@ I made on openrouter", "Only the operator does headless runs sometimes", "Seat w
 agent" and "Consultant is an agent needed minority of the time hopefully".  So the consultant is the
 only model run, it is the Operator's, and it starts only when deterministic code cannot decide.  What
 runs today is not that yet:  a seat configured with a `claude`, `muse` or `openrouter` wake still
-starts a model for itself, with any configured fallback behind it, and the Mac bridge consult runs
-on the pinned Muse binary unless an operator declares its known-cap OpenRouter mode.  PR #1506 adds
+starts a model for itself, with any configured fallback behind it.  (The Mac's Muse inbox bridge,
+which also consulted a model, was deleted on Nov 10, 2026, on the owner's instruction.)  PR #1506 adds
 a record-only model gate that records, for every model start, why it happened and whether a
 deterministic rule could have decided it, and `simple-chat status` counts the avoidable ones;  it
 changes no decision (`simple-tools-listener.md`, section 3.4a).  Phase 2 is pending and not built:
 PR #1506 lists AA's readings of these lines, which are readings and not rulings, that it would
 remove the `claude`, `muse` and `openrouter` seat wakes and their fallbacks in favour of the
-Operator's one consultant run, fix the per-seat model run an `@all` starts, and move the Mac bridge
-consult onto the owner's preset.  ECHO's candidate for that preset, `@preset/operator-inbox-router`
-version 3, was held when this was written.  The Mac's `listener.toml` declares it as the bridge consult backup (`[muse_bridge] consult_backup`, the AFC-649 known-cap mode) since Nov 7, 2026, 10:14 PM, with the owner's Nov 6 line as the reason and no `review_by`.  That is the only place it is applied;  making it the consult's standing runtime is still pending Phase 2, and no release by ECHO's coordinator is recorded in the repository.
+Operator's one consultant run and fix the per-seat model run an `@all` starts.  ECHO's candidate
+for the consultant's preset, `@preset/operator-inbox-router` version 3, was held when this was
+written.  The Mac's `listener.toml` has declared it since Nov 7, 2026, 10:14 PM, with the owner's Nov 6
+line as the reason and no `review_by`, first as the deleted Muse inbox bridge's consult backup (the
+AFC-649 known-cap mode) and now as the decider's `[decider.consult_backup]`
+([zulip-wake-routing.md](zulip-wake-routing.md), The Decider's Declaration).  No code calls it now
+that the bridge is gone;  making it the consultant's standing runtime is still pending Phase 2, and no
+release by ECHO's coordinator is recorded in the repository.
 
 **The direct message consequence, and what Jay has now ruled.**  AFC-469, merged on Oct 25, 2026,
 says a direct message may go out only when the owner is in the conversation, checked by user id.

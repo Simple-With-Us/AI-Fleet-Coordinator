@@ -28,9 +28,12 @@ Python 3.11+, standard library only.
 
 from __future__ import annotations
 
+import math
 import os
 import re
+import time
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -99,7 +102,6 @@ SEAT_KEYS: frozenset[str] = frozenset(
         "creds",
         "bot",
         "bearer_file",
-        "muse_bridge",
         "budget",
         "held_back",
         "live",
@@ -130,6 +132,14 @@ SEAT_KEYS_LEGACY: frozenset[str] = frozenset(
 # Keys the parser already refuses with their own message (`bearer_locator` downgrades a seat's wake,
 # `allow_admin` stops the seat), so the schema adds nothing to say about them.
 SEAT_KEYS_RETIRED: frozenset[str] = frozenset({"bearer_locator", "allow_admin"})
+# Keys left over from a feature that was deleted.  A live config may still carry one, so it is ignored
+# with one warning that says it can be deleted:  never an error, never a downgrade of the seat.  The
+# Muse inbox bridge (AFC-326) was deleted on the owner's instruction of Nov 10, 2026.
+SEAT_KEYS_LEFTOVER: dict[str, str] = {"muse_bridge": "the deleted Muse inbox bridge"}
+# Top-level tables left over the same way.  `[muse_bridge]` is ignored with one warning, except that
+# its `consult_backup` subtable is still read as the decider's declaration (`[decider.consult_backup]`)
+# while the new table is absent, so the owner's preset declaration is never lost by a deploy.
+TABLES_LEFTOVER: dict[str, str] = {"muse_bridge": "the deleted Muse inbox bridge"}
 # Settings inside a seat's `budget` table that go away with the wake types (route suggestions and the
 # per-seat board filing cap).  Still read, still enforced, and a warning when a seat sets one.
 BUDGET_KEYS_LEGACY: frozenset[str] = frozenset(
@@ -176,6 +186,137 @@ OPENROUTER_MODEL_PATTERN = r"^(~?[A-Za-z0-9][A-Za-z0-9._-]{0,39}/[A-Za-z0-9][A-Z
 # An `@preset/<slug>` reference is accepted too:  the preset then supplies the model list and any
 # system prompt, and the slug itself is what the pin fingerprints, so an edit on the dashboard
 # changes behavior without changing the fingerprint.
+
+# ---- The decider's OpenRouter declaration (`[decider.consult_backup]`) -----------------------
+#
+# The one headless decider every platform shares (docs/protocols/zulip-wake-routing.md) runs only
+# when the deterministic routing rules cannot pick a chat.  This table is the only record of the
+# owner's OpenRouter preset for it:  the `@preset/` reference, the models it is expected to serve,
+# the owner's reason in his own words, and when it was declared.  It moved here from the deleted
+# Muse inbox bridge's `[muse_bridge] consult_backup` (AFC-649, known-cap mode) with the same
+# validation, and a config that still holds the old table is read the same way until it is moved.
+#
+# NO EXPIRY BY DEFAULT.  review_by is OPTIONAL.  A declaration without it never expires:  it stands
+# until the operator removes it (owner direction, WhatsApp 2026-11-07 22:21 CT:  "don't have it expire
+# by default").  A review_by that IS given must be a finite epoch after declared_at, or the
+# declaration is misconfigured and fails closed:  a bad date never silently turns into "no expiry".
+#
+# EXPIRY IS A HOLD, NOT A REVERT.  When an explicitly declared review time passes, the decider holds:
+# no runtime is invoked at all and a review-due signal is the answer.
+#
+# ABSENT VS MALFORMED.  A declaration that was never configured selects the primary (no backup).  A
+# declaration that IS configured but partial or malformed fails CLOSED (hold), and the config loader
+# says so in a warning:  silently falling back would spend against a cap the operator declared.
+
+_PRESET_RE = re.compile(r"^@preset/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+
+DECIDER_PRIMARY = "primary"
+DECIDER_OPENROUTER = "openrouter"
+DECIDER_HOLD = "hold"
+DECIDER_MISCONFIGURED = "backup_misconfigured"
+DECIDER_REVIEW_DUE = "backup_review_due"
+DECIDER_KEYS: frozenset[str] = frozenset({"consult_backup"})
+
+_DECLARATION_REQUIRED = ("runtime", "model", "reason", "declared_at")
+
+
+@dataclass(frozen=True)
+class DeciderDeclaration:
+    """One operator declaration of the OpenRouter model the decider calls.
+
+    runtime:    the approved runtime id;  only "openrouter" is recognised.
+    model:      an `@preset/<slug>` reference (the reference the owner supplied) or a plain
+                `provider/name`, validated against OPENROUTER_MODEL_PATTERN.
+    expected_models:  the plain `provider/name` ids the declaration expects the preset to serve.
+                REQUIRED with an `@preset/` model:  a dashboard edit to the preset's model list
+                changes what runs without changing any slug, and this set is the only code-side
+                fingerprint of it.  Optional with a plain model, where it defaults to that model.
+    reason:     the operator's own words for why it was declared (kept verbatim).
+    declared_at: epoch seconds.
+    review_by:  OPTIONAL epoch seconds, None when the operator declared no expiry (the default)."""
+
+    runtime: str
+    model: str
+    reason: str
+    declared_at: float
+    review_by: float | None
+    expected_models: tuple
+
+
+def parse_decider_declaration(raw: Any) -> DeciderDeclaration | None:
+    """The declaration from `[decider.consult_backup]`, or None when absent or malformed."""
+    if not isinstance(raw, Mapping):
+        return None
+    if any(k not in raw for k in _DECLARATION_REQUIRED):
+        return None
+    runtime = raw["runtime"]
+    model = raw["model"]
+    reason = raw["reason"]
+    declared_at = raw["declared_at"]
+    review_by = raw.get("review_by")
+    if runtime != DECIDER_OPENROUTER:
+        return None
+    if not isinstance(model, str) or not re.fullmatch(OPENROUTER_MODEL_PATTERN, model):
+        return None
+    expected_raw = raw.get("expected_models")
+    if _PRESET_RE.fullmatch(model):
+        # A preset's model list lives on the dashboard;  without a declared expectation the code has
+        # no fingerprint of what the preset serves, so it is misconfigured and fails closed.
+        if not isinstance(expected_raw, list) or not expected_raw:
+            return None
+    elif expected_raw is None:
+        expected_raw = [model]
+    if (
+        not isinstance(expected_raw, list)
+        or not expected_raw
+        or any(
+            not isinstance(entry, str)
+            or _PRESET_RE.fullmatch(entry)
+            or not re.fullmatch(OPENROUTER_MODEL_PATTERN, entry)
+            for entry in expected_raw
+        )
+    ):
+        return None
+    if not isinstance(reason, str) or not reason.strip():
+        return None
+    for value in (declared_at,) if review_by is None else (declared_at, review_by):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        try:
+            if not math.isfinite(value) or not math.isfinite(float(value)):
+                return None
+        except OverflowError:
+            return None
+    if review_by is not None and review_by <= declared_at:
+        return None
+    return DeciderDeclaration(
+        runtime=DECIDER_OPENROUTER,
+        model=model,
+        reason=reason.strip(),
+        declared_at=float(declared_at),
+        review_by=None if review_by is None else float(review_by),
+        expected_models=tuple(expected_raw),
+    )
+
+
+def select_decider_runtime(
+    raw: Any, *, now: float | None = None
+) -> tuple[str, DeciderDeclaration | None, str | None]:
+    """(which runtime the decider uses, the declaration, why it holds).
+
+    (DECIDER_PRIMARY, None, None)                  - no declaration configured.
+    (DECIDER_OPENROUTER, decl, None)               - a complete declaration, inside its window.
+    (DECIDER_HOLD, None, DECIDER_MISCONFIGURED)    - configured but partial or malformed:  fail closed.
+    (DECIDER_HOLD, decl, DECIDER_REVIEW_DUE)       - an explicit review_by has passed:  hold."""
+    if raw is None:
+        return DECIDER_PRIMARY, None, None
+    decl = parse_decider_declaration(raw)
+    if decl is None:
+        return DECIDER_HOLD, None, DECIDER_MISCONFIGURED
+    moment = time.time() if now is None else now
+    if decl.review_by is not None and moment >= decl.review_by:
+        return DECIDER_HOLD, decl, DECIDER_REVIEW_DUE
+    return DECIDER_OPENROUTER, decl, None
 # Wakes the budget holds back (heldback.py), per seat:  `held_back = { max = 200, overflow_max = 1000,
 # ttl_hours = 24, items_in_wake = 20, owner_digest_minutes = 60, catch_up = true }`.  max is the records
 # with names;  past it the oldest move to a compact overflow tier (still listed by id), and only past
@@ -330,7 +471,6 @@ class SeatConfig:
         fallback: str | None = None,
         fallback_uncontained_ok: bool = False,
         fallback_model: str = OPENROUTER_FALLBACK_MODEL,
-        muse_bridge: bool = False,
         typing_indicator: bool = False,
         bearer_file: str | None = None,
         config_problems: list[str] | None = None,
@@ -373,9 +513,6 @@ class SeatConfig:
         self.key_env = key_env
         self.site_env = site_env
         self.routine = routine
-        self.muse_bridge = (
-            muse_bridge  # default-off central decision path; original adapter stays configured
-        )
         # Wake-config problems found in this seat's section (AFC-358).  The seat connects and captures
         # anyway;  its wake was downgraded to inbox, and status shows the seat red until they are fixed.
         self.config_problems: list[str] = list(config_problems or [])
@@ -451,12 +588,12 @@ class SeatConfig:
 class Config:
     def __init__(self) -> None:
         self.raw: dict[str, Any] = {}
-        self.muse_bridge_enabled = False
-        self.muse_bridge_remote_seats: tuple[str, ...] = ()
-        # The production application the Mac bridge reaches, from the operator's
-        # own config.  Empty when the bridge is off.
-        self.muse_bridge_remote_app = ""
-        self.muse_bridge_consult_backup: dict[str, Any] | None = None
+        # `[decider.consult_backup]`:  the decider's OpenRouter declaration as written (None when the
+        # file has none), its parsed form (None when absent or malformed), and the table it was read
+        # from ("decider", or "muse_bridge" for a config that still holds the old location).
+        self.decider_consult_backup: dict[str, Any] | None = None
+        self.decider_declaration: DeciderDeclaration | None = None
+        self.decider_source: str | None = None
         self.errors: list[str] = []
         # Things worth fixing that change nothing today:  a deprecated seat setting that still works, and
         # a seat key nothing reads.  They never raise, never downgrade a seat and never turn status red;
@@ -722,7 +859,12 @@ def seat_key_warnings(seat: str, section: Mapping[str, Any]) -> list[str]:
     for key in sorted(section, key=str):
         if key in SEAT_KEYS or key in SEAT_KEYS_RETIRED:
             continue
-        if key in SEAT_KEYS_LEGACY or key.startswith("routes_"):
+        if key in SEAT_KEYS_LEFTOVER:
+            found.append(
+                "seat.%s.%s is left over from %s and is ignored;  it can be deleted"
+                % (seat, key, SEAT_KEYS_LEFTOVER[key])
+            )
+        elif key in SEAT_KEYS_LEGACY or key.startswith("routes_"):
             found.append(
                 "seat.%s.%s is deprecated:  it still works as before, and goes away when seats move "
                 "to the one wake path (a routine, or capture only)" % (seat, key)
@@ -740,45 +882,59 @@ def seat_key_warnings(seat: str, section: Mapping[str, Any]) -> list[str]:
     return found
 
 
+def _decider_from_dict(cfg: Config, raw: Mapping[str, Any]) -> None:
+    """`[decider]`, and the leftover `[muse_bridge]` table it replaces.
+
+    A leftover table is never an error:  it is ignored with one warning that names it and says it can
+    be deleted.  Its `consult_backup` subtable is the one part still read, and only while
+    `[decider.consult_backup]` is absent, so a config written before the move keeps its declaration;
+    when both are there the new table wins.  A declaration that is configured but malformed is a
+    warning, not an error (the decider fails closed on it), exactly as it was under the bridge."""
+    leftover = raw.get("muse_bridge")
+    leftover_backup = leftover.get("consult_backup") if isinstance(leftover, dict) else None
+    decider = raw.get("decider")
+    if decider is None:
+        decider = {}
+    elif not isinstance(decider, dict):
+        cfg.errors.append("[decider] must be a table")
+        decider = {}
+    unknown = sorted(str(k) for k in decider if k not in DECIDER_KEYS)
+    if unknown:
+        cfg.errors.append("[decider] has unknown setting(s): %s" % ", ".join(unknown))
+    backup: Any = None
+    if "consult_backup" in decider:
+        backup, cfg.decider_source = decider["consult_backup"], "decider"
+    elif leftover_backup is not None:
+        backup, cfg.decider_source = leftover_backup, "muse_bridge"
+    if "muse_bridge" in raw:
+        name = TABLES_LEFTOVER["muse_bridge"]
+        if cfg.decider_source == "muse_bridge":
+            cfg.warnings.append(
+                "[muse_bridge] is left over from %s and is ignored, except that its consult_backup is read "
+                "as [decider.consult_backup];  move that table there, and then [muse_bridge] can be deleted"
+                % name
+            )
+        else:
+            cfg.warnings.append("[muse_bridge] is left over from %s and is ignored;  it can be deleted" % name)
+    if backup is None:
+        return
+    # A non-table value is kept as an empty table, so it reads as configured and malformed (a hold),
+    # never as absent (which would silently select the primary).
+    cfg.decider_consult_backup = backup if isinstance(backup, dict) else {}
+    cfg.decider_declaration = parse_decider_declaration(cfg.decider_consult_backup)
+    if cfg.decider_declaration is None:
+        cfg.warnings.append(
+            "%s is misconfigured, so the decider holds instead of calling OpenRouter:  it needs runtime = "
+            '"openrouter", model, reason and declared_at, and an @preset/ model also needs expected_models'
+            % ("decider.consult_backup" if cfg.decider_source == "decider" else "muse_bridge.consult_backup")
+        )
+
+
 def from_dict(raw: Mapping[str, Any]) -> Config:
     cfg = Config()
     cfg.raw = dict(raw)
     errors = cfg.errors
-    bridge = raw.get("muse_bridge") or {}
-    if not isinstance(bridge, dict):
-        errors.append("[muse_bridge] must be a table")
-        bridge = {}
-    bridge_enabled = bridge.get("enabled", False)
-    if not isinstance(bridge_enabled, bool):
-        errors.append("muse_bridge.enabled must be true or false")
-    else:
-        cfg.muse_bridge_enabled = bridge_enabled
-    # The production application the Mac bridge talks to is private deployment
-    # inventory, so it lives in the operator's own config and never in this
-    # repository.  It stays optional here: the bridge fails closed at request
-    # time and says so, which keeps a config that never enabled the bridge
-    # valid.
-    remote_app = bridge.get("remote_app", "")
-    if not isinstance(remote_app, str):
-        errors.append("muse_bridge.remote_app must be a string")
-        remote_app = ""
-    cfg.muse_bridge_remote_app = remote_app.strip()
-    remote_seats = bridge.get("remote_seats", [])
-    if (
-        not isinstance(remote_seats, list)
-        or not all(isinstance(s, str) and _SEAT_RE.fullmatch(s) for s in remote_seats)
-        or len(set(remote_seats)) != len(remote_seats)
-    ):
-        errors.append("muse_bridge.remote_seats must be unique canonical seat names")
-    else:
-        cfg.muse_bridge_remote_seats = tuple(remote_seats)
-    # AFC-649 known-cap mode:  an explicit operator declaration that the primary consult runtime
-    # is capped and the approved backup serves consults.  Stored raw and validated at consult
-    # time (simple_tools.backup_mode):  absent/null means never enabled and the primary runs as
-    # today;  a configured-but-malformed declaration fails CLOSED there, holding consults and
-    # preserving pending work instead of erroring the whole config load.
-    backup = bridge.get("consult_backup")
-    cfg.muse_bridge_consult_backup = backup if backup is None or isinstance(backup, dict) else {}
+    _decider_from_dict(cfg, raw)
     daemon = raw.get("daemon") or {}
     if not isinstance(daemon, dict):
         errors.append("[daemon] must be a table")
@@ -788,8 +944,6 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("daemon.instance must be one of %s" % ", ".join(INSTANCES))
     else:
         cfg.instance = instance
-    if cfg.instance == "server" and cfg.muse_bridge_remote_seats:
-        errors.append("muse_bridge.remote_seats is for the Mac bridge only")
     owner = daemon.get("owner_user_id", 0)
     if isinstance(owner, bool) or not isinstance(owner, int) or owner < 0:
         errors.append("daemon.owner_user_id must be a user id (0 means not pinned yet)")
@@ -1135,10 +1289,6 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         if not isinstance(route_enabled, bool):
             wake_problems.append("seat.%s.route_enabled must be true or false" % seat_name)
             route_enabled = True
-        muse_bridge = section.get("muse_bridge", False)
-        if not isinstance(muse_bridge, bool):
-            wake_problems.append("seat.%s.muse_bridge must be true or false" % seat_name)
-            muse_bridge = False
         typing_indicator = section.get("typing_indicator", False)
         if not isinstance(typing_indicator, bool):
             wake_problems.append("seat.%s.typing_indicator must be true or false" % seat_name)
@@ -1426,7 +1576,6 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             fallback=fallback,
             fallback_uncontained_ok=uncontained,
             fallback_model=fallback_model,
-            muse_bridge=muse_bridge,
             typing_indicator=typing_indicator,
             bearer_file=bearer_file,
             config_problems=wake_problems,
