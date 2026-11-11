@@ -1648,6 +1648,60 @@ class Generations(Base):
         self.assertEqual((receipt["status"], receipt["code"]), ("dead", WR.UNREADABLE_ROW))
         self.assertIs(receipt["delivered"], False)
 
+    def test_a_resolve_answer_that_is_not_a_mapping_is_a_retry_and_no_delivery(self) -> None:
+        for odd in (None, [], ["found"], "error", 7):
+            with self.subTest(answer=odd):
+                self.delivered.clear()
+                for leftover in (self.state / "pending", self.state / "done"):
+                    shutil.rmtree(leftover, ignore_errors=True)
+                router = self.lettered()
+                real = self.registry
+
+                def call(env, op, params=None, *, timeout=25, odd=odd, real=real):
+                    return odd if op == "resolve" else real(env, op, params, timeout=timeout)
+
+                with mock.patch.object(WR.registry_api, "call", call):
+                    self.drain(router)
+                self.assertEqual(len(self.delivered), 1)
+                saved = json.loads(self.pending().read_text(encoding="utf-8"))
+                self.assertNotIn("in_flight", saved)
+                self.assertEqual((saved["failures"], saved.get("repicks", 0)), (1, 0))
+                self.assertEqual(saved["pick"]["target"]["session_id"], SID_A)
+                self.clock.now += 2000
+                self.drain(router)
+                self.assertEqual(len(self.delivered), 2)
+                self.assertEqual(self.done()["status"], "delivered")
+
+    def test_a_resolve_answer_that_is_not_a_mapping_is_bounded(self) -> None:
+        router = self.lettered(max_attempts=2)
+        real = self.registry
+
+        def call(env, op, params=None, *, timeout=25):
+            return None if op == "resolve" else real(env, op, params, timeout=timeout)
+
+        with mock.patch.object(WR.registry_api, "call", call):
+            for _ in range(6):
+                self.drain(router)
+                self.clock.now += 2000
+        self.assertEqual(len(self.delivered), 1)
+        receipt = self.done()
+        self.assertEqual((receipt["status"], receipt["code"]), ("dead", "registry-unavailable"))
+        self.assertIs(receipt["delivered"], False)
+
+    def test_a_pick_on_an_answer_that_is_not_a_mapping_is_a_retry(self) -> None:
+        for op_odd in ("resolve", "history"):
+            for odd in (None, [], "error", 7):
+                with self.subTest(op=op_odd, answer=odd):
+                    real = self.registry
+
+                    def call(env, op, params=None, *, timeout=25, odd=odd, op_odd=op_odd):
+                        return odd if op == op_odd else real(env, op, params, timeout=timeout)
+
+                    wake = self.wake(letter="AA") if op_odd == "resolve" else self.wake()
+                    with mock.patch.object(WR.registry_api, "call", call):
+                        pick = self.router().pick(wake)
+                    self.assertEqual((pick.reason, pick.retry), ("registry-unavailable", True))
+
     def test_holds_tells_a_release_from_a_row_it_cannot_read(self) -> None:
         target = WR.Target(SID_A, letter="AA", generation=3)
 
@@ -1664,6 +1718,8 @@ class Generations(Base):
         for seat in NOT_CLAUDE:
             self.assertIsNone(held({**live, "seat": seat}), repr(seat))
         self.assertIsNone(held({**live, "native_session_id": "-p"}))
+        for odd in (None, [], ["found"], "found", 7):
+            self.assertIsNone(held(odd), repr(odd))
 
     def test_a_letterless_wake_on_a_closed_chat_is_picked_again(self) -> None:
         router = self.queued()
@@ -3762,6 +3818,20 @@ class Remote(RemoteBase):
         )
         self.assertEqual(answer["wake_id"], self.w.wake_id)
         spy.assert_not_called()
+
+    def test_a_registry_answer_that_is_not_a_mapping_is_a_retry_and_no_delivery(self) -> None:
+        for odd in (None, [], ["found"], "error", 7):
+            with self.subTest(answer=odd):
+                with (
+                    mock.patch.object(WR.registry_api, "call", return_value=odd),
+                    mock.patch.object(CW, "deliver_local") as spy,
+                ):
+                    _, answer = self.run_main(self.envelope())
+                self.assertEqual(
+                    (answer["delivery"]["outcome"], answer["delivery"]["code"]),
+                    ("failed", "registry-unavailable"),
+                )
+                spy.assert_not_called()
 
     def test_a_registry_call_that_raises_is_a_retry_and_no_delivery(self) -> None:
         with (

@@ -740,7 +740,7 @@ class Router:
                 {"platform": self.platform.platform, "letter": wake.letter},
                 timeout=timeout,
             )
-            if "error" in answer:
+            if not isinstance(answer, Mapping) or "error" in answer:
                 return Pick(reason="registry-unavailable", retry=True)
             live = answer.get("found") and not _closed(answer)
             target = self._valid(answer) if live else None
@@ -758,7 +758,7 @@ class Router:
             {"platform": self.platform.platform, "limit": HISTORY_LIMIT},
             timeout=timeout,
         )
-        if "error" in answer:
+        if not isinstance(answer, Mapping) or "error" in answer:
             return Pick(reason="registry-unavailable", retry=True)
         live: dict[str, Target] = {}
         seen: dict[str, float | None] = {}
@@ -1178,7 +1178,7 @@ class Router:
             {"platform": self.platform.platform, "letter": target.letter},
             timeout=REGISTRY_TIMEOUT,
         )
-        if "error" in answer:
+        if not isinstance(answer, Mapping) or "error" in answer:
             return "registry-unavailable"
         held = holds(answer, target, self.platform.seat, self.platform.target_re)
         if held is None:
@@ -1406,7 +1406,10 @@ def holds(
     chat is closed, or a well-formed chat of this seat holds it at another session or generation.
     None when a live answer is not a well-formed chat of this seat (no seat, a malformed one,
     another seat's, or a bad id or generation), because a row that cannot be read proves no
-    release.  The caller has already ruled out an answer that is an error."""
+    release.  An answer that is not a mapping at all is None too.  The caller has already ruled out
+    an answer that is an error."""
+    if not isinstance(answer, Mapping):
+        return None
     if not answer.get("found") or _closed(answer):
         return False
     current = target_from_row(answer, seat, target_re)
