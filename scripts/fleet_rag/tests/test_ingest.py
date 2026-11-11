@@ -399,6 +399,28 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(rep["per_source"]["doc"]["chunks_repointed"], 1)
         self.assertEqual(len(self.qd.payload_sets), 1)
 
+    def test_nightly_prune_keeps_apple_note_state_rows(self) -> None:
+        self.docs["doc"] = [make_doc("doc/a", LONG_A)]
+        self._run()
+        st = json.loads(self.state.read_text())
+        st["note/ABC/ICNote/p1"] = {
+            "doc_hash": "h",
+            "chunk_ids": ["pt-note"],
+            "updated_at": 0,
+            "source": "apple-note",
+        }
+        self.qd.points["pt-note"] = {
+            "id": "pt-note",
+            "payload": {"doc_id": "note/ABC/ICNote/p1", "text": "Pinned fleet note body text."},
+        }
+        self.state.write_text(json.dumps(st))
+        self.docs["doc"] = [make_doc("doc/a", LONG_A)]
+        rep = self._run(prune=True)
+        self.assertTrue(rep["ok"])
+        st_after = json.loads(self.state.read_text())
+        self.assertIn("note/ABC/ICNote/p1", st_after)
+        self.assertIn("pt-note", self.qd.points)
+
     def test_prune_removes_vanished_docs(self) -> None:
         self.docs["doc"] = [make_doc("doc/a", LONG_A), make_doc("doc/b", LONG_B),
                             make_doc("doc/c", "Shared tail text here.", title="S"),

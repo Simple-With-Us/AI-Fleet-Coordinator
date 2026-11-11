@@ -1475,7 +1475,7 @@ class ChatLogTests(unittest.TestCase):
 
     def test_retired_sources_are_explicit_only_and_linear_refreshes_by_default(self) -> None:
         self.assertEqual(
-            sources.NIGHTLY_SOURCES, ("linear", "doc", "skill", "memory", "apple-note")
+            sources.NIGHTLY_SOURCES, ("linear", "doc", "skill", "memory")
         )
         self.assertIn("linear", sources.SOURCES)
         from fleet_rag.ingest import _resolve_names, _attests_health
