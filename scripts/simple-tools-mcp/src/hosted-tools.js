@@ -69,7 +69,7 @@ import {
   RECALL_MARKER_END,
 } from "./recall.js";
 import { GR_SECRETS, GR_TOOLS, GR_TOOL_NAMES, GRAPHQL_ERROR_CODES } from "./gr-tools.js";
-import { REFUSAL_REASONS, classifyRelayRefusal, githubRefusalStatus, refusalReasonText } from "./gr-refusal.js";
+import { REFUSAL_REASONS, classifyRelayRefusal, githubRefusalStatus, movedRepository, refusalReasonText, repositoryMovedText } from "./gr-refusal.js";
 import { TYPED_V1_ACTIONS, TYPED_V1_TOOLS } from "./gr-typed-v1.js";
 import { WF_V1_ACTIONS, WF_V1_TOOLS, parseWfV1Args, boundedWorkflowInput, WF_V1_READ_ACTIONS, workflowInputLimit } from "./gr-workflow-v1.js";
 import {
@@ -1527,6 +1527,14 @@ export class HostedTools {
         { extra },
       );
     }
+    // A workflow READ that GitHub (or the relay's own read check) failed:  the
+    // relay marks it retryable, and a read changed nothing.  It used to fall
+    // into the unreadable-answer text below, which hid a plain transient
+    // failure (AFC deficiency rows 22, 31, 35, 47, 107, 138).  Only
+    // callWorkflow produces this exact flat marker with retryable:true.
+    if (status === 502 && workflow && body && typeof body === "object" && body.error === "workflow_request_refused" && body.retryable === true) {
+      throw new ToolError("unavailable", "git-relay could not complete this read:  GitHub failed it or the relay could not verify GitHub's answer.  Nothing was written;  retry shortly, and if it repeats, read less per call (a smaller per_page or the paged verb).", { retryable: true });
+    }
     if (status === 502) throw new ToolError("unavailable", "git-relay answered in a way this server could not read.  The call did not complete.");
     // Only the transport's own root marker proves this failed before send.
     // Upstream status/body content can never supply that marker.
@@ -1594,6 +1602,15 @@ export class HostedTools {
       const classified = refusalShape.data.reason
         ? { reason: refusalShape.data.reason, ...(githubRefusalStatus(refusalShape.data.github_status) !== undefined ? { github_status: githubRefusalStatus(refusalShape.data.github_status) } : {}) }
         : classifyRelayRefusal(refusalError, refusalShape.data.github_status);
+      // A renamed or transferred repository (OPS-1036):  say where it went, from
+      // the validated owner/name and id only, on both relay paths.
+      if (classified?.reason === "repository_moved") {
+        const moved = movedRepository(body);
+        // An error field is clipped at 60 characters (contract.js), so a longer
+        // owner/name travels in the message only, never as a clipped field.
+        const fields = { ...moved, ...(moved.moved_to && moved.moved_to.length > 60 ? { moved_to: undefined } : {}) };
+        throw new ToolError("relay_refused", repositoryMovedText(moved), { extra: { reason: "repository_moved", ...fields } });
+      }
       const extra = classified ? { reason: classified.reason, ...(classified.github_status !== undefined ? { github_status: classified.github_status } : {}) } : null;
       const flat = refusalError === "workflow_request_refused";
       const fixedText = classified && flat ? refusalReasonText(classified.reason) : null;
