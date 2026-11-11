@@ -34,19 +34,7 @@ struct ListenerStatus: Decodable, Equatable {
         var oldest_age: Double?
     }
 
-    /// The fallback an OpenRouter-backed seat publishes:  its model, its own pin, and whether it
-    /// would answer right now.  An eavesdropper publishes this only for `fallback = "openrouter"`.
-    struct Fallback: Decodable, Equatable {
-        var runtime: String?
-        var model: String?
-        var pinned: Bool?
-        var pin: Pin?
-        var ready: Bool?
-        var stands_in: Bool?
-        var primary_hold: String?
-    }
-
-    /// Whether an http seat's routine can be reached.
+    /// Whether a seat's routine can be reached, as the eavesdropper last found it.
     struct Routine: Decodable, Equatable {
         var ready: Bool?
         var why: String?
@@ -79,12 +67,6 @@ struct ListenerStatus: Decodable, Equatable {
     struct Seat: Decodable, Equatable {
         /// The seat's name,  as the Operator knows it.
         var bot: String?
-        /// The wake type the Operator is running.
-        var wake: String?
-        /// The muse binary the Operator uses.
-        var muse: String?
-        /// The claude binary the Operator uses.
-        var claude: String?
         /// The provider the seat talks to.
         var provider: String?
         /// Where the seat's credentials come from.
@@ -101,8 +83,6 @@ struct ListenerStatus: Decodable, Equatable {
         var budget: [String: JSONValue]?
         /// The live caps the Operator is holding.
         var live: [String: JSONValue]?
-        /// The pin the Operator holds for this seat.
-        var pin: Pin?
         /// Active red warnings the Operator reports for this seat.
         var red: [String]?
         /// Held-back / deferred wakes for this seat.
@@ -111,49 +91,21 @@ struct ListenerStatus: Decodable, Equatable {
         var chatNudges: ChatNudges?
         /// Quota reading for this seat.
         var quota: Quota?
-        /// The model an OpenRouter wake runs.  An eavesdropper publishes it for that wake only.
-        var model: String?
-        /// The OpenRouter fallback, when the seat has one.
-        var fallback: Fallback?
-        /// Whether an http seat's routine can be reached.
+        /// Whether the seat's routine can be reached.
         var routine: Routine?
         /// Whether the seat may route a wake to another seat.
         var routeEnabled: Bool?
 
         enum CodingKeys: String, CodingKey {
-            case bot, wake, muse, claude, provider, creds, connected, paused
+            case bot, provider, creds, connected, paused
             case wakesPaused = "wakes_paused"
             case wakes24h = "wakes_24h"
-            case budget, live, pin, red
+            case budget, live, red
             case heldBack = "held_back"
             case chatNudges = "chat_nudges"
-            case quota, model, fallback, routine
+            case quota, routine
             case routeEnabled = "route_enabled"
         }
-    }
-
-    /// The pin that proves a seat's binary works, as the eavesdropper judges it on every publish:
-    /// the pin file against the binary (or the model and request) the seat runs now.
-    struct Pin: Decodable, Equatable {
-        /// Whether the eavesdropper holds the pin.
-        var pinned: Bool?
-        /// The pinned muse binary.
-        var pinned_muse: String?
-        /// The pinned claude binary.
-        var pinned_claude: String?
-        /// The pinned OpenRouter model.
-        var pinned_model: String?
-        /// The claude binary on disk now.
-        var claude: String?
-        /// The muse binary on disk now.
-        var muse: String?
-        /// The OpenRouter model the seat runs now.
-        var model: String?
-        /// The OpenRouter role the pin is for.
-        var role: String?
-        /// The eavesdropper's own reason,  when the pin is not what it should be:  `not_pinned`,
-        /// `pin_stale`, `pin_unverified`, `pin_unreadable`, `no_claude` or `no_muse`.
-        var why: String?
     }
 
     /// One entry of the kill switch.
@@ -600,9 +552,6 @@ extension ListenerStatus.Seat {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         bot = container.lenient(String.self, .bot)
-        wake = container.lenient(String.self, .wake)
-        muse = container.lenient(String.self, .muse)
-        claude = container.lenient(String.self, .claude)
         provider = container.lenient(String.self, .provider)
         creds = container.lenient(String.self, .creds)
         connected = container.lenient(Bool.self, .connected)
@@ -611,13 +560,10 @@ extension ListenerStatus.Seat {
         wakes24h = container.lenient(Int.self, .wakes24h)
         budget = container.lenient([String: JSONValue].self, .budget)
         live = container.lenient([String: JSONValue].self, .live)
-        pin = container.lenient(ListenerStatus.Pin.self, .pin)
         red = container.lenient([String].self, .red)
         heldBack = container.lenient(ListenerStatus.HeldBack.self, .heldBack)
         chatNudges = container.lenient(ListenerStatus.ChatNudges.self, .chatNudges)
         quota = container.lenient(ListenerStatus.Quota.self, .quota)
-        model = container.lenient(String.self, .model)
-        fallback = container.lenient(ListenerStatus.Fallback.self, .fallback)
         routine = container.lenient(ListenerStatus.Routine.self, .routine)
         routeEnabled = container.lenient(Bool.self, .routeEnabled)
     }
@@ -726,8 +672,6 @@ struct SimpleToolsInvocation: Equatable {
     var timeout: TimeInterval
 
     static let defaultTimeout: TimeInterval = 60
-    /// A test wake runs a real agent,  so it gets the engine's own long timeout.
-    static let testWakeTimeout: TimeInterval = 900
 
     init(_ arguments: [String], timeout: TimeInterval = SimpleToolsInvocation.defaultTimeout) {
         self.arguments = arguments
@@ -767,37 +711,12 @@ struct SimpleToolsInvocation: Equatable {
         return SimpleToolsInvocation(["daemon", "check-config", "--file", file] + copy + ["--json"])
     }
 
-    /// `daemon test-wake --seat S --runtime R --run`:  run the seat's wake for real.
-    ///
-    /// `runtime` is nil when the seat's wake is not one of the runtimes the CLI names
-    /// (`claude`, `muse`, `mcode`, `fallback`).  Passing a wake type the CLI does not know
-    /// -- `inbox` or `http` -- makes argparse exit 2 with "invalid choice",  so the flag is
-    /// left off and the CLI's own default (`auto`) decides instead.
-    static func testWakeRun(seat: String, runtime: String?) throws -> SimpleToolsInvocation {
-        SimpleToolsInvocation([
-            "daemon", "test-wake", "--seat", try checked(seat),
-        ] + runtimeArgument(runtime) + ["--run"], timeout: testWakeTimeout)
-    }
-
-    /// `daemon test-wake --seat S --runtime R --pin`:  pin the binary that passed.
-    static func testWakePin(seat: String, runtime: String?) throws -> SimpleToolsInvocation {
-        SimpleToolsInvocation([
-            "daemon", "test-wake", "--seat", try checked(seat),
-        ] + runtimeArgument(runtime) + ["--pin"], timeout: testWakeTimeout)
-    }
-
-    /// `--runtime R`,  or nothing when there is no runtime to name.
-    private static func runtimeArgument(_ runtime: String?) -> [String] {
-        guard let runtime else { return [] }
-        return ["--runtime", (try? checked(runtime)) ?? runtime]
-    }
-
     /// The command as a person would type it.
     var commandLine: String {
         (["simple-chat"] + arguments).joined(separator: " ")
     }
 
-    /// A seat tag and a runtime name are plain tokens.  A value that could be read as a
+    /// A seat tag is a plain token.  A value that could be read as a
     /// flag,  or that carries whitespace or a path separator,  is refused before any
     /// process exists.
     private static func checked(_ value: String) throws -> String {
@@ -822,7 +741,7 @@ struct SimpleToolsCLIResult: Equatable {
     }
 
     /// The reason to show for a run that failed.  The eavesdropper's own command line prints its
-    /// refusals (`FAIL: …`, `NOT PINNED: …`) on stdout and leaves stderr empty, so an empty stderr
+    /// refusals (`FAIL: …`) on stdout and leaves stderr empty, so an empty stderr
     /// falls back to the last lines of stdout rather than to nothing.
     var failureTail: String {
         let errors = stderrTail

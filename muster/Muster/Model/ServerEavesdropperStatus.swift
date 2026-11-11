@@ -454,49 +454,44 @@ enum ServerSeatRunState: Equatable {
     }
 }
 
-/// What wakes a seat.
+/// Whether a server seat Wakes or Captures Only, from the reducer's wake word.
+///
+/// The reducer still sends the old wake kinds, and every word it sends is read:  `http` is a seat
+/// whose routine wakes the right chat, and `inbox` one whose mentions are kept in its inbox.  Any
+/// other word is shown as the server wrote it, and never given a meaning Muster does not know.
 enum ServerSeatWake: Equatable {
-    case inbox
-    case muse
-    case http
-    case claude
-    case openRouter
-    case miniMaxCode
-    /// The fallback is standing in for the seat's own wake.
-    case fallback
-    /// A wake kind the reducer does not name.
-    case other
+    case wakes
+    case capturesOnly
+    /// A word the panel gives no meaning to, as the server wrote it.
+    case other(String)
     case notReported
 
     init(token: String?) {
         switch token {
-        case "inbox"?: self = .inbox
-        case "muse"?: self = .muse
-        case "http"?: self = .http
-        case "claude"?: self = .claude
-        case "openrouter"?: self = .openRouter
-        case "mcode"?: self = .miniMaxCode
-        case "fallback"?: self = .fallback
-        case "other"?: self = .other
-        default: self = .notReported
+        case nil: self = .notReported
+        case "http"?: self = .wakes
+        case "inbox"?: self = .capturesOnly
+        case let word?: self = .other(word)
         }
     }
 
     var label: String {
         switch self {
-        case .inbox: return "Inbox"
-        case .muse: return "Muse"
-        case .http: return "HTTP"
-        case .claude: return "Claude"
-        case .openRouter: return "OpenRouter"
-        case .miniMaxCode: return "MiniMax Code"
-        case .fallback: return "Fallback standing in"
-        case .other: return "Other"
+        case .wakes: return "Wakes"
+        case .capturesOnly: return "Captures Only"
+        case .other(let word): return word
         case .notReported: return EavesdropperStatusText.notReported
         }
     }
-}
 
+    /// The line a seat's row shows:  the kind alone, or the wake word the server sent.
+    var rowText: String {
+        switch self {
+        case .wakes, .capturesOnly: return label
+        case .other, .notReported: return "Wake: \(label)"
+        }
+    }
+}
 /// Whether a seat is paused (a full pause or a pause of its wakes).
 enum ServerSeatPause: Equatable {
     case paused
