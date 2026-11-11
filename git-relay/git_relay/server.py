@@ -321,7 +321,16 @@ class Relay:
                 # The request is refused either way:  the row names who was
                 # refused, it does not grant anything, and a verified
                 # identity is not attacker-chosen attribution.
-                identity = self.policy.bootstrap_resolve(token)
+                # Only actions whose denial row can bind a bootstrap receipt
+                # spend the shared verifier and auditor budgets;  anything else
+                # falls through to the generic bounded unauth row below, so a
+                # spray on read-only actions cannot starve first-seat
+                # enrollment.
+                identity = (
+                    self.policy.bootstrap_resolve(token)
+                    if action in ("wf_repo_get", "wf_file_patch")
+                    else None
+                )
                 if identity is not None:
                     repo = str(args.get("repo") or "") if isinstance(args, dict) else ""
                     path = (

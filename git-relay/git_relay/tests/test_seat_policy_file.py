@@ -618,3 +618,44 @@ class ZcAuthReasonTests(unittest.TestCase):
             body["error"],
             "app-token minting failed: app installation is missing, suspended, or on another account",
         )
+
+
+class ProofKeyMintFailureTests(unittest.TestCase):
+    """A failed mint removes the partial file, so the never-overwrite refusal
+    does not permanently block later mints after one bad write."""
+
+    def _args(self, path):
+        import types
+
+        return types.SimpleNamespace(key_file=str(path))
+
+    def _mint_guards(self):
+        from unittest import mock
+
+        return (
+            mock.patch.object(os, "geteuid", return_value=0),
+            mock.patch.object(seat_policy, "_proof_key_dir_trust", return_value=None),
+        )
+
+    def test_write_failure_unlinks_the_partial_file(self):
+        import pathlib
+        from unittest import mock
+
+        g1, g2 = self._mint_guards()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "proof.key"
+            with g1, g2, mock.patch.object(os, "fdopen", side_effect=OSError("disk full")):
+                self.assertEqual(seat_policy.proof_key(self._args(path)), 2)
+            self.assertFalse(path.exists())
+
+    def test_post_create_check_failure_unlinks_the_partial_file(self):
+        import pathlib
+        from unittest import mock
+
+        g1, g2 = self._mint_guards()
+        not_root = os.stat_result((stat.S_IFREG | 0o600, 0, 0, 0, 1, 0, 0, 0, 0, 0))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "proof.key"
+            with g1, g2, mock.patch.object(os, "fstat", return_value=not_root):
+                self.assertEqual(seat_policy.proof_key(self._args(path)), 2)
+            self.assertFalse(path.exists())

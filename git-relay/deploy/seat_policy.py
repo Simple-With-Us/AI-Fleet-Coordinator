@@ -709,6 +709,10 @@ def proof_key(args) -> int:
         st = os.fstat(fd)
         if st.st_uid != 0 or st.st_mode & 0o777 != 0o600:
             os.close(fd)
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
             print(f"refusing:  {path} is not root-owned 0600 after creation")
             return 2
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -716,6 +720,14 @@ def proof_key(args) -> int:
             fh.flush()
             os.fsync(fh.fileno())
     except OSError:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
         print(f"refusing:  could not write {path}")
         return 2
     print(f"proof key written to {path} (root-owned 0600;  the key is never printed)")

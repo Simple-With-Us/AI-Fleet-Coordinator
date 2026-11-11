@@ -593,6 +593,8 @@ def verify_bootstrap_receipt(
         raise ValueError("receipt forged")
     if record.get("outcome") != PROVEN:
         raise ValueError("receipt is not a proof")
+    if record.get("refusal") != BOOTSTRAP_CAUSE:
+        raise ValueError("receipt is not a proof")
     if (
         record.get("v") != BootstrapProof.VERSION
         or record.get("url") != url

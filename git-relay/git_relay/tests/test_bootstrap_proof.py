@@ -134,6 +134,13 @@ class BootstrapReceiptTests(unittest.TestCase):
                 receipt=deploy_proof.sign_receipt(KEY, _record(url="https://x.example/v1/"))
             )
 
+    def test_a_misdescribed_refusal_is_not_a_proof(self):
+        # A signed PROVEN record that misdescribes the pre-activation denial
+        # must not bind:  the refusal cause is part of what the proof proves.
+        rec = _record(refusal="bearer_rejected")
+        with self.assertRaisesRegex(ValueError, "not a proof"):
+            self.verify(receipt={"record": rec, "hmac": _hmac(rec)})
+
     def test_freshness(self):
         with self.assertRaisesRegex(ValueError, "stale"):
             self.verify(receipt=deploy_proof.sign_receipt(KEY, _record(ts=NOW - 601)))
@@ -394,6 +401,30 @@ class BootstrapRelayChainTests(unittest.TestCase):
                 repo=REPO,
             )
             self.assertEqual(record["proof_id"], proof_id)
+
+    def test_non_bindable_actions_never_spend_bootstrap_budgets(self):
+        from git_relay.typed_gateway import ACTIONS
+
+        # Only wf_repo_get / wf_file_patch denials can bind a receipt, so only
+        # they may spend the verifier resolve and bootstrap-row budgets;  a
+        # spray of other actions with an unclaimed bearer gets the generic
+        # bounded spray row and leaves enrollment capacity intact.
+        for action in ("open_pr", "merge_pr", "comment_pr"):
+            self.assertNotIn(action, ACTIONS)
+        with tempfile.TemporaryDirectory() as tmp:
+            server, log = self._server(tmp)
+            for action in ("open_pr", "merge_pr", "comment_pr"):
+                status, body = server.handle("bearer-zc", action, {"repo": REPO})
+                self.assertEqual((status, body), (401, {"error": "seat_not_in_policy"}))
+            rows = deploy_proof.read_audit_rows(log._path)
+            self.assertEqual(len(rows), 3)
+            for row in rows:
+                self.assertEqual(row["cause"], "seat_not_in_policy")
+                self.assertNotIn("identity", row)
+            status, _body = server.handle("bearer-zc", "wf_repo_get", {"repo": REPO})
+            self.assertEqual(status, 401)
+            rows = deploy_proof.read_audit_rows(log._path)
+            self.assertEqual(rows[-1]["identity"], "ZC")
 
     def test_a_row_for_another_confirmed_identity_does_not_bind(self):
         with tempfile.TemporaryDirectory() as tmp:
