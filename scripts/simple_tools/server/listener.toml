@@ -224,10 +224,16 @@ instance = "server"
 creds = "env"                     # ZULIP_OPENCODE_EMAIL, ZULIP_OPENCODE_API_KEY
 wake = "inbox"
 
+# ZC is woken through its wake bridge (docs/protocols/zcode-wakes.md):  POST simple-tools-wake/1 with
+# Authorization: Bearer <ZC_ROUTINE_KEY> to ZC_ROUTINE_URL, the bridge's tailnet URL on this host.  The key is the
+# one in Fleet-OPS /zulip, read through the listener's secondary project read (infisical_env.py
+# LISTENER_READ_CODES);  the URL is in AFC prod /zulip.  Until both are set the wake is logged routine-unready and
+# dropped, and capture is unchanged.
 [seat.ZC]
 instance = "server"
 creds = "env"                     # ZULIP_ZC_EMAIL, ZULIP_ZC_API_KEY
-wake = "inbox"
+wake = "http"
+routine = { url_env = "ZC_ROUTINE_URL", key_env = "ZC_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 
 [seat.KIMI]
 instance = "server"
