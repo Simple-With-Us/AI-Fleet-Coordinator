@@ -542,10 +542,7 @@ def _bootstrap_row_binds(record, rows, identity):
         if (
             isinstance(row, dict)
             and row.get("cause") == BOOTSTRAP_CAUSE
-            and (
-                row.get("identity") == identity
-                or row.get("identity_sha256") == identity_sha256
-            )
+            and (row.get("identity") == identity or row.get("identity_sha256") == identity_sha256)
             and row.get("action") == "wf_file_patch"
             and row.get("repo") == record["repo"]
             and row.get("result") == "unauthenticated"
