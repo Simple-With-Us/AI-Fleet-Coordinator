@@ -176,6 +176,30 @@ class NightlyJobTests(unittest.TestCase):
         self.assertEqual(summary["alert"], "posted")
         self.assertIn("code-main-sync exited 3", posts[0]["content"])
 
+    def test_linear_pairs_come_from_the_coordinator_project(self) -> None:
+        fetched: list[tuple] = []
+
+        def fetch(project, path, token, names):  # noqa: ANN001
+            fetched.append((project, path))
+            return {name: f"value-{name}" for name in names}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _ready(Path(tmp))
+            nightly_job.load_credentials(env, read_file=nightly_job.read_token_file, fetch=fetch)
+            env[nightly_job.LINEAR_PROJECT_ENV] = "other-project"
+            nightly_job.load_credentials(env, read_file=nightly_job.read_token_file, fetch=fetch)
+        recall_project = nightly_job.infisical_project()
+        self.assertEqual(
+            fetched,
+            [
+                (recall_project, "/"),
+                (nightly_job.LINEAR_PROJECT_DEFAULT, "/linear"),
+                (recall_project, "/"),
+                ("other-project", "/linear"),
+            ],
+        )
+        self.assertNotEqual(recall_project, nightly_job.LINEAR_PROJECT_DEFAULT)
+
     def test_machine_identity_refuses_before_the_recall_fetch(self) -> None:
         fetched: list[tuple] = []
 

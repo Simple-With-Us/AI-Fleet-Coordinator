@@ -61,6 +61,10 @@ LINEAR_KEYS = (
 )
 TOKEN_FILE_RECALL = "FLEET_RECALL_INFISICAL_TOKEN_FILE"
 TOKEN_FILE_LINEAR = "FLEET_RAG_LINEAR_INFISICAL_TOKEN_FILE"
+# The seat Linear app pairs live in AI Fleet Coordinator prod /linear, not in the shared
+# project that holds the Qdrant and TEI keys.  The env var overrides the project id.
+LINEAR_PROJECT_ENV = "FLEET_RAG_LINEAR_INFISICAL_PROJECT"
+LINEAR_PROJECT_DEFAULT = "9bf7417a-fbbb-42ca-870c-2b45207233f5"
 TOKEN_FILE_ZULIP = "FLEET_RAG_ZULIP_INFISICAL_TOKEN_FILE"
 # The server file from AFC-677 (#1729).  It holds FLEET_RECALL_INFISICAL_TOKEN=...
 # An export prefix and quotes are allowed.  TOKEN_FILE_RECALL overrides this path.
@@ -174,8 +178,9 @@ def load_credentials(
     if not linear_file:
         raise NightlyError("token-file-unset")
     project = infisical_project()
+    linear_project = (env.get(LINEAR_PROJECT_ENV) or "").strip() or LINEAR_PROJECT_DEFAULT
     recall = _call_fetch(fetch, project, "/", read_file(recall_token_path(env)), RECALL_KEYS)
-    linear = _call_fetch(fetch, project, "/linear", read_file(Path(linear_file)), LINEAR_KEYS)
+    linear = _call_fetch(fetch, linear_project, "/linear", read_file(Path(linear_file)), LINEAR_KEYS)
     missing = [name for name in RECALL_KEYS if not recall.get(name)]
     if missing:
         raise NightlyError("missing:" + ",".join(missing))
