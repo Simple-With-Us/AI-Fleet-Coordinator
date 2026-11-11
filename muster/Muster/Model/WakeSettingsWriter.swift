@@ -157,8 +157,10 @@ struct WakeSettingsWriter {
             // The eavesdropper folds a seat's name to upper case, so a seat is found under the
             // spelling the file already gives it, and written there.  Two spellings of one seat are
             // two headers it merges unpredictably, so neither is written.
-            if base.spellings(ofSeat: seat).count > 1 {
-                throw WriteError.spelledTwice(seat: seat, headers: base.sections(matchingSeat: seat).map(\.name))
+            let spellings = base.spellings(ofSeat: seat)
+            if spellings.count > 1 {
+                // Only the seat headers are spellings:  a `routine`, `budget` or `live` sub-table is not.
+                throw WriteError.spelledTwice(seat: seat, headers: spellings.map { "seat.\($0)" })
             }
             let problems = base.sections(matchingSeat: seat).flatMap(\.problems)
             guard problems.isEmpty else {

@@ -1517,7 +1517,8 @@ enum WakeSettingsBuilder {
             hasSection: hasSection,
             lineProblems: seatSections.flatMap(\.problems),
             leftoverWake: leftoverWake,
-            foldedHeaders: spellings.count > 1 ? seatSections.map(\.name) : []
+            // Only the seat headers are spellings:  a `routine`, `budget` or `live` sub-table is not.
+            foldedHeaders: spellings.count > 1 ? spellings.map { "seat.\($0)" } : []
         )
         let routine = sources.config.routineTable(seat: tag, form: form) ?? [:]
         let settings = WakeSettingKey.seatKeys.map { key -> WakeSetting in

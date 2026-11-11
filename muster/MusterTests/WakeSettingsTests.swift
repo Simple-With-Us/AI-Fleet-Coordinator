@@ -597,6 +597,16 @@ final class WakeSettingsTests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("[seat.MM] and [seat.mm]"), error.localizedDescription)
         }
         XCTAssertEqual(try String(contentsOf: space.config, encoding: .utf8), config)
+
+        // A sub-table is not a spelling:  the refusal names only the two seat headers.
+        let withTables = "[seat.MM]\nbot = \"MM\"\n\n[seat.mm]\nbot = \"MM\"\n\n[seat.mm.routine]\nurl_env = \"MM_ROUTINE_URL\"\n\n[seat.mm.budget]\nwakes_per_hour = 5\n"
+        let tables = try makeWorkspace(config: withTables)
+        let tableWriter = WakeSettingsWriter(configURL: tables.config, partitionURL: tables.partition)
+        XCTAssertThrowsError(try tableWriter.apply([
+            WakeSettingsWriter.Edit(seat: "MM", key: .wakesPerHour, value: .number(9)),
+        ])) { error in
+            XCTAssertEqual(error as? WakeSettingsWriter.WriteError, .spelledTwice(seat: "MM", headers: ["seat.MM", "seat.mm"]))
+        }
     }
 
     /// The gate runs again at the commit,  because the partition can change during the check.
