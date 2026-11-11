@@ -52,7 +52,8 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # The 162nd is scripts/ag-wake-bridge (AFC-665), the AG seat's wake bridge.
 # The 163rd and 164th are the Clutch and Fx session-letter adapters;  fleet-cli-release.py carries the
 # same ledger.
-MAX_FILES = 165
+# The 166th and 167th are simple_tools/wake_router.py and simple_tools/claude_wake.py (OPS-1048).
+MAX_FILES = 167
 MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65
