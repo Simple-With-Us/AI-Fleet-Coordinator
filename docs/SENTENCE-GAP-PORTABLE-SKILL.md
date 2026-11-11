@@ -203,7 +203,7 @@ lowercase one.  `e.g. this` and lower-case domains keep their plain space.
   costs the gap on a sentence that ends in a digit: `The answer is 42. Next thing.` gets none.
 
 If a body carries one of these, fix that single gap by hand after the run.  Do not silently ship
-**Hand-typed failures to avoid (owner corrections, 2026-11-10).**  The gap belongs only between two sentences, after `.`, `!` or `?` — never after a colon, semicolon, comma or a lead-in label: the owner ruled "I DO NOT WANT 2 spaces after ':'" after seeing `Summary:` carry a gap in a reply whose sentence boundary in the same reply held one plain space.  When typing the gap by hand in chat, check every sentence boundary for the wide pair and every colon for the bare single space before sending.
+
 it.  When a whole *class* of shapes is missed — a closing quote, a closing bracket, a closing
 span — widen the class in the converter **and** in both checks together, and never widen the
 converter alone: a converter the checks cannot see is a converter that fails silently, and a body
@@ -557,6 +557,8 @@ Two more costs it carries, and both are deliberate:
     converted.  Close the fence.
 
 A `0` from the first check means the run changed nothing.  Fix it before posting, never after.
+
+**Hand-typed failures to avoid (owner corrections, 2026-11-10).**  The gap belongs only between two sentences, after `.`, `!` or `?` — never after a colon, semicolon, comma or a lead-in label: the owner ruled "I DO NOT WANT 2 spaces after ':'" after seeing `Summary:` carry a gap in a reply whose sentence boundary in the same reply held one plain space.  When typing the gap by hand in chat, check every sentence boundary for the wide pair and every colon for the bare single space before sending.
 
 A body holds user-supplied text, so it needs the approved credential scan before it is persisted
 and before it leaves the machine.  The scan comes **first**, ahead of every `body*.txt` file: the
