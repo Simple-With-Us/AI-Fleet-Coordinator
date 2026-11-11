@@ -148,6 +148,8 @@ class DispatchIntents(unittest.TestCase):
             self.assertTrue(body["retryable"])
             status, _ = relay.handle(SEAT_TOKEN, "workflow_dispatch", self.args())
             self.assertEqual(status, 200)
+
+
 class CommentIntentTests(unittest.TestCase):
     """comment_pr idempotency: identical text resends replay; an explicit
     intent_id makes a deliberate re-trigger a new operation; the metadata
@@ -188,15 +190,16 @@ class CommentIntentTests(unittest.TestCase):
             relay = self.relay(tmp)
             relay._dispatch = Mock(return_value={"id": 3, "url": "u"})
             relay.handle(SEAT_TOKEN, "comment_pr", self.args(intent_id="trigger-0700z"))
-            status, replay = relay.handle(SEAT_TOKEN, "comment_pr", self.args(intent_id="trigger-0700z"))
+            status, replay = relay.handle(
+                SEAT_TOKEN, "comment_pr", self.args(intent_id="trigger-0700z")
+            )
             self.assertEqual(status, 200)
             self.assertEqual(relay._dispatch.call_count, 1)
 
     def test_intent_id_validation(self):
         for bad in (123, "", "   ", "x" * 40000):
-            with self.subTest(bad=repr(bad)[:20]):
-                with self.assertRaises(ValueError):
-                    _validate_args("comment_pr", self.args(intent_id=bad))
+            with self.subTest(bad=repr(bad)[:20]), self.assertRaises(ValueError):
+                _validate_args("comment_pr", self.args(intent_id=bad))
         with tempfile.TemporaryDirectory() as tmp:
             relay = self.relay(tmp)
             status, body = relay.handle(SEAT_TOKEN, "comment_pr", self.args(intent_id=123))
@@ -212,4 +215,6 @@ class CommentIntentTests(unittest.TestCase):
             # bearer:  no intent metadata.
             self.assertEqual(len(client.calls), 1)
             name, repo, number, body, bearer = client.calls[0]
-            self.assertEqual((name, repo, number, body), ("comment_pr", "example/x", 5, "@kody start-review"))
+            self.assertEqual(
+                (name, repo, number, body), ("comment_pr", "example/x", 5, "@kody start-review")
+            )
