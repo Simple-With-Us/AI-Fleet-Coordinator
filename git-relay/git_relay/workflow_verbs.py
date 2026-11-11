@@ -1009,7 +1009,18 @@ class WorkflowVerbs:
             return
 
     @classmethod
-    def for_action(cls, client, policy, minter, seat, action, repo, preauthorized=False, args=None, caller_token=None):
+    def for_action(
+        cls,
+        client,
+        policy,
+        minter,
+        seat,
+        action,
+        repo,
+        preauthorized=False,
+        args=None,
+        caller_token=None,
+    ):
         """Seat is already authenticated by the broker; authorize once, mint least permission.
 
         preauthorized is for Relay.handle only: it has just run policy.authorize for this

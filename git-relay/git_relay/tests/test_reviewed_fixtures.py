@@ -137,9 +137,7 @@ class ReviewedFixturesTests(TestCase):
     def test_zulip_shape_refused_on_publication_scan(self):
         token = "Ab1" * 10 + "C2"  # exactly 32 chars, mixed case and digits
         raw = (token + chr(10)).encode()
-        self.assertEqual(
-            unreviewed_file_secret(REPO, self.path, raw), "a Zulip-shaped API key"
-        )
+        self.assertEqual(unreviewed_file_secret(REPO, self.path, raw), "a Zulip-shaped API key")
 
     def args(self):
         return {

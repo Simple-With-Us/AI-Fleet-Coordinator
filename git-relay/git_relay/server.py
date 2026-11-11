@@ -434,7 +434,9 @@ class Relay:
                         "retryable": False,
                     }
             try:
-                result = self._dispatch(seat, action, canonical, canonical["repo"], caller_token=token)
+                result = self._dispatch(
+                    seat, action, canonical, canonical["repo"], caller_token=token
+                )
             except PolicyDenied as exc:
                 self._release(key, "refused")
                 outcome = "denied"
@@ -644,7 +646,9 @@ class Relay:
         if key is not None:
             self.outcomes.finish(key, state)
 
-    def _dispatch(self, seat: str, action: str, args: dict, repo: str, caller_token: str | None = None) -> dict:
+    def _dispatch(
+        self, seat: str, action: str, args: dict, repo: str, caller_token: str | None = None
+    ) -> dict:
         # handle() has already scanned, shape-validated, and authorized this
         # call (allowlist + hourly quota, once);  dispatch only executes.
         if action in SeatPolicy.WORKFLOW_ACTIONS:
@@ -811,7 +815,9 @@ def _is_workflow_read(self, action: str) -> bool:
     return spec is not None and not spec[1]
 
 
-def _dispatch_workflow(self, seat: str, action: str, args: dict, repo: str, caller_token: str | None = None) -> dict:
+def _dispatch_workflow(
+    self, seat: str, action: str, args: dict, repo: str, caller_token: str | None = None
+) -> dict:
     # Imported here: workflow_verbs imports this module.
     from .app_tokens import AppTokenError, InstallationReadError
     from .workflow_verbs import CeilingDenied, Unknown, WorkflowVerbs
