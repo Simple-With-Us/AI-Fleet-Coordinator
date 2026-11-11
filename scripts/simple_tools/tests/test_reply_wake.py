@@ -734,6 +734,18 @@ class ReplyWakeDaemonTests(DaemonHarness):
         done = [r for r in self.ledger() if r["state"] == "done"][-1]
         self.assertNotIn("linked_by", done)
 
+    def test_the_bot_name_cache_follows_a_changed_webhook_seat_list(self) -> None:
+        # Sentry on #1771:  fleet_bots_by_seat reads outgoing_webhook_seats, so the cache key must carry it,
+        # as eligible_ids' does, or a reload that changes the list leaves stale names behind.
+        daemon = self.started()
+        runner = next(iter(daemon.seats.values()))
+        daemon.fleet_bot_names(runner)
+        before = runner.bot_names_cache[0]
+        daemon.config.outgoing_webhook_seats = tuple(daemon.config.outgoing_webhook_seats) + ("NEWSEAT",)
+        daemon.fleet_bot_names(runner)
+        self.assertNotEqual(runner.bot_names_cache[0], before)
+        self.assertIn("NEWSEAT", runner.bot_names_cache[0][3])
+
     def test_a_reply_to_a_post_with_no_letter_posts_no_letter(self) -> None:
         daemon, routine = self.routine_daemon()
         self.chat_a_tags_codex(daemon, CHAT_A_UNLETTERED)

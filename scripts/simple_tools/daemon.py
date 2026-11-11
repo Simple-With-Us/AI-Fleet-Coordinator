@@ -2027,7 +2027,12 @@ class Daemon:
         """The fleet bots' full names (case-folded) mapped to their seat tags, so a loud `@**Name**`
         mention in a post reads as a tagged seat.  Cached until the user list, the tags or the owner pin
         changes, like `eligible_ids`.  Only the realm's own fleet bots count (router.fleet_bots_by_seat)."""
-        key = (runner.users_version, self.fleet_tags, self.config.owner_user_id)
+        key = (
+            runner.users_version,
+            self.fleet_tags,
+            self.config.owner_user_id,
+            self.config.outgoing_webhook_seats,
+        )
         if runner.bot_names_cache is None or runner.bot_names_cache[0] != key:
             names: dict[str, str] = {}
             by_seat = R.fleet_bots_by_seat(
