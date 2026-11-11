@@ -229,6 +229,13 @@ test("wrangler.jsonc keeps every hostname but the custom domain off", () => {
   assert.equal(w.durable_objects.bindings[0].class_name, "SeatGate");
 });
 
+test("wrangler.jsonc pins the Worker's placement to Frankfurt, near the server (owner decision, Nov 10, 2026)", () => {
+  const w = wranglerConfig();
+  // One explicit region hint:  Cloudflare takes exactly one of region, host, hostname or mode.  Dropping or changing it
+  // needs a new owner decision, and a change takes effect only when the config is deployed.
+  assert.deepEqual(w.placement, { region: "aws:eu-central-1" });
+});
+
 test("package.json pins exact versions (fleet two-week rule, see README)", () => {
   const pkg = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"));
   const all = { ...pkg.dependencies, ...pkg.devDependencies };

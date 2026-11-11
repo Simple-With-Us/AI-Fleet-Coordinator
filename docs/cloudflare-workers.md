@@ -70,6 +70,7 @@ Measured figures are from the audit of Nov 3-4, 2026.  CPU figures are a 14-day
 - **Source:** `scripts/simple-tools-mcp`.
 - **Deploy:** by hand from `DEPLOY.md`.  Status `gated`.  Merge does not deploy it, and each deploy restarts the Durable Objects.
 - **Limits:** 300 ms CPU, 200 subrequests, sampling 1.  Measured CPU p99 78.9 ms, p99.9 120 ms, about 5.5 subrequests per request.  The true per-invocation maximum is not exposed by analytics.  The largest fan-out read from the code is `GET /admin`: about 131 SeatGate calls across 8 hosted seats and 44 bearer rows, plus its Infisical reads.  Whether each call or each stub counts as a subrequest is not verified.  Past the limit its reads show as unavailable or unknown instead of failing the page.
+- **Placement:** pinned with `placement.region = "aws:eu-central-1"` (Frankfurt, near the server in Nuremberg), the owner's decision of Nov 10, 2026.  It moves only the fetch handler, because Cloudflare ignores placement for RPC methods and leaves Durable Objects their own automatic placement, so SeatGate is unaffected.  Like the limits it takes effect only when the config is deployed.
 
 ### alert-ingress
 
