@@ -984,7 +984,7 @@ def _cli(scripts_dir, args, env, timeout):
     if not scripts_dir or not os.path.isdir(os.path.join(scripts_dir, "simple_tools")):
         return 127, ""
     try:
-        done = subprocess.run(  # noqa: S603 - an argv list, never a shell
+        done = subprocess.run(
             [sys.executable, "-I", "-c", _CLI_SHIM, scripts_dir] + list(args),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -1211,7 +1211,7 @@ def apply(
                     "the Eavesdropper would not take the result;  nothing was written",
                     check=check,
                 )
-            stamp = (now or _dt.datetime.now(_dt.timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
+            stamp = (now or _dt.datetime.now(_dt.UTC)).strftime("%Y%m%dT%H%M%SZ")
             backup = path.with_name("%s%s%s" % (path.name, BACKUP_INFIX, stamp))
             serial = 1
             while os.path.lexists(str(backup)):
