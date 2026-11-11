@@ -1715,6 +1715,73 @@ class RetireTests(WorldCase):
         self.assertIn("PR lookup failed (relay)", res.err)
         self.assertTrue(lane.exists())
 
+    def test_relay_refused_and_only_the_tree_landed_signature_retires(self) -> None:
+        # main squashes the lane's change and then edits the same path again, so neither "zero diff" nor
+        # "byte-identical at the tip" can hold: only HEAD's tree equalling a recent main commit proves it.
+        lane = self.w.new_lane("treeonly")
+        self.w.commit(lane)
+        tree = self.w.trees["DealDex"]
+        name = "claude-treeonly.txt"
+        (tree / name).write_text(name + "\n", encoding="utf-8")
+        self.w.git(["add", name], tree)
+        self.w.git(["commit", "-q", "-m", "squash"], tree)
+        (tree / name).write_text("edited later\n", encoding="utf-8")
+        self.w.git(["add", name], tree)
+        self.w.git(["commit", "-q", "-m", "edited again"], tree)
+        self.w.git(["push", "-q", "origin", "main"], tree)
+        self.w.git(["fetch", "-q", "origin"], lane)
+        res = self.w.run("retire", "treeonly", override=self._relay_down)
+        self.assertEqual(res.rc, 0, res.err)
+        self.assertFalse(lane.exists())
+        self.assertIn("squash-merged", res.err)
+        self.assertNotIn("byte-identical", res.err)
+
+    def test_relay_refused_never_retires_a_lane_whose_branch_is_live_on_origin(self) -> None:
+        # Net-zero diff with a live upstream and an OPEN PR: relay up keeps it ("PR #41 is open"), and relay
+        # down must not be more permissive, because the relay cannot say whether a PR exists.
+        lane = self.w.new_lane("opendown")
+        self.w.commit(lane)
+        self.w.git(["revert", "--no-edit", "HEAD"], lane)
+        self.w.push(lane, "claude/opendown")
+        self.w.merged_pr(lane, "claude/opendown", number=41, state="OPEN")
+        up = self.w.run("retire", "opendown")
+        self.assertEqual(up.rc, 64)
+        self.assertIn("PR #41 is open", up.err)
+        down = self.w.run("retire", "opendown", override=self._relay_down)
+        self.assertEqual(down.rc, 64, down.err)
+        self.assertIn("branch live on origin may have an open PR", down.err)
+        self.assertTrue(lane.exists())
+        pruned = self.w.run("prune", "--json", override=self._relay_down)
+        self.assertEqual(pruned.row("claude-opendown")["action"], "keep")
+
+    def test_relay_refused_still_fails_closed_for_a_review_checkout(self) -> None:
+        gh = lambda a: D.CmdResult(
+            0,
+            json.dumps(
+                {
+                    "headRefOid": SHAS["pr"],
+                    "headRefName": "prbranch",
+                    "state": "OPEN",
+                    "isCrossRepository": False,
+                }
+            ),
+            "",
+        )
+        made = self.w.run(
+            "new",
+            "DealDex",
+            "--review",
+            "--pr",
+            "7",
+            clock=REAL_NOW,
+            override=lambda a: gh(a) if a[0] == "gh" else None,
+        )
+        self.assertEqual(made.rc, 0, made.err)
+        res = self.w.run("retire", made.out.strip(), override=self._relay_down)
+        self.assertEqual(res.rc, 69, res.err)
+        self.assertIn("PR lookup failed (relay)", res.err)
+        self.assertTrue(Path(made.out.strip()).exists())
+
     def test_retire_refuses_another_seats_lane_and_unknown_or_ambiguous_slugs(
         self,
     ) -> None:

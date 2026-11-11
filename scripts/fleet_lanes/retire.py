@@ -61,10 +61,13 @@ page only for a lane the bulk pages could not place.  No gh and no owner credent
 When the relay refuses or cannot be reached, a lane (never a review checkout) is retired only on local proof
 (AFC-696): no net change against its merge base with origin/<default>, every path it changed byte-identical at
 origin/<default>'s tip, or HEAD's tree equal to a recent origin/<default> commit.  The reason names the
-evidence used; anything else keeps failing closed ("PR lookup failed (relay)", exit 69).
+evidence used; anything else keeps failing closed ("PR lookup failed (relay)", exit 69).  A lane whose branch or
+upstream is still live on origin is never retired on local proof alone, since an open PR could exist there.
 
 Exit codes: 0 ok (some lanes may be kept: read the table), 64 usage or refusal (`lane retire` of a lane that is
-not removable is a refusal), 69 git, relay or lsof failed, or a removal failed.
+not removable is a refusal), 69 git, relay or lsof failed, or a removal failed.  With the relay down, `prune`
+still exits 69 (the relay error stays in the plan) even when `--apply` removed lanes on local evidence:  read the
+table, not the exit code, to see what was removed.
 
 Python 3.9 safe.  Tests: fleet_lanes/tests/test_retire.py (real git, a local bare origin, the relay and lsof faked).
 """
@@ -417,6 +420,9 @@ class Facts:
     default_branch: str = "main"
     upstream: str | None = None  # the short branch name on origin this lane tracks
     upstream_gone: bool | None = None
+    # Whether the lane's branch name or its upstream is a live branch on origin (None when ls-remote failed).
+    # An open PR can only exist for a live branch, so local evidence alone never retires such a lane (AFC-696).
+    remote_branch_live: bool | None = None
     idle_minutes: float | None = None
     pr: PrView = field(default_factory=PrView)
 
@@ -466,6 +472,11 @@ def decide(f: Facts, *, prune: bool) -> tuple[str, str]:
             return "keep", f"review checkout; PR state {state or 'unknown'}"
     elif f.pr.open_number is not None:
         return "keep", f"PR #{f.pr.open_number} is open"
+    if f.kind != "review" and f.pr.local_evidence and f.remote_branch_live is not False:
+        # The relay could not say whether an open PR exists, and a branch live on origin is exactly where one
+        # could be.  Local git evidence only retires a lane whose branch is not on origin (never pushed, or
+        # deleted on merge), so this path is never more permissive than the relay-up path.
+        return "keep", "relay PR lookup failed; branch live on origin may have an open PR"
     # origin/<default> is never deleted or rewound, so HEAD in it is pushed even when its new tip was not
     # fetched here (the live-sha count drops a sha that is not an object here).
     if not (f.pr.covers_head or f.unpushed == 0 or f.merged_default):
@@ -753,6 +764,8 @@ def _inspect(
             f.upstream = up[len("refs/heads/") :]
             if remote_heads is not None:
                 f.upstream_gone = f.upstream not in remote_heads
+    if remote_heads is not None:
+        f.remote_branch_live = any(n and n in remote_heads for n in (branch, f.upstream))
     # Unpushed means "on no LIVE origin branch": the shas `git ls-remote --heads origin` reported, never a local
     # remote-tracking ref.  Those can be stale (a branch deleted on origin without a `fetch --prune`, the
     # deleted upstream's or any other; a force-pushed branch), and another remote (a peer lane, a scratch bare
@@ -994,7 +1007,8 @@ def _local_evidence(run: Runner, path: str, default_branch: str) -> str | None:
     closed):  the lane has no net change against its merge base with origin/<default> (zero work);  every path
     it changed is byte-identical at origin/<default>'s tip (the work landed, however it was merged);  or
     HEAD's tree is the tree of a recent origin/<default> commit (a squash merge).  Nothing here asks GitHub, so
-    it never knows about an open PR, and it does not need to: an open PR holds no work this lane lacks.
+    it never knows about an open PR, so `decide` refuses this evidence while the lane's branch or upstream is live on
+    origin, which is where an open PR could exist (an open PR is a policy guard, not only a data guard).
     Compared against the local refs/remotes/origin/<default>, which this tool never fetches; a stale ref can
     only hide landed work (keep), never invent it."""
     base_ref = f"refs/remotes/origin/{default_branch}"
