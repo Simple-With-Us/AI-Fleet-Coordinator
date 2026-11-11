@@ -549,6 +549,49 @@ class WorkflowPrElevation(unittest.TestCase):
         self.assertNotIn("PUT", [c[0] for c in client.calls])
         self.assertEqual(len(minter.calls), 1)
 
+    def test_update_branch_refuses_when_base_tip_object_is_not_a_dict(self):
+        client, minter, handle, args = self.update_branch([{"filename": "docs/a.md"}])
+        client.replies[2] = {"object": None}
+        with self.assertRaises(Refused):
+            handle.run("wf_update_branch", args)
+        self.assertNotIn("PUT", [c[0] for c in client.calls])
+        self.assertEqual(len(minter.calls), 1)
+
+    def test_update_branch_non_list_compare_files_falls_back_to_trees(self):
+        minter = Minter()
+        pr = {"head": {"sha": SHA}, "base": {"ref": "main", "sha": "b" * 40}}
+        tree = {
+            "sha": "c" * 40,
+            "truncated": False,
+            "tree": [{"type": "blob", "path": "a.py", "sha": "1" * 40, "mode": "100644"}],
+        }
+        head_commit = {"sha": SHA, "tree": {"sha": "c" * 40}}
+        base_commit = {"sha": "b" * 40, "tree": {"sha": "c" * 40}}
+        client = Client(
+            pr,
+            {"total_commits": 5, "files": {"shape": "malformed"}},
+            head_commit,
+            tree,
+            base_commit,
+            tree,
+            {"object": {"sha": "b" * 40}},
+            {"message": "ok"},
+        )
+        args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
+        handle = WorkflowVerbs.for_action(
+            client,
+            Policy({**CEILING, "workflows": "write"}),
+            minter,
+            "swu-wise",
+            "wf_update_branch",
+            REPO,
+            args=args,
+        )
+        handle.run("wf_update_branch", args)
+        self.assertEqual(client.calls[-1][0], "PUT")
+        self.assertEqual(len(minter.calls), 2)
+        self.assertEqual(minter.calls[1][2].get("workflows"), "write")
+
     def test_update_branch_ordinary_change_still_elevates_unfenced_base(self):
         client, minter, handle, args = self.update_branch([{"filename": "docs/a.md"}])
         handle.run("wf_update_branch", args)

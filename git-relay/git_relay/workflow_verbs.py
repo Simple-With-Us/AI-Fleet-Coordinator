@@ -1129,7 +1129,7 @@ class WorkflowVerbs:
                     raise
                 data = None
             files = data.get("files") if isinstance(data, dict) else None
-            if files is None:
+            if not isinstance(files, list):
                 touches = self._base_changes_touch_workflows_via_trees(
                     read, repo, head_sha, base_sha
                 )
@@ -1146,7 +1146,8 @@ class WorkflowVerbs:
             # is exactly why the write below always runs under the workflow ceiling
             # instead of relying on the provider to refuse unaudited changes.
             tip = read(f"/repos/{repo}/git/ref/heads/{base_ref}")
-            tip_sha = tip.get("object", {}).get("sha") if isinstance(tip, dict) else None
+            tip_obj = tip.get("object") if isinstance(tip, dict) else None
+            tip_sha = tip_obj.get("sha") if isinstance(tip_obj, dict) else None
             if tip_sha != base_sha:
                 raise Refused("PR base not matched")
         else:
