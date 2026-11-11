@@ -62,7 +62,8 @@ What it promises:
     server Operator's session registry and its wake records, each with one fixed `docker exec
     --user simpletools eavesdropper /usr/local/bin/python3 -I -c PROGRAM PLACE...`, where PROGRAM
     and every PLACE are constants of this file (no shell, no sudo, no word from the request, the
-    same pinned docker environment, at most 1 MiB, 20 seconds).  The program opens the registry
+    same pinned docker environment, at most 1 MiB, 20 seconds, and the program stops itself
+    after 15, so a slow read is not left running in the container).  The program opens the registry
     read-only and reads the listener's records through the container's own read-only views, and
     prints only the columns named here;  this helper then checks every value against a fixed
     shape and drops what does not fit.  The sessions answer holds letters, seats, platforms,
@@ -239,6 +240,11 @@ OPERATOR_STATE_ROOT = "/data"
 OPERATOR_SCRIPTS_DIR = "/app/scripts"
 OPERATOR_READ_MAX_BYTES = 1024 * 1024
 OPERATOR_READ_TIMEOUT = 20
+# Each program stops itself after this long and answers `timeout`.  It is shorter than the read's
+# own limit on purpose:  when that limit kills the local `docker exec`, the process it started
+# inside the container is not killed with it, so a slow read would otherwise run on beside the
+# daemon after its answer was given up.
+OPERATOR_PROGRAM_SECONDS = 15
 OPERATOR_SCHEMA = 1
 # The caps the programs apply inside the container and the reducers apply again here.
 OPERATOR_MAX_SESSIONS = 300
@@ -253,15 +259,23 @@ OPERATOR_COUNT_MAX = 1_000_000_000
 # selects the columns the answer needs and no others.  The native session id, the title, the
 # project, the links and the profile scope are never selected;  the record id is used for the
 # join inside the query and is never printed.  A registry from before the issues table has no
-# issues.  Anything that goes wrong is one fixed word.
+# issues, and that is decided by asking the database whether the table is there, never by a
+# failed query, so a locked database is not answered as sessions without issues.  Anything that
+# goes wrong is one fixed word:  `store_busy` when a writer held the lock past the five-second
+# wait, and `store_recovering` when a writer died mid-write and left a journal that a read-only
+# handle may not roll back (the next read-write open of the registry, which the Operator itself
+# makes, clears it).  The handle stays `mode=ro`:  a read-write handle would recover that journal,
+# and it would also give this route write access to the registry.
 OPERATOR_SESSIONS_PROGRAM = r"""
 import json
 import os
 import sqlite3
 import sys
+import threading
 import urllib.parse
 
 LIMIT = __LIMIT__
+SECONDS = __SECONDS__
 COLUMNS = (
     "s.seat, s.platform, s.verified_host, s.state, s.wake_capability, s.registered_at,"
     " s.last_seen_at, a.letter, a.generation"
@@ -279,13 +293,16 @@ def read(path):
     conn = sqlite3.connect("file:" + urllib.parse.quote(path) + "?mode=ro", uri=True, timeout=5)
     try:
         counts = [list(row) for row in conn.execute("SELECT state, COUNT(*) FROM sessions GROUP BY state")]
-        try:
+        issues = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_issues'"
+        ).fetchone()
+        if issues:
             rows = conn.execute(
                 "SELECT " + COLUMNS + ", i.issues" + JOIN
                 + " LEFT JOIN session_issues i ON i.record_id = s.record_id" + TAIL,
                 (LIMIT,),
             ).fetchall()
-        except sqlite3.OperationalError:
+        else:
             rows = [
                 tuple(row) + (None,)
                 for row in conn.execute("SELECT " + COLUMNS + JOIN + TAIL, (LIMIT,))
@@ -295,12 +312,36 @@ def read(path):
     return {"counts": counts, "rows": [list(row) for row in rows]}
 
 
+def word(error):
+    name = getattr(error, "sqlite_errorname", None) or ""
+    if name in ("SQLITE_READONLY_ROLLBACK", "SQLITE_READONLY_RECOVERY"):
+        return "store_recovering"
+    if name.startswith(("SQLITE_BUSY", "SQLITE_LOCKED")):
+        return "store_busy"
+    return "reader_failed"
+
+
+def late():
+    if once.acquire(False):
+        os.write(1, b'{"error": "timeout"}')
+        os._exit(0)
+
+
+once = threading.Lock()
+timer = threading.Timer(SECONDS, late)
+timer.daemon = True
+timer.start()
 try:
     answer = read(sys.argv[1])
+except sqlite3.Error as error:
+    answer = {"error": word(error)}
 except Exception:
     answer = {"error": "reader_failed"}
+once.acquire()
 sys.stdout.write(json.dumps(answer))
-""".replace("__LIMIT__", str(OPERATOR_MAX_SESSIONS))
+""".replace("__LIMIT__", str(OPERATOR_MAX_SESSIONS)).replace(
+    "__SECONDS__", str(OPERATOR_PROGRAM_SECONDS)
+)
 # The wakes program:  argv[1] is the daemon's state root (one folder per seat, named in capitals,
 # so `listener`, `logs` and `operator` are never taken for one) and argv[2] the folder that holds the container's own `simple_tools` package, whose read-only views
 # (`listener_records`, the ones the listener's signed read API answers with) do the reading, so
@@ -314,9 +355,10 @@ import json
 import os
 import re
 import sys
+import threading
 
 ROOT, SCRIPTS = sys.argv[1], sys.argv[2]
-SEATS, ROWS, HOURS = __SEATS__, __ROWS__, __HOURS__
+SEATS, ROWS, HOURS, SECONDS = __SEATS__, __ROWS__, __HOURS__, __SECONDS__
 SEAT_RE = re.compile(r"[A-Z0-9][A-Z0-9_-]{0,31}")
 
 
@@ -379,14 +421,26 @@ def read():
     return answer
 
 
+def late():
+    if once.acquire(False):
+        os.write(1, b'{"error": "timeout"}')
+        os._exit(0)
+
+
+once = threading.Lock()
+timer = threading.Timer(SECONDS, late)
+timer.daemon = True
+timer.start()
 try:
     answer = read()
 except Exception:
     answer = {"error": "reader_failed"}
+once.acquire()
 sys.stdout.write(json.dumps(answer))
 """.replace("__SEATS__", str(OPERATOR_MAX_SEATS))
     .replace("__ROWS__", str(OPERATOR_MAX_ROWS))
     .replace("__HOURS__", str(OPERATOR_WAKE_WINDOW_HOURS))
+    .replace("__SECONDS__", str(OPERATOR_PROGRAM_SECONDS))
 )
 # verb -> (the program, the constant places it is given, the key of the answer, the detail).
 OPERATOR_READS = {
@@ -412,8 +466,12 @@ OPERATOR_UNAVAILABLE = {
     "too_large": "the answer is larger than the allowed size",
     "not_json": "the answer is not a JSON object",
     "store_missing": "the Operator's store is not in the container",
+    "store_busy": "the Operator's store was locked by a writer",
+    "store_recovering": "the Operator's store is waiting for a writer to recover it",
     "reader_failed": "the Operator's store could not be read",
 }
+# The words a program may answer for itself;  any other word it prints is `reader_failed`.
+OPERATOR_PROGRAM_WORDS = ("store_missing", "store_busy", "store_recovering", "timeout")
 # The shapes a value must have to reach an answer of those two verbs (always `fullmatch`).  A
 # value that does not fit is dropped to null or its row is left out;  it is never repaired.
 OPERATOR_SEAT_RE = re.compile(r"[A-Z0-9][A-Z0-9_-]{0,31}")
@@ -1682,7 +1740,8 @@ def operator_read(ctx, action, target, mode):
     reduced = None
     if document is not None and "error" in document:
         # The program's own word for a store it could not read;  any other word is one answer.
-        reason = "store_missing" if document.get("error") == "store_missing" else "reader_failed"
+        word = document.get("error")
+        reason = word if word in OPERATOR_PROGRAM_WORDS else "reader_failed"
         document = None
     if document is not None:
         try:

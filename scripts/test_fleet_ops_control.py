@@ -3724,8 +3724,9 @@ class LocalStoreReader:
     argv of an Operator read, then runs the very program it carries with this interpreter
     (`-I`, as in the container) against fixture places instead of the container's own."""
 
-    def __init__(self, places):
+    def __init__(self, places, rewrite=None):
         self.places = [str(place) for place in places]
+        self.rewrite = rewrite
         self.calls = []
 
     def __call__(self, argv, timeout=None, env=None, max_bytes=None):
@@ -3739,8 +3740,13 @@ class LocalStoreReader:
             "-I",
             "-c",
         ], argv
+        program = argv[8]
+        if self.rewrite is not None:
+            old, new = self.rewrite
+            assert program.count(old) == 1, old
+            program = program.replace(old, new)
         done = subprocess.run(
-            [sys.executable, "-I", "-c", argv[8]] + self.places,
+            [sys.executable, "-I", "-c", program] + self.places,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=60,
@@ -4043,7 +4049,11 @@ class OperatorReadTests(Base):
             ("not_json", StatusReader(out=b"[1, 2]")),
             ("not_json", StatusReader(out=b"")),
             ("store_missing", StatusReader(out=b'{"error": "store_missing"}')),
+            ("store_busy", StatusReader(out=b'{"error": "store_busy"}')),
+            ("store_recovering", StatusReader(out=b'{"error": "store_recovering"}')),
+            ("timeout", StatusReader(out=b'{"error": "timeout"}')),
             ("reader_failed", StatusReader(out=b'{"error": "reader_failed"}')),
+            ("reader_failed", StatusReader(out=b'{"error": ["store_busy"]}')),
             ("reader_failed", StatusReader(out=json.dumps({"error": self.PATH}).encode())),
         )
         for verb in self.VERBS:
@@ -4344,9 +4354,9 @@ class OperatorFixtureStoreTests(Base):
     SESSION = OperatorReadTests.SESSION
     BODY = OperatorReadTests.BODY
 
-    def run_verb(self, verb, places):
+    def run_verb(self, verb, places, rewrite=None):
         context = self.ctx()
-        context.reader = LocalStoreReader(places)
+        context.reader = LocalStoreReader(places, rewrite)
         out = io.StringIO()
         code = foc.main(["server", verb, "server", "--plan", "--json"], ctx=context, out=out)
         return code, out.getvalue(), context.reader
@@ -4468,6 +4478,98 @@ class OperatorFixtureStoreTests(Base):
         code, text, _ = self.run_verb("operator-sessions", [self.registry(issues_table=False)])
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(text)["sessions"], self.expected_sessions([]))
+
+    def assert_unavailable(self, code, text, word):
+        answer = json.loads(text)
+        self.assertEqual(
+            (code, answer["ok"], answer["result"], answer["errorCode"]),
+            (1, False, "unavailable", word),
+        )
+        self.assertEqual(answer["detail"], foc.OPERATOR_UNAVAILABLE[word])
+        self.assertNotIn("sessions", answer)
+        self.assertNotIn("wakes", answer)
+        self.assertNotIn(str(self.home), text)
+
+    def test_a_locked_registry_is_store_busy_and_never_sessions_without_issues(self):
+        import sqlite3
+
+        path = self.registry()
+        writer = sqlite3.connect(str(path), isolation_level=None)
+        try:
+            writer.execute("BEGIN EXCLUSIVE")
+            code, text, _ = self.run_verb("operator-sessions", [path])
+        finally:
+            writer.close()
+        self.assert_unavailable(code, text, "store_busy")
+        # The fallback without issues is chosen by asking for the table, not by a failed query.
+        self.assertNotIn("except sqlite3.OperationalError", foc.OPERATOR_SESSIONS_PROGRAM)
+        self.assertIn("sqlite_master", foc.OPERATOR_SESSIONS_PROGRAM)
+
+    def test_a_journal_left_by_a_dead_writer_is_store_recovering_and_is_left_alone(self):
+        import sqlite3
+
+        path = self.registry()
+        # A writer that dies mid-transaction, after its pages spilled to the file.
+        died = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                "import os, sqlite3, sys\n"
+                "c = sqlite3.connect(sys.argv[1], isolation_level=None)\n"
+                "c.execute('PRAGMA cache_size = 1')\n"
+                "c.execute('CREATE TABLE filler(a)')\n"
+                "c.executemany('INSERT INTO filler VALUES (?)', [('x' * 500,)] * 2000)\n"
+                "c.execute('BEGIN IMMEDIATE')\n"
+                "c.execute(\"UPDATE filler SET a = a || 'y'\")\n"
+                "os._exit(0)\n",
+                str(path),
+            ],
+            check=False,
+            timeout=60,
+        )
+        self.assertEqual(died.returncode, 0)
+        journal = path.with_name(path.name + "-journal")
+        self.assertTrue(journal.exists())
+        before = (path.read_bytes(), journal.read_bytes())
+        code, text, _ = self.run_verb("operator-sessions", [path])
+        self.assert_unavailable(code, text, "store_recovering")
+        self.assertEqual(before, (path.read_bytes(), journal.read_bytes()))
+        # The next read-write open recovers it, and the read then answers.
+        with contextlib.closing(sqlite3.connect(str(path))) as recovering:
+            recovering.execute("SELECT COUNT(*) FROM sessions").fetchall()
+        code, text, _ = self.run_verb("operator-sessions", [path])
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            json.loads(text)["sessions"], self.expected_sessions(["AFC-704", "AFC-616"])
+        )
+
+    def test_a_program_stops_itself_before_the_reads_own_limit(self):
+        import sqlite3
+
+        self.assertLess(foc.OPERATOR_PROGRAM_SECONDS, foc.OPERATOR_READ_TIMEOUT)
+        for program in (foc.OPERATOR_SESSIONS_PROGRAM, foc.OPERATOR_WAKES_PROGRAM):
+            self.assertIn(str(foc.OPERATOR_PROGRAM_SECONDS), program)
+            self.assertNotIn("__SECONDS__", program)
+        path = self.registry()
+        writer = sqlite3.connect(str(path), isolation_level=None)
+        started = time.monotonic()
+        try:
+            # The lock makes the read wait five seconds;  a one-second limit ends it first.
+            writer.execute("BEGIN EXCLUSIVE")
+            code, text, _ = self.run_verb(
+                "operator-sessions", [path], rewrite=("SECONDS = 15", "SECONDS = 1")
+            )
+        finally:
+            writer.close()
+        self.assertLess(time.monotonic() - started, 4)
+        self.assert_unavailable(code, text, "timeout")
+        code, text, _ = self.run_verb(
+            "operator-wakes",
+            [self.listener()[0], HERE],
+            rewrite=("SECONDS = 64, 10, 24, 15", "SECONDS = 64, 10, 24, 0"),
+        )
+        self.assert_unavailable(code, text, "timeout")
 
     def test_the_read_does_not_change_the_registry(self):
         path = self.registry()
