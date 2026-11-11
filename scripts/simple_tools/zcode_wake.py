@@ -243,8 +243,11 @@ def deliver_request(
                 WR.Delivery("failed", route="zcode", code="deliver-%s" % type(exc).__name__)
             )
         if proc.returncode == 0:
-            # zcode -p exits 0 even when the turn fails (seen live on this server), so this
-            # is handed-over without proof, never completed.
+            # Exit 0 is only `sent`.  The bridge's four resume attempts with failed turns all
+            # exited 1 (command-failed-1);  the one run that seemed to exit 0 was a fresh
+            # non-resume probe whose exit code was misread from a shell pipeline, so a
+            # successful run has not been seen yet and 0 stays handed-over without proof,
+            # never completed.
             return answer(WR.Delivery("sent", route="zcode"))
         return answer(
             WR.Delivery("refused", route="zcode", code="command-failed-%d" % proc.returncode)
