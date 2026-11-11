@@ -1,14 +1,18 @@
-# simple-chat listener seat partition.  Owner decision, Thu, Oct 8 (2026-10-08).
+# simple-chat listener seat partition.  Owner decision, Thu, Oct 8 (2026-10-08);  one listener
+# since Tue, Nov 10 (2026-11-10).
 #
-# The listener runs as two instances of the same package (scripts/simple_tools):
-#   mac     the owner's Mac (LaunchAgent com.jay.operator):  every seat that runs on
-#           the Mac.  CLAUDE gets live delivery and the tool-less claude -p wake; the others get
-#           inbox capture (owner, Thu, Oct 8:  "grok build is on the mac too").
-#   server  the Coolify container on the Hetzner box:  the cloud seats (owner, Thu, Oct 8:
-#           OpenAI dot (Jet), Muse Assist, the Grok Bots, Instinct and Echo, plus GROK-WEB).
-#           GB bots wake through their Grok Bot routine webhooks.  The other cloud seats (MA,
-#           JET, GROK-WEB, WISE and ECHO) hold a queue with inbox capture since Fri, Oct 9 (no
-#           Mac config can hold them), and get a wake adapter when one exists.
+# There is ONE Zulip listener, on the server (owner, Tue, Nov 10:  "Only should have one and the
+# server's listener and router can send a signal to a Mac based wake process if necessary for wake
+# delivery").  The package (scripts/simple_tools) still knows two instances:
+#   mac     the owner's Mac (LaunchAgent com.jay.operator, booted out at the Nov 10 cutover).
+#           It holds no agent seat;  only the Operator's service identity stays listed here.
+#           The Mac's ~/.simple-tools/listener.toml keeps [daemon], [platform.*] and its other
+#           non-seat tables, which the CLI and the plugin hooks read.
+#   server  the Coolify container on the server:  every live seat.  The Mac CLI seats (CLAUDE,
+#           CODEX, AG, CURSOR, GROK, CLUTCH, FX, MM, MC, OPENCODE, ZC, KIMI and AMP) moved here
+#           on Nov 10 (owner:  "All seats at once") and hold a queue with inbox capture.  The
+#           cloud seats (MA, JET, GROK-WEB, WISE and ECHO) have held queues here since Fri,
+#           Oct 9, and the GB bots wake through their Grok Bot routine webhooks.
 #   none    no listener instance holds the seat.  Only retired names stay here (owner,
 #           Fri, Nov 6:  every seat should be working and all through the Operator, so a
 #           live seat is never left on "none").
@@ -31,23 +35,23 @@ version = 1
 # The Operator:  a deterministic service, not an agent roster entry.
 OPERATOR = "mac"
 
-# Mac seats
-CLAUDE = "mac"
-CODEX = "mac"
-AG = "mac"
-CURSOR = "mac"
-GROK = "mac"
-CLUTCH = "mac"
-FX = "mac"
-MM = "mac"
-MC = "mac"
-OPENCODE = "mac"
-# ZC, KIMI and AMP are Mac CLI seats like the rest (ZCode, Kimi Code and Amp); they held
-# Zulip bots and Infisical credentials all along and were missing only here (owner,
-# Fri, Nov 6:  they have seats, and every seat works through the Operator).
-ZC = "mac"
-KIMI = "mac"
-AMP = "mac"
+# Mac CLI seats.  Their agents run on the Mac, and the server listener holds their queues since
+# the one-listener cutover (owner, Tue, Nov 10).  ZC, KIMI and AMP (ZCode, Kimi Code and Amp)
+# held Zulip bots and Infisical credentials all along (owner, Fri, Nov 6:  they have seats, and
+# every seat works through the Operator).
+CLAUDE = "server"
+CODEX = "server"
+AG = "server"
+CURSOR = "server"
+GROK = "server"
+CLUTCH = "server"
+FX = "server"
+MM = "server"
+MC = "server"
+OPENCODE = "server"
+ZC = "server"
+KIMI = "server"
+AMP = "server"
 
 # Cloud seats
 MA = "server"
