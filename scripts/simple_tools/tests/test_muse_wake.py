@@ -1491,17 +1491,25 @@ class SubscriptionCappingTest(unittest.TestCase):
             _config_with_wake("claude").seats["MM"].wake_max_usd, C.WAKE_MAX_BUDGET_USD
         )
 
-    def test_the_count_caps_are_unchanged_and_still_the_spam_guard(self) -> None:
+    def test_the_count_caps_have_no_default_and_a_seat_that_sets_them_keeps_them(self) -> None:
+        # Owner, Nov 10, 2026:  an unset cap is no limit.  A seat still sets the spam guard itself.
         budget = _config_with_wake("muse").seats["MM"].budget
-        self.assertEqual(budget["wakes_per_hour"], 6)
-        self.assertEqual(budget["wakes_per_day"], 40)
-        self.assertEqual(budget["per_topic_per_hour"], 2)
-        self.assertEqual(budget["owner_per_day"], 20)
-        self.assertEqual(budget["owner_per_topic_per_hour"], 6)
+        for cap in C.WAKE_CAP_KEYS:
+            self.assertNotIn(cap, budget)
+        caps = {
+            "wakes_per_hour": 6,
+            "wakes_per_day": 40,
+            "per_topic_per_hour": 2,
+            "owner_per_day": 20,
+            "owner_per_topic_per_hour": 6,
+        }
+        set_budget = _config_with_wake("muse", {"budget": caps}).seats["MM"].budget
+        for cap, number in caps.items():
+            self.assertEqual(set_budget[cap], number)
 
-    def test_a_muse_seat_is_still_bounded_by_the_count_caps(self) -> None:
+    def test_a_muse_seat_is_still_bounded_by_the_count_caps_it_sets(self) -> None:
         # The dollar axis is inert, so prove the count axis is what actually stops it.
-        budget = _config_with_wake("muse").seats["MM"].budget
+        budget = _config_with_wake("muse", {"budget": {"wakes_per_hour": 6}}).seats["MM"].budget
         now = time.time()
         views = {
             "w%d" % i: {

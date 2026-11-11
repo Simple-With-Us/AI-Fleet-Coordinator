@@ -1372,6 +1372,133 @@ class HookTests(Base):
         self.assertNotIn("went to another chat", out["additionalContext"])
         self.assertEqual(self.lookup("s-0001")["label"], "AA")
 
+    # ---- a letter the registry changes in place:  the title follows it ----
+
+    def move_letter(self, sid: str, letter: str = "", generation: int = 0) -> None:
+        """Change the live letter (or generation) of a chat's record in place, as a relabel or a restore does."""
+        record = self.lookup(sid)["record_id"]
+        conn = sqlite3.connect(self.db)
+        with conn:
+            if letter:
+                conn.execute("UPDATE alias_assignments SET letter = ? WHERE record_id = ? AND retired_at IS NULL",
+                             (letter, record))
+            if generation:
+                conn.execute("UPDATE alias_assignments SET generation = ? WHERE record_id = ? AND retired_at IS NULL",
+                             (generation, record))
+        conn.close()
+
+    def test_a_letter_the_registry_moved_retitles_the_chat_on_its_next_touch(self) -> None:
+        self.titled()  # AA: Help Get All PR Issues Addressed
+        self.move_letter("s-0001", "QX")
+        ssh = FakeSsh(self)
+        later = time.time() + CL.TOUCH_SECONDS + 5
+        out = self.renamed("AA: Help Get All PR Issues Addressed", runner=ssh, now=later)
+        self.assertEqual(self.registry_ops(ssh), ["touch"])
+        self.assertEqual(out["sessionTitle"], "QX: Help Get All PR Issues Addressed")
+        context = out["additionalContext"]
+        self.assertIn("letter changed from AA to QX; it is addressed as QX now", context)
+        self.assertIn('"@**Claude** QX"', context)
+        note = self.note("s-0001")
+        self.assertEqual((note["label"], note["prior_label"], note["placeholder"]), ("QX", "AA", "QX: New Chat"))
+        # The next prompt has nothing to change once the title shows the new letter, and no registry call either.
+        self.assertIsNone(self.renamed("QX: Help Get All PR Issues Addressed", runner=ssh, now=later + 60))
+        self.assertEqual(len(ssh.calls), 1)
+        # A title that still shows the old letter (the app did not take the hook's) gets the new one again, quietly.
+        out = self.renamed("AA: Help Get All PR Issues Addressed", runner=ssh, now=later + 120)
+        self.assertEqual(out, {"hookEventName": "UserPromptSubmit",
+                               "sessionTitle": "QX: Help Get All PR Issues Addressed"})
+        self.assertEqual(len(ssh.calls), 1)
+
+    def test_two_moves_in_place_take_every_earlier_letter_off_the_title(self) -> None:
+        self.titled()  # AA
+        self.move_letter("s-0001", "QX")
+        later = time.time() + CL.TOUCH_SECONDS + 5
+        self.renamed("AA: Help Get All PR Issues Addressed", now=later)
+        self.move_letter("s-0001", "QY")
+        later += CL.TOUCH_SECONDS + 5
+        # The app never took a title from the hook, so the chat still shows the first letter of the three.
+        out = self.renamed("AA: Help Get All PR Issues Addressed", now=later)
+        self.assertEqual(out["sessionTitle"], "QY: Help Get All PR Issues Addressed")
+        self.assertIn("letter changed from QX to QY", out["additionalContext"])
+        note = self.note("s-0001")
+        self.assertEqual((note["label"], note["prior_label"]), ("QY", "QX"))
+        self.assertEqual(note["held_labels"], ["AA", "QX", "QY"])
+        # A later prompt that still sees the first letter is not a rename:  no registry call, the letter goes back.
+        ssh = FakeSsh(self)
+        out = self.renamed("AA: Help Get All PR Issues Addressed", runner=ssh, now=later + 60)
+        self.assertEqual(out["sessionTitle"], "QY: Help Get All PR Issues Addressed")
+        self.assertEqual(ssh.calls, [])
+        self.assertEqual(self.lookup("s-0001")["title"], "Help Get All PR Issues Addressed")
+
+    def test_a_title_answer_names_the_record(self) -> None:
+        self.titled()
+        code, answer = self.registry("title", "--location", "server", "--session-id", "s-0001", "--title=Words")
+        self.assertEqual(code, 0, answer)
+        self.assertEqual(answer["record_id"], self.lookup("s-0001")["record_id"])
+
+    def test_a_title_answer_with_a_new_letter_retitles_the_chat(self) -> None:
+        self.titled()
+        self.move_letter("s-0001", "QX")
+        ssh = FakeSsh(self)
+        out = self.renamed("AA: Release Notes", runner=ssh)  # a rename:  the title call answers with the letter
+        self.assertEqual(self.registry_ops(ssh), ["title"])
+        self.assertEqual(out["sessionTitle"], "QX: Release Notes")
+        self.assertIn("letter changed from AA to QX", out["additionalContext"])
+        self.assertEqual(self.lookup("s-0001")["title"], "Release Notes")
+        self.assertEqual(self.note("s-0001")["label"], "QX")
+
+    def test_a_first_title_answer_with_a_new_letter_titles_the_chat_under_it(self) -> None:
+        self.start("s-0001")
+        self.move_letter("s-0001", "QX")
+        out = self.prompt("s-0001", "fix the login bug", session_title="AA: New Chat")
+        self.assertEqual(out["sessionTitle"], "QX: Fix the Login Bug")
+        self.assertIn("letter changed from AA to QX", out["additionalContext"])
+
+    def test_the_same_letter_and_generation_change_nothing(self) -> None:
+        self.titled()
+        ssh = FakeSsh(self)
+        later = time.time() + CL.TOUCH_SECONDS + 5
+        self.assertIsNone(self.renamed("AA: Help Get All PR Issues Addressed", runner=ssh, now=later))
+        self.assertEqual(self.registry_ops(ssh), ["touch"])
+        note = self.note("s-0001")
+        self.assertEqual((note["label"], note["generation"]), ("AA", 1))
+        self.assertNotIn("prior_label", note)
+
+    def test_a_generation_alone_is_folded_into_the_note_silently(self) -> None:
+        self.titled()
+        self.move_letter("s-0001", generation=2)  # a chat registered by hand differs from its note by generation only
+        later = time.time() + CL.TOUCH_SECONDS + 5
+        self.assertIsNone(self.renamed("AA: Help Get All PR Issues Addressed", now=later))
+        note = self.note("s-0001")
+        self.assertEqual((note["label"], note["generation"]), ("AA", 2))
+        self.assertNotIn("prior_label", note)
+
+    def test_an_old_registry_touch_answer_without_a_letter_changes_nothing(self) -> None:
+        class OldRegistry(FakeSsh):
+            """A Mac on a runtime from before the touch named the letter."""
+
+            def __call__(self, cmd, **kwargs):
+                answer = super().__call__(cmd, **kwargs)
+                body = json.loads(answer.stdout)
+                if shlex.split(cmd[8])[3] == "touch":
+                    body = {k: v for k, v in body.items() if k not in ("label", "generation")}
+                return SimpleNamespace(stdout=json.dumps(body) + "\n", returncode=answer.returncode)
+
+        self.titled()
+        self.move_letter("s-0001", "QX")
+        ssh = OldRegistry(self)
+        later = time.time() + CL.TOUCH_SECONDS + 5
+        self.assertIsNone(self.renamed("AA: Help Get All PR Issues Addressed", runner=ssh, now=later))
+        self.assertEqual(self.registry_ops(ssh), ["touch"])
+        self.assertEqual(self.note("s-0001")["label"], "AA")
+
+    def test_a_closed_record_is_not_followed_but_registered_again(self) -> None:
+        note = {"state": "open", "label": "AA", "generation": 1, "title": "Words"}
+        for answer in ({"retired": True, "record_id": "r1"}, {"error": CL.NO_REGISTRATION}, {"ok": True}):
+            kept = dict(note)
+            self.assertEqual(CL._follow_letter(kept, answer, "AA: Words"), ("", ""))
+            self.assertEqual(kept, note)
+
     def replace_the_registry(self) -> None:
         """The store moves under the chats:  a registry that has never heard of any of them (the API's, after the cutover)."""
         for suffix in ("", "-wal", "-shm"):

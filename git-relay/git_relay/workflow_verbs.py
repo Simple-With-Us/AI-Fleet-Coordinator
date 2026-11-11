@@ -35,6 +35,7 @@ import zipfile
 import zlib
 from urllib.parse import quote, urlsplit
 
+from .app_tokens import AppTokenError
 from .github_client import MAX_DOWNLOAD_CHUNK, RelayGitHubError
 from .provider_scan import PROVIDER_PATTERN, provider_token_text
 from .reviewed_fixtures import unreviewed_file_secret
@@ -1022,6 +1023,8 @@ class WorkflowVerbs:
             if exc.code == "repository_moved":
                 raise
             raise Unknown("own App credential unavailable") from None
+        except AppTokenError:
+            raise
         except Exception:
             raise Unknown("own App credential unavailable") from None
         handle = cls(client, policy, seat, token, app_slug, action, repo)
@@ -1117,6 +1120,8 @@ class WorkflowVerbs:
             if exc.code == "repository_moved":
                 raise
             raise Unknown("own App credential unavailable") from None
+        except AppTokenError:
+            raise
         except Exception:
             raise Unknown("own App credential unavailable") from None
         return token

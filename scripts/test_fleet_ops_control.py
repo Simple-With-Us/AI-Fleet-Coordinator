@@ -369,9 +369,15 @@ class AllowlistListShapeTests(Base):
 class AllowlistNotesTests(Base):
     """The owner copy an entry may carry (`role`, `stopConsequence`), `logsUnit` and the `watch` list."""
 
-    # The five Mac agents that carry owner copy, as the repo allowlist words it.  The notes runner
-    # has no role: neither word the allowlist uses (`reporting`, `updater`) describes it.
+    # The Mac agents that carry owner copy, as the repo allowlist words it.  The notes runner
+    # and the RAG mirror have no role: neither word the allowlist uses (`reporting`, `updater`)
+    # describes them.
     MAC_NOTES = {
+        "com.jay.fleet-rag-mirror": (
+            None,
+            "Stopping this stops the Mac push of skill and memory files, so the server nightly "
+            "keeps the last mirror.",
+        ),
         "com.jay.fleet-mac-services": (
             "reporting",
             "Stopping this stops the Mac's agent report, so Muster's Services panel goes out of "

@@ -24,7 +24,7 @@ import re
 import threading
 from collections.abc import Callable
 
-from .policy import SeatPolicy
+from .policy import SeatPolicy, auth_failure_response
 from .secret_scan import find_secret
 
 ACTION = "git_read"
@@ -139,10 +139,11 @@ def handle(
     auth = handler.headers.get("Authorization") or ""
     presented = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
     proof = {"action": ACTION, "body_sha256": hashlib.sha256(body).hexdigest()}
-    seat = relay.policy.authenticate(presented, proof)
+    seat, auth_reason = relay.policy.authenticate_with_reason(presented, proof)
     if seat is None:
-        relay._unauth_auditor.record(relay.audit, ACTION)
-        _send_json(handler, 401, {"error": "unauthenticated"})
+        relay._unauth_auditor.record(relay.audit, ACTION, auth_reason)
+        status, body = auth_failure_response(auth_reason)
+        _send_json(handler, status, body)
         return
     # The default is "error":  an exception of a type the except clause does not name still records its real
     # class, never a silent "ok" (the finally below records before the exception propagates).
