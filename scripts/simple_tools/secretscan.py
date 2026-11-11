@@ -164,6 +164,11 @@ _REVIEWED_GENERIC_FIXTURES: frozenset[tuple[str, str, str]] = frozenset(
             "scripts/lib/run-session-token-collector.mjs",
             "e96f73542ff0a5923af4d53981f96693bb67f80444e54cf94a520737ac5418f4",
         ),
+        (
+            "Simple-With-Us/AI-Fleet-Coordinator",
+            "scripts/linear-board/test_board.py",
+            "9e96737087b55d3ba6f82f7fb8e5e0a5b17828d10f2759e73dae65063211cfe3",
+        ),
     }
 )
 _GENERIC_ASSIGNMENTS = frozenset({"assigned credential", "assigned secret"})
