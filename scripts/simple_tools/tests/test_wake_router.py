@@ -4019,6 +4019,122 @@ class Remote(RemoteBase):
         self.assertEqual((code, answer["code"]), (2, "bad-request"))
 
 
+# A platform whose chat ids are not bare UUIDs, shaped as ZCode's are:  `sess_` plus a UUID.
+SESS_SID = "sess_0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0"
+SESS_RE = re.compile(r"^sess_[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
+SESS_MODULE = "simple_tools.tests.no_such_sess_wake"  # only ever the fake put in sys.modules
+
+
+class PlatformSessionPatterns(RemoteBase):
+    """Each `PLATFORMS` entry carries its own session-id pattern, and both hosts read the ids with
+    it:  an id that is not Claude's shape is neither blanked nor refused when it is its platform's."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.target = WR.Target(SESS_SID, letter="AA", host="mac", generation=3)
+        self.seen: list[dict] = []
+        self.delivery = {"outcome": "sent", "route": "sess-desktop", "ack": "unknown", "code": "", "note": ""}
+        entry = CW.DeliveryPlatform(CW._module_delivery(SESS_MODULE), SESS_RE)
+        module = SimpleNamespace(deliver_request=self.platform_delivers)
+        for patcher in (
+            mock.patch.dict(CW.PLATFORMS, {"sessplat": entry}),
+            mock.patch.dict(sys.modules, {SESS_MODULE: module}),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def platform_delivers(self, request, *, env):
+        """The platform's own delivery:  it repeats the ids it was sent, as codex_wake does."""
+        self.seen.append(request)
+        target = request["target"]
+        return {
+            "wake_id": request["wake"]["wake_id"],
+            "session_id": target["session_id"],
+            "generation": target["generation"],
+            "delivery": dict(self.delivery),
+        }
+
+    def sess_envelope(self) -> dict:
+        request = self.envelope(platform="sessplat")
+        request["target"]["session_id"] = SESS_SID
+        return request
+
+    def over_the_wire(self, argv, **kwargs):
+        """ssh to the Mac:  the preflight passes, and the real command is `wake-deliver` itself."""
+        self.runs.append((argv, kwargs))
+        if argv[-1] == CW.PREFLIGHT_COMMAND:
+            return SimpleNamespace(returncode=0, stdout="")
+        out = io.StringIO()
+        code = CW.wake_deliver_main(io.StringIO(kwargs["input"]), out, self.env)
+        return SimpleNamespace(returncode=code, stdout=out.getvalue())
+
+    def send(self, target: WR.Target | None = None, platform: str = "sessplat") -> WR.Delivery:
+        return CW.deliver_remote(
+            self.env, self.cfg, target or self.target, self.w, platform=platform, runner=self.over_the_wire
+        )
+
+    def test_a_delivered_turn_is_not_a_mismatch(self) -> None:
+        code, answer = self.run_main(self.sess_envelope())
+        self.assertEqual(code, 0)
+        self.assertEqual((answer["delivery"]["outcome"], answer["delivery"]["route"]), ("sent", "sess-desktop"))
+        self.assertEqual(
+            (answer["wake_id"], answer["session_id"], answer["generation"]), (self.w.wake_id, SESS_SID, 3)
+        )
+        self.assertEqual(len(self.seen), 1)
+
+    def test_the_whole_round_trip_through_the_sender(self) -> None:
+        with mock.patch.object(CW, "deliver_local") as spy:
+            result = self.send()
+        self.assertEqual((result.outcome, result.route, result.code), ("sent", "ssh:sess-desktop", ""))
+        self.assertEqual(json.loads(self.runs[1][1]["input"])["platform"], "sessplat")
+        self.assertEqual(self.seen[0]["target"]["session_id"], SESS_SID)
+        spy.assert_not_called()
+
+    def test_busy_stays_a_retry_on_both_hosts(self) -> None:
+        self.delivery = {"outcome": "busy", "route": "sess-desktop", "code": "session-locked"}
+        _, answer = self.run_main(self.sess_envelope())
+        self.assertEqual((answer["delivery"]["outcome"], answer["delivery"]["code"]), ("busy", "session-locked"))
+        result = self.send()
+        self.assertEqual((result.outcome, result.code), ("busy", "session-locked"))
+
+    def test_an_id_not_of_its_platforms_shape_is_refused_before_anything_runs(self) -> None:
+        cases = {
+            "a UUID on the sess_ platform": ("sessplat", SID_A),
+            "a sess_ id on Claude": ("claude", SESS_SID),
+            "a sess_ id on Codex": ("codex", SESS_SID),
+            "no id": ("sessplat", None),
+        }
+        for label, (platform, session_id) in cases.items():
+            with self.subTest(label):
+                request = self.envelope(platform=platform)
+                request["target"]["session_id"] = session_id
+                with (
+                    mock.patch.object(CW, "deliver_local") as spy,
+                    mock.patch.object(CW.importlib, "import_module") as importing,
+                ):
+                    code, answer = self.run_main(request)
+                self.assertEqual(
+                    (code, answer["delivery"]["outcome"], answer["delivery"]["code"]),
+                    (2, "refused", "bad-request"),
+                )
+                self.assertEqual((answer["wake_id"], answer["session_id"]), (self.w.wake_id, ""))
+                spy.assert_not_called()
+                importing.assert_not_called()
+        self.assertEqual(self.seen, [])
+
+    def test_the_sender_refuses_an_id_not_of_its_platforms_shape_before_ssh(self) -> None:
+        for platform, session_id in {"sessplat": SID_A, "claude": SESS_SID, "codex": SESS_SID}.items():
+            with self.subTest(platform):
+                result = self.send(WR.Target(session_id, letter="AA", host="mac", generation=3), platform)
+                self.assertEqual((result.outcome, result.code), ("refused", "bad-session-id"))
+        self.assertEqual(self.runs, [])
+
+    def test_the_sender_refuses_an_unknown_platform_before_ssh(self) -> None:
+        result = self.send(platform="nosuch")
+        self.assertEqual((result.outcome, result.code), ("refused", "unknown-platform"))
+        self.assertEqual(self.runs, [])
+
+
 class Gate(RemoteBase):
     """The forced command on the router's ssh key."""
 
