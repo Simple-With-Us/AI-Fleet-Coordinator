@@ -438,16 +438,28 @@ class CodexChatTransport:
         finally:
             rpc.close()
 
-    def receipt(self, binding, text):
+    def receipt_state(self, binding, text):
+        """Distinguish actual user input, a queued submission, absence and an unreadable probe.
+
+        A failed queue/transcript read is never proof of absence: callers deciding
+        whether to enqueue again must defer on ``unavailable``.
+        """
         if not self._valid(binding):
-            return False
+            return "unavailable"
         try:
             items, messages = self._receipt_snapshot(binding)
             client_id = message_id(binding, text)
             digest = hashlib.sha256(text.encode()).digest()
-            return digest in messages or (client_id, digest) in items
+            if digest in messages:
+                return "observed"
+            if (client_id, digest) in items:
+                return "queued"
+            return "absent"
         except (OSError, ValueError, TimeoutError, subprocess.SubprocessError):
-            return False
+            return "unavailable"
+
+    def receipt(self, binding, text):
+        return self.receipt_state(binding, text) in ("observed", "queued")
 
     def send(self, binding, text, *, permit: Callable[[], bool] | None = None):
         self.hold_reason = None
