@@ -368,6 +368,39 @@ class CodexWakeTests(unittest.TestCase):
                 )
                 self.assertEqual(self.transport.queue_add_calls, 0)
 
+    def test_malformed_registry_found_flag_retries_without_native_enqueue(self):
+        malformed = (
+            {},
+            {"found": None},
+            {"found": 0},
+            {"found": 1},
+            {"found": "true"},
+            {"found": "false"},
+            {"found": []},
+            {"found": {}},
+        )
+        for variant in malformed:
+            with self.subTest(found=variant.get("found", "<missing>")):
+                answer = dict(self.registry_result)
+                answer.pop("found", None)
+                answer.update(variant)
+                self.registry_result = answer
+                self.transport.calls.clear()
+                self.transport.events.clear()
+                result = self.deliver()
+                self.assertEqual((result.outcome, result.code), ("busy", "registry-unavailable"))
+                self.assertEqual(
+                    self.transport.events,
+                    ["preflight", "receipt_state", "send", "registry"],
+                )
+                self.assertEqual(self.transport.queue_add_calls, 0)
+
+    def test_literal_false_registry_found_flag_is_authoritative_release(self):
+        self.registry_result = {**self.registry_result, "found": False}
+        result = self.deliver()
+        self.assertEqual((result.outcome, result.code), ("refused", "target-released"))
+        self.assertEqual(self.transport.queue_add_calls, 0)
+
     def test_registry_requires_explicit_well_formed_codex_seat(self):
         for seat in (None, "", "  ", 42, ["CODEX"]):
             with self.subTest(seat=seat):
