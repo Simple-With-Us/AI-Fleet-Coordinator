@@ -313,6 +313,13 @@ def _as_time(value: object) -> float:
         return 0.0
 
 
+#: A native session id fragment a sender pasted (some still do):  at least a plausible
+#: prefix+run so a bare word never matches.
+SID_FRAGMENT_RE = re.compile(r"\b(sess_[A-Za-z0-9][A-Za-z0-9._-]{5,})")
+#: A Linear issue id a wake and a chat title may share (AFC-123 style, any team key).
+ISSUE_ID_RE = re.compile(r"\b([A-Z][A-Z0-9]{1,9}-\d{1,7})\b")
+
+
 def _words(text: str) -> set[str]:
     return {w for w in WORD_RE.findall(text or "") if w.lower() not in STOP_WORDS}
 
@@ -323,6 +330,7 @@ def pick_target(
     store: Path,
     target_host: str,
     letter_sid: str = "",
+    payload_text: str = "",
 ) -> tuple[str, str]:
     """(native session id, why) for the best live row, or ("", reason).  A letter the sender
     addressed wins outright (the registry already resolved it to one live session), passing
@@ -340,6 +348,9 @@ def pick_target(
         if letter_sid in _subagent_ids(store, [letter_sid]):
             return "", "letter-target-is-subagent"
         return letter_sid, "letter"
+    # owner ruling, Nov 11:  link by session-id fragment next (some senders still paste
+    # one), then by a Linear issue the wake and a chat title share, and only then the
+    # topic/recency heuristics - each a deterministic rule ahead of the decider.
     topic_words = _words(topic)
     best: tuple[float, float, str] = (0.0, 0.0, "")
     fallback: tuple[float, str] = (0.0, "")
@@ -357,6 +368,25 @@ def pick_target(
             continue
         candidates.append((_as_time(row.get("assigned_at")), sid, str(row.get("title") or "")))
     subagents = _subagent_ids(store, [sid for _, sid, _ in candidates])
+    if payload_text:
+        _subagents = _subagent_ids(store, [sid for _, sid, _ in candidates])
+        for fragment in SID_FRAGMENT_RE.findall(payload_text):
+            for seen, sid, _title in candidates:
+                if sid.startswith(fragment) and sid not in _subagents:
+                    return sid, "session-id-fragment"
+        wake_issues = set(ISSUE_ID_RE.findall(topic or "")) | set(
+            ISSUE_ID_RE.findall(payload_text)
+        )
+        if wake_issues:
+            best_issue: tuple[float, str] = (0.0, "")
+            for seen, sid, title in candidates:
+                if wake_issues & set(ISSUE_ID_RE.findall(title)):
+                    if sid in _subagents:
+                        continue
+                    if seen > best_issue[0]:
+                        best_issue = (seen, sid)
+            if best_issue[1]:
+                return best_issue[1], "linear-issue"
     for seen, sid, title in candidates:
         if sid in subagents:
             continue
@@ -453,6 +483,7 @@ def record(
     channel: str,
     link: str,
     letter: str = "",
+    excerpt: str = "",
     log_path: Path | None = None,
 ) -> dict[str, Any]:
     """Route the wake deterministically and record the pick.  Never raises, never messages
@@ -670,6 +701,7 @@ def make_handler(env: dict[str, str], config: dict[str, Any], receipts: list[dic
                     channel=str(payload.get("channel") or ""),
                     link=str(payload.get("zulip_link") or ""),
                     letter=letter_of(payload),
+                    excerpt=str(payload.get("excerpt") or ""),
                 )
                 # BB's shape: the POST answers as soon as the wake is deduped, in-flight-checked
                 # and ROUTED; the delivery runs off the handler thread (the listener's own

@@ -41,7 +41,13 @@ AND WAKES the picked chat, each platform using whatever it needs to do that.
   not retry a 200);  the receipt fields are the router's own record:
   `{wake_id, letter, session_id, thread_link, picked: letter|topic-match|most-recent|"", reason}`.
 - Dedupe:  one receipt per wake id, under a lock;  a repeated id answers the record.
-- Determinism first:  the rules above, in order.  ONE headless decider for every platform
+- Determinism first, widened by the owner's Nov 11 ruling:  the rules above, in order,
+  now include a session-id fragment a sender pasted (some still do) and a Linear issue
+  the wake and a chat title share - both deterministic linkers ahead of the decider, so
+  its minority case shrinks to recency-only wakes.
+- The Operator never DMs anyone either (owner, with Claude, Nov 11) - not even a
+  clarification question.  A clarification, on the rare case one is needed, is the
+  Operator's own post in the originating thread, never a direct message to anyone.  ONE headless decider for every platform
   (the Operator's preset, via OpenRouter - the owner's words:  not "a bunch of different
   headless models on a per platform basis"), called ONLY when the deterministic rules
   cannot decide.  It DECIDES - its output is a pick (a session id) or ONE clarification

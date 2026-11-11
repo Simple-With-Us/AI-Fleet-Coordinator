@@ -257,6 +257,36 @@ class IsoTimes(Base):
         self.assertEqual((sid, why), ("sess_junk", "topic-match"))
 
 
+class DeterministicLinkers(Base):
+    """Owner ruling, Nov 11:  a session-id fragment a sender pasted links the wake;  a
+    Linear issue the wake and a chat title share links it;  both ahead of the decider."""
+
+    def test_a_session_id_fragment_links(self) -> None:
+        rows = self.rows(
+            {"native_session_id": "sess_link_frag_0001", "title": "Unrelated", "verified_host": "server",
+             "state": "open", "assigned_at": 1, "retired_at": None, "closed_at": None},
+            {"native_session_id": "sess_other_9999", "title": "Unrelated", "verified_host": "server",
+             "state": "open", "assigned_at": 99, "retired_at": None, "closed_at": None},
+        )
+        sid, why = B.pick_target(
+            rows, "any topic", Path(self.store), "server",
+            payload_text="please wake sess_link_frag for me",
+        )
+        self.assertEqual((sid, why), ("sess_link_frag_0001", "session-id-fragment"))
+
+    def test_a_shared_linear_issue_links(self) -> None:
+        rows = self.rows(
+            {"native_session_id": "sess_issue_0001", "title": "AFC-999 fix the thing", "verified_host": "server",
+             "state": "open", "assigned_at": 5, "retired_at": None, "closed_at": None},
+            {"native_session_id": "sess_newer_0002", "title": "Something else", "verified_host": "server",
+             "state": "open", "assigned_at": 50, "retired_at": None, "closed_at": None},
+        )
+        sid, why = B.pick_target(
+            rows, "AFC-999 status?", Path(self.store), "server", payload_text="checking on AFC-999",
+        )
+        self.assertEqual((sid, why), ("sess_issue_0001", "linear-issue"))
+
+
 class UserAgentHeader(Base):
     """The registry host is Cloudflare-fronted and refuses a bare urllib signature (1010);
     every request the bridge sends carries the explicit agent (found live:  the first real
