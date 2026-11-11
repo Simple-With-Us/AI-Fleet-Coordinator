@@ -1137,7 +1137,13 @@ class FakeInbox:
         self.server.close()
 
 
+#: The Mac has no /proc, so a record's start time cannot be compared there and a live pid counts.
+HAS_PROC = os.path.exists("/proc/self/stat")
+
+
 def proc_start(pid: int) -> str:
+    if not HAS_PROC:
+        return ""
     with open("/proc/%d/stat" % pid, encoding="utf-8") as fh:
         return fh.read().rsplit(")", 1)[1].split()[19]
 
@@ -1375,6 +1381,7 @@ class Resume(ClaudeBase):
         self.transcript()
         self.assertEqual(self.deliver().route, "resume")
 
+    @unittest.skipUnless(HAS_PROC, "a reused pid is only detectable through /proc")
     def test_a_reused_pid_does_not_hold(self) -> None:
         self.holder_file(procStart="1")
         self.transcript()
@@ -1631,6 +1638,7 @@ class Exclude(ClaudeBase):
         exclude = CW.exclude_non_interactive(self.env, "server")
         self.assertEqual(exclude([WR.Target(SID_A, host="server")]), set())
 
+    @unittest.skipUnless(HAS_PROC, "a reused pid is only detectable through /proc")
     def test_a_reused_pid_excludes_nothing(self) -> None:
         self.holder_file(procStart="1", kind="print")
         exclude = CW.exclude_non_interactive(self.env, "server")
