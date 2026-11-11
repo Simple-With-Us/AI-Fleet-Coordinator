@@ -715,26 +715,13 @@ def _kill_and_reap(proc):
         pass
 
 
-def _send_input(proc, data):
-    """Write `data` to the child's standard input and close it.  True when every byte went.
-
-    The write never waits:  the caller keeps `data` under a pipe's capacity, and a child that
-    does not take it is reported, not waited for."""
-    try:
-        os.set_blocking(proc.stdin.fileno(), False)
-        return os.write(proc.stdin.fileno(), data) == len(data)
-    except OSError:
-        return False
-    finally:
-        try:
-            proc.stdin.close()
-        except OSError:
-            pass
-
-
 def run_bounded_read(argv, timeout, env, max_bytes, stderr_max=DOCKER_STDERR_MAX, data=None):
     """(exit status, stdout, stderr, over).  An argv list, never a shell, stdin closed, or, with
-    `data`, a pipe that is given those bytes and then closed (126 when the child did not take them).
+    `data`, a pipe that is fed those bytes and then closed.  The input is written from the same
+    loop that reads the output, a piece at a time and never waiting on the child alone, so a
+    short write is carried on, a child that fills its output before it has read its input cannot
+    stall the two of them, and a child that never reads ends at the timeout like any other.  A
+    child that closes its input early is left to say why by its exit status.
 
     Stdout is never held beyond `max_bytes`: the first byte past the limit kills the child at
     once and answers `over` (True) with no stdout, so a huge file costs neither memory nor the
@@ -761,13 +748,17 @@ def run_bounded_read(argv, timeout, env, max_bytes, stderr_max=DOCKER_STDERR_MAX
     over = False
     timed_out = False
     selector = selectors.DefaultSelector()
+    pending = memoryview(data) if data is not None else None
     try:
-        if data is not None and not _send_input(proc, data):
-            _kill_and_reap(proc)
-            return 126, b"", b"", False
         deadline = time.monotonic() + timeout
         selector.register(proc.stdout, selectors.EVENT_READ, "out")
         selector.register(proc.stderr, selectors.EVENT_READ, "err")
+        if pending is not None:
+            if len(pending):
+                os.set_blocking(proc.stdin.fileno(), False)
+                selector.register(proc.stdin, selectors.EVENT_WRITE, "in")
+            else:
+                proc.stdin.close()
         while selector.get_map() and not over:
             remaining = deadline - time.monotonic()
             events = selector.select(remaining) if remaining > 0 else []
@@ -775,6 +766,19 @@ def run_bounded_read(argv, timeout, env, max_bytes, stderr_max=DOCKER_STDERR_MAX
                 timed_out = True
                 break
             for key, _ in events:
+                if key.data == "in":
+                    try:
+                        sent = os.write(key.fd, pending[:65536])
+                    except BlockingIOError:
+                        continue
+                    except OSError:
+                        # The child closed its end:  nothing more can be given to it.
+                        sent = len(pending)
+                    pending = pending[sent:]
+                    if not len(pending):
+                        selector.unregister(key.fileobj)
+                        proc.stdin.close()
+                    continue
                 chunk = os.read(key.fd, 65536)
                 if not chunk:
                     selector.unregister(key.fileobj)
@@ -810,9 +814,11 @@ def run_bounded_read(argv, timeout, env, max_bytes, stderr_max=DOCKER_STDERR_MAX
             selector.close()
         except BaseException:  # noqa: BLE001, S110 - Best-effort cleanup must preserve the result.
             pass
-        for stream in (proc.stdout, proc.stderr):
+        # `stdin` is only there when the child was given input.
+        for stream in (proc.stdout, proc.stderr, getattr(proc, "stdin", None)):
             try:
-                stream.close()
+                if stream is not None:
+                    stream.close()
             except BaseException:  # noqa: BLE001, S110 - Preserve the original interruption.
                 pass
 

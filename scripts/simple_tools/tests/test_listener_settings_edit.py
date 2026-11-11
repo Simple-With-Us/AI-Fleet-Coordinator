@@ -1252,6 +1252,31 @@ class ControlVerbTests(Case):
         )
         self.assertEqual((status, out, over), (0, b"", False))
 
+    def test_the_bounded_reader_carries_on_after_a_short_write(self) -> None:
+        # Far more than a pipe holds, so no single write can take it, and `cat` fills its output
+        # while its input is still coming:  the input and the output have to move together.
+        big = bytes(range(256)) * 4096
+        status, out, err, over = self.foc.run_bounded_read(
+            ["/bin/cat"], timeout=30, env={"PATH": "/usr/bin:/bin"}, max_bytes=2 * len(big), data=big
+        )
+        self.assertEqual((status, over, len(out)), (0, False, len(big)))
+        self.assertEqual(out, big)
+
+    def test_the_bounded_reader_does_not_wait_on_a_child_that_never_reads(self) -> None:
+        status, out, err, over = self.foc.run_bounded_read(
+            ["/bin/sleep", "30"], timeout=1, env={"PATH": "/usr/bin:/bin"}, max_bytes=1024, data=b"x" * (1 << 20)
+        )
+        self.assertEqual((status, out, over), (124, b"", False))
+        # A child that ends without reading its input is told by its own exit status.
+        status, out, err, over = self.foc.run_bounded_read(
+            ["/usr/bin/true"], timeout=10, env={"PATH": "/usr/bin:/bin"}, max_bytes=1024, data=b"x" * (1 << 20)
+        )
+        self.assertEqual((status, out, over), (0, b"", False))
+        status, out, err, over = self.foc.run_bounded_read(
+            ["/bin/cat"], timeout=10, env={"PATH": "/usr/bin:/bin"}, max_bytes=1024, data=b""
+        )
+        self.assertEqual((status, out, over), (0, b"", False))
+
     def test_the_helper_still_parses_on_python_3_9(self) -> None:
         import ast
 
