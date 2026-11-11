@@ -180,7 +180,9 @@ def load_credentials(
     project = infisical_project()
     linear_project = (env.get(LINEAR_PROJECT_ENV) or "").strip() or LINEAR_PROJECT_DEFAULT
     recall = _call_fetch(fetch, project, "/", read_file(recall_token_path(env)), RECALL_KEYS)
-    linear = _call_fetch(fetch, linear_project, "/linear", read_file(Path(linear_file)), LINEAR_KEYS)
+    linear = _call_fetch(
+        fetch, linear_project, "/linear", read_file(Path(linear_file)), LINEAR_KEYS
+    )
     missing = [name for name in RECALL_KEYS if not recall.get(name)]
     if missing:
         raise NightlyError("missing:" + ",".join(missing))
