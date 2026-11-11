@@ -20,7 +20,7 @@ class AcceptanceTests(unittest.TestCase):
             source={"id": 12345, "content": "@**Codex** BB please read the topic"},
             listener=[{"wake_id": "w-123", "seat": "CODEX", "trigger_ids": [12345], "state": "done"}],
             receipt={"wake_id": "w-123", "seat": "CODEX", "test": False,
-                     "session_id": SID, "generation": 3,
+                     "session_id": SID, "picked_generation": 3,
                      "status": "delivered", "delivered": None},
             transcript=[{"type": "session_meta", "payload": {"id": SID}},
                         {"type": "event_msg", "payload": {"type": "user_message",
@@ -101,7 +101,7 @@ class AcceptanceTests(unittest.TestCase):
     def test_generation_reuse_or_missing_generation_cannot_pass(self):
         for value in (None, 0, 2, True, "3"):
             with self.subTest(value=value):
-                self.args["receipt"]["generation"] = value
+                self.args["receipt"]["picked_generation"] = value
                 result = self.check("rejected")
                 self.assertIn("router-generation-mismatch", result["errors"])
 

@@ -117,7 +117,7 @@ def assess(
     elif receipt.get("session_id") != session_id:
         checks["router"] = "mismatch"
         errors.append("router-target-mismatch")
-    elif type(receipt.get("generation")) is not int or receipt.get("generation") != generation:
+    elif type(receipt.get("picked_generation")) is not int or receipt.get("picked_generation") != generation:
         checks["router"] = "mismatch"
         errors.append("router-generation-mismatch")
     elif receipt.get("status") in ("dead", "failed", "refused"):
