@@ -35,6 +35,18 @@ AUTH_FAILURE_REASONS = frozenset(
     }
 )
 
+# First-seat bootstrap probe bounds.  A seat_not_in_policy answer may be
+# probed for proof purposes, but every probe costs a blocking Worker verify,
+# so three bounds apply per window:  a GLOBAL verify count, a distinct
+# IDENTITY CARDINALITY, and a per-identity count.  The global and cardinality
+# bounds come first:  an unbounded set of parsed identities must not multiply
+# the budget by rotating names.  A refused probe behaves exactly like an
+# unverifiable bearer - the ordinary bounded denial row, no verifier call.
+BOOTSTRAP_VERIFY_GLOBAL = 6
+BOOTSTRAP_VERIFY_IDENTITIES = 8
+BOOTSTRAP_VERIFY_PER_IDENTITY = 2
+BOOTSTRAP_VERIFY_WINDOW_S = 60.0
+
 
 def auth_failure_response(reason: str) -> tuple[int, dict]:
     """HTTP answer for authenticate_with_reason's failure cause. No credential material."""
@@ -428,11 +440,53 @@ class SeatPolicy:
         self._calls: dict[str, list[float]] = {}
         self._writes: dict[str, list[float]] = {}
         self._lock = threading.Lock()
+        self._bootstrap_calls: list[float] = []
+        self._bootstrap_idents: dict[str, list[float]] = {}
 
     def authenticate(self, token: str, proof: dict | None = None) -> str | None:
         """Return the seat the presented credential resolves to, or None."""
         seat, _reason = self.authenticate_with_reason(token, proof)
         return seat
+
+    def bootstrap_resolve(self, token: str, now: float | None = None) -> str | None:
+        """The verifier-CONFIRMED identity of a bearer no configured seat claims, or None.
+
+        Runs only after authenticate_with_reason answered seat_not_in_policy:
+        the token already parsed as a recognizable bearer naming an identity
+        no shared seat claims.  The returned identity is the verifier's own
+        answer, never the bearer's claim;  an unverifiable bearer is None.
+        Every call costs a blocking Worker verify, so the bootstrap bounds
+        (global count, distinct identity cardinality, per-identity count)
+        reserve their slot under the lock BEFORE the call and keep the
+        reservation on failure:  a spray of one identity or of many names is
+        self-limiting either way, and concurrent probes cannot overrun the
+        budget.  Over budget returns None;  the caller then writes the
+        ordinary bounded denial row and never reaches the verifier.
+        """
+        if self._verifier is None:
+            return None
+        named = self._verifier.parse_identity(token)
+        if named is None:
+            return None
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            recent = [t for t in self._bootstrap_calls if now - t < BOOTSTRAP_VERIFY_WINDOW_S]
+            idents = {
+                i: [t for t in ts if now - t < BOOTSTRAP_VERIFY_WINDOW_S]
+                for i, ts in self._bootstrap_idents.items()
+            }
+            idents = {i: ts for i, ts in idents.items() if ts}
+            if (
+                len(recent) >= BOOTSTRAP_VERIFY_GLOBAL
+                or (named not in idents and len(idents) >= BOOTSTRAP_VERIFY_IDENTITIES)
+                or len(idents.get(named, [])) >= BOOTSTRAP_VERIFY_PER_IDENTITY
+            ):
+                self._bootstrap_calls, self._bootstrap_idents = recent, idents
+                return None
+            recent.append(now)
+            idents.setdefault(named, []).append(now)
+            self._bootstrap_calls, self._bootstrap_idents = recent, idents
+        return self._verifier.resolve(token)
 
     def authenticate_with_reason(
         self, token: str, proof: dict | None = None

@@ -34,7 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import git_read
 from .app_tokens import AppTokenError, missing_app_credential
-from .audit import AuditLog, UnauthorizedAuditor
+from .audit import AuditLog, BootstrapDenialAuditor, UnauthorizedAuditor
 from .github_client import DispatchPreReadUnavailable, GitHubClient, RelayGitHubError
 from .outcomes import OutcomeStore, OutcomeStoreError, key_for
 from .policy import (
@@ -291,6 +291,7 @@ class Relay:
         self.client = client
         self.audit = audit
         self._unauth_auditor = UnauthorizedAuditor()
+        self._bootstrap_auditor = BootstrapDenialAuditor()
         self.app_minter = app_minter
         self.outcomes = outcomes if outcomes is not None else OutcomeStore(None)
         self.typed_gateway = None
@@ -311,6 +312,25 @@ class Relay:
                 return self.typed_gateway.handle(token, action, args, proof=proof)
         seat, auth_reason = self.policy.authenticate_with_reason(token, proof)
         if seat is None:
+            if auth_reason == "seat_not_in_policy":
+                # First-seat bootstrap:  the bearer parses and names an
+                # identity no shared seat claims.  Ask the verifier under the
+                # bootstrap bounds and record the denial against the
+                # verifier-CONFIRMED identity (never the bearer's claim), so
+                # an install-seat bootstrap receipt can bind this exact run.
+                # The request is refused either way:  the row names who was
+                # refused, it does not grant anything, and a verified
+                # identity is not attacker-chosen attribution.
+                identity = self.policy.bootstrap_resolve(token)
+                if identity is not None:
+                    repo = str(args.get("repo") or "") if isinstance(args, dict) else ""
+                    path = (
+                        args.get("path")
+                        if action == "wf_file_patch" and isinstance(args, dict)
+                        else None
+                    )
+                    self._bootstrap_auditor.record(self.audit, action, repo, identity, path)
+                    return auth_failure_response(auth_reason)
             # One bounded, rate-limited row (seat unknown, no token material)
             # so a credential spray is visible without filling the log.
             # The cause is a closed word (seat_not_in_policy, bearer_rejected,

@@ -298,6 +298,86 @@ class ReplayStore:
                 os.unlink(tmp)
 
 
+BOOTSTRAP_CAUSE = "seat_not_in_policy"
+
+
+class BootstrapProof(RuntimeProof):
+    """First-seat, no-write runtime proof for a seat the policy does not yet name.
+
+    The ordinary ExternalProof is unrunable for a first seat:  its read must
+    answer 200, and an unconfigured seat is refused before that.  The
+    bootstrap proof instead certifies the exact pre-activation state:  BOTH
+    the read and the NULL_OID negative probe are refused with exactly
+    seat_not_in_policy, and the relay audits each denial against the
+    verifier-confirmed identity.  PROVEN means "the exact seat to add is
+    currently denied, the denial is the audited pre-policy cause, and no
+    mutation was possible" (NULL_OID preconditions, no successful read
+    claimed);  any other answer - including an unexpected 200, which would
+    mean the identity already resolves - is REFUSED.
+    """
+
+    URL = "https://agents.simplewithus.com/v1/"
+    VERSION = 3
+    USER_AGENT = "swu-git-relay-bootstrap-proof/3"
+
+    def __call__(self, seat, identity, proof_id, policy_before, policy_after):
+        if not isinstance(seat, str) or not seat:
+            raise ValueError("invalid seat")
+        if not isinstance(identity, str) or not identity:
+            raise ValueError("invalid identity")
+        path = probe_path(proof_id)
+        record = {
+            "v": self.VERSION,
+            "seat": seat,
+            # The prover's claimed identity;  verify_bootstrap_receipt binds
+            # it to the relay's verifier-confirmed identity and to the seat
+            # row's configured claim, so claim == verified == configured.
+            "identity": identity,
+            "proof_id": proof_id,
+            "ts": int(time.time()),
+            "url": self.URL,
+            "repo": self.REPO,
+            "probe_path": path,
+            "policy_before": policy_before,
+            "policy_after": policy_after,
+        }
+        try:
+            status, result = self.call("wf_repo_get", {"repo": self.REPO})
+        except OSError:
+            return dict(record, outcome=INCONCLUSIVE, stage="read")
+        if (
+            status != 401
+            or not isinstance(result, dict)
+            or result.get("error") != BOOTSTRAP_CAUSE
+        ):
+            return dict(record, outcome=REFUSED, stage="read", status=status)
+        probe = {
+            "repo": self.REPO,
+            "base_sha": NULL_OID,
+            "head_sha": NULL_OID,
+            "merged_into_default": True,
+            "proof_id": proof_id,
+            "patches": [
+                {
+                    "path": path,
+                    "action": "create",
+                    "content": f"bootstrap {proof_id}",
+                }
+            ],
+        }
+        try:
+            status, result = self.call("wf_file_patch", probe)
+        except OSError:
+            return dict(record, outcome=INCONCLUSIVE, stage="probe")
+        if (
+            status == 401
+            and isinstance(result, dict)
+            and result.get("error") == BOOTSTRAP_CAUSE
+        ):
+            return dict(record, outcome=PROVEN, refusal=BOOTSTRAP_CAUSE)
+        return dict(record, outcome=REFUSED, stage="probe", status=status)
+
+
 def _row_binds_path(row, probe_path):
     """The probe path, or its exact redacted stand-in.
 
@@ -450,6 +530,105 @@ def verify_receipt(
     if store.seen(proof_id):
         raise ValueError("receipt replayed")
     _audit_row_binds(record, audit_rows)
+    if store_id:
+        store.add(record)
+    return record
+
+
+def _bootstrap_row_binds(record, rows, identity):
+    """Exactly one audited bootstrap denial row must name this proof run.
+
+    The bootstrap row is written only after the Worker confirms the bearer,
+    so its identity field is the verifier's answer.  The receipt binds when
+    exactly one row matches the closed cause, that CONFIRMED identity equal
+    to the receipt's claimed identity, the workflow-file action, the proof
+    repository, the denial result and the proof-id path.  More than one
+    match is as much a refusal as none:  the binding must name one run.
+    """
+    matches = 0
+    for row in rows or ():
+        if (
+            isinstance(row, dict)
+            and row.get("cause") == BOOTSTRAP_CAUSE
+            and (
+                row.get("identity") == identity
+                or row.get("identity_sha256")
+                == hashlib.sha256(identity.encode()).hexdigest()
+            )
+            and row.get("action") == "wf_file_patch"
+            and row.get("repo") == record["repo"]
+            and row.get("result") == "unauthenticated"
+            and _row_binds_path(row, record["probe_path"])
+        ):
+            matches += 1
+    if matches != 1:
+        raise ValueError("bootstrap proof not bound to the relay audit")
+
+
+def verify_bootstrap_receipt(
+    key,
+    receipt,
+    *,
+    seat,
+    identity,
+    now,
+    store,
+    policy_before,
+    policy_after,
+    audit_rows,
+    window_s=RECEIPT_WINDOW_S,
+    store_id=True,
+    url=None,
+    repo=None,
+):
+    """The bootstrap analogue of verify_receipt;  same gates, bootstrap target.
+
+    Every gate of the external path remains:  shape, HMAC, outcome (only
+    PROVEN), staleness, the named seat, both policy digests, probe-path
+    consistency, replay, audit binding and replay-store consumption.  Two
+    differences:  the record must be exactly a BootstrapProof record (never
+    another proof type's), and the record's claimed identity must equal the
+    seat row's configured identity - which _bootstrap_row_binds then equates
+    with the relay's verifier-confirmed answer.
+    """
+    url = BootstrapProof.URL if url is None else url
+    repo = BootstrapProof.REPO if repo is None else repo
+    if not isinstance(receipt, dict):
+        raise ValueError("receipt unreadable")
+    record = receipt.get("record")
+    mac = receipt.get("mac")
+    if not isinstance(record, dict) or not isinstance(mac, str):
+        raise ValueError("receipt unreadable")
+    expected = hmac.new(
+        key,
+        json.dumps(record, sort_keys=True, separators=(",", ":")).encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected, mac):
+        raise ValueError("receipt forged")
+    if record.get("outcome") != PROVEN:
+        raise ValueError("proof inconclusive")
+    if (
+        record.get("v") != BootstrapProof.VERSION
+        or record.get("url") != url
+        or record.get("repo") != repo
+    ):
+        raise ValueError("receipt names another proof target")
+    ts = record.get("ts")
+    if not isinstance(ts, int) or not 0 <= now - ts <= window_s:
+        raise ValueError("receipt stale")
+    if record.get("seat") != seat:
+        raise ValueError("receipt names another seat")
+    if record.get("identity") != identity:
+        raise ValueError("receipt names another identity")
+    if record.get("policy_before") != policy_before or record.get("policy_after") != policy_after:
+        raise ValueError("receipt names another transaction")
+    proof_id = record.get("proof_id")
+    if record.get("probe_path") != probe_path(proof_id):
+        raise ValueError("receipt probe path inconsistent")
+    if store.seen(proof_id):
+        raise ValueError("receipt replayed")
+    _bootstrap_row_binds(record, audit_rows, identity)
     if store_id:
         store.add(record)
     return record

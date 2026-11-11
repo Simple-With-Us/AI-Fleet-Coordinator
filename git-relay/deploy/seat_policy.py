@@ -603,6 +603,42 @@ def _restore_file(unit: Unit, wait: int, before: str, path: str, backup: str, st
     return 3
 
 
+def proof_key(args) -> int:
+    """Mint the operator proof key into a root-owned 0600 file;  never prints it.
+
+    Custody rule (a proposal requiring the host owner's approval to enact):
+    one 0600 file owned by root on the relay host, named by
+    GIT_RELAY_PROOF_KEY_FILE.  Any offline backup - for example the
+    Fleet-OPS /git-relay-owner folder - is a separate, explicitly authorized
+    operational step, never part of this command.  A non-root caller is
+    refused (the file must be root-owned), and an existing key is never
+    overwritten:  rotating the key would orphan outstanding receipts.
+    """
+    path = os.environ.get(PROOF_KEY_FILE_VAR) or args.key_file
+    if not path:
+        print(f"refusing:  {PROOF_KEY_FILE_VAR} names no proof-key file")
+        return 2
+    if os.geteuid() != 0:
+        print("refusing:  proof-key runs as root so the key file is root-owned 0600")
+        return 2
+    material = os.urandom(32).hex() + "\n"
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        print(f"refusing:  {path} exists;  never overwrite the proof key, receipts bind to it")
+        return 2
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(material)
+            fh.flush()
+            os.fsync(fh.fileno())
+    except OSError:
+        print(f"refusing:  could not write {path}")
+        return 2
+    print(f"proof key written to {path} (root-owned 0600;  the key is never printed)")
+    return 0
+
+
 def install_seat(args, unit: Unit) -> int:
     """Add exactly one seat to a file-backed policy under one exclusive transaction.
 
@@ -707,22 +743,45 @@ def _install_seat_locked(
         return 2
     with open(key_path, "rb") as fh:
         key = fh.read().strip()
-    with open(args.receipt, encoding="utf-8") as fh:
+    bootstrap = getattr(args, "bootstrap_receipt", None)
+    with open(args.receipt or bootstrap, encoding="utf-8") as fh:
         receipt = json.load(fh)
     try:
         audit_rows = deploy_proof.read_audit_rows(_audit_path(unit))
         store = deploy_proof.ReplayStore(os.path.join(unit.relay, REPLAY_STORE))
-        deploy_proof.verify_receipt(
-            key,
-            receipt,
-            seat=args.seat,
-            now=int(time.time()),
-            store=store,
-            policy_before=args.expect_before,
-            policy_after=args.expect_after,
-            audit_rows=audit_rows,
-            store_id=args.apply,
-        )
+        if bootstrap:
+            # First-seat bootstrap:  the receipt must bind the relay's
+            # verifier-confirmed identity to THIS row's configured identity,
+            # so the proven-denied bearer is exactly the seat being added.
+            # A row without an explicit identity cannot make that claim.
+            claimed = row.get("identity")
+            if not isinstance(claimed, str) or not claimed:
+                print("refusing:  the seat row names no identity for a bootstrap receipt to bind")
+                return 2
+            deploy_proof.verify_bootstrap_receipt(
+                key,
+                receipt,
+                seat=args.seat,
+                identity=claimed,
+                now=int(time.time()),
+                store=store,
+                policy_before=args.expect_before,
+                policy_after=args.expect_after,
+                audit_rows=audit_rows,
+                store_id=args.apply,
+            )
+        else:
+            deploy_proof.verify_receipt(
+                key,
+                receipt,
+                seat=args.seat,
+                now=int(time.time()),
+                store=store,
+                policy_before=args.expect_before,
+                policy_after=args.expect_after,
+                audit_rows=audit_rows,
+                store_id=args.apply,
+            )
     except ValueError as exc:
         print(f"refusing:  {exc}")
         return 2
@@ -889,7 +948,8 @@ def verify_inner(args) -> int:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
-        "command", choices=["render", "install", "install-seat", "verify-apps", "verify-inner"]
+        "command",
+        choices=["render", "install", "install-seat", "verify-apps", "verify-inner", "proof-key"],
     )
     parser.add_argument("--policy", default=str(DEFAULT_POLICY))
     parser.add_argument(
@@ -906,6 +966,11 @@ def main(argv=None) -> int:
         "--expect-after", help="install-seat:  full canonical digest of live-plus-one-seat"
     )
     parser.add_argument("--receipt", help="install-seat:  the signed external-proof receipt")
+    parser.add_argument(
+        "--bootstrap-receipt",
+        help="install-seat:  the signed bootstrap-proof receipt (first seat for an identity)",
+    )
+    parser.add_argument("--key-file", help="proof-key:  key path when the env var is unset")
     parser.add_argument("--seats", help="verify-inner only:  the rendered policy")
     parser.add_argument("--relay", help="verify-inner only:  the deployed relay code")
     parser.add_argument("--secrets-path", default=DEFAULT_SECRETS_PATH, help="verify-inner only")
@@ -917,6 +982,8 @@ def main(argv=None) -> int:
         return 0
     if args.command == "verify-inner":
         return verify_inner(args)
+    if args.command == "proof-key":
+        return proof_key(args)
     if not args.unit:
         parser.error(f"{args.command} needs --unit, the relay's systemd unit")
     unit = read_unit(args.unit)
@@ -927,11 +994,13 @@ def main(argv=None) -> int:
     if args.command == "install":
         return install(args, unit)
     if args.command == "install-seat":
-        for flag in ("seat", "row_json", "expect_before", "expect_after", "receipt"):
+        for flag in ("seat", "row_json", "expect_before", "expect_after"):
             if not getattr(args, flag):
                 parser.error(f"install-seat needs --{flag.replace('_', '-')}")
+        if bool(args.receipt) == bool(args.bootstrap_receipt):
+            parser.error("install-seat needs exactly one of --receipt or --bootstrap-receipt")
         if os.geteuid() == 0:
-            require_root_owned([args.row_json, args.receipt])
+            require_root_owned([args.row_json, args.receipt or args.bootstrap_receipt])
         return install_seat(args, unit)
     return verify_apps(args, unit)
 
