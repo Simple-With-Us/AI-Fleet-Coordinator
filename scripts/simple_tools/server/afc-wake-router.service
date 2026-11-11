@@ -17,7 +17,8 @@
 # scoped to prod:/wake-router (AI Fleet Coordinator) and nothing else.  Every setting is a knob in
 # that folder, and so are the secrets:  the one bearer WAKE_ROUTER_KEY that every seat's path is
 # checked against (at least 16 characters), and the registry's address and signing key
-# (WAKE_ROUTER_REGISTRY_URL and WAKE_ROUTER_REGISTRY_KEY).  No env file or ssh remote supplies the
+# (SIMPLE_TOOLS_OPERATOR_REGISTRY_URL and SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY, the names registry_api
+# reads, handed to it as an explicit mapping).  No env file or ssh remote supplies the
 # registry:  with either value missing every pick is a bounded retry and /health says
 # registry-not-configured.  There is no key file:  the secrets are read at start and on every
 # refresh and held in memory only.  A failed refresh keeps them;  only a fetch that worked changes

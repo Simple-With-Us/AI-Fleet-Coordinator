@@ -67,14 +67,17 @@ With no key at all (none read since start, or one revoked), every seat refuses i
 
 The registry's address and key, on the server.  The router reads the Operator's registry over its
 API (registry_api), and on the server the address and signing key come from this folder too:  the
-setting WAKE_ROUTER_REGISTRY_URL and the secret WAKE_ROUTER_REGISTRY_KEY, held by the same rule as
-the routine key.  `RegistryEnv` hands them to registry_api under the names it reads
-(SIMPLE_TOOLS_OPERATOR_REGISTRY_URL and _KEY) and drops any registry address or key the process
-inherited, so no env file and no ssh remote is ever a fallback.  With no address or no key, every
-registry call answers `not_configured`:  a pick is a bounded retry, and /health says so.  Only the
-server reads these knobs.  `wake-deliver` on the Mac keeps the shared registry env loader every Mac
-registry client uses (claude_wake._registry_env):  a Mac token for this folder would also read the
-router's bearer, which no Mac may hold.
+setting SIMPLE_TOOLS_OPERATOR_REGISTRY_URL and the secret SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY, the
+same names registry_api reads, so each value has one name.  They are fetched here, once per
+refresh with everything else, and held by the same rule as the routine key.  `RegistryEnv` hands
+them to registry_api as an explicit mapping:  registry_api consults the knobs itself only for the
+process environment, so this is the one fetch path and the keep-on-failed-refresh rule governs it.
+The mapping drops any registry address or key the process inherited, so no env file and no ssh
+remote is ever a fallback.  With no address or no key, every registry call answers
+`not_configured`:  a pick is a bounded retry, and /health says so.  Only the server reads these
+knobs here.  `wake-deliver` on the Mac keeps the shared registry env loader every Mac registry
+client uses (claude_wake._registry_env):  a Mac token for this folder would also read the router's
+bearer, which no Mac may hold.
 
 Python 3.11+, standard library only (fleet_knobs is too).
 """
@@ -121,10 +124,10 @@ JOIN_SECONDS = 10  # longer than one fleet_knobs fetch can take
 # The one routine key every seat's path is checked against.
 KEY_KNOB = "WAKE_ROUTER_KEY"
 # Where the registry is and the key its calls are signed with.
-REGISTRY_URL = "WAKE_ROUTER_REGISTRY_URL"
-REGISTRY_KEY = "WAKE_ROUTER_REGISTRY_KEY"
+REGISTRY_URL = "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL"  # registry_api.URL_KNOB, one name per value
+REGISTRY_KEY = "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"  # registry_api.KEY_KNOB
 # The names registry_api reads the address and key under, which no inherited value may supply.
-REGISTRY_NAMES = (registry_api.URL_ENV, registry_api.KEY_ENV, registry_api.KEY_REF_ENV)
+REGISTRY_NAMES = (registry_api.URL_ENV, registry_api.KEY_VAR)
 # The one folder every setting above lives in;  a test keeps them, and the keys, all in it.
 FOLDER = BY_NAME[DELIVERY_ENABLED].folder
 
@@ -182,7 +185,7 @@ def registry_overlay(env: Mapping[str, str], url: str, key: str) -> dict[str, st
     if url:
         out[registry_api.URL_ENV] = url
     if key:
-        out[registry_api.KEY_ENV] = key
+        out[registry_api.KEY_VAR] = key
     return out
 
 

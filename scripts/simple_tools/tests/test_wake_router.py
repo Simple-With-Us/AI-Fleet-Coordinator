@@ -167,7 +167,7 @@ class Base(unittest.TestCase):
         return {
             "HOME": self.tmp,
             WR.registry_api.URL_ENV: REGISTRY_URL,
-            WR.registry_api.KEY_ENV: "registry-" + "0" * 16,
+            WR.registry_api.KEY_VAR: "registry-" + "0" * 16,
         }
 
     def wake(self, wake_id: str = "w-1", **over) -> WR.Wake:
@@ -1523,7 +1523,7 @@ class Shutdown(Base):
         self.assertNotIn("operator-registry-env", "\n".join(settings))
         self.assertNotIn("CLAUDE_LETTER_REMOTE", self.unit())
         self.assertNotIn("/bin/sh", "\n".join(settings))
-        self.assertIn("WAKE_ROUTER_REGISTRY_URL", self.unit())
+        self.assertIn("SIMPLE_TOOLS_OPERATOR_REGISTRY_URL", self.unit())
         self.assertIn("WAKE_ROUTER_KEY", self.unit())
 
     def test_the_old_claude_only_unit_is_gone(self) -> None:
@@ -4759,20 +4759,25 @@ class RegistryNotConfigured(Base):
 
     def test_health_needs_the_key_as_well_as_the_address(self) -> None:
         router = self.router()
-        url, key = WR.registry_api.URL_ENV, WR.registry_api.KEY_ENV
-        ref = WR.registry_api.KEY_REF_ENV
+        url, key = WR.registry_api.URL_ENV, WR.registry_api.KEY_VAR
         cases = {
             "address only": ({"HOME": self.tmp, url: REGISTRY_URL}, 503),
-            "key only": ({"HOME": self.tmp, key: "k" * 20}, 503),
+            "key only": ({"HOME": self.tmp, key: "k" * 32}, 503),
             "blank key": ({url: REGISTRY_URL, key: "  "}, 503),
-            "key under another name, not set": ({url: REGISTRY_URL, ref: "OTHER"}, 503),
-            "key under another name": ({url: REGISTRY_URL, ref: "OTHER", "OTHER": "k" * 20}, 200),
             "both": (self.router_env(), 200),
         }
         for label, (env, status) in cases.items():
             with self.subTest(label):
                 router.env = env
                 self.assertEqual(WR.Seats([router]).seat_health("CLAUDE")[0], status)
+
+    def test_health_reads_only_the_routers_own_mapping(self) -> None:
+        # An explicit mapping:  registry_api never fills it from Infisical, so a router env that
+        # lacks the values is not configured, whatever the knobs hold.
+        router = self.router()
+        router.env = {"HOME": self.tmp}
+        with mock.patch.object(WR.registry_api, "_knob_value", side_effect=AssertionError("knob")):
+            self.assertEqual(WR.Seats([router]).seat_health("CLAUDE")[0], 503)
 
     def test_serve_starts_without_it(self) -> None:
         # Infisical may be down at start:  the router starts and says so on /health instead.

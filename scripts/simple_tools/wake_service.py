@@ -50,7 +50,7 @@ and every other seat is served as usual.
 The settings.  Each seat has a `WakeSettings` of its own, all on one local narrowing file,
 `<state root>/config.json`, and one `SettingsGroup` refreshes them all with one fetch of the
 Infisical folder /wake-router, on a timer and on SIGHUP.  The routine key (WAKE_ROUTER_KEY) and
-the registry's address and key (WAKE_ROUTER_REGISTRY_URL and WAKE_ROUTER_REGISTRY_KEY) come from
+the registry's address and key (SIMPLE_TOOLS_OPERATOR_REGISTRY_URL and _KEY) come from
 the same folder;  nothing is read from an env file.  The service's read token,
 `afc-wake-router-ro`, is scoped to prod:/wake-router and is the only thing in its environment file
 (server/afc-wake-router.service).  A process that may not read knobs at all, such as one in a

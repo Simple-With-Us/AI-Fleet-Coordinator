@@ -1809,8 +1809,8 @@
    "folder": "/wake-router"
   },
   {
-   "name": "WAKE_ROUTER_REGISTRY_URL",
-   "label": "Wake Router Registry Address",
+   "name": "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL",
+   "label": "Operator Registry Address",
    "group": "Wake Router",
    "owner": "W2",
    "kind": "str",
@@ -1828,11 +1828,15 @@
    "narrower": null,
    "local": "deny",
    "local_rule": "A local file cannot change this.",
-   "hosts": "server",
+   "hosts": "both",
    "consumers": [
     {
      "name": "the wake router",
      "path": "scripts/simple_tools/wake_settings.py"
+    },
+    {
+     "name": "the registry client",
+     "path": "scripts/simple_tools/registry_api.py"
     }
    ],
    "requires": [],
@@ -1842,12 +1846,12 @@
    "example": "https://registry.example.com",
    "once": false,
    "requires_explicit": false,
-   "note": "the Operator registry API's origin (no path) the server's wake router reads the registry at (the Mac's wake-deliver keeps the shared registry env file);  http only to a loopback address;  empty means not configured, so every pick is a bounded retry and /health says so",
+   "note": "the Operator registry API's origin (no path);  the server's wake router reads the registry at it, and registry_api falls back to it for a process environment that does not set it (the Mac's wake-deliver keeps the shared registry env file);  http only to a loopback address;  empty means not configured, so every pick is a bounded retry and /health says so",
    "folder": "/wake-router"
   },
   {
-   "name": "WAKE_ROUTER_REGISTRY_KEY",
-   "label": "Wake Router Registry Key",
+   "name": "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
+   "label": "Operator Registry Key",
    "group": "Wake Router",
    "owner": "W2",
    "kind": "str",
@@ -1865,11 +1869,15 @@
    "narrower": null,
    "local": "narrow",
    "local_rule": "A local file cannot change this.",
-   "hosts": "server",
+   "hosts": "both",
    "consumers": [
     {
      "name": "the wake router",
      "path": "scripts/simple_tools/wake_settings.py"
+    },
+    {
+     "name": "the registry client",
+     "path": "scripts/simple_tools/registry_api.py"
     }
    ],
    "requires": [],
@@ -1879,7 +1887,7 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "the key the server's wake router signs registry calls with;  held like the bearer, and without it every registry call answers not configured and /health says so",
+   "note": "the one key Operator registry calls are signed with (at least 32 characters, as the registry requires);  the server's wake router holds it like its bearer, and registry_api falls back to it for a process environment that does not set it;  without it every registry call answers not configured and the router's /health says so",
    "folder": "/wake-router"
   }
  ]

@@ -26,8 +26,12 @@ ROUTER_VALUES = {"WAKE_ROUTER_MAX_ATTEMPTS": "9", ROUTER_KEY: KEY}
 class RegistryTests(KnobTestCase):
     def test_the_router_knobs_and_only_they_are_in_its_folder(self):
         self.assertEqual(FOLDERS, ("/", ROUTER))
+        # The router's knobs, and the Operator registry's address and key, which keep registry_api's
+        # one name for each value.
+        registry = {"SIMPLE_TOOLS_OPERATOR_REGISTRY_URL", "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"}
         self.assertEqual(
-            set(names_in(ROUTER)), {s.name for s in REGISTRY if s.name.startswith("WAKE_ROUTER_")}
+            set(names_in(ROUTER)),
+            {s.name for s in REGISTRY if s.name.startswith("WAKE_ROUTER_")} | registry,
         )
         self.assertIn(ROUTER_KEY, names_in(ROUTER))
         self.assertTrue(BY_NAME[ROUTER_KEY].secret)

@@ -99,14 +99,24 @@ class Registered(Settings):
     def test_one_bearer_and_no_seat_has_one_of_its_own(self) -> None:
         self.assertFalse(hasattr(WS, "KEY_KNOBS"))
         per_seat = [name for name in BY_NAME if re.fullmatch(r"WAKE_ROUTER_[A-Z]+_KEY", name)]
-        self.assertEqual(sorted(per_seat), ["WAKE_ROUTER_REGISTRY_KEY"], "only the registry's")
+        self.assertEqual(per_seat, [])
         for name in ("WAKE_ROUTER_CLAUDE_KEY", "WAKE_ROUTER_CODEX_KEY", "WAKE_ROUTER_MC_KEY"):
             self.assertNotIn(name, BY_NAME)
+
+    def test_the_registry_knobs_have_registry_apis_one_name(self) -> None:
+        self.assertEqual(
+            (WS.REGISTRY_URL, WS.REGISTRY_KEY), (registry_api.URL_KNOB, registry_api.KEY_KNOB)
+        )
+        self.assertEqual((WS.REGISTRY_URL, WS.REGISTRY_KEY), (registry_api.URL_ENV, registry_api.KEY_VAR))
+        for retired in ("WAKE_ROUTER_REGISTRY_URL", "WAKE_ROUTER_REGISTRY_KEY"):
+            self.assertNotIn(retired, BY_NAME)
 
     def test_the_registry_knobs(self) -> None:
         url, key = BY_NAME[WS.REGISTRY_URL], BY_NAME[WS.REGISTRY_KEY]
         self.assertFalse(url.secret)
         self.assertTrue(key.secret)
+        self.assertIsNone(knob_values.lenient(key, "k" * 31)[1], "the registry needs 32")
+        self.assertEqual(knob_values.lenient(key, "k" * 32), (True, "k" * 32))
         self.assertEqual((url.folder, key.folder), (WS.FOLDER, WS.FOLDER))
         self.assertEqual(url.local, "deny", "a local file never points the router elsewhere")
         self.assertEqual(url.default, "", "unset by default:  not configured")
@@ -123,7 +133,9 @@ class Folder(Settings):
         self.assertEqual({call["path"] for call in self.fake.calls()}, {"/wake-router"})
         asked = set(self.fake.calls()[0]["names"])
         self.assertIn(KEY_KNOB, asked)
-        self.assertFalse(any(not name.startswith("WAKE_ROUTER_") for name in asked))
+        self.assertLessEqual({WS.REGISTRY_URL, WS.REGISTRY_KEY}, asked)
+        allowed = {name for name in BY_NAME if name.startswith("WAKE_ROUTER_")}
+        self.assertLessEqual(asked, allowed | {WS.REGISTRY_URL, WS.REGISTRY_KEY})
 
     def test_root_knobs_cannot_arm_or_confirm_the_router(self) -> None:
         # Infisical holds the switch only at the root:  the router does not read it there.
@@ -818,8 +830,7 @@ class RouterOnSettings(Settings):
 
 INHERITED = {
     registry_api.URL_ENV: "https://inherited.example.test",
-    registry_api.KEY_ENV: "inherited-" + "0" * 20,
-    registry_api.KEY_REF_ENV: "OTHER_KEY",
+    registry_api.KEY_VAR: "inherited-" + "0" * 32,
 }
 
 
@@ -829,11 +840,23 @@ class Registry(Settings):
 
     def test_the_router_env_carries_the_registry_from_the_knobs(self) -> None:
         settings = self.loaded(**REGISTRY)
-        env = settings.registry_env({"HOME": str(self.home), **INHERITED, "OTHER_KEY": "x"})
+        env = settings.registry_env({"HOME": str(self.home), **INHERITED})
         self.assertEqual(env[registry_api.URL_ENV], REGISTRY_URL)
-        self.assertEqual(env[registry_api.KEY_ENV], REGISTRY_KEY)
-        self.assertNotIn(registry_api.KEY_REF_ENV, env)
+        self.assertEqual(env[registry_api.KEY_VAR], REGISTRY_KEY)
         self.assertEqual(env["HOME"], str(self.home))
+
+    def test_registry_api_gets_an_explicit_mapping_and_never_reads_the_knobs_itself(self) -> None:
+        # One fetch path:  the values come from these settings, and registry_api consults
+        # Infisical only for the process environment, which a router's env never is.
+        settings = self.loaded(**REGISTRY)
+        env = settings.registry_env({"HOME": str(self.home)})
+        self.assertIsNot(env, os.environ)
+        with mock.patch.object(registry_api, "_knob_value", side_effect=AssertionError("knob")):
+            self.assertEqual(registry_api.base_url(env), REGISTRY_URL)
+            self.assertEqual(registry_api.signing_key(env), REGISTRY_KEY)
+        settings._registry = ("", "")
+        with mock.patch.object(registry_api, "_knob_value", side_effect=AssertionError("knob")):
+            self.assertEqual((registry_api.base_url(env), registry_api.signing_key(env)), ("", ""))
 
     def test_without_it_every_call_is_not_configured_and_nothing_is_inherited(self) -> None:
         for secrets in ({}, {WS.REGISTRY_URL: REGISTRY_URL}, {WS.REGISTRY_KEY: REGISTRY_KEY}):
@@ -841,7 +864,7 @@ class Registry(Settings):
                 self.new_process()
                 settings = self.loaded(**secrets)
                 env = settings.registry_env({"HOME": str(self.home), **INHERITED})
-                self.assertEqual(env.get(registry_api.KEY_ENV, ""), secrets.get(WS.REGISTRY_KEY, ""))
+                self.assertEqual(env.get(registry_api.KEY_VAR, ""), secrets.get(WS.REGISTRY_KEY, ""))
                 self.assertEqual(registry_api.base_url(env), secrets.get(WS.REGISTRY_URL, ""))
                 answer = registry_api.call(env, "history", {"limit": 1})
                 self.assertEqual(answer["code"], "not_configured")
@@ -876,7 +899,7 @@ class Registry(Settings):
         router = served.seats.routers[CW.SEAT]
         self.assertIsInstance(router.env, WS.RegistryEnv)
         self.assertEqual(registry_api.base_url(router.env), REGISTRY_URL)
-        self.assertEqual(router.env[registry_api.KEY_ENV], REGISTRY_KEY)
+        self.assertEqual(router.env[registry_api.KEY_VAR], REGISTRY_KEY)
 
     def test_the_mac_side_has_no_knob_reader_for_it(self) -> None:
         self.assertFalse(hasattr(WS, "registry_env_once"))

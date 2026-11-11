@@ -145,6 +145,7 @@ _SHEET = (("the reference sheet sync", "scripts/fleet-apps-sheet-sync.mjs"),)
 _COMPLIANCE = (("the fleet-config compliance rules", "scripts/fleet_config/seed_manifest.py"),)
 _WATCHDOG = (("the Cloudflare usage watchdog", "scripts/cf-usage-watchdog/watchdog.py"),)
 _WAKE = (("the wake router", "scripts/simple_tools/wake_settings.py"),)
+_REGISTRY = _WAKE + (("the registry client", "scripts/simple_tools/registry_api.py"),)
 
 REGISTRY: tuple[Spec, ...] = (
     # C1 fleet-autopush
@@ -858,37 +859,42 @@ REGISTRY: tuple[Spec, ...] = (
         consumers=_WAKE,
         folder=WAKE_ROUTER_FOLDER,
     ),
+    # The Operator registry's address and signing key, under the one name registry_api reads
+    # (AFC-720):  the same name as the environment variable, so each value has one name.
     _S(
-        "WAKE_ROUTER_REGISTRY_URL",
+        "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL",
         "str",
         "W2",
         default="",
         local="deny",
         pattern=r"^(https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?)?$",
-        note="the Operator registry API's origin (no path) the server's wake router reads the "
-        "registry at (the Mac's wake-deliver keeps the shared registry env file);  http only to a "
+        note="the Operator registry API's origin (no path);  the server's wake router reads the "
+        "registry at it, and registry_api falls back to it for a process environment that does "
+        "not set it (the Mac's wake-deliver keeps the shared registry env file);  http only to a "
         "loopback address;  empty means not configured, so every pick is a bounded retry and "
         "/health says so",
         group="Wake Router",
-        label="Wake Router Registry Address",
-        hosts="server",
-        consumers=_WAKE,
+        label="Operator Registry Address",
+        hosts="both",
+        consumers=_REGISTRY,
         folder=WAKE_ROUTER_FOLDER,
         format="an https origin, with no path",
         example="https://registry.example.com",
     ),
     _S(
-        "WAKE_ROUTER_REGISTRY_KEY",
+        "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
         "str",
         "W2",
         secret=True,
-        pattern=r"^[!-~]{16,512}$",
-        note="the key the server's wake router signs registry calls with;  held like the bearer, "
-        "and without it every registry call answers not configured and /health says so",
+        pattern=r"^[!-~]{32,512}$",
+        note="the one key Operator registry calls are signed with (at least 32 characters, as the "
+        "registry requires);  the server's wake router holds it like its bearer, and registry_api "
+        "falls back to it for a process environment that does not set it;  without it every "
+        "registry call answers not configured and the router's /health says so",
         group="Wake Router",
-        label="Wake Router Registry Key",
-        hosts="server",
-        consumers=_WAKE,
+        label="Operator Registry Key",
+        hosts="both",
+        consumers=_REGISTRY,
         folder=WAKE_ROUTER_FOLDER,
     ),
 )

@@ -1435,12 +1435,10 @@ class Router:
 
 
 def registry_configured(env: Mapping[str, str]) -> bool:
-    """Whether this env lets registry_api sign a call:  an address and a key, read the way
-    registry_api reads them (the key under the name KEY_REF_ENV gives, else KEY_ENV)."""
-    if not registry_api.base_url(env):
-        return False
-    key_name = str(env.get(registry_api.KEY_REF_ENV) or "").strip() or registry_api.KEY_ENV
-    return bool(str(env.get(key_name) or "").strip())
+    """Whether this env lets registry_api sign a call:  an address and a key, read with
+    registry_api's own readers (SIMPLE_TOOLS_OPERATOR_REGISTRY_URL and _KEY).  A router's env is
+    an explicit mapping, so they read only that mapping and never reach Infisical here."""
+    return bool(registry_api.base_url(env)) and bool(registry_api.signing_key(env))
 
 
 def registry_trouble(answer: object) -> str:

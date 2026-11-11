@@ -70,7 +70,7 @@ final class KnobControlsTests: XCTestCase {
         XCTAssertEqual(secrets.map { $0.name }, [
             "FLEET_FACTS_SIGNING_KEY",
             "WAKE_ROUTER_KEY",
-            "WAKE_ROUTER_REGISTRY_KEY",
+            "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
         ])
         for secret in secrets {
             XCTAssertNil(secret.editor, secret.name)
