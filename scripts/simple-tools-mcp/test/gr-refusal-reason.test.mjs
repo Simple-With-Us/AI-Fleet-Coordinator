@@ -11,7 +11,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { HostedTools } from "../src/hosted-tools.js";
 import { GrRelayClient } from "../src/gr-tools.js";
-import { REFUSAL_REASONS, classifyRelayRefusal, isRefusalReason, githubRefusalStatus, refusalReasonText } from "../src/gr-refusal.js";
+import { REFUSAL_REASONS, allowlistedGithubDiagnostics, classifyRelayRefusal, isRefusalReason, githubRefusalStatus, refusalReasonText } from "../src/gr-refusal.js";
 import { loadConfig } from "../src/config.js";
 import { testEnv } from "./helpers.mjs";
 import * as S from "../src/seat-state.js";
@@ -150,6 +150,16 @@ test("a refused write forwards allowlisted github_diagnostics and drops the GitH
   }, 400));
   assert.equal(broken.github_diagnostics, undefined);
   assert.ok(!JSON.stringify(broken).includes("not-a-request-id"));
+});
+
+test("the diagnostics allowlist holds the relay's bounds:  no empty permission map, one to four sets", () => {
+  const set = { contents: "write" };
+  const diagnostics = (extra) => allowlistedGithubDiagnostics({ category: "unknown", ...extra });
+  assert.equal(diagnostics({ accepted_permissions: {} }), null);
+  assert.equal(diagnostics({ accepted_permission_sets: [] }), null);
+  assert.equal(diagnostics({ accepted_permission_sets: [set, {}] }), null);
+  assert.equal(diagnostics({ accepted_permission_sets: [set, set, set, set, set] }), null);
+  assert.deepEqual(diagnostics({ accepted_permission_sets: [set, set, set, set] }).accepted_permission_sets.length, 4);
 });
 
 test("github_refused needs a valid client-error status:  a missing, textual or out-of-range one stays flat", async () => {

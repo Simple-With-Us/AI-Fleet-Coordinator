@@ -223,7 +223,7 @@ function permissionMap(value) {
     if (!DIAGNOSTIC_PERMISSIONS.has(name) || (level !== "read" && level !== "write")) return null;
     out[name] = level;
   }
-  return out;
+  return Object.keys(out).length ? out : null;
 }
 
 /** Allowlisted github_diagnostics, or null.  Unknown keys are ignored. */
@@ -245,6 +245,7 @@ export function allowlistedGithubDiagnostics(value) {
   }
   if (hasSets) {
     if (!Array.isArray(value.accepted_permission_sets)) return null;
+    if (value.accepted_permission_sets.length < 1 || value.accepted_permission_sets.length > 4) return null;
     const sets = value.accepted_permission_sets.map(permissionMap);
     if (sets.some((item) => item === null)) return null;
     out.accepted_permission_sets = sets;
