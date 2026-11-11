@@ -304,9 +304,7 @@ class ThreadRegistryStore:
                 record["last_activity"] = ts
                 record["last_message_id"] = message_id
             elif ts == last_activity:
-                record["last_message_id"] = max(
-                    int(record.get("last_message_id") or 0), message_id
-                )
+                record["last_message_id"] = max(int(record.get("last_message_id") or 0), message_id)
             # Linear Issues contract:  keys mentioned in the topic name or in any message
             # body join the thread's set, deduplicated;  the union only ever grows, so a
             # key once added is never removed by a later, quieter message.
