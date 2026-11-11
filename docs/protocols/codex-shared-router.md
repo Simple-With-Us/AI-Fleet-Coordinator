@@ -52,4 +52,10 @@ Exit 0 means the input arrived in the expected chat.  Exit 3 means incomplete o
 
 ## Activation Record
 
+The file-only LaunchAgent template is `scripts/launchd/com.jay.codex-wake-router.plist`.  Render its `__HOME__` and `__RUNTIME__` placeholders for the target Mac, create protected state and log directories, provision the approved routine key and authoritative settings, and validate the rendered plist before installing it.  The template stays on loopback port 8795 and does not enable delivery.  Its exit timeout exceeds the shared router's default graceful shutdown wait.
+
+The runtime sync helper preserves the existing listener restart and sends SIGTERM to an already-loaded Codex router when shared runtime code changes.  It never loads or starts an absent Codex job.  The router settles running deliveries and keeps its durable state; launchd's KeepAlive starts the next process with the updated runtime.  The live sync helper is a regular deployed copy outside the checkout, so installing the router also requires deploying the reviewed sync-helper update.
+
+Before activation, register the new router as Always-on in the Mac process inventory and refresh its Background Jobs Master List note.  Confirm the exact installed runtime head, the updated sync-helper copy, scoped registry environment, approved Infisical settings and key delivery, and the shared consultant contract.  An absent consultant continues to hold ambiguous wakes.
+
 This source change does not itself establish activation.  Record the deployed head, listener routine, one real peer mention, final receipt and target-chat observation under AFC-694 before marking Codex delivery functioning.  Claude DD owns authoritative Codex archive release separately, and Claude CC owns registry-touch title reconciliation.
