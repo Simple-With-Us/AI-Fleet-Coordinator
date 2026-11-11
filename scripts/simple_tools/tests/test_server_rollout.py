@@ -385,7 +385,7 @@ class ApplyLiveConfigTests(unittest.TestCase):
             self.assertEqual(new["seat." + seat], sample["seat." + seat], seat)
         cfg = C.from_dict(tomllib.loads(after))
         self.assertEqual(cfg.errors, [])
-        self.assertEqual(sorted(cfg.disabled), [], "every GB bot is enabled")
+        self.assertEqual(sorted(cfg.disabled), ["AMP", "GROK"], "only the two keyless Mac CLI seats are off")
         self.assertEqual(AL.problems(after), [])
         code, out = self.run_main("--apply")
         self.assertEqual(code, 0, out)
@@ -489,13 +489,13 @@ class ApplyLiveConfigTests(unittest.TestCase):
         self.assertTrue(self.live.read_text().endswith(enabled))
 
     def test_a_result_that_would_not_load_is_refused_and_nothing_is_written(self) -> None:
-        # A Mac seat in the server's live file is a partition problem the merge cannot fix.
-        self.live.write_text(self.live.read_text() + '\n[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n')
+        # A seat the partition gives to no listener ("none") is a partition problem the merge cannot fix.
+        self.live.write_text(self.live.read_text() + '\n[seat.GROK-BUILD]\nwake = "inbox"\n')
         before = self.live.read_text()
         code, out = self.run_main("--apply")
         self.assertEqual(code, 2, out)
         self.assertIn("refused:  the result would not load", out)
-        self.assertIn("seat CLAUDE", out)
+        self.assertIn("seat GROK-BUILD", out)
         self.assertEqual(self.live.read_text(), before)
         self.assertEqual(list(self.tmp.glob("*.bak-*")), [])
 

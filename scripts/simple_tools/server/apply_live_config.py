@@ -53,8 +53,14 @@ _HEADER_RE = re.compile(r"^\[([^\[\]]+)\]\s*(#.*)?$")
 ADD_ONLY = ("listener_api", "notes_queue", "linear_projects", "linear_comments")
 
 
+# The Mac CLI seats the server has held since the Nov 10 one-listener cutover.
+MAC_CLI_SEATS = frozenset(
+    {"CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "OPENCODE", "ZC", "KIMI", "AMP"}
+)
+
+
 def target(seat: str) -> bool:
-    return seat == "JET" or seat.startswith("GB-") or seat.startswith("BF-")
+    return seat == "JET" or seat.startswith("GB-") or seat.startswith("BF-") or seat in MAC_CLI_SEATS
 
 
 def blocks(text: str) -> tuple[list[str], list[tuple[str, list[str]]]]:
@@ -241,7 +247,7 @@ def main(argv: list[str] | None = None, out=sys.stdout) -> int:
         return 2
     if not changes:
         print(
-            "no changes:  %s already matches the sample's JET, GB and BF sections and has [%s]"
+            "no changes:  %s already matches the sample's JET, GB, BF and Mac CLI seat sections and has [%s]"
             % (live_path, "] and [".join(ADD_ONLY)),
             file=out,
         )
