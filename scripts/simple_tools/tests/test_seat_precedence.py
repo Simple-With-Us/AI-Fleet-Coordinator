@@ -15,7 +15,7 @@ from simple_tools import adapters as A
 from simple_tools import identity as I
 from simple_tools import live as L
 from simple_tools.tests.fake_zulip import BOT_EMAIL
-from simple_tools.tests.harness import TAG, Harness, write_rc
+from simple_tools.tests.harness import TAG, TWO_INSTANCE_PARTITION, Harness, write_rc
 from simple_tools.tests.mcp_harness import McpHarness
 from simple_tools.tests.test_attach import LEASE, AttachHarness
 
@@ -78,7 +78,14 @@ class ResolveSeatTests(Harness):
         self.assertIn("answered as", I.check_bot(bot, "BF-PLUMBER", CODEX_EMAIL))
 
     def test_partition(self) -> None:
-        self.assertEqual(I.served_here("CLAUDE", {}), (True, ""))
+        # The live partition:  one listener, on the server, holds every seat (owner, Tue, Nov 10).
+        served, why = I.served_here("CLAUDE", {})
+        self.assertFalse(served)
+        self.assertIn("seat CLAUDE is not served by the Mac listener (partition:  server)", why)
+        self.assertTrue(I.served_here("CLAUDE", {"SIMPLE_TOOLS_INSTANCE": "server"})[0])
+        # The mac instance's mechanics, on the two-instance fixture.
+        two = {"SIMPLE_TOOLS_PARTITION": str(TWO_INSTANCE_PARTITION)}
+        self.assertEqual(I.served_here("CLAUDE", two), (True, ""))
         served, why = I.served_here("BF-PLUMBER", {})
         self.assertFalse(served)
         self.assertIn("seat BF-PLUMBER is not served by the Mac listener", why)

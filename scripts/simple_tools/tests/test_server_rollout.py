@@ -144,7 +144,7 @@ class InfisicalEnvTests(unittest.TestCase):
             "ZULIP_ALERT_GB_FIXER_HEADER": "Authorization: Bearer crsr_never",
             "ZULIP_JET_EMAIL": "openai-dot-bot@zulip.test",
             "ZULIP_BF_BUILDER_API_KEY": "bf-" + secrets.token_hex(8),      # the retired BotFleet seat:  not a server seat
-            "ZULIP_CLAUDE_API_KEY": "mac-" + secrets.token_hex(8),         # a Mac seat
+            "ZULIP_OPERATOR_API_KEY": "mac-" + secrets.token_hex(8),       # the one seat the partition gives to "mac"
             "ZULIP_SITE": "https://evil.test",                             # never from Infisical
             "PATH": "/nowhere",
         }
@@ -164,7 +164,7 @@ class InfisicalEnvTests(unittest.TestCase):
         for name in ("ZULIP_GB_FIXER_EMAIL", "ZULIP_GB_FIXER_API_KEY", "ZULIP_ALERT_GB_FIXER_ENDPOINT",
                      "ZULIP_ALERT_GB_FIXER_KEY", "ZULIP_JET_EMAIL"):
             self.assertEqual(out[name], self.values[name], "%s comes from Infisical, which wins" % name)
-        for name in ("ZULIP_ALERT_GB_FIXER_HEADER", "ZULIP_BF_BUILDER_API_KEY", "ZULIP_CLAUDE_API_KEY"):
+        for name in ("ZULIP_ALERT_GB_FIXER_HEADER", "ZULIP_BF_BUILDER_API_KEY", "ZULIP_OPERATOR_API_KEY"):
             self.assertNotIn(name, out)
         self.assertEqual(out["ZULIP_SITE"], "https://simplewithus.zulipchat.com")
         self.assertNotEqual(out["PATH"], "/nowhere")
@@ -239,9 +239,14 @@ class InfisicalEnvTests(unittest.TestCase):
         # never a credential, so they are shared names the loader copies from the store.
         self.assertIn("OPERATOR_ZULIP_USER_ID", names)
         self.assertIn("OPERATOR_ZULIP_EMAIL", names)
-        for name in ("ZULIP_CLAUDE_API_KEY", "ZULIP_BF_BUILDER_EMAIL", "ZULIP_ZC_API_KEY", "ZULIP_KIMI_API_KEY",
-                     "ZULIP_AMP_API_KEY", "ZULIP_EMAIL", "ZULIP_API_KEY", "ZULIP_SITE",
-                     "ZULIP_ALERT_GB_TRADER_HEADER"):
+        # The Mac CLI seats are server seats since the one-listener cutover (owner, Tue, Nov 10).
+        for name in ("ZULIP_CLAUDE_API_KEY", "ZULIP_CODEX_EMAIL", "ZULIP_ZC_API_KEY", "ZULIP_KIMI_API_KEY",
+                     "ZULIP_AMP_API_KEY", "ZULIP_GROK_API_KEY", "ZULIP_OPENCODE_EMAIL"):
+            self.assertIn(name, names)
+        # GROK-BUILD is "none", so the GROK seat's older ZULIP_GROK_BUILD_* stem never loads, and
+        # OPERATOR is "mac".
+        for name in ("ZULIP_BF_BUILDER_EMAIL", "ZULIP_GROK_BUILD_API_KEY", "ZULIP_OPERATOR_API_KEY",
+                     "ZULIP_EMAIL", "ZULIP_API_KEY", "ZULIP_SITE", "ZULIP_ALERT_GB_TRADER_HEADER"):
             self.assertNotIn(name, names)
 
     # ---- the launcher and the entrypoint as processes
@@ -380,7 +385,7 @@ class ApplyLiveConfigTests(unittest.TestCase):
             self.assertEqual(new["seat." + seat], sample["seat." + seat], seat)
         cfg = C.from_dict(tomllib.loads(after))
         self.assertEqual(cfg.errors, [])
-        self.assertEqual(sorted(cfg.disabled), [], "every GB bot is enabled")
+        self.assertEqual(sorted(cfg.disabled), ["AMP", "GROK"], "only the two keyless Mac CLI seats are off")
         self.assertEqual(AL.problems(after), [])
         code, out = self.run_main("--apply")
         self.assertEqual(code, 0, out)
@@ -484,13 +489,13 @@ class ApplyLiveConfigTests(unittest.TestCase):
         self.assertTrue(self.live.read_text().endswith(enabled))
 
     def test_a_result_that_would_not_load_is_refused_and_nothing_is_written(self) -> None:
-        # A Mac seat in the server's live file is a partition problem the merge cannot fix.
-        self.live.write_text(self.live.read_text() + '\n[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n')
+        # A seat the partition gives to no listener ("none") is a partition problem the merge cannot fix.
+        self.live.write_text(self.live.read_text() + '\n[seat.GROK-BUILD]\nwake = "inbox"\n')
         before = self.live.read_text()
         code, out = self.run_main("--apply")
         self.assertEqual(code, 2, out)
         self.assertIn("refused:  the result would not load", out)
-        self.assertIn("seat CLAUDE", out)
+        self.assertIn("seat GROK-BUILD", out)
         self.assertEqual(self.live.read_text(), before)
         self.assertEqual(list(self.tmp.glob("*.bak-*")), [])
 

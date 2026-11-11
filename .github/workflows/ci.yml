@@ -10,7 +10,11 @@ on:
 # instead of racing the newest one to the required check.
 concurrency:
   group: ci-${{ github.repository }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Main is the release source: once a main CI run starts it is never cancelled
+  # (the single pending slot simply moves to the newest push), so a merge storm
+  # cannot starve the release gate of a completed CI run (AFC-653).  Pull
+  # request runs keep the supersede-cancel behavior.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 # Least privilege: every job below only reads the checkout and the toolchains,  so the
 # workflow grants contents read and nothing else.
@@ -74,6 +78,12 @@ jobs:
       run: |
         timeout 60 ruby scripts/check-workflow-duplicate-keys.rb .github/workflows .github/pr-autofix-trusted.yml
         cd scripts && python3 -m unittest test_workflow_duplicate_keys -v
+    # Release-source binding (AFC-653):  a merge storm must not starve the release
+    # gate (a main CI run that starts always finishes), and a release must deploy
+    # the exact head its triggering CI proved.  Static text assertions, no deps.
+    - name: Workflow release-source binding
+      timeout-minutes: 5
+      run: cd scripts && python3 -m unittest test_workflow_release_binding -v
     # FLEET-PROTOCOL.md is generated from Fleet-OPS handbook/ and mirrored here by the sync job's pull request from
     # handbook-sync/mirror.  The mirror must start with the GENERATED header, its body must hash to the header, and
     # only that branch may change it.  To change policy, open a PR to Fleet-OPS handbook/ (its README has the rules).
