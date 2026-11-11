@@ -186,13 +186,13 @@ class BootstrapProofRunTests(unittest.TestCase):
         return proof
 
     def test_proven_requires_two_exact_refusals(self):
-        denied = (401, {"error": deploy_proof.BOOTSTRAP_CAUSE})
+        denied = (401, {"error": deploy_proof.BOOTSTRAP_CAUSE, "bootstrap_admission": "operator"})
         out = self._proof([denied, denied])("swu-zc", "ZC", "b" * 32, "1" * 64, "2" * 64)
         self.assertEqual(out["outcome"], deploy_proof.PROVEN)
         self.assertEqual(out["refusal"], deploy_proof.BOOTSTRAP_CAUSE)
 
     def test_probe_request_is_byte_identical_to_external_proof(self):
-        denied = (401, {"error": deploy_proof.BOOTSTRAP_CAUSE})
+        denied = (401, {"error": deploy_proof.BOOTSTRAP_CAUSE, "bootstrap_admission": "operator"})
         boot = self._proof([denied, denied])
         boot("swu-zc", "ZC", "b" * 32, "1" * 64, "2" * 64)
         ext = deploy_proof.ExternalProof("bearer-tok")
@@ -224,7 +224,7 @@ class BootstrapProofRunTests(unittest.TestCase):
         self.assertEqual(out["stage"], "read")
 
     def test_any_other_refusal_is_not_a_proof(self):
-        denied = (401, {"error": deploy_proof.BOOTSTRAP_CAUSE})
+        denied = (401, {"error": deploy_proof.BOOTSTRAP_CAUSE, "bootstrap_admission": "operator"})
         other = (401, {"error": "bearer_rejected"})
         out = self._proof([denied, other])("swu-zc", "ZC", "b" * 32, "1" * 64, "2" * 64)
         self.assertEqual(out["outcome"], deploy_proof.REFUSED)
@@ -373,10 +373,16 @@ class BootstrapRelayChainTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             server, log = self._server(tmp)
             proof_id = "c" * 32
-            status, body = server.handle("bearer-zc", "wf_repo_get", {"repo": REPO})
-            self.assertEqual((status, body), (401, {"error": "seat_not_in_policy"}))
-            status, body = server.handle("bearer-zc", "wf_file_patch", self._probe(proof_id))
-            self.assertEqual((status, body), (401, {"error": "seat_not_in_policy"}))
+            status, body = server.handle("bearer-zc", "wf_repo_get", {"repo": REPO}, operator_bootstrap=True)
+            self.assertEqual(
+                (status, body),
+                (401, {"error": "seat_not_in_policy", "bootstrap_admission": "operator"}),
+            )
+            status, body = server.handle("bearer-zc", "wf_file_patch", self._probe(proof_id), operator_bootstrap=True)
+            self.assertEqual(
+                (status, body),
+                (401, {"error": "seat_not_in_policy", "bootstrap_admission": "operator"}),
+            )
 
             rows = deploy_proof.read_audit_rows(log._path)
             self.assertEqual(len(rows), 2)
@@ -414,14 +420,14 @@ class BootstrapRelayChainTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             server, log = self._server(tmp)
             for action in ("open_pr", "merge_pr", "comment_pr"):
-                status, body = server.handle("bearer-zc", action, {"repo": REPO})
+                status, body = server.handle("bearer-zc", action, {"repo": REPO}, operator_bootstrap=True)
                 self.assertEqual((status, body), (401, {"error": "seat_not_in_policy"}))
             rows = deploy_proof.read_audit_rows(log._path)
             self.assertEqual(len(rows), 3)
             for row in rows:
                 self.assertEqual(row["cause"], "seat_not_in_policy")
                 self.assertNotIn("identity", row)
-            status, _body = server.handle("bearer-zc", "wf_repo_get", {"repo": REPO})
+            status, _body = server.handle("bearer-zc", "wf_repo_get", {"repo": REPO}, operator_bootstrap=True)
             self.assertEqual(status, 401)
             rows = deploy_proof.read_audit_rows(log._path)
             self.assertEqual(rows[-1]["identity"], "ZC")
@@ -430,7 +436,7 @@ class BootstrapRelayChainTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             server, log = self._server(tmp, identity="MALLORY")
             proof_id = "d" * 32
-            status, _body = server.handle("bearer-zc", "wf_file_patch", self._probe(proof_id))
+            status, _body = server.handle("bearer-zc", "wf_file_patch", self._probe(proof_id), operator_bootstrap=True)
             self.assertEqual(status, 401)
             rows = deploy_proof.read_audit_rows(log._path)
             receipt = deploy_proof.sign_receipt(KEY, _record(proof_id=proof_id))
@@ -451,7 +457,7 @@ class BootstrapRelayChainTests(unittest.TestCase):
     def test_an_unverifiable_bearer_gets_no_bootstrap_row(self):
         with tempfile.TemporaryDirectory() as tmp:
             server, log = self._server(tmp)
-            status, body = server.handle("bearer-nope", "wf_repo_get", {"repo": REPO})
+            status, body = server.handle("bearer-nope", "wf_repo_get", {"repo": REPO}, operator_bootstrap=True)
             self.assertEqual(status, 401)
             rows = deploy_proof.read_audit_rows(log._path)
             self.assertTrue(
@@ -463,9 +469,9 @@ class BootstrapRelayChainTests(unittest.TestCase):
             server, log = self._server(tmp)
             server._bootstrap_auditor = audit_mod.BootstrapDenialAuditor(limit=1)
             first, second = "e" * 32, "f" * 32
-            status, _ = server.handle("bearer-zc", "wf_file_patch", self._probe(first))
+            status, _ = server.handle("bearer-zc", "wf_file_patch", self._probe(first), operator_bootstrap=True)
             self.assertEqual(status, 401)
-            status, _ = server.handle("bearer-zc", "wf_file_patch", self._probe(second))
+            status, _ = server.handle("bearer-zc", "wf_file_patch", self._probe(second), operator_bootstrap=True)
             self.assertEqual(status, 401)
             rows = deploy_proof.read_audit_rows(log._path)
             self.assertEqual(len(rows), 1)
@@ -487,7 +493,7 @@ class BootstrapRelayChainTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             server, log = self._server(tmp)
             for _ in range(3):
-                status, _ = server.handle("bearer-zc", "wf_repo_get", {"repo": REPO})
+                status, _ = server.handle("bearer-zc", "wf_repo_get", {"repo": REPO}, operator_bootstrap=True)
                 self.assertEqual(status, 401)
             rows = deploy_proof.read_audit_rows(log._path)
             self.assertEqual(len(rows), 3)
@@ -500,3 +506,268 @@ class BootstrapRelayChainTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+class ListenerCapabilitySeparationTests(unittest.TestCase):
+    """Bootstrap admission is a property of the LISTENER the request arrives
+    on, never of the peer address:  the tunnel dials the public listener
+    from 127.0.0.1 exactly like an operator would, so remote_addr cannot be
+    the operator boundary.  The public listener never reaches the verifier
+    or spends the bootstrap budgets;  the operator listener does."""
+
+    def _relay(self, tmp):
+        from git_relay.audit import AuditLog
+        from git_relay.server import Relay
+
+        calls = []
+
+        class Verifier:
+            def parse_identity(self, token):
+                return "ZC" if token == "bearer-zc" else None
+
+            def resolve(self, token):
+                calls.append(token)
+                return "ZC"
+
+        policy = SeatPolicy(json.dumps({"swu-old": dict(OLD_ROW)}), verifier=Verifier())
+        log = AuditLog(os.path.join(tmp, "audit.jsonl"))
+        return Relay(policy, object(), log), log, calls
+
+    def test_public_listener_never_reaches_the_verifier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay, log, calls = self._relay(tmp)
+            status, _body = relay.handle(
+                "bearer-zc", "wf_repo_get", {"repo": REPO}, operator_bootstrap=False
+            )
+            self.assertEqual(status, 401)
+            self.assertEqual(calls, [])
+            with open(log._path, encoding="utf-8") as fh:
+                rows = [json.loads(line) for line in fh]
+            # The generic bounded unauth row only:  no bootstrap identity row,
+            # no auditor spend, and nothing named after the bearer's claim.
+            self.assertFalse(any(r.get("identity") == "ZC" for r in rows))
+            self.assertFalse(any(r.get("cause") == "bootstrap_denied" for r in rows))
+
+    def test_operator_listener_resolves_and_audits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay, log, calls = self._relay(tmp)
+            status, _body = relay.handle(
+                "bearer-zc", "wf_repo_get", {"repo": REPO}, operator_bootstrap=True
+            )
+            self.assertEqual(status, 401)
+            self.assertEqual(calls, ["bearer-zc"])
+            with open(log._path, encoding="utf-8") as fh:
+                rows = [json.loads(line) for line in fh]
+            self.assertTrue(
+                any(
+                    r.get("identity") == "ZC" and r.get("cause") == "seat_not_in_policy"
+                    for r in rows
+                )
+            )
+
+    def test_over_budget_operator_denial_carries_no_marker(self):
+        # The marker asserts installable audit evidence exists:  once the
+        # per-identity budget is spent, the denial is still refused but no
+        # longer claims admission, so the proof cannot go PROVEN on an
+        # uninstallable run.
+        with tempfile.TemporaryDirectory() as tmp:
+            relay, log, calls = self._relay(tmp)
+            for _ in range(2):
+                status, body = relay.handle(
+                    "bearer-zc", "wf_repo_get", {"repo": REPO}, operator_bootstrap=True
+                )
+                self.assertEqual(status, 401)
+                self.assertEqual(body.get("bootstrap_admission"), "operator")
+            status, body = relay.handle(
+                "bearer-zc", "wf_repo_get", {"repo": REPO}, operator_bootstrap=True
+            )
+            self.assertEqual(status, 401)
+            self.assertNotIn("bootstrap_admission", body)
+
+    def test_audit_io_failure_carries_no_marker(self):
+        # An unwritable audit log must not crash the handler nor emit the
+        # admission marker:  the refusal stands, the proof will REFUSE.
+        from git_relay.server import Relay
+
+        class Verifier:
+            def parse_identity(self, token):
+                return "ZC" if token == "bearer-zc" else None
+
+            def resolve(self, token):
+                return "ZC"
+
+        policy = SeatPolicy(json.dumps({"swu-old": dict(OLD_ROW)}), verifier=Verifier())
+        log = audit_mod.AuditLog("/nonexistent-dir-9x/audit.jsonl")
+        relay = Relay(policy, object(), log)
+        status, body = relay.handle(
+            "bearer-zc", "wf_repo_get", {"repo": REPO}, operator_bootstrap=True
+        )
+        self.assertEqual(status, 401)
+        self.assertNotIn("bootstrap_admission", body)
+
+    def test_http_public_listener_cannot_reach_bootstrap_even_from_loopback(self):
+        # cloudflared dials the public listener from 127.0.0.1:  the peer
+        # address is identical to an operator's, so only the listener the
+        # request ARRIVED on may decide bootstrap admission.
+        import http.client
+        import threading
+
+        from git_relay.server import BoundedThreadingHTTPServer, make_handler
+
+        with tempfile.TemporaryDirectory() as tmp:
+            relay, log, calls = self._relay(tmp)
+            public = BoundedThreadingHTTPServer(("127.0.0.1", 0), make_handler(relay))
+            operator = BoundedThreadingHTTPServer(
+                ("127.0.0.1", 0), make_handler(relay, operator_bootstrap=True)
+            )
+            for srv in (public, operator):
+                threading.Thread(target=srv.serve_forever, daemon=True).start()
+            try:
+                for srv, expected_calls in ((public, 0), (operator, 1)):
+                    conn = http.client.HTTPConnection(
+                        "127.0.0.1", srv.server_address[1], timeout=10
+                    )
+                    conn.request(
+                        "POST",
+                        "/v1/wf_repo_get",
+                        body=json.dumps({"repo": REPO}),
+                        headers={
+                            "Authorization": "Bearer bearer-zc",
+                            "Content-Type": "application/json",
+                        },
+                    )
+                    resp = conn.getresponse()
+                    resp.read()
+                    conn.close()
+                    self.assertEqual(resp.status, 401)
+                    self.assertEqual(len(calls), expected_calls)
+            finally:
+                for srv in (public, operator):
+                    srv.shutdown()
+                    srv.server_close()
+class OperatorBootstrapEndToEndTests(unittest.TestCase):
+    """The real HTTP flow:  the public listener refuses the proof run (no
+    operator-admission marker), the operator listener proves it, and the
+    signed receipt verifies against the run's own audit rows with the exact
+    URL binding both edges share."""
+
+    def _relay(self, tmp):
+        from git_relay.audit import AuditLog
+        from git_relay.server import Relay
+
+        class Verifier:
+            def parse_identity(self, token):
+                return "ZC" if token == "bearer-zc" else None
+
+            def resolve(self, token):
+                return "ZC"
+
+        policy = SeatPolicy(json.dumps({"swu-old": dict(OLD_ROW)}), verifier=Verifier())
+        log = AuditLog(os.path.join(tmp, "audit.jsonl"))
+        return Relay(policy, object(), log), log
+
+    def _serve(self, relay, operator):
+        import threading
+
+        from git_relay.server import BoundedThreadingHTTPServer, make_handler
+
+        srv = BoundedThreadingHTTPServer(
+            ("127.0.0.1", 0), make_handler(relay, operator_bootstrap=operator)
+        )
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        return srv, "http://127.0.0.1:%d/v1/" % srv.server_address[1]
+
+    def test_public_listener_proof_run_refuses_without_admission(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay, log = self._relay(tmp)
+            _srv, url = self._serve(relay, operator=False)
+            proof = deploy_proof.BootstrapProof("bearer-zc", url=url)
+            record = proof("swu-zc", "ZC", "d" * 32, "1" * 64, "2" * 64)
+            self.assertEqual(record["outcome"], deploy_proof.REFUSED)
+            self.assertEqual(record["stage"], "read")
+            self.assertEqual(record.get("reason"), "no_operator_admission")
+
+    def test_operator_listener_proof_binds_receipt_and_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay, log = self._relay(tmp)
+            _srv, url = self._serve(relay, operator=True)
+            proof = deploy_proof.BootstrapProof("bearer-zc", url=url)
+            proof_id = "e" * 32
+            record = proof("swu-zc", "ZC", proof_id, "1" * 64, "2" * 64)
+            self.assertEqual(record["outcome"], deploy_proof.PROVEN)
+            self.assertEqual(record["url"], url)
+
+            rows = deploy_proof.read_audit_rows(log._path)
+            receipt = deploy_proof.sign_receipt(KEY, record)
+            store = deploy_proof.ReplayStore(os.path.join(tmp, "store.json"))
+            verified = deploy_proof.verify_bootstrap_receipt(
+                KEY,
+                receipt,
+                seat="swu-zc",
+                identity="ZC",
+                now=int(time.time()),
+                store=store,
+                policy_before="1" * 64,
+                policy_after="2" * 64,
+                audit_rows=rows,
+                url=url,
+            )
+            self.assertEqual(verified["proof_id"], proof_id)
+
+            # The same receipt against any other URL string refuses:  proof
+            # and installer bind the exact same validated endpoint.
+            other = deploy_proof.ReplayStore(os.path.join(tmp, "other.json"))
+            with self.assertRaises(ValueError):
+                deploy_proof.verify_bootstrap_receipt(
+                    KEY,
+                    receipt,
+                    seat="swu-zc",
+                    identity="ZC",
+                    now=int(time.time()),
+                    store=other,
+                    policy_before="1" * 64,
+                    policy_after="2" * 64,
+                    audit_rows=rows,
+                    url="http://127.0.0.1:1/v1/",
+                )
+
+    def test_git_paths_refused_on_operator_listener(self):
+        import http.client
+
+        with tempfile.TemporaryDirectory() as tmp:
+            relay, log = self._relay(tmp)
+            srv, _url = self._serve(relay, operator=True)
+            conn = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+            conn.request("GET", "/example.git/info/refs?service=git-upload-pack")
+            resp = conn.getresponse()
+            resp.read()
+            conn.close()
+            self.assertEqual(resp.status, 404)
+
+    def test_operator_url_validation(self):
+        good = ("http://127.0.0.1:8472/v1/", "https://localhost:8472/v1/", "http://[::1]:8472/v1/")
+        for url in good:
+            self.assertEqual(deploy_proof.validate_operator_url(url), url)
+        bad = (
+            "ftp://127.0.0.1:8472/v1/",
+            "http://example.com:8472/v1/",
+            "http://user@127.0.0.1:8472/v1/",
+            "http://127.0.0.1:8472/v1/?x=1",
+            "http://127.0.0.1:8472/v1/#frag",
+            "http://127.0.0.1/v1/",
+            "http://127.0.0.1:8472/v1",
+            "http://127.0.0.1:8472/api/v1/",
+            "http://127.0.0.1:99999/v1/",
+            "http://127.0.0.1:0/v1/",
+            "http://127.0.0.1:8472/v1/?",
+            "http://127.0.0.1:8472/v1/#",
+            "http://127.0.0.1:8472/v" + chr(10) + "1/",
+            "http://127.0.0.1:8472/" + chr(9) + "v1/",
+            "",
+            None,
+        )
+        for url in bad:
+            with self.assertRaises(ValueError, msg=repr(url)):
+                deploy_proof.validate_operator_url(url)
+        with self.assertRaises(ValueError):
+            deploy_proof.BootstrapProof("bearer-zc", url="http://example.com:8472/v1/")

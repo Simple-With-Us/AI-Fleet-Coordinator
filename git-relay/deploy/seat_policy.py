@@ -867,6 +867,13 @@ def _install_seat_locked(
             deploy_proof.verify_bootstrap_receipt(
                 key,
                 receipt,
+                # The receipt is verified against the listener it was proven
+                # on:  after operator-listener activation this is the operator
+                # URL, validated to the supported loopback shape;  unset, the
+                # historical default stays.
+                url=deploy_proof.validate_operator_url(os.environ["GIT_RELAY_OPERATOR_URL"])
+                if os.environ.get("GIT_RELAY_OPERATOR_URL")
+                else deploy_proof.BootstrapProof.URL,
                 seat=args.seat,
                 identity=claimed,
                 now=int(time.time()),

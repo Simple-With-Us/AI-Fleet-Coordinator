@@ -170,6 +170,20 @@ class BootstrapInstallTests(unittest.TestCase):
         self.assertTrue(ReplayStore(str(self.relay_dir / sp.REPLAY_STORE)).seen("proof-b1"))
         self.assertIn(["systemctl", "restart", "git-relay.service"], fake.calls)
 
+    def test_a_malformed_operator_url_env_is_refused_before_any_write(self):
+        with mock.patch.dict(os.environ, {"GIT_RELAY_OPERATOR_URL": "http://example.com:8472/v1/"}):
+            rc = self.install(self.args2(), self.unit)
+        self.assertEqual(rc, 2)
+        self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
+        self.assertFalse(ReplayStore(str(self.relay_dir / sp.REPLAY_STORE)).seen("proof-b1"))
+
+    def test_a_mismatched_operator_url_env_is_refused_before_any_write(self):
+        with mock.patch.dict(os.environ, {"GIT_RELAY_OPERATOR_URL": "http://127.0.0.1:8472/v1/"}):
+            rc = self.install(self.args2(), self.unit)
+        self.assertEqual(rc, 2)
+        self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
+        self.assertFalse(ReplayStore(str(self.relay_dir / sp.REPLAY_STORE)).seen("proof-b1"))
+
     def test_a_replayed_bootstrap_receipt_is_refused_before_any_write(self):
         store = ReplayStore(str(self.relay_dir / sp.REPLAY_STORE))
         store.add(self.record)

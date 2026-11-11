@@ -14,6 +14,7 @@ import os
 import re
 import tempfile
 import time
+import urllib.parse
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -45,6 +46,45 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
+def validate_operator_url(url: str) -> str:
+    """The supported operator endpoint shape, enforced at both edges.
+
+    The prover (BootstrapProof(url=...)) and the installer
+    (GIT_RELAY_OPERATOR_URL) validate through this one helper so the exact
+    same URL string is bound in the proof record and the receipt verifier.
+    Only loopback http(s) with an explicit port and the exact /v1/ path is
+    supported;  userinfo, query and fragment are refused, so a bearer is
+    never sent to an arbitrary external or malformed endpoint.
+    """
+    if not isinstance(url, str) or not url:
+        raise ValueError("operator url: empty")
+    # urlsplit silently strips ASCII newlines/tabs and treats an empty
+    # query/fragment delimiter as absent:  validate the RAW string so the
+    # exact bytes validated are the exact bytes used.
+    if any(ord(c) < 0x21 or ord(c) == 0x7F for c in url):
+        raise ValueError("operator url: control or whitespace bytes are not allowed")
+    if "?" in url or "#" in url:
+        raise ValueError("operator url: query and fragment are not allowed")
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("operator url: scheme must be http or https")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("operator url: userinfo is not allowed")
+    if parsed.hostname not in ("127.0.0.1", "::1", "localhost"):
+        raise ValueError("operator url: host must be loopback")
+    try:
+        port = parsed.port
+    except ValueError:
+        raise ValueError("operator url: invalid port") from None
+    if port is None:
+        raise ValueError("operator url: explicit port required")
+    if port == 0:
+        raise ValueError("operator url: port 0 is not a real endpoint")
+    if parsed.path != "/v1/":
+        raise ValueError("operator url: path must be exactly /v1/")
+    return url
+
+
 class RuntimeProof:
     URL = "http://127.0.0.1:8471/v1/"
     REPO = "Simple-With-Us/AI-Fleet-Coordinator"
@@ -53,9 +93,13 @@ class RuntimeProof:
     # Python agents).  See ExternalProof.USER_AGENT.
     USER_AGENT = None
 
-    def __init__(self, bearer, opener=None):
+    def __init__(self, bearer, opener=None, url=None):
         self.bearer = bearer
         self.opener = opener or build_opener(NoRedirect())
+        if url is not None:
+            # Operator-listener override:  validated to the supported
+            # loopback endpoint shape before any bearer is sent to it.
+            self.URL = validate_operator_url(url)
 
     def call(self, action, args):
         raw = json.dumps(args, separators=(",", ":")).encode()
@@ -314,6 +358,14 @@ class BootstrapProof(RuntimeProof):
     mutation was possible" (NULL_OID preconditions, no successful read
     claimed);  any other answer - including an unexpected 200, which would
     mean the identity already resolves - is REFUSED.
+
+    PROVEN requires the relay's operator-admission marker on BOTH refusals:
+    only the operator listener (make_handler(operator_bootstrap=True)) emits
+    it, so a run against the public listener is REFUSED with
+    no_operator_admission instead of producing a proven-but-uninstallable
+    receipt.  The operator URL override is validated (loopback http(s) only,
+    explicit port, exact /v1/ path, no userinfo/query/fragment) and
+    install-seat binds the same URL string through verify_bootstrap_receipt.
     """
 
     URL = "https://agents.simplewithus.com/v1/"
@@ -347,6 +399,13 @@ class BootstrapProof(RuntimeProof):
             return dict(record, outcome=INCONCLUSIVE, stage="read")
         if status != 401 or not isinstance(result, dict) or result.get("error") != BOOTSTRAP_CAUSE:
             return dict(record, outcome=REFUSED, stage="read", status=status)
+        if result.get("bootstrap_admission") != "operator":
+            # The refusal carries no operator-admission marker:  this run
+            # reached the public listener, whose generic bounded row binds
+            # no verifier-confirmed identity, so a receipt from it would be
+            # uninstallable.  Refuse instead of claiming proof.
+            return dict(record, outcome=REFUSED, stage="read", status=status,
+                        reason="no_operator_admission")
         # Byte-identical to ExternalProof's negative probe for the same proof
         # id:  the flat wf_file_patch request whose NULL_OID preconditions
         # (expected_head_sha, base_blob_sha) make a mutation impossible, so
@@ -364,8 +423,16 @@ class BootstrapProof(RuntimeProof):
             status, result = self.call("wf_file_patch", probe)
         except OSError:
             return dict(record, outcome=INCONCLUSIVE, stage="probe")
-        if status == 401 and isinstance(result, dict) and result.get("error") == BOOTSTRAP_CAUSE:
+        if (
+            status == 401
+            and isinstance(result, dict)
+            and result.get("error") == BOOTSTRAP_CAUSE
+            and result.get("bootstrap_admission") == "operator"
+        ):
             return dict(record, outcome=PROVEN, refusal=BOOTSTRAP_CAUSE)
+        if status == 401 and isinstance(result, dict) and result.get("error") == BOOTSTRAP_CAUSE:
+            return dict(record, outcome=REFUSED, stage="probe", status=status,
+                        reason="no_operator_admission")
         return dict(record, outcome=REFUSED, stage="probe", status=status)
 
 
