@@ -242,11 +242,15 @@ test("listenerReceipt: the four words of a ledger receipt and nothing else", () 
   assert.deepEqual(listenerReceipt({ wake_id: "w1", state: "A".repeat(3), via: "9lives", at: NaN }), { wake_id: "w1", state: null, via: null, at: null });
 });
 
-test("listenerSecretName: wake seats keep their wake key, MA gets its read-only key, other seats get none", () => {
+test("listenerSecretName: wake seats keep their wake key, the read-key seats get theirs, other seats get none", () => {
   assert.equal(listenerSecretName("JET"), "WAKE_HMAC_KEY_JET");
   assert.equal(listenerSecretName("WISE"), "WAKE_HMAC_KEY_INSTINCT");
   assert.equal(listenerSecretName("MA"), "WAKE_HMAC_KEY_MA");
-  assert.equal(listenerSecretName("CLAUDE"), null);
+  // Owner, Nov 10 2026 ("make the wake key for everyone"):  every hosted seat without a wake route has a read key.
+  assert.equal(listenerSecretName("CLAUDE"), "WAKE_HMAC_KEY_CLAUDE");
+  assert.equal(listenerSecretName("CODEX"), "WAKE_HMAC_KEY_CODEX");
+  assert.equal(listenerSecretName("CURSOR"), "WAKE_HMAC_KEY_CURSOR");
+  assert.equal(listenerSecretName("AG"), null);
   assert.equal(listenerSecretName("__proto__"), null);
 });
 
