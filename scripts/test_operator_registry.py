@@ -1141,6 +1141,33 @@ class RegistryTest(unittest.TestCase):
         self.assertIn("not registered", str(caught.exception))
         self.assertNotIn("Should not land", str(self.reg._get(eh["record_id"])["title"]))
 
+    def test_touch_names_the_live_letter_and_follows_a_change_in_place(self):
+        """A touch answers with the letter and generation the record holds now, so a hook sees a relabel."""
+        native = "mvs_touch_names_letter"
+        mac = self._loc(platform="minimax", host="mac-1")
+        live = self.reg.resolve_or_register(ident(platform="minimax", host="mac-1", native=native))
+        touched = R.touch_session(self.db, platform="minimax", native_session_id=native, **mac)
+        self.assertEqual(
+            touched,
+            {
+                "record_id": live["record_id"],
+                "outcome": "seen",
+                "label": live["label"],
+                "generation": live["generation"],
+            },
+        )
+        self._force_live_letter(live["record_id"], "QX")  # the registry moves the letter in place
+        moved = R.touch_session(self.db, platform="minimax", native_session_id=native, **mac)
+        self.assertEqual((moved["outcome"], moved["label"]), ("seen", "QX"))
+
+    def test_touch_on_a_closed_row_keeps_its_old_answer(self):
+        native = "mvs_touch_closed"
+        mac = self._loc(platform="minimax", host="mac-1")
+        live = self.reg.resolve_or_register(ident(platform="minimax", host="mac-1", native=native))
+        self.reg.close(live["record_id"], actor="MM", source="test")
+        closed = R.touch_session(self.db, platform="minimax", native_session_id=native, **mac)
+        self.assertEqual(closed, {"record_id": live["record_id"], "outcome": "closed"})
+
     def test_update_session_on_a_closed_row_is_consistent_across_hosts(self):
         """A closed row at the caller's host answers closed;  another host sees a miss."""
         native = "mvs_closed_consistency"

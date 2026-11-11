@@ -355,6 +355,35 @@ class PlatformLetterTests(ApiBase):
             argv.append("--%s=%s" % (name.replace("_", "-"), value))
         return argv
 
+    def test_a_touch_over_the_api_names_the_letter_the_server_holds_now(self) -> None:
+        code, made = self.registry(self.reg_argv("register", "s-0001", letter_pick="lowest"))
+        self.assertEqual(code, 0)
+        # The API's own touch answer keeps its old keys and adds the letter and generation.
+        raw = registry_api.call(
+            self.api_env(),
+            "touch",
+            {"platform": "codex", "location": "server", "scope": PL.SCOPE, "session_id": "s-0001"},
+        )
+        self.assertEqual(
+            raw,
+            {
+                "record_id": made["record_id"],
+                "outcome": "seen",
+                "label": made["label"],
+                "generation": made["generation"],
+            },
+        )
+        conn = sqlite3.connect(self.server_db)
+        with conn:
+            conn.execute("UPDATE alias_assignments SET letter = 'QX' WHERE retired_at IS NULL")
+        conn.close()
+        code, touched = self.registry(self.reg_argv("touch", "s-0001"))
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            touched,
+            {"ok": True, "record_id": made["record_id"], "label": "QX", "generation": made["generation"]},
+        )
+
     def test_the_whole_letter_life_runs_over_the_api(self) -> None:
         code, made = self.registry(
             self.reg_argv("register", "s-0001", letter_pick="lowest")

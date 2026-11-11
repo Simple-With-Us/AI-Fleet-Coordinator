@@ -12,6 +12,7 @@ import io
 import json
 import os
 import secrets
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -103,6 +104,43 @@ class ApiSide(unittest.TestCase):
         code, again = self.registry("close", "--location", "mac", "--session-id", SID)
         self.assertEqual(code, 0, again)
         self.assertTrue(again["retired"])  # a closed chat's second close is the local path's retired answer
+
+    def test_a_touch_names_the_letter_the_server_holds_now(self) -> None:
+        _, made = self.registry("register", "--location", "mac", "--session-id", SID)
+        code, touched = self.registry("touch", "--location", "mac", "--session-id", SID)
+        self.assertEqual(code, 0, touched)
+        self.assertEqual((touched["label"], touched["generation"]), (made["label"], made["generation"]))
+        # The registry moves the letter in place (a relabel, or a restore):  the next touch names the new one.
+        conn = sqlite3.connect(self.db)
+        with conn:
+            conn.execute("UPDATE alias_assignments SET letter = 'QX' WHERE retired_at IS NULL")
+        conn.close()
+        code, moved = self.registry("touch", "--location", "mac", "--session-id", SID)
+        self.assertEqual(code, 0, moved)
+        self.assertEqual(moved["label"], "QX")
+
+    def test_a_server_chat_retitles_when_the_server_moved_its_letter(self) -> None:
+        env = dict(self.api_env, CLAUDE_LETTER_LOCATION="server", CLAUDE_CODE_ENTRYPOINT="cli")
+        start = time.time()
+
+        def hook(payload: dict, now: float) -> dict | None:
+            out = io.StringIO()
+            CL.hook(env, io.StringIO(json.dumps(payload)), out, runner=no_runner, now=now, platform="linux")
+            text = out.getvalue().strip()
+            return json.loads(text)["hookSpecificOutput"] if text else None
+
+        first = hook({"hook_event_name": "SessionStart", "session_id": SID, "source": "startup"}, start)
+        old = first["sessionTitle"].split(":")[0]
+        hook({"hook_event_name": "UserPromptSubmit", "session_id": SID, "prompt": "fix the build",
+              "session_title": first["sessionTitle"]}, start + 1)
+        conn = sqlite3.connect(self.db)
+        with conn:
+            conn.execute("UPDATE alias_assignments SET letter = 'QX' WHERE retired_at IS NULL")
+        conn.close()
+        out = hook({"hook_event_name": "UserPromptSubmit", "session_id": SID, "prompt": "more",
+                    "session_title": "%s: Fix the Build" % old}, start + CL.TOUCH_SECONDS + 5)
+        self.assertEqual(out["sessionTitle"], "QX: Fix the Build")
+        self.assertIn("letter changed from %s to QX" % old, out["additionalContext"])
 
     def test_a_chat_that_comes_back_after_close_reopens(self) -> None:
         _, first = self.registry("register", "--location", "mac", "--session-id", SID)
