@@ -373,12 +373,16 @@ class BootstrapRelayChainTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             server, log = self._server(tmp)
             proof_id = "c" * 32
-            status, body = server.handle("bearer-zc", "wf_repo_get", {"repo": REPO}, operator_bootstrap=True)
+            status, body = server.handle(
+                "bearer-zc", "wf_repo_get", {"repo": REPO}, operator_bootstrap=True
+            )
             self.assertEqual(
                 (status, body),
                 (401, {"error": "seat_not_in_policy", "bootstrap_admission": "operator"}),
             )
-            status, body = server.handle("bearer-zc", "wf_file_patch", self._probe(proof_id), operator_bootstrap=True)
+            status, body = server.handle(
+                "bearer-zc", "wf_file_patch", self._probe(proof_id), operator_bootstrap=True
+            )
             self.assertEqual(
                 (status, body),
                 (401, {"error": "seat_not_in_policy", "bootstrap_admission": "operator"}),
@@ -420,14 +424,18 @@ class BootstrapRelayChainTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             server, log = self._server(tmp)
             for action in ("open_pr", "merge_pr", "comment_pr"):
-                status, body = server.handle("bearer-zc", action, {"repo": REPO}, operator_bootstrap=True)
+                status, body = server.handle(
+                    "bearer-zc", action, {"repo": REPO}, operator_bootstrap=True
+                )
                 self.assertEqual((status, body), (401, {"error": "seat_not_in_policy"}))
             rows = deploy_proof.read_audit_rows(log._path)
             self.assertEqual(len(rows), 3)
             for row in rows:
                 self.assertEqual(row["cause"], "seat_not_in_policy")
                 self.assertNotIn("identity", row)
-            status, _body = server.handle("bearer-zc", "wf_repo_get", {"repo": REPO}, operator_bootstrap=True)
+            status, _body = server.handle(
+                "bearer-zc", "wf_repo_get", {"repo": REPO}, operator_bootstrap=True
+            )
             self.assertEqual(status, 401)
             rows = deploy_proof.read_audit_rows(log._path)
             self.assertEqual(rows[-1]["identity"], "ZC")
@@ -436,7 +444,9 @@ class BootstrapRelayChainTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             server, log = self._server(tmp, identity="MALLORY")
             proof_id = "d" * 32
-            status, _body = server.handle("bearer-zc", "wf_file_patch", self._probe(proof_id), operator_bootstrap=True)
+            status, _body = server.handle(
+                "bearer-zc", "wf_file_patch", self._probe(proof_id), operator_bootstrap=True
+            )
             self.assertEqual(status, 401)
             rows = deploy_proof.read_audit_rows(log._path)
             receipt = deploy_proof.sign_receipt(KEY, _record(proof_id=proof_id))
@@ -457,7 +467,9 @@ class BootstrapRelayChainTests(unittest.TestCase):
     def test_an_unverifiable_bearer_gets_no_bootstrap_row(self):
         with tempfile.TemporaryDirectory() as tmp:
             server, log = self._server(tmp)
-            status, body = server.handle("bearer-nope", "wf_repo_get", {"repo": REPO}, operator_bootstrap=True)
+            status, body = server.handle(
+                "bearer-nope", "wf_repo_get", {"repo": REPO}, operator_bootstrap=True
+            )
             self.assertEqual(status, 401)
             rows = deploy_proof.read_audit_rows(log._path)
             self.assertTrue(
@@ -469,9 +481,13 @@ class BootstrapRelayChainTests(unittest.TestCase):
             server, log = self._server(tmp)
             server._bootstrap_auditor = audit_mod.BootstrapDenialAuditor(limit=1)
             first, second = "e" * 32, "f" * 32
-            status, _ = server.handle("bearer-zc", "wf_file_patch", self._probe(first), operator_bootstrap=True)
+            status, _ = server.handle(
+                "bearer-zc", "wf_file_patch", self._probe(first), operator_bootstrap=True
+            )
             self.assertEqual(status, 401)
-            status, _ = server.handle("bearer-zc", "wf_file_patch", self._probe(second), operator_bootstrap=True)
+            status, _ = server.handle(
+                "bearer-zc", "wf_file_patch", self._probe(second), operator_bootstrap=True
+            )
             self.assertEqual(status, 401)
             rows = deploy_proof.read_audit_rows(log._path)
             self.assertEqual(len(rows), 1)
@@ -493,7 +509,9 @@ class BootstrapRelayChainTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             server, log = self._server(tmp)
             for _ in range(3):
-                status, _ = server.handle("bearer-zc", "wf_repo_get", {"repo": REPO}, operator_bootstrap=True)
+                status, _ = server.handle(
+                    "bearer-zc", "wf_repo_get", {"repo": REPO}, operator_bootstrap=True
+                )
                 self.assertEqual(status, 401)
             rows = deploy_proof.read_audit_rows(log._path)
             self.assertEqual(len(rows), 3)
@@ -506,6 +524,8 @@ class BootstrapRelayChainTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
 class ListenerCapabilitySeparationTests(unittest.TestCase):
     """Bootstrap admission is a property of the LISTENER the request arrives
     on, never of the peer address:  the tunnel dials the public listener
@@ -643,6 +663,8 @@ class ListenerCapabilitySeparationTests(unittest.TestCase):
                 for srv in (public, operator):
                     srv.shutdown()
                     srv.server_close()
+
+
 class OperatorBootstrapEndToEndTests(unittest.TestCase):
     """The real HTTP flow:  the public listener refuses the proof run (no
     operator-admission marker), the operator listener proves it, and the

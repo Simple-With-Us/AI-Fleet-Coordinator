@@ -404,8 +404,9 @@ class BootstrapProof(RuntimeProof):
             # reached the public listener, whose generic bounded row binds
             # no verifier-confirmed identity, so a receipt from it would be
             # uninstallable.  Refuse instead of claiming proof.
-            return dict(record, outcome=REFUSED, stage="read", status=status,
-                        reason="no_operator_admission")
+            return dict(
+                record, outcome=REFUSED, stage="read", status=status, reason="no_operator_admission"
+            )
         # Byte-identical to ExternalProof's negative probe for the same proof
         # id:  the flat wf_file_patch request whose NULL_OID preconditions
         # (expected_head_sha, base_blob_sha) make a mutation impossible, so
@@ -431,8 +432,13 @@ class BootstrapProof(RuntimeProof):
         ):
             return dict(record, outcome=PROVEN, refusal=BOOTSTRAP_CAUSE)
         if status == 401 and isinstance(result, dict) and result.get("error") == BOOTSTRAP_CAUSE:
-            return dict(record, outcome=REFUSED, stage="probe", status=status,
-                        reason="no_operator_admission")
+            return dict(
+                record,
+                outcome=REFUSED,
+                stage="probe",
+                status=status,
+                reason="no_operator_admission",
+            )
         return dict(record, outcome=REFUSED, stage="probe", status=status)
 
 
