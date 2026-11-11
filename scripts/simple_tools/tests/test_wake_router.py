@@ -2051,6 +2051,8 @@ class Receipts(Base):
                 "session-cwd-gone",
                 "unknown-host",
                 "unknown-platform",
+                "workspace-mismatch",
+                "workspace-unknown",
             },
         )
 
