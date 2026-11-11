@@ -219,6 +219,25 @@ with the top-level `apps` (the acronyms) and `--app`.
    pack are fleet-wide; the pack assumes tag `[MONET]` and branch prefix
    `monet/`.
 
+5. **Prove the route live: the seat self-test.**  Before you trust a closed
+   issue, and before you fall back to `gh`, run from your own shell:
+
+   ```bash
+   python3 scripts/simple_tools/selftest.py --seat <TAG>
+   ```
+
+   It strips a stale `AGENT_SEAT`, `AGENT_TAG` and `AGENT_LAUNCH_SEAT` (a
+   launcher's own hints are kept and must agree), reads your own bearer file,
+   and checks `whoami`, one hosted git read (`gr_wf_repo_get`) and one
+   seat-policy-gated read (`gr_wf_pr_list_page`).  On a refusal it names the
+   exact cause: `seat_not_in_policy`, `bearer_rejected`,
+   `verifier_unavailable`, `no_app_credential` or `seat_policy`.  It also
+   prints the Worker version, and a relay version if one is exposed.  Reads
+   that need a relay policy grant (`gr_wf_pr_search`, `gr_wf_repo_list`) show
+   as `WARN`, and fail the run only with `--strict`.  Exit code 0 means every
+   required step passed.  It is read-only and never prints a credential.  Tests:
+   `cd scripts && python3 -m unittest simple_tools.tests.test_selftest`.
+
 ---
 
 ## Phase 1 — Zulip Receive and Send
