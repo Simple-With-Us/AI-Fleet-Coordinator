@@ -146,6 +146,26 @@ _COMPLIANCE = (("the fleet-config compliance rules", "scripts/fleet_config/seed_
 _WATCHDOG = (("the Cloudflare usage watchdog", "scripts/cf-usage-watchdog/watchdog.py"),)
 _WAKE = (("the wake router", "scripts/simple_tools/wake_settings.py"),)
 
+
+def _router_key(name: str, seat: str, label: str) -> Spec:
+    """One seat's wake router bearer:  a secret, the same value as the listener's routine key."""
+    return _S(
+        name,
+        "str",
+        "W2",
+        secret=True,
+        pattern=r"^[!-~]{16,512}$",
+        note="the bearer the wake router checks on every %s request, the same value as the "
+        "listener's %s_ROUTINE_KEY;  never cached, and while it cannot be read the router refuses "
+        "that seat's requests and says why on /health, and every other seat goes on" % (seat, seat),
+        group="Wake Router",
+        label="%s Wake Router Bearer" % label,
+        hosts="server",
+        consumers=_WAKE,
+        folder=WAKE_ROUTER_FOLDER,
+    )
+
+
 REGISTRY: tuple[Spec, ...] = (
     # C1 fleet-autopush
     _S(
@@ -841,21 +861,11 @@ REGISTRY: tuple[Spec, ...] = (
         folder=WAKE_ROUTER_FOLDER,
         format="an ssh destination, with no options",
     ),
-    _S(
-        "WAKE_ROUTER_CLAUDE_KEY",
-        "str",
-        "W2",
-        secret=True,
-        pattern=r"^[!-~]{16,512}$",
-        note="the bearer Claude's wake router checks on every request, the same value as the listener's "
-        "CLAUDE_ROUTINE_KEY;  never cached, and while it cannot be read the router refuses every request "
-        "and says why on /health",
-        group="Wake Router",
-        label="Claude Wake Router Bearer",
-        hosts="server",
-        consumers=_WAKE,
-        folder=WAKE_ROUTER_FOLDER,
-    ),
+    # One bearer per seat the router serves (wake_settings.KEY_KNOBS), never one shared across seats.
+    _router_key("WAKE_ROUTER_CLAUDE_KEY", "CLAUDE", "Claude"),
+    _router_key("WAKE_ROUTER_CODEX_KEY", "CODEX", "Codex"),
+    _router_key("WAKE_ROUTER_MC_KEY", "MC", "Muse Code"),
+    _router_key("WAKE_ROUTER_ZC_KEY", "ZC", "ZCode"),
 )
 
 BY_NAME: dict[str, Spec] = {s.name: s for s in REGISTRY}

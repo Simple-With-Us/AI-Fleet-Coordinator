@@ -1,8 +1,11 @@
 """Claude's half of the wake router:  how one wake reaches one Claude Code chat (OPS-1048).
 
-    simple-chat wake-router serve [--bind ADDR] [--port N] [--config FILE]
     simple-chat wake-deliver          one delivery on this host;  JSON in on stdin, JSON out
     simple-chat wake-ssh-gate         the forced command for the router's ssh key
+
+The router itself is the one service for every platform (`wake_service`, `simple-chat
+wake-router serve`), which builds the CLAUDE seat from `make_platform` here, with `DEFAULTS` as
+its settings and `state_dir` as its state folder (`wake_service.BUILDERS`).
 
 The join.  A registration's native_session_id is the `sessionId` in ~/.claude/sessions/<pid>.json,
 which also holds `pid`, `procStart`, `messagingSocketPath` and `kind`.  A file only counts while its
@@ -73,14 +76,12 @@ Python 3.11+, standard library only.
 
 from __future__ import annotations
 
-import argparse
 import fcntl
 import importlib
 import json
 import os
 import re
 import shutil
-import signal
 import socket
 import stat
 import subprocess
@@ -96,7 +97,6 @@ from . import wake_router as WR
 SEAT = "CLAUDE"
 PLATFORM = "claude"
 MENTION = "Claude"
-DEFAULT_PORT = 8793
 SESSION_RE = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
 # A Codex thread id is a bare UUID too:  the same shape `codex_wake.SESSION_RE` checks.
 CODEX_SESSION_RE = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
@@ -941,39 +941,6 @@ def wake_ssh_gate_main(
         return wake_deliver_main(stdin, stdout, env)
     stderr.write("wake-ssh-gate: that command is not allowed on this key\n")
     return GATE_REFUSED
-
-
-def main(argv: list[str]) -> int:
-    """`simple-chat wake-router serve`."""
-    from . import platform_letter as PL
-    from . import wake_settings as WS
-
-    parser = argparse.ArgumentParser(prog="simple-chat wake-router")
-    sub = parser.add_subparsers(dest="cmd", required=True)
-    serve = sub.add_parser("serve")
-    serve.add_argument("--bind", default="127.0.0.1")
-    serve.add_argument("--port", type=int, default=DEFAULT_PORT)
-    serve.add_argument("--config", default="")
-    args = parser.parse_args(argv)
-    env = dict(PL.with_registry_env(dict(os.environ)))
-    named = args.config or env.get("CLAUDE_WAKE_CONFIG") or ""
-    state = state_dir(env)
-    settings = WS.WakeSettings(
-        SEAT, DEFAULTS, Path(named or state / "config.json"), required=bool(named)
-    )
-    settings.load()
-    # The routine key is the secret knob the settings read from Infisical:  there is no key file.
-    # No decider is configured:  a wake the rules cannot link goes to the most recent live chat.
-    router = WR.Router(
-        make_platform(env, settings), env, settings, state, settings.routine_key, consult=None
-    )
-    previous = signal.signal(signal.SIGHUP, lambda _signum, _frame: settings.kick())
-    settings.start_refresh()
-    try:
-        return WR.serve(router, args.bind, args.port)
-    finally:
-        settings.stop_refresh()
-        signal.signal(signal.SIGHUP, previous)
 
 
 def deliver_entry() -> int:

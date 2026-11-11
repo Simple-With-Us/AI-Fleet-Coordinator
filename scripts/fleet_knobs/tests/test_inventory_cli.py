@@ -76,16 +76,24 @@ PLAN_KEYS = {
     "WAKE_ROUTER_SETTINGS_REFRESH_SECONDS",
     "WAKE_ROUTER_MAC_SSH",
     "WAKE_ROUTER_CLAUDE_KEY",
+    "WAKE_ROUTER_CODEX_KEY",
+    "WAKE_ROUTER_MC_KEY",
+    "WAKE_ROUTER_ZC_KEY",
 }
+# The signing key and one wake router bearer per seat the router serves.
+SECRETS = [
+    "FLEET_FACTS_SIGNING_KEY",
+    "WAKE_ROUTER_CLAUDE_KEY",
+    "WAKE_ROUTER_CODEX_KEY",
+    "WAKE_ROUTER_MC_KEY",
+    "WAKE_ROUTER_ZC_KEY",
+]
 
 
 class InventoryTests(unittest.TestCase):
-    def test_the_registry_holds_every_planned_knob_and_only_the_two_secrets(self):
+    def test_the_registry_holds_every_planned_knob_and_only_these_secrets(self):
         self.assertEqual({s.name for s in REGISTRY}, PLAN_KEYS)
-        self.assertEqual(
-            [s.name for s in REGISTRY if s.secret],
-            ["FLEET_FACTS_SIGNING_KEY", "WAKE_ROUTER_CLAUDE_KEY"],
-        )
+        self.assertEqual([s.name for s in REGISTRY if s.secret], SECRETS)
 
     def test_a_knob_outside_the_root_says_its_folder_in_the_table(self):
         for spec in REGISTRY:

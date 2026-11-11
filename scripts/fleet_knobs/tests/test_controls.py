@@ -81,7 +81,14 @@ class RegistryFactsTests(KnobTestCase):
         doc = json.loads(inventory.json_text())
         secret = [k for k in doc["knobs"] if k["secret"]]
         self.assertEqual(
-            [k["name"] for k in secret], ["FLEET_FACTS_SIGNING_KEY", "WAKE_ROUTER_CLAUDE_KEY"]
+            [k["name"] for k in secret],
+            [
+                "FLEET_FACTS_SIGNING_KEY",
+                "WAKE_ROUTER_CLAUDE_KEY",
+                "WAKE_ROUTER_CODEX_KEY",
+                "WAKE_ROUTER_MC_KEY",
+                "WAKE_ROUTER_ZC_KEY",
+            ],
         )
         for entry in secret:
             self.assertIsNone(entry["default"])
