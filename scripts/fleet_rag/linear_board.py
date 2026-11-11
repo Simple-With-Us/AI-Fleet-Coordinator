@@ -50,9 +50,7 @@ def load_board():
         if mod is not None:
             _board_mod = mod
             return mod
-        loader = importlib.machinery.SourceFileLoader(
-            "board_cli_fleet_rag", str(_BOARD_PATH)
-        )
+        loader = importlib.machinery.SourceFileLoader("board_cli_fleet_rag", str(_BOARD_PATH))
         spec = importlib.util.spec_from_loader("board_cli_fleet_rag", loader)
         mod = importlib.util.module_from_spec(spec)
         loader.exec_module(mod)
