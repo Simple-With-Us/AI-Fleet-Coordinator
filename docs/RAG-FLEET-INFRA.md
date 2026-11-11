@@ -87,7 +87,7 @@ runtime by themselves.
 | `apple-note` | every note in the iCloud folder **Coding**, exported by AppleScript without stealing focus, cached by modification date | app and seat parsed from the `[TEAM_KEY, Agent] Topic` title convention |
 | `doc` | markdown in fleet app repos under `~/Code` (`README.md`, `AGENTS.md`, `STATUS.md`, `CLAUDE.md`, `docs/**/*.md`), plus the broader walk of AI-Fleet-Coordinator and fleet-ops, top-level `~/apps/*.md` except effort logs, `~/.claude/CLAUDE.md`, `~/.grok/docs/**/*.md`, and `~/.grok/skills/**/SKILL.md` | GitHub blob URL when the file is in a repo.  Skip `node_modules`, `.git`, backups, dist, build, vendor, and `reviews/raw`.  Deduped by resolved path. |
 | `effort-log` | `~/apps/*-EFFORT-LOG.md` and the protocol | one doc per file, app from the filename |
-| `skill` | `~/.claude/skills/*/SKILL.md`, `~/.cursor/skills/*/SKILL.md` | deduped by content |
+| `skill` | `~/.claude/skills/*/SKILL.md`, `~/.cursor/skills/*/SKILL.md`, and `~/.grok/skills/*/SKILL.md` | deduped by content |
 | `memory` | `~/.claude/projects/*/memory/*.md`, `~/.codex/memories/*.md` | the per-seat silos, so their lessons are shared |
 | `chat-log` | infrequent policy scan of agent transcripts (not in `ingest --all`) | **Owner 2026-09-02:** only user turns that look like an owner ruling or infra/policy shift.  Not a lesson dump.  Agents contribute lessons via `recall_contribute`; chat review is sparingly for policy/infra drift.  Explicit `recall ingest --source chat-log`. |
 | `agent-contribution` | `recall contribute` / `recall_contribute` | **Highest-yield write path.**  Scrubbed, gitleaks-gated, 40–4,000 chars.  Search first, then contribute the lesson at the moment it was learned. |
@@ -97,6 +97,8 @@ repo mirror (FLEET-PROTOCOL, MAC-LOCAL-PROCESSES, FLEET-UI-COPY, TEMPLATE-AGENTS
 repo copies of skills are skipped in favour of the `skill` source, effort-log mirrors are skipped
 in favour of the live boards, and checkouts reachable under two spellings are walked once.
 `recall ingest --prune` deletes the chunks of documents a source no longer yields.
+
+The nightly server job and the Mac mirror are in `docs/RAG-NIGHTLY-INGEST.md` (AFC-687).  Both ship disabled.
 
 Every chunk goes through the secret scrub (`scripts/fleet_rag/scrub.py`: well-known token shapes,
 assignment patterns, basic-auth URLs) and then a gitleaks gate over the staged rows; anything

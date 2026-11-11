@@ -22,11 +22,25 @@ fleet's TestFlight guards.
 | `scripts/launchd/com.jay.ios-testflight-freshness.plist` | The LaunchAgent:  every two hours at :20. |
 
 `~/apps/ios-fleet` stays the install target, as for the rest of the fleet's TestFlight tooling.
-The check calls `~/apps/ios-fleet/asc-api.mjs` for App Store Connect (that script takes the
-`ASC_*` env or Infisical `/asc` through `fleet-secrets`; the check never reads a credential and never echoes
-`asc-api.mjs` stderr, because a crash there can name the key path) and
-`~/apps/ios-fleet/build-window.sh` for the build window.  Set `IOS_FLEET_DIR` to point both
-somewhere else.
+The check calls `~/apps/ios-fleet/asc-api.mjs` for App Store Connect and `~/apps/ios-fleet/build-window.sh` for the build window.  Set `IOS_FLEET_DIR` to point both somewhere else.  The check resolves the App Store Connect key itself before it starts a child, and it never echoes `asc-api.mjs` stderr, because a crash there can name a key path.
+
+## Credentials (AFC-606)
+
+Freshness reads use one owned Infisical service token.  The grant must be exactly Fleet-OPS `prod` `/asc` with permission `read`.  The check asks Infisical for that token's own metadata and continues only when the grant matches.  It then reads `ASC_KEY_ID`, `ASC_ISSUER_ID` and `ASC_KEY_P8` from that folder and passes those three values to each `asc-api.mjs` child.  The service token itself is not passed to the child.
+
+The binding is one of these, and a chosen home that fails does not fall through to the next:
+
+- `IOS_TF_FRESHNESS_INFISICAL_TOKEN` in the process environment.
+- A mode `0600` or `0400` file named by `IOS_TF_FRESHNESS_INFISICAL_TOKEN_FILE`.
+- The login-keychain item whose service is `infisical-service-token` and whose account is `ios-testflight-freshness-ro`.  This is the home the LaunchAgent uses, because the plist does not carry a secret.
+
+The Fleet-OPS project id comes from `INFISICAL_FLEET_OPS_PROJECT_ID` or the first line of `~/.simple-tools/fleet-ops-project-id`.  That file holds a UUID, not a credential.
+
+A missing binding, a token that is not that exact read-only grant, an expired token, or a row that does not prove `prod:/asc` exits 2 with a message that names the binding and never a value.  The check does not call `fleet-secrets`, does not read a legacy key folder, and does not use a machine identity or universal-auth.
+
+`--allow-legacy-asc-creds`, or `IOS_TF_ALLOW_LEGACY_ASC_CREDS=1`, is the explicit opt-in that skips this binding and lets the installed `asc-api.mjs` use its own fallback (environment `ASC_*` values, then standalone `fleet-secrets` `/asc`, then a legacy key folder).  Deploy checks and the LaunchAgent do not set it.  The build-number audit uses the same `makeDeps().asc` path, so it follows the same rule.
+
+The owner creates the token and stores it.  This repository does not mint it.  Suggested registry name: `ios-testflight-freshness-ro`.  One project, environment `prod`, folder `/asc`, access read, with an expiry.  On the Mac, the login-keychain item above is the binding the scheduled job reads.
 
 ## Commands
 
@@ -42,19 +56,16 @@ node ~/apps/ios-fleet/ios_testflight_freshness.mjs --ship-behind --alert     # w
 From a lane, `node scripts/ios-fleet/ios_testflight_freshness.mjs` works the same way (it finds
 `asc-api.mjs` in `~/apps/ios-fleet`).  A full run takes about 20 seconds.
 
-Every App Store Connect call is one `asc-api.mjs` child, and each child signs in to Infisical
-through `fleet-secrets` (three `get`s, each a login plus an export).  The check runs at most two
+Every App Store Connect call is one `asc-api.mjs` child.  The scoped token is verified once per run, and each child receives the three `ASC_*` values instead of signing in again.  The check runs at most two
 children at once, retries a child that was killed by its 120 second timeout, and stops spawning
 after three kills in a row.  A report line that says `asc-api.mjs killed by SIGTERM after the 120s
 timeout, host load N` means the Mac was overloaded (the 2026-10-20 2:20pm and 4:20pm runs failed
 this way at load 100 to 200 with memory thrashing), not that App Store Connect or the credentials
-are wrong:  find what is saturating the Mac (`top -o cpu`, the Housekeeper) and re-run.  A real
-credential problem reads `HTTP 401` or `Missing ASC_KEY_ID`.  Before 2026-10-20 a killed child
-was printed as `asc-api.mjs exit ?`.
+are wrong:  find what is saturating the Mac (`top -o cpu`, the Housekeeper) and re-run.  A real credential problem reads `HTTP 401`, or exit 2 from the scoped binding.  Before 2026-10-20 a killed child was printed as `asc-api.mjs exit ?`.
 
 Exit codes:  **0** every checked app is current;  **1** something is behind, or a catch-up ship is
 still running or processing;  **2** the check itself failed (App Store Connect or GitHub
-unreachable, an unknown `--app`, a registry row that matches no commit).
+unreachable, an unknown `--app`, a registry row that matches no commit, or a missing or unverified scoped binding).
 
 A full run also writes the report to `~/.cache/ios-fleet/freshness-last.json`.
 
@@ -167,10 +178,7 @@ atomically), and a lock directory beside it keeps two mutating runs apart.
 ## Where it runs, and why there
 
 A Mac LaunchAgent, `com.jay.ios-testflight-freshness`, every two hours at :20 (scheduled, not
-always-on;  registered in `MAC-LOCAL-PROCESSES.md`).  It needs **no new secret**:  App Store
-Connect credentials are already in Infisical (`/asc`, read with `fleet-secrets get`) for `asc-api.mjs`, `gh` is signed in with the
-`workflow` scope that `workflow_dispatch` needs, and `simple-chat` has the CLAUDE bot's Zulip
-credential, all verified under a launchd-style clean environment.  A GitHub Actions cron in
+always-on;  registered in `MAC-LOCAL-PROCESSES.md`).  It needs the scoped binding described above (the login-keychain item, plus the Fleet-OPS project id the Mac already uses for other Infisical reads).  Until that binding exists the job exits 2.  It does not fall back to `fleet-secrets` `/asc`.  `gh` is signed in with the `workflow` scope that `workflow_dispatch` needs, and `simple-chat` has the CLAUDE bot's Zulip credential.  A GitHub Actions cron in
 AI-Fleet-Coordinator could read the App Store Connect key through the org's Fleet-OPS Infisical
 identity (ContactLogo's workflows already do), but it would still need a token proven to run
 `workflow_dispatch` in every app repo (AFC's `FLEET_GITHUB_TOKEN` has an unverified scope) and a

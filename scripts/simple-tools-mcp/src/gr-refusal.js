@@ -40,6 +40,12 @@ const BAD_REQUEST_REASONS = new Map([
   ["files too large", "bad_request_content_too_large"],
   ["file too large", "bad_request_content_too_large"],
   ["file content budget exceeded", "bad_request_content_too_large"],
+  ["additive label does not exist", "bad_request_label_not_found"],
+  ["additive label target not found", "bad_request_label_target_not_found"],
+  ["additive label was not applied", "bad_request_label_not_applied"],
+  ["auto-merge is not armed", "bad_request_auto_merge_not_armed"],
+  ["auto-merge enable was refused", "bad_request_auto_merge_refused"],
+  ["auto-merge is armed with a different method", "bad_request_auto_merge_method_mismatch"],
 ]);
 
 /** The relay's fixed head, ref and identity fences:  the caller's expected
@@ -91,6 +97,10 @@ const REFUSAL_BASE_REASONS = Object.freeze([
   "github_refused",
   "fence_mismatch",
   "unauthenticated",
+  "seat_not_in_policy",
+  "bearer_rejected",
+  "verifier_unavailable",
+  "no_app_credential",
   "repository_moved",
   "read_too_large",
 ]);
@@ -155,6 +165,10 @@ export function classifyRelayRefusal(error, githubStatus) {
     return status === undefined ? null : { reason: "github_refused", github_status: status };
   }
   if (error === "unauthenticated") return { reason: "unauthenticated" };
+  if (error === "seat_not_in_policy") return { reason: "seat_not_in_policy" };
+  if (error === "bearer_rejected") return { reason: "bearer_rejected" };
+  if (error === "verifier_unavailable") return { reason: "verifier_unavailable" };
+  if (error === "no_app_credential") return { reason: "no_app_credential" };
   if (error === REPOSITORY_MOVED_ERROR) return { reason: "repository_moved" };
   if (error === READ_TOO_LARGE_ERROR) return { reason: "read_too_large" };
   if (SEAT_RATE_LIMIT_ERRORS.has(error)) return { reason: "seat_rate_limit" };
@@ -172,6 +186,10 @@ const REASON_TEXT = Object.freeze({
   github_refused: "GitHub itself refused the request (see github_status:  403 is permission or a branch rule, 405 is a merge block, 422 is a rejected change).  The relay passed it on;  fix the cause on GitHub, not in the seat policy.",
   fence_mismatch: "The pull request, branch, comment or check no longer matches the head, base or state the call expected.  Read the current state, then send the call again with the fresh value.",
   unauthenticated: "git-relay did not accept this seat's credential.  Nothing was written.",
+  seat_not_in_policy: "git-relay has no shared seat for the identity this credential names.  The loaded seat policy has to include that seat.  Nothing was written.",
+  bearer_rejected: "git-relay knows this seat, and the credential check did not confirm this bearer.  Nothing was written.",
+  verifier_unavailable: "git-relay could not ask the credential checker, so this bearer was not confirmed.  Nothing was written.  Try again shortly.",
+  no_app_credential: "git-relay authenticated this seat, but its GitHub App id or private key is missing or unusable.  Nothing was written.",
   repository_moved: repositoryMovedText(),
   read_too_large: "GitHub's answer to this read is larger than git-relay's read bound.  Ask for less per call:  a smaller per_page, or the paged verb (for example gr_wf_pr_reviews_page, gr_wf_pr_comments_page or gr_wf_compare_commits_page).",
   bad_request_pr_not_issue_target: "The target is a pull request, not an issue.  Use the pull-request tool for it.",
@@ -186,9 +204,75 @@ const REASON_TEXT = Object.freeze({
   bad_request_unsupported_action: "The relay does not support this workflow action.",
   bad_request_invalid_repository: "The repository is not a valid owner/name.",
   bad_request_content_too_large: "The content is over the relay's size or budget limit.  Send less per call.",
+  bad_request_label_not_found: "That label is not in the repository yet.  Create the fleet hold label, then send the call again.",
+  bad_request_label_target_not_found: "That number is not a pull request this call can label.",
+  bad_request_label_not_applied: "The label is still absent after the pull-request path.  Nothing further was written.",
+  bad_request_auto_merge_not_armed: "A follow-up read shows squash, merge, or rebase auto-merge is off.  Sending the call again is safe.",
+  bad_request_auto_merge_refused: "GitHub refused the enable, and a follow-up read shows auto-merge is off.",
+  bad_request_auto_merge_method_mismatch: "A follow-up read shows auto-merge is on with a different merge method.  Read the pull request before enabling again.",
 });
 
 /** Fixed caller-facing text for a reason id, or null when there is none. */
 export function refusalReasonText(reason) {
   return isRefusalReason(reason) ? (REASON_TEXT[reason] ?? null) : null;
+}
+
+// Same allowlist git_relay/github_client.py safe_error_diagnostics keeps.
+// A present field that fails the shape drops the whole object.  message is
+// never a field here, so GitHub's refusal prose cannot ride along.
+const DIAGNOSTIC_CATEGORIES = new Set([
+  "resource_not_accessible",
+  "rate_limit",
+  "bad_credentials",
+  "not_found",
+  "unknown",
+]);
+const DIAGNOSTIC_PERMISSIONS = new Set([
+  "actions",
+  "administration",
+  "checks",
+  "contents",
+  "issues",
+  "metadata",
+  "pull_requests",
+  "statuses",
+  "workflows",
+]);
+const REQUEST_ID_RE = /^[0-9A-Fa-f]{4,8}(?::[0-9A-Fa-f]{4,8}){3}$/;
+
+function permissionMap(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const out = {};
+  for (const [name, level] of Object.entries(value)) {
+    if (!DIAGNOSTIC_PERMISSIONS.has(name) || (level !== "read" && level !== "write")) return null;
+    out[name] = level;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/** Allowlisted github_diagnostics, or null.  Unknown keys are ignored. */
+export function allowlistedGithubDiagnostics(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (!DIAGNOSTIC_CATEGORIES.has(value.category)) return null;
+  const out = { category: value.category };
+  if (value.request_id !== undefined) {
+    if (typeof value.request_id !== "string" || !REQUEST_ID_RE.test(value.request_id)) return null;
+    out.request_id = value.request_id;
+  }
+  const hasPermissions = value.accepted_permissions !== undefined;
+  const hasSets = value.accepted_permission_sets !== undefined;
+  if (hasPermissions && hasSets) return null;
+  if (hasPermissions) {
+    const permissions = permissionMap(value.accepted_permissions);
+    if (!permissions) return null;
+    out.accepted_permissions = permissions;
+  }
+  if (hasSets) {
+    if (!Array.isArray(value.accepted_permission_sets)) return null;
+    if (value.accepted_permission_sets.length < 1 || value.accepted_permission_sets.length > 4) return null;
+    const sets = value.accepted_permission_sets.map(permissionMap);
+    if (sets.some((item) => item === null)) return null;
+    out.accepted_permission_sets = sets;
+  }
+  return out;
 }

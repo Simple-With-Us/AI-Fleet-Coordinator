@@ -2007,7 +2007,6 @@ class PrivateInventoryTests(unittest.TestCase):
         "docs/MAC-LOCAL-PROCESSES.md": "AFC-505: the live inventory of Mac local processes",
         "docs/protocols/coolify-fleet-cli-sync.md": "AFC-505: the protocol for the sync that reaches the box",
         "fleet-sentry-monitor/monitor.py": "AFC-505: a live monitor that defaults to the alias",
-        "scripts/simple_tools/muse_bridge_mac.py": "AFC-505: the live bridge that defaults to the alias",
         "scripts/fleet-cli-sync.py": "AFC-505: a live sync that names the receiver it ships to",
         "scripts/fleet_rag/doctor.py": "AFC-505: a live doctor that defaults to the alias",
         "scripts/recall-tunnel": "AFC-505: a live tunnel that reaches the box by alias and address",

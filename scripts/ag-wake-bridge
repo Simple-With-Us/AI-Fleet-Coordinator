@@ -10,7 +10,7 @@ Antigravity conversation the wake belongs to, and runs the delivery command in t
 
 It holds no Zulip key and no listener state.  Its one secret is the routine key, read from a
 0600 file on every request.  Its registry access is the Operator's read API, signed as the
-OPERATOR principal from the environment (or loaded from ~/.local/bin/mm-registry-env on both the
+OPERATOR principal from the environment (or loaded from ~/.local/bin/operator-registry-env on both the
 server and the Mac).  Message bodies never pass through it:  the wake payload carries metadata
 and a bounded excerpt, and the delivered prompt names the thread, never quotes it.
 

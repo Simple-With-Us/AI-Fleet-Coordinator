@@ -15,7 +15,8 @@ import Foundation
 //     allowlist does not name.  Their start and stop are not something an allowlist argv
 //     can say,  so they have no plan,  no Touch ID and no audit row.  Stop still asks,
 //     BotFleet Server's Restart asks when a fresh read finds work in flight,  and the Mac
-//     eavesdropper's Restart always asks,  because it drops every Mac seat at once
+//     eavesdropper's Restart always asks,  because it was retired at the one-listener cutover
+//     and a restart would bring it back
 //
 // A start that Muster takes on its own (`ServiceReconciler`) asks `route(forStarting:)` for
 // the same route a Start button would take.  On `.ops` it runs the same helper with the same

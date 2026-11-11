@@ -14,9 +14,11 @@ Sources (payload `source` value):
                  FLEET-PROTOCOL.md is ingested:  the public ones are the text of that file),
                  top-level ~/apps/*.md (not effort logs),
                  ~/.claude/CLAUDE.md, ~/.grok/docs/**/*.md, ~/.grok/skills/**/SKILL.md
-  skill          ~/.claude/skills/*/SKILL.md and ~/.cursor/skills/*/SKILL.md
-                 (doc_id skill/<tree>/<name>; byte-identical copies collapse to the first tree)
-  memory         ~/.claude/projects/*/memory/*.md and ~/.codex/memories/*.md
+  skill          ~/.claude/skills/*/SKILL.md, ~/.cursor/skills/*/SKILL.md and ~/.grok/skills/*/SKILL.md
+                 (doc_id skill/<tree>/<name>; byte-identical copies collapse to the first tree).
+                 When FLEET_RAG_MIRROR is set, those three trees are read from that directory.
+  memory         ~/.claude/projects/*/memory/*.md and ~/.codex/memories/*.md.
+                 When FLEET_RAG_MIRROR is set, those trees are read from that directory.
   apple-note     the iCloud "Coding" folder via notes_export (falls back to the on-disk cache
                  when Notes.app is unavailable and records a warning via `take_warnings`)
   chat-log       parsed agent transcripts (user + assistant text only) from Claude, Grok,
@@ -42,6 +44,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 
+from . import linear_board, mirror
 from .core import FleetRagError, now_ms
 
 HOME = pathlib.Path.home()
@@ -142,7 +145,10 @@ SOURCES = ("linear", "doc", "skill", "memory", "apple-note", "chat-log")
 # (owner 2026-09-02).  Pass `--source chat-log` explicitly.
 # board and effort-log are retired sources (owner 2026-11-03: Linear is the only issue home).
 # Their iter_* readers stay for tests until the data is deleted;  they are not registered.
-NIGHTLY_SOURCES = ("linear", "doc", "skill", "memory", "apple-note")
+# apple-note is write-time upsert only (AFC-685); nightly ingest must not read Apple Notes.
+NIGHTLY_SOURCES = ("linear", "doc", "skill", "memory")
+# The Hetzner nightly (AFC-687) is this same set.  It attests health without Apple Notes.
+SERVER_NIGHTLY_SOURCES = NIGHTLY_SOURCES
 
 WARNINGS: list[str] = []
 
@@ -978,23 +984,54 @@ def doc_from_file(
     )
 
 
+# An omitted directory follows the host env at call time.  An explicit None still
+# skips that walk, which is what the tests use to keep a fixture off the code tree.
+_CALLER_DEFAULT = object()
+
+
+def _configured_dir(value: object, env_name: str, fallback: pathlib.Path) -> pathlib.Path | None:
+    if value is None:
+        return None
+    if value is _CALLER_DEFAULT:
+        raw = (os.environ.get(env_name) or "").strip()
+        return pathlib.Path(raw) if raw else fallback
+    return pathlib.Path(str(value))
+
+
+def _default_checkout(name: str) -> pathlib.Path:
+    """A clone under FLEET_CODE_ROOT, or under ~/Code when that root is unset."""
+    root = _configured_dir(_CALLER_DEFAULT, "FLEET_CODE_ROOT", CODE_DIR)
+    if root is None:
+        root = CODE_DIR
+    return root / name
+
+
 def iter_docs(
-    fleet_repo: pathlib.Path | str = FLEET_REPO,
-    fleet_ops: pathlib.Path | str = FLEET_OPS_REPO,
+    fleet_repo: object = _CALLER_DEFAULT,
+    fleet_ops: object = _CALLER_DEFAULT,
     extra: Iterable[pathlib.Path] = EXTRA_DOCS,
     limit: int | None = None,
-    code_dir: pathlib.Path | str | None = CODE_DIR,
-    apps_dir: pathlib.Path | str | None = APPS_DIR,
+    code_dir: object = _CALLER_DEFAULT,
+    apps_dir: object = _CALLER_DEFAULT,
     grok_home: pathlib.Path | str | None = GROK_HOME,
 ) -> Iterator[Doc]:
-    ops = pathlib.Path(fleet_ops)
+    repo = (
+        _default_checkout("AI-Fleet-Coordinator")
+        if fleet_repo is _CALLER_DEFAULT
+        else pathlib.Path(str(fleet_repo))
+    )
+    ops = (
+        _default_checkout("fleet-ops")
+        if fleet_ops is _CALLER_DEFAULT
+        else pathlib.Path(str(fleet_ops))
+    )
     DOC_SKIPS.clear()
     files = _doc_files(
-        pathlib.Path(fleet_repo),
+        repo,
         ops,
         extra,
-        code_dir=None if code_dir is None else pathlib.Path(code_dir),
-        apps_dir=None if apps_dir is None else pathlib.Path(apps_dir),
+        code_dir=_configured_dir(code_dir, "FLEET_CODE_ROOT", CODE_DIR),
+        apps_dir=_configured_dir(apps_dir, "FLEET_APPS_ROOT", APPS_DIR),
         grok_home=None if grok_home is None else pathlib.Path(grok_home),
     )
     _log_doc_skips()
@@ -1036,15 +1073,32 @@ def skill_tree(skill_dir: pathlib.Path) -> str:
     return tree or "local"
 
 
+def resolved_skill_dirs() -> tuple[pathlib.Path, ...]:
+    """Skill trees for this call.  A mirror, when configured, replaces the home trees."""
+    root = mirror.mirror_root()
+    if root is not None:
+        return mirror.skill_dirs(root)
+    return SKILL_DIRS
+
+
+def resolved_memory_dirs() -> tuple[pathlib.Path, pathlib.Path]:
+    """Claude project memories and Codex memories for this call."""
+    root = mirror.mirror_root()
+    if root is not None:
+        return mirror.memory_claude(root), mirror.memory_codex(root)
+    return CLAUDE_PROJECTS, CODEX_MEMORIES
+
+
 def iter_skills(
-    skill_dirs: Iterable[pathlib.Path] = SKILL_DIRS, limit: int | None = None
+    skill_dirs: Iterable[pathlib.Path] | None = None, limit: int | None = None
 ) -> Iterator[Doc]:
     """One Doc per SKILL.md.  doc_id is unique per tree (skill/claude/<name>, skill/cursor/<name>);
     a byte-identical copy in a later tree is skipped (the first tree wins) so the same content is
-    not chunked twice under two ids."""
+    not chunked twice under two ids.  An omitted directory list is resolved at call time."""
+    chosen = resolved_skill_dirs() if skill_dirs is None else skill_dirs
     seen_hash: set[str] = set()
     n = 0
-    for d in skill_dirs:
+    for d in chosen:
         d = pathlib.Path(d)
         if not d.exists():
             continue
@@ -1161,12 +1215,14 @@ def _memory_doc(p: pathlib.Path, seat: str, doc_id: str, app: str) -> Doc:
 
 
 def iter_memory(
-    claude_projects: pathlib.Path | str = CLAUDE_PROJECTS,
-    codex_memories: pathlib.Path | str = CODEX_MEMORIES,
+    claude_projects: pathlib.Path | str | None = None,
+    codex_memories: pathlib.Path | str | None = None,
     limit: int | None = None,
 ) -> Iterator[Doc]:
+    """Memory files.  An omitted path is resolved at call time, including the mirror."""
+    default_claude, default_codex = resolved_memory_dirs()
     n = 0
-    cp = pathlib.Path(claude_projects)
+    cp = pathlib.Path(default_claude if claude_projects is None else claude_projects)
     if cp.exists():
         for mem_dir in sorted(cp.glob("*/memory")):
             slug = project_slug(mem_dir.parent.name)
@@ -1179,7 +1235,7 @@ def iter_memory(
                 yield _memory_doc(
                     p, "CLAUDE", f"memory/claude/{slug}/{p.name}", app_from_project(slug)
                 )
-    cm = pathlib.Path(codex_memories)
+    cm = pathlib.Path(default_codex if codex_memories is None else codex_memories)
     if cm.exists():
         for p in sorted(cm.glob("*.md")):
             if limit and n >= limit:
@@ -1764,9 +1820,9 @@ def iter_chat_logs(
 # THE BOARD was retired 2026-10-19 (AFC-363);  the frozen findings.db keeps the old rows
 # searchable, but nothing new can ever arrive from it, so the corpus has missed every board
 # point since the freeze.  Linear is the live board now (docs/protocols/linear-migration.md).
-# This generator reads Linear through the installed `simple-board` CLI - read verbs only,
-# which need no bearer and run as the shared Fleet app - so credential lookup, token caching
-# and rate limiting stay in the one sanctioned place instead of being duplicated here.
+# This generator reads Linear through the board CLI stack (in-process, read-only GraphQL)
+# so credential lookup, per-run token reuse, refresh on expiry or 401, and rate limiting
+# stay in the one sanctioned place instead of being duplicated here.
 #
 # Linear replaces the frozen board corpus. Every live or archived issue is eligible,
 # including imported issues untouched since the freeze. Only committed ingest state may
@@ -1774,7 +1830,6 @@ def iter_chat_logs(
 # only by explicit migration verification, never by the normal Linear source.
 
 LINEAR_FREEZE = os.environ.get("FLEET_RAG_LINEAR_FREEZE", "2026-10-19T00:00:00.000Z")
-SIMPLE_BOARD_CLI = os.environ.get("FLEET_RAG_SIMPLE_BOARD", "simple-board")
 LINEAR_PAGE = 250
 LINEAR_FULL_PAGE = 50  # full nodes are heavy (descriptions + comments);  keep each call modest
 # Keep the CLI cap. Halve issue chunks, then retry a single issue with one node per
@@ -1879,6 +1934,7 @@ def reset_linear_seat_state() -> None:
     global LINEAR_SEAT_USED
     _linear_failed_seats.clear()
     LINEAR_SEAT_USED = None
+    linear_board.reset_sessions()
 
 
 def _linear_seat_names() -> list[str]:
@@ -1941,58 +1997,109 @@ def _linear_is_auth_failure(proc: subprocess.CompletedProcess) -> bool:
     return proc.returncode == 4 or bool(_LINEAR_AUTH_RE.search(proc.stderr or ""))
 
 
-def _linear_run(query: str, timeout_s: int) -> subprocess.CompletedProcess:
-    """Run one simple-board read as the first configured seat whose credentials have not failed
-    this run, falling back seat by seat on a credential failure (and only on one)."""
+def _linear_is_auth_failure_board(err: linear_board.BoardCliFailure) -> bool:
+    if err.code in (4, 6):
+        return True
+    return bool(_LINEAR_AUTH_RE.search(err.stderr or ""))
+
+
+def _linear_board_failure(err: linear_board.BoardCliFailure) -> LinearSourceError:
+    stderr = err.stderr or ""
+    if "exceeds --max-chars" in stderr:
+        return LinearSourceError(
+            f"linear: simple-board api query exited {err.code}: response exceeds the CLI size cap",
+            overflow=True,
+        )
+    if "no Linear app credentials" in stderr or err.code == 4:
+        return LinearSourceError(
+            f"linear: simple-board api query exited {err.code}: no Linear app identity "
+            f"for this run (the shared Fleet app was retired 2026-11-05;  export "
+            f"LINEAR_BF_ORACLE_CLIENT_ID/_SECRET or LINEAR_GB_ORACLE_CLIENT_ID/_SECRET, or "
+            f"LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET)"
+        )
+    return LinearSourceError(f"linear: simple-board api query exited {err.code}")
+
+
+def _linear_budget_left(deadline: float, timeout_s: int) -> float:
+    """The caller's remaining budget for this read, or a fail-closed budget error.
+
+    Every board attempt is forwarded the remaining budget as its own socket/retry
+    deadline, so the budget binds the blocking read itself on any thread and no
+    process-wide timer is ever touched."""
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise _linear_board_failure(
+            linear_board.BoardCliFailure(124, f"linear: query exceeded {timeout_s}s budget")
+        )
+    return left
+
+
+def _linear_run(query: str, timeout_s: int) -> dict:
+    """One board GraphQL read as the first configured seat whose credentials have not failed
+    this run, falling back seat by seat on a credential failure (and only on one).  ``timeout_s``
+    is the caller's total budget for the read, seat fallbacks included:  each attempt gets
+    the remaining budget, never the board client's unrelated default."""
+    deadline = time.monotonic() + max(1, timeout_s)
     global LINEAR_SEAT_USED
-    argv = [SIMPLE_BOARD_CLI, "api", "query", "--max-chars", str(LINEAR_MAX_CHARS), query]
     candidates = _linear_seat_envs()
     if not candidates:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s)
+        cid = os.environ.get("LINEAR_CLIENT_ID", "").strip()
+        sec = os.environ.get("LINEAR_CLIENT_SECRET", "").strip()
+        if not (cid and sec):
+            raise _linear_board_failure(
+                linear_board.BoardCliFailure(4, "no Linear app credentials")
+            )
+        try:
+            return linear_board.query(
+                "LINEAR_CLIENT_ID",
+                cid,
+                sec,
+                query,
+                max_chars=LINEAR_MAX_CHARS,
+                timeout_s=_linear_budget_left(deadline, timeout_s),
+            )
+        except linear_board.BoardCliFailure as err:
+            raise _linear_board_failure(err) from None
     live = [c for c in candidates if c[0] not in _linear_failed_seats] or candidates[-1:]
-    proc = None
+    last_err: linear_board.BoardCliFailure | None = None
     for n, (seat, env) in enumerate(live):
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s, env=env)
-        if not _linear_is_auth_failure(proc):
-            if LINEAR_SEAT_USED != seat:
-                LINEAR_SEAT_USED = seat
-                warn(f"linear: reading Linear as {seat}")
-            return proc
-        _linear_failed_seats.add(seat)
-        if n + 1 < len(live):
-            warn(f"linear: {seat} credentials failed (exit {proc.returncode});  falling back")
-    return proc
+        try:
+            data = linear_board.query(
+                seat,
+                env["LINEAR_CLIENT_ID"],
+                env["LINEAR_CLIENT_SECRET"],
+                query,
+                max_chars=LINEAR_MAX_CHARS,
+                timeout_s=_linear_budget_left(deadline, timeout_s),
+            )
+        except linear_board.BoardCliFailure as err:
+            last_err = err
+            if not _linear_is_auth_failure_board(err):
+                raise _linear_board_failure(err) from None
+            _linear_failed_seats.add(seat)
+            if n + 1 < len(live):
+                warn(f"linear: {seat} credentials failed (exit {err.code});  falling back")
+            continue
+        if LINEAR_SEAT_USED != seat:
+            LINEAR_SEAT_USED = seat
+            warn(f"linear: reading Linear as {seat}")
+        return data
+    if last_err is not None:
+        raise _linear_board_failure(last_err)
+    raise LinearSourceError("linear: no configured Linear seat credentials")
 
 
 def _linear_query(query: str, timeout_s: int = LINEAR_QUERY_TIMEOUT_S) -> dict:
-    """One GraphQL read through the simple-board CLI.  Fail-closed:  any transport, exit-code or
+    """One GraphQL read through the board stack.  Fail-closed:  any transport, exit-code or
     GraphQL error raises LinearSourceError so a broken read can never look like an empty board."""
     try:
-        proc = _linear_run(query, timeout_s)
-    except (OSError, subprocess.TimeoutExpired) as e:
+        data = _linear_run(query, timeout_s)
+    except LinearSourceError:
+        raise
+    except linear_board.BoardCliFailure as err:
+        raise _linear_board_failure(err) from None
+    except (OSError, ImportError) as e:
         raise LinearSourceError(f"linear: simple-board api query failed to run: {e}") from None
-    if proc.returncode != 0:
-        # stderr can carry request data or credentials, so it never reaches the error:  only
-        # the exit code plus a normalized reason from an allow-list of fixed CLI messages.
-        stderr = proc.stderr or ""
-        if "exceeds --max-chars" in stderr:
-            raise LinearSourceError(
-                f"linear: simple-board api query exited {proc.returncode}: response exceeds "
-                f"the CLI size cap",
-                overflow=True,
-            )
-        if "no Linear app credentials" in stderr:
-            raise LinearSourceError(
-                f"linear: simple-board api query exited {proc.returncode}: no Linear app identity "
-                f"for this run (the shared Fleet app was retired 2026-11-05;  export "
-                f"LINEAR_BF_ORACLE_CLIENT_ID/_SECRET or LINEAR_GB_ORACLE_CLIENT_ID/_SECRET, or "
-                f"LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET)"
-            )
-        raise LinearSourceError(f"linear: simple-board api query exited {proc.returncode}")
-    try:
-        data = json.loads(proc.stdout)
-    except ValueError as e:
-        raise LinearSourceError(f"linear: unreadable JSON from simple-board: {e}") from None
     if isinstance(data, dict) and data.get("errors"):
         raise LinearSourceError(f"linear: GraphQL errors: {str(data['errors'])[:300]}")
     if not isinstance(data, dict):

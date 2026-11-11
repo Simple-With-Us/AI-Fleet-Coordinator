@@ -55,10 +55,15 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # unit template stays repo-only under simple_tools/server/).
 # The 163rd is simple_tools/platform_letter_clutch.py (the Clutch session-letter adapter) and the 164th is
 # simple_tools/platform_letter_fx.py (the Fx session-letter adapter, which registers from the fx session store).
-# The 165th and 166th are simple_tools/thread_registry.py (the Operator chat-thread registry the listener
+# The 165th is simple_tools/operator_linear.py (AFC-565, the Operator's Zulip-to-Linear living comments
+# service the daemon hosts).
+# The 166th and 167th are simple_tools/wake_router.py and simple_tools/claude_wake.py (OPS-1048, the shared wake
+# router and Claude's delivery;  `simple-chat wake-deliver` has to run on the Mac, so they ship).
+# The 168th is simple_tools/wake_settings.py (OPS-1048, the router's settings through fleet_knobs).
+# The 169th and 170th are simple_tools/thread_registry.py (the Operator chat-thread registry the listener
 # keeps) and simple_tools/thread_registry_export.mjs (its Google drain, a data file beside the Python
 # modules), added for that review.
-MAX_FILES = 166
+MAX_FILES = 170
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,

@@ -638,7 +638,7 @@ class Wrapper(Base):
         with open(real, "w", encoding="utf-8") as fh:
             fh.write(body)
         os.chmod(real, 0o755)
-        envfile = os.path.join(self.home, ".local", "bin", "mm-registry-env")
+        envfile = os.path.join(self.home, ".local", "bin", "operator-registry-env")
         os.makedirs(os.path.dirname(envfile))
         with open(envfile, "w", encoding="utf-8") as fh:
             fh.write("export REGISTRY_MARK=sourced\n")

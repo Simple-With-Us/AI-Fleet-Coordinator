@@ -57,10 +57,39 @@ class Reply:
         return json.dumps(self.data).encode()
 
 
+def assert_public_artifact_boundary(root: Path, names: tuple[str, ...]) -> None:
+    allowed = {repo.casefold() for repo in PUBLIC_REPOS} | set(
+        HISTORICAL_PUBLIC_REPO_ALIASES.keys()
+    )
+    for name in names:
+        body = (root / name).read_text()
+        # RFC 5545 line folding can split a URL across CRLF + space.
+        body = re.sub(r"\r?\n[ \t]", "", body)
+        linked_repos = re.findall(
+            r"https://github\.com/Simple-With-Us/([^/\s?#)\"<>]+)", body, re.IGNORECASE
+        )
+        if not all(repo.casefold() in allowed for repo in linked_repos):
+            raise AssertionError(f"disallowed repository link in {name}")
+        if "### Effort board" in body or "<h3>Effort board</h3>" in body:
+            raise AssertionError(f"effort section in {name}")
+
+
 class PublicActivityTests(unittest.TestCase):
-    def test_checked_in_public_artifacts_contain_only_allowlisted_links(self) -> None:
-        root = Path(__file__).resolve().parents[1]
-        names = (
+    def test_built_public_artifacts_contain_only_allowlisted_links(self) -> None:
+        """Published snapshots live on published/fleet-activity, not stale main copies."""
+        day = date(2026, 9, 26)
+        pr = {
+            "repo": "BotFleet",
+            "number": 123,
+            "title": "Fix onboarding",
+            "url": "https://github.com/Simple-With-Us/BotFleet/pull/123",
+            "user": "jay",
+        }
+        commit = {
+            "sha": "a" * 40,
+            "commit": {"message": "feat: fixture", "author": {"date": "2026-09-26T12:00:00Z"}},
+        }
+        artifact_names = (
             "site/index.html",
             "site/digest.md",
             "calendar/daily-digest.ics",
@@ -68,23 +97,39 @@ class PublicActivityTests(unittest.TestCase):
             "site/calendar/daily-digest.ics",
             "site/calendar/agent-activity.ics",
         )
-        allowed = {repo.casefold() for repo in PUBLIC_REPOS} | set(
-            HISTORICAL_PUBLIC_REPO_ALIASES.keys()
-        )
-        for name in names:
-            body = (root / name).read_text()
-            # RFC 5545 line folding can split a URL across CRLF + space.
-            body = re.sub(r"\r?\n[ \t]", "", body)
-            with self.subTest(name=name):
-                linked_repos = re.findall(
-                    r"https://github\.com/Simple-With-Us/([^/\s?#)\"<>]+)", body, re.IGNORECASE
-                )
-                self.assertTrue(
-                    all(repo.casefold() in allowed for repo in linked_repos),
-                    f"disallowed repository link in {name}",
-                )
-                self.assertFalse("### Effort board" in body, f"effort section in {name}")
-                self.assertFalse("<h3>Effort board</h3>" in body, f"effort section in {name}")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = {
+                key: value
+                for key, value in os.environ.items()
+                if key not in {"FLEET_OWNER", "SITE_BASE_URL", "FLEET_REPOS", "GITHUB_TOKEN"}
+            }
+            env.update(
+                {
+                    "SITE_OUT": str(root / "site"),
+                    "ICS_OUT": str(root / "calendar" / "daily-digest.ics"),
+                    "CALENDAR_OUT": str(root / "calendar" / "agent-activity.ics"),
+                    "GITHUB_TOKEN": "fixture",
+                }
+            )
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                with (
+                    patch.dict(os.environ, env, clear=True),
+                    patch.object(digest, "token", return_value="fixture"),
+                    patch.object(digest, "select_public_repos", return_value=["BotFleet"]),
+                    patch.object(digest, "fetch_merged_prs", return_value=[(day, pr)]),
+                    patch.object(digest, "fetch_issue_churn", return_value=([], [])),
+                    patch.object(agent_calendar, "select_public_repos", return_value=["BotFleet"]),
+                    patch.object(agent_calendar, "list_commits", return_value=[commit]),
+                    contextlib.redirect_stdout(io.StringIO()),
+                ):
+                    self.assertEqual(agent_calendar.main(), 0)
+                    self.assertEqual(digest.main(), 0)
+            finally:
+                os.chdir(cwd)
+            assert_public_artifact_boundary(root, artifact_names)
 
     def test_private_and_unlisted_repos_never_enter_feed(self) -> None:
         def api(request: object, timeout: int) -> Reply:

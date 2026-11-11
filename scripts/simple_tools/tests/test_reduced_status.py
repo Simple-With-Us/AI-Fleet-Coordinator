@@ -357,7 +357,6 @@ def seat_row(**changes: Any) -> dict[str, Any]:
         "last_event": NOW - 30,
         "wake": "inbox",
         "routine": None,
-        "muse_bridge": False,
         "pinned": None,
         "pin": None,
         "claude": None,
@@ -451,7 +450,6 @@ def status_document(**changes: Any) -> dict[str, Any]:
         "updated": NOW - 2,
         "instance": "server",
         "disabled": ["GROK-WEB", "BF-ORACLE"],
-        "muse_bridge": {"enabled": False, "remote_seats": [], "pin": "inactive"},
         "skipped_seats": {
             "BAD": ["seat.BAD.creds must be one of file, infisical, env", "seat.BAD.wake x"]
         },
@@ -1393,7 +1391,7 @@ class FromRealDaemonStatusTests(DaemonHarness):
         document = self.written_status()
         read = {"updated", "instance", "disabled", "skipped_seats", "pause", "seats", "operator_voice"}
         not_read = {
-            "pid", "version", "started", "muse_bridge", "config_errors", "reload_refused",
+            "pid", "version", "started", "config_errors", "reload_refused",
             "reload_at", "partition_file", "owner_user_id", "chat_nudges", "wake_loop_prevention",
             "loop_guard", "rewake_verified", "rewake_verified_cli", "rewake_verified_desktop",
             # AFC-652's planned-drain checklist:  on-host operator tooling with message ids
@@ -1404,7 +1402,7 @@ class FromRealDaemonStatusTests(DaemonHarness):
         self.assertEqual(set(document), read | not_read)
         seat_keys = {
             "bot", "creds", "connected", "cursor", "webhook_high_water", "last_event", "wake",
-            "routine", "muse_bridge",
+            "routine",
             "pinned", "pin", "claude", "muse", "model", "fallback", "provider", "quota",
             "wakes_24h", "routes_24h", "route_enabled", "budget", "live", "jobs", "running",
             "paused", "wakes_paused", "held_back", "leases", "red", "chat_nudges",

@@ -88,6 +88,39 @@ class ListenerSecondaryKeyTests(unittest.TestCase):
         self.assertEqual(secondary_kwargs["expected_paths"], ("/zulip",))
         self.assertEqual(primary_calls[0][1]["expected_paths"], ("/zulip", MODULE.OPERATOR_PATH))
 
+    def test_zc_key_comes_from_the_secondary_project_and_its_url_from_the_primary(self):
+        zc_url = "http://example.test:8791/wake/ZC"
+        calls = []
+
+        def fetch(env, **kwargs):
+            calls.append(kwargs.copy())
+            if kwargs.get("token") == SECONDARY_TOKEN:
+                return {
+                    "ZC_ROUTINE_KEY": "fleet-ops-zc" * 4,
+                    "ZC_ROUTINE_URL": "http://elsewhere.invalid/wake/ZC",
+                    "ZULIP_ZC_EMAIL": "foreign@example.test",
+                }
+            if kwargs.get("path") == MODULE.OPERATOR_PATH:
+                return {}
+            return {
+                "ZULIP_ZC_EMAIL": "zc@example.test",
+                "ZC_ROUTINE_URL": zc_url,
+                "ZC_ROUTINE_KEY": "primary-copy" * 4,
+            }
+
+        with (
+            patch.object(MODULE, "server_codes", return_value={"ZC"}),
+            patch.object(MODULE, "fetch", side_effect=fetch),
+        ):
+            out, line = MODULE.build_env(self.env())
+        # The key is the Fleet-OPS one, never the primary project's copy;  the URL is the primary's
+        # (the secondary read carries _ROUTINE_KEY names only);  a foreign Zulip name is ignored.
+        self.assertEqual(out["ZC_ROUTINE_KEY"], "fleet-ops-zc" * 4)
+        self.assertEqual(out["ZC_ROUTINE_URL"], zc_url)
+        self.assertEqual(out["ZULIP_ZC_EMAIL"], "zc@example.test")
+        self.assertNotIn("fleet-ops-zc", line)
+        self.assertEqual(sum(1 for call in calls if call.get("token") == SECONDARY_TOKEN), 1)
+
     def test_failure_does_not_fall_back_to_primary_project_or_stale_value(self):
         out, line, calls = self.run_case(MODULE.LoadError("read listener keys: HTTP 403"))
         self.assertNotIn("MA_ROUTINE_KEY", out)

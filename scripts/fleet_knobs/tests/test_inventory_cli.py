@@ -36,6 +36,8 @@ PLAN_KEYS = {
     "NEEDS_OWNER_NOTIFY_PAUSED",
     "NEEDS_OWNER_CAPS",
     "OWNER_LINEAR_USER_ID",
+    "NEEDS_OWNER_BAR",  # the owner bar:  off, warn or enforce on `needs-owner file --why-owner`
+    "NEEDS_OWNER_SEAT_DAILY_MAX",  # the most filings one seat may make in 24 hours (0 means no cap)
     "CLAIM_EXPIRY_MODE",
     "CLAIM_EXPIRY_CAPS",
     "CLAIM_EXPIRY_LAUNCH_AT",
@@ -58,6 +60,21 @@ PLAN_KEYS = {
     "COMPLIANCE_SECRETS_FINDINGS_MAX",  # AFC-400:  the secrets-hygiene tolerance the compliance rule reads
     "CF_USAGE_WATCHDOG_MODE",  # AFC-617:  observe or enforce
     "CF_USAGE_WATCHDOG_PROFILE",  # AFC-617:  which threshold profile applies
+    # OPS-1048:  the wake router's switch, its seats, and its retry and cap settings
+    "WAKE_ROUTER_DELIVERY_ENABLED",
+    "WAKE_ROUTER_DELIVERY_SEATS",
+    "WAKE_ROUTER_WORKERS",
+    "WAKE_ROUTER_MAX_DELIVERIES",
+    "WAKE_ROUTER_MAX_ATTEMPTS",
+    "WAKE_ROUTER_RETRY_BACKOFF",
+    "WAKE_ROUTER_BUSY_RETRY_SECONDS",
+    "WAKE_ROUTER_UNREACHABLE_RETRY_SECONDS",
+    "WAKE_ROUTER_MAX_AGE_SECONDS",
+    "WAKE_ROUTER_SHUTDOWN_WAIT_SECONDS",
+    "WAKE_ROUTER_RESUME_TIMEOUT_SECONDS",
+    "WAKE_ROUTER_CONFIRM_SECONDS",
+    "WAKE_ROUTER_SETTINGS_REFRESH_SECONDS",
+    "WAKE_ROUTER_MAC_SSH",
 }
 
 
