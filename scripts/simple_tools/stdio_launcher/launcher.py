@@ -161,10 +161,17 @@ def serve_refusal(seat, cause, stdin, stdout, stderr):
         if len(raw) > MAX_FRAME and not raw.endswith(b"\n"):
             # Drain the rest of the overlong frame and answer it once as one bad
             # frame, so its tail is never parsed as a request of its own.
+            drained = len(raw)
             while not raw.endswith(b"\n"):
                 raw = stdin.readline(MAX_FRAME + 1)
                 if not raw:
                     break
+                drained += len(raw)
+                if drained > MAX_FRAME * 4:
+                    # A peer that never sends a newline gets one refusal and is dropped.
+                    stdout.write((json.dumps(refusal_reply(None, seat, cause)) + "\n").encode())
+                    stdout.flush()
+                    return 3
             stdout.write((json.dumps(refusal_reply(None, seat, cause)) + "\n").encode())
             stdout.flush()
             continue
@@ -250,7 +257,17 @@ def plan(env, config, euid=None):
             )
         problem = exec_custody_problem(key, config[key], euid)
         if problem:
-            return ("refuse", seat, ("transport_custody", problem), notice)
+            # The client gets a generic cause;  paths and file metadata stay on stderr.
+            detail = f"custody check failed: {problem}"
+            return (
+                "refuse",
+                seat,
+                (
+                    "transport_custody",
+                    "the transport failed a custody check; see the launcher log for detail",
+                ),
+                f"{notice}\n{detail}" if notice else detail,
+            )
     token, refusal = read_bearer(config["BEARER_FILE"], seat, euid)
     if refusal:
         return ("refuse", seat, refusal, notice)

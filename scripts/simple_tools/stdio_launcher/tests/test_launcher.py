@@ -193,6 +193,15 @@ class EndToEnd(unittest.TestCase):
         _, replies = self.installed.run({})
         self.assertEqual(replies[0]["error"]["data"]["cause"], "transport_custody")
 
+    def test_custody_refusal_keeps_paths_and_modes_off_the_client(self):
+        os.chmod(self.installed.transport, 0o664)
+        done, replies = self.installed.run({})
+        message = replies[0]["error"]["message"]
+        self.assertNotIn(self.installed.transport, message)
+        self.assertNotIn("0o", message)
+        self.assertNotIn("uid", message)
+        self.assertIn(self.installed.transport, done.stderr)
+
 
 class SeatDecision(unittest.TestCase):
     def test_agent_tag_mismatch_is_ignored_with_one_line(self):
@@ -228,6 +237,24 @@ class SeatDecision(unittest.TestCase):
         stdin = io.BytesIO(b"x" * (launcher.MAX_FRAME + 10) + tail.encode() + b"\n")
         stdout = io.BytesIO()
         launcher.serve_refusal("CLAUDE", ("seat_mismatch", "why"), stdin, stdout, io.StringIO())
+        replies = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertEqual([r["id"] for r in replies], [None])
+
+    def test_endless_frame_without_newline_is_cut_off(self):
+        class Endless:
+            reads = 0
+
+            def readline(self, size):
+                Endless.reads += 1
+                if Endless.reads > 1000:
+                    raise AssertionError("drain never stopped")
+                return b"x" * size
+
+        stdout = io.BytesIO()
+        code = launcher.serve_refusal(
+            "CLAUDE", ("seat_mismatch", "why"), Endless(), stdout, io.StringIO()
+        )
+        self.assertEqual(code, 3)
         replies = [json.loads(line) for line in stdout.getvalue().splitlines()]
         self.assertEqual([r["id"] for r in replies], [None])
 
