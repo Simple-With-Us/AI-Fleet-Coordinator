@@ -239,5 +239,47 @@ class BootstrapInstallTests(unittest.TestCase):
         self.assertEqual(json.loads(self.seats_path.read_text()), self.policy)
 
 
+class ProofKeyCustodyTests(unittest.TestCase):
+    """The proof-key loader's custody refusals;  fixtures only, no real keys."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.root = Path(self.dir.name)
+        self.key = self.root / "k"
+        self.key.write_bytes(b"k" * 32)
+        os.chmod(self.key, 0o600)
+
+    def test_happy_path_reads_the_key(self):
+        self.assertEqual(sp._load_proof_key(str(self.key)), b"k" * 32)
+
+    def test_symlink_key_refused(self):
+        link = self.root / "link"
+        os.symlink(self.key, link)
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            sp._load_proof_key(str(link))
+
+    def test_group_or_world_writable_directory_refused(self):
+        os.chmod(self.root, 0o777)
+        try:
+            with self.assertRaisesRegex(ValueError, "group/world-writable"):
+                sp._load_proof_key(str(self.key))
+        finally:
+            os.chmod(self.root, 0o700)
+
+    def test_empty_key_refused(self):
+        self.key.write_bytes(b"")
+        with self.assertRaisesRegex(ValueError, "empty"):
+            sp._load_proof_key(str(self.key))
+
+    def test_as_root_the_full_ancestor_chain_is_checked(self):
+        # Fixture trees live under /var (a symlink on macOS) or a sticky
+        # world-writable /tmp:  as root the require_root_owned-equivalent
+        # chain walk must refuse either, proving the walk actually runs.
+        with mock.patch.object(os, "geteuid", lambda: 0):
+            with self.assertRaisesRegex(ValueError, "directory chain"):
+                sp._load_proof_key(str(self.key))
+
+
 if __name__ == "__main__":
     unittest.main()

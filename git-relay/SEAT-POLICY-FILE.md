@@ -169,9 +169,14 @@ part of the mint command.
   request, never the raw bearer, and the answer is checked to equal the
   parsed identity. No App mint or provider write happens in the denial
   branch; the request is refused either way.
-- Proof-key custody is enforced at both ends: the mint refuses a non-root
-  caller, a non-root-owned or group/world-writable directory, a symlinked
-  path and any existing file (never overwrites); the loader refuses a
-  symlink, a non-regular file, an owner other than its operator, a
-  group/world-writable directory, an empty file, and (as root) any mode
-  wider than 0600.
+- Proof-key custody is enforced at both ends. The mint refuses a non-root
+  caller, any existing file (never overwrites), and opens O_NOFOLLOW with an
+  fstat re-check of the created descriptor. The loader checks the directory
+  chain first: as root, the FULL ancestor chain under the same rule
+  require_root_owned applies to the policy file (every ancestor root-owned,
+  writable by root alone, never a symlink - a foreign-owned 0755 parent
+  lets that account substitute the key); non-root dev paths check the
+  immediate directory only. The key file is opened O_NOFOLLOW and verified
+  by fstat on the OPENED descriptor (regular file, operator-owned, 0600 as
+  root, non-empty), so a symlink swap or a replace between check and open
+  lands on the descriptor actually read, not a second lookup.

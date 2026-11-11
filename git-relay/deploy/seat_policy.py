@@ -603,38 +603,60 @@ def _restore_file(unit: Unit, wait: int, before: str, path: str, backup: str, st
     return 3
 
 
-def _load_proof_key(path):
-    """Read the operator proof key from a custody-checked file;  never logs it.
+def _proof_key_dir_trust(path):
+    """The key's directory chain must be untamperable by anyone but its operator.
 
-    Custody:  a regular file, never a symlink, owned by the current euid (so
-    under root - where install-seat runs - it is root-owned), non-empty, in a
-    directory that is not group- or world-writable.  Mode 0600 is enforced
-    when running as root, mirroring this file's require_root_owned pattern:
-    production is strict, dev fixtures stay usable.  Any deviation refuses
-    closed:  a writable or substituted key silently forges every receipt
-    gate downstream of it.
+    As root - where install-seat and proof-key run in production - the FULL
+    ancestor chain is checked with the same rule require_root_owned applies
+    to the policy file:  every ancestor directory root-owned, writable by
+    root alone, never a symlink (a foreign-owned 0755 parent, or a symlinked
+    one, lets another account substitute the key file).  Non-root is the
+    dev/fixture path:  only the immediate directory is checked, since test
+    trees legitimately live under per-user (and on macOS symlinked) roots.
     """
-    try:
-        st = os.lstat(path)
-    except OSError:
-        raise ValueError("proof-key file unreadable")
-    if stat.S_ISLNK(st.st_mode):
-        raise ValueError("proof-key file must not be a symlink")
-    if not stat.S_ISREG(st.st_mode):
-        raise ValueError("proof-key file must be a regular file")
-    if st.st_uid != os.geteuid():
-        raise ValueError("proof-key file must be owned by its operator")
-    if os.geteuid() == 0 and st.st_mode & 0o077:
-        raise ValueError("proof-key file must be private (0600)")
     parent = os.path.dirname(os.path.abspath(path)) or "/"
+    if os.geteuid() == 0:
+        try:
+            require_root_owned([parent])
+        except SystemExit as exc:
+            raise ValueError(f"proof-key directory chain:  {exc}")
+        return
     try:
         pst = os.stat(parent)
     except OSError:
         raise ValueError("proof-key directory unreadable")
     if pst.st_mode & 0o022:
         raise ValueError("proof-key directory must not be group/world-writable")
-    with open(path, "rb") as fh:
-        key = fh.read().strip()
+
+
+def _load_proof_key(path):
+    """Read the operator proof key from a custody-checked file;  never logs it.
+
+    The directory chain is checked first (_proof_key_dir_trust).  The file
+    itself is opened O_NOFOLLOW and verified by fstat on the OPENED
+    descriptor - a regular file, owned by the current euid (root-owned in
+    production), 0600 when running as root - so a symlink swap or a
+    replace-between-check-and-open lands on the descriptor that is actually
+    read, never a second lookup.  Any deviation refuses closed:  a writable
+    or substituted key silently forges every receipt gate downstream of it.
+    """
+    _proof_key_dir_trust(path)
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        raise ValueError("proof-key file unreadable (missing, or a symlink)")
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError("proof-key file must be a regular file")
+        if st.st_uid != os.geteuid():
+            raise ValueError("proof-key file must be owned by its operator")
+        if os.geteuid() == 0 and st.st_mode & 0o077:
+            raise ValueError("proof-key file must be private (0600)")
+        data = os.read(fd, 1 << 16)
+    finally:
+        os.close(fd)
+    key = data.strip()
     if not key:
         raise ValueError("proof-key file empty")
     return key
@@ -660,14 +682,10 @@ def proof_key(args) -> int:
     if os.geteuid() != 0:
         print("refusing:  proof-key runs as root so the key file is root-owned 0600")
         return 2
-    parent = os.path.dirname(os.path.abspath(path)) or "/"
     try:
-        pst = os.stat(parent)
-    except OSError:
-        print("refusing:  the proof-key directory is unreadable")
-        return 2
-    if pst.st_uid != 0 or pst.st_mode & 0o022:
-        print("refusing:  the proof-key directory must be root-owned and not group/world-writable")
+        _proof_key_dir_trust(path)
+    except ValueError as exc:
+        print(f"refusing:  {exc}")
         return 2
     material = os.urandom(32).hex() + "\n"
     try:
