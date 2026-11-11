@@ -16,17 +16,17 @@ import XCTest
 /// fake command runner, and every Ops run fails at once without starting a process.  No
 /// store here starts a timer, a watcher or a run of its own.
 ///
-/// What the fixtures cannot reach:  a few panels read through app singletons
-/// (`OpsController.shared`, `FleetViewStore.shared`, `SeatActivityStore.shared`,
-/// `WakeSettingsStore.shared`, `ServerEavesdropperStatusStore.shared`) from a `.task` when
-/// they appear.  Those reads are real:  they start the app's own read-only readers, which
-/// launch processes, among them `ssh` to the server for `eavesdropper-status --plan`
-/// (`ServerEavesdropperStatusReader`) and the Seats panel's local sources
-/// (`SeatActivityReader`).  On a GitHub runner they fail at once;  on a Mac with the fleet's
-/// ssh route they reach the server, read only.  A read that lands inside the settle time can
-/// make that panel's PNG differ from run to run.  Giving those stores fixtures needs an
-/// injection point in the views, which this harness leaves to a follow-up rather than
-/// changing a view.
+/// Inert by default:  a few panels read through app singletons (`OpsController.shared`,
+/// `FleetViewStore.shared`, `SeatActivityStore.shared`, `WakeSettingsStore.shared`,
+/// `ServerEavesdropperStatusStore.shared`) or build their own reader (`FleetSecrets()` in
+/// Secrets and Recall Settings) from a `.task` when they appear.  None of them can reach
+/// anything:  `InertProcess.swift` shadows `Process` in this bundle, so `fleet-secrets`, the
+/// recall token read, `ssh` for `eavesdropper-status --plan`, the Seats panel's sources and
+/// every other launch fail at once without starting, and `InertURLProtocol` fails every
+/// request through `URLSession.shared`.  Those panels show their own could-not-read state,
+/// which is the same on every Mac and in CI.  They may still read the Mac's own report files
+/// under the home folder, read only.  Giving them fixture data instead of the failure state
+/// needs an injection point in the views, a follow-up.
 ///
 /// No pixel baselines.  It is still a layout gate:  every PNG must be written at the size
 /// asked for, must not be one flat colour, and must keep the split view inside the window
@@ -86,6 +86,8 @@ final class PanelSnapshotTests: XCTestCase {
         scratch = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("muster-panel-fixtures-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        URLProtocol.registerClass(InertURLProtocol.self)
+        _ = Process.takeAttempts()
     }
 
     override func tearDownWithError() throws {
@@ -95,6 +97,31 @@ final class PanelSnapshotTests: XCTestCase {
             if let saved { defaults.set(saved, forKey: key) } else { defaults.removeObject(forKey: key) }
         }
         if let scratch { try? FileManager.default.removeItem(at: scratch) }
+        URLProtocol.unregisterClass(InertURLProtocol.self)
+    }
+
+    // MARK: The inert switch
+
+    /// The readers the Secrets and Recall panels build for themselves, and `ssh` through the
+    /// Ops runner, fail without starting anything, and `URLSession.shared` never leaves the Mac.
+    func testPanelReadersCannotStartAProcessOrReachTheNetwork() async throws {
+        XCTAssertThrowsError(try FleetSecrets().secretNamesGrouped(paths: ["/"]))
+        XCTAssertThrowsError(try FleetSecrets().doctorReport())
+        let ssh = OpsInvocation(executable: "/usr/bin/ssh", arguments: ["example.invalid", "true"],
+                                workingDirectory: "/", environment: [:], timeout: 5)
+        do {
+            _ = try await OpsProcessRunner().run(ssh)
+            XCTFail("the Ops runner started ssh")
+        } catch {}
+        let tried = Process.takeAttempts().map { URL(fileURLWithPath: $0).lastPathComponent }
+        XCTAssertEqual(tried, ["fleet-secrets", "fleet-secrets", "ssh"])
+
+        do {
+            _ = try await URLSession.shared.data(from: URL(string: "https://example.invalid/")!)
+            XCTFail("URLSession.shared reached the network")
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .notConnectedToInternet)
+        }
     }
 
     // MARK: The test
@@ -126,6 +153,9 @@ final class PanelSnapshotTests: XCTestCase {
                            "\(size.name):  one PNG per MusterDestination per theme")
             XCTAssertEqual(written[size.name]?.count, MusterDestination.allCases.count * Theme.allCases.count)
         }
+        // Every launch a panel tried was stopped before it started:  list them for the log.
+        let blocked = Set(Process.takeAttempts().map { URL(fileURLWithPath: $0).lastPathComponent })
+        print("PROBE panel-snapshots blocked-launches=\(blocked.sorted().joined(separator: ","))")
         print("PROBE panel-snapshots dir=\(output.path) count=\(written.values.map(\.count).reduce(0, +))")
     }
 

@@ -198,8 +198,11 @@ targets:
   # take plain values, this bundle compiles the whole app, less its `@main` entry point, so
   # it can host the real window root (FleetOverviewView) on every MusterDestination with
   # fixture stores, in light and dark, and write one PNG per panel per theme per size.
-  # It is report only:  no pixel baselines.  It runs from its own scheme
-  # (script/render_panels.sh), so `-scheme Muster test` is unchanged.
+  # No pixel baselines, but a layout gate (size, flat colour, split view inside the window).
+  # MusterPanelTests/InertProcess.swift shadows Process in this bundle only, so no panel's
+  # reader starts a process here.  It runs from its own scheme:
+  #   xcodebuild -scheme MusterPanels test -only-testing:MusterPanelTests/PanelSnapshotTests
+  # (script/render_panels.sh), so `-scheme Muster test` and the MusterTests bundle are unchanged.
   MusterPanelTests:
     type: bundle.unit-test
     platform: macOS
