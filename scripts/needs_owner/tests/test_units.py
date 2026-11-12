@@ -281,10 +281,10 @@ class ItemTests(unittest.TestCase):
     def test_state_order(self) -> None:
         item = I.build_item(self.show())
         self.assertEqual((item.state, item.seat, item.seat_verified), ("notify_pending", "CLAUDE", True))
-        notified = I.build_item(self.show(comments=[{"author": "CLAUDE", "text": "[needs-owner] notified msg 5\ntopic: OWNER AFC-1 Q"}]))
+        notified = I.build_item(self.show(comments=[{"author": "CLAUDE", "author_seat": "CLAUDE", "text": "[needs-owner] notified msg 5\ntopic: OWNER AFC-1 Q"}]))
         self.assertEqual((notified.state, notified.topic), ("notified", "OWNER AFC-1 Q"))
-        replied = I.build_item(self.show(comments=[{"author": "CLAUDE", "text": "[needs-owner] notified msg 5"},
-                                                   {"author": "CLAUDE", "text": "owner replied:  msg 9"}]))
+        replied = I.build_item(self.show(comments=[{"author": "CLAUDE", "author_seat": "CLAUDE", "text": "[needs-owner] notified msg 5"},
+                                                   {"author": "CLAUDE", "author_seat": "CLAUDE", "text": "owner replied:  msg 9"}]))
         self.assertEqual(replied.state, "replied")
         for status in I.CLOSED_STATUSES:
             self.assertEqual(I.build_item(self.show(status=status)).state, "closed")
@@ -296,10 +296,29 @@ class ItemTests(unittest.TestCase):
 
     def test_a_block_comment_of_another_author_is_not_verified(self) -> None:
         text = records.block_comment_text(B.render_block(sample()))
-        mine = I.build_item(self.show(description="by hand", comments=[{"author": "CLAUDE", "text": text}]))
-        theirs = I.build_item(self.show(description="by hand", comments=[{"author": "CODEX", "text": text}]))
+        mine = I.build_item(self.show(description="by hand", comments=[{"author": "CLAUDE", "author_seat": "CLAUDE", "text": text}]))
+        theirs = I.build_item(self.show(description="by hand", comments=[{"author": "CODEX", "author_seat": "CODEX", "text": text}]))
         self.assertTrue(mine.seat_verified)
         self.assertFalse(theirs.seat_verified)
+
+    def test_records_without_author_seat_are_ignored(self):
+        """A display name or a typed [CLAUDE] prefix is not a verified seat (AFC-692)."""
+        notice = "[needs-owner] notified msg 5\ntopic: OWNER AFC-1 Q"
+        reply = "owner replied:  msg 9"
+        named = I.build_item(self.show(comments=[{"author": "Claude", "author_app": False, "text": notice}]))
+        tagged = I.build_item(self.show(comments=[{"author": "CLAUDE", "author_app": False, "text": reply}]))
+        self.assertEqual(named.state, "notify_pending")
+        self.assertIsNone(named.notified)
+        self.assertEqual(tagged.state, "notify_pending")
+        self.assertIsNone(tagged.replied)
+        trusted = I.build_item(self.show(comments=[
+            {"author": "Claude", "author_seat": "CLAUDE", "author_app": True, "text": notice},
+            {"author": "CLAUDE", "author_seat": "CLAUDE", "author_app": True, "text": reply},
+        ]))
+        self.assertEqual(trusted.state, "replied")
+        self.assertEqual(I.comment_seat({"author": "CLAUDE", "author_seat": None}), None)
+        self.assertEqual(I.comment_seat({"author": "CLAUDE"}), None)
+        self.assertEqual(I.comment_seat({"author_seat": "CLAUDE"}), "CLAUDE")
 
     def test_age(self) -> None:
         import datetime as dt
