@@ -121,6 +121,7 @@ EXPLICIT_RULES = (
     ("AFC", "systemd", "fleet-coding-memory.service", True),
     ("AFC", "systemd", "fleet-health-recover@", False),
     ("AFC", "systemd", "fleet-housekeep.service", True),
+    ("AFC", "systemd", "fleet-rag-collection-health.service", True),
     ("AFC", "systemd", "fleet-rag-nightly.service", True),
     ("AFC", "systemd", "fleet-server-status.service", True),
     ("AFC", "systemd", "fleet-tools-doctor.service", True),
