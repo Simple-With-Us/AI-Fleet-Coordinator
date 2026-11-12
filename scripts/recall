@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""recall -- search and grow the fleet-agents knowledge corpus.
+"""recall -- search and grow the fleet knowledge corpus.
 
 Credentials are read from the environment, then Infisical via a machine identity in the
 environment, then `fleet-secrets` when it is installed.  Values are never printed.  Reads use the read-only Qdrant key when it is
@@ -24,6 +24,8 @@ Usage:
   recall digest [--days 7] [--app X] [--json]
   recall eval [--k 5] [--threshold 0.6] [--per-doc N] [--no-rerank] [--no-lessons] [--compare]
               [--json]
+  recall eval --retrieval [--offline] [--source S] [--app A] [--category C] [--json] [--out FILE]
+  recall eval --compare BEFORE.json AFTER.json
   recall doctor [--json]
   recall doctor --platforms [--box] [--json]
   recall ingest [--all | --source board,doc,...] [--dry-run] [--limit N] [--since 7d] [--prune]
@@ -35,8 +37,12 @@ Search returns one hit per document (--per-doc 1..3 keeps the best N chunks of e
 agent lessons into the fusion (--no-lessons for raw document research) and reranks the
 candidates with the cross-encoder when TEI_RERANK_URL / TEI_RERANK_API_KEY are configured
 (--no-rerank keeps the fused order).  The mode line says which engaged ("hybrid+rerank"); a
-reranked hit prints rerank= and fused= next to its score.  `recall eval --compare` scores the
-golden set with lessons / rerank each on and off and prints the deltas.
+reranked hit prints rerank= and fused= next to its score.  `recall eval --compare` with no
+paths scores the weekly golden set with lessons / rerank each on and off and prints the
+deltas.  `recall eval --compare BEFORE.json AFTER.json` diffs two retrieval-quality reports.
+`recall eval --retrieval` scores recall@1, recall@5, recall@10 and MRR for
+`retrieval_golden.json` against the live fleet collection.  `recall eval --offline`
+builds a BM25 fixture from the repo files that set names, with no Qdrant credentials.
 
 Contribute refuses a near-duplicate: when an existing agent contribution scores >= 0.92
 cosine against the candidate it prints "similar lesson already exists: <doc_id> (score S)"
@@ -396,14 +402,47 @@ def cmd_digest(a: argparse.Namespace) -> int:
 
 
 def cmd_eval(a: argparse.Namespace) -> int:
+    # Lazy on purpose: eval and retrieval_eval stay off the server mirror.  The release
+    # allowlist follows only the imports recall reaches without a function-body import.
+    compare = a.compare if isinstance(a.compare, list) else ([] if a.compare else None)
+    if compare is not None and len(compare) == 2:
+        from fleet_rag import retrieval_eval as rq
+
+        try:
+            return rq.compare_files(compare[0], compare[1], as_json=a.json, out=a.out)
+        except FleetRagError as e:
+            print(f"eval: {e}", file=sys.stderr)
+            return 2
+    if compare is not None and len(compare) != 0:
+        print("eval: --compare takes no paths, or exactly two JSON runs", file=sys.stderr)
+        return 2
+    config_compare = compare is not None
+    if a.retrieval or a.offline:
+        if config_compare:
+            print(
+                "eval: --retrieval does not run the lessons/rerank matrix; save two JSON runs "
+                "and pass them to --compare",
+                file=sys.stderr,
+            )
+            return 2
+        if not a.offline:
+            public_fallback.require_direct_path("eval")
+        from fleet_rag import retrieval_eval as rq
+
+        # None means the flag was absent, including abbreviated forms such as --thresh.
+        # retrieval_eval then applies its own 0.9 default.
+        return rq.run_from_namespace(a)
+
     from fleet_rag import eval as ev
 
     public_fallback.require_direct_path("eval")
+    if a.threshold is None:
+        a.threshold = 0.6
     golden = a.golden or ev.GOLDEN
     # per_doc is not one of the A/B axes, so it is bound onto the search callable and applies to
     # every configuration; --no-rerank / --no-lessons are the axes and go through search_kwargs.
     search = functools.partial(recall_api.recall_search, per_doc=a.per_doc)
-    if a.compare:
+    if config_compare:
         res = ev.run_compare(a.k, golden, search=search)
         print(json.dumps(res, indent=2) if a.json else ev.render_compare(res))
         return 0 if res["runs"]["both"]["recall_at_k"] >= a.threshold else 1
@@ -636,9 +675,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dg.add_argument("--json", action="store_true")
 
-    e = sub.add_parser("eval", help="score golden.jsonl: Recall@1, Recall@k, MRR")
+    e = sub.add_parser("eval", help="score a golden set: Recall@k and MRR")
     e.add_argument("--k", type=int, default=5)
-    e.add_argument("--threshold", type=float, default=0.6)
+    e.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help="fail under this score. Weekly Recall@k defaults to 0.6; retrieval recall@10 defaults to 0.9",
+    )
     e.add_argument("--golden")
     e.add_argument(
         "--per-doc",
@@ -653,11 +697,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     e.add_argument(
         "--compare",
-        action="store_true",
-        help="score lessons / rerank each on and off and print the deltas vs both-off "
-        "(--no-rerank / --no-lessons are ignored; every configuration runs)",
+        nargs="*",
+        metavar="RUN.json",
+        help="with no paths, score lessons / rerank each on and off (weekly golden). "
+        "With two JSON paths, print the delta between those retrieval-quality runs",
     )
     e.add_argument("--json", action="store_true")
+    e.add_argument(
+        "--retrieval",
+        action="store_true",
+        help="score retrieval_golden.json at recall@1/5/10 and MRR (live collection unless --offline)",
+    )
+    e.add_argument(
+        "--offline",
+        action="store_true",
+        help="build a BM25 fixture from the golden set's repo files; no Qdrant credentials",
+    )
+    e.add_argument("--out", help="write the JSON report to this path")
+    e.add_argument("--repo", help="repo root for --offline")
+    e.add_argument("--chunk-target", dest="chunk_target", type=int)
+    e.add_argument("--chunk-overlap", dest="chunk_overlap", type=int)
+    e.add_argument("--chunk-hard-max", dest="chunk_hard_max", type=int)
+    e.add_argument("--source")
+    e.add_argument("--app")
+    e.add_argument("--category")
+    e.add_argument("--since-days", dest="since_days", type=int)
 
     d = sub.add_parser("doctor", help="credentials (names only), embedder, qdrant, key mode")
     d.add_argument(

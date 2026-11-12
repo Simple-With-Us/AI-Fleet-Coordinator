@@ -129,7 +129,7 @@ const SPECS = {
   wf_release_update: ['release update.',obj(['repo', 'release_id', 'name', 'body', 'draft', 'prerelease'],{repo:REPO,release_id:INT,name:{type:'string',minLength:1,maxLength:32768},body:{type:'string',minLength:1,maxLength:32768},draft:{type:'boolean'},prerelease:{type:'boolean'}})],
  wf_environments:['Read bounded environment metadata, not full protection rules or reviewers; null means unknown/notreturned, not unprotected.',obj(['repo'],{repo:REPO,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
  wf_environment_get:['Read exact environment metadata and protection-type summary; no environment creation, deletion, approval or policy changes.',obj(['repo','name'],{repo:REPO,name:{type:'string',minLength:1,maxLength:100,pattern:'^[A-Za-z0-9][A-Za-z0-9 ._/-]{0,99}$'}})],
- wf_file_delete:['Delete exact blob on non-default branch; workflow paths refused. Requires separate execution authority.',obj(['repo','path','branch','message','prior_sha'],{repo:REPO,path:PATH,branch:REF,message:{type:'string',minLength:1,maxLength:500},prior_sha:SHA})],
+ wf_file_delete:['Delete one exact blob. The default branch is allowed only when this exact path is in the seat default_branch_paths, and prior_sha must match the blob. Workflow paths stay refused.',obj(['repo','path','branch','message','prior_sha'],{repo:REPO,path:PATH,branch:REF,message:{type:'string',minLength:1,maxLength:500},prior_sha:SHA})],
 
 
   wf_issue_list: ['List issues (not pull requests); optional labels is a comma-separated list of up to 10 exact label names.', obj(['repo'], {repo:REPO,state:{type:'string',enum:['open','closed','all']},per_page:PER_PAGE,labels:{type:'string',maxLength:1019}})],
@@ -216,7 +216,7 @@ const SPECS = {
   wf_run_rerun: ['Re-run a workflow run.', obj(['repo', 'run_id'], { repo: REPO, run_id: INT })],
   wf_run_cancel: ['Cancel a workflow run.', obj(['repo', 'run_id'], { repo: REPO, run_id: INT })],
   wf_run_approve: ['Approve a pending workflow run.', obj(['repo', 'run_id'], { repo: REPO, run_id: INT })],
-  wf_file_put: ['Write one file to a branch.', obj(['repo', 'path', 'branch', 'message', 'content_b64'], { repo: REPO, path: PATH, branch: REF, message: STR, content_b64: FILE_CONTENT, prior_sha: SHA })],
+  wf_file_put: ['Write one file. The default branch is allowed only when this exact path is in the seat default_branch_paths. prior_sha must match the current blob, and is omitted only to create a file that is absent.', obj(['repo', 'path', 'branch', 'message', 'content_b64'], { repo: REPO, path: PATH, branch: REF, message: STR, content_b64: FILE_CONTENT, prior_sha: SHA })],
   wf_file_patch: ['Patch one existing nondefault-branch file using server-verified same-path base provenance. UTF-8 byte offsets, sorted nonoverlapping edits; residual unchanged generic assignments permitted, dedicated/loaded credentials always refused. No raw output bypass.', obj(['repo','branch','path','message','expected_head_sha','base_blob_sha','edits'], {repo:REPO,branch:REF,path:PATH,message:STR,expected_head_sha:SHA,base_blob_sha:SHA,edits:{type:'array',minItems:1,maxItems:32,items:obj(['start','end','text'],{start:{type:'integer',minimum:0,maximum:2097152},end:{type:'integer',minimum:0,maximum:2097152},text:{type:'string',maxLength:32768}})}})],
   wf_files_put: ['Write up to 20 files in one commit, fenced on the branch head.', obj(['repo', 'branch', 'message', 'expected_head_sha', 'files'], {
     repo: REPO, branch: REF, message: STR, expected_head_sha: SHA,

@@ -13,7 +13,7 @@ from pathlib import Path
 
 from fleet_lanes import layout as L
 
-DEFAULT_OWNERS = ("Simple-With-Us", "jaywedgeworth22")
+DEFAULT_OWNERS = ("Simple-With-Us",)
 DEFAULT_CHAINS = {"Socratic-Trade": 3, "BotFleet": 2, "AI-Fleet-Coordinator": 2}
 
 
