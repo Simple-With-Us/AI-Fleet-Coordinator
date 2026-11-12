@@ -238,7 +238,9 @@ def _config(settings: object = None) -> dict[str, Any]:
 
 #: The `refused` codes this platform can return before anything ran.  The one-router service
 #: collects these per adapter instead of keeping one central list in the router.
-NEVER_RAN = frozenset({"no-such-session", "subagent-session", "session-cwd-gone", "unknown-host"})
+NEVER_RAN = frozenset(
+    {"bad-session-id", "no-such-session", "subagent-session", "session-cwd-gone", "unknown-host"}
+)
 
 
 def _holder(session_dir: str | None) -> bool | None:
@@ -324,19 +326,22 @@ def _list(path: str) -> list[str]:
 
 
 def _session_cwd(session_dir: str) -> str:
-    """The chat's working directory, from its own transcript, or "" when it names none."""
+    """The chat's working directory, from the last `cwd` its transcript names in its tail, or
+    "" when it names none.  A transcript that cannot be read raises StoreUnreadable:  an
+    unknown cwd is a doubt that fails closed, never the absence a refusal is built on."""
+    path = os.path.join(session_dir, "session.jsonl")
     try:
-        with open(
-            os.path.join(session_dir, "session.jsonl"), encoding="utf-8", errors="replace"
-        ) as fh:
-            head = fh.read(TAIL_BYTES)
-    except OSError:
-        return ""
-    found = re.search(r'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"', head)
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - TAIL_BYTES))
+            tail = fh.read().decode("utf-8", "replace")
+    except OSError as exc:
+        raise StoreUnreadable(str(exc)) from exc
+    found = re.findall(r'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"', tail)
     if not found:
         return ""
     try:
-        cwd = json.loads('"%s"' % found.group(1))
+        cwd = json.loads('"%s"' % found[-1])
     except ValueError:
         return ""
     return cwd if isinstance(cwd, str) else ""
@@ -383,8 +388,11 @@ def _seen_appended(
         try:
             with open(path, "rb") as fh:
                 fh.seek(offset)
-                if needle in fh.read():
-                    return True
+                keep = b""
+                while chunk := fh.read(64 * 1024):
+                    if needle in keep + chunk:
+                        return True
+                    keep = (keep + chunk)[-len(needle) + 1 :] if len(needle) > 1 else b""
         except OSError:
             pass  # a transient read says nothing; the deadline, not the first error, decides
         if clock() >= deadline:
@@ -410,8 +418,19 @@ def _via_exec(
     binary = _binary(env, config)
     if not binary:
         return WR.Delivery("failed", "exec", code="muse-not-found")
-    cwd = _session_cwd(session_dir)
-    if not cwd or not os.path.isdir(cwd):
+    try:
+        cwd = _session_cwd(session_dir)
+    except StoreUnreadable:
+        return WR.Delivery("failed", "exec", code="store-unreadable")
+    if not cwd:
+        return WR.Delivery("refused", "exec", code="session-cwd-gone")
+    try:
+        info = os.stat(cwd)
+    except FileNotFoundError:
+        return WR.Delivery("refused", "exec", code="session-cwd-gone")
+    except OSError:
+        return WR.Delivery("failed", "exec", code="store-unreadable")
+    if not stat.S_ISDIR(info.st_mode):
         return WR.Delivery("refused", "exec", code="session-cwd-gone")
     argv = [binary, "exec", "--session-id", session_id, wake_text(wake)]
     transcript = os.path.join(session_dir, "session.jsonl")
@@ -483,9 +502,12 @@ def deliver_local(
         return WR.Delivery("busy", code="chat-live")
     if _locked:
         return _via_exec(env, config, session_dir, session_id, wake, runner, sleep)
-    folder = state_dir(env) / "locks"
-    WR.private_dir(folder)
-    fd = os.open(folder / ("session-%s.lock" % session_id), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        folder = state_dir(env) / "locks"
+        WR.private_dir(folder)
+        fd = os.open(folder / ("session-%s.lock" % session_id), os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError as exc:
+        return WR.Delivery("failed", code="lock-%s" % type(exc).__name__)
     with os.fdopen(fd, "w") as lock:
         try:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -580,16 +602,19 @@ def router_platform(env: Mapping[str, str], settings: object = None) -> WR.Platf
         )
 
     def exclude(targets: list[WR.Target]) -> set[str]:
+        # One walk for the whole batch (glob hides its own errors, and delivery re-checks
+        # every pick against the store anyway, so a doubt here excludes nothing).
+        import glob as _glob
+
         root = data_root(here)
-        try:
-            return {
-                t.session_id
-                for t in targets
-                if t.host == str(config.get("local_host") or "")
-                and MR.is_subagent(root, t.session_id)
-            }
-        except Exception:  # noqa: BLE001 - an unreadable store excludes nothing here; delivery fails closed
-            return set()
+        nested = _glob.glob(
+            os.path.join(
+                _glob.escape(root), "sessions", "[0-9]*", "[0-9]*", "[0-9]*", "*", "subagent", "*"
+            )
+        )
+        subagents = {os.path.basename(path) for path in nested}
+        local = str(config.get("local_host") or "")
+        return {t.session_id for t in targets if t.host == local and t.session_id in subagents}
 
     return WR.Platform(
         seat=SEAT,

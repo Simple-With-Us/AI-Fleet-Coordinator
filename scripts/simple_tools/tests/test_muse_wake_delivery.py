@@ -183,6 +183,27 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         self.assertEqual(child["SESSION_LETTER"], "0")
         self.assertFalse(any("KEY" in name or "TOKEN" in name for name in child))
 
+    def test_the_last_recorded_cwd_is_the_one_used(self) -> None:
+        other = self.home / "elsewhere"
+        other.mkdir()
+        with open(self.session_dir / "session.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"cwd": str(other)}) + "\n")
+        answer = self._deliver()
+        self.assertEqual(answer["delivery"]["outcome"], "sent")
+        self.assertEqual(self.calls[0]["cwd"], str(other))
+
+    def test_an_unreadable_transcript_fails_closed(self) -> None:
+        transcript = self.session_dir / "session.jsonl"
+        transcript.unlink()
+        transcript.mkdir()
+        try:
+            answer = self._deliver()
+        finally:
+            transcript.rmdir()
+            transcript.write_text(json.dumps({"cwd": str(self.work)}) + "\n", encoding="utf-8")
+        self.assertEqual(answer["delivery"]["outcome"], "failed")
+        self.assertEqual(answer["delivery"]["code"], "store-unreadable")
+
     def test_a_session_with_no_recorded_cwd_is_refused(self) -> None:
         (self.session_dir / "session.jsonl").write_text("{}\n", encoding="utf-8")
         answer = self._deliver()
@@ -307,7 +328,9 @@ class MuseWakeDeliveryTest(unittest.TestCase):
     def test_never_ran_codes_are_exported_for_the_router(self) -> None:
         self.assertEqual(
             MW.NEVER_RAN,
-            frozenset({"no-such-session", "subagent-session", "session-cwd-gone", "unknown-host"}),
+            frozenset(
+                {"bad-session-id", "no-such-session", "subagent-session", "session-cwd-gone", "unknown-host"}
+            ),
         )
         from simple_tools import wake_service
 
