@@ -735,6 +735,7 @@ def main(argv: list[str] | None = None) -> int:
         stopped["ran"] = True
         stopped["ok"] = False
         stopped["errors"] = ["stopped"]
+        _inherit_alert_state(stopped, path)
         try:
             write_summary(path, stopped)
         except OSError as exc:
