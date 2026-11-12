@@ -25,7 +25,7 @@ Three tools stand alone and need no identity:
 | `whoami` | The Zulip bot a call acts as (seat, bot email and id, role, realm, transport, post tag).  Takes `identity`. (`linear_whoami` and `fleetlink_whoami` answer for Linear and FleetLink.) |
 | `identities` | The bots this connection may act as and its default, with a status word per identity (`configured` or `missing`; stdio only lists identities whose credential file exists).  Takes no arguments. |
 | `guide` | This guide, or one `##` section by name (case and punctuation ignored).  Needs no credential.  A wrong name lists the section names. |
-| `catalog` | This connection's own tool catalog in bounded pages:  names and one-line descriptions only (full schemas come from `tools/list`, which accepts the same cursor).  Call with no arguments for the first page;  pass the returned `nextCursor` as `cursor` for the next page.  Hosted only. |
+| `catalog` | This connection's own tool catalog in bounded pages:  names and one-line descriptions only (full schemas come from `tools/list`, which accepts the same cursor).  Call with no arguments for the first page;  pass the returned `nextCursor` as `cursor` for the next page.  Hosted only. |
 
 Call `identities` first when a client is new, then `whoami` with an `identity` to prove the bot.  Test posts go to #sandbox.
 
@@ -238,17 +238,46 @@ Per-seat policy is an allowlist layer over that credential: allowed actions, all
 
 **Closing a pull request.**  `gr_wf_pr_close` closes an open PR without merging it and never deletes its branch.  It requires `expected_head_sha` and `expected_base_ref`, and it returns a receipt.  `gr_wf_pr_reopen` reopens a closed PR, with `expected_head_sha` optional, and a PR already open answers with no write.  A merged PR is refused by both.  Those checks read the PR just before the write, so they narrow a race and do not close it.  `simple-git call` reaches both.  Who may close whose PR is the superseded-PR rule in `AGENTS.md`.
 
-**Rules, rulesets and merge settings.**  `gr_wf_branch_rules` (`repo`, `branch`, optional `page` and `per_page`) lists the rules from every active ruleset that applies to that branch, with each rule's parameters (a `pull_request` rule carries `allowed_merge_methods`) and the ruleset that supplies it.  `gr_wf_rulesets` lists the repository's rulesets (id, name, target, source, enforcement), and with `includes_parents` (default true) the organization rulesets that target it.  Both are metadata reads.  Classic branch protection needs Administration read, which the fleet ceiling does not hold, so no verb reads it.  `gr_wf_repo_get` carries `allow_merge_commit`, `allow_squash_merge`, `allow_rebase_merge`, `allow_auto_merge` and `delete_branch_on_merge` only when GitHub returns them, and GitHub returns them only to a token that can read the repository's settings:  the relay asks for that when the seat's ceiling holds Administration, and otherwise those keys stay absent (absent means unknown, not false).
+**Rules, rulesets and merge settings.**  `gr_wf_branch_rules` (`repo`, `branch`, optional `page` and `per_page`) lists the rules from every active ruleset that applies to that branch, with each rule's parameters (a `pull_request` rule carries `allowed_merge_methods`) and the ruleset that supplies it.  `gr_wf_rulesets` lists the repository's rulesets (id, name, target, source, enforcement), and with `includes_parents` (default true) the organization rulesets that target it.  Both are metadata reads.  Classic branch protection needs Administration read, which the fleet ceiling does not hold, so no verb reads it.  `gr_wf_repo_get` carries `allow_merge_commit`, `allow_squash_merge`, `allow_rebase_merge`, `allow_auto_merge` and `delete_branch_on_merge` only when GitHub returns them, and GitHub returns them only to a token that can read the repository's settings:  the relay asks for that when the seat's ceiling holds Administration, and otherwise those keys stay absent (absent means unknown, not false).
 
 `mint_token` is deliberately not exposed over GR-MCP or fronted by ST-MCP: it returns a raw credential, and a stdio transcript is too easy to capture.  A seat that needs a token for git-over-HTTPS calls the relay's HTTP API directly, where the answer goes only to that caller and the mint is capped the same way.
 
-**Fetch and clone need no token.**  `simple-git clone`, `fetch`, `pull`, `ls-remote`, `bundle` and `archive` run local git over the read-only route at `https://agents.simplewithus.com/git/`, as the seat's own GitHub App.  The relay holds the GitHub token, so the machine needs only `SIMPLE_TOOLS_BEARER`.  The route has no push.
+**Fetch and clone need no token.**  `simple-git clone`, `fetch`, `pull`, `ls-remote`, `bundle` and `archive` run local git over the read-only route at `https://agents.simplewithus.com/git/`, as the seat's own GitHub App.  The relay holds the GitHub token, so the machine needs only `SIMPLE_TOOLS_BEARER`.  The route has no push.
 
-**Large files.**  A tool argument is a poor way to send a big file, because the model has to write out all of it.  `simple-git publish --repo OWNER/NAME --branch BRANCH --message TEXT --file LOCAL[=REPO_PATH]` reads the files from disk and commits them through `gr_wf_files_put`, with up to 2 MiB per file.  It splits a set past 20 files or 4 MiB into several commits, in order.  `--base BRANCH` creates the branch first.
+**Large files.**  A tool argument is a poor way to send a big file, because the model has to write out all of it.  `simple-git publish --repo OWNER/NAME --branch BRANCH --message TEXT --file LOCAL[=REPO_PATH]` reads the files from disk and commits them through `gr_wf_files_put`, with up to 2 MiB per file.  It splits a set past 20 files or 4 MiB into several commits, in order.  `--base BRANCH` creates the branch first.
 
 **One exact path on the default branch.**  `wf_file_put` and `wf_file_delete` may write the default branch when that seat's `default_branch_paths` names the exact repository and the exact path.  The relay prefixes the commit message with `default-branch-path: `.  It reads the blob first and refuses unless `prior_sha` matches.  Leave `prior_sha` out only to create a file that is not there.  A mismatch is `fence_mismatch` (`default-branch blob sha does not match`).  Any other path, seat or verb is still `bad_request_default_branch_protected`, including `wf_files_put`.
 
 A relay refusal arrives as a tool error carrying the relay's own HTTP status, never as one of the codes below: 401 unauthenticated, 403 policy denial, 400 a bad request or a terminal GitHub refusal, 409 a replay refused, 429 a GitHub rate limit (retryable), 502 an unknown outcome (not retryable — check GitHub before retrying) and 503 app-token minting unavailable.
+
+### gh Command To Relay Verb, And Paging
+
+Use the relay verb in the right column, never `gh`.  `gh` is the logged fallback only, for an operation no verb covers.  Hosted names are the `gr_*` and `gr_wf_*` tools; GR-MCP uses the same names without the `gr_` prefix, so `gr_wf_checks` is `wf_checks` there.
+
+| gh command (retired) | Relay verb |
+|---|---|
+| `gh pr view N --json commits,updatedAt` | `gr_wf_pr_get`; the commits page is `gr_wf_pr_commits_page`, which needs `expected_head_sha` |
+| `gh api graphql` reviewThreads | `gr_wf_review_threads`, with `number` and an optional `cursor` |
+| `gh api` call that replies to a review thread | `gr_reply_thread`, or `gr_wf_review_comment_reply` for a single review comment |
+| `gh api` call that resolves a review thread | `gr_resolve_thread`, or `gr_wf_review_thread_resolve` |
+| `gh api -X PUT repos/O/R/pulls/N/reviews/ID/dismissals` | `gr_wf_review_dismiss` |
+| `gh pr checks N` and `gh pr checks N --watch` | `gr_wf_checks` with the full 40-character head sha as `ref`; `gr_wf_check_runs_page` pages the check runs |
+| `gh run rerun --failed` | `gr_wf_run_rerun` for the run; `gr_wf_job_rerun` for one job |
+| `gh pr merge N --squash --auto` | `gr_wf_automerge_enable` with the squash method |
+| `gh pr merge N --squash` | `gr_wf_merge_guarded` with the squash method |
+| `gh pr create` | `gr_open_pr`, which is owner-authored by design |
+| `gh pr edit` | `gr_edit_pr` for the title and body; `wf_pr_edit` is ungranted |
+| `gh pr comment N` | `gr_comment_pr` |
+| `gh pr ready` and `gh pr ready --undo` | `gr_wf_pr_ready` and `gr_wf_pr_draft` |
+| `gh pr list` | `gr_wf_pr_list` |
+
+### Paging And Pins
+
+List reads take `page` and `per_page`.  The list reads the relay tests cover, such as pull request reviews and comments, workflows, labels and repository hooks, default to 30 per page and cap `per_page` at 50, and a larger value is refused.
+
+`gr_wf_review_threads` pages five threads at a time.  Pass the returned end cursor back as `cursor` until the page reports no next page.  The relay binds only the first 100 threads of a pull request before it allows a fixed mutation, so a thread outside that bound is refused rather than changed.
+
+`gr_wf_checks` and `gr_wf_check_runs_page` need the full 40-character commit sha as `ref`, and a short sha is refused.  Read the sha from `gr_wf_pr_get` rather than retyping it.
 
 ## Old Names and New Names
 
@@ -374,7 +403,7 @@ A hosted `gr_*` refusal (`code: "relay_refused"`) names its cause in a `reason` 
 |---|---|
 | `seat_policy` | The relay's allowlist for this seat does not permit the action or repository (or the seat's App ceiling is too low).  Retrying will not help; the seat's relay policy has to change |
 | `seat_rate_limit` | The seat used its hourly call or write quota.  Wait, then retry |
-| `github_refused` | GitHub itself refused it. `github_status` is the numeric status: 403 is permission or a branch rule, 405 is a merge block, 422 is a rejected change.  Fix the cause on GitHub; the seat policy is not the problem |
+| `github_refused` | GitHub itself refused it.  `github_status` is the numeric status: 403 is permission or a branch rule, 405 is a merge block, 422 is a rejected change.  Fix the cause on GitHub; the seat policy is not the problem |
 | `fence_mismatch` | The head, base, ref, default-branch blob sha or other state the call expected is no longer what the relay read just before the write.  Read the current state and send the call again with the fresh value |
 | `credential_scan` | The content looked like a credential.  The code is `refused_secret` instead; nothing was written |
 | `unauthenticated` | The relay did not accept the seat's credential |
@@ -389,27 +418,27 @@ Exit codes of the `simple-chat` CLI: 0 ok, 2 usage, 3 credentials, realm or iden
 
 `simple-git readiness OWNER/REPO NUMBER [--expected-head FULL_SHA]` combines the
 existing approved PR, exact-head check-run, commit-status, paginated review-record,
-and actual review-thread reads. It prints JSON. Exit 0 means
+and actual review-thread reads.  It prints JSON.  Exit 0 means
 `observed_checks_passed`, not permission to merge; exit 1 means blocked or unknown.
 It never merges, resolves a conversation, changes a rule, or creates an auto-merge request.
 
 The report counts unresolved review **threads**, including outdated unresolved
-threads. Issue comments are never a substitute. It follows thread cursors and
+threads.  Issue comments are never a substitute.  It follows thread cursors and
 review pages to a bounded end, rejects duplicate/missing pagination and incomplete
-check censuses, and reads head/base/lifecycle again at the end. A changed head or
-base requires a new report. The same overall CLI time budget covers every read.
+check censuses, and reads head/base/lifecycle again at the end.  A changed head or
+base requires a new report.  The same overall CLI time budget covers every read.
 
 Missing tools, refused reads, malformed coverage, missing current-head reviews,
-and unknown mergeability are not a clean result. The report retains known
-blockers even if another read is incomplete. All observed checks/statuses are
-reported; it does not guess which are required. A COMMENTED current-head review
+and unknown mergeability are not a clean result.  The report retains known
+blockers even if another read is incomplete.  All observed checks/statuses are
+reported; it does not guess which are required.  A COMMENTED current-head review
 is evidence of a completed review, not an approval or an automatic policy verdict.
 Reviewer identity requirements, repository rules and owner authority still need
-normal qualification. The existing REST PR read provides `mergeable_state`, not
+normal qualification.  The existing REST PR read provides `mergeable_state`, not
 GitHub's exact human-readable rule reason: `github_block_reason` stays `unknown`
-rather than inventing an allowlist or policy explanation. Use the authenticated
+rather than inventing an allowlist or policy explanation.  Use the authenticated
 PR merge panel when that missing reason matters.
 
 These are bounded sequential observations, not an atomic snapshot or durable
-merge token. Recheck at the point of a later write through the existing approved
-merge path. Review text is not emitted by this report and cannot grant authority.
+merge token.  Recheck at the point of a later write through the existing approved
+merge path.  Review text is not emitted by this report and cannot grant authority.
