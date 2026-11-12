@@ -19,6 +19,16 @@ model=${MODEL_ID:-unknown}
 
 echo "::notice::autofix route=$route base_url=$base model_id=$model"
 
+# Redact credential values, including the common "Bearer <token>",
+# "api-key: <key>", and "Authorization: <value>" forms where whitespace or a
+# colon separates the keyword from the value, plus bare sk-... keys.
+redact() {
+  sed -E \
+    -e 's/(bearer)[[:space:]]+[^[:space:]"]+/\1 [REDACTED]/gi' \
+    -e 's/((x-)?api[_-]?key|access[_-]?token|authorization|password|secret)("?)([[:space:]]*[:=][[:space:]]*|[[:space:]]+)("?)[^[:space:]"]+/\1\3\4\5[REDACTED]/gi' \
+    -e 's/sk-[A-Za-z0-9_-]+/[REDACTED]/g'
+}
+
 if ! command -v jq >/dev/null 2>&1; then
   echo "::warning::jq unavailable; cannot summarize Claude execution output"
   exit 0
@@ -41,7 +51,7 @@ while IFS= read -r line; do
   [ -n "$line" ] || continue
   key=${line%%=*}
   val=${line#*=}
-  val=$(printf '%s' "$val" | tr '\n' ' ' | sed -E 's/(bearer|sk-|api[_-]?key)[^[:space:]]+/[REDACTED]/gi')
+  val=$(printf '%s' "$val" | tr '\n' ' ' | redact)
   val=${val:0:500}
   echo "::notice::Claude result field ${key}=${val}"
 done < <(printf '%s' "$result_json" | jq -r '
@@ -59,7 +69,7 @@ errors=$(jq -r '
   | .[0] // empty
 ' "$exec_path" 2>/dev/null || true)
 if [ -n "$errors" ]; then
-  errors=$(printf '%s' "$errors" | tr '\n' ' ' | sed -E 's/(bearer|sk-|api[_-]?key)[^[:space:]]+/[REDACTED]/gi')
+  errors=$(printf '%s' "$errors" | tr '\n' ' ' | redact)
   errors=${errors:0:500}
   echo "::notice::Claude tool error excerpt=${errors}"
 fi
@@ -70,7 +80,7 @@ assistant_text=$(jq -r '
   | .[0:500] // empty
 ' "$exec_path" 2>/dev/null || true)
 if [ -n "$assistant_text" ]; then
-  assistant_text=$(printf '%s' "$assistant_text" | sed -E 's/(bearer|sk-|api[_-]?key)[^[:space:]]+/[REDACTED]/gi')
+  assistant_text=$(printf '%s' "$assistant_text" | redact)
   echo "::notice::Claude assistant text excerpt=${assistant_text}"
 fi
 
