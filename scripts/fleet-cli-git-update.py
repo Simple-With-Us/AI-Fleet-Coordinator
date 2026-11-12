@@ -241,6 +241,21 @@ def write_new_wrappers(home: Path, repo: Path) -> list[str]:
     return written
 
 
+def refresh_wrappers(home: Path, repo: Path) -> list[str]:
+    """Rewrite the managed wrappers a release changes under a host that has the older form (the release module's
+    REFRESHED_WRAPPERS:  platform-letter, whose wrapper now carries the registry settings of a session-letter hook).  A
+    link, a file without the marker and every other wrapper are never touched."""
+    release = release_module(repo)
+    plan = getattr(release, "refreshed_wrapper_plan", None)
+    if plan is None:  # a checkout from before the release module knew how:  nothing to refresh
+        return []
+    done = []
+    for path, (data, mode) in plan(home).items():
+        release.atomic_write(path, data, mode)
+        done.append(path.name)
+    return done
+
+
 def point_current(base: Path) -> None:
     temporary = base / (".pointer-" + uuid.uuid4().hex)
     temporary.symlink_to("repo")
@@ -295,6 +310,10 @@ def wrappers(home: Path, repo: Path, result: dict) -> dict:
     if written:
         result["wrappers_written"] = written
         log("WRAPPERS  " + ", ".join(written))
+    refreshed = refresh_wrappers(home, repo)
+    if refreshed:
+        result["wrappers_refreshed"] = refreshed
+        log("WRAPPERS REFRESHED  " + ", ".join(refreshed))
     return result
 
 

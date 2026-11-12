@@ -616,3 +616,76 @@ class NoLetterTitles(Base):
                                   env=self.env(), shown="??: New Chat", held=("CC",))
         self.assertTrue(Z.zcode_rename(request))
         self.assertEqual(self.title(sid), ("Jay named this", "custom"))
+
+
+class ServerShapedHome(Base):
+    """A server's home:  the managed `platform-letter` wrapper (the one `fleet-cli-git-update` writes), a `zc-letter`
+    wrapper from before, and the host's registry env script.  `install --platform zcode --location server` replaces the
+    ZCode entry, and the hook it writes must go on registering, because the managed wrapper sources the env script."""
+
+    FAKE = False
+
+    def test_after_the_install_the_hook_goes_through_the_managed_wrapper_and_registers(self) -> None:
+        import importlib.util
+        import subprocess
+        from pathlib import Path
+
+        # The managed wrapper runs the system interpreter by its fixed path, isolated:  it must be one this checkout runs on.
+        try:
+            probe = subprocess.run(
+                ["/usr/bin/python3", "-c", "import sys; print(sys.version_info >= (3, 11))"],
+                capture_output=True, text=True, timeout=30,
+            )
+            usable = probe.stdout.strip() == "True"
+        except OSError:
+            usable = False
+        if not usable:
+            self.skipTest("the managed wrapper's fixed interpreter /usr/bin/python3 is missing or older than 3.11 here")
+        scripts = Path(__file__).resolve().parents[2]
+        spec = importlib.util.spec_from_file_location("_rel", scripts / "fleet-cli-release.py")
+        rel = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rel)
+        home = Path(self.home)
+        bin_dir = home / ".local" / "bin"
+        (bin_dir / "zc-letter").mkdir(parents=True)
+        managed = bin_dir / "platform-letter"
+        managed.write_bytes(rel.wrapper(home, "scripts/platform-letter"))
+        managed.chmod(0o755)
+        # The release the wrapper runs:  this checkout.
+        (home / ".local" / "share" / "fleet-cli").mkdir(parents=True)
+        (home / ".local" / "share" / "fleet-cli" / "current").symlink_to(scripts.parent)
+        # The host's env script (fake values):  it points the hook at the registry served on loopback.
+        self.assigner.install()
+        self.addCleanup(self.assigner.uninstall)
+        url = self.assigner.serve(os.path.join(self.tmp.name, "listener-state"))
+        values = {**self.assigner.env(), "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL": url}
+        (bin_dir / "operator-registry-env").write_text(
+            "".join("export %s=%s\n" % (k, shlex.quote(v)) for k, v in values.items())
+        )
+        # An entry an earlier install pointed at the zc-letter wrapper:  install replaces it in place.
+        old = "%s hook --platform zcode --location server" % (bin_dir / "zc-letter" / "platform-letter")
+        config = home / ".zcode" / "cli" / "config.json"
+        config.write_text(
+            json.dumps({"hooks": {"events": {"SessionStart": [{"hooks": [{"type": "command", "command": old}]}]}}})
+        )
+        out = io.StringIO()
+        code = PL.install_main(["--platform", "zcode", "--location", "server"], {"HOME": self.home}, out)
+        self.assertEqual(code, 0, out.getvalue())
+        written = json.loads(config.read_text())["hooks"]["events"]["SessionStart"]
+        commands = [h["command"] for group in written for h in group["hooks"]]
+        self.assertEqual(commands, ["%s hook --platform zcode --location server" % managed])
+        # The hook, as a process with no profile and none of the registry settings, registers the chat.
+        sid = sess(31)
+        self.add_session(sid, title="Fix the wake path")
+        done = subprocess.run(
+            shlex.split(commands[0]),
+            input=json.dumps({"session_id": sid, "hook_event_name": "SessionStart", "source": "startup"}),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={"HOME": self.home, "PATH": "/usr/bin:/bin", "SIMPLE_TOOLS_STATE_DIR": self.state},
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        record = OR.SessionRegistry(self.db).lookup("zcode", "server", "default", sid)
+        self.assertTrue(record)
+        self.assertRegex(record["label"], PAIR)
