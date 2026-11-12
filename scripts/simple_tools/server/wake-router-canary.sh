@@ -246,7 +246,8 @@ def request(args, method, path, key=None, body=None):
 
 def summary(record):
     keys = ("status", "picked", "picked_letter", "picked_generation", "session_id", "host", "reason",
-            "delivered", "route", "ack", "code", "attempts", "receipt_id", "wake_id")
+            "delivered", "route", "ack", "code", "attempts", "receipt_id", "wake_id",
+            "letter_other_seat")
     return {k: record.get(k) for k in keys if k in record}
 
 
