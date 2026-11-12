@@ -2807,6 +2807,8 @@ class Tools:
             raise ToolError("outcome_unknown", str(exc)) from None
 
     def _linear_text(self, name: str, stdout: str) -> dict[str, Any]:
+        if LINEAR.empty_stdout(stdout):
+            raise ToolError("upstream_error", "Linear returned no data")
         return {
             "content": [
                 {

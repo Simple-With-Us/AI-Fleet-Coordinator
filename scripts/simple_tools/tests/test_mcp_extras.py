@@ -1285,6 +1285,68 @@ class LinearToolTests(FakePrograms):
         self.assertEqual(mutation["argv"][:3], ["api", "mutation", "-"])
         self.assertIn("mut-key-1", mutation["argv"])
 
+    def test_an_empty_linear_payload_is_a_typed_error(self):
+        project = "44412252-b36b-4705-90f5-7e3f7a17b77c"
+        args = {"first": 40, "filter": {"project": {"id": {"eq": project}}}, "selection": "nodes { id title }"}
+        session = self.session(self.env(LINEAR_TEST_REPLY="{}\n"))
+        self.assert_tool_error(session.call("linear_list_issues", args), "upstream_error")
+        wrapper = json.dumps(
+            {"command": "linear_list_issues", "operation": "query", "duplicate": False, "data": None}
+        )
+        session = self.session(self.env(LINEAR_TEST_REPLY=wrapper + "\n"))
+        self.assert_tool_error(
+            session.call("linear_list_issues", {"first": 15, "filter": args["filter"], "max_chars": 60000}),
+            "upstream_error",
+        )
+
+    def test_partial_linear_data_is_fenced_and_selection_reaches_board(self):
+        project = "44412252-b36b-4705-90f5-7e3f7a17b77c"
+        reply = json.dumps(
+            {
+                "command": "linear_list_issues",
+                "operation": "query",
+                "duplicate": False,
+                "data": {"issues": {"nodes": [{"id": "issue-1", "title": "Native"}]}},
+                "errors": [{"code": "INTERNAL", "path": ["issues"]}],
+            }
+        )
+        session = self.session(self.env(LINEAR_TEST_REPLY=reply + "\n"))
+        result = session.call(
+            "linear_list_issues",
+            {
+                "first": 15,
+                "max_chars": 60000,
+                "filter": {"project": {"id": {"eq": project}}},
+                "selection": "nodes { id title }",
+            },
+        )
+        self.assertNotIn("isError", result)
+        self.assertNotIn("structuredContent", result)
+        text = result["content"][0]["text"]
+        self.assertIn("issue-1", text)
+        self.assertNotEqual(text.strip(), "{}")
+        body = json.loads(self.calls(self.board_out)[0]["stdin"])
+        self.assertEqual(body["selection"], "nodes { id title }")
+        self.assertEqual(body["first"], 15)
+        self.assertEqual(body["max_chars"], 60000)
+
+    def test_a_board_max_chars_refusal_is_response_too_large(self):
+        session = self.session(
+            self.env(
+                LINEAR_TEST_EXIT="1",
+                LINEAR_TEST_ERR="the Linear response exceeds --max-chars 60000.  Use pagination or select fewer fields.\n",
+                LINEAR_TEST_REPLY="",
+            )
+        )
+        error = self.assert_tool_error(
+            session.call(
+                "linear_query",
+                {"query": "{ viewer { name } }", "max_chars": 60000},
+            ),
+            "response_too_large",
+        )
+        self.assertIn("max-chars", error["message"])
+
     def test_linear_show_passes_its_comment_limit_to_board(self):
         session = self.session(self.env())
         session.call("linear_show", {"id": "AFC-1", "comment_limit": 3})

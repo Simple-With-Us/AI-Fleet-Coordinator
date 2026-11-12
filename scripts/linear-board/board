@@ -1917,6 +1917,49 @@ class GqlError(Exception):
         return False
 
 
+def _request_id(hdrs) -> str | None:
+    hdrs = hdrs or {}
+    return (
+        hdrs.get("x-request-id")
+        or hdrs.get("request-id")
+        or hdrs.get("x-linear-request-id")
+        or hdrs.get("cf-ray")
+    )
+
+
+def public_gql_error(entry: dict) -> dict:
+    """A GraphQL error reduced to its code and path.  The message is third-party text and stays out."""
+    ext = entry.get("extensions") or {}
+    code = str(ext.get("code") or ext.get("type") or "GRAPHQL_ERROR").strip()[:80] or "GRAPHQL_ERROR"
+    path = entry.get("path") if isinstance(entry.get("path"), list) else []
+    safe = [part for part in path if isinstance(part, (str, int))][:12]
+    out = {"code": code}
+    if safe:
+        out["path"] = safe
+    return out
+
+
+def graphql_read_payload(js, status: int, hdrs) -> tuple[dict, list]:
+    """Data of one read, plus field-error codes when Linear sent both.
+
+    Null or `{}` raises.  A non-empty `data` object is returned even when
+    `errors` is also set, so a partial page is not thrown away.
+    """
+    if not isinstance(js, dict):
+        js = {}
+    errs = [e for e in (js.get("errors") or []) if isinstance(e, dict)]
+    data = js.get("data")
+    if not isinstance(data, dict) or not data:
+        raise GqlError(
+            errs or [{"message": "Linear returned no data", "extensions": {"code": "NO_DATA"}}],
+            data,
+            status=status,
+            headers=hdrs,
+            request_id=_request_id(hdrs),
+        )
+    return data, [public_gql_error(e) for e in errs]
+
+
 def gql_summary(e: BaseException) -> str:
     """Allow-listed fields from an external API error for logs:  error name, HTTP status,
     the GraphQL codes and the request id.  Never the response body, headers, or credentials.
@@ -1967,6 +2010,7 @@ class Linear:
         # "not applied".  `rerun` is the advice that goes with them.
         self.landed: list[str] = []
         self.rerun = "Rerunning the same command is safe and finishes the rest."
+        self.partial_errors: list[dict] = []
 
     def partial(self) -> str:
         if not self.landed:
@@ -2036,6 +2080,7 @@ class Linear:
         """Data of one GraphQL operation.  Raises GqlError on GraphQL errors.
         Retries Linear's rate limit (HTTP 400 RATELIMITED, or 429), 5xx and
         transport errors with backoff, never past LINEAR_BOARD_MAX_WAIT."""
+        self.partial_errors = []
         body = json.dumps({"query": query, "variables": variables or {}}).encode()
         deadline = time.time() + self.max_wait
         delay = self.base_delay
@@ -2100,20 +2145,12 @@ class Linear:
                 time.sleep(delay)
                 delay = min(delay * 2, 30)
                 continue
-            data = js.get("data")
-            if errs or data is None:
-                rid = (
-                    hdrs.get("x-request-id")
-                    or hdrs.get("request-id")
-                    or hdrs.get("x-linear-request-id")
-                    or hdrs.get("cf-ray")
-                )
-                raise GqlError(
-                    errs or [{"message": f"HTTP {status} with no data"}],
-                    data,
-                    status=status,
-                    headers=hdrs,
-                    request_id=rid,
+            data, field_errors = graphql_read_payload(js, status, hdrs)
+            self.partial_errors = field_errors
+            if field_errors:
+                warn(
+                    "Linear returned partial data with GraphQL errors: "
+                    + gql_summary(GqlError(errs, data, status=status, request_id=_request_id(hdrs)))
                 )
             return data
         self.fail("gave up after repeated retries against Linear")
@@ -4506,17 +4543,30 @@ def assert_public_inputs(command: dict, values: dict) -> dict:
 # ----------------------------------------------------------------- named commands (linear-named.js)
 
 
-def selected_fields(value: str) -> str:
-    """A selection override may hold only response fields:  it cannot close its braces and append roots."""
+def _selection_ok(value: str) -> bool:
     try:
         defs = _GqlParser(
             gql_tokens(f"fragment NamedSelection on NamedResource {{ {value} }}", 4000)
         ).document()
     except (GqlSyntax, ParityError):
-        raise ParityError("selection must contain only GraphQL response fields.") from None
-    if len(defs) != 1 or defs[0]["kind"] != "Fragment" or defs[0]["name"] != "NamedSelection":
+        return False
+    return len(defs) == 1 and defs[0]["kind"] == "Fragment" and defs[0]["name"] == "NamedSelection"
+
+
+def selected_fields(value: str) -> str:
+    """A selection override may hold only response fields:  it cannot close its braces and append roots.
+
+    One pair of wrapping braces is the selection set itself.
+    """
+    source = value.strip()
+    chosen = source
+    if source.startswith("{") and source.endswith("}"):
+        inner = source[1:-1].strip()
+        if inner and _selection_ok(inner):
+            chosen = inner
+    if not _selection_ok(chosen):
         raise ParityError("selection must contain only GraphQL response fields.")
-    return value
+    return chosen
 
 
 def build_named_operation(entry: dict, args: dict) -> tuple[str, dict]:
@@ -4937,7 +4987,7 @@ def linear_send_once(L: "Linear", query: str, variables: dict) -> dict:
     if status >= 500:
         raise SendFailed(f"Linear answered HTTP {status}", False)
     data = js.get("data")
-    if errs or data is None:
+    if errs or data is None or data == {}:
         rid = (
             hdrs.get("x-request-id")
             or hdrs.get("request-id")
@@ -5446,20 +5496,17 @@ def run_mutation(L: "Linear", auth: "Auth", seat: str, a, prepared: dict, label:
     return data, duplicate
 
 
-def print_api_result(a, data, duplicate: bool, operation: str, name: str) -> int:
+def print_api_result(a, data, duplicate: bool, operation: str, name: str, errors=None) -> int:
     if duplicate:
         warn(
             "this idempotency key already completed this exact request;  showing the first result, not "
             "sending it again"
         )
     if a.json:
-        print(
-            json.dumps(
-                {"command": name, "operation": operation, "duplicate": duplicate, "data": data},
-                indent=2,
-                ensure_ascii=False,
-            )
-        )
+        body = {"command": name, "operation": operation, "duplicate": duplicate, "data": data}
+        if errors:
+            body["errors"] = errors
+        print(json.dumps(body, indent=2, ensure_ascii=False))
     else:
         print(json.dumps(data, indent=2, ensure_ascii=False))
     return 0
@@ -5473,7 +5520,7 @@ def cmd_run(L: "Linear", auth: "Auth", a, seat: str) -> int:
         return print_api_result(a, data, duplicate, "mutation", entry["name"])
     data = clean_data(L.call(prepared["document"], prepared["variables"]))
     output_limited(data, a.max_chars)
-    return print_api_result(a, data, False, "query", entry["name"])
+    return print_api_result(a, data, False, "query", entry["name"], L.partial_errors)
 
 
 def _type_text(t: dict | None) -> str:
@@ -5563,7 +5610,7 @@ def cmd_api(L: "Linear", auth: "Auth", a, seat: str) -> int:
     if a.api_cmd == "query":
         data = clean_data(L.call(a.prepared["document"], a.prepared["variables"]))
         output_limited(data, a.max_chars)
-        return print_api_result(a, data, False, "query", "linear_query")
+        return print_api_result(a, data, False, "query", "linear_query", L.partial_errors)
     data, duplicate = run_mutation(L, auth, seat, a, a.prepared, "`board api mutation`")
     output_limited(data, a.max_chars, write=True)
     return print_api_result(a, data, duplicate, "mutation", "linear_mutation")

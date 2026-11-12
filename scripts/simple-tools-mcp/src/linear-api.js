@@ -1,7 +1,7 @@
 // General Linear GraphQL tools share the existing seat-bound transport.
 import { Kind, print } from "graphql";
 import { ToolError, okResult, sha256Hex, stableJson, scanSecret, newNonce } from "./contract.js";
-import { LinearError, linearClean, linearEnvelope, Q_ISSUE } from "./linear.js";
+import { LinearError, linearClean, linearEnvelope, linearFieldErrors, Q_ISSUE } from "./linear.js";
 import { prepareGraphql } from "./linear-graphql.js";
 
 const PROTECTED_LABEL = /^(?:claimed:|seat:|stale-claim$)/i;
@@ -38,14 +38,31 @@ function cleanData(tools, data, depth = 0) {
   return data;
 }
 
+function fieldErrorNote(notes) {
+  const shown = notes.slice(0, 5).map((note) => {
+    const code = typeof note?.code === "string" && note.code ? note.code : "GRAPHQL_ERROR";
+    const path = Array.isArray(note?.path) ? note.path.filter((part) => typeof part === "string" || typeof part === "number").join(".") : "";
+    return path ? `${code} at ${path}` : code;
+  });
+  const extra = notes.length > shown.length ? ` (+${notes.length - shown.length} more)` : "";
+  return `${shown.join("; ")}${extra}`;
+}
+
 function apiResult(tools, data, { max_chars = 24000, operation = "query", duplicate = false } = {}) {
+  const partial = data && typeof data === "object" ? data[linearFieldErrors] : undefined;
   const safe = cleanData(tools, data);
+  if (safe == null || (typeof safe === "object" && !Array.isArray(safe) && Object.keys(safe).length === 0)) {
+    throw new ToolError("upstream_error", "Linear returned no data");
+  }
   if (JSON.stringify(safe).length > max_chars) {
     throw new ToolError("response_too_large", "Linear response exceeds max_chars.  Use pagination or select fewer fields; a mutation may already have succeeded, so retain its idempotency key.");
   }
+  const summary = Array.isArray(partial) && partial.length
+    ? `Partial Linear data (untrusted).  GraphQL errors: ${fieldErrorNote(partial)}.`
+    : duplicate ? "Previously completed mutation; not repeated." : "Linear API result (untrusted data).";
   // Only the fenced text contains remote data.  No untrusted fields are
   // promoted to structured MCP output as trusted metadata.
-  return okResult(linearEnvelope(`simple-tools linear_${operation}`, duplicate ? "Previously completed mutation; not repeated." : "Linear API result (untrusted data).", [safe], newNonce()));
+  return okResult(linearEnvelope(`simple-tools linear_${operation}`, summary, [safe], newNonce()));
 }
 
 export async function apiSchema(tools, args) {
@@ -69,7 +86,7 @@ export async function apiQuery(tools, args) {
   const prepared = prepareGraphql(args.query, args.variables, "query");
   tools.scanLinear({ query: prepared.query, variables: JSON.stringify(prepared.variables) });
   await tools.reserveLinear("read");
-  const data = await tools.linearCall(() => client.call(prepared.query, prepared.variables));
+  const data = await tools.linearCall(() => client.call(prepared.query, prepared.variables, { allowPartial: true }));
   return apiResult(tools, data, args);
 }
 

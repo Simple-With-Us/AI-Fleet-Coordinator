@@ -342,7 +342,9 @@ export function errorResult(error, scrub = (s) => s) {
   return { content: [{ type: "text", text: JSON.stringify(obj) }], isError: true, _meta: { [ERROR_META_KEY]: obj, ...error.meta } };
 }
 
+/** A successful tool result.  `structuredContent` is set only when the caller passes one.  Omitting it must not become `{}`. */
 export function okResult(text, structured) {
+  if (structured === undefined) return { content: [{ type: "text", text }] };
   return { content: [{ type: "text", text }], structuredContent: { ...structured } };
 }
 
