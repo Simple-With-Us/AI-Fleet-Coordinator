@@ -1623,6 +1623,12 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
                 "seat.%s.routine may not read %s, the Zulip site variable"
                 % (seat_name, DEFAULT_SITE_ENV)
             )
+        outgoing_token_env = outgoing_webhook_token_env(seat_name)
+        if routine is not None and outgoing_token_env in (routine.url_env, routine.key_env):
+            wake_problems.append(
+                "seat.%s.routine may not read %s, the Zulip outgoing-webhook token variable"
+                % (seat_name, outgoing_token_env)
+            )
         if problems:
             errors.extend(problems)
             errors.extend(wake_problems)
