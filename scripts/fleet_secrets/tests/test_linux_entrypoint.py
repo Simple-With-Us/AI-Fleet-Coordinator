@@ -41,7 +41,9 @@ class ServiceTokenEntryTests(unittest.TestCase):
             ):
                 with self.assertRaises(entry.EntryError) as caught:
                     entry.authenticated_env()
-                self.assertIn("invalid scoped reader binding: INFISICAL_TOKEN", str(caught.exception))
+                self.assertIn(
+                    "invalid scoped reader binding: INFISICAL_TOKEN", str(caught.exception)
+                )
 
     def test_scoped_reader_and_writer_tokens_are_preserved_separately(self):
         with mock.patch.dict(
