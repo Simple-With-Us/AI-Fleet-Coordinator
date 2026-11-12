@@ -1463,7 +1463,7 @@ CURSOR_HOST = "cursor.com"
 GH_BUDGET_S = 8.0
 
 #  A repository that is not under the default owner.
-REPO_OWNER = {"Fleet-OPS": "jaywedgeworth22"}
+REPO_OWNER = {}
 
 TEAM_TO_REPO = {
     #  One Linear team per repository:  the team key names the repository that team works in.

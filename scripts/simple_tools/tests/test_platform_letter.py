@@ -1295,6 +1295,203 @@ class HookTests(Base):
         PL.sync_issues(note, {"transcript_path": path}, self.home, 3000.0, broken)  # never raises
         self.assertEqual(note["issues_sent"], ["AFC-1"])
 
+    # ---- AFC-702:  the end of a turn reports its issues and topics ----
+
+    def turn_spec(self) -> PL.PlatformSpec:
+        return make_spec(events={**PL.DEFAULT_EVENTS, "Stop": "turn"})
+
+    def test_a_turn_end_event_reports_without_a_further_prompt_and_closes_nothing(self) -> None:
+        spec = self.turn_spec()
+        self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, spec=spec)
+        path = self.transcript(
+            {"type": "user", "message": {"content": "start on AFC-1"}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash",
+                 "input": {"command": 'simple-chat post --topic "AFC-1 plan" --body x'}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1",
+                                                      "content": "posted id 3 to #Work-In-Progress › AFC-1 plan"}]}},
+        )
+        ssh = FakeSsh(self)
+        out = self.hook({"hook_event_name": "Stop", "session_id": "s-0001", "transcript_path": path},
+                        spec=spec, runner=ssh)
+        self.assertIsNone(out)  # a turn end prints nothing
+        self.assertEqual(ssh.ops(), ["issues"])
+        self.assertEqual(self.issues_held(), ["AFC-1"])
+        note = self.note("s-0001")
+        self.assertEqual(note["state"], "open")
+        self.assertEqual([t["topic"] for t in note["topics"]], ["AFC-1 plan"])
+        self.assertNotIn("ended", note)
+        # The prompt after it reads from where the turn end left off:  nothing new, no second issues call (it may
+        # still title the chat, which is the prompt's own work).
+        self.turn(ssh, transcript_path=path)
+        self.assertEqual(ssh.ops().count("issues"), 1)
+
+    def test_a_turn_end_for_a_closed_or_unknown_chat_does_nothing(self) -> None:
+        spec = self.turn_spec()
+        path = self.transcript({"type": "user", "message": {"content": "AFC-1"}})
+        ssh = FakeSsh(self)
+        self.assertIsNone(self.hook({"hook_event_name": "Stop", "session_id": "s-0009", "transcript_path": path},
+                                    spec=spec, runner=ssh))
+        self.assertEqual(ssh.calls, [])
+        note = {"state": "closed", "label": "AA"}
+        PL.end_of_turn(note, {"transcript_path": path}, self.home, 1000.0, lambda text: {"ok": True})
+        self.assertEqual(note, {"state": "closed", "label": "AA"})
+
+    def test_a_turn_end_with_the_registry_unreachable_is_silent_and_waits_to_ask_again(self) -> None:
+        calls: list[str] = []
+
+        def down(text: str) -> dict:
+            calls.append(text)
+            return {"error": "ssh to the Mac timed out"}
+
+        note: dict = {"state": "open", "label": "AA"}
+        path = self.transcript("AFC-1")
+        PL.end_of_turn(note, {"transcript_path": path}, self.home, 1000.0, down)
+        PL.end_of_turn(note, {"transcript_path": path}, self.home, 1000.0 + 60, down)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(note["issues_failed_at"], 1000.0)
+        self.assertEqual([i["id"] for i in note["issues"]], ["AFC-1"])
+
+    def test_the_turn_event_is_one_a_spec_may_map_to(self) -> None:
+        self.assertIn("turn", PL.EVENTS)
+        self.assertEqual(PL.canonical_event(self.turn_spec(), {"hook_event_name": "Stop"}), "turn")
+        self.assertEqual(PL.canonical_event(make_spec(), {"hook_event_name": "Stop"}), "")  # none by default
+
+    @staticmethod
+    def calls(*uses: tuple[str, str, dict]) -> str:
+        return json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": cid, "name": name, "input": args} for cid, name, args in uses]}})
+
+    @staticmethod
+    def results(*outs: tuple[str, object, bool]) -> str:
+        return json.dumps({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": cid, "content": content, "is_error": err}
+            for cid, content, err in outs]}})
+
+    def test_topics_in_lines_counts_a_post_only_when_its_own_result_comes_back(self) -> None:
+        lines = [
+            self.calls(
+                ("a", "Bash", {"command": "cd x && simple-chat --as CLAUDE post --topic 'First one' -b 'a; b'"}),
+                ("b", "mcp__26a3__zulip_post", {"channel": "Work-In-Progress", "topic": "  Second   one  "}),
+                ("c", "mcp__26a3__zulip_read_topic", {"topic": "Only read"}),
+                ("d", "Bash", {"command": 'TOPIC="Third one"; simple-chat post --topic "$TOPIC" --body x'}),
+            ),
+            self.results(
+                ("a", "posted id 5 to #Work-In-Progress › First one", False),
+                ("b", [{"type": "text", "text": "{\"id\": 6}"}], False),
+                ("c", "a topic someone else posted", False),
+                ("d", "posted id 7 to #Work-In-Progress › Third one", False),
+            ),
+            "{not json",
+        ]
+        self.assertEqual(PL.topics_in_lines(lines), ["First one", "Second one", "Third one"])
+        self.assertEqual(PL.topics_in_lines(["x" * 10, json.dumps(5), json.dumps([{"name": 3}])]), [])
+        long = "T" * 90
+        cmd = self.calls(("a", "Bash", {"command": "simple-chat post --topic=%s -b x" % long}))
+        self.assertEqual(PL.topics_in_lines([cmd, self.results(("a", "", False))]), ["T" * PL.TOPIC_CHARS])
+
+    def test_topics_in_lines_refuses_what_is_not_a_post_this_chat_made(self) -> None:
+        cases = {
+            "a read": [self.calls(("a", "Bash", {"command": 'simple-chat read --topic "AFC-9 someone elses"'})),
+                       self.results(("a", "posted id 1 to #x › AFC-9 someone elses", False))],
+            "another program": [self.calls(("a", "Bash", {"command": "kafka-topics --describe --topic orders"})),
+                                self.results(("a", "ok", False))],
+            "a variable with no printed line": [
+                self.calls(("a", "Bash", {"command": 'simple-chat post --topic "$TOPIC" --json -b x'})),
+                self.results(("a", '{"id": 4}', False))],
+            "user prose": [json.dumps({"type": "user", "message": {"content":
+                                                                    "never post with --topic fleet unless told"}}),
+                           "plain words: simple-chat post --topic=First"],
+            "a reply's words": [json.dumps({"type": "assistant", "message": {"content":
+                                                                             'simple-chat post --topic "Said"'}})],
+            "a peer's log line": [self.calls(("a", "Bash", {"command": "tail -5 listener.log"})),
+                                  self.results(("a", "posted id 7 to #Work-In-Progress › BF-3 peer topic", False))],
+            "an error result": [self.calls(("a", "mcp__f__zulip_post", {"topic": "Denied"}),
+                                           ("b", "Bash", {"command": "simple-chat post --topic Failed -b x"})),
+                                self.results(("a", "permission denied", True), ("b", "error", True))],
+            "no result": [self.calls(("a", "mcp__f__zulip_reply", {"topic": "Pending"}))],
+            "no id": [json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "mcp__f__zulip_post", "input": {"topic": "No id"}}]}})],
+        }
+        for name, lines in cases.items():
+            with self.subTest(name):
+                self.assertEqual(PL.topics_in_lines(lines), [])
+        # A body that quotes a printed line names no topic:  only the command's own output line counts.
+        quoted = [self.calls(("a", "Bash", {"command": "simple-chat post --topic Real -b 'posted id 5 to #x › y'"})),
+                  self.results(("a", "posted id 8 to #Work-In-Progress › Real", False))]
+        self.assertEqual(PL.topics_in_lines(quoted), ["Real"])
+
+    def test_a_topic_with_a_dollar_sign_counts_when_no_shell_read_it(self) -> None:
+        lines = [
+            self.calls(("a", "mcp__f__zulip_post", {"topic": "Price $5"}),
+                       ("b", "Bash", {"command": "simple-chat post --topic 'Cost `x`' -b y"}),
+                       ("c", "Bash", {"command": 'simple-chat post --topic "$T" -b y'})),
+            self.results(("a", "{}", False), ("b", "posted id 3 to #Work-In-Progress › Cost `x`", False),
+                         ("c", "posted id 4 to #Work-In-Progress › Price $6", False)),
+        ]
+        self.assertEqual(PL.topics_in_lines(lines), ["Price $5", "Cost `x`", "Price $6"])
+        single = [self.calls(("a", "Bash", {"command": "simple-chat post --topic 'Price $5' -b y"})),
+                  self.results(("a", "{}", False))]
+        self.assertEqual(PL.topics_in_lines(single), ["Price $5"])
+        # A quoted copy of the text elsewhere in the command does not make an expanding topic literal.
+        other = [self.calls(("a", "Bash", {"command": "echo 'x $T y'; simple-chat post --topic $T -b 'a'; "
+                                                      "echo '$T'"})),
+                 self.results(("a", "{}", False))]
+        self.assertEqual(PL.topics_in_lines(other), [])
+        # A literal `$VAR` in the command is not the topic, and with no printed line it names nothing.
+        bare = [self.calls(("a", "Bash", {"command": 'simple-chat post --topic "$T" -b y'})),
+                self.results(("a", "{}", False))]
+        self.assertEqual(PL.topics_in_lines(bare), [])
+
+    def test_only_a_command_that_runs_the_program_posts(self) -> None:
+        def topics(command: str) -> list[str]:
+            return PL.topics_in_lines([self.calls(("a", "Bash", {"command": command})), self.results(("a", "", False))])
+
+        for command in ("echo simple-chat post --topic Demo -b x", "grep -r 'x' simple-chat post --topic Demo",
+                        "cat agent-sync post --topic Demo"):
+            with self.subTest(command):
+                self.assertEqual(topics(command), [])
+        for command in ("sudo -u jay simple-chat post --topic Demo -b x", "env A=b simple-chat reply --topic Demo -b x",
+                        "A=b ~/.local/bin/simple-chat post --topic Demo -b x",
+                        "if true; then simple-chat post --topic Demo -b x; fi",
+                        "/usr/bin/sudo simple-chat post --topic Demo -b x",
+                        "timeout 10 simple-chat post --topic Demo -b x",
+                        "nice -n 5 /usr/bin/env A=b simple-chat post --topic Demo -b x"):
+            with self.subTest(command):
+                self.assertEqual(topics(command), ["Demo"])
+
+    def test_turn_note_keeps_what_another_hook_wrote_meanwhile(self) -> None:
+        before = {"state": "open", "label": "AA", "issues_failed_at": 1.0, "title": "Old"}
+        after = dict(before, issues=[{"id": "AFC-1"}], topics=[{"topic": "T", "at": 2.0}])
+        after.pop("issues_failed_at")
+        fresh = {"state": "closed", "label": "AA", "ended": {"reason": "clear"}, "issues_failed_at": 1.0,
+                 "title": "New"}
+        merged = PL.turn_note(before, after, fresh)
+        self.assertEqual(merged["state"], "closed")
+        self.assertEqual(merged["ended"], {"reason": "clear"})
+        self.assertEqual(merged["title"], "New")
+        self.assertEqual(merged["issues"], [{"id": "AFC-1"}])
+        self.assertEqual(merged["topics"], [{"topic": "T", "at": 2.0}])
+        self.assertNotIn("issues_failed_at", merged)
+        self.assertIsNone(PL.turn_note(before, after, {}))
+
+    def test_merge_topics_keeps_each_once_newest_last_and_bounded(self) -> None:
+        old = [{"topic": "A", "at": 1.0}, {"topic": "B", "at": 2.0}, {"topic": "", "at": 3.0}, "junk",
+               {"topic": "C", "at": True}]
+        self.assertEqual(PL.merge_topics(old, ["A"], 5.0), [{"topic": "B", "at": 2.0}, {"topic": "A", "at": 5.0}])
+        many = PL.merge_topics([], ["t%d" % i for i in range(PL.TOPIC_KEEP + 5)], 9.0)
+        self.assertEqual(len(many), PL.TOPIC_KEEP)
+        self.assertEqual(PL.merge_topics("not a list", [], 1.0), [])
+        # What it is given is cleaned the same way:  one entry per topic, never longer than TOPIC_CHARS.
+        merged = PL.merge_topics([{"topic": "A b", "at": 1.0}], ["  A   b ", "X" * 90, "", "Price $5"], 7.0)
+        self.assertEqual(merged, [{"topic": "A b", "at": 7.0}, {"topic": "X" * PL.TOPIC_CHARS, "at": 7.0},
+                                  {"topic": "Price $5", "at": 7.0}])
+        # One parse serves both readers of the same lines.
+        lines = ["{not json", json.dumps({"type": "user", "message": {"content": "AFC-3"}})]
+        parsed = PL.parsed_lines(lines)
+        self.assertEqual(PL.issue_ids_in_lines(lines, parsed), PL.issue_ids_in_lines(lines))
+        self.assertEqual(PL.topics_in_lines(lines, parsed), [])
+
     def test_a_rename_event(self) -> None:
         spec = make_spec(events={"session.created": "start", "session.renamed": "rename", "session.deleted": "end"},
                          output="json")

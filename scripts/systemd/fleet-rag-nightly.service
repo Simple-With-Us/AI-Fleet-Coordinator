@@ -12,7 +12,10 @@
 [Unit]
 Description=Fleet RAG nightly ingest (no-op until FLEET_RAG_NIGHTLY=1)
 ConditionPathExists=/etc/fleet/rag-nightly.env
-After=network-online.target
+# The unit owns the code sync:  systemd starts code-main-sync first and orders this job
+# after it finishes.  The job reads its Result instead of calling systemctl start.
+Wants=code-main-sync.service
+After=network-online.target code-main-sync.service
 
 [Service]
 Type=oneshot
@@ -22,6 +25,7 @@ Nice=10
 EnvironmentFile=-/etc/fleet/lanes.conf
 EnvironmentFile=/etc/fleet/rag-nightly.env
 Environment=FLEET_RAG_REQUIRE_CODE_ROOT=1
+Environment=FLEET_RAG_CODE_SYNC_BY_UNIT=1
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/python3 -I ${FLEET_RAG_CHECKOUT}/scripts/fleet_rag/nightly_job.py
 SyslogIdentifier=fleet-rag-nightly

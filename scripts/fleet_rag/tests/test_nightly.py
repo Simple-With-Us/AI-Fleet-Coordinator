@@ -138,7 +138,7 @@ class NightlyJobTests(unittest.TestCase):
         self.assertEqual(summary["alert"], "posted")
         self.assertIn("prune guard", posts[0]["content"])
         self.assertIn("\u00a0 ", posts[0]["content"])
-        self.assertEqual(posts[0]["to"], "Alerts")
+        self.assertEqual(posts[0]["to"], "OPS")
 
     def test_failure_alerts_and_withholds_a_secret(self) -> None:
         def ingest_bad():
@@ -159,6 +159,45 @@ class NightlyJobTests(unittest.TestCase):
         self.assertNotIn(SECRET, json.dumps(summary))
         self.assertNotIn(SECRET, posts[0]["content"])
         self.assertIn("failed", posts[0]["content"])
+
+    def test_unit_owned_sync_reads_the_result_instead_of_starting_it(self) -> None:
+        seen: list[list[str]] = []
+        now = 10_000.0
+
+        def show(result="success", status="0", started_s=now - 60):  # noqa: ANN001
+            def run(argv):  # noqa: ANN001
+                seen.append(argv)
+                return (
+                    f"Result={result}\nExecMainStatus={status}\n"
+                    f"ExecMainStartTimestampMonotonic={int(started_s * 1_000_000)}\n"
+                )
+            return run
+
+        def check(**kw):  # noqa: ANN003
+            return nightly_job.unit_sync_result(show(**kw), now_monotonic=lambda: now)
+
+        self.assertEqual(check(), 0)
+        self.assertEqual(check(result="exit-code"), 1)
+        self.assertEqual(check(status="1"), 1)
+        # A success left over from an earlier run is not tonight's sync.
+        self.assertEqual(check(started_s=now - nightly_job.SYNC_MAX_AGE_S - 1), 1)
+        self.assertEqual(check(started_s=0), 1)
+        self.assertEqual(nightly_job.unit_sync_result(lambda argv: "", now_monotonic=lambda: now), 1)
+        self.assertTrue(all("start" not in argv for argv in seen))
+        self.assertEqual(seen[0][:3], ["systemctl", "show", "code-main-sync.service"])
+
+    def test_unit_flag_routes_code_sync_to_the_result_read(self) -> None:
+        with mock.patch.object(nightly_job, "unit_sync_result", return_value=0) as read, mock.patch.object(
+            nightly_job.subprocess, "run", side_effect=AssertionError("started a unit")
+        ):
+            self.assertEqual(nightly_job.code_sync(None, {nightly_job.SYNC_BY_UNIT_ENV: "1"}), 0)
+        read.assert_called_once_with()
+
+    def test_service_unit_owns_the_code_sync_dependency(self) -> None:
+        unit = (REPO / "scripts" / "systemd" / "fleet-rag-nightly.service").read_text(encoding="utf-8")
+        self.assertIn("Wants=code-main-sync.service", unit)
+        self.assertRegex(unit, r"(?m)^After=.*code-main-sync\.service")
+        self.assertIn(f"Environment={nightly_job.SYNC_BY_UNIT_ENV}=1", unit)
 
     def test_code_sync_failure_does_not_ingest(self) -> None:
         called = []
@@ -370,6 +409,147 @@ class NightlyJobTests(unittest.TestCase):
     def test_http_zulip_site_is_refused(self) -> None:
         with self.assertRaises(nightly_job.NightlyError):
             nightly_job.zulip_post("http://example.com", "a@example.com", "key", {})
+
+    def test_without_zulip_credentials_alert_is_unconfigured(self) -> None:
+        posts: list[dict] = []
+
+        def ingest_bad():
+            return 1, {"ok": False, "errors": ["nope"], "guard_trips": [], "warnings": []}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _ready(Path(tmp))
+            _fresh_mirror(env, Path(tmp) / "mirror")
+            store = Path(env["FLEET_RAG_NIGHTLY_SUMMARY"])
+            store.write_text(
+                json.dumps({"alert_fingerprint": "ok=0|errors:nope", "alert_streak": 2}) + "\n",
+                encoding="utf-8",
+            )
+            for key in ("ZULIP_SITE", "ZULIP_EMAIL", "ZULIP_API_KEY"):
+                env.pop(key, None)
+            summary = nightly_job.execute(
+                env,
+                read_file=nightly_job.read_token_file,
+                fetch=_fetch,
+                sync=lambda: 0,
+                ingest_runner=ingest_bad,
+                post=lambda site, email, key, fields: posts.append(fields),
+            )
+        self.assertEqual(summary["alert"], "unconfigured")
+        self.assertEqual(posts, [])
+        self.assertEqual(summary.get("alert_streak"), 2)
+        self.assertEqual(summary.get("alert_fingerprint"), "ok=0|errors:nope")
+
+    def test_zulip_credentials_load_from_infisical(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            zulip_token = root / "zulip.token"
+            _token(zulip_token)
+
+            def fetch(project, path, token, names):  # noqa: ANN001
+                if path == "/fleet-rag-nightly":
+                    return {
+                        "ZULIP_SITE": "https://example.zulipchat.com",
+                        "ZULIP_EMAIL": "rag-bot@example.com",
+                        "ZULIP_API_KEY": "not-a-real-key",
+                    }
+                return {name: f"value-{name}" for name in names}
+
+            env = _ready(root)
+            for key in ("ZULIP_SITE", "ZULIP_EMAIL", "ZULIP_API_KEY"):
+                env.pop(key, None)
+            env[nightly_job.TOKEN_FILE_ZULIP] = str(zulip_token)
+            env["FLEET_RAG_ZULIP_INFISICAL_PROJECT"] = RECALL_PROJECT
+            env["FLEET_RAG_ZULIP_INFISICAL_PATH"] = "/fleet-rag-nightly"
+            loaded = nightly_job.load_credentials(
+                env, read_file=nightly_job.read_token_file, fetch=fetch
+            )
+        self.assertEqual(loaded["ZULIP_EMAIL"], "rag-bot@example.com")
+
+    def test_the_same_failure_on_consecutive_nights_posts_still_failing(self) -> None:
+        posts: list[dict] = []
+
+        def ingest_bad():
+            return 1, {"ok": False, "errors": ["nope"], "guard_trips": [], "warnings": []}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = _ready(root)
+            _fresh_mirror(env, root / "mirror")
+            fingerprint = "ok=0|errors:nope"
+            store = Path(env["FLEET_RAG_NIGHTLY_SUMMARY"])
+            store.parent.mkdir(parents=True, exist_ok=True)
+            store.write_text(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "alert_fingerprint": fingerprint,
+                        "alert_streak": 1,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            summary = nightly_job.execute(
+                env,
+                read_file=nightly_job.read_token_file,
+                fetch=_fetch,
+                sync=lambda: 0,
+                ingest_runner=ingest_bad,
+                post=lambda site, email, key, fields: posts.append(fields),
+            )
+        self.assertEqual(summary["alert_streak"], 2)
+        self.assertIn("still failing, night 2", posts[0]["content"])
+
+    def test_a_failed_alert_post_does_not_change_the_job_exit(self) -> None:
+        def ingest_bad():
+            return 1, {"ok": False, "errors": ["nope"], "guard_trips": [], "warnings": []}
+
+        def boom(*args, **kwargs):  # noqa: ANN002, ANN003
+            raise RuntimeError("zulip down")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _ready(Path(tmp))
+            summary = nightly_job.execute(
+                env,
+                read_file=nightly_job.read_token_file,
+                fetch=_fetch,
+                sync=lambda: 0,
+                ingest_runner=ingest_bad,
+                post=boom,
+            )
+            self.assertEqual(summary["alert"], "failed")
+            self.assertFalse(summary["ok"])
+            with mock.patch.dict(os.environ, {**env, "FLEET_RAG_NIGHTLY": "1"}, clear=True):
+                with mock.patch.object(nightly_job, "execute", return_value=summary), mock.patch.object(
+                    nightly_job, "write_summary"
+                ):
+                    self.assertEqual(nightly_job.main(), 1)
+
+    def test_a_stale_mirror_alerts_before_ingest_guard_trips_merge(self) -> None:
+        posts: list[dict] = []
+        now = int(time.time())
+
+        def ingest_runner():
+            return 0, {"ok": True, "errors": [], "guard_trips": [], "warnings": []}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = _ready(root)
+            live = root / "mirror" / "current"
+            live.mkdir(parents=True)
+            mirror.write_stamp(live, now - 40 * 3600, {})
+            env[mirror.MIRROR_ENV] = str(live)
+            summary = nightly_job.execute(
+                env,
+                read_file=nightly_job.read_token_file,
+                fetch=_fetch,
+                sync=lambda: 0,
+                ingest_runner=ingest_runner,
+                post=lambda site, email, key, fields: posts.append(fields),
+            )
+        self.assertTrue(summary["ok"])
+        self.assertEqual(summary["alert"], "posted")
+        self.assertIn("mirror is stale", posts[0]["content"])
 
     def test_units_ship_disabled(self) -> None:
         service = (REPO / "scripts/systemd/fleet-rag-nightly.service").read_text(encoding="utf-8")
