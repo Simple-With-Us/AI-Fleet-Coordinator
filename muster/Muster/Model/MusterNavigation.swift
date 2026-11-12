@@ -138,6 +138,78 @@ extension FleetPlace {
     }
 }
 
+// MARK: - Quick Open and shortcuts
+
+extension MusterDestination {
+    /// The words besides the title that find the panel in Quick Open, lowercase.
+    ///
+    /// There is no default:  a new panel cannot compile until it says how it is found.
+    var keywords: [String] {
+        switch self {
+        case .overview: return ["home", "summary", "cards", "start"]
+        case .services: return ["pm2", "launchagent", "launchctl", "restart", "stop", "start", "botfleet"]
+        case .macAgents: return ["agents", "hog hunter", "launchd", "background", "jobs"]
+        case .complianceGrid: return ["grid", "rules", "pass", "red", "cells", "check", "verdict"]
+        case .driftHistory: return ["drift", "history", "red", "alerts", "changes"]
+        case .wakeAndListener: return ["wake", "listener", "zulip", "eavesdropper", "operator", "mentions"]
+        case .seatDetail: return ["seat", "setup", "engine", "files", "platform"]
+        case .serverStatus: return ["server", "hetzner", "report", "units", "systemd", "health"]
+        case .serverResourceLimits: return ["server", "memory", "cpu", "limits", "policy", "resources"]
+        case .serverUpdates: return ["server", "update", "allowlist", "upgrade", "apt"]
+        case .appsAndWork: return ["apps", "work", "lanes", "pull requests", "prs", "claims", "linear"]
+        case .seats: return ["seats", "sessions", "presence", "agents", "last post"]
+        case .controls: return ["knobs", "secrets", "infisical", "settings", "values"]
+        case .hosts: return ["tools", "worker", "workers", "doctor", "versions", "hosts"]
+        case .appProcesses: return ["processes", "scan", "doctor", "apps"]
+        case .virtualMachines: return ["vm", "vms", "machines", "parallels"]
+        case .actionHistory: return ["audit", "log", "actions", "ops", "history", "touch id"]
+        }
+    }
+
+    /// The digit that opens the panel with Command, or nil.  Nine keys cover the first nine
+    /// panels in the order the sidebar reads them;  the rest are reached by Quick Open.
+    /// Every digit is used at most once.
+    var shortcutDigit: Int? {
+        switch self {
+        case .overview: return 1
+        case .services: return 2
+        case .macAgents: return 3
+        case .complianceGrid: return 4
+        case .driftHistory: return 5
+        case .wakeAndListener: return 6
+        case .seatDetail: return 7
+        case .serverStatus: return 8
+        case .serverResourceLimits: return 9
+        case .serverUpdates, .appsAndWork, .seats, .controls, .hosts, .appProcesses,
+             .virtualMachines, .actionHistory:
+            return nil
+        }
+    }
+
+    /// The shortcut as a menu shows it, or nil.
+    var shortcutLabel: String? { shortcutDigit.map { "\u{2318}\($0)" } }
+}
+
+/// Quick Open's search:  pure, so every panel's reachability is a test.
+enum QuickOpenSearch {
+    /// The panels that match the query, best first.  An empty query lists every panel in the
+    /// sidebar's order.  Every word of the query must be found in the title or a keyword,
+    /// ignoring case.  A title that starts with the first word comes first, then a title
+    /// that holds it, then a keyword match.
+    static func results(_ query: String) -> [MusterDestination] {
+        let words = query.lowercased().split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        guard let first = words.first else { return MusterDestination.allCases }
+        let matched = MusterDestination.allCases.enumerated().compactMap { index, destination -> (Int, Int, MusterDestination)? in
+            let title = destination.title.lowercased()
+            let haystack = ([title] + destination.keywords).joined(separator: " ")
+            guard words.allSatisfy({ haystack.contains($0) }) else { return nil }
+            let rank = title.hasPrefix(first) ? 0 : (title.contains(first) ? 1 : 2)
+            return (rank, index, destination)
+        }
+        return matched.sorted { ($0.0, $0.1) < ($1.0, $1.1) }.map { $0.2 }
+    }
+}
+
 // MARK: - Where each panel's data comes from
 
 /// What the window knows about its sources, taken once, for the line under each badge.

@@ -77,6 +77,7 @@ struct MusterApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandGroup(after: .appInfo) { CheckForUpdatesButton() }
+            GoCommands()
         }
 
         // Settings keeps Apple's default, `.contentSize`, so the window should be the size of
@@ -103,6 +104,45 @@ struct MusterApp: App {
                 .environmentObject(watch)
                 .environmentObject(router)
         }
+    }
+}
+
+/// The Go menu:  Quick Open with Command-K, and each panel with its Command-digit.
+///
+/// A panel is chosen by writing the saved place, which the window follows, as the menu bar
+/// item does, so the menu works with the window closed.
+struct GoCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+    @FocusedBinding(\.quickOpenShown) private var quickOpenShown: Bool?
+
+    var body: some Commands {
+        CommandMenu("Go") {
+            Button("Quick Open\u{2026}") { quickOpenShown = true }
+                .keyboardShortcut("k", modifiers: .command)
+                .disabled(quickOpenShown == nil)
+            Divider()
+            ForEach(MusterDestination.allCases) { destination in
+                GoMenuItem(destination: destination, openWindow: openWindow)
+            }
+        }
+    }
+}
+
+/// One panel in the Go menu, with its shortcut when it has one.
+private struct GoMenuItem: View {
+    let destination: MusterDestination
+    let openWindow: OpenWindowAction
+
+    var body: some View {
+        if let digit = destination.shortcutDigit {
+            button.keyboardShortcut(KeyEquivalent(Character("\(digit)")), modifiers: .command)
+        } else {
+            button
+        }
+    }
+
+    private var button: some View {
+        Button(destination.title) { MusterWindow.show(destination, openWindow: openWindow) }
     }
 }
 

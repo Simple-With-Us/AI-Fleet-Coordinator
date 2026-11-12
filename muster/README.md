@@ -68,6 +68,10 @@ The sidebar opens on Overview, then three sections:  The Mac (Services, Backgrou
 
 Every panel has one name, the same in the sidebar, the window title and its own heading.  A strip over each panel shows one place badge, On The Mac, On The Server or Across The Fleet, and the line that says where its data came from.  The Overview's The Mac and The Server cards and Server Status's state are built from the menu's own summary of each place, in the same words, so the window and the menu cannot disagree.  Server Status shows the report's sections and their buttons only when the menu calls the report current.  When the server was reached and its report stopped, it lists the last known units with the allowlist's Restart and Logs, and when the Mac's fetch stopped or could not reach the server, it lists them with no repairs, because the menu offers a fetch instead.
 
+## Keyboard
+
+Command-K opens Quick Open:  type a panel's name or a word that goes with it (for example `pm2`, `wake` or `audit`), use the arrow keys, and press Return.  A count beside a result is the sidebar's own count for that panel.  The Go menu lists every panel, and Command-1 to Command-9 open the first nine in the sidebar's order, from Overview to Resource Limits.  The rest are reached through Quick Open or the Go menu.
+
 ## Scope
 
 - `Muster/` holds the app:  every panel in the table under Every Panel, the menu bar item, Settings, and the models behind them, which `MusterTests/` covers without a view.
