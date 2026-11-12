@@ -18,6 +18,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from fleet_agent_config.__main__ import main
 from fleet_agent_config.reconcile import (
     Finding,
     UsageError,
@@ -26,13 +27,14 @@ from fleet_agent_config.reconcile import (
     _env_for,
     reconcile,
 )
-from fleet_agent_config.__main__ import main
 
 _SCRIPTS = Path(__file__).resolve().parents[2]
 
 
 def _load_doctor():
-    spec = importlib.util.spec_from_file_location("doctor_for_agent_config", _SCRIPTS / "fleet-tools-doctor.py")
+    spec = importlib.util.spec_from_file_location(
+        "doctor_for_agent_config", _SCRIPTS / "fleet-tools-doctor.py"
+    )
     if spec is None or spec.loader is None:
         raise RuntimeError("cannot load fleet-tools-doctor.py")
     module = importlib.util.module_from_spec(spec)
@@ -54,7 +56,9 @@ class TempHome(unittest.TestCase):
         self.home.mkdir()
 
     def status(self, result, surface: str, name: str) -> str:
-        matches = [item for item in result.findings if item.surface == surface and item.name == name]
+        matches = [
+            item for item in result.findings if item.surface == surface and item.name == name
+        ]
         self.assertEqual(len(matches), 1, (surface, name, result.findings))
         return matches[0].status
 
@@ -97,7 +101,13 @@ class CheckOnlyTests(TempHome):
         result = reconcile(
             str(self.home),
             apply=True,
-            runners={"rules": rules_runner, "skills": lambda *_: 0, "hooks": lambda *_: 0, "mcp": lambda *_: 0, "recall": lambda *_: 0},
+            runners={
+                "rules": rules_runner,
+                "skills": lambda *_: 0,
+                "hooks": lambda *_: 0,
+                "mcp": lambda *_: 0,
+                "recall": lambda *_: 0,
+            },
         )
         self.assertEqual(self.status(result, "rules", "claude"), "report-only")
         self.assertEqual(self.status(result, "rules", "home-agents"), "report-only")
@@ -105,7 +115,12 @@ class CheckOnlyTests(TempHome):
         self.assertNotIn("home-agents", called)
         self.assertEqual((claude / "CLAUDE.md").read_bytes(), before["CLAUDE.md"])
         self.assertEqual(agents.read_bytes(), before["AGENTS.md"])
-        self.assertTrue(all(not item.startswith("rules:claude") and not item.startswith("rules:home-agents") for item in result.applied))
+        self.assertTrue(
+            all(
+                not item.startswith("rules:claude") and not item.startswith("rules:home-agents")
+                for item in result.applied
+            )
+        )
 
     def test_malformed_markers_are_refused_and_not_applied(self) -> None:
         codex = self.home / ".codex"
@@ -131,7 +146,9 @@ class CheckOnlyTests(TempHome):
         )
         self.assertEqual(self.status(result, "rules", "codex"), "refused")
         self.assertNotIn("codex", called)
-        self.assertEqual(target.read_text(encoding="utf-8"), "<!-- fleet-lane-map:begin v2 -->\nstill open\n")
+        self.assertEqual(
+            target.read_text(encoding="utf-8"), "<!-- fleet-lane-map:begin v2 -->\nstill open\n"
+        )
         self.assertFalse(result.ok)
 
     def test_json_envelope(self) -> None:
@@ -282,7 +299,13 @@ class ApplyContractTests(TempHome):
         result = reconcile(
             str(self.home),
             apply=True,
-            runners={"recall": recall, "skills": lambda *_: 0, "rules": lambda *_: 0, "hooks": lambda *_: 0, "mcp": lambda *_: 0},
+            runners={
+                "recall": recall,
+                "skills": lambda *_: 0,
+                "rules": lambda *_: 0,
+                "hooks": lambda *_: 0,
+                "mcp": lambda *_: 0,
+            },
         )
         self.assertEqual(self.status(result, "recall-mcp", ".cursor/mcp.json"), "report-only")
         self.assertEqual(calls, [])
@@ -306,7 +329,9 @@ class ApplyContractTests(TempHome):
 
     def test_scoped_env_keeps_roots_when_checking_the_process_home(self) -> None:
         real = os.path.realpath(os.path.expanduser("~"))
-        env = _env_for(real, {"HOME": real, "FLEET_APPS_ROOT": "/opt/fleet-apps", "PATH": "/usr/bin"})
+        env = _env_for(
+            real, {"HOME": real, "FLEET_APPS_ROOT": "/opt/fleet-apps", "PATH": "/usr/bin"}
+        )
         self.assertEqual(env["FLEET_APPS_ROOT"], "/opt/fleet-apps")
 
 
@@ -332,7 +357,9 @@ class FxApplyTests(TempHome):
         self.assertIn("mcp:fx", result.applied)
         self.assertNotIn("hooks:fx", result.applied)
         self.assertEqual(self.status(result, "hooks", "fx"), "report-only")
-        self.assertNotIn("drift", {item.status for item in result.findings if item.surface != "hooks"})
+        self.assertNotIn(
+            "drift", {item.status for item in result.findings if item.surface != "hooks"}
+        )
         self.assertTrue(result.ok, result.summary() + " " + json.dumps(result.as_dict()))
         for path, (mtime, body) in zip(watched, before):
             self.assertEqual(path.read_bytes(), body, path)

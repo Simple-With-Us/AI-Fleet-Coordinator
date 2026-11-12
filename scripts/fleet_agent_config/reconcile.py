@@ -206,7 +206,9 @@ def check_skills(home: str, env: Mapping[str, str]) -> list[Finding]:
                 findings.append(Finding("skills", label, "skip", "no tool home"))
                 continue
             if not _within(dest, home):
-                findings.append(Finding("skills", label, "refused", "skill dir resolves outside home"))
+                findings.append(
+                    Finding("skills", label, "refused", "skill dir resolves outside home")
+                )
                 continue
             missing: list[str] = []
             differ: list[str] = []
@@ -245,13 +247,24 @@ def check_skills(home: str, env: Mapping[str, str]) -> list[Finding]:
             if not os.path.isdir(parent):
                 continue
             if not _within(parent, home):
-                findings.append(Finding("skills", "always-on-rules", "refused", "tool home resolves outside home"))
+                findings.append(
+                    Finding(
+                        "skills", "always-on-rules", "refused", "tool home resolves outside home"
+                    )
+                )
                 return findings
             seen_home = True
             for src_rel, dest_rel in rule_files.items():
                 dest = os.path.join(home, dest_rel[2:]) if dest_rel.startswith("~/") else dest_rel
                 if not _within(os.path.dirname(dest), home):
-                    findings.append(Finding("skills", "always-on-rules", "refused", "rule path resolves outside home"))
+                    findings.append(
+                        Finding(
+                            "skills",
+                            "always-on-rules",
+                            "refused",
+                            "rule path resolves outside home",
+                        )
+                    )
                     return findings
                 src = os.path.join(_REPO, src_rel)
                 if not os.path.isfile(src):
@@ -268,7 +281,11 @@ def check_skills(home: str, env: Mapping[str, str]) -> list[Finding]:
         if not seen_home:
             findings.append(Finding("skills", "always-on-rules", "skip", "no tool home"))
         elif rule_bits:
-            findings.append(Finding("skills", "always-on-rules", "drift", _detail("differs " + ", ".join(rule_bits))))
+            findings.append(
+                Finding(
+                    "skills", "always-on-rules", "drift", _detail("differs " + ", ".join(rule_bits))
+                )
+            )
         else:
             findings.append(Finding("skills", "always-on-rules", "current", "rule files match"))
         return findings
@@ -289,7 +306,9 @@ def check_rules(home: str) -> list[Finding]:
     findings: list[Finding] = []
     for platform in rules.PLATFORMS:
         if platform.rel_path is None:
-            findings.append(Finding("rules", platform.name, "skip", _detail(platform.note or "no rules file")))
+            findings.append(
+                Finding("rules", platform.name, "skip", _detail(platform.note or "no rules file"))
+            )
             continue
         root = platform.root_dir
         if root and not os.path.isdir(os.path.join(home, root)):
@@ -299,10 +318,16 @@ def check_rules(home: str) -> list[Finding]:
             continue
         result = rules.verify_platform(platform, home)
         status = _rules_status(result.ok, result.reasons)
-        detail = _detail(rules.redact("; ".join(result.reasons)) if result.reasons else "block current")
+        detail = _detail(
+            rules.redact("; ".join(result.reasons)) if result.reasons else "block current"
+        )
         if platform.owner_file:
             if status == "current":
-                findings.append(Finding("rules", platform.name, "report-only", "current; owner file, not applied"))
+                findings.append(
+                    Finding(
+                        "rules", platform.name, "report-only", "current; owner file, not applied"
+                    )
+                )
             else:
                 findings.append(Finding("rules", platform.name, "report-only", detail))
             continue
@@ -321,9 +346,13 @@ def check_hooks(home: str, env: Mapping[str, str]) -> list[Finding]:
         if platform.kind == "block":
             plan = tools.plan_block(platform, paths)
             if plan.state == "skip" or not installed:
-                findings.append(Finding("hooks", key, "skip", _detail(plan.reason or "platform not installed")))
+                findings.append(
+                    Finding("hooks", key, "skip", _detail(plan.reason or "platform not installed"))
+                )
             elif plan.state == "refuse":
-                findings.append(Finding("hooks", key, "refused", _detail(tools.redact(plan.reason))))
+                findings.append(
+                    Finding("hooks", key, "refused", _detail(tools.redact(plan.reason)))
+                )
             elif plan.action in ("create", "append", "replace"):
                 findings.append(Finding("hooks", key, "drift", _detail(plan.action)))
             else:
@@ -334,7 +363,9 @@ def check_hooks(home: str, env: Mapping[str, str]) -> list[Finding]:
                 findings.append(Finding("hooks", key, "skip", "platform not installed"))
             else:
                 findings.append(
-                    Finding("hooks", key, "report-only", "no automatic hook write for this platform")
+                    Finding(
+                        "hooks", key, "report-only", "no automatic hook write for this platform"
+                    )
                 )
             continue
         plan = tools.plan_platform(platform, paths)
@@ -351,7 +382,9 @@ def check_hooks(home: str, env: Mapping[str, str]) -> list[Finding]:
         elif action == "unchanged":
             findings.append(Finding("hooks", key, "current", "hook registration matches"))
         else:
-            findings.append(Finding("hooks", key, "error", _detail(f"unknown plan action {action}")))
+            findings.append(
+                Finding("hooks", key, "error", _detail(f"unknown plan action {action}"))
+            )
     return findings
 
 
@@ -383,7 +416,9 @@ def _json_recall(path: str, server: str, create: bool, tool_dir: str, home: str)
     entry = {"command": "python3", "args": [server]}
     if not os.path.isfile(path):
         if create and tool_dir and os.path.isdir(os.path.join(home, tool_dir)):
-            return Finding("recall-mcp", name, "drift", "file absent; installer would add fleet-recall")
+            return Finding(
+                "recall-mcp", name, "drift", "file absent; installer would add fleet-recall"
+            )
         return Finding("recall-mcp", name, "skip", "file absent")
     try:
         with open(path, encoding="utf-8") as handle:
@@ -485,13 +520,23 @@ def check_recall(home: str, env: Mapping[str, str]) -> list[Finding]:
                 raw = handle.read()
             data = json.loads(raw) if raw.strip() else {}
         except (OSError, UnicodeError, json.JSONDecodeError):
-            findings.append(Finding("recall-hooks", "claude", "refused", "settings.json is not valid JSON"))
+            findings.append(
+                Finding("recall-hooks", "claude", "refused", "settings.json is not valid JSON")
+            )
             if missing:
-                findings.append(Finding("recall-hooks", "files", "drift", _detail("differs " + ", ".join(missing))))
+                findings.append(
+                    Finding(
+                        "recall-hooks", "files", "drift", _detail("differs " + ", ".join(missing))
+                    )
+                )
             return findings
         hooks = data.get("hooks") if isinstance(data, dict) else None
         if not isinstance(data, dict) or (hooks is not None and not isinstance(hooks, dict)):
-            findings.append(Finding("recall-hooks", "claude", "refused", "settings.json hooks are not an object"))
+            findings.append(
+                Finding(
+                    "recall-hooks", "claude", "refused", "settings.json hooks are not an object"
+                )
+            )
             return findings
         hooks = hooks or {}
         absent = []
@@ -516,7 +561,9 @@ def check_recall(home: str, env: Mapping[str, str]) -> list[Finding]:
             bits.append(settings_problem)
         findings.append(Finding("recall-hooks", "claude", "drift", _detail("; ".join(bits))))
     else:
-        findings.append(Finding("recall-hooks", "claude", "current", "hook files and settings match"))
+        findings.append(
+            Finding("recall-hooks", "claude", "current", "hook files and settings match")
+        )
     return findings
 
 
@@ -536,7 +583,9 @@ def check(home: str, env: Mapping[str, str] | None = None) -> Result:
         try:
             result.findings.extend(fn())
         except Exception as exc:  # a broken surface must not hide the others
-            result.findings.append(Finding(name, "*", "error", _detail(f"{type(exc).__name__}: {exc}")))
+            result.findings.append(
+                Finding(name, "*", "error", _detail(f"{type(exc).__name__}: {exc}"))
+            )
     return result
 
 
@@ -577,7 +626,9 @@ def _default_hooks(home: str, platform: str, env: Mapping[str, str]) -> int:
 
 def _default_mcp(home: str, target: str, env: Mapping[str, str]) -> int:
     def run() -> int:
-        return mcp.main(["apply", target, "--home", home], out=io.StringIO(), err=io.StringIO(), env=dict(env))
+        return mcp.main(
+            ["apply", target, "--home", home], out=io.StringIO(), err=io.StringIO(), env=dict(env)
+        )
 
     return int(_run_in_env(env, run))
 
@@ -628,17 +679,23 @@ def reconcile(
             code = calls["rules"](root, item.name, scoped)
             report.applied.append(f"rules:{item.name}")
             if code != 0:
-                report.findings.append(Finding("rules", item.name, "error", f"installer exited {code}"))
+                report.findings.append(
+                    Finding("rules", item.name, "error", f"installer exited {code}")
+                )
         elif item.surface == "hooks":
             code = calls["hooks"](root, item.name, scoped)
             report.applied.append(f"hooks:{item.name}")
             if code != 0:
-                report.findings.append(Finding("hooks", item.name, "error", f"installer exited {code}"))
+                report.findings.append(
+                    Finding("hooks", item.name, "error", f"installer exited {code}")
+                )
         elif item.surface == "mcp":
             code = calls["mcp"](root, item.name, scoped)
             report.applied.append(f"mcp:{item.name}")
             if code != 0:
-                report.findings.append(Finding("mcp", item.name, "error", f"installer exited {code}"))
+                report.findings.append(
+                    Finding("mcp", item.name, "error", f"installer exited {code}")
+                )
     if any(item.surface in ("recall-mcp", "recall-hooks") for item in drifted):
         code = calls["recall"](root, scoped)
         report.applied.append("recall")
