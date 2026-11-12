@@ -30,7 +30,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 FOLDERS_PATH = ROOT / "scripts" / "worker-secret-folders.json"
@@ -289,7 +289,11 @@ def _infisical_record(record, project_id, folder):
 
 
 def parse_worker_secret_names(body):
-    if not isinstance(body, dict) or body.get("success") is not True or not isinstance(body.get("result"), list):
+    if (
+        not isinstance(body, dict)
+        or body.get("success") is not True
+        or not isinstance(body.get("result"), list)
+    ):
         raise SyncError("cloudflare-incomplete")
     result = body["result"]
     info = body.get("result_info")
@@ -611,7 +615,7 @@ def cli(argv, *, account, guard, env=None, transport=None, now=None, stdout=None
     env = os.environ if env is None else env
     stdout = sys.stdout if stdout is None else stdout
     stderr = sys.stderr if stderr is None else stderr
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     apply_flag = False
     strict = False
     worker = None

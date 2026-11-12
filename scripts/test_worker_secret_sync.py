@@ -3,11 +3,9 @@
 
 import importlib.util
 import io
-import json
-import os
 import pathlib
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 spec = importlib.util.spec_from_file_location(
     "worker_secret_sync",
@@ -16,7 +14,7 @@ spec = importlib.util.spec_from_file_location(
 sync = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sync)
 
-NOW = datetime(2026, 11, 12, tzinfo=timezone.utc)
+NOW = datetime(2026, 11, 12, tzinfo=UTC)
 ACCOUNT = "a" * 32
 SERVICE = "st." + ("b" * 32)
 CLOUDFLARE = "c" * 40
@@ -68,7 +66,9 @@ class DiffAndPolicy(unittest.TestCase):
 
     def test_matching_digest_is_not_differ(self):
         digest = "ab" * 32
-        diff = sync.classify({"ACCESS_AUD": digest}, ["ACCESS_AUD"], {"ACCESS_AUD": digest}, ["ACCESS_AUD"])
+        diff = sync.classify(
+            {"ACCESS_AUD": digest}, ["ACCESS_AUD"], {"ACCESS_AUD": digest}, ["ACCESS_AUD"]
+        )
         self.assertEqual(diff["differ"], ())
         self.assertFalse(sync.drift(diff))
 
@@ -79,7 +79,9 @@ class DiffAndPolicy(unittest.TestCase):
             "differ": ("ACCESS_AUD", "OTHER"),
             "not_allowlisted": ("HIDDEN", "OTHER"),
         }
-        self.assertEqual(sync.puts_for_apply(diff, ["ACCESS_AUD", "NEW_NAME"]), ("ACCESS_AUD", "NEW_NAME"))
+        self.assertEqual(
+            sync.puts_for_apply(diff, ["ACCESS_AUD", "NEW_NAME"]), ("ACCESS_AUD", "NEW_NAME")
+        )
         self.assertEqual(sync.puts_for_apply(diff, []), ())
         self.assertNotIn("LEFTOVER", sync.puts_for_apply(diff, ["LEFTOVER", "ACCESS_AUD"]))
 
@@ -106,7 +108,9 @@ class DiffAndPolicy(unittest.TestCase):
         self.assertEqual(set(digests), {"ACCESS_AUD"})
         diff = sync.classify(digests, [sync.DIGEST_KEY_NAME], None, ["ACCESS_AUD"])
         self.assertEqual(diff["only_on_worker"], (sync.DIGEST_KEY_NAME,))
-        self.assertNotIn(sync.DIGEST_KEY_NAME, sync.puts_for_apply(diff, [sync.DIGEST_KEY_NAME, "ACCESS_AUD"]))
+        self.assertNotIn(
+            sync.DIGEST_KEY_NAME, sync.puts_for_apply(diff, [sync.DIGEST_KEY_NAME, "ACCESS_AUD"])
+        )
 
     def test_mask_is_literal_and_the_report_has_names_only(self):
         value = "secret.*value!!"
@@ -178,7 +182,9 @@ class DiffAndPolicy(unittest.TestCase):
     def test_corrupt_digest_record_is_not_treated_as_empty(self):
         body = {
             "success": True,
-            "result": {"bindings": [{"type": "plain_text", "name": sync.DIGEST_BINDING, "text": "{"}]},
+            "result": {
+                "bindings": [{"type": "plain_text", "name": sync.DIGEST_BINDING, "text": "{"}]
+            },
         }
         with self.assertRaises(sync.SyncError) as caught:
             sync.parse_stored_digests(body)
@@ -272,7 +278,9 @@ class FakeCloud:
         if path.endswith("/settings") and method == "GET":
             bindings = [dict(item) for item in self.bindings if item["name"] != sync.DIGEST_BINDING]
             if self.digest is not None:
-                bindings.append({"type": "plain_text", "name": sync.DIGEST_BINDING, "text": self.digest})
+                bindings.append(
+                    {"type": "plain_text", "name": sync.DIGEST_BINDING, "text": self.digest}
+                )
             return {"success": True, "result": {"bindings": bindings}}
         if path.endswith("/settings") and method == "PATCH":
             self.patches.append(payload)
