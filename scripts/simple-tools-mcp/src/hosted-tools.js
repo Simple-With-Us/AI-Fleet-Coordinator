@@ -150,7 +150,7 @@ import { ZULIP_PUBLIC_TOOLS, ZULIP_FULL_PUBLIC_TOOLS, ZULIP_FULL_NAMES, ZULIP_LE
 import { ZULIP_FULL_METHODS, FULL_WRITE_KIND } from "./zulip-full.js";
 import { EAVESDROPPER_TOOLS, EAVESDROPPER_READ_TOOLS, EAVESDROPPER_METHODS } from "./eavesdropper.js";
 import { NOTES_TOOLS, NOTES_READ_TOOLS, NOTES_WRITE_TOOLS, NOTES_METHODS } from "./notes.js";
-import { WORKER_DIAGNOSTICS_TOOLS, WORKER_DIAGNOSTICS_READ_TOOLS, WORKER_DIAGNOSTICS_METHODS } from "./worker-diagnostics.js";
+import { WORKER_DIAGNOSTICS_NAME, WORKER_DIAGNOSTICS_TOOLS, WORKER_DIAGNOSTICS_READ_TOOLS, WORKER_DIAGNOSTICS_METHODS, boundedDiagnosticsInput } from "./worker-diagnostics.js";
 import { REALM } from "./zulip.js";
 import { PINNED_OPERATOR_USER_ID } from "./config.js";
 
@@ -575,6 +575,7 @@ export class HostedTools {
         throw new ToolError("invalid_argument", "Recall arguments exceed structural limits.");
       }
       if (publicName.startsWith("gr_wf_") && !boundedWorkflowInput(args, {maxBytes:workflowInputLimit(publicName.slice(3)),maxString:workflowInputLimit(publicName.slice(3))})) throw new ToolError("invalid_argument", "Workflow input exceeds structural limits.");
+      if (publicName === WORKER_DIAGNOSTICS_NAME && !boundedDiagnosticsInput(args)) throw new ToolError("invalid_argument", "worker_diagnostics arguments exceed structural limits:  at most seat and limit, each a short scalar.");
       const problem = schemaProblem(spec.inputSchema, args);
       if (problem) throw new ToolError("invalid_argument", problem);
       this.requireScope(publicName);

@@ -10,9 +10,15 @@
 // under the same shape the writer enforces, so a row that somehow carried anything else (key material, a
 // header, a body) never reaches the caller.  The tool takes no secret and returns none.
 //
+// Arguments:  the handler bounds the raw arguments structurally first (depth, nodes, bytes, keys), then parses
+// them with a strict zod schema and reads only the parsed data, whoever calls it.  HostedTools.call runs the same
+// bound before its JSON-Schema check, so an oversized argument object never reaches either validator.
+//
 // Pure module apart from the HostedTools method at the bottom:  no `cloudflare:` imports.
 
+import { z } from "zod";
 import { ToolError, okResult, formatTime } from "./contract.js";
+import { boundedWorkflowInput } from "./gr-workflow-v1.js";
 import { GAP } from "./textfmt.js";
 
 export const WORKER_DIAGNOSTICS_NAME = "worker_diagnostics";
@@ -25,6 +31,34 @@ export const WORKER_DIAGNOSTICS_RECENT = 50;
 const KIND_RE = /^[a-z][a-z0-9_-]{0,39}$/i;
 const REASON_RE = /^[a-z0-9_:-]{1,80}$/i;
 const SEAT_RE = /^[A-Z][A-Z0-9_-]{0,39}$/;
+
+// The whole argument object is at most two short scalars:  `seat` (40 characters) and `limit`.  Anything deeper,
+// wider or longer is refused before any schema code walks it.
+const ARGUMENT_BOUNDS = Object.freeze({ maxDepth: 1, maxNodes: 3, maxBytes: 64, maxString: 40, maxKeys: 2 });
+
+/** True when `args` fits the structural bounds above (it says nothing about the values;  the zod parse does). */
+export function boundedDiagnosticsInput(args) {
+  return boundedWorkflowInput(args, ARGUMENT_BOUNDS);
+}
+
+/** The one accepted argument shape.  Strict:  an unknown key is refused.  Only an omitted limit takes the default;
+ * every other limit that is not an integer from 1 to WORKER_DIAGNOSTICS_MAX is refused, never clamped. */
+export const WorkerDiagnosticsArgs = z.strictObject({
+  seat: z.string().regex(SEAT_RE).optional(),
+  limit: z.number().int().min(1).max(WORKER_DIAGNOSTICS_MAX).default(WORKER_DIAGNOSTICS_DEFAULT),
+});
+
+/** A refusal message built from the first zod issue's field only, never from the value the caller sent. */
+function argumentProblem(error) {
+  const issue = error.issues[0];
+  const field = issue?.path?.[0];
+  if (field === "limit") return `limit must be an integer from 1 to ${WORKER_DIAGNOSTICS_MAX}`;
+  if (field === "seat") return "seat must be an upper-case seat tag (A-Z, 0-9, _ or -, at most 40 characters)";
+  if (issue?.code === "unrecognized_keys") return "unknown argument:  worker_diagnostics takes only seat and limit";
+  return "arguments must be an object with only seat and limit";
+}
+
+const storeUnavailable = () => new ToolError("unavailable", "The Worker's diagnostics store is temporarily unavailable.  Try again shortly.", { retryable: true });
 
 const rowSchema = {
   type: "object",
@@ -90,16 +124,34 @@ export function diagnosticRow(row) {
 
 export const WORKER_DIAGNOSTICS_METHODS = {
   async tool_worker_diagnostics(args, audit) {
+    const input = args === undefined ? {} : args;
+    if (!boundedDiagnosticsInput(input)) throw new ToolError("invalid_argument", "worker_diagnostics arguments exceed structural limits:  at most seat and limit, each a short scalar.");
+    const parsed = WorkerDiagnosticsArgs.safeParse(input);
+    if (!parsed.success) throw new ToolError("invalid_argument", argumentProblem(parsed.error));
+    const seat = parsed.data.seat ?? null;
+    const limit = parsed.data.limit;
+    // Null when the HostedTools was built without the refusal-log gate (every Worker construction site in
+    // index.js passes gate(env, GATE_LOG_NAME), whose SEAT_GATE binding the seat's own gate needs first, so
+    // there a store failure shows up below, as unavailable, at call time).
     const source = this.diagnosticsGate;
     if (!source || typeof source.diagnosticTail !== "function") {
       throw new ToolError("not_configured", "The Worker's diagnostics store is not reachable from this connection.  Every other tool still works.");
     }
-    const seat = typeof args.seat === "string" ? args.seat : null;
-    if (seat !== null && !SEAT_RE.test(seat)) throw new ToolError("invalid_argument", "seat must be an upper-case seat tag");
-    const limit = Number.isInteger(args.limit) ? Math.max(1, Math.min(args.limit, WORKER_DIAGNOSTICS_MAX)) : WORKER_DIAGNOSTICS_DEFAULT;
     await this.reserve("read");
-    // The store keeps at most WORKER_DIAGNOSTICS_MAX rows, so one read is the whole of it, newest first.
-    const rows = (await source.diagnosticTail(WORKER_DIAGNOSTICS_MAX)).map(diagnosticRow).filter(Boolean);
+    // The store keeps at most WORKER_DIAGNOSTICS_MAX rows, so one read is the whole of it, newest first.  A
+    // rejected or malformed read is a transient store failure:  retryable, and nothing from the error is echoed.
+    let stored;
+    try {
+      stored = await source.diagnosticTail(WORKER_DIAGNOSTICS_MAX);
+    } catch {
+      this.log?.({ event: "worker_diagnostics_unavailable" });
+      throw storeUnavailable();
+    }
+    if (!Array.isArray(stored)) {
+      this.log?.({ event: "worker_diagnostics_unavailable" });
+      throw storeUnavailable();
+    }
+    const rows = stored.map(diagnosticRow).filter(Boolean);
     const wakeAll = rows.filter((row) => row.kind === "wake" && (seat === null || row.seat === seat));
     const wake = wakeAll.slice(0, limit);
     const out = { count: wake.length, total: wakeAll.length, wake, recent: rows.slice(0, WORKER_DIAGNOSTICS_RECENT) };

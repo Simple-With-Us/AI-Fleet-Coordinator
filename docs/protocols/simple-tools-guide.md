@@ -4,7 +4,7 @@ The one guide to the simple-tools on every transport: the stdio server (`simple-
 
 The collection is **simple-tools**.  The hosted server is **ST-MCP** and its admin is **ST-MCP + GR-MCP Admin**.  Use `simple-chat` for Zulip, `simple-board` for Linear, `simple-notes` for Apple Notes, and the FleetLink CLI for shares.  Fleet coordination is in **#Work-In-Progress**.  Use these component names in instructions and tool descriptions.
 
-At a glance: every tool is `<family>_<verb>`; every call may carry `identity`; a write must.  The stdio server serves 274 tools and the hosted server 282 (counted from the release source, which adds the seven `gr_*` tools and the hosted-only `catalog`; the deployed server lists 272 until that release ships): `eavesdropper_ack` is stdio only, and the hosted-only `whatsapp_read` is listed only to JET-CHAT, the full Jet login, while the WhatsApp bridge is on (it is default-off), which makes JET-CHAT's hosted list 283 (Tools by Family).
+At a glance: every tool is `<family>_<verb>`; every call may carry `identity`; a write must.  The stdio server serves 274 tools and the hosted server 282 (counted from the release source, which adds the seven `gr_*` tools and the hosted-only `catalog` and `worker_diagnostics`; the deployed server lists 272 until that release ships): `eavesdropper_ack` is stdio only, and the hosted-only `whatsapp_read` is listed only to JET-CHAT, the full Jet login, while the WhatsApp bridge is on (it is default-off), which makes JET-CHAT's hosted list 283 (Tools by Family).
 
 ## How to Pass Identity
 
@@ -128,7 +128,7 @@ The local eavesdropper's records for the identity.  Stdio reads them from this 
 | `eavesdropper_wakes` | R | both | The wake ledger, filtered by `since_hours` and `state` |
 | `eavesdropper_held_back` | R | both | Wakes held back for the budget, with reason and link |
 | `eavesdropper_ack` | W | stdio only | Move the inbox cursor or surfaced mark forward, or clear one held-back entry |
-| `worker_diagnostics` | R | hosted only | The Worker's own wake and runtime diagnostics (reason, seat, count, status, time; no keys or bodies), newest first: `wake` rows, filtered by `seat` and `limit` (default 50, max 100), plus the newest `recent` rows of every kind; the same rows the owner's admin page shows, so a seat can see why a wake route answered 404 |
+| `worker_diagnostics` | R | hosted only | The Worker's own wake and runtime diagnostics (reason, seat, count, status, time; no keys or bodies), newest first: `wake` rows, filtered by `seat` and `limit` (default 50, max 100), plus the newest `recent` rows of every kind; the same rows the owner's admin page shows, so a seat can see why a wake route answered 404.  Hosted only:  no CLI command or stdio tool serves it (CLI Equivalents) |
 
 ### notes
 
@@ -357,7 +357,7 @@ Title rule for a create: `[TEAM_KEY, Agent] Topic`, such as `[AFC, Codex] Topic`
 
 ## CLI Equivalents
 
-Every MCP tool has a command except the hosted-only `whatsapp_read`, which has none (the WhatsApp row below).  Identity for the CLI comes from `--as NAME`, `AGENT_SEAT` or `--default-seat` (under a launcher, `AGENT_LAUNCH_SEAT` wins and a different `--as` exits 3); the `notes` commands also take `--identity`, except `simple-notes log`, which acts as no one (filter it with `--by-seat`).  Add `--json` for machine output.
+Every MCP tool has a command except the hosted-only `whatsapp_read`, `catalog` and `worker_diagnostics`, which have none (their rows below).  Identity for the CLI comes from `--as NAME`, `AGENT_SEAT` or `--default-seat` (under a launcher, `AGENT_LAUNCH_SEAT` wins and a different `--as` exits 3); the `notes` commands also take `--identity`, except `simple-notes log`, which acts as no one (filter it with `--by-seat`).  Add `--json` for machine output.
 
 | Group | Commands |
 |---|---|
@@ -372,6 +372,7 @@ Every MCP tool has a command except the hosted-only `whatsapp_read`, which has n
 | FleetLink | `fleetlink` (`fleetlink tool NAME` runs any `fleetlink_*` tool; stdio runs it that way) |
 | WhatsApp | None: `whatsapp_read` is hosted only (the whatsapp section above), so no CLI command or stdio tool serves it |
 | Catalog | None: `catalog` is hosted only (paged names and descriptions;  full schemas come from `tools/list` with the same cursor), so no CLI command or stdio tool serves it |
+| Worker diagnostics | None: `worker_diagnostics` is hosted only (the eavesdropper section above;  it reads the Worker's own store), so no CLI command or stdio tool serves it |
 | GitHub | `git-relay serve` (the relay) and `git-relay mcp` (GR-MCP over stdio); the relay is deployed and is the fleet's GitHub route (verified live 2026-11-07) |
 
 Long text stays out of `argv`: `--body-file PATH` (a file you own, mode 0600 or 0400, at most 64 KB) or `-` for standard input.
