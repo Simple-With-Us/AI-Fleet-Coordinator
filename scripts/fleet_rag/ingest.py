@@ -221,10 +221,7 @@ def _reconcile_stale_ingest_lock(path: pathlib.Path, log=eprint) -> None:
     host = meta.get("host") if meta else None
     if pid is not None and host in (None, local):
         if not _ingest_pid_alive(int(pid)):
-            log(
-                f"ingest lock: removing stale lock at {path} "
-                f"(pid {pid} is not running on {local})"
-            )
+            log(f"ingest lock: removing stale lock at {path} (pid {pid} is not running on {local})")
             _remove_ingest_lock(path)
         return
     if pid is None or host is None:
@@ -262,24 +259,17 @@ def _write_lock_held_nightly_summary(pid: int, host: str) -> None:
         pass
 
 
-def _raise_ingest_lock_held(
-    path: pathlib.Path, *, attests_health: bool, log=eprint
-) -> None:
+def _raise_ingest_lock_held(path: pathlib.Path, *, attests_health: bool, log=eprint) -> None:
     meta = _read_ingest_lock_meta(path) or {}
     pid = meta.get("pid")
     host = meta.get("host") or _ingest_lock_hostname()
     local = _ingest_lock_hostname()
-    if (
-        isinstance(pid, int)
-        and meta.get("host") in (None, local)
-        and _ingest_pid_alive(pid)
-    ):
+    if isinstance(pid, int) and meta.get("host") in (None, local) and _ingest_pid_alive(pid):
         log(f"ingest lock: held by live pid {pid} on {host}")
         if attests_health:
             _write_lock_held_nightly_summary(pid, str(host))
         raise IngestLocked(
-            f"another ingest is running (lock held: {path}, pid {pid}); "
-            f"exit {EXIT_LOCKED}",
+            f"another ingest is running (lock held: {path}, pid {pid}); exit {EXIT_LOCKED}",
             reason="lock_held",
             pid=pid,
             host=str(host),
@@ -900,9 +890,7 @@ def run(
             f"exit {EXIT_LOCKED}"
         )
     try:
-        with IngestLock(
-            lock_path, timeout_s=lock_timeout_s, attests_health=attests, log=log
-        ):
+        with IngestLock(lock_path, timeout_s=lock_timeout_s, attests_health=attests, log=log):
             return _run_locked(
                 names,
                 dry_run,
