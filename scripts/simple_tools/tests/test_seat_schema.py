@@ -91,7 +91,7 @@ class SeatKeySchema(unittest.TestCase):
             creds = "file"
             bot = "Codex"
             bearer_file = "/home/x/.secrets/fleet-tools/codex"
-            budget = { wakes_per_hour = 4, usd_per_day = 2.0 }
+            budget = { wakes_per_hour = 4 }
             held_back = { max = 50 }
             live = { per_hour = 7 }
             """
@@ -199,7 +199,7 @@ class SeatKeySchema(unittest.TestCase):
         self.assertEqual(len(cfg.warnings), 1)
         self.assertIn("seat.CODEX.routes_per_day is deprecated", cfg.warnings[0])
 
-    def test_legacy_budget_keys_warn_but_the_wake_caps_and_usd_do_not(self) -> None:
+    def test_legacy_budget_keys_and_usd_warn_but_the_wake_caps_do_not(self) -> None:
         cfg = load(
             """
             [seat.CODEX]
@@ -214,6 +214,11 @@ class SeatKeySchema(unittest.TestCase):
                 "seat.CODEX.budget.%s is deprecated:  it still works as before, and goes away with the "
                 "wake types it belongs to" % key
                 for key in ("board_per_day", "route_topic_minutes", "routes_per_day", "routes_per_hour")
+            ]
+            + [
+                # Accepted, so the seat keeps loading, but nothing enforces a dollar limit.
+                "seat.CODEX.budget.usd_per_day is accepted but sets no ceiling:  nothing enforces a "
+                "dollar limit (wake accounting is frequency-only, owner 2026-10-13)"
             ],
         )
         budget = cfg.seats["CODEX"].budget
@@ -243,6 +248,20 @@ class SeatKeySchema(unittest.TestCase):
                 self.assertEqual((seat.wake, seat.mode), ("http", "routine"))
                 self.assertEqual(seat.config_problems, [])
                 self.assertEqual(seat.routine.describe(), plain.routine.describe())
+
+    def test_an_unknown_live_key_warns_and_a_known_one_does_not(self) -> None:
+        # A typo in the `live` table used to fall back to a live default;  with none, it is no limit.
+        before = load(ROUTINE_SEAT % "")
+        cfg = load(ROUTINE_SEAT % "live = { per_hr = 2, per_day = 5 }")
+        self.assertEqual(cfg.errors, [])
+        self.assertEqual(
+            [w for w in cfg.warnings if w not in before.warnings],
+            ["seat.JET.live.per_hr is not a known live limit;  it is ignored, so that limit is off"],
+        )
+        seat = cfg.seats["JET"]
+        self.assertEqual(seat.live, {"per_day": 5}, "the known key still applies")
+        self.assertEqual((seat.wake, seat.mode), ("http", "routine"))
+        self.assertEqual(seat.config_problems, [])
 
     def test_the_retired_keys_keep_their_own_refusal_and_add_no_unknown_key_warning(self) -> None:
         cfg = load('[seat.CODEX]\nbot = "Codex"\nbearer_locator = "x"\nallow_admin = true\n')

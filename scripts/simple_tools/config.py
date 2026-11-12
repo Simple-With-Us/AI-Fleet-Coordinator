@@ -89,15 +89,16 @@ WAKE_CAP_KEYS: tuple[str, ...] = (
 # same topic;  a seat that wants one writes it in its own `budget`, and a route cap written there
 # still applies (wakes.route_budget_block).  `usd_per_day` is only accepted, so a config that names
 # it keeps loading:  nothing enforces it (wake accounting is frequency-only, owner 2026-10-13), so
-# writing it sets no ceiling.  The old defaults were $2 a day, 3 routes an hour, 10 a day and one
-# per topic every 30 minutes.
+# writing it sets no ceiling, and seat_key_warnings says so.  The shipped server sample no longer
+# writes it.  The old defaults were $2 a day, 3 routes an hour, 10 a day and one per topic every 30
+# minutes.
 BUDGET_DEFAULTS: dict[str, float] = {
     "board_per_day": 0,
 }
 # Every key a seat's `budget` table may carry:  the defaults above, the five wake count caps, and
 # the keys that no longer have a default:  the three route caps, still enforced when a config sets
-# them, and `usd_per_day`, accepted and never enforced, so a live config that names one keeps
-# loading.
+# them, and `usd_per_day`, accepted with a warning and never enforced, so a live config that names
+# one keeps loading.
 BUDGET_KEYS_UNSET_BY_DEFAULT: tuple[str, ...] = (
     "usd_per_day",
     "routes_per_hour",
@@ -583,10 +584,10 @@ class SeatConfig:
         So the dollar axis carries no signal for a muse seat and the COUNT caps do the bounding:
         wakes_per_hour, wakes_per_day, per_topic_per_hour, owner_per_day and owner_per_topic_per_hour
         (WAKE_CAP_KEYS) are enforced first, exactly as they are for a claude seat, whenever the seat
-        sets them (since Nov 10, 2026 a cap the seat leaves unset is no limit).  usd_per_day still
-        exists in the config and is still read, so an operator who sets it sees it enforced as a
-        plain ceiling of $0 spent against $0 spent:  it never blocks, which is correct, because the
-        run it would have blocked was never paid for.
+        sets them (since Nov 10, 2026 a cap the seat leaves unset is no limit).  usd_per_day is
+        still accepted in the config, with a warning, but nothing enforces it (wake accounting is
+        frequency-only, owner 2026-10-13), so it never blocks, which is correct, because the run
+        it would have blocked was never paid for.
 
         The consequence to be explicit about:  the held-back machinery (heldback.py) and its
         eviction reserve `reserve_usd` from this value to decide what a wake might still spend.  At
@@ -893,11 +894,12 @@ def _routine(seat: str, given: Any, problems: list[str]) -> RoutineConfig | None
 def seat_key_warnings(seat: str, section: Mapping[str, Any]) -> list[str]:
     """What is worth saying about the keys of one `[seat.X]` section, in a stable order.  Warnings only:
     a deprecated key keeps working exactly as before, and an unknown key is ignored as it always was.
-    The seat's `live` table is checked too:  a `live` that is not a table, or a live limit that
-    is not a whole number of at least 0, is ignored by live.live_limits, and with no live default
-    behind it that limit is off, so it is said here.  None of these may downgrade the seat or drop
-    its `routine`, so the caller puts them in `Config.warnings` and nowhere else (a wake problem
-    would rewrite the seat to inbox)."""
+    A `budget.usd_per_day` is accepted and enforces nothing, so it is said too.  The seat's `live`
+    table is checked as well:  a `live` that is not a table, a key that is not a known live limit,
+    or a live limit that is not a whole number of at least 0 is ignored by live.live_limits, and
+    with no live default behind it that limit is off, so it is said here.  None of these may
+    downgrade the seat or drop its `routine`, so the caller puts them in `Config.warnings` and
+    nowhere else (a wake problem would rewrite the seat to inbox)."""
     found: list[str] = []
     for key in sorted(section, key=str):
         if key in SEAT_KEYS or key in SEAT_KEYS_RETIRED:
@@ -922,6 +924,11 @@ def seat_key_warnings(seat: str, section: Mapping[str, Any]) -> list[str]:
                     "seat.%s.budget.%s is deprecated:  it still works as before, and goes away with "
                     "the wake types it belongs to" % (seat, key)
                 )
+            elif key == "usd_per_day":
+                found.append(
+                    "seat.%s.budget.usd_per_day is accepted but sets no ceiling:  nothing enforces "
+                    "a dollar limit (wake accounting is frequency-only, owner 2026-10-13)" % seat
+                )
     live = section.get("live")
     if live is not None and not isinstance(live, dict):
         found.append(
@@ -930,9 +937,12 @@ def seat_key_warnings(seat: str, section: Mapping[str, Any]) -> list[str]:
     elif isinstance(live, dict):
         for key in sorted(live, key=str):
             value = live[key]
-            if key in L.LIVE_LIMIT_KEYS and (
-                isinstance(value, bool) or not isinstance(value, int) or value < 0
-            ):
+            if key not in L.LIVE_LIMIT_KEYS:
+                found.append(
+                    "seat.%s.live.%s is not a known live limit;  it is ignored, so that limit is off"
+                    % (seat, key)
+                )
+            elif isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 found.append(
                     "seat.%s.live.%s must be a whole number of at least 0;  it is ignored, so that "
                     "limit is off" % (seat, key)
