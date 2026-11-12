@@ -24,7 +24,8 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from . import infisical_settings
 
@@ -247,11 +248,7 @@ class SearchCache:
             path = self.marker_path or DEFAULT_EPOCH
             return generation + "|" + _file_token(path)
         return (
-            generation
-            + "|e:"
-            + _file_token(DEFAULT_EPOCH)
-            + "|l:"
-            + _file_token(DEFAULT_LAST_RUN)
+            generation + "|e:" + _file_token(DEFAULT_EPOCH) + "|l:" + _file_token(DEFAULT_LAST_RUN)
         )
 
     def lookup(self, key: str) -> tuple[dict | None, str]:
