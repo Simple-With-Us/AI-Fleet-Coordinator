@@ -2,6 +2,8 @@
 
 What the Operator is, what already exists, and which parts are still a decision rather than a task.  The wake path is [zulip-wake-routing.md](zulip-wake-routing.md).
 
+**The rule above all of these:** there is one Operator with one tool or process per function for every platform and host, and only last-mile wake delivery may differ per platform.  A platform contributes data to a shared table, never its own client, router, bridge, sweeper, timer, unit, token or registry.  The binding text is in [AGENTS.md](../../AGENTS.md#one-operator-no-special-seats-owner--all-agents-all-platforms-2026-11-11).
+
 ## 1: What The Owner Has Ruled
 
 These are the owner's rulings.  Where the code does not do one yet, [the listener design, section 9](simple-tools-listener.md#9-not-yet-in-the-code) says so.
@@ -269,8 +271,11 @@ one entry is kept per id (its newest `seen_at`), and the list is cut to 8.  An 
 the session's last activity (every touch, title and update stamps it): the router ranks sessions by
 it first and falls back to `assigned_at`.
 
-**Who writes it.**  The session-letter hooks, at the start of each turn (`claude_letter` for Claude
-Code, `platform_letter` for the other platforms whose hook data names a transcript or a folder). 
+**Who writes it.**  The session-letter hooks (`claude_letter` for Claude Code, `platform_letter` for
+the other platforms whose hook data names a transcript or a folder).  Claude Code reports at the end
+of each turn (its Stop hook, AFC-702), so a chat's last turn is recorded without a next prompt, and
+every platform reads the same lines again at the start of the next turn as the fallback;  the scan
+point is shared, so a turn is read once. 
 They read three sources:
 
 *  the transcript lines added since the hook last looked (the note keeps a byte offset, and a turn

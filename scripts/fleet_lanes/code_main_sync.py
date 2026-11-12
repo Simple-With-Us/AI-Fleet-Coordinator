@@ -43,7 +43,7 @@ GIT = os.environ.get("FLEET_GIT_SHIM_REAL") or "/usr/bin/git"
 TIMEOUT = 120
 STALE_LOCK_S = 3600
 FLEET_OWNERS = {"simple-with-us", "jaywedgeworth22"}
-CANONICAL_OWNERS = {"simple-with-us": "Simple-With-Us", "jaywedgeworth22": "jaywedgeworth22"}
+CANONICAL_OWNERS = {"simple-with-us": "Simple-With-Us", "jaywedgeworth22": "Simple-With-Us"}
 
 
 def log(message: str) -> None:

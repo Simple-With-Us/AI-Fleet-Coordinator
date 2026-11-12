@@ -1088,9 +1088,9 @@ Verified live Fri, Oct 16, 2026 with `python3 scripts/zulip_linkifiers.py --chec
 | 5126 | `AFC#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/ai-fleet-coordinator/issues/{id}` | `AFC#535` |
 | 5127 | `PS#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Personal-Site/issues/{id}` | `PS#4` |
 | 5128 | `HH#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/HogHunter/issues/{id}` | `HH#2` |
-| 5129 | `OPS#(?P<id>[0-9]+)` | `https://github.com/jaywedgeworth22/Fleet-OPS/issues/{id}` | `OPS#953` |
+| 5129 | `OPS#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Fleet-OPS/issues/{id}` | `OPS#953` |
 | 5130 | `CC#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/CodeCaps/issues/{id}` | `CC#5` (CodeCaps) |
-| 5131 | `GH@(?P<user>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)` | `https://github.com/{user}/{repo}` | `GH@jaywedgeworth22/AI-Fleet-Coordinator` |
+| 5131 | `GH@(?P<user>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)` | `https://github.com/{user}/{repo}` | `GH@Simple-With-Us/AI-Fleet-Coordinator` |
 | 5132 | `CAPS#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/CodeCaps/issues/{id}` | `CAPS#12` (CodeCaps alias; retired by the 2026-10-23 ruling, removal pending, row 30) |
 | 5133 | `FL#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/FleetLink/issues/{id}` | `FL#12` |
 | 5135 | `CK#(?P<id>[0-9]+)` | `https://github.com/Simple-With-Us/Clutch/issues/{id}` | `CK#5` (Clutch legacy alias, row 30) |
@@ -1117,7 +1117,7 @@ Zulip stores each message's rendered HTML, so changing a rule changes how new me
 Worth keeping, because the same bug shapes recur.
 
 - **Oct 15–16 (v4.3).**  The generic `repo#id` rule (id 5116 then) had been first in realm order since the links were created, so the ten acronym rows behind it never matched:  `CT#2316` rendered to a repo named `CT`.  Jay moved the generic rule to the end (re-added as 5139), corrected 5119's slug from `simplewithus` to `simple-with-us`, and added `CAPS#`, `FL#`, `CK#`, `CTS#` and `CLUTCH#`.
-- **Oct 16 (AFC-336).**  Checked every target against GitHub, Linear and Sentry rather than against the table.  `ST#` pointed at `Socratic.Trade`, which 404s (the repo is `Socratic-Trade`);  `OPS#` at a repo that had moved to `jaywedgeworth22/Fleet-OPS`;  5119 lacked `AR`, `SWU` and Clutch's `C` while carrying `CK` and `CAPS`, which are not Linear teams;  `CC#` pointed at Clutch against the owner's ruling;  and 5118 truncated nested paths, which needed both a wider pattern and the `{+path}` template, because plain `{path}` encodes `/` as `%2F` and FleetLink 404s on it.  Sentry, Cursor and PagerDuty rules were added, and the script now keeps the generic rule last after every add.
+- **Oct 16 (AFC-336).**  Checked every target against GitHub, Linear and Sentry rather than against the table.  `ST#` pointed at `Socratic.Trade`, which 404s (the repo is `Socratic-Trade`);  `OPS#` at a repo that had moved to `Simple-With-Us/Fleet-OPS`;  5119 lacked `AR`, `SWU` and Clutch's `C` while carrying `CK` and `CAPS`, which are not Linear teams;  `CC#` pointed at Clutch against the owner's ruling;  and 5118 truncated nested paths, which needed both a wider pattern and the `{+path}` template, because plain `{path}` encodes `/` as `%2F` and FleetLink 404s on it.  Sentry, Cursor and PagerDuty rules were added, and the script now keeps the generic rule last after every add.
 
 The lessons are in [How Linkifiers Work](#how-linkifiers-work):  order decides, the first match is final, and a broad rule placed early silently disables everything after it.  And a rule that renders is not a rule that works:  check where the link lands.
 

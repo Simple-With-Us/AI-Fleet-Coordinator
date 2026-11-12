@@ -362,7 +362,7 @@ class ApplyLiveConfigTests(unittest.TestCase):
         self.assertEqual(self.live.read_text(), before)
         self.assertIn("[seat.JET]\n    budget.board_per_day:", out)
         self.assertIn("wake: 'inbox' -> 'http'", out)
-        self.assertIn("[seat.GB-FIXER]\n    enabled: False -> True", out)
+        self.assertIn("[seat.GB-FIXER]\n    budget.owner_per_day: 20 -> '<unset>'\n    budget.owner_per_topic_per_hour: 6 -> '<unset>'\n    budget.per_topic_per_hour: 2 -> '<unset>'\n    budget.wakes_per_day: 40 -> '<unset>'\n    budget.wakes_per_hour: 6 -> '<unset>'\n    enabled: False -> True", out)
         self.assertIn("routine.url_env: 'GB_FIXER_ROUTINE_URL' -> 'ZULIP_ALERT_GB_FIXER_ENDPOINT'", out)
         self.assertIn("dry run:  nothing written", out)
         self.assertEqual(list(self.tmp.glob("*.bak-*")), [])
