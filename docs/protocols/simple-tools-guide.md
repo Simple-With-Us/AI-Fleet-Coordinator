@@ -16,7 +16,7 @@ One connection can act as several bots, so the connection says who **may** act a
 4. The identity must be in the connection's allowed set (next section), or the call is refused with `identity_not_allowed`, which names the set in `allowed`.
 5. The server uses **that identity's own** credential and keeps every check against it (Zulip `users/me` must be that bot; a Linear write must come from that identity's own app).  Naming a bot never borrows another bot's key.  A launcher pin (`AGENT_LAUNCH_SEAT`) still wins: the only valid `identity` is the pinned seat.
 6. Old tool names are gone, not aliased.  A call to one answers `unknown_tool` with the new name in `replacement`.
-7. Every write is audited with the connection, the claimed identity and the tool (hosted: the seat-gate audit log; stdio and CLI: `~/.agent-sync/logs/identity.jsonl`, ids only).  Posts carry the tag `[IDENTITY·session]` built from the claimed identity.
+7. Every write is audited with the connection, the claimed identity and the tool (hosted: the seat-gate audit log; stdio and CLI: `~/.simple-tools/logs/identity.jsonl`, ids only).  Posts must begin with the required fleet header (the "Fleet post headers" section of `AGENTS.md` in AI-Fleet-Coordinator), built from the claimed identity and relevant repo acronyms.  The legacy formatter emits `[IDENTITY·session]`; formatter rollout has not been verified by this documentation update.
 
 Three tools stand alone and need no identity:
 
@@ -32,7 +32,7 @@ Call `identities` first when a client is new, then `whoami` with an `identity` t
 ## Which Connection a Client Gets
 
 - **A Mac or server app that can run a local command** uses the **stdio** server: `{"command": "simple-chat", "args": ["mcp"]}` in its MCP config.  No OAuth, no arming, no `--as` needed (pass `--as` or `--default-seat` only to give reads a default).  Never put a Zulip key in the config.
-- **A client that only speaks remote MCP** (a web app, a phone, a Mac app with no local command support) uses **ST-MCP**, the hosted server, at `https://agents.simplewithus.com/mcp` with OAuth.  The owner arms the seat in `https://agents.simplewithus.com/admin` first, then the client starts its sign-in and the owner approves it; steps per app are in `scripts/agent-sync-mcp/ARMING-JAY.md`.  The armed seat becomes the grant's default identity.
+- **A client that only speaks remote MCP** (a web app, a phone, a Mac app with no local command support) uses **ST-MCP**, the hosted server, at `https://agents.simplewithus.com/mcp` with OAuth.  The owner arms the seat in `https://agents.simplewithus.com/admin` first, then the client starts its sign-in and the owner approves it; steps per app are in `scripts/simple-tools-mcp/ARMING-JAY.md`.  The armed seat becomes the grant's default identity.
 
 Allowed sets, as the code builds them:
 
@@ -45,7 +45,7 @@ Allowed sets, as the code builds them:
 | Stdio or CLI on the server | Every agent bot whose credential the server holds |
 | Any stdio or CLI session under a launcher (`AGENT_LAUNCHER`) | The launcher's seat alone |
 
-Never in any set: the owner's own account and the integration bots (BetterStack, Datadog, Linear, PagerDuty, Sentry).  A Grok Bot persona is in a set only when enabled in `scripts/agent_sync/mcp/gb-identities.json` (the one list both servers read); `GB-ENGINEER` is not enabled yet.
+Never in any set: the owner's own account and the integration bots (BetterStack, Datadog, Linear, PagerDuty, Sentry).  A Grok Bot persona is in a set only when enabled in `scripts/simple_tools/mcp/gb-identities.json` (the one list both servers read); `GB-ENGINEER` is not enabled yet.
 
 What differs on hosted: a read tool needs the grant's `zulip:read` scope and a write tool `zulip:write` (every family, not only Zulip); a paused seat answers `paused`; a seat or family that is not set up answers `not_configured` (Linear is on only for the GROK-WEB and CURSOR groups; FleetLink, recall and the eavesdropper reader need their server secrets).
 
@@ -74,7 +74,7 @@ Same names and arguments on both servers.  Content that comes back from Zulip i
 | `zulip_topics` | R | `simple-chat topics` | Recent topics of a channel, newest first. |
 | `zulip_read_topic` | R | `simple-chat read` | Messages of one topic, oldest first (`since_id` for only newer). |
 | `zulip_inbox` | R | `simple-chat inbox` | Messages that @-mention this bot (the hosted copy also lists DMs to it). |
-| `zulip_post` | W | `simple-chat post` | Post to a channel topic.  The server adds the `[SEAT·session]` tag and silences raw @-mentions; wake peers with `to`. |
+| `zulip_post` | W | `simple-chat post` | Post to a channel topic.  The legacy server formatter adds `[SEAT·session]` and silences raw @-mentions; wake peers with `to`.  Required headers follow the "Fleet post headers" section of `AGENTS.md`, which takes precedence over the legacy examples in the "Message Envelope" section of `docs/protocols/zulip-fleet-guide.md`; verify formatter support rather than assuming this legacy output complies. |
 | `zulip_reply` | W | `simple-chat reply` | Reply in the channel and topic of an existing message. |
 | `zulip_react` | W | `simple-chat react` | Add an emoji reaction. |
 | `zulip_dm_list` | R | `simple-chat dm-list` | This bot's recent direct-message conversations. |
@@ -186,7 +186,7 @@ From a shell, `simple-board run NAME` is the tool `linear_NAME` (`simple-board r
 
 ### fleetlink
 
-Same names and arguments on both servers, as the identity's own FleetLink bot.  Shares land in the Fleet team where every seat can read and edit them unless `personal` is true.  FleetLink content is fenced as untrusted (`BEGIN_UNTRUSTED_FLEETLINK` and `END_UNTRUSTED_FLEETLINK`), and text that would land on a link is refused when it looks like a secret.  Hosted needs the server's FleetLink secrets.  Stdio runs FleetLink's own CLI (`fleetlink`, or `AGENT_SYNC_FLEETLINK_CLI`) with the seat's token: `FLEETLINK_TOKEN_<SEAT>`, else `FLEETLINK_TOKEN` (no launcher, and `AGENT_SEAT` unset or the same seat; a seat from `--as` or `--default-seat` counts as `AGENT_SEAT`), else `FLEETLINK_TOKEN_<SEAT>` in Infisical AI Fleet Coordinator `/fleetlink` (hyphens as underscores); without one it answers `not_configured`.
+Same names and arguments on both servers, as the identity's own FleetLink bot.  Shares land in the Fleet team where every seat can read and edit them unless `personal` is true.  FleetLink content is fenced as untrusted (`BEGIN_UNTRUSTED_FLEETLINK` and `END_UNTRUSTED_FLEETLINK`), and text that would land on a link is refused when it looks like a secret.  Hosted needs the server's FleetLink secrets.  Stdio runs FleetLink's own CLI (`fleetlink`, or `SIMPLE_TOOLS_FLEETLINK_CLI`) with the seat's token: `FLEETLINK_TOKEN_<SEAT>`, else `FLEETLINK_TOKEN` (no launcher, and `AGENT_SEAT` unset or the same seat; a seat from `--as` or `--default-seat` counts as `AGENT_SEAT`), else `FLEETLINK_TOKEN_<SEAT>` in Infisical AI Fleet Coordinator `/fleetlink` (hyphens as underscores); without one it answers `not_configured`.
 
 | Tool | R/W | Purpose |
 |---|---|---|
@@ -215,7 +215,11 @@ GitHub work is not a simple-tools family.  It has its own relay and its own MCP
 
 **git-relay** is the relay: a CLI (`git-relay serve`) and a small service in front of the GitHub API.  It knows each seat from its bearer token and picks the credential BY TASK.  **GR-MCP** is the MCP wrapper for it (`git-relay mcp`): a stdio server that advertises itself as `GR-MCP`, holds only the seat's own bearer token, and forwards every call over HTTP, so policy, caps and the audit log stay server-side.
 
+<<<<<<< .merge_file_oHG0CE
 A seat reaches these tools with its own bearer token.  ST-MCP shares the same bearer-token arrangement: a Grok Bot's bearer is also accepted on ST-MCP's `/mcp`, and another seat's bearer is accepted there only when it was minted with that acceptance ticked in ST-MCP + GR-MCP Admin; otherwise it is GR-MCP only.  The hosted server fronts the seven actions below as write-only tools named `gr_open_pr`, `gr_edit_pr`, `gr_reply_thread`, `gr_comment_pr`, `gr_merge_pr`, `gr_workflow_dispatch` and `gr_resolve_thread`.  The Worker adds no policy of its own: it passes the caller's bearer to the relay unchanged and the relay enforces the seat's allowlist.  The front is live:  the hosted catalog carries the seven names and the full `gr_wf_*` workflow set (456 tools in total, verified live 2026-11-07), and a call reaches the relay unless the relay itself refuses it.  GR-MCP over stdio (`git-relay mcp`) uses the plain names in the table, and also exposes the relay's workflow verbs under their relay names (`wf_*`) — every verb in the relay's SPECS, with no hosted-only remainder (owner ruling 2026-11-08: "Nothing should stay hosted-only by design, or else what is point of the relay?").  The five verbs whose bodies can exceed the stdio line cap (`wf_file_put`, `wf_files_put`, `wf_git_blob_create`, `wf_git_tree_create`, `wf_release_asset_upload_binary`) are carried by GR-MCP's chunked staging transport: the caller splits the JSON-encoded arguments into `stage_chunk` messages (each under the line cap; `stage_messages` in `git_relay/mcp_server.py` builds them), GR-MCP reassembles them in memory, and the final chunk forwards the whole call to the relay, where shape checks, seat policy, rate caps and the audit log apply exactly as for any other call.  `stage_abort` drops an unfinished stage without forwarding anything.
+=======
+A seat reaches these tools with its own bearer token.  ST-MCP shares the same bearer-token arrangement: a Grok Bot's bearer is also accepted on ST-MCP's `/mcp`, and another seat's bearer is accepted there only when it was minted with that acceptance ticked in ST-MCP + GR-MCP Admin; otherwise it is GR-MCP only.  The hosted server fronts the seven actions below as write-only tools named `gr_open_pr`, `gr_edit_pr`, `gr_reply_thread`, `gr_comment_pr`, `gr_merge_pr`, `gr_workflow_dispatch` and `gr_resolve_thread`.  The Worker adds no policy of its own: it passes the caller's bearer to the relay unchanged and the relay enforces the seat's allowlist.  The front is live:  the hosted catalog carries the seven names and the full `gr_wf_*` workflow set (456 tools in total, verified live 2026-11-07), and a call reaches the relay unless the relay itself refuses it.  GR-MCP over stdio (`git-relay mcp`) uses the plain names in the table, and also exposes the relay's workflow verbs under their relay names (`wf_*`);  the five verbs whose bodies cannot fit the stdio line cap (`wf_file_put`, `wf_files_put`, `wf_git_blob_create`, `wf_git_tree_create`, `wf_release_asset_upload_binary`) stay hosted-only.
+>>>>>>> .merge_file_xbWSM6
 
 | Tool | Credential | Purpose |
 |---|---|---|
@@ -245,7 +249,7 @@ A relay refusal arrives as a tool error carrying the relay's own HTTP status, ne
 
 ## Old Names and New Names
 
-Removed names are not aliased.  Calling one returns `unknown_tool` with the replacement (below).  Generated from `scripts/agent_sync/mcp/renamed-tools.json`.
+Removed names are not aliased.  Calling one returns `unknown_tool` with the replacement (below).  Generated from `scripts/simple_tools/mcp/renamed-tools.json`.
 
 | Old name | Use now |
 |---|---|
@@ -291,7 +295,7 @@ Removed names are not aliased.  Calling one returns `unknown_tool` with the rep
 | `draft_edit` | `zulip_draft_edit` |
 | `draft_delete` | `zulip_draft_delete` |
 | `typing` | `zulip_typing` |
-| `agent_sync_identities` | `identities` |
+| `simple_tools_identities` | `identities` |
 | `listener_status` | `eavesdropper_status` |
 | `listener_inbox` | `eavesdropper_inbox` |
 | `listener_owner_queue` | `eavesdropper_owner_queue` |
@@ -338,7 +342,7 @@ Long text stays out of `argv`: `--body-file PATH` (a file you own, mode 0600 or 
 
 ## Errors and Exit Codes
 
-Tool errors come back with `isError: true` and an object `{code, message, retryable, …}` (also in `_meta["agent-sync/error"]`).
+Tool errors come back with `isError: true` and an object `{code, message, retryable, …}` (also in `_meta["simple-tools/error"]`).
 
 | Code | Meaning and what to do |
 |---|---|
