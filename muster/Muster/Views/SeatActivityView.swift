@@ -289,6 +289,13 @@ struct SeatActivityView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // The registry's stale sweep is a fact about the whole server, so it is shown only
+            // from a current reading, like the global pause in the line above.
+            if group.kind == .server,
+               let sweep = serverStatus.reading?.currentStatus(now: now)?.registrySweep,
+               sweep.isReported {
+                registrySweepLine(sweep, now: now)
+            }
             if group.kind == .server, let note = model.otherServerSeatsNote {
                 Text(SeatActivityText.display(note))
                     .font(.caption)
@@ -300,6 +307,31 @@ struct SeatActivityView: View {
                 rowView(row, readAt: model.readAt, now: now)
             }
         }
+    }
+
+    /// The server registry's last stale sweep (AFC-721):  when it ran,  OK or its error,  how many
+    /// chats it closed,  and the platforms the share guard held back.
+    private func registrySweepLine(_ sweep: ServerRegistrySweepFields, now: Date) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: sweep.symbolName)
+                .foregroundStyle(sweep.isProblem ? Color.orange : Color.secondary)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    Text(ServerRegistrySweepFields.title)
+                        .font(.caption.weight(.semibold))
+                    Text(sweep.label)
+                        .font(.caption.weight(.semibold).monospaced())
+                        .foregroundStyle(sweep.isProblem ? Color.orange : Color.secondary)
+                }
+                Text(SeatActivityText.display(sweep.sentence(now: now)))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: The table
@@ -329,6 +361,7 @@ struct SeatActivityView: View {
         // A seat the server holds reads from the server's eavesdropper;  every other row is
         // built from the Mac's,  exactly as before.
         let server: ServerSeatRowPresentation? = row.place == .server ? serverPresentation(row, now: now) : nil
+        let router: ServerSeatRouter? = row.place == .server ? serverRouter(row, now: now) : nil
         return VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 1) {
@@ -360,6 +393,15 @@ struct SeatActivityView: View {
                     quotaCell(row, readAt: readAt)
                 }
                 postCell(row)
+            }
+            // Whether the seat's wakes go to a ready router.  Readiness only:  it never says a
+            // wake reached a chat.
+            if let router, let line = router.line {
+                Text(SeatActivityText.display(line))
+                    .font(.caption)
+                    .foregroundStyle(router.isProblem ? Color.orange : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, seatWidth + 8)
             }
             if let server, expanded.contains(row.seat), !server.sessionLines.isEmpty {
                 VStack(alignment: .leading, spacing: 1) {
@@ -414,6 +456,13 @@ struct SeatActivityView: View {
             loading: serverStatus.loading,
             now: now
         )
+    }
+
+    /// Whether a seat the server holds has its wakes go to a ready router,  from a current
+    /// reading only,  or nil when there is none.  A reading that is not current says nothing
+    /// about the router,  as it says nothing about the seat's other present state.
+    private func serverRouter(_ row: SeatActivityRow, now: Date) -> ServerSeatRouter? {
+        ServerSeatRowPresentation.seatReading(row.seat, reading: serverStatus.reading, now: now).facts?.router
     }
 
     /// The machine whose eavesdropper holds the seat,  in words with its symbol beside them.
