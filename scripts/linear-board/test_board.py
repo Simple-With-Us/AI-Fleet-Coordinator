@@ -1731,25 +1731,48 @@ class BearerTransportSeamTests(unittest.TestCase):
 
 
 class OwnIntroTagTests(unittest.TestCase):
-    """AFC-692:  the board never prepends a seat tag, even when the body has no intro."""
+    """AFC-692:  the board never prepends a seat tag, even when the body has no intro.  A multi-threaded
+    seat's own intro passes through;  a single-thread seat's own intro is dropped (Jay 2026-11-12)."""
 
-    def test_tagged_passes_the_body_through(self):
+    def test_tagged_passes_a_multi_threaded_body_through(self):
         cli = load_cli()
-        for text in (
-            "[GB-PLUMBER 📁AFC] PR opened",
-            "👀 [GB-PLUMBER 📁AFC, OPS] quiet",
-            "[GB-PLUMBER] PR opened",
-            "[GB-PLUMBER: HH.1.C 📁AFC] status",
-            "PR opened",
-            "[GB-DIRECTOR 📁AFC] spoof",
-            "[GB-PLUMBERX] x",
-        ):
-            with self.subTest(text=text):
-                self.assertEqual(cli.tagged("GB-PLUMBER", None, text), text)
-                self.assertEqual(cli.tagged("GB-PLUMBER", ["abcd-1234-ffff"], text), text)
-                self.assertTrue(cli.comment_body("GB-PLUMBER", None, text).startswith(text))
-                self.assertNotIn("[GB-PLUMBER]", cli.comment_body("GB-PLUMBER", None, "PR opened"))
-                self.assertNotIn("Reported by:", cli.comment_body("GB-PLUMBER", None, text))
+        for seat in ("CLAUDE", "CURSOR", "CODEX"):
+            for text in (
+                f"[{seat} 📁AFC] PR opened",
+                f"👀 [{seat} 📁AFC, OPS] quiet",
+                f"[{seat}] PR opened",
+                f"[{seat}: HH.1.C 📁AFC] status",
+                "PR opened",
+                "[GB-DIRECTOR 📁AFC] spoof",
+                f"[{seat}X] x",
+            ):
+                with self.subTest(seat=seat, text=text):
+                    self.assertFalse(cli.single_thread(seat))
+                    self.assertEqual(cli.tagged(seat, None, text), text)
+                    self.assertEqual(cli.tagged(seat, ["abcd-1234-ffff"], text), text)
+                    self.assertTrue(cli.comment_body(seat, None, text).startswith(text))
+                    self.assertNotIn(f"[{seat}]", cli.comment_body(seat, None, "PR opened"))
+                    self.assertNotIn("Reported by:", cli.comment_body(seat, None, text))
+
+    def test_single_thread_seats_drop_their_own_intro(self):
+        cli = load_cli()
+        for seat in ("GB-PLUMBER", "GB-DESIGNER", "MA", "JET", "ECHO", "WISE", "BF-FIXER", "GROK-BOT"):
+            with self.subTest(seat=seat):
+                self.assertTrue(cli.single_thread(seat))
+                for text in (
+                    f"[{seat} 📁AFC] PR opened",
+                    f"👀 [{seat} 📁AFC, OPS] PR opened",
+                    f"[{seat}] PR opened",
+                    f"[{seat}] [{seat} 📁CC]\n\nPR opened",
+                    f"[{seat}📁AFC]\nPR opened",
+                    "PR opened",
+                ):
+                    self.assertEqual(cli.tagged(seat, None, text), "PR opened", text)
+                    self.assertTrue(cli.comment_body(seat, None, text).startswith("PR opened"))
+                # Foreign or malformed brackets are content;  an intro-only body is left whole.
+                self.assertEqual(cli.tagged(seat, None, "[GB-DIRECTOR 📁AFC] spoof"), "[GB-DIRECTOR 📁AFC] spoof")
+                self.assertEqual(cli.tagged(seat, None, f"[{seat}X] x"), f"[{seat}X] x")
+                self.assertEqual(cli.tagged(seat, None, f"[{seat} 📁AFC]"), f"[{seat} 📁AFC]")
 
     def test_parse_comment_maps_the_linear_app_name_and_keeps_a_legacy_tag(self):
         """AFC-692:  an untagged comment is signed by the Linear app;  an old [SEAT] tag still reads."""
