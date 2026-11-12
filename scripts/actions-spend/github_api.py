@@ -7,6 +7,7 @@ token and never the response body.
 
 from __future__ import annotations
 
+import http.client
 import json
 import threading
 import time
@@ -24,6 +25,40 @@ class ApiError(Exception):
 class RateLimited(ApiError):
     def __init__(self, message):
         super().__init__(429, message)
+
+
+API_HOST = "api.github.com"
+# The largest response this report reads (100 runs or jobs per page) is well
+# under a megabyte.  Anything past this budget is refused before parsing.
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+
+
+class _SameHostRedirects(urllib.request.HTTPRedirectHandler):
+    """Follow redirects only to https://api.github.com.
+
+    urllib copies every request header, including Authorization, onto the
+    redirected request.  GitHub's own 301/307 for a renamed repository stays on
+    api.github.com, so that case keeps working; any other target is refused
+    before a second request (and the bearer token) leaves the process.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        target = urllib.parse.urlsplit(newurl)
+        if target.scheme != "https" or target.hostname != API_HOST:
+            raise urllib.error.HTTPError(
+                req.full_url, code, "refused cross-origin redirect", headers, fp
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_SameHostRedirects)
+
+
+def _read_json(response):
+    body = response.read(MAX_RESPONSE_BYTES + 1)
+    if len(body) > MAX_RESPONSE_BYTES:
+        raise ValueError("response exceeds the size budget")
+    return json.loads(body.decode())
 
 
 class Client:
@@ -149,8 +184,8 @@ class Client:
             headers["Authorization"] = "Bearer " + self._token
             request = urllib.request.Request(url, headers=headers)
             try:
-                with urllib.request.urlopen(request, timeout=60) as response:
-                    payload = json.loads(response.read().decode())
+                with _OPENER.open(request, timeout=60) as response:
+                    payload = _read_json(response)
                     self._note_headers(response.headers)
                     with self._lock:
                         self.calls += 1
@@ -167,11 +202,17 @@ class Client:
                     self._sleep(min(2**attempt, 8))
                     continue
                 raise ApiError(exc.code, f"HTTP {exc.code} on {path}") from None
-            except (urllib.error.URLError, TimeoutError):
+            except (OSError, http.client.HTTPException):
+                # URLError, TimeoutError, ConnectionResetError and an
+                # IncompleteRead are all transport faults worth a retry.
                 if attempt < 3:
                     self._sleep(min(2**attempt, 8))
                     continue
                 raise ApiError(0, f"network error on {path}") from None
+            except (ValueError, RecursionError):
+                # Not JSON, not UTF-8, too large, or nested past the parser's
+                # recursion limit.  The body is never echoed.
+                raise ApiError(0, f"unreadable response on {path}") from None
         raise RateLimited(f"rate limited on {path}")
 
     def _backoff(self, headers):

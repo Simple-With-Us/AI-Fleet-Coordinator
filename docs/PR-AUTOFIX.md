@@ -105,7 +105,8 @@ The workflow refuses to push when:
 
 - Claude Code exits unsuccessfully or diagnostics report a non-`success` result.
 - The scoped `verify_command` fails.
-- The PR `headRefOid` changed after the run started (another writer landed commits).
+
+When the PR `headRefOid` changed after the run started, or the model step was cancelled or skipped, another writer or a newer autofix run already superseded this one.  The workflow logs a notice, skips the push, and ends **success** so queued no-op and superseded runs do not show as failures.
 
 Sanitized diagnostics (no raw transcripts) are uploaded as a short-lived artifact on every attempted fix, matching the fleet Claude Code autofix reusable.
 

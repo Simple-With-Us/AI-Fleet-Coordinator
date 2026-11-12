@@ -20,7 +20,12 @@ class Refs(unittest.TestCase):
                 args["sha"] = "b" * 40
             response = {"ref": "refs/heads/feature/x", "object": {"sha": "b" * 40}}
             h, c = self.handle(
-                action, [{"default_branch": "main"}, {"object": {"sha": SHA}}, response]
+                action,
+                [
+                    {"default_branch": "main"},
+                    {"ref": "refs/heads/feature/x", "object": {"sha": SHA}},
+                    response,
+                ],
             )
             h.run(action, args)
             self.assertEqual(c.calls[0][0], "GET")
