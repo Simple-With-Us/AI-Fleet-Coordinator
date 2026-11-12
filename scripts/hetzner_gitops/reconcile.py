@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 from hetzner_gitops.diff import LiveLayout, PathEscape, diff_manifest, resolve_under
-from hetzner_gitops.manifest import HetznerManifest, default_manifest_path, load_manifest
+from hetzner_gitops.manifest import FileSpec, HetznerManifest, default_manifest_path, load_manifest
 
 EXIT_OK = 0
 EXIT_DRIFT = 1
@@ -42,16 +42,25 @@ def _atomic_write(payload: bytes, dest: Path) -> None:
 
 
 def apply_copies(manifest: HetznerManifest, layout: LiveLayout) -> list[str]:
-    """Copy desired files.  Does not delete forbid matches or touch excluded units."""
-    actions: list[str] = []
+    """Copy desired files.  Does not delete forbid matches or touch excluded units.
+
+    A missing source copies nothing.  Check reports that same source as drift.
+    """
     if not layout.live_root.is_dir():
         raise PathEscape(f"live root is not a directory: {layout.live_root}")
+    missing: list[str] = []
+    staged: list[tuple[FileSpec, Path, Path]] = []
     for spec in manifest.files:
         source = layout.repo_root / spec.source
-        if not source.is_file():
-            actions.append(f"skip missing source {spec.source}")
-            continue
         dest = resolve_under(layout.live_root, spec.installed)
+        if not source.is_file():
+            missing.append(f"skip missing source {spec.source}")
+            continue
+        staged.append((spec, source, dest))
+    if missing:
+        return missing
+    actions: list[str] = []
+    for spec, source, dest in staged:
         _atomic_write(source.read_bytes(), dest)
         actions.append(f"copied {spec.id}")
     return actions
@@ -123,6 +132,8 @@ def run_apply(args: argparse.Namespace) -> int:
     else:
         for line in actions:
             print(line)
+    if any(line.startswith("skip missing source ") for line in actions):
+        return EXIT_DRIFT
     return EXIT_OK
 
 

@@ -236,6 +236,51 @@ class CliTests(unittest.TestCase):
             gap_ids = {item["id"] for item in payload["gaps"]}
             self.assertTrue(EXCLUDED_IDS.isdisjoint(gap_ids))
 
+    def test_apply_writes_nothing_when_a_source_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            live = root / "live"
+            (repo / "units").mkdir(parents=True)
+            live.mkdir()
+            (repo / "units" / "present.service").write_text("[Unit]\n", encoding="utf-8")
+            manifest_path = repo / "manifest.toml"
+            manifest_path.write_text(
+                "\n".join(
+                    [
+                        "schema_version = 1",
+                        'issue = "AFC-369"',
+                        "[[file]]",
+                        'id = "present.service"',
+                        'kind = "unit"',
+                        'source = "units/present.service"',
+                        'installed = "etc/systemd/system/present.service"',
+                        'inventory = "test"',
+                        "[[file]]",
+                        'id = "gone.service"',
+                        'kind = "unit"',
+                        'source = "units/gone.service"',
+                        'installed = "etc/systemd/system/gone.service"',
+                        'inventory = "test"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            code = _code(
+                [
+                    "--manifest",
+                    str(manifest_path),
+                    "--repo-root",
+                    str(repo),
+                    "--live-root",
+                    str(live),
+                    "--apply",
+                ]
+            )
+            self.assertEqual(code, EXIT_DRIFT)
+            self.assertEqual(list(live.iterdir()), [])
+
     def test_reconcile_source_does_not_call_the_host(self):
         text = (REPO_ROOT / "scripts/hetzner_gitops/reconcile.py").read_text(encoding="utf-8")
         for banned in ("systemctl", "daemon-reload", "ssh "):
