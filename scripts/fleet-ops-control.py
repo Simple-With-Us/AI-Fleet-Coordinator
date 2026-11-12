@@ -1260,6 +1260,7 @@ class Context:
         monotonic=None,
         reader=None,
         stdin=None,
+        router_health=None,
     ):
         self.platform = platform or sys.platform
         self.uid = os.getuid() if uid is None else uid
