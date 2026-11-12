@@ -15,15 +15,11 @@ carries the meta must_not).
 from __future__ import annotations
 
 import datetime
-import errno
-import fcntl
 import json
 import os
 import pathlib
 import re
-import stat
 import subprocess
-import time
 import urllib.error
 import urllib.request
 import zoneinfo
