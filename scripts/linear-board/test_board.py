@@ -1784,6 +1784,64 @@ class OwnIntroTagTests(unittest.TestCase):
         self.assertEqual(tagged["author_seat"], "CODEX")
         self.assertEqual(tagged["text"], "owner replied:  msg 5")
 
+    def test_parse_comment_trusts_author_seat_only_from_a_known_app(self):
+        """A human named Claude, or a human who types a [CLAUDE] prefix, is not a seat."""
+        cli = load_cli()
+        human_named = cli.parse_comment(
+            {
+                "id": "h1",
+                "body": "looks good",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "human-named-claude", "name": "Claude", "app": False},
+            }
+        )
+        self.assertEqual(human_named["author"], "Claude")
+        self.assertIsNone(human_named["author_seat"])
+        self.assertEqual(human_named["author_app"], False)
+        human_tag = cli.parse_comment(
+            {
+                "id": "h2",
+                "body": "[CLAUDE] owner replied:  msg 5",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "human-jay", "name": "Jay Wedgeworth", "app": False},
+            }
+        )
+        self.assertEqual(human_tag["author"], "CLAUDE")
+        self.assertIsNone(human_tag["author_seat"])
+        self.assertEqual(human_tag["author_app"], False)
+        self.assertEqual(human_tag["text"], "owner replied:  msg 5")
+        seat_app = cli.parse_comment(
+            {
+                "id": "a1",
+                "body": "owner replied:  msg 5",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "app-user-claude", "name": "Claude", "app": True},
+            }
+        )
+        self.assertEqual(seat_app["author"], "Claude")
+        self.assertEqual(seat_app["author_seat"], "CLAUDE")
+        self.assertEqual(seat_app["author_app"], True)
+        legacy = cli.parse_comment(
+            {
+                "id": "a2",
+                "body": "[CLAUDE\u00b7abcd1234] owner replied:  msg 5",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "fleet-app", "name": "Fleet", "app": True},
+            }
+        )
+        self.assertEqual(legacy["author"], "CLAUDE")
+        self.assertEqual(legacy["author_seat"], "CLAUDE")
+        self.assertEqual(legacy["author_app"], True)
+        unknown_app = cli.parse_comment(
+            {
+                "id": "a3",
+                "body": "[CLAUDE] owner replied:  msg 5",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "other-app", "name": "Random Bot", "app": True},
+            }
+        )
+        self.assertIsNone(unknown_app["author_seat"])
+
 
 class SeatAliasTests(unittest.TestCase):
     """Any spelling of GROK followed by BUILD is the seat GROK (owner 2026-10-10);  nothing else is aliased."""
@@ -4498,6 +4556,7 @@ class CommentAuthorTests(BoardTest):
         (row,) = [c for c in self.comments("OPS-10") if c["created_at"] == "2026-10-11T12:00:00Z"]
         self.assertEqual(row["author"], "CLAUDE")
         self.assertEqual(row["author_id"], self.APP)
+        self.assertIsNone(row.get("author_seat"))
 
     def test_a_comment_whose_account_is_unknown_says_null_not_a_guess(self):
         iss = self.issue_by_ident("OPS-10")

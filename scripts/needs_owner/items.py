@@ -107,14 +107,16 @@ NOTIFIER_SEAT = "CLAUDE"  # the seat that runs the fallback notifier:  it posts 
 
 
 def comment_seat(comment: dict) -> str | None:
-    """The seat that signed this comment:  a legacy `[SEAT]` tag (`author_seat` or `author`),
-    otherwise the Linear app account mapped to a seat (AFC-692).  Body text is not consulted."""
-    return comment.get("author_seat") or comment.get("author")
+    """The verified seat that signed this comment:  `author_seat` from a known Linear app
+    (a seat app, or a legacy `[SEAT]` tag posted by a known app).  None when `author_seat`
+    is missing;  the display `author` and body text are not consulted."""
+    seat = comment.get("author_seat")
+    return seat if isinstance(seat, str) and seat else None
 
 
 def _newest(comments: list[dict], parse, authors: frozenset[str] | None = None):
-    """(parsed value, comment) of the newest comment `parse` accepts.  With `authors`, only a comment signed
-    by one of those seats counts (`author_seat` from the Linear app, or a legacy tag line)."""
+    """(parsed value, comment) of the newest comment `parse` accepts.  With `authors`, only a comment
+    whose verified `author_seat` is one of those seats counts;  a comment with no `author_seat` is ignored."""
     for comment in reversed(comments):
         if authors is not None and comment_seat(comment) not in authors:
             continue

@@ -392,6 +392,29 @@ def seat_for_linear_author(name: str | None) -> str | None:
     return unique[0] if len(unique) == 1 else None
 
 
+def linear_author_name(user) -> str | None:
+    """The Linear commenter's name or displayName, or None when both are missing."""
+    if not isinstance(user, dict):
+        return None
+    for key in ("name", "displayName"):
+        val = user.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+    return None
+
+
+def is_known_linear_app(user) -> bool:
+    """True when this Linear user is a recognized app:  a seat app, or the retired shared Fleet app."""
+    if not isinstance(user, dict) or user.get("app") is not True:
+        return False
+    name = linear_author_name(user)
+    if name is None:
+        return False
+    if name.casefold() == "fleet":
+        return True
+    return seat_for_linear_author(name) is not None
+
+
 # The importer writes "Reported by x, addressed by y" through str.capitalize(),
 # so the line is lower case after its first letter; "Addressed by y" when there
 # was no reporter.  Linear hands bullets back as `*`.
@@ -2177,7 +2200,7 @@ Q_COMMENTS = """query BoardComments($id: String!, $first: Int!, $after: String) 
   issue(id: $id) {
     comments(first: $first, after: $after) {
       pageInfo { hasNextPage endCursor }
-      nodes { id body createdAt user { id name app } }
+      nodes { id body createdAt user { id name displayName app } }
     }
   }
 }"""
@@ -2786,28 +2809,35 @@ def _where_sessions(body: str) -> tuple[str, str, str]:
 
 def parse_comment(c: dict) -> dict:
     body = md_unescape((c.get("body") or "").replace("\r\n", "\n"))
-    author = ((c.get("user") or {}).get("name")) or "unknown"
+    user = c.get("user") or {}
+    author = linear_author_name(user) or "unknown"
     where = ""
     sessions = ""
     tm = TAG_RE.match(body)
     mm = MIGRATED_COMMENT_RE.match(body)
+    # author_seat is trusted only when the Linear commenter is a known app (a seat
+    # app, or the retired shared Fleet app).  A typed [SEAT] tag or a matching
+    # display name is not enough on its own.
+    known_app = is_known_linear_app(user)
     author_seat = None
     if tm:
         author = tm.group(1)
-        author_seat = author
+        if known_app:
+            author_seat = author
         body, where, sessions = _where_sessions(body[tm.end() :])
     elif mm:
         author = mm.group(1)
-        author_seat = seat_for_linear_author(author)
+        if known_app:
+            author_seat = seat_for_linear_author(linear_author_name(user))
         where = mm.group(3) or ""
         body = body[mm.end() :]
     else:
         body, where, sessions = _where_sessions(body)
-        author_seat = seat_for_linear_author(author)
+        if known_app:
+            author_seat = seat_for_linear_author(linear_author_name(user))
     body = HTML_COMMENT_RE.sub("\n", body).strip()
     # `author` is the display name (legacy tag or Linear user).  A consumer that has to know
     # WHO wrote it reads `author_seat`, `author_id` and `author_app`.
-    user = c.get("user") or {}
     author_id = user.get("id") if isinstance(user.get("id"), str) and user.get("id") else None
     author_app = user.get("app") if isinstance(user.get("app"), bool) else None
     return {
