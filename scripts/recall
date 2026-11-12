@@ -185,7 +185,9 @@ def cmd_search(a: argparse.Namespace) -> int:
     res = public_fallback.call_with_fallback(
         "recall_search",
         fallback_args,
-        lambda: recall_api.recall_search(a.query, **search_kwargs),
+        lambda: recall_api.recall_search(
+            a.query, compact=not a.full, full=bool(a.full), **search_kwargs
+        ),
     )
     if not a.json and not a.full:
         res = recall_presentation.present_search_result(res, presentation)
