@@ -229,7 +229,11 @@ Per-seat policy is an allowlist layer over that credential: allowed actions, all
 
 **Status.** git-relay and GR-MCP are implemented, policy-checked and tested, but **not deployed**: no seat is pointed at it and no running service has been verified.  The owner has chosen the host and the rollout is staged; until the owner decides the cutover, the relay is not an available route: do not plan work that assumes it is live, and do not assume any other GitHub path or credential is available to a seat either.  What a seat may use today is whatever its own environment and owner have set up and verified.
 
-`mint_token` is deliberately not exposed over GR-MCP or fronted by ST-MCP: it returns a raw credential, and a stdio transcript is too easy to capture.  A seat that needs a token for git-over-HTTPS calls the relay's HTTP API directly, where the answer goes only to that caller and the mint is capped the same way.
+`mint_token` is deliberately not exposed over GR-MCP or fronted by ST-MCP: it returns a raw credential, and a stdio transcript is too easy to capture.  No seat's policy allows it today.
+
+**Fetch and clone need no token.**  `simple-git clone`, `fetch`, `pull`, `ls-remote`, `bundle` and `archive` run local git over the read-only route at `https://agents.simplewithus.com/git/`, as the seat's own GitHub App.  The relay holds the GitHub token, so the machine needs only `SIMPLE_TOOLS_BEARER`.  The route has no push.
+
+**Large files.**  A tool argument is a poor way to send a big file, because the model has to write out all of it.  `simple-git publish --repo OWNER/NAME --branch BRANCH --message TEXT --file LOCAL[=REPO_PATH]` reads the files from disk and commits them through `gr_wf_files_put`, with up to 2 MiB per file.  It splits a set past 20 files or 4 MiB into several commits, in order.  `--base BRANCH` creates the branch first.
 
 A relay refusal arrives as a tool error carrying the relay's own HTTP status, never as one of the codes below: 401 unauthenticated, 403 policy denial, 400 a bad request or a terminal GitHub refusal, 409 a replay refused, 429 a GitHub rate limit (retryable), 502 an unknown outcome (not retryable — check GitHub before retrying) and 503 app-token minting unavailable.
 

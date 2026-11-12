@@ -66,6 +66,7 @@ import { serveGrBearerVerify } from "./gr-verify.js";
 import { serveGrAssertVerify, grantSummaryIsLive } from "./gr-assert-verify.js";
 import { grAssertionMinter } from "./gr-assert.js";
 import { resolveGrSecrets, grClientFromResolved } from "./gr-tools.js";
+import { isGitPath, serveGit } from "./git-route.js";
 import { serveMcpRequest } from "./mcp.js";
 import { HostedTools } from "./hosted-tools.js";
 import { IdentityRouter, resolveDelegatedCredentials, adminDelegatedReadiness, GB_IDENTITIES } from "./delegated-identities.js";
@@ -1500,6 +1501,9 @@ export default {
     // mentions or assigns a fleet seat wakes that seat.  Its own HMAC is the
     // gate, so it is answered before the path allowlist and the OAuth library.
     if (new URL(request.url).pathname === LINEAR_WAKE_PATH) return serveLinearWake(request, env, ctx);
+    // The read-only git route (src/git-route.js):  the relay authenticates the caller's bearer, so it never reaches the
+    // OAuth library.
+    if (isGitPath(new URL(request.url).pathname)) return serveGit(request, env);
     const route = classifyPath(new URL(request.url).pathname);
     if (!route) return notFound();
     if (route === "health") {
