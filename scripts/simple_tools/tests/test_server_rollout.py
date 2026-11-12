@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.server
 import importlib.util
 import io
+import ipaddress
 import json
 import os
 import secrets
@@ -342,6 +343,43 @@ class InfisicalEnvTests(unittest.TestCase):
         self.assertNotIn("JET_ROUTINE_URL", out)
         self.assertIn("not usable, so not loaded: JET_ROUTINE_KEY, JET_ROUTINE_URL", line)
         self.assertNotIn("ftp://", line)
+
+    def test_the_routine_url_rule_matches_the_daemons(self) -> None:
+        # The ZCode bridge is plain http to a Tailscale address;  the daemon accepts that, so the loader does too.
+        tailnet = "http://%s:8791/wake/ZC" % ipaddress.IPv4Address((100 << 24) | (64 << 16) | 7)
+        for url in (tailnet, "http://127.0.0.1:8791/wake", "http://localhost/wake", "https://jet.test/wake"):
+            self.assertTrue(IE.seat_value_usable("ZC_ROUTINE_URL", url), url)
+        for url in ("http://jet.test/wake", "http://10.0.0.1/wake", "ftp://jet.test/wake", "https://u:p@jet.test/",
+                    "https://[::1/wake", "https://jet.test:99999/wake", "https://jet.test/a b", "https:///wake"):
+            self.assertFalse(IE.seat_value_usable("ZC_ROUTINE_URL", url), url)
+        from simple_tools import adapters
+
+        for url in (tailnet, "http://jet.test/wake", "https://[::1/wake", "https://jet.test:99999/wake"):
+            self.assertEqual(IE.routine_url_usable(url), adapters.routine_url_problem(url) is None, url)
+
+    def test_a_malformed_routine_url_is_refused_for_that_seat_and_never_raises(self) -> None:
+        values = dict(self.values, JET_ROUTINE_URL="https://[jet.test/wake")
+        with FakeInfisical(self.cid, self.csecret, values) as fake:
+            out, line = IE.build_env(self.env(fake))
+        self.assertNotIn("JET_ROUTINE_URL", out)
+        self.assertIn("not usable, so not loaded: JET_ROUTINE_URL", line)
+        self.assertIn("ZULIP_GB_FIXER_API_KEY", out, "every other seat still runs")
+
+    def test_a_reference_in_a_name_the_loader_never_uses_does_not_stop_startup(self) -> None:
+        with FakeInfisical(self.cid, self.csecret, self.values) as fake:
+            fake.wake_secrets["WAKE_ROUTER_MAC_SSH"] = "${fleet.some.reference}"
+            fake.operator_secrets["OPERATOR_SOMETHING_ELSE"] = "${fleet.other.reference}"
+            out, _ = IE.build_env(self.env(fake))
+        self.assertEqual(out["OPERATOR_REGISTRY_KEY"], fake.wake_secrets["SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"])
+        self.assertNotIn("WAKE_ROUTER_MAC_SSH", out)
+        self.assertNotIn("OPERATOR_SOMETHING_ELSE", out)
+
+    def test_a_reference_in_a_name_the_loader_uses_still_stops_startup(self) -> None:
+        for folder, name in (("wake", "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"), ("operator", "OPERATOR_ZULIP_EMAIL")):
+            with self.subTest(name=name), FakeInfisical(self.cid, self.csecret, self.values) as fake:
+                getattr(fake, folder + "_secrets")[name] = "${fleet.some.reference}"
+                with self.assertRaisesRegex(IE.LoadError, "unresolved reference"):
+                    IE.build_env(self.env(fake))
 
     def test_an_unusable_infisical_only_value_stops_startup_without_the_value(self) -> None:
         with FakeInfisical(self.cid, self.csecret, self.values) as fake:

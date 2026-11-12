@@ -230,10 +230,10 @@ What only Jay can verify, because it needs his Access sign-in and consent:  the 
 
 ## Wake Jet (MCP Events, once)
 
-The Worker answers `POST /internal/wake/<SEAT>` from the server listener and fans each wake out as an MCP event (spec section 3.12).  A seat's wake works only once its shared HMAC key is a Worker secret.  The key lives in Infisical Fleet-OPS as `JET_ROUTINE_KEY` (64 hex characters, made with `openssl rand -hex 32`;  Jay stores a new one there himself).  It is installed without printing it (same environment as Step 1):
+The Worker answers `POST /internal/wake/<SEAT>` from the server listener and fans each wake out as an MCP event (spec section 3.12).  A seat's wake works only once its shared HMAC key is a Worker secret.  The key lives in Infisical AI Fleet Coordinator prod `/zulip` as `JET_ROUTINE_KEY`, its one home (64 hex characters, made with `openssl rand -hex 32`;  Jay stores a new one there himself).  No Fleet-OPS copy may remain:  the Eavesdropper's loader loads a routine key held by both projects from neither (AFC-759).  It is installed without printing it (same environment as Step 1):
 
 ```bash
-fleet-secrets get JET_ROUTINE_KEY | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_JET >/dev/null && echo "set WAKE_HMAC_KEY_JET"
+fleet-secrets get JET_ROUTINE_KEY --path /zulip --project ai-fleet-coordinator | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_JET >/dev/null && echo "set WAKE_HMAC_KEY_JET"
 ```
 
 The listener half is Jay's step (ARMING-JAY.md, "Wake Jet", step 1):  two names in Infisical AFC prod `/zulip`, never Coolify variables (`JET_ROUTINE_URL=https://agents.simplewithus.com/internal/wake/JET`, and `JET_ROUTINE_KEY` set to the same key;  the Eavesdropper's loader reads them from there only, AFC-759), a scoped edit of the **live** `/data/listener.toml` (the volume keeps the copy seeded on first start, so the repo sample's new JET section never reaches it), and a restart.  Rotating the key means rerunning both.  Check:  `POST /internal/wake/JET` with no signature answers 401 (not 404, which would mean the secret is missing), and `infra_phase0.py check` probes it.  `EVENT_CALLBACK_HOSTS` in `wrangler.jsonc` lists the hosts ChatGPT may give as a callback.  A refused one shows on `/admin` as `callback_host_not_allowed`, and adding it is a var change and a deploy.
@@ -286,7 +286,7 @@ The `eavesdropper_status`, `eavesdropper_inbox`, `eavesdropper_owner_queue`, `ea
    Set the fleet knob to the same origin before deploying:  `OPERATOR_API_URL` in Infisical (project "AI Fleet Coordinator", `prod`, root path) is what the Python clients read (simple-notes, the stdio `notes_*` tools, the Mac runner), and the contract is one origin for both (`docs/protocols/operator-notes.md`).  A deploy that moves only the var splits each notes request/response pair across two hosts.
 3. Make sure each seat that should read its records has `WAKE_HMAC_KEY_<SEAT>` (JET already does;  CLAUDE, CODEX, CURSOR and MA have a read key from Nov 10, 2026 (owner:  "make the wake key for everyone", each in `LISTENER_READ_SECRETS`), and a further hosted seat needs its own entry there and a Worker secret of the same name):
    ```bash
-   fleet-secrets get JET_ROUTINE_KEY | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_JET >/dev/null && echo "set WAKE_HMAC_KEY_JET"
+   fleet-secrets get JET_ROUTINE_KEY --path /zulip --project ai-fleet-coordinator | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_JET >/dev/null && echo "set WAKE_HMAC_KEY_JET"
    ```
 4. Deploy (step 1).  From a connected JET chat, `eavesdropper_status` answers counts;  a 401 there means the two keys differ or the clocks are more than five minutes apart, a 404 that the listener has no key for the seat.  **Not deployed yet.**
 
