@@ -216,7 +216,7 @@ class OneBadClone(SyncCase):
 class Errors(unittest.TestCase):
     def test_only_fleet_github_origins_count(self) -> None:
         self.assertTrue(S.remote_is_fleet_github("https://github.com/Simple-With-Us/X.git"))
-        self.assertTrue(S.remote_is_fleet_github("git@github.com:jaywedgeworth22/Fleet-OPS.git"))
+        self.assertTrue(S.remote_is_fleet_github("git@github.com:Simple-With-Us/Fleet-OPS.git"))
         self.assertFalse(S.remote_is_fleet_github("https://github.com/someone/X.git"))
         self.assertFalse(S.remote_is_fleet_github("/local/path.git"))
 
