@@ -225,7 +225,9 @@ def _zulip_credentials(
     project = (env.get("FLEET_RAG_ZULIP_INFISICAL_PROJECT") or "").strip()
     if not project:
         raise NightlyError("missing:FLEET_RAG_ZULIP_INFISICAL_PROJECT")
-    folder = (env.get("FLEET_RAG_ZULIP_INFISICAL_PATH") or "/fleet-rag-nightly").strip() or "/fleet-rag-nightly"
+    folder = (
+        env.get("FLEET_RAG_ZULIP_INFISICAL_PATH") or "/fleet-rag-nightly"
+    ).strip() or "/fleet-rag-nightly"
     site_name = (env.get("FLEET_RAG_ZULIP_SITE_NAME") or "ZULIP_SITE").strip()
     email_name = (env.get("FLEET_RAG_ZULIP_EMAIL_NAME") or "ZULIP_EMAIL").strip()
     key_name = (env.get("FLEET_RAG_ZULIP_API_KEY_NAME") or "ZULIP_API_KEY").strip()
@@ -332,7 +334,7 @@ def alert_text(summary: dict, tag: str, host: str, *, streak: int = 1) -> str:
         source = trip.get("source") or "ingest"
         reason = trip.get("reason") or "guard"
         lines.append(f"- `{source}`: {reason}")
-    if mirror_reason and not any((trip.get("source") == "mirror" for trip in trips)):
+    if mirror_reason and not any(trip.get("source") == "mirror" for trip in trips):
         lines.append(f"- `mirror`: {mirror_reason}")
     return "\n".join(lines).rstrip() + "\n"
 
