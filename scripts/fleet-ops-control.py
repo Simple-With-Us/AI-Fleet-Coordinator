@@ -554,6 +554,20 @@ OPERATOR_STOP_STATES = ("skipped", "dropped", "held_back", "surfaced", "expired"
 # Seconds since 1970 that can be a time the daemon wrote:  2000 to 2100.
 OPERATOR_EPOCH_MIN = 946684800.0
 OPERATOR_EPOCH_MAX = 4102444800.0
+# `server router-health server --plan`:  reads the one wake router's `GET /health` on loopback
+# 8794 and reduces it to fixed booleans, counts and reason words only, never a URL, key or text.
+ROUTER_HEALTH_VERB = "router-health"
+ROUTER_HEALTH_URL = "http://127.0.0.1:8794/health"
+ROUTER_HEALTH_TIMEOUT = 5
+ROUTER_HEALTH_MAX_BYTES = 256 * 1024
+ROUTER_HEALTH_UNAVAILABLE = {
+    "router_not_running": "the wake router is not listening on loopback 8794",
+    "timeout": "reading the wake router health took too long",
+    "bad_status": "the wake router answered with an unexpected status",
+    "too_large": "the wake router health answer is larger than the allowed size",
+    "not_json": "the wake router health answer is not a JSON object",
+    "read_failed": "the wake router health could not be read",
+}
 # The `--from-muster` entry (`muster-exec`'s forced command).  The approval engine is the sibling
 # file `muster_approval.py`, loaded by its fixed place (beside this file, in the installed layout and
 # in a checkout alike) and never through sys.path.  The environment of this branch is fixed: nothing
