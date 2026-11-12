@@ -15,6 +15,7 @@ import secrets
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from simple_tools import listener_api as API
 from simple_tools import listener_registry as RG
@@ -161,7 +162,9 @@ class FxTests(Base):
         self.add_session(sid, title="Operator's", updated=time.time() - 1000)
         out = io.StringIO()
         argv = ["register", "--platform", "fx", "--location", "mac", "--session-id", sid]
-        code = PL.registry_main(argv + ["--seat", "OPERATOR", "--source", "test"], env=self.env(), stdout=out)
+        # A row filed under another seat before the registry refused one (AFC-772):  it is still there to be kept.
+        with mock.patch.object(OR, "check_seat_platform", lambda *_: None):
+            code = PL.registry_main(argv + ["--seat", "OPERATOR", "--source", "test"], env=self.env(), stdout=out)
         self.assertEqual(code, 0, out.getvalue())
         answer = self.sync("--apply", now=time.time() + FX.LIVE_SECONDS + 60)
         self.assertEqual(answer["closed"], [])

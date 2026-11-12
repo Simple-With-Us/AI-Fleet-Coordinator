@@ -763,7 +763,7 @@ class WakeLetterTests(DaemonHarness):
 
     def test_the_row_identity_joins_on_platform_location_scope_and_session(self) -> None:
         d, r, p = self.setup_rows([self.row()])
-        self.register(d, platform="codex", native_session_id="mvs_abc")
+        self.register(d, platform="codex", seat="CODEX", native_session_id="mvs_abc")
         context = d.chat_context(r, p)
         self.assertEqual(context[0]["label"], "")
         # The registry's host key is the fleet location, so a registration made under a
@@ -1308,7 +1308,8 @@ class AskOperatorTests(DaemonHarness):
     A and B.
     """
 
-    AMBIGUOUS = (("MM", "minimax"), ("CODEX", "claude-code"))
+    # Each seat on its own platform:  the registry refuses a platform under another seat (AFC-772).
+    AMBIGUOUS = (("MM", "minimax"), ("CODEX", "codex"))
 
     def seed(self, d, seats):
         db = OR.registry_db_path(d.root, d.env)
@@ -1391,18 +1392,18 @@ class AskOperatorTests(DaemonHarness):
         # The asking seat lives on a third platform and holds the same letter there.
         db = OR.registry_db_path(d.root, d.env)
         OR.register_session(
-            db, platform="codex", verified_host="mac-claude", profile_scope="default",
+            db, platform="claude", verified_host="mac-claude", profile_scope="default",
             native_session_id="mvs_claude", seat="CLAUDE", source="test", title="Work CLAUDE",
             issuer=OR.ISSUER_OPERATOR,
         )
         d.ask_operator_for_candidates(
             d.seats["CLAUDE"], self.pending(d.config.owner_user_id), "AA"
         )
-        self.assertEqual(self.sent[0]["platform"], "codex")
+        self.assertEqual(self.sent[0]["platform"], "claude")
 
     def test_the_platform_is_never_a_hardcoded_seat_name(self) -> None:
         d = self.daemon()
-        self.seed(d, (("MM", "minimax"), ("CODEX", "grok-leader")))
+        self.seed(d, (("MM", "minimax"), ("GROK", "grok-leader")))
         self.with_stubbed_send(d)
         d.ask_operator_for_candidates(
             d.seats["CLAUDE"], self.pending(d.config.owner_user_id), "AA"

@@ -1602,6 +1602,21 @@ class RetiredHookCommandTests(HookBase):
     def test_the_macs_installed_command_line_works_for_all_four_events(self) -> None:
         self.check_the_four_events("mac")
 
+    def test_a_host_that_exports_another_seat_still_files_a_claude_chat_under_claude(self) -> None:
+        # AFC-772:  the Mac exported AGENT_SEAT=ZC to every shell, and the retired client took its seat from it, so the
+        # registry (which now refuses a claude chat under ZCode's seat) had to answer and the chat took no letter.  This
+        # client's seat is the platform's own, whatever the host exports:  the chat registers under CLAUDE and keeps
+        # its note under CLAUDE, so a row an earlier run filed under ZC is healed by the registry on this register.
+        code, start, err = self.installed_hook(
+            {"hook_event_name": "SessionStart", "session_id": "s-0003", "source": "startup"},
+            CLAUDE_LETTER_LOCATION="server", AGENT_SEAT="ZC")
+        self.assertEqual((code, err), (0, ""))
+        row = self.row("s-0003", "server")
+        self.assertEqual((row["state"], row["seat"]), ("active", "CLAUDE"))
+        self.assertEqual(start["sessionTitle"], "%s: New Chat" % row["label"])
+        self.assertEqual(self.note("CLAUDE", "s-0003")["state"], "open")
+        self.assertFalse(os.path.exists(os.path.join(self.state, "ZC", "letters", "s-0003.json")))
+
     def test_the_retired_off_switch_still_turns_the_installed_hook_off(self) -> None:
         code, answer, err = self.installed_hook(
             {"hook_event_name": "SessionStart", "session_id": "s-0002", "source": "startup"},

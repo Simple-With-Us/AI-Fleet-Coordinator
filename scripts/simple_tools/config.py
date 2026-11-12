@@ -80,17 +80,34 @@ WAKE_CAP_KEYS: tuple[str, ...] = (
     "owner_per_day",
     "owner_per_topic_per_hour",
 )
-# The rest of a seat's `budget` table keeps its defaults.
+# The rest of a seat's `budget` table.  Only `board_per_day` keeps a default, and its 0 is a feature
+# switch (the seat files nothing on the board), not a throttle.  The others have NO default (owner,
+# Nov 10, 2026:  wakes are liberal and nothing throttles them), so a key a seat leaves out is no
+# limit, the way the five wake count caps are.  The route suggestion caps (owner 2026-10-10:  what
+# one routing seat may page on the owner's behalf, counted from that seat's own ledger) are
+# `routes_per_hour`, `routes_per_day`, and `route_topic_minutes` since the last route posted in the
+# same topic;  a seat that wants one writes it in its own `budget`, and a route cap written there
+# still applies (wakes.route_budget_block).  `usd_per_day` is only accepted, so a config that names
+# it keeps loading:  nothing enforces it (wake accounting is frequency-only, owner 2026-10-13), so
+# writing it sets no ceiling, and seat_key_warnings says so.  The shipped server sample no longer
+# writes it.  The old defaults were $2 a day, 3 routes an hour, 10 a day and one per topic every 30
+# minutes.
 BUDGET_DEFAULTS: dict[str, float] = {
-    "usd_per_day": 2.0,
     "board_per_day": 0,
-    # Route suggestions (owner 2026-10-10):  what one routing seat (today only CLAUDE, the one claude
-    # wake) may page on the owner's behalf, counted from that seat's own ledger.  A route also needs
-    # route_topic_minutes since the last route posted in the same topic.
-    "routes_per_hour": 3,
-    "routes_per_day": 10,
-    "route_topic_minutes": 30,
 }
+# Every key a seat's `budget` table may carry:  the defaults above, the five wake count caps, and
+# the keys that no longer have a default:  the three route caps, still enforced when a config sets
+# them, and `usd_per_day`, accepted with a warning and never enforced, so a live config that names
+# one keeps loading.
+BUDGET_KEYS_UNSET_BY_DEFAULT: tuple[str, ...] = (
+    "usd_per_day",
+    "routes_per_hour",
+    "routes_per_day",
+    "route_topic_minutes",
+)
+KNOWN_BUDGET_KEYS: frozenset[str] = frozenset(
+    {*BUDGET_DEFAULTS, *WAKE_CAP_KEYS, *BUDGET_KEYS_UNSET_BY_DEFAULT}
+)
 # [registry] (AFC-721):  one stale window for every platform (36 hours), one sweep every 15 minutes,
 # and one sweep pass may end at most half of a (platform, host)'s open rows.  Host gone reports may
 # close at most half of a host's live rows for a platform within any 60 minute window.
@@ -406,6 +423,11 @@ ROUTINE_RESERVED_HEADERS = frozenset(
     }
 )
 ROUTINE_TIMEOUT_DEFAULT = 15.0
+# The one bearer the one wake router checks for every seat it serves (OPS-1048):  each router seat's
+# routine names it as `key_env` with `auth = "bearer"`, and the listener's loader takes it from
+# Infisical /wake-router (server/infisical_env.py, a stdlib-only script that keeps its own copy of the
+# name;  a test holds the two equal).  The only variable two seats may share (_refuse_shared_env).
+ROUTER_BEARER_ENV = "WAKE_ROUTER_KEY"
 OUTGOING_WEBHOOK_DEFAULT_PORT = 8787
 LISTENER_API_DEFAULT_PORT = 8788
 _SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,31}$")
@@ -567,10 +589,10 @@ class SeatConfig:
         So the dollar axis carries no signal for a muse seat and the COUNT caps do the bounding:
         wakes_per_hour, wakes_per_day, per_topic_per_hour, owner_per_day and owner_per_topic_per_hour
         (WAKE_CAP_KEYS) are enforced first, exactly as they are for a claude seat, whenever the seat
-        sets them (since Nov 10, 2026 a cap the seat leaves unset is no limit).  usd_per_day still
-        exists in the config and is still read, so an operator who sets it sees it enforced as a
-        plain ceiling of $0 spent against $0 spent:  it never blocks, which is correct, because the
-        run it would have blocked was never paid for.
+        sets them (since Nov 10, 2026 a cap the seat leaves unset is no limit).  usd_per_day is
+        still accepted in the config, with a warning, but nothing enforces it (wake accounting is
+        frequency-only, owner 2026-10-13), so it never blocks, which is correct, because the run
+        it would have blocked was never paid for.
 
         The consequence to be explicit about:  the held-back machinery (heldback.py) and its
         eviction reserve `reserve_usd` from this value to decide what a wake might still spend.  At
@@ -631,7 +653,9 @@ class Config:
         self.operator_dm_allow: frozenset[int] = frozenset()
         self.owner_clients: set[str] = set(DEFAULT_OWNER_CLIENTS)
         self.stale_after = float(L.STALE_AFTER_DEFAULT)
-        self.wake_loop_prevention = True
+        # The topic loop guard is OFF unless the config turns it on (owner, Nov 10, 2026:  wakes are
+        # liberal and nothing throttles them).
+        self.wake_loop_prevention = False
         self.coalesce_seconds = 20.0
         self.coalesce_max_seconds = 90.0
         self.owner_coalesce_seconds = 5.0
@@ -875,8 +899,12 @@ def _routine(seat: str, given: Any, problems: list[str]) -> RoutineConfig | None
 def seat_key_warnings(seat: str, section: Mapping[str, Any]) -> list[str]:
     """What is worth saying about the keys of one `[seat.X]` section, in a stable order.  Warnings only:
     a deprecated key keeps working exactly as before, and an unknown key is ignored as it always was.
-    Neither one may downgrade the seat or drop its `routine`, so the caller puts these in
-    `Config.warnings` and nowhere else (a wake problem would rewrite the seat to inbox)."""
+    A `budget.usd_per_day` is accepted and enforces nothing, so it is said too.  The seat's `live`
+    table is checked as well:  a `live` that is not a table, a key that is not a known live limit,
+    or a live limit that is not a whole number of at least 0 is ignored by live.live_limits, and
+    with no live default behind it that limit is off, so it is said here.  None of these may
+    downgrade the seat or drop its `routine`, so the caller puts them in `Config.warnings` and
+    nowhere else (a wake problem would rewrite the seat to inbox)."""
     found: list[str] = []
     for key in sorted(section, key=str):
         if key in SEAT_KEYS or key in SEAT_KEYS_RETIRED:
@@ -900,6 +928,29 @@ def seat_key_warnings(seat: str, section: Mapping[str, Any]) -> list[str]:
                 found.append(
                     "seat.%s.budget.%s is deprecated:  it still works as before, and goes away with "
                     "the wake types it belongs to" % (seat, key)
+                )
+            elif key == "usd_per_day":
+                found.append(
+                    "seat.%s.budget.usd_per_day is accepted but sets no ceiling:  nothing enforces "
+                    "a dollar limit (wake accounting is frequency-only, owner 2026-10-13)" % seat
+                )
+    live = section.get("live")
+    if live is not None and not isinstance(live, dict):
+        found.append(
+            "seat.%s.live must be a table;  it is ignored, so no live limit applies" % seat
+        )
+    elif isinstance(live, dict):
+        for key in sorted(live, key=str):
+            value = live[key]
+            if key not in L.LIVE_LIMIT_KEYS:
+                found.append(
+                    "seat.%s.live.%s is not a known live limit;  it is ignored, so that limit is off"
+                    % (seat, key)
+                )
+            elif isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                found.append(
+                    "seat.%s.live.%s must be a whole number of at least 0;  it is ignored, so that "
+                    "limit is off" % (seat, key)
                 )
     return found
 
@@ -1076,7 +1127,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("daemon.route_enabled must be true or false")
     else:
         cfg.route_enabled = route_on
-    loop_prevention = daemon.get("wake_loop_prevention", True)
+    loop_prevention = daemon.get("wake_loop_prevention", False)
     if not isinstance(loop_prevention, bool):
         errors.append("daemon.wake_loop_prevention must be true or false")
     else:
@@ -1576,7 +1627,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             wake_problems.append("seat.%s.budget must be a table" % seat_name)
             given = {}
         for key, value in given.items():
-            if key not in BUDGET_DEFAULTS and key not in WAKE_CAP_KEYS:
+            if key not in KNOWN_BUDGET_KEYS:
                 wake_problems.append("seat.%s.budget.%s is not a known budget" % (seat_name, key))
                 continue
             number = _number(value, "seat.%s.budget.%s" % (seat_name, key), wake_problems)
@@ -1667,29 +1718,91 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
     return cfg
 
 
+def listener_api_key_env(seat: str, routine: RoutineConfig | None) -> str:
+    """The variable that holds a seat's read-API key (daemon.listener_api_keys):  its routine key
+    when the routine is hmac-sha256 (the key the Worker holds as WAKE_HMAC_KEY_<SEAT>), else
+    <CODE>_ROUTINE_KEY, whether or not the seat's config names that variable."""
+    if routine is not None and routine.auth == "hmac-sha256":
+        return routine.key_env
+    return env_code(seat) + "_ROUTINE_KEY"
+
+
+def outgoing_webhook_token_env(seat: str) -> str:
+    """The variable that holds a seat's Zulip outgoing-webhook token
+    (daemon._configure_outgoing_webhook), ZULIP_OUTGOING_<CODE>_TOKEN, read for a seat in
+    daemon.outgoing_webhook_seats though no setting of the seat names it.  The server loader
+    exports it for every server seat (server/infisical_env.py), listed or not."""
+    return "ZULIP_OUTGOING_%s_TOKEN" % env_code(seat)
+
+
 def _refuse_shared_env(cfg: Config) -> None:
     """Two seats reading the same variable would alias one bot (or send one seat's wakes to
-    another's routine):  every seat that shares a name is dropped with an error."""
+    another's routine, or one seat's read-API key to another's):  every seat that shares a name is
+    dropped with an error.  A seat's names are its Zulip `email_env` and `key_env`, its routine's
+    `url_env` and `key_env`, the variable its read-API key is read from (listener_api_key_env),
+    which a seat on the router's bearer still reads though its config no longer names it, and its
+    Zulip outgoing-webhook token ZULIP_OUTGOING_<CODE>_TOKEN (outgoing_webhook_token_env), which no
+    setting of the seat names either and which the server loader exports for every server seat,
+    listed in daemon.outgoing_webhook_seats or not.  Enabled and disabled seats are checked alike.
+
+    One exception, ROUTER_BEARER_ENV, the one wake router's bearer (One Operator rule:  one router,
+    one bearer, nothing per seat).  Any number of seats may name it as `routine.key_env` with
+    `auth = "bearer"`, and that is the only role it may have.  The router checks the bearer and
+    routes by the seat in the path of each seat's own URL, and a wake whose body names another seat
+    is refused, so a shared bearer cannot send one seat's wakes to another's routine;  that is why
+    every seat's `routine.url_env` must still be its own.  In any other role (a seat's Zulip
+    `email_env`, `key_env` or `site_env`, a `routine.url_env`, or the key of a `header` or
+    `hmac-sha256` routine, which for hmac-sha256 is also that seat's read-API key) the name would
+    send the router's bearer somewhere other than the router.  So a seat that reads it that way is
+    dropped even when no other seat names it, and when other seats name it too, every one of them
+    is dropped with the shared-name error, as before."""
     users: dict[str, set[str]] = {}
+    shareable: dict[str, bool] = {}
     for seat_cfg in list(cfg.seats.values()) + list(cfg.disabled.values()):
-        names = [seat_cfg.email_env, seat_cfg.key_env]
-        if seat_cfg.routine is not None:
-            names += [seat_cfg.routine.url_env, seat_cfg.routine.key_env]
-        for name in names:
+        routine = seat_cfg.routine
+        uses = [
+            (seat_cfg.email_env, False),
+            (seat_cfg.key_env, False),
+            (listener_api_key_env(seat_cfg.seat, routine), False),
+        ]
+        # The loader exports every server seat's outgoing-webhook token, listed or not, so no other
+        # seat may name it and send it out.  Only a seat's own token is ever its own.
+        uses.append((outgoing_webhook_token_env(seat_cfg.seat), False))
+        if seat_cfg.site_env == ROUTER_BEARER_ENV:
+            # Every env seat reads the one ZULIP_SITE, so the site name meets only the bearer rule.
+            uses.append((seat_cfg.site_env, False))
+        if routine is not None:
+            router_bearer = routine.key_env == ROUTER_BEARER_ENV and routine.auth == "bearer"
+            uses += [(routine.url_env, False), (routine.key_env, router_bearer)]
+        for name, may_share in uses:
             if name:
                 users.setdefault(name, set()).add(seat_cfg.seat)
+                shareable[name] = shareable.get(name, True) and may_share
     for name, seats in sorted(users.items()):
+        if shareable[name]:
+            continue
         if len(seats) > 1:
-            cfg.errors.append(
-                "environment variable %s is named by more than one seat (%s); a seat's variables must be "
-                "its own, so none of them gets a queue" % (name, ", ".join(sorted(seats)))
+            error = (
+                "environment variable %s is named by more than one seat (%s); a seat's variables "
+                "must be its own, so none of them gets a queue" % (name, ", ".join(sorted(seats)))
             )
-            for seat in seats:
-                cfg.seats.pop(seat, None)
-                cfg.disabled.pop(seat, None)
-                cfg.skipped_seats.setdefault(seat, []).append(
-                    "environment variable %s is shared with another seat" % name
-                )
+            reason = "environment variable %s is shared with another seat" % name
+        elif name == ROUTER_BEARER_ENV:
+            error = (
+                "environment variable %s is the wake router's bearer and may be named only as a "
+                'routine key_env with auth = "bearer"; seat %s names it in another role, so it '
+                "gets no queue" % (name, next(iter(seats)))
+            )
+            reason = (
+                "environment variable %s is the wake router's bearer, named in another role" % name
+            )
+        else:
+            continue
+        cfg.errors.append(error)
+        for seat in seats:
+            cfg.seats.pop(seat, None)
+            cfg.disabled.pop(seat, None)
+            cfg.skipped_seats.setdefault(seat, []).append(reason)
 
 
 def load(root: str, path: str | None = None) -> Config:

@@ -61,8 +61,11 @@ class FakeClock:
 
 
 def identity(sid: str) -> dict[str, str]:
+    # A platform no seat owns (fleet-apps.json `seatApps` names none for it), so these tests may
+    # file any seat under it:  the registry refuses a known platform under another seat
+    # (AFC-772, the seat tests of RegistryApiTest below).
     return {
-        "platform": "minimax",
+        "platform": "testbed",
         "location": "mac",
         "scope": "default",
         "session_id": sid,
@@ -150,13 +153,13 @@ class RegistryApiTest(unittest.TestCase):
 
         # resolve:  the owner seat and the Operator read it;  the letter form matches the CLI's.
         status, found = self.call(
-            "CLAUDE", "GET", "resolve", {"platform": "minimax", "letter": "AA"}
+            "CLAUDE", "GET", "resolve", {"platform": "testbed", "letter": "AA"}
         )
         self.assertEqual(status, 200, found)
         self.assertTrue(found["found"])
         self.assertEqual(found["record_id"], record_id)
         status, miss = self.call(
-            "CLAUDE", "GET", "resolve", {"platform": "minimax", "letter": "ZZ"}
+            "CLAUDE", "GET", "resolve", {"platform": "testbed", "letter": "ZZ"}
         )
         self.assertEqual((status, miss["found"]), (200, False))
 
@@ -177,14 +180,14 @@ class RegistryApiTest(unittest.TestCase):
         self.assertEqual((status, held["record_id"]), (200, record_id))
 
         # history:  a seat sees only its own rows;  the Operator sees the platform's.
-        status, history = self.call("CLAUDE", "GET", "history", {"platform": "minimax"})
+        status, history = self.call("CLAUDE", "GET", "history", {"platform": "testbed"})
         self.assertEqual((status, history["count"]), (200, 1))
-        status, history = self.call("OPERATOR", "GET", "history", {"platform": "minimax"})
+        status, history = self.call("OPERATOR", "GET", "history", {"platform": "testbed"})
         self.assertEqual((status, history["count"]), (200, 2))
 
         # sweep:  nothing is stale yet, so nothing ends.
         status, swept = self.call(
-            "CLAUDE", "POST", "sweep", {"platform": "minimax", "seat": "CLAUDE"}
+            "CLAUDE", "POST", "sweep", {"platform": "testbed", "seat": "CLAUDE"}
         )
         self.assertEqual((status, swept["count"]), (200, 0))
 
@@ -269,7 +272,7 @@ class RegistryApiTest(unittest.TestCase):
         self.create_store()
         self.register("CLAUDE", SID_CLAUDE)
         unfolded = {
-            "platform": "MiniMax",
+            "platform": "TestBed",
             "location": "mac",
             "scope": "default",
             "session_id": " %s " % SID_CLAUDE,
@@ -293,20 +296,20 @@ class RegistryApiTest(unittest.TestCase):
         self.register("CODEX", SID_CODEX)
         record_id = claude["record_id"]
         cases = [
-            ("GET", "resolve", {"platform": "minimax", "letter": "AA"}),
+            ("GET", "resolve", {"platform": "testbed", "letter": "AA"}),
             ("POST", "update", {**identity(SID_CLAUDE), "title": "Stolen"}),
             ("POST", "touch", identity(SID_CLAUDE)),
             ("POST", "close", identity(SID_CLAUDE)),
             ("POST", "reopen", {"record_id": record_id}),
             ("GET", "held", {"record_id": record_id}),
-            ("POST", "sweep", {"platform": "minimax", "seat": "CLAUDE"}),
+            ("POST", "sweep", {"platform": "testbed", "seat": "CLAUDE"}),
         ]
         for method, op, payload in cases:
             status, answer = self.call("CODEX", method, op, payload)
             self.assertEqual(status, 403, (op, answer))
         # The Operator may act for any seat, and the outbox is the Operator's alone.
         status, _found = self.call(
-            "OPERATOR", "GET", "resolve", {"platform": "minimax", "letter": "AA"}
+            "OPERATOR", "GET", "resolve", {"platform": "testbed", "letter": "AA"}
         )
         self.assertEqual(status, 200)
         for method, op, payload in (
@@ -321,7 +324,7 @@ class RegistryApiTest(unittest.TestCase):
     def test_hmac_discipline(self) -> None:
         self.create_store()
         self.register("CLAUDE", SID_CLAUDE)
-        query = {"platform": "minimax", "letter": "AA"}
+        query = {"platform": "testbed", "letter": "AA"}
         # A bad signature is 401.
         status, answer = self.call("CLAUDE", "GET", "resolve", query, key=CODEX_KEY)
         self.assertEqual((status, answer["error"]), (401, "unauthorized"))
@@ -345,25 +348,25 @@ class RegistryApiTest(unittest.TestCase):
         self.assertEqual(status, 401, answer)
         ghost = RG.headers(
             secrets.token_hex(24), "GET", RG.PREFIX + "resolve",
-            "platform=minimax&letter=AA", "GHOST", b"", self.clock.now,
+            "platform=testbed&letter=AA", "GHOST", b"", self.clock.now,
         )
         status, answer = self.service.handle(
-            "GET", RG.PREFIX + "resolve?platform=minimax&letter=AA", ghost, b""
+            "GET", RG.PREFIX + "resolve?platform=testbed&letter=AA", ghost, b""
         )
         self.assertEqual(status, 404, answer)
         short = RG.RegistryService(self.db, {"SHORTY": "x" * 10}, clock=self.clock)
         status, answer = short.handle(
             "GET",
-            RG.PREFIX + "resolve?platform=minimax&letter=AA",
+            RG.PREFIX + "resolve?platform=testbed&letter=AA",
             RG.headers("x" * 10, "GET", RG.PREFIX + "resolve",
-                       "platform=minimax&letter=AA", "SHORTY", b"", self.clock.now),
+                       "platform=testbed&letter=AA", "SHORTY", b"", self.clock.now),
             b"",
         )
         self.assertEqual(status, 404, answer)
 
     def test_method_and_route_discipline(self) -> None:
         # A known op with the wrong method is 405, signed or not.
-        status, answer = self.call("OPERATOR", "POST", "resolve", {"platform": "minimax"})
+        status, answer = self.call("OPERATOR", "POST", "resolve", {"platform": "testbed"})
         self.assertEqual((status, answer["error"]), (405, "method_not_allowed"))
         status, answer = self.call("OPERATOR", "GET", "register", {})
         self.assertEqual(status, 405, answer)
@@ -374,6 +377,226 @@ class RegistryApiTest(unittest.TestCase):
         self.assertEqual(status, 404, answer)
         status, answer = self.service.handle("GET", "/listener/v1/CLAUDE/status", {}, b"")
         self.assertEqual(status, 404, answer)
+
+    # ---- a platform's chat is filed under one of its own seats (AFC-772) -----------
+
+    def ask(
+        self, op: str, platform: str, seat: str, sid: str = SID_SEED, **extra: Any
+    ) -> tuple[int, dict[str, Any]]:
+        return self.call(
+            "OPERATOR",
+            "POST",
+            op,
+            {
+                "platform": platform,
+                "location": "mac",
+                "scope": "default",
+                "session_id": sid,
+                "seat": seat,
+                "source": "seat guard test",
+                **extra,
+            },
+        )
+
+    def legacy(self, platform: str, seat: str, sid: str = SID_SEED) -> dict[str, Any]:
+        """A row as one was filed before the check existed:  the pair went in unquestioned."""
+        with mock.patch.object(OR, "check_seat_platform", lambda *_: None):
+            status, answer = self.ask("register", platform, seat, sid)
+        self.assertEqual(status, 200, answer)
+        return answer
+
+    def rows(self) -> int:
+        conn = sqlite3.connect(self.db)
+        try:
+            return sum(
+                conn.execute("SELECT COUNT(*) FROM %s" % table).fetchone()[0]
+                for table in ("sessions", "alias_assignments", "events", "export_outbox")
+            )
+        finally:
+            conn.close()
+
+    def test_a_claude_chat_under_zc_is_400_with_its_own_code_and_no_row(self) -> None:
+        self.create_store()
+        lines: list[tuple[str, dict[str, Any]]] = []
+        self.service.log = lambda event, **fields: lines.append((event, fields))
+        status, answer = self.ask("register", "claude", "ZC")
+        self.assertEqual(status, 400, answer)
+        self.assertEqual(
+            answer,
+            {
+                "error": "platform claude registers under seat CLAUDE, not ZC",
+                "code": "seat_platform_mismatch",
+                "platform": "claude",
+                "seat": "ZC",
+                "expected": ["CLAUDE"],
+            },
+        )
+        self.assertEqual(self.rows(), 0)
+        status, history = self.call("OPERATOR", "GET", "history", {"platform": "claude"})
+        self.assertEqual((status, history["count"]), (200, 0))
+        self.assertEqual(
+            [fields for event, fields in lines if event == "registry-api-refused"],
+            [
+                {
+                    "principal": "OPERATOR",
+                    "op": "register",
+                    "reason": "seat_platform_mismatch",
+                    "platform": "claude",
+                    "seat": "ZC",
+                }
+            ],
+        )
+
+    def test_each_platforms_own_seat_registers(self) -> None:
+        self.create_store()
+        for platform, seat in (("claude", "CLAUDE"), ("zcode", "ZC"), ("minimax", "MM")):
+            status, answer = self.ask("register", platform, seat)
+            self.assertEqual((status, answer.get("label")), (200, "AA"), answer)
+
+    def test_a_platform_the_table_does_not_know_registers_under_any_seat(self) -> None:
+        self.create_store()
+        for index, seat in enumerate(("ZC", "CLAUDE", "SOMETHING-NEW")):
+            status, answer = self.ask("register", "newplatform", seat, "new-%d" % index)
+            self.assertEqual((status, answer.get("outcome")), (200, "registered"), answer)
+
+    def test_a_launchers_bot_is_checked_against_its_pattern(self) -> None:
+        self.create_store()
+        status, answer = self.ask("register", "botfleet", "BF-FIXER", "bf-0001")
+        self.assertEqual((status, answer.get("label")), (200, "AA"), answer)
+        status, answer = self.ask("register", "botfleet", "bf-oracle", "bf-0002")
+        self.assertEqual((status, answer.get("label")), (200, "BB"), answer)
+        status, answer = self.ask("register", "botfleet", "CLAUDE", "bf-0003")
+        self.assertEqual((status, answer.get("code")), (400, "seat_platform_mismatch"), answer)
+        self.assertEqual(answer["expected"], ["BF-*"])
+        status, answer = self.ask("register", "grok-bot", "GB-COMPILER", "gb-0001")
+        self.assertEqual(status, 200, answer)
+
+    def test_case_aliases_and_adapter_names_do_not_get_around_it(self) -> None:
+        self.create_store()
+        for platform, seat in (("Claude", "zc"), ("cursor-cloud", " ZC "), ("grok-build", "MM")):
+            status, answer = self.ask("register", platform, seat)
+            self.assertEqual((status, answer.get("code")), (400, "seat_platform_mismatch"), answer)
+        self.assertEqual(self.rows(), 0)
+        for index, (platform, seat, namespace, tag) in enumerate(
+            (
+                ("Claude", "claude", "claude", "CLAUDE"),
+                ("claude", " CLAUDE ", "claude", "CLAUDE"),
+                ("cursor-cloud", "Cursor", "cursor", "CURSOR"),
+                ("grok-build", "Grok Build", "grok-leader", "GROK"),
+            )
+        ):
+            sid = "right-%d" % index
+            status, answer = self.ask("register", platform, seat, sid)
+            self.assertEqual((status, answer.get("outcome")), (200, "registered"), answer)
+            # The row is filed under the tag, not as typed, so the same chat resumes under the tag and the wake
+            # router reads the row's seat.
+            status, found = self.call(
+                "OPERATOR", "GET", "resolve", {"platform": namespace, "letter": answer["label"]}
+            )
+            self.assertEqual((status, found.get("seat")), (200, tag), found)
+            status, again = self.ask("register", namespace, tag, sid)
+            self.assertEqual(
+                (status, again.get("outcome"), again.get("record_id")), (200, "resumed", answer["record_id"]), again
+            )
+
+    def test_a_relabel_names_the_seat_in_any_spelling_the_check_accepts(self) -> None:
+        self.create_store()
+        status, made = self.ask("register", "claude", "CLAUDE")
+        self.assertEqual(status, 200, made)
+        status, answer = self.ask("relabel", "claude", "claude", force=True)
+        self.assertEqual(
+            (status, answer.get("record_id"), answer.get("outcome")), (200, made["record_id"], "unchanged"), answer
+        )
+
+    def test_a_relabel_into_a_mismatch_is_400_and_moves_no_letter(self) -> None:
+        self.create_store()
+        made = self.legacy("claude", "ZC")
+        before = self.rows()
+        status, answer = self.ask("relabel", "claude", "ZC", force=True)
+        self.assertEqual((status, answer.get("code")), (400, "seat_platform_mismatch"), answer)
+        self.assertEqual(self.rows(), before)
+        status, found = self.call(
+            "OPERATOR", "GET", "resolve", {"platform": "claude", "letter": made["label"]}
+        )
+        self.assertEqual((status, found["seat"]), (200, "ZC"))
+
+    def test_a_row_filed_under_a_wrong_seat_earlier_can_still_be_touched_and_closed(self) -> None:
+        self.create_store()
+        made = self.legacy("claude", "ZC")
+        where = {"platform": "claude", "location": "mac", "scope": "default", "session_id": SID_SEED}
+        # While the row is live, a resume under the seat it is stored under still answers its letter:  a refused
+        # resume left the chat's hook unable to end the row.  A new chat under that seat is refused as before.
+        status, answer = self.ask("register", "claude", "ZC")
+        self.assertEqual(
+            (status, answer.get("outcome"), answer.get("label")), (200, "resumed", made["label"]), answer
+        )
+        status, answer = self.ask("register", "claude", "ZC", "session-new-0001")
+        self.assertEqual((status, answer.get("code")), (400, "seat_platform_mismatch"), answer)
+        status, answer = self.call("OPERATOR", "POST", "touch", where)
+        self.assertEqual((status, answer.get("outcome")), (200, "seen"), answer)
+        status, answer = self.call("OPERATOR", "POST", "update", {**where, "title": "Still Here"})
+        self.assertEqual((status, answer.get("outcome")), (200, "updated"), answer)
+        status, answer = self.call("OPERATOR", "POST", "close", {**where, "reason": "session ended"})
+        self.assertEqual((status, answer.get("closed"), answer.get("label")), (200, True, made["label"]))
+        # Closed, it is not brought back under the wrong seat, and nothing about the row changes.
+        before = self.rows()
+        status, answer = self.ask("register", "claude", "ZC")
+        self.assertEqual((status, answer.get("code")), (400, "seat_platform_mismatch"), answer)
+        self.assertEqual(self.rows(), before)
+        # ... and a host may still report such a chat gone.
+        self.legacy("claude", "ZC", "session-gone-0001")
+        status, answer = self.call(
+            "OPERATOR",
+            "POST",
+            "report-gone",
+            {"platform": "claude", "verified_host": "mac", "native_session_ids": ["session-gone-0001"]},
+        )
+        self.assertEqual((status, answer.get("count")), (200, 1), answer)
+
+    def test_a_register_under_the_platforms_own_seat_heals_a_row_filed_under_another(self) -> None:
+        # The three Mac chats of AFC-772:  platform claude, seat ZC, open.  Their hook, once its seat is
+        # right, registers as CLAUDE and gets the letter it already holds, now filed under CLAUDE.
+        self.create_store()
+        made = self.legacy("claude", "ZC")
+        status, answer = self.ask("register", "claude", "CLAUDE")
+        self.assertEqual(
+            (status, answer.get("outcome"), answer.get("label"), answer.get("generation")),
+            (200, "resumed", made["label"], made["generation"]),
+            answer,
+        )
+        self.assertEqual(answer.get("record_id"), made["record_id"])
+        status, found = self.call("OPERATOR", "GET", "resolve", {"platform": "claude", "letter": made["label"]})
+        self.assertEqual((status, found.get("seat")), (200, "CLAUDE"), found)
+        # The principal CLAUDE can now act on the row (a seat acts only on its own sessions).
+        where = {"platform": "claude", "location": "mac", "scope": "default", "session_id": SID_SEED}
+        status, answer = self.call("CLAUDE", "POST", "touch", where)
+        self.assertEqual((status, answer.get("outcome")), (200, "seen"), answer)
+        # Never the other way:  the wrong seat against the healed row is 400 and the row stays.
+        before = self.rows()
+        status, answer = self.ask("register", "claude", "ZC")
+        self.assertEqual((status, answer.get("code")), (400, "seat_platform_mismatch"), answer)
+        self.assertEqual(self.rows(), before)
+        status, found = self.call("OPERATOR", "GET", "resolve", {"platform": "claude", "letter": made["label"]})
+        self.assertEqual(found.get("seat"), "CLAUDE", found)
+
+    def test_an_unreadable_seat_table_refuses_nothing_and_is_logged_once(self) -> None:
+        self.create_store()
+        lines: list[tuple[str, dict[str, Any]]] = []
+        self.service.log = lambda event, **fields: lines.append((event, fields))
+        missing = os.path.join(self.tmp.name, "no-such", "fleet-apps.json")
+        with mock.patch.dict(os.environ, {"FLEET_APPS_JSON": missing}):
+            for index in range(2):
+                status, answer = self.ask("register", "claude", "ZC", "blind-%d" % index)
+                self.assertEqual((status, answer.get("outcome")), (200, "registered"), answer)
+        table = [fields for event, fields in lines if event == "registry-seat-table"]
+        self.assertEqual(len(table), 1, lines)
+        self.assertFalse(table[0]["ok"])
+        self.assertIn("cannot read", table[0]["error"])
+        # Readable again:  the check is back, and the log says so once.
+        status, answer = self.ask("register", "claude", "ZC", "blind-2")
+        self.assertEqual((status, answer.get("code")), (400, "seat_platform_mismatch"), answer)
+        table = [fields for event, fields in lines if event == "registry-seat-table"]
+        self.assertEqual([fields["ok"] for fields in table], [False, True])
 
     # ---- behind the real listener server -------------------------------------------
 
@@ -423,7 +646,7 @@ class RegistryApiTest(unittest.TestCase):
         )
         self.assertEqual((status, answer["label"]), (200, "AA"))
         status, answer = self._http(
-            server, "CLAUDE", "GET", "resolve", {"platform": "minimax", "letter": "AA"}
+            server, "CLAUDE", "GET", "resolve", {"platform": "testbed", "letter": "AA"}
         )
         self.assertEqual((status, answer["found"]), (200, True))
         # A request naming no principal is 404 (the notes queue's discipline:  an unknown
@@ -431,7 +654,7 @@ class RegistryApiTest(unittest.TestCase):
         # method entirely is 405.
         host, port = server.address
         request = urllib.request.Request(
-            "http://%s:%d%sresolve?platform=minimax&letter=AA" % (host, port, RG.PREFIX),
+            "http://%s:%d%sresolve?platform=testbed&letter=AA" % (host, port, RG.PREFIX),
             method="GET",
         )
         with self.assertRaises(urllib.error.HTTPError) as caught:
@@ -475,7 +698,7 @@ class OneWriterTest(RegistryApiTest):
             "OPERATOR",
             "POST",
             "report-gone",
-            {"platform": "minimax", "verified_host": "mac", "native_session_ids": sids, **extra},
+            {"platform": "testbed", "verified_host": "mac", "native_session_ids": sids, **extra},
         )
 
     def age(self, sid: str, hours: float) -> None:
@@ -508,7 +731,7 @@ class OneWriterTest(RegistryApiTest):
     def test_operator_register_never_creates_a_store(self) -> None:
         with self.assertRaises(OR.RegistryUnavailable):
             self.service.operator_register(
-                platform="minimax",
+                platform="testbed",
                 verified_host="mac",
                 profile_scope="default",
                 native_session_id=SID_CLAUDE,
@@ -520,7 +743,7 @@ class OneWriterTest(RegistryApiTest):
     def test_operator_register_always_issues_as_the_operator(self) -> None:
         self.create_store()
         out = self.service.operator_register(
-            platform="minimax",
+            platform="testbed",
             verified_host="mac",
             profile_scope="default",
             native_session_id=SID_CLAUDE,
@@ -552,7 +775,7 @@ class OneWriterTest(RegistryApiTest):
             "CLAUDE",
             "POST",
             "report-gone",
-            {"platform": "minimax", "verified_host": "mac", "native_session_ids": [SID_CLAUDE]},
+            {"platform": "testbed", "verified_host": "mac", "native_session_ids": [SID_CLAUDE]},
         )
         self.assertEqual(status, 403, answer)
         self.assertIn(SID_CLAUDE, self.open_sids())
@@ -579,7 +802,7 @@ class OneWriterTest(RegistryApiTest):
             "OPERATOR",
             "POST",
             "report-gone",
-            {"platform": "minimax", "verified_host": "server", "native_session_ids": ["keep-1"]},
+            {"platform": "testbed", "verified_host": "server", "native_session_ids": ["keep-1"]},
         )
         self.assertEqual((status, answer["count"]), (200, 0), answer)
         self.assertIn("keep-1", self.open_sids())
@@ -677,12 +900,12 @@ class OneWriterTest(RegistryApiTest):
     def test_report_gone_validates_its_body(self) -> None:
         self.create_store()
         for body in (
-            {"platform": "minimax", "verified_host": "mac", "native_session_ids": "x"},
-            {"platform": "minimax", "verified_host": "mac", "native_session_ids": [""]},
-            {"platform": "minimax", "native_session_ids": ["x"]},
-            {"platform": "minimax", "verified_host": "laptop", "native_session_ids": ["x"]},
+            {"platform": "testbed", "verified_host": "mac", "native_session_ids": "x"},
+            {"platform": "testbed", "verified_host": "mac", "native_session_ids": [""]},
+            {"platform": "testbed", "native_session_ids": ["x"]},
+            {"platform": "testbed", "verified_host": "laptop", "native_session_ids": ["x"]},
             {
-                "platform": "minimax",
+                "platform": "testbed",
                 "verified_host": "mac",
                 "native_session_ids": ["x"] * (RG.MAX_GONE_IDS + 1),
             },
@@ -734,7 +957,7 @@ class OneWriterTest(RegistryApiTest):
         result = sweeper.maybe_run(self.clock.now)
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["ended"], 2)
-        self.assertEqual(set(result["platforms"]), {"minimax", "cursor"})
+        self.assertEqual(set(result["platforms"]), {"testbed", "cursor"})
         self.assertEqual(self.open_sids(), {"new-1", "quiet-1", "cursor-new"})
         self.assertEqual(sweeper.last, result)
         # Not due again until the interval has passed.
@@ -755,7 +978,7 @@ class OneWriterTest(RegistryApiTest):
         self.assertFalse(result["ok"])
         self.assertFalse(os.path.exists(self.db))
 
-    def register_at(self, seat: str, sid: str, host: str, platform: str = "minimax") -> None:
+    def register_at(self, seat: str, sid: str, host: str, platform: str = "testbed") -> None:
         OR.register_session(
             self.db,
             platform=platform,
@@ -804,7 +1027,7 @@ class OneWriterTest(RegistryApiTest):
         self.assertEqual(result["error"], "sweep_share_exceeded")
         self.assertEqual(result["ended"], 0)
         self.assertEqual(
-            result["refused"], [{"platform": "minimax", "host": "mac", "would_end": 8, "open": 9}]
+            result["refused"], [{"platform": "testbed", "host": "mac", "would_end": 8, "open": 9}]
         )
         self.assertEqual(self.open_sids(), set(old) | {"new-1"})
         # A share set to allow it ends them.
@@ -831,12 +1054,12 @@ class OneWriterTest(RegistryApiTest):
             "CLAUDE",
             "POST",
             "sweep",
-            {"platform": "minimax", "seat": "CLAUDE", "stale_after_minutes": 60},
+            {"platform": "testbed", "seat": "CLAUDE", "stale_after_minutes": 60},
         )
         self.assertEqual((status, answer["count"]), (200, 0), answer)
         self.age("old-1", 40)
         status, answer = self.call(
-            "CLAUDE", "POST", "sweep", {"platform": "minimax", "seat": "CLAUDE"}
+            "CLAUDE", "POST", "sweep", {"platform": "testbed", "seat": "CLAUDE"}
         )
         self.assertEqual((status, answer["count"]), (200, 1), answer)
         self.assertEqual(self.open_sids(), {"new-1", "other-1"})
@@ -848,7 +1071,7 @@ class OneWriterTest(RegistryApiTest):
         self.age("old-1", 40)
         self.register("CLAUDE", "new-1")
         status, answer = self.call(
-            "CLAUDE", "POST", "sweep", {"platform": "minimax", "seat": " claude "}
+            "CLAUDE", "POST", "sweep", {"platform": "testbed", "seat": " claude "}
         )
         self.assertEqual((status, answer["count"]), (200, 1), answer)
         self.assertEqual(self.open_sids(), {"new-1"})
@@ -866,7 +1089,7 @@ class OneWriterTest(RegistryApiTest):
         self.age("srv-old", 40)
         self.register_at("CLAUDE", "srv-new", "server")
         status, answer = self.call(
-            "CLAUDE", "POST", "sweep", {"platform": "minimax", "seat": "CLAUDE"}
+            "CLAUDE", "POST", "sweep", {"platform": "testbed", "seat": "CLAUDE"}
         )
         self.assertEqual(status, 409, answer)
         self.assertEqual(answer["code"], "sweep_share_exceeded")
@@ -878,7 +1101,7 @@ class OneWriterTest(RegistryApiTest):
         self.create_store()
         self.service.sweeper = None
         status, answer = self.call(
-            "CLAUDE", "POST", "sweep", {"platform": "minimax", "seat": "CLAUDE"}
+            "CLAUDE", "POST", "sweep", {"platform": "testbed", "seat": "CLAUDE"}
         )
         self.assertEqual((status, answer.get("code")), (503, "sweep_off"), answer)
 
@@ -913,7 +1136,7 @@ class OneWriterTest(RegistryApiTest):
             "OPERATOR",
             "POST",
             "report-gone",
-            {"platform": "minimax", "verified_host": " MAC ", "native_session_ids": ["gone-1"]},
+            {"platform": "testbed", "verified_host": " MAC ", "native_session_ids": ["gone-1"]},
         )
         self.assertEqual((status, answer["count"]), (200, 1), answer)
 

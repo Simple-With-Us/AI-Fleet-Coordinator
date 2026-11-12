@@ -496,11 +496,24 @@ class RegistrySideTests(Base):
         self.assertEqual(self.registry(*self.reg_argv("show", "s-0099"))[0], 5)
 
     def test_a_seat_that_is_not_the_registered_one_gets_a_mismatch(self) -> None:
-        self.register("s-0001")
+        # On a platform no seat owns the registry still answers for the stored row:  another seat's.
+        self.register("s-0001", platform="testbed")
+        argv = self.reg_argv("register", "s-0001", platform="testbed")
+        argv[argv.index("TESTBED")] = "OPENCODE"
+        code, out = self.registry(*argv)
+        self.assertEqual(out["outcome"], "seat_mismatch")
+
+    def test_a_platform_under_another_platforms_seat_is_refused_and_nothing_is_stored(self) -> None:
+        # AFC-772:  codex is CODEX.  The registry side answers an error the hook reads as "no letter yet", exit 4.
         argv = self.reg_argv("register", "s-0001")
         argv[argv.index("CODEX")] = "OPENCODE"
         code, out = self.registry(*argv)
-        self.assertEqual(out["outcome"], "seat_mismatch")
+        self.assertEqual(code, 4, out)
+        self.assertIn("SeatPlatformMismatch", out["error"])
+        self.assertIn("platform codex registers under seat CODEX, not OPENCODE", out["error"])
+        self.assertNotIn("outcome", out)
+        self.assertIsNone(self.lookup("s-0001"))
+        self.assertEqual(self.register("s-0001")["outcome"], "registered")  # the right seat is not held up
 
     def test_each_platform_has_its_own_letters(self) -> None:
         one = self.register("s-0001", platform="codex")
@@ -1584,6 +1597,30 @@ class HookTests(Base):
             self.hook({"hook_event_name": "SessionStart", "source": "startup"}, spec=bot,
                       env=dict(env, **extra), transport=answer)
         self.assertEqual(seen, [])
+
+    def test_a_chat_under_another_platforms_seat_carries_on_with_no_letter(self) -> None:
+        # AFC-772:  the registry refuses a codex chat under OPENCODE.  The chat reads why, takes no letter, and the
+        # hook still exits 0 (the helper checks it);  a later prompt asks again.
+        spec = make_spec(seat="OPENCODE")
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, spec=spec,
+                        env=self.env(), platform="darwin")
+        self.assertIn("No Operator letter yet", out["additionalContext"])
+        self.assertIn("platform codex registers under seat CODEX, not OPENCODE", out["additionalContext"])
+        self.assertNotIn("sessionTitle", out)
+        self.assertIsNone(self.lookup("s-0001", "mac"))
+        with open(os.path.join(self.state, "OPENCODE", "letters", "s-0001.json")) as fh:
+            self.assertEqual(json.load(fh)["state"], "failed")
+
+    def test_a_launchers_bot_is_lettered_by_the_real_registry_under_its_own_seat(self) -> None:
+        # The registry checks a launcher's platform against a pattern (BF-*), so every bot keeps its own seat.
+        bot = make_spec(platform="botfleet", seat=PL.from_env("AGENT_LAUNCH_SEAT"), source="botfleet-letter-hook",
+                        display="BotFleet", launchers=("botfleet",), session_id=PL.from_env("BOTFLEET_SESSION_ID"))
+        for index, seat in enumerate(("bf-builder", "BF-ORACLE")):
+            env = self.env(AGENT_LAUNCHER="botfleet", AGENT_LAUNCH_SEAT=seat, BOTFLEET_SESSION_ID="bf-000%d" % index)
+            out = self.hook({"hook_event_name": "SessionStart", "source": "startup"}, spec=bot, env=env,
+                            platform="darwin")
+            self.assertEqual(out["sessionTitle"], "%s: New Chat" % ("AA", "BB")[index])
+            self.assertEqual(self.lookup("bf-000%d" % index, "mac", "botfleet")["seat"], seat.upper())
 
     def test_a_platform_that_runs_only_on_the_mac_takes_no_server_letter(self) -> None:
         spec = make_spec(platform="grok", seat="GROK", locations=("mac",))
