@@ -439,9 +439,7 @@ def _via_exec(
     except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
         return WR.Delivery("refused", "exec", code="exec-error-%s" % type(exc).__name__)
     if proc.returncode == 0:
-        if _seen_appended(
-            transcript, offset, wake.wake_id, confirm_seconds, sleep=sleep
-        ):
+        if _seen_appended(transcript, offset, wake.wake_id, confirm_seconds, sleep=sleep):
             # The prompt reaching the transcript proves hand-over, not a finished turn:  the
             # wake text carries its own id, so it is recorded even when the turn then fails.
             # `completed` would claim the turn finished, so this is `sent`, confirmed.
