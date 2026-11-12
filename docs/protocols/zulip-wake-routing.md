@@ -19,10 +19,11 @@ AND WAKES the picked chat, each platform using whatever it needs to do that.
          seat inbox, always, and fires the seat's routine:  ONE signed POST
          (the simple-tools-wake/1 contract) to the platform's ROUTER
       -> the ROUTER resolves which chat the wake belongs to, deterministically:
-           1. a letter the sender addressed ("@**ZCode** AA"), or the body's `letter`
-              field (a wake that is an untagged reply to a chat of the seat carries one,
-              with `linked_by: "reply"`), resolves through the Operator's registry
-              (live holders only;  cross-host by design)
+           1. a letter the sender addressed ("@**ZCode** AA", or the post header's
+              recipient "→ ZC AA";  every form is in "Addressing a chat" below), or the
+              body's `letter` field (a wake that is an untagged reply to a chat of the
+              seat carries one, with `linked_by: "reply"`), resolves through the
+              Operator's registry (live holders only;  cross-host by design)
            2. else the live registration whose title shares the wake topic's words
            3. else the most recently seen live registration on the host
            (a sub-agent session is never picked)
@@ -34,6 +35,18 @@ AND WAKES the picked chat, each platform using whatever it needs to do that.
       -> the pick and the delivery are receipted (wakes.jsonl);  a failed delivery retries
          through the listener.  The message also sits in the seat inbox and the Operator's
          pending-inbox, so a live session sees it either way.
+
+## Addressing a chat
+
+A chat is written as its platform's name and its letter, and a letter is exactly two capitals:  "Claude AA" for a main chat, "Claude DE" for a child thread.  The one router reads which chat a message addresses in one function for every platform (`letter_of` in `scripts/simple_tools/wake_router.py`), with no rule of its own for any seat.  The body's `letter` field wins.  Otherwise the first of these that names a letter for the seat gives it, in this order:
+
+1. **A real mention and the letter**, anywhere:  `@**Claude** AA`, the letter on the mention's line or the next.  The name may be said again after the mention (`@**Claude** Claude AA`).  A real mention is the platform's mention name as Zulip writes it, so `@**CLAUDE** AA` is not one.
+2. **The recipient list of the post's header**, the text after its arrow (`→`, or `->` as some type it) up to the closing bracket:  `[GROK: BB.2.M 📁AFC → CLAUDE AA, CODEX BB]` is AA for Claude and BB for Codex.  This is the canonical way to address a chat, because every fleet post begins with that header.  An item counts when it is exactly the name and the letter:  `CLAUDE AA`, `Claude AA` or `@Claude AA`, the mention name or the seat tag in any case.  The name may also be a mention (`@**Claude** AA`), which the fleet's posting tools make silent in a bot's post (`@_**Claude** AA`), and the letter may carry its session token (`CODEX BB.1.M`).  The first such item for the seat wins.  An item that is only `CLAUDE` names the seat and no chat.  Only the header that opens the message is read this way.
+3. **The plain at-form**, anywhere:  `@Claude AA`, with the mention name or the seat tag after the `@` in any case (`@claude AA`), said again or not (`@Claude Claude AA`).  It does not count as the tail of a word, an address or a path (`jay@Claude AA`).
+4. **The plain form at the start of a line**, with the mention name or the seat tag as written:  `Claude AA, can you check`, or `CLAUDE AA please`.  The body's first words count as the start of a line, after the header and the mentions that follow it:  `[ECHO 📁AFC → CLAUDE] @**Claude** Claude AA, can you check`.
+5. **The plain form later in a line, written as an address**:  the mention name and the letter with a comma or a colon straight after ("thanks, Claude CC, that works"), and only when the text names no other chat by that mention name (a seat tag or a silent mention elsewhere is not counted).  A name with no comma or colon after it is a reference ("ask Claude AA about it"), and so are two different letters ("so, Claude CC, see what Claude DD said");  a possessive ("Claude CC's result") is a reference that does not count as a second chat.  This last form is the router's own choice (AFC-694), made under the owner's liberal-wake ruling (Nov 10, 2026) and not his wording, and it can be removed alone (`sole_plain_letter`).
+
+These never address a chat:  a silent mention in the body (`@_**Claude** AA`, though the name said again after one that opens the body, `@_**Claude** Claude AA`, is the plain form of 4);  quoted text (a line starting with `>`, or a quote block);  text inside another untrusted-text marker pair;  a lower-case, one-letter or three-letter form (`Claude cc`, `Claude C`, `Claude CCC`, `Claude Code`, `CLAUDE-CC`);  another platform's letter;  and the seat's own tag, which a post often opens with under the mention ("ZC, can you").  Forms 3 to 5 do not read code either, an inline span or a fenced block, because a post about the router shows these forms as examples.  A letter no live chat holds falls through to the next rule of the pick, as a wake with no letter does.  The wake still carries that letter, though, and a wake that carries a letter is not picked again when its chat is released before delivery:  it ends dead with the code `target-released`.
 
 ## The router contract (what every platform's router implements)
 
