@@ -188,14 +188,23 @@ def diff_manifest(
     return DiffResult(drifts=drifts)
 
 
-def parse_pm2_jlist(stdout: str) -> frozenset[str]:
+def parse_pm2_jlist(stdout: str) -> frozenset[str] | None:
+    """Return the pm2 app names, or None when the output is not a JSON list.
+
+    None makes diff_pm2 skip the comparison, so unreadable output is never reported
+    as every app missing.  A leading non-JSON banner (such as "[PM2] ...") is skipped.
+    """
+    text = stdout.strip()
+    start = text.find("\n[")
+    if not text.startswith("[{") and text != "[]" and start != -1:
+        text = text[start + 1 :]
     try:
-        processes = json.loads(stdout)
+        processes = json.loads(text)
     except json.JSONDecodeError:
-        return frozenset()
+        return None
     names: set[str] = set()
     if not isinstance(processes, list):
-        return frozenset()
+        return None
     for proc in processes:
         if not isinstance(proc, dict):
             continue

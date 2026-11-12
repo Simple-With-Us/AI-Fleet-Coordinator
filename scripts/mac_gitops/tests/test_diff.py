@@ -147,6 +147,17 @@ class ParsePm2Tests(unittest.TestCase):
         sample = '[{"name":"a","pm2_env":{"name":"a"}},{"name":"b"}]'
         self.assertEqual(parse_pm2_jlist(sample), frozenset({"a", "b"}))
 
+    def test_parse_pm2_jlist_unreadable_is_none(self):
+        self.assertIsNone(parse_pm2_jlist("not json"))
+        self.assertIsNone(parse_pm2_jlist('{"name": "a"}'))
+
+    def test_parse_pm2_jlist_skips_banner(self):
+        sample = '[PM2] Spawning PM2 daemon\n[{"name":"a"}]'
+        self.assertEqual(parse_pm2_jlist(sample), frozenset({"a"}))
+
+    def test_parse_pm2_jlist_empty_list(self):
+        self.assertEqual(parse_pm2_jlist("[]"), frozenset())
+
 
 if __name__ == "__main__":
     unittest.main()
