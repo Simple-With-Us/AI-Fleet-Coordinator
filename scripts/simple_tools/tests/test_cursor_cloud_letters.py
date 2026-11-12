@@ -209,6 +209,72 @@ class SweepTests(unittest.TestCase):
         self.assertIn("today", text)
         self.assertEqual(CCL.plain(key), "")
 
+    def test_a_key_that_one_mark_had_split_is_not_rejoined_into_the_dm(self) -> None:
+        # Taking the markup out of a title can join the halves of a key that one mark had split.  The values are
+        # built here, so no key-shaped literal is in the file.
+        whole = ("sk-" + "ant-" + "a1B2c3", "D4e5F6g7H8i9J0k1L2"), ("AK" + "IA", "ABCDEFGHIJKLMNOP")
+        self.steer = Steer("unavailable")
+        for n, (head, tail) in enumerate(whole):
+            self.assertTrue(PL.secretscan.scan(head + tail), n)  # the shape the scanner knows
+            for mark in "`*|\\[":
+                broken = head + mark + tail
+                self.assertEqual(CCL.plain("rotate %s today" % broken), "rotate today", (n, mark))
+                self.assertEqual(CCL.plain(broken), "", (n, mark))
+        self.agents = [agent(A1, "GB-Director: rotate %s`%s today" % whole[0])]
+        self.run_sweep()
+        text = self.dm.calls[0][-1]
+        self.assertNotIn(whole[0][0] + whole[0][1], text)
+        self.assertNotIn(whole[0][1], text)
+        self.assertIn('"GB-Director rotate today"', text)  # the words around it still go
+        # Words that hold no secret still go, with their marks taken out as before.
+        self.assertEqual(CCL.plain("fix `the` *login* page"), "fix the login page")
+
+    def test_a_bot_name_shaped_like_a_key_is_no_bots_name(self) -> None:
+        name = "GB-" + "aB3dE6gH" + "9jK2mN5p" + "Q8sT1vW4" + "yZ7bC0dF"  # 32 mixed-case letters and digits
+        self.assertTrue(PL.secretscan.scan(name))
+        self.assertEqual(CCL.bot_of(name + ": fix the login page"), ("", ""))
+        self.assertEqual(CCL.bot_of("GB-Director: fix the login page"), ("GB-Director", "fix the login page"))
+        self.steer = Steer("unavailable")
+        self.agents = [agent(A1, name + ": fix the login page")]
+        out = self.run_sweep()
+        row = out["rows"][0]
+        self.assertNotIn("bot", row)  # not in the printed row
+        self.assertNotIn("dm", row)
+        self.assertEqual(self.dm.calls, [])  # no DM, so no `--to` and no text carries it
+        self.assertNotIn(name, json.dumps(out))
+        self.assertNotIn(name, json.dumps(CCL.read_state(self.env)))
+
+    def test_a_state_that_cannot_be_saved_ends_the_run_before_anything_more_is_sent(self) -> None:
+        self.steer = Steer("unavailable")
+        self.agents = [agent(A1, "GB-Director: tidy the board"), agent(A2, "GB-Builder: fix the login page")]
+        real, writes = CCL.write_state, []
+
+        def failing_once(env, state):
+            writes.append(json.loads(json.dumps(state)))
+            if len(writes) == 1:
+                raise OSError("no space left on device")
+            return real(env, state)
+
+        with mock.patch.object(CCL, "write_state", failing_once), self.assertRaises(CCL.StateUnsaved) as stopped:
+            self.run_sweep()
+        self.assertEqual(str(stopped.exception), "OSError")  # the type only:  a message can hold a path
+        self.assertEqual(writes[0][A1]["dm"], "unknown")  # the write that failed was the one before the send
+        self.assertEqual(self.dm.calls, [])  # nothing was sent
+        self.assertEqual([sid for sid, _ in self.steer.calls], [A1])  # and the next agent was never reached
+        self.assertEqual(len(writes), 1)  # nor was the unsaved row written by a later save
+        self.assertNotIn("dm", CCL.read_state(self.env).get(A1, {}))
+        # The next run, with a disk that works, sends the DM:  nothing recorded it as sent.
+        out = self.run_sweep()
+        self.assertEqual([row.get("dm") for row in out["rows"]], ["sent", "sent"])
+        self.assertEqual([call[3] for call in self.dm.calls], ["GB-Director", "GB-Builder"])
+        self.assertEqual(CCL.read_state(self.env)[A1]["dm"], "sent")
+
+    def test_the_command_reports_an_unsaved_state_in_one_line(self) -> None:
+        with mock.patch.object(CCL, "sweep", side_effect=CCL.StateUnsaved("OSError")), \
+                mock.patch("builtins.print") as printed:
+            self.assertEqual(CCL.main(["sweep"]), 1)
+        self.assertEqual(json.loads(printed.call_args[0][0])["error"], "StateUnsaved")
+
     def test_a_refused_dm_is_asked_again_and_is_final_after_three_refusals(self) -> None:
         self.steer = Steer("unavailable")
         self.dm = Fake(code=2, out="refused: unknown name GB-Director")

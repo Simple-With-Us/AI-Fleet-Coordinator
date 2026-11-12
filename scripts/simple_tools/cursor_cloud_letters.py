@@ -101,9 +101,18 @@ def agent_problem(agent: object) -> str:
 
 
 def bot_of(title: str) -> tuple[str, str]:
-    """(the GB bot a title names, the words after its name), or ("", "") for a title that names none."""
+    """(the GB bot a title names, the words after its name), or ("", "") for a title that names none, or whose
+    name is shaped like a secret (a title can carry a pasted key where the name goes)."""
     match = BOT_TITLE.match(PL.one_line(title))
-    return (match.group(1), match.group(2).strip()) if match else ("", "")
+    if not match or PL.secretscan.scan(match.group(1)):
+        # A name that reads as a secret is no bot's name:  it goes in no DM, no `--to` and no printed row.
+        return "", ""
+    return match.group(1), match.group(2).strip()
+
+
+class StateUnsaved(RuntimeError):
+    """The sweep's state could not be saved before a DM, so the run stops:  a DM or a steer it cannot remember
+    would be sent again.  It carries the type of what failed, never a message (a message can hold a path)."""
 
 
 def state_path(env: Mapping[str, str]) -> str:
@@ -181,12 +190,19 @@ def message(bot: str, agent: Mapping[str, Any], label: str, generation: int, wor
 def plain(text: object) -> str:
     """A chat title as plain words for a Zulip DM:  one line, with any secret-shaped word dropped (a title can carry a
     pasted key, and a DM leaves this host) and the marks Zulip reads as markup or a mention taken out, so a title can
-    neither leak a credential, format the message nor @-mention anyone."""
+    neither leak a credential, format the message nor @-mention anyone.  The words are scanned before the marks
+    come out and again after."""
     words = [w for w in PL.one_line(text).split(" ") if w and not PL.secretscan.scan(w)]
     line = " ".join(words)
     if PL.secretscan.scan(line):
         return ""
-    return PL.one_line(MARKUP.sub("", line))[:200]
+    # Taking the marks out can join the two halves of a key that one mark had split, so what is left is scanned
+    # again:  a word that reads as a secret now is dropped, and a line that still reads as one sends nothing.
+    line = PL.one_line(MARKUP.sub("", line))
+    line = " ".join(w for w in line.split(" ") if w and not PL.secretscan.scan(w))
+    if PL.secretscan.scan(line):
+        return ""
+    return line[:200]
 
 
 def wanted_title(label: str, current: object) -> str:
@@ -436,7 +452,16 @@ def sweep(
                 bot=bot, label=label, generation=generation, dm="unknown", outcome="unknown", at=now
             )
             state[sid] = pending
-            write_state(env, state)
+            try:
+                write_state(env, state)
+            except Exception as exc:
+                # Nothing was sent, so nothing is remembered:  the row goes back as it was.  And a state that
+                # cannot be saved ends the run here, before any more steers or DMs it could not remember.
+                if before:
+                    state[sid] = before
+                else:
+                    state.pop(sid, None)
+                raise StateUnsaved(type(exc).__name__) from None
             dm = send_dm(bot, text, env, runner)
             row["dm"] = dm
             if dm == "sent":
@@ -458,6 +483,8 @@ def sweep(
         row: dict[str, Any] = {"session_id": str(agent["session_id"])}
         try:
             visit(agent, row)
+        except StateUnsaved:
+            raise  # not one agent's failure:  the sweep cannot remember what it sends
         except Exception as exc:  # noqa: BLE001 - one agent's failure never stops the others
             row["error"] = (
                 "failed (%s)" % type(exc).__name__
