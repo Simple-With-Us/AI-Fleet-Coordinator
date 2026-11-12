@@ -39,9 +39,7 @@ class FleetOpsProjectIdLintTests(unittest.TestCase):
         )
 
     def test_matching_digest_is_flagged(self):
-        found = lint.scan_text(
-            "bad.py", f'X = "{FAKE_BANNED}"\n', banned_digest=FAKE_BANNED_DIGEST
-        )
+        found = lint.scan_text("bad.py", f'X = "{FAKE_BANNED}"\n', banned_digest=FAKE_BANNED_DIGEST)
         self.assertEqual(len(found), 1)
         self.assertIn("INFISICAL_FLEET_OPS_PROJECT_ID", found[0].message)
 

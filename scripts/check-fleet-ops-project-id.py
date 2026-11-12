@@ -24,7 +24,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # Default: SHA-256 of the Fleet-OPS Infisical project UUID (lowercase, no braces).  The literal is not stored here.
-DEFAULT_BANNED_PROJECT_ID_SHA256 = "98523bf1fe1594f019e654a36f5fec6331bc9863270199b39c4c0977198e83c2"
+DEFAULT_BANNED_PROJECT_ID_SHA256 = (
+    "98523bf1fe1594f019e654a36f5fec6331bc9863270199b39c4c0977198e83c2"
+)
 
 UUID_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
@@ -120,7 +122,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     digest = (args.digest or "").strip().lower()
     if not re.fullmatch(r"[0-9a-f]{64}", digest):
-        print("check-fleet-ops-project-id: --digest must be a 64-character hex SHA-256", file=sys.stderr)
+        print(
+            "check-fleet-ops-project-id: --digest must be a 64-character hex SHA-256",
+            file=sys.stderr,
+        )
         return 2
     roots = args.paths or [SELF.parent.parent]
     findings: list[Finding] = []
