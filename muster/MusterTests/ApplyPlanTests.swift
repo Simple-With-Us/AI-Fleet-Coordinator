@@ -303,6 +303,165 @@ final class OutcomeMappingTests: XCTestCase {
         XCTAssertEqual(outcome, .failed("the installer exited 1"))
     }
 
+    // MARK: Partly applied runs
+
+    private let sibling = "claude-skills-installed"
+
+    /// An apply report with one block per step, in the engine's own text layout.
+    private func report(
+        _ steps: [(outcome: String, rule: String, files: [String], detail: String)],
+        refused: String? = nil
+    ) -> String {
+        var lines = ["Applied 1 change;  0 skipped,  1 failed."]
+        for step in steps {
+            lines.append("  \(step.outcome)  \(step.rule)  hooks  claude")
+            lines.append("      command:  python3 -m fleet_lanes.install_tools apply claude")
+            for file in step.files { lines.append("      file:  \(file)") }
+            lines.append("      \(step.detail)")
+        }
+        if let refused { lines.append("  REFUSED:  \(refused)") }
+        lines.append("  status after the apply:  FAIL")
+        return lines.joined(separator: "\n")
+    }
+
+    func testReportParsingKeepsTheFilesOfEachStep() throws {
+        let text = report([
+            ("applied", rule, [".claude/settings.json", ".claude/hooks/guard.py"], "installed and denied"),
+            ("failed", sibling, [".claude/skills/x"], "the installer exited 1"),
+        ])
+        let parsed = try XCTUnwrap(ApplyReport.parse(text))
+        XCTAssertEqual(parsed.steps.count, 2)
+        XCTAssertEqual(parsed.steps[0].files, [".claude/settings.json", ".claude/hooks/guard.py"])
+        XCTAssertEqual(parsed.steps[0].detail, "installed and denied")
+        XCTAssertEqual(parsed.steps[1].files, [".claude/skills/x"])
+        XCTAssertEqual(parsed.steps[1].detail, "the installer exited 1")
+        XCTAssertTrue(parsed.steps[0].isApplied)
+        XCTAssertFalse(parsed.steps[0].isNotWritten)
+        XCTAssertTrue(parsed.steps[1].isNotWritten)
+        let fromFixture = try XCTUnwrap(ApplyReport.parse(try fixture("apply_report_applied", "txt")))
+        XCTAssertEqual(fromFixture.steps[0].files, [".claude/settings.json"])
+    }
+
+    func testTargetAppliedWithASiblingFailedIsPartNotGreen() throws {
+        let text = report([
+            ("applied", rule, [".claude/settings.json"], "installed and denied"),
+            ("failed", sibling, [".claude/skills/x"], "the installer exited 1"),
+        ])
+        let outcome = ApplyOutcome.classify(
+            applyResult: result(1, text), targetRuleID: rule, reproved: result(state: .pass)
+        )
+        guard case .partlyApplied(let partial) = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertEqual(partial.written.map { $0.ruleID }, [rule])
+        XCTAssertEqual(partial.notWritten.map { $0.ruleID }, [sibling])
+        XCTAssertEqual(partial.reproved, result(state: .pass))
+        XCTAssertFalse(outcome.isGreen)
+    }
+
+    func testTargetFailedWithASiblingAppliedIsPartNotAPlainFailure() throws {
+        let text = report([
+            ("failed", rule, [".claude/settings.json"], "the installer exited 1"),
+            ("applied", sibling, [".claude/skills/x"], "installed"),
+        ])
+        let outcome = ApplyOutcome.classify(
+            applyResult: result(1, text), targetRuleID: rule, reproved: result(state: .missing)
+        )
+        guard case .partlyApplied(let partial) = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertEqual(partial.written.map { $0.ruleID }, [sibling])
+        XCTAssertEqual(partial.notWritten.map { $0.ruleID }, [rule])
+    }
+
+    func testTargetSkippedWithASiblingAppliedListsTheTargetAsNotWritten() throws {
+        let text = report([
+            ("skipped", rule, [], "the rule has no auto-fix"),
+            ("applied", sibling, [".claude/skills/x"], "installed"),
+        ])
+        let outcome = ApplyOutcome.classify(
+            applyResult: result(0, text), targetRuleID: rule, reproved: result(state: .missing)
+        )
+        guard case .partlyApplied(let partial) = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertEqual(partial.written.map { $0.ruleID }, [sibling])
+        XCTAssertEqual(partial.notWritten.map { $0.ruleID }, [rule])
+    }
+
+    func testExitTwoWithTheTargetWrittenAndASiblingRefusedIsPartial() throws {
+        let text = report(
+            [
+                ("applied", rule, [".claude/settings.json"], "installed and denied"),
+                ("refused", sibling, [".claude/skills/x"], "the Touch ID confirmation did not succeed"),
+            ],
+            refused: "the Touch ID confirmation did not succeed"
+        )
+        let outcome = ApplyOutcome.classify(
+            applyResult: result(2, text), targetRuleID: rule, reproved: result(state: .pass)
+        )
+        guard case .partlyApplied(let partial) = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertEqual(partial.written.map { $0.ruleID }, [rule])
+        XCTAssertEqual(partial.notWritten.map { $0.ruleID }, [sibling])
+    }
+
+    func testExitTwoWithNothingWrittenStaysARefusal() throws {
+        let text = report(
+            [
+                ("refused", rule, [".claude/settings.json"], "the Touch ID confirmation did not succeed"),
+                ("refused", sibling, [".claude/skills/x"], "the Touch ID confirmation did not succeed"),
+            ],
+            refused: "the Touch ID confirmation did not succeed"
+        )
+        let outcome = ApplyOutcome.classify(
+            applyResult: result(2, text), targetRuleID: rule, reproved: result(state: .missing)
+        )
+        guard case .refused(let kind, _) = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertEqual(kind, .touchIDDeclined)
+    }
+
+    func testEveryStepAppliedStillClassifiesFromTheReproof() throws {
+        let text = report([
+            ("applied", rule, [".claude/settings.json"], "installed and denied"),
+            ("applied", sibling, [".claude/skills/x"], "installed"),
+        ])
+        let green = ApplyOutcome.classify(
+            applyResult: result(0, text), targetRuleID: rule, reproved: result(state: .pass)
+        )
+        XCTAssertTrue(green.isGreen)
+        let notGreen = ApplyOutcome.classify(
+            applyResult: result(1, text), targetRuleID: rule, reproved: result(state: .missing)
+        )
+        XCTAssertEqual(notGreen, .stillFailing(result(state: .missing)))
+    }
+
+    func testAFailedTargetWithNothingWrittenElsewhereStaysAFailure() throws {
+        let text = report([
+            ("failed", rule, [".claude/settings.json"], "the installer exited 1"),
+            ("already-current", sibling, [], "nothing to do"),
+        ])
+        let outcome = ApplyOutcome.classify(
+            applyResult: result(1, text), targetRuleID: rule, reproved: result(state: .missing)
+        )
+        XCTAssertEqual(outcome, .failed("the installer exited 1"))
+    }
+
+    func testPartialSummaryAndDetailAccountForEveryStep() {
+        let written = ApplyReportStep(
+            outcome: "applied", ruleID: rule, kind: "hooks", platform: "claude",
+            detail: "installed and denied", files: [".claude/settings.json"]
+        )
+        let missed = ApplyReportStep(
+            outcome: "failed", ruleID: sibling, kind: "skills", platform: "claude",
+            detail: "the installer exited 1", files: []
+        )
+        let partial = ApplyPartialResult(written: [written], notWritten: [missed], reproved: nil)
+        XCTAssertEqual(
+            partial.detail,
+            "Written:\n  \(rule) (~/.claude/settings.json)\nNot written:\n  \(sibling): the installer exited 1"
+        )
+        XCTAssertEqual(
+            ApplyOutcome.partlyApplied(partial).summary,
+            "Apply was partial, with 1 written and 1 not written.\u{00A0} Nothing was retried."
+        )
+        let none = ApplyPartialResult(written: [], notWritten: [missed], reproved: nil)
+        XCTAssertTrue(none.detail.hasPrefix("Nothing was written."))
+    }
+
     func testEngineLevelRefusalWithoutReport() {
         let outcome = ApplyOutcome.classify(
             applyResult: result(2, "", stderr: "fleet-config: the manifest is invalid\n"),
