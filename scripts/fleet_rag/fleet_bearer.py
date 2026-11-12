@@ -296,9 +296,20 @@ class Client:
             ):
                 raise ValueError
             if result.get("isError"):
+                # Hosted tool errors follow contract.errorResult: no structuredContent,
+                # with the typed error under _meta["simple-tools/error"]. Keep the
+                # older structuredContent shape as a compatibility fallback. Never
+                # echo upstream text, which can contain private source content.
+                meta = result.get("_meta")
+                error = meta.get("simple-tools/error") if isinstance(meta, dict) else None
                 sc = result.get("structuredContent")
-                code = sc.get("code") if isinstance(sc, dict) else None
-                if not isinstance(code, str) or not re.fullmatch(r"[a-z_]{1,40}", code):
+                code = None
+                for candidate in (error, sc):
+                    value = candidate.get("code") if isinstance(candidate, dict) else None
+                    if isinstance(value, str) and re.fullmatch(r"[a-z_]{1,40}", value):
+                        code = value
+                        break
+                if code is None:
                     code = "upstream_error"
                 raise FleetError(code, "gateway refused the call (" + code + ")" + unknown)
             return result

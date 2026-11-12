@@ -300,6 +300,12 @@ class ListenerHarness(Harness):
         """Every message the fake realm holds that the Operator sent."""
         return [m for m in self.fake.messages if m["sender_id"] == OPERATOR_USER_ID]
 
+    def log_events(self, name: str) -> list[dict[str, Any]]:
+        """The listener log's lines for one event, parsed."""
+        text = (self.state_dir / "logs" / "listener.log").read_text()
+        rows = [json.loads(line) for line in text.splitlines() if line.strip()]
+        return [row for row in rows if row.get("event") == name]
+
     def seat_requests(self) -> list[Any]:
         """Every message, edit or typing indicator a seat's bot (anyone but the Operator) wrote to
         the fake realm over HTTP.

@@ -10,6 +10,7 @@ import ast
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -80,6 +81,12 @@ class ClampCheck(unittest.TestCase):
         ok, detail = prio.clamp_applied((10, 20), 10, 20)
         self.assertTrue(ok, detail)
         self.assertIn("pri=20", detail)
+
+    def test_runner_priority_18_is_a_verified_utility_clamp(self):
+        ok, detail = prio.clamp_applied((10, 18), 10, 20)
+        self.assertTrue(ok, detail)
+        self.assertIn("pri=18", detail)
+        self.assertNotIn("pri=20", detail)
 
     def test_a_normal_process_is_refused(self):
         ok, detail = prio.clamp_applied((10, 31), 10, 20)
@@ -246,7 +253,7 @@ class LiveCanary(unittest.TestCase):
         with tempfile.TemporaryDirectory() as scratch:
             script = Path(scratch) / "canary.sh"
             script.write_text(
-                '#!/bin/bash\n/bin/ps -o ni=,pri= -p $$ | tr -d " " > "$1"\n',
+                '#!/bin/bash\n/bin/ps -o ni=,pri= -p $$ | cat > "$1"\n',
                 encoding="utf-8",
             )
             script.chmod(0o755)
@@ -271,11 +278,21 @@ class LiveCanary(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 0, proc.stderr)
             observed = out.read_text(encoding="utf-8").strip()
-            self.assertEqual(observed, "1020", f"expected ni=10 and pri=20, read {observed}")
+            got_nice, got_pri = (int(part) for part in observed.split())
+            self.assertGreaterEqual(got_nice, 10, observed)
+            self.assertGreaterEqual(got_pri, prio.MIN_ACCEPTED_PRI, observed)
+            self.assertLessEqual(got_pri, prio.MAX_ACCEPTED_PRI, observed)
             receipt = json.loads(log.read_text(encoding="utf-8").strip().splitlines()[-1])
             self.assertEqual(receipt["status"], "ran")
             self.assertEqual(receipt["exit"], 0)
-            self.assertIn("pri=20", receipt["verified"])
+            # The helper reads before exec and the canary reads after exec;
+            # scheduler values can differ while both remain in the utility band.
+            verified = re.match(r"^nice=(\d+) pri=(\d+)(?:$| \()", receipt["verified"])
+            self.assertIsNotNone(verified, receipt["verified"])
+            receipt_nice, receipt_pri = map(int, verified.groups())
+            self.assertGreaterEqual(receipt_nice, 10, receipt["verified"])
+            self.assertGreaterEqual(receipt_pri, prio.MIN_ACCEPTED_PRI, receipt["verified"])
+            self.assertLessEqual(receipt_pri, prio.MAX_ACCEPTED_PRI, receipt["verified"])
 
     def test_a_launched_job_runs_from_an_already_niced_parent(self):
         """The bug a review found: `nice -n 10` is an INCREMENT.
@@ -325,7 +342,8 @@ class LiveCanary(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             observed = out.read_text(encoding="utf-8").strip()
             got_nice, got_pri = (int(part) for part in observed.split())
-            self.assertEqual(got_pri, 20, f"expected the utility clamp, read {observed}")
+            self.assertGreaterEqual(got_pri, prio.MIN_ACCEPTED_PRI, observed)
+            self.assertLessEqual(got_pri, prio.MAX_ACCEPTED_PRI, observed)
             self.assertGreaterEqual(
                 got_nice,
                 10,

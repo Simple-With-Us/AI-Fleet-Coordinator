@@ -393,13 +393,18 @@ class ContractTests(unittest.TestCase):
         self.assertTrue(PL._accepts(OR.register_session, "letter_space"))
         self.assertTrue(PL._accepts(OR.SessionRegistry.reopen, "source"))
 
+    # Two doubled pairs, and a second chat that held BB, so a freed pair can go to another chat:  a main chat takes the
+    # free doubled pair issued the fewest times (owner, Nov 11 2026), so a freed AA is reissued only once BB caught up.
+    @mock.patch.dict(OR.LETTER_SPACES, {"double": ("AA", "BB")})
     def test_a_reopen_that_would_turn_a_pair_chat_into_a_single_letter_one_is_refused_unwritten(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = os.path.join(tmp, "registry.sqlite3")
             first = self.make(db, "s-0001")
+            filler = self.make(db, "s-0009")  # BB
             reg = OR.SessionRegistry(db)
             try:
                 reg.close(first["record_id"], source="test")
+                reg.close(filler["record_id"], source="test")
                 self.make(db, "s-0002")  # takes the pair s-0001 held
                 calls = []
 
@@ -484,11 +489,17 @@ class RegistrySideTests(Base):
         self.assertEqual((code, out["closed"]), (0, True))
         self.assertTrue(self.registry(*self.reg_argv("touch", "s-0001"))[1]["retired"])
         back = self.register("s-0001", title="Back Again")
-        self.assertEqual((back["outcome"], back["label"], back["generation"], back["previous"]), ("reopened", label, 2, label))
+        # its own pair back as the same generation:  a return is not a second issue of the pair
+        self.assertEqual((back["outcome"], back["label"], back["generation"], back["previous"]), ("reopened", label, 1, label))
         self.assertEqual(self.lookup("s-0001")["title"], "Back Again")
 
+    # Two doubled pairs, and a second chat that held BB, so a freed pair can go to another chat:  a main chat takes the
+    # free doubled pair issued the fewest times (owner, Nov 11 2026), so a freed AA is reissued only once BB caught up.
+    @mock.patch.dict(OR.LETTER_SPACES, {"double": ("AA", "BB")})
     def test_a_chat_whose_pair_went_to_another_chat_never_gets_a_single_letter(self) -> None:
         label = self.register("s-0001")["label"]
+        self.register("s-0009")  # BB
+        self.assertEqual(self.registry(*self.reg_argv("close", "s-0009"))[1]["closed"], True)
         self.assertEqual(self.registry(*self.reg_argv("close", "s-0001"))[1]["closed"], True)
         self.assertEqual(self.register("s-0002")["label"], label)  # the pair is free again, and taken
         code, back = self.register_raw("s-0001")
@@ -587,16 +598,18 @@ class RegistrySideTests(Base):
             for i in range(3):
                 self.register("s-%04d" % i)
                 self.set_seen("s-%04d" % i, seen(2 - i))
-            self.set_seen("s-0001", seen(3))  # the oldest
-            held = self.lookup("s-0001")["label"]
-            out = self.register("s-0099", now=now)
-        self.assertEqual((out["evicted"], out["label"], out["generation"]), (1, held, 2))
-        self.assertEqual(self.lookup("s-0001")["state"], "closed")
+            self.set_seen("s-0001", seen(3))  # the least recently seen, an hour older but not stale
+            code, out = self.registry(*self.reg_argv("register", "s-0099"), now=now)
+        # Owner, Nov 11 2026:  "ok just refuse actually is fine".  The chat is refused and no live chat loses its pair.
+        self.assertEqual(code, 5)
+        self.assertIn("main-chat pairs (AA to ZZ) are live", out["error"])
+        for i in range(3):
+            self.assertEqual(self.lookup("s-%04d" % i)["state"], "active")
 
-    def test_full_letters_evict_the_least_recently_seen(self) -> None:
+    def test_full_letters_refuse_and_evict_no_one(self) -> None:
         self.fill_the_letters_and_ask_for_one_more()
 
-    def test_the_eviction_does_not_depend_on_the_calendar(self) -> None:
+    def test_the_refusal_does_not_depend_on_the_calendar(self) -> None:
         """The same scenario with the real clock years away from the fixture's: the test cannot go red with the date."""
         years_on = OR.datetime(2031, 6, 1, tzinfo=OR.UTC).timestamp()
         with mock.patch("time.time", return_value=years_on):
@@ -613,7 +626,7 @@ class RegistrySideTests(Base):
                 self.set_seen(sid, "2026-01-01T00:00:00.000Z")
             code, out = self.registry(*self.reg_argv("register", "s-0001", letter_pick="lowest"))
         self.assertEqual(code, 5)
-        self.assertIn("in use", out["error"])
+        self.assertIn("are live", out["error"])
         for sid in ("op-0001", "op-0002"):
             self.assertEqual(self.lookup(sid, "mac")["state"], "active")
 
@@ -782,10 +795,15 @@ class HookTests(Base):
         self.assertNotIn("sessionTitle", out or {})  # already right
         self.assertEqual(self.lookup("s-0001")["title"], "Fleet Sweep")
 
+    # Two doubled pairs, and a second chat that held BB, so a freed pair can go to another chat:  a main chat takes the
+    # free doubled pair issued the fewest times (owner, Nov 11 2026), so a freed AA is reissued only once BB caught up.
+    @mock.patch.dict(OR.LETTER_SPACES, {"double": ("AA", "BB")})
     def test_clear_closes_and_reopen_checks_again(self) -> None:
         self.spec = make_spec(close_reasons=("clear", "logout", "other"), title_in_output=True)
         self.start("s-0001", session_title="Old Name")
         old = self.label("s-0001")
+        self.start("s-0009")  # BB
+        self.end("s-0009", "clear")
         self.end("s-0001", "clear")
         self.assertEqual(self.lookup("s-0001")["state"], "closed")
         self.assertEqual(self.note("s-0001")["ended"]["reason"], "clear")
@@ -833,12 +851,17 @@ class HookTests(Base):
         out = self.prompt("s-0001", "write the tests", session_title="ZZ: Previous Chat")
         self.assertEqual(out["sessionTitle"], "%s: Write the Tests" % label)
 
+    # Two doubled pairs, and a second chat that held BB, so a freed pair can go to another chat:  a main chat takes the
+    # free doubled pair issued the fewest times (owner, Nov 11 2026), so a freed AA is reissued only once BB caught up.
+    @mock.patch.dict(OR.LETTER_SPACES, {"double": ("AA", "BB")})
     def test_a_letter_retired_while_open_is_reissued(self) -> None:
         self.start("s-0001")
         old = self.label("s-0001")
+        self.start("s-0009")  # BB
         self.prompt("s-0001", "first task", session_title="%s: New Chat" % old)
         reg = OR.SessionRegistry(self.db)
         try:
+            reg.close(self.lookup("s-0009")["record_id"], source="test")
             reg.close(self.lookup("s-0001")["record_id"], source="test")
         finally:
             reg.close_db()
@@ -925,6 +948,572 @@ class HookTests(Base):
             self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "x",
                        "session_title": "Stubborn Name"}, runner=ssh)
         self.assertEqual(ssh.ops(), ["title", "title"])
+
+    # ---- a letter the registry changes in place: the title follows it ----
+
+    def move_letter(self, sid: str, letter: str = "", generation: int = 0) -> None:
+        """Change the live letter (or generation) of a chat's record in place, as a relabel or a restore does."""
+        record = self.lookup(sid)["record_id"]
+        conn = sqlite3.connect(self.db)
+        with conn:
+            if letter:
+                conn.execute("UPDATE alias_assignments SET letter = ? WHERE record_id = ? AND retired_at IS NULL",
+                             (letter, record))
+            if generation:
+                conn.execute("UPDATE alias_assignments SET generation = ? WHERE record_id = ? AND retired_at IS NULL",
+                             (generation, record))
+        conn.close()
+
+    def titled_chat(self) -> str:
+        self.start("s-0001")
+        label = self.label("s-0001")
+        self.prompt("s-0001", "fix the build", session_title="%s: New Chat" % label)
+        return label
+
+    def test_a_letter_the_registry_moved_retitles_the_chat_on_its_next_touch(self) -> None:
+        old = self.titled_chat()
+        self.move_letter("s-0001", "QX")
+        ssh = FakeSsh(self)
+        later = time.time() + PL.TOUCH_SECONDS + 5
+        out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more",
+                         "session_title": "%s: Fix the Build" % old}, runner=ssh, now=later)
+        self.assertEqual(ssh.ops(), ["touch"])
+        self.assertEqual(out["sessionTitle"], "QX: Fix the Build")
+        self.assertIn("letter changed from %s to QX" % old, out["additionalContext"])
+        self.assertIn('"@**Codex** QX"', out["additionalContext"])
+        note = self.note("s-0001")
+        self.assertEqual((note["label"], note["placeholder"]), ("QX", "QX: New Chat"))
+        self.assertIn(old, note["labels"])  # a title that still shows the old letter is read as this chat's
+        # The next prompt has nothing to change, whether the platform shows the new title or still the old one.
+        self.assertIsNone(self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "x",
+                                     "session_title": "QX: Fix the Build"}, runner=ssh, now=later + 60))
+        self.assertEqual(ssh.ops(), ["touch"])
+
+    def test_a_title_answer_with_a_new_letter_retitles_the_chat(self) -> None:
+        old = self.titled_chat()
+        self.move_letter("s-0001", "QX")
+        out = self.prompt("s-0001", "next", session_title="%s: Better Name" % old)  # a rename: a title call
+        self.assertEqual(out["sessionTitle"], "QX: Better Name")
+        self.assertIn("letter changed from %s to QX" % old, out["additionalContext"])
+        self.assertEqual(self.lookup("s-0001")["title"], "Better Name")
+        self.assertEqual(self.label("s-0001"), "QX")
+
+    def test_the_same_letter_and_generation_change_nothing(self) -> None:
+        label = self.titled_chat()
+        before = self.note("s-0001")
+        later = time.time() + PL.TOUCH_SECONDS + 5
+        out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more",
+                         "session_title": "%s: Fix the Build" % label}, now=later)
+        self.assertIsNone(out)
+        after = self.note("s-0001")
+        self.assertEqual((after["label"], after["generation"]), (before["label"], before["generation"]))
+
+    def test_a_generation_alone_is_folded_in_silently(self) -> None:
+        label = self.titled_chat()
+        self.move_letter("s-0001", generation=2)
+        later = time.time() + PL.TOUCH_SECONDS + 5
+        out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more",
+                         "session_title": "%s: Fix the Build" % label}, now=later)
+        self.assertIsNone(out)  # no title and nothing said
+        note = self.note("s-0001")
+        self.assertEqual((note["label"], note["generation"]), (label, 2))
+
+    def test_an_old_registry_touch_answer_without_a_letter_changes_nothing(self) -> None:
+        class OldRegistry(FakeSsh):
+            """A Mac on a runtime from before the touch named the letter."""
+
+            def __call__(self, cmd, **kwargs):
+                answer = super().__call__(cmd, **kwargs)
+                body = json.loads(answer.stdout)
+                if shlex.split(cmd[8])[2] == "touch":
+                    body = {k: v for k, v in body.items() if k not in ("label", "generation")}
+                return SimpleNamespace(stdout=json.dumps(body) + "\n", returncode=answer.returncode)
+
+        label = self.titled_chat()
+        self.move_letter("s-0001", "QX")
+        ssh = OldRegistry(self)
+        later = time.time() + PL.TOUCH_SECONDS + 5
+        out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more",
+                         "session_title": "%s: Fix the Build" % label}, runner=ssh, now=later)
+        self.assertEqual(ssh.ops(), ["touch"])
+        self.assertIsNone(out)
+        self.assertEqual(self.label("s-0001"), label)
+
+    def test_follow_letter_reads_only_a_live_answer_with_a_letter(self) -> None:
+        base = {"state": "open", "label": "AA", "generation": 1, "record_id": "r1"}
+        for answer in ({"ok": True, "record_id": "r1"}, {"retired": True, "record_id": "r1"},
+                       {"error": "the registry host did not answer"}, {"ok": True, "label": ""}, {}):
+            note = dict(base)
+            self.assertEqual(PL.follow_letter(note, answer), "", answer)
+            self.assertEqual(note, base, answer)
+        note = dict(base, state="closed")
+        self.assertEqual(PL.follow_letter(note, {"ok": True, "label": "QX", "generation": 1}), "")
+        self.assertEqual(note["label"], "AA")
+        note = dict(base)
+        self.assertEqual(PL.follow_letter(note, {"ok": True, "label": "QX", "generation": 3, "record_id": "r1"}), "AA")
+        self.assertEqual((note["label"], note["generation"]), ("QX", 3))
+
+    def test_a_new_letter_without_a_generation_is_the_first_generation(self) -> None:
+        note = {"state": "open", "label": "AA", "generation": 3, "record_id": "r1"}
+        self.assertEqual(PL.follow_letter(note, {"ok": True, "label": "QX"}), "AA")
+        self.assertEqual((note["label"], note["generation"]), ("QX", 1))
+        for bad in (None, 0, True, "2"):
+            note = {"state": "open", "label": "AA", "generation": 3}
+            PL.follow_letter(note, {"ok": True, "label": "QX", "generation": bad})
+            self.assertEqual(note["generation"], 1, bad)
+        note = {"state": "open", "label": "AA", "generation": 3}
+        PL.follow_letter(note, {"ok": True, "label": "AA"})  # the same letter with none:  the note keeps its own
+        self.assertEqual(note["generation"], 3)
+
+    def test_a_title_answer_refreshes_the_record_id(self) -> None:
+        self.titled_chat()
+        code, answer = self.registry(*self.reg_argv("title", "s-0001", title="Words"))
+        self.assertEqual(code, 0, answer)
+        self.assertEqual(answer["record_id"], self.lookup("s-0001")["record_id"])
+        note = {"state": "open", "label": "AA", "generation": 1, "record_id": "old"}
+        PL.follow_letter(note, {"ok": True, "label": "QX", "generation": 1, "record_id": "r2"})
+        self.assertEqual(note["record_id"], "r2")
+
+    def test_a_rename_that_only_drops_the_letter_touches_on_schedule_and_follows_a_moved_letter(self) -> None:
+        spec = make_spec(events={"session.created": "start", "session.renamed": "rename", "session.deleted": "end"},
+                         output="json")
+        start = time.time()
+
+        def rename(title: str, now: float, ssh: FakeSsh) -> dict | None:
+            out = io.StringIO()
+            PL.hook(spec, self.server_env(), io.StringIO(json.dumps(
+                {"event": "session.renamed", "session_id": "s-0001", "title": title})), out, runner=ssh, now=now)
+            text = out.getvalue().strip()
+            return json.loads(text)["platform_letter"] if text else None
+
+        PL.hook(spec, self.server_env(), io.StringIO(json.dumps({"event": "session.created", "session_id": "s-0001"})),
+                io.StringIO(), runner=FakeSsh(self), now=start)
+        old = self.label("s-0001")
+        rename("Fresh Name", start + 1, FakeSsh(self))  # the words reach the Operator
+        self.move_letter("s-0001", "QX")
+        path = os.path.join(self.state, "CODEX", "letters", "s-0001.json")
+
+        def forget_seen() -> None:  # the platform shows the bare words again, as a name it was not told
+            note = self.note("s-0001")
+            note.pop("seen", None)
+            with open(path, "w") as fh:
+                json.dump(note, fh)
+
+        # Within TOUCH_SECONDS of the last call a letter-only rename costs no registry call, as a prompt would not.
+        forget_seen()
+        ssh = FakeSsh(self)
+        body = rename("Fresh Name", start + 60, ssh)
+        self.assertEqual(ssh.ops(), [])
+        self.assertEqual(body["title"], "%s: Fresh Name" % old)
+        # Once a touch is due, the rename makes it and takes the letter the registry holds now.
+        forget_seen()
+        body = rename("Fresh Name", start + PL.TOUCH_SECONDS + 5, ssh)
+        self.assertEqual(ssh.ops(), ["touch"])
+        self.assertEqual((body["label"], body["title"]), ("QX", "QX: Fresh Name"))
+        self.assertIn("letter changed from %s to QX" % old, body["context"])
+
+    def test_the_api_touch_answer_passes_the_letter_on_and_an_old_one_names_none(self) -> None:
+        new = {"record_id": "r1", "outcome": "seen", "label": "QX", "generation": 2}
+        self.assertEqual(PL._touch_answer(new), {"ok": True, "record_id": "r1", "label": "QX", "generation": 2})
+        self.assertEqual(PL._touch_answer({"record_id": "r1", "outcome": "seen"}), {"ok": True, "record_id": "r1"})
+
+    def test_a_rename_event_follows_a_moved_letter(self) -> None:
+        spec = make_spec(events={"session.created": "start", "session.renamed": "rename", "session.deleted": "end"},
+                         output="json")
+        PL.hook(spec, self.server_env(), io.StringIO(json.dumps({"event": "session.created", "session_id": "s-0001"})),
+                io.StringIO(), runner=FakeSsh(self))
+        old = self.label("s-0001")
+        self.move_letter("s-0001", "QX")
+        out = io.StringIO()
+        PL.hook(spec, self.server_env(), io.StringIO(json.dumps(
+            {"event": "session.renamed", "session_id": "s-0001", "title": "Fresh Name"})), out, runner=FakeSsh(self))
+        body = json.loads(out.getvalue())["platform_letter"]
+        self.assertEqual((body["label"], body["title"]), ("QX", "QX: Fresh Name"))
+        self.assertIn("letter changed from %s to QX" % old, body["context"])
+
+    # ---- AFC-694:  the Linear issues a turn touched go to the registry ----
+
+    def transcript(self, *entries, name: str = "t.jsonl") -> str:
+        """Append transcript lines (dicts as JSON, strings as they are) under the platform's home folder."""
+        folder = os.path.join(self.home, ".codex", "sessions")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, name)
+        with open(path, "a", encoding="utf-8") as fh:
+            for entry in entries:
+                fh.write((json.dumps(entry) if isinstance(entry, dict) else entry) + "\n")
+        return path
+
+    def issues_held(self, sid: str = "s-0001") -> list[str]:
+        found = OR.resolve_label(self.db, "codex", self.label(sid)) or {}
+        return sorted(i["id"] for i in found.get("issues", []))
+
+    def turn(self, ssh, text: str = "go", **extra) -> dict | None:
+        label = self.label("s-0001")
+        return self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": text,
+                          "session_title": "%s: Fix the Build" % label, **extra}, runner=ssh)
+
+    def test_a_turn_records_the_issues_its_transcript_names_and_sends_only_a_change(self) -> None:
+        self.titled_chat()
+        path = self.transcript(
+            {"type": "user", "message": {"role": "user", "content": "please fix AFC-694 today"}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "input": {"command": 'simple-chat post --topic "OPS-12 rollout" --body x'}}]}},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "content": "a file that names AFC-999 and posted id 5 to #WIP › CT-7 notes"}]},
+             "toolUseResult": {"stdout": "AFC-998"}},
+        )
+        ssh = FakeSsh(self)
+        self.assertIsNone(self.turn(ssh, transcript_path=path))  # nothing changes on screen
+        self.assertEqual(ssh.ops(), ["issues"])
+        self.assertEqual(self.issues_held(), ["AFC-694", "CT-7", "OPS-12"])  # not what a tool's output read
+        note = self.note("s-0001")
+        self.assertEqual(note["issues_sent"], ["AFC-694", "CT-7", "OPS-12"])
+        self.assertEqual(note["issues_scan"]["offset"], os.path.getsize(path))
+        # No new lines, or only ids it already sent:  no registry call.
+        self.turn(ssh, transcript_path=path)
+        self.transcript({"type": "assistant", "message": {"content": "still on AFC-694"}})
+        self.turn(ssh, transcript_path=path)
+        self.assertEqual(ssh.ops(), ["issues"])
+        # A new id is a change, and it goes first.
+        self.transcript({"type": "assistant", "message": {"content": "now SWU-3"}})
+        self.turn(ssh, transcript_path=path)
+        self.assertEqual(ssh.ops(), ["issues", "issues"])
+        self.assertEqual(self.issues_held(), ["AFC-694", "CT-7", "OPS-12", "SWU-3"])
+        self.assertEqual(self.note("s-0001")["issues"][0]["id"], "SWU-3")
+
+    def test_a_turn_records_the_issue_its_branch_names(self) -> None:
+        self.titled_chat()
+        repo = os.path.join(self.tmp.name, "repo")
+        os.makedirs(repo)
+        git = ["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+        subprocess.run(git + ["init", "-q", "-b", "codex/afc-701-letter-issues"], check=True)
+        subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "x"], check=True)
+        ssh = FakeSsh(self)
+        self.turn(ssh, cwd=repo)
+        self.assertEqual(ssh.ops(), ["issues"])
+        self.assertEqual(self.issues_held(), ["AFC-701"])
+        # A folder that is no git tree, or no folder at all, gives nothing.
+        self.assertEqual(PL.branch_issue_ids(self.tmp.name), set())
+        self.assertEqual(PL.branch_issue_ids(os.path.join(self.tmp.name, "gone")), set())
+
+    def test_hook_data_with_neither_a_transcript_nor_a_folder_sends_nothing(self) -> None:
+        self.titled_chat()
+        ssh = FakeSsh(self)
+        self.turn(ssh)
+        self.assertEqual(ssh.ops(), [])
+        self.assertNotIn("issues", self.note("s-0001"))
+
+    def test_a_transcript_outside_the_home_folder_is_never_read(self) -> None:
+        self.titled_chat()
+        outside = os.path.join(self.tmp.name, "elsewhere.jsonl")
+        with open(outside, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "user", "message": {"content": "AFC-694"}}) + "\n")
+        ssh = FakeSsh(self)
+        self.turn(ssh, transcript_path=outside)
+        self.assertEqual(ssh.ops(), [])
+
+    def test_a_registry_that_fails_or_does_not_know_the_op_is_silent_and_asked_again_later(self) -> None:
+        class OldMac(FakeSsh):
+            """A Mac on a runtime from before the op:  its parser refuses the whole call."""
+
+            def __call__(self, cmd, **kwargs):
+                if shlex.split(cmd[8])[2] == "issues":
+                    self.calls.append(cmd)
+                    return SimpleNamespace(stdout='{"error": "bad arguments"}\n', returncode=2)
+                return super().__call__(cmd, **kwargs)
+
+        label = self.titled_chat()
+        path = self.transcript({"type": "user", "message": {"content": "AFC-694"}})
+        ssh = OldMac(self)
+        start = time.time()
+        out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go",
+                         "session_title": "%s: Fix the Build" % label, "transcript_path": path},
+                        runner=ssh, now=start)
+        self.assertIsNone(out)  # the prompt is untouched
+        note = self.note("s-0001")
+        self.assertEqual([i["id"] for i in note["issues"]], ["AFC-694"])
+        self.assertNotIn("issues_sent", note)
+        self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go",
+                   "session_title": "%s: Fix the Build" % label, "transcript_path": path}, runner=ssh, now=start + 60)
+        self.assertEqual(ssh.ops(), ["issues"])  # not again inside the wait
+        self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go",
+                   "session_title": "%s: Fix the Build" % label, "transcript_path": path},
+                  runner=FakeSsh(self), now=start + PL.RETRY_SECONDS + 5)
+        self.assertEqual(self.issues_held(), ["AFC-694"])
+
+    def test_issue_ids_in_lines_reads_the_chats_own_words_and_any_posted_topic(self) -> None:
+        lines = [
+            json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "AFC-1 and CTS-2"}]}}),
+            json.dumps({"type": "function_call_output", "output": "OPS-3"}),
+            json.dumps({"isMeta": True, "message": {"content": "OPS-4"}}),
+            json.dumps({"type": "tool_result", "content": "simple-chat post --topic 'CC-5 x'"}),
+            "plain text names UM-6, afc-7 and XAFC-8",
+            json.dumps({"input": {"command": "simple-chat post --topic=FL-9"}}),
+        ]
+        self.assertEqual(PL.issue_ids_in_lines(lines), {"AFC-1", "CTS-2", "CC-5", "UM-6", "FL-9"})
+
+    def test_issue_ids_in_lines_reads_past_a_type_that_is_not_a_string(self) -> None:
+        # A tool input that carries a JSON schema has "type" holding a list or a mapping;  it must not
+        # stop the scan (Sentry on #1762).
+        lines = [
+            json.dumps({"input": {"schema": {"type": ["string", "null"]}, "note": "AFC-11"}}),
+            json.dumps({"type": {"nested": True}, "text": "CTS-12"}),
+        ]
+        self.assertEqual(PL.issue_ids_in_lines(lines), {"AFC-11", "CTS-12"})
+
+    def test_read_new_lines_reads_only_new_whole_lines_within_its_cap(self) -> None:
+        root = os.path.join(self.home, ".codex")
+        path = self.transcript("one AFC-1", "two AFC-2")
+        lines, scan = PL.read_new_lines(path, root, None)
+        self.assertEqual(lines, ["one AFC-1", "two AFC-2"])
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("three AFC-3\nfour, half writ")
+        lines, scan = PL.read_new_lines(path, root, scan)
+        self.assertEqual(lines, ["three AFC-3"])  # the line still being written waits
+        self.assertEqual(PL.read_new_lines(path, root, scan)[0], [])
+        with mock.patch.object(PL, "ISSUE_SCAN_BYTES", 16):
+            big = self.transcript(*["line %d AFC-%d" % (n, n) for n in range(50)], name="big.jsonl")
+            lines, scan = PL.read_new_lines(big, root, None)
+        self.assertEqual(lines, ["line 49 AFC-49"])  # only the tail, from its first whole line
+        self.assertEqual(scan["offset"], os.path.getsize(big))
+        with self.assertRaises(ValueError):
+            PL.read_new_lines(path, os.path.join(self.home, "other"), None)
+
+    def test_branch_issue_ids_is_silent_on_every_failure(self) -> None:
+        def answer(stdout: str = "", code: int = 0, raises: Exception | None = None):
+            def run(*args, **kwargs):
+                self.assertEqual(kwargs["timeout"], PL.ISSUE_GIT_TIMEOUT)
+                if raises:
+                    raise raises
+                return SimpleNamespace(stdout=stdout, returncode=code)
+            return run
+
+        here = self.tmp.name
+        self.assertEqual(PL.branch_issue_ids(here, answer("claude/ops-12-x\n")), {"OPS-12"})
+        self.assertEqual(PL.branch_issue_ids(here, answer("HEAD\n")), set())
+        self.assertEqual(PL.branch_issue_ids(here, answer("", 128)), set())
+        self.assertEqual(PL.branch_issue_ids(here, answer(raises=subprocess.TimeoutExpired("git", 2))), set())
+        self.assertEqual(PL.branch_issue_ids(here, answer(raises=OSError("no git"))), set())
+
+    def test_sync_issues_sends_on_change_only_and_reads_an_old_answer_as_taken(self) -> None:
+        sent: list[str] = []
+
+        def send(text: str) -> dict:
+            sent.append(text)
+            return {"ok": True}  # an answer with no `issues` field:  the registry took what it was sent
+
+        note: dict = {}
+        path = self.transcript("AFC-1")
+        PL.sync_issues(note, {"transcript_path": path}, self.home, 1000.0, send)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(json.loads(sent[0]), [{"id": "AFC-1", "seen_at": "1970-01-01T00:16:40Z"}])
+        self.assertEqual(note["issues_sent"], ["AFC-1"])
+        PL.sync_issues(note, {"transcript_path": path}, self.home, 2000.0, send)
+        self.assertEqual(len(sent), 1)
+
+        def broken(text: str) -> dict:
+            raise RuntimeError("boom")
+
+        self.transcript("AFC-2")
+        PL.sync_issues(note, {"transcript_path": path}, self.home, 3000.0, broken)  # never raises
+        self.assertEqual(note["issues_sent"], ["AFC-1"])
+
+    # ---- AFC-702:  the end of a turn reports its issues and topics ----
+
+    def turn_spec(self) -> PL.PlatformSpec:
+        return make_spec(events={**PL.DEFAULT_EVENTS, "Stop": "turn"})
+
+    def test_a_turn_end_event_reports_without_a_further_prompt_and_closes_nothing(self) -> None:
+        spec = self.turn_spec()
+        self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, spec=spec)
+        path = self.transcript(
+            {"type": "user", "message": {"content": "start on AFC-1"}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash",
+                 "input": {"command": 'simple-chat post --topic "AFC-1 plan" --body x'}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1",
+                                                      "content": "posted id 3 to #Work-In-Progress › AFC-1 plan"}]}},
+        )
+        ssh = FakeSsh(self)
+        out = self.hook({"hook_event_name": "Stop", "session_id": "s-0001", "transcript_path": path},
+                        spec=spec, runner=ssh)
+        self.assertIsNone(out)  # a turn end prints nothing
+        self.assertEqual(ssh.ops(), ["issues"])
+        self.assertEqual(self.issues_held(), ["AFC-1"])
+        note = self.note("s-0001")
+        self.assertEqual(note["state"], "open")
+        self.assertEqual([t["topic"] for t in note["topics"]], ["AFC-1 plan"])
+        self.assertNotIn("ended", note)
+        # The prompt after it reads from where the turn end left off:  nothing new, no second issues call (it may
+        # still title the chat, which is the prompt's own work).
+        self.turn(ssh, transcript_path=path)
+        self.assertEqual(ssh.ops().count("issues"), 1)
+
+    def test_a_turn_end_for_a_closed_or_unknown_chat_does_nothing(self) -> None:
+        spec = self.turn_spec()
+        path = self.transcript({"type": "user", "message": {"content": "AFC-1"}})
+        ssh = FakeSsh(self)
+        self.assertIsNone(self.hook({"hook_event_name": "Stop", "session_id": "s-0009", "transcript_path": path},
+                                    spec=spec, runner=ssh))
+        self.assertEqual(ssh.calls, [])
+        note = {"state": "closed", "label": "AA"}
+        PL.end_of_turn(note, {"transcript_path": path}, self.home, 1000.0, lambda text: {"ok": True})
+        self.assertEqual(note, {"state": "closed", "label": "AA"})
+
+    def test_a_turn_end_with_the_registry_unreachable_is_silent_and_waits_to_ask_again(self) -> None:
+        calls: list[str] = []
+
+        def down(text: str) -> dict:
+            calls.append(text)
+            return {"error": "ssh to the Mac timed out"}
+
+        note: dict = {"state": "open", "label": "AA"}
+        path = self.transcript("AFC-1")
+        PL.end_of_turn(note, {"transcript_path": path}, self.home, 1000.0, down)
+        PL.end_of_turn(note, {"transcript_path": path}, self.home, 1000.0 + 60, down)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(note["issues_failed_at"], 1000.0)
+        self.assertEqual([i["id"] for i in note["issues"]], ["AFC-1"])
+
+    def test_the_turn_event_is_one_a_spec_may_map_to(self) -> None:
+        self.assertIn("turn", PL.EVENTS)
+        self.assertEqual(PL.canonical_event(self.turn_spec(), {"hook_event_name": "Stop"}), "turn")
+        self.assertEqual(PL.canonical_event(make_spec(), {"hook_event_name": "Stop"}), "")  # none by default
+
+    @staticmethod
+    def calls(*uses: tuple[str, str, dict]) -> str:
+        return json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": cid, "name": name, "input": args} for cid, name, args in uses]}})
+
+    @staticmethod
+    def results(*outs: tuple[str, object, bool]) -> str:
+        return json.dumps({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": cid, "content": content, "is_error": err}
+            for cid, content, err in outs]}})
+
+    def test_topics_in_lines_counts_a_post_only_when_its_own_result_comes_back(self) -> None:
+        lines = [
+            self.calls(
+                ("a", "Bash", {"command": "cd x && simple-chat --as CLAUDE post --topic 'First one' -b 'a; b'"}),
+                ("b", "mcp__26a3__zulip_post", {"channel": "Work-In-Progress", "topic": "  Second   one  "}),
+                ("c", "mcp__26a3__zulip_read_topic", {"topic": "Only read"}),
+                ("d", "Bash", {"command": 'TOPIC="Third one"; simple-chat post --topic "$TOPIC" --body x'}),
+            ),
+            self.results(
+                ("a", "posted id 5 to #Work-In-Progress › First one", False),
+                ("b", [{"type": "text", "text": "{\"id\": 6}"}], False),
+                ("c", "a topic someone else posted", False),
+                ("d", "posted id 7 to #Work-In-Progress › Third one", False),
+            ),
+            "{not json",
+        ]
+        self.assertEqual(PL.topics_in_lines(lines), ["First one", "Second one", "Third one"])
+        self.assertEqual(PL.topics_in_lines(["x" * 10, json.dumps(5), json.dumps([{"name": 3}])]), [])
+        long = "T" * 90
+        cmd = self.calls(("a", "Bash", {"command": "simple-chat post --topic=%s -b x" % long}))
+        self.assertEqual(PL.topics_in_lines([cmd, self.results(("a", "", False))]), ["T" * PL.TOPIC_CHARS])
+
+    def test_topics_in_lines_refuses_what_is_not_a_post_this_chat_made(self) -> None:
+        cases = {
+            "a read": [self.calls(("a", "Bash", {"command": 'simple-chat read --topic "AFC-9 someone elses"'})),
+                       self.results(("a", "posted id 1 to #x › AFC-9 someone elses", False))],
+            "another program": [self.calls(("a", "Bash", {"command": "kafka-topics --describe --topic orders"})),
+                                self.results(("a", "ok", False))],
+            "a variable with no printed line": [
+                self.calls(("a", "Bash", {"command": 'simple-chat post --topic "$TOPIC" --json -b x'})),
+                self.results(("a", '{"id": 4}', False))],
+            "user prose": [json.dumps({"type": "user", "message": {"content":
+                                                                    "never post with --topic fleet unless told"}}),
+                           "plain words: simple-chat post --topic=First"],
+            "a reply's words": [json.dumps({"type": "assistant", "message": {"content":
+                                                                             'simple-chat post --topic "Said"'}})],
+            "a peer's log line": [self.calls(("a", "Bash", {"command": "tail -5 listener.log"})),
+                                  self.results(("a", "posted id 7 to #Work-In-Progress › BF-3 peer topic", False))],
+            "an error result": [self.calls(("a", "mcp__f__zulip_post", {"topic": "Denied"}),
+                                           ("b", "Bash", {"command": "simple-chat post --topic Failed -b x"})),
+                                self.results(("a", "permission denied", True), ("b", "error", True))],
+            "no result": [self.calls(("a", "mcp__f__zulip_reply", {"topic": "Pending"}))],
+            "no id": [json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "mcp__f__zulip_post", "input": {"topic": "No id"}}]}})],
+        }
+        for name, lines in cases.items():
+            with self.subTest(name):
+                self.assertEqual(PL.topics_in_lines(lines), [])
+        # A body that quotes a printed line names no topic:  only the command's own output line counts.
+        quoted = [self.calls(("a", "Bash", {"command": "simple-chat post --topic Real -b 'posted id 5 to #x › y'"})),
+                  self.results(("a", "posted id 8 to #Work-In-Progress › Real", False))]
+        self.assertEqual(PL.topics_in_lines(quoted), ["Real"])
+
+    def test_a_topic_with_a_dollar_sign_counts_when_no_shell_read_it(self) -> None:
+        lines = [
+            self.calls(("a", "mcp__f__zulip_post", {"topic": "Price $5"}),
+                       ("b", "Bash", {"command": "simple-chat post --topic 'Cost `x`' -b y"}),
+                       ("c", "Bash", {"command": 'simple-chat post --topic "$T" -b y'})),
+            self.results(("a", "{}", False), ("b", "posted id 3 to #Work-In-Progress › Cost `x`", False),
+                         ("c", "posted id 4 to #Work-In-Progress › Price $6", False)),
+        ]
+        self.assertEqual(PL.topics_in_lines(lines), ["Price $5", "Cost `x`", "Price $6"])
+        single = [self.calls(("a", "Bash", {"command": "simple-chat post --topic 'Price $5' -b y"})),
+                  self.results(("a", "{}", False))]
+        self.assertEqual(PL.topics_in_lines(single), ["Price $5"])
+        # A quoted copy of the text elsewhere in the command does not make an expanding topic literal.
+        other = [self.calls(("a", "Bash", {"command": "echo 'x $T y'; simple-chat post --topic $T -b 'a'; "
+                                                      "echo '$T'"})),
+                 self.results(("a", "{}", False))]
+        self.assertEqual(PL.topics_in_lines(other), [])
+        # A literal `$VAR` in the command is not the topic, and with no printed line it names nothing.
+        bare = [self.calls(("a", "Bash", {"command": 'simple-chat post --topic "$T" -b y'})),
+                self.results(("a", "{}", False))]
+        self.assertEqual(PL.topics_in_lines(bare), [])
+
+    def test_only_a_command_that_runs_the_program_posts(self) -> None:
+        def topics(command: str) -> list[str]:
+            return PL.topics_in_lines([self.calls(("a", "Bash", {"command": command})), self.results(("a", "", False))])
+
+        for command in ("echo simple-chat post --topic Demo -b x", "grep -r 'x' simple-chat post --topic Demo",
+                        "cat agent-sync post --topic Demo"):
+            with self.subTest(command):
+                self.assertEqual(topics(command), [])
+        for command in ("sudo -u jay simple-chat post --topic Demo -b x", "env A=b simple-chat reply --topic Demo -b x",
+                        "A=b ~/.local/bin/simple-chat post --topic Demo -b x",
+                        "if true; then simple-chat post --topic Demo -b x; fi",
+                        "/usr/bin/sudo simple-chat post --topic Demo -b x",
+                        "timeout 10 simple-chat post --topic Demo -b x",
+                        "nice -n 5 /usr/bin/env A=b simple-chat post --topic Demo -b x"):
+            with self.subTest(command):
+                self.assertEqual(topics(command), ["Demo"])
+
+    def test_turn_note_keeps_what_another_hook_wrote_meanwhile(self) -> None:
+        before = {"state": "open", "label": "AA", "issues_failed_at": 1.0, "title": "Old"}
+        after = dict(before, issues=[{"id": "AFC-1"}], topics=[{"topic": "T", "at": 2.0}])
+        after.pop("issues_failed_at")
+        fresh = {"state": "closed", "label": "AA", "ended": {"reason": "clear"}, "issues_failed_at": 1.0,
+                 "title": "New"}
+        merged = PL.turn_note(before, after, fresh)
+        self.assertEqual(merged["state"], "closed")
+        self.assertEqual(merged["ended"], {"reason": "clear"})
+        self.assertEqual(merged["title"], "New")
+        self.assertEqual(merged["issues"], [{"id": "AFC-1"}])
+        self.assertEqual(merged["topics"], [{"topic": "T", "at": 2.0}])
+        self.assertNotIn("issues_failed_at", merged)
+        self.assertIsNone(PL.turn_note(before, after, {}))
+
+    def test_merge_topics_keeps_each_once_newest_last_and_bounded(self) -> None:
+        old = [{"topic": "A", "at": 1.0}, {"topic": "B", "at": 2.0}, {"topic": "", "at": 3.0}, "junk",
+               {"topic": "C", "at": True}]
+        self.assertEqual(PL.merge_topics(old, ["A"], 5.0), [{"topic": "B", "at": 2.0}, {"topic": "A", "at": 5.0}])
+        many = PL.merge_topics([], ["t%d" % i for i in range(PL.TOPIC_KEEP + 5)], 9.0)
+        self.assertEqual(len(many), PL.TOPIC_KEEP)
+        self.assertEqual(PL.merge_topics("not a list", [], 1.0), [])
+        # What it is given is cleaned the same way:  one entry per topic, never longer than TOPIC_CHARS.
+        merged = PL.merge_topics([{"topic": "A b", "at": 1.0}], ["  A   b ", "X" * 90, "", "Price $5"], 7.0)
+        self.assertEqual(merged, [{"topic": "A b", "at": 7.0}, {"topic": "X" * PL.TOPIC_CHARS, "at": 7.0},
+                                  {"topic": "Price $5", "at": 7.0}])
+        # One parse serves both readers of the same lines.
+        lines = ["{not json", json.dumps({"type": "user", "message": {"content": "AFC-3"}})]
+        parsed = PL.parsed_lines(lines)
+        self.assertEqual(PL.issue_ids_in_lines(lines, parsed), PL.issue_ids_in_lines(lines))
+        self.assertEqual(PL.topics_in_lines(lines, parsed), [])
 
     def test_a_rename_event(self) -> None:
         spec = make_spec(events={"session.created": "start", "session.renamed": "rename", "session.deleted": "end"},

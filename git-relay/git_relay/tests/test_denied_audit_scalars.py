@@ -56,7 +56,7 @@ class DeniedAuditScalarTests(unittest.TestCase):
             log = os.path.join(td, "audit.jsonl")
             relay = self._relay(log)
 
-            def boom(seat, action, args, repo):
+            def boom(seat, action, args, repo, caller_token=None):
                 raise Refused("default branch is not writable")
 
             relay._dispatch = boom
@@ -83,7 +83,7 @@ class DeniedAuditScalarTests(unittest.TestCase):
 
             from git_relay.server import PolicyDenied
 
-            def boom(seat, action, args, repo):
+            def boom(seat, action, args, repo, caller_token=None):
                 raise PolicyDenied("seat ceiling does not cover permission 'contents: write'")
 
             relay._dispatch = boom
@@ -115,7 +115,7 @@ class DeniedAuditScalarTests(unittest.TestCase):
             )
             relay = Relay(SeatPolicy(seats), _Client(), AuditLog(log))
 
-            def boom(seat, action, args, repo):
+            def boom(seat, action, args, repo, caller_token=None):
                 raise ValueError("no such pull request")
 
             relay._dispatch = boom
