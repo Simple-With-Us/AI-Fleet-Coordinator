@@ -189,10 +189,7 @@ def _commit_linear_cursor(state: dict, receipt: dict) -> bool:
     if not receipt.get("cursor_advance"):
         return False
     candidate = receipt.get("cursor_candidate")
-    if (
-        not isinstance(candidate, str)
-        or sources._LINEAR_CURSOR_RE.fullmatch(candidate) is None
-    ):
+    if not isinstance(candidate, str) or sources._LINEAR_CURSOR_RE.fullmatch(candidate) is None:
         return False
     prev = state.get(sources.LINEAR_CURSOR_KEY)
     last_full = None

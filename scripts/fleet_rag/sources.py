@@ -2110,9 +2110,7 @@ def _linear_query(query: str, timeout_s: int = LINEAR_QUERY_TIMEOUT_S) -> dict:
     return data
 
 
-def _linear_light_scan(
-    deadline: float | None = None, updated_since: str | None = None
-) -> dict:
+def _linear_light_scan(deadline: float | None = None, updated_since: str | None = None) -> dict:
     """Every issue's id -> {identifier, updatedAt}, one 250-wide page at a time, oldest update
     first.  ``updated_since`` is a strict UTC timestamp:  the scan then asks only for issues
     updated at or after that instant.  Fail closed:  a missing connection is a broken read.
@@ -2594,9 +2592,7 @@ def _linear_sweep_ms() -> int:
 
 
 def _linear_overlap_ms() -> int:
-    hours = _linear_bounded_int(
-        "FLEET_RAG_LINEAR_OVERLAP_HOURS", LINEAR_OVERLAP_HOURS, 1, 168
-    )
+    hours = _linear_bounded_int("FLEET_RAG_LINEAR_OVERLAP_HOURS", LINEAR_OVERLAP_HOURS, 1, 168)
     return hours * 3600 * 1000
 
 
