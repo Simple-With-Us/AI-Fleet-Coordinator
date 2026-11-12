@@ -1,70 +1,61 @@
-# Claude Wake Router:  Install And Bounded Canary
+# The One Wake Router:  Install And Canary
 
-Refs AFC-694 and OPS-1048.  This is the runbook for putting Claude's wake router on the server and proving one wake end to end.  Nothing here is armed by merging it:  the installer and the canary are two scripts someone runs by hand, and every root step and every Infisical write below is the owner's.
+Refs AFC-694 and OPS-1048.  This is the runbook for putting the one wake router on the server as the `jay` user and proving one wake end to end, for any seat.  Nothing here is armed by merging it:  the installer and the canary are two scripts someone runs by hand, and every Infisical write and every arming step below is the owner's.
 
-The two scripts live beside the unit template in `scripts/simple_tools/server/`:
+The router serves every seat from one process (`afc-wake-router.service`, merged in #1816):  the Eavesdropper posts each seat's wake to `/wake/<SEAT>`, the router picks the chat, and the seat's platform module delivers it.  The scripts live beside the unit templates in `scripts/simple_tools/server/`:
 
-| Script | What it does |
+| File | What it is |
 |---|---|
-| `install-claude-wake-router.sh` | Checks the host, then installs `claude-wake-router.service` as `/etc/systemd/system/afc-claude-wake-router.service`.  It never writes a secret, never changes an Infisical value and never starts the router unless `--start` is passed.  `--dry-run` prints the whole plan and changes nothing. |
-| `claude-wake-canary.sh` | Sends exactly one `simple-tools-wake/1` body to the router, addressed to one letter, then prints the wake id, the pick and the receipt, and stops.  `--test` asks the router for its pick and delivers nothing;  `--dry-run` sends nothing. |
+| `install-wake-router.sh` | Checks the host, then installs a clean `git archive` of origin/main and writes both user units.  It refuses to run as root, never uses `sudo`, never writes an Infisical value and never starts anything unless `--start` is passed.  `--dry-run` lists every refusal and changes nothing.  `--uninstall` removes exactly what it installed. |
+| `wake-router-canary.sh` | Reads `/health/<SEAT>`, sends exactly one `simple-tools-wake/1` body to `/wake/<SEAT>` addressed to one letter, and follows its receipt.  `--test` asks for the pick and delivers nothing;  `--follow` sends nothing and follows a wake the Eavesdropper already sent. |
+| `afc-wake-router.service` | The router's user unit template (#1816):  loopback `127.0.0.1:8794` only. |
+| `afc-wake-tls.service` | The TLS front's user unit template:  `socat` as `jay` on the tailnet address, port 8795, passing each connection to the router on loopback.  It is modelled on `zc-wake-tls.service`. |
 
-## Facts this runbook relies on
+## What The Installer Puts Where
 
-These were checked read-only on both hosts by Claude AA on November 11 (Zulip, topic `AFC-694 Operator cross-platform coordination`), and they override the older notes in the unit template:
+Everything is owned by `jay`, under `jay`'s home:
 
-- One router instance per seat, all sharing `scripts/simple_tools/wake_router.py`.  This one is Claude's.
-- The router listens on port 8794 by default.  Port 8793 belongs to `zc-wake-tls.service`, and the installer refuses it.
-- The listener refuses plain http to a non-loopback address, so the router needs a TLS front on the tailnet address (for example socat on 8795, reusing the ZC certificate).  That front is not part of these scripts.
-- The routine key is `CLAUDE_ROUTINE_KEY` in AI Fleet Coordinator prod `/zulip`.  `CLAUDE_ROUTINE_URL` does not exist yet.
-- The delivery knobs live in AI Fleet Coordinator prod `/` and are read with a read-only service token (proposed name `CLAUDE-wake-router-ro`).
-- The Mac route needs its own ssh key, because the existing key serves other jobs:  a `mac-wake` Host block on the server and one forced-command line in the Mac's `authorized_keys`.
+- `~/.local/share/afc-wake-router/releases/<sha>/scripts/`:  origin/main's `scripts/` from `git archive`, with `~/.local/share/afc-wake-router/current` pointing at it.  The router's unit runs `current/scripts/simple-chat wake-router serve`, so a checkout's working tree is never imported or run.  A new install keeps only the current release.
+- `~/.config/systemd/user/afc-wake-router.service` and `afc-wake-tls.service`:  rendered from the archive's templates, each with an `# Installed by install-wake-router.sh` first line.  A unit already there without that line is never overwritten.
+- `~/.config/afc-wake-router/env`, mode 0600:  only `FLEET_KNOBS_INFISICAL_TOKEN`, the service token `afc-wake-router-ro` (read-only, scoped `prod:/wake-router` in AI Fleet Coordinator), plus comments.  The installer moves it there from `~/.config/infisical-staging/afc-wake-router.env`.  It refuses an `export ` prefix, quotes, a second name or a file anyone but `jay` can read.  There is no key file:  the router reads `WAKE_ROUTER_KEY` from `/wake-router` through `fleet_knobs` and holds it in memory.
+- `~/.local/state/afc-wake-router/tls/cert.pem` and `key.pem` (key 0600):  copies of the tailnet certificate and key the front serves, from `--tls-cert` and `--tls-key`.
 
-## Owner steps, in order
+Before it writes anything, it checks:  that lingering is on for `jay`;  that no root unit named `*wake-router*` is left in `/etc/systemd/system` (it prints the owner's removal command and never runs it);  that the router binds a loopback address on the allowlist and that every port is plain decimal, above 1024 and never 8793 (`zc-wake-tls.service`);  that the tailnet address is in `100.64.0.0/10`;  that `socat` is installed;  and that `/wake-router` holds `WAKE_ROUTER_DELIVERY_ENABLED`, `WAKE_ROUTER_KEY` and `WAKE_ROUTER_MAC_SSH`, with `WAKE_ROUTER_MAC_SSH` equal to `mac-wake`.  It reads those by name through `fleet_knobs`, running the archive's code with the staged token, and prints presence only, never a value.  `WAKE_ROUTER_DELIVERY_SEATS`, `SIMPLE_TOOLS_OPERATOR_REGISTRY_URL` and `SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY` are reported and not required:  without the registry values the router answers `registry-not-configured` in `/health/<SEAT>`.
 
-Each step is the owner's, or needs the owner's yes before a seat does it.
+`--start` is refused while delivery is armed, or while the installer cannot confirm it is off.  It starts a stopped unit and restarts one running stale code (a new release, a changed unit or a pending daemon reload).
 
-1. **Mint the read-only knob token** for AI Fleet Coordinator prod `/`, and put it in `/etc/claude-wake-router.env` on the server, root-owned, mode 0600, as `FLEET_KNOBS_INFISICAL_TOKEN=...`.  Optional non-secret lines in the same file:  `CLAUDE_WAKE_BIND`, `CLAUDE_WAKE_PORT` and `CLAUDE_WAKE_KEY_FILE`.
-2. **Write the routine key** to `/home/jay/.local/state/claude-wake/routine-key`, owned by `jay`, mode 0600.
-3. **Set the knobs** in Infisical:  `WAKE_ROUTER_DELIVERY_SEATS=CLAUDE`, `WAKE_ROUTER_MAC_SSH=mac-wake` and `WAKE_ROUTER_DELIVERY_ENABLED=false`.  The installer refuses to run while either delivery knob is unset, so the router never starts on defaults nobody chose.
-4. **Add the Mac key**:  a dedicated key pair on the server, the `mac-wake` Host block, and on the Mac one `authorized_keys` line with `from=` the server's tailnet address and `command="/Users/jay/.local/bin/simple-chat wake-ssh-gate",no-pty,no-port-forwarding,no-agent-forwarding,no-X11-forwarding`.
-5. **Install**, from a clean checkout at `origin/main`:
+## The Tailnet Certificate
 
-   ```sh
-   bash scripts/simple_tools/server/install-claude-wake-router.sh --dry-run
-   sudo bash scripts/simple_tools/server/install-claude-wake-router.sh --start
-   ```
+The front serves the server's tailnet certificate, which expires **Jan 21, 2027 at 9:05pm**.  Who renews it, and whether `tailscale cert` can run as `jay`, is not verified yet.  A renewed certificate reaches the front only when the installer runs again with `--tls-cert` and `--tls-key`, which restarts the front.
 
-   The dry run names every problem a real run would refuse and exits 0.  With delivery still `false`, a started router picks and receipts every wake and delivers nothing.
-6. **Point the listener** at the router's TLS front with the routine key.  That edit is Claude BB's (the live listener config), followed by a readback.
+## Live Steps, In Order
 
-## The canary
+| Step | Who | What |
+|---|---|---|
+| 1 | Claude AA (the server seat that owns the router), as `jay` on the server | From an AI-Fleet-Coordinator checkout there, run `bash scripts/simple_tools/server/install-wake-router.sh --dry-run --tls-cert CERT --tls-key KEY`.  It must exit 0 and list no refusal.  Then run the same command without `--dry-run`, and with `--start`.  If it reports a root unit in `/etc`, lingering off or a missing knob, that step is the owner's before anything else. |
+| 2 | Claude AA, as `jay` on the server | The dry run of the chain, with delivery still off:  `curl -s http://127.0.0.1:8794/health/<SEAT>` must answer `"healthy": true` (the overall `/health` can be 503 while another platform is not installed, so check the seat), then `bash scripts/simple_tools/server/wake-router-canary.sh --seat <SEAT> --letter <XX> --message-id <id> --test`, where the message is a real canary post in the work topic.  It must exit 0, which means the router picked `<XX>`.  Claude BB points the Eavesdropper's wake for the seat at the front (`https://<tailnet name>:8795/wake/<SEAT>`) and reads the setting back. |
+| 3 | The owner, in Muster | Arm delivery:  set `WAKE_ROUTER_DELIVERY_ENABLED` to true and `WAKE_ROUTER_DELIVERY_SEATS` to the seat.  The router reads them at its next refresh, or at once after `systemctl --user reload afc-wake-router.service`. |
+| 4 | The owner tags the letter in Zulip;  Claude AA follows it;  the woken chat confirms | One canary wake.  The owner (or a seat the owner names) posts one message in the work topic that tags `<XX>`.  The Eavesdropper captures it and logs its `wake_id`.  Claude AA runs `wake-router-canary.sh --seat <SEAT> --letter <XX> --follow <wake_id>`, which must exit 0:  the receipt has the same `wake_id` and `receipt_id`, `picked_letter` is `<XX>` and `delivered` is true.  The woken chat reads the same `wake_id` in its own prompt and says so in the topic.  Claude II posts the three together in AFC-694. |
 
-Run it on the server as `jay`, against the router's loopback port.
+Whether delivery stays armed after step 4 is the owner's call.
 
-1. Post one canary message in the work topic, addressed to the letter you mean to wake, and note its message id.
-2. Ask for the pick without delivering:
+## Canary Exit Codes
 
-   ```sh
-   bash scripts/simple_tools/server/claude-wake-canary.sh --letter AA --message-id <id> --test
-   ```
+`wake-router-canary.sh` exits 0 only when it proved the wake:  a test answer that picked `--letter` and says `delivered: false`, or a final receipt with the same `wake_id` and `receipt_id`, the named letter and `delivered: true`.  Otherwise it exits 3 when the wake was held (delivery off), 4 when it is dead or `delivered` is false or null, 5 when no final receipt came within `--wait`, 6 when another letter was picked, 1 on an unhealthy seat, a transport or router error, or an answer for another wake, and 2 on bad arguments.
 
-   The answer must pick the named letter.
-3. Only after the owner says so, set `WAKE_ROUTER_DELIVERY_ENABLED=true` for one wake, then send it:
+It runs as `jay` and refuses root.  It reads the bearer `WAKE_ROUTER_KEY` in its own process through `fleet_knobs` from the installed release, with the token in `~/.config/afc-wake-router/env`, and sends it only in the `Authorization` header:  never printed and never on a command line.  It speaks plain http to a loopback IP literal only, uses no proxy and never follows a redirect.  `--poll-seconds` must be a plain decimal from 0.05 to 60.  It needs Python 3.9 or newer for itself, and the router's own floor (3.11) for `fleet_knobs`.
 
-   ```sh
-   bash scripts/simple_tools/server/claude-wake-canary.sh --letter AA --message-id <id>
-   ```
+## Undo
 
-   It waits up to 1100 seconds for a final receipt.  Exit 0 means delivered, 3 held, 4 dead, 5 still pending.
-4. Set `WAKE_ROUTER_DELIVERY_ENABLED=false` again unless the owner wants delivery left on.
+As `jay` on the server:
 
-## The evidence for AFC-694
+```sh
+bash scripts/simple_tools/server/install-wake-router.sh --uninstall --dry-run
+bash scripts/simple_tools/server/install-wake-router.sh --uninstall
+```
 
-Acceptance is the same wake id in every link of the chain, posted in the AFC-694 topic:
+It runs `systemctl --user disable --now` on each unit it wrote, removes those two unit files, reloads the user manager, moves the token back to `~/.config/infisical-staging/afc-wake-router.env` (0600), and removes `~/.local/share/afc-wake-router` and `~/.local/state/afc-wake-router/tls`.  A unit file without its first-line marker is left alone and named.  The router's own state, `~/.local/state/wake-router` (receipts and pending wakes), is kept.  Disarming delivery is a separate owner step in Muster:  set `WAKE_ROUTER_DELIVERY_ENABLED` to false.
 
-- the canary's output:  `wake_id`, the pick (`picked`, `picked_letter`, `picked_generation`, `session_id`) and the receipt;
-- the router's own record, `~/.local/state/claude-wake/done/<wake_id>.json`, and `GET /receipt/<wake_id>`;
-- the woken chat, whose prompt names the wake id and the message id.  This one is read in that chat, by that chat, and command success alone does not prove it.
+## Tests
 
-A wake sent by the canary goes straight to the router, so it proves the router and the delivery, not the listener's capture.  The listener's capture is proved separately by tagging the letter in Zulip once the listener points at the router, and reading the same `wake_id` in the listener's log and the receipt.
+`cd scripts && python3 -m unittest simple_tools.tests.test_wake_router_install -v`.  Everything runs under a temporary test root with synthetic paths (`WAKE_ROUTER_TEST_ROOT`, ignored for root):  a synthetic git origin carrying the real unit templates and a stub `fleet_knobs`, stubs for `systemctl`, `loginctl`, `tailscale` and `socat`, and a scripted fake router on a loopback port.  No test touches the real home, `/etc`, `systemctl`, Infisical or the network.
