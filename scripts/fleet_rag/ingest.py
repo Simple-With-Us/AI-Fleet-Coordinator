@@ -498,11 +498,14 @@ def _sync_unchanged_chunks(
     seen: dict[str, dict],
     pending: list[dict],
     run_id: str,
+    state_path: pathlib.Path,
 ) -> bool:
     """Point an unchanged document at chunks already claimed in this run.
 
-    Returns True when state chunk ids changed and were saved by the caller.  A chunker
-    drift that would invent a point id not already stored aborts without deleting.
+    Returns True when state chunk ids changed and were saved.  The new ids are written
+    before any Qdrant delete, so a crash cannot leave state pointing at a point that
+    this run already removed.  A chunker drift that would invent a point id not already
+    stored aborts without deleting.
     """
     rows, _scrubbed = doc_rows(doc, run_id)
     prev = state.get(doc.doc_id) if isinstance(state.get(doc.doc_id), dict) else {}
@@ -545,13 +548,14 @@ def _sync_unchanged_chunks(
         others.update(rec.get("chunk_ids") or [])
     adopted_set = set(adopted)
     stale = [i for i in replaced_ids if i not in others and i not in adopted_set]
-    writer.delete(stale)
     stats["chunks_deleted"] += len(stale)
     stats["chunks_deduped"] = stats.get("chunks_deduped", 0) + len(replaced_ids)
     if writer.dry_run:
         return False
     prev["chunk_ids"] = new_ids
     state[doc.doc_id] = prev
+    save_state(state, state_path)
+    writer.delete(stale)
     return True
 
 
@@ -1026,6 +1030,7 @@ def _run_locked(
                         seen_chunks,
                         pending_annotations,
                         run_id,
+                        state_path,
                     ):
                         state_touched = True
                     _flush_also_paths(writer, pending_annotations)

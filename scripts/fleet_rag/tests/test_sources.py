@@ -783,6 +783,18 @@ class ExtraDocWalkerTests(unittest.TestCase):
         self.assertEqual(census["rules_hash"], ingest.diet_rules_hash())
         self.assertGreaterEqual(census["excluded_by_rule"]["skipped-dir"], 5)
 
+    def test_a_diet_dir_above_the_checkout_does_not_exclude_it(self) -> None:
+        checkout = self.root / "out" / "target" / "checkout"
+        (checkout / "docs" / "out").mkdir(parents=True)
+        readme = checkout / "README.md"
+        readme.write_text("# Hello\n\nkept\n")
+        nested = checkout / "docs" / "out" / "page.md"
+        nested.write_text("# Out\n\nbuilt\n")
+        subprocess.run(["git", "init"], cwd=checkout, check=True, capture_output=True)
+        sources._git_toplevel.cache_clear()
+        self.assertIsNone(sources.doc_exclude_reason(readme))
+        self.assertEqual(sources.doc_exclude_reason(nested), "skipped-dir")
+
 
 class MirrorSkipTests(unittest.TestCase):
     """Doc-walk dedupe at the source: live ~/apps copy wins, skill copies and effort-log mirrors

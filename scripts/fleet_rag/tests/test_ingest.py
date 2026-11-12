@@ -575,7 +575,19 @@ class IngestTests(unittest.TestCase):
         self.qd.points[own_id] = {"id": own_id, "payload": dict(rows[0]["payload"])}
         self.qd.deleted.clear()
         self.embed_calls.clear()
+        recorded: dict = {}
+        real_delete = self.qd.delete_ids
+
+        def spy_delete(ids, wait=True):  # noqa: ANN001
+            recorded["state"] = json.loads(self.state.read_text())
+            recorded["ids"] = list(ids)
+            return real_delete(ids, wait=wait)
+
+        self.qd.delete_ids = spy_delete
         rep2 = self._run(prune=False)
+        self.assertIn(own_id, recorded["ids"])
+        self.assertEqual(recorded["state"]["doc/two"]["chunk_ids"], canonical)
+        self.assertNotIn(own_id, recorded["state"]["doc/two"]["chunk_ids"])
         self.assertEqual(rep2["per_source"]["doc"]["docs_changed"], 0)
         self.assertEqual(self.embed_calls, [])
         self.assertIn(own_id, self.qd.deleted)

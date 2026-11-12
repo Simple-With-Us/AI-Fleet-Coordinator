@@ -772,6 +772,50 @@ def _legacy_skip(p: pathlib.Path) -> bool:
     return False
 
 
+@functools.lru_cache(maxsize=4096)
+def _git_toplevel(start: str) -> str:
+    """Git toplevel for ``start``, or "" when it is not in a repo. Cached per directory."""
+    if not start:
+        return ""
+    top = _git(["rev-parse", "--show-toplevel"], pathlib.Path(start))
+    if not top:
+        return ""
+    try:
+        return os.fspath(canonical_path(top.strip()))
+    except OSError:
+        return top.strip()
+
+
+def _diet_dir_parts(p: pathlib.Path) -> set[str]:
+    """Directory names that count for the diet.
+
+    Inside a git checkout, only the path relative to that checkout counts, so a parent
+    named ``out`` or ``target`` above the repo is not a build directory. With no repo,
+    the path relative to the home directory is the scope.
+    """
+    start = p if p.is_dir() else p.parent
+    try:
+        start_s = os.fspath(start)
+    except OSError:
+        start_s = ""
+    top = _git_toplevel(start_s) if start_s else ""
+    try:
+        full = canonical_path(p)
+    except OSError:
+        full = p
+    if top:
+        try:
+            rel = full.relative_to(top)
+        except ValueError:
+            rel = full
+    else:
+        try:
+            rel = full.resolve().relative_to(HOME)
+        except (ValueError, OSError):
+            rel = full
+    return {part.casefold() for part in rel.parts}
+
+
 def doc_exclude_reason(p: pathlib.Path) -> str | None:
     """Why the doc walk drops ``p``, or None to keep it.
 
@@ -781,8 +825,7 @@ def doc_exclude_reason(p: pathlib.Path) -> str | None:
     """
     if set(p.parts) & DOC_SKIP_DIR_NAMES_LEGACY:
         return "legacy-dir"
-    folded = {part.casefold() for part in p.parts}
-    if folded & DOC_DIET_DIR_NAMES_FOLDED:
+    if _diet_dir_parts(p) & DOC_DIET_DIR_NAMES_FOLDED:
         return "skipped-dir"
     fold = p.name.casefold()
     if fold in DOC_LOCKFILE_NAMES or fold.endswith("-lock.json") or fold.endswith(".lock"):
