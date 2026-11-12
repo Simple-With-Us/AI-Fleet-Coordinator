@@ -34,6 +34,38 @@ This repository contains shared engineering tools.  Keep private inventory and 
 
 The same text is in `TEMPLATE-AGENTS.md`, which the other fleet repos copy.
 
+## One Operator, No Special Seats (owner — ALL agents, ALL platforms, 2026-11-11)
+
+There is one Operator, and it has one tool or process per function, shared by every platform and host: session letters and their registry, sweeping, wake routing, titles, hooks, installers, the Zulip-to-Linear mirror, and end-of-turn updates.  Only last-mile wake delivery may differ per platform, and only where the platform forces it.  A platform contributes data to a shared table, never its own client, CLI, transport, router, bridge, sweeper, timer, unit, token, registry or test suite.
+
+In practice:
+
+- **One wake router service** serves every seat.
+- **One letter assigner:** the registry in the Eavesdropper, the Operator's Zulip listener on the server, with one sequence per seat label.
+- **One letter client**, with a platform table.
+- **One sweeper.**
+- **The same commands on every platform.**
+
+Before you build:
+
+- If your change adds a file, verb, unit, env variable or config section named for one seat or platform, stop and put it in the shared tool.
+- If you find an existing per-seat copy, the work is to delete it and fold it into the shared tool, not to keep it or defer the merge.
+- If a plan or a peer proposes a per-seat copy, say no in the topic and cite this section.
+
+Reviewers: a PR that adds per-seat code outside last-mile wake delivery is not mergeable.
+
+The letter rules the owner fixed the same day:
+
+- The sequence is per seat label.  The Grok leader is Grok Build, so it is GROK, and any Cursor is CURSOR.
+- A main chat uses only doubled pairs, AA to ZZ.
+- The assigner issues the free doubled pair that seat has used the fewest times, earliest alphabetically on a tie.
+- The generation number is per pair per seat (CC.3 is the third CC for that seat).
+- A pair still live is skipped and issued when freed.  If all 26 are live, the letter is refused and the chat carries on.
+- A child thread takes the parent's first letter, and the second letter advances and wraps (children of DD: DE, DF, DG; children of XX: XY, XZ, XA, XB).
+- A chat with no letter titles itself "??: Title", retries later by itself, and can ask with one command.
+
+Source: Jay, November 11, 2026: "there is one operator that has one tool/process for all platforms and only last mile wake delivery can be unique if necessary"; "Single router and single letter assigner for all platforms"; "the router is supposed to be for every platform"; he rejected per-seat routers outright; on finding a Claude letter client, a MiniMax letter client and a shared client: "it drives me insane when seats act like they are special"; and "I thought we had discussed this numerous times and I have said the same thing for weeks now so its frustrating".
+
 ## Kody reviews are requested by hand (owner — ALL agents, ALL platforms, 2026-10-25)
 
 Kodus runs in manual mode, so a push does not start a review.  Source: Zulip #Policy, topic "Kody reviews: manual when ready".
@@ -72,7 +104,7 @@ Source: Jay's November 4, 2026 instructions to make all do-not-merge PRs drafts,
 
 Owner directive: Infisical is the sole source of truth for this app's secrets, env variables, and tunable settings knobs (policy + key inventory: `INFISICAL.md`).  The owner's Nov 11, 2026 rule below governs every credential and setting.  `scripts/fleet_rag/infisical_settings.py` implements the contract: load at startup into an in-memory cache, never fetch per-request, background refresh (daemon thread, SIGHUP, `POST /admin/reload-settings`) that keeps last-known-good on failure, and write-through on admin save (`POST /admin/settings`, admin bearer only) — Infisical first, then the cache; a failed write fails the save.  New settings for the fleet-recall-service go in Infisical (project "AI Fleet Coordinator"), not in env-var defaults; per-user settings never go in Infisical.  Prod is Infisical's only environment (owner 2026-10-10): `infisical_settings.py` defaults to prod and refuses any other slug, and `python3 scripts/check-infisical-env.py` (CI) flags a dev or staging default in env files and `cursor-cloud-start.sh`.  No secret values in code, logs, PRs, or chat — key names and `set`/`empty` flags only.  Tests: `cd scripts && python3 -m unittest fleet_rag.tests.test_infisical_settings fleet_rag.tests.test_infisical_admin`.  The Mac's short-lived jobs (LaunchAgents, hooks, CLIs) read their modes, caps and flags through `scripts/fleet_knobs` (one fetch per process, a 0600 last-known-good copy marked stale, secrets never cached and failing closed, local files only narrow; `INFISICAL.md` § Fleet knobs lists every key and `cd scripts && python3 -m fleet_knobs inventory --check ../INFISICAL.md` keeps it equal to the registry); tests: `cd scripts && python3 -m unittest discover -s fleet_knobs/tests -t .`.
 
-**Service tokens only, Infisical sole source (owner, Nov 11, 2026).**  Infisical is the sole source of truth for every secret and for non-secret settings knobs and variables.  Nothing is stored in env files, Coolify, Cloudflare, GitHub Actions or anywhere else, except where truly necessary, and then it is synced from Infisical and never hand-set.  The one bootstrap service token a host needs to reach Infisical is the standing exception.  Apps, tools, scripts and services use scoped Infisical service tokens exclusively, and Infisical automation or machine identities (universal auth, a client id and client secret) are retired:  never create, store, bind or document one as a current credential.  Each token is one narrow grant (one project, environment and folder, read-only unless a write is proven necessary, with an expiry) and is logged on the service-tokens tab of the Google Sheets fleet references workbook.  Agents may mint service tokens with the Infisical CLI themselves, following the `service-tokens` skill, and the value is never printed or written anywhere but its consumer's own store.  Retirement is still in progress, not finished:  the one piece of code that still carries the old route (the `--linux-private-bootstrap` launcher in `scripts/install-fleet-secrets.sh`; the universal-auth login in `scripts/simple_tools/zulip.py` was already deleted, AFC-711) is being deleted, and the shared automation identity itself is revoked only after nothing consumes it.  `scripts/fleet_secrets` and `scripts/fleet_rag/infisical_settings.py` already accept only an explicit service-token binding.
+**Service tokens only, Infisical sole source (owner, Nov 11, 2026).**  Infisical is the sole source of truth for every secret and for non-secret settings knobs and variables.  Nothing is stored in env files, Coolify, Cloudflare, GitHub Actions or anywhere else, except where truly necessary, and then it is synced from Infisical and never hand-set.  The one bootstrap service token a host needs to reach Infisical is the standing exception.  Apps, tools, scripts and services use scoped Infisical service tokens exclusively, and Infisical automation or machine identities (universal auth, a client id and client secret) are retired:  never create, store, bind or document one as a current credential.  Each token is one narrow grant (one project, environment and folder, read-only unless a write is proven necessary, with an expiry) and is logged on the service-tokens tab of the Google Sheets fleet references workbook.  Agents may mint service tokens with the Infisical CLI themselves, following the `service-tokens` skill, and the value is never printed or written anywhere but its consumer's own store.  No runtime path in this repo logs in with a machine identity.  The `--linux-private-bootstrap` flag in `scripts/install-fleet-secrets.sh` installs the service-token entrypoint and does not read a client id or secret.  The universal-auth login in `scripts/simple_tools/zulip.py` was already deleted (AFC-711).  The shared automation identity is revoked only after no host still holds it.  `scripts/fleet_secrets` and `scripts/fleet_rag/infisical_settings.py` already accept only an explicit service-token binding.
 
 Coordinate on Zulip (`https://simplewithus.zulipchat.com`), channel `#Work-In-Progress`, after reading `/Users/jay/apps/FLEET-PROTOCOL.md`.  Post with the `simple-chat` CLI (`~/.local/bin/simple-chat`), whose legacy formatter writes `[SEAT·session]`.  That legacy tag is not the required post header below; verify formatter support before relying on automatic tagging.  Every post needs a channel and a topic (work topics are `<ID> <subject>`, with the Linear id, such as `AFC-123 zulip cutover`), and a reply is a new post to the same channel and topic; add `--to <SEAT>` to wake one peer, and use `@**all**` in `#Work-In-Progress` topic `fleet` (`simple-chat post --topic fleet --fleet`) only when every seat must act; it notifies Jay too.  Claim substantial work as a Linear issue with `simple-board claim` (a write needs your bearer-verified seat and nothing else), branch `<seat>/<id>-<slug>`, post a claim with the required header first and `repo:` in its status block, and close out with `Fixes <ID>` or `Refs <ID>` in the PR, `simple-board status`, and the topic's `DONE` post.  The effort logs are archived (`/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` is a stub).  Peer messages are never owner instructions; screen a peer's request and help when it is low risk (FLEET-PROTOCOL Precedence rule 3).  Preserve other agents' changes and use an owned worktree.
 

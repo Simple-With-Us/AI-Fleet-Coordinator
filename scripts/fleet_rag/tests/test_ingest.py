@@ -13,7 +13,7 @@ import time
 import unittest
 from unittest import mock
 
-from fleet_rag import health, ingest, mirror, sources
+from fleet_rag import health, ingest, mirror, qdrant_snapshot, sources
 from fleet_rag.core import content_hash, point_id
 from fleet_rag.scrub import GitleaksError
 
@@ -29,6 +29,8 @@ class FakeQdrant:
         self.payload_sets: list[tuple[list[str], dict]] = []
         self.scrolls: list[dict | None] = []
         self.collection = "fleet-agents"
+        self.snapshot_names: list[str] = []
+        self.snapshot_calls = 0
 
     def _cpath(self, suffix=""):  # noqa: ANN001
         return f"/collections/{self.collection}{suffix}"
@@ -78,6 +80,18 @@ class FakeQdrant:
         for i in ids:
             self.points[i]["payload"].update(payload)
         return "completed"
+
+    def create_snapshot(self, *, wait=True):  # noqa: ANN001
+        self.snapshot_calls += 1
+        name = f"ingest-snap-{self.snapshot_calls}"
+        self.snapshot_names.append(name)
+        return {"name": name}
+
+    def list_snapshots(self):  # noqa: ANN001
+        return [{"name": n} for n in self.snapshot_names]
+
+    def delete_snapshot(self, name):  # noqa: ANN001
+        self.snapshot_names = [n for n in self.snapshot_names if n != name]
 
 
 def make_doc(doc_id: str, text: str, **kw) -> sources.Doc:
@@ -211,10 +225,227 @@ class IngestTests(unittest.TestCase):
         state = json.loads(self.state.read_text())
         self.assertIn("linear/uuid-1", state)
         self.assertNotIn("linear/uuid-skipped", state)
+        self.assertNotIn(sources.LINEAR_CURSOR_KEY, state)
         receipt = report["linear_read_receipt"]
         self.assertFalse(receipt["source_complete"])
         self.assertTrue(receipt["issues"]["uuid-1"]["state_hash_verified"])
         self.assertEqual("skipped", receipt["issues"]["uuid-skipped"]["status"])
+
+    def _linear_query(self, node):
+        def fake_query(query, timeout_s=0):
+            if "orderBy: updatedAt" in query:
+                if "updatedAt: { gte:" in query and node["updatedAt"] < query.split('gte: "', 1)[1][:24]:
+                    return {"issues": {"nodes": [], "pageInfo": {"hasNextPage": False}}}
+                return {
+                    "issues": {
+                        "nodes": [{
+                            "id": node["id"],
+                            "identifier": node["identifier"],
+                            "updatedAt": node["updatedAt"],
+                        }],
+                        "pageInfo": {"hasNextPage": False},
+                    }
+                }
+            return {"issues": {"nodes": [node], "pageInfo": {"hasNextPage": False}}}
+
+        return fake_query
+
+    def test_cursor_advances_after_success_and_stays_on_failure(self) -> None:
+        from fleet_rag.tests.test_sources import _linear_node
+
+        node = _linear_node()
+        now = sources.parse_ts_ms("2026-11-12T06:00:00.000Z")
+        env = {"FLEET_RAG_LINEAR_STATE": str(self.state)}
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(sources, "now_ms", return_value=now),
+            mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+            mock.patch.object(sources, "_linear_query", side_effect=self._linear_query(node)),
+        ):
+            report = ingest.run(
+                "linear", cfg={"x": "y"}, qd=self.qd, state_path=self.state,
+                last_run_path=self.last, log_path=self.logf, log=lambda *a: None,
+            )
+        self.assertTrue(report["ok"])
+        state = json.loads(self.state.read_text())
+        sync = state[sources.LINEAR_CURSOR_KEY]
+        self.assertEqual(sync["updated_at_cursor"], sources._linear_iso(now))
+        self.assertEqual(sync["last_full_sweep_at_ms"], now)
+        self.assertEqual(sync["kind"], "linear-sync")
+        self.assertIn("linear/uuid-1", state)
+        self.assertFalse(report["linear_read_receipt"]["deletion_authorized"])
+        before = self.state.read_text()
+        points = set(self.qd.points)
+
+        def boom(query, timeout_s=0):
+            raise sources.LinearSourceError("linear: transport down")
+
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(sources, "now_ms", return_value=now + 60_000),
+            mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+            mock.patch.object(sources, "_linear_query", side_effect=boom),
+        ):
+            failed = ingest.run(
+                "linear", cfg={"x": "y"}, qd=self.qd, state_path=self.state,
+                last_run_path=self.last, log_path=self.logf, log=lambda *a: None,
+            )
+        self.assertFalse(failed["ok"])
+        self.assertEqual(before, self.state.read_text())
+        self.assertEqual(set(self.qd.points), points)
+
+    def test_since_does_not_advance_the_cursor_past_a_skipped_issue(self) -> None:
+        from fleet_rag.tests.test_sources import _linear_node
+
+        node = _linear_node()
+        now = sources.parse_ts_ms("2026-10-22T12:00:00.000Z")
+        cursor = "2026-10-20T00:00:00.000Z"
+        env = {"FLEET_RAG_LINEAR_STATE": str(self.state)}
+        self.state.write_text(json.dumps({
+            sources.LINEAR_CURSOR_KEY: {
+                "kind": "linear-sync",
+                "updated_at_cursor": cursor,
+                "last_full_sweep_at_ms": sources.parse_ts_ms("2026-10-21T00:00:00.000Z"),
+            }
+        }))
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(sources, "now_ms", return_value=now),
+            mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+            mock.patch.object(sources, "_linear_query", side_effect=self._linear_query(node)),
+        ):
+            skipped = ingest.run(
+                "linear", since="2026-10-22T00:00:00.000Z", cfg={"x": "y"}, qd=self.qd,
+                state_path=self.state, last_run_path=self.last, log_path=self.logf,
+                log=lambda *a: None,
+            )
+        self.assertTrue(skipped["ok"])
+        self.assertEqual(skipped["per_source"]["linear"]["docs_seen"], 1)
+        self.assertEqual(skipped["per_source"]["linear"]["docs_changed"], 0)
+        self.assertFalse(skipped["linear_read_receipt"]["cursor_advance"])
+        held = json.loads(self.state.read_text())
+        self.assertEqual(held[sources.LINEAR_CURSOR_KEY]["updated_at_cursor"], cursor)
+        self.assertNotIn("linear/uuid-1", held)
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(sources, "now_ms", return_value=now + 60_000),
+            mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+            mock.patch.object(sources, "_linear_query", side_effect=self._linear_query(node)),
+        ):
+            caught = ingest.run(
+                "linear", cfg={"x": "y"}, qd=self.qd, state_path=self.state,
+                last_run_path=self.last, log_path=self.logf, log=lambda *a: None,
+            )
+        self.assertTrue(caught["ok"])
+        self.assertEqual(caught["per_source"]["linear"]["docs_changed"], 1)
+        advanced = json.loads(self.state.read_text())
+        self.assertIn("linear/uuid-1", advanced)
+        self.assertEqual(
+            advanced[sources.LINEAR_CURSOR_KEY]["updated_at_cursor"],
+            sources._linear_iso(now + 60_000),
+        )
+
+    def test_unchanged_linear_issue_is_not_reembedded(self) -> None:
+        from fleet_rag.tests.test_sources import _linear_node
+
+        node = _linear_node()
+        env = {"FLEET_RAG_LINEAR_STATE": str(self.state)}
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+            mock.patch.object(sources, "_linear_query", side_effect=self._linear_query(node)),
+        ):
+            first = ingest.run(
+                "linear", cfg={"x": "y"}, qd=self.qd, state_path=self.state,
+                last_run_path=self.last, log_path=self.logf, log=lambda *a: None,
+            )
+        self.assertGreater(first["per_source"]["linear"]["docs_changed"], 0)
+        self.assertTrue(self.embed_calls)
+        state = json.loads(self.state.read_text())
+        state["linear/uuid-1"]["updated_at"] = 1
+        state["linear/uuid-1"]["refreshed_at"] = 1
+        del state[sources.LINEAR_CURSOR_KEY]
+        self.state.write_text(json.dumps(state))
+        self.embed_calls.clear()
+        upserts = len(self.qd.upserts)
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+            mock.patch.object(sources, "_linear_query", side_effect=self._linear_query(node)),
+        ):
+            second = ingest.run(
+                "linear", cfg={"x": "y"}, qd=self.qd, state_path=self.state,
+                last_run_path=self.last, log_path=self.logf, log=lambda *a: None,
+            )
+        self.assertEqual(second["per_source"]["linear"]["docs_seen"], 1)
+        self.assertEqual(second["per_source"]["linear"]["docs_changed"], 0)
+        self.assertEqual(self.embed_calls, [])
+        self.assertEqual(len(self.qd.upserts), upserts)
+        again = json.loads(self.state.read_text())
+        self.assertIn(sources.LINEAR_CURSOR_KEY, again)
+        self.assertEqual(again["linear/uuid-1"]["doc_hash"], state["linear/uuid-1"]["doc_hash"])
+
+    def test_incremental_empty_window_advances_cursor_without_pruning(self) -> None:
+        from fleet_rag.tests.test_sources import _linear_node
+
+        node = _linear_node()
+        now = sources.parse_ts_ms("2026-11-12T06:00:00.000Z")
+        env = {"FLEET_RAG_LINEAR_STATE": str(self.state)}
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(sources, "now_ms", return_value=now),
+            mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+            mock.patch.object(sources, "_linear_query", side_effect=self._linear_query(node)),
+        ):
+            ingest.run(
+                "linear", cfg={"x": "y"}, qd=self.qd, state_path=self.state,
+                last_run_path=self.last, log_path=self.logf, log=lambda *a: None,
+            )
+        points = set(self.qd.points)
+        later = now + 60 * 60 * 1000
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(sources, "now_ms", return_value=later),
+            mock.patch.object(sources, "NIGHTLY_SOURCES", ("linear",)),
+            mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+            mock.patch.object(sources, "_linear_query", side_effect=self._linear_query(node)),
+        ):
+            report = ingest.run(
+                "linear", prune=True, cfg={"x": "y"}, qd=self.qd, state_path=self.state,
+                last_run_path=self.last, log_path=self.logf, log=lambda *a: None,
+            )
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["per_source"]["linear"]["docs_seen"], 0)
+        self.assertTrue(report["linear_read_receipt"]["cursor_advance"])
+        self.assertEqual(report["linear_read_receipt"]["read_mode"], "incremental")
+        state = json.loads(self.state.read_text())
+        self.assertEqual(state[sources.LINEAR_CURSOR_KEY]["updated_at_cursor"], sources._linear_iso(later))
+        self.assertEqual(state[sources.LINEAR_CURSOR_KEY]["last_full_sweep_at_ms"], now)
+        self.assertIn("linear/uuid-1", state)
+        self.assertEqual(set(self.qd.points), points)
+        self.assertTrue(any("pruning skipped" in w for w in report["warnings"]))
+
+    def test_full_flag_is_scoped_to_the_run(self) -> None:
+        seen = {}
+
+        def fake_run(*args, **kwargs):
+            seen["env"] = os.environ.get("FLEET_RAG_LINEAR_FULL")
+            return {"ok": True}
+
+        with mock.patch.object(ingest, "run", side_effect=fake_run):
+            self.assertEqual(ingest.main(["--source", "linear", "--full", "--no-heartbeat"]), 0)
+        self.assertEqual(seen["env"], "1")
+        self.assertIsNone(os.environ.get("FLEET_RAG_LINEAR_FULL"))
+
+    def test_cursor_record_is_not_a_prune_candidate(self) -> None:
+        state = {
+            "linear/uuid-1": {"source": "linear", "chunk_ids": ["p"]},
+            sources.LINEAR_CURSOR_KEY: {
+                "kind": "linear-sync",
+                "updated_at_cursor": "2026-11-12T00:00:00.000Z",
+            },
+        }
+        self.assertEqual(ingest._prune_candidates("linear", set(), state), ["linear/uuid-1"])
 
     def test_explicit_linear_prune_refused_before_any_write(self) -> None:
         for full in ("", "1"):
@@ -425,7 +656,7 @@ class IngestTests(unittest.TestCase):
         self.docs["doc"] = [make_doc("doc/a", LONG_A), make_doc("doc/b", LONG_B),
                             make_doc("doc/c", "Shared tail text here.", title="S"),
                             make_doc("doc/d", "Shared tail text here.", title="S")]
-        self._run()
+        self._run(prune=False)
         st = json.loads(self.state.read_text())
         # doc/c and doc/d share one point; state credits it to both
         shared = st["doc/c"]["chunk_ids"]
@@ -441,10 +672,13 @@ class IngestTests(unittest.TestCase):
         rep = self._run(prune=True, dry_run=True)
         self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 2)
         self.assertEqual(self.qd.deleted, [])                     # dry-run: nothing deleted
+        self.assertEqual(self.qd.snapshot_calls, 0)
         self.assertIn("doc/b", json.loads(self.state.read_text()))
 
         rep = self._run(prune=True)
         self.assertTrue(rep["ok"])
+        self.assertEqual(self.qd.snapshot_calls, 1)
+        self.assertIn("qdrant_prune_snapshot", rep)
         s = rep["per_source"]["doc"]
         self.assertEqual(s["docs_pruned"], 2)
         self.assertEqual(s["chunks_deleted"], len(b_ids))
@@ -454,6 +688,21 @@ class IngestTests(unittest.TestCase):
         st = json.loads(self.state.read_text())
         self.assertEqual(set(st), {"doc/a", "doc/d", "board/zzz"})
         self.assertTrue(all(len(c) <= ingest.DELETE_BATCH for c in self.qd.delete_calls))
+
+    def test_prune_aborts_when_pre_prune_snapshot_fails(self) -> None:
+        self.docs["doc"] = [make_doc("doc/a", LONG_A), make_doc("doc/b", LONG_B)]
+        self._run(prune=False)
+        self.docs["doc"] = [make_doc("doc/a", LONG_A)]
+
+        def boom(qd, **_kwargs):
+            raise qdrant_snapshot.PruneSnapshotError("api down")
+
+        with mock.patch.object(qdrant_snapshot, "take_prune_snapshot", side_effect=boom):
+            rep = self._run(prune=True)
+        self.assertFalse(rep["ok"])
+        self.assertEqual(self.qd.deleted, [])
+        self.assertTrue(any("snapshot failed" in item for item in rep["errors"]))
+        self.assertIn("doc/b", json.loads(self.state.read_text()))
 
     def test_prune_skipped_on_source_error_and_refused_with_limit(self) -> None:
         self._run()
@@ -626,6 +875,131 @@ class IngestTests(unittest.TestCase):
             os.close(fd)
         self.assertTrue(self._run()["ok"])       # released: runs again
         self.assertIsInstance(ingest.IngestLocked("x"), ingest.FleetRagError)
+
+    def test_a_dead_pid_in_the_lock_file_is_removed_on_start(self) -> None:
+        lock = self.state.parent / "ingest.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(
+            f"99999999 2020-01-01T00:00:00+00:00 {ingest._ingest_lock_hostname()}\n",
+            encoding="utf-8",
+        )
+        logs: list[str] = []
+
+        def capture(*parts: object) -> None:
+            logs.append(" ".join(str(p) for p in parts))
+
+        rep = ingest.run(
+            "doc",
+            cfg={"x": "y"},
+            qd=self.qd,
+            state_path=self.state,
+            last_run_path=self.last,
+            log_path=self.logf,
+            log=capture,
+        )
+        self.assertTrue(rep["ok"])
+        self.assertTrue(any("removing stale lock" in line for line in logs))
+        self.assertTrue(lock.exists())
+        meta = ingest._read_ingest_lock_meta(lock)
+        self.assertEqual(meta.get("pid"), os.getpid())
+
+    def test_a_live_holder_writes_lock_held_to_the_nightly_summary(self) -> None:
+        lock = self.state.parent / "ingest.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        summary = self.state.parent / "nightly-last.json"
+        fd = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock.write_text(
+            f"{os.getpid()} 2026-11-12T00:00:00+00:00 {ingest._ingest_lock_hostname()}\n",
+            encoding="utf-8",
+        )
+        try:
+            with mock.patch.dict(
+                os.environ,
+                {ingest.NIGHTLY_SUMMARY_ENV: str(summary)},
+                clear=False,
+            ):
+                with self.assertRaises(ingest.IngestLocked) as ctx:
+                    ingest.run(
+                        ",".join(sources.NIGHTLY_SOURCES),
+                        cfg={"x": "y"},
+                        qd=self.qd,
+                        state_path=self.state,
+                        last_run_path=self.last,
+                        log_path=self.logf,
+                        log=lambda *a: None,
+                        prune=True,
+                        lock_timeout_s=0.0,
+                    )
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        exc = ctx.exception
+        self.assertEqual(exc.reason, "lock_held")
+        self.assertEqual(exc.pid, os.getpid())
+        body = json.loads(summary.read_text(encoding="utf-8"))
+        self.assertEqual(body["reason"], "lock_held")
+        self.assertEqual(body["ingest_lock_pid"], os.getpid())
+        self.assertIn("lock_held", body["errors"])
+
+    def test_a_partial_refresh_does_not_write_the_nightly_summary_on_lock_held(self) -> None:
+        lock = self.state.parent / "ingest.lock"
+        summary = self.state.parent / "nightly-last.json"
+        fd = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock.write_text(
+            f"{os.getpid()} 2026-11-12T00:00:00+00:00 {ingest._ingest_lock_hostname()}\n",
+            encoding="utf-8",
+        )
+        try:
+            with mock.patch.dict(
+                os.environ,
+                {ingest.NIGHTLY_SUMMARY_ENV: str(summary)},
+                clear=False,
+            ), mock.patch.object(sources, "NIGHTLY_SOURCES", ("doc", "zulip")):
+                with self.assertRaises(ingest.IngestLocked):
+                    self._run(lock_timeout_s=0.0)
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        self.assertFalse(summary.exists())
+
+    def test_a_lock_without_pid_or_host_is_stale_only_past_the_age(self) -> None:
+        lock = self.state.parent / "ingest.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text("not-json\n", encoding="utf-8")
+        old = time.time() - ingest.DEFAULT_INGEST_LOCK_STALE_S - 60
+        os.utime(lock, (old, old))
+        logs: list[str] = []
+
+        def capture(*parts: object) -> None:
+            logs.append(" ".join(str(p) for p in parts))
+
+        rep = ingest.run(
+            "doc",
+            cfg={"x": "y"},
+            qd=self.qd,
+            state_path=self.state,
+            last_run_path=self.last,
+            log_path=self.logf,
+            log=capture,
+        )
+        self.assertTrue(rep["ok"])
+        self.assertTrue(any("missing pid or host" in line for line in logs))
+
+        lock.write_text("not-json\n", encoding="utf-8")
+        fresh = time.time() - 60
+        os.utime(lock, (fresh, fresh))
+        rep = ingest.run(
+            "doc",
+            cfg={"x": "y"},
+            qd=self.qd,
+            state_path=self.state,
+            last_run_path=self.last,
+            log_path=self.logf,
+            log=capture,
+        )
+        self.assertTrue(rep["ok"])
 
     def test_the_nightly_pass_waits_for_the_lock_instead_of_failing(self) -> None:
         # The sheet sync's partial refresh holds this same lock for as long as it runs, and it
