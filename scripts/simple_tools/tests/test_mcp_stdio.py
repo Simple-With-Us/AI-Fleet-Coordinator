@@ -2065,7 +2065,7 @@ class StartupTests(McpHarness):
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "tools/call",
-                "params": {"name": "zulip_read_topic", "arguments": {"topic": "big", "limit": 50}},
+                "params": {"name": "zulip_read_topic", "arguments": {"topic": "big", "limit": 50, "full": True}},
             }
             os.write(in_w, (json.dumps(call) + "\n").encode("ascii"))
             os.close(in_w)
