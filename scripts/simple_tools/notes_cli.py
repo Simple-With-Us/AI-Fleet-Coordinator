@@ -32,6 +32,7 @@ from . import identities as X
 from . import identity as I
 from . import notes as N
 from . import notes_client as NC
+from .mcp import list_presentation as LP
 from . import session_ids as SID
 from . import zulip as Z
 from .idem import IdemStore
@@ -39,6 +40,22 @@ from .secretscan import scan as scan_text
 from .state import state_root
 
 CLI_WAIT_DEFAULT = 300
+
+
+def _list_lossless(args: argparse.Namespace, use_json: bool) -> bool:
+    """`--full` or `--json` keep the runner's payload;  text list is compact by default."""
+    return bool(getattr(args, "full", False) or use_json)
+
+
+def _list_limit(args: argparse.Namespace, use_json: bool) -> int:
+    limit_explicit = getattr(args, "limit", None) is not None
+    work = {"limit": args.limit} if limit_explicit else {}
+    return LP.effective_limit(
+        work,
+        schema_default=N.LIST_DEFAULT,
+        full=_list_lossless(args, use_json),
+        limit_explicit=limit_explicit,
+    )
 
 
 def add_parsers(
@@ -200,7 +217,13 @@ def add_parsers(
         type=int,
         metavar="N",
         default=None,
-        help="at most this many (1 to %d, default %d)" % (N.LIST_MAX, N.LIST_DEFAULT),
+        help="at most this many (1 to %d, default %d;  compact default is %d)"
+        % (N.LIST_MAX, N.LIST_DEFAULT, LP.COMPACT_DEFAULT_LIMIT),
+    )
+    q.add_argument(
+        "--full",
+        action="store_true",
+        help="return the full lossless payload;  the default is compact (at most ten rows)",
     )
     request_opts(q)
     q = add(sub, "log", "the action log of apple-notes-coding.sh, newest first (never note text)")
@@ -520,7 +543,7 @@ def _cmd_notes(rt: Any, args: argparse.Namespace, audit: dict[str, Any]) -> int:
             session=session,
             fmt=getattr(args, "format", None) if action == "read" else None,
             query=getattr(args, "query", None) if action == "list" else None,
-            limit=getattr(args, "limit", None) if action == "list" else None,
+            limit=_list_limit(args, use_json) if action == "list" else None,
             note_id=getattr(args, "note_id", None) if action == "delete" else None,
         )
         if action in N.WRITE_ACTIONS:
@@ -535,6 +558,8 @@ def _cmd_notes(rt: Any, args: argparse.Namespace, audit: dict[str, Any]) -> int:
     if action == "read":
         _print_read(rt, info, use_json)
     elif action == "list":
+        if info.get("status") == "done" and not _list_lossless(args, use_json):
+            info = LP.compact_notes_list_result(info, top_n=_list_limit(args, use_json))
         _print_list(rt, info, use_json)
     else:
         _print(rt, info, use_json)
@@ -634,7 +659,7 @@ def _print_list(rt: Any, info: dict[str, Any], use_json: bool) -> None:
     for row in info.get("notes") or []:
         rt.out("%s  %s\n" % (_when(row.get("modified")), row.get("title")))
     shown, total = len(info.get("notes") or []), info.get("total", 0)
-    if info.get("truncated"):
+    if info.get("truncated") or info.get("compact_truncated"):
         rt.out("(%d of %d shown;  raise --limit or narrow --query)\n" % (shown, total))
 
 
