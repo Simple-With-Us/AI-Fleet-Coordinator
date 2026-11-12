@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 from pathlib import Path
 
 from cron_monitor_audit.classify import build_catalog, classify_monitor, explainable
-from cron_monitor_audit.errors import AuditError, SentryForbidden
+from cron_monitor_audit.errors import AuditError, SentryForbidden, load_bounded_json
 from cron_monitor_audit.report import build_report, render_json, render_markdown, summary_line
 from cron_monitor_audit.sentry import fetch_monitors, parse_monitor_page
 from cron_monitor_audit.sources import (
@@ -110,9 +109,10 @@ def _sentry_token() -> str:
 
 def _read_json(path: Path) -> object:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        raw = path.read_bytes()
+    except OSError as exc:
         raise AuditError(f"could not read {path}") from exc
+    return load_bounded_json(raw, str(path))
 
 
 def _load_sources(path: Path) -> list[RepoSource]:

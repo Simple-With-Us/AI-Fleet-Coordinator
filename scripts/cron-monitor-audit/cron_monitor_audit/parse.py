@@ -5,8 +5,9 @@ The parsers read source as text. They do not execute it.
 
 from __future__ import annotations
 
-import json
 import re
+
+from cron_monitor_audit.errors import AuditError, load_bounded_json
 
 _CRON_KEY = re.compile(r"(?m)^CRON_SCHEDULES\s*=\s*\{")
 _PAIR = re.compile(r'"((?:\\.|[^"\\])*)"\s*:\s*"((?:\\.|[^"\\])*)"')
@@ -152,8 +153,8 @@ def _json_schedules(raw: str | None) -> dict[str, str] | None:
     if not text.startswith("{"):
         return None
     try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
+        payload = load_bounded_json(text.encode("utf-8"), "cron schedules")
+    except AuditError:
         return None
     if not isinstance(payload, dict):
         return None

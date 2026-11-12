@@ -29,6 +29,7 @@ from cron_monitor_audit.sources import (
     fetch_repos,
     include_local_path,
     load_apps,
+    search_code,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -431,6 +432,12 @@ class SentryClientTests(unittest.TestCase):
             load_bounded_json(body, "Sentry monitor list")
         self.assertIn("depth", str(caught.exception))
 
+    def test_wide_json_is_refused(self):
+        body = json.dumps([0] * 100_000).encode()
+        with self.assertRaises(AuditError) as caught:
+            load_bounded_json(body, "Sentry monitor list")
+        self.assertIn("node", str(caught.exception))
+
     def test_results_false_does_not_follow(self):
         class Opener:
             def open(self, request, timeout=None):
@@ -485,6 +492,27 @@ class GithubClientTests(unittest.TestCase):
         )
         self.assertTrue(any(path.endswith("sentry-ci-report.yml") for path, _ in repos[0].files))
         self.assertNotIn("bad-token", " ".join(calls))
+
+    def test_a_json_array_is_not_a_workflow_object(self):
+        class Opener:
+            def open(self, request, timeout=None):
+                return Response(b"[]")
+
+        repos, _token = fetch_repos(
+            [next(app for app in load_apps(APPS) if app.repo == "Socratic-Trade")],
+            "",
+            opener=Opener(),
+        )
+        self.assertFalse(repos[0].readable)
+        self.assertIn("not an object", repos[0].reason)
+
+    def test_a_json_array_does_not_finish_code_search(self):
+        class Opener:
+            def open(self, request, timeout=None):
+                return Response(b"[]")
+
+        result = search_code(["ci-example-nightly"], "Simple-With-Us", "token", opener=Opener())
+        self.assertEqual(result.state, "unavailable")
 
 
 class CliTests(unittest.TestCase):

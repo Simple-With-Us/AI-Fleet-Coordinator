@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -63,9 +62,10 @@ def _github_name(value: str) -> bool:
 
 def load_apps(path: Path) -> list[App]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        raw = path.read_bytes()
+    except OSError as exc:
         raise AuditError(f"could not read fleet app list {path}") from exc
+    payload = load_bounded_json(raw, "fleet app list")
     if not isinstance(payload, dict):
         raise AuditError("fleet app list was not an object")
     owner = payload.get("owner")
@@ -215,6 +215,8 @@ def search_code(
             payload = load_bounded_json(body, "GitHub code search")
         except AuditError:
             return CodeSearch("incomplete", "response was not usable JSON", hits)
+        if not isinstance(payload, dict):
+            return CodeSearch("unavailable", "response was not an object", hits)
         found: list[CodeHit] = []
         for item in payload.get("items") or []:
             if not isinstance(item, dict):
@@ -241,6 +243,8 @@ def _fetch_repo(full_name: str, token: str, root: str, opener) -> tuple[RepoSour
     if status != 200:
         raise AuditError(f"GitHub workflows for {full_name} returned HTTP {status}")
     payload = load_bounded_json(body, f"GitHub workflows for {full_name}")
+    if not isinstance(payload, dict):
+        raise AuditError(f"GitHub workflows for {full_name} was not an object")
     workflows = payload.get("workflows")
     if not isinstance(workflows, list):
         raise AuditError(f"GitHub workflows for {full_name} was not a list")
