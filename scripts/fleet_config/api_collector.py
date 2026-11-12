@@ -817,3 +817,427 @@ def evaluate_api_observation(
             None,
         )
 
+    observed_dt = _parse_utc_iso(matched.get("observedAt"))
+    expires_dt = _parse_utc_iso(matched.get("expiresAt"))
+    if observed_dt is None or expires_dt is None:
+        return (
+            build_result(
+                rule,
+                platform,
+                CheckState.UNKNOWN,
+                "the api observation carries malformed observedAt or expiresAt",
+                ReasonCode.UNPARSEABLE,
+                ObservedState(),
+                ctx,
+                collector=Collector.API,
+            ),
+            None,
+        )
+    now_utc = ctx.now if ctx.now.tzinfo is not None else ctx.now.replace(tzinfo=timezone.utc)
+    if observed_dt > now_utc + timedelta(seconds=MAX_CLOCK_SKEW_SECONDS):
+        return (
+            build_result(
+                rule,
+                platform,
+                CheckState.UNKNOWN,
+                "the api observation timestamp is implausibly in the future",
+                ReasonCode.ERROR,
+                ObservedState(),
+                ctx,
+                collector=Collector.API,
+            ),
+            None,
+        )
+    if expires_dt <= observed_dt:
+        return (
+            build_result(
+                rule,
+                platform,
+                CheckState.UNKNOWN,
+                "the api observation expiresAt is not after observedAt",
+                ReasonCode.UNPARSEABLE,
+                ObservedState(),
+                ctx,
+                collector=Collector.API,
+            ),
+            None,
+        )
+
+    local_cap = observed_dt + timedelta(seconds=max(1, int(rule.ttl_seconds)))
+    effective_expires = min(expires_dt, local_cap)
+    observed_iso = iso_utc(observed_dt)
+    expires_iso = iso_utc(effective_expires)
+    observer_id = str(matched.get("observerId") or doc.get("observerId") or "unknown-observer")
+    observed_state = _observed_from_row(matched.get("observed"), secret_canaries)
+    sidecar = build_evidence_sidecar(
+        matched,
+        rule=rule,
+        platform=platform,
+        host_id=expected_host_id,
+        observer_id=observer_id,
+        observer_class=observer_class,
+        observed_at=observed_iso,
+        received_at=iso_utc(now_utc),
+        expires_at=expires_iso,
+        manifest_digest=manifest_digest,
+        secret_canaries=secret_canaries,
+    )
+
+    if effective_expires <= now_utc:
+        stale_result = CheckResult(
+            rule_id=rule.id,
+            seat=rule.seat,
+            platform=platform,
+            kind=rule.kind,
+            state=CheckState.UNKNOWN,
+            reason="the api observation expired before this run",
+            reason_code=ReasonCode.STALE,
+            expected=rule.expected,
+            observed=observed_state,
+            proof_level_required=rule.proof_level,
+            proof_level_achieved=None,
+            collector=Collector.API,
+            check_type=rule.check.type,
+            checked_at=observed_iso,
+            expires_at=expires_iso,
+            ttl_seconds=rule.ttl_seconds,
+            stale=True,
+        )
+        return stale_result, sidecar
+
+    reported_state_raw = matched.get("state")
+    if reported_state_raw is not None:
+        if str(reported_state_raw) not in {state.value for state in CHECK_STATES}:
+            return (
+                build_result(
+                    rule,
+                    platform,
+                    CheckState.UNKNOWN,
+                    "the api observation carries an unknown state value",
+                    ReasonCode.UNPARSEABLE,
+                    observed_state,
+                    ctx,
+                    collector=Collector.API,
+                ),
+                sidecar,
+            )
+
+    if rule.expected.present is True and observed_state.present is False:
+        return (
+            replace(
+                build_result(
+                    rule,
+                    platform,
+                    CheckState.MISSING,
+                    "the expected remote target was authoritatively reported absent",
+                    ReasonCode.MISSING,
+                    observed_state,
+                    ctx,
+                    collector=Collector.API,
+                ),
+                checked_at=observed_iso,
+                expires_at=expires_iso,
+            ),
+            sidecar,
+        )
+
+    matched_ok, match_reason = _matches_expected(rule, observed_state)
+    if not matched_ok:
+        return (
+            replace(
+                build_result(
+                    rule,
+                    platform,
+                    CheckState.DRIFT,
+                    scrub_secrets(match_reason, secret_canaries),
+                    ReasonCode.DRIFT,
+                    observed_state,
+                    ctx,
+                    collector=Collector.API,
+                ),
+                checked_at=observed_iso,
+                expires_at=expires_iso,
+            ),
+            sidecar,
+        )
+
+    final_state, final_code, achieved, final_reason = _evaluate_proof(rule, matched, secret_canaries)
+    return (
+        replace(
+            build_result(
+                rule,
+                platform,
+                final_state,
+                scrub_secrets(final_reason, secret_canaries),
+                final_code,
+                observed_state,
+                ctx,
+                proof_level_achieved=achieved,
+                collector=Collector.API,
+            ),
+            checked_at=observed_iso,
+            expires_at=expires_iso,
+        ),
+        sidecar,
+    )
+
+
+def _query_url(base_url: str, *, nonce: str, rule: Rule, platform: str, host_id: str) -> str:
+    """Build the read-only GET query string for one observer check."""
+    query = urllib.parse.urlencode(
+        {
+            "ruleId": rule.id,
+            "seat": rule.seat,
+            "platform": platform,
+            "hostId": host_id,
+            "nonce": nonce,
+        }
+    )
+    separator = "&" if "?" in base_url else "?"
+    return base_url + separator + query
+
+
+def api_collect(rule: Rule, platform: str, ctx: CheckContext) -> CheckResult:
+    """Execute a rule via an explicitly configured read-only ``api`` observer runtime.
+
+    When no observer runtime is configured in ``ctx.cache[API_OBSERVER_CACHE_KEY]``,
+    return ``UNSUPPORTED`` honestly instead of inventing compliance outcomes.
+    """
+    runtime = ctx.cache.get(API_OBSERVER_CACHE_KEY)
+    if not isinstance(runtime, ApiObserverRuntime):
+        return build_result(
+            rule,
+            platform,
+            CheckState.UNSUPPORTED,
+            "the api collector has no configured observer endpoint (AFC-398), so this rule is not checked here",
+            ReasonCode.UNSUPPORTED,
+            ObservedState(),
+            ctx,
+            collector=Collector.API,
+        )
+
+    target = runtime.target
+    nonce = runtime.nonce_factory() if runtime.nonce_factory is not None else uuid.uuid4().hex
+    headers = dict(target.header_provider()) if target.header_provider is not None else {}
+    timeout = max(1, min(int(ctx.timeout), int(target.timeout_seconds)))
+    try:
+        request_url = validate_observer_url(
+            _query_url(
+                target.base_url,
+                nonce=nonce,
+                rule=rule,
+                platform=platform,
+                host_id=target.expected_host_id,
+            ),
+            allowed_hosts=target.allowed_hosts,
+            allow_insecure_loopback=target.allow_insecure_loopback,
+        )
+        if runtime.fetcher is not None:
+            raw = runtime.fetcher(request_url, headers, timeout, target.max_bytes)
+        else:
+            raw = http_fetch_observer(
+                request_url,
+                headers,
+                timeout,
+                target.max_bytes,
+                allowed_hosts=target.allowed_hosts,
+                allow_insecure_loopback=target.allow_insecure_loopback,
+                resolve_dns=runtime.resolve_dns,
+            )
+    except CheckError as exc:
+        return build_result(
+            rule,
+            platform,
+            CheckState.UNKNOWN,
+            scrub_secrets(str(exc), runtime.secret_canaries),
+            exc.reason_code,
+            ObservedState(),
+            ctx,
+            collector=Collector.API,
+        )
+    except Exception as exc:  # noqa: BLE001 - fail closed on unexpected transport error
+        return build_result(
+            rule,
+            platform,
+            CheckState.UNKNOWN,
+            scrub_secrets("the api observer transport failed: %s" % exc, runtime.secret_canaries),
+            ReasonCode.ERROR,
+            ObservedState(),
+            ctx,
+            collector=Collector.API,
+        )
+
+    result, sidecar = evaluate_api_observation(
+        rule,
+        platform,
+        raw,
+        expected_nonce=nonce,
+        expected_host_id=target.expected_host_id,
+        ctx=ctx,
+        max_bytes=target.max_bytes,
+        max_rows=target.max_rows,
+        manifest_digest=runtime.manifest_digest,
+        secret_canaries=runtime.secret_canaries,
+    )
+    if sidecar is not None:
+        runtime.sidecar_sink.append(sidecar)
+        sink = ctx.cache.setdefault(API_SIDECAR_CACHE_KEY, [])
+        if isinstance(sink, list):
+            sink.append(sidecar)
+    return result
+
+
+def build_first_cloud_seat_rules(
+    *,
+    seat: str,
+    platform: str,
+    host_id: str,
+    owner_seat: str,
+    rules_target: str,
+    rules_sha256: str,
+    hooks_target: str,
+    hook_names: Sequence[str],
+    mcp_target: str,
+    mcp_names: Sequence[str],
+    skills_target: str,
+    skill_names: Sequence[str],
+    subagents_target: str,
+    subagent_names: Sequence[str],
+    permissions_target: str,
+    permission_names: Sequence[str],
+    hook_proof_level: ProofLevel = ProofLevel.L0,
+    ttl_seconds: int = 900,
+    source: str = "AFC-441 Jet Oct 21 section 6",
+) -> tuple[Rule, ...]:
+    """Build the first six-kind cloud-seat rules for one registered cloud host/subject.
+
+    All cloud rules carry ``collector=Collector.API`` and ``autofix_allowed=False``.
+    Callers must supply real registered targets and digests; never invent endpoints.
+    """
+    prefix = "%s-%s" % (seat.lower(), host_id.lower())
+    return (
+        Rule(
+            id="%s-instructions" % prefix,
+            kind=ConfigKind.INSTRUCTIONS,
+            platforms=(platform,),
+            check=CheckSpec(
+                type=CheckType.MARKED_BLOCK_HASH,
+                target=rules_target,
+                detail="fleet-lane-map",
+            ),
+            expected=ExpectedState(
+                description="Approved public fleet instruction-block digest observed remotely.",
+                present=True,
+                sha256=rules_sha256,
+            ),
+            proof_level=ProofLevel.L0,
+            owner_seat=owner_seat,
+            autofix_allowed=False,
+            collector=Collector.API,
+            ttl_seconds=ttl_seconds,
+            seat=seat,
+            source=source,
+        ),
+        Rule(
+            id="%s-hooks" % prefix,
+            kind=ConfigKind.HOOKS,
+            platforms=(platform,),
+            check=CheckSpec(
+                type=CheckType.HOOK_REGISTERED,
+                target=hooks_target,
+                detail="PreToolUse",
+            ),
+            expected=ExpectedState(
+                description="Registered hook names and timeouts on cloud subject (L1 only with real sentinel).",
+                present=True,
+                names=tuple(hook_names),
+            ),
+            proof_level=hook_proof_level,
+            owner_seat=owner_seat,
+            autofix_allowed=False,
+            collector=Collector.API,
+            ttl_seconds=ttl_seconds,
+            seat=seat,
+            source=source,
+        ),
+        Rule(
+            id="%s-mcp" % prefix,
+            kind=ConfigKind.MCP,
+            platforms=(platform,),
+            check=CheckSpec(
+                type=CheckType.MCP_SERVERS_REGISTERED,
+                target=mcp_target,
+            ),
+            expected=ExpectedState(
+                description="Allowlisted configured MCP server names observed on cloud host.",
+                names=tuple(mcp_names),
+            ),
+            proof_level=ProofLevel.L0,
+            owner_seat=owner_seat,
+            autofix_allowed=False,
+            collector=Collector.API,
+            ttl_seconds=ttl_seconds,
+            seat=seat,
+            source=source,
+        ),
+        Rule(
+            id="%s-skills" % prefix,
+            kind=ConfigKind.SKILLS,
+            platforms=(platform,),
+            check=CheckSpec(
+                type=CheckType.SKILLS_INSTALLED,
+                target=skills_target,
+            ),
+            expected=ExpectedState(
+                description="Expected authorized fleet skill IDs present on cloud host.",
+                names=tuple(skill_names),
+            ),
+            proof_level=ProofLevel.L0,
+            owner_seat=owner_seat,
+            autofix_allowed=False,
+            collector=Collector.API,
+            ttl_seconds=ttl_seconds,
+            seat=seat,
+            source=source,
+        ),
+        Rule(
+            id="%s-subagents" % prefix,
+            kind=ConfigKind.SUBAGENTS,
+            platforms=(platform,),
+            check=CheckSpec(
+                type=CheckType.SUBAGENTS_INSTALLED,
+                target=subagents_target,
+            ),
+            expected=ExpectedState(
+                description="Expected subagent definition IDs present on cloud host.",
+                names=tuple(subagent_names),
+            ),
+            proof_level=ProofLevel.L0,
+            owner_seat=owner_seat,
+            autofix_allowed=False,
+            collector=Collector.API,
+            ttl_seconds=ttl_seconds,
+            seat=seat,
+            source=source,
+        ),
+        Rule(
+            id="%s-permissions" % prefix,
+            kind=ConfigKind.PERMISSIONS,
+            platforms=(platform,),
+            check=CheckSpec(
+                type=CheckType.PERMISSIONS_MATCH,
+                target=permissions_target,
+            ),
+            expected=ExpectedState(
+                description="Exact approved permission identifiers (credential stat/key-name only).",
+                names=tuple(permission_names),
+            ),
+            proof_level=ProofLevel.L0,
+            owner_seat=owner_seat,
+            autofix_allowed=False,
+            collector=Collector.API,
+            ttl_seconds=ttl_seconds,
+            seat=seat,
+            source=source,
+        ),
+    )
