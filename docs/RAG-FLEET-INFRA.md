@@ -243,10 +243,11 @@ recall correct contrib/CLAUDE/2026-11-05/472fc36e "Replacement lesson text ..." 
 recall retract contrib/CLAUDE/2026-11-05/472fc36e --reason "obsolete after the bridge rewrite"
 recall "old lesson" --include-retracted         # audit view only
 recall stats            # points, by source / app, embedder health
-recall doctor           # credentials found (names only), key mode, service health
+recall doctor [--json]  # setup health: token file mode 600, Infisical read, TEI, Qdrant, mirror and
+                        # nightly last.json where configured, install layout, ingest.lock (SKIP when N/A)
 recall eval --k 5 [--compare]   # golden-set retrieval quality, with/without lessons and rerank
 recall digest --days 7          # this week's contributions grouped by app (the weekly owner note)
-recall doctor --platforms --box # parity table: every CLI config, skills, hooks, seat-mcp, routines, box rows
+recall doctor --platforms --box # Mac parity table: CLI configs, skills, hooks, seat-mcp, routines, box rows
 recall ingest --all --prune     # what the nightly routine runs (idempotent, resumable)
 ```
 
