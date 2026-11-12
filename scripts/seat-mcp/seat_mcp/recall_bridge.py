@@ -240,11 +240,18 @@ def _opt_int(arguments: JsonDict, name: str, lo: int, hi: int) -> int | None:
 
 
 def recall_search(arguments: JsonDict) -> JsonDict:
+    from fleet_rag import recall_presentation
+
     query = _opt_str(arguments, "query", "q")
     if not query:
         raise SeatError("query is required")
-    limit = _opt_int(arguments, "limit", 1, MAX_LIMIT) or 5
-    kwargs: JsonDict = {"query": query, "limit": limit}
+    search_args, presentation = recall_presentation.split_search_arguments(dict(arguments))
+    search_args["query"] = query
+    if "limit" in arguments and arguments.get("limit") not in (None, ""):
+        limit = _opt_int(arguments, "limit", 1, MAX_LIMIT)
+        if limit is not None:
+            search_args["limit"] = limit
+    kwargs: JsonDict = {"query": search_args["query"], "limit": search_args["limit"]}
     for key in ("category", "app", "source"):
         val = _opt_str(arguments, key)
         if val:
@@ -259,7 +266,8 @@ def recall_search(arguments: JsonDict) -> JsonDict:
         kwargs["since_days"] = since
     if arguments.get("include_retracted") is True or arguments.get("includeRetracted") is True:
         kwargs["include_retracted"] = True
-    return _call("recall_search", **kwargs)
+    raw = _call("recall_search", **kwargs)
+    return recall_presentation.present_search_result(raw, presentation)
 
 
 def recall_stats(arguments: JsonDict) -> JsonDict:
@@ -422,7 +430,17 @@ def recall_tool_schemas() -> list[JsonDict]:
                         "type": "integer",
                         "minimum": 1,
                         "maximum": MAX_LIMIT,
-                        "description": "Default 5.",
+                        "description": "Default 3 (compact top-k).",
+                    },
+                    "full": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Return full chunk text and every stored hit field.",
+                    },
+                    "fields": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Hit fields to keep in compact mode.",
                     },
                     **filter_props,
                     "include_retracted": {

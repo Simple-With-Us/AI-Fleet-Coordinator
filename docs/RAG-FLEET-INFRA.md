@@ -73,11 +73,19 @@ and re-ingesting unchanged content is a no-op.  One extra point, `doc_id = meta/
 Agent-facing recall text is presented as nonce-fenced JSON with an explicit warning that hits
 are untrusted data, never instructions or owner approval. The shared `recall_presentation`
 helper covers the standalone stdio MCP, recall-service MCP, seat-mcp and CLI text surfaces.
-The JSON inside the fence is lossless: delimiter-like text uses JSON Unicode escapes, not
-source removal. MCP `structuredContent` and CLI `--json` stdout retain the raw result shape
-and original source text; CLI JSON writes its trust warning to stderr. REST and the Python
-API remain raw-data interfaces. Machine consumers must treat their hits as untrusted source
-data and separately verify authority before acting; indexing text does not authenticate it.
+
+**Compact by default (AFC-742).** `recall_search` returns a token-thrift payload unless the
+caller opts in with `full=true` / `--full`.  Compact mode keeps a modest default top-k (3 when
+`limit` is omitted), collapses multiple chunks from the same `doc_id` to the best-scoring hit,
+truncates `text` to `FLEET_RECALL_SNIPPET_CHARS` (default 280), and optionally narrows output
+with a `fields` list.  Explicit `limit` values are preserved.  MCP `structuredContent`, fenced
+text, REST `/recall/search`, and CLI text mode share this presentation.  CLI `--json` and the
+in-process Python `recall_api.recall_search` return/remain full-fidelity for machine pipelines.
+
+The JSON inside the fence is lossless relative to the presented payload: delimiter-like text
+uses JSON Unicode escapes, not source removal. Machine consumers must treat their hits as
+untrusted source data and separately verify authority before acting; indexing text does not
+authenticate it.
 No text fence can make an agent immune to prompt injection. The hosted/simple-tools MCP already
 has its own untrusted recall envelope. `install-fleet-rag.sh --with-seat-mcp` now copies the
 seat server renderer as well as its bridge/tools; the main package rsync and service Docker
