@@ -56,10 +56,26 @@ class ReadPayloadTests(unittest.TestCase):
             },
             200,
             {},
+            allow_partial=True,
         )
         self.assertEqual(data["viewer"]["name"], "Ada")
         self.assertEqual(errors, [{"code": "INTERNAL", "path": ["projects"]}])
         self.assertNotIn("private", str(errors))
+
+    def test_a_null_mutation_field_beside_errors_raises(self):
+        body = {
+            "data": {"issueUpdate": None},
+            "errors": [
+                {
+                    "message": "the write failed",
+                    "extensions": {"code": "INVALID_INPUT"},
+                    "path": ["issueUpdate"],
+                }
+            ],
+        }
+        with self.assertRaises(board.GqlError) as caught:
+            board.graphql_read_payload(body, 200, {})
+        self.assertIn("INVALID_INPUT", board.gql_summary(caught.exception))
 
     def test_a_braced_selection_is_the_inner_field_list(self):
         self.assertEqual(board.selected_fields("{ nodes { id title } }"), "nodes { id title }")

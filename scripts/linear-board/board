@@ -1939,11 +1939,12 @@ def public_gql_error(entry: dict) -> dict:
     return out
 
 
-def graphql_read_payload(js, status: int, hdrs) -> tuple[dict, list]:
-    """Data of one read, plus field-error codes when Linear sent both.
+def graphql_read_payload(js, status: int, hdrs, allow_partial: bool = False) -> tuple[dict, list]:
+    """Data of one GraphQL answer, plus field-error codes when a read keeps both.
 
-    Null or `{}` raises.  A non-empty `data` object is returned even when
-    `errors` is also set, so a partial page is not thrown away.
+    Null or `{}` raises.  GraphQL errors raise too, unless `allow_partial` is
+    set for a read that should keep a non-empty page.  A write stays strict:
+    `{"issueUpdate": null}` beside `errors` is a failure, not a success.
     """
     if not isinstance(js, dict):
         js = {}
@@ -1957,6 +1958,8 @@ def graphql_read_payload(js, status: int, hdrs) -> tuple[dict, list]:
             headers=hdrs,
             request_id=_request_id(hdrs),
         )
+    if errs and not allow_partial:
+        raise GqlError(errs, data, status=status, headers=hdrs, request_id=_request_id(hdrs))
     return data, [public_gql_error(e) for e in errs]
 
 
@@ -2076,10 +2079,12 @@ class Linear:
             stamps.append(time.time() + float(ra))
         return max(stamps) if stamps else None
 
-    def call(self, query: str, variables: dict | None = None) -> dict:
+    def call(self, query: str, variables: dict | None = None, allow_partial: bool = False) -> dict:
         """Data of one GraphQL operation.  Raises GqlError on GraphQL errors.
-        Retries Linear's rate limit (HTTP 400 RATELIMITED, or 429), 5xx and
-        transport errors with backoff, never past LINEAR_BOARD_MAX_WAIT."""
+        `allow_partial` keeps a non-empty read that also carried field errors.
+        Writes leave it false.  Retries Linear's rate limit (HTTP 400
+        RATELIMITED, or 429), 5xx and transport errors with backoff, never past
+        LINEAR_BOARD_MAX_WAIT."""
         self.partial_errors = []
         body = json.dumps({"query": query, "variables": variables or {}}).encode()
         deadline = time.time() + self.max_wait
@@ -2145,7 +2150,7 @@ class Linear:
                 time.sleep(delay)
                 delay = min(delay * 2, 30)
                 continue
-            data, field_errors = graphql_read_payload(js, status, hdrs)
+            data, field_errors = graphql_read_payload(js, status, hdrs, allow_partial=allow_partial)
             self.partial_errors = field_errors
             if field_errors:
                 warn(
@@ -5518,7 +5523,7 @@ def cmd_run(L: "Linear", auth: "Auth", a, seat: str) -> int:
         data, duplicate = run_mutation(L, auth, seat, a, prepared, f"`board run {entry['name']}`")
         output_limited(data, a.max_chars, write=True)
         return print_api_result(a, data, duplicate, "mutation", entry["name"])
-    data = clean_data(L.call(prepared["document"], prepared["variables"]))
+    data = clean_data(L.call(prepared["document"], prepared["variables"], allow_partial=True))
     output_limited(data, a.max_chars)
     return print_api_result(a, data, False, "query", entry["name"], L.partial_errors)
 
@@ -5608,7 +5613,7 @@ def cmd_api(L: "Linear", auth: "Auth", a, seat: str) -> int:
             print(f"\nmore:  --offset {nxt}")
         return 0
     if a.api_cmd == "query":
-        data = clean_data(L.call(a.prepared["document"], a.prepared["variables"]))
+        data = clean_data(L.call(a.prepared["document"], a.prepared["variables"], allow_partial=True))
         output_limited(data, a.max_chars)
         return print_api_result(a, data, False, "query", "linear_query", L.partial_errors)
     data, duplicate = run_mutation(L, auth, seat, a, a.prepared, "`board api mutation`")
