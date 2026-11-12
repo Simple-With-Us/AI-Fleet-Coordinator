@@ -116,6 +116,42 @@ class WfForwarding(unittest.TestCase):
         text = reply["result"]["content"][0]["text"]
         self.assertEqual(json.loads(text), {"pulls": [], "page": 1})
 
+    def test_issue_list_labels_and_issue_get_body_are_forwarded(self):
+        seen = {}
+
+        def opener(req, timeout=None):
+            seen["url"] = req.full_url
+            seen["body"] = json.loads(req.data.decode())
+            if req.full_url.endswith("/wf_issue_get"):
+                payload = {
+                    "issue": {
+                        "number": 2,
+                        "state": "open",
+                        "body": "needs-mac block",
+                        "body_withheld": False,
+                    }
+                }
+            else:
+                payload = {"issues": [{"number": 2, "state": "open"}], "complete": False}
+            return FakeResponse(json.dumps(payload).encode())
+
+        server = self._server(opener)
+        listed = self._call(
+            server,
+            "wf_issue_list",
+            {"repo": "o/r", "labels": "needs-mac", "state": "open", "per_page": 20},
+        )
+        self.assertEqual(seen["url"], "http://127.0.0.1:8471/v1/wf_issue_list")
+        self.assertEqual(seen["body"]["labels"], "needs-mac")
+        self.assertEqual(json.loads(listed["result"]["content"][0]["text"])["issues"][0]["number"], 2)
+        got = self._call(server, "wf_issue_get", {"repo": "o/r", "number": 2})
+        self.assertEqual(seen["url"], "http://127.0.0.1:8471/v1/wf_issue_get")
+        issue = json.loads(got["result"]["content"][0]["text"])["issue"]
+        self.assertEqual(issue["body"], "needs-mac block")
+        self.assertIs(issue["body_withheld"], False)
+        self.assertIn("wf_issue_list", TOOL_NAMES)
+        self.assertIn("wf_issue_get", TOOL_NAMES)
+
     def test_a_wf_read_http_error_is_a_refusal_not_an_unknown_write(self):
         def opener(req, timeout=None):
             raise urllib.error.HTTPError(
