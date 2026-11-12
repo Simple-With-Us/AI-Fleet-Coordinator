@@ -113,6 +113,7 @@ WRITE_TOOLS = {
     "notes_create",
     "notes_update",
     "notes_pin",
+    "notes_delete",
     "notes_unpin",
     "recall_contribute",
     "recall_correct",

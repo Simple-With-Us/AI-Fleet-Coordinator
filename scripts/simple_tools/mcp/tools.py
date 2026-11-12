@@ -130,6 +130,7 @@ WRITE_TOOLS = (
             "notes_update",
             "notes_pin",
             "notes_unpin",
+            "notes_delete",
             "recall_contribute",
             "recall_correct",
             "recall_retract",
@@ -239,6 +240,7 @@ CLI_VERBS: dict[str, tuple[str, ...]] = {
     "notes_update": ("update",),
     "notes_pin": ("pin",),
     "notes_unpin": ("unpin",),
+    "notes_delete": ("delete",),
     "notes_read": ("read",),
     "notes_list": ("list",),
     "notes_status": ("status",),
@@ -2451,21 +2453,26 @@ class Tools:
                 action,
                 self.seat,
                 request_id=args.get("request_id") or NOTES.new_request_id(),
-                title=args.get("title") if action != "list" else None,
+                title=args.get("title") if action not in ("list", "delete") else None,
                 markdown=str(args.get("markdown") or "") if action in NOTES.BODY_ACTIONS else "",
                 flags=notes_flags(args, action) if action in NOTES.BODY_ACTIONS else None,
                 session=session,
                 fmt=args.get("format") if action == "read" else None,
                 query=args.get("query") if action == "list" else None,
                 limit=args.get("limit") if action == "list" else None,
+                note_id=args.get("note_id") if action == "delete" else None,
+            )
+            scan = (
+                (lambda req: None)
+                if action == "delete"
+                else (lambda req: self._scan(**NOTES.text_fields(req)))
             )
             result = NOTES_CLIENT.call(
                 self._notes_host(),
                 self.seat,
                 request,
                 wait=self._notes_wait(args),
-                # The title, the body and the text flags (the summary rides argv):  the scan every write gets.
-                scan=lambda req: self._scan(**NOTES.text_fields(req)),
+                scan=scan,
             )
         except NOTES.NotesError as exc:
             raise self._notes_error(exc) from None
@@ -2499,6 +2506,9 @@ class Tools:
 
     def _tool_notes_unpin(self, args: Mapping[str, Any]) -> dict[str, Any]:
         return self._notes_call("unpin", args)
+
+    def _tool_notes_delete(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        return self._notes_call("delete", args)
 
     def _tool_notes_read(self, args: Mapping[str, Any]) -> dict[str, Any]:
         return self._notes_call("read", args)
