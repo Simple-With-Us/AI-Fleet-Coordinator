@@ -27,7 +27,7 @@ function cleanData(tools, data, depth = 0) {
   if (depth > 32) throw new ToolError("invalid_argument", "Linear response nesting exceeds the response limit.  Select fewer nested fields.");
   if (typeof data === "string") {
     const value = tools.scrub(data);
-    return scanSecret(value, tools.known) ? "[redacted secret]" : linearClean(value, 64000)[0];
+    return scanSecret(value, tools.known) ? "[redacted secret]" : linearClean(value, 1000000)[0];
   }
   if (Array.isArray(data)) return data.map((item) => cleanData(tools, item, depth + 1));
   if (data && typeof data === "object") {
@@ -205,7 +205,7 @@ export async function apiMutation(tools, args, audit) {
         throw error;
       }
     }, { write: true }));
-    if (JSON.stringify(data).length > 64000) {
+    if (JSON.stringify(data).length > 1000000) {
       // Keep a completed marker even when the requested response is too large.
       data = { mutation_completed: true, operation, response_omitted: "Select fewer fields to inspect this resource with linear_query." };
     }

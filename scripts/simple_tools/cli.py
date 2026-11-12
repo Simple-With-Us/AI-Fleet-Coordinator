@@ -1609,6 +1609,37 @@ def _resolve_peers(agent: Agent, names: Sequence[str]) -> tuple[list[str], list[
     return mentions, labels
 
 
+_LIVE_MENTION_RE = re.compile(r"(?<![^\s'\"({\[/<])@\*\*([^*\n]+)\*\*")
+
+
+def _mention_identity(inner: str) -> tuple[str, str]:
+    """A mention's identity:  its name, any case, and its user id when it carries one."""
+    match = re.match(r"^(.*)\|(\d+)$", inner, re.DOTALL)
+    return ((match.group(1) if match else inner).strip().lower(), match.group(2) if match else "")
+
+
+def _mentions_missing_from(text: str, mentions: Sequence[str]) -> list[str]:
+    """The `--to` mentions the text does not already make live, each at most once.
+
+    A body mention counts only where Zulip would notify:  outside code and block quotes, and with
+    only whitespace or opening punctuation before the @.  Same rule as contract.js mentionsMissingFrom.
+    """
+    visible = "\n".join(
+        line for line in ROUTER.outside_code(text).split("\n") if not line.lstrip().startswith(">")
+    )
+    present = [_mention_identity(found) for found in _LIVE_MENTION_RE.findall(visible)]
+    missing: list[str] = []
+    for mention in mentions:
+        if not mention:
+            continue
+        name, uid = _mention_identity(mention[3:-2])
+        if any(n == name and (not i or not uid or i == uid) for n, i in present):
+            continue
+        present.append((name, uid))
+        missing.append(mention)
+    return missing
+
+
 def _compose_intro_lead(
     text: str,
     *,
@@ -1636,7 +1667,7 @@ def _compose_intro_lead(
     if quiet and not marker:
         marker = ROUTER.NO_WAKE_MARKER + " "
     rest = intro["rest"]
-    mention_blob = " ".join(m for m in mentions if m and m not in rest)
+    mention_blob = " ".join(_mentions_missing_from(rest, mentions))
     if mention_blob:
         if rest.startswith("\n") or not rest.strip():
             return "%s%s %s%s" % (marker, bracket, mention_blob, rest)
@@ -1673,15 +1704,21 @@ def _compose(
     start = len(leading)
     seat_end = start + 1 + len(agent.seat)
     end = text.find("]", start)
+    # A folder intro typed with no space or a non-ASCII space before 📁 is still this
+    # seat's own intro (AFC-676), as in the hosted composeBody transport.
+    folder = re.match(r"\s*📁", text[seat_end:]) is not None
     own = (
         not no_tag
         and text.startswith("[" + agent.seat, start)
-        and text[seat_end : seat_end + 1] in ("]", " ", ":", "·", "→", "\t")
+        and (folder or text[seat_end : seat_end + 1] in ("]", " ", ":", "·", "→", "\t"))
         and end >= 0
         and not re.search(r"[\r\n\[]", text[start + 1 : end])
     )
     if own:
         intro = text[:end]
+        if folder:
+            # Exactly one ASCII space before 📁, the Policy shape the router parses.
+            intro = intro[:seat_end] + " " + intro[seat_end:].lstrip()
         if "·" in agent.tag_prefix:
             suffix = re.sub(r"^·[^\s:→\]]*", "", intro[seat_end:])
             intro = intro[:seat_end] + agent.tag_prefix[agent.tag_prefix.index("·") :] + suffix
@@ -1693,7 +1730,8 @@ def _compose(
         tail = text[end + 1 :]
         if tail and not tail[0].isspace():
             tail = " " + tail
-        body = intro + "]" + (" " + " ".join(mentions) if mentions else "") + tail
+        added = _mentions_missing_from(tail, mentions)
+        body = intro + "]" + (" " + " ".join(added) if added else "") + tail
         if quiet and not leading.startswith(ROUTER.NO_WAKE_MARKER):
             body = ROUTER.NO_WAKE_MARKER + " " + body
     else:
@@ -1702,7 +1740,7 @@ def _compose(
             parts.append(ROUTER.NO_WAKE_MARKER)
         if not no_tag:
             parts.append(agent.tag_prefix + ("→" + ",".join(labels) if labels else "") + "]")
-        parts.extend(mentions)
+        parts.extend(_mentions_missing_from(text, mentions))
         parts.append(text)
         body = " ".join(parts)
     if len(body) > MAX_CONTENT_LENGTH:
@@ -2818,7 +2856,7 @@ READ_ONLY_ACTIONS = frozenset({"list"})  # `scheduled list` and `drafts list` re
 
 def _check_agent_identity(rt: Runtime, agent: Agent, command: str = "") -> None:
     """AFC-331:  the CLI acts only as an agent bot (a live or extra seat, a BF-* bot or an enabled GB-*
-    persona), never as the owner's account or an integration bot, whatever credential files exist.  Without a
+    bot), never as the owner's account or an integration bot, whatever credential files exist.  Without a
     readable registry nothing proves that, so every identity is refused (fail closed), as on the stdio and Notes
     paths.  `whoami` is the one diagnostic that goes on and reports the registry problem."""
     from . import identities as X

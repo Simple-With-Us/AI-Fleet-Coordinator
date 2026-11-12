@@ -271,8 +271,12 @@ class ActualRuntime(unittest.TestCase):
         )
         sender = importlib.util.module_from_spec(sender_spec)
         sender_spec.loader.exec_module(sender)
+        # The cap is checked by what it is for:  both sides agree and the real bundle fits.  It is
+        # not pinned to a number, so adding a module under the cap breaks nothing here.
         self.assertEqual(sender.MAX_FILES, self.receiver.MAX_FILES)
-        self.assertEqual(self.receiver.MAX_FILES, 162)
+        self.assertIn("scripts/simple_tools/wake_settings.py", self.bundle["files"])
+        self.assertIn("scripts/simple_tools/wake_service.py", self.bundle["files"])
+        self.assertIn("scripts/simple_tools/thread_registry.py", self.bundle["files"])
         self.assertIn("scripts/fleet_rag/recall_presentation.py", self.bundle["files"])
         self.assertIn("scripts/simple_tools/mcp/bearer_gate.py", self.bundle["files"])
         self.assertIn("scripts/simple_tools/listener_registry.py", self.bundle["files"])

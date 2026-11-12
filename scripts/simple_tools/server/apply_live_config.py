@@ -10,10 +10,10 @@ Run it inside the container (the Coolify terminal, or docker exec):
 The entrypoint seeds /data/listener.toml from the sample only once, so a seat section changed in the
 sample never reaches a live volume by itself.  This copies exactly the sample's [seat.JET] and every
 [seat.GB-*] and [seat.BF-*] section into the live file:  a section that differs is replaced where it stands, with the
-comment lines just above it, and a missing one is appended.  [listener_api], [notes_queue] (AFC-486) and
-[linear_projects] (AFC-565) are appended the same way when the live file has none, but one that is there is
+comment lines just above it, and a missing one is appended.  [listener_api], [notes_queue] (AFC-486),
+[linear_projects] (AFC-565) and [linear_comments] are appended the same way when the live file has none, but one that is there is
 never changed:  its `enabled` (and the notes queue's seat lists) are the operator's choice on that volume,
-and the sample ships all three off.  [daemon]
+and the sample ships them all off.  [daemon]
 (owner_user_id and eligible_user_ids, pinned by `simple-chat daemon init`) and every other section stay byte
 for byte.
 
@@ -23,7 +23,7 @@ then replaces it atomically with the same mode and owner.  A second run changes 
 backup.  The file holds variable names, never values, so the diff prints the keys as they are.
 
 Afterwards restart the app if a section names a variable the container did not start with (always the
-case for a newly enabled persona); otherwise `simple-chat daemon reload` is enough.
+case for a newly enabled bot); otherwise `simple-chat daemon reload` is enough.
 
 Exit codes:  0 done (or nothing to do), 1 a file is missing or unreadable, 2 the result would be refused.
 """
@@ -50,11 +50,33 @@ HERE = Path(__file__).resolve().parent
 
 _HEADER_RE = re.compile(r"^\[([^\[\]]+)\]\s*(#.*)?$")
 # Settings sections copied from the sample only when the live file has none, and never replaced.
-ADD_ONLY = ("listener_api", "notes_queue", "linear_projects")
+ADD_ONLY = ("listener_api", "notes_queue", "linear_projects", "linear_comments")
+
+
+# The Mac CLI seats the server has held since the Nov 10 one-listener cutover.
+MAC_CLI_SEATS = frozenset(
+    {
+        "CLAUDE",
+        "CODEX",
+        "AG",
+        "CURSOR",
+        "GROK",
+        "CLUTCH",
+        "FX",
+        "MM",
+        "MC",
+        "OPENCODE",
+        "ZC",
+        "KIMI",
+        "AMP",
+    }
+)
 
 
 def target(seat: str) -> bool:
-    return seat == "JET" or seat.startswith("GB-") or seat.startswith("BF-")
+    return (
+        seat == "JET" or seat.startswith("GB-") or seat.startswith("BF-") or seat in MAC_CLI_SEATS
+    )
 
 
 def blocks(text: str) -> tuple[list[str], list[tuple[str, list[str]]]]:
@@ -241,7 +263,7 @@ def main(argv: list[str] | None = None, out=sys.stdout) -> int:
         return 2
     if not changes:
         print(
-            "no changes:  %s already matches the sample's JET, GB and BF sections and has [%s]"
+            "no changes:  %s already matches the sample's JET, GB, BF and Mac CLI seat sections and has [%s]"
             % (live_path, "] and [".join(ADD_ONLY)),
             file=out,
         )

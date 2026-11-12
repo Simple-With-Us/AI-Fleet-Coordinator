@@ -109,13 +109,13 @@ This review first reported PR B as 10 unpushed local commits.  Deeper verificati
 
 ## E. Grok Bot — what it actually is, and what to do with it
 
-**Identity (verified from Info.plist):** `/Applications/Grok Bot.app` is a renamed **Cursor.app** (CFBundleIdentifier `com.anysphere.sand`, v0.27.0).  It launches Cursor cloud agents; the "team of bots" is ~10 GB-* personas (GB-CONDUCTOR, GB-ORACLE, GB-DEPLOYER, GB-NURSE, …) posting to Slack under your account, fact-checked in near-real-time by CURSOR-BUGBOT.  There is no Grok Bot codebase; it is config + convention on top of a vendor app.
+**Identity (verified from Info.plist):** `/Applications/Grok Bot.app` is a renamed **Cursor.app** (CFBundleIdentifier `com.anysphere.sand`, v0.27.0).  It launches Cursor cloud agents; the "team of bots" is ~10 GB-* bots (GB-CONDUCTOR, GB-ORACLE, GB-DEPLOYER, GB-NURSE, …) posting to Slack under your account, fact-checked in near-real-time by CURSOR-BUGBOT.  There is no Grok Bot codebase; it is config + convention on top of a vendor app.
 **The confusion is real and documented:** four-way name collision (GROK / GROK-BUILD / GROK-BOT / CURSOR) needing a defensive disambiguation clause in FLEET-PROTOCOL; an identity-bleed incident (Cursor signed as Monet, Aug 23); the 5-day takeover window whose ownership flipped mid-window and was never closed out (c8d325b9, now 2 days past its end date, still open); GB-ORACLE's plan-churn being this week's worst DONE-inflation offender; a corrective rule already needed ("do not add app-specific Grok Bot lanes").
 **Recommendation:** keep it — Bugbot's independent verification is genuinely the best process pattern in the fleet — but demote and constrain it:
-1. **GB-* personas are role labels on ONE seat (GROK-BOT), not seats.**  Cap the roster; a FLEET wake should not fan out to ten personas of the same underlying quota.
+1. **GB-* bots are role labels on ONE seat (GROK-BOT), not seats.**  Cap the roster; a FLEET wake should not fan out to ten bots of the same underlying quota.
 2. **Same landing rules as everyone:** a GB DONE post with no PR/board-resolution link is noise; Bugbot already flags these — make an unverified-DONE something Bugbot auto-reopens.
-3. **Decide its budget deliberately.**  It runs on Cursor cloud quota and died mid-lane when the cap hit.  If you keep it: wire Grok Bot.app to the local grok-leader socket (the Aug 20 note's own recommendation, never attempted) so the queue survives Cursor caps.  If you're lukewarm: shut the personas down cleanly and keep only Bugbot — most GB value this week was verification, not implementation.
-4. **Owner decisions never live in persona chat.**  "Jay picked Qdrant" existing only inside a GB-ORACLE Slack message is exactly how Plan A ended the week with two engines and zero code — decisions land on the board.
+3. **Decide its budget deliberately.**  It runs on Cursor cloud quota and died mid-lane when the cap hit.  If you keep it: wire Grok Bot.app to the local grok-leader socket (the Aug 20 note's own recommendation, never attempted) so the queue survives Cursor caps.  If you're lukewarm: shut the bots down cleanly and keep only Bugbot — most GB value this week was verification, not implementation.
+4. **Owner decisions never live in bot chat.**  "Jay picked Qdrant" existing only inside a GB-ORACLE Slack message is exactly how Plan A ended the week with two engines and zero code — decisions land on the board.
 
 ---
 

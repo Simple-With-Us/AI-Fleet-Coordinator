@@ -1,16 +1,26 @@
 """`simple-chat letter`:  an Operator session letter, and the title "<letter>: <Title>", for every Claude Code chat
 on the Mac and on the server (AFC-564, owner request Oct 28, 2026).
 
-    letter hook                        the Claude Code hook:  SessionStart, UserPromptSubmit and SessionEnd
+    letter hook                        the Claude Code hook:  SessionStart, UserPromptSubmit, Stop and SessionEnd
     letter show [--session-id S]       this chat's letter from its local note;  no network
     letter install [--location L]      add the hooks to ~/.claude/settings.json (--check, --remove)
     letter registry OP ...             the registry side:  register, title, touch or close one chat
+    letter sweep-archived [--apply]    close the registrations of chats the desktop app has archived (dry run by default)
 
 Where the letter comes from.  The Operator's session registry (`operator_registry`, AFC-412) is one SQLite file on the
 Mac, the one allocator for every host.  A chat on the Mac reaches it in process.  A chat on the server reaches it over
 an SSH hop to the Mac (the destination in CLAUDE_LETTER_REMOTE) by running `simple-chat letter registry ...` there,
 so the Mac's own managed runtime makes the write.  The registry side refuses a host that has no registry file and
 never creates one:  a second file would issue letters that collide with the Mac's, and the server has none.
+
+The registry API cutover applies here as it does to the platform-letter registry side:  when the registry API
+URL is configured in the hook's environment (`registry_api`: SIMPLE_TOOLS_OPERATOR_REGISTRY_URL and the key env
+it names, which reach a Claude hook through the settings the installer writes or the host's shared registry env
+file), the registry side answers from the server registry over the API and the local file is never opened, and
+a chat on a host off the Mac calls the API through its own in-process registry side instead of the SSH hop.  A
+failed API call is an error answer, never a quiet local write.  With no URL configured nothing changes.  The
+key reaches the hook the way it reaches the other seats' hooks — through host configuration the seat's own
+install already owns — and is never another seat's to borrow.
 
 What the hook does.
 - SessionStart registers the chat, or resumes its registration, and titles it:  "<letter>: <Title>" when the chat
@@ -20,8 +30,20 @@ What the hook does.
   reaches the title), retries a registration or a title the registry did not take (at most every ten minutes), and marks
   the chat seen at most every half hour, whatever the title did.  When the Operator reissues a different pair, the model is
   told the new one as well as the title.
-- SessionEnd closes the registration when the chat is archived (reason `other`), replaced by `/clear`, or logged out,
-  which frees its letter (CLOSE_REASONS).  An exit at the prompt or a `/resume` keeps the letter.
+- Stop, at the end of every turn (AFC-702), reports what the turn touched:  the Linear issues its new transcript lines
+  and its folder's branch name go to the registry (only when the set of ids changed), and the Zulip topics it posted to
+  are kept in the chat's note (`platform_letter.end_of_turn`).  So the last turn of a chat is recorded without a next
+  prompt.  UserPromptSubmit runs the same scan from the same point, as the fallback for a turn whose Stop never ran.
+  Stop prints nothing and never blocks the turn from ending.
+- SessionEnd closes the registration when the chat is replaced by `/clear` or logged out, which frees its letter
+  (CLOSE_REASONS).  Any other end keeps the letter:  an exit at the prompt, a `/resume`, and `other`, which Claude Code
+  sends for an archive but also when the app quits or an ssh connection drops, so it cannot tell an archive apart.
+
+Archives.  The desktop app marks an archived chat in its own record of the chat (`isArchived`, beside `cliSessionId`,
+the chat's session UUID).  `letter sweep-archived` reads those records on the Mac (`claude_app_lineage.archive_states`)
+and closes the open Claude registration of each archived chat through the same registry side SessionEnd uses, which
+frees its letter.  A chat whose record is unarchived, unreadable or missing (a terminal chat) keeps its letter.  It is
+a dry run unless given --apply, and a host with no app store (the server) has nothing to sweep.
 
 Pair letters (owner, Oct 29, 2026).  A Claude chat takes a pair of letters (AA to ZZ, 676 of them), not one.  Measured
 over 30 days on the Mac and the server together:  121 interactive chats, 40 of them started inside one 72 hours, and
@@ -82,6 +104,7 @@ Python 3.11+, standard library only.
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 import os
@@ -110,19 +133,19 @@ SOURCE = "claude-letter-hook"
 MANAGED_SOURCES = (SOURCE, "claude-chat-start")
 ENTRYPOINTS = ("cli", "claude-desktop")
 LOCATIONS = ("mac", "server")
-HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "SessionEnd")
+HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "Stop", "SessionEnd")
 TITLE_SOURCES = (
     "startup",
     "resume",
     "fork",
 )  # the SessionStart sources whose sessionTitle Claude Code applies
-# SessionEnd reasons that close a chat's registration and free its letter (owner, Oct 28, 2026:  archiving closes).
-# Archiving a chat in the desktop app ends its process, and the docs name no archive reason, so it arrives as `other`,
-# Claude Code's reason for any end it does not name;  `/clear` replaces the chat;  `logout` ends every chat.  An exit
-# at the prompt and `/resume` keep the letter.  A chat that `other` closed by some other end gets its letter back when
-# it reopens, because reopen prefers the letter it held while that letter is free.  A host can name its own list in
-# CLAUDE_LETTER_CLOSE_ON (comma-separated).
-CLOSE_REASONS = ("clear", "logout", "other")
+# SessionEnd reasons that close a chat's registration and free its letter:  `/clear` replaces the chat, and `logout`
+# ends every chat.  An exit at the prompt and `/resume` keep the letter, and so does `other` (AFC-694):  it is Claude
+# Code's reason for any end it does not name, an archive among them, but also the app quitting or an ssh connection
+# dropping, and closing on it took the letters of chats that were still running.  An archive is found instead from the
+# app's own `isArchived` flag, by `letter sweep-archived` (owner, Oct 28, 2026:  archiving closes).  A host can name
+# its own list in CLAUDE_LETTER_CLOSE_ON (comma-separated).
+CLOSE_REASONS = ("clear", "logout")
 ENV_CLOSE_ON = "CLAUDE_LETTER_CLOSE_ON"
 
 ENV_OFF = "CLAUDE_LETTER"
@@ -141,6 +164,8 @@ REMOTE_TIMEOUT = 8.0  # the whole ssh round trip, inside every hook's own timeou
 STALE_SECONDS = 36 * 3600
 TOUCH_SECONDS = 1800
 RETRY_SECONDS = 600
+#: The registry's answer for a chat it has no row for, on the local path and the API path alike.
+NO_REGISTRATION = "this chat has no registration"
 PLACEHOLDER = "New Chat"
 TITLE_WORDS = 7
 TITLE_CHARS = 60
@@ -287,9 +312,15 @@ def bare(title: object, label: str = "") -> str:
 def own_words(current: object, note: Mapping[str, Any]) -> str:
     """The words of a title as someone wrote them, with this chat's letters dropped:  its own, and the one it held
     before the Operator reissued it (a chat whose registration failed keeps showing the old letter until it takes a
-    new one).  The words are kept whole;  only the copy sent to the registry is cut and scanned."""
+    new one), and every earlier letter the note remembers (`held_labels`: a letter the registry moved twice in place
+    leaves the first one on a title the app did not retitle).  The words are kept whole;  only the copy sent to the
+    registry is cut and scanned."""
     words = one_line(current)
-    for held in (note.get("label"), note.get("prior_label")):
+    for held in (
+        note.get("label"),
+        note.get("prior_label"),
+        *reversed(note.get("held_labels") or []),
+    ):
         if held:
             words = bare(words, str(held))
     return words
@@ -658,7 +689,7 @@ def _on_record(OR: Any, db: str, args: Any, sid: str) -> dict[str, Any]:
     try:
         rec = reg.lookup(PLATFORM, args.location, SCOPE, sid)
         if rec is None:
-            return {"error": "this chat has no registration"}
+            return {"error": NO_REGISTRATION}
         if rec.get("state") == "closed" or not rec.get("label"):
             return {"retired": True, "record_id": rec["record_id"]}
         rid = rec["record_id"]
@@ -672,9 +703,171 @@ def _on_record(OR: Any, db: str, args: Any, sid: str) -> dict[str, Any]:
                 "closed": reg.close(rid, actor=args.seat, source=args.source),
                 "label": rec["label"],
             }
-        return {"ok": True, "label": rec["label"], "generation": rec["generation"]}
+        elif args.op == "issues":
+            from . import platform_letter as PL
+
+            identity = {
+                "platform": PLATFORM,
+                "location": args.location,
+                "scope": SCOPE,
+                "session_id": sid,
+            }
+            return PL.record_issues_local(OR, db, identity, args.issues)
+        return {
+            "ok": True,
+            "label": rec["label"],
+            "generation": rec["generation"],
+            "record_id": rid,
+        }
     finally:
         reg.close_db()
+
+
+def _api_parent(args: Any, sid: str) -> tuple[str, str]:
+    """(the Claude Code session id of the chat that started this one, why none), for the API path.
+
+    Named by the caller (--parent-session-id), else read from the desktop app's record of the chat
+    (`claude_app_lineage`), which lives on the host this registry side runs on — the Mac, where the hook's
+    own registry side runs when the API is configured there.  The local path also skips the lookup for a
+    chat that already holds a live letter; the API's register answers a resume itself, and a parent named
+    for a resumed chat is ignored by the registry, so asking is harmless.  The lookup is a hint the chat
+    was never owed, so nothing it can raise stops a registration."""
+    if args.parent_session_id:
+        return str(args.parent_session_id), ""
+    try:
+        return AL.lookup(
+            args.home,
+            host_session_id=args.host_session_id,
+            cli_session_id=sid,
+            allow_lag=args.after_clear,
+        )
+    except Exception:  # noqa: BLE001 - a hint, never a reason to leave a chat without a letter
+        return "", AL.UNREADABLE
+
+
+def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[str, Any]:
+    """Register one chat through the registry API: resume it, or reopen it when it comes back closed.
+
+    The local `_register`'s orchestration over the API's ops, as the platform-letter registry side's API
+    path already does it: the API's register answers for a fresh chat and for a resume (its resume stamps
+    the session seen), a resumed-closed chat is reopened, and a resumed or reopened chat that arrived with
+    a title has the title carried over, because register keeps an existing record's old title.  What the
+    local path also does, this path does not: it sweeps nothing and evicts nothing — reclaiming letters is
+    the registry's own sweep's work once the store is the API's, and an exhausted space answers with the
+    registry's refusal instead of this side closing another chat to make room."""
+    from . import platform_letter as PL
+
+    title = clean_title(args.title)
+    parent, no_parent = _api_parent(args, sid)
+    identity = {"platform": PLATFORM, "location": args.location, "scope": SCOPE, "session_id": sid}
+    params: dict[str, Any] = {
+        **identity,
+        "seat": args.seat,
+        "source": args.source,
+        "title": title,
+        "letter_space": LETTER_SPACE,
+        "letter_pick": LETTER_PICK,
+    }
+    if parent:
+        params["parent_session_id"] = parent
+    out = PL._call_api(env, "register", params)
+    if out.get("code") == "labels_exhausted":
+        return {
+            "error": "all %d Claude letters are in use" % len(OR.LETTER_SPACES[LETTER_SPACE]),
+            "swept": 0,
+        }
+    error = PL._api_error(out)
+    if error is not None:
+        return error
+    if out.get("outcome") == "resumed_closed":
+        reopen_params: dict[str, Any] = {
+            "record_id": out["record_id"],
+            "actor": args.seat,
+            "source": args.source,
+            "letter_pick": LETTER_PICK,
+        }
+        if parent:
+            reopen_params["parent_session_id"] = parent
+        reopened = PL._call_api(env, "reopen", reopen_params)
+        if reopened.get("code") == "labels_exhausted":
+            return {
+                "error": "all %d Claude letters are in use" % len(OR.LETTER_SPACES[LETTER_SPACE]),
+                "swept": 0,
+            }
+        if reopened.get("code") == "space_lost":
+            return {
+                "error": "this registry cannot give a closed chat a pair letter again yet",
+                "swept": 0,
+            }
+        error = PL._api_error(reopened)
+        if error is not None:
+            return error
+        out = {
+            **out,
+            "label": reopened["label"],
+            "generation": reopened["generation"],
+            "previous": reopened["previous"],
+            "outcome": "reopened",
+            "title_display": OR.display_title(reopened["label"], title),
+        }
+    if title and out.get("outcome") in ("resumed", "reopened"):
+        updated = PL._call_api(env, "update", {**identity, "title": title})
+        error = PL._api_error(updated)
+        if error is not None:
+            return error
+        out = {**out, "title": updated.get("title"), "title_display": updated.get("title_display")}
+    out["swept"] = 0
+    out["evicted"] = 0
+    if no_parent and out.get("outcome") in ("registered", "reopened"):
+        out["parent_lookup"] = no_parent
+    return out
+
+
+def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[str, Any]:
+    """title, touch and close for one chat through the registry API.
+
+    The local path looks the record up first and answers from it: no record is the no-registration error,
+    and a closed one is retired, before any op writes.  The API's ops are addressed by identity and answer
+    in the registry's own words, so this path probes with the touch op where the local path reads, as the
+    platform-letter API path does: a touch stamps a live session seen, answers outcome "closed" for a
+    closed one without writing anything, and refuses a session the registry does not hold."""
+    from . import platform_letter as PL
+
+    identity = {"platform": PLATFORM, "location": args.location, "scope": SCOPE, "session_id": sid}
+    if args.op == "close":
+        out = PL._call_api(
+            env,
+            "close",
+            {**identity, "reason": "session ended", "actor": args.seat, "source": args.source},
+        )
+        error = PL._api_error(out)
+        if error is not None:
+            return error
+        if out.get("outcome") == "already_closed":
+            return {"retired": True, "record_id": out.get("record_id", "")}
+        return {"closed": bool(out.get("closed")), "label": out.get("label", "")}
+    if args.op == "issues":
+        return PL.record_issues_api(env, identity, args.issues)
+    probe = PL._call_api(env, "touch", identity)
+    error = PL._api_error(probe)
+    if error is not None:
+        return error
+    if probe.get("outcome") == "closed":
+        return {"retired": True, "record_id": probe.get("record_id", "")}
+    title = clean_title(args.title) if args.op == "title" else ""
+    if args.op == "touch" or not title:
+        # The letter and generation go on when the registry named them, as the local path's answer does.
+        return PL._touch_answer(probe)
+    updated = PL._call_api(env, "update", {**identity, "title": title})
+    error = PL._api_error(updated)
+    if error is not None:
+        return error
+    out = {"ok": True, "label": updated.get("label", ""), "generation": updated.get("generation")}
+    if updated.get("record_id"):
+        out["record_id"] = updated[
+            "record_id"
+        ]  # as a touch's answer carries it, for the hook's note
+    return out
 
 
 def registry_main(
@@ -684,13 +877,15 @@ def registry_main(
     import argparse
 
     from . import operator_registry as OR
+    from . import registry_api
 
     parser = argparse.ArgumentParser(prog="simple-chat letter registry", add_help=True)
-    parser.add_argument("op", choices=("register", "title", "touch", "close"))
+    parser.add_argument("op", choices=("register", "title", "touch", "close", "issues"))
     parser.add_argument("--location", required=True, choices=LOCATIONS)
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--seat", default=SEAT_DEFAULT)
     parser.add_argument("--title", default="")
+    parser.add_argument("--issues", default="[]")  # the `issues` op's list, as JSON (AFC-694)
     parser.add_argument("--source", default=SOURCE)
     parser.add_argument("--parent-session-id", default="")
     parser.add_argument("--host-session-id", default="")
@@ -707,6 +902,32 @@ def registry_main(
         return _emit(stdout, {"error": "bad arguments:  %s" % " ".join(argv)[:200]}, 2)
     args.home = str(env.get("HOME") or os.path.expanduser("~"))
     db = OR.registry_db_path(L.state_root(env), env)
+    if not registry_api.base_url(env) and not os.path.isfile(db):
+        # No URL in the environment and no registry file on this host:  the host's shared registry env
+        # file may carry the URL (the platform-letter registry side reads it on the same terms), and a
+        # host with a registry file of its own is never redirected by it.
+        from . import platform_letter as PL
+
+        env = PL.with_registry_env(env)
+    if registry_api.base_url(env):
+        # The registry API is the store now: with its URL configured (registry_api), the server's store
+        # answers instead and the local file is never opened, so the "no registry on this host" answer
+        # below does not arise.  A failed call is an error answer, never a quiet local write: two stores
+        # taking writes is the split the cutover exists to end.
+        try:
+            sid = SI.check(args.session_id, "the session id")
+            args.seat = I.canonical_seat(args.seat) or SEAT_DEFAULT
+            if args.op == "register":
+                out = _register_api(OR, env, args, sid)
+            else:
+                out = _on_record_api(OR, env, args, sid)
+        except ValueError as exc:
+            return _emit(stdout, {"error": "%s: %s" % (type(exc).__name__, str(exc)[:200])}, 4)
+        except (KeyError, TypeError):
+            # A registry answer too short to fold (a key the orchestration reads is not there) is a
+            # failed call, answered the same way: an error, never a traceback.
+            return _emit(stdout, {"error": "the registry answer was incomplete"}, 5)
+        return _emit(stdout, out, 0 if "error" not in out else 5)
     if not os.path.isfile(db):
         # Never create one:  a second registry would hand out letters that collide with the one the Operator keeps.
         return _emit(stdout, {"error": "no Operator registry on this host"}, 3)
@@ -725,6 +946,171 @@ def registry_main(
 def _emit(stdout: TextIO, payload: Mapping[str, Any], code: int) -> int:
     stdout.write(json.dumps(payload, sort_keys=True) + "\n")
     return code
+
+
+# --------------------------------------------------------------------------------------------
+# The archive sweep (runs where the desktop app's records are:  the Mac)
+# --------------------------------------------------------------------------------------------
+
+ARCHIVE_SOURCE = "claude-letter-archive-sweep"
+#: The letter rows the first read asks for, newest first (as the Z Code sweep reads it).  Closed rows count against
+#: the window too, so the window doubles until the history is read to its end (fewer rows came back than were asked
+#: for, or a doubling brought no more), up to HISTORY_MAX.
+HISTORY_LIMIT = 1000
+#: The largest window:  the registry builds one placeholder per row in a single query, and SQLite allows 32,766.
+HISTORY_MAX = 32000
+
+
+def _read_history(OR: Any, env: Mapping[str, str], db: str, registry_api: Any) -> list | str:
+    """Every letter-history row of the platform, newest first, or the reason it could not be read.  A window that
+    comes back full may hide older open registrations behind closed ones, so it is doubled until the history ends."""
+    limit, prev = HISTORY_LIMIT, -1
+    while True:
+        if registry_api.base_url(env):
+            answer = registry_api.call(env, "history", {"platform": PLATFORM, "limit": limit})
+            rows = answer.get("items") if isinstance(answer, dict) else None
+            if not isinstance(rows, list):
+                return str((answer or {}).get("error") or "the registry gave no history")[:200]
+        else:
+            try:
+                rows = OR.letter_history(db, PLATFORM, limit)
+            except (sqlite3.Error, OR.RegistryUnavailable) as exc:
+                return type(exc).__name__
+        # The API drops other seats' rows after the window is cut, so a short answer is not always the end;  a
+        # doubling that brings no more rows is.
+        if len(rows) < limit and (not registry_api.base_url(env) or len(rows) == prev):
+            return rows
+        if limit >= HISTORY_MAX:
+            return rows
+        prev, limit = len(rows), min(limit * 2, HISTORY_MAX)
+
+
+def _open_registrations(OR: Any, env: Mapping[str, str], db: str) -> list[dict[str, str]] | str:
+    """The open CLAUDE-seat Claude registrations that hold a letter, as {location, session_id, letter}, or the reason
+    they could not be read.  Read from the registry's whole letter history (`_read_history`), over the API when its
+    URL is configured and from the local file otherwise, the same choice `registry_main` makes."""
+    from . import registry_api
+
+    rows = _read_history(OR, env, db, registry_api)
+    if isinstance(rows, str):
+        return rows
+    out: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        if not isinstance(row, Mapping) or not row.get("live") or row.get("closed_at"):
+            continue
+        if str(row.get("state") or "") == "closed":
+            continue
+        if I.canonical_seat(str(row.get("seat") or "")) != SEAT_DEFAULT:
+            continue
+        where = str(row.get("verified_host") or "")
+        try:
+            sid = SI.check(str(row.get("native_session_id") or ""), "the session id")
+        except ValueError:
+            continue
+        if where not in LOCATIONS or (where, sid) in seen:
+            continue
+        seen.add((where, sid))
+        out.append({"location": where, "session_id": sid, "letter": str(row.get("letter") or "")})
+    return out
+
+
+def sweep_archived(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
+    """`letter sweep-archived [--apply]`:  close the open Claude registration of every chat the desktop app has
+    archived, which frees its letter (AFC-694).
+
+    Archiving a chat fires no SessionEnd reason of its own (it arrives as `other`, which an app quit or a dropped ssh
+    connection also sends), so the app's own record is the sign:  a record whose `isArchived` is true names the chat
+    by `cliSessionId`, the session UUID the registry keys on.  The registrations come from the registry's history (only
+    CLAUDE's, only open ones), and each is closed through `registry_main`'s close, the call SessionEnd makes, so the API
+    path and the local path both apply.  A chat whose record is unarchived, unreadable or missing keeps its letter;  a
+    chat on the server that the Mac's app runs over ssh has its record on the Mac, so it is swept here too.  Without
+    --apply nothing is sent.  One line per chat names its letter and the first 8 characters of its session id, never a
+    title.  A host with no app store (the server, a terminal-only Mac) has nothing to sweep and exits 0."""
+    import argparse
+
+    from . import operator_registry as OR
+    from . import platform_letter as PL
+    from . import registry_api
+
+    parser = argparse.ArgumentParser(prog="simple-chat letter sweep-archived")
+    parser.add_argument(
+        "--apply", action="store_true", help="close them (without it, only say what would close)"
+    )
+    args = parser.parse_args(argv)
+    home = str(env.get("HOME") or os.path.expanduser("~"))
+    if not os.path.isdir(AL.store_root(home)):
+        stdout.write("archive sweep:  no app store here, nothing to sweep\n")
+        return 0
+    db = OR.registry_db_path(L.state_root(env), env)
+    reg_env = env
+    if not registry_api.base_url(env) and not os.path.isfile(db):
+        reg_env = PL.with_registry_env(env)
+    if not registry_api.base_url(reg_env) and not os.path.isfile(db):
+        stdout.write("archive sweep:  no Operator registry on this host\n")
+        return 3
+    rows = _open_registrations(OR, reg_env, db)
+    if isinstance(rows, str):
+        stdout.write("archive sweep:  could not read the registrations (%s)\n" % rows)
+        return 5
+    states = AL.archive_states(home, {r["session_id"] for r in rows}) or {}
+    counts = {"archived": 0, "closed": 0, "already": 0, "failed": 0}
+    for row in sorted(rows, key=lambda r: (r["letter"], r["session_id"])):
+        if states.get(row["session_id"]) != AL.ARCHIVED:
+            continue
+        counts["archived"] += 1
+        tag = "%s (%s, %s)" % (row["letter"] or "-", row["session_id"][:8], row["location"])
+        if not args.apply:
+            stdout.write("would close %s\n" % tag)
+            continue
+        buf = io.StringIO()
+        registry_main(
+            [
+                "close",
+                "--location",
+                row["location"],
+                "--session-id",
+                row["session_id"],
+                "--seat",
+                SEAT_DEFAULT,
+                "--source",
+                ARCHIVE_SOURCE,
+            ],
+            env=env,
+            stdout=buf,
+        )
+        answer = _last_json(buf.getvalue()) or {}
+        if answer.get("closed"):
+            counts["closed"] += 1
+            stdout.write("closed %s\n" % tag)
+        elif answer.get("retired") or answer.get("error") == NO_REGISTRATION:
+            counts["already"] += 1
+            stdout.write("already closed %s\n" % tag)
+        else:
+            counts["failed"] += 1
+            stdout.write(
+                "could not close %s:  %s\n" % (tag, str(answer.get("error") or "no answer")[:120])
+            )
+    kept = {
+        s: sum(1 for r in rows if states.get(r["session_id"]) == s)
+        for s in (AL.UNARCHIVED, AL.UNREADABLE)
+    }
+    stdout.write(
+        "archive sweep:  %d open, %d archived, %d closed, %d already closed, %d failed;  kept %d unarchived,"
+        " %d unreadable, %d with no record%s\n"
+        % (
+            len(rows),
+            counts["archived"],
+            counts["closed"],
+            counts["already"],
+            counts["failed"],
+            kept[AL.UNARCHIVED],
+            kept[AL.UNREADABLE],
+            sum(1 for r in rows if r["session_id"] not in states),
+            "" if args.apply else "  (dry run:  nothing sent;  --apply closes them)",
+        )
+    )
+    return 1 if counts["failed"] else 0
 
 
 # --------------------------------------------------------------------------------------------
@@ -813,7 +1199,9 @@ class Chat:
 
     # ---- the registry ----------------------------------------------------------------------
 
-    def registry(self, op: str, title: str = "", after_clear: bool = False) -> dict[str, Any]:
+    def registry(
+        self, op: str, title: str = "", after_clear: bool = False, issues: str = ""
+    ) -> dict[str, Any]:
         argv = [
             op,
             "--location",
@@ -823,6 +1211,8 @@ class Chat:
             "--seat",
             self.seat,
         ]
+        if issues and op == "issues":
+            argv += ["--issues=" + issues]  # the list as JSON (AFC-694)
         if title:
             # One argument in the --flag=VALUE form:  a chat renamed "-v" or "--db x" must reach the registry as a
             # title, not be read by its parser as an option.
@@ -840,11 +1230,39 @@ class Chat:
         return self._call(argv)
 
     def _call(self, argv: list[str]) -> dict[str, Any]:
+        from . import platform_letter as PL
+        from . import registry_api
+
         if self.location == "mac":
+            # On the Mac the registry side runs in process, as it always has.
             out = io.StringIO()
             registry_main(argv, env=self.env, stdout=out)
             return _answer(_last_json(out.getvalue()))
         dest = str(self.env.get(ENV_REMOTE) or "").strip()
+        env = (
+            self.env
+            if (registry_api.base_url(self.env) or dest)
+            else PL.with_registry_env(self.env)
+        )
+        # A register with no parent named, from a host that has the Mac's ssh destination, still hops:  the
+        # parent of a sub-thread is found in the desktop app's record of the chat (`_api_parent`), and that
+        # record lives on the Mac, so an in-process lookup on this host would find none and the chat would
+        # lose its after-parent placement.  The Mac's own registry side then makes the API call.
+        needs_mac_lineage = (
+            bool(dest)
+            and argv[:1] == ["register"]
+            and not any(
+                a == "--parent-session-id" or a.startswith("--parent-session-id=") for a in argv
+            )
+        )
+        if registry_api.base_url(env) and not needs_mac_lineage:
+            # The registry API is the cutover (registry_api):  a chat on a host off the Mac calls the
+            # Operator's API itself, through its own in-process registry side, and never hops over ssh
+            # to a host whose own call would land back on the API — the platform-letter library's rule,
+            # its shared registry env file included.
+            out = io.StringIO()
+            registry_main(argv, env=env, stdout=out)
+            return _answer(_last_json(out.getvalue()))
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._@-]*", dest):
             # Empty, or something ssh could read as an option:  refuse it rather than run it.
             return {"error": "%s does not name an ssh destination" % ENV_REMOTE}
@@ -1011,6 +1429,39 @@ def _reissued(answer: Mapping[str, Any]) -> str:
             )
         )
     return ""
+
+
+def _follow_letter(note: dict[str, Any], answer: Mapping[str, Any], shown: str) -> tuple[str, str]:
+    """(title, context) for a chat whose letter the registry changed in place, read from a touch or title answer, or
+    ("", "") when it did not.
+
+    `platform_letter.follow_letter` folds the answer into the note: a different letter moves the note to it, and the
+    same letter under another generation only updates the generation, with no title and nothing said, because a chat
+    registered by hand can differ from its note by generation alone.  An answer with no letter (an error, a retired
+    letter, or a registry from before the touch named one) changes nothing.  For a new letter the title is the words of
+    `shown` with this chat's letters taken off (its old one is kept as `prior_label` for that), else the note's own
+    words, under the new letter, and the model is told how the chat is addressed now, as a reissued letter is."""
+    from . import platform_letter as PL
+
+    prior = PL.follow_letter(note, answer)
+    if not prior:
+        return "", ""
+    label = str(note["label"])
+    # Every letter this chat held stays in `held_labels`, in the shape `_agent_title_fix` keeps it (the letter it
+    # holds last), so a title that still shows any of them, not only the latest, has it taken off.
+    earlier = [*(note.get("held_labels") or []), note.get("prior_label"), prior]
+    kept: list[str] = []
+    for letter in earlier:
+        if letter and str(letter) != label and str(letter) not in kept:
+            kept.append(str(letter))
+    note["held_labels"] = kept[-(HELD_LABELS - 1) :] + [label]
+    note["prior_label"] = prior  # the title on screen still carries it
+    note["placeholder"] = "%s: %s" % (label, PLACEHOLDER)
+    words = own_words(shown, note)
+    if not words or words == PLACEHOLDER:
+        words = str(note.get("title") or "") or PLACEHOLDER
+    context = PL.relabeled(prior, label) + reminder(note) + _title_check(answer, label)
+    return "%s: %s" % (label, words), context
 
 
 def on_start(chat: Chat, data: Mapping[str, Any], stdout: TextIO, home: str) -> int:
@@ -1210,7 +1661,17 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
     if not sent and chat.now - float(note.get("touched_at") or 0) >= TOUCH_SECONDS:
         answer = chat.registry("touch")
         note["touched_at"] = chat.now
-    if answer.get("retired"):
+    # The registry may have changed this chat's letter in place (a relabel, or a restore that moved records between
+    # letters): the title and the model follow it.  The words are the title this prompt sets, else the one on screen.
+    followed, moved = _follow_letter(note, answer, title or current)
+    if followed:
+        title = followed
+        context = _join_context(context, moved)
+    # A chat that holds a letter in its note but has no row in the registry it now asks is the same case as a retired
+    # letter:  the store moved under it (the registry API took over from the Mac's file, and a chat opened before that
+    # was never copied), so nothing could ever resolve its letter.  It registers again, with the title it has.
+    unknown = answer.get("error") == NO_REGISTRATION and bool(note.get("label"))
+    if answer.get("retired") or unknown:
         # The letter was retired while this chat was open:  check with the Operator again, in case it needs a new one.
         held = str(note.get("label") or "")
         held_generation = int(note.get("generation") or 1)
@@ -1249,13 +1710,28 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
         else:
             title = bare(current, held) if held and current.startswith("%s: " % held) else None
             if held:
-                # Retired and not replaced yet:  the model must not go on announcing a letter another chat may hold.
+                # Retired (or never held by this registry) and not replaced yet:  the model must not go on announcing a
+                # letter another chat may hold.
+                what = "is not in the Operator's registry" if unknown else "was retired"
                 context = (
-                    "This chat's Operator letter %s was retired and the Operator could not issue another (%s).  "
+                    "This chat's Operator letter %s %s and the Operator could not issue another (%s).  "
                     "It is not %s any more; a prompt after %d minutes tries again."
-                    % (held, str(note.get("error") or "no answer"), held, RETRY_SECONDS // 60)
+                    % (held, what, str(note.get("error") or "no answer"), held, RETRY_SECONDS // 60)
                 )
     context = _join_context(context, _agent_title_fix(chat, note))
+    if note.get("state") == "open" and note.get("label"):
+        # The Linear issues the turn before touched (AFC-694):  its new transcript lines (only a transcript under
+        # ~/.claude is read) and its folder's branch.  Sent only when the set of ids changed;  silent on any failure.
+        from . import platform_letter as PL
+
+        home = str(chat.env.get("HOME") or os.path.expanduser("~"))
+        PL.sync_issues(
+            note,
+            data,
+            os.path.join(home, ".claude"),
+            chat.now,
+            lambda text: chat.registry("issues", issues=text),
+        )
     chat.write(note)
     if (title and title != current) or context:
         _hook_out(
@@ -1267,10 +1743,37 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
     return 0
 
 
+def on_stop(chat: Chat, data: Mapping[str, Any]) -> int:
+    """The end of a turn (AFC-702):  report the Linear issues and Zulip topics the turn touched, through the shared
+    end-of-turn entry, so the registry has the last turn of a chat without waiting for its next prompt.  Prints
+    nothing (any Stop output could keep the turn going) and is silent on every failure;  a registry that does not
+    answer is asked again no sooner than RETRY_SECONDS."""
+    note = chat.read()
+    if not note or note.get("state") != "open" or not note.get("label"):
+        return 0
+    from . import platform_letter as PL
+
+    home = str(chat.env.get("HOME") or os.path.expanduser("~"))
+    before = copy.deepcopy(note)
+    PL.end_of_turn(
+        note,
+        data,
+        os.path.join(home, ".claude"),
+        chat.now,
+        lambda text: chat.registry("issues", issues=text),
+    )
+    # The registry call can take seconds:  only the report's own keys go back, onto the note as it is now, so a
+    # SessionEnd or a prompt that wrote it meanwhile is never undone by this stale copy.
+    merged = PL.turn_note(before, note, chat.read())
+    if merged is not None:
+        chat.write(merged)
+    return 0
+
+
 def on_end(chat: Chat, data: Mapping[str, Any]) -> int:
-    """Close the registration when the chat ends for good (CLOSE_REASONS:  an archive, `/clear` or logout), which frees
-    its letter;  any other end keeps it for a resume.  Every end reason is kept in the note, so the close rule can be
-    checked against what the app really sends."""
+    """Close the registration when the chat ends for good (CLOSE_REASONS:  `/clear` or logout), which frees its letter;
+    any other end keeps it for a resume (an archive is the archive sweep's to find).  Every end reason is kept in the
+    note, so the close rule can be checked against what the app really sends."""
     note = chat.read()
     if not note:
         return 0
@@ -1333,6 +1836,8 @@ def hook(
         return on_start(chat, data, stdout, home)
     if event == "UserPromptSubmit":
         return on_prompt(chat, data, stdout)
+    if event == "Stop":
+        return on_stop(chat, data)
     return on_end(chat, data)
 
 
@@ -1361,8 +1866,9 @@ def show(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
 # --------------------------------------------------------------------------------------------
 
 #: The hook events and their timeouts in seconds.  SessionEnd's default budget is 1.5 seconds, too short for the
-#: ssh round trip from the server, so every entry names its own.
-HOOK_TIMEOUTS = {"SessionStart": 20, "UserPromptSubmit": 15, "SessionEnd": 15}
+#: ssh round trip from the server, so every entry names its own.  Stop (AFC-702) makes at most one registry call,
+#: inside REMOTE_TIMEOUT.
+HOOK_TIMEOUTS = {"SessionStart": 20, "UserPromptSubmit": 15, "Stop": 15, "SessionEnd": 15}
 HOOK_MARK = " letter hook"
 
 
@@ -1385,7 +1891,7 @@ def _write_private(path: str, data: bytes, mode: int) -> None:
 
 
 def install(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
-    """`letter install [--location server|mac] [--remote DEST] [--check | --remove]`:  add the three hook entries
+    """`letter install [--location server|mac] [--remote DEST] [--check | --remove]`:  add the four hook entries
     (and, when named, CLAUDE_LETTER_LOCATION and CLAUDE_LETTER_REMOTE) to ~/.claude/settings.json, keeping a dated
     0600 backup, or check or remove them;  --remove takes the two settings out as well.  Running it twice changes
     nothing.  The command names this host's own simple-chat wrapper by absolute path."""
@@ -1474,7 +1980,8 @@ def install(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
 
 
 USAGE = (
-    "usage: simple-chat letter {hook | show [--session-id S] | install [...] | registry OP ...}\n"
+    "usage: simple-chat letter {hook | show [--session-id S] | install [...] | registry OP ..."
+    " | sweep-archived [--apply]}\n"
 )
 
 
@@ -1555,6 +2062,8 @@ def main(
         return show(argv[1:], env, stdout)
     if argv[0] == "install":
         return install(argv[1:], env, stdout)
+    if argv[0] == "sweep-archived":
+        return sweep_archived(argv[1:], env, stdout)
     stderr.write(USAGE)
     return 2
 

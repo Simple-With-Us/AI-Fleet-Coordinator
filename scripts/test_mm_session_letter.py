@@ -549,6 +549,60 @@ class MmSessionLetterTest(unittest.TestCase):
         self.assertIn("secret_detected", out.getvalue())
         self.assertNotIn(secret, out.getvalue())
 
+    def test_the_rename_command_uses_the_resolved_letter_and_one_prefix(self):
+        """AFC-640: rename must not register() a second letter or double-prefix the title."""
+        from simple_tools import operator_registry as OR
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "registry.sqlite3")
+            reg = OR.SessionRegistry(db)
+            native = SESSION_ID
+            made = reg.resolve_or_register(
+                {
+                    "seat": "MM",
+                    "platform": "minimax",
+                    "verified_host": "mac-1",
+                    "profile_scope": "default",
+                    "native_session_id": native,
+                    "source": "test",
+                    "letter_space": "double",
+                }
+            )
+            reg._conn.execute(
+                "UPDATE alias_assignments SET letter = 'EH' WHERE record_id = ?",
+                (made["record_id"],),
+            )
+            reg._conn.commit()
+            reg.close_db()
+            out = io.StringIO()
+            with (
+                mock.patch.object(M, "registry_db", return_value=db),
+                mock.patch.object(M, "location", return_value="cloud-1"),
+                mock.patch.object(M, "set_title", return_value=True),
+                mock.patch.object(M, "update_title", return_value={"outcome": "updated"}),
+                mock.patch.object(M, "session_row", return_value={}),
+                mock.patch.object(
+                    M, "register", side_effect=AssertionError("register must not run")
+                ),
+                contextlib.redirect_stdout(out),
+            ):
+                code = M.main(
+                    [
+                        "rename",
+                        "--session-id",
+                        native,
+                        "--title",
+                        "EH: AFC-621 Housekeeper Webhook Credential Path",
+                    ]
+                )
+            self.assertEqual(code, 0)
+            payload = json.loads(out.getvalue().strip())
+            self.assertEqual(payload["letter"], "EH")
+            self.assertEqual(
+                payload["title"],
+                "EH: AFC-621 Housekeeper Webhook Credential Path",
+            )
+
     def test_read_hook_input_rejects_oversized_bytes(self):
         payload = b"x" * (M.HOOK_INPUT_MAX + 2)
         with mock.patch.object(sys, "stdin", _StdinBytes(payload)):
@@ -995,6 +1049,13 @@ class MmSessionLetterTest(unittest.TestCase):
         self.assertTrue(M.first_line_states_letter("AA: hello\nmore", "AA"))
         self.assertTrue(M.title_ok("AA: Topic", "AA")[0])
         self.assertFalse(M.title_ok("A: Topic", "AA")[0])
+
+    def test_wanted_title_strips_a_stale_prefix_from_a_held_letter(self):
+        # AFC-640: a title that still carries EH must not become "NN: EH: ..." after re-lettering.
+        self.assertEqual(M.wanted_title("EH", "EH: AFC-621 Topic", ("EH",)), "EH: AFC-621 Topic")
+        self.assertEqual(
+            M.wanted_title("EH", "NN: EH: AFC-621 Topic", ("EH", "NN")), "EH: AFC-621 Topic"
+        )
 
     def test_wanted_title_drops_the_letter_the_title_already_carries(self):
         # A thread that is re-lettered keeps its topic:  the old prefix goes, the new one comes.
@@ -1492,6 +1553,95 @@ class MmReLetterTitleTest(unittest.TestCase):
     def test_a_bare_topic_that_starts_with_an_acronym_keeps_it(self):
         # The topic is not a title, so the acronym is not a letter and stays.
         self.assertEqual(M.wanted_title("AA", "AI: the model"), "AA: AI: the model")
+
+
+class MmRegistryLetterResolveTest(unittest.TestCase):
+    """registry_letter_for_session and rename_registry_context stay location-safe."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "registry.sqlite3")
+        from simple_tools import operator_registry as R
+
+        R.SessionRegistry(self.db).close_db()
+
+    def _env(self):
+        return mock.patch.dict(
+            os.environ,
+            {
+                "SIMPLE_TOOLS_OPERATOR_REGISTRY": self.db,
+                "MINIMAX_HOOKS_DATA": "",
+                "MINIMAX_DATA_DIR": self.tmp.name,
+            },
+            clear=False,
+        )
+
+    def test_registry_letter_from_rows_skips_empty_labels(self):
+        rows = [{"verified_host": "mac-1", "profile_scope": "default", "label": ""}]
+        self.assertEqual(
+            M._registry_letter_from_rows(rows, verified_host="mac-1", profile_scope="default"),
+            "",
+        )
+        rows = [{"verified_host": "mac-1", "profile_scope": "default", "label": "AA"}]
+        self.assertEqual(
+            M._registry_letter_from_rows(rows, verified_host="mac-1", profile_scope="default"),
+            "AA",
+        )
+
+    def test_registry_letter_for_session_matches_profile_scope(self):
+        from simple_tools import operator_registry as R
+
+        native = "mvs_scope_disambiguation"
+        with self._env(), mock.patch.object(M, "location", return_value="mac-1"):
+            R.register_session(
+                self.db,
+                platform="minimax",
+                native_session_id=native,
+                seat="MM",
+                source="test",
+                issuer=R.ISSUER_OPERATOR,
+                verified_host="mac-1",
+                profile_scope="scope-a",
+                letter_space="double",
+            )
+            R.register_session(
+                self.db,
+                platform="minimax",
+                native_session_id=native,
+                seat="MM",
+                source="test",
+                issuer=R.ISSUER_OPERATOR,
+                verified_host="mac-1",
+                profile_scope="default",
+                letter_space="double",
+            )
+            with mock.patch.object(M, "PROFILE_SCOPE", "default"):
+                letters = [
+                    R.lookup_label(self.db, "minimax", "mac-1", "scope-a", native),
+                    R.lookup_label(self.db, "minimax", "mac-1", "default", native),
+                ]
+                self.assertEqual(len(set(letters)), 2)
+                self.assertEqual(M.registry_letter_for_session(native), letters[1])
+
+    def test_rename_registry_context_opens_the_registry_once(self):
+        import simple_tools.operator_registry as OR
+
+        calls: list[bool] = []
+        original = OR.SessionRegistry
+
+        class _CountingRegistry(original):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                calls.append(kwargs.get("read_only"))
+
+        with (
+            self._env(),
+            mock.patch.object(M, "location", return_value="mac-1"),
+            mock.patch.object(OR, "SessionRegistry", _CountingRegistry),
+        ):
+            M.rename_registry_context(SESSION_ID)
+        self.assertEqual(calls, [True])
 
 
 class MmReopenStrictTouchTest(unittest.TestCase):

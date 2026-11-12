@@ -1,0 +1,192 @@
+# Mac background-process desired state (Fleet GitOps G7, AFC-375).
+# Boundary: docs/plans/2026-10-19-fleet-config-design.md section 2 (disjoint from fleet-seats.json).
+# Live install paths assume the owner home layout documented in docs/MAC-LOCAL-PROCESSES.md;
+# reconciler normalizes /Users/jay to $HOME before comparing plists.
+
+schema_version = 1
+issue = "AFC-375"
+
+[manifest]
+repo = "AI-Fleet-Coordinator"
+description = "Tracked com.jay.* LaunchAgents and pm2 apps the repo defines for reconciliation."
+
+# --- Excluded surfaces (never in [[launch_agent]] / [[pm2]]; reconciler ignores drift on these) ---
+
+[[excluded.launch_agent]]
+label = "com.jay.operator"
+category = "operator"
+reason = "Always-on Zulip listener; plist is written by simple-chat daemon install, not a tracked template."
+
+[[excluded.launch_agent]]
+label = "com.jay.operator-notes-runner"
+category = "operator"
+reason = "Operator Apple Notes queue runner; lifecycle is Operator-owned."
+
+[[excluded.launch_agent]]
+label = "com.jay.operator-wake-alerter"
+category = "wake-delivery"
+reason = "Mac wake banner client for the hosted Operator listener read API."
+
+[[excluded.launch_agent]]
+label = "com.jay.fleet-mac-services"
+category = "muster"
+reason = "Writes mac-services.json for the Muster Operations tab."
+
+[[excluded.launch_agent]]
+label = "com.jay.fleet-tools-doctor"
+category = "muster"
+reason = "Writes fleet-tools report.json for Muster Fleet Tools."
+
+[[excluded.launch_agent]]
+label = "com.jay.fleet-worker-health"
+category = "muster"
+reason = "Writes worker-health.json for Muster Worker Health."
+
+[[excluded.launch_agent]]
+label = "com.jay.github-outbox-bridge"
+category = "routing"
+reason = "GitHub outbox to Zulip routing bridge; not in desired-state scope for G7."
+
+[[excluded.launch_agent]]
+label = "com.jay.mac-seat-watch"
+category = "routing"
+reason = "Mac seat claim poller for needs-mac issues; routing, not fleet job shape."
+
+[[excluded.note]]
+category = "eavesdropper"
+reason = "The Mac eavesdropper listener was retired at the one-listener cutover; wake and inbox are server-side. No com.jay.* LaunchAgent remains for eavesdropper."
+
+[[excluded.note]]
+category = "session-letter"
+reason = "Session letters are assigned by the Operator registry and seat hooks, not a Mac LaunchAgent or pm2 job."
+
+# --- LaunchAgents in desired state (templates under scripts/launchd/) ---
+
+[[launch_agent]]
+label = "com.jay.botfleet-server"
+plist_template = "scripts/launchd/com.jay.botfleet-server.plist"
+
+[[launch_agent]]
+label = "com.jay.fleet-gdrive-backup"
+plist_template = "scripts/launchd/com.jay.fleet-gdrive-backup.plist"
+
+[[launch_agent]]
+label = "com.jay.fleet-rag-mirror"
+plist_template = "scripts/launchd/com.jay.fleet-rag-mirror.plist"
+
+[[launch_agent]]
+label = "com.jay.fleet-work-backup"
+plist_template = "scripts/launchd/com.jay.fleet-work-backup.plist"
+
+[[launch_agent]]
+label = "com.jay.grok-idle-unload"
+plist_template = "scripts/launchd/com.jay.grok-idle-unload.plist"
+
+[[launch_agent]]
+label = "com.jay.ios-testflight-freshness"
+plist_template = "scripts/launchd/com.jay.ios-testflight-freshness.plist"
+
+[[launch_agent]]
+label = "com.jay.mac-cleanup"
+plist_template = "scripts/launchd/com.jay.mac-cleanup.plist"
+helpers = [{ repo = "scripts/mac-auto-cleanup.sh", installed = "apps/mac-auto-cleanup.sh" }]
+
+[[launch_agent]]
+label = "com.jay.mac-facts-publish"
+plist_template = "scripts/launchd/com.jay.mac-facts-publish.plist"
+
+[[launch_agent]]
+label = "com.jay.mac-process-watch"
+plist_template = "scripts/launchd/com.jay.mac-process-watch.plist"
+helpers = [{ repo = "scripts/mac-process-watch.sh", installed = "apps/mac-process-watch.sh" }]
+
+[[launch_agent]]
+label = "com.jay.mac-resource-watch"
+plist_template = "scripts/launchd/com.jay.mac-resource-watch.plist"
+helpers = [{ repo = "scripts/mac-resource-watch.py", installed = "apps/mac-resource-watch.py" }]
+
+[[launch_agent]]
+label = "com.jay.needs-owner-notify"
+plist_template = "scripts/launchd/com.jay.needs-owner-notify.plist"
+
+[[launch_agent]]
+label = "com.jay.sim-idle-reaper"
+plist_template = "scripts/launchd/com.jay.sim-idle-reaper.plist"
+helpers = [{ repo = "scripts/sim-idle-reaper.py", installed = "apps/sim-idle-reaper.py" }]
+
+[[launch_agent]]
+label = "com.jay.simple-tools-runtime-sync"
+plist_template = "scripts/launchd/com.jay.simple-tools-runtime-sync.plist"
+helpers = [{ repo = "scripts/simple-tools-runtime-sync.sh", installed = "apps/simple-tools-runtime-sync.sh" }]
+
+[[launch_agent]]
+label = "com.jays.weekly-fleet-mode-digest"
+plist_template = "scripts/launchd/com.jays.weekly-fleet-mode-digest.plist"
+
+# --- pm2 apps (declared in scripts/pm2-ecosystem.config.cjs; live copy at ~/apps/pm2-ecosystem.config.cjs) ---
+
+[pm2]
+ecosystem_template = "scripts/pm2-ecosystem.config.cjs"
+ecosystem_installed = "apps/pm2-ecosystem.config.cjs"
+
+[[pm2.app]]
+name = "shellular"
+
+[[pm2.app]]
+name = "code-main-keeper"
+
+[[pm2.app]]
+name = "vision-worker"
+
+[[pm2.app]]
+name = "xcode-health"
+
+[[pm2.app]]
+name = "agy-acp"
+
+[[pm2.app]]
+name = "grok-leader"
+
+[[pm2.app]]
+name = "grok-acp"
+
+[[pm2.app]]
+name = "clutch-web"
+
+[[pm2.app]]
+name = "seat-mcp"
+
+[[pm2.app]]
+name = "botfleet-mcp"
+
+# --- Documented gaps (not invented; see docs/compliance/inventory.md and MAC-LOCAL-PROCESSES.md) ---
+
+[[gap]]
+kind = "launch_agent"
+label = "com.jay.lark-mm-bridge"
+note = "Tracked template deploy/com.jay.lark-mm-bridge.plist uses placeholders; live plist hard-codes Lark open ids."
+
+[[gap]]
+kind = "launch_agent"
+label = "com.jay.lane-placement-watch"
+note = "Template scripts/fleet_lanes/templates/com.jay.lane-placement-watch.plist; install is owner-gated."
+
+[[gap]]
+kind = "launch_agent"
+label = "com.jay.simple-tools.echo-health"
+note = "Live-only plist; no tracked template in this repo."
+
+[[gap]]
+kind = "launch_agent"
+label = "com.jay.fleet-handbook-sync"
+note = "Tracked source in Fleet-OPS; no AFC plist template."
+
+[[gap]]
+kind = "launch_agent"
+label = "com.jay.clutch-auto-update"
+note = "Tracked source in Clutch repo; Mac installed copy outside AFC."
+
+[[gap]]
+kind = "pm2"
+name = "pm2-logrotate"
+note = "pm2 module housekeeping; not in scripts/pm2-ecosystem.config.cjs."

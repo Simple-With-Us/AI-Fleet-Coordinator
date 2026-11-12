@@ -107,6 +107,18 @@ export const OWN_APP_LINEAR_PREFIXES = Object.freeze({
   "BF-PLUMBER": "BF_PLUMBER",
   "BF-PUBLISHER": "BF_PUBLISHER",
   "BF-TRADER": "BF_TRADER",
+  "GB-COMPILER": "GB_COMPILER",
+  "GB-DEPLOYER": "GB_DEPLOYER",
+  "GB-DESIGNER": "GB_DESIGNER",
+  "GB-DIRECTOR": "GB_DIRECTOR",
+  "GB-ENGINEER": "GB_ENGINEER",
+  "GB-FIXER": "GB_FIXER",
+  "GB-HOUSEKEEPER": "GB_HOUSEKEEPER",
+  "GB-MONITOR": "GB_MONITOR",
+  "GB-ORACLE": "GB_ORACLE",
+  "GB-PLUMBER": "GB_PLUMBER",
+  "GB-PUBLISHER": "GB_PUBLISHER",
+  "GB-TRADER": "GB_TRADER",
 });
 
 export const LINEAR_SECRETS = Object.freeze({
@@ -146,6 +158,18 @@ export const LINEAR_SECRETS = Object.freeze({
   "BF-PLUMBER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-PLUMBER"]),
   "BF-PUBLISHER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-PUBLISHER"]),
   "BF-TRADER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-TRADER"]),
+  "GB-COMPILER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-COMPILER"]),
+  "GB-DEPLOYER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-DEPLOYER"]),
+  "GB-DESIGNER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-DESIGNER"]),
+  "GB-DIRECTOR": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-DIRECTOR"]),
+  "GB-ENGINEER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-ENGINEER"]),
+  "GB-FIXER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-FIXER"]),
+  "GB-HOUSEKEEPER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-HOUSEKEEPER"]),
+  "GB-MONITOR": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-MONITOR"]),
+  "GB-ORACLE": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-ORACLE"]),
+  "GB-PLUMBER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-PLUMBER"]),
+  "GB-PUBLISHER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-PUBLISHER"]),
+  "GB-TRADER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-TRADER"]),
 });
 
 /** The Worker secret names for a seat, or null when the seat has no Linear app. */
@@ -193,6 +217,18 @@ export const LINEAR_INFISICAL = Object.freeze({
   "BF-PLUMBER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-PLUMBER"]),
   "BF-PUBLISHER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-PUBLISHER"]),
   "BF-TRADER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-TRADER"]),
+  "GB-COMPILER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-COMPILER"]),
+  "GB-DEPLOYER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-DEPLOYER"]),
+  "GB-DESIGNER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-DESIGNER"]),
+  "GB-DIRECTOR": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-DIRECTOR"]),
+  "GB-ENGINEER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-ENGINEER"]),
+  "GB-FIXER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-FIXER"]),
+  "GB-HOUSEKEEPER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-HOUSEKEEPER"]),
+  "GB-MONITOR": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-MONITOR"]),
+  "GB-ORACLE": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-ORACLE"]),
+  "GB-PLUMBER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-PLUMBER"]),
+  "GB-PUBLISHER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-PUBLISHER"]),
+  "GB-TRADER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-TRADER"]),
 });
 
 /** Async: the seat's Linear pair resolved through Infisical when INFISICAL_MODE
@@ -387,6 +423,18 @@ export const SEAT_APP_NAMES = Object.freeze({
   "BF-PUBLISHER": "BF-Publisher",
   "BF-ENGINEER": "BF-Engineer",
   "BF-TRADER": "BF-Trader",
+  "GB-COMPILER": "GB-Compiler",
+  "GB-DEPLOYER": "GB-Deployer",
+  "GB-DESIGNER": "GB-Designer",
+  "GB-DIRECTOR": "GB-Director",
+  "GB-ENGINEER": "GB-Engineer",
+  "GB-FIXER": "GB-Fixer",
+  "GB-HOUSEKEEPER": "GB-Housekeeper",
+  "GB-MONITOR": "GB-Monitor",
+  "GB-ORACLE": "GB-Oracle",
+  "GB-PLUMBER": "GB-Plumber",
+  "GB-PUBLISHER": "GB-Publisher",
+  "GB-TRADER": "GB-Trader",
 });
 export const SEAT_APP_ALIASES = Object.freeze({
   JET: Object.freeze(["Jet (OpenAI dot)"]),
@@ -855,7 +903,7 @@ export const LINEAR_TOOLS = Object.freeze([
     inputSchema: { type: "object", additionalProperties: false, required: ["query"], properties: {
       query: { type: "string", minLength: 1, maxLength: 24000 },
       variables: { type: "object", default: {} },
-      max_chars: { type: "integer", minimum: 1000, maximum: 64000, default: 24000 },
+      max_chars: { type: "integer", minimum: 1000, maximum: 1000000, default: 24000 },
     } },
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
@@ -867,7 +915,7 @@ export const LINEAR_TOOLS = Object.freeze([
       variables: { type: "object", default: {} },
       idempotency_key: { type: "string", minLength: 1, maxLength: 100, pattern: "^[A-Za-z0-9_.:-]+$" },
       session: SESSION,
-      max_chars: { type: "integer", minimum: 1000, maximum: 64000, default: 24000 },
+      max_chars: { type: "integer", minimum: 1000, maximum: 1000000, default: 24000 },
     } },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
   },

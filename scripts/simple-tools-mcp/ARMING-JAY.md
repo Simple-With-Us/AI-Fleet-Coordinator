@@ -227,7 +227,7 @@ if not m: sys.exit("no [seat.JET] section")
 body = m.group(1)
 if 'wake = "http"' in body: sys.exit("JET already has wake = \"http\"; nothing changed")
 if body.count('wake = "inbox"') != 1: sys.exit("JET section does not hold exactly one wake = \"inbox\" line; edit by hand")
-new = body.replace('wake = "inbox"', 'wake = "http"\nroutine = { url_env = "JET_ROUTINE_URL", key_env = "JET_ROUTINE_KEY", method = "POST", auth = "hmac-sha256", header = "X-Simple-Tools-Signature", timeout_seconds = 15 }\nbudget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 30, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }', 1)
+new = body.replace('wake = "inbox"', 'wake = "http"\nroutine = { url_env = "JET_ROUTINE_URL", key_env = "JET_ROUTINE_KEY", method = "POST", auth = "hmac-sha256", header = "X-Simple-Tools-Signature", timeout_seconds = 15 }\nbudget = { usd_per_day = 2.0, board_per_day = 0 }', 1)
 with open(p, "r+") as f:
     f.seek(0); f.write(s[:m.start(1)] + new + s[m.end(1):]); f.truncate()
 print("JET switched to wake = \"http\"")
@@ -252,7 +252,7 @@ To limit it to one channel, add "for the sandbox channel" (or any public channel
 
 **If ChatGPT says the subscription failed** (callback refused or verification failed):  open `/admin`, look under **Refused Authorize Requests** for a row with reason `callback_host_not_allowed`, and tell Claude the host shown.  ChatGPT's callback host is not documented, and the server accepts only `chatgpt.com` and `openai.com` hosts until that host is added.
 
-Each wake starts a ChatGPT task, so the eavesdropper limits Jet to 6 wakes an hour, 40 a day and 2 an hour per topic or DM thread (your own messages:  30 a day, 6 an hour per topic).  **A message over those limits is held back, not lost.**  The next wake that reaches Jet lists it (who sent it, where, a link and which limit, never its text), and once the limits have room again the eavesdropper sends one catch-up wake for the newest one, inside the same limits.  Every held message stays on that list, oldest first, until a wake that reached Jet has listed it (only past 1,200 held messages is one dropped, and then it is counted and you get a note), and Jet can also find it with `inbox` or `read_topic`.  The hourly summary for you goes to an owner queue that nothing on the server reads yet.  Mentions in any public channel openai-dot-bot is subscribed to reach ChatGPT.  A mention of Jet in a private channel, or in one on `CHANNELS_DENY`, is captured but never forwarded.
+Each wake starts a ChatGPT task, so a limit can be set for Jet (the sample sets none since Nov 10), for example 6 wakes an hour, 40 a day and 2 an hour per topic or DM thread (your own messages:  30 a day, 6 an hour per topic).  **A message over those limits is held back, not lost.**  The next wake that reaches Jet lists it (who sent it, where, a link and which limit, never its text), and once the limits have room again the eavesdropper sends one catch-up wake for the newest one, inside the same limits.  Every held message stays on that list, oldest first, until a wake that reached Jet has listed it (only past 1,200 held messages is one dropped, and then it is counted and you get a note), and Jet can also find it with `inbox` or `read_topic`.  The hourly summary for you goes to an owner queue that nothing on the server reads yet.  Mentions in any public channel openai-dot-bot is subscribed to reach ChatGPT.  A mention of Jet in a private channel, or in one on `CHANNELS_DENY`, is captured but never forwarded.
 
 **To see a wake go through,** open `/admin` → **Audit**:  `event_wake_captured` means the server got the wake, and `event_wake_settled` with outcome `delivered` means ChatGPT accepted the event.  Whether the Jet task then ran shows only in its tool calls (**Tool Calls**) and its `[JET]` reply.  If ChatGPT is briefly down, the server says so and the eavesdropper tries the same wake again a few seconds later.
 
@@ -281,7 +281,7 @@ Your first attempt may be refused if Instinct presents a client the server does 
 
 ## What to note
 
-These go into the design doc (section 6):  Grok's form fields and whether it asked for a client ID, how Grok asked to approve the post, your xAI account type, whether iOS can create a connector or only use one, and whether Grok Bot personas see it.  For ChatGPT later:  your plan, the menu path, and how a chat and a dot confirm a post.
+These go into the design doc (section 6):  Grok's form fields and whether it asked for a client ID, how Grok asked to approve the post, your xAI account type, whether iOS can create a connector or only use one, and whether Grok bots see it.  For ChatGPT later:  your plan, the menu path, and how a chat and a dot confirm a post.
 
 ## If something looks wrong
 

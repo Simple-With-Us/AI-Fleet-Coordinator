@@ -1,6 +1,6 @@
 // Per-call identity on the hosted server (AFC-331, docs/protocols/per-call-identity.md sections 2-4
 // and the hosted rows of section 8).  Table-driven from GB_IDENTITIES, SHARED_IDENTITY_SEATS and
-// KNOWN_SEATS:  no literal list of personas here.  The grant's own tools and every other identity's
+// KNOWN_SEATS:  no literal list of bots here.  The grant's own tools and every other identity's
 // tools are stubs that record what reached them, so the tests see exactly which identity each call
 // ran as and with which arguments.
 
@@ -90,7 +90,7 @@ test("row 2:  a GROK-WEB credential assigns only GROK-WEB", async () => {
   assert.deepEqual(info.identities.map((row) => row.identity), [...allowedIdentities("GROK-WEB")]);
 });
 
-test("row 3:  every other grant acts as exactly its own seat;  a persona or a peer seat is refused", async () => {
+test("row 3:  every other grant acts as exactly its own seat;  a bot or a peer seat is refused", async () => {
   assert.ok(OTHER_SEATS.length > 0);
   for (const seat of OTHER_SEATS) {
     assert.deepEqual([...allowedIdentities(seat)], [seat], seat);
@@ -113,7 +113,7 @@ test("row 3:  every other grant acts as exactly its own seat;  a persona or a pe
   }
 });
 
-test("row 4:  a persona that GB_IDENTITIES leaves out is in no set", () => {
+test("row 4:  a bot that GB_IDENTITIES leaves out is in no set", () => {
   assert.ok(GB_IDENTITIES.includes("GB-ENGINEER"));
   assert.ok(!GB_IDENTITIES.includes("GB-RETIRED"));
   for (const seat of KNOWN_SEATS) {
@@ -145,7 +145,7 @@ test("row 5:  a write without identity is refused with identity_required;  a rea
   }
 });
 
-test("legacy shared credentials cannot select any other seat or persona in any tool family", async () => {
+test("legacy shared credentials cannot select any other seat or bot in any tool family", async () => {
   for (const seat of ["CURSOR", "GROK-WEB", "WISE", "ECHO", ...GB_IDENTITIES]) {
     const { r, caller, created } = router(seat);
     for (const identity of ["CURSOR", "GROK-WEB", "WISE", "ECHO", ...GB_IDENTITIES].filter(other => other !== seat)) {
@@ -298,7 +298,7 @@ test("the instructions state the rule, the set and the families", () => {
 
 // ---------------------------------------------------------------- the per-identity gate
 
-test("gate() opens a gate for every seat, every enabled persona and the refusal log, and nothing else", () => {
+test("gate() opens a gate for every seat, every enabled bot and the refusal log, and nothing else", () => {
   const opened = [];
   const env = { SEAT_GATE: { idFromName: (name) => name, get: (id) => { opened.push(id); return { id }; } } };
   for (const name of [...KNOWN_SEATS, ...GB_IDENTITIES, GATE_LOG_NAME]) assert.deepEqual(gate(env, name), { id: name }, name);
@@ -306,6 +306,6 @@ test("gate() opens a gate for every seat, every enabled persona and the refusal 
   for (const name of ["SENTRY", "JAY", "GB-RETIRED", "gb-fixer", "GB-", "", "__proto__", undefined, null, 5]) {
     assert.throws(() => gate(env, name), /not a seat/, String(name));
   }
-  assert.ok(!GB_IDENTITIES.includes("GB-RETIRED"), "a persona that is not enabled never gets a gate");
+  assert.ok(!GB_IDENTITIES.includes("GB-RETIRED"), "a bot that is not enabled never gets a gate");
   assert.equal(opened.length, KNOWN_SEATS.length + GB_IDENTITIES.length + 1, "the refused names opened nothing");
 });

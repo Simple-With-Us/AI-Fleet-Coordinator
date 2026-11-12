@@ -561,7 +561,7 @@ export function buildSeatsTab({ fleetApps, partition, serverSeats, seatAppNames,
       "active", (s.branchPrefixes || []).join(", ") || "Not configured", s.zulipBotEmail || "",
       credFor(s.tag, instance, s.zulipFileCode), linearFor(s.tag), viewNotes(s.tag, s.notes)]);
   }
-  // Seats the listener partition knows that fleet-apps.json does not:  the hosted seats, Grok Bot personas
+  // Seats the listener partition knows that fleet-apps.json does not:  the hosted seats, Grok bots
   // and BotFleet role bots.
   const extra = Object.keys(partition).filter(t => !seen.has(t) && t !== "GROK-BUILD" && t !== "GROK-BOT");
   const order = (t) => t.startsWith("GB-") ? 2 : t.startsWith("BF-") ? 3 : 1;

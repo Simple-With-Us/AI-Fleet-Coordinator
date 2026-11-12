@@ -129,13 +129,15 @@ What the source does NOT carry, and so is null here (or never produced) whatever
     source's own `pause` value is the wrong shape.
 
 Deliberately never read: `config_errors`, `reload_refused`, `reload_at`, `partition_file`,
-`owner_user_id`, `loop_guard`, `chat_nudges`, `muse_bridge`, `pid`, `version`, `started`, each
+`owner_user_id`, `loop_guard`, `chat_nudges`, `pid`, `version`, `started`, each
 seat's `creds`, `cursor` and its `webhook_high_water` (both internal ingestion positions), `claude`, `muse`, `routine`, `pin`, `pinned`, `model`, `red`, `live`,
 `budget`, `routes_24h`, `route_enabled`, `provider` and `fallback` (beyond `stands_in`), and a
 lease's `lease_id`, `session_id` and `title`.  `drain` is not read either:  it is the AFC-652
 planned-drain checklist, on-host operator tooling the fleet CLI reads from the raw status.json
 before a SIGTERM, and its terminal rows name message ids and effect reasons - an id and free
 text are exactly what this document never emits, and the apps have no drain surface to feed.
+`registry_sweep` (AFC-721) is not read:  it is the one stale sweeper's last pass on the server,
+with letters and record ids in it, for the Eavesdropper's own status readers.
 """
 
 from __future__ import annotations

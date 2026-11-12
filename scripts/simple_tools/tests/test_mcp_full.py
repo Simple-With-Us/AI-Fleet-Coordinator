@@ -33,6 +33,72 @@ class FullZulipToolTests(McpHarness):
         self.assert_structured("zulip_scheduled_edit", session.call("zulip_scheduled_edit", {"scheduled_message_id": later["id"], "text": "[MA 📁OPS] quoted"}))
         self.assertEqual(self.fake.scheduled[later["id"]]["content"], "[CLAUDE·%s] [MA 📁OPS] quoted" % TAG)
 
+    def test_body_mentions_are_not_silenced_or_doubled_after_own_intro(self):
+        session = self.session()
+        cases = [
+            ("[CLAUDE 📁AFC] @**Codex** ping", "[CLAUDE·%s 📁AFC] @**Codex** ping" % TAG),
+            ("[CLAUDE 📁AFC] @**Claude** status", "[CLAUDE·%s 📁AFC] @**Claude** status" % TAG),
+            (
+                "[CLAUDE 📁AFC] @**Codex** and @**Jay Wedgeworth|1211974**",
+                "[CLAUDE·%s 📁AFC] @**Codex** and @**Jay Wedgeworth|1211974**" % TAG,
+            ),
+        ]
+        for text, want in cases:
+            with self.subTest(text=text):
+                made = self.assert_structured("zulip_post", session.call("zulip_post", {"topic": "t", "text": text}))
+                self.assertEqual(self.fake._find(made["id"])["content"], want)
+        arrow = self.assert_structured(
+            "zulip_post",
+            session.call(
+                "zulip_post",
+                {"topic": "t", "text": "[CLAUDE 📁AFC →CODEX] @**Codex** please", "to": ["CODEX"]},
+            ),
+        )
+        self.assertEqual(
+            self.fake._find(arrow["id"])["content"],
+            "[CLAUDE·%s 📁AFC →CODEX] @**Codex** please" % TAG,
+        )
+
+    def test_to_is_deduped_by_who_is_mentioned_not_by_text(self):
+        session = self.session()
+
+        def loud(text):
+            made = self.assert_structured(
+                "zulip_post", session.call("zulip_post", {"topic": "t", "text": text, "to": ["CODEX"]})
+            )
+            return self.fake._find(made["id"])["content"].lower().count("@**codex")
+
+        self.assertEqual(loud("[CLAUDE 📁AFC] @**Codex|1234** please"), 1)
+        self.assertEqual(loud("[CLAUDE 📁AFC] @**codex** please"), 1)
+        # In code or a quote Zulip does not notify, so the `to` mention is still needed.
+        self.assertEqual(loud("[CLAUDE 📁AFC] see `@**Codex**` there"), 2)
+        self.assertEqual(loud("[CLAUDE 📁AFC] look\n> @**Codex** said"), 2)
+
+    def test_edit_never_double_tags_an_already_tagged_body(self):
+        # AFC-666:  the edit path follows the post path's intro rule.  An already-tagged
+        # body keeps its single intro (a foreign compact intro is preserved as post
+        # preserves it), while plain text still gains exactly one seat tag.
+        session = self.session()
+        mine = self.assert_structured("zulip_post", session.call("zulip_post", {"topic": "t", "text": "first"}))["id"]
+        cases = [
+            ("[CLAUDE 📁OPS] status", "[CLAUDE·%s 📁OPS] status" % TAG),
+            ("[CLAUDE: HH.1.M 📁OPS] threaded", "[CLAUDE·%s: HH.1.M 📁OPS] threaded" % TAG),
+            ("👀 [CLAUDE 📁OPS] look", "👀 [CLAUDE·%s 📁OPS] look" % TAG),
+            ("[CLAUDE·old12345 📁OPS] refreshed", "[CLAUDE·%s 📁OPS] refreshed" % TAG),
+            ("[GB-PLUMBER 📁AFC → GB-DIRECTOR] relayed", "[GB-PLUMBER 📁AFC →GB-DIRECTOR] relayed"),
+            ("[MA 📁OPS] quoted", "[MA 📁OPS] quoted"),
+            ("plain words", "[CLAUDE·%s] plain words" % TAG),
+        ]
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assert_structured("zulip_edit_message", session.call("zulip_edit_message", {"message_id": mine, "text": text}))
+                self.assertEqual(self.fake._find(mine)["content"], expected)
+        # `to` still merges labels into the kept intro and mentions the peer.
+        self.assert_structured("zulip_edit_message", session.call("zulip_edit_message", {"message_id": mine, "text": "[GB-PLUMBER 📁AFC] please", "to": ["CODEX"]}))
+        self.assertEqual(self.fake._find(mine)["content"], "[GB-PLUMBER 📁AFC →CODEX] @**Codex** please")
+        self.assert_structured("zulip_edit_message", session.call("zulip_edit_message", {"message_id": mine, "text": "now for you", "to": ["CODEX"]}))
+        self.assertEqual(self.fake._find(mine)["content"], "[CLAUDE·%s→CODEX] @**Codex** now for you" % TAG)
+
     def test_write_secret_fixtures_refuse_before_any_request(self):
         basic = base64.b64encode(("%s:%s" % (BOT_EMAIL, self.key)).encode()).decode()
         placeholders = {"$FIXTURE_KEY": self.key, "$FIXTURE_BASIC": basic, "$FIXTURE_ZULIP_SHAPED": zulip_shaped()}
@@ -70,7 +136,7 @@ class FullZulipToolTests(McpHarness):
         mine = self.assert_structured("zulip_post", session.call("zulip_post", {"topic": "t", "text": "draft one"}))["id"]
         edited = self.assert_structured("zulip_edit_message", session.call("zulip_edit_message", {"message_id": mine, "text": "@**Codex** two"}))
         self.assertEqual(edited, {"id": mine, "edited": True})
-        self.assertEqual(self.fake._find(mine)["content"], "[CLAUDE·%s] @_**Codex** two" % TAG)
+        self.assertEqual(self.fake._find(mine)["content"], "[CLAUDE·%s] @**Codex** two" % TAG)
         history = session.call("zulip_message_history", {"message_id": mine})
         self.assertEqual(self.assert_structured("zulip_message_history", history)["count"], 2)
         self.assert_fence(history["content"][0]["text"])
@@ -175,7 +241,7 @@ class FullZulipToolTests(McpHarness):
         made = self.assert_structured("zulip_scheduled_create", session.call("zulip_scheduled_create", {
             "topic": "later", "text": "ping @**Codex**", "deliver_at": when}))
         self.assertFalse(made["duplicate"])
-        self.assertEqual(self.fake.scheduled[made["id"]]["content"], "[CLAUDE·%s] ping @_**Codex**" % TAG)
+        self.assertEqual(self.fake.scheduled[made["id"]]["content"], "[CLAUDE·%s] ping @**Codex**" % TAG)
         again = self.assert_structured("zulip_scheduled_create", session.call("zulip_scheduled_create", {
             "topic": "later", "text": "ping @**Codex**", "deliver_at": when}))
         self.assertEqual((again["id"], again["duplicate"]), (made["id"], True))
@@ -215,7 +281,7 @@ class FullZulipToolTests(McpHarness):
                                                                           "text": "hi @**Jay Wedgeworth**",
                                                                           "idempotency_key": "dm-key-0001"}))
         self.assertEqual(sent["user_ids"], [11, 12])
-        self.assertEqual(self.fake._find(sent["id"])["content"], "[CLAUDE·%s→CODEX,JAY] hi @_**Jay Wedgeworth**" % TAG)
+        self.assertEqual(self.fake._find(sent["id"])["content"], "[CLAUDE·%s→CODEX,JAY] hi @**Jay Wedgeworth**" % TAG)
         again = self.assert_structured("zulip_dm_send", session.call("zulip_dm_send", {"user_ids": [11, 12], "text": "different",
                                                                            "idempotency_key": "dm-key-0001"}))
         self.assertEqual((again["id"], again["duplicate"]), (sent["id"], True))

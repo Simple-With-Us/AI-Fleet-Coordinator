@@ -1363,7 +1363,7 @@ function sameHash(a, b) {
   return diff === 0;
 }
 
-/** Install `hash` as the persona's bearer, replacing any earlier one (rotate).  Audits who and when, never the hash. */
+/** Install `hash` as the bot's bearer, replacing any earlier one (rotate).  Audits who and when, never the hash. */
 export async function gbBearerMint(store, { hash, by, expiresAt, mcpAccept }, now = Date.now()) {
   const prev = (await store.get(GB_BEARER_KEY)) ?? null;
   const row = {
@@ -1373,8 +1373,8 @@ export async function gbBearerMint(store, { hash, by, expiresAt, mcpAccept }, no
     expires_at: Number(expiresAt) || now,
     last_used_at: 0,
     mint_count: Number(prev?.mint_count ?? 0) + 1,
-    // Whether this bearer is ALSO accepted on /mcp itself.  A Grok Bot persona's
-    // bearer is its only credential, so persona mints carry mcp_accept: true from
+    // Whether this bearer is ALSO accepted on /mcp itself.  A Grok bot's
+    // bearer is its only credential, so bot mints carry mcp_accept: true from
     // the existing admin UI.  For an OAuth-capable seat this is the recorded
     // owner choice (owner direction 2026-10-23:  one credential per identity,
     // shared between ST-MCP and GR-MCP):  accepting a bearer in place of the

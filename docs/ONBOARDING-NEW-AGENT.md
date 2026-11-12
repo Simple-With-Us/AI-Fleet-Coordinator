@@ -46,7 +46,7 @@ add a dedicated row.
 **Grok Bot is not onboarded this way.**  `GROK-BOT` is one fleet-wide identity
 that drives Cursor cloud agents.  It is not Mac Grok (GROK, which Grok Build shares), and it
 is **not** a per-app seat.  Do not run this script to create
-per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.  Its `GB-<ROLE>` personas need no
+per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.  Its `GB-<ROLE>` bots need no
 registry row:  `seatApps.patterns` covers them (and the `BF-<ROLE>` bots), and the
 `GROK-BOT` row has no branch prefix because it opens no lanes.  The roles do open
 lanes (AFC-620):  a pattern's `lane` block lists them and renders the lane folder and
@@ -178,7 +178,7 @@ with the top-level `apps` (the acronyms) and `--app`.
      (`~/.minimax/.builtin-skills/mavis/references/skill-management.md` and
      `references/agent.md` § Skill Discovery.)
    - **A custom agent (`~/.minimax/agents/<name>/agent.md`) — always-on, but
-     only for that agent.**  An agent definition's `system_prompt` / `persona`
+     only for that agent.**  An agent definition's `system_prompt` / `bot`
      does load every turn, but only in sessions where the user picked that
      agent.  The shipped definitions under `agents/.builtin/` (`explore`,
      `worker`, `verifier`) are sub-agent roles, so a fleet pointer parked
@@ -218,6 +218,26 @@ with the top-level `apps` (the acronyms) and `--app`.
    **MONET** login.  CLAUDE is a separate library.  Procedures inside the
    pack are fleet-wide; the pack assumes tag `[MONET]` and branch prefix
    `monet/`.
+
+5. **Prove the route live: the seat self-test.**  Before you trust a closed
+   issue, and before you fall back to `gh`, run from your own shell:
+
+   ```bash
+   python3 scripts/simple_tools/selftest.py --seat <TAG>
+   ```
+
+   It strips a stale `AGENT_SEAT` and `AGENT_TAG` (a launcher's
+   hints, and any `AGENT_LAUNCH_SEAT`, are kept and must agree), reads your own bearer file,
+   and checks `whoami`, one hosted git read (`gr_wf_repo_get`) and one
+   seat-policy-gated read (`gr_wf_pr_list_page`).  On a refusal it names the
+   exact cause: `seat_not_in_policy`, `bearer_rejected`,
+   `verifier_unavailable`, `no_app_credential`, `seat_policy` or
+   `unauthenticated`, or another closed gateway code such as `not_authorized`.  It also
+   prints the Worker version, and a relay version if one is exposed.  Reads
+   that need a relay policy grant (`gr_wf_pr_search`, `gr_wf_repo_list`) show
+   as `WARN`, and fail the run only with `--strict`.  Exit code 0 means every
+   required step passed.  It is read-only and never prints a credential.  Tests:
+   `cd scripts && python3 -m unittest simple_tools.tests.test_selftest`.
 
 ---
 

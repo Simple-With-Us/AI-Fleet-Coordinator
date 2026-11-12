@@ -73,7 +73,7 @@ BOT_EMAIL_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*-bot@(?P<host>[a-z0-9.-]+)$
 def zulip_errors(data: dict) -> list[str]:
     """Check the registry's Zulip fields against the simple-chat CLI and each other.
 
-    Presence is not required:  GROK-BOT is a set of owner-managed personas with no zuliprc, and
+    Presence is not required:  GROK-BOT is a set of owner-managed bots with no zuliprc, and
     a retired seat has no bot.  What is present must be well formed.  The bot email cannot be
     derived from the tag (muse-assist-bot@, grok-build-bot@), so it is checked for shape and
     uniqueness only; the file code is derived by the CLI, so it is compared against the CLI.

@@ -2,7 +2,7 @@
 import { LINEAR_READ_COMMANDS } from './linear-read-catalog.js';
 import { LINEAR_WRITE_COMMANDS } from './linear-write-catalog.js';
 
-const outputLimit = { type: 'integer', minimum: 1000, maximum: 64000, default: 24000 };
+const outputLimit = { type: 'integer', minimum: 1000, maximum: 1000000, default: 24000 };
 const selection = { type: 'string', minLength: 1, maxLength: 12000, description: 'Optional GraphQL response fields.  Omit to use the resource-specific default; discover fields with linear_schema.' };
 const idem = { type: 'string', minLength: 1, maxLength: 100, pattern: '^[A-Za-z0-9_.:-]+$' };
 const session = { type: 'string', maxLength: 80, pattern: '^[A-Za-z0-9_.:-]+$' };
@@ -63,10 +63,19 @@ export const LINEAR_NAMED_TOOLS = Object.freeze(LINEAR_NAMED_COMMANDS.map((comma
   const properties = Object.fromEntries(Object.entries(command.args).map(([name, arg]) => [name, { ...arg.schema, ...(arg.description ? { description: arg.description } : {}), ...(name === "id" ? { minLength: 1 } : {}) }]));
   // A document read returns one whole document:  the fleet's own deficiency
   // log passed 26K characters and the shared 24,000 default made it
-  // unreadable in one call (response_too_large), while a 12.5K document read
-  // fine.  Document reads therefore advertise the 64,000 ceiling as their
-  // default;  callNamedLinear applies the same default server-side.
-  properties.max_chars = command.name === "linear_get_document" ? { ...outputLimit, default: 64000 } : outputLimit;
+  // unreadable in one call (response_too_large).  The first fix advertised
+  // the then-ceiling of 64,000 as the document default, but 64,000 was also
+  // the verb's hard maximum, so any larger document was unreadable in one
+  // call with no way to ask for more (owner question, 2026-11-08).
+  // Document reads therefore advertise the raised 1,000,000 ceiling as
+  // their default, and linear_get_document also accepts content_offset /
+  // content_length so a document past even that reads in slices;
+  // callNamedLinear applies the same default server-side.
+  properties.max_chars = command.name === "linear_get_document" ? { ...outputLimit, default: 1000000 } : outputLimit;
+  if (command.name === "linear_get_document") {
+    properties.content_offset = { type: "integer", minimum: 0, description: "Read the document content starting at this character offset (default 0).  The result carries content_total and content_offset so slices can be walked." };
+    properties.content_length = { type: "integer", minimum: 1, maximum: 1000000, description: "Read at most this many content characters from content_offset.  Omit to read to the end of the document." };
+  }
   if (command.selection) properties.selection = selection;
   const required = Object.entries(command.args).filter(([, arg]) => arg.required).map(([name]) => name);
   if (command.write) {

@@ -363,7 +363,7 @@ test("INFISICAL_EXPECT_DEFAULT: exactly the 72-copy manifest, drift-guarded agai
   assert.ok(![...set].some((e) => e.includes("SPIKE")), "ephemeral spike key is not durable storage");
 });
 
-test("personas table:  the committed table passes, and a malformed one fails soft instead of throwing at load (kody 4367022121)", async () => {
+test("bots table:  the committed table passes, and a malformed one fails soft instead of throwing at load (kody 4367022121)", async () => {
   const { GB_TABLE_VALID, gbIdentitiesFrom } = await import("../src/infisical-manifest.js");
   const { GB_IDENTITIES } = await import("../src/delegated-identities.js");
   assert.equal(GB_TABLE_VALID, true, "a malformed committed table fails CI here, before it can ship");
@@ -371,11 +371,11 @@ test("personas table:  the committed table passes, and a malformed one fails sof
   for (const table of [{}, { enabled: [] }, { enabled: ["gb-fixer"] }, { enabled: ["GB-FIXER", 7] }, { enabled: "GB-FIXER" }, null, []]) {
     const r = gbIdentitiesFrom(table);
     assert.equal(r.valid, false, JSON.stringify(table));
-    assert.deepEqual([...r.identities], [], "no persona field is declared from a malformed table");
+    assert.deepEqual([...r.identities], [], "no bot field is declared from a malformed table");
   }
 });
 
-// Loads the Worker's persona consumers in a fresh node process whose personas table is `table`:  a load
+// Loads the Worker's bot consumers in a fresh node process whose bots table is `table`:  a load
 // hook serves the fixture in place of scripts/simple_tools/mcp/gb-identities.json, so nothing on disk changes.
 // The child prints one JSON line describing what each consumer saw.  The hook needs node:module's
 // registerHooks, which Node has from 22.15 (and 23.5);  package.json allows Node 22.0, so on an older 22 the
@@ -425,10 +425,10 @@ function loadWithPersonasTable(table) {
   return { out: JSON.parse(run.stdout.trim().split("\n").at(-1)), stderr: run.stderr };
 }
 
-test("personas table:  a malformed table still loads every module that uses it, and enables no persona (kody 4367022121)", {
+test("bots table:  a malformed table still loads every module that uses it, and enables no bot (kody 4367022121)", {
   skip: LOAD_HOOKS ? false : "needs node:module registerHooks (Node 22.15 or later)",
 }, () => {
-  // The control proves the hook takes effect:  a one-persona table gives exactly that persona everywhere.
+  // The control proves the hook takes effect:  a one-bot table gives exactly that bot everywhere.
   const control = loadWithPersonasTable({ enabled: ["GB-FIXER"] });
   assert.equal(control.out.error, undefined, control.out.error);
   assert.deepEqual(control.out.identities, ["GB-FIXER"]);
@@ -446,10 +446,10 @@ test("personas table:  a malformed table still loads every module that uses it, 
     assert.equal(out.valid, false, label);
     assert.deepEqual(out.identities, [], `${label}: GB_IDENTITIES is empty`);
     assert.equal(out.sameList, true, label);
-    assert.ok(!out.cursorAllowed.some((name) => name.startsWith("GB-")), `${label}: no grant may act as a persona`);
-    assert.equal(out.gbDeclared, 0, `${label}: no persona field is declared`);
-    assert.equal(out.gbGate, "not a seat", `${label}: no persona gate opens`);
-    assert.equal(out.gbBearer, null, `${label}: no persona bearer parses`);
+    assert.ok(!out.cursorAllowed.some((name) => name.startsWith("GB-")), `${label}: no grant may act as a bot`);
+    assert.equal(out.gbDeclared, 0, `${label}: no bot field is declared`);
+    assert.equal(out.gbGate, "not a seat", `${label}: no bot gate opens`);
+    assert.equal(out.gbBearer, null, `${label}: no bot bearer parses`);
     assert.deepEqual(out.fleetlink, { seatTokens: 0, denied: ["GB-ENGINEER"] }, `${label}: the /mcp FleetLink seat list resolves`);
     assert.equal(out.bundleValid, true, `${label}: the legacy credential path still loads`);
     assert.ok(stderr.includes('"event":"gb_identity_table_invalid"'), `${label}: one structured event`);
@@ -473,7 +473,7 @@ test("resolveDelegatedCredentials: required mode assembles validated rows from I
   const env = { INFISICAL_MODE: "required", INFISICAL_WORKSPACE_ID: "ws-test", INFISICAL_SERVICE_TOKEN: "tok", INFISICAL_ENVIRONMENT: "prod" };
   const r = await resolveDelegatedCredentials(env);
   assert.equal(r.source, "infisical");
-  assert.equal(r.roles.size, GB_IDENTITIES.length, "every enabled persona assembled");
+  assert.equal(r.roles.size, GB_IDENTITIES.length, "every enabled bot assembled");
   assert.equal(r.roles.get("GB-FIXER").email, "fixer-grok-bot@simplewithus.zulipchat.com", "completeRole validation applied");
 });
 
@@ -489,7 +489,7 @@ test("resolveDelegatedCredentials: fallback with nothing resolved keeps the env 
   assert.equal(r.roles.size, GB_IDENTITIES.length);
 });
 
-test("resolveDelegatedCredentials: fallback with /zulip served but /linear unreadable keeps every bundle persona (kody 4365622415)", async () => {
+test("resolveDelegatedCredentials: fallback with /zulip served but /linear unreadable keeps every bundle bot (kody 4365622415)", async () => {
   _resetInfisicalForTests();
   const { resolveDelegatedCredentials, GB_IDENTITIES } = await import("../src/delegated-identities.js");
   const email = (i) => `${i.slice(3).toLowerCase()}-grok-bot@simplewithus.zulipchat.com`;
@@ -504,7 +504,7 @@ test("resolveDelegatedCredentials: fallback with /zulip served but /linear unrea
   const bundle = JSON.stringify({ v: 1, r: Object.fromEntries(GB_IDENTITIES.map((i) => [i, [email(i), "zk-bundle", "li", "ls"]])) });
   const env = { INFISICAL_MODE: "fallback", INFISICAL_WORKSPACE_ID: "ws-test", INFISICAL_SERVICE_TOKEN: "tok", GB_IDENTITY_CREDENTIALS: bundle };
   const r = await resolveDelegatedCredentials(env);
-  assert.equal(r.roles.size, GB_IDENTITIES.length, "no persona is dropped by a partial outage");
+  assert.equal(r.roles.size, GB_IDENTITIES.length, "no bot is dropped by a partial outage");
   assert.equal(r.roles.get("GB-FIXER").zulipKey, "zk-bundle", "the incomplete Infisical row is replaced by the bundle's whole row, never mixed");
   assert.ok(infisicalStats().fallbacks >= GB_IDENTITIES.length * 2, "each unreadable field was counted");
 });

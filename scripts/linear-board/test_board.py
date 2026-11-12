@@ -1665,7 +1665,7 @@ class BearerTransportSeamTests(unittest.TestCase):
         self.assertIn("SANDBOX OK", p.stdout)
 
     def test_every_verifier_identity_is_already_a_canonical_seat_tag(self):
-        # The verifier can only answer KNOWN_SEATS (ST-MCP config.js) or an enabled GB persona
+        # The verifier can only answer KNOWN_SEATS (ST-MCP config.js) or an enabled GB bot
         # (gb-identities.json), and sbt_/gbb_ bearers are minted for those only.  The CLI refuses a
         # non-canonical answer instead of re-mapping it, so this guards drift:  if the verifier set ever
         # gains an alias spelling, this fails and the contract is revisited rather than silently remapped.
@@ -1722,6 +1722,43 @@ class BearerTransportSeamTests(unittest.TestCase):
         self.assertEqual(q["identity"], "ECHO")
         self.assertEqual(q["hash"], hashlib.sha256(BEARER_ECHO.encode()).hexdigest())
         self.assertNotIn(BEARER_ECHO, body.decode())
+
+
+class OwnIntroTagTests(unittest.TestCase):
+    """AFC-692:  a body that already opens with the seat's own intro gets no second seat tag."""
+
+    def test_own_intro_is_not_tagged_twice(self):
+        cli = load_cli()
+        for text in (
+            "[GB-PLUMBER 📁AFC] PR opened",
+            "👀 [GB-PLUMBER 📁AFC, OPS] quiet",
+            "[GB-PLUMBER] PR opened",
+            "[GB-PLUMBER: HH.1.C 📁AFC] status",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(cli.tagged("GB-PLUMBER", None, text), text)
+                self.assertTrue(cli.comment_body("GB-PLUMBER", None, text).startswith(text))
+
+    def test_a_supplied_session_replaces_the_intro_session_without_a_second_tag(self):
+        cli = load_cli()
+        for text, want in (
+            ("[GB-PLUMBER 📁AFC] status", "[GB-PLUMBER·abcd1234 📁AFC] status"),
+            ("[GB-PLUMBER·stale999 📁AFC] status", "[GB-PLUMBER·abcd1234 📁AFC] status"),
+            ("👀 [GB-PLUMBER] note", "👀 [GB-PLUMBER·abcd1234] note"),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(cli.tagged("GB-PLUMBER", ["abcd-1234-ffff"], text), want)
+
+    def test_untagged_and_foreign_bodies_keep_the_seat_tag(self):
+        cli = load_cli()
+        self.assertEqual(cli.tagged("GB-PLUMBER", None, "PR opened"), "[GB-PLUMBER] PR opened")
+        self.assertEqual(
+            cli.tagged("GB-PLUMBER", None, "[GB-DIRECTOR 📁AFC] spoof"),
+            "[GB-PLUMBER] [GB-DIRECTOR 📁AFC] spoof",
+        )
+        self.assertEqual(
+            cli.tagged("GB-PLUMBER", None, "[GB-PLUMBERX] x"), "[GB-PLUMBER] [GB-PLUMBERX] x"
+        )
 
 
 class SeatAliasTests(unittest.TestCase):

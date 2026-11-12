@@ -13,7 +13,7 @@ GitHub About should match this file.  Do not invent seats, hosts, or jobs that a
 3. **Effort logs: archived.**  The live Mac copies (`~/apps/*-EFFORT-LOG.md`) and each repo's `docs/EFFORT-LOG.md` carry an "Archived" header; every item was imported into Linear.  `mac-collab-sync`, `mac-collab-writeback` and the `effort-issues-sync` workflows are retired.  See `EFFORT-LOG-PROTOCOL.md` (a stub) and `docs/BOARD-WRITEBACK-PROTOCOL.md` (retired).
 4. **Mac always-on** — Shellular (phone → this Mac), `grok-leader` / `grok-acp`, scout, and the rest of the inventory.  Master list: [`docs/MAC-LOCAL-PROCESSES.md`](docs/MAC-LOCAL-PROCESSES.md).  Do not invent LaunchAgents from a cloud session.
 5. **Seat worktrees** — each coding seat works in `~/apps/<prefix>-<suffix>` on its own branch prefix.  Never edit in `~/Code/<App>` (the human integration tree).
-6. **No app-specific Grok Bot seats.**  Grok Bot seats implement through **Cursor cloud agents**.  Their tags are `[GB-<NAME>]` — never `[GROK-BOT]`, `[CURSOR]`, or `[GROK]`, and never `GB-COMPILE`.  The live persona roster is the guide's *Who's Here*; GB personas are owner-managed, hold no fleet Zulip credential, and post through the Grok Bot platform, so do not assume one is listening.  This coordinator/ops system self-id is **`AFC`**.  A fleet-wide wake is a post in `#Work-In-Progress` › `fleet` that @-mentions each bot that must act; it is not Mac Grok (`GROK`), not Grok Build (`GROK-BUILD`), and not a per-app lane in `fleet-apps.json`.  Do not add `~/apps/<app>-grok-bot` seats.
+6. **No app-specific Grok Bot seats.**  Grok Bot seats implement through **Cursor cloud agents**.  Their tags are `[GB-<NAME>]` — never `[GROK-BOT]`, `[CURSOR]`, or `[GROK]`, and never `GB-COMPILE`.  The live bot roster is the guide's *Who's Here*; GB bots are owner-managed, hold no fleet Zulip credential, and post through the Grok Bot platform, so do not assume one is listening.  This coordinator/ops system self-id is **`AFC`**.  A fleet-wide wake is a post in `#Work-In-Progress` › `fleet` that @-mentions each bot that must act; it is not Mac Grok (`GROK`), not Grok Build (`GROK-BUILD`), and not a per-app lane in `fleet-apps.json`.  Do not add `~/apps/<app>-grok-bot` seats.
 
 ## Apps and coding seats
 
@@ -94,12 +94,12 @@ activity ICS and deploys the site to **GitHub Pages**.  The public feeds use an 
 | **Linear** (auth) | https://linear.app/simple-with-us |
 | **Board short link** | https://board.jays.services (Cloudflare redirect to Linear;  the old THE BOARD archive was retired 2026-10-19) |
 
-Raw-from-`main` fallbacks (no Pages required):
+Raw fallbacks on branch `published/fleet-activity` (refreshed by the workflow; `main` copies are no longer updated):
 
 ```text
-https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/main/calendar/daily-digest.ics
-https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/main/calendar/agent-activity.ics
-https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/main/site/digest.md
+https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/published/fleet-activity/calendar/daily-digest.ics
+https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/published/fleet-activity/calendar/agent-activity.ics
+https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/published/fleet-activity/site/digest.md
 ```
 
 ### Subscribe (Apple / Google / Outlook)
@@ -115,7 +115,7 @@ https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/main/site/
 CDN alternate for the commit feed (sometimes validates more cleanly on mobile):
 
 ```text
-https://cdn.jsdelivr.net/gh/Simple-With-Us/AI-Fleet-Coordinator@main/calendar/agent-activity.ics
+https://cdn.jsdelivr.net/gh/Simple-With-Us/AI-Fleet-Coordinator@published/fleet-activity/calendar/agent-activity.ics
 ```
 
 ### Enable GitHub Pages (one-time)

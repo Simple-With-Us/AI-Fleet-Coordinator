@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import io
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -1046,6 +1048,153 @@ class RegistryTest(unittest.TestCase):
                 self.db, platform="minimax", native_session_id="nope", title="T", **self._loc()
             )
 
+    def _force_live_letter(self, record_id: str, letter: str) -> None:
+        now = "2026-11-05T12:00:00.000Z"
+        self.reg._conn.execute(
+            "UPDATE alias_assignments SET letter = ?, retired_at = NULL WHERE record_id = ?",
+            (letter, record_id),
+        )
+        live = self.reg._conn.execute(
+            "SELECT 1 FROM alias_assignments WHERE record_id = ? AND retired_at IS NULL",
+            (record_id,),
+        ).fetchone()
+        if not live:
+            self.reg._conn.execute(
+                "INSERT INTO alias_assignments(platform, letter, generation, record_id, assigned_at)"
+                " VALUES (?, ?, 1, ?, ?)",
+                ("minimax", letter, record_id, now),
+            )
+        self.reg._conn.commit()
+
+    def _insert_orphan_session_row(self, *, host: str, letter: str, native: str = "") -> str:
+        """A live row with no real native session id (AFC-640 reproduction)."""
+        from simple_tools.operator_registry import _ulid
+
+        now = "2026-11-05T12:00:00.000Z"
+        record_id = _ulid()
+        self.reg._conn.execute(
+            "INSERT INTO sessions(record_id, seat, platform, verified_host, profile_scope,"
+            " native_session_id, title, project, thread_link, apple_note_link,"
+            " wake_capability, registered_at, last_seen_at, source)"
+            " VALUES (?, ?, ?, ?, ?, ?, '', '', '', '', 'unknown', ?, ?, ?)",
+            (record_id, "MM", "minimax", host, "default", native, now, now, "test orphan"),
+        )
+        self.reg._conn.execute(
+            "INSERT INTO alias_assignments(platform, letter, generation, record_id, assigned_at)"
+            " VALUES (?, ?, 1, ?, ?)",
+            ("minimax", letter, record_id, now),
+        )
+        self.reg._conn.commit()
+        return record_id
+
+    def test_register_and_update_follow_the_live_session_id_not_a_placeholder_row(self):
+        """AFC-640: EH holds the session id; an empty-session row holds NN and must not win."""
+        native = "mvs_b3fef2c69d4e44c9b07f403581d6938a"
+        mac = self._loc(platform="minimax", host="mac-1")
+        cloud = self._loc(platform="minimax", host="cloud-1")
+        eh = self.reg.resolve_or_register(
+            ident(platform="minimax", host="mac-1", native=native, letter_space="double")
+        )
+        self._force_live_letter(eh["record_id"], "EH")
+        remote_orphan = self._insert_orphan_session_row(host="cloud-1", letter="NN", native="")
+        resumed = R.register_session(
+            self.db,
+            platform="minimax",
+            native_session_id=native,
+            seat="MM",
+            source="test rename",
+            issuer=R.ISSUER_OPERATOR,
+            **mac,
+        )
+        self.assertEqual(resumed["outcome"], "resumed")
+        self.assertEqual(resumed["record_id"], eh["record_id"])
+        self.assertEqual(resumed["label"], "EH")
+        out = R.update_session(
+            self.db,
+            platform="minimax",
+            native_session_id=native,
+            title="AFC-621 Housekeeper Webhook Credential Path",
+            **mac,
+        )
+        self.assertEqual(out["record_id"], eh["record_id"])
+        self.assertEqual(out["label"], "EH")
+        self.assertIn("Housekeeper", str(self.reg._get(eh["record_id"])["title"]))
+        self.assertEqual(str(self.reg._get(remote_orphan)["native_session_id"]), "")
+        resolved = R.resolve_label(self.db, "minimax", "EH")
+        self.assertEqual(resolved["native_session_id"], native)
+
+    def test_update_session_at_a_mismatched_host_does_not_touch_a_remote_live_row(self):
+        """Fail closed:  a cloud caller must not mutate a mac row with the same session id."""
+        native = "mvs_cross_host_guard"
+        mac = self._loc(platform="minimax", host="mac-1")
+        cloud = self._loc(platform="minimax", host="cloud-1")
+        eh = self.reg.resolve_or_register(
+            ident(platform="minimax", host="mac-1", native=native, letter_space="double")
+        )
+        self._force_live_letter(eh["record_id"], "EH")
+        with self.assertRaises(ValueError) as caught:
+            R.update_session(
+                self.db,
+                platform="minimax",
+                native_session_id=native,
+                title="Should not land",
+                **cloud,
+            )
+        self.assertIn("not registered", str(caught.exception))
+        self.assertNotIn("Should not land", str(self.reg._get(eh["record_id"])["title"]))
+
+    def test_touch_names_the_live_letter_and_follows_a_change_in_place(self):
+        """A touch answers with the letter and generation the record holds now, so a hook sees a relabel."""
+        native = "mvs_touch_names_letter"
+        mac = self._loc(platform="minimax", host="mac-1")
+        live = self.reg.resolve_or_register(ident(platform="minimax", host="mac-1", native=native))
+        touched = R.touch_session(self.db, platform="minimax", native_session_id=native, **mac)
+        self.assertEqual(
+            touched,
+            {
+                "record_id": live["record_id"],
+                "outcome": "seen",
+                "label": live["label"],
+                "generation": live["generation"],
+            },
+        )
+        self._force_live_letter(live["record_id"], "QX")  # the registry moves the letter in place
+        moved = R.touch_session(self.db, platform="minimax", native_session_id=native, **mac)
+        self.assertEqual((moved["outcome"], moved["label"]), ("seen", "QX"))
+
+    def test_touch_on_a_closed_row_keeps_its_old_answer(self):
+        native = "mvs_touch_closed"
+        mac = self._loc(platform="minimax", host="mac-1")
+        live = self.reg.resolve_or_register(ident(platform="minimax", host="mac-1", native=native))
+        self.reg.close(live["record_id"], actor="MM", source="test")
+        closed = R.touch_session(self.db, platform="minimax", native_session_id=native, **mac)
+        self.assertEqual(closed, {"record_id": live["record_id"], "outcome": "closed"})
+
+    def test_update_session_on_a_closed_row_is_consistent_across_hosts(self):
+        """A closed row at the caller's host answers closed;  another host sees a miss."""
+        native = "mvs_closed_consistency"
+        mac = self._loc(platform="minimax", host="mac-1")
+        cloud = self._loc(platform="minimax", host="cloud-1")
+        live = self.reg.resolve_or_register(ident(platform="minimax", host="mac-1", native=native))
+        self.reg.close(live["record_id"], actor="MM", source="test")
+        at_mac = R.update_session(
+            self.db,
+            platform="minimax",
+            native_session_id=native,
+            title="T",
+            **mac,
+        )
+        self.assertEqual(at_mac["outcome"], "closed")
+        with self.assertRaises(ValueError) as caught:
+            R.update_session(
+                self.db,
+                platform="minimax",
+                native_session_id=native,
+                title="T",
+                **cloud,
+            )
+        self.assertIn("not registered", str(caught.exception))
+
     def test_update_session_needs_a_field(self):
         self.reg.resolve_or_register(ident(platform="minimax"))
         with self.assertRaises(ValueError):
@@ -1494,6 +1643,172 @@ class RegistryGuardTest(unittest.TestCase):
         code, answer = self._run(["history", "--platform=minimax", "--db", db])
         self.assertEqual(code, 0)
         self.assertEqual(answer, [])
+
+
+class SessionIssuesTest(unittest.TestCase):
+    """AFC-694:  the Linear issues a session works on, kept in the session_issues side table."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "registry.sqlite3")
+        reg = R.SessionRegistry(self.db)
+        try:
+            self.made = reg.resolve_or_register(
+                ident(platform="minimax", host="mac-1", native="mvs_issues_1")
+            )
+        finally:
+            reg.close_db()
+        self.where = {
+            "platform": "minimax",
+            "verified_host": "mac-1",
+            "profile_scope": "simplewithus",
+            "native_session_id": "mvs_issues_1",
+        }
+
+    def update(self, **fields):
+        return R.update_session(self.db, **self.where, **fields)
+
+    def test_the_team_keys_are_the_boards(self):
+        board = os.path.join(os.path.dirname(os.path.abspath(__file__)), "linear-board", "board")
+        with open(board, encoding="utf-8") as fh:
+            match = re.search(r"(?m)^TEAM_KEYS = (\(.*?\))\s*$", fh.read(), re.DOTALL)
+        self.assertIsNotNone(match)
+        self.assertEqual(R.LINEAR_TEAM_KEYS, tuple(ast.literal_eval(match.group(1))))
+
+    def test_an_old_registry_keeps_every_row_and_gains_the_table(self):
+        conn = sqlite3.connect(self.db)
+        with conn:
+            conn.execute("DROP TABLE session_issues")
+            conn.execute("DELETE FROM schema_migrations WHERE version = 3")
+        conn.close()
+        # A read on the old file (no DDL) answers as before, with no issues.
+        found = R.resolve_label(self.db, "minimax", self.made["label"])
+        self.assertNotIn("issues", found)
+        self.assertNotIn("issues", R.letter_history(self.db, "minimax")[0])
+        # The next writer adds the table, and the row is still there.
+        out = self.update(issues=[{"id": "AFC-694", "seen_at": "2026-11-10T15:00:00Z"}])
+        self.assertEqual(out["record_id"], self.made["record_id"])
+        self.assertEqual(out["issues"], [{"id": "AFC-694", "seen_at": "2026-11-10T15:00:00Z"}])
+        conn = sqlite3.connect(self.db)
+        try:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0], 1)
+            self.assertEqual(
+                conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 3
+            )
+        finally:
+            conn.close()
+
+    def test_the_field_round_trips_through_every_answer_that_describes_the_record(self):
+        issues = [
+            {"id": "AFC-694", "seen_at": "2026-11-10T15:00:00Z"},
+            {"id": "OPS-12", "seen_at": "2026-11-10T14:00:00Z"},
+        ]
+        out = self.update(issues=issues)
+        self.assertEqual((out["outcome"], out["changed"]), ("updated", ["issues"]))
+        self.assertEqual(out["issues"], issues)
+        touched = R.touch_session(self.db, **self.where)
+        self.assertEqual(touched["issues"], issues)
+        self.assertEqual(touched["outcome"], "seen")
+        self.assertEqual(R.resolve_label(self.db, "minimax", self.made["label"])["issues"], issues)
+        self.assertEqual(R.letter_history(self.db, "minimax")[0]["issues"], issues)
+        # The same list again changes nothing;  an update without the field leaves it as it is.
+        self.assertEqual(self.update(issues=list(reversed(issues)))["outcome"], "unchanged")
+        out = self.update(title="Other Words")
+        self.assertEqual(out["changed"], ["title"])
+        self.assertEqual(out["issues"], issues)
+        # An empty list clears it, and an answer then carries no field.
+        out = self.update(issues=[])
+        self.assertNotIn("issues", out)
+        self.assertNotIn("issues", R.touch_session(self.db, **self.where))
+
+    def test_invalid_ids_are_dropped_and_the_list_is_deduped_newest_first_and_capped(self):
+        stamp = "2026-11-10T%02d:00:00Z"
+        given = [
+            {"id": "XYZ-1", "seen_at": stamp % 1},  # not a team key
+            {"id": "AFC-", "seen_at": stamp % 1},
+            {"id": "AFC-12a", "seen_at": stamp % 1},
+            {"id": "AFC-5"},  # no seen_at
+            {"id": "AFC-6", "seen_at": "2026-11-10T01:00:00"},  # no zone
+            "not an entry",
+            {"id": "afc-7", "seen_at": stamp % 2},  # read as AFC-7
+            {"id": "AFC-7", "seen_at": stamp % 9},  # the newer copy wins
+            {"id": "AFC-7", "seen_at": stamp % 3},
+        ] + [{"id": "OPS-%d" % n, "seen_at": stamp % (10 + n)} for n in range(1, 10)]
+        out = self.update(issues=given)
+        ids = [i["id"] for i in out["issues"]]
+        self.assertEqual(len(ids), R.MAX_ISSUES)
+        self.assertEqual(
+            ids, ["OPS-9", "OPS-8", "OPS-7", "OPS-6", "OPS-5", "OPS-4", "OPS-3", "OPS-2"]
+        )
+        out = self.update(issues=given[:9])
+        self.assertEqual(out["issues"], [{"id": "AFC-7", "seen_at": stamp % 9}])
+
+    def test_history_carries_the_last_seen_time_and_a_touch_moves_it_forward(self):
+        conn = sqlite3.connect(self.db)
+        with conn:
+            conn.execute("UPDATE sessions SET last_seen_at = '2026-01-01T00:00:00.000Z'")
+        conn.close()
+        self.assertEqual(
+            R.letter_history(self.db, "minimax")[0]["last_seen_at"], "2026-01-01T00:00:00.000Z"
+        )
+        R.touch_session(self.db, **self.where)
+        after = R.letter_history(self.db, "minimax")[0]["last_seen_at"]
+        self.assertGreater(after, "2026-01-01T00:00:00.000Z")
+
+    def test_a_value_that_is_not_a_list_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.update(issues="AFC-694")
+
+    def test_a_closed_session_keeps_its_issues_and_takes_no_new_ones(self):
+        self.update(issues=[{"id": "AFC-694", "seen_at": "2026-11-10T15:00:00Z"}])
+        reg = R.SessionRegistry(self.db)
+        try:
+            reg.close(self.made["record_id"], actor="MM", source="test")
+        finally:
+            reg.close_db()
+        out = self.update(issues=[{"id": "OPS-1", "seen_at": "2026-11-10T16:00:00Z"}])
+        self.assertEqual(out["outcome"], "closed")
+        self.assertEqual([i["id"] for i in out["issues"]], ["AFC-694"])
+        # A touch on the closed session reports the list it keeps, as update does (Kody on #1762).
+        self.assertEqual(
+            R.touch_session(self.db, **self.where),
+            {
+                "record_id": self.made["record_id"],
+                "outcome": "closed",
+                "issues": [{"id": "AFC-694", "seen_at": "2026-11-10T15:00:00Z"}],
+            },
+        )
+
+    def test_the_cli_update_takes_issues_as_json(self):
+        argv = [
+            "update",
+            "--db",
+            self.db,
+            "--platform",
+            "minimax",
+            "--location",
+            "mac-1",
+            "--scope",
+            "simplewithus",
+            "--session-id",
+            "mvs_issues_1",
+        ]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = R.main(
+                argv + ["--issues", '[{"id": "CT-7", "seen_at": "2026-11-10T15:00:00Z"}]'], env={}
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            json.loads(out.getvalue())["issues"],
+            [{"id": "CT-7", "seen_at": "2026-11-10T15:00:00Z"}],
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = R.main(argv + ["--issues", "CT-7"], env={})
+        self.assertEqual(code, 2)
+        self.assertIn("must be a list", json.loads(out.getvalue())["error"])
 
 
 if __name__ == "__main__":
