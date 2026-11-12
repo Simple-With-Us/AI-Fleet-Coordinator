@@ -45,6 +45,58 @@ export const GR_SECRETS = Object.freeze({
   accessSecret: "GR_ACCESS_CLIENT_SECRET",
 });
 
+/** Stable machine-readable reasons when gr_* refuses before git-relay is reached. */
+export const GR_UNAVAILABLE_REASON = Object.freeze({
+  RELAY_ENV_MISSING: "gr_relay_env_missing",
+  CONNECTION_NO_SEAT_RELAY_AUTH: "gr_connection_no_seat_relay_auth",
+  RELAY_SIGNER_UNAVAILABLE: "gr_relay_signer_unavailable",
+});
+
+/** Name every missing relay-front setting (never values). */
+export function grFrontMissing({ accessId, accessSecret }, env) {
+  const missing = [];
+  if (!grUpstreamUrl(env?.GR_UPSTREAM_URL)) missing.push("GR_UPSTREAM_URL");
+  if (!accessId) missing.push(GR_SECRETS.accessId);
+  if (!accessSecret) missing.push(GR_SECRETS.accessSecret);
+  return missing;
+}
+
+/** Why there is no GrRelayClient on this connection when wiring finished. */
+export function grUnavailableWhenNoClient(resolvedSecrets, env, { relayAuthAvailable }) {
+  const missing = grFrontMissing(resolvedSecrets, env);
+  if (missing.length) {
+    return { reason: GR_UNAVAILABLE_REASON.RELAY_ENV_MISSING, missing };
+  }
+  if (!relayAuthAvailable) {
+    return { reason: GR_UNAVAILABLE_REASON.CONNECTION_NO_SEAT_RELAY_AUTH, missing: [] };
+  }
+  return { reason: GR_UNAVAILABLE_REASON.RELAY_ENV_MISSING, missing: ["GR_UPSTREAM_URL"] };
+}
+
+export function grNotConfiguredMessage({ reason, missing }) {
+  if (reason === GR_UNAVAILABLE_REASON.CONNECTION_NO_SEAT_RELAY_AUTH) {
+    return (
+      "GR-MCP is not available on this connection.  "
+      + "Web OAuth connectors (ChatGPT, Claude, Grok) do not send an sbt_* or gbb_* seat bearer to git-relay, "
+      + "and this connection has no OAuth assertion path for gr_* either (for example a paused or wake-only seat).  "
+      + "gr_* needs a seat-bearer MCP connection (minted with ST-MCP/GR-MCP acceptance in Admin) or GR-MCP over stdio (`git-relay mcp`).  "
+      + "Setting GR_UPSTREAM_URL or the Access pair will not help.  The other tools still work."
+    );
+  }
+  if (reason === GR_UNAVAILABLE_REASON.RELAY_SIGNER_UNAVAILABLE) {
+    return (
+      "GR-MCP is not configured on this server right now (the relay front or the hosted-OAuth assertion signer is unavailable).  "
+      + "Nothing was sent to git-relay;  the other tools still work."
+    );
+  }
+  const vars = missing.length
+    ? missing.join(", ")
+    : `GR_UPSTREAM_URL and ${Object.values(GR_SECRETS).join(", ")}`;
+  return (
+    `GR-MCP relay front is not configured on this server.  Missing: ${vars} (scripts/simple-tools-mcp/DEPLOY.md).  The other tools still work.`
+  );
+}
+
 // The seven fronted actions, in the order the admin panel and docs name them.
 // open_pr is the only one the relay still runs under the owner (PR-only)
 // token;  the rest run as the calling seat's own GitHub App.

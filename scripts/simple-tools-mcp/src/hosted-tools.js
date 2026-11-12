@@ -69,7 +69,14 @@ import {
   RECALL_MARKER_BEGIN,
   RECALL_MARKER_END,
 } from "./recall.js";
-import { GR_SECRETS, GR_TOOLS, GR_TOOL_NAMES, GRAPHQL_ERROR_CODES } from "./gr-tools.js";
+import {
+  GR_SECRETS,
+  GR_TOOLS,
+  GR_TOOL_NAMES,
+  GRAPHQL_ERROR_CODES,
+  GR_UNAVAILABLE_REASON,
+  grNotConfiguredMessage,
+} from "./gr-tools.js";
 import { REFUSAL_REASONS, allowlistedGithubDiagnostics, classifyRelayRefusal, githubRefusalStatus, movedRepository, refusalReasonText, repositoryMovedText } from "./gr-refusal.js";
 import { TYPED_V1_ACTIONS, TYPED_V1_TOOLS } from "./gr-typed-v1.js";
 import { WF_V1_ACTIONS, WF_V1_TOOLS, parseWfV1Args, boundedWorkflowInput, WF_V1_READ_ACTIONS, workflowInputLimit } from "./gr-workflow-v1.js";
@@ -398,12 +405,14 @@ export class HostedTools {
    * @param {object|null} [o.listener]     a ListenerClient for this seat (src/listener.js), or null
    * @param {object|null} [o.notes]        an OperatorNotesClient (src/notes.js), or null when notes are not configured
    * @param {object|null} [o.gr]           a GrRelayClient for this bearer identity (src/gr-tools.js), or null when the GR front is not configured
+   * @param {string|null} [o.grUnavailableReason]  GR_UNAVAILABLE_REASON when gr is null (src/gr-tools.js)
+   * @param {string[]} [o.grMissingEnv]    missing relay-front setting names when gr is null
    * @param {function|null} [o.audit]      the Worker's isolate audit buffer sink (src/audit-batch.js):  (key, gate, row);  null writes each row to the gate at once
    * @param {object|null} [o.identityCache]  the Worker's isolate verified-identity cache (src/identity-cache.js), or null
    * @param {string|null} [o.identityKey]    this credential's cache key (the SHA-256 of the presented credential)
    * @param {object|null} [o.identityEntry]  the route's fresh cache entry for this credential, or null when the route verified live for this request (the first call always pays the full gate price)
    */
-  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, whatsappGate = null, callerSeat = seat, callerGate = gate, verifySeat = false, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, listener = null, notes = null, gr = null, audit = null, identityCache = null, identityKey = null, identityEntry = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
+  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, whatsappGate = null, callerSeat = seat, callerGate = gate, verifySeat = false, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, listener = null, notes = null, gr = null, grUnavailableReason = null, grMissingEnv = [], audit = null, identityCache = null, identityKey = null, identityEntry = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
     this.seat = seat;
     this.callerSeat = callerSeat;
     this.callerGate = callerGate;
@@ -422,6 +431,8 @@ export class HostedTools {
     // The recall secrets join the scrub list, so no error text can carry them.
     if (this.recall) this.known.push(...this.recall.secrets().filter(Boolean));
     this.gr = gr ?? null;
+    this.grUnavailableReason = this.gr ? null : (grUnavailableReason ?? GR_UNAVAILABLE_REASON.RELAY_ENV_MISSING);
+    this.grMissingEnv = this.gr ? [] : (Array.isArray(grMissingEnv) ? grMissingEnv : []);
     // The GR front's Access pair and the caller's bearer join the scrub list too.
     if (this.gr) this.known.push(...this.gr.secrets().filter(Boolean));
     this.linear = linear ?? null;
@@ -1498,9 +1509,11 @@ export class HostedTools {
 
   requireGr() {
     if (this.gr) return this.gr;
+    const reason = this.grUnavailableReason ?? GR_UNAVAILABLE_REASON.RELAY_ENV_MISSING;
     throw new ToolError(
       "not_configured",
-      `GR-MCP is not configured on this server.  The owner sets GR_UPSTREAM_URL and ${Object.values(GR_SECRETS).join(", ")} (scripts/simple-tools-mcp/DEPLOY.md).  The other tools still work.`,
+      grNotConfiguredMessage({ reason, missing: this.grMissingEnv }),
+      { extra: { reason, ...(this.grMissingEnv.length ? { missing: this.grMissingEnv } : {}) } },
     );
   }
 
@@ -1540,7 +1553,12 @@ export class HostedTools {
     // Only the transport's own root marker proves this failed before send.
     // Upstream status/body content can never supply that marker.
     if (localFailure === true && status === 503 && body?.error === "not_configured") {
-      throw new ToolError("not_configured", "GR-MCP is not configured on this server right now (the relay front or the hosted-OAuth signer is unavailable).  Nothing was sent to git-relay;  the other tools still work.");
+      const reason = GR_UNAVAILABLE_REASON.RELAY_SIGNER_UNAVAILABLE;
+      throw new ToolError(
+        "not_configured",
+        grNotConfiguredMessage({ reason, missing: [] }),
+        { extra: { reason } },
+      );
     }
     // Every other 5xx is outcome_unknown (kody discussion_r4372747157):  a
     // relay crash or edge error can follow an ACCEPTED mutation, so calling
