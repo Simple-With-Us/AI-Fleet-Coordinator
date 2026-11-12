@@ -4083,6 +4083,7 @@ def parse_ssh_command(text):
         EAVESDROPPER_SETTINGS_VERB,
         "operator-sessions",
         "operator-wakes",
+        ROUTER_HEALTH_VERB,
     ):
         raise Refused("unknown server verb")
     if words[:3] != plain:
