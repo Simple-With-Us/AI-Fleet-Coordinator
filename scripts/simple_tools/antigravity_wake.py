@@ -142,7 +142,10 @@ def find_conversation_record(
                 ):
                     if col in cols:
                         fields.append(col)
-                query = "SELECT %s FROM conversation_summaries WHERE conversation_id = ?" % ", ".join(fields)
+                query = (
+                    "SELECT %s FROM conversation_summaries WHERE conversation_id = ?"
+                    % ", ".join(fields)
+                )
                 cur = conn.cursor()
                 row = cur.execute(query, (session_id,)).fetchone()
                 if row is not None:
