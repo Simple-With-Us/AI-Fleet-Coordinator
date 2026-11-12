@@ -33,6 +33,9 @@ enum MusterWindow {
         UserDefaults.standard.set(destination.rawValue, forKey: MusterSettings.sidebarSelectionDefaultsKey)
         show(openWindow: openWindow)
     }
+
+    /// Whether a sheet is up over the window, so a menu shortcut can leave the panel beneath it alone.
+    static var hasSheet: Bool { window?.attachedSheet != nil }
 }
 
 /// Attached to the window's root,  so `MusterWindow` knows the window.

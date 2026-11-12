@@ -142,7 +142,11 @@ private struct GoMenuItem: View {
     }
 
     private var button: some View {
-        Button(destination.title) { MusterWindow.show(destination, openWindow: openWindow) }
+        Button(destination.title) {
+            // A sheet owns the window until it closes, so the panel beneath it stays put.
+            guard !MusterWindow.hasSheet else { return }
+            MusterWindow.show(destination, openWindow: openWindow)
+        }
     }
 }
 
