@@ -43,7 +43,9 @@ if (
 if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "letter":
     from simple_tools.platform_letter import main as letter_main  # noqa: E402
 
-    sys.exit(letter_main(sys.argv[2:]))
+    # The name it was run under goes along:  `simple-chat letter hook` with no --platform is the command the retired
+    # Claude client installed, and it must go on working until someone runs `install`.
+    sys.exit(letter_main(sys.argv[2:], program="simple-chat"))
 
 # Deterministic handbook service is not a roster seat or an admin API escape hatch.
 if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "handbook-service":

@@ -1488,6 +1488,65 @@ class ParentFromMacTests(HookBase):
             self.assertEqual(PL.parent_ssh_command(*bad), "", bad)
 
 
+class RetiredHookCommandTests(HookBase):
+    """The Claude hooks installed on both hosts run `simple-chat letter hook`, with no --platform:  the command the
+    retired Claude client installed.  The runtime under them becomes this client before anyone runs `install`, so
+    that exact command line must go on working."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        # The hook runs as its own process, so the assigner is served on loopback.
+        self.url = self.fake.serve(os.path.join(self.tmp.name, "listener-state"))
+
+    def installed_hook(self, payload: dict, **extra: str) -> tuple[int, dict, str]:
+        """Run the installed command line, `simple-chat letter hook`, with one hook payload on its standard input."""
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": self.home,
+               "SIMPLE_TOOLS_STATE_DIR": self.state, "CLAUDE_CODE_ENTRYPOINT": "claude-desktop", **self.fake.env(),
+               registry_api.URL_ENV: self.url, **extra}
+        result = subprocess.run([sys.executable, "-I", "-B", str(SCRIPTS / "simple-chat"), "letter", "hook"],
+                                input=json.dumps(payload), capture_output=True, text=True, timeout=60, env=env)
+        answer = json.loads(result.stdout)["hookSpecificOutput"] if result.stdout.strip() else {}
+        return result.returncode, answer, result.stderr
+
+    def check_the_four_events(self, location: str, **extra: str) -> None:
+        code, start, err = self.installed_hook(
+            {"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, **extra)
+        self.assertEqual((code, err), (0, ""))
+        row = self.row("s-0001", location)
+        self.assertEqual((row["state"], row["seat"]), ("active", "CLAUDE"))
+        label = row["label"]
+        self.assertEqual(start["sessionTitle"], "%s: New Chat" % label)
+        self.assertIn('"@**Claude** %s"' % label, start["additionalContext"])
+        code, prompt, err = self.installed_hook(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix the build",
+             "session_title": "%s: New Chat" % label}, **extra)
+        self.assertEqual((code, err, prompt["sessionTitle"]), (0, "", "%s: Fix the Build" % label))
+        self.assertEqual(self.row("s-0001", location)["title"], "Fix the Build")
+        code, stop, err = self.installed_hook({"hook_event_name": "Stop", "session_id": "s-0001"}, **extra)
+        self.assertEqual((code, stop, err), (0, {}, ""))  # a turn end prints nothing and blocks nothing
+        code, end, err = self.installed_hook(
+            {"hook_event_name": "SessionEnd", "session_id": "s-0001", "reason": "logout"}, **extra)
+        self.assertEqual((code, end, err), (0, {}, ""))
+        self.assertEqual(self.row("s-0001", location)["state"], "closed")
+        note = self.note("CLAUDE", "s-0001")
+        self.assertEqual((note["platform"], note["state"], note["location"]), ("claude", "closed", location))
+
+    def test_the_servers_installed_command_line_works_for_all_four_events(self) -> None:
+        # The server's settings carry the retired client's own variable for where the host is.
+        self.check_the_four_events("server", CLAUDE_LETTER_LOCATION="server")
+
+    @unittest.skipUnless(sys.platform == "darwin", "the Mac's hooks say nothing of where they run:  darwin is the Mac")
+    def test_the_macs_installed_command_line_works_for_all_four_events(self) -> None:
+        self.check_the_four_events("mac")
+
+    def test_the_retired_off_switch_still_turns_the_installed_hook_off(self) -> None:
+        code, answer, err = self.installed_hook(
+            {"hook_event_name": "SessionStart", "session_id": "s-0002", "source": "startup"},
+            CLAUDE_LETTER="0", CLAUDE_LETTER_LOCATION="server")
+        self.assertEqual((code, answer, err), (0, {}, ""))
+        self.assertIsNone(self.row("s-0002", "server"))
+
+
 class StoredTitleTests(HookBase):
     """A resumed chat with no title gets the one its first prompt gives, read from its own transcript."""
 

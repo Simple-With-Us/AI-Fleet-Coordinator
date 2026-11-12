@@ -3307,6 +3307,65 @@ class ParentTests(Base):
                          "--platform faux --location server")
 
 
+class RetiredClientTests(Base):
+    """The hooks a retired per-seat client installed stay in a platform's hook file until someone runs `install`,
+    and the runtime under them changes first.  Its command lines go on working, its hooks are taken out wherever
+    they are, and its own record of a chat it lettered is adopted."""
+
+    def test_a_retired_command_line_is_read_as_that_client_meant_it(self) -> None:
+        self.assertEqual(PL.RETIRED_HOOKS["simple-chat"], "claude")
+        env = {"CLAUDE_LETTER_LOCATION": "server", "CLAUDE_LETTER_REMOTE": "jay@mac"}
+        # The names the retired client read are the adapter's to state, not the library's.
+        self.assertEqual(PL.load_spec("claude").retired_env, {
+            "off": "CLAUDE_LETTER", "--location": "CLAUDE_LETTER_LOCATION", "--mac-ssh": "CLAUDE_LETTER_REMOTE"})
+        self.assertEqual(make_spec().retired_env, {})
+        for argv, want in (
+            (["hook"], ["hook", "--platform", "claude"]),
+            (["install", "--location", "server", "--remote", "jay@mac"],
+             ["install", "--location", "server", "--mac-ssh", "jay@mac", "--platform", "claude"]),
+            (["registry", "touch", "--location", "mac", "--session-id", "s-0001"],
+             ["registry", "touch", "--location", "mac", "--session-id", "s-0001", "--platform", "claude"]),
+        ):
+            self.assertEqual(PL.retired_argv("simple-chat", list(argv), {}), want)
+        # What the retired client read from the environment is the flag it means.
+        self.assertEqual(PL.retired_argv("simple-chat", ["hook"], env),
+                         ["hook", "--platform", "claude", "--location", "server", "--mac-ssh", "jay@mac"])
+        self.assertIsNone(PL.retired_argv("simple-chat", ["hook"], {"CLAUDE_LETTER": "0"}))  # its own off switch
+        # A command line that names a platform is this client's own, and so is every other verb and program.
+        for program, argv in (
+            ("simple-chat", ["hook", "--platform", "codex"]),
+            ("simple-chat", ["hook", "--platform=codex", "--location", "server"]),
+            ("simple-chat", ["request"]),
+            ("simple-chat", ["show"]),
+            ("simple-chat", ["gone"]),
+            ("simple-chat", []),
+            ("platform-letter", ["hook"]),
+            ("", ["hook"]),
+        ):
+            self.assertEqual(PL.retired_argv(program, list(argv), env), argv, (program, argv))
+
+    def test_the_retired_hook_command_registers_through_the_entry_point(self) -> None:
+        spec = make_spec(platform="claude", seat="CLAUDE", source="faux-hook", display="Faux",
+                         retired_env={"off": "CLAUDE_LETTER", "--location": "CLAUDE_LETTER_LOCATION"})
+        payload = json.dumps({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"})
+        with mock.patch.dict(PL.SPECS, {"claude": spec}):
+            out, err = io.StringIO(), io.StringIO()
+            # Without the program's name it is this client's own command line, with no platform:  nothing runs.
+            self.assertEqual(PL.main(["hook"], env=self.env(), stdin=io.StringIO(payload), stdout=out,
+                                     stderr=err), 0)
+            self.assertEqual((out.getvalue(), self.lookup("s-0001", platform="claude")), ("", None))
+            out = io.StringIO()
+            code = PL.main(["hook"], env=self.env(CLAUDE_LETTER_LOCATION="server"), stdin=io.StringIO(payload),
+                           stdout=out, stderr=err, program="simple-chat")
+            self.assertEqual(code, 0)
+            label = self.lookup("s-0001", platform="claude")["label"]
+            self.assertEqual(json.loads(out.getvalue())["hookSpecificOutput"]["sessionTitle"], "%s: New Chat" % label)
+            # Its own off switch still turns it off.
+            out = io.StringIO()
+            code = PL.main(["hook"], env=self.env(CLAUDE_LETTER="0", CLAUDE_LETTER_LOCATION="server"),
+                           stdin=io.StringIO(payload.replace("s-0001", "s-0002")), stdout=out, stderr=err,
+                           program="simple-chat")
+            self.assertEqual((code, out.getvalue(), self.lookup("s-0002", platform="claude")), (0, "", None))
 class ShowTests(Base):
     """`simple-chat letter show` with no flags prints the note of the chat this shell runs in, found the way
     `request` finds it:  by the spec's own reader, then its session id variables."""

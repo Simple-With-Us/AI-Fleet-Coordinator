@@ -371,6 +371,10 @@ class PlatformSpec:
                                session ids asked about are gone for good, for the hooks' gone report (`report_gone`)
     gone_elsewhere             for a platform whose app on this host runs chats at another location:  the session
                                ids of the ones there that are gone for good (`report_gone_elsewhere`)
+    retired_env                for a platform whose retired client read its settings from the environment:  the
+                               names it read, by what they mean here ("off", "--location", "--mac-ssh"), so a
+                               hook entry of that client that is still installed means what it meant
+                               (`retired_argv`)
     """
 
     platform: str
@@ -396,6 +400,7 @@ class PlatformSpec:
     title_advice: TitleAdvice | None = None
     gone_sessions: GoneSessions | None = None
     gone_elsewhere: GoneElsewhere | None = None
+    retired_env: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not PLATFORM_RE.fullmatch(self.platform):
@@ -3646,6 +3651,34 @@ def _flag(words: list[str], name: str) -> str:
 RETIRED_HOOKS = {"simple-chat": "claude", "mm-session-letter": "minimax"}
 
 
+def retired_argv(program: str, argv: list[str], env: Mapping[str, str]) -> list[str] | None:
+    """`argv` as this client reads it, when it came in as a command line of the retired client `program`.
+
+    The hooks a retired client installed stay in a platform's hook file until someone runs `install`, and the
+    runtime under them changes first.  So `simple-chat letter hook`, with no --platform, is the hook of the
+    platform that client served (RETIRED_HOOKS), and what that client read from the environment (the spec's
+    `retired_env`) is read here as the flags it means.  The same holds for its `install` and `registry` forms, and its
+    `--remote` is `--mac-ssh`.  A command line that names a platform is this client's own and is left as it is.
+    None when the retired client's own off switch is set:  the hook does nothing."""
+    platform = RETIRED_HOOKS.get(program, "")
+    if not platform or not argv or argv[0] not in ("hook", "install", "registry"):
+        return argv
+    if _flag(argv[1:], "--platform"):
+        return argv
+    spec = load_spec(platform)
+    names = spec.retired_env if spec is not None else {}
+    if argv[0] == "hook" and _text(env.get(names.get("off", ""))) == "0":
+        return None
+    words = [("--mac-ssh" if word == "--remote" else word) for word in argv]
+    words += ["--platform", platform]
+    if argv[0] == "hook":
+        for flag in ("--location", "--mac-ssh"):
+            value = _text(env.get(names.get(flag, "")))
+            if value and not _flag(words[1:], flag):
+                words += [flag, value]
+    return words
+
+
 def installed_command(entry: object, platform: str) -> list[str] | None:
     """The words of the command in a hook entry when it is this platform's `platform-letter hook` (or `simple-chat
     letter hook`, the same command), else None.  The entry may have any shape: every string in it is looked at.
@@ -4044,10 +4077,19 @@ def main(
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
     transport: Transport | None = None,
+    program: str = "",
 ) -> int:
+    """`program` is the name the command was run under when that is not this client's own (`simple-chat letter
+    ...`):  a command line of the retired client that program was is read as that client meant it
+    (`retired_argv`)."""
     argv = list(sys.argv[1:] if argv is None else argv)
     env = os.environ if env is None else env
     stdin, stdout, stderr = stdin or sys.stdin, stdout or sys.stdout, stderr or sys.stderr
+    if program:
+        meant = retired_argv(program, argv, env)
+        if meant is None:
+            return 0  # the retired client's own off switch:  its hook does nothing
+        argv = meant
     if not argv or argv[0] in ("-h", "--help"):
         stdout.write(USAGE)
         return 0 if argv else 2

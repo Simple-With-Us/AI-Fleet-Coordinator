@@ -831,6 +831,15 @@ def claude_gone_elsewhere(env: Mapping[str, str], there: str) -> set[str]:
     return {sid for sid in candidates if states.get(sid) == ARCHIVED}
 
 
+#: What the retired Claude client (`simple-chat letter hook`, with no flags) read from the environment:  its own
+#: off switch, and the variables that are this client's `--location` and `--mac-ssh`.  A hook entry of that
+#: client stays installed until someone runs `install`, and it goes on meaning what it meant.
+RETIRED_ENV = {
+    "off": "CLAUDE_LETTER",
+    "--location": "CLAUDE_LETTER_LOCATION",
+    "--mac-ssh": "CLAUDE_LETTER_REMOTE",
+}
+
 SPEC = PL.PlatformSpec(
     platform=PLATFORM,
     seat=SEAT,
@@ -849,6 +858,7 @@ SPEC = PL.PlatformSpec(
     title_advice=claude_title_advice,
     gone_sessions=claude_gone,
     gone_elsewhere=claude_gone_elsewhere,
+    retired_env=RETIRED_ENV,
 )
 
 INSTALL = PL.JsonHookInstaller(path=os.path.join(".claude", "settings.json"), events=HOOK_TIMEOUTS)
