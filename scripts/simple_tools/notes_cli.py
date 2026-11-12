@@ -57,6 +57,10 @@ def add_parsers(
     shared = frozenset({"status", "read"})
 
     def add(parent: Any, name: str, summary: str) -> argparse.ArgumentParser:
+        if name == "delete" and (verbs is None or "delete" not in verbs):
+            from .cli import _NullParser
+
+            return _NullParser()
         if (
             verbs is not None
             and name not in verbs
