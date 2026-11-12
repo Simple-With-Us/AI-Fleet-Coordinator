@@ -210,6 +210,141 @@ class MiniMaxRow(Base):
             self.assertTrue(commands[0].endswith("platform-letter hook --platform minimax"), commands[0])
 
 
+class MiniMaxRetiredClient(Base):
+    """What the retired MiniMax client (`mm-session-letter`) left on a host:  its hooks in ~/.minimax/hooks.json, its
+    wrappers, and its own cache of each chat's letter."""
+
+    add, title = MiniMaxRow.add, MiniMaxRow.title
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.store = os.path.join(self.home, ".minimax", "v2", "sqlite", "runtime-state.sqlite")
+        os.makedirs(os.path.dirname(self.store))
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(MiniMaxRow.DDL)
+        conn.close()
+
+    def hooks_file(self) -> str:
+        return os.path.join(self.home, ".minimax", "hooks.json")
+
+    def old_hooks(self) -> None:
+        def entry(command: str, **extra) -> dict:
+            return {"hooks": [{"type": "command", "command": command, **extra}]}
+
+        hooks = {
+            "SessionStart": [entry("mm-session-letter hook-session-start", timeout=20)],
+            "PreToolUse": [{"matcher": "Bash", "description": "Letter In Posts",
+                            "hooks": [{"type": "command", "command": "mm-session-letter hook-pre-tool-use"}]},
+                           {"matcher": "Write", "hooks": [{"type": "command", "command": "another-tool guard"}]}],
+            "Stop": [entry("mm-session-letter hook-stop", timeout=15)],
+        }
+        with open(self.hooks_file(), "w", encoding="utf-8") as fh:
+            json.dump({"hooks": hooks}, fh)
+
+    def install(self, *argv: str) -> tuple[int, dict]:
+        out = io.StringIO()
+        code = PL.install_main(["--platform", "minimax", *argv], self.env(), out)
+        return code, json.loads(out.getvalue())
+
+    def test_install_replaces_the_retired_hooks_and_takes_out_the_pre_tool_use_entry(self) -> None:
+        self.old_hooks()
+        code, answer = self.install("--check")
+        self.assertEqual((code, answer["retired"]["hooks"]), (1, ["PreToolUse"]))
+        code, answer = self.install()
+        self.assertEqual((code, sorted(answer["changed"])), (0, ["PreToolUse", "SessionStart", "Stop"]))
+        with open(self.hooks_file(), encoding="utf-8") as fh:
+            hooks = json.load(fh)["hooks"]
+        self.assertNotIn("mm-session-letter", json.dumps(hooks))
+        self.assertEqual(hooks["PreToolUse"], [{"matcher": "Write", "hooks": [{"type": "command",
+                                                                              "command": "another-tool guard"}]}])
+        for event in ("SessionStart", "Stop"):
+            commands = [h["command"] for group in hooks[event] for h in group["hooks"]]
+            self.assertEqual(len(commands), 1, event)
+            self.assertTrue(commands[0].endswith("platform-letter hook --platform minimax"), commands[0])
+        self.assertEqual(self.install("--check")[0], 0)
+        # The same file, with the retired hooks back, comes out of a remove with only the other tool's hook.
+        self.old_hooks()
+        self.assertEqual(self.install("--remove")[0], 0)
+        with open(self.hooks_file(), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["hooks"], {"PreToolUse": [
+                {"matcher": "Write", "hooks": [{"type": "command", "command": "another-tool guard"}]}]})
+
+    def test_check_names_the_wrappers_that_are_still_on_the_host(self) -> None:
+        self.assertEqual(self.install()[0], 0)
+        os.makedirs(os.path.join(self.home, ".local", "bin"))
+        wrapper = os.path.join(self.home, ".local", "bin", "mm-session-letter")
+        with open(wrapper, "w") as fh:
+            fh.write("#!/bin/sh\n")
+        code, answer = self.install("--check")
+        self.assertEqual((code, answer["retired"]), (1, {"hooks": [], "files": [wrapper]}))
+        os.remove(wrapper)
+        self.assertEqual(self.install("--check")[0], 0)
+
+    def cache(self, sid: str, body: object, *scope: str) -> str:
+        folder = os.path.join(self.home, ".minimax", *(scope or ("hook-state",)), "session-letters")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, sid + ".json")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body if isinstance(body, str) else json.dumps(body))
+        return path
+
+    def test_the_retired_clients_cache_is_read_where_it_kept_it(self) -> None:
+        env = self.env()
+        self.assertIsNone(PM.minimax_retired_note(env, "m-0001"))
+        path = self.cache("m-0001", {"letter": "QQ", "topic": "Memory sync", "host": "mac", "space": "double"})
+        self.assertEqual(PM.minimax_retired_note(env, "m-0001"),
+                         {"label": "QQ", "location": "mac", "title": "Memory sync", "seen": os.stat(path).st_mtime})
+        # The scopes are read in the retired client's own order:  the user scope, the project scopes, then the old one.
+        self.cache("m-0001", {"letter": "QR", "host": "mac"}, "v2", "hook-data", "projects", "abc123")
+        self.assertEqual(PM.minimax_retired_note(env, "m-0001")["label"], "QR")
+        self.cache("m-0001", {"letter": "QS", "host": "mac"}, "v2", "hook-data", "user")
+        self.assertEqual(PM.minimax_retired_note(env, "m-0001")["label"], "QS")
+        # A hook is told its own scope, and reads that one alone.
+        scope = os.path.join(self.tmp.name, "scope")
+        os.makedirs(os.path.join(scope, "session-letters"))
+        with open(os.path.join(scope, "session-letters", "m-0001.json"), "w") as fh:
+            json.dump({"letter": "QT", "host": "server"}, fh)
+        told = self.env(MINIMAX_HOOKS_DATA=scope)
+        self.assertEqual((PM.minimax_retired_note(told, "m-0001")["label"],
+                          PM.minimax_retired_note(told, "m-0001")["location"]), ("QT", "server"))
+        self.assertIsNone(PM.minimax_retired_note(told, "m-0002"))
+        # Anything that is not the cache's shape is no record, and a symlink is never followed.
+        for n, body in enumerate(("", "not json", "[1]", {"topic": "no letter"}, {"letter": 7}, {"letter": ""})):
+            self.cache("m-01%02d" % n, body)
+            self.assertIsNone(PM.minimax_retired_note(env, "m-01%02d" % n), body)
+        outside = os.path.join(self.tmp.name, "outside.json")
+        with open(outside, "w") as fh:
+            json.dump({"letter": "ZZ", "host": "mac"}, fh)
+        os.symlink(outside, os.path.join(self.home, ".minimax", "hook-state", "session-letters", "m-0200.json"))
+        self.assertIsNone(PM.minimax_retired_note(env, "m-0200"))
+        self.assertIs(PM.SPEC.retired_note, PM.minimax_retired_note)
+
+    def test_a_chat_open_across_the_change_keeps_its_letter_at_its_next_turn_end(self) -> None:
+        # The retired client registered the chat and cached its letter.  No start event comes for an open chat:
+        # the row's first event for it is the end of a turn.
+        out = io.StringIO()
+        code = PL.registry_main(["register", "--platform", "minimax", "--location", "mac", "--session-id", "m-0001",
+                                 "--seat", "MM", "--source", "mm-session-letter", "--title=Memory sync"],
+                                env=self.env(), stdout=out)
+        self.assertEqual(code, 0, out.getvalue())
+        label = json.loads(out.getvalue())["label"]
+        self.cache("m-0001", {"letter": label, "topic": "Memory sync", "host": "mac", "space": "double"})
+        self.add("m-0001", "Memory sync")  # MiniMax Code regenerated the title without the letter
+        before = len(self.fake.requests)
+        self.assertEqual(self.run_hook(PM.SPEC, {"hook_event_name": "Stop", "session_id": "m-0001"}), "")
+        note = self.note("MM", "m-0001")
+        self.assertEqual((note["state"], note["label"], note["platform"], note["location"]),
+                         ("open", label, "minimax", "mac"))
+        self.assertEqual(self.title("m-0001"), "%s: Memory sync" % label)
+        # It was not registered a second time:  the registration is the one the retired client made.
+        self.assertFalse([path for method, path in self.fake.requests[before:] if path.endswith("/register")])
+        self.assertEqual(self.fake.lookup("minimax", "mac", PL.SCOPE, "m-0001")["label"], label)
+        # A chat the retired client never lettered has nothing to adopt:  its turn end does nothing, as before.
+        self.assertEqual(self.run_hook(PM.SPEC, {"hook_event_name": "Stop", "session_id": "m-0002"}), "")
+        self.assertFalse(os.path.exists(os.path.join(self.state, "MM", "letters", "m-0002.json")))
+
+
 class SharedBehaviour(Base):
     """What the review found, on a generic row:  it holds for every platform in the table."""
 

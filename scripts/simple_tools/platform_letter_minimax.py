@@ -12,14 +12,24 @@ retries, the "??" title, the end-of-turn report and the install;  this file is o
   is a chat, a row with `parent_session_id` is a sub-thread of that chat, and any other kind (a cron run) is not a
   chat.  A session the store does not know yet is a chat.  The title is read from and written to the row's `title`.
 
+- The retired MiniMax client (`mm-session-letter`) kept each chat's letter in a cache of its own, one small file
+  per session under MiniMax Code's hook data (`minimax_retired_note`).  A chat that was open when this row took
+  over has no note here, so its first hook event takes its note from that cache:  the registration is the same
+  one, and the chat keeps its letter.
+
 Installing.  `platform-letter install --platform minimax [--check | --remove]` adds the two hooks to
-`~/.minimax/hooks.json` with the shared JSON installer.
+`~/.minimax/hooks.json` with the shared JSON installer.  It also takes out every hook of the retired client,
+the `mm-session-letter hook-pre-tool-use` PreToolUse entry among them (the retired client refused a post that
+did not state the chat's letter;  this row has no such gate), and `--check` names the retired wrappers that
+are still on the host (`~/.local/bin/mm-session-letter`, `~/.local/bin/mm-registry-env`), which the owner
+removes.
 
 Python 3.11+, standard library only.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from collections.abc import Mapping
@@ -34,6 +44,10 @@ DISPLAY = "MiniMax"
 EVENTS = {"SessionStart": "start", "UserPromptSubmit": "prompt", "Stop": "turn"}
 HOOK_TIMEOUTS = {"SessionStart": 20, "Stop": 15}
 CLOSE_REASONS: tuple[str, ...] = ()
+# The retired client's letter cache (`minimax_retired_note`):  the most of one file that is read, and the most
+# project scopes looked through for it.
+CACHE_BYTES = 64 << 10
+CACHE_SCOPES = 200
 CHAT_KINDS = ("conversation", "task")
 
 
@@ -104,9 +118,62 @@ def minimax_rename(request: PL.TitleRequest) -> bool:
         return False
 
 
+def _data_dir(env: Mapping[str, str]) -> str:
+    return str(env.get("MINIMAX_DATA_DIR") or "") or os.path.join(
+        str(env.get("HOME") or os.path.expanduser("~")), ".minimax"
+    )
+
+
+def _cache_dirs(env: Mapping[str, str]) -> list[str]:
+    """Where the retired client kept its letter cache, in the order it read it:  the scope the runtime names for
+    this hook (MINIMAX_HOOKS_DATA), else the user scope, the project scopes and the layout from before those."""
+    scope = str(env.get("MINIMAX_HOOKS_DATA") or "")
+    if scope:
+        return [os.path.join(scope, "session-letters")]
+    data = _data_dir(env)
+    hooks = os.path.join(data, "v2", "hook-data")
+    dirs = [os.path.join(hooks, "user", "session-letters")]
+    try:
+        names = sorted(os.listdir(os.path.join(hooks, "projects")))[:CACHE_SCOPES]
+    except OSError:
+        names = []
+    dirs += [os.path.join(hooks, "projects", name, "session-letters") for name in names]
+    dirs.append(os.path.join(data, "hook-state", "session-letters"))
+    return dirs
+
+
+def minimax_retired_note(env: Mapping[str, str], sid: str) -> dict[str, Any] | None:
+    """What the retired MiniMax client cached for a chat it lettered (`<scope>/session-letters/<sid>.json`:  letter,
+    topic, host, space), as the library adopts it:  the letter, where the chat is registered, its words and when
+    the cache was written.  None when there is no such file.  A cache folder or file that is a symlink is never
+    followed, as the retired client never followed one, and only the first CACHE_BYTES of a file are read."""
+    for folder in _cache_dirs(env):
+        path = os.path.join(folder, sid + ".json")
+        if os.path.islink(folder) or os.path.islink(path) or not os.path.isfile(path):
+            continue
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.loads(fh.read(CACHE_BYTES))
+            seen = os.stat(path).st_mtime
+        except (OSError, ValueError, RecursionError):
+            continue
+        if isinstance(data, dict) and isinstance(data.get("letter"), str) and data["letter"]:
+            return {
+                "label": data["letter"],
+                "location": data.get("host"),
+                "title": data.get("topic"),
+                "seen": seen,
+            }
+    return None
+
+
 def minimax_chat_payload(sid: str) -> Mapping[str, Any]:
     return {"hook_event_name": "SessionStart", "session_id": sid, "source": "startup"}
 
+
+#: The wrappers the retired MiniMax client left on a host, under the home folder.  Nothing runs them any more;
+#: `install --check` names the ones still there and no installer deletes them.
+RETIRED_FILES = (".local/bin/mm-session-letter", ".local/bin/mm-registry-env")
 
 SPEC = PL.PlatformSpec(
     platform=PLATFORM,
@@ -125,6 +192,8 @@ SPEC = PL.PlatformSpec(
     quiet_events=("Stop",),
     chat_payload=minimax_chat_payload,
     session_env=("__MAVIS_RUNTIME_SESSION_ID",),
+    retired_note=minimax_retired_note,
+    retired_files=RETIRED_FILES,
 )
 
 INSTALL = PL.JsonHookInstaller(path=os.path.join(".minimax", "hooks.json"), events=HOOK_TIMEOUTS)

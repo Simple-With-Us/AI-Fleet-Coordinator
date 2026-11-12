@@ -1444,6 +1444,13 @@ class ParentFromMacTests(HookBase):
         self.assertEqual(commands, {shlex.quote(os.path.join(self.server_home, ".local", "bin", "platform-letter"))
                                     + " hook --platform claude --location server --mac-ssh " + self.DEST})
         self.assertEqual(sorted(hooks), ["SessionEnd", "SessionStart", "Stop", "UserPromptSubmit"])
+        # The install says what the Mac's owner must add, and touches no authorized_keys itself.
+        answer = json.loads(out.getvalue())
+        self.assertEqual(answer["mac_authorized_keys"],
+                         'restrict,command="$HOME/.local/bin/platform-letter parent-ssh-gate"'
+                         " <key-type> <public-key> letter-parent")
+        self.assertIn("the Mac's owner adds it", answer["mac_note"])
+        self.assertFalse(os.path.exists(os.path.join(self.server_home, ".ssh")))
 
     def test_the_gate_answers_the_clients_own_command_and_nothing_else(self) -> None:
         self.app_record(self.PARENT, "p-0001")

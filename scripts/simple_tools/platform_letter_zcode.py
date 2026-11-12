@@ -326,6 +326,8 @@ SPEC = PL.PlatformSpec(
     chat_payload=zcode_chat_payload,
     title_writer=zcode_rename,
     locations=("mac", "server"),
+    # The wrapper the retired ZCode client left on a host:  `install --check` names it while it is there.
+    retired_files=(".local/bin/zc-letter",),
 )
 
 

@@ -3293,9 +3293,16 @@ class ParentTests(Base):
         self.assertEqual(code, 0, answer)
         want = entry + " hook --platform faux --location server --mac-ssh jay@mac.example"
         self.assertEqual((commands(), answer["command"]), ({want}, want))
+        # It prints the line the Mac's owner adds for this host's key, and edits no authorized_keys itself.
+        self.assertEqual(answer["mac_authorized_keys"], PL.parent_key_line())
+        self.assertIn("the Mac's owner adds it, this installer never edits that file", answer["mac_note"])
+        self.assertFalse(os.path.exists(os.path.join(self.home, ".ssh")))
+        code, answer = install("--check")
+        self.assertEqual((code, answer["mac_authorized_keys"]), (0, PL.parent_key_line()))
         # An install that does not name it keeps the one the host has, as it keeps the location.
         code, answer = install()
         self.assertEqual((code, answer["changed"], commands()), (0, [], {want}))
+        self.assertEqual(answer["mac_authorized_keys"], PL.parent_key_line())  # said again, while the flag is there
         code, answer = install("--mac-ssh", "mini")
         self.assertEqual(commands(), {entry + " hook --platform faux --location server --mac-ssh mini"})
         # Something ssh could read as an option is refused, and nothing is written.
@@ -3366,6 +3373,170 @@ class RetiredClientTests(Base):
                            stdin=io.StringIO(payload.replace("s-0001", "s-0002")), stdout=out, stderr=err,
                            program="simple-chat")
             self.assertEqual((code, out.getvalue(), self.lookup("s-0002", platform="claude")), (0, "", None))
+
+    # ---- the installer:  the retired client's hooks and wrappers ----
+
+    def minimax(self) -> tuple[PL.JsonHookInstaller, PL.PlatformSpec]:
+        spec = make_spec(platform="minimax", seat="MM", source="faux-hook", display="Faux",
+                         retired_files=(".local/bin/mm-session-letter", ".local/bin/mm-registry-env"))
+        return PL.JsonHookInstaller(path=os.path.join(".minimax", "hooks.json"),
+                                    events={"SessionStart": 20, "Stop": 15}), spec
+
+    def install(self, *argv: str) -> tuple[int, dict]:
+        installer, spec = self.minimax()
+        out = io.StringIO()
+        with mock.patch.object(PL, "load_adapter", return_value=SimpleNamespace(INSTALL=installer, SPEC=spec)), \
+                mock.patch.dict(PL.SPECS, {"minimax": spec}):
+            code = PL.install_main(["--platform", "minimax", *argv], self.env(), out)
+        return code, json.loads(out.getvalue())
+
+    def hooks(self) -> dict:
+        with open(os.path.join(self.home, ".minimax", "hooks.json"), encoding="utf-8") as fh:
+            return json.load(fh)["hooks"]
+
+    def old_hooks(self) -> dict:
+        """~/.minimax/hooks.json as the retired MiniMax client left it, beside another tool's hooks."""
+        def entry(command: str, **extra) -> dict:
+            return {"hooks": [{"type": "command", "command": command, **extra}]}
+
+        hooks = {
+            "SessionStart": [entry("mm-session-letter hook-session-start", timeout=20)],
+            "PreToolUse": [
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": "other-tool check"}]},
+                {"matcher": "Bash", "description": "Letter In Posts",
+                 "hooks": [{"type": "command", "command": "mm-session-letter hook-pre-tool-use"}]},
+            ],
+            "Stop": [entry("/Users/x/.local/bin/mm-session-letter hook-stop"), entry("other-tool stop")],
+        }
+        os.makedirs(os.path.join(self.home, ".minimax"))
+        with open(os.path.join(self.home, ".minimax", "hooks.json"), "w", encoding="utf-8") as fh:
+            json.dump({"hooks": hooks}, fh)
+        return hooks
+
+    def test_install_takes_out_every_hook_of_the_retired_client(self) -> None:
+        self.old_hooks()
+        code, answer = self.install("--check")
+        self.assertEqual((code, answer["retired"]), (1, {"hooks": ["PreToolUse"], "files": []}))
+        self.assertEqual(answer["current"], {"SessionStart": False, "Stop": False})
+        code, answer = self.install()
+        self.assertEqual((code, sorted(answer["changed"])), (0, ["PreToolUse", "SessionStart", "Stop"]))
+        hooks = self.hooks()
+        text = json.dumps(hooks)
+        self.assertNotIn("mm-session-letter", text)
+        # The other tool's hooks are where they were, and the retired entry's whole group went with it.
+        self.assertEqual(hooks["PreToolUse"], [{"matcher": "Bash", "hooks": [{"type": "command",
+                                                                             "command": "other-tool check"}]}])
+        self.assertEqual(text.count("other-tool stop"), 1)
+        self.assertEqual(text.count("platform-letter hook --platform minimax"), 2)
+        self.assertEqual(self.install("--check"), (0, {
+            "platform": "minimax", "path": os.path.join(self.home, ".minimax", "hooks.json"),
+            "installed": {"SessionStart": True, "Stop": True}, "current": {"SessionStart": True, "Stop": True}}))
+        self.assertEqual(self.install()[1]["changed"], [])  # and it is idempotent
+
+    def test_remove_takes_them_out_too_and_an_event_left_empty_goes(self) -> None:
+        hooks = self.old_hooks()
+        hooks["PreToolUse"] = hooks["PreToolUse"][1:]  # the retired entry is the event's only one
+        with open(os.path.join(self.home, ".minimax", "hooks.json"), "w", encoding="utf-8") as fh:
+            json.dump({"hooks": hooks}, fh)
+        code, answer = self.install("--remove")
+        self.assertEqual((code, sorted(answer["changed"])), (0, ["PreToolUse", "SessionStart", "Stop"]))
+        self.assertEqual(self.hooks(), {"Stop": [{"hooks": [{"type": "command", "command": "other-tool stop"}]}]})
+
+    def test_check_names_a_wrapper_the_retired_client_left_and_no_install_deletes_it(self) -> None:
+        self.assertEqual(self.install()[0], 0)
+        self.assertEqual(self.install("--check")[0], 0)
+        bin_dir = os.path.join(self.home, ".local", "bin")
+        os.makedirs(bin_dir)
+        wrappers = [os.path.join(bin_dir, name) for name in ("mm-session-letter", "mm-registry-env")]
+        for wrapper in wrappers:
+            with open(wrapper, "w") as fh:
+                fh.write("#!/bin/sh\n")
+        code, answer = self.install("--check")
+        self.assertEqual((code, answer["retired"]), (1, {"hooks": [], "files": wrappers}))
+        code, answer = self.install()
+        self.assertEqual((code, answer["changed"], answer["retired_files"]), (0, [], wrappers))
+        self.assertTrue(all(os.path.exists(wrapper) for wrapper in wrappers))  # the owner retires them, not this
+        for wrapper in wrappers:
+            os.remove(wrapper)
+        self.assertEqual(self.install("--check")[0], 0)
+        # Which files those are is each adapter's to state.
+        self.assertEqual({name: PL.load_spec(name).retired_files for name in ("minimax", "zcode", "codex")}, {
+            "minimax": (".local/bin/mm-session-letter", ".local/bin/mm-registry-env"),
+            "zcode": (".local/bin/zc-letter",),
+            "codex": (),
+        })
+
+    def test_another_platforms_install_leaves_the_retired_hooks_alone(self) -> None:
+        self.old_hooks()
+        installer = PL.JsonHookInstaller(path=os.path.join(".minimax", "hooks.json"), events={"SessionStart": 20})
+        out = io.StringIO()
+        with mock.patch.object(PL, "load_adapter", return_value=SimpleNamespace(INSTALL=installer, SPEC=self.spec)):
+            self.assertEqual(PL.install_main(["--platform", "codex"], self.env(), out), 0)
+        self.assertEqual(json.dumps(self.hooks()).count("mm-session-letter"), 3)
+
+    # ---- a chat the retired client lettered, in a place of its own ----
+
+    def test_a_chat_the_retired_client_lettered_gets_its_note_from_that_clients_record(self) -> None:
+        held = {"s-0001": {"label": "QQ", "location": "mac", "title": "Fix the build", "seen": 12.5}}
+        asked: list[str] = []
+
+        def retired_note(env, sid):
+            asked.append(sid)
+            return held.get(sid)
+
+        spec = make_spec(events={**PL.DEFAULT_EVENTS, "Stop": "turn"}, retired_note=retired_note)
+        chat = PL.Chat(spec, self.env(), "mac", "s-0001", now=99.0)
+        note = chat.read()
+        self.assertEqual(note, {
+            "session_id": "s-0001", "platform": "codex", "state": "open", "label": "QQ", "labels": ["QQ"],
+            "location": "mac", "title": "Fix the build", "titled": True, "placeholder": "QQ: New Chat",
+            "touched_at": 0, "updated_at": 12.5})
+        with open(chat.path, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh), note)  # saved, so the record is asked once
+        self.assertEqual((chat.read(), asked), (note, ["s-0001"]))
+        # Nothing to adopt, or something that is not a letter at a fleet location, adopts nothing.
+        for sid, old in (("s-0002", None), ("s-0003", {"label": "qq", "location": "mac"}),
+                         ("s-0004", {"label": "QQ", "location": "laptop"}), ("s-0005", "QQ"),
+                         ("s-0006", {"label": 7})):
+            held[sid] = old
+            self.assertEqual(PL.Chat(spec, self.env(), "mac", sid, now=99.0).read(), {}, sid)
+        held["s-0007"] = {"label": "QR"}  # no location in the record:  the chat's own
+        self.assertEqual(PL.Chat(spec, self.env(), "server", "s-0007", now=99.0).read()["location"], "server")
+        broken = make_spec(retired_note=mock.Mock(side_effect=OSError("gone")))
+        self.assertEqual(PL.Chat(broken, self.env(), "mac", "s-0008", now=99.0).read(), {})
+        # A chat that has a note is never asked about, and a spec with no such record never asks.
+        asked.clear()
+        chat.write(dict(note, title="Other words"))
+        self.assertEqual((chat.read()["title"], asked), ("Other words", []))
+        self.assertEqual(PL.Chat(self.spec, self.env(), "mac", "s-0009", now=99.0).read(), {})
+
+    def test_an_adopted_chat_is_attached_at_its_next_turn_end(self) -> None:
+        # The chat was open when this client took over:  no start event will come for it, only the end of a turn.
+        written: list[str] = []
+        spec = make_spec(platform="faux", source="faux-hook", display="Faux",
+                         events={**PL.DEFAULT_EVENTS, "Stop": "turn"},
+                         title_writer=lambda request: written.append(request.title) or True, title_in_output=False,
+                         current_title=lambda payload, env=None: "Fix the build",  # the app dropped the letter
+                         retired_note=lambda env, sid: {"label": label, "location": "mac", "title": "Fix the build"})
+        code, answer = self.registry("register", "--platform", "faux", "--location", "mac", "--session-id", "s-0001",
+                                     "--seat", "CODEX", "--source", "old-client")
+        self.assertEqual(code, 0, answer)
+        label = answer["label"]  # the retired client's record holds the letter the registry gave the chat
+        out = io.StringIO()
+        PL.hook(spec, self.env(), io.StringIO(json.dumps({"hook_event_name": "Stop", "session_id": "s-0001"})),
+                out, platform="darwin")
+        with open(os.path.join(self.state, "CODEX", "letters", "s-0001.json")) as fh:
+            note = json.load(fh)
+        self.assertEqual((note["state"], note["label"], note["platform"]), ("open", label, "faux"))
+        self.assertEqual(written, ["%s: Fix the build" % label])  # the letter is back on its title
+        # Without the retired client's record the same turn end does nothing:  the chat never started here.
+        bare = make_spec(platform="faux", source="faux-hook", display="Faux",
+                         events={**PL.DEFAULT_EVENTS, "Stop": "turn"})
+        PL.hook(bare, self.env(), io.StringIO(json.dumps({"hook_event_name": "Stop", "session_id": "s-0002"})),
+                out, platform="darwin")
+        self.assertFalse(os.path.exists(os.path.join(self.state, "CODEX", "letters", "s-0002.json")))
+
+
 class ShowTests(Base):
     """`simple-chat letter show` with no flags prints the note of the chat this shell runs in, found the way
     `request` finds it:  by the spec's own reader, then its session id variables."""

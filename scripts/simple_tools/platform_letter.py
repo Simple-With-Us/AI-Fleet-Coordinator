@@ -371,10 +371,15 @@ class PlatformSpec:
                                session ids asked about are gone for good, for the hooks' gone report (`report_gone`)
     gone_elsewhere             for a platform whose app on this host runs chats at another location:  the session
                                ids of the ones there that are gone for good (`report_gone_elsewhere`)
+    retired_note               for a platform whose retired client kept a chat's letter somewhere of its own:
+                               from the environment and a session id, what it held (label, location, title,
+                               seen), so a chat that is open across the change keeps its letter (`adopted_note`)
     retired_env                for a platform whose retired client read its settings from the environment:  the
                                names it read, by what they mean here ("off", "--location", "--mac-ssh"), so a
                                hook entry of that client that is still installed means what it meant
                                (`retired_argv`)
+    retired_files              the files that retired client left on a host, under the home folder:  wrappers
+                               nothing runs any more, which `install --check` names while they are there
     """
 
     platform: str
@@ -400,7 +405,9 @@ class PlatformSpec:
     title_advice: TitleAdvice | None = None
     gone_sessions: GoneSessions | None = None
     gone_elsewhere: GoneElsewhere | None = None
+    retired_note: Callable[[Mapping[str, str], str], Mapping[str, Any] | None] | None = None
     retired_env: Mapping[str, str] = field(default_factory=dict)
+    retired_files: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not PLATFORM_RE.fullmatch(self.platform):
@@ -1187,8 +1194,15 @@ class Chat:
 
     def read(self) -> dict[str, Any]:
         """The chat's note, or {}.  A note the seat's retired client wrote is put in this client's shape where it
-        lies, the first time it is read (`upgraded_note`)."""
+        lies, the first time it is read (`upgraded_note`), and a chat that client lettered somewhere of its own gets
+        its note from there (`adopted_note`)."""
         note = _read_json(self.path)
+        if not note and self.spec.retired_note is not None and not os.path.lexists(self.path):
+            # No note yet:  the seat's retired client may have lettered this chat, in a place of its own.
+            adopted = adopted_note(self.spec, self.env, self.session_id, self.location)
+            if adopted is not None:
+                _save_json(self.path, adopted)
+                return adopted
         fresh = upgraded_note(note, self.spec.platform)
         if fresh is None:
             return note
@@ -3178,6 +3192,41 @@ def _seconds(value: object) -> float:
     return float(value)
 
 
+def adopted_note(
+    spec: PlatformSpec, env: Mapping[str, str], sid: str, where: str
+) -> dict[str, Any] | None:
+    """A note for a chat the platform's retired client lettered and kept in a place of its own (the spec's
+    `retired_note`), or None.  The chat's registration is the same one (the registry identity did not change), so
+    the note only says what the chat already holds:  its letter, where it is registered and its words.  Its touch is
+    due at once, so the assigner is asked at the chat's next event whether that is still so.  Anything that is not
+    a letter and a fleet location adopts nothing, and an adapter that raises has nothing to adopt."""
+    if spec.retired_note is None:
+        return None
+    try:
+        old = spec.retired_note(env, sid)
+    except Exception:  # noqa: BLE001 - the retired client's file;  a surprise adopts nothing
+        return None
+    if not isinstance(old, Mapping):
+        return None
+    label, location = old.get("label"), old.get("location") or where
+    if not isinstance(label, str) or not LABEL_RE.fullmatch(label) or location not in LOCATIONS:
+        return None
+    title = clean_title(old.get("title"))
+    return {
+        "session_id": sid,
+        "platform": spec.platform,
+        "state": "open",
+        "label": label,
+        "labels": [label],
+        "location": location,
+        "title": title,
+        "titled": bool(title),
+        "placeholder": compose(label, ""),
+        "touched_at": 0,
+        "updated_at": _seconds(old.get("seen")),
+    }
+
+
 def upgraded_note(note: Mapping[str, Any], platform: str) -> dict[str, Any] | None:
     """A note the retired per-seat client wrote, in this client's shape, or None when it needs no change.
 
@@ -3712,6 +3761,28 @@ def installed_command(entry: object, platform: str) -> list[str] | None:
 _GONE = object()
 
 
+def _is_retired(node: dict[str, Any], platform: str) -> bool:
+    """The dict holds a `hook-...` command of the retired program this platform's row replaced (RETIRED_HOOKS), as a
+    string or in a list of strings of its own.  Such an entry is the retired client's under ANY event, also one
+    this row hooks nothing on (the retired MiniMax client had a PreToolUse hook)."""
+    for value in node.values():
+        for text in value if isinstance(value, list) else [value]:
+            if not isinstance(text, str):
+                continue
+            try:
+                words = shlex.split(text)
+            except ValueError:
+                continue
+            program = os.path.basename(words[0]) if words else ""
+            if (
+                RETIRED_HOOKS.get(program) == platform
+                and words[1:2]
+                and words[1].startswith("hook-")
+            ):
+                return True
+    return False
+
+
 def _is_ours(node: dict[str, Any], platform: str) -> bool:
     """The dict holds this platform's command as a string, or in a list of strings, of its own."""
     return any(
@@ -3736,19 +3807,23 @@ def _command_objects(node: Any, platform: str) -> list[dict[str, Any]]:
     return found
 
 
-def _strip(node: Any, platform: str) -> Any:
-    """A copy of `node` without this platform's command objects.  A group that loses its last hook goes with it
-    (`_GONE`), and a group that keeps another tool's hook keeps its matcher and that hook."""
+def _strip(
+    node: Any, platform: str, ours: Callable[[dict[str, Any], str], bool] | None = None
+) -> Any:
+    """A copy of `node` without this platform's command objects (or without the ones `ours` picks).  A group that
+    loses its last hook goes with it (`_GONE`), and a group that keeps another tool's hook keeps its matcher and
+    that hook."""
+    ours = ours or _is_ours
     if isinstance(node, list):
-        return [k for k in (_strip(item, platform) for item in node) if k is not _GONE]
+        return [k for k in (_strip(item, platform, ours) for item in node) if k is not _GONE]
     if not isinstance(node, dict):
         return node
-    if _is_ours(node, platform):
+    if ours(node, platform):
         return _GONE
     out: dict[str, Any] = {}
     for key, value in node.items():
         if isinstance(value, (dict, list)):
-            kept = _strip(value, platform)
+            kept = _strip(value, platform, ours)
             if kept is _GONE or (isinstance(value, list) and value and not kept):
                 return _GONE
             out[key] = kept
@@ -3914,7 +3989,13 @@ def install_json_hooks(
     keeps its matcher and that hook, and a group is dropped only when it has no hook left.  A file it
     rewrites is backed up first (`<file>.bak-letter-<UTC stamp>`, 0600, a name no earlier backup has) and keeps its
     mode.  A file that is not the shape the adapter's `locate` expects is refused, never edited.  The
-    location goes into the hook command as a flag; running it again without one keeps the one already installed."""
+    location goes into the hook command as a flag; running it again without one keeps the one already installed.
+
+    A hook of the retired client this platform's row replaced is taken out wherever it is, also under an event the
+    row hooks nothing on, by an install and by a remove.  The wrappers that client left on the host (the spec's `retired_files`)
+    are named in the answer and never deleted here, and `--check` answers exit 1 while either is still there.  With
+    the Mac's ssh destination on the command, the answer carries the authorized_keys line for the Mac's owner to
+    add (`parent_key_line`)."""
     home = str(env.get("HOME") or os.path.expanduser("~"))
     path = installer.path if os.path.isabs(installer.path) else os.path.join(home, installer.path)
     if opts.location and opts.location not in LOCATIONS:
@@ -3948,14 +4029,44 @@ def install_json_hooks(
         ev: any(installed_command(e, platform) for e in events.get(ev) or [])
         for ev in installer.events
     }
+    # What the retired client left:  its hooks on events this row hooks nothing on, and its wrappers.
+    stray = {
+        ev: _strip(entries, platform, _is_retired)
+        for ev, entries in events.items()
+        if ev not in installer.events and isinstance(entries, list)
+    }
+    stray = {ev: kept for ev, kept in stray.items() if kept != events[ev]}
+    spec = load_spec(platform)
+    files = [
+        os.path.join(home, name)
+        for name in (spec.retired_files if spec is not None else ())
+        if os.path.lexists(os.path.join(home, name))
+    ]
+    key = {}
+    if mac and not opts.remove:
+        # The Mac's owner adds the line, with this host's public key:  no installer edits authorized_keys.
+        key = {
+            "mac_authorized_keys": parent_key_line(),
+            "mac_note": "add that line to ~/.ssh/authorized_keys ON THE MAC, with this host's public key in place"
+            " of <key-type> <public-key>;  the Mac's owner adds it, this installer never edits that file",
+        }
     if opts.check:
         current = {}
         for ev, timeout in installer.events.items():
             new, entries = _plan_event(installer, events, ev, timeout, command, platform, False)
             current[ev] = have[ev] and new == entries  # an install would change nothing
-        answer = {"platform": platform, "path": path, "installed": have, "current": current}
-        return _emit(stdout, answer, 0 if all(have.values()) else 1)
+        answer = {"platform": platform, "path": path, "installed": have, "current": current, **key}
+        if stray or files:
+            # Not current:  an install takes the retired hooks out, and the owner retires the files.
+            answer["retired"] = {"hooks": sorted(stray), "files": files}
+        return _emit(stdout, answer, 0 if all(have.values()) and not (stray or files) else 1)
     changed = []
+    for ev, kept in stray.items():
+        changed.append(ev)
+        if kept:
+            events[ev] = kept
+        else:
+            events.pop(ev, None)
     for ev, timeout in installer.events.items():
         new, entries = _plan_event(installer, events, ev, timeout, command, platform, opts.remove)
         if new != entries:
@@ -3965,8 +4076,9 @@ def install_json_hooks(
         else:
             events.pop(ev, None)
     drop = installer.whole_file and opts.remove and _vacant(doc)
+    left = {"retired_files": files} if files else {}
     if not changed:
-        return _emit(stdout, {"platform": platform, "changed": [], "path": path}, 0)
+        return _emit(stdout, {"platform": platform, "changed": [], "path": path, **left, **key}, 0)
     backup = ""
     if existed:
         file_mode = os.stat(path).st_mode & 0o777
@@ -3993,7 +4105,14 @@ def install_json_hooks(
             except OSError:
                 pass
             raise
-    answer = {"platform": platform, "changed": changed, "path": path, "backup": backup}
+    answer = {
+        "platform": platform,
+        "changed": changed,
+        "path": path,
+        "backup": backup,
+        **left,
+        **key,
+    }
     if drop:
         answer["removed_file"] = True
     if not opts.remove:
