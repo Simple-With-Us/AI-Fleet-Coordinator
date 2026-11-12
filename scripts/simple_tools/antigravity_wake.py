@@ -60,7 +60,6 @@ DEFAULTS: Mapping[str, Any] = {
     "local_host": "server",
     "mac_ssh": "",
     "resume_timeout_seconds": 900,
-    "agy_bin": "agy",
 }
 
 NEVER_RAN: frozenset[str] = frozenset(
@@ -93,11 +92,11 @@ Runner = Callable[..., subprocess.CompletedProcess[Any]]
 
 def state_dir(env: Mapping[str, str]) -> Path:
     """The state folder for Antigravity wake locks and runtime artifacts."""
-    explicit = env.get("AG_WAKE_STATE")
+    explicit = env.get("AG_ROUTER_STATE")
     if explicit:
         return Path(explicit)
     base = os.path.join(str(env.get("HOME") or os.path.expanduser("~")), ".local", "state")
-    return Path(base) / "ag-wake"
+    return Path(base) / "wake-router" / "ag"
 
 
 def store_paths(env: Mapping[str, str]) -> list[Path]:
@@ -258,40 +257,37 @@ def _child_env(env: Mapping[str, str]) -> dict[str, str]:
     }
 
 
-def _resolve_cwd(rec: dict[str, Any]) -> str | None:
-    """Extract a valid working directory from `workspace_uris`, or None."""
+def _resolve_cwd(rec: dict[str, Any]) -> str:
+    """Extract a valid working directory from `workspace_uris`, or empty string."""
     raw = rec.get("workspace_uris")
     if not raw or not isinstance(raw, str):
-        return None
+        return ""
     try:
         uris = json.loads(raw)
     except (ValueError, TypeError):
-        return None
+        return ""
     if not isinstance(uris, list):
-        return None
-    saw_file_uri = False
+        return ""
     for uri in uris:
         if isinstance(uri, str) and uri.startswith("file://"):
-            saw_file_uri = True
             path = urllib.request.url2pathname(uri[7:])
             if os.path.isdir(path):
                 return path
-    if saw_file_uri:
-        # Candidate file URIs were checked and none exist on disk.
-        return ""
-    return None
+    return ""
 
 
-def _find_agy_binary(config: Mapping[str, Any], child_env: Mapping[str, str]) -> str | None:
-    """Locate the `agy` CLI binary, checking configured bin, PATH, and standard fleet paths."""
-    named = str(config.get("agy_bin") or "agy")
-    binary = shutil.which(named, path=child_env.get("PATH"))
+def _find_agy_binary(child_env: Mapping[str, str]) -> str | None:
+    """Locate the `agy` CLI binary, checking AGY_BIN, PATH, and standard user bin paths."""
+    explicit = child_env.get("AGY_BIN")
+    if explicit and os.path.isfile(explicit) and os.access(explicit, os.X_OK):
+        return explicit
+    binary = shutil.which("agy", path=child_env.get("PATH"))
     if binary:
         return binary
     home = child_env.get("HOME") or os.path.expanduser("~")
     candidates = [
         "/usr/local/bin/agy",
-        "/mnt/fleet-extra/apps/cli/agy/bin/agy",
+        os.path.join(home, ".local", "bin", "agy"),
         os.path.join(home, ".gemini", "bin", "agy"),
     ]
     for cand in candidates:
@@ -305,6 +301,7 @@ def deliver_local(
     config: Mapping[str, Any],
     session_id: str,
     wake: WR.Wake,
+    target: WR.Target | None = None,
     *,
     runner: Runner = subprocess.run,
 ) -> WR.Delivery:
@@ -321,50 +318,77 @@ def deliver_local(
         except OSError:
             return WR.Delivery("busy", "resume", code="session-locked")
 
-        rec, db_err = find_conversation_record(env, session_id)
-        if db_err is not None:
-            return WR.Delivery("failed", "resume", code="store-%s" % db_err)
-        if rec is None:
-            return WR.Delivery("refused", "resume", code="conversation-not-found")
-        if rec.get("parent_conversation_id") or (rec.get("nesting_depth") or 0) > 0:
-            return WR.Delivery("refused", "resume", code="conversation-subagent")
-        if (rec.get("killed") or 0) != 0:
-            return WR.Delivery("refused", "resume", code="conversation-killed")
-        if rec.get("not_fully_idle"):
-            return WR.Delivery("busy", "resume", code="session-busy")
+        bridge_home = str(env.get("HOME") or os.path.expanduser("~"))
+        bridge_dir = Path(bridge_home) / ".local" / "state" / "ag-wake"
+        bridge_lock = None
+        if bridge_dir.is_dir():
+            try:
+                b_fd = os.open(
+                    bridge_dir / ("session-%s.lock" % session_id), os.O_CREAT | os.O_RDWR, 0o600
+                )
+                bridge_lock = os.fdopen(b_fd, "w")
+                fcntl.flock(bridge_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                if bridge_lock is not None:
+                    bridge_lock.close()
+                return WR.Delivery("busy", "resume", code="session-locked")
 
-        cwd = _resolve_cwd(rec)
-        if cwd == "":
-            return WR.Delivery("refused", "resume", code="session-cwd-gone")
-
-        child_env = _child_env(env)
-        binary = _find_agy_binary(config, child_env)
-        if not binary:
-            return WR.Delivery("failed", "resume", code="agy-not-found")
-
-        argv = [binary, "--conversation", session_id, "-p", wake_text(wake)]
-        timeout_seconds = int(config.get("resume_timeout_seconds") or 900)
         try:
-            proc = runner(
-                argv,
-                cwd=cwd,
-                env=child_env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=timeout_seconds,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            return WR.Delivery("refused", "resume", code="resume-timeout")
-        except OSError as exc:
-            return WR.Delivery("failed", "resume", code="resume-%s" % type(exc).__name__)
-        except Exception as exc:  # noqa: BLE001 - may have started, so it is final
-            return WR.Delivery("refused", "resume", code="resume-error-%s" % type(exc).__name__)
+            if target is not None:
+                stale = _recheck(env, target)
+                if stale is not None:
+                    return stale
 
-        if proc.returncode == 0:
-            return WR.Delivery("completed", "resume", ack="confirmed")
-        return WR.Delivery("refused", "resume", code="resume-exit-%d" % proc.returncode)
+            rec, db_err = find_conversation_record(env, session_id)
+            if db_err is not None:
+                return WR.Delivery("failed", "resume", code="store-%s" % db_err)
+            if rec is None:
+                return WR.Delivery("refused", "resume", code="conversation-not-found")
+            if rec.get("parent_conversation_id") or (rec.get("nesting_depth") or 0) > 0:
+                return WR.Delivery("refused", "resume", code="conversation-subagent")
+            if (rec.get("killed") or 0) != 0:
+                return WR.Delivery("refused", "resume", code="conversation-killed")
+            not_idle = rec.get("not_fully_idle")
+            if not_idle is None or not_idle != 0:
+                return WR.Delivery("busy", "resume", code="session-busy")
+
+            cwd = _resolve_cwd(rec)
+            if not cwd:
+                return WR.Delivery("refused", "resume", code="session-cwd-gone")
+
+            child_env = _child_env(env)
+            binary = _find_agy_binary(child_env)
+            if not binary:
+                return WR.Delivery("failed", "resume", code="agy-not-found")
+
+            argv = [binary, "--conversation", session_id, "-p", wake_text(wake)]
+            timeout_seconds = int(config.get("resume_timeout_seconds") or 900)
+            try:
+                proc = runner(
+                    argv,
+                    cwd=cwd,
+                    env=child_env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=timeout_seconds,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                return WR.Delivery("refused", "resume", code="resume-timeout")
+            except OSError as exc:
+                return WR.Delivery("failed", "resume", code="resume-%s" % type(exc).__name__)
+            except Exception as exc:  # noqa: BLE001 - may have started, so it is final
+                return WR.Delivery(
+                    "refused", "resume", code="resume-error-%s" % type(exc).__name__
+                )
+
+            if proc.returncode == 0:
+                return WR.Delivery("sent", "resume", ack="unknown", note="agy completed with exit 0")
+            return WR.Delivery("refused", "resume", code="resume-exit-%d" % proc.returncode)
+        finally:
+            if bridge_lock is not None:
+                bridge_lock.close()
 
 
 def make_deliver(
@@ -378,7 +402,9 @@ def make_deliver(
 
     def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
         if target.host == local_host:
-            return deliver_local(env, config, target.session_id, wake, runner=runner)
+            return deliver_local(
+                env, config, target.session_id, wake, target=target, runner=runner
+            )
         if target.host == "mac":
             from . import claude_wake as CW
 
@@ -518,12 +544,18 @@ def deliver_request(
     except (Exception, SystemExit) as exc:
         return _answer(request, WR.Delivery("failed", code="settings-%s" % type(exc).__name__))
 
-    stale = _recheck(env, target)
-    if stale is not None:
-        return _answer(request, stale)
+    # The Mac-side handler requires target to belong to this execution host ("mac")
+    if target.host != "mac":
+        return _answer(request, WR.Delivery("refused", code="unknown-host"))
+
+    mac_config = dict(config)
+    if mac_config.get("local_host") == "server":
+        mac_config["local_host"] = "mac"
 
     try:
-        delivery = deliver_local(env, config, target.session_id, wake, runner=runner)
+        delivery = deliver_local(
+            env, mac_config, target.session_id, wake, target=target, runner=runner
+        )
     except OSError as exc:
         delivery = WR.Delivery("failed", code="deliver-%s" % type(exc).__name__)
 
