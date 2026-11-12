@@ -2,6 +2,8 @@
 
 What the Operator is, what already exists, and which parts are still a decision rather than a task.  The wake path is [zulip-wake-routing.md](zulip-wake-routing.md).
 
+**The rule above all of these:** there is one Operator with one tool or process per function for every platform and host, and only last-mile wake delivery may differ per platform.  A platform contributes data to a shared table, never its own client, router, bridge, sweeper, timer, unit, token or registry.  The binding text is in [AGENTS.md](../../AGENTS.md#one-operator-no-special-seats-owner--all-agents-all-platforms-2026-11-11).
+
 ## 1: What The Owner Has Ruled
 
 These are the owner's rulings.  Where the code does not do one yet, [the listener design, section 9](simple-tools-listener.md#9-not-yet-in-the-code) says so.
