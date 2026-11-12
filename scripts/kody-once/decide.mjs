@@ -130,15 +130,23 @@ export function decideOnce(event, context = {}) {
   const action = event?.action;
   const checks = context.checks || [];
   const receiptAt = latestReceiptAt(checks);
-  const explicitComment = hasFreshTrigger(context.comments, receiptAt);
   const labelRequest = action === 'labeled' && event?.label === REREVIEW_LABEL;
+
+  // Drafts never review on their own; only the explicit label overrides.
+  if (event?.draft && action !== 'ready_for_review' && !labelRequest) return skip('draft');
+
+  // A trigger comment is fresh only if it is newer than the latest finished
+  // Kody attempt (receipt or not), so one stale comment cannot re-fire on
+  // every later event.
+  const last = latestCompleted(checks);
+  const lastAt = last ? completedAt(last) : null;
+  const since = receiptAt == null ? lastAt : lastAt == null ? receiptAt : Math.max(receiptAt, lastAt);
+  const explicitComment = hasFreshTrigger(context.comments, since);
 
   if (labelRequest || explicitComment) {
     if (checks.some(isInFlight)) return skip('in-flight');
     return review(labelRequest ? 'label' : 'comment');
   }
-
-  if (event?.draft && action !== 'ready_for_review') return skip('draft');
 
   if (checks.some(isInFlight)) return skip('in-flight');
 
@@ -148,7 +156,6 @@ export function decideOnce(event, context = {}) {
   }
 
   if (action === 'synchronize') {
-    const last = latestCompleted(checks);
     if (last && isFailedAttempt(last)) return review('failed-attempt');
     if (receiptAt != null) return skip('already-reviewed');
     if (!last) return review('no-review-yet');

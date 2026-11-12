@@ -145,3 +145,22 @@ test('unrelated events skip', () => {
     reason: 'unsupported-event',
   });
 });
+
+test('a stale trigger comment does not bypass the draft gate or re-fire after a finished attempt', () => {
+  const comments = [{ created_at: '2026-11-11T09:00:00Z', body: '@kody start-review' }];
+  assert.deepEqual(decideOnce({ action: 'synchronize', draft: true }, { comments }), {
+    action: 'skip',
+    reason: 'draft',
+  });
+  const failedLater = {
+    name: 'Kody Code Review',
+    app: { slug: 'kody-ai' },
+    status: 'completed',
+    conclusion: 'skipped',
+    completed_at: '2026-11-11T10:00:00Z',
+  };
+  assert.deepEqual(decideOnce({ action: 'edited', draft: false }, { checks: [failedLater], comments }), {
+    action: 'skip',
+    reason: 'unsupported-event',
+  });
+});
