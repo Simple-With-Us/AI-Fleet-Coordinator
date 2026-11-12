@@ -107,9 +107,7 @@ fleet-facts publish --path REL --file LOCAL [--dry-run]    sign (a .json file) o
 fleet-facts verify FILE [--path REL]                       check a signed file
 ```
 
-A cycle gathers the Mac parts (`lanes`, `autopush`, `backup`, `needs_owner`) and the full list (`open-loops gather` then
-`open-loops render --markdown`), and writes up to three files to the PRIVATE repository `Simple-With-Us/fleet-loops-data` through
-sha-aware `gh api -X PUT` calls (no clone, never forced), in this order:
+A cycle gathers the Mac parts (`lanes`, `autopush`, `backup`, `needs_owner`) and the full list (`open-loops gather` then `open-loops render --markdown`), and writes up to three files to the PRIVATE repository `Simple-With-Us/fleet-loops-data`.  When `FLEET_FACTS_RELAY_URL` is set, those writes and the `mac-facts.json` delete go through git-relay (`wf_file_put`, `wf_file_delete` and `wf_file_get`) on `FLEET_FACTS_RELAY_BRANCH`, which must be that repository's default branch.  A set URL with a missing token or branch refuses the run and does not call `gh`.  An empty URL keeps the sha-aware `gh api` contents calls.  There is no clone and no force.  The repository gate (webhooks, deploy keys and org installations) still uses `gh`, because those reads have no relay verb.  In this order:
 
 | File | What it is |
 | --- | --- |
