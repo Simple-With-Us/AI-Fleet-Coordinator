@@ -85,7 +85,6 @@ class CliTests(unittest.TestCase):
                                 ["fixture-repo", "fixture-repo-2"],
                             )
 
-
     def test_fleet_apps_without_fleet_token_returns_2(self) -> None:
         with mock.patch.object(cli, "build_report") as build:
             with mock.patch.dict("os.environ", {"FLEET_READ_TOKEN": "", "GITHUB_TOKEN": "x"}):

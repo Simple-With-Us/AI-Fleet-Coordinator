@@ -39,7 +39,12 @@ class FleetAppsTests(unittest.TestCase):
         self.assertNotIn("Simple-With-Us", note)
 
     def test_malformed_entries_fail_closed(self) -> None:
-        for apps in ([{"repo": "A"}, "B"], [{"repo": "A"}, {"name": "B"}], [{"repo": "A/../x"}], [{"repo": ".."}]):
+        for apps in (
+            [{"repo": "A"}, "B"],
+            [{"repo": "A"}, {"name": "B"}],
+            [{"repo": "A/../x"}],
+            [{"repo": ".."}],
+        ):
             with self.subTest(apps=apps), tempfile.TemporaryDirectory() as tmp:
                 path = Path(tmp) / "fleet-apps.json"
                 path.write_text(json.dumps({"apps": apps}), encoding="utf-8")
