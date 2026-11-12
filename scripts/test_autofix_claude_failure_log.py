@@ -26,9 +26,7 @@ def run_log(result_field: str) -> str:
         {
             "type": "user",
             "message": {
-                "content": [
-                    {"type": "tool_result", "is_error": True, "content": result_field}
-                ]
+                "content": [{"type": "tool_result", "is_error": True, "content": result_field}]
             },
         },
         {"type": "assistant", "message": {"content": [{"type": "text", "text": result_field}]}},
