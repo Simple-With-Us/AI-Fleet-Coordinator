@@ -17,7 +17,9 @@
 #   1. fetches origin/main in the checkout this script came from (or --repo) and installs a clean
 #      `git archive` of origin/main's scripts/ into ~/.local/share/afc-wake-router/releases/<sha>,
 #      with ~/.local/share/afc-wake-router/current pointing at it.  Nothing is imported or run from
-#      a working checkout;  the knob check below runs the archive's code;
+#      a working checkout;  the knob check below runs the archive's code.  The router's ExecStart
+#      names its release folder, so its running process shows which release it uses:  a release
+#      is removed only when it is neither the newest nor the one that process runs from;
 #   2. writes ~/.config/systemd/user/afc-wake-router.service and afc-wake-tls.service from the
 #      archive's templates, with the router's ExecStart pointing at the installed release.  A unit
 #      already there that this script did not write is never overwritten;
@@ -88,7 +90,14 @@ UNITS = (ROUTER_UNIT, FRONT_UNIT)
 MARKER = "# Installed by install-wake-router.sh"
 TEMPLATE_DIR = "scripts/simple_tools/server"
 TEMPLATE_EXEC = "%h/.local/share/fleet-cli/current/scripts/simple-chat"
-INSTALLED_EXEC = "%h/.local/share/afc-wake-router/current/scripts/simple-chat"
+INSTALLED_EXEC = "%h/.local/share/afc-wake-router/releases/{sha}/scripts/simple-chat"
+# systemctl is-active's own answers for a unit that is not running:  exit 3 (not active) or 4 (no
+# such unit), with exactly one of these words.  Anything else, an empty answer included, is not
+# proof that the unit stopped.
+STOPPED_STATES = frozenset({"inactive", "failed"})
+STOPPED_CODES = frozenset({3, 4})
+# Longer than the router's TimeoutStopSec (1030), so a slow clean stop is waited for, not cut off.
+SYSTEMCTL_TIMEOUT = 1100
 TEMPLATE_BIND = "--bind 127.0.0.1 --port 8794"
 TEMPLATE_ENV = "EnvironmentFile=-%h/.config/afc-wake-router/env"
 TOKEN = "FLEET_KNOBS_INFISICAL_TOKEN"
@@ -289,8 +298,11 @@ class Host:
     address when the caller has one).  Without XDG_RUNTIME_DIR it fails with "Failed to connect to
     user scope bus"."""
 
-    def __init__(self, path_env, home, runtime_dir, bus=""):
+    def __init__(self, path_env, home, runtime_dir, bus="", timeout=300,
+                 systemctl_timeout=SYSTEMCTL_TIMEOUT):
         self.path_env = path_env
+        self.timeout = timeout
+        self.systemctl_timeout = systemctl_timeout
         self.home = str(home)
         self.base_env = {"PATH": path_env, "HOME": self.home, "LANG": "C.UTF-8",
                          "XDG_RUNTIME_DIR": runtime_dir}
@@ -300,24 +312,31 @@ class Host:
     def which(self, tool):
         return shutil.which(tool, path=self.path_env)
 
-    def run(self, argv, check=False, stdin=None, env=None, binary=False):
+    def run(self, argv, check=False, stdin=None, env=None, binary=False, timeout=None):
         exe = self.which(argv[0]) if "/" not in argv[0] else argv[0]
         if not exe:
             return 127, "" if not binary else b"", "%s not found" % argv[0]
-        result = subprocess.run(
-            [exe] + list(argv[1:]),
-            input=stdin,
-            capture_output=True,
-            text=not binary,
-            env=env if env is not None else dict(self.base_env),
-            timeout=300,
-        )
+        try:
+            result = subprocess.run(
+                [exe] + list(argv[1:]),
+                input=stdin,
+                capture_output=True,
+                text=not binary,
+                env=env if env is not None else dict(self.base_env),
+                timeout=timeout or self.timeout,
+            )
+        except subprocess.TimeoutExpired:
+            if check:
+                raise SystemExit("%s: %s timed out" % (NAME, " ".join(argv[:3])))
+            return 124, b"" if binary else "", "timed out"
+        except OSError as exc:
+            return 126, b"" if binary else "", "could not run %s (%s)" % (argv[0], type(exc).__name__)
         if check and result.returncode != 0:
             raise SystemExit("%s: %s failed (%d)" % (NAME, " ".join(argv[:3]), result.returncode))
         return result.returncode, result.stdout, result.stderr
 
     def systemctl(self, *args):
-        return self.run(["systemctl", "--user"] + list(args))
+        return self.run(["systemctl", "--user"] + list(args), timeout=self.systemctl_timeout)
 
 
 def safe_extract(blob, dest):
@@ -371,7 +390,7 @@ def render_units(scripts, sha, args, tailnet, socat):
     for needle in (TEMPLATE_EXEC, TEMPLATE_BIND, TEMPLATE_ENV):
         if router.count(needle) != 1:
             raise ValueError("the router template does not hold %r exactly once" % needle)
-    router = router.replace(TEMPLATE_EXEC, INSTALLED_EXEC).replace(
+    router = router.replace(TEMPLATE_EXEC, INSTALLED_EXEC.format(sha=sha)).replace(
         TEMPLATE_BIND, "--bind %s --port %s" % (args.bind, args.port))
     for placeholder in ("@SOCAT@", "@FRONT_PORT@", "@TAILNET_ADDR@", "@ROUTER_ADDR@", "@ROUTER_PORT@"):
         if front.count(placeholder) != 1:
@@ -379,8 +398,8 @@ def render_units(scripts, sha, args, tailnet, socat):
     front = (front.replace("@SOCAT@", socat).replace("@FRONT_PORT@", args.front_port)
              .replace("@TAILNET_ADDR@", tailnet).replace("@ROUTER_ADDR@", args.bind)
              .replace("@ROUTER_PORT@", args.port))
-    # Only the router's text names the release, so a new release restarts the router and leaves
-    # the front, whose text does not change, running.
+    # Only the router's text names the release (its ExecStart runs releases/<sha>), so a new release
+    # restarts the router and leaves the front, whose text does not change, running.
     head = "%s;  --uninstall removes it.\n" % MARKER
     return {ROUTER_UNIT: head + "# Release:  origin/main %s\n" % sha + router, FRONT_UNIT: head + front}
 
@@ -422,6 +441,58 @@ def check_knobs(host, python, scripts, token, plan, start):
     return report
 
 
+def confirmed_stopped(code, out):
+    """Whether `systemctl --user is-active UNIT` positively said the unit is not running."""
+    return code in STOPPED_CODES and out.strip() in STOPPED_STATES and "\n" not in out.strip()
+
+
+def running_releases(host, proc_root, releases):
+    """(set of release shas the router's running process uses, problem).  None means it cannot be
+    told, and then nothing may be pruned.  The process is the unit's MainPID;  its command line
+    names releases/<sha>/scripts/simple-chat, because that is what the installed ExecStart runs."""
+    code, out, _err = host.systemctl("show", "--property=MainPID", "--value", ROUTER_UNIT)
+    pid = out.strip()
+    if code != 0 or not re.fullmatch(r"[0-9]{1,10}", pid):
+        return None, "systemctl could not report the router's main process (exit %d)" % code
+    if int(pid) == 0:
+        return set(), ""
+    try:
+        argv = (proc_root / pid / "cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return None, "the router's process %s cannot be read" % pid
+    found = set()
+    pattern = re.compile(r".*/releases/([0-9a-f]{40})/scripts/simple-chat")
+    for raw in argv:
+        arg = raw.decode("utf-8", "replace")
+        match = pattern.fullmatch(arg)
+        if match and os.path.realpath(arg) == os.path.realpath(
+                str(releases / match.group(1) / "scripts" / "simple-chat")):
+            found.add(match.group(1))
+    if len(found) != 1:
+        return None, "the router's process %s does not run from one installed release" % pid
+    return found, ""
+
+
+def prune_releases(host, proc_root, releases, sha):
+    """Remove every release that is neither the newest nor one the running router uses."""
+    running, problem = running_releases(host, proc_root, releases)
+    if running is None:
+        say("%s;  every installed release is kept" % problem)
+        return
+    keep = {sha} | running
+    for old in sorted(releases.iterdir()):
+        if old.name in keep:
+            continue
+        if old.is_dir() and not old.is_symlink():
+            shutil.rmtree(old)
+        else:
+            old.unlink()
+        say("removed release %s (not running)" % old.name[:12])
+    for name in sorted(running - {sha}):
+        say("the running router still uses release %s;  it is kept until a later install finds it "
+            "unused" % name[:12])
+
+
 def atomic_write(path, text, mode):
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.parent / (".%s.%s.tmp" % (path.name, secrets.token_hex(4)))
@@ -438,7 +509,7 @@ def atomic_write(path, text, mode):
         raise
 
 
-def install(args, plan, host, home, etc, uid, here, interpreter):
+def install(args, plan, host, home, etc, uid, here, interpreter, proc_root):
     user = pwd.getpwuid(uid).pw_name
     unit_dir = home / ".config" / "systemd" / "user"
     env_path = home / ".config" / "afc-wake-router" / "env"
@@ -555,10 +626,10 @@ def install(args, plan, host, home, etc, uid, here, interpreter):
         releases = base / "releases"
         releases.mkdir(parents=True, exist_ok=True)
         os.chmod(str(base), 0o700)
-        # A release folder is never rebuilt or deleted while it may be running:  the router resolves
-        # its code under releases/<sha> at start and imports lazily from there, so the release
-        # `current` named before this run is kept until the next install, and a release that is
-        # already here (the same commit) is left as it is.
+        # A release folder is never rebuilt or deleted while it may be running:  the router imports
+        # lazily from releases/<sha>, so a release that is already here (the same commit) is left
+        # as it is, and old releases are pruned only at the end, keeping the one the running
+        # router's process runs from (prune_releases).
         target = releases / sha
         if not (target / "scripts" / "simple-chat").is_file():
             if target.exists():
@@ -573,14 +644,7 @@ def install(args, plan, host, home, etc, uid, here, interpreter):
         os.symlink(os.path.join("releases", sha), str(link))
         os.replace(str(link), str(current))
         release_changed = before != os.path.join("releases", sha)
-        keep = {sha, os.path.basename(before)}
-        for old in releases.iterdir():
-            if old.name not in keep:
-                shutil.rmtree(old) if old.is_dir() and not old.is_symlink() else old.unlink()
         say("installed release %s" % sha[:12])
-        if release_changed and before and not args.start:
-            say("a running router keeps release %s until it restarts;  that release is kept" %
-                os.path.basename(before)[:12])
 
         if installed_problem == "missing":
             env_path.parent.mkdir(parents=True, exist_ok=True)
@@ -614,6 +678,7 @@ def install(args, plan, host, home, etc, uid, here, interpreter):
 
         if not args.start:
             say("not started;  run again with --start, or `systemctl --user start %s`" % " ".join(UNITS))
+            prune_releases(host, proc_root, releases, sha)
             return 0
         for unit in UNITS:
             active = host.systemctl("is-active", unit)[1].strip() == "active"
@@ -628,6 +693,7 @@ def install(args, plan, host, home, etc, uid, here, interpreter):
                 say("systemctl --user %s %s failed" % (verb, unit))
                 return 1
             say("%s %s" % ("restarted" if verb == "restart" else "started", unit))
+        prune_releases(host, proc_root, releases, sha)
         return 0
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
@@ -671,9 +737,10 @@ def uninstall(args, plan, host, home, uid):
         if code != 0:
             say("systemctl --user disable --now %s failed (%d);  nothing was removed" % (unit, code))
             return 1
-        state = host.systemctl("is-active", unit)[1].strip()
-        if state in ("active", "activating", "deactivating", "reloading"):
-            say("%s is still %s;  nothing was removed" % (unit, state))
+        code, out, _err = host.systemctl("is-active", unit)
+        if not confirmed_stopped(code, out):
+            say("%s is not confirmed stopped (systemctl is-active answered %r, exit %d);  nothing was "
+                "removed" % (unit, out.strip()[:40], code))
             return 1
     for unit in remove_units:
         (unit_dir / unit).unlink()
@@ -720,13 +787,15 @@ def main(argv, environ, uid):
         path_env = os.path.join(test_root, "bin") + os.pathsep + path_env
     runtime_dir = environ.get("XDG_RUNTIME_DIR") or "/run/user/%d" % uid
     host = Host(path_env, home, runtime_dir, environ.get("DBUS_SESSION_BUS_ADDRESS", ""))
+    proc_root = Path(test_root) / "proc" if test_root else Path("/proc")
     if args.uninstall:
         return uninstall(args, plan, host, home, uid)
     if host.which("systemctl") is None:
         plan.refuse("systemctl is not available")
     # The router's unit runs /usr/bin/python3;  offline tests use the interpreter running them.
     interpreter = sys.executable if test_root else "/usr/bin/python3"
-    return install(args, plan, host, home, etc, uid, environ.get("WAKE_ROUTER_INSTALLER_HERE", "."), interpreter)
+    return install(args, plan, host, home, etc, uid, environ.get("WAKE_ROUTER_INSTALLER_HERE", "."),
+                   interpreter, proc_root)
 
 
 if __name__ == "__main__":

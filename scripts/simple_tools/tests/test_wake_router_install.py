@@ -100,8 +100,17 @@ if [ -z "$XDG_RUNTIME_DIR" ]; then echo "Failed to connect to user scope bus" >&
 echo "$XDG_RUNTIME_DIR" > "$here/xdg.seen"
 if [ -f "$here/fail-$2" ]; then exit 1; fi
 if [ "$2" = "is-active" ]; then
-  if [ -f "$(dirname "$0")/../active-$3" ]; then echo active; exit 0; fi
+  if [ -f "$here/sleep-is-active" ]; then sleep 5; fi
+  # A scripted answer:  is-active-code holds the exit code, is-active-out the printed text.
+  if [ -f "$here/is-active-code" ]; then
+    cat "$here/is-active-out" 2>/dev/null; exit "$(cat "$here/is-active-code")"
+  fi
+  if [ -f "$here/active-$3" ]; then echo active; exit 0; fi
   echo inactive; exit 3
+fi
+if [ "$2" = "show" ] && [ "$3" = "--property=MainPID" ]; then
+  if [ -f "$here/mainpid-$5" ]; then cat "$here/mainpid-$5"; else echo 0; fi
+  exit 0
 fi
 if [ "$2" = "show" ]; then echo no; fi
 exit 0
@@ -193,6 +202,35 @@ class Fixture:
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "WAKE_ROUTER_TEST_ROOT": str(self.root)}
         return subprocess.run(argv, env=env, capture_output=True, text=True, timeout=120)
 
+    def advance(self, name: str) -> None:
+        """A new commit on origin/main, so the next install is a new release."""
+        (self.src / "scripts" / name).write_text("")
+        git(self.src, "add", "-A")
+        git(self.src, "commit", "-q", "-m", name)
+        git(self.src, "push", "-q", "origin", "HEAD:main")
+
+    def releases(self) -> set:
+        return {path.name for path in (self.base / "releases").iterdir()}
+
+    def current_sha(self) -> str:
+        return os.path.basename(os.readlink(self.base / "current"))
+
+    def run_router_from(self, sha: str, pid: str = "4242") -> None:
+        """A fake running router:  its MainPID, and that process's command line as systemd starts
+        it from the installed unit (ExecStart with %h expanded)."""
+        unit = (self.units / "afc-wake-router.service").read_text()
+        exec_line = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
+        argv = exec_line[len("ExecStart="):].replace("%h", str(self.home)).split()
+        argv = [arg.replace(self.current_sha(), sha) for arg in argv]
+        (self.root / "mainpid-afc-wake-router.service").write_text(pid + "\n")
+        cmdline = self.root / "proc" / pid / "cmdline"
+        cmdline.parent.mkdir(parents=True, exist_ok=True)
+        cmdline.write_bytes(b"\0".join(arg.encode() for arg in argv) + b"\0")
+
+    def is_active_answers(self, code: int, out: str) -> None:
+        (self.root / "is-active-code").write_text("%d\n" % code)
+        (self.root / "is-active-out").write_text(out)
+
     def systemctl_log(self) -> str:
         path = self.root / "systemctl.log"
         return path.read_text() if path.exists() else ""
@@ -235,8 +273,8 @@ class InstallerTest(unittest.TestCase):
         router = (self.fx.units / "afc-wake-router.service").read_text()
         front = (self.fx.units / "afc-wake-tls.service").read_text()
         self.assertTrue(router.startswith("# Installed by install-wake-router.sh"))
-        self.assertIn("%h/.local/share/afc-wake-router/current/scripts/simple-chat wake-router serve "
-                      "--bind 127.0.0.1 --port 8794", router)
+        self.assertIn("%%h/.local/share/afc-wake-router/releases/%s/scripts/simple-chat wake-router serve "
+                      "--bind 127.0.0.1 --port 8794" % self.fx.current_sha(), router)
         self.assertNotIn("fleet-cli/current", router)
         self.assertIn("OPENSSL-LISTEN:8795,bind=%s," % TAILNET, front)
         self.assertIn("TCP:127.0.0.1:8794", front)
@@ -314,17 +352,14 @@ class InstallerTest(unittest.TestCase):
             (self.fx.root / ("active-" + unit)).write_text("")
         (self.fx.root / "systemctl.log").unlink()
         # A new origin/main:  the router runs stale code and must be restarted.
-        (self.fx.src / "scripts" / "new.py").write_text("")
-        git(self.fx.src, "add", "-A")
-        git(self.fx.src, "commit", "-q", "-m", "next")
-        git(self.fx.src, "push", "-q", "origin", "HEAD:main")
+        self.fx.advance("new.py")
         result = self.fx.install("--start", tls=False)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         log = self.fx.systemctl_log()
         self.assertIn("systemctl --user restart afc-wake-router.service", log)
         self.assertNotIn("restart afc-wake-tls.service", log)
-        # The new release and the one the router ran before the restart;  nothing older.
-        self.assertEqual(len(list((self.fx.base / "releases").iterdir())), 2)
+        # Pruning runs after the restart;  the stub then reports no process on the old release.
+        self.assertEqual(self.fx.releases(), {self.fx.current_sha()})
 
     def test_foreign_unit_is_never_overwritten(self) -> None:
         self.fx.write(self.fx.units / "afc-wake-router.service", "[Unit]\n", 0o644)
@@ -375,22 +410,91 @@ class InstallerTest(unittest.TestCase):
         self.assertTrue((self.fx.units / "afc-wake-router.service").exists())
         self.assertTrue(self.fx.env_file.exists())
 
-    def test_rerun_keeps_the_release_a_running_router_uses(self) -> None:
+    def test_rerun_never_rebuilds_an_installed_release(self) -> None:
         self.assertEqual(self.fx.install().returncode, 0)
-        first = os.readlink(self.fx.base / "current")
-        sentinel = self.fx.base / first / "scripts" / "sentinel"
+        sentinel = self.fx.base / "current" / "scripts" / "sentinel"
         sentinel.write_text("")
         self.assertEqual(self.fx.install(tls=False).returncode, 0)  # the same release:  left alone
         self.assertTrue(sentinel.exists())
-        (self.fx.src / "scripts" / "next.py").write_text("")
-        git(self.fx.src, "add", "-A")
-        git(self.fx.src, "commit", "-q", "-m", "next")
-        git(self.fx.src, "push", "-q", "origin", "HEAD:main")
+
+    def test_installs_a_b_c_keep_the_release_a_running_router_uses(self) -> None:
+        self.assertEqual(self.fx.install().returncode, 0)
+        a = self.fx.current_sha()
+        self.fx.run_router_from(a)  # the router runs from A and is never restarted below
+        self.fx.advance("b.py")
+        self.assertEqual(self.fx.install(tls=False).returncode, 0)
+        b = self.fx.current_sha()
+        self.assertEqual(self.fx.releases(), {a, b})
+        self.fx.advance("c.py")
         result = self.fx.install(tls=False)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertNotEqual(os.readlink(self.fx.base / "current"), first)
-        self.assertTrue(sentinel.exists())  # the previous release stays until the next install
-        self.assertIn("keeps release", result.stdout)
+        c = self.fx.current_sha()
+        self.assertEqual(len({a, b, c}), 3)
+        # A is what the running process runs from, C is the newest;  B is neither.
+        self.assertEqual(self.fx.releases(), {a, c})
+        self.assertTrue((self.fx.base / "releases" / a / "scripts" / "simple-chat").is_file())
+        self.assertIn("still uses release %s" % a[:12], result.stdout)
+        self.assertIn("removed release %s" % b[:12], result.stdout)
+        # Once the router runs from C, the next install lets A go.
+        self.fx.run_router_from(c)
+        self.assertEqual(self.fx.install(tls=False).returncode, 0)
+        self.assertEqual(self.fx.releases(), {c})
+
+    def test_an_unreadable_running_router_keeps_every_release(self) -> None:
+        self.assertEqual(self.fx.install().returncode, 0)
+        a = self.fx.current_sha()
+        self.fx.run_router_from(a)
+        (self.fx.root / "proc" / "4242" / "cmdline").unlink()  # the process cannot be read
+        self.fx.advance("b.py")
+        self.assertEqual(self.fx.install(tls=False).returncode, 0)
+        self.fx.advance("c.py")
+        result = self.fx.install(tls=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(self.fx.releases()), 3)
+        self.assertIn("every installed release is kept", result.stdout)
+        # A process that runs something other than one installed release proves nothing either.
+        cmdline = self.fx.root / "proc" / "4242" / "cmdline"
+        cmdline.write_bytes(b"/usr/bin/python3\0-I\0/elsewhere/current/scripts/simple-chat\0")
+        result = self.fx.install(tls=False)
+        self.assertEqual(len(self.fx.releases()), 3)
+        self.assertIn("does not run from one installed release", result.stdout)
+
+    def test_uninstall_removes_nothing_unless_is_active_says_stopped(self) -> None:
+        self.assertEqual(self.fx.install().returncode, 0)
+        for code, out in ((1, ""), (3, ""), (0, ""), (0, "inactive\n"), (3, "unknown\n"),
+                          (3, "deactivating\n"), (1, "inactive\n"), (4, "inactive\ninactive\n")):
+            with self.subTest(code=code, out=out):
+                self.fx.is_active_answers(code, out)
+                result = self.fx.install("--uninstall", tls=False)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn("not confirmed stopped", result.stdout)
+                self.assertIn("nothing was removed", result.stdout)
+                for path in (self.fx.units / "afc-wake-router.service",
+                             self.fx.units / "afc-wake-tls.service", self.fx.env_file,
+                             self.fx.base / "current", self.fx.tls / "key.pem"):
+                    self.assertTrue(path.exists(), path)
+                self.assertFalse(self.fx.staged.exists())
+        # systemctl's own answer for a unit it no longer knows (exit 4, "inactive") is stopped.
+        self.fx.is_active_answers(4, "inactive\n")
+        result = self.fx.install("--uninstall", tls=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(self.fx.base.exists())
+        self.assertTrue(self.fx.staged.exists())
+
+    def test_uninstall_removes_nothing_when_is_active_times_out(self) -> None:
+        self.assertEqual(self.fx.install().returncode, 0)
+        (self.fx.root / "sleep-is-active").write_text("")
+        m = program(INSTALL)
+        path_env = str(self.fx.root / "bin") + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin")
+        host = m["Host"](path_env, self.fx.home, "/run/user/%d" % os.getuid(), systemctl_timeout=1)
+        args = m["parse_args"](["--uninstall"])
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            code = m["uninstall"](args, m["Plan"](False), host, self.fx.home, os.getuid())
+        self.assertEqual(code, 1, out.getvalue())
+        self.assertIn("exit 124", out.getvalue())
+        self.assertTrue((self.fx.units / "afc-wake-router.service").exists())
+        self.assertTrue(self.fx.env_file.exists())
+        self.assertTrue((self.fx.base / "current").exists())
 
     def test_help_prints_only_the_header(self) -> None:
         for script in (INSTALL, CANARY):
@@ -421,6 +525,16 @@ class InstallerRulesTest(unittest.TestCase):
                     TAILNET, "8.8.8.8", "localhost"):
             with self.subTest(bad=bad):
                 self.assertTrue(check(bad))
+
+    def test_only_systemctls_stopped_answers_count_as_stopped(self) -> None:
+        stopped = self.m["confirmed_stopped"]
+        for code, out in ((3, "inactive\n"), (3, "failed\n"), (4, "inactive\n")):
+            with self.subTest(code=code, out=out):
+                self.assertTrue(stopped(code, out))
+        for code, out in ((1, ""), (3, ""), (124, ""), (127, ""), (0, "inactive\n"), (0, "active\n"),
+                          (3, "activating\n"), (3, "Inactive\n"), (3, "inactive\nactive\n")):
+            with self.subTest(code=code, out=out):
+                self.assertFalse(stopped(code, out))
 
     def test_tailnet_address_is_checked(self) -> None:
         check = self.m["check_tailnet"]
