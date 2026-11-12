@@ -688,7 +688,11 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     refused = sorted(name for name, value in seats.items() if not seat_value_usable(name, value))
     for name in refused:
         seats.pop(name)
-    loaded_values = dict(seats, **operator, **voice_keys, **only_values)
+    # The four sources own disjoint names (a test holds them so);  merged in order, never with ** keywords,
+    # so a future overlap cannot raise mid-start:  the later, more specific source wins.
+    loaded_values: dict[str, str] = {}
+    for part in (seats, operator, voice_keys, only_values):
+        loaded_values.update(part)
     loaded = sorted(loaded_values)
     replaced = sum(1 for name in loaded if name in env)
     out.update(loaded_values)

@@ -222,6 +222,14 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
         self.assertNotIn("WAKE_ROUTER_KEY", rows, "the Eavesdropper does not use the router bearer yet")
         self.assertTrue(MODULE.infisical_only_names().isdisjoint(MODULE.AUTH_ENV_VARS))
 
+    def test_the_loader_sources_own_disjoint_names(self):
+        exports = {row[0] for row in MODULE.INFISICAL_ONLY}
+        groups = [exports, set(MODULE.OPERATOR_NAMES), set(MODULE.OPERATOR_VOICE_NAMES),
+                  MODULE.allowed_names(MODULE.server_codes(MODULE.PARTITION_DEFAULT))]
+        for i, a in enumerate(groups):
+            for b in groups[i + 1:]:
+                self.assertTrue(a.isdisjoint(b), sorted(a & b))
+
     def test_the_registry_key_pattern_is_the_knob_registry_pattern(self):
         from fleet_knobs import registry
 
