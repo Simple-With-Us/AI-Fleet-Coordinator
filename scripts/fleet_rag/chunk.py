@@ -5,6 +5,7 @@ bge-m3 accepts 4096 tokens but retrieval quality is best with focused chunks, so
 then paragraphs, then sentences.  A heading trail is prepended to every chunk so a fragment of
 "§ Secret handoff → Handoff-file grep trap" still carries its context when retrieved alone.
 """
+
 from __future__ import annotations
 
 import re
@@ -117,8 +118,12 @@ def chunk_markdown(
                 cur = (cur + "\n\n" + unit).strip() if cur else unit
         if cur.strip():
             # Merge a tiny tail into the previous chunk of the same section when possible.
-            if chunks and chunks[-1].heading == heading and len(cur) < MIN_CHUNK \
-                    and len(chunks[-1].text) + len(cur) < hard_max:
+            if (
+                chunks
+                and chunks[-1].heading == heading
+                and len(cur) < MIN_CHUNK
+                and len(chunks[-1].text) + len(cur) < hard_max
+            ):
                 chunks[-1] = Chunk(chunks[-1].text + "\n\n" + cur, chunks[-1].index, heading)
             else:
                 chunks.append(Chunk(_with_heading(heading, cur), idx, heading))

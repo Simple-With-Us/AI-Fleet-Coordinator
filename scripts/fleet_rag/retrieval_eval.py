@@ -19,6 +19,7 @@ Exit 0 when recall@10 meets --threshold (default 0.9), 1 when it does not,
 2 on a bad golden file, a missing fixture or a usage error.  --compare always
 exits 0 for a valid pair of reports.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -97,16 +98,20 @@ def load_golden(path: pathlib.Path | str = GOLDEN) -> dict:
             raise FleetRagError(f"{raw_path}: {qid} needs a query")
         if isinstance(prefixes, str):
             prefixes = [prefixes]
-        if not isinstance(prefixes, list) or not prefixes or not all(
-            isinstance(p, str) and p.strip() for p in prefixes
+        if (
+            not isinstance(prefixes, list)
+            or not prefixes
+            or not all(isinstance(p, str) and p.strip() for p in prefixes)
         ):
             raise FleetRagError(f"{raw_path}: {qid} needs expect_doc_id_prefix")
-        queries.append({
-            "id": qid,
-            "query": query.strip(),
-            "expect_doc_id_prefix": [p.strip() for p in prefixes],
-            "note": row.get("note") or "",
-        })
+        queries.append(
+            {
+                "id": qid,
+                "query": query.strip(),
+                "expect_doc_id_prefix": [p.strip() for p in prefixes],
+                "note": row.get("note") or "",
+            }
+        )
     if not queries:
         raise FleetRagError(f"{raw_path}: no queries")
     extra = data.get("extra_paths") or []
@@ -206,14 +211,16 @@ def build_fixture_rows(repo: pathlib.Path, rels: list[str], chunk: dict) -> list
         else:
             chunks_text = [ch.text for ch in chunks]
         for index, body in enumerate(chunks_text):
-            rows.append({
-                "doc_id": doc_id,
-                "text": body,
-                "index": index,
-                "source": FIXTURE_SOURCE,
-                "app": FIXTURE_APP,
-                "category": FIXTURE_CATEGORY,
-            })
+            rows.append(
+                {
+                    "doc_id": doc_id,
+                    "text": body,
+                    "index": index,
+                    "source": FIXTURE_SOURCE,
+                    "app": FIXTURE_APP,
+                    "category": FIXTURE_CATEGORY,
+                }
+            )
     if not rows:
         raise FleetRagError("fixture index is empty")
     return rows
@@ -284,12 +291,14 @@ class FixtureIndex:
             if kept[row["doc_id"]] >= per_doc:
                 continue
             kept[row["doc_id"]] += 1
-            hits.append({
-                "doc_id": row["doc_id"],
-                "text": row["text"],
-                "score": scores[index],
-                "source": row["source"],
-            })
+            hits.append(
+                {
+                    "doc_id": row["doc_id"],
+                    "text": row["text"],
+                    "score": scores[index],
+                    "source": row["source"],
+                }
+            )
             if len(hits) >= limit:
                 break
         return {"hits": hits, "mode": "offline-bm25"}
@@ -328,14 +337,16 @@ def run_retrieval(
         rank, doc_id = first_rank(hits, row["expect_doc_id_prefix"])
         ranks.append(rank)
         top = hits[0] if hits else {}
-        details.append({
-            "id": row["id"],
-            "query": row["query"],
-            "expected": row["expect_doc_id_prefix"],
-            "rank": rank,
-            "hit_doc_id": doc_id or None,
-            "top_doc_id": top.get("doc_id"),
-        })
+        details.append(
+            {
+                "id": row["id"],
+                "query": row["query"],
+                "expected": row["expect_doc_id_prefix"],
+                "rank": rank,
+                "hit_doc_id": doc_id or None,
+                "top_doc_id": top.get("doc_id"),
+            }
+        )
     report = {
         "schema_version": SCHEMA_VERSION,
         "suite": "retrieval-quality",
@@ -367,7 +378,11 @@ def render(report: dict) -> str:
             f"chunk target={chunk['target']} overlap={chunk['overlap']} hard_max={chunk['hard_max']}"
         )
     filters = report.get("filters") or {}
-    active = {key: value for key, value in filters.items() if value not in (None, True, 1) or key == "per_doc"}
+    active = {
+        key: value
+        for key, value in filters.items()
+        if value not in (None, True, 1) or key == "per_doc"
+    }
     if active:
         shown = ", ".join(f"{key}={value}" for key, value in active.items())
         lines.append(f"filters {shown}")
@@ -388,24 +403,28 @@ def compare_runs(before: dict, after: dict) -> dict:
     for row in after["queries"]:
         prev = before_ids.get(row["id"])
         if prev is None:
-            changes.append({
-                "id": row["id"],
-                "query": row["query"],
-                "rank_before": None,
-                "rank_after": row.get("rank"),
-                "hit_before": None,
-                "hit_after": row.get("hit_doc_id"),
-            })
+            changes.append(
+                {
+                    "id": row["id"],
+                    "query": row["query"],
+                    "rank_before": None,
+                    "rank_after": row.get("rank"),
+                    "hit_before": None,
+                    "hit_after": row.get("hit_doc_id"),
+                }
+            )
             continue
         if prev.get("rank") != row.get("rank") or prev.get("hit_doc_id") != row.get("hit_doc_id"):
-            changes.append({
-                "id": row["id"],
-                "query": row["query"],
-                "rank_before": prev.get("rank"),
-                "rank_after": row.get("rank"),
-                "hit_before": prev.get("hit_doc_id"),
-                "hit_after": row.get("hit_doc_id"),
-            })
+            changes.append(
+                {
+                    "id": row["id"],
+                    "query": row["query"],
+                    "rank_before": prev.get("rank"),
+                    "rank_after": row.get("rank"),
+                    "hit_before": prev.get("hit_doc_id"),
+                    "hit_after": row.get("hit_doc_id"),
+                }
+            )
     return {
         "schema_version": SCHEMA_VERSION,
         "suite": "retrieval-compare",
@@ -581,8 +600,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--offline", action="store_true", help="score the fixture index, no Qdrant")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--out", help="write the JSON report to this path")
-    parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
-                        help="fail when recall@10 is below this (default 0.9); compare ignores it")
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=DEFAULT_THRESHOLD,
+        help="fail when recall@10 is below this (default 0.9); compare ignores it",
+    )
     parser.add_argument("--compare", nargs=2, metavar=("BEFORE.json", "AFTER.json"))
     parser.add_argument("--chunk-target", dest="chunk_target", type=int)
     parser.add_argument("--chunk-overlap", dest="chunk_overlap", type=int)
@@ -617,8 +640,13 @@ def main(argv: list[str] | None = None) -> int:
                 per_doc=args.per_doc,
             )
         else:
-            if any(value is not None for value in (args.chunk_target, args.chunk_overlap, args.chunk_hard_max)):
-                raise FleetRagError("chunk settings apply to --offline; a live run scores the ingested collection")
+            if any(
+                value is not None
+                for value in (args.chunk_target, args.chunk_overlap, args.chunk_hard_max)
+            ):
+                raise FleetRagError(
+                    "chunk settings apply to --offline; a live run scores the ingested collection"
+                )
             report = run_live(
                 golden_path=args.golden,
                 source=args.source,
