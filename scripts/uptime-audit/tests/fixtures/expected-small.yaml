@@ -1,0 +1,41 @@
+version: 1
+org: example-org
+
+entries:
+  - id: app
+    owner: App
+    host: app.example
+    health_url: https://app.example/api/health
+    certainty: certain
+    source: test
+
+  - id: app-ready
+    owner: App
+    host: app.example
+    health_url: https://app.example/api/ready?strict=1
+    certainty: certain
+    source: test
+
+  - id: maybe
+    owner: App
+    host: maybe.example
+    health_url: https://maybe.example/
+    certainty: uncertain
+    source: test
+
+  - id: dashboard
+    owner: Ops
+    host: dash.example
+    certainty: uncertain
+    source: test
+    note: "no health path"
+
+  - id: redacted
+    owner: Marketing
+    certainty: uncertain
+    source: test
+    note: "url redacted"
+
+excluded:
+  - host: old.example
+    reason: "retired"
