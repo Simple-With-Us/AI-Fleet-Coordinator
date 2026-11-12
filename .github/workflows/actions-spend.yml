@@ -1,0 +1,49 @@
+name: Actions spend report
+
+# Weekly read-only accounting of GitHub Actions minutes for this repository.
+# The report ranks workflows and proposes cuts. It does not edit other workflows.
+
+on:
+  schedule:
+    - cron: "17 13 * * 1"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: actions-spend-${{ github.repository }}
+  cancel-in-progress: true
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.15"
+
+      - name: Install PyYAML
+        run: pip install "PyYAML==6.0.3"
+
+      - name: Unit tests
+        run: python3 -m unittest discover -s scripts/actions-spend/tests -v
+
+      - name: Write the spend report
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/actions-spend/report.py --repo "${{ github.repository }}" --days 7 --workflows-dir .github/workflows --out-dir actions-spend-report
+
+      - name: Upload the report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: actions-spend-report
+          path: actions-spend-report/
+          if-no-files-found: error
+          retention-days: 30

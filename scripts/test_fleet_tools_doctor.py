@@ -575,16 +575,25 @@ class SeatAndMcpTests(unittest.TestCase):
         rel = importlib.util.spec_from_file_location("release", HERE / "fleet-cli-release.py")
         receiver = importlib.util.module_from_spec(rel)
         rel.loader.exec_module(receiver)
-        self.assertEqual(doctor.SHIPPED_EXACT, receiver.EXACT)
-        for path in receiver.EXACT:
-            self.assertTrue(doctor.is_shipped(path), path)
-            self.assertTrue(any(path == p or path.startswith(p) for p in doctor.SHIPPED), path)
-        for path in (
-            "scripts/fleet_rag/eval.py",
-            "scripts/fleet_lanes/tests/test_lane.py",
-            "scripts/fleet_rag/tests/x.py",
-        ):
-            self.assertFalse(doctor.is_shipped(path), path)
+        shipped = receiver.EXACT - receiver.REPO_ONLY
+        self.assertEqual(doctor.SHIPPED_EXACT, shipped)
+        self.assertEqual(doctor.SHIPPED_REPO_ONLY, receiver.REPO_ONLY)
+        doctor._RELEASE_POLICY.clear()
+        doctor._RELEASE_POLICY.append(receiver)
+        try:
+            for path in shipped:
+                self.assertTrue(doctor.is_shipped(path), path)
+                self.assertTrue(any(path == p or path.startswith(p) for p in doctor.SHIPPED), path)
+            for path in receiver.REPO_ONLY:
+                self.assertFalse(doctor.is_shipped(path), path)
+            for path in (
+                "scripts/fleet_rag/eval.py",
+                "scripts/fleet_lanes/tests/test_lane.py",
+                "scripts/fleet_rag/tests/x.py",
+            ):
+                self.assertFalse(doctor.is_shipped(path), path)
+        finally:
+            doctor._RELEASE_POLICY.clear()
 
     def test_the_same_seven_tools_on_both_hosts(self):
         self.assertEqual(
@@ -709,9 +718,40 @@ class ShippedListTests(unittest.TestCase):
         )
         release = importlib.util.module_from_spec(rspec)
         rspec.loader.exec_module(release)
-        self.assertEqual(doctor.SHIPPED_EXACT, release.EXACT)
-        for path in release.EXACT:
-            self.assertTrue(doctor.is_shipped(path), path)
+        shipped = release.EXACT - release.REPO_ONLY
+        self.assertEqual(doctor.SHIPPED_EXACT, shipped)
+        self.assertEqual(doctor.SHIPPED_REPO_ONLY, release.REPO_ONLY)
+        doctor._RELEASE_POLICY.clear()
+        doctor._RELEASE_POLICY.append(release)
+        try:
+            for path in shipped:
+                self.assertTrue(doctor.is_shipped(path), path)
+            for path in release.REPO_ONLY:
+                self.assertFalse(doctor.is_shipped(path), path)
+        finally:
+            doctor._RELEASE_POLICY.clear()
+        # The no-checkout fallback must exclude the same repo-only paths.
+        doctor._RELEASE_POLICY.append(None)
+        try:
+            for path in shipped:
+                self.assertTrue(doctor.is_shipped(path), path)
+            for path in release.REPO_ONLY:
+                self.assertFalse(doctor.is_shipped(path), path)
+        finally:
+            doctor._RELEASE_POLICY.clear()
+
+    def test_the_fallback_repo_only_list_is_the_release_list(self):
+        rspec = importlib.util.spec_from_file_location(
+            "release_for_doctor_repo_only", HERE / "fleet-cli-release.py"
+        )
+        release = importlib.util.module_from_spec(rspec)
+        rspec.loader.exec_module(release)
+        self.assertEqual(doctor.SHIPPED_REPO_ONLY, release.REPO_ONLY)
+        # With no checkout the fallback must agree with the release:  a repo-only module is not drift.
+        with mock.patch.object(doctor, "release_policy", return_value=None):
+            for path in release.REPO_ONLY:
+                self.assertFalse(doctor.is_shipped(path), path)
+            self.assertTrue(doctor.is_shipped("scripts/simple_tools/notes_cli.py"))
 
 
 class McpStartupTests(unittest.TestCase):
@@ -1646,6 +1686,11 @@ class ReportAndRunTests(HomeCase):
             for key in doctor.ROW_FIELDS:
                 self.assertIn(key, row)
         self.assertEqual((doc["schemaVersion"], doc["host"]), (1, "server"))
+        agent = [row for row in doc["checks"] if row["check"] == "agent-config"]
+        self.assertEqual(len(agent), 1)
+        self.assertEqual(agent[0]["status"], "OK")
+        self.assertEqual(agent[0]["category"], "agent-config")
+        self.assertEqual(agent[0]["state"], "current")
         self.assertIsNone(doc["expected"]["rev"])
         self.assertEqual(doc["doctorCommit"], TIP)
         rows = {r["check"]: r for r in doc["checks"]}

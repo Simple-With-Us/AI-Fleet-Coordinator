@@ -55,7 +55,8 @@ _REVIEWED_FIXTURES = frozenset(
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
             "scripts/simple-tools-mcp/test/gr-front.test.mjs",
-            "9de759b53f8cb987b16ade0a9cf99ff69d999659519a620b292f4aa748eee3b9",
+            # Refreshed for the gr_create_repo name-list change (AFC-632).
+            "23856d7de9e04ce7fb133b685516cdc06d6f26b93e69d528de8cc57991b7ddfb",
         ),
         (
             "Simple-With-Us/AI-Fleet-Coordinator",

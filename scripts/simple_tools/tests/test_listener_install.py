@@ -8,16 +8,25 @@ import json
 import os
 import plistlib
 import secrets
+import socket
 import subprocess
 import sys
+import threading
 import unittest
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
+from simple_tools import adapters as A
+from simple_tools import claude_wake as CW
 from simple_tools import config as C
 from simple_tools import live as L
+from simple_tools import wake_router as WR
+from simple_tools import wake_settings as WS
+from simple_tools.tests import test_wake_router as WRT
+from simple_tools.tests.fake_routine import FakeRoutine
 from simple_tools.tests.harness import write_rc
-from simple_tools.tests.listener_harness import ListenerHarness, mode_of, reply_output
+from simple_tools.tests.listener_harness import ListenerHarness, mode_of
 
 REPO = Path(__file__).resolve().parents[3]
 ENTRY = REPO / "scripts" / "simple-chat"
@@ -335,73 +344,550 @@ class InitAndTestWakeTests(ListenerHarness):
             self.assertNotIn(other["user_id"], eligible, other["email"])
         self.assertEqual(sorted(eligible), [10, 11, 13, 14, jet["user_id"]])
 
-    def test_test_wake_prints_the_plan_and_run_pins_the_binary(self) -> None:
-        self.write_config(
-            seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\nclaude = "%s"\n' % self.claude
-        )
-        dry = self.run_cli("daemon", "test-wake", "--seat", "CLAUDE")
-        self.assertEqual(dry.code, 0, dry.err)
-        self.assertIn("--safe-mode", dry.out)
-        self.assertIn(
-            "environment names: AGENT_LAUNCHER, AGENT_LAUNCH_SEAT, AGENT_SEAT, "
-            "CLAUDE_CODE_DISABLE_ADVISOR_TOOL, ENABLE_CLAUDEAI_MCP_SERVERS, HOME",
-            dry.out,
-        )
-        self.assertIn("BEGIN_UNTRUSTED_ZULIP", dry.out)
-        self.assertEqual(self.dumps(), [], "no --run, no claude")
-        self.set_claude(mode="tool", hang=30, output=reply_output())
-        failed = self.run_cli("daemon", "test-wake", "--seat", "CLAUDE", "--run")
-        self.assertEqual(failed.code, 1)
-        self.assertFalse(os.path.exists(self.seat_paths().wake_pin))
-        self.set_claude(mode="ok", output=reply_output())
-        self.assertEqual(
-            self.run_cli("daemon", "test-wake", "--seat", "CLAUDE", "--pin").code,
-            1,
-            "nothing passed yet",
-        )
-        passed = self.run_cli("daemon", "test-wake", "--seat", "CLAUDE", "--run")
-        self.assertEqual(passed.code, 0, passed.out)
-        self.assertIn("PASS, NOT PINNED YET", passed.out)
-        self.assertIn('"init_tools": [\n    "StructuredOutput"\n  ]', passed.out)
-        self.assertIn('"claude_agents_json": "usable (1 rows)"', passed.out)
-        self.assertFalse(os.path.exists(self.seat_paths().wake_pin), "--run never pins on its own")
-        pinned = self.run_cli("daemon", "test-wake", "--seat", "CLAUDE", "--pin")
-        self.assertEqual(pinned.code, 0, pinned.out)
-        pin = L.read_json(self.seat_paths().wake_pin)
-        self.assertEqual(
-            (pin["claude"], pin["agents_ok"], pin["init_tools"]),
-            (os.path.realpath(self.claude), True, ["StructuredOutput"]),
-        )
-        self.assertFalse(os.path.exists(self.seat_paths().wake_pin_candidate))
-        self.assertEqual(self.bot_posts(), [])
 
-    def test_test_wake_pin_refuses_a_binary_that_changed_since_the_run(self) -> None:
-        self.write_config(
-            seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\nclaude = "%s"\n' % self.claude
-        )
-        self.set_claude(mode="ok", output=reply_output(), agents="not a listing")
-        self.assertEqual(self.run_cli("daemon", "test-wake", "--seat", "CLAUDE", "--run").code, 0)
-        candidate = L.read_json(self.seat_paths().wake_pin_candidate)
-        self.assertFalse(
-            candidate["agents_ok"],
-            "an unusable agents --json is recorded, so the daemon never runs it",
-        )
-        L.write_json(
-            self.seat_paths().wake_pin_candidate, dict(candidate, claude="/somewhere/else/claude")
-        )
-        refused = self.run_cli("daemon", "test-wake", "--seat", "CLAUDE", "--pin")
-        self.assertEqual(refused.code, 1)
-        self.assertIn("changed since the test", refused.out)
-        L.write_json(
-            self.seat_paths().wake_pin_candidate, dict(candidate, at=candidate["at"] - 2 * 86400)
-        )
-        self.assertIn(
-            "over a day old", self.run_cli("daemon", "test-wake", "--seat", "CLAUDE", "--pin").out
-        )
-        self.assertFalse(os.path.exists(self.seat_paths().wake_pin))
+class TestWakeTests(ListenerHarness):
+    """`daemon test-wake` sends the seat's router one wake with `"test": true`, built and signed by
+    the daemon's own `http` wake code, and shows the router's dry-run answer.  It sends only when
+    the routine's key variable is the router's bearer, its path is `/wake/<SEAT>` and the host
+    answers `GET /health/<SEAT>` as the router.  It runs no model, writes no ledger row and needs
+    no running daemon."""
 
-    def bot_posts(self):
-        return [m for m in self.fake.messages if m["sender_id"] == 10]
+    KEY_ENV = C.ROUTER_BEARER_ENV
+
+    def setUp(self):
+        super().setUp()
+        self.routine = FakeRoutine()
+        self.routine.start()
+        self.addCleanup(self.routine.stop)
+        self.key = secrets.token_hex(24)
+        self.extra_keys.append(("routine", self.key))
+        self.routine.health["/health/CLAUDE"] = (
+            200,
+            {"seat": "CLAUDE", "delivery": True, "healthy": True},
+        )
+
+    def routine_config(self, seat="CLAUDE", auth="bearer", key_env=KEY_ENV, extra=""):
+        code = seat.replace("-", "_")
+        self.write_config(
+            seats=(
+                '[seat.%s]\nbot = "Claude"\nwake = "http"\nroutine = { url_env = "%s_ROUTINE_URL", '
+                'key_env = "%s", auth = "%s"%s }\n' % (seat, code, key_env, auth, extra)
+            )
+        )
+
+    def routine_env(self, path="/wake/CLAUDE", **over):
+        env = {"CLAUDE_ROUTINE_URL": self.routine.url + path, self.KEY_ENV: self.key}
+        env.update(over)
+        return self.env(**env)
+
+    @staticmethod
+    def dry_run_answer(**over):
+        """What wake_router.Router.test_answer returns for the request it answers (no `ok`)."""
+
+        def answer(received):
+            body = received.json()
+            found = {
+                "test": True,
+                "status": "test",
+                "wake_id": body["wake_id"],
+                "receipt_id": "0123456789abcdef",
+                "seat": body["seat"],
+                "letter": body.get("letter", ""),
+                "letter_live": bool(body.get("letter")),
+                "picked": "letter" if body.get("letter") else "recency",
+                "picked_letter": body.get("letter") or "AA",
+                "picked_generation": 1,
+                "session_id": "aaaaaaaa-0000-4000-8000-000000000001",
+                "reason": "letter" if body.get("letter") else "recency",
+                "candidates": ["aaaaaaaa-0000-4000-8000-000000000001"],
+                "link_note": "the router picked this chat",
+                "delivered": False,
+            }
+            found.update(over)
+            return 200, found
+
+        return answer
+
+    def test_the_body_is_a_real_wake_body_with_test_true(self) -> None:
+        self.routine_config()
+        self.routine.script.append(self.dry_run_answer())
+        result = self.run_cli(
+            "daemon", "test-wake", "--seat", "CLAUDE", "--letter", "bb", env=self.routine_env()
+        )
+        self.assertEqual(result.code, 0, result.out + result.err)
+        (seen,) = self.routine.received
+        self.assertEqual((seen.method, seen.path), ("POST", "/wake/CLAUDE"))
+        body = seen.json()
+        self.assertIs(body["test"], True)
+        self.assertEqual(body["letter"], "BB")
+        real = A.routine_body(
+            seat="CLAUDE",
+            wake_id=body["wake_id"],
+            trigger_ids=[0],
+            row={"id": 0, "type": "stream", "channel": "sandbox", "topic": "t"},
+            bot_user_id=None,
+            realm="https://zulip.example",
+            now=0,
+        )
+        self.assertEqual(set(body) - {"test", "letter"}, set(real), "a real wake's fields")
+        self.assertEqual(body["contract"], A.ROUTINE_CONTRACT)
+        self.assertEqual((body["seat"], body["channel"]), ("CLAUDE", "sandbox"))
+        self.assertEqual(body["topic"], "AFC listener test-wake")
+        self.assertEqual(seen.body, A.routine_bytes(body), "serialized as the daemon does")
+        self.assertEqual(seen.header("Idempotency-Key"), body["wake_id"])
+        self.assertIn("PASS: the router answered the dry run", result.out)
+        self.assertIn('picked_letter: "BB"', result.out)
+        self.assertIn("CLAUDE_ROUTINE_URL", result.out)
+        self.assertIn("delivery:  on\n", result.out)
+        self.assertNotIn(self.routine.url, result.out, "the URL is named by its variable")
+        # The health read went first, to the router's health path, with no key.
+        (probe,) = self.routine.health_requests
+        self.assertEqual(probe.path, "/health/CLAUDE")
+        self.assertIsNone(probe.header("Authorization"))
+
+    def test_the_router_bearer_is_sent_as_the_daemon_sends_it(self) -> None:
+        self.routine_config()
+        self.routine.script.append(self.dry_run_answer())
+        result = self.run_cli("daemon", "test-wake", "--seat", "CLAUDE", env=self.routine_env())
+        self.assertEqual(result.code, 0, result.out + result.err)
+        (seen,) = self.routine.received
+        target = A.RoutineTarget(
+            self.routine.url + "/wake/CLAUDE", self.key, C.load(self.root).seats["CLAUDE"].routine
+        )
+        self.assertEqual(seen.header("Authorization"), target.header_value(seen.body))
+        self.assertEqual(seen.header("Authorization"), "Bearer " + self.key)
+        # The fake echoes every auth header back;  none of it is shown.
+        for text in (result.out, result.err):
+            self.assertNotIn(self.key, text)
+
+    def test_the_router_bearer_in_another_auth_mode_is_never_sent(self) -> None:
+        # config keeps the router's bearer to `auth = "bearer"` and drops a seat that names it in
+        # another role, so the seat is not loaded at all.
+        for auth in ("hmac-sha256", "header"):
+            with self.subTest(auth=auth):
+                self.routine_config(auth=auth)
+                result = self.run_cli(
+                    "daemon", "test-wake", "--seat", "CLAUDE", env=self.routine_env()
+                )
+                self.assertEqual(result.code, 2, result.out + result.err)
+                self.assertIn("seat CLAUDE is not a loaded seat", result.err)
+        # The command's own check stands behind config's:  a routine that reaches it in another
+        # auth mode is refused before anything is sent.
+        self.routine_config()
+        cfg = C.load(self.root)
+        cfg.seats["CLAUDE"].routine.auth = "hmac-sha256"
+        with patch("simple_tools.listener_cli._load", return_value=cfg):
+            result = self.run_cli(
+                "daemon", "test-wake", "--seat", "CLAUDE", "--json", env=self.routine_env()
+            )
+        self.assertEqual(result.code, 1, result.out + result.err)
+        self.assertEqual(json.loads(result.out)["error"], "not_the_router")
+        with patch("simple_tools.listener_cli._load", return_value=cfg):
+            text = self.run_cli("daemon", "test-wake", "--seat", "CLAUDE", env=self.routine_env())
+        self.assertIn(
+            'names WAKE_ROUTER_KEY with auth = "hmac-sha256";  the wake router takes it only as '
+            'auth = "bearer", so nothing was sent',
+            text.out,
+        )
+        self.assertEqual((self.routine.received, self.routine.health_requests), ([], []))
+
+    def test_json_output_holds_the_request_and_the_answer_and_no_secret(self) -> None:
+        self.routine_config()
+        self.routine.script.append(self.dry_run_answer())
+        result = self.run_cli(
+            "daemon", "test-wake", "--seat", "CLAUDE", "--json", "--topic", "AFC-1 check",
+            env=self.routine_env(),
+        )
+        self.assertEqual(result.code, 0, result.out + result.err)
+        report = json.loads(result.out)
+        self.assertTrue(report["passed"])
+        self.assertTrue(report["dry_run"])
+        self.assertTrue(report["picked"])
+        self.assertEqual(
+            report["router_health"], {"healthy": True, "delivery": True, "reason": None}
+        )
+        self.assertEqual(report["http_status"], 200)
+        self.assertEqual(report["request"]["topic"], "AFC-1 check")
+        self.assertIs(report["request"]["test"], True)
+        self.assertEqual(report["answer"]["picked"], "recency")
+        self.assertNotIn("echo", report["answer"], "only the router's dry-run fields are kept")
+        self.assertEqual(
+            report["routine"],
+            {
+                "url_env": "CLAUDE_ROUTINE_URL",
+                "key_env": self.KEY_ENV,
+                "auth": "bearer",
+                "method": "POST",
+                "host": "127.0.0.1",
+            },
+        )
+        self.assertNotIn(self.key, result.out)
+
+    def test_delivery_off_is_shown_and_does_not_change_the_result(self) -> None:
+        self.routine_config()
+        self.routine.health["/health/CLAUDE"] = (
+            200,
+            {"seat": "CLAUDE", "delivery": False, "healthy": True},
+        )
+        self.routine.script.append(self.dry_run_answer())
+        result = self.run_cli("daemon", "test-wake", "--seat", "CLAUDE", env=self.routine_env())
+        self.assertEqual(result.code, 0, result.out + result.err)
+        self.assertIn("delivery:  off, a real wake would be held", result.out)
+
+    def test_a_secret_nested_in_a_kept_list_is_never_shown(self) -> None:
+        self.routine_config()
+        for flags in ((), ("--json",)):
+            with self.subTest(flags=flags):
+                self.routine.script.append(
+                    self.dry_run_answer(
+                        link_note="note " + self.key,
+                        candidates=["AA", "Bearer " + self.key, {"auth": "Bearer " + self.key},
+                                    ["Bearer " + self.key]],
+                    )
+                )
+                result = self.run_cli(
+                    "daemon", "test-wake", "--seat", "CLAUDE", *flags, env=self.routine_env()
+                )
+                self.assertEqual(result.code, 0, result.out + result.err)
+                self.assertNotIn(self.key, result.out + result.err)
+                self.assertIn("[redacted]", result.out)
+                self.assertIn('"AA"', result.out)
+
+    def test_a_refusal_or_an_answer_that_is_not_a_dry_run_exits_1(self) -> None:
+        self.routine_config()
+        for label, action in (
+            ("401", (401, {"error": "bad bearer"})),
+            ("503", 503),
+            ("a real wake's 202", (202, {"status": "accepted"})),
+            ("delivered", self.dry_run_answer(delivered=True)),
+            ("another wake", self.dry_run_answer(wake_id="w-other")),
+            ("not a test", self.dry_run_answer(test=False)),
+            ("no answer", "drop"),
+        ):
+            with self.subTest(label):
+                self.routine.received.clear()
+                self.routine.script.append(action)
+                result = self.run_cli(
+                    "daemon", "test-wake", "--seat", "CLAUDE", env=self.routine_env()
+                )
+                self.assertEqual(result.code, 1, label)
+                self.assertIn("FAIL", result.out, label)
+                self.assertEqual(len(self.routine.received), 1, "sent once, never retried")
+
+    def test_a_dry_run_that_picked_nothing_exits_1(self) -> None:
+        self.routine_config()
+        self.routine.script.append(
+            self.dry_run_answer(
+                picked="", picked_letter="", session_id="", reason="registry-not-configured"
+            )
+        )
+        result = self.run_cli(
+            "daemon", "test-wake", "--seat", "CLAUDE", "--json", env=self.routine_env()
+        )
+        self.assertEqual(result.code, 1, result.out + result.err)
+        report = json.loads(result.out)
+        self.assertEqual(
+            (report["dry_run"], report["picked"], report["passed"]), (True, False, False)
+        )
+        self.routine.script.append(
+            self.dry_run_answer(
+                picked="", picked_letter="", session_id="", reason="no-live-session"
+            )
+        )
+        text = self.run_cli("daemon", "test-wake", "--seat", "CLAUDE", env=self.routine_env())
+        self.assertEqual(text.code, 1)
+        self.assertIn("picked no chat (reason no-live-session)", text.out)
+        self.assertNotIn("would be delivered", text.out)
+
+    def test_another_letter_than_the_one_addressed_exits_1(self) -> None:
+        self.routine_config()
+        self.routine.script.append(
+            self.dry_run_answer(picked="recency", picked_letter="AA", letter_live=False)
+        )
+        result = self.run_cli(
+            "daemon", "test-wake", "--seat", "CLAUDE", "--letter", "ZZ", env=self.routine_env()
+        )
+        self.assertEqual(result.code, 1, result.out + result.err)
+        self.assertIn("FAIL: the router picked letter AA, not the addressed ZZ (letter_live false)",
+                      result.out)
+        self.routine.script.append(
+            self.dry_run_answer(picked="recency", picked_letter="AA", letter_live=False)
+        )
+        report = json.loads(
+            self.run_cli(
+                "daemon", "test-wake", "--seat", "CLAUDE", "--letter", "ZZ", "--json",
+                env=self.routine_env(),
+            ).out
+        )
+        self.assertEqual(
+            (report["dry_run"], report["picked"], report["addressed"], report["passed"]),
+            (True, True, False, False),
+        )
+
+    def test_a_malformed_letter_is_a_usage_error_and_sends_nothing(self) -> None:
+        self.routine_config()
+        result = self.run_cli(
+            "daemon", "test-wake", "--seat", "CLAUDE", "--letter", "ABC", env=self.routine_env()
+        )
+        self.assertEqual(result.code, 2)
+        self.assertIn("--letter must be one or two letters", result.err)
+        self.assertEqual((self.routine.received, self.routine.health_requests), ([], []))
+
+    def test_an_inbox_seat_and_an_unknown_seat_are_usage_errors(self) -> None:
+        self.write_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "inbox"\n')
+        inbox = self.run_cli("daemon", "test-wake", "--seat", "CLAUDE", env=self.routine_env())
+        self.assertEqual(inbox.code, 2)
+        self.assertIn("seat CLAUDE has no routine", inbox.err)
+        self.assertIn("so it has no router to test", inbox.err)
+        unknown = self.run_cli("daemon", "test-wake", "--seat", "CODEX", env=self.routine_env())
+        self.assertEqual(unknown.code, 2)
+        self.assertIn("seat CODEX is not a loaded seat", unknown.err)
+        self.assertEqual(self.routine.received, [])
+
+    def test_a_missing_variable_fails_by_name_and_sends_nothing(self) -> None:
+        self.routine_config()
+        for name in ("CLAUDE_ROUTINE_URL", self.KEY_ENV):
+            with self.subTest(name):
+                result = self.run_cli(
+                    "daemon", "test-wake", "--seat", "CLAUDE", env=self.routine_env(**{name: None})
+                )
+                self.assertEqual(result.code, 1)
+                self.assertIn("not set: %s" % name, result.out)
+                self.assertIn("run it through the entrypoint", result.out)
+                self.assertNotIn("Traceback", result.out + result.err)
+        self.assertEqual((self.routine.received, self.routine.health_requests), ([], []))
+
+    def test_a_routine_that_is_not_the_router_is_never_sent_a_test(self) -> None:
+        self.routine_config()
+        for path in ("/internal/wake/CLAUDE", "/wake/CODEX", "/hook/abcdefgh12345678"):
+            with self.subTest(path):
+                result = self.run_cli(
+                    "daemon", "test-wake", "--seat", "CLAUDE", env=self.routine_env(path)
+                )
+                self.assertEqual(result.code, 1)
+                self.assertIn("is not the wake router's /wake/<SEAT> path", result.out)
+                self.assertNotIn(path, result.out, "a routine path may hold a token")
+        self.assertEqual(self.routine.received, [])
+
+    def test_a_bridge_with_its_own_key_variable_is_never_sent_a_test(self) -> None:
+        # The ZCode bridge serves /wake/ZC with the same contract, never reads `test` and would
+        # really wake;  its routine names its own key variable.
+        self.routine_config(key_env="CLAUDE_ROUTINE_KEY")
+        self.routine.script.append((202, {"delivered": None}))
+        result = self.run_cli(
+            "daemon", "test-wake", "--seat", "CLAUDE", "--json",
+            env=self.routine_env(CLAUDE_ROUTINE_KEY=self.key),
+        )
+        self.assertEqual(result.code, 1)
+        self.assertEqual(json.loads(result.out)["error"], "not_the_router")
+        self.assertEqual((self.routine.received, self.routine.health_requests), ([], []))
+        plain = self.run_cli(
+            "daemon", "test-wake", "--seat", "CLAUDE",
+            env=self.routine_env(CLAUDE_ROUTINE_KEY=self.key),
+        )
+        self.assertIn("key variable is CLAUDE_ROUTINE_KEY, not the wake router's WAKE_ROUTER_KEY",
+                      plain.out)
+        self.assertEqual(self.routine.received, [])
+
+    def test_a_host_that_does_not_answer_health_as_the_router_is_never_sent_a_test(self) -> None:
+        self.routine_config()
+        for label, health in (
+            ("404, as the bridges answer", None),
+            ("another seat", (200, {"seat": "CODEX", "healthy": True})),
+            ("no healthy boolean", (200, {"seat": "CLAUDE", "healthy": "yes"})),
+            ("not an object", (200, ["CLAUDE"])),
+        ):
+            with self.subTest(label):
+                if health is None:
+                    self.routine.health.clear()
+                else:
+                    self.routine.health["/health/CLAUDE"] = health
+                result = self.run_cli(
+                    "daemon", "test-wake", "--seat", "CLAUDE", "--json", env=self.routine_env()
+                )
+                self.assertEqual(result.code, 1, label)
+                self.assertEqual(json.loads(result.out)["error"], "not_the_router", label)
+                self.assertEqual(self.routine.received, [], label)
+
+    def test_the_key_variable_is_the_routers_one_bearer_knob(self) -> None:
+        self.assertEqual(C.ROUTER_BEARER_ENV, WS.KEY_KNOB)
+        self.assertEqual(self.KEY_ENV, WS.KEY_KNOB)
+
+    def test_an_unhealthy_router_is_still_the_router_and_is_sent_the_dry_run(self) -> None:
+        self.routine_config()
+        cases = (
+            (
+                "registry not configured",
+                {"seat": "CLAUDE", "delivery": True, "healthy": False,
+                 "reason": "registry-not-configured"},
+                self.dry_run_answer(
+                    picked="", picked_letter="", session_id="", reason="registry-not-configured"
+                ),
+                (True, False),
+            ),
+            (
+                "no routine key",
+                {"seat": "CLAUDE", "delivery": True, "healthy": False,
+                 "reason": "routine-key-unavailable:x"},
+                self.dry_run_answer(),
+                (True, True),
+            ),
+        )
+        for label, health, answer, (dry_run, picked) in cases:
+            with self.subTest(label):
+                self.routine.received.clear()
+                self.routine.health["/health/CLAUDE"] = (503, health)
+                self.routine.script.append(answer)
+                result = self.run_cli(
+                    "daemon", "test-wake", "--seat", "CLAUDE", "--json", env=self.routine_env()
+                )
+                report = json.loads(result.out)
+                self.assertEqual(
+                    report["router_health"],
+                    {"healthy": False, "delivery": True, "reason": health["reason"]},
+                )
+                self.assertEqual((report["dry_run"], report["picked"]), (dry_run, picked))
+                self.assertEqual(result.code, 0 if picked else 1, result.out)
+                self.assertEqual(len(self.routine.received), 1, "the router was sent the dry run")
+        self.routine.script.append(self.dry_run_answer())
+        text = self.run_cli("daemon", "test-wake", "--seat", "CLAUDE", env=self.routine_env())
+        self.assertIn("router health:  healthy no;  delivery:  on\n", text.out)
+
+    def test_a_redirect_on_the_health_read_is_refused_and_nothing_is_sent(self) -> None:
+        second = FakeRoutine()
+        second.start()
+        self.addCleanup(second.stop)
+        second.health["/health/CLAUDE"] = (200, {"seat": "CLAUDE", "delivery": True, "healthy": True})
+        self.routine.health["/health/CLAUDE"] = ("redirect", second.url + "/health/CLAUDE")
+        self.routine_config()
+        result = self.run_cli(
+            "daemon", "test-wake", "--seat", "CLAUDE", "--json", env=self.routine_env()
+        )
+        self.assertEqual(result.code, 1, result.out + result.err)
+        self.assertEqual(json.loads(result.out)["error"], "not_the_router")
+        self.assertEqual(len(self.routine.health_requests), 1)
+        self.assertEqual(
+            (self.routine.received, second.received, second.health_requests), ([], [], [])
+        )
+
+    def test_a_router_that_does_not_answer_is_unreachable_and_nothing_is_sent(self) -> None:
+        self.routine_config()
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        result = self.run_cli(
+            "daemon", "test-wake", "--seat", "CLAUDE", "--json",
+            env=self.routine_env(CLAUDE_ROUTINE_URL="http://127.0.0.1:%d/wake/CLAUDE" % port),
+        )
+        self.assertEqual(result.code, 1, result.out + result.err)
+        self.assertEqual(json.loads(result.out)["error"], "router_unreachable")
+        self.assertNotIn("internal error", result.err)
+        text = self.run_cli(
+            "daemon", "test-wake", "--seat", "CLAUDE",
+            env=self.routine_env(CLAUDE_ROUTINE_URL="http://127.0.0.1:%d/wake/CLAUDE" % port),
+        )
+        self.assertIn("got no answer (the router may be down), so nothing was sent", text.out)
+        self.assertEqual((self.routine.received, self.routine.health_requests), ([], []))
+
+    def test_nothing_is_written_to_the_wake_ledger(self) -> None:
+        self.routine_config()
+        self.routine.script.append(self.dry_run_answer())
+        before = sorted(str(p) for p in self.state_dir.rglob("*"))
+        result = self.run_cli("daemon", "test-wake", "--seat", "CLAUDE", env=self.routine_env())
+        self.assertEqual(result.code, 0, result.out + result.err)
+        self.assertFalse(os.path.exists(self.seat_paths().wakes))
+        self.assertEqual(sorted(str(p) for p in self.state_dir.rglob("*")), before)
+
+    def test_the_real_router_answers_the_dry_run_and_delivers_nothing(self) -> None:
+        registry = WRT.FakeRegistry([WRT.row(WRT.SID_A, "AA", "Only chat")])
+        patcher = patch.object(WR.registry_api, "call", registry)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        delivered = []
+        platform = WR.Platform(
+            seat="CLAUDE",
+            platform="claude",
+            mention="Claude",
+            target_re=CW.SESSION_RE,
+            deliver=lambda target, wake: delivered.append(wake) or WR.Delivery("completed", "x"),
+        )
+        state = self.tmp / "router-state"
+        router = WR.Router(
+            platform,
+            {
+                "HOME": str(self.tmp),
+                WR.registry_api.URL_ENV: WRT.REGISTRY_URL,
+                WR.registry_api.KEY_VAR: "registry-" + "0" * 16,
+            },
+            {**WR.ROUTER_DEFAULTS, "delivery_enabled": True},
+            state,
+            lambda: (self.key, ""),
+        )
+        seats = WR.Seats([router], not_installed=["ZC"])
+        server = ThreadingHTTPServer(("127.0.0.1", 0), WR.make_handler(seats))
+        server.daemon_threads = True
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.routine_config()
+        port = server.server_address[1]
+        env = self.env(
+            CLAUDE_ROUTINE_URL="http://127.0.0.1:%d/wake/CLAUDE" % port,
+            WAKE_ROUTER_KEY=self.key,
+        )
+        # The real router's own /health/<SEAT> route is what the command's health read accepts.
+        result = self.run_cli(
+            "daemon", "test-wake", "--seat", "CLAUDE", "--letter", "AA", "--json", env=env
+        )
+        self.assertEqual(result.code, 0, result.out + result.err)
+        report = json.loads(result.out)
+        self.assertEqual(
+            report["router_health"], {"healthy": True, "delivery": True, "reason": None}
+        )
+        answer = report["answer"]
+        self.assertEqual(
+            (answer["test"], answer["status"], answer["picked_letter"], answer["session_id"]),
+            (True, "test", "AA", WRT.SID_A),
+        )
+        self.assertIs(answer["delivered"], False)
+        self.assertFalse(router.run_once(), "nothing was queued to deliver")
+        self.assertEqual(delivered, [])
+        pending = state / "pending"
+        self.assertEqual(list(pending.glob("*")) if pending.exists() else [], [], "no id reserved")
+        self.assertNotIn(self.key, result.out)
+        # A registered seat that is not installed answers 503 on its health path and is still the
+        # router:  the dry run is sent and refused with 503, and nothing is queued.
+        self.write_config(
+            seats='[seat.ZC]\nbot = "Claude"\nwake = "http"\nroutine = { url_env = '
+            '"ZC_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY" }\n'
+        )
+        other = self.run_cli(
+            "daemon", "test-wake", "--seat", "ZC", "--json",
+            env=self.env(
+                ZC_ROUTINE_URL="http://127.0.0.1:%d/wake/ZC" % port, WAKE_ROUTER_KEY=self.key
+            ),
+        )
+        self.assertEqual(other.code, 1, other.out + other.err)
+        report = json.loads(other.out)
+        self.assertEqual(
+            report["router_health"], {"healthy": False, "delivery": None, "reason": "not-installed"}
+        )
+        self.assertEqual((report["http_status"], report["error"]), (503, "HTTP 503"))
+        self.assertFalse(router.run_once(), "nothing was queued to deliver")
+        # A seat nobody registered answers 404 on its health path:  nothing is sent.
+        self.write_config(
+            seats='[seat.CODEX]\nbot = "Claude"\nwake = "http"\nroutine = { url_env = '
+            '"CODEX_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY" }\n'
+        )
+        unknown = self.run_cli(
+            "daemon", "test-wake", "--seat", "CODEX", "--json",
+            env=self.env(
+                CODEX_ROUTINE_URL="http://127.0.0.1:%d/wake/CODEX" % port, WAKE_ROUTER_KEY=self.key
+            ),
+        )
+        self.assertEqual(unknown.code, 1, unknown.out + unknown.err)
+        self.assertEqual(json.loads(unknown.out)["error"], "not_the_router")
+        self.assertNotIn("http_status", json.loads(unknown.out), "nothing was sent")
 
 
 class LocalReadTests(ListenerHarness):

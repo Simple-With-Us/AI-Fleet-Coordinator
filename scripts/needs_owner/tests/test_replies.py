@@ -25,8 +25,16 @@ class RepliesCase(NotifierCase):
         self.w.react(record["notified_msg_id"], user, kw.pop("code", KEYCAP[option]), **kw)
 
     def replied(self, ident: str) -> list[str]:
-        """The reply records the notifier wrote (CLAUDE's comments), not anything a test or a person typed."""
-        return [c for c in self.w.comments(ident) if c.startswith("[CLAUDE") and "owner replied:" in c]
+        """The reply records the notifier wrote (CLAUDE's Linear app, or a legacy [CLAUDE] tag)."""
+        out = []
+        for row in self.w.issue(ident)["comments"]:
+            body = row.get("body") or ""
+            if "owner replied:" not in body:
+                continue
+            user = row.get("user") or {}
+            if body.lstrip().startswith("[CLAUDE") or (user.get("app") and user.get("name") in ("Claude", "CLAUDE")):
+                out.append(body)
+        return out
 
     def notes(self) -> list[dict]:
         return [c for c in self.sent_by_notifier() if "--to" in c["argv"]]
@@ -41,7 +49,8 @@ class TapTests(RepliesCase):
         self.assertEqual((replied["id"], replied["kind"], replied["option"], replied["ref"]),
                          (record["identifier"], "reaction", 1, record["notified_msg_id"]))
         (comment,) = self.replied(record["identifier"])
-        self.assertIn("[CLAUDE", comment)
+        self.assertIn("owner replied:", comment)
+        self.assertFalse(comment.lstrip().startswith("["), comment)
         self.assertIn("owner replied:  reaction 1 on msg %d" % record["notified_msg_id"], comment)
         self.assertNotIn("Revive", comment, "the record never holds the answer's words")
         # the filer is woken by one directed note in the item's own topic

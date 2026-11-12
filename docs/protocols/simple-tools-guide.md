@@ -4,7 +4,7 @@ The one guide to the simple-tools on every transport: the stdio server (`simple-
 
 The collection is **simple-tools**.  The hosted server is **ST-MCP** and its admin is **ST-MCP + GR-MCP Admin**.  Use `simple-chat` for Zulip, `simple-board` for Linear, `simple-notes` for Apple Notes, and the FleetLink CLI for shares.  Fleet coordination is in **#Work-In-Progress**.  Use these component names in instructions and tool descriptions.
 
-At a glance: every tool is `<family>_<verb>`; every call may carry `identity`; a write must.  The stdio server serves 274 tools and the hosted server 281 (counted from the release source, which adds the seven `gr_*` tools and the hosted-only `catalog`; the deployed server lists 272 until that release ships): `eavesdropper_ack` is stdio only, and the hosted-only `whatsapp_read` is listed only to JET-CHAT, the full Jet login, while the WhatsApp bridge is on (it is default-off), which makes JET-CHAT's hosted list 282 (Tools by Family).
+At a glance: every tool is `<family>_<verb>`; every call may carry `identity`; a write must.  The stdio server serves 274 tools and the hosted server 282 (counted from the release source, which adds the seven `gr_*` tools and the hosted-only `catalog` and `worker_diagnostics`; the deployed server lists 272 until that release ships): `eavesdropper_ack` is stdio only, and the hosted-only `whatsapp_read` is listed only to JET-CHAT, the full Jet login, while the WhatsApp bridge is on (it is default-off), which makes JET-CHAT's hosted list 283 (Tools by Family).
 
 ## How to Pass Identity
 
@@ -58,6 +58,7 @@ Name = `<family>_<verb>`.  R = read, W = write (writes need `identity`).  Wher
 | (none) `whoami`, `identities`, `guide`, `catalog` | 3 stdio, 4 hosted | both | Identity, this guide and the paged tool catalog (above; `catalog` is hosted only) |
 | `zulip_*` | 42 | both | Read and post on the fleet's Zulip as a bot |
 | `eavesdropper_*` | 7 stdio, 6 hosted | both | This seat's eavesdropper records |
+| `worker_diagnostics` | 1 | hosted | The Worker's wake and runtime diagnostics (read-only; the eavesdropper section) |
 | `notes_*` | 8 | both | Apple Notes in the owner's Coding folder |
 | `recall_*` | 3 | both | The fleet's shared knowledge corpus |
 | `linear_*` | 196 | both | The Linear board as the identity's own app |
@@ -127,6 +128,7 @@ The local eavesdropper's records for the identity.  Stdio reads them from this 
 | `eavesdropper_wakes` | R | both | The wake ledger, filtered by `since_hours` and `state` |
 | `eavesdropper_held_back` | R | both | Wakes held back for the budget, with reason and link |
 | `eavesdropper_ack` | W | stdio only | Move the inbox cursor or surfaced mark forward, or clear one held-back entry |
+| `worker_diagnostics` | R | hosted only | The Worker's own wake and runtime diagnostics (reason, seat, count, status, time; no keys or bodies), newest first: `wake` rows, filtered by `seat` and `limit` (default 50, max 100), plus the newest `recent` rows of every kind; the same rows the owner's admin page shows, so a seat can see why a wake route answered 404.  Hosted only:  no CLI command or stdio tool serves it (CLI Equivalents) |
 
 ### notes
 
@@ -215,7 +217,7 @@ GitHub work is not a simple-tools family.  It has its own relay and its own MCP
 
 **git-relay** is the relay: a CLI (`git-relay serve`) and a small service in front of the GitHub API.  It knows each seat from its bearer token and picks the credential BY TASK.  **GR-MCP** is the MCP wrapper for it (`git-relay mcp`): a stdio server that advertises itself as `GR-MCP`, holds only the seat's own bearer token, and forwards every call over HTTP, so policy, caps and the audit log stay server-side.
 
-A seat reaches these tools with its own bearer token.  ST-MCP shares the same bearer-token arrangement: a Grok Bot's bearer is also accepted on ST-MCP's `/mcp`, and another seat's bearer is accepted there only when it was minted with that acceptance ticked in ST-MCP + GR-MCP Admin; otherwise it is GR-MCP only.  The hosted server fronts the seven actions below as write-only tools named `gr_open_pr`, `gr_edit_pr`, `gr_reply_thread`, `gr_comment_pr`, `gr_merge_pr`, `gr_workflow_dispatch` and `gr_resolve_thread`.  The Worker adds no policy of its own: it passes the caller's bearer to the relay unchanged and the relay enforces the seat's allowlist.  The front is live:  the hosted catalog carries the seven names and the full `gr_wf_*` workflow set (456 tools in total, verified live 2026-11-07), and a call reaches the relay unless the relay itself refuses it.  GR-MCP over stdio (`git-relay mcp`) uses the plain names in the table, and also exposes the relay's workflow verbs under their relay names (`wf_*`) — every verb in the relay's SPECS, with no hosted-only remainder (owner ruling 2026-11-08: "Nothing should stay hosted-only by design, or else what is point of the relay?").  The five verbs whose bodies can exceed the stdio line cap (`wf_file_put`, `wf_files_put`, `wf_git_blob_create`, `wf_git_tree_create`, `wf_release_asset_upload_binary`) are carried by GR-MCP's chunked staging transport: the caller splits the JSON-encoded arguments into `stage_chunk` messages (each under the line cap; `stage_messages` in `git_relay/mcp_server.py` builds them), GR-MCP reassembles them in memory, and the final chunk forwards the whole call to the relay, where shape checks, seat policy, rate caps and the audit log apply exactly as for any other call.  `stage_abort` drops an unfinished stage without forwarding anything.
+A seat reaches these tools with its own bearer token.  ST-MCP shares the same bearer-token arrangement: a Grok Bot's bearer is also accepted on ST-MCP's `/mcp`, and another seat's bearer is accepted there only when it was minted with that acceptance ticked in ST-MCP + GR-MCP Admin; otherwise it is GR-MCP only.  The hosted server fronts these actions as write-only tools named `gr_open_pr`, `gr_edit_pr`, `gr_reply_thread`, `gr_comment_pr`, `gr_merge_pr`, `gr_workflow_dispatch`, `gr_resolve_thread` and `gr_create_repo`.  The Worker adds no policy of its own: it passes the caller's bearer to the relay unchanged and the relay enforces the seat's allowlist.  The front is live:  the hosted catalog carried the seven names and the full `gr_wf_*` workflow set (456 tools in total, verified live 2026-11-07).  `gr_create_repo` joins that front in this tree and is listed live only after the relay and the Worker are deployed.  A call reaches the relay unless the relay itself refuses it.  GR-MCP over stdio (`git-relay mcp`) uses the plain names in the table, and also exposes the relay's workflow verbs under their relay names (`wf_*`) — every verb in the relay's SPECS, with no hosted-only remainder (owner ruling 2026-11-08: "Nothing should stay hosted-only by design, or else what is point of the relay?").  The five verbs whose bodies can exceed the stdio line cap (`wf_file_put`, `wf_files_put`, `wf_git_blob_create`, `wf_git_tree_create`, `wf_release_asset_upload_binary`) are carried by GR-MCP's chunked staging transport: the caller splits the JSON-encoded arguments into `stage_chunk` messages (each under the line cap; `stage_messages` in `git_relay/mcp_server.py` builds them), GR-MCP reassembles them in memory, and the final chunk forwards the whole call to the relay, where shape checks, seat policy, rate caps and the audit log apply exactly as for any other call.  `stage_abort` drops an unfinished stage without forwarding anything.
 
 | Tool | Credential | Purpose |
 |---|---|---|
@@ -226,6 +228,9 @@ A seat reaches these tools with its own bearer token.  ST-MCP shares the same b
 | `merge_pr` | the seat's own GitHub App | Merge (squash, merge or rebase) |
 | `workflow_dispatch` | the seat's own GitHub App | Dispatch a workflow run |
 | `resolve_thread` | the seat's own GitHub App | Resolve a review thread |
+| `create_repo` | the seat's own GitHub App | Create a repository (private unless granted public) |
+
+`create_repo` (`gr_create_repo` on the hosted front, `create_repo` on GR-MCP) creates one repository under `Simple-With-Us` or `jaywedgeworth22`.  It is denied unless that seat's policy grants `create_repo`.  Visibility is private unless the request says public and the seat's `create_repo_public` flag is true.  An existing repository answers `already_exists`; the relay does not create it again and does not follow a redirect.  `onboard-new-app.sh` calls it through `simple-git` when `SIMPLE_TOOLS_BEARER` is set, and uses `gh` only when that bearer is unset.  A configured relay that fails does not fall back to `gh`.
 
 PR-write authoring runs under the owner's scoped PR-only token on purpose: a pull request is authored as the owner, so the review bots read it the way they expect.  Everything else runs under the seat's own GitHub App token, which the relay mints and refreshes itself.  git-relay is the only path in the fleet that mints per-bot GitHub App tokens, so the GR-MCP tool surface never hands a seat an App id, a private key or a token with an expiry to manage.  What a minted token can do is the seat's own policy: the mint is capped at that seat's allowed repos and at its mint-permission ceiling (`contents`, `pull_requests`, `issues`, `actions` or `metadata`, each read or write as the policy says), so a seat pushes only where its own policy gives that ceiling `contents: write`.
 
@@ -246,6 +251,37 @@ Per-seat policy is an allowlist layer over that credential: allowed actions, all
 **One exact path on the default branch.**  `wf_file_put` and `wf_file_delete` may write the default branch when that seat's `default_branch_paths` names the exact repository and the exact path.  The relay prefixes the commit message with `default-branch-path: `.  It reads the blob first and refuses unless `prior_sha` matches.  Leave `prior_sha` out only to create a file that is not there.  A mismatch is `fence_mismatch` (`default-branch blob sha does not match`).  Any other path, seat or verb is still `bad_request_default_branch_protected`, including `wf_files_put`.
 
 A relay refusal arrives as a tool error carrying the relay's own HTTP status, never as one of the codes below: 401 unauthenticated, 403 policy denial, 400 a bad request or a terminal GitHub refusal, 409 a replay refused, 429 a GitHub rate limit (retryable), 502 an unknown outcome (not retryable — check GitHub before retrying) and 503 app-token minting unavailable.
+
+### gh Command To Relay Verb, And Paging
+
+Use the relay verb in the right column, never `gh`.  `gh` is the logged fallback only, for an operation no verb covers.  Hosted names are the `gr_*` and `gr_wf_*` tools; GR-MCP uses the same names without the `gr_` prefix, so `gr_wf_checks` is `wf_checks` there.
+
+| gh command (retired) | Relay verb |
+|---|---|
+| `gh pr view N --json commits,updatedAt` | `gr_wf_pr_get`; the commits page is `gr_wf_pr_commits_page`, which needs `expected_head_sha` |
+| `gh api graphql` reviewThreads | `gr_wf_review_threads`, with `number` and an optional `cursor` |
+| `gh api` call that replies to a review thread | `gr_reply_thread`, or `gr_wf_review_comment_reply` for a single review comment |
+| `gh api` call that resolves a review thread | `gr_resolve_thread`, or `gr_wf_review_thread_resolve` |
+| `gh api -X PUT repos/O/R/pulls/N/reviews/ID/dismissals` | `gr_wf_review_dismiss` |
+| `gh pr checks N` and `gh pr checks N --watch` | `gr_wf_checks` with the full 40-character head sha as `ref`; `gr_wf_check_runs_page` pages the runs of one check and needs that sha as `head_sha` plus the exact `check_name` |
+| `gh run rerun --failed` | `gr_wf_run_rerun` for the run; `gr_wf_job_rerun` for one job |
+| `gh pr merge N --squash --auto` | `gr_wf_automerge_enable` with `method` `SQUASH` |
+| `gh pr merge N --squash` | `gr_wf_merge_guarded` with `method` `squash` and `expected_head_sha`, the full head sha read from `gr_wf_pr_get` |
+| `gh pr create` | `gr_open_pr`, which is owner-authored by design |
+| `gh pr edit` | `gr_edit_pr` for the title and body; `wf_pr_edit` is ungranted |
+| `gh pr comment N` | `gr_comment_pr` |
+| `gh pr ready` and `gh pr ready --undo` | `gr_wf_pr_ready` and `gr_wf_pr_draft` |
+| `gh pr list` | `gr_wf_pr_list` |
+
+### Paging And Pins
+
+List reads default to 30 per page and cap `per_page` at 50, and a larger value is refused.  Not every list read pages:  `gr_wf_pr_reviews_page`, `gr_wf_pr_comments_page`, `gr_wf_pr_comments`, `gr_wf_workflows_page`, `gr_wf_pr_list_page`, `gr_wf_repo_hooks` and `gr_wf_branches` take `page` as well as `per_page`, while `gr_wf_pr_reviews`, `gr_wf_labels` and `gr_wf_workflows` take `per_page` only, refuse `page`, and stop at 50 rows.  To read past 50 reviews or workflows, use the `_page` verb.
+
+`gr_wf_branches` lists one page of branches and takes the same `page` and `per_page` (30 by default, 50 at most).  Its result carries `page`, `has_more` and `complete`: `has_more` is true when the page came back full, so read the next `page` until a page comes back short, and `complete` is true only when page 1 itself came back short and so holds every branch.  A repository with more than 50 branches needs more than one call.
+
+`gr_wf_review_threads` pages five threads at a time.  Pass the returned end cursor back as `cursor` until the page reports no next page.  The relay binds only the first 100 threads of a pull request before it allows a fixed mutation, so a thread outside that bound is refused rather than changed.
+
+`gr_wf_checks` needs the full 40-character commit sha as `ref`, and `gr_wf_check_runs_page` needs it as `head_sha` together with the exact `check_name`;  a short sha is refused.  Read the sha from `gr_wf_pr_get` rather than retyping it.
 
 ## Old Names and New Names
 
@@ -321,7 +357,7 @@ Title rule for a create: `[TEAM_KEY, Agent] Topic`, such as `[AFC, Codex] Topic`
 
 ## CLI Equivalents
 
-Every MCP tool has a command except the hosted-only `whatsapp_read`, which has none (the WhatsApp row below).  Identity for the CLI comes from `--as NAME`, `AGENT_SEAT` or `--default-seat` (under a launcher, `AGENT_LAUNCH_SEAT` wins and a different `--as` exits 3); the `notes` commands also take `--identity`, except `simple-notes log`, which acts as no one (filter it with `--by-seat`).  Add `--json` for machine output.
+Every MCP tool has a command except the hosted-only `whatsapp_read`, `catalog` and `worker_diagnostics`, which have none (their rows below).  Identity for the CLI comes from `--as NAME`, `AGENT_SEAT` or `--default-seat` (under a launcher, `AGENT_LAUNCH_SEAT` wins and a different `--as` exits 3); the `notes` commands also take `--identity`, except `simple-notes log`, which acts as no one (filter it with `--by-seat`).  Add `--json` for machine output.
 
 | Group | Commands |
 |---|---|
@@ -336,6 +372,7 @@ Every MCP tool has a command except the hosted-only `whatsapp_read`, which has n
 | FleetLink | `fleetlink` (`fleetlink tool NAME` runs any `fleetlink_*` tool; stdio runs it that way) |
 | WhatsApp | None: `whatsapp_read` is hosted only (the whatsapp section above), so no CLI command or stdio tool serves it |
 | Catalog | None: `catalog` is hosted only (paged names and descriptions;  full schemas come from `tools/list` with the same cursor), so no CLI command or stdio tool serves it |
+| Worker diagnostics | None: `worker_diagnostics` is hosted only (the eavesdropper section above;  it reads the Worker's own store), so no CLI command or stdio tool serves it |
 | GitHub | `git-relay serve` (the relay) and `git-relay mcp` (GR-MCP over stdio); the relay is deployed and is the fleet's GitHub route (verified live 2026-11-07) |
 
 Long text stays out of `argv`: `--body-file PATH` (a file you own, mode 0600 or 0400, at most 64 KB) or `-` for standard input.

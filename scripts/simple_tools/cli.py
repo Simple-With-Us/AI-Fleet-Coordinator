@@ -1047,14 +1047,6 @@ def build_parser(
         "The default when no --to is given;  with --to it adds the owner to the group",
     )
     p.add_argument(
-        "--clarifying-question",
-        dest="clarifying_question",
-        action="store_true",
-        help="Operator only:  true when this DM is the one clarifying question it may open about a message "
-        "whose addressee could not be resolved to a single seat (owner decision, Oct 22 2026).  Every other "
-        "seat is refused when it opens a new DM;  a reply inside a DM Operator opened needs no flag.",
-    )
-    p.add_argument(
         "--no-tag", action="store_true", help="do not prepend the [SEAT\u00b7session\u2192TO] tag"
     )
     p.add_argument(
@@ -1249,7 +1241,7 @@ def build_parser(
         help="CODEX-only: attribute calls from native MCP _meta.threadId; no automatic nosession fallback",
     )
 
-    zulip_cli.add_parsers(sub, common, channel_default)
+    zulip_cli.add_parsers(sub, common, channel_default, skip_verbs=notes_verbs)
     listener_cli.add_parsers(sub, common, verbs=listener_verbs)
     notes_cli.add_parsers(sub, common, verbs=notes_verbs)
     return parser
@@ -2119,12 +2111,6 @@ def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
     # outage into a retryable failure for a send the rule does not govern.
     if not DMP.rule_enabled(env):
         return
-    clarifying = bool(getattr(args, "clarifying_question", None))
-    if DMP.clarifying_exempt(agent.seat, clarifying=clarifying):
-        # Operator's own clarifying question is the one message the rule permits without knowing
-        # who the Operator is, so the id is never resolved and the conversation is never read:  a
-        # host whose listener config is damaged can still send it (Kody review on AFC-473).
-        return
     bots = {int(u["user_id"]): bool(u.get("is_bot")) for u in agent.users()}
     recipients = [
         {"user_id": u["user_id"], "is_bot": bots.get(int(u["user_id"]), False)} for u in to.users
@@ -2174,7 +2160,6 @@ def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
                 operator_user_id=DMP.operator_user_id(env, lambda: pinned_operator_id(agent)),
                 self_id=_int_or_none(agent.me().get("user_id")),
             ),
-            clarifying=clarifying,
             owner_user_id=_owner_id_pinned(agent) or None,
         )
     except DMP.DmRefused as refused:
@@ -2934,16 +2919,31 @@ LOCAL_COMMANDS: dict[str, Callable[[Runtime, argparse.Namespace], int]] = {
 # `simple-notes` verbs (AFC-486:  one per notes_* tool, plus the Mac runner).  They are top-level commands, so they
 # land in LOCAL_COMMANDS beside the listener verbs, except `read`, which `simple-chat` owns too (a topic's history)
 # and which only the simple-notes override below sends here.
-NOTES_VERBS = ("create", "update", "pin", "unpin", "read", "list", "status", "log", "runner")
+NOTES_VERBS = (
+    "create",
+    "update",
+    "pin",
+    "unpin",
+    "delete",
+    "read",
+    "list",
+    "status",
+    "log",
+    "runner",
+)
 for _action in NOTES_VERBS:
-    if _action != "read":
+    if _action not in ("read", "delete"):
         LOCAL_COMMANDS[_action] = notes_cli.cmd_notes
 
 # `status` and `read` are verbs of two commands:  `simple-chat status` is the listener's and `simple-chat read` a
 # topic's history, `simple-notes status` and `simple-notes read` are the notes ones.  A bare name cannot pick one,
 # so each command overrides them for its own verbs.
 DISPATCH_OVERRIDES: dict[str, dict[str, Callable[[Runtime, argparse.Namespace], int]]] = {
-    "simple-notes": {"status": notes_cli.cmd_notes, "read": notes_cli.cmd_notes},
+    "simple-notes": {
+        "status": notes_cli.cmd_notes,
+        "read": notes_cli.cmd_notes,
+        "delete": notes_cli.cmd_notes,
+    },
     "simple-chat": {"status": listener_cli.cmd_status},
 }
 
@@ -3071,6 +3071,9 @@ _REMOTE_CODES = frozenset(
         "fleetlink_expired",
         "dm_not_allowed",
         "budget_exhausted",
+        "invalid_secret",
+        "sheets_auth_failed",
+        "sheets_write_failed",
     )
 )
 _REMOTE_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
@@ -3435,8 +3438,6 @@ def _remote_write_args(
         targs["user_ids"] = [int(i) for i in ids]
     if emails:
         targs["emails"] = emails
-    if getattr(args, "clarifying_question", False):
-        targs["clarifying_question"] = True
     return "zulip_dm_send", targs
 
 

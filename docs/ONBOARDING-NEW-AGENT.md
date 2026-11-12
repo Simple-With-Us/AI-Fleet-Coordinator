@@ -59,7 +59,7 @@ branch prefix, so `AGENT_SEAT=GB-DEPLOYER` plans under `gb-deployer/` and signs
 
 `fleet-apps.json` has a top-level `seatApps` key that says which **app** each seat runs
 in (`claude-code`, `codex`, `grok-terminal`, `grok-web`, `botfleet`, ...).  Code that
-counts apps instead of models (a consult quorum, claim ownership) reads it through two
+counts apps instead of models (a consult quorum, claim ownership) reads it through the
 functions in `scripts/simple_tools/identity.py`:
 
 | Function | What it does |
@@ -67,6 +67,7 @@ functions in `scripts/simple_tools/identity.py`:
 | `canonical_seat(raw)` | The lenient input boundary.  Trims and upper-cases anything, and turns every GROK-BUILD spelling into `GROK`.  It never raises and never reads the registry. |
 | `strict_seat(raw)` | `canonical_seat`, then `UnknownSeat` unless the result is a live `seats` row, a `seatApps.extraSeats` key, or matches a `seatApps.patterns` row.  `MINIMAX` raises (the tag is `MM`), and so does a retired seat. |
 | `seat_app(seat)` | The seat's app, patterns included.  It runs `strict_seat` first, so an unknown name is an error, never a new app. |
+| `platform_seats(platform)` | The key read from app to seats, for the Operator's session registry (AFC-772): the seat tags and the role patterns a registry platform's chats register under, or nothing for a platform the key does not name.  `claude` gives `CLAUDE`, `botfleet` gives `BF-*`. |
 
 The key has three parts:
 
@@ -81,6 +82,17 @@ The key has three parts:
   templates;  an unlisted role is refused with the known roles, and a role whose
   rendered folder or branch prefix collides with a seat row or another pattern
   fails the registry check.
+
+The Operator's session registry reads the key the other way.  A chat registers under a
+platform namespace (`claude`, `codex`, `zcode`) and a seat, and the registry refuses a
+known platform under a seat that is not one of its own (`seat_platform_mismatch`): three
+Claude Code chats once registered under `ZC`, and no wake could reach them.  A namespace
+is its app's name, except the four in `identity.PLATFORM_APPS` (`claude` is `claude-code`,
+`grok-leader` is `grok-terminal`, `minimax` is `minimax-code`, `muse` is `muse-code`).
+So a new platform's chats are checked as soon as its seat has an app here, and until then
+they register under any seat.
+A register under the platform's one seat also re-seats a row of the same session that was filed under
+another seat (the registry writes a `reseat` event, and the chat keeps its letter).  A launcher's role pattern and an app with several tags (`instinct`) have no one seat, so they are left alone.
 
 Two seats on one model are two apps when they are two products (`GROK` the
 terminal and `GROK-WEB`), and two seats in one product are one app (`ECHO` and

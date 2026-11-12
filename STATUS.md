@@ -1,5 +1,9 @@
 # Status
 
+## 2026-11-12 CURSOR — Agent config reconcile ([AFC-370](https://linear.app/simple-with-us/issue/AFC-370))
+
+One check-then-apply command, `scripts/fleet-agent-config`, compares skills, Lane Map blocks, guard hooks and MCP config on a host with this checkout.  Check is the default and exits 1 on managed drift.  `--apply` calls the existing installers.  `~/.claude/CLAUDE.md` and `~/AGENTS.md` stay report-only.  The doctor grows an `agent-config` row from the same check and does not apply.  Hosts are not reconciled by this change.  Rollout: `docs/rollouts/2026-11-12-afc-370-agent-config-reconcile.md`.
+
 ## 2026-11-02 MC — Muster live-pass fixes (AFC-592)
 
 Follow-up to the overhaul's live verification: `fleet-secrets names` no longer fails fleet-wide on one unexpanded Infisical reference value, Muster tells a refused secret read from a timeout, the Settings window follows the stored theme, and the Fleet filter picker label no longer wraps letter by letter.  Next action: merge, re-run `scripts/install-fleet-secrets.sh`, and re-check Secret Names live.  Rollout: `docs/rollouts/2026-11-02-muster-live-pass-fixes.md`.
@@ -22,7 +26,7 @@ Rollout: `docs/rollouts/2026-10-26-afc554-housekeeper-owner-record.md`.
 
 ## 2026-10-25 MM — the sentence-gap rule, restated with the one chat-pane exception
 
-Between sentences the gap is a real U+00A0 plus a normal space on every surface, with one exception:  the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the `&nbsp;` entity plus a normal space.  The two-spaces wording in the 2026-09-03 entry below records the ruling as it stood that day.
+Between sentences the gap is a real U+00A0 plus a normal space on every surface, with one exception:  the chat panes of Claude Code (the Code tab), MiniMax Code (the MiniMax Code pane) and Z Code (the Z Code pane) take the `&nbsp;` entity plus a normal space.  The two-spaces wording in the 2026-09-03 entry below records the ruling as it stood that day.
 
 ## 2026-10-23 CODEX — WhatsApp Wake Bridge Implementation (AFC-477)
 

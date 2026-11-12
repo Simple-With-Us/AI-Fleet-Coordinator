@@ -351,22 +351,20 @@ class RegistrySideTests(Base):
         code, out = self.registry("touch", "--location", "server", "--session-id", "s-0001")
         self.assertTrue(out["retired"])
         back = self.register("s-0001", title="Back Again")
-        self.assertEqual((back["outcome"], back["label"], back["generation"], back["previous"]), ("reopened", "AA", 2, "AA"))
+        # its own pair back as the same generation:  a return is not a second issue of AA
+        self.assertEqual((back["outcome"], back["label"], back["generation"], back["previous"]), ("reopened", "AA", 1, "AA"))
         self.assertEqual(self.lookup("s-0001")["title"], "Back Again")
 
-    def test_new_chats_take_pairs_and_a_chat_that_holds_a_single_letter_keeps_it(self) -> None:
+    def test_new_chats_take_pairs_and_a_returning_single_letter_chat_moves_onto_a_pair(self) -> None:
         # Main chats take the doubled pairs in order (owner, Oct 29, 2026).
         self.assertEqual([self.register("s-%04d" % i)["label"] for i in (1, 2, 3)], ["AA", "BB", "CC"])
         # The first Claude chat was registered by hand, before pairs, and holds a single letter.
-        OR.register_session(
-            self.db, platform="claude", verified_host="server", profile_scope="default",
-            native_session_id="first-chat", seat="CLAUDE", source="claude-chat-start", issuer=OR.ISSUER_OPERATOR,
-            letter_space="single",
-        )
+        self.single("first-chat", "claude-chat-start")
         self.assertEqual(self.lookup("first-chat")["label"], "A")
         self.registry("close", "--location", "server", "--session-id", "first-chat")
         back = self.register("first-chat")
-        self.assertEqual((back["outcome"], back["label"], back["previous"]), ("reopened", "A", "A"))
+        # No single letter is issued again (owner, Nov 11 2026):  it comes back on the next pair.
+        self.assertEqual((back["outcome"], back["label"], back["previous"]), ("reopened", "DD", "A"))
 
     def test_reopen_prefers_the_letter_it_held(self) -> None:
         for sid in ("s-0001", "s-0002", "s-0003"):
@@ -374,7 +372,7 @@ class RegistrySideTests(Base):
         for sid in ("s-0002", "s-0001"):
             self.registry("close", "--location", "server", "--session-id", sid)
         back = self.register("s-0002")  # AA is free and lower, but BB is still free and was this chat's
-        self.assertEqual((back["outcome"], back["label"], back["generation"]), ("reopened", "BB", 2))
+        self.assertEqual((back["outcome"], back["label"], back["generation"]), ("reopened", "BB", 1))
 
     def test_one_bad_record_does_not_stop_the_others_closing(self) -> None:
         self.register("s-0001")
@@ -382,21 +380,21 @@ class RegistrySideTests(Base):
         self.assertEqual(CL._close_records(OR, self.db, ["no-such-record", rid], "test"), 1)
         self.assertEqual(self.lookup("s-0001")["state"], "closed")
 
-    def test_a_freed_pair_goes_to_the_next_new_chat_and_the_old_chat_takes_the_next_one(self) -> None:
+    def test_a_freed_pair_is_not_the_next_new_chats_and_the_old_chat_has_it_back(self) -> None:
         self.register("s-0001")
         self.registry("close", "--location", "server", "--session-id", "s-0001")
-        # Main chats take the lowest free doubled pair, so the freed AA is the next new chat's (generation 2).
+        # Keep advancing (owner, Nov 11 2026):  AA was issued once and BB never, so the next new chat takes BB.
         taken = self.register("s-0002")
-        self.assertEqual((taken["label"], taken["generation"]), ("AA", 2))
-        back = self.register("s-0001")  # AA is held now, so the returning chat takes the next doubled pair
-        self.assertEqual((back["outcome"], back["label"], back["generation"], back["previous"]), ("reopened", "BB", 1, "AA"))
+        self.assertEqual((taken["label"], taken["generation"]), ("BB", 1))
+        back = self.register("s-0001")  # AA is still free and was this chat's
+        self.assertEqual((back["outcome"], back["label"], back["generation"], back["previous"]), ("reopened", "AA", 1, "AA"))
 
     def test_a_returning_chat_has_its_own_pair_back_while_it_is_free(self) -> None:
         self.register("s-0001")
         self.register("s-0002")
         self.registry("close", "--location", "server", "--session-id", "s-0001")
         back = self.register("s-0001")  # AA is free and was this chat's
-        self.assertEqual((back["outcome"], back["label"], back["generation"], back["previous"]), ("reopened", "AA", 2, "AA"))
+        self.assertEqual((back["outcome"], back["label"], back["generation"], back["previous"]), ("reopened", "AA", 1, "AA"))
 
     def test_new_chats_take_the_lowest_free_pair_in_the_primary_order(self) -> None:
         with self.small_space("AA", "BB", "CC"):
@@ -415,14 +413,15 @@ class RegistrySideTests(Base):
         with self.small_space("AA", "BB", "CC"):
             self.register("s-0001")  # AA
             self.registry("close", "--location", "server", "--session-id", "s-0001")
-            self.assertEqual(self.register("s-0002")["label"], "AA")  # generation 2
-            self.assertEqual(self.register("s-0003")["label"], "BB")
-            self.assertEqual(self.register("s-0004")["label"], "CC")
+            self.assertEqual(self.register("s-0002")["label"], "BB")  # keep advancing:  BB and CC were never issued
+            self.assertEqual(self.register("s-0003")["label"], "CC")
+            self.assertEqual(self.register("s-0004")["label"], "AA")  # then AA, generation 2
             self.set_seen("s-0003", self.ago(300))
             back = self.register("s-0001")
-        # AA is held by s-0002 and every pair is live, so the least recently seen chat (s-0003) gives up BB.
-        self.assertEqual((back["outcome"], back["label"], back["previous"], back["evicted"]), ("reopened", "BB", "AA", 1))
-        self.assertEqual(self.lookup("s-0003")["state"], "closed")
+        # AA is held by s-0004 and every pair is live:  the letter is refused ("ok just refuse actually is fine") and
+        # the least recently seen chat (s-0003) keeps CC.
+        self.assertIn("main-chat pairs (AA to ZZ) are live", back["error"])
+        self.assertEqual(self.lookup("s-0003")["state"], "active")
 
     def test_sweep_closes_only_stale_claude_chats(self) -> None:
         self.register("s-0001")
@@ -433,7 +432,8 @@ class RegistrySideTests(Base):
         self.set_seen("s-0001", "2026-01-01T00:00:00.000Z")
         self.set_seen("mm-0001", "2026-01-01T00:00:00.000Z")
         out = self.register("s-0002")
-        self.assertEqual((out["swept"], out["label"]), (1, "AA"))  # the swept chat's AA is free and the lowest
+        # the swept chat's AA is free, but BB was never issued:  keep advancing (owner, Nov 11 2026)
+        self.assertEqual((out["swept"], out["label"]), (1, "BB"))
         self.assertEqual(self.lookup("s-0001")["state"], "closed")
         reg = OR.SessionRegistry(self.db)
         try:
@@ -441,34 +441,39 @@ class RegistrySideTests(Base):
         finally:
             reg.close_db()
 
-    def test_chats_the_operator_registered_another_way_are_never_swept_or_evicted(self) -> None:
-        for sid, source in (("op-0001", "operator-registration"), ("op-0002", "chat-topic-answer")):
-            OR.register_session(
-                self.db, platform="claude", verified_host="mac", profile_scope="default",
-                native_session_id=sid, seat="CLAUDE", source=source, issuer=OR.ISSUER_OPERATOR,
-                letter_space="single",
-            )
-            self.set_seen(sid, "2026-01-01T00:00:00.000Z")
-        with self.small_space("AA", "AB"):
-            # The Operator's rows hold the single letters A and B, outside the pair space.
+    def test_chats_the_operator_registered_another_way_are_never_swept_or_closed(self) -> None:
+        with self.small_space("AA", "BB", "CC", "DD"):
+            for sid, source in (("op-0001", "operator-registration"), ("op-0002", "chat-topic-answer")):
+                OR.register_session(
+                    self.db, platform="claude", verified_host="mac", profile_scope="default",
+                    native_session_id=sid, seat="CLAUDE", source=source, issuer=OR.ISSUER_OPERATOR,
+                )
+                self.set_seen(sid, "2026-01-01T00:00:00.000Z")
+            # The Operator's rows hold AA and BB and are long unseen:  this hook never sweeps them.
             self.assertEqual(self.register("s-0001")["swept"], 0)
             self.register("s-0002")
             self.set_seen("s-0001", self.ago(300))
             out = self.register("s-0099")
-        # The pairs are all live:  s-0001, the least recently seen of this hook's chats, gives up AA.
-        self.assertEqual((out["evicted"], out["label"]), (1, "AA"))
+        # The pairs are all live:  the letter is refused and no chat is closed to make room.
+        self.assertIn("are live", out["error"])
         for sid in ("op-0001", "op-0002"):
             self.assertEqual(self.lookup(sid, "mac")["state"], "active")
+        self.assertEqual(self.lookup("s-0001")["state"], "active")
 
-    def test_full_letters_evict_the_least_recently_seen(self) -> None:
+    def test_full_letters_refuse_and_evict_no_one(self) -> None:
+        # The reviewer's sequence:  every pair live, the least recently seen idle an hour (not stale), one more chat.
+        # Owner, Nov 11 2026:  "ok just refuse actually is fine".  No live chat loses its pair.
         with self.small_space("AA", "BB", "CC", "DD"):
             for i in range(4):
                 self.register("s-%04d" % i)
                 self.set_seen("s-%04d" % i, self.ago(100 - i))
-            self.set_seen("s-0002", self.ago(900))  # CC is the oldest
-            out = self.register("s-0099")
-        self.assertEqual((out["evicted"], out["label"], out["generation"]), (1, "CC", 2))
-        self.assertEqual(self.lookup("s-0002")["state"], "closed")
+            self.set_seen("s-0002", self.ago(3600))  # CC is the least recently seen
+            code, out = self.registry("register", "--location", "server", "--session-id", "s-0099")
+        self.assertEqual(code, 5)
+        self.assertEqual(out["error"], "all 4 Claude main-chat pairs (AA to ZZ) are live:  the Operator refused this chat a letter")
+        for i in range(4):
+            self.assertEqual(self.lookup("s-%04d" % i)["state"], "active")
+        self.assertIsNone(self.lookup("s-0099"))
 
     def test_when_the_operator_holds_every_pair_the_error_counts_the_pairs(self) -> None:
         with self.small_space("AA"):
@@ -478,18 +483,29 @@ class RegistrySideTests(Base):
                 issuer=OR.ISSUER_OPERATOR, letter_space="double",
             )
             code, out = self.registry("register", "--location", "server", "--session-id", "s-0001")
-        self.assertEqual(code, 5)  # nothing this hook manages can be evicted, so there is no room
-        self.assertEqual(out["error"], "all 1 Claude letters are in use")
+        self.assertEqual(code, 5)  # every pair is live:  the letter is refused
+        self.assertEqual(out["error"], "all 1 Claude main-chat pairs (AA to ZZ) are live:  the Operator refused this chat a letter")
         self.assertIsNone(self.lookup("s-0001"))
 
-    def single(self, sid: str, source: str) -> dict:
-        """A Claude registration in the single space, as the hand-registered first chat has."""
-        return OR.register_session(
+    def single(self, sid: str, source: str, letter: str = "A") -> dict:
+        """A Claude registration that holds a single letter, as the hand-registered first chat has from before the
+        pair rule.  No single letter is issued now, so the row is written as that history left it."""
+        out = OR.register_session(
             self.db, platform="claude", verified_host="server", profile_scope="default", native_session_id=sid,
-            seat="CLAUDE", source=source, issuer=OR.ISSUER_OPERATOR, letter_space="single",
+            seat="CLAUDE", source=source, issuer=OR.ISSUER_OPERATOR,
         )
+        reg = OR.SessionRegistry(self.db)
+        try:
+            with reg._conn:
+                reg._conn.execute(
+                    "UPDATE alias_assignments SET letter = ? WHERE record_id = ?",
+                    (letter, out["record_id"]),
+                )
+        finally:
+            reg.close_db()
+        return {**out, "label": letter}
 
-    def test_a_full_pair_space_never_evicts_a_chat_that_holds_a_single_letter(self) -> None:
+    def test_a_full_pair_space_closes_no_chat_not_even_one_that_holds_a_single_letter(self) -> None:
         with self.small_space("AA"):
             legacy = self.single("first-chat", "claude-chat-start")  # managed, single letter A, the oldest chat
             self.assertEqual(legacy["label"], "A")
@@ -497,30 +513,27 @@ class RegistrySideTests(Base):
             self.set_seen("first-chat", self.ago(900))
             self.set_seen("s-0001", self.ago(100))
             out = self.register("s-0002")
-        # Closing the single-letter chat would free no pair, so the pair chat is the one that gives its pair up.
-        self.assertEqual((out["evicted"], out["label"]), (1, "AA"))
+        self.assertIn("are live", out["error"])
         self.assertEqual(self.lookup("first-chat")["state"], "active")
-        self.assertEqual(self.lookup("s-0001")["state"], "closed")
-
-    def test_a_full_single_space_never_evicts_a_chat_that_holds_a_pair(self) -> None:
-        with mock.patch.dict(OR.LETTER_SPACES, {"single": ("A",), "double": ("AA", "AB")}):
-            first = self.single("first-chat", "claude-chat-start")  # A
-            self.register("s-0001")  # AA
-            self.registry("close", "--location", "server", "--session-id", "first-chat")
-            self.single("op-single", "operator-registration")  # takes A, and this hook does not manage it
-            self.set_seen("s-0001", self.ago(900))
-            back = self.register("first-chat")  # needs a single letter:  none is free, none can be freed
-        self.assertEqual(first["label"], "A")
-        self.assertEqual(back["error"], "all 1 Claude letters are in use")
         self.assertEqual(self.lookup("s-0001")["state"], "active")
 
-    def test_a_chat_that_holds_a_single_letter_gets_a_single_letter_when_its_own_went_elsewhere(self) -> None:
+    def test_a_returning_single_letter_chat_is_refused_when_every_pair_is_live(self) -> None:
+        with mock.patch.dict(OR.LETTER_SPACES, {"single": ("A",), "double": ("AA", "AB")}):
+            first = self.single("first-chat", "claude-chat-start")  # A
+            self.register("s-0001")  # AA, the only doubled pair here
+            self.registry("close", "--location", "server", "--session-id", "first-chat")
+            self.set_seen("s-0001", self.ago(900))
+            back = self.register("first-chat")  # takes a pair now:  none is free, and none is freed for it
+        self.assertEqual(first["label"], "A")
+        self.assertIn("are live", back["error"])
+        self.assertEqual(self.lookup("s-0001")["state"], "active")
+
+    def test_a_chat_that_holds_a_single_letter_comes_back_on_a_pair(self) -> None:
         with mock.patch.dict(OR.LETTER_SPACES, {"single": ("A", "B"), "double": ("AA", "AB")}):
             self.single("first-chat", "claude-chat-start")  # A
             self.registry("close", "--location", "server", "--session-id", "first-chat")
-            self.assertEqual(self.single("op-single", "operator-registration")["label"], "A")
             back = self.register("first-chat")
-        self.assertEqual((back["outcome"], back["label"], back["previous"]), ("reopened", "B", "A"))
+        self.assertEqual((back["outcome"], back["label"], back["previous"]), ("reopened", "AA", "A"))
 
     # ---- a chat another chat started takes the pair after its parent's (owner, Oct 29, 2026) ----
 
@@ -695,6 +708,14 @@ class TitlesDown(FakeSsh):
 
 
 class HookTests(Base):
+    def close_chat(self, sid: str) -> None:
+        """End one chat's registration, as a sweep or a clear on another host does."""
+        reg = OR.SessionRegistry(self.db)
+        try:
+            reg.close(self.lookup(sid)["record_id"], source="test")
+        finally:
+            reg.close_db()
+
     def hook(self, payload: dict, *, env: dict | None = None, runner=None, now: float | None = None,
              platform: str = "linux") -> dict | None:
         out = io.StringIO()
@@ -951,6 +972,28 @@ class HookTests(Base):
         self.assertIn("10 minutes", out["additionalContext"])
         self.assertEqual(len(down.calls), 1)
 
+    def test_a_chat_whose_host_exports_another_seat_carries_on_with_no_letter(self) -> None:
+        # AFC-772:  the Mac exported AGENT_SEAT=ZC, the hook takes its seat from it, and the registry refuses a claude
+        # chat under ZCode's seat.  The chat reads why, takes no letter, and is never stopped.
+        def no_ssh(*a, **k):
+            raise AssertionError("the Mac never uses ssh")
+
+        env = self.env(AGENT_SEAT="ZC")
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "m-0001", "source": "startup"},
+                        env=env, runner=no_ssh, platform="darwin")
+        self.assertIn("No Operator letter yet (SeatPlatformMismatch: platform claude registers under seat CLAUDE, "
+                      "not ZC)", out["additionalContext"])
+        self.assertIn("10 minutes", out["additionalContext"])
+        self.assertNotIn("sessionTitle", out)
+        self.assertIsNone(self.lookup("m-0001", "mac"))
+        with open(os.path.join(self.state, "ZC", "letters", "m-0001.json")) as fh:
+            self.assertEqual(json.load(fh)["state"], "failed")
+        # The same chat once its host names no other seat:  the platform's own, and a letter.
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "m-0001", "source": "startup"},
+                        env=self.env(), runner=no_ssh, platform="darwin")
+        self.assertEqual(out["sessionTitle"], "AA: New Chat")
+        self.assertEqual(self.lookup("m-0001", "mac")["seat"], "CLAUDE")
+
     def test_a_named_chat_keeps_its_words(self) -> None:
         out = self.start("s-0001", source="resume", session_title="Fleet PR Sweep")
         self.assertEqual(out["sessionTitle"], "AA: Fleet PR Sweep")
@@ -971,17 +1014,17 @@ class HookTests(Base):
         self.assertEqual(CL.title_from_transcript(stray, self.home), "")
 
     def test_clear_closes_and_reopen_checks_again(self) -> None:
-        with self.small_space("AA", "AB"):
+        with self.small_space("AA", "BB"):  # a main chat takes only doubled pairs (owner, Nov 11 2026)
             self.start("s-0001", session_title="Old Name")  # AA
             self.hook({"hook_event_name": "SessionEnd", "session_id": "s-0001", "reason": "clear"})
             self.assertEqual(self.lookup("s-0001")["state"], "closed")
             self.assertEqual(self.note("s-0001")["ended"]["reason"], "clear")
-            self.start("s-0002")  # AA again:  the lowest free pair
-            self.start("s-0003")  # AB
-            self.set_seen("s-0003", self.ago(300))
+            self.start("s-0002")  # BB:  keep advancing, BB was never issued
+            self.start("s-0003")  # AA, generation 2
+            self.close_chat("s-0002")  # BB is free again
             out = self.start("s-0001", source="resume", session_title="AA: Old Name")
-        # AA is s-0002's now and every pair is live, so the least recently seen chat (s-0003) gives up AB.
-        self.assertEqual(out["sessionTitle"], "AB: Old Name")
+        # AA is s-0003's now, so the returning chat takes the free pair, BB.
+        self.assertEqual(out["sessionTitle"], "BB: Old Name")
         self.assertIn("earlier letter AA went to another chat", out["additionalContext"])
         self.assertIn("  ", out["additionalContext"])  # rendered copy takes U+00A0 sentence gaps
 
@@ -1028,7 +1071,7 @@ class HookTests(Base):
         self.assertEqual(out["sessionTitle"], "AA: Write the Tests")
 
     def test_a_letter_retired_while_open_is_reissued(self) -> None:
-        with self.small_space("AA", "AB"):
+        with self.small_space("AA", "BB"):  # a main chat takes only doubled pairs (owner, Nov 11 2026)
             self.start("s-0001")  # AA
             self.prompt("s-0001", "first task", session_title="AA: New Chat")
             reg = OR.SessionRegistry(self.db)
@@ -1036,14 +1079,14 @@ class HookTests(Base):
                 reg.close(self.lookup("s-0001")["record_id"], source="test")
             finally:
                 reg.close_db()
-            self.start("s-0002")  # AA:  the lowest free pair goes to another chat
-            self.start("s-0003")  # AB
-            self.set_seen("s-0003", self.ago(300))
+            self.start("s-0002")  # BB:  keep advancing
+            self.start("s-0003")  # AA, generation 2:  the freed pair goes to another chat
+            self.close_chat("s-0002")  # BB is free again
             later = time.time() + CL.TOUCH_SECONDS + 5
             out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more",
                              "session_title": "AA: First Task"}, now=later)
-        self.assertEqual(out["sessionTitle"], "AB: First Task")
-        self.assertEqual(self.lookup("s-0001")["label"], "AB")
+        self.assertEqual(out["sessionTitle"], "BB: First Task")
+        self.assertEqual(self.lookup("s-0001")["label"], "BB")
 
     def test_a_placeholder_is_never_taken_for_a_title(self) -> None:
         self.start("s-0001")
@@ -1210,12 +1253,12 @@ class HookTests(Base):
 
     def test_a_chat_that_took_a_new_letter_after_a_failed_start_drops_the_old_one_from_its_title(self) -> None:
         down = FakeSsh(self, fail=subprocess.TimeoutExpired("ssh", 12))
-        with self.small_space("AA", "AB"):
+        with self.small_space("AA", "BB"):  # a main chat takes only doubled pairs (owner, Nov 11 2026)
             self.start("s-0001", session_title="Fix Login")  # AA
             self.hook({"hook_event_name": "SessionEnd", "session_id": "s-0001", "reason": "clear"})
-            self.start("s-0002")  # AA again
-            self.start("s-0003")  # AB
-            self.set_seen("s-0003", self.ago(300))
+            self.start("s-0002")  # BB:  keep advancing
+            self.start("s-0003")  # AA, generation 2
+            self.close_chat("s-0002")  # BB is free again
             # The resume cannot reach the registry, so the chat keeps showing "AA: Fix Login".
             out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "resume",
                              "session_title": "AA: Fix Login"}, runner=down)
@@ -1223,10 +1266,10 @@ class HookTests(Base):
             later = time.time() + CL.RETRY_SECONDS + 5
             out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go",
                              "session_title": "AA: Fix Login"}, now=later)
-        self.assertEqual(out["sessionTitle"], "AB: Fix Login")  # not "AB: AA: Fix Login"
+        self.assertEqual(out["sessionTitle"], "BB: Fix Login")  # not "BB: AA: Fix Login"
         self.assertEqual(self.lookup("s-0001")["title"], "Fix Login")
         # the start told the model there was no letter yet, so the first prompt that recovers tells it the one it holds
-        self.assertIn("Claude AB", out["additionalContext"])
+        self.assertIn("Claude BB", out["additionalContext"])
         self.assertIn("earlier letter AA went to another chat", out["additionalContext"])
 
     def test_a_secret_in_a_name_given_before_the_first_prompt_is_not_kept_in_the_note(self) -> None:
@@ -1344,27 +1387,34 @@ class HookTests(Base):
         self.assertEqual(self.registry_ops(ssh), ["touch"])
 
     def test_a_retired_letter_that_comes_back_as_another_pair_tells_the_model(self) -> None:
-        self.titled()  # AA: Help Get All PR Issues Addressed
-        reg = OR.SessionRegistry(self.db)
-        try:
-            reg.close(self.lookup("s-0001")["record_id"], source="test")  # swept while the chat sat idle
-        finally:
-            reg.close_db()
-        self.start("s-0002")  # AA, the freed pair goes to another chat
-        self.start("s-0003")  # BB
-        later = time.time() + CL.TOUCH_SECONDS + 5
-        out = self.hook(
-            {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more",
-             "session_title": "AA: Help Get All PR Issues Addressed"},
-            now=later,
-        )
-        self.assertEqual(out["sessionTitle"], "CC: Help Get All PR Issues Addressed")
+        with self.small_space("AA", "BB", "CC"):
+            self.titled()  # AA: Help Get All PR Issues Addressed
+            reg = OR.SessionRegistry(self.db)
+            try:
+                reg.close(self.lookup("s-0001")["record_id"], source="test")  # swept while the chat sat idle
+            finally:
+                reg.close_db()
+            self.start("s-0002")  # BB:  keep advancing (owner, Nov 11 2026)
+            self.start("s-0003")  # CC
+            self.start("s-0004")  # AA, generation 2:  the freed pair goes to another chat
+            reg = OR.SessionRegistry(self.db)
+            try:
+                reg.close(self.lookup("s-0002")["record_id"], source="test")  # BB is free again
+            finally:
+                reg.close_db()
+            later = time.time() + CL.TOUCH_SECONDS + 5
+            out = self.hook(
+                {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more",
+                 "session_title": "AA: Help Get All PR Issues Addressed"},
+                now=later,
+            )
+        self.assertEqual(out["sessionTitle"], "BB: Help Get All PR Issues Addressed")
         context = out["additionalContext"]
-        self.assertIn("Claude CC", context)  # the model is told the new pair, not left with AA
+        self.assertIn("Claude BB", context)  # the model is told the new pair, not left with AA
         self.assertIn("earlier letter AA went to another chat", context)
-        self.assertEqual(self.note("s-0001")["label"], "CC")
+        self.assertEqual(self.note("s-0001")["label"], "BB")
 
-    def test_a_retired_letter_that_comes_back_as_the_same_pair_is_told_as_a_later_generation(self) -> None:
+    def test_a_retired_letter_that_comes_back_as_the_same_pair_keeps_its_generation(self) -> None:
         self.titled()
         reg = OR.SessionRegistry(self.db)
         try:
@@ -1377,12 +1427,10 @@ class HookTests(Base):
              "session_title": "AA: Help Get All PR Issues Addressed"},
             now=later,
         )
-        # AA is free and was this chat's, so the title on screen is right and is left alone;  but a reused pair is the
-        # next generation, and the model is told how the chat is addressed now ("Claude AA (gen 2)").
-        self.assertNotIn("sessionTitle", out)
-        self.assertIn("Claude AA (gen 2)", out["additionalContext"])
-        self.assertNotIn("went to another chat", out["additionalContext"])
-        self.assertEqual(self.lookup("s-0001")["label"], "AA")
+        # AA is free and was this chat's, so it comes back as the same generation (a return is not a second issue of
+        # AA):  the title on screen is right, the address is unchanged, and there is nothing to tell.
+        self.assertIsNone(out)
+        self.assertEqual((self.lookup("s-0001")["label"], self.lookup("s-0001")["generation"]), ("AA", 1))
 
     # ---- a letter the registry changes in place:  the title follows it ----
 
@@ -1832,7 +1880,7 @@ class HookTests(Base):
             reg.close_db()
         later = time.time() + CL.TOUCH_SECONDS + 5
         out = self.renamed("AA: " + long, now=later)
-        self.assertNotIn("sessionTitle", out)  # the whole name already on screen is not cut to the registry's copy
+        self.assertNotIn("sessionTitle", out or {})  # the whole name already on screen is not cut to the registry's copy
         stored = self.lookup("s-0001")["title"]
         self.assertLessEqual(len(stored), CL.TITLE_CHARS)
         self.assertTrue(long.startswith(stored))
@@ -2504,7 +2552,10 @@ class ArchiveSweepTests(Base):
         self.assertEqual(self.lookup("s-0001", "mac")["state"], "closed")
 
     def test_another_seat_is_never_closed(self) -> None:
-        self.registry("register", "--location", "mac", "--session-id", "s-0001", "--seat", "MM")
+        # A row filed under another seat before the registry refused one (AFC-772):  it is still there to be swept past.
+        with mock.patch.object(OR, "check_seat_platform", lambda *_: None):
+            code, made = self.registry("register", "--location", "mac", "--session-id", "s-0001", "--seat", "ZC")
+        self.assertEqual((code, made.get("outcome")), (0, "registered"), made)
         self.archived_record("local_aaaaaaaa-0001", "s-0001")
         code, out = self.sweep("--apply")
         self.assertEqual(code, 0, out)

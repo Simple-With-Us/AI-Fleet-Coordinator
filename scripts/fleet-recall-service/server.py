@@ -112,6 +112,8 @@ MANAGED_KEYS = (
         "RECALL_ADMIN_TOKEN",
         "RECALL_OWNER_TOKEN",
         "RECALL_SOCKET_TIMEOUT",
+        "RECALL_SEARCH_CACHE_SIZE",
+        "RECALL_SEARCH_CACHE_TTL_SECONDS",
         "SETTINGS_REFRESH_SECONDS",
         "HOST",
         "PORT",
@@ -162,7 +164,8 @@ TOOLS: list[JsonDict] = [
                     "type": "integer",
                     "minimum": 1,
                     "maximum": recall_api.MAX_LIMIT,
-                    "default": 5,
+                    "default": recall_presentation.DEFAULT_AGENT_LIMIT,
+                    "description": "How many hits to return (default compact top-k).",
                 },
                 "category": {
                     "type": "string",
@@ -202,6 +205,21 @@ TOOLS: list[JsonDict] = [
                     "type": "boolean",
                     "default": False,
                     "description": "Include retracted contributions for audit; normal search hides them.",
+                },
+                "compact": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Cache key for the excerpt view. Hit text stays complete until presentation.",
+                },
+                "full": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Return full chunk text and every stored hit field (verbose).",
+                },
+                "fields": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Hit fields to keep in compact mode (default: score, title, doc_id, url, source, app, category, text).",
                 },
             },
             "required": ["query"],
@@ -353,13 +371,21 @@ def call_tool(name: str, args: JsonDict) -> JsonDict:
         raise FleetRagError("missing required argument(s): " + ", ".join(missing))
     if name == "recall_search":
         ensure_retracted_index()
-        _int(args, "limit")
-        _int(args, "since_days")
-        _int(args, "per_doc")
-        _bool(args, "rerank")
-        _bool(args, "prefer_lessons")
-        _bool(args, "include_retracted")
-        return recall_api.recall_search(**args)
+        search_args, presentation = recall_presentation.split_search_arguments(args)
+        _int(search_args, "limit")
+        _int(search_args, "since_days")
+        _int(search_args, "per_doc")
+        _bool(search_args, "rerank")
+        _bool(search_args, "prefer_lessons")
+        _bool(search_args, "include_retracted")
+        _bool(search_args, "compact")
+        _bool(args, "full")
+        if "fields" in args and args["fields"] is not None and not isinstance(args["fields"], list):
+            raise FleetRagError("fields must be a list of field names")
+        raw = recall_api.recall_search(
+            **search_args, **({"full": True} if presentation.full else {})
+        )
+        return recall_presentation.present_search_result(raw, presentation)
     if name == "recall_stats":
         return recall_api.recall_stats()
     if name in ("recall_correct", "recall_retract"):

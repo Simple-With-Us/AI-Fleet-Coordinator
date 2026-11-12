@@ -208,12 +208,14 @@ Jet can now be woken when someone @-mentions it (or DMs openai-dot-bot) in Zulip
 
 **1. Turn on the eavesdropper's half (Coolify, once).**  Three parts, then one restart.
 
-a.  In the simple-chat listener app on Coolify, under Environment Variables (runtime only), add:
+a.  In Infisical, project AI Fleet Coordinator, environment `prod`, folder `/zulip` (never a Coolify variable:  the Eavesdropper's loader removes a Coolify copy at start and reads these from Infisical only, AFC-759), make sure these two names hold:
 
-| Variable | Value |
+| Name | Value |
 |---|---|
 | `JET_ROUTINE_URL` | `https://agents.simplewithus.com/internal/wake/JET` |
-| `JET_ROUTINE_KEY` | the value of `JET_ROUTINE_KEY` in Infisical Fleet-OPS (`fleet-secrets get JET_ROUTINE_KEY`).  It is the same value as the Worker secret `WAKE_HMAC_KEY_JET`, which is already installed.  Paste it without quotes. |
+| `JET_ROUTINE_KEY` | the shared HMAC key, the same value as the Worker secret `WAKE_HMAC_KEY_JET`, at least 32 characters, a literal and not an Infisical reference.  A rotation changes this value and the Worker secret together. |
+
+**Move the key, never copy it.**  AFC prod `/zulip` is the one home of `JET_ROUTINE_KEY`.  Once it is there, delete the Fleet-OPS prod `/zulip` copy in the same sitting:  the loader loads a routine key held by both projects from neither, so leaving both copies leaves Jet unready and drops every Jet wake.  Install the Worker secret from the AFC copy (DEPLOY.md, "Wake Jet").
 
 b.  Switch JET's section of the **live** config to the http wake.  The container copied the sample onto its volume on first start and never re-reads the repo's copy, so merging this change did not reach it.  In the app's Coolify terminal (or `docker exec -i <container> sh` on the host), paste:
 

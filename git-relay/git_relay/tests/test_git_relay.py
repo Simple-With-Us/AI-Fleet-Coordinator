@@ -56,8 +56,13 @@ class FakeResponse:
     def __init__(self, payload: dict):
         self._raw = json.dumps(payload).encode()
 
-    def read(self, _limit: int) -> bytes:
-        return self._raw
+    _pos = 0
+
+    def read(self, limit: int) -> bytes:
+        # Like a real response:  at most limit bytes, then empty once the body is consumed.
+        piece = self._raw[self._pos : self._pos + limit]
+        self._pos += len(piece)
+        return piece
 
     def __enter__(self):
         return self
@@ -256,7 +261,15 @@ class TestAudit(unittest.TestCase):
 
 class TestClient(unittest.TestCase):
     def test_open_pr_posts_to_pulls_with_auth(self):
-        opener = FakeOpener({"number": 7, "html_url": "https://x/pr/7"})
+        # One payload answers both the create and the read-back of the same pull request.
+        opener = FakeOpener(
+            {
+                "number": 7,
+                "html_url": "https://github.com/o/r/pull/7",
+                "base": {"ref": "main", "repo": {"full_name": "o/r"}},
+                "head": {"ref": "feat", "label": "o:feat"},
+            }
+        )
         client = GitHubClient("tok", base_url="https://api.test", opener=opener)
         result = client.open_pr("o/r", "main", "feat", "t", "b")
         req = opener.requests[0]
@@ -264,7 +277,15 @@ class TestClient(unittest.TestCase):
         self.assertEqual(req.get_method(), "POST")
         self.assertEqual(req.get_header("Authorization"), "Bearer tok")
         self.assertEqual(json.loads(req.data)["head"], "feat")
-        self.assertEqual(result, {"number": 7, "url": "https://x/pr/7"})
+        self.assertEqual(
+            result, {"number": 7, "url": "https://github.com/o/r/pull/7", "verified": True}
+        )
+        readback = opener.requests[1]
+        self.assertEqual(len(opener.requests), 2)
+        self.assertEqual(readback.full_url, "https://api.test/repos/o/r/pulls/7")
+        self.assertEqual(readback.get_method(), "GET")
+        self.assertEqual(readback.get_header("Authorization"), "Bearer tok")
+        self.assertIsNone(readback.data)
 
     def test_reply_thread_carries_in_reply_to(self):
         opener = FakeOpener({"id": 5, "html_url": "u"})
@@ -579,8 +600,9 @@ class TestMcpWrapper(unittest.TestCase):
         self.assertEqual(reply["result"]["serverInfo"]["name"], "GR-MCP")
         reply = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = [t["name"] for t in reply["result"]["tools"]]
-        # The original seven come first and unchanged;  the wf verbs follow (AFC-664 item 6,
-        # tested in test_mcp_wf_verbs).  mint_token stays HTTP-only: raw App tokens never cross stdio.
+        # The original seven come first and unchanged;  create_repo follows them;
+        # the wf verbs follow that (AFC-664 item 6, tested in test_mcp_wf_verbs).
+        # mint_token stays HTTP-only: raw App tokens never cross stdio.
         self.assertEqual(
             names[:7],
             [
@@ -593,10 +615,11 @@ class TestMcpWrapper(unittest.TestCase):
                 "resolve_thread",
             ],
         )
+        self.assertEqual(names[7], "create_repo")
         # mint_token stays HTTP-only: raw App tokens never cross stdio
         from git_relay.mcp_server import WF_ACTIONS
 
-        self.assertEqual(set(names[7:]), set(WF_ACTIONS) | {"stage_chunk", "stage_abort"})
+        self.assertEqual(set(names[8:]), set(WF_ACTIONS) | {"stage_chunk", "stage_abort"})
         self.assertNotIn("mint_token", names)
 
     def test_tools_call_forwards_to_relay_with_seat_token(self):

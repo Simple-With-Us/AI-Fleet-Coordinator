@@ -490,6 +490,8 @@ async function serveMcp(request, env, ctx) {
     // Null unless LISTENER_API_URL and OPERATOR_NOTES_KEY are set:  the notes_* tools then answer not_configured
     // and every other tool works as before (AFC-486).  The seat a request names is always this HostedTools' seat.
     notes: operatorNotesClientFromEnv(env),
+    diagnosticsGate: gate(env, GATE_LOG_NAME),
+    workerEnv: env,
   });
   // The authenticated grant assigns the acting principal. No per-call peer or
   // bot credential loader is installed, even for legacy shared OAuth seats.
@@ -629,6 +631,8 @@ async function serveGbBearerMcp(request, env, token, ctx, credential = null) {
     recall: recallClientFromResolved(recallSecrets, env),
     fleetlink: fleetlinkClientFromSecret(fleetlinkSecret, env, { resolvedTokens: fleetlinkTokens }),
     notes: operatorNotesClientFromEnv(env),
+    diagnosticsGate: gate(env, GATE_LOG_NAME),
+    workerEnv: env,
     linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
     delegatedLinear: true,
     config: { ...config, botEmails: { ...config.botEmails, [identity]: credentials.email } },
@@ -758,6 +762,8 @@ async function serveSbtBearerMcp(request, env, token, ctx, credential = null) {
     fleetlink: fleetlinkClientFromSecret(Object.hasOwn(ADDITIONAL_BEARER_SEATS, seat) ? "" : fleetlinkSecret, env, { resolvedTokens: fleetlinkTokens }),
     listener: listenerClientFromEnv(env, seat, { wakeKey: listenerWakeKey }),
     notes: operatorNotesClientFromEnv(env),
+    diagnosticsGate: gate(env, GATE_LOG_NAME),
+    workerEnv: env,
   });
   const routed = new IdentityRouter({ callerTools: tools, credentials: null, createIdentity: null });
   const authInfo = { token: grantRef, clientId: "sbt-bearer", scopes, extra: { seat } };
