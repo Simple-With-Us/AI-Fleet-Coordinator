@@ -529,8 +529,12 @@ print(json.dumps(result))
             [t["name"] for t in listed[len(served) : len(served) + len(linear)]], linear
         )
         fleetlink = json.loads((mcp / "fleetlink-tools.json").read_bytes())["tools"]
+        peer_actions = json.loads((mcp / "peer-actions-tools.json").read_bytes())["tools"]
         self.assertTrue(fleetlink)
-        self.assertEqual(listed[len(served) + len(linear) :], fleetlink)
+        self.assertTrue(peer_actions)
+        tail = listed[len(served) + len(linear) :]
+        self.assertEqual(tail[: len(fleetlink)], fleetlink)
+        self.assertEqual(tail[len(fleetlink) :], peer_actions)
 
     def test_generated_wrapper_isolation_flags(self):
         for name in (

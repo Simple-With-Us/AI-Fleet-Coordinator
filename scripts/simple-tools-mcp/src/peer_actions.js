@@ -4,6 +4,7 @@
 
 import PEER_ACTIONS_JSON from "../../simple_tools/mcp/peer-actions-tools.json" with { type: "json" };
 import { ToolError, okResult } from "./contract.js";
+import { canonicalSeatName } from "./identity-aliases.js";
 import { resolveSecret } from "./infisical.js";
 
 export const PEER_ACTIONS_TOOLS = Object.freeze(PEER_ACTIONS_JSON.tools);
@@ -26,7 +27,7 @@ function cleanLine(name, value, max = TEXT_MAX) {
 }
 
 function cleanSeat(name, value) {
-  const text = cleanLine(name, value, 32).toUpperCase();
+  const text = canonicalSeatName(cleanLine(name, value, 32));
   if (!SEAT_RE.test(text)) throw new ToolError("invalid_argument", `${name} must be a fleet seat tag`);
   return text;
 }
@@ -129,7 +130,7 @@ async function appendRow(env, row, fetchImpl) {
   const token = await googleAccessToken(sa, fetchImpl);
   const url =
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/` +
-    `${encodeURIComponent(APPEND_RANGE)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+    `${encodeURIComponent(APPEND_RANGE)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`;
   const body = JSON.stringify({ values: [row] });
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const res = await fetchImpl(url, {

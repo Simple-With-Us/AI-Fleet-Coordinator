@@ -76,7 +76,9 @@ class PeerActionsTests(unittest.TestCase):
 
     def test_load_service_account_from_infisical(self):
         fake = FakeInfisical()
-        with mock.patch("simple_tools.peer_actions.urllib.request.urlopen", fake.open):
+        opener = mock.Mock()
+        opener.open = fake.open
+        with mock.patch.object(P, "_http_opener", return_value=opener):
             with mock.patch.object(P, "_secret_from_file_or_env", return_value="st." + ("x" * 40)):
                 with mock.patch.object(P, "_project_id", return_value="proj-test"):
                     sa = P.load_service_account_json({})
@@ -90,7 +92,7 @@ class PeerActionsTests(unittest.TestCase):
             action_taken="a",
             result="done",
         )
-        with mock.patch.object(P.urllib.request, "build_opener") as build:
+        with mock.patch.object(P, "_http_opener") as build:
             out = P.log_row(entry, dry_run=True, env={"GOOGLE_SHEETS_SA": json.dumps(FAKE_SA)})
             build.assert_not_called()
         self.assertTrue(out["dry_run"])

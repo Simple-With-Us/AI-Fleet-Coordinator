@@ -57,6 +57,20 @@ API_TIMEOUT_S = 30.0
 MAX_RETRY_ATTEMPTS = 5
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow redirects; urllib would re-send the Authorization header to another host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        return None
+
+
+def _http_opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(
+        _NoRedirect(),
+        urllib.request.HTTPSHandler(context=ssl.create_default_context()),
+    )
+
+
 class PeerActionsError(Exception):
     def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:
         super().__init__(message)
@@ -147,8 +161,9 @@ def _infisical_get_secret(
             "User-Agent": "simple-peer-actions/1.0",
         },
     )
+    opener = _http_opener()
     try:
-        with urllib.request.urlopen(req, timeout=API_TIMEOUT_S) as resp:
+        with opener.open(req, timeout=API_TIMEOUT_S) as resp:
             raw = resp.read(512 * 1024 + 1)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
@@ -358,9 +373,7 @@ class SheetsClient:
     ) -> None:
         self.spreadsheet_id = spreadsheet_id
         self._token_provider = token_provider
-        self._opener = opener or urllib.request.build_opener(
-            urllib.request.HTTPSHandler(context=ssl.create_default_context())
-        )
+        self._opener = opener or _http_opener()
         self._sleep = sleep or time.sleep
 
     def append(self, row: list[str]) -> dict[str, Any]:
@@ -369,7 +382,7 @@ class SheetsClient:
         url = (
             f"https://sheets.googleapis.com/v4/spreadsheets/{self.spreadsheet_id}/values/"
             f"{urllib.parse.quote(APPEND_RANGE, safe='')}:append"
-            "?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS"
+            "?valueInputOption=RAW&insertDataOption=INSERT_ROWS"
         )
         body = json.dumps({"values": [row]}, separators=(",", ":")).encode()
         attempt = 0
