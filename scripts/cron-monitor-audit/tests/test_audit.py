@@ -404,7 +404,9 @@ class SentryClientTests(unittest.TestCase):
                     "status": "active",
                     "isMuted": 1,
                     "project": {"slug": "fleet-infra"},
-                    "environments": [{"status": "ok", "lastCheckIn": "2026-11-11T00:00:00Z", "isMuted": 0}],
+                    "environments": [
+                        {"status": "ok", "lastCheckIn": "2026-11-11T00:00:00Z", "isMuted": 0}
+                    ],
                 }
             ]
         )[0]
