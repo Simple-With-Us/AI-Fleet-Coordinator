@@ -13,7 +13,7 @@ import json
 import sys
 from typing import Any
 
-from . import core, ingest
+from . import core
 from .core import FleetRagError, eprint
 from .ingest import STATE_PATH, IngestLock, IngestLocked, Writer, load_state, save_state
 from .note_upsert import DEFAULT_LOCK_TIMEOUT_S, note_doc_id

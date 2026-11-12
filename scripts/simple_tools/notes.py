@@ -446,7 +446,9 @@ def check_note_id(raw: Any) -> str:
             "argument 'note_id' is %d characters;  at most %d" % (len(note_id), NOTE_ID_MAX),
         )
     if any(ch in note_id for ch in "*?%"):
-        raise NotesError("invalid_argument", "argument 'note_id' must be an exact id, not a pattern")
+        raise NotesError(
+            "invalid_argument", "argument 'note_id' must be an exact id, not a pattern"
+        )
     if not NOTE_ID_RE.match(note_id):
         raise NotesError(
             "invalid_argument",
@@ -1222,7 +1224,9 @@ def _deleted_note_id(stdout: str) -> str | None:
     return match.group(1)[:NOTE_ID_MAX] if match else None
 
 
-def _delete_result(request: Mapping[str, Any], env: Mapping[str, str], *, apple_deleted: bool) -> dict[str, Any]:
+def _delete_result(
+    request: Mapping[str, Any], env: Mapping[str, str], *, apple_deleted: bool
+) -> dict[str, Any]:
     note_id = str(request.get("note_id") or "")
     rag = _fleet_rag_delete(note_id, env)
     result: dict[str, Any] = {

@@ -2934,7 +2934,18 @@ LOCAL_COMMANDS: dict[str, Callable[[Runtime, argparse.Namespace], int]] = {
 # `simple-notes` verbs (AFC-486:  one per notes_* tool, plus the Mac runner).  They are top-level commands, so they
 # land in LOCAL_COMMANDS beside the listener verbs, except `read`, which `simple-chat` owns too (a topic's history)
 # and which only the simple-notes override below sends here.
-NOTES_VERBS = ("create", "update", "pin", "unpin", "delete", "read", "list", "status", "log", "runner")
+NOTES_VERBS = (
+    "create",
+    "update",
+    "pin",
+    "unpin",
+    "delete",
+    "read",
+    "list",
+    "status",
+    "log",
+    "runner",
+)
 for _action in NOTES_VERBS:
     if _action != "read":
         LOCAL_COMMANDS[_action] = notes_cli.cmd_notes
