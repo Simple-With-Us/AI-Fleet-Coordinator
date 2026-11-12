@@ -13,10 +13,11 @@ from simple_tools import grok_wake as GW
 from simple_tools import wake_router as WR
 from simple_tools import wake_service as SVC
 
-SID = "01a1cd37-4371-7f13-866e-ab3ef60d58f8"
+# Fixtures are synthetic on purpose:  no real session id and no real home path.
+SID = "00000000-0000-4000-8000-000000000001"
 BODY = "THE-MESSAGE-BODY-MUST-NOT-TRAVEL"
 SUMMARY = "THE-TRANSCRIPT-SUMMARY-MUST-NOT-TRAVEL"
-CWD = "/Users/jay/apps/lanes/example"
+CWD = "/tmp/fixture-apps/lanes/example"
 
 
 def request(host: str = "mac", generation: object = 2, **wake_over) -> dict:
@@ -178,6 +179,17 @@ class GrokWake(unittest.TestCase):
         self.assertEqual([call[2] for call in drive.calls], ["list", "prompt"])
         self.assertTrue(str(drive.calls[0][1]).endswith("grok-drive.py"))
         self.assertIn(self.tmp, drive.calls[0][1])
+
+    def test_secret_shaped_metadata_is_withheld_from_the_prompt(self) -> None:
+        secret = "ghp_" + "a1B2" * 9
+        body = request(topic="deploy " + secret, sender=secret, channel=secret)
+        body["wake"]["zulip_link"] = "https://example.invalid/m/1?t=" + secret
+        drive, answer = self.deliver(body)
+        self.assertEqual(answer["delivery"]["outcome"], "sent")
+        prompted = drive.prompted()
+        assert prompted is not None
+        self.assertNotIn(secret, "\n".join(prompted))
+        self.assertIn(WR.secretscan.WITHHELD, prompted[prompted.index("--prompt") + 1])
 
     def test_a_queued_acceptance_counts_even_when_ok_is_absent(self) -> None:
         _drive, answer = self.deliver(drive=Drive([row()], {"queued": True}))
