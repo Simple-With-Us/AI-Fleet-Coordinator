@@ -2947,14 +2947,18 @@ NOTES_VERBS = (
     "runner",
 )
 for _action in NOTES_VERBS:
-    if _action != "read":
+    if _action not in ("read", "delete"):
         LOCAL_COMMANDS[_action] = notes_cli.cmd_notes
 
 # `status` and `read` are verbs of two commands:  `simple-chat status` is the listener's and `simple-chat read` a
 # topic's history, `simple-notes status` and `simple-notes read` are the notes ones.  A bare name cannot pick one,
 # so each command overrides them for its own verbs.
 DISPATCH_OVERRIDES: dict[str, dict[str, Callable[[Runtime, argparse.Namespace], int]]] = {
-    "simple-notes": {"status": notes_cli.cmd_notes, "read": notes_cli.cmd_notes},
+    "simple-notes": {
+        "status": notes_cli.cmd_notes,
+        "read": notes_cli.cmd_notes,
+        "delete": notes_cli.cmd_notes,
+    },
     "simple-chat": {"status": listener_cli.cmd_status},
 }
 
