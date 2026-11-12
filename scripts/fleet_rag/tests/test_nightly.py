@@ -97,7 +97,13 @@ class NightlyJobTests(unittest.TestCase):
             def ingest_ok():
                 seen["require"] = os.environ.get("FLEET_RAG_REQUIRE_CODE_ROOT", "")
                 seen["qdrant"] = os.environ.get("QDRANT_API_KEY", "")
-                return 0, {"ok": True, "errors": [], "guard_trips": [], "warnings": []}
+                return 0, {
+                    "ok": True,
+                    "errors": [],
+                    "guard_trips": [],
+                    "warnings": [],
+                    "qdrant_prune_snapshot": {"name": "snap-2026", "collection": "test-collection"},
+                }
 
             posts: list[dict] = []
             summary = nightly_job.execute(
@@ -111,6 +117,7 @@ class NightlyJobTests(unittest.TestCase):
         self.assertTrue(summary["ok"])
         self.assertEqual(summary["alert"], "quiet")
         self.assertEqual(posts, [])
+        self.assertEqual(summary.get("qdrant_snapshot", {}).get("name"), "snap-2026")
         self.assertEqual(seen["require"], "1")
         self.assertEqual(seen["qdrant"], "value-QDRANT_API_KEY")
         self.assertNotIn("value-QDRANT_API_KEY", json.dumps(summary))
