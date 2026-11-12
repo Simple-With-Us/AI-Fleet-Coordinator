@@ -487,6 +487,25 @@ def _compliance_rules() -> list[dict[str, object]]:
             "row and the check lands when the command does.",
             source="AFC-400 starter rule 8;  the Nylas 401 class",
         ),
+        _compliance_rule(
+            "compliance-cloud-seat-api-observer",
+            ["cloud"],
+            {"type": "command", "target": "fleet-cloud-seat-observer", "detail": ""},
+            {"description": "Cloud seats are verified by an authorized read-only observer (never self-report alone)."},
+            "AG",
+            "Cloud seats are verified by an authorized read-only observer (never self-report alone).",
+            ttl_seconds=900,
+            source="AFC-441 section 16;  transport coordinated with AFC-398",
+            collector="api",
+            implemented=False,
+            implementation_reason=(
+                "The api collector trust boundary and rule templates are implemented,  "
+                "while live cloud observation awaits an authorized observer endpoint "
+                "and scoped credential (AFC-398)."
+            ),
+        ),
+        # keep outer list closing intact -> note existing code had "        )," already!
+        ),
     ]
 
 
