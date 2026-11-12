@@ -687,12 +687,17 @@ class MockLinear:
                 return {"commentCreate": None}, [{"message": "Comment already exists"}]
             iss = self.find(inp["issueId"])
             cid = inp.get("id") or str(uuid.uuid4())
+            viewer = self.viewer_for(self.current_token)
             self.comments[cid] = {
                 "id": cid,
                 "issue": iss["id"],
                 "body": inp["body"],
                 "createdAt": f"2026-10-10T{20 + len(self.comments) // 3600:02d}:{len(self.comments) // 60 % 60:02d}:{len(self.comments) % 60:02d}.000Z",
-                "user": {"name": "Fleet"},
+                "user": {
+                    "id": viewer.get("id"),
+                    "name": viewer.get("name"),
+                    "app": viewer.get("app"),
+                },
             }
             return {"commentCreate": {"success": True, "comment": {"id": cid}}}, None
         if op == "BoardRelate":
@@ -1743,34 +1748,99 @@ class OwnIntroTagTests(unittest.TestCase):
                 self.assertEqual(cli.tagged("GB-PLUMBER", None, text), text)
                 self.assertEqual(cli.tagged("GB-PLUMBER", ["abcd-1234-ffff"], text), text)
                 self.assertTrue(cli.comment_body("GB-PLUMBER", None, text).startswith(text))
-                self.assertIn("Reported by: GB-PLUMBER", cli.comment_body("GB-PLUMBER", None, text))
                 self.assertNotIn("[GB-PLUMBER]", cli.comment_body("GB-PLUMBER", None, "PR opened"))
+                self.assertNotIn("Reported by:", cli.comment_body("GB-PLUMBER", None, text))
 
-    def test_parse_comment_reads_reported_by_on_an_untagged_body(self):
-        """AFC-692:  [needs-owner] is not a seat tag;  the footer names the signer."""
+    def test_parse_comment_maps_the_linear_app_name_and_keeps_a_legacy_tag(self):
+        """AFC-692:  an untagged comment is signed by the Linear app;  an old [SEAT] tag still reads."""
         cli = load_cli()
+        self.assertEqual(cli.seat_for_linear_author("Claude"), "CLAUDE")
+        self.assertEqual(cli.seat_for_linear_author("Grok (Web/iOS)"), "GROK-WEB")
+        self.assertIsNone(cli.seat_for_linear_author("Jay Wedgeworth"))
+        self.assertIsNone(cli.seat_for_linear_author("Jet"), "JET and JET-CHAT share the name")
         parsed = cli.parse_comment(
             {
                 "id": "c1",
-                "body": "[needs-owner] notified msg 630000000\ntopic: OWNER AFC-300 x\n\nReported by: CLAUDE",
+                "body": "[needs-owner] notified msg 630000000\ntopic: OWNER AFC-300 x",
                 "createdAt": "2026-10-11T08:00:00.000Z",
-                "user": {"id": "fleet", "name": "Fleet", "app": True},
+                "user": {"id": "app-user-claude", "name": "Claude", "app": True},
             }
         )
-        self.assertEqual(parsed["author"], "CLAUDE")
+        self.assertEqual(parsed["author"], "Claude")
+        self.assertEqual(parsed["author_seat"], "CLAUDE")
         self.assertEqual(
             parsed["text"], "[needs-owner] notified msg 630000000\ntopic: OWNER AFC-300 x"
         )
+        self.assertEqual((parsed["author_id"], parsed["author_app"]), ("app-user-claude", True))
         tagged = cli.parse_comment(
             {
                 "id": "c2",
                 "body": "[CODEX·abcd1234] owner replied:  msg 5",
                 "createdAt": "2026-10-11T08:00:00.000Z",
-                "user": {"id": "fleet", "name": "Fleet", "app": True},
+                "user": {"id": "app-user-codex", "name": "Codex", "app": True},
             }
         )
         self.assertEqual(tagged["author"], "CODEX")
+        self.assertEqual(tagged["author_seat"], "CODEX")
         self.assertEqual(tagged["text"], "owner replied:  msg 5")
+
+    def test_parse_comment_trusts_author_seat_only_from_a_known_app(self):
+        """A human named Claude, or a human who types a [CLAUDE] prefix, is not a seat."""
+        cli = load_cli()
+        human_named = cli.parse_comment(
+            {
+                "id": "h1",
+                "body": "looks good",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "human-named-claude", "name": "Claude", "app": False},
+            }
+        )
+        self.assertEqual(human_named["author"], "Claude")
+        self.assertIsNone(human_named["author_seat"])
+        self.assertEqual(human_named["author_app"], False)
+        human_tag = cli.parse_comment(
+            {
+                "id": "h2",
+                "body": "[CLAUDE] owner replied:  msg 5",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "human-jay", "name": "Jay Wedgeworth", "app": False},
+            }
+        )
+        self.assertEqual(human_tag["author"], "CLAUDE")
+        self.assertIsNone(human_tag["author_seat"])
+        self.assertEqual(human_tag["author_app"], False)
+        self.assertEqual(human_tag["text"], "owner replied:  msg 5")
+        seat_app = cli.parse_comment(
+            {
+                "id": "a1",
+                "body": "owner replied:  msg 5",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "app-user-claude", "name": "Claude", "app": True},
+            }
+        )
+        self.assertEqual(seat_app["author"], "Claude")
+        self.assertEqual(seat_app["author_seat"], "CLAUDE")
+        self.assertEqual(seat_app["author_app"], True)
+        legacy = cli.parse_comment(
+            {
+                "id": "a2",
+                "body": "[CLAUDE\u00b7abcd1234] owner replied:  msg 5",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "fleet-app", "name": "Fleet", "app": True},
+            }
+        )
+        self.assertEqual(legacy["author"], "CLAUDE")
+        self.assertEqual(legacy["author_seat"], "CLAUDE")
+        self.assertEqual(legacy["author_app"], True)
+        unknown_app = cli.parse_comment(
+            {
+                "id": "a3",
+                "body": "[CLAUDE] owner replied:  msg 5",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "other-app", "name": "Random Bot", "app": True},
+            }
+        )
+        self.assertIsNone(unknown_app["author_seat"])
 
 
 class SeatAliasTests(unittest.TestCase):
@@ -2467,7 +2537,7 @@ class WriteTests(BoardTest):
         self.assertEqual(iss["state"], "Done")
         self.assertEqual(
             self.comments_of(iss)[-1],
-            f"Resolution (completed): Landed in #2894.\n\nSessions: {BASE_SESSION}\n\nReported by: CLAUDE",
+            f"Resolution (completed): Landed in #2894.\n\nSessions: {BASE_SESSION}",
         )
         d = json.loads(self.board("show", "OPS-10", "--json").stdout)
         self.assertEqual(d["resolution"], "Landed in #2894.")
@@ -2483,7 +2553,7 @@ class WriteTests(BoardTest):
             self.assertEqual(self.mock.issues[hy(B_C)]["state"], state)
         self.assertEqual(
             self.comments_of(self.mock.issues[hy(B_C)])[-1],
-            f"Status: parked\n\nSessions: {BASE_SESSION}\n\nReported by: CLAUDE",
+            f"Status: parked\n\nSessions: {BASE_SESSION}",
         )
         self.board("status", B_C[:8], "bogus", code=2)
         self.board("status", B_C[:8], "completed", "--of", "OPS-10", code=2)
@@ -2533,10 +2603,10 @@ class WriteTests(BoardTest):
         body = self.comments_of(self.mock.issues[hy(B_A)])[-1]
         self.assertEqual(
             body,
-            "Verified on main.\n\nWhere: Mac, ~/apps/lanes/A @ b\n\nSessions: sess-1, sess-2\n\nReported by: CLAUDE",
+            "Verified on main.\n\nWhere: Mac, ~/apps/lanes/A @ b\n\nSessions: sess-1, sess-2",
         )
         p = self.board("show", "OPS-10")
-        self.assertIn("CLAUDE (Mac, ~/apps/lanes/A @ b): Verified on main.", p.stdout)
+        self.assertIn("Claude (Mac, ~/apps/lanes/A @ b): Verified on main.", p.stdout)
 
 
 def footer(line: str) -> str:
@@ -4041,7 +4111,7 @@ class FileInputTests(BoardTest):
         iss = self.mock.issues[hy(B_A)]
         self.assertEqual(
             self.comments_of(iss)[-1],
-            f"Checked on main.\n\nNo change needed.\n\nSessions: {BASE_SESSION}\n\nReported by: CLAUDE",
+            f"Checked on main.\n\nNo change needed.\n\nSessions: {BASE_SESSION}",
         )
         n = len(self.mock.comments)
         p = self.board(
@@ -4062,7 +4132,7 @@ class FileInputTests(BoardTest):
         )
         self.assertEqual(
             self.comments_of(iss)[-1],
-            "From standard input.\n\nSessions: sess-1\n\nReported by: CLAUDE",
+            "From standard input.\n\nSessions: sess-1",
         )
         ops = len(self.mock.ops)
         p = self.board("comment", "OPS-10", "--text-file", f, code=2)
@@ -4459,13 +4529,18 @@ class CommentAuthorTests(BoardTest):
         rows = {c["created_at"]: c for c in self.comments("OPS-10")}
         human = rows["2026-10-11T12:00:00Z"]
         self.assertEqual(
-            (human["author"], human["author_id"], human["author_app"]),
-            ("Jay Wedgeworth", self.OWNER, False),
+            (human["author"], human["author_id"], human["author_app"], human.get("author_seat")),
+            ("Jay Wedgeworth", self.OWNER, False, None),
         )
         tagged = rows["2026-10-11T12:01:00Z"]
         self.assertEqual(
-            (tagged["author"], tagged["author_id"], tagged["author_app"]),
-            ("CLAUDE", self.APP, True),
+            (
+                tagged["author"],
+                tagged["author_id"],
+                tagged["author_app"],
+                tagged.get("author_seat"),
+            ),
+            ("CLAUDE", self.APP, True, "CLAUDE"),
         )
 
     def test_a_tag_line_changes_the_shown_author_and_never_the_account(self):
@@ -4481,6 +4556,7 @@ class CommentAuthorTests(BoardTest):
         (row,) = [c for c in self.comments("OPS-10") if c["created_at"] == "2026-10-11T12:00:00Z"]
         self.assertEqual(row["author"], "CLAUDE")
         self.assertEqual(row["author_id"], self.APP)
+        self.assertIsNone(row.get("author_seat"))
 
     def test_a_comment_whose_account_is_unknown_says_null_not_a_guess(self):
         iss = self.issue_by_ident("OPS-10")
