@@ -900,6 +900,39 @@ class OneWriterTest(RegistryApiTest):
         self.assertEqual((status, answer["count"]), (200, 1), answer)
         self.assertEqual(self.open_sids(), {"new-1", "other-1"})
 
+    def test_the_sweep_op_matches_the_seat_in_any_case(self) -> None:
+        # kody 4544698048:  the authority check folds the seat, so the filter does too.
+        self.create_store()
+        self.register("CLAUDE", "old-1")
+        self.age("old-1", 40)
+        self.register("CLAUDE", "new-1")
+        status, answer = self.call(
+            "CLAUDE", "POST", "sweep", {"platform": "minimax", "seat": " claude "}
+        )
+        self.assertEqual((status, answer["count"]), (200, 1), answer)
+        self.assertEqual(self.open_sids(), {"new-1"})
+
+    def test_a_refused_sweep_op_still_names_what_it_ended(self) -> None:
+        # kody 4544698314:  one host refused, another swept in the same pass;  the 409 says
+        # which rows the pass did end.
+        self.create_store()
+        old = ["old-%d" % n for n in range(3)]
+        for sid in old:
+            self.register_at("CLAUDE", sid, "mac")
+            self.age(sid, 40)
+        self.register_at("CLAUDE", "new-mac", "mac")
+        self.register_at("CLAUDE", "srv-old", "server")
+        self.age("srv-old", 40)
+        self.register_at("CLAUDE", "srv-new", "server")
+        status, answer = self.call(
+            "CLAUDE", "POST", "sweep", {"platform": "minimax", "seat": "CLAUDE"}
+        )
+        self.assertEqual(status, 409, answer)
+        self.assertEqual(answer["code"], "sweep_share_exceeded")
+        self.assertEqual(answer["count"], 1, answer)
+        self.assertEqual(answer["ended"][0]["native_session_id"], "srv-old")
+        self.assertEqual(self.open_sids(), set(old) | {"new-mac", "srv-new"})
+
     def test_the_sweep_op_answers_503_when_the_sweep_is_off(self) -> None:
         self.create_store()
         self.service.sweeper = None

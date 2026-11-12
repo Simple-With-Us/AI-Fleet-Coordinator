@@ -552,10 +552,14 @@ class RegistryService:
             return 503, {"error": "the stale sweep is off on this instance", "code": "sweep_off"}
         outcome = sweeper.sweep(platform, seat)
         if outcome["refused"]:
+            # The pass commits the hosts it did not refuse, so the answer names those too
+            # (kody 4544698314).
             return 409, {
                 "error": "the sweep would end more than the allowed share of a host's open rows",
                 "code": "sweep_share_exceeded",
                 "refused": outcome["refused"],
+                "ended": outcome["ended"],
+                "count": len(outcome["ended"]),
             }
         return 200, {"ended": outcome["ended"], "count": len(outcome["ended"])}
 
@@ -887,7 +891,8 @@ class Sweeper:
         if not os.path.isfile(self.service.db_path):
             raise OR.RegistryUnavailable("the registry %s is not there" % self.service.db_path)
         only_platform = OR.normalize_platform(platform) if platform else ""
-        only_seat = seat.strip()
+        # Seats compare case-insensitively, as the op's authority check does (kody 4544698048).
+        only_seat = seat.strip().upper()
         cutoff = datetime.now(UTC) - timedelta(minutes=self.stale_after_minutes)
         ended: list[dict[str, Any]] = []
         refused: list[dict[str, Any]] = []
@@ -914,7 +919,7 @@ class Sweeper:
                     for (pf, st, host, _scope), members in groups.items():
                         if only_platform and pf != only_platform:
                             continue
-                        if only_seat and st != only_seat:
+                        if only_seat and str(st).strip().upper() != only_seat:
                             continue
                         for row in _stale_and_replaced(members, cutoff):
                             doomed.setdefault((pf, host), []).append(row)
