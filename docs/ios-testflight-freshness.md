@@ -16,15 +16,31 @@ fleet's TestFlight guards.
 | `scripts/ios-fleet/ios_testflight_freshness.mjs` | The check, the remedy and the alerts.  Node, no dependencies. |
 | `scripts/ios-fleet/testflight-apps.json` | The registry:  one row per App Store Connect record.  **Edit this** when an app, a repo path, a ship workflow or a compile check changes. |
 | `scripts/ios-fleet/ios_testflight_freshness.test.mjs` | Tests (`node --test`, everything stubbed, run in CI). |
+| `scripts/ios-fleet/build_number_audit.mjs` | Read-only build-number audit (AFC-675):  checks `FLEET-PROTOCOL.md` § App Version and Build Numbers (1000-series builds from 1000 upward, marketing `0.1.0` / CT `1.1.2`).  Default scope is each app's **current** train only;  `--json`;  `--strict` exits non-zero on findings;  `--all-history` includes retired trains. |
+| `scripts/ios-fleet/build_number_audit.test.mjs` | Audit tests (`node --test`, ASC stubbed). |
 | `scripts/ios-fleet/install-testflight-freshness.sh` | Copies the check and the registry into `~/apps/ios-fleet` and loads the LaunchAgent. |
 | `scripts/launchd/com.jay.ios-testflight-freshness.plist` | The LaunchAgent:  every two hours at :20. |
 
 `~/apps/ios-fleet` stays the install target, as for the rest of the fleet's TestFlight tooling.
-The check calls `~/apps/ios-fleet/asc-api.mjs` for App Store Connect (that script reads
-`~/.secrets/appstore-connect.env`; the check never reads a credential and never echoes
-`asc-api.mjs` stderr, because a crash there can name the key path) and
-`~/apps/ios-fleet/build-window.sh` for the build window.  Set `IOS_FLEET_DIR` to point both
-somewhere else.
+The check calls `~/apps/ios-fleet/asc-api.mjs` for App Store Connect and `~/apps/ios-fleet/build-window.sh` for the build window.  Set `IOS_FLEET_DIR` to point both somewhere else.  The check resolves the App Store Connect key itself before it starts a child, and it never echoes `asc-api.mjs` stderr, because a crash there can name a key path.
+
+## Credentials (AFC-606)
+
+Freshness reads use one owned Infisical service token.  The grant must be exactly Fleet-OPS `prod` `/asc` with permission `read`.  The check asks Infisical for that token's own metadata and continues only when the grant matches.  It then reads `ASC_KEY_ID`, `ASC_ISSUER_ID` and `ASC_KEY_P8` from that folder and passes those three values to each `asc-api.mjs` child.  The service token itself is not passed to the child.
+
+The binding is one of these, and a chosen home that fails does not fall through to the next:
+
+- `IOS_TF_FRESHNESS_INFISICAL_TOKEN` in the process environment.
+- A mode `0600` or `0400` file named by `IOS_TF_FRESHNESS_INFISICAL_TOKEN_FILE`.
+- The login-keychain item whose service is `infisical-service-token` and whose account is `ios-testflight-freshness-ro`.  This is the home the LaunchAgent uses, because the plist does not carry a secret.
+
+The Fleet-OPS project id comes from `INFISICAL_FLEET_OPS_PROJECT_ID` or the first line of `~/.simple-tools/fleet-ops-project-id`.  That file holds a UUID, not a credential.
+
+A missing binding, a token that is not that exact read-only grant, an expired token, or a row that does not prove `prod:/asc` exits 2 with a message that names the binding and never a value.  The check does not call `fleet-secrets`, does not read a legacy key folder, and does not use a machine identity or universal-auth.
+
+`--allow-legacy-asc-creds`, or `IOS_TF_ALLOW_LEGACY_ASC_CREDS=1`, is the explicit opt-in that skips this binding and lets the installed `asc-api.mjs` use its own fallback (environment `ASC_*` values, then standalone `fleet-secrets` `/asc`, then a legacy key folder).  Deploy checks and the LaunchAgent do not set it.  The build-number audit uses the same `makeDeps().asc` path, so it follows the same rule.
+
+The owner creates the token and stores it.  This repository does not mint it.  Suggested registry name: `ios-testflight-freshness-ro`.  One project, environment `prod`, folder `/asc`, access read, with an expiry.  On the Mac, the login-keychain item above is the binding the scheduled job reads.
 
 ## Commands
 
@@ -40,9 +56,16 @@ node ~/apps/ios-fleet/ios_testflight_freshness.mjs --ship-behind --alert     # w
 From a lane, `node scripts/ios-fleet/ios_testflight_freshness.mjs` works the same way (it finds
 `asc-api.mjs` in `~/apps/ios-fleet`).  A full run takes about 20 seconds.
 
+Every App Store Connect call is one `asc-api.mjs` child.  The scoped token is verified once per run, and each child receives the three `ASC_*` values instead of signing in again.  The check runs at most two
+children at once, retries a child that was killed by its 120 second timeout, and stops spawning
+after three kills in a row.  A report line that says `asc-api.mjs killed by SIGTERM after the 120s
+timeout, host load N` means the Mac was overloaded (the 2026-10-20 2:20pm and 4:20pm runs failed
+this way at load 100 to 200 with memory thrashing), not that App Store Connect or the credentials
+are wrong:  find what is saturating the Mac (`top -o cpu`, the Housekeeper) and re-run.  A real credential problem reads `HTTP 401`, or exit 2 from the scoped binding.  Before 2026-10-20 a killed child was printed as `asc-api.mjs exit ?`.
+
 Exit codes:  **0** every checked app is current;  **1** something is behind, or a catch-up ship is
 still running or processing;  **2** the check itself failed (App Store Connect or GitHub
-unreachable, an unknown `--app`, a registry row that matches no commit).
+unreachable, an unknown `--app`, a registry row that matches no commit, or a missing or unverified scoped binding).
 
 A full run also writes the report to `~/.cache/ios-fleet/freshness-last.json`.
 
@@ -50,23 +73,62 @@ A full run also writes the report to `~/.cache/ios-fleet/freshness-last.json`.
 
 App Store Connect never records a git sha, so the check reconstructs it:
 
-1. **The ship run.**  The build number is the UTC cut time (`YYYYMMDDHHmm`).  The ship workflow
-   run whose start-to-end window contains that cut time is the run that uploaded the build, and
-   its `head_sha` is the shipped source.  The run's conclusion is ignored on purpose:  most green
-   ship runs are gate skips that upload nothing, and BotFleet 1.0.113 was uploaded by a run that
-   went red afterwards.
+1. **The ship run.**  The build number is the repo commit count, so a current build carries no cut
+   time.  The ship workflow run whose start-to-end window contains the upload is the run that
+   uploaded the build, and its `head_sha` is the shipped source.  The run's conclusion is ignored on
+   purpose:  most green ship runs are gate skips that upload nothing, and BotFleet 1.0.113 was
+   uploaded by a run that went red afterwards.  A build uploaded under the retired scheme still
+   carries a 12-digit UTC stamp, and those are correlated by their cut time instead.
 2. **The state file** `~/.cache/ios-fleet/last-ship-<app>.txt`, when its time matches the upload.
    Hosted runners do not write it here, so this mostly covers local ships.
-3. **Time**, labelled `time` in the output:  the build's cut time against the commit time.
+3. **Time**, labelled `time` in the output:  the build's upload time against the commit time.
 
 Containment uses the compare API:  `ahead` or `identical` from the newest native commit to the
 shipped sha means current.  The table's SHIPPED column says which source was used.
+
+## External beta groups (AFC-434)
+
+The build-level check alone cannot see what testers install from a public link or an external
+group.  For each app the check also reads App Store Connect **external** beta groups
+(`GET /v1/apps/{id}/betaGroups`, then skips rows with `isInternalGroup` on the client — the
+relationship endpoint rejects `filter[isInternalGroup]`), then for each group the newest assigned
+build (`GET /v1/builds?filter[betaGroups]={id}&sort=-uploadedDate`; an empty result means no builds
+and skips the relationship), with a fields-only relationship fallback when the filter call fails),
+the tester count, and whether the public link is enabled.  Read-only:  it never changes groups,
+builds in a group, or testers.  If this extra lookup fails for one app, the build-level result is
+kept and `externalGroupsWarning` names the error.
+
+Each app row in `--json` carries an **`externalGroups`** array (empty when there are no external
+groups).  Each element has `name`, `id`, `newestBuild` (same shape as `testflight`), `testerCount`,
+and `publicLinkEnabled`, plus `newestBuildKnown` / `testerCountKnown` (false when that leg failed).
+`testerCount` is `null` when the tester lookup failed, not zero.  When a group is wrong, `findings`
+lists `staleBuild`, `noBuilds`, and/or `noTesters` only on successful lookups;  a partial failure
+is `lookupUnknown` (warning only, does not flip the app to `behind`).  A failed lookup for one group
+sets that row's `lookupWarning` without clearing the rest.
+
+The app is **`behind`** (same exit class as code staleness) when any external group's newest build
+is older than the app's newest **VALID** processed build, when a group has **no builds**, or when a
+group has **zero testers**.  The NOTE column and `reason` string name the groups.  When the
+build-level check was `current` and only external groups caused `behind`, the JSON row sets
+`externalGroupsOnly: true` and `behindReason: "externalGroups"`.  `--ship-behind` does **not**
+dispatch a catch-up ship in that case (remedy `blocked`), because uploading a new build does not add
+testers or assign builds to a group.  When the app was already behind on native code, external
+group issues are appended to `reason` and normal auto-remedy still applies.  The existing build-level
+fields are unchanged; consumers that ignore `externalGroups` keep working.
+
+## Internal tester landing (AFC-753)
+
+A VALID processing state is not a completed landing until an internal tester can install that build.  For each app the check reads the same beta-group list and keeps the rows the external check skips (`isInternalGroup`).  The external path is unchanged.  For each internal group it records whether the app's current VALID build is assigned (`GET /v1/builds?filter[betaGroups]={id}`, the same read the external check uses) and whether that group has a reachable tester count.  Read-only: it never changes groups, builds, or testers.  If this extra lookup fails for one app, the build-level result is kept and `internalLandingWarning` names the error.
+
+Each app row in `--json` carries **`internalLanding`**.  `installable` is `true` when some internal group contains the VALID build and has at least one tester, `false` only when every internal group is proven unable to install that build, and `null` when any group is still unreadable and none is proven installable (including when the app lists no internal group).  Each group has `name`, `id`, `assigned`, `assignedKnown`, `testerCount`, and `testerCountKnown`.  `testerCount` is `null` when the count could not be read, not zero.  Findings are `notAssigned` (the VALID build is not in the group), `noTesters` (the count is zero), and `lookupUnknown` (assignment or the count could not be read).  A known miss is still recorded when the other lookup failed.  A partial failure sets that row's `lookupWarning`.  `lookupUnknown` does not by itself mark the app behind.
+
+When the build-level check was `current` and every internal group is proven to omit the VALID build or to have zero testers, the row becomes **`behind`** with `internalLandingOnly: true` and `behindReason: "internalLanding"`.  `--ship-behind` does **not** dispatch in that case (remedy `blocked`), because a ship cannot fix group membership.  An unreadable count stays a finding on the group and leaves a code-current app `current`.  When the app was already behind on native code, the internal finding is appended to `reason` and normal auto-remedy still applies.  Existing fields, including `externalGroups`, stay in place.
 
 ## Statuses
 
 | Status | Meaning |
 |---|---|
-| `current` | The newest processed build contains the newest native commit. |
+| `current` | The newest processed build contains the newest native commit, and no listed internal group is known to block install of that build. |
 | `BEHIND` | It does not.  The NOTE column says which commit is missing and what the remedy decided. |
 | `SHIPPING` | A ship run that contains the commit is queued or running, and started under 3 hours ago (`inflightMaxHours`).  An older run counts as stuck:  the app shows `BEHIND`, the NOTE links the stuck run, and it no longer holds back other apps. |
 | `PROCESSING` | An upload after the commit is still processing in App Store Connect. |
@@ -85,16 +147,16 @@ named under the table, so a new app cannot go unchecked.
 
 For each app that is behind, oldest gap first, the check runs the app's **own** ship workflow
 with `gh workflow run <workflow> --repo Simple-With-Us/<Repo> --ref main` (plus the registry's
-inputs, for example `-f upload=true` for ContactLogo and Hog Hunter).  It never runs
+inputs, for example `-f upload=true` for Hog Hunter).  It never runs
 `xcodebuild` here, never passes `--force-ship`, never sets `IOS_TF_MIN_INTERVAL_SEC`, and never
 runs an App Store GM workflow.  Every one of these must hold, or the app is reported
 `blocked` or `deferred` with the reason:
 
 1. `autoRemedy` is on for the app (the registry refuses to load when an app with `autoRemedy` on names no `compileCheck`), and its ship workflow exists and is `active` (a
    `disabled_manually` workflow is the owner's switch;  it is reported, never re-enabled).
-2. The compile check on main is green.
+2. The compile check on main is green.  A ship job gated on a repo variable (`ship.enabledVar`, Hog Hunter's `HH_IOS_TESTFLIGHT_ENABLED`) is only dispatched while that variable is `true`;  otherwise the dispatch would be a skipped job that uploads nothing.
 3. 2.5 hours have passed since the app's last upload.  The check enforces the documented fleet
-   gate itself, because ContactLogo and Hog Hunter do not ship through `ship-testflight.sh`.
+   gate itself, because ContactLogo does not ship through `ship-testflight.sh`.  Hog Hunter does (HH-157), and its `paths` here are the same exact files as its workflow's push filter.
 4. The app has not already been dispatched for this main HEAD.  A ship that keeps failing is
    tried once per HEAD, not every two hours;  a new main commit re-arms it.  (The same-HEAD skip
    inside `ship-testflight.sh` still applies on the runner.)
@@ -107,8 +169,8 @@ runs an App Store GM workflow.  Every one of these must hold, or the app is repo
 
 ## Alerts (`--alert`)
 
-The check posts to Zulip `#agent-sync`, topic `AFC testflight-freshness`, with
-`agent-sync post --as CLAUDE --session tfresh` (override the seat with `IOS_TF_FRESHNESS_SEAT`):
+The check posts to Zulip `#Work-In-Progress`, topic `AFC testflight-freshness`, with
+`simple-chat post --as CLAUDE --session tfresh` (override the seat with `IOS_TF_FRESHNESS_SEAT`):
 
 - an app the check has seen behind, without a break, for **more than 6 hours**:  by then the
   catch-up ship has had its chance, or the line says why it could not run (pipeline disabled,
@@ -124,10 +186,7 @@ atomically), and a lock directory beside it keeps two mutating runs apart.
 ## Where it runs, and why there
 
 A Mac LaunchAgent, `com.jay.ios-testflight-freshness`, every two hours at :20 (scheduled, not
-always-on;  registered in `MAC-LOCAL-PROCESSES.md`).  It needs **no new secret**:  App Store
-Connect credentials are already in `~/.secrets` for `asc-api.mjs`, `gh` is signed in with the
-`workflow` scope that `workflow_dispatch` needs, and `agent-sync` has the CLAUDE bot's Zulip
-credential, all verified under a launchd-style clean environment.  A GitHub Actions cron in
+always-on;  registered in `MAC-LOCAL-PROCESSES.md`).  It needs the scoped binding described above (the login-keychain item, plus the Fleet-OPS project id the Mac already uses for other Infisical reads).  Until that binding exists the job exits 2.  It does not fall back to `fleet-secrets` `/asc`.  `gh` is signed in with the `workflow` scope that `workflow_dispatch` needs, and `simple-chat` has the CLAUDE bot's Zulip credential.  A GitHub Actions cron in
 AI-Fleet-Coordinator could read the App Store Connect key through the org's Fleet-OPS Infisical
 identity (ContactLogo's workflows already do), but it would still need a token proven to run
 `workflow_dispatch` in every app repo (AFC's `FLEET_GITHUB_TOKEN` has an unverified scope) and a
@@ -170,8 +229,10 @@ run deferred every catch-up because the Usage Monitor ship was in flight:  one s
 - `ios-ship.yml` is `disabled_manually` in Congress.Trade and DealDex.  Re-enabling is the
   owner's call;  until then those apps alert once per new native commit.
 - DealDex has no iOS compile check on main (its `ci.yml` builds the web app only), so `autoRemedy` is off for it:  a catch-up needs a green compile check.  Add an iOS compile job, name it in the registry, and turn `autoRemedy` on.
-- CodeCaps for Mac ships only by hand (`macos-ship.yml` has no push trigger).  Set
-  `autoRemedy: true` in the registry if it should catch up automatically.
+- CodeCaps for Mac is retired from TestFlight and the Mac App Store (CC-169, owner
+  2026-10-19), so the registry carries a `skip` reason rather than a ship workflow:
+  the Mac app ships through GitHub release DMGs.  It reports as `skipped`, not
+  `BEHIND`, so there is nothing to catch up.
 - The live `ship-testflight.sh` sets `DEFAULT_MIN_INTERVAL_SEC=3600` (1 hour, owner
   2026-08-14) while the ios-fleet README documents 2.5 hours.  The check uses 2.5 hours, the
   stricter of the two.  Which one is the standing limit is the owner's call.

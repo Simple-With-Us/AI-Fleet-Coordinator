@@ -1,6 +1,6 @@
 {
   "count": 11,
-  "generated_by": "scripts/agent-sync-mcp/scripts/export-linear-catalog.mjs",
+  "generated_by": "scripts/simple-tools-mcp/scripts/export-linear-catalog.mjs",
   "local_fields": [
     "idempotency_key",
     "max_chars",
@@ -8,7 +8,7 @@
   ],
   "prefix": "linear_",
   "protocol_version": "2025-03-26",
-  "regenerate": "cd scripts/agent-sync-mcp && node scripts/export-linear-catalog.mjs",
+  "regenerate": "cd scripts/simple-tools-mcp && node scripts/export-linear-catalog.mjs",
   "sources": [
     "src/linear-mcp-specs.js",
     "src/linear-mcp-client.js"
@@ -29,7 +29,7 @@
         "properties": {
           "max_chars": {
             "default": 24000,
-            "maximum": 64000,
+            "maximum": 1000000,
             "minimum": 1000,
             "type": "integer"
           },
@@ -47,7 +47,7 @@
       },
       "kind": "read",
       "name": "linear_get_diff",
-      "title": "Linear Get Diff",
+      "title": "Linear: Get Diff",
       "upstream_name": "get_diff"
     },
     {
@@ -81,7 +81,7 @@
           },
           "max_chars": {
             "default": 24000,
-            "maximum": 64000,
+            "maximum": 1000000,
             "minimum": 1000,
             "type": "integer"
           },
@@ -137,7 +137,7 @@
       },
       "kind": "read",
       "name": "linear_list_diffs",
-      "title": "Linear List Diffs",
+      "title": "Linear: List Diffs",
       "upstream_name": "list_diffs"
     },
     {
@@ -155,7 +155,7 @@
         "properties": {
           "max_chars": {
             "default": 24000,
-            "maximum": 64000,
+            "maximum": 1000000,
             "minimum": 1000,
             "type": "integer"
           },
@@ -192,7 +192,7 @@
       },
       "kind": "read",
       "name": "linear_get_diff_threads",
-      "title": "Linear Get Diff Threads",
+      "title": "Linear: Get Diff Threads",
       "upstream_name": "get_diff_threads"
     },
     {
@@ -251,7 +251,7 @@
           },
           "max_chars": {
             "default": 24000,
-            "maximum": 64000,
+            "maximum": 1000000,
             "minimum": 1000,
             "type": "integer"
           },
@@ -280,7 +280,7 @@
       },
       "kind": "write",
       "name": "linear_save_diff_comment",
-      "title": "Linear Save Diff Comment",
+      "title": "Linear: Save Diff Comment",
       "upstream_name": "save_diff_comment"
     },
     {
@@ -304,7 +304,7 @@
           },
           "max_chars": {
             "default": 24000,
-            "maximum": 64000,
+            "maximum": 1000000,
             "minimum": 1000,
             "type": "integer"
           },
@@ -333,7 +333,7 @@
       },
       "kind": "write",
       "name": "linear_resolve_diff_thread",
-      "title": "Linear Resolve Diff Thread",
+      "title": "Linear: Resolve Diff Thread",
       "upstream_name": "resolve_diff_thread"
     },
     {
@@ -369,7 +369,7 @@
           },
           "max_chars": {
             "default": 24000,
-            "maximum": 64000,
+            "maximum": 1000000,
             "minimum": 1000,
             "type": "integer"
           },
@@ -386,7 +386,7 @@
       },
       "kind": "write",
       "name": "linear_delete_diff_comment",
-      "title": "Linear Delete Diff Comment",
+      "title": "Linear: Delete Diff Comment",
       "upstream_name": "delete_diff_comment"
     },
     {
@@ -426,7 +426,7 @@
           },
           "max_chars": {
             "default": 24000,
-            "maximum": 64000,
+            "maximum": 1000000,
             "minimum": 1000,
             "type": "integer"
           },
@@ -451,7 +451,7 @@
       },
       "kind": "write",
       "name": "linear_submit_diff_review",
-      "title": "Linear Submit Diff Review",
+      "title": "Linear: Submit Diff Review",
       "upstream_name": "submit_diff_review"
     },
     {
@@ -574,7 +574,7 @@
           },
           "max_chars": {
             "default": 24000,
-            "maximum": 64000,
+            "maximum": 1000000,
             "minimum": 1000,
             "type": "integer"
           },
@@ -686,7 +686,7 @@
       },
       "kind": "write",
       "name": "linear_update_diff",
-      "title": "Linear Update Diff",
+      "title": "Linear: Update Diff",
       "upstream_name": "update_diff"
     },
     {
@@ -710,7 +710,7 @@
           },
           "max_chars": {
             "default": 24000,
-            "maximum": 64000,
+            "maximum": 1000000,
             "minimum": 1000,
             "type": "integer"
           },
@@ -744,7 +744,7 @@
       },
       "kind": "write",
       "name": "linear_merge_diff",
-      "title": "Linear Merge Diff",
+      "title": "Linear: Merge Diff",
       "upstream_name": "merge_diff"
     },
     {
@@ -767,7 +767,7 @@
           },
           "max_chars": {
             "default": 24000,
-            "maximum": 64000,
+            "maximum": 1000000,
             "minimum": 1000,
             "type": "integer"
           }
@@ -779,7 +779,7 @@
       },
       "kind": "read",
       "name": "linear_extract_images",
-      "title": "Linear Extract Images",
+      "title": "Linear: Extract Images",
       "upstream_name": "extract_images"
     },
     {
@@ -797,7 +797,7 @@
         "properties": {
           "max_chars": {
             "default": 24000,
-            "maximum": 64000,
+            "maximum": 1000000,
             "minimum": 1000,
             "type": "integer"
           },
@@ -819,7 +819,7 @@
       },
       "kind": "read",
       "name": "linear_search_documentation",
-      "title": "Linear Search Documentation",
+      "title": "Linear: Search Documentation",
       "upstream_name": "search_documentation"
     }
   ],

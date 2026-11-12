@@ -32,6 +32,7 @@ never written, and SIM_REAPER_HOOKS=0 disables it.  Stdlib only.  Installed to ~
 by scripts/install-sim-idle-reaper.py, behind the shell prefilter sim-session-hook.sh.
 Log:  ~/Library/Logs/sim-session-hook.log.
 """
+
 from __future__ import annotations
 
 import fcntl
@@ -45,22 +46,27 @@ import time
 
 HOME = os.path.expanduser("~")
 STATE_DIR = os.environ.get("SIM_REAPER_STATE_DIR") or os.path.join(
-    HOME, "Library", "Application Support", "sim-idle-reaper")
+    HOME, "Library", "Application Support", "sim-idle-reaper"
+)
 DEVICES_DIR = os.environ.get("SIM_REAPER_DEVICES_DIR") or os.path.join(
-    HOME, "Library", "Developer", "CoreSimulator", "Devices")
+    HOME, "Library", "Developer", "CoreSimulator", "Devices"
+)
 LOG_PATH = os.environ.get("SIM_REAPER_HOOK_LOG") or os.path.join(
-    HOME, "Library", "Logs", "sim-session-hook.log")
+    HOME, "Library", "Logs", "sim-session-hook.log"
+)
 XCRUN = os.environ.get("SIM_REAPER_XCRUN") or "/usr/bin/xcrun"
 PGREP = "/usr/bin/pgrep"
 
 MCP_PREFIX = "mcp__Claude_Code_iOS_Simulator__"
-WATCH_ACTIONS = ("attach", "launch")          # `launch` re-attaches the live panel too
+WATCH_ACTIONS = ("attach", "launch")  # `launch` re-attaches the live panel too
 # Bash commands that can boot a simulator.  Read-only simctl calls (list, listapps, io, spawn,
 # shutdown) do not match, so a concurrent `simctl list` in another session cannot claim a boot.
-BOOTISH = re.compile(r"xcodebuild|\bboot(?:status)?\b|\bSimulator\b|ios-debug|run-ios|run:ios|"
-                     r"fastlane|xctest")
-BOOTED_STATES = (2, 3)                         # device.plist state: 1 Shutdown, 2 Booting, 3 Booted
-PRE_MAX_AGE = 3600                             # stale PreToolUse snapshots are pruned after this
+BOOTISH = re.compile(
+    r"xcodebuild|\bboot(?:status)?\b|\bSimulator\b|ios-debug|run-ios|run:ios|"
+    r"fastlane|xctest"
+)
+BOOTED_STATES = (2, 3)  # device.plist state: 1 Shutdown, 2 Booting, 3 Booted
+PRE_MAX_AGE = 3600  # stale PreToolUse snapshots are pruned after this
 LOCK_WAIT = 0.5
 LOG_MAX = 512 * 1024
 _SAFE = re.compile(r"[^A-Za-z0-9._-]")
@@ -228,7 +234,7 @@ def on_post(payload: dict) -> None:
         return
     path = pre_path(sid, tuid)
     if not os.path.exists(path):
-        return                                   # no snapshot: attribute nothing
+        return  # no snapshot: attribute nothing
     snap = load_json(path, {})
     try:
         os.remove(path)
@@ -249,8 +255,10 @@ def on_post(payload: dict) -> None:
     watch: list = []
     if tool == MCP_PREFIX + "control" and str(tin.get("action") or "") in WATCH_ACTIONS:
         target = str(tin.get("device") or tin.get("udid") or "")
-        watch = [u for u, n in booted.items() if target and (u.lower() == target.lower() or n == target)]
-        watch = watch or sorted(booted)          # unknown target: treat every booted device as watched
+        watch = [
+            u for u, n in booted.items() if target and (u.lower() == target.lower() or n == target)
+        ]
+        watch = watch or sorted(booted)  # unknown target: treat every booted device as watched
     if not new and not watch:
         return
 
@@ -263,11 +271,13 @@ def on_post(payload: dict) -> None:
         for u in new:
             other = newest_other_claim(u, sid)
             if other is not None and other >= pre_t:
-                log(f"skip-claim {u} session={safe(sid)[:8]} agent={agent}: another session claimed it first")
+                log(
+                    f"skip-claim {u} session={safe(sid)[:8]} agent={agent}: another session claimed it first"
+                )
                 continue
             udids[u] = {"agent": agent, "t": now, "name": booted.get(u, ""), "tool": tool}
             claimed += 1
-            log(f"own {u} \"{booted.get(u, '')}\" session={safe(sid)[:8]} agent={agent} tool={tool}")
+            log(f'own {u} "{booted.get(u, "")}" session={safe(sid)[:8]} agent={agent} tool={tool}')
         if not claimed and not watch:
             return
         if watch:
@@ -281,10 +291,18 @@ def on_post(payload: dict) -> None:
 
 
 def spawn_worker(event: str, sid: str, agent: str) -> None:
-    args = [sys.executable or "python3", os.path.abspath(__file__), "--worker", event, str(sid), agent]
+    args = [
+        sys.executable or "python3",
+        os.path.abspath(__file__),
+        "--worker",
+        event,
+        str(sid),
+        agent,
+    ]
     with open(os.devnull, "rb") as dn_in, open(os.devnull, "wb") as dn_out:
-        subprocess.Popen(args, stdin=dn_in, stdout=dn_out, stderr=dn_out,
-                         start_new_session=True, close_fds=True)
+        subprocess.Popen(
+            args, stdin=dn_in, stdout=dn_out, stderr=dn_out, start_new_session=True, close_fds=True
+        )
 
 
 def on_stop(payload: dict, event: str) -> None:
@@ -299,11 +317,13 @@ def on_stop(payload: dict, event: str) -> None:
         return
     doc = load_json(path, {})
     if doc.get("watched"):
-        return                                   # owner is watching: SessionEnd and the reaper
+        return  # owner is watching: SessionEnd and the reaper
     agent = "main" if event == "Stop" else str(payload.get("agent_id") or "")
     if not agent:
         return
-    if any(isinstance(e, dict) and e.get("agent") == agent for e in (doc.get("udids") or {}).values()):
+    if any(
+        isinstance(e, dict) and e.get("agent") == agent for e in (doc.get("udids") or {}).values()
+    ):
         spawn_worker(event, sid, agent)
 
 
@@ -311,18 +331,73 @@ def running(*names: str) -> list:
     out = []
     for n in names:
         try:
-            if subprocess.run([PGREP, "-x", n], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                              timeout=5).returncode == 0:
+            if (
+                subprocess.run(
+                    [PGREP, "-x", n],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                ).returncode
+                == 0
+            ):
                 out.append(n)
         except Exception:
-            out.append(n)                         # cannot tell: assume busy
+            out.append(n)  # cannot tell: assume busy
     return out
+
+
+def is_bitrig_running() -> bool:
+    """True when Bitrig desktop app or CLI is running, or session runs inside Bitrig."""
+    if os.environ.get("BITRIG_COMMAND_PIPE") or os.environ.get("BITRIG_MCP_SOCKET"):
+        return True
+    for name in ("Bitrig", "bitrig"):
+        try:
+            if (
+                subprocess.run(
+                    [PGREP, "-x", name],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                ).returncode
+                == 0
+            ):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def bitrig_exempt_udid(booted: dict[str, str], targets: dict) -> str | None:
+    """When Bitrig is running, exempt up to 1 booted simulator (most recently claimed/seen)."""
+    if not booted or not is_bitrig_running():
+        return None
+    state = load_json(os.path.join(STATE_DIR, "state.json"), {})
+
+    def score(u: str) -> tuple[float, str]:
+        t = 0.0
+        if u in targets and isinstance(targets[u], dict):
+            try:
+                t = float(targets[u].get("t") or 0.0)
+            except (TypeError, ValueError):
+                pass
+        try:
+            t = max(t, float(state.get(u, 0.0)))
+        except (TypeError, ValueError):
+            pass
+        return (t, u)
+
+    return max(booted.keys(), key=score)
 
 
 def shutdown(udid: str) -> int:
     try:
-        return subprocess.run([XCRUN, "simctl", "shutdown", udid], stdin=subprocess.DEVNULL,
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120).returncode
+        return subprocess.run(
+            [XCRUN, "simctl", "shutdown", udid],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=120,
+        ).returncode
     except Exception:
         return -1
 
@@ -333,21 +408,28 @@ def run_worker(event: str, sid: str, agent: str) -> None:
     with StateLock(wait=10):
         doc = load_json(path, {})
     udids = doc.get("udids") or {}
-    targets = {u: e for u, e in udids.items()
-               if isinstance(e, dict) and (agent == "*" or e.get("agent") == agent)}
+    targets = {
+        u: e
+        for u, e in udids.items()
+        if isinstance(e, dict) and (agent == "*" or e.get("agent") == agent)
+    }
     if event != "SessionEnd":
         if doc.get("watched") or not targets:
             return
-        busy = running("xcodebuild", "xctest", "Simulator")
+        busy = running("xcodebuild", "xctest", "Simulator", "bitrig")
         if busy:
             log(f"defer {tag} {len(targets)} device(s): {'/'.join(busy)} running")
             return
     booted = booted_devices()
+    exempt_udid = bitrig_exempt_udid(booted, targets)
     done = []
     for u, e in sorted(targets.items()):
         if u not in booted:
             done.append(u)
             log(f"gone {u} {tag}: already shut down")
+            continue
+        if exempt_udid and u == exempt_udid:
+            log(f"skip {u} {tag}: Bitrig is running (1 simulator exempt)")
             continue
         other = newest_other_claim(u, sid)
         try:
@@ -359,7 +441,7 @@ def run_worker(event: str, sid: str, agent: str) -> None:
             log(f"release {u} {tag}: re-booted and claimed by another session")
             continue
         rc = shutdown(u)
-        log(f"shutdown {u} \"{e.get('name', '')}\" {tag} rc={rc}")
+        log(f'shutdown {u} "{e.get("name", "")}" {tag} rc={rc}')
         if rc == 0:
             done.append(u)
     with StateLock(wait=10):
@@ -391,7 +473,7 @@ def main(argv: list) -> int:
     if len(argv) >= 5 and argv[1] == "--worker":
         try:
             run_worker(argv[2], argv[3], argv[4])
-        except Exception as exc:                  # never raise; leave a trace for diagnosis
+        except Exception as exc:  # never raise; leave a trace for diagnosis
             log(f"worker error {type(exc).__name__}")
         return 0
     try:

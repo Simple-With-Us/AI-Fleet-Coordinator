@@ -5,6 +5,7 @@ the field names the plan gives and answer {"ok": False, "reason": ...} for a sha
 an unreadable document is Missing in the digest, never zero.  Every free-text field is cleaned with the F3
 `render_untrusted` (plain form);  a lane is named by its folder name, never by its full path.
 """
+
 from __future__ import annotations
 
 import os
@@ -14,7 +15,7 @@ from typing import Any
 from fleet_facts import safety
 from fleet_facts.activity import parse_time
 
-__all__ = ["autopush_view", "needs_owner_view", "asks_view", "lane_name", "IDENT"]
+__all__ = ["IDENT", "asks_view", "autopush_view", "lane_name", "needs_owner_view"]
 
 IDENT = re.compile(r"^[A-Z][A-Z0-9]{0,7}-\d{1,7}$")
 _REPO = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
@@ -84,7 +85,9 @@ def _lane(row: dict) -> dict:
         "snapshot_only": row.get("snapshot_only") is True,
         "armed_local_work": row.get("armed_local_work") is True or state == "armed_local_work",
         "pr_number": _int(row.get("pr_number")),
-        "pr_is_auto_draft": row.get("pr_is_auto_draft") if isinstance(row.get("pr_is_auto_draft"), bool) else None,
+        "pr_is_auto_draft": row.get("pr_is_auto_draft")
+        if isinstance(row.get("pr_is_auto_draft"), bool)
+        else None,
         "reason": _refusal_reason(row),
     }
 
@@ -109,7 +112,10 @@ def autopush_view(data: Any) -> dict:
                 refusals_raw = _dicts(document[key])
                 break
     if rows is None and refusals_raw is None:
-        return {"ok": False, "reason": "the fleet-autopush status has a shape this version does not know"}
+        return {
+            "ok": False,
+            "reason": "the fleet-autopush status has a shape this version does not know",
+        }
     lanes = [_lane(r) for r in (rows or [])]
     refusals: list[dict] = []
     seen: set[str] = set()
@@ -120,7 +126,11 @@ def autopush_view(data: Any) -> dict:
         if name:
             seen.add(name)
     for lane in lanes:
-        if lane["reason"] and lane["lane"] not in seen and ((lane["unpushed"] or 0) > 0 or (lane["dirty"] or 0) > 0):
+        if (
+            lane["reason"]
+            and lane["lane"] not in seen
+            and ((lane["unpushed"] or 0) > 0 or (lane["dirty"] or 0) > 0)
+        ):
             refusals.append({"lane": lane["lane"], "reason": lane["reason"]})
             if lane["lane"]:
                 seen.add(lane["lane"])
@@ -131,7 +141,11 @@ def _option_numbers(value: Any) -> list[int]:
     if isinstance(value, list):
         out = []
         for item in value:
-            number = _int(item) if not isinstance(item, dict) else _int(item.get("n") or item.get("number") or item.get("index"))
+            number = (
+                _int(item)
+                if not isinstance(item, dict)
+                else _int(item.get("n") or item.get("number") or item.get("index"))
+            )
             if number is not None and number > 0 and number not in out:
                 out.append(number)
         return sorted(out)
@@ -152,7 +166,10 @@ def needs_owner_view(data: Any) -> dict:
                 rows = _dicts(document[key])
                 break
     if rows is None:
-        return {"ok": False, "reason": "the needs-owner list has a shape this version does not know"}
+        return {
+            "ok": False,
+            "reason": "the needs-owner list has a shape this version does not know",
+        }
     by_ident: dict[str, dict] = {}
     over: set[str] = set()
     for row in rows:
@@ -160,7 +177,11 @@ def needs_owner_view(data: Any) -> dict:
         if not (isinstance(ident, str) and IDENT.match(ident)):
             continue
         seat = safety.safe_token(row.get("seat"), 40)
-        topic = row.get("topic") if isinstance(row.get("topic"), str) and 0 < len(row.get("topic")) <= 60 else None
+        topic = (
+            row.get("topic")
+            if isinstance(row.get("topic"), str) and 0 < len(row.get("topic")) <= 60
+            else None
+        )
         state = (safety.clean(row.get("state"), 20) or "").lower() or None
         replied = row.get("replied") not in (None, False, "", {}, [], 0) or state == "replied"
         options = _option_numbers(row.get("low_stakes"))
@@ -180,7 +201,7 @@ def needs_owner_view(data: Any) -> dict:
 
 
 def asks_view(data: Any) -> dict:
-    """C3 `agent-sync asks status --json`:  the owner's earlier asks that are still open."""
+    """C3 `simple-chat asks status --json`:  the owner's earlier asks that are still open."""
     document = data.get("document") if isinstance(data, dict) else None
     rows = None
     if isinstance(document, list):
@@ -195,9 +216,11 @@ def asks_view(data: Any) -> dict:
     items = []
     for row in rows[:50]:
         ident = row.get("identifier")
-        items.append({
-            "text": safety.clean(row.get("title") or row.get("text") or row.get("ask"), 200),
-            "identifier": ident if isinstance(ident, str) and IDENT.match(ident) else None,
-            "age_hours": _num(row.get("age_hours")),
-        })
+        items.append(
+            {
+                "text": safety.clean(row.get("title") or row.get("text") or row.get("ask"), 200),
+                "identifier": ident if isinstance(ident, str) and IDENT.match(ident) else None,
+                "age_hours": _num(row.get("age_hours")),
+            }
+        )
     return {"ok": True, "count": len(rows), "items": items}

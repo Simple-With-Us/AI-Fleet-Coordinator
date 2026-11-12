@@ -44,15 +44,19 @@ jobs:
     permissions:
       contents: write
       pull-requests: read
+      issues: write
+      actions: read
     uses: Simple-With-Us/AI-Fleet-Coordinator/.github/workflows/pr-autofix-reusable.yml@<sha>
     secrets:
       MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+      META_MODEL_API_TOKEN: ${{ secrets.META_MODEL_API_TOKEN }}
+      USAGE_INGEST_TOKEN: ${{ secrets.USAGE_INGEST_TOKEN }}
       AUTOFIX_GITHUB_APP_PRIVATE_KEY: ${{ secrets.SWU_AUTOFIX_GITHUB_APP_PRIVATE_KEY }}
 ```
 
 The `concurrency` group is shared on purpose by every autofix caller in a repo (another autofix bot uses the same group name), so pushes to one PR branch are serialized.  The group belongs in the caller only:  the reusable job must not repeat it, because a job that asks for the group its own run already holds is cancelled as a deadlock before any step runs.  That is what stopped every PR Autofix run from `2e671004` (#520) until the job-level copy was removed, so a caller pinned to any commit from `2e671004` up to that fix (BotFleet and DealDex were on `3fac4c3c`) needs a repin.  `cancel-in-progress` is `false` so one bot never cancels the other mid-push;  keep the group name and that setting exactly as shown.
 
-`MINIMAX_API_KEY` is an org secret visible to every repo.  Pair it with org secret `SWU_AUTOFIX_GITHUB_APP_PRIVATE_KEY` and org/repo variable `SWU_AUTOFIX_GITHUB_APP_ID` so autofix pushes re-trigger CI (see below).  The caller-level `if:` keeps a human comment from starting a runner at all;  the reusable job repeats the same checks and also requires the PR to be open.
+`MINIMAX_API_KEY` is an org secret visible to every repo.  Pair it with org secret `SWU_AUTOFIX_GITHUB_APP_PRIVATE_KEY` and org/repo variable `SWU_AUTOFIX_GITHUB_APP_ID` so autofix pushes re-trigger CI (see below).  The job-level `permissions:` block caps the token the reusable receives, so the caller must grant `issues: write` for the run-marker comment and `actions: read` for the `meter` job's usage-artifact download;  a caller missing them fails at startup, when GitHub validates the called workflow's requested scopes against the caller's grants.  `META_MODEL_API_TOKEN` is only consumed when `SWU_AUTOFIX_MODEL_BASE_URL` points at `api.meta.ai`, and `USAGE_INGEST_TOKEN` only feeds the usage report (the run is unchanged without it), but the reusable can only read a secret the caller maps, so the template passes both through.  The caller-level `if:` keeps a human comment from starting a runner at all;  the reusable job repeats the same checks and also requires the PR to be open.
 
 ## Inputs
 
@@ -63,7 +67,7 @@ All optional, passed with `with:` on the calling job.
 | `allowed_bots` | `kody-ai[bot],chatgpt-codex-connector[bot],cursor[bot],claude[bot]` | Comma-separated logins whose comments may start a run. |
 | `max_iterations` | `5` | Most autofix commits on one PR (overridden by trusted file on default branch). |
 | `claude_code_version` | `2.1.295` | Version of `@anthropic-ai/claude-code` to install. |
-| `model` | `MiniMax-M3.1-Flash-Preview` | MiniMax model id (overridden by trusted file on default branch). |
+| `model` | `MiniMax-M3.1-Flash` | MiniMax model id (overridden by trusted file on default branch). |
 | `max_turns` | `60` | Claude Code turn budget (overridden by trusted file on default branch). |
 | `verify_command` | empty | Shell run after the model and before push; trusted file may supply this instead. |
 
@@ -74,7 +78,7 @@ The allowlist is authoritative.  A comment from a bot that is not listed never s
 Add `.github/pr-autofix-trusted.yml` on the **default branch** of each repo that uses PR Autofix:
 
 ```yaml
-model: MiniMax-M3.1-Flash-Preview
+model: MiniMax-M3.1-Flash
 max_turns: 60
 max_iterations: 5
 verify_command: |
@@ -109,6 +113,12 @@ Sanitized diagnostics (no raw transcripts) are uploaded as a short-lived artifac
 
 Pushes made with the workflow `GITHUB_TOKEN` do not trigger other workflows.  When `SWU_AUTOFIX_GITHUB_APP_PRIVATE_KEY` and `SWU_AUTOFIX_GITHUB_APP_ID` are configured, the reusable workflow mints a GitHub App installation token and pushes with that instead so required checks run on the new head.  The mint step is gated on the org variable `SWU_AUTOFIX_GITHUB_APP_ID`, not on the secret, because GitHub rejects workflow startup when a step `if` references `secrets`.  A preceding shell step reads the private key from the environment and skips mint when the variable is set but the secret is empty, so the run falls back to `GITHUB_TOKEN` push with a notice.  Without the App, the push still lands but logs a warning that CI must be re-triggered manually.
 
+## Usage Metering
+
+Each attempted fix reports its token usage to Usage Monitor (UM-1593), so the fleet can see what autofix spends.  The model job keeps only the counters of Claude Code's final result message (tokens, model, duration, turns) and hands them to a separate `meter` job as a one-day artifact.  The `meter` job posts one v2 usage event (`producerId: ci-autofix`, `harness: claude-code-ci`, repo, PR number, run id) through the pinned fleet reporting action.  The ingest credential exists only in that job, because the model job runs Claude Code with Bash and could rewrite any file on its runner.  Reporting is `continue-on-error`, exits 0 on every failure, and also covers runs whose push the gate then refuses.
+
+The reusable declares an optional secret, `USAGE_INGEST_TOKEN`, which callers forward like `MINIMAX_API_KEY`:  `USAGE_INGEST_TOKEN: ${{ secrets.USAGE_INGEST_TOKEN }}`.  Without it the `meter` job does nothing.  A caller must pin a SHA that declares the secret before it forwards it, because GitHub rejects a secret the called workflow does not declare.
+
 ## What It Skips
 
 - PRs that are closed, merged, or from a fork (`isCrossRepository`), since there is no branch to push to.
@@ -123,8 +133,8 @@ The fleet runs three autofix bots (this PR Autofix, the Claude Code Autofix reus
 
 - PR Autofix, this workflow.
 - Claude Code Autofix, the Claude Code Autofix reusable (anthropics/claude-code-action on MiniMax; the filename is left over from its DeepSeek "Codex Autofix" days).
-- Kody autofix, the Kody reusable (MiniMax M3 (`MiniMax-M3`) through MiniMax’s direct OpenAI-compatible endpoint, `https://api.minimax.io/v1`, using `MINIMAX_API_KEY`, enabled fleet-wide 2026-10-11 by the org variable `SWU_KODY_AUTOFIX_ENABLED`; board 99e559ea).
+- Kody autofix, the Kody reusable (MiniMax M3.1 Flash (`MiniMax-M3.1-Flash`) through MiniMax’s direct OpenAI-compatible endpoint, `https://api.minimax.io/v1`, using `MINIMAX_API_KEY`, enabled fleet-wide 2026-10-11 by the org variable `SWU_KODY_AUTOFIX_ENABLED`; board 99e559ea).
 
 GitHub keeps one running and one pending run per group, and a newer pending run replaces the older one.
 
-Codex's own fix feature runs in Codex's cloud, outside this queue.  Agents never ask Codex to fix a PR unless Jay agrees first (AGENT-SYNC.md, [Landing Work](../AGENT-SYNC.md#landing-work-commit-pr-review-merge-deploy)).  Asking Codex to *review* a PR stays allowed;  review findings are fixed by these fleet autofix bots or by the seat that owns the PR.
+Codex's own fix feature runs in Codex's cloud, outside this queue.  Agents never ask Codex to fix a PR unless Jay agrees first (FLEET-PROTOCOL.md, [Landing Work](../FLEET-PROTOCOL.md#landing-work-commit-pr-review-merge-deploy)).  Asking Codex to *review* a PR stays allowed;  review findings are fixed by these fleet autofix bots or by the seat that owns the PR.

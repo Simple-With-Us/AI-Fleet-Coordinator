@@ -11,7 +11,7 @@ Fleet RAG (any device):
 
 See `mcp.example.json` and `docs/RAG-FLEET-INFRA.md`.
 
-Token:  `~/.secrets/seat-mcp.env` (`SEAT_MCP_TOKEN`).  chmod 600.  Never print it.  Never put it in `~/.shellular/agents.json` or git.
+Token:  Infisical Fleet-OPS `/seat-mcp` (`SEAT_MCP_TOKEN`), read with `fleet-secrets get SEAT_MCP_TOKEN --path /seat-mcp`.  Never print it.  Never put it in `~/.shellular/agents.json` or git.
 
 Job records:  `~/.seat-mcp/jobs/<jobId>.json` (atomic write + ring-buffered tail).  Multi-seat:  do not use `~/.dsh/mcp-jobs`.
 
@@ -80,9 +80,7 @@ Test adapters (not for Conductor production):  `_echo`, `_sleep`.
 Load the token into the environment without printing it:
 
 ```bash
-set -a
-source /Users/jay/.secrets/seat-mcp.env
-set +a
+SEAT_MCP_TOKEN="$(fleet-secrets get SEAT_MCP_TOKEN --path /seat-mcp)"
 BASE=http://127.0.0.1:8793/mcp
 AUTH="Authorization: Bearer $SEAT_MCP_TOKEN"
 ```
@@ -182,3 +180,11 @@ pm2 restart seat-mcp
 ```
 
 Tests:  `cd scripts && python3 -m unittest fleet_rag.tests.test_seat_mcp_recall -v`.
+
+## Webhook proxy (`/hooks/`)
+
+`POST` (and `GET`) `/hooks/<endpoint>/<secret>` is passed through, unauthenticated, to BotFleet's webhook-only ingress on `127.0.0.1:8800`, with the body and headers (minus `Host` and `Connection`) intact.  The ingress checks the capability secret and answers;  seat-mcp relays its status and body unchanged, or answers `502` when the ingress is down.  Because the route is unauthenticated, seat-mcp bounds each request first:  a POST needs a `Content-Length` (`411` without one, and for chunked bodies), a bad or negative length is `400`, a body over 2 MB (the same cap as the MCP and `/recall/*` paths) is `413` without being read, and a body that stalls for 30 seconds is `408`.  This is how GitHub, Sentry, PagerDuty and Congress.Trade reach BotFleet webhook triggers through the public seat-mcp route.
+
+The path IS the credential, so the request log writes `/hooks/<redacted>` and never the endpoint id or the secret (AFC-359).  The capability URLs are recorded in Infisical Fleet-OPS (`/botfleet-github-webhooks`, `/botfleet-firefighter-webhooks`, `/global-api-keys`);  rotate one with BotFleet's `POST /api/webhooks/<id>/rotate` and then move every sender to the new URL.
+
+Tests:  `cd scripts/seat-mcp && python3 -m unittest test_hooks_proxy test_recall_http test_main_token -v`.

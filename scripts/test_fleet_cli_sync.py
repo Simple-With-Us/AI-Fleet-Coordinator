@@ -1,37 +1,40 @@
 #!/usr/bin/env python3
 """Offline source/transport tests.  No SSH, credentials, installed configs, or models."""
+
 from __future__ import annotations
 
 import base64
-from contextlib import redirect_stdout
 import fcntl
 import importlib.util
 import io
 import json
 import os
-from pathlib import Path
 import shlex
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
 from unittest.mock import patch
 
-SPEC = importlib.util.spec_from_file_location("fleet_cli_sync", Path(__file__).with_name("fleet-cli-sync.py"))
+SPEC = importlib.util.spec_from_file_location(
+    "fleet_cli_sync", Path(__file__).with_name("fleet-cli-sync.py")
+)
 S = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(S)
 
-POLICY = '''import hashlib,json
-MAX_BUNDLE_BYTES=8*1024*1024
+POLICY = """import hashlib,json
+MAX_BUNDLE_BYTES=12*1024*1024
 def allowed_path(path):
-    if path in {"scripts/agent-sync","scripts/fleet-cli-release.py","fleet-apps.json","docs/protocols/agent-sync-partition.toml","scripts/linear-board/board","scripts/linear-board/board-ids.txt"}: return True
+    if path in {"scripts/simple-chat","scripts/fleet-cli-release.py","fleet-apps.json","docs/protocols/simple-tools-partition.toml","scripts/linear-board/board","scripts/linear-board/board-ids.txt"}: return True
     parts=path.split("/")
-    if len(parts)==3 and parts[:2]==["scripts","agent_sync"] and parts[2].endswith(".py"): return True
-    if len(parts)==4 and parts[:3]==["scripts","agent_sync","mcp"] and (parts[3].endswith(".py") or parts[3] in {"tools.json","fixtures.jsonl"}): return True
-    return path=="scripts/agent_sync/wake/wake-schema.json"
+    if len(parts)==3 and parts[:2]==["scripts","simple_tools"] and parts[2].endswith(".py"): return True
+    if len(parts)==4 and parts[:3]==["scripts","simple_tools","mcp"] and (parts[3].endswith(".py") or parts[3] in {"tools.json","fixtures.jsonl"}): return True
+    return path=="scripts/simple_tools/wake/wake-schema.json"
 def manifest_digest(files):
     value={path:{"mode":entry["mode"],"sha256":entry["sha256"]} for path,entry in files.items()}
     return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(",",":")).encode()).hexdigest()
-'''
+"""
 
 
 class Transport(S.Runner):
@@ -49,8 +52,11 @@ class Transport(S.Runner):
         if self.mode == "failure":
             return subprocess.CompletedProcess(argv, 1, b"", b"NEVER_PRINT_THIS_CREDENTIAL")
         bundle = json.loads(kwargs["data"])
-        reply = {"status": "unchanged" if self.mode == "unchanged" else "activated",
-                 "source_commit": bundle["source_commit"], "bundle_sha256": bundle["bundle_sha256"]}
+        reply = {
+            "status": "unchanged" if self.mode == "unchanged" else "activated",
+            "source_commit": bundle["source_commit"],
+            "bundle_sha256": bundle["bundle_sha256"],
+        }
         if self.mode == "paused":
             reply["status"] = "paused"
         if self.mode == "wrong_digest":
@@ -71,18 +77,35 @@ class Fixture(unittest.TestCase):
         self.repo.mkdir()
         self.state = self.root / "state"
         self.git("init", "-q")
-        self.git("remote", "add", "origin", "git@github.com:Simple-With-Us/AI-Fleet-Coordinator.git")
+        self.git(
+            "remote", "add", "origin", "git@github.com:Simple-With-Us/AI-Fleet-Coordinator.git"
+        )
         self.put("scripts/fleet-cli-release.py", POLICY)
-        self.put("scripts/agent-sync", "#!/usr/bin/env python3\nprint('fixture')\n", executable=True)
-        self.put("scripts/agent_sync/core.py", "VALUE = 1\n")
+        self.put(
+            "scripts/simple-chat", "#!/usr/bin/env python3\nprint('fixture')\n", executable=True
+        )
+        self.put("scripts/simple_tools/core.py", "VALUE = 1\n")
         self.put("fleet-apps.json", "{}\n")
         self.put("docs/private-fixture.md", "PRIVATE_FIXTURE_MUST_NOT_SHIP\n")
         self.commit()
 
     def git(self, *argv):
-        result = subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-                                 "-C", str(self.repo), *argv], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                timeout=10, env=S.git_env())
+        result = subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-C",
+                str(self.repo),
+                *argv,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            env=S.git_env(),
+        )
         self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
         return result.stdout.decode().strip()
 
@@ -114,14 +137,60 @@ class SourceTests(Fixture):
         bundle, _raw, receiver = S.build_bundle(self.repo)
         policy = S.receiver_policy(receiver.encode())
         self.assertEqual(bundle["bundle_sha256"], policy.manifest_digest(bundle["files"]))
-        self.assertTrue(policy.allowed_path("scripts/agent_sync/core.py"))
+        self.assertTrue(policy.allowed_path("scripts/simple_tools/core.py"))
         self.assertNotIn("docs/private-fixture.md", bundle["files"])
+
+    def test_repo_only_files_are_not_shipped(self):
+        actual = Path(__file__).with_name("fleet-cli-release.py")
+        if not actual.is_file():
+            self.skipTest("Receiver integration runs from the owned source lane")
+        self.put("scripts/fleet-cli-release.py", actual.read_text())
+        self.put("scripts/simple_tools/clarify.py", "# repo-only\n")
+        self.commit()
+        bundle, _raw, receiver = S.build_bundle(self.repo)
+        policy = S.receiver_policy(receiver.encode())
+        # Main's AFC-768 policy: allowed_path is false, retained_path stays true for rollback.
+        self.assertFalse(policy.allowed_path("scripts/simple_tools/clarify.py"))
+        self.assertFalse(policy.shipped_path("scripts/simple_tools/clarify.py"))
+        self.assertTrue(policy.retained_path("scripts/simple_tools/clarify.py"))
+        self.assertNotIn("scripts/simple_tools/clarify.py", bundle["files"])
+
+    def test_repo_only_cannot_drop_required_files(self):
+        actual = Path(__file__).with_name("fleet-cli-release.py")
+        if not actual.is_file():
+            self.skipTest("Receiver integration runs from the owned source lane")
+        text = actual.read_text()
+        # Pin typography-stable contents only:  ruff/autofix may reformat the set
+        # literal, and a byte-identical block would skip this safety check.
+        marker = "REPO_ONLY = frozenset"
+        needle = '"scripts/simple_tools/mcp/fixtures.jsonl"'
+        if marker not in text or text.count(needle) != 1:
+            self.fail("REPO_ONLY block missing from receiver")
+        self.put(
+            "scripts/fleet-cli-release.py",
+            text.replace(needle, needle + ',\n        "fleet-apps.json"', 1),
+        )
+        self.commit()
+        self.assert_code("receiver_policy_invalid", S.build_bundle, self.repo)
+
+    def test_receiver_cap_may_exceed_sender_cap_but_never_trail_it(self):
+        self.assertEqual(S.MAX_BYTES, 11 * 1024 * 1024)
+        self.put("scripts/fleet-cli-release.py", POLICY.replace("12*1024*1024", "4*1024*1024"))
+        self.commit()
+        self.assert_code("receiver_policy_invalid", S.build_bundle, self.repo)
 
     def test_only_published_allowlisted_blobs_and_regular_modes_ship(self):
         bundle, raw, receiver = S.build_bundle(self.repo)
-        self.assertEqual(set(bundle["files"]), {"scripts/fleet-cli-release.py", "scripts/agent-sync",
-                                                "scripts/agent_sync/core.py", "fleet-apps.json"})
-        self.assertEqual(bundle["files"]["scripts/agent-sync"]["mode"], 0o755)
+        self.assertEqual(
+            set(bundle["files"]),
+            {
+                "scripts/fleet-cli-release.py",
+                "scripts/simple-chat",
+                "scripts/simple_tools/core.py",
+                "fleet-apps.json",
+            },
+        )
+        self.assertEqual(bundle["files"]["scripts/simple-chat"]["mode"], 0o755)
         self.assertEqual(bundle["files"]["fleet-apps.json"]["mode"], 0o644)
         self.assertEqual(bundle["source_commit"], self.git("rev-parse", "HEAD"))
         self.assertNotIn(b"PRIVATE_FIXTURE_MUST_NOT_SHIP", raw)
@@ -129,18 +198,18 @@ class SourceTests(Fixture):
 
     def test_untracked_allowlisted_file_and_secret_are_ignored(self):
         before = S.build_bundle(self.repo)[1]
-        self.put("scripts/agent_sync/untracked.py", "SHOULD_NOT_SHIP\n")
+        self.put("scripts/simple_tools/untracked.py", "SHOULD_NOT_SHIP\n")
         self.put(".env", "SECRET_FIXTURE\n")
         self.assertEqual(S.build_bundle(self.repo)[1], before)
 
     def test_tracked_staged_and_unstaged_changes_are_refused(self):
-        self.put("scripts/agent_sync/core.py", "VALUE = 2\n")
+        self.put("scripts/simple_tools/core.py", "VALUE = 2\n")
         self.assert_code("source_tracked_dirty", S.build_bundle, self.repo)
-        self.git("add", "scripts/agent_sync/core.py")
+        self.git("add", "scripts/simple_tools/core.py")
         self.assert_code("source_tracked_dirty", S.build_bundle, self.repo)
 
     def test_unpublished_head_is_refused(self):
-        self.put("scripts/agent_sync/core.py", "VALUE = 2\n")
+        self.put("scripts/simple_tools/core.py", "VALUE = 2\n")
         self.commit(published=False)
         self.assert_code("source_not_published", S.build_bundle, self.repo)
 
@@ -149,37 +218,62 @@ class SourceTests(Fixture):
         self.assert_code("source_origin_refused", S.build_bundle, self.repo)
 
     def test_allowlisted_symlink_and_symlink_receiver_are_refused(self):
-        (self.repo / "scripts/agent_sync/link.py").symlink_to("../../docs/private-fixture.md")
+        (self.repo / "scripts/simple_tools/link.py").symlink_to("../../docs/private-fixture.md")
         self.commit()
         self.assert_code("source_entry_refused", S.build_bundle, self.repo)
-        self.git("rm", "scripts/agent_sync/link.py", "scripts/fleet-cli-release.py")
+        self.git("rm", "scripts/simple_tools/link.py", "scripts/fleet-cli-release.py")
         (self.repo / "scripts/fleet-cli-release.py").symlink_to("../docs/private-fixture.md")
         self.commit()
         self.assert_code("receiver_blob_refused", S.build_bundle, self.repo)
 
     def test_export_attributes_cannot_hide_or_rewrite_payload(self):
         original = "$Format:%H$\n"
-        self.put("scripts/agent_sync/substitute.py", original)
-        self.put(".gitattributes", "scripts/agent_sync/core.py export-ignore\nscripts/agent_sync/substitute.py export-subst\n")
+        self.put("scripts/simple_tools/substitute.py", original)
+        self.put(
+            ".gitattributes",
+            "scripts/simple_tools/core.py export-ignore\nscripts/simple_tools/substitute.py export-subst\n",
+        )
         self.commit()
         files = S.build_bundle(self.repo)[0]["files"]
-        self.assertIn("scripts/agent_sync/core.py", files)
-        self.assertEqual(base64.b64decode(files["scripts/agent_sync/substitute.py"]["data"]), original.encode())
+        self.assertIn("scripts/simple_tools/core.py", files)
+        self.assertEqual(
+            base64.b64decode(files["scripts/simple_tools/substitute.py"]["data"]), original.encode()
+        )
 
     def test_git_environment_cannot_redirect_source_or_replace_objects(self):
-        with patch.dict(os.environ, {"GIT_DIR": "/missing-fixture", "GIT_WORK_TREE": "/missing-fixture",
-                                     "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.worktree",
-                                     "GIT_CONFIG_VALUE_0": "/missing-fixture"}):
-            self.assertEqual(S.build_bundle(self.repo)[0]["source_commit"], self.git("rev-parse", "HEAD"))
+        with patch.dict(
+            os.environ,
+            {
+                "GIT_DIR": "/missing-fixture",
+                "GIT_WORK_TREE": "/missing-fixture",
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "core.worktree",
+                "GIT_CONFIG_VALUE_0": "/missing-fixture",
+            },
+        ):
+            self.assertEqual(
+                S.build_bundle(self.repo)[0]["source_commit"], self.git("rev-parse", "HEAD")
+            )
 
     def test_file_count_and_encoded_bundle_size_are_bounded(self):
         for number in range(S.MAX_FILES):
-            self.put(f"scripts/agent_sync/f{number}.py", "x\n")
+            self.put(f"scripts/simple_tools/f{number}.py", "x\n")
+        self.commit()
+        self.assert_code("bundle_too_many_files", S.build_bundle, self.repo)
+
+    def test_file_count_exact_limit_builds_but_one_more_is_refused(self):
+        count = len(S.build_bundle(self.repo)[0]["files"])
+        for number in range(S.MAX_FILES - count):
+            self.put(f"scripts/simple_tools/boundary_{number}.py", "# boundary\n")
+        self.commit()
+        self.assertEqual(len(S.build_bundle(self.repo)[0]["files"]), S.MAX_FILES)
+        self.put("scripts/simple_tools/one_too_many.py", "# boundary\n")
         self.commit()
         self.assert_code("bundle_too_many_files", S.build_bundle, self.repo)
 
     def test_encoded_size_limit_is_checked_after_base64(self):
-        self.put("scripts/agent_sync/large.py", "x" * (6 * 1024 * 1024))
+        # Raw stays under the 11 MiB sender cap.  Base64 of 9 MiB, plus the other files, crosses it.
+        self.put("scripts/simple_tools/large.py", "x" * (9 * 1024 * 1024))
         self.commit()
         self.assert_code("bundle_too_large", S.build_bundle, self.repo)
 
@@ -199,7 +293,9 @@ class TransportTests(Fixture):
         self.assertEqual(checked["last_check_status"], "skipped")
         self.assertEqual(checked["last_success_at"], before["last_success_at"])
         forced = Transport("unchanged")
-        self.assertEqual(S.sync(self.repo, self.state, force=True, runner=forced)["status"], "unchanged")
+        self.assertEqual(
+            S.sync(self.repo, self.state, force=True, runner=forced)["status"], "unchanged"
+        )
         installer = Transport()
         S.sync(self.repo, self.state, install=True, runner=installer)
         self.assertEqual(shlex.split(installer.calls[0][0][-1])[-1], "--install")
@@ -218,7 +314,7 @@ class TransportTests(Fixture):
     def test_failed_send_retries_next_trigger_and_preserves_last_success(self):
         S.sync(self.repo, self.state, runner=Transport())
         before = json.loads((self.state / "state.json").read_text())
-        self.put("scripts/agent_sync/core.py", "VALUE = 2\n")
+        self.put("scripts/simple_tools/core.py", "VALUE = 2\n")
         self.commit()
         failed = Transport("timeout")
         self.assert_code("command_timeout", S.sync, self.repo, self.state, runner=failed)
@@ -230,9 +326,13 @@ class TransportTests(Fixture):
         self.assertEqual(len(retried.calls), 1)
 
     def test_paused_bad_receipts_and_failed_ssh_are_not_success(self):
-        for mode, code in (("paused", "receiver_paused"), ("wrong_digest", "receipt_invalid"),
-                           ("wrong_commit", "receipt_invalid"), ("malformed", "receipt_invalid"),
-                           ("failure", "ssh_failed")):
+        for mode, code in (
+            ("paused", "receiver_paused"),
+            ("wrong_digest", "receipt_invalid"),
+            ("wrong_commit", "receipt_invalid"),
+            ("malformed", "receipt_invalid"),
+            ("failure", "ssh_failed"),
+        ):
             with self.subTest(mode=mode):
                 state_dir = self.state / mode
                 self.assert_code(code, S.sync, self.repo, state_dir, runner=Transport(mode))
@@ -240,14 +340,39 @@ class TransportTests(Fixture):
                 self.assertNotIn("last_success_bundle_sha256", state)
                 self.assertEqual(state["last_error_code"], code)
 
+    def test_a_named_receiver_refusal_is_carried_and_anything_else_is_ssh_failed(self):
+        bundle = {}
+        for stderr, code in (
+            (b"fleet-cli: release_retention_limit\n", "receiver_release_retention_limit"),
+            (
+                b"fleet-cli: smoke_start_failed_simple_chat_version_errno_2\n",
+                "receiver_smoke_start_failed_simple_chat_version_errno_2",
+            ),
+            (b"fleet-cli: Bad Code\n", "ssh_failed"),
+            (b"permission denied\n", "ssh_failed"),
+            (b"", "ssh_failed"),
+        ):
+            with self.subTest(stderr=stderr):
+                result = subprocess.CompletedProcess([], 255, b"", stderr)
+                with self.assertRaises(S.SyncError) as error:
+                    S.receipt(result, bundle)
+                self.assertEqual(error.exception.code, code)
+
     def test_ssh_command_has_strict_fixed_options_and_quoted_receiver(self):
         text = "print('shell $(touch should-not-exist) `anything`')\n"
         argv = S.ssh_argv(text)
         self.assertEqual(argv[-2], "root@coolify")
-        self.assertEqual(shlex.split(argv[-1]), ["/usr/bin/python3", "-I", "-B", "-c", text, "receive"])
+        self.assertEqual(
+            shlex.split(argv[-1]), ["/usr/bin/python3", "-I", "-B", "-c", text, "receive"]
+        )
         self.assertIn("-T", argv)
-        for option in ("BatchMode=yes", "StrictHostKeyChecking=yes", "UpdateHostKeys=no",
-                       "ControlMaster=no", "ConnectTimeout=10"):
+        for option in (
+            "BatchMode=yes",
+            "StrictHostKeyChecking=yes",
+            "UpdateHostKeys=no",
+            "ControlMaster=no",
+            "ConnectTimeout=10",
+        ):
             self.assertIn(option, argv)
 
     def test_timeouts_and_deadline_are_fixed_safe_errors(self):
@@ -276,16 +401,24 @@ class TransportTests(Fixture):
 
 class HookTests(unittest.TestCase):
     def test_opt_in_hook_precedes_fetch_and_no_change_exit_inside_existing_lock(self):
-        hook = Path(__file__).with_name("agent-sync-runtime-sync.sh").read_text()
+        hook = Path(__file__).with_name("simple-tools-runtime-sync.sh").read_text()
         start = hook.index("# Code-only Coolify CLI sync")
         self.assertGreater(start, hook.index("trap 'rmdir"))
         self.assertLess(start, hook.index("if ! rgit fetch"))
         self.assertLess(start, hook.index('[ "$old" = "$new" ]'))
         self.assertLess(hook.index('[ -e "$PAUSE_FILE" ]'), start)
-        self.assertIn('coolify-cli-sync.enabled', hook)
-        self.assertIn('alarm 95', hook)
-        self.assertIn('COOLIFY-CLI-SYNC-FAILED', hook)
-        self.assertNotIn('--install', hook[start:hook.index('if ! git -C', start)])
+        self.assertIn("coolify-cli-sync.enabled", hook)
+        self.assertIn("alarm 95", hook)
+        self.assertIn("COOLIFY-CLI-SYNC-FAILED", hook)
+        self.assertNotIn("--install", hook[start : hook.index("if ! git -C", start)])
+
+    def test_mac_gitops_check_runs_before_fetch(self):
+        hook = Path(__file__).with_name("simple-tools-runtime-sync.sh").read_text()
+        gitops = hook.index("Mac GitOps G7")
+        fetch = hook.index("if ! rgit fetch")
+        self.assertLess(gitops, fetch)
+        self.assertIn("mac-gitops-check.enabled", hook)
+        self.assertIn("mac-gitops-reconcile.py", hook)
 
 
 if __name__ == "__main__":

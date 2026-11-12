@@ -12,7 +12,7 @@ Modules:
   views        tolerant readers for the C1 and C6 documents
   sections     the six sections of the facts (decisions, stuck PRs, not on GitHub, unpushed, claims, asks)
   claims       claim bands from the one activity definition in fleet_facts.activity
-  zulip_topics the claimants' posts in their `<ID> ...` topics, read through the installed agent-sync
+  zulip_topics the claimants' posts in their `<ID> ...` topics, read through the installed simple-chat
   facts        gather and assemble
   render       the Markdown list
   lint         the DM checks

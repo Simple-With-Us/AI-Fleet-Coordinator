@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-18T00:58:58Z",
+  "updatedAt": "2026-11-12T04:17:45Z",
   "apps": {
     "app.botfleet": {
       "marketingVersion": "1.0.29",
@@ -21,8 +21,8 @@
       "displayName": "Autorotate for Mac"
     },
     "com.contactlogo": {
-      "marketingVersion": "1.0.3",
-      "build": "202609032049",
+      "marketingVersion": "1.0.4",
+      "build": "202610180127",
       "appleId": 6804247582,
       "displayName": "ContactLogo"
     },
@@ -38,10 +38,16 @@
       "appleId": 6820881005,
       "displayName": "Usage Monitor Client"
     },
+    "com.simplewithus.usage.local.ios": {
+      "marketingVersion": "1.0.3",
+      "build": "202610180042",
+      "appleId": 6820885210,
+      "displayName": "Usage Monitor Local"
+    },
     "net.dealdex": {
-      "marketingVersion": "1.0.25",
-      "build": "202608251750",
-      "appleId": 6802474288,
+      "marketingVersion": "0.1.0",
+      "build": "202611091611",
+      "appleId": 6804249232,
       "displayName": "DealDex"
     },
     "online.dealdex": {
@@ -72,6 +78,24 @@
       "marketingVersion": "1.0.72",
       "appleId": 6799238379,
       "build": "202608250600"
+    },
+    "com.socratictrade.ios": {
+      "marketingVersion": "0.1.0",
+      "build": "202611111913",
+      "appleId": 6815511597,
+      "displayName": "Socratic-Trade"
+    },
+    "com.simplewithus.codecaps.ios": {
+      "marketingVersion": "0.1.0",
+      "build": "202611102106",
+      "appleId": 6814623846,
+      "displayName": "CodeCaps Companion"
+    },
+    "app.botfleet.ios": {
+      "marketingVersion": "0.1.0",
+      "build": "202611111957",
+      "appleId": 6820175685,
+      "displayName": "BotFleet"
     }
   }
 }

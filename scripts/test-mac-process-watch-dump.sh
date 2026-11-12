@@ -36,7 +36,7 @@ printf '%s\n' '[{"name":"vision-worker","pm2_env":{"name":"vision-worker","statu
 assert_no "${tmp}/poisoned.json" \
   shellular scout senate-relay senate-tunnel \
   code-main-keeper vision-worker xcode-health agy-acp \
-  grok-leader grok-acp mac-collab mac-collab-sync
+  grok-leader grok-acp
 
 # same poisoned dump still fails the original job list
 assert_no "${tmp}/poisoned.json" \
@@ -50,14 +50,14 @@ path = sys.argv[1]
 names = [
     "shellular", "scout", "senate-relay", "senate-tunnel",
     "code-main-keeper", "vision-worker", "xcode-health", "agy-acp",
-    "grok-leader", "grok-acp", "mac-collab", "mac-collab-sync",
+    "grok-leader", "grok-acp",
 ]
 json.dump([{"name": n} for n in names], open(path, "w"))
 PY
 assert_ok "${tmp}/complete.json" \
   shellular scout senate-relay senate-tunnel \
   code-main-keeper vision-worker xcode-health agy-acp \
-  grok-leader grok-acp mac-collab mac-collab-sync
+  grok-leader grok-acp
 
 # pm2_env.name only
 python3 - "${tmp}/envonly.json" <<'PY'

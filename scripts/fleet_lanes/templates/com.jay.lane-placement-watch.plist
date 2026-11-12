@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template.  Replace @HOME@ on install: see scripts/fleet_lanes/README.md, "Placement watcher". -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jay.lane-placement-watch</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>-I</string>
+    <string>@HOME@/apps/lane-tools/fleet_lanes/placement_watch.py</string>
+    <string>--apply</string>
+    <string>--verify-hooks</string>
+    <string>--seat</string>
+    <string>CLAUDE</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>@HOME@/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+    <key>AGENT_SEAT</key>
+    <string>CLAUDE</string>
+    <key>LINEAR_BOARD_WRITES</key>
+    <string>1</string>
+    <key>FLEET_APPS_JSON</key>
+    <string>@HOME@/apps/lane-tools/fleet-apps.json</string>
+    <key>SIMPLE_BOARD_BEARER_FILE</key>
+    <string>@BEARER_FILE@</string>
+    <key>SIMPLE_BOARD_TOOLS_TOKEN_FILE</key>
+    <string>@TOOLS_TOKEN_FILE@</string>
+    <key>SIMPLE_BOARD_TOOLS_PROJECT_ID</key>
+    <string>@TOOLS_PROJECT_ID@</string>
+    <key>LINEAR_BOARD_INFISICAL_READ_TOKEN_FILE</key>
+    <string>@INFISICAL_READ_TOKEN_FILE@</string>
+    <key>LINEAR_BOARD_INFISICAL_PROJECT_ID</key>
+    <string>@INFISICAL_PROJECT_ID@</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>3600</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>Nice</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>@HOME@/apps/logs/lane-placement-watch.log</string>
+  <key>StandardErrorPath</key>
+  <string>@HOME@/apps/logs/lane-placement-watch.log</string>
+</dict>
+</plist>

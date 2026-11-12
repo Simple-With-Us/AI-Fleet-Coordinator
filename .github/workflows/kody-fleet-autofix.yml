@@ -1,9 +1,12 @@
 # Enabled fleet wide by the owner on 2026-10-11 (boards 04b963b7 and 99e559ea).
-# MiniMax M3 via its direct OpenAI-compatible endpoint, paid; at most 5 attempts per UTC day in this repository.
-name: Kody MiniMax M3 Fix Proposals
+# MiniMax M3.1 Flash via its direct OpenAI-compatible endpoint, paid; at most 5 attempts per UTC day in this repository.
+name: Kody MiniMax M3.1 Flash Fix Proposals
 
 # Generated offline.  Missing SWU_KODY_AUTOFIX_ENABLED means disabled.
 # MODEL_API_KEY is forwarded explicitly; secrets are never inherited.
+# The canonical reusable takes the provider key only from this forward.  It has no
+# Infisical fallback:  a caller that cannot supply MODEL_API_KEY fails closed with a
+# named error instead of resolving a key outside the approved secret path.
 # Budget approval and protected-environment setup are separate owner actions.
 # Daily attempt slots bound this repository only; they are not a dollar cap.
 on:
@@ -33,14 +36,20 @@ jobs:
       pull-requests: write
       checks: read
       actions: read
-    uses: Simple-With-Us/congress-trading-shared/.github/workflows/kody-autofix-reusable.yml@fea7cd120407b157c3d1f5edc5b08ff15d3f0e73
+    # The canonical copy of this reusable lives in this repository,  so this caller
+    # runs the same file the fleet's model-default test covers.  Pointing at another
+    # repository's copy is how the two drift apart unnoticed.  The SHA is the commit
+    # that carries the canonical copy;  it stays on this repository's main through
+    # the merge commit,  so the pin does not need to move.
+    uses: Simple-With-Us/AI-Fleet-Coordinator/.github/workflows/kody-autofix-reusable.yml@76e27db8821e2bfdd87aebb92daf3dce6f401d30
     with:
       repository_id: '1315501725'
       profile: 'python'
       source_prefixes: '["scripts/"]'
       daily_attempt_limit: 5
       budget_policy_id: 'approved-owner-2026-10-11'
-      model: 'MiniMax-M3'
+      model: 'MiniMax-M3.1-Flash'
       model_base_url: 'https://api.minimax.io/v1'
     secrets:
       MODEL_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+      USAGE_INGEST_TOKEN: ${{ secrets.USAGE_INGEST_TOKEN }}

@@ -90,7 +90,7 @@ class Commands(Home):
                 I.gather(part, runner)
         self.assertEqual(runner.argvs, [
             ["/x/fleet-autopush", "status", "--json"],
-            ["/x/agent-sync", "asks", "status", "--json"],
+            ["/x/simple-chat", "asks", "status", "--json"],
             ["/x/needs-owner", "list", "--all", "--json"],
             ["/x/consult", "status", "--all", "--json"]])
 

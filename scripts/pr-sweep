@@ -1,0 +1,24 @@
+#!/bin/sh
+# pr-sweep: shim for the pr_sweep package in this checkout (docs/PR-SWEEP.md).
+#
+#   scripts/pr-sweep inventory | plan | status | needs-work | prompt | audit | lanes | run | platforms
+#
+# It finds its own real location (following symlinks) and runs the package from that checkout's scripts/
+# directory with `python3 -I -B`, so a pr_sweep or fleet_lanes folder in the caller's cwd never shadows it.
+# Run it from a fresh checkout of origin/main (a lane), not from ~/Code.  FLEET_PYTHON overrides the interpreter.
+self=$0
+hops=0
+while [ -L "$self" ] && [ "$hops" -lt 40 ]; do
+    target=$(readlink "$self") || break
+    case $target in
+        /*) self=$target ;;
+        *) self=$(dirname "$self")/$target ;;
+    esac
+    hops=$((hops + 1))
+done
+scripts=$(cd "$(dirname "$self")" 2>/dev/null && pwd -P) || { echo "pr-sweep: cannot locate scripts/" >&2; exit 69; }
+if [ ! -f "$scripts/pr_sweep/cli.py" ]; then
+    echo "pr-sweep: $scripts/pr_sweep/cli.py not found" >&2
+    exit 69
+fi
+exec "${FLEET_PYTHON:-python3}" -I -B -c 'import sys, runpy; sys.path.insert(0, sys.argv.pop(1)); runpy.run_module("pr_sweep", run_name="__main__", alter_sys=True)' "$scripts" "$@"

@@ -41,10 +41,10 @@ not fetched lately, the newest commit it shares with that branch;  `local-remote
 
 A checkout with nothing unpushed, no stash and nothing dirty leaves nothing behind.
 
-**(b) Non-git files** under `~/apps`, outside any checkout:  `AGENT-SYNC.md`, the effort logs,
-`MAC-LOCAL-PROCESSES.md`, helper scripts, `mac-collab/findings.db` and its `backups/` folder, runtime
+**(b) Non-git files** under `~/apps`, outside any checkout:  `FLEET-PROTOCOL.md`, the effort logs,
+`MAC-LOCAL-PROCESSES.md`, helper scripts, runtime
 configs.  They are staged under `files/`, which mirrors the path relative to the home directory
-(`files/apps/AGENT-SYNC.md`).  The loose files directly in `~/Code` are included too.  SQLite files
+(`files/apps/FLEET-PROTOCOL.md`).  The loose files directly in `~/Code` are included too.  SQLite files
 are copied with the online backup API (a live WAL-mode database is never torn;  `-wal` and `-shm`
 sidecars are skipped).  Symlinks are stored as symlinks, never followed.  A folder whose `.git` points
 nowhere (a pruned worktree) is not a checkout, so its files are kept here.
@@ -127,8 +127,9 @@ later, or a new commit on that branch, no longer matches and the file is dropped
 `allow-stale`).  A line without `@ digest` is ignored (`allow-unpinned`), and a **secret name is never
 allowed**.  An allowed file still goes through gitleaks.
 
-If the gate drops `mac-collab/findings.db` or its backups, that shows in the detail log too;  the
-board's database not being backed up is not something to leave silent.
+`mac-collab` was retired on 2026-10-19 (AFC-363):  `~/apps/mac-collab` is gone from the live tree, and the
+old board database is now `~/apps/_retired/mac-collab-20261019/findings.db`.  Snapshots made before that
+day still hold `files/apps/mac-collab`.
 
 ## Where it goes
 
@@ -162,7 +163,7 @@ bucket has a **lifecycle rule** with `daysFromHidingToDeleting` of 7 to 30 (whic
 window).  The dedicated bucket's rule is the whole-bucket one,
 `{fileNamePrefix: "", daysFromHidingToDeleting: 14, daysFromUploadingToHiding: null}`, and the check accepts it
 (a rule on `fleet-work-backup/` alone is accepted too).  A key that can delete lets any process on the Mac that
-can read it erase the history, so keep the key in the handoff file only (mode 600) and consider Object Lock.
+can read it erase the history, so keep the key in Infisical only (read through `fleet-secrets`) and consider Object Lock.
 
 The staging folder is fixed at `~/Library/Caches/fleet-work-backup/stage` (restic picks the parent
 snapshot by path, so a timestamped folder would break deduplication and retention).  Files are
@@ -173,7 +174,7 @@ runs with `--ignore-inode --ignore-ctime`, because a rebuilt folder has new inod
 
 ## Credentials
 
-Read by the job from `~/.secrets/global-api-keys` (or the environment) into the restic
+Read by the job from the environment, else one `fleet-secrets` fetch (OPS-818;  the flat file `global-api-keys` is no longer read), into the restic
 subprocess environment only.  Names, never values:
 
 | Name | Use |
@@ -186,10 +187,9 @@ The master key (`BACKBLAZE_MASTER_KEY_ID` / `BACKBLAZE_MASTER_APPLICATION_KEY`) 
 init or install:  it has no prefix.  With `FLEET_WORK_BACKUP_ALLOW_MASTER=1` the restore commands (`restic`,
 `snapshots`) may fall back to it for names the scoped key leaves empty.
 
-All four names live in Infisical (project `AI Fleet Coordinator`, `prod`) and reach the handoff
-file through the one-way `com.jay.infisical-secrets-sync` job:  `scripts/infisical-secrets-sync.sh`
-has a `MAP` row for each (the password's is write-once, the other three follow Infisical), and the sync reads
-exactly the rows in that array.  The password must be a
+All four names live in Infisical Fleet-OPS (`prod`, root `/`), and the job reads them with `fleet-secrets` (AFC-359:
+nothing is read from `~/.secrets`).  They were seeded from the `AI Fleet Coordinator` project by the one-way
+`com.jay.infisical-secrets-sync` job, which is being retired.  The password must be a
 urlsafe token of at least 16 characters, with no whitespace and no backslash (the sync's plausibility
 check rejects anything else, and its `awk -v` mangles backslashes).  Generate it with
 
@@ -198,7 +198,7 @@ check rejects anything else, and its `awk -v` mangles backslashes).  Generate it
 which writes a 43-character urlsafe token to Infisical through the logged-in CLI and never prints it:  the
 value reaches the CLI as a file path (`RESTIC_FLEET_WORK_PASSWORD=@<0600 file>`, removed afterwards), never in
 argv, the CLI's output is discarded, and the value is read back and compared in memory (it reports
-`matched` and the length).  It refuses when the handoff file, the environment or Infisical already has a
+`matched` and the length).  It refuses when `fleet-secrets`, the environment or Infisical already has a
 password, and a read it cannot make is a refusal, never "absent".
 
 **The password is the only key to every snapshot, so it is never rotated in Infisical.**  The sync
@@ -237,26 +237,26 @@ LaunchAgent `com.jay.fleet-work-backup`, every 3 hours (`StartInterval` 10800), 
   not `lock-held`, which means another run is working) is counted;  after 8 in a row the line carries
   `warn=no-complete-backup-for-about-24h` and every such line shows `last_ok=`.
 - **Alert:**  at that point the job tells two places, each tried even when the other fails.  (1) One post through
-  `agent-sync post --as CLAUDE` in the topic `AFC 29c02bcb fleet-work-backup` (`#agent-sync`), with the count, the
+  `simple-chat post --as CLAUDE` in the topic `AFC 29c02bcb fleet-work-backup` (`#Work-In-Progress`), with the count, the
   last complete run, the run line (names and counts only) and where the logs are
   (`~/Library/Logs/fleet-work-backup.log`, `.detail.log`, `.out.log`, `.err.log`).  The post @-mentions each name in
   `FLEET_WORK_BACKUP_ALERT_TO` (a comma list of seats or people;  empty wakes nobody) and ends with
   `FLEET_WORK_BACKUP_ALERT_NOTE`, a standing instruction.  (2) When `FLEET_WORK_BACKUP_ALERT_DM_OWNER` is `1`,
-  `true` or `yes`, a Zulip DM to the owner through `agent-sync dm --as CLAUDE --owner`, with the same text and
+  `true` or `yes`, a Zulip DM to the owner through `simple-chat dm --as CLAUDE --owner`, with the same text and
   without the note.  This install's plist sets all three (owner ruling, Jay, Oct 10, 2026:  DM him, and tell the
   Plumbers to investigate and fix it without asking him):  `ALERT_TO=BF-PLUMBER,GB-PLUMBER`, `ALERT_DM_OWNER=1`,
   and a note that says the first Plumber to reply "taking it" in the topic owns the fix and the other reviews it.
   The job posts as the CLAUDE bot, which is a different seat from both Plumbers, so its mention can wake them.
   BF-Plumber is woken by BotFleet's own Zulip listener and GB-Plumber through the Grok Bot routine webhook on the
-  agent-sync server (live and connected as of Oct 10, 2026 10:34pm by `agent-sync status` on the server).  Neither
+  Operator server (live and connected as of Oct 10, 2026 10:34pm by `simple-chat status` on the server).  Neither
   has posted yet, so the wake path is unproven end to end.  BotFleet caps peer wakes (6 per bot per hour, 2 per
   topic per hour, and after 4 peer wakes in one topic with no message from Jay the topic stops waking that bot
   until Jay speaks there), so a failure that lasts for days can stop waking BF-Plumber in this topic.  **The owner
   DM is the delivery that is guaranteed.**  The alert goes out once when the count reaches 8 and again at most once
   a day while runs stay not ok (the mention and the note go with each).  When a complete run follows, the
   all-clear goes out to the owner by DM and to the topic as a post with **no** mention and no note, so good news
-  spends no one's wake budget.  The CLI is `~/.local/bin/agent-sync` (launchd's `PATH` lacks it;
-  `FLEET_WORK_BACKUP_AGENT_SYNC` overrides).  `FLEET_WORK_BACKUP_ALERT_TOPIC` and `FLEET_WORK_BACKUP_ALERT_SEAT`
+  spends no one's wake budget.  The CLI is `~/.local/bin/simple-chat` (launchd's `PATH` lacks it;
+  `FLEET_WORK_BACKUP_SIMPLE_CHAT` overrides).  `FLEET_WORK_BACKUP_ALERT_TOPIC` and `FLEET_WORK_BACKUP_ALERT_SEAT`
   change the topic and the seat.  When neither send is delivered the detail log says `alert-not-posted` (naming
   `post`, `dm` or both);  when only one is, it says `alert-partly-posted` and names the other, and the alert
   counts as sent for that day, so a DM that failed beside a post that landed is not retried until tomorrow.
@@ -326,7 +326,7 @@ Neither changes the backup run path.
 
 **`health --json`** is read-only.  It reads `state.json`, the newest line of the run log, the installed files and
 `launchctl print gui/<uid>/com.jay.fleet-work-backup` (the one launchctl verb it uses), and it writes nothing, not
-even a directory.  It never reads the credential names or values, the handoff file, restic or B2.  It always exits 0:
+even a directory.  It never reads the credential names or values, `fleet-secrets`, restic or B2.  It always exits 0:
 the verdict is in the output.  Without `--json` it prints the same facts as a few lines.
 
 | Field | What it holds |
@@ -400,8 +400,7 @@ Order matters;  nothing here runs by itself:
    (project `AI Fleet Coordinator`, `prod`), and copy `scripts/fleet-work-backup/fleet_work_backup.py` to
    `~/apps/fleet-work-backup/` (`install.py --skip-launchd` does that), then run `fleet_work_backup.py
    new-password` for `RESTIC_FLEET_WORK_PASSWORD`.
-4. `install -m 755 scripts/infisical-secrets-sync.sh ~/bin/` and wait one tick;  `~/.secrets/infisical-sync.log`
-   shows `updated <KEY> (new_len=N)` for each.
+4. Confirm `fleet-secrets names | grep -E 'B2_FLEET_WORK|RESTIC_FLEET_WORK'` lists all four names (Fleet-OPS, root `/`).
 5. `python3 ~/apps/fleet-work-backup/fleet_work_backup.py init` (it checks the key's scope and the lifecycle
    rule first), then add the recovery key (Credentials, above) and keep its password outside Infisical.
 6. `python3 scripts/fleet-work-backup/install.py --check-repo` (loads the LaunchAgent and records the installed

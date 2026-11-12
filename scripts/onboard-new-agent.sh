@@ -109,7 +109,7 @@ if [ -n "$APP" ] && ! printf '%s' "$APP" | grep -Eq '^[a-z0-9]+(-[a-z0-9]+)*$'; 
   exit 1
 fi
 
-# The credential file code comes from the rule the agent-sync CLI itself uses, so the
+# The credential file code comes from the rule the simple-chat CLI itself uses, so the
 # file this script names is the file the CLI will look for.  The bot email is the short
 # name plus -bot@ plus the realm host (the registry's zulipRealm).
 zulip_ids="$(python3 - "$here" "$TAG" "$ZULIP_SHORT" <<'PY'
@@ -121,7 +121,7 @@ from urllib.parse import urlparse
 
 here, tag, short = sys.argv[1:4]
 sys.path.insert(0, str(Path(here) / "scripts"))
-from agent_sync.zulip import UsageError, credential_file_name, normalise_seat  # noqa: E402
+from simple_tools.zulip import UsageError, credential_file_name, normalise_seat  # noqa: E402
 
 try:
     seat = normalise_seat(tag)
@@ -138,7 +138,8 @@ FILE_CODE="${zulip_ids%% *}"
 BOT_EMAIL="${zulip_ids##* }"
 
 echo "== seat onboard: tag=$TAG notes=$NOTES_NAME suffix=$SUFFIX prefix=$PREFIX app=${APP:-(not set)}"
-echo "   zulip bot=$BOT_EMAIL  credential file=~/.secrets/Zulip/$FILE_CODE-zuliprc"
+BOT_KEY_PREFIX="$(printf '%s' "$FILE_CODE" | tr 'a-z-' 'A-Z_')"
+echo "   zulip bot=$BOT_EMAIL  credentials=Infisical Fleet-OPS /zulip (keys ${BOT_KEY_PREFIX}_ZULIP_EMAIL, _KEY, _SITE)"
 
 # Record the seat in fleet-apps.json if missing, and its app in seatApps.bySeat.
 if [ "$DRY_RUN" -eq 0 ]; then
@@ -196,7 +197,8 @@ echo "       cd scripts && python3 -m fleet_lanes.install_tools plan tools"
 echo "       cd scripts && python3 -m fleet_lanes.install_tools apply tools"
 echo "  2. Rules file and deny hook are installed per PLATFORM, not per seat.  If this seat runs"
 echo "     on a covered platform (rules: claude codex fx grok antigravity minimax cursor;"
-echo "     hook: claude codex grok antigravity cursor), confirm with:"
+echo "     hook: claude codex grok antigravity cursor minimax muse clutch kimi; minimax is in 'all', and muse,"
+echo "     clutch and kimi are opt-in), confirm with:"
 echo "       cd scripts && python3 -m fleet_lanes.install_rules verify <platform>"
 echo "       cd scripts && python3 -m fleet_lanes.install_tools verify <platform>"
 echo "     and, if either is missing, plan then apply it:"
@@ -213,27 +215,30 @@ echo "       a. Add a row to ROSTER in scripts/zulip_provision_bots.py:"
 echo "            (\"$NOTES_NAME\", \"$ZULIP_SHORT\", \"$FILE_CODE\")"
 echo "          The display name is Jay's choice; the short name and file code are not."
 echo "          Zulip appends -bot to the short name, so this makes $BOT_EMAIL."
-echo "       b. Jay runs it in his own terminal (it uses his key and asks y/N before it writes):"
+echo "       b. Jay runs it in his own terminal (it signs in as the realm-admin bot from Infisical /zulipadmin and asks y/N before it writes):"
 echo "            python3 scripts/zulip_provision_bots.py --dry-run --only \"<display name in that ROSTER row>\""
 echo "            python3 scripts/zulip_provision_bots.py --only \"<display name in that ROSTER row>\""
 echo "          --only matches the full display name, so use the one Jay chose.  Without --only it covers the whole roster."
 echo "          Settings > Bots in Zulip works too; enter only the short name there."
-echo "          The script writes ~/.secrets/Zulip/$FILE_CODE-zuliprc with mode 600 and never prints the key."
+echo "          The script writes ~/.simple-tools/provisioned/$FILE_CODE-zuliprc with mode 600 and never prints the key."
+echo "          It then prints the Infisical /zulip key names to store (upper case, hyphens as underscores)."
+echo "          An existing bot keeps its key unless Jay passes --regenerate, which invalidates the old key."
 echo "          A cloud seat gets env ZULIP_EMAIL, ZULIP_API_KEY and ZULIP_SITE instead of a file."
-echo "       c. Check the file mode (expect 600) and the identity (it must show $BOT_EMAIL).  Neither"
-echo "          prints the key:"
-echo "            stat -f '%Lp' ~/.secrets/Zulip/$FILE_CODE-zuliprc"
-echo "            AGENT_SEAT=$TAG agent-sync whoami"
+echo "       c. Jay stores the three values in Infisical /zulip and deletes ~/.simple-tools/provisioned/."
+echo "          Check the file mode (expect 600) before that and the identity (it must show $BOT_EMAIL) after."
+echo "          Neither prints the key:"
+echo "            stat -f '%Lp' ~/.simple-tools/provisioned/$FILE_CODE-zuliprc"
+echo "            AGENT_SEAT=$TAG simple-chat whoami"
 echo "       d. Subscribe at setup, not ad hoc (a typo cannot create a channel with --must-exist):"
-echo "            AGENT_SEAT=$TAG agent-sync subscribe --channel agent-sync --channel builds --must-exist"
+echo "            AGENT_SEAT=$TAG simple-chat subscribe --channel work-in-progress --channel builds --must-exist"
 echo "  5. Intro, once per session, before the first claim:"
-echo "       AGENT_SEAT=$TAG agent-sync post --topic \"roll call\" \"online  |  <platform>  |  cadence:  <listen|wait|per-turn read>"
+echo "       AGENT_SEAT=$TAG simple-chat post --topic \"roll call\" \"online  |  <platform>  |  cadence:  <listen|wait|per-turn read>"
 echo "       can:  <what this session can do>\""
-echo "     The CLI writes the [${TAG}·session8] tag itself.  Read the room first:  agent-sync inbox"
-echo "  6. Listener: docs/protocols/agent-sync-partition.toml must list $TAG as mac or server, in the"
+echo "     The CLI writes the [${TAG}·session8] tag itself.  Read the room first:  simple-chat inbox"
+echo "  6. Listener: docs/protocols/simple-tools-partition.toml must list $TAG as mac or server, in the"
 echo "     PR that enables it and with Jay's OK.  A listener refuses a seat the file does not give to"
 echo "     its own instance, and a seat must never be in both."
 echo "  7. Add the seat to the Who's Here roster in docs/protocols/zulip-fleet-guide.md (mention, bot"
 echo "     email, file code), and a row to the Active Seats table if this is a standing seat:  that table is in"
-echo "     Fleet-OPS handbook/core/seats-and-identity.md, changed by pull request, never by editing AGENT-SYNC.md"
+echo "     Fleet-OPS handbook/core/seats-and-identity.md, changed by pull request, never by editing FLEET-PROTOCOL.md"
 echo "  8. See docs/ONBOARDING-NEW-AGENT.md"

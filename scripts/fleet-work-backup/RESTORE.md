@@ -25,7 +25,7 @@ Never restore over live folders.  Restore to a scratch target and copy out what 
     export STAGE=$HOME/restore-fwb$HOME/Library/Caches/fleet-work-backup/stage
     ls $STAGE            # MANIFEST.json  README-RESTORE.txt  files/  git/
 
-A smaller pull:  `... restore latest --tag fleet-work --target ... --include '*/stage/files/apps/mac-collab'`,
+A smaller pull:  `... restore latest --tag fleet-work --target ... --include '*/stage/files/apps/FLEET-PROTOCOL.md'`,
 or an older snapshot id from `snapshots` in place of `latest`.  `$FWB restic -- ls latest --tag
 fleet-work` lists what a snapshot holds.  `latest` can be a partial snapshot;  when the work you want
 is older, name the snapshot id.
@@ -34,11 +34,12 @@ is older, name the snapshot id.
 
 `files/` mirrors paths relative to the home directory.
 
-    cp -p $STAGE/files/apps/AGENT-SYNC.md $HOME/apps/
-    cp -Rp $STAGE/files/apps/mac-collab $HOME/apps/mac-collab.restored
+    cp -p $STAGE/files/apps/FLEET-PROTOCOL.md $HOME/apps/
 
-`mac-collab/findings.db` is a consistent snapshot (SQLite online backup);  stop the board server
-(`mac-collab-server.py`) before moving it into place, and delete any stale `findings.db-wal` and
+`mac-collab` was retired on 2026-10-19 (AFC-363).  Only a snapshot made before that day holds
+`files/apps/mac-collab` (the old board database, `findings.db`, a consistent SQLite online backup);
+the live copy is `~/apps/_retired/mac-collab-20261019/findings.db`.  There is no board server to stop
+or restart any more.  If you restore an old database, delete any stale `findings.db-wal` and
 `findings.db-shm` next to the target.
 
 ## 3. Git work
@@ -155,7 +156,7 @@ same way (`git fetch head.bundle HEAD:refs/restored/detached-head`).
 ## 4. What is not in the backup
 
 Secrets, by design:  anything with a strict secret name (`.env`, keys, `zuliprc`, `auth.json`, `.dev.vars`,
-`*.tfstate`), any file the content scan matched, and the handoff file.  Re-create those from Infisical.
+`*.tfstate`), any file the content scan matched, and any secrets file.  Re-create those from Infisical.
 Git-ignored files (`node_modules`, build output) are rebuilt from the checkout.  Runtime session stores
 (`acp-home/sessions`, `acp-home/memtrace`, `fleet-rag/mined/chat`) are skipped by default, but the repo plist
 turns that off and skips `memtrace` by name, so on this install `acp-home/sessions` and `fleet-rag/mined/chat`

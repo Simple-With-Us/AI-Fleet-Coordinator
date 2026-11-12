@@ -27,14 +27,14 @@ Then prove the tools work from your surface, in this order, and report each resu
 
 a. Call recall_stats.  Report collection status and the point count.
 b. Call recall_search with the query "how do I avoid leaking credentials when I look at the
-   global-api-keys handoff file", limit 3.  Report the top hit's title, source, and score.
+   a secrets file", limit 3.  Report the top hit's title, source, and score.
 c. Call recall_search with a question about the task you are about to start.  Say whether a hit
    changed your plan.
 d. If step a or b failed, run `recall doctor --platforms` in a shell and paste the FAIL rows.
    If the ingest:sentinel row says "direct path skipped", note that search still works through
    the recall.jays.services fallback; only ingest/eval need `recall-tunnel up`.
 e. Post one comment on Linear issue OPS-372 in this exact shape:
-   board comment OPS-372 --by CODEX --env Mac --text "surface: stdio-mcp | search: ok|FAIL <detail> | contribute: ok|FAIL <detail> | stats points: <n>"
+   simple-board comment OPS-372 --by CODEX --env Mac --text "surface: stdio-mcp | search: ok|FAIL <detail> | contribute: ok|FAIL <detail> | stats points: <n>"
 
 From now on in every session:
 - **Search recall at the START of turns and tasks, before re-deriving.**  Evaluate the 4 Search
