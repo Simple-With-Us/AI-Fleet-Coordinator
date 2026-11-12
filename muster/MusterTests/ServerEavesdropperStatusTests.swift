@@ -757,6 +757,141 @@ final class ServerRegistrySweepTests: XCTestCase {
     }
 }
 
+/// A current server document generated at 12:00 PM Chicago time on November 12, 2026, holding
+/// the one seat `seat` (JSON text).
+private func routineDocument(_ seat: String) -> String {
+    #"{"schema":1,"generated_at":"2026-11-12T18:00:00Z","instance":"server","status_updated":"2026-11-12T17:59:58Z","seats":["#
+        + seat + #"],"skipped":[],"disabled":[]}"#
+}
+
+/// Whether a seat's wakes go to a ready router:  the reducer's per-seat `routine` (a flag and two
+/// fixed words), and the one line a seat's row shows for it.
+final class ServerSeatRouterTests: XCTestCase {
+    private func seat(_ text: String) throws -> ServerSeatFacts {
+        try XCTUnwrap(try document(routineDocument(text)).seat(named: "CLAUDE"))
+    }
+
+    /// The live server's CLAUDE seat on November 12, as the reducer sends it.
+    func test_a_ready_routine_reads_as_ready() throws {
+        let facts = try seat(
+            #"{"seat":"CLAUDE","connected":true,"running":"running","wake":"http","routine":{"ready":true,"auth":"bearer","why":null}}"#
+        )
+        XCTAssertTrue(facts.routineReported)
+        XCTAssertEqual(facts.routine, ServerSeatRoutineFields(ready: true, auth: "bearer", why: nil))
+        XCTAssertEqual(facts.router, .ready)
+        XCTAssertEqual(facts.router.line, "Wakes go to the router, ready")
+        XCTAssertFalse(facts.router.isProblem)
+        // Readiness only:  the line never claims a wake was delivered or accepted.
+        let line = try XCTUnwrap(facts.router.line)
+        for word in ["202", "accepted", "delivered", "reached"] {
+            XCTAssertFalse(line.contains(word), word)
+        }
+        // Shown from a current reading only.
+        let reading = ServerEavesdropperReading.reading(of: try document(routineDocument(
+            #"{"seat":"CLAUDE","wake":"http","routine":{"ready":true,"auth":"bearer","why":null}}"#
+        )))
+        XCTAssertEqual(reading.seat("CLAUDE", now: try date("2026-11-12T18:01:00Z")).facts?.router, .ready)
+        XCTAssertNil(reading.seat("CLAUDE", now: try date("2026-11-12T18:30:00Z")).facts)
+    }
+
+    /// A routine that is not ready says why in plain words, and is a problem.
+    func test_a_routine_that_is_not_ready_says_why() throws {
+        let cases: [(String, String)] = [
+            (#""routine_not_configured""#, "its address or key is not set on the server"),
+            (#""routine_key_refused""#, "its key cannot be used"),
+            (#""routine_url_refused""#, "its address cannot be used"),
+            (#""other""#, "the server did not say why"),
+            ("null", "the server did not say why"),
+        ]
+        for (why, words) in cases {
+            let facts = try seat(
+                #"{"seat":"CLAUDE","wake":"http","routine":{"ready":false,"auth":"bearer","why":"# + why + "}}"
+            )
+            XCTAssertEqual(facts.router, .notReady(words), why)
+            XCTAssertEqual(facts.router.line, "Wakes go to the router, not ready: " + words, why)
+            XCTAssertTrue(facts.router.isProblem, why)
+        }
+    }
+
+    /// A reducer that sends the key with null says the seat has no routine:  a seat whose mentions
+    /// stay in its inbox only captures, and gets no router line, because its listener cell already
+    /// says Captures Only;  a seat that wakes some other way gets no line either.
+    func test_a_null_routine_is_capture_only_for_an_inbox_seat() throws {
+        let inbox = try seat(#"{"seat":"CLAUDE","wake":"inbox","routine":null}"#)
+        XCTAssertTrue(inbox.routineReported)
+        XCTAssertNil(inbox.routine)
+        XCTAssertEqual(inbox.router, .captureOnly)
+        XCTAssertNil(inbox.router.line)
+        XCTAssertFalse(inbox.router.isProblem)
+        XCTAssertEqual(inbox.wakeKind.rowText, "Captures Only")
+
+        let headless = try seat(#"{"seat":"CLAUDE","wake":"claude","routine":null}"#)
+        XCTAssertEqual(headless.router, .notSaid)
+        XCTAssertNil(headless.router.line)
+
+        // A seat that wakes through the router always has a routine, so a null one is a routine
+        // the reducer could not read, never a ready one.
+        let unread = try seat(#"{"seat":"CLAUDE","wake":"http","routine":null}"#)
+        XCTAssertEqual(unread.router, .readinessNotReported)
+        XCTAssertEqual(unread.router.line, "Wakes go to the router, readiness not reported")
+    }
+
+    /// An older reducer sends no `routine` key at all:  Muster then says nothing about the
+    /// router, whatever the seat's wake is.
+    func test_an_absent_routine_from_an_older_reducer_says_nothing() throws {
+        for wake in [#""http""#, #""inbox""#, #""claude""#, "null"] {
+            let facts = try seat(#"{"seat":"CLAUDE","wake":"# + wake + "}")
+            XCTAssertFalse(facts.routineReported, wake)
+            XCTAssertNil(facts.routine, wake)
+            XCTAssertEqual(facts.router, .notSaid, wake)
+            XCTAssertNil(facts.router.line, wake)
+        }
+        let status = try XCTUnwrap(sampleReading().status)
+        for facts in status.seats {
+            XCTAssertNil(facts.router.line, facts.seat)
+        }
+    }
+
+    /// A block of the wrong shape is rejected whole, never read field by field:  decoding it
+    /// throws, the seat then has no routine, and the rest of the seat still reads.
+    func test_a_malformed_routine_is_rejected_whole() throws {
+        let malformed = [
+            #"{"ready":"true","auth":7,"why":["x"]}"#,
+            // One bad field rejects the good ones beside it.
+            #"{"ready":true,"auth":7,"why":null}"#,
+            #"{"ready":true,"auth":"bearer","why":5}"#,
+            // A word the reducer never sends.
+            #"{"ready":true,"auth":"basic","why":null}"#,
+            #"{"ready":false,"auth":"bearer","why":"router.invalid"}"#,
+        ]
+        for block in malformed {
+            XCTAssertThrowsError(
+                try JSONDecoder().decode(ServerSeatRoutineFields.self, from: Data(block.utf8)), block)
+            let facts = try seat(#"{"seat":"CLAUDE","wake":"http","routine":"# + block + "}")
+            XCTAssertNil(facts.routine, block)
+            XCTAssertEqual(facts.router, .readinessNotReported, block)
+        }
+
+        // Keys the reducer never sends are not read, and do not spoil a good block.
+        let extra = try seat(
+            #"{"seat":"CLAUDE","wake":"http","routine":{"ready":true,"auth":"bearer","why":null,"host":"router.invalid","detail":"not set"}}"#
+        )
+        XCTAssertEqual(extra.routine, ServerSeatRoutineFields(ready: true, auth: "bearer", why: nil))
+        XCTAssertEqual(extra.router, .ready)
+
+        for block in [#""ready""#, "5", "[]", "true"] {
+            let facts = try seat(#"{"seat":"CLAUDE","wake":"inbox","routine":"# + block + "}")
+            XCTAssertNil(facts.routine, block)
+            XCTAssertTrue(facts.routineReported, block)
+            XCTAssertEqual(facts.router, .captureOnly, block)
+        }
+        // The rest of the seat still reads.
+        let rest = try seat(#"{"seat":"CLAUDE","connected":true,"wake":"http","routine":"bad"}"#)
+        XCTAssertEqual(rest.connected, true)
+        XCTAssertEqual(rest.wakeKind, .wakes)
+    }
+}
+
 @MainActor
 final class ServerEavesdropperStoreTests: XCTestCase {
     actor Counter {
