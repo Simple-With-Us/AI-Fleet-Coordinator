@@ -139,6 +139,9 @@ EXPLICIT_RULES = (
     ("AFC", "systemd", "afc-wake-router.service", True),
     # Its TLS front on the tailnet address (install-wake-router.sh), also a systemd --user unit.
     ("AFC", "systemd", "afc-wake-tls.service", True),
+    # The shared Cursor Cloud letter sweep (AFC-694, install-cursor-cloud-letters.sh), a
+    # systemd --user unit named for no seat.
+    ("AFC", "systemd", "afc-cursor-cloud-letters.service", True),
     # Clutch's browser UI, and Congress.Trade's scanned-PTR worker (docs/MAC-LOCAL-PROCESSES.md).
     ("C", "pm2", "clutch-web", True),
     ("CT", "pm2", "vision-worker", True),
