@@ -18,7 +18,7 @@ Operator host (live 2026-08-07+): Hetzner NBG1 **`<PROD_ORIGIN_IP>`** (the host 
 | `COOLIFY_SERVER_STATS` | Read-only.  App server-stats panels.  Infisical metrics token. |
 | `COOLIFY_AGENTS` | Full deploy/admin.  Agent ops only.  **Never** store this in Infisical as the app's `COOLIFY_API_TOKEN`. |
 
-Load via env, not argv.  Names and one value come from the consumer's own scoped Infisical service token (the `service-tokens` pack); the shared `fleet-secrets` reader needs a working login on this host, and without one you stop and report it.  See `secret-handoff`.
+Load via env, not argv.  Names and one value come from the consumer's own scoped Infisical service token (the `service-tokens` pack); the shared `fleet-secrets` reader authenticates only with `INFISICAL_TOKEN` and fails closed naming that variable when it is missing.  See `secret-handoff`.
 
 If Infisical still has `COOLIFY_API_TOKEN` for metrics, it must equal `COOLIFY_SERVER_STATS`.
 
@@ -106,7 +106,11 @@ Health URLs say nothing about a native app.  After a merge that touches an app'
 node ~/apps/ios-fleet/ios_testflight_freshness.mjs --app <key>    # or --repo <Repo>;  --json for the report
 ```
 
-Exit 0 means current, so the deploy is verified.  Exit 1 means not yet: `SHIPPING` or `PROCESSING` is a ship already in flight, so re-run it later; `BEHIND` names the missing commit and says why the automatic catch-up did not run.  Exit 2 means the check itself failed.  App keys and native paths live in AFC `scripts/ios-fleet/testflight-apps.json`, and the full guide is AFC `docs/ios-testflight-freshness.md`.  This post-merge check is report-only, so never pass `--ship-behind` here.  The LaunchAgent `com.jay.ios-testflight-freshness` runs the catch-up ships every two hours under the fleet gates.  Quote the verdict in the closeout.
+App Store Connect credentials for this check are the owned read-only service token `ios-testflight-freshness-ro`, scoped to exactly Fleet-OPS prod `/asc` and verified before the call.  A missing binding or a grant that is not that scope exits 2.  The check does not fall back to `fleet-secrets` `/asc`, a machine identity, or a legacy key folder.  `--allow-legacy-asc-creds` or `IOS_TF_ALLOW_LEGACY_ASC_CREDS=1` is the only opt-in to that old helper fallback, and a deploy check does not use it.  The binding lives in `IOS_TF_FRESHNESS_INFISICAL_TOKEN`, a 0600 file named by `IOS_TF_FRESHNESS_INFISICAL_TOKEN_FILE`, or the login-keychain item `infisical-service-token` / `ios-testflight-freshness-ro`.  Full steps are in AFC `docs/ios-testflight-freshness.md`.
+
+Exit 0 means current, so the deploy is verified.  Exit 1 means not yet: `SHIPPING` or `PROCESSING` is a ship already in flight, so re-run it later; `BEHIND` names the missing commit and says why the automatic catch-up did not run, or (AFC-434) that an external TestFlight group serves a stale or empty build (group-only `BEHIND` does not trigger `--ship-behind` catch-up — fix groups in App Store Connect).  Exit 2 means the check itself failed.  App keys and native paths live in AFC `scripts/ios-fleet/testflight-apps.json`, and the full guide is AFC `docs/ios-testflight-freshness.md`.  With `--json`, each app may include `externalGroups` (per-group newest build, tester count, public link); see the doc for findings and `externalGroupsOnly`.  This post-merge check is report-only, so never pass `--ship-behind` here.  The LaunchAgent `com.jay.ios-testflight-freshness` runs the catch-up ships every two hours under the fleet gates.  Quote the verdict in the closeout.
+
+After a ship, you may also run the read-only build-number audit when the change touches versioning:  `node scripts/ios-fleet/build_number_audit.mjs --json` from an AFC lane (report-only;  `--strict` exits non-zero when findings exist).  It checks `FLEET-PROTOCOL.md` § App Version and Build Numbers (1000-series build numbers, monotonic uploads, iOS/Mac pairs, marketing baseline;  default scope is current train, `--all-history` for retired trains).
 
 "Touches the native iOS tree" means what the app's own ship workflow lists under `paths:`.  A merge that matches none of those paths leaves TestFlight where it was, which is current; say so in the closeout instead of shipping.
 

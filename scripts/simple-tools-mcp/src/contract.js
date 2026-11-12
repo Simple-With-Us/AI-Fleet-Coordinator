@@ -140,18 +140,45 @@ const CONTROL_RE = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
 const SEPARATOR_RE = /[\u2028\u2029]/g;
 const LINE_BREAKS_RE = /[\u2028\u2029\x85]/g;
 
-/** NFKC, then drop format characters (zero-width, bidi controls). */
+// Zs, including U+0020 and U+00A0.  NFKC maps the compatibility spaces
+// (U+00A0, U+2000–U+200A, U+202F, U+205F, U+3000) to U+0020.  A space
+// separator is not a letter, so the marker check already treats it as a
+// separator.  Hold each one out of NFKC (AFC-729).  Format characters stay
+// in the other runs and are still dropped.
+const SPACE_SEPARATOR = /\p{Zs}/u;
+
+/**
+ * NFKC, then drop format characters (zero-width, bidi controls).
+ * Unicode space separators are returned unchanged, so a read can show U+00A0.
+ */
 export function fold(text) {
-  return String(text).normalize("NFKC").replace(/\p{Cf}/gu, "");
+  let out = "";
+  let buf = "";
+  const flush = () => {
+    if (!buf) return;
+    out += buf.normalize("NFKC").replace(/\p{Cf}/gu, "");
+    buf = "";
+  };
+  for (const ch of String(text)) {
+    if (SPACE_SEPARATOR.test(ch)) {
+      flush();
+      out += ch;
+    } else {
+      buf += ch;
+    }
+  }
+  flush();
+  return out;
 }
 
 const hex2 = (ch) => `\\x${ch.charCodeAt(0).toString(16).padStart(2, "0")}`;
 const hex4 = (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`;
 
 /**
- * A Zulip-authored string made safe inside the fence:  folded, marker text in
- * any case or with any separator (or none) replaced, control characters shown
- * as \xNN, line and paragraph separators as \uXXXX.  Returns [text, truncated].
+ * A Zulip-authored string made safe inside the fence:  folded (NFKC, format
+ * characters dropped, space separators kept), marker text in any case or with
+ * any separator (or none) replaced, control characters shown as \xNN, line
+ * and paragraph separators as \uXXXX.  Returns [text, truncated].
  */
 export function clean(value, limit = null) {
   const text = fold(value === null || value === undefined ? "" : String(value))
@@ -406,6 +433,7 @@ export function basicForms(email, key) {
 const MENTION_RE = /@(?!_)\*\*/g;
 const GROUP_RE = /@_?\*(?!\*)[^*\n]{1,100}\*/g;
 const LOUD_RE = /@(?!_)\*/g;
+const LOUD_SINGLE_STAR_RE = /@(?!_)\*(?!\*)/g;
 
 /** @**X** becomes silent @_**X**;  group mentions are removed, until stable. */
 export function neutralizeMentions(text) {
@@ -415,6 +443,18 @@ export function neutralizeMentions(text) {
     text = changed;
   }
   return text.replace(LOUD_RE, "@_*");
+}
+
+/** Group mentions are removed and stray @* tokens silenced;  a typed @**Name** mention stays
+ * real and notifies that seat (owner ruling, Nov 11 2026).  Wildcard forms stay as written and are
+ * gated server-side by the realm's wildcard-mention permission. */
+export function sanitizeComposeMentions(text) {
+  for (;;) {
+    const changed = text.replace(GROUP_RE, "");
+    if (changed === text) break;
+    text = changed;
+  }
+  return text.replace(LOUD_SINGLE_STAR_RE, "@_*");
 }
 
 // ---------------------------------------------------------------- seats and tags (cli.py, zulip.py)
@@ -457,7 +497,7 @@ export function tagPrefix(seat, tag) {
 }
 
 /** Locate a complete, single-line own-seat intro. Foreign-seat and malformed markers are content. */
-function ownIntro(prefix, text) {
+export function ownIntro(prefix, text) {
   const seat = prefix.slice(1).split("·", 1)[0];
   const leading = text.match(/^(?:👀\s*)?\s*/u)[0];
   const start = leading.length;
@@ -476,8 +516,38 @@ function ownIntro(prefix, text) {
   return { end, intro, rest: text.slice(end + 1) };
 }
 
+// A body mention counts only where Zulip would notify:  outside code and block quotes, and with
+// only whitespace or opening punctuation before the @.  Same rule as cli.py _mentions_missing_from.
+const CODE_BLOCK_RE = /^(```|~~~)[\s\S]*?(?:^\1\s*$|(?![\s\S]))/gm;
+const CODE_SPAN_RE = /`[^`\n]*`/g;
+const LIVE_MENTION_RE = /(?<![^\s'"({[/<])@\*\*([^*\n]+)\*\*/g;
+
+/** A mention's identity:  its name, any case, and its user id when it carries one. */
+function mentionIdentity(inner) {
+  const match = /^(.*)\|(\d+)$/su.exec(inner);
+  return { name: (match ? match[1] : inner).trim().toLowerCase(), id: match ? match[2] : "" };
+}
+
+function sameMention(a, b) {
+  return a.name === b.name && (!a.id || !b.id || a.id === b.id);
+}
+
+/** The `to` mentions the text does not already make live, each at most once. */
+function mentionsMissingFrom(text, mentions) {
+  const visible = text.replace(CODE_BLOCK_RE, "").replace(CODE_SPAN_RE, "")
+    .split("\n").filter((line) => !/^\s*>/u.test(line)).join("\n");
+  const present = [...visible.matchAll(LIVE_MENTION_RE)].map((match) => mentionIdentity(match[1]));
+  return mentions.filter((mention) => {
+    if (!mention) return false;
+    const wanted = mentionIdentity(mention.slice(3, -2));
+    if (present.some((seen) => sameMention(seen, wanted))) return false;
+    present.push(wanted);
+    return true;
+  });
+}
+
 /** Preserve an existing own-seat intro, adding resolved recipients without a second attribution.
- * Raw mentions have already been neutralized by normalizeText; only resolved mentions can notify.
+ * Body @** mentions are unchanged; only `--to` adds loud mentions not already in the body.
  * Untagged/foreign-seat text retains the generated attribution. */
 export function composeBody(prefix, text, { labels = [], mentions = [] } = {}) {
   const own = ownIntro(prefix, text);
@@ -494,9 +564,10 @@ export function composeBody(prefix, text, { labels = [], mentions = [] } = {}) {
     const added = [...new Set(labels)].filter((label) => !existing.includes(label));
     if (added.length) intro += `${arrow < 0 ? " →" : ","}${added.join(",")}`;
     const tail = own.rest && !/^\s/u.test(own.rest) ? ` ${own.rest}` : own.rest;
-    parts = [`${intro}]${mentions.length ? ` ${mentions.join(" ")}` : ""}${tail}`];
+    const addedMentions = mentionsMissingFrom(tail, mentions);
+    parts = [`${intro}]${addedMentions.length ? ` ${addedMentions.join(" ")}` : ""}${tail}`];
   } else {
-    parts = [`${prefix}${labels.length ? `→${labels.join(",")}` : ""}]`, ...mentions, text];
+    parts = [`${prefix}${labels.length ? `→${labels.join(",")}` : ""}]`, ...mentionsMissingFrom(text, mentions), text];
   }
   const body = parts.filter(Boolean).join(" ");
   const length = codePoints(body).length;
@@ -520,11 +591,11 @@ export function normalizeChannel(value) {
   return channel;
 }
 
-/** tools.py _text:  not a single '-', raw mentions silenced, not empty after. */
+/** tools.py _text:  not a single '-', group mentions removed, not empty after. */
 export function normalizeText(value) {
   if (value.trim() === "-") throw new ToolError("invalid_argument", "argument 'text' must not be a single '-'");
-  const text = neutralizeMentions(value).trim();
-  if (!text) throw new ToolError("invalid_argument", "the message text is empty once raw mentions are silenced");
+  const text = sanitizeComposeMentions(value).trim();
+  if (!text) throw new ToolError("invalid_argument", "the message text is empty once group mentions are removed");
   return text;
 }
 

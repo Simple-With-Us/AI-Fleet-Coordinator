@@ -16,7 +16,7 @@ It runs as CLAUDE every five minutes (com.jay.needs-owner-notify) and does these
      pending-CLAUDE.json (a post that mentions yourself wakes nobody).  A note that cannot go out yet stays due.
   5. Nudges.  Two different reactions: "ask again" once.  A tap on an option that is not low-stakes: "needs a typed
      reply" once.
-  6. The Grok Bot mirror.  An OWNER topic that a Grok Bot persona opened with a fenced `needs-owner-request` JSON block
+  6. The Grok Bot mirror.  An OWNER topic that a Grok bot opened with a fenced `needs-owner-request` JSON block
      becomes a Linear item filed by CLAUDE "for GB-<ROLE>" (`needs-owner file --mirror-of`), and the link goes back
      into the topic.
 
@@ -58,10 +58,10 @@ MIRRORS_PER_RUN = 3
 TOPIC_SCANS_PER_RUN = 10
 TOPIC_LIST_LIMIT = 60
 CONTROL_READS_PER_RUN = 10
-NEVER = -1  # state.topics value:  a topic whose first message is not a Grok Bot persona's
+NEVER = -1  # state.topics value:  a topic whose first message is not a Grok bot's
 NOTE_TRIES = 12
 STREAM_ID_TTL = 24 * 3600
-MIRROR_APP = "AFC"  # the team a mirrored item is filed in (the persona's own `app` is not used)
+MIRROR_APP = "AFC"  # the team a mirrored item is filed in (the bot's own `app` is not used)
 _SAFE = re.compile(r"[^A-Za-z0-9_.:/=-]")
 _GB_SEAT = re.compile(r"GB-[A-Z0-9]+(?:-[A-Z0-9]+)*")
 
@@ -358,7 +358,7 @@ class Notifier:
             self.events.add("skip", item.identifier, why=why)
 
     def target_seat(self, item: Item) -> str:
-        """The seat a note wakes:  the Grok Bot persona a mirrored item is for, else the filer."""
+        """The seat a note wakes:  the Grok bot a mirrored item is for, else the filer."""
         b = item.block
         return (b.for_seat or b.filed_by) if b else SEAT
 
@@ -784,7 +784,7 @@ class Notifier:
 
     # ---- the Grok Bot mirror --------------------------------------------------------------------------
     def gb_sender(self, message: dict) -> str | None:
-        """The GB seat that sent `message`, only when it is a bot whose email is exactly that persona's
+        """The GB seat that sent `message`, only when it is a bot whose email is exactly that bot's
         (`<role>-grok-bot@<this realm>`) and the registry puts the seat in the grok-bot app."""
         seat = message.get("seat")
         if (
@@ -825,7 +825,7 @@ class Notifier:
             outcome = self.consider_topic(name, messages, mirrored, made)
             made += 1 if outcome == "mirrored" else 0
             if outcome != "retry":
-                # A topic a persona did not open is never a request topic, so it is not read again for this.
+                # A topic a bot did not open is never a request topic, so it is not read again for this.
                 self.state.data["topics"][name] = (
                     NEVER if outcome == "not_a_persona_topic" else max_id
                 )

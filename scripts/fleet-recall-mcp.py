@@ -65,7 +65,8 @@ TOOLS = [
                     "type": "integer",
                     "minimum": 1,
                     "maximum": recall_api.MAX_LIMIT,
-                    "default": 5,
+                    "default": recall_presentation.DEFAULT_AGENT_LIMIT,
+                    "description": "How many hits to return (default compact top-k).",
                 },
                 "category": {
                     "type": "string",
@@ -106,6 +107,21 @@ TOOLS = [
                     "type": "boolean",
                     "default": False,
                     "description": "Include retracted contributions for audit; normal search hides them.",
+                },
+                "compact": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Cache key for the excerpt view. Hit text stays complete until presentation.",
+                },
+                "full": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Return full chunk text and every requested field (verbose).",
+                },
+                "fields": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Hit fields to keep in compact mode (default: score, title, doc_id, url, source, app, category, text).",
                 },
             },
             "required": ["query"],
@@ -303,32 +319,48 @@ def call_tool(name: str, args: dict) -> dict:
     if unknown:
         raise FleetRagError("unknown argument(s): " + ", ".join(sorted(unknown)))
     if name == "recall_search":
-        _int(args, "limit")
-        _int(args, "since_days")
-        _int(args, "per_doc")
-        _bool(args, "rerank")
-        _bool(args, "prefer_lessons")
-        _bool(args, "include_retracted")
+        search_args, presentation = recall_presentation.split_search_arguments(args)
+        _int(search_args, "limit")
+        _int(search_args, "since_days")
+        _int(search_args, "per_doc")
+        _bool(search_args, "rerank")
+        _bool(search_args, "prefer_lessons")
+        _bool(search_args, "include_retracted")
+        _bool(search_args, "compact")
+        _bool(args, "full")
+        if "fields" in args and args["fields"] is not None and not isinstance(args["fields"], list):
+            raise FleetRagError("fields must be a list of field names")
         # The log names who asked:  the bearer's seat, never an argument.  (`seat` itself stays a corpus filter.)
         caller_seat = (
             verified
-            or args.get("seat")
+            or search_args.get("seat")
             or os.environ.get("AGENT_SEAT")
             or os.environ.get("AGENT_TAG")
         )
         # A null for an optional flag means "default", not False.
-        for key in ("per_doc", "rerank", "prefer_lessons", "include_retracted"):
-            if key in args and args[key] is None:
-                del args[key]
+        for key in ("per_doc", "rerank", "prefer_lessons", "include_retracted", "compact"):
+            if key in search_args and search_args[key] is None:
+                del search_args[key]
+        fallback_args = dict(search_args)
+        fallback_args.pop("compact", None)
+        if presentation.full:
+            fallback_args["full"] = True
+        if "fields" in args and args.get("fields") is not None:
+            fallback_args["fields"] = args["fields"]
         t0 = time.time()
         res = public_fallback.call_with_fallback(
-            "recall_search", args, lambda: recall_api.recall_search(**args)
+            "recall_search",
+            fallback_args,
+            lambda: recall_api.recall_search(
+                **search_args, **({"full": True} if presentation.full else {})
+            ),
         )
+        res = recall_presentation.present_search_result(res, presentation)
         latency_ms = int((time.time() - t0) * 1000)
         search_log.log_search(
-            query=args.get("query", ""),
+            query=search_args.get("query", ""),
             seat=caller_seat,
-            app=args.get("app"),
+            app=search_args.get("app"),
             hits_count=len(res.get("hits", [])),
             latency_ms=latency_ms,
             mode=res.get("mode", "mcp"),

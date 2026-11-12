@@ -2,7 +2,7 @@
 
 Every test runs the real notifier in process against the fake `board` and `simple-chat` (built on the real parsers), a
 fake clock and fake K1 knobs, in a temp HOME.  Jay is Zulip user 7 (the pinned owner);  CODEX, BF-DIRECTOR and the
-Grok Bot personas are the filing seats.
+Grok bots are the filing seats.
 """
 from __future__ import annotations
 
@@ -101,7 +101,7 @@ class FallbackTests(NotifierCase):
         row = self.state_of(ident)
         self.assertEqual((row["state"], row["notified_msg_id"] is not None), ("notified", True))
         comments = self.w.comments(ident)
-        self.assertTrue(any(c.startswith("[CLAUDE") and "[needs-owner] notified msg" in c for c in comments), comments)
+        self.assertTrue(any("[needs-owner] notified msg" in c and ("Reported by: CLAUDE" in c or c.startswith("[CLAUDE")) for c in comments), comments)
         # nothing was closed, restated or edited
         self.assertEqual(self.issue_status(ident), "Todo")
 

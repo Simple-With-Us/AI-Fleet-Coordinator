@@ -2131,7 +2131,7 @@ def seat_owns_folder(seat: Seat, registry: Registry) -> bool:
 def _role_lane_seat(raw: str, registry: Registry) -> Seat | None:
     """A role tag (BF-FIXER, GB-PLUMBER) becomes a lane seat from its seatApps.patterns `lane`
     block (AFC-620);  anything else stays None so the caller's unknown-tag refusal stands.
-    GROK-BOT itself opens no lanes (registry note) - its GB-<ROLE> personas are the lane form.
+    GROK-BOT itself opens no lanes (registry note) - its GB-<ROLE> bots are the lane form.
     Reads only layout's parsed Registry.role_lanes, so the installed standalone lane copy
     resolves roles without a simple_tools dependency."""
     tag = raw.strip().upper()

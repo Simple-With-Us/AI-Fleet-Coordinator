@@ -87,5 +87,50 @@ class MergeRoutineEnv(unittest.TestCase):
             D.merge_routine_env(seats, self.env, Path(self.tmp.name), fetch=fetch)
 
 
+class PerNameFallback(unittest.TestCase):
+    """A batched read that fails because ONE name is absent must not lose the names the
+    store holds (OPS-1048: the routine URL in the plist env, the key in Infisical)."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.env = {"HOME": self.tmp.name}
+        self.seats = {"ZC": seat("ZC", routine=routine("ZC_ROUTINE_URL", "ZC_ROUTINE_KEY"))}
+
+    def test_key_absent_batch_falls_back_per_name(self) -> None:
+        calls = []
+
+        def fetch(names):
+            calls.append(tuple(names))
+            if len(names) > 1:
+                raise type(
+                    "E", (RuntimeError,), {"__str__": lambda self: "fleet-secrets key-absent (exit 3)"}
+                )()
+            return {names[0]: "k" * 32} if names[0].endswith("KEY") else {}
+
+        # the real raiser is Z.CredentialError; fake one that str()s the same way
+        from simple_tools import zulip as Z
+
+        def fetch_real(names):
+            calls.append(tuple(names))
+            if len(names) > 1:
+                raise Z.CredentialError("fleet-secrets key-absent (exit 3)")
+            return {names[0]: "k" * 32} if names[0].endswith("KEY") else {}
+
+        D.merge_routine_env(self.seats, self.env, self.tmp.name, fetch=fetch_real)
+        self.assertEqual(self.env.get("ZC_ROUTINE_KEY"), "k" * 32)
+        self.assertNotIn("ZC_ROUTINE_URL", self.env)
+        self.assertEqual(calls[0], ("ZC_ROUTINE_URL", "ZC_ROUTINE_KEY"))  # batch first
+
+    def test_an_outage_still_raises(self) -> None:
+        from simple_tools import zulip as Z
+
+        def fetch(names):
+            raise Z.CredentialError("fleet-secrets timeout")
+
+        with self.assertRaises(Z.CredentialError):
+            D.merge_routine_env(self.seats, self.env, self.tmp.name, fetch=fetch)
+
+
 if __name__ == "__main__":
     unittest.main()

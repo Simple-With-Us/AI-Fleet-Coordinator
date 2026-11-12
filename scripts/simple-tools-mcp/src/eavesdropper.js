@@ -174,6 +174,28 @@ export function listenerItem(item) {
 
 const count = (value) => (isInt(value) && value >= 0 ? value : 0);
 
+const RECEIPT_WAKE_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/;
+const RECEIPT_STATE = /^[a-z_]{1,32}$/;
+const RECEIPT_VIA = /^[a-z][a-z0-9_]{0,39}$/;
+const receiptWord = (value, shape) => (typeof value === "string" && shape.test(value) ? value : null);
+
+/** The Operator's receipt on a pending item (listener_records.wake_receipts):  how the wake ledger
+ * routed the message, as exactly {wake_id, state, via, at}.  It is re-admitted field by field under
+ * the same shapes the listener applies, so any other key, nested value or free text a receipt
+ * carried is dropped, and a receipt with no usable wake id is null, like a message no ledger wake
+ * carries.  listenerItem drops nested objects, so this is the one way a receipt gets through. */
+export function listenerReceipt(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const wakeId = receiptWord(value.wake_id, RECEIPT_WAKE_ID);
+  if (wakeId === null) return null;
+  return {
+    wake_id: wakeId,
+    state: receiptWord(value.state, RECEIPT_STATE),
+    via: receiptWord(value.via, RECEIPT_VIA),
+    at: typeof value.at === "number" && Number.isFinite(value.at) ? value.at : null,
+  };
+}
+
 export const EAVESDROPPER_METHODS = {
   requireListener() {
     if (this.listener) return this.listener;
@@ -245,6 +267,8 @@ export const EAVESDROPPER_METHODS = {
       out.classes = classes;
       out.wake_worthy = item?.wake_worthy === true;
       out.wake_owner = item?.wake_owner === true;
+      // Additive:  a listener that predates the receipt sends no key, and then none is invented.
+      if (item && typeof item === "object" && Object.hasOwn(item, "receipt")) out.receipt = listenerReceipt(item.receipt);
       return out;
     });
     structured.seqs = items.map((i) => i.seq).filter(isInt);

@@ -6,7 +6,7 @@ import Foundation
 // actually uses:  scalars,  string arrays,  and inline tables such as
 //
 //     [seat.MM]
-//     wake = "muse"
+//     routine = { url_env = "MM_ROUTINE_URL", key_env = "MM_ROUTINE_KEY" }
 //     budget = { wakes_per_hour = 5, wakes_per_day = 80 }
 //
 // Two properties matter more than completeness:
@@ -526,7 +526,7 @@ struct ListenerConfigDocument: Equatable {
             case .notATable(let name):
                 return "The \(name) value is not a group of settings, so nothing was written."
             case .heldInItsOwnSection(let name):
-                return "The file keeps \(name) under its own [\(name)] header, and this app cannot change it there, so nothing was written."
+                return "The file keeps \(name) under its own [\(name)] header, so writing it in the seat's own section too would define it twice, and nothing was written."
             }
         }
     }

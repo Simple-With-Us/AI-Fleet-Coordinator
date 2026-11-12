@@ -22,9 +22,12 @@ import tomllib
 import uuid
 from pathlib import Path, PurePosixPath
 
-MAX_BUNDLE_BYTES = 8 * 1024 * 1024
-# The reviewed allowlisted runtime contains 154 files.  Keep the exact minimum
-# ceiling in sender and receiver: a new file still needs an explicit policy review.
+# Two-step cap raise (Nov 11-12, 2026).  The receiver accepts up to 12 MiB.  Step 2 set
+# fleet-cli-sync.py MAX_BYTES to 11 MiB, leaving at least 1 MiB of headroom.  The sender
+# runs this file from the published source commit (python3 -c), so the pairing does not
+# depend on a host install.  The receiver cap must never be below the sender cap.
+MAX_BUNDLE_BYTES = 12 * 1024 * 1024
+# The reviewed allowlisted runtime contains 154 files.  Keep the exact minimum# ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
 # platform_letter_opencode.py and opencode_letter_plugin/index.js (the OpenCode adapter);  the 137th is operator_post.py
@@ -56,7 +59,20 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # unit template stays repo-only under simple_tools/server/).
 # The 163rd is simple_tools/platform_letter_clutch.py (the Clutch session-letter adapter) and the 164th is
 # simple_tools/platform_letter_fx.py (the Fx session-letter adapter, which registers from the fx session store).
-MAX_FILES = 164
+# The 165th is simple_tools/operator_linear.py (AFC-565, the Operator's Zulip-to-Linear living comments
+# service the daemon hosts).
+# The 166th and 167th are simple_tools/wake_router.py and simple_tools/claude_wake.py (OPS-1048, the shared wake
+# router and Claude's delivery;  `simple-chat wake-deliver` has to run on the Mac, so they ship).
+# The 168th is simple_tools/wake_settings.py (OPS-1048, the router's settings through fleet_knobs).
+# The 169th and 170th are simple_tools/thread_registry.py (the Operator chat-thread registry the listener
+# keeps) and simple_tools/thread_registry_export.mjs (its Google drain, a data file beside the Python
+# modules), added for that review.
+# The 171st is simple_tools/wake_service.py (OPS-1048, the one wake router service for every platform).
+# The 172nd is simple_tools/mcp/list_presentation.py (AFC-756, compact list/search read payloads for seat MCP).
+# From here the cap is 180, set once (Nov 11, 2026) with room for the platform modules the wake router
+# registers ahead of them (codex_wake, muse_wake, zcode_wake), so a new module no longer has to move it;
+# fleet-cli-sync.py keeps the same number, and a test checks the two agree and the bundle fits.
+MAX_FILES = 180
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,
@@ -76,10 +92,12 @@ RECALL_MODULES = (
     "core",
     "doctor",
     "health",
+    "infisical_settings",
     "public_fallback",
     "recall_api",
     "recall_presentation",
     "scrub",
+    "search_cache",
     "search_log",
     "telemetry",
 )
@@ -91,6 +109,7 @@ SCOPED_READER_MODULES = ("__init__", "core")
 LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout", "placement", "temp_build")
 AFC331_FILES = (
     "scripts/simple_tools/mcp/notes-tools.json",
+    "scripts/simple_tools/mcp/peer-actions-tools.json",
     "scripts/simple_tools/mcp/recall-tools.json",
     "scripts/linear-board/catalog/core-tools.json",
     "docs/protocols/simple-tools-guide.md",
@@ -99,6 +118,7 @@ EXACT = frozenset(
     {
         "scripts/simple-chat",
         "scripts/simple-notes",
+        "scripts/simple-peer-actions",
         "scripts/simple-board",
         # The git tools CLI entry wrapper and implementation.
         "scripts/simple-git",
@@ -109,9 +129,8 @@ EXACT = frozenset(
         "docs/protocols/simple-tools-partition.toml",
         "scripts/fleet-cli-release.py",
         "scripts/simple_tools/mcp/tools.json",
-        "scripts/simple_tools/mcp/fixtures.jsonl",
         # AFC-331:  the stdio server reads these beside tools.json (the listener tools, the removed-name map
-        # and the enabled Grok Bot personas).
+        # and the enabled Grok bots).
         "scripts/simple_tools/mcp/eavesdropper-tools.json",
         "scripts/simple_tools/mcp/renamed-tools.json",
         "scripts/simple_tools/mcp/gb-identities.json",
@@ -136,6 +155,9 @@ EXACT = frozenset(
         "scripts/simple_tools/operator_sheets_google.mjs",
         # OPS-1037:  the production drain runner, shipped beside the exporter and adapter it wires.
         "scripts/simple_tools/operator_sheets_drain.mjs",
+        # The Operator chat-thread registry drain:  the same shape as the outbox exporter above — the Node
+        # writer that owns the service-account auth, shipped as a data file beside the Python modules.
+        "scripts/simple_tools/thread_registry_export.mjs",
         # AFC-564:  the OpenCode letter plugin, a data file beside the Python modules (OpenCode loads it from the path
         # `platform-letter install --platform opencode` writes).  Its node test lives under tests/ and is not shipped.
         "scripts/simple_tools/opencode_letter_plugin/index.js",
@@ -146,6 +168,35 @@ EXACT = frozenset(
         "scripts/zcode-letter-hook/platform-letter",
         # AFC-665:  the AG seat's wake bridge (delivering Operator wakes via the local agy CLI daemon API).
         "scripts/ag-wake-bridge",
+    }
+)
+# Paths that match the allowlist pattern (or were previously named in EXACT) but that nothing runs, on any
+# host, so they stay in the repository and out of the release (AFC-768, Nov 11, 2026).  Every module that a
+# host or an installer still runs or loads stays in the release, even when today's hosts run it from a git
+# checkout:  the release path is dormant (the server runs from git since Oct 19, 2026), and a release must
+# still be whole if it is ever used again.  Each Python module below has no importer outside this set and
+# the repo-only tests:
+#   - operator_github_client, operator_github_policy, operator_github_secrets:  the OPS-966 token broker's
+#     outer layers, which git-relay replaced as the one minting path (owner decision Oct 22, 2026);  kept for
+#     review history and their repo-only tests.
+#   - operator_send and clarify:  Operator DM paths that are not wired in (simple_tools/README.md).
+#   - mcp/fixtures.jsonl:  golden cases the unit suites load from the checkout;  `simple-chat mcp` does not
+#     read them at runtime.  Leaving them out of the bundle keeps the encoded sender payload under the
+#     sender cap after AFC-756 (list_presentation plus the compact/full catalog fields).
+# A new module still ships by default:  this list only ever names a path that nothing runs.
+REPO_ONLY = frozenset(
+    {
+        *(
+            "scripts/simple_tools/" + name + ".py"
+            for name in (
+                "clarify",
+                "operator_github_client",
+                "operator_github_policy",
+                "operator_github_secrets",
+                "operator_send",
+            )
+        ),
+        "scripts/simple_tools/mcp/fixtures.jsonl",
     }
 )
 # What every release ever installed contains.  verify_retained, rollback and status judge a retained
@@ -171,6 +222,7 @@ TOOL_REQUIRED = frozenset(
         # stays a valid rollback target.
         "scripts/simple-chat",
         "scripts/simple-notes",
+        "scripts/simple-peer-actions",
         "scripts/simple-board",
         # The git tools CLI.  TOOL_REQUIRED, not BASE_REQUIRED:  a retained pre-git release stays a valid
         # rollback target (the smoke skips cases whose script a rollback target does not carry).
@@ -198,6 +250,8 @@ TOOL_REQUIRED = frozenset(
         "scripts/simple_tools/secretscan.py",
         # Imported by notes_client: new bundles need it, older rollback targets do not.
         "scripts/simple_tools/notes_service_reader.py",
+        "scripts/simple_tools/peer_actions.py",
+        "scripts/simple_tools/peer_actions_cli.py",
         "scripts/simple_tools/fleet_bearer.py",
         # New stdio bundles must carry the hard-imported own-bearer gate. Older rollback targets stay valid.
         "scripts/simple_tools/mcp/bearer_gate.py",
@@ -210,6 +264,11 @@ class Refused(Exception):
     """Only fixed, non-sensitive error codes leave this program."""
 
 
+def shipped_path(path: str) -> bool:
+    """What a new bundle carries:  the allowlist minus the repo-only files."""
+    return allowed_path(path) and path not in REPO_ONLY
+
+
 def allowed_path(path: str) -> bool:
     if not isinstance(path, str) or not re.fullmatch(r"[A-Za-z0-9_./-]+", path):
         return False
@@ -220,6 +279,8 @@ def allowed_path(path: str) -> bool:
         return False
     if path in EXACT:
         return True
+    if path in REPO_ONLY:
+        return False
     return bool(
         re.fullmatch(r"scripts/simple_tools/(?:mcp/)?[a-z][a-z0-9_]*\.py", path)
         or path in ("scripts/simple_tools/__init__.py", "scripts/simple_tools/mcp/__init__.py")
@@ -634,6 +695,7 @@ def wrapper_files(home: Path) -> dict[Path, tuple[bytes, int]]:
         bin_dir / "simple-git": (wrapper(home, "scripts/simple-git"), 0o755),
         bin_dir / "simple-chat": (wrapper(home, "scripts/simple-chat"), 0o755),
         bin_dir / "simple-notes": (wrapper(home, "scripts/simple-notes"), 0o755),
+        bin_dir / "simple-peer-actions": (wrapper(home, "scripts/simple-peer-actions"), 0o755),
         bin_dir / "simple-chat-codex-mcp": (
             wrapper(
                 home,
@@ -757,6 +819,13 @@ def verify_existing(release: Path, files: dict) -> None:
             raise Refused("existing_release_changed")
 
 
+def retained_path(path: str) -> bool:
+    # A retained release was judged by the policy that installed it.  A path that policy shipped and REPO_ONLY
+    # has since kept out is still a valid member of that older release, so status and rollback keep accepting
+    # it:  narrowing the release must never strand the rollback target it exists for.
+    return allowed_path(path) or path in REPO_ONLY
+
+
 def verify_retained(release: Path) -> dict:
     metadata = release / "release.json"
     if (
@@ -779,7 +848,7 @@ def verify_retained(release: Path) -> dict:
             raise Refused("invalid_release_metadata")
         for name, entry in files.items():
             if (
-                not allowed_path(name)
+                not retained_path(name)
                 or set(entry) != {"mode", "sha256"}
                 or type(entry["mode"]) is not int
                 or entry["mode"] not in (0o644, 0o755)

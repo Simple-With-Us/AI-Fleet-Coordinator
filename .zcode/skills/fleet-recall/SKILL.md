@@ -1,7 +1,7 @@
 ---
 name: fleet-recall
 description: >-
-  Search the fleet's shared knowledge corpus (board resolutions, Apple Notes, effort logs, protocol docs, seat memories) before re-deriving a lesson, and contribute a reusable lesson after you learn one.  Use at the start of any task that smells familiar (an incident, a deploy gotcha, an owner preference), whenever a peer says "we solved this before", and at closeout.  Backed by the self-hosted fleet-agents Qdrant collection on the Hetzner box.
+  Search the fleet's shared knowledge corpus (board resolutions, Apple Notes, effort logs, protocol docs, seat memories) before re-deriving a lesson, and contribute a reusable lesson after you learn one.  Use at the start of any task that smells familiar (an incident, a deploy gotcha, an owner preference), whenever a peer says "we solved this before", and at closeout.  Backed by the self-hosted fleet Qdrant collection on the Hetzner box.
 ---
 
 # Fleet recall
@@ -9,7 +9,7 @@ description: >-
 > **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).  A seat a launcher assigned beats the ZC default.
 
 
-The fleet has one shared memory: the `fleet-agents` collection in the self-hosted Qdrant on the
+The fleet has one shared memory: the collection named by `QDRANT_FLEET_COLLECTION` in the self-hosted Qdrant on the
 Hetzner box, embedded by the self-hosted bge-m3 endpoint.  It holds every row of the old board with its
 resolution (Linear issues join when the `linear` recall source ships), the Apple Notes archive, every effort log, the fleet protocol docs, the skills, and
 each seat's memory files, refreshed nightly by the BotFleet bot Oracle.  Canonical doc:
@@ -70,6 +70,13 @@ of the window grouped by app, then category, one line per lesson (date, seat, ti
 line, doc_id, url).  The Sunday Oracle routine pastes it into its health note and the owner
 reads it in Apple Notes; use `--app` to scope a per-app closeout.
 
+**Setup health.**  `recall doctor [--json]` runs one setup pass: Infisical token file (mode 600,
+never the value), scoped read of the recall keys, TEI embedder, Qdrant reachability
+and point count, Mac mirror `.complete` age when `FLEET_RAG_MIRROR` is set, nightly `last.json`
+when the server job is configured, install completeness (`linear-board/`, `simple_tools/secretscan.py`),
+and `ingest.lock` when the exclusive flock is still held and the pid is not running.  Rows the host
+does not need are SKIP; any FAIL exits 1.
+
 **Platform parity.**  `recall doctor --platforms [--box] [--json]` prints an OK/WARN/FAIL table:
 `fleet-recall` registered in every platform config (Claude, Cursor, Gemini, Codex, Grok,
 grok-acp), the skill copied to each skills dir, the Claude Code hooks installed, seat-mcp
@@ -96,10 +103,14 @@ scans the transcript once: a session with 25+ tool uses that never called `recal
 contribute or say `no lesson`; a per-session marker under `~/apps/fleet-rag/state/hook-nudged/`
 prevents repeats and `FLEET_RECALL_HOOKS=0` disables both hooks.
 
-Cloud seats (Cursor cloud, Codex cloud, Claude cloud, Grok Bot personas) reach the same three
+Cloud seats (Cursor cloud, Codex cloud, Claude cloud, Grok bots) reach the same three
 tools through the fleet MCP gateway (`docs/RECALL-ACCESS-CHECK.md` names the URL; Cloudflare Access +
 bearer, see `docs/fleet-skills/drive-grok-tui`).  Nothing else on the internet can reach the
 corpus; both services bind to the Tailscale mesh only.
+
+## Retrieval-Quality Eval
+
+`recall eval --retrieval` scores `scripts/fleet_rag/retrieval_golden.json` against the live collection at recall@1, recall@5, recall@10 and MRR.  `recall eval --offline` builds a small BM25 index from the repo files those queries name, so CI can run it with no Qdrant credentials.  Save two JSON reports and pass them to `recall eval --compare BEFORE.json AFTER.json` to see what a chunking or filter change did.  The weekly `recall eval` on `golden.jsonl` is unchanged.
 
 ## Rules
 

@@ -242,14 +242,14 @@ function actionButton(csrf, action, label, fields = {}) {
  * atomically with the mint (src/seat-state.js gbBearerMintChecked), so an
  * accidental refresh or resubmit cannot touch the bearer - it is acked from
  * the stored outcome instead (gbBearerMintCompletedPage).  The
- * send line states what THIS minted bearer can actually do:  a persona bearer
+ * send line states what THIS minted bearer can actually do:  a bot bearer
  * and a seat bearer minted with the acceptance reach Fleet MCP's /mcp and Git Relay;
  * a seat bearer minted without it is Git Relay only.  Both forms also note that a
  * fleet tool verifying with this Worker (simple-board is the first) uses the
  * same bearer - the /mcp acceptance does not gate that, and per-tool support
  * is stated as landing, never as already shipped.
  */
-export function gbBearerRevealPage({ identity, token, expiresAt, kind = "persona", mcpAccept = true }) {
+export function gbBearerRevealPage({ identity, token, expiresAt, kind = "bot", mcpAccept = true }) {
   const onMcp = kind !== "seat" || mcpAccept === true;
   const send = onMcp
     ? "Send it as an Authorization: Bearer header to Fleet MCP's /mcp URL and to Git Relay;  it acts only as this identity.  A fleet tool that verifies with this Worker (simple-board is the first) uses this same bearer as the identity's credential."

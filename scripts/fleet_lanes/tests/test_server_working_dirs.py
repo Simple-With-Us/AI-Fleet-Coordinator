@@ -183,6 +183,7 @@ class ServerWorkingDirsTest(unittest.TestCase):
         self.write_config('{"server": {"host": "example.test", "port": 62306}}\n')
         self.patches = [
             mock.patch.object(swd, "HOME", self.home),
+            mock.patch.object(swd, "SYSTEM_BIN", self.tmp / "usr-local-bin"),  # not the machine's real /usr/local/bin
             mock.patch.object(swd, "SYSTEMD_DIR", self.systemd),
             mock.patch.dict(os.environ, {"FLEET_LANES_ROOT": str(self.lanes)}),
             mock.patch.dict(os.environ, {"PATH": str(self.home / "empty-bin")}),

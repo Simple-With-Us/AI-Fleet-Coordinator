@@ -100,11 +100,15 @@ enum EavesdropperStatusText {
 ///      "pause": {"paused", "since", "wakes_only", "set_by"}, "pause_file_error",
 ///      "seats": [{"seat", "bot", "connected", "running", "wake", "paused", "wakes_24h",
 ///                 "held_back", "jobs", "last_event", "quota": {...}, "leases": [...],
-///                 "letters": {"known", "why"}}],
-///      "skipped": [{"seat", "reason"}], "disabled": [name]}
+///                 "letters": {"known", "why"}, "routine": {"ready", "auth", "why"} | null}],
+///      "skipped": [{"seat", "reason"}], "disabled": [name],
+///      "registry_sweep": {"ran_at", "ok", "ended", "error", "stale_after_minutes", "refused",
+///                         "refused_platforms": [name]}}
 ///
 /// The document has no schema name of its own:  `schema` is its version, and the helper's answer
 /// around it names the verb (`server eavesdropper-status`), which the answer parser checks.
+/// `registry_sweep` and each seat's `routine` came later and are additive, so the version stays 1
+/// and a document from an older helper simply has neither.
 struct ReducedEavesdropperStatus: Decodable, Equatable {
     /// The one version this app reads.
     static let schemaVersion = 1
@@ -138,6 +142,8 @@ struct ReducedEavesdropperStatus: Decodable, Equatable {
     let skipped: [ServerSkippedSeat]
     /// Seats the listener's settings turn off.
     let disabled: [String]
+    /// The registry's last stale sweep on the server, or nil from an older helper.
+    let registrySweep: ServerRegistrySweepFields?
 
     enum CodingKeys: String, CodingKey {
         case schema, instance, pause, seats, skipped, disabled
@@ -145,6 +151,7 @@ struct ReducedEavesdropperStatus: Decodable, Equatable {
         case statusUpdatedText = "status_updated"
         case operatorVoice = "operator_voice"
         case pauseFileError = "pause_file_error"
+        case registrySweep = "registry_sweep"
     }
 }
 
@@ -162,6 +169,7 @@ extension ReducedEavesdropperStatus {
         skipped = container.lenientList(ServerSkippedSeat.self, .skipped)
         disabled = container.lenientList(String.self, .disabled)
             .compactMap { EavesdropperStatusText.plain($0, limit: 32) }
+        registrySweep = container.optionalField(ServerRegistrySweepFields.self, .registrySweep)
     }
 
     /// True when this is the version this app reads.
@@ -325,6 +333,141 @@ extension ServerEavesdropperPause {
     var since: Date? { sinceText.flatMap(FleetTime.parse) }
 }
 
+// MARK: - The registry's stale sweep
+
+/// The document's `registry_sweep` block (AFC-721):  the server's one stale sweeper's last pass,
+/// as counts.  The reducer never sends the letters, record ids or machines of the chats a pass
+/// closed or held back, and nothing here asks for them.  The Mac, and a server before its first
+/// pass, send the block with every field null.
+struct ServerRegistrySweepFields: Decodable, Equatable {
+    /// When the pass ran, as written.
+    let ranAtText: String?
+    let ok: Bool?
+    /// How many chats the pass closed.
+    let ended: Int?
+    /// The reducer's code for why the pass was not clean (`sweep_share_exceeded`,
+    /// `registry_unavailable`, `registry_error`), or nil.
+    let error: String?
+    /// How long a chat must be quiet before the sweep closes it, in minutes.
+    let staleAfterMinutes: Int?
+    /// How many platform and machine groups the share guard held back.
+    let refused: Int?
+    /// The platforms of those groups, each once.
+    let refusedPlatforms: [String]
+
+    /// The most platforms the reducer sends (`MAX_SWEEP_PLATFORMS`).
+    static let maxPlatforms = 16
+    /// The row's name.
+    static let title = "Stale Chat Sweep"
+
+    enum CodingKeys: String, CodingKey {
+        case ok, ended, error, refused
+        case ranAtText = "ran_at"
+        case staleAfterMinutes = "stale_after_minutes"
+        case refusedPlatforms = "refused_platforms"
+    }
+}
+
+extension ServerRegistrySweepFields {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        ranAtText = container.optionalText(.ranAtText, limit: 40)
+        ok = container.optionalField(Bool.self, .ok)
+        ended = container.optionalCount(.ended)
+        error = container.optionalText(.error, limit: 48)
+        staleAfterMinutes = container.optionalCount(.staleAfterMinutes)
+        refused = container.optionalCount(.refused)
+        refusedPlatforms = Array(
+            container.lenientList(String.self, .refusedPlatforms)
+                .compactMap { EavesdropperStatusText.plain($0, limit: 24) }
+                .prefix(Self.maxPlatforms)
+        )
+    }
+
+    /// When the pass ran, or nil.
+    var ranAt: Date? { ranAtText.flatMap(FleetTime.parse) }
+
+    /// True when the block says anything about a pass.  An all-null block (the Mac, or a server
+    /// that has not swept yet) is not shown.
+    var isReported: Bool { ranAtText != nil || ok != nil || ended != nil }
+
+    /// True when the last pass was not clean.
+    var isProblem: Bool { ok == false }
+
+    /// The row's glyph, three ways:  a clean pass, a pass that was not clean, and a pass whose
+    /// outcome the server did not report.  An unknown outcome never shows as healthy.
+    var symbolName: String {
+        switch ok {
+        case true?: return "checkmark.circle"
+        case false?: return "exclamationmark.triangle"
+        case nil: return "questionmark.circle"
+        }
+    }
+
+    /// The short answer:  OK, or the reducer's error word.
+    var label: String {
+        switch ok {
+        case true?: return "OK"
+        case false?: return error ?? "Failed"
+        case nil: return EavesdropperStatusText.notReported
+        }
+    }
+
+    /// What the last pass did, in plain words:  when it ran, how many chats it closed, why it was
+    /// not clean, and which platforms the share guard held back.
+    func sentence(now: Date) -> String {
+        var parts: [String] = []
+        if let ranAt {
+            parts.append("It last ran at \(EavesdropperStatusText.time(ranAt, now: now)).")
+        } else {
+            parts.append("It does not say when it last ran.")
+        }
+        if let ended {
+            let chats = ended == 0 ? "no chats" : (ended == 1 ? "1 chat" : "\(ended) chats")
+            if let quiet = Self.quietText(staleAfterMinutes) {
+                parts.append("It closed \(chats) quiet for more than \(quiet).")
+            } else {
+                parts.append("It closed \(chats).")
+            }
+        }
+        switch error {
+        case "registry_unavailable"?:
+            parts.append("The session registry was not there, so it closed nothing.")
+        case "registry_error"?:
+            parts.append("It could not read or write the session registry, so it closed nothing.")
+        case nil, "sweep_share_exceeded"?:
+            if ok == false, error == nil {
+                parts.append("It did not finish cleanly, and the server did not say why.")
+            }
+        case let code?:
+            parts.append("It did not finish cleanly (\(code)).")
+        }
+        let heldBack = (refused ?? 0) > 0 || !refusedPlatforms.isEmpty || error == "sweep_share_exceeded"
+        if heldBack {
+            if !refusedPlatforms.isEmpty {
+                parts.append("Held back: \(refusedPlatforms.joined(separator: ", ")).")
+            } else if let refused, refused > 0 {
+                // `refused` counts platform-and-machine groups, not platforms.
+                parts.append(refused == 1
+                    ? "It held back one platform's chats on one machine."
+                    : "It held back \(refused) groups of chats, each one platform on one machine.")
+            }
+            parts.append("The share guard stopped it closing too many of a platform's open chats on one machine at once, so it left those chats open.")
+        }
+        return parts.joined(separator: EavesdropperStatusText.gap)
+    }
+
+    /// `2160` minutes as `36 hours`, any other whole number of minutes as minutes, or nil.
+    static func quietText(_ minutes: Int?) -> String? {
+        guard let minutes, minutes > 0 else { return nil }
+        if minutes % 60 == 0 {
+            let hours = minutes / 60
+            return hours == 1 ? "1 hour" : "\(hours) hours"
+        }
+        return minutes == 1 ? "1 minute" : "\(minutes) minutes"
+    }
+}
+
 // MARK: - One seat
 
 /// One seat of the server's eavesdropper, field by field, with each fact as a reading that
@@ -348,9 +491,15 @@ struct ServerSeatFacts: Decodable, Equatable {
     /// The seat's sessions (the listener's leases), with no lease or session id.
     let sessions: [ServerSeatSession]
     let letters: ServerSeatLetterFields?
+    /// Whether the router the seat's wakes go to is ready, or nil when the reducer sent no
+    /// routine for the seat (or one it could not read).
+    let routine: ServerSeatRoutineFields?
+    /// True when the reducer sent the `routine` key at all, null included.  An older reducer
+    /// sends none, and then Muster says nothing about the router for any seat.
+    let routineReported: Bool
 
     enum CodingKeys: String, CodingKey {
-        case seat, bot, connected, running, wake, paused, jobs, quota, letters
+        case seat, bot, connected, running, wake, paused, jobs, quota, letters, routine
         case sessions = "leases"
         case wakesLastDay = "wakes_24h"
         case heldBack = "held_back"
@@ -379,6 +528,28 @@ extension ServerSeatFacts {
         quota = container.optionalField(ServerSeatQuotaFields.self, .quota)
         sessions = container.lenientList(ServerSeatSession.self, .sessions)
         letters = container.optionalField(ServerSeatLetterFields.self, .letters)
+        routine = container.optionalField(ServerSeatRoutineFields.self, .routine)
+        routineReported = container.contains(.routine)
+    }
+
+    /// Whether the seat's wakes go to a ready router, as one plain line can say it.
+    var router: ServerSeatRouter {
+        if let routine {
+            switch routine.ready {
+            case true?: return .ready
+            case false?: return .notReady(routine.whyText)
+            case nil: return .readinessNotReported
+            }
+        }
+        // No routine.  Only a reducer that sends the key can say a seat has none.
+        guard routineReported else { return .notSaid }
+        switch wakeKind {
+        case .capturesOnly: return .captureOnly
+        // A seat that wakes through the router always has a routine, so one without is a
+        // routine the reducer could not read.
+        case .wakes: return .readinessNotReported
+        case .other, .notReported: return .notSaid
+        }
     }
 
     var connection: ServerSeatConnection { ServerSeatConnection(connected) }
@@ -454,46 +625,129 @@ enum ServerSeatRunState: Equatable {
     }
 }
 
-/// What wakes a seat.
+/// Whether a server seat Wakes or Captures Only, from the reducer's wake word.
+///
+/// The reducer still sends the old wake kinds, and every word it sends is read:  `http` is a seat
+/// whose routine wakes the right chat, and `inbox` one whose mentions are kept in its inbox.  Any
+/// other word is shown as the server wrote it, and never given a meaning Muster does not know.
 enum ServerSeatWake: Equatable {
-    case inbox
-    case muse
-    case http
-    case claude
-    case openRouter
-    case miniMaxCode
-    /// The fallback is standing in for the seat's own wake.
-    case fallback
-    /// A wake kind the reducer does not name.
-    case other
+    case wakes
+    case capturesOnly
+    /// A word the panel gives no meaning to, as the server wrote it.
+    case other(String)
     case notReported
 
     init(token: String?) {
         switch token {
-        case "inbox"?: self = .inbox
-        case "muse"?: self = .muse
-        case "http"?: self = .http
-        case "claude"?: self = .claude
-        case "openrouter"?: self = .openRouter
-        case "mcode"?: self = .miniMaxCode
-        case "fallback"?: self = .fallback
-        case "other"?: self = .other
-        default: self = .notReported
+        case nil: self = .notReported
+        case "http"?: self = .wakes
+        case "inbox"?: self = .capturesOnly
+        case let word?: self = .other(word)
         }
     }
 
     var label: String {
         switch self {
-        case .inbox: return "Inbox"
-        case .muse: return "Muse"
-        case .http: return "HTTP"
-        case .claude: return "Claude"
-        case .openRouter: return "OpenRouter"
-        case .miniMaxCode: return "MiniMax Code"
-        case .fallback: return "Fallback standing in"
-        case .other: return "Other"
+        case .wakes: return "Wakes"
+        case .capturesOnly: return "Captures Only"
+        case .other(let word): return word
         case .notReported: return EavesdropperStatusText.notReported
         }
+    }
+
+    /// The line a seat's row shows:  the kind alone, or the wake word the server sent.
+    var rowText: String {
+        switch self {
+        case .wakes, .capturesOnly: return label
+        case .other, .notReported: return "Wake: \(label)"
+        }
+    }
+}
+
+/// A seat's `routine` block:  whether the router the seat's wakes go to is ready.  The reducer
+/// sends it only for a seat that wakes through the router, and never the router's address, its
+/// detail sentence or its method, so nothing here holds one.  It is about readiness only:  it
+/// never says that any one wake reached a chat.
+struct ServerSeatRoutineFields: Decodable, Equatable {
+    let ready: Bool?
+    /// `header`, `bearer`, `hmac-sha256` or `other`, or nil.
+    let auth: String?
+    /// `routine_not_configured`, `routine_key_refused`, `routine_url_refused` or `other`, or nil.
+    let why: String?
+
+    enum CodingKeys: String, CodingKey { case ready, auth, why }
+}
+
+extension ServerSeatRoutineFields {
+    /// The only `auth` words the reducer sends.
+    static let authWords: Set<String> = ["header", "bearer", "hmac-sha256", "other"]
+    /// The only `why` words the reducer sends.
+    static let whyWords: Set<String> = [
+        "routine_not_configured", "routine_key_refused", "routine_url_refused", "other",
+    ]
+
+    /// The block is judged whole before anything reads it:  a field of the wrong type, or a word
+    /// the reducer never sends, throws.  The seat's own reader takes that as no routine, so the
+    /// seat says its readiness is not reported, and never shows half a block.  Keys the reducer
+    /// never sends (an address, a detail sentence) are not read at all.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let readyValue = try container.decodeIfPresent(Bool.self, forKey: .ready)
+        let authValue = try container.decodeIfPresent(String.self, forKey: .auth)
+        let whyValue = try container.decodeIfPresent(String.self, forKey: .why)
+        if let word = authValue, !Self.authWords.contains(word) {
+            throw DecodingError.dataCorruptedError(
+                forKey: .auth, in: container, debugDescription: "not an auth word the reducer sends")
+        }
+        if let word = whyValue, !Self.whyWords.contains(word) {
+            throw DecodingError.dataCorruptedError(
+                forKey: .why, in: container, debugDescription: "not a reason word the reducer sends")
+        }
+        ready = readyValue
+        auth = authValue
+        why = whyValue
+    }
+
+    /// Why the router is not ready, in plain words.
+    var whyText: String {
+        switch why {
+        case "routine_not_configured"?: return "its address or key is not set on the server"
+        case "routine_key_refused"?: return "its key cannot be used"
+        case "routine_url_refused"?: return "its address cannot be used"
+        default: return "the server did not say why"
+        }
+    }
+}
+
+/// Whether a server seat's wakes go to a ready router.  It is about readiness only:  a router
+/// that is ready, or that took a wake, has not thereby put the wake in front of a chat, and no
+/// line here says it has.
+enum ServerSeatRouter: Equatable {
+    case ready
+    /// Not ready, with the reason in plain words.
+    case notReady(String)
+    /// The seat wakes through the router, and the server did not say whether it is ready.
+    case readinessNotReported
+    /// The seat's mentions are kept in its inbox, and nothing wakes it.
+    case captureOnly
+    /// The seat wakes some other way, or the server is too old to say.
+    case notSaid
+
+    /// The one line a seat's row shows, or nil when there is nothing to say.  A seat that only
+    /// captures gets no line:  its listener cell already says Captures Only.
+    var line: String? {
+        switch self {
+        case .ready: return "Wakes go to the router, ready"
+        case .notReady(let why): return "Wakes go to the router, not ready: \(why)"
+        case .readinessNotReported: return "Wakes go to the router, readiness not reported"
+        case .captureOnly, .notSaid: return nil
+        }
+    }
+
+    /// True when the router is not ready.
+    var isProblem: Bool {
+        if case .notReady = self { return true }
+        return false
     }
 }
 

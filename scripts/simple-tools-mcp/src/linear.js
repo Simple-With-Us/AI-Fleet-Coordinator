@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { SEAT_NAME_ALIASES } from "./identity-aliases.js";
 import { LINEAR_MCP_TOOLS, LINEAR_MCP_READ_TOOLS, LINEAR_MCP_WRITE_TOOLS } from "./linear-mcp-specs.js";
+import { FULL_ARG } from "./linear-full-arg.js";
 import { LINEAR_NAMED_TOOLS, LINEAR_NAMED_COMMANDS } from "./linear-named-specs.js";
 import { resolveSecret } from "./infisical.js";
 // Linear tools for hosted seats, so a seat with no shell (GROK-WEB first, then
@@ -107,6 +108,18 @@ export const OWN_APP_LINEAR_PREFIXES = Object.freeze({
   "BF-PLUMBER": "BF_PLUMBER",
   "BF-PUBLISHER": "BF_PUBLISHER",
   "BF-TRADER": "BF_TRADER",
+  "GB-COMPILER": "GB_COMPILER",
+  "GB-DEPLOYER": "GB_DEPLOYER",
+  "GB-DESIGNER": "GB_DESIGNER",
+  "GB-DIRECTOR": "GB_DIRECTOR",
+  "GB-ENGINEER": "GB_ENGINEER",
+  "GB-FIXER": "GB_FIXER",
+  "GB-HOUSEKEEPER": "GB_HOUSEKEEPER",
+  "GB-MONITOR": "GB_MONITOR",
+  "GB-ORACLE": "GB_ORACLE",
+  "GB-PLUMBER": "GB_PLUMBER",
+  "GB-PUBLISHER": "GB_PUBLISHER",
+  "GB-TRADER": "GB_TRADER",
 });
 
 export const LINEAR_SECRETS = Object.freeze({
@@ -146,6 +159,18 @@ export const LINEAR_SECRETS = Object.freeze({
   "BF-PLUMBER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-PLUMBER"]),
   "BF-PUBLISHER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-PUBLISHER"]),
   "BF-TRADER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-TRADER"]),
+  "GB-COMPILER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-COMPILER"]),
+  "GB-DEPLOYER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-DEPLOYER"]),
+  "GB-DESIGNER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-DESIGNER"]),
+  "GB-DIRECTOR": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-DIRECTOR"]),
+  "GB-ENGINEER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-ENGINEER"]),
+  "GB-FIXER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-FIXER"]),
+  "GB-HOUSEKEEPER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-HOUSEKEEPER"]),
+  "GB-MONITOR": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-MONITOR"]),
+  "GB-ORACLE": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-ORACLE"]),
+  "GB-PLUMBER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-PLUMBER"]),
+  "GB-PUBLISHER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-PUBLISHER"]),
+  "GB-TRADER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-TRADER"]),
 });
 
 /** The Worker secret names for a seat, or null when the seat has no Linear app. */
@@ -193,6 +218,18 @@ export const LINEAR_INFISICAL = Object.freeze({
   "BF-PLUMBER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-PLUMBER"]),
   "BF-PUBLISHER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-PUBLISHER"]),
   "BF-TRADER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-TRADER"]),
+  "GB-COMPILER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-COMPILER"]),
+  "GB-DEPLOYER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-DEPLOYER"]),
+  "GB-DESIGNER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-DESIGNER"]),
+  "GB-DIRECTOR": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-DIRECTOR"]),
+  "GB-ENGINEER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-ENGINEER"]),
+  "GB-FIXER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-FIXER"]),
+  "GB-HOUSEKEEPER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-HOUSEKEEPER"]),
+  "GB-MONITOR": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-MONITOR"]),
+  "GB-ORACLE": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-ORACLE"]),
+  "GB-PLUMBER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-PLUMBER"]),
+  "GB-PUBLISHER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-PUBLISHER"]),
+  "GB-TRADER": ownAppPair(OWN_APP_LINEAR_PREFIXES["GB-TRADER"]),
 });
 
 /** Async: the seat's Linear pair resolved through Infisical when INFISICAL_MODE
@@ -387,6 +424,18 @@ export const SEAT_APP_NAMES = Object.freeze({
   "BF-PUBLISHER": "BF-Publisher",
   "BF-ENGINEER": "BF-Engineer",
   "BF-TRADER": "BF-Trader",
+  "GB-COMPILER": "GB-Compiler",
+  "GB-DEPLOYER": "GB-Deployer",
+  "GB-DESIGNER": "GB-Designer",
+  "GB-DIRECTOR": "GB-Director",
+  "GB-ENGINEER": "GB-Engineer",
+  "GB-FIXER": "GB-Fixer",
+  "GB-HOUSEKEEPER": "GB-Housekeeper",
+  "GB-MONITOR": "GB-Monitor",
+  "GB-ORACLE": "GB-Oracle",
+  "GB-PLUMBER": "GB-Plumber",
+  "GB-PUBLISHER": "GB-Publisher",
+  "GB-TRADER": "GB-Trader",
 });
 export const SEAT_APP_ALIASES = Object.freeze({
   JET: Object.freeze(["Jet (OpenAI dot)"]),
@@ -634,9 +683,17 @@ export function neutralizeLinearMentions(body) {
   return out;
 }
 
-/** clean() (which removes the Zulip markers) plus the Linear markers.  Returns [text, truncated]. */
+// AFC-722 review:  clean() folds NFKC, which turns U+00A0 into a plain space, so a Linear read could never show the
+// sentence gap a write stored and every agent saw it as missing.  U+00A0 rides through the fold as a private-use
+// placeholder and comes back as itself.  The marker patterns treat both as a separator, so nothing hides a marker.
+const NBSP_HOLD = "\uF8FE";
+const NBSP_HOLD_RE = /\uF8FE/g;
+
+/** clean() (which removes the Zulip markers) plus the Linear markers, keeping U+00A0.  Returns [text, truncated]. */
 export function linearClean(value, limit = null) {
-  const [text] = clean(value);
+  const raw = value === null || value === undefined ? "" : String(value);
+  const [held] = clean(raw.replace(NBSP_HOLD_RE, " ").replaceAll("\u00a0", NBSP_HOLD));
+  const text = held.replace(NBSP_HOLD_RE, "\u00a0");
   const stripped = text.replace(LINEAR_MARKER_RE, "[marker removed]");
   if (limit !== null) {
     const points = [...stripped];
@@ -689,9 +746,11 @@ const ISSUE_ID = {
   description: "The issue id or identifier, such as fc9e1ab6 or AFC-289.",
 };
 
-// The same optional session id the Zulip tools take, so the seat tag line on a
-// Linear body is written the same way in both places.
-const SESSION = { type: "string", maxLength: 100, description: "Your session id, for the seat tag line." };
+// The same optional session id the Zulip tools take.  Linear writes record it
+// for idempotency and (on the board CLI) a Sessions footer;  they do not inject it into the body.
+const SESSION = { type: "string", maxLength: 100, description: "Your session id, recorded on the write." };
+
+export { FULL_ARG } from "./linear-full-arg.js";
 
 export const LINEAR_TOOLS = Object.freeze([
   {
@@ -728,6 +787,7 @@ export const LINEAR_TOOLS = Object.freeze([
         env: { type: "string", enum: ["mac", "cloud"] },
         label: { type: "string", enum: [...FLAT_LABELS], description: "Only the flat workspace labels are accepted; a claim or seat label is never one of them." },
         limit: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        full: FULL_ARG,
       },
     },
     outputSchema: {
@@ -763,7 +823,7 @@ export const LINEAR_TOOLS = Object.freeze([
   {
     name: "linear_file",
     title: "Linear File",
-    description: "File a new issue.  The body starts with your seat tag line.  Writes need the server's write switch on, which the owner sets at deploy.",
+    description: "File a new issue.  The body is posted as given;  attribution is the Linear app identity.  Writes need the server's write switch on, which the owner sets at deploy.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -806,7 +866,7 @@ export const LINEAR_TOOLS = Object.freeze([
   {
     name: "linear_comment",
     title: "Linear Comment",
-    description: "Add a comment to an issue.  The body starts with your seat tag line.  Writes need the server's write switch on.",
+    description: "Add a comment to an issue.  The body is posted as given;  attribution is the Linear app identity.  Writes need the server's write switch on.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -856,6 +916,7 @@ export const LINEAR_TOOLS = Object.freeze([
       query: { type: "string", minLength: 1, maxLength: 24000 },
       variables: { type: "object", default: {} },
       max_chars: { type: "integer", minimum: 1000, maximum: 1000000, default: 24000 },
+      full: FULL_ARG,
     } },
     annotations: { readOnlyHint: true, openWorldHint: false },
   },

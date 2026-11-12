@@ -10,7 +10,11 @@ on:
 # instead of racing the newest one to the required check.
 concurrency:
   group: ci-${{ github.repository }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Main is the release source: once a main CI run starts it is never cancelled
+  # (the single pending slot simply moves to the newest push), so a merge storm
+  # cannot starve the release gate of a completed CI run (AFC-653).  Pull
+  # request runs keep the supersede-cancel behavior.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 # Least privilege: every job below only reads the checkout and the toolchains,  so the
 # workflow grants contents read and nothing else.
@@ -74,6 +78,12 @@ jobs:
       run: |
         timeout 60 ruby scripts/check-workflow-duplicate-keys.rb .github/workflows .github/pr-autofix-trusted.yml
         cd scripts && python3 -m unittest test_workflow_duplicate_keys -v
+    # Release-source binding (AFC-653):  a merge storm must not starve the release
+    # gate (a main CI run that starts always finishes), and a release must deploy
+    # the exact head its triggering CI proved.  Static text assertions, no deps.
+    - name: Workflow release-source binding
+      timeout-minutes: 5
+      run: cd scripts && python3 -m unittest test_workflow_release_binding -v
     # FLEET-PROTOCOL.md is generated from Fleet-OPS handbook/ and mirrored here by the sync job's pull request from
     # handbook-sync/mirror.  The mirror must start with the GENERATED header, its body must hash to the header, and
     # only that branch may change it.  To change policy, open a PR to Fleet-OPS handbook/ (its README has the rules).
@@ -114,6 +124,13 @@ jobs:
       timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest discover fleet_rag/tests/ -v
+    # Offline retrieval-quality eval.  It chunks the repo files named by
+    # retrieval_golden.json and ranks them in memory, so it needs no Qdrant
+    # credentials.  A normal run is under a second.  The gate is recall@10.
+    - name: Retrieval quality eval offline fixture
+      timeout-minutes: 5
+      run: |
+        cd scripts && python3 -m fleet_rag.retrieval_eval --offline --threshold 0.9
     - name: Lane doctor and tmp guard tests
       timeout-minutes: 15
       run: |
@@ -155,6 +172,12 @@ jobs:
         python3 scripts/test_fleet_cli_git_update.py
         (cd scripts/git-tools && python3 -m unittest test_git_remote test_simple_git_wrapper test_helper_plan -v)
         bash -n scripts/simple-tools-runtime-sync.sh
+    # backup-repos archive loop (AFC-682):  a failed clone target must keep the
+    # partial archive set, label it, and still fail the run;  plus the secret/noise
+    # zip exclusions.  Stubbed clones only;  no network, no token.
+    - name: backup-repos tests
+      timeout-minutes: 10
+      run: python3 scripts/test_backup_repos.py -v
     # systemd unit templates (the fleet CLI updater unit):  the measured host
     # quirk that %h expands to the root account's home inside a system unit even
     # when User= names another account, the unit's own internal consistency, and
@@ -267,6 +290,7 @@ jobs:
       timeout-minutes: 12
       run: |
         cd scripts && python3 -m unittest discover -s simple_tools/tests -t . -v
+        python3 -m unittest discover -s simple_tools/stdio_launcher/tests -t . -v
         python3 -m unittest discover -s whatsapp_bridge/tests -t . -v
     # The Operator's session registry and the MM seat's letter hook:  the letter
     # allocation, the two letter spaces, the registry CLI, and the secret scan that
@@ -384,6 +408,12 @@ jobs:
       timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_fleet_skill_identity -v
+    # Skill token budget (AFC-763).  The skill-token-lint job only warns.
+    # These tests are the gate: a broken estimator or a missed duplicate fails test.
+    - name: Skill token lint tests
+      timeout-minutes: 10
+      run: |
+        cd scripts && python3 -m unittest test_skill_token_lint -v
     # The housekeeper locks, read from the one home:  the lock blocks are run
     # as written, with the ssh hop replaced by a fake, so the free, peer-held
     # and unmakeable paths are all covered and the destructive commands are
@@ -437,6 +467,12 @@ jobs:
       timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_autofix_model_defaults -v
+    # Read-only Sentry uptime coverage audit. Fixtures only: the tests never
+    # call the Sentry API, and the workflow skips when the token secret is absent.
+    - name: Uptime coverage audit tests
+      timeout-minutes: 10
+      run: |
+        cd scripts/uptime-audit && python3 -m unittest discover -s tests -t . -v
     # Owner rule 2026-10-21:  the request gate fires only on a tag that opens
     # the comment.  The test runs the reusables' own marked gate block.
     - name: Autofix request gate tests
@@ -495,6 +531,11 @@ jobs:
     - name: Verify public activity boundary
       timeout-minutes: 10
       run: python3 scripts/test-public-activity.py
+    - name: Refuse stale fleet activity artifacts on main
+      timeout-minutes: 5
+      run: |
+        python3 scripts/test_check_fleet_activity_main_artifacts.py
+        python3 scripts/check-fleet-activity-main-artifacts.py
     - name: Verify fleet registry
       timeout-minutes: 10
       run: python3 scripts/check-fleet-registry.py
@@ -599,6 +640,8 @@ jobs:
       run: |
         python3 scripts/test_check_infisical_env.py
         python3 scripts/check-infisical-env.py
+        python3 scripts/test_check_fleet_ops_project_id.py
+        python3 scripts/check-fleet-ops-project-id.py
     # fleet-telemetry-relay: transform mappings against recorded payloads,
     # secretscan redaction parity, Coolify env-name inventory, and a stubbed
     # configure-agents.sh (never talks to Infisical or writes under $HOME).
@@ -640,6 +683,7 @@ jobs:
       timeout-minutes: 10
       run: |
         python3 scripts/test-deploy-mapped-worker.py
+        python3 scripts/test_worker_secret_sync.py
         python3 scripts/test-deploy-alert-workers.py
     # Hosted ST-MCP Worker unit tests (including GraphQL document
     # parsing).  Install its pinned dependencies before running the suites.
@@ -656,6 +700,12 @@ jobs:
     - name: Kody defer and deferred sweep tests
       timeout-minutes: 10
       run: node --test scripts/kody-defer/*.test.mjs scripts/kody-deferred-sweep.test.mjs
+    - name: Kody first-review prompter tests
+      timeout-minutes: 10
+      run: node --test scripts/kody-first-review/*.test.mjs
+    - name: Kody once-per-PR decision
+      timeout-minutes: 10
+      run: node --test scripts/kody-once/*.test.mjs
     - name: Autofix dispatcher tests
       timeout-minutes: 10
       run: node --test scripts/autofix-dispatcher/*.test.mjs
@@ -674,6 +724,11 @@ jobs:
     - name: Auto-merge reusable workflow contract
       timeout-minutes: 10
       run: python3 scripts/test_auto_merge_reusable.py
+    # Idempotent fleet hold-label provisioning (AFC-691).  No network:  the
+    # transport is injected, and the workflow job is checked by reading the file.
+    - name: Fleet hold label provisioning
+      timeout-minutes: 10
+      run: python3 -m unittest discover -s scripts/hold_labels -p 'test_*.py' -t scripts/hold_labels
     # Pure builders and readers of the Fleet Reference Sheet registry sync.  No
     # network:  the tests import the script, which runs main() only as an entry point.
     - name: Fleet Reference Sheet registry sync tests
@@ -692,6 +747,8 @@ jobs:
       timeout-minutes: 10
       run: |
         node --test scripts/ios-fleet/ios_testflight_freshness.test.mjs
+        node --test scripts/ios-fleet/asc_scoped_creds.test.mjs
+        node --test scripts/ios-fleet/build_number_audit.test.mjs
         bash -n scripts/ios-fleet/install-testflight-freshness.sh
     # The fleet iOS version manifest publisher (AFC-540).  It publishes as a
     # branch plus a pull request against this repository, because the ruleset
@@ -774,6 +831,7 @@ jobs:
         working-directory: muster
         run: |
           xcodegen generate --spec project.yml
+          python3 script/resolve_packages.py --project Muster.xcodeproj --derived-data .build/CI
           # The checked-out commit's own time, in the same UTC form the build scripts write.
           commit_time="$(date -u -r "$(git show -s --format=%ct HEAD)" +%Y-%m-%dT%H:%M:%SZ)"
           xcodebuild -project Muster.xcodeproj -scheme Muster -configuration Debug \
@@ -811,3 +869,36 @@ jobs:
           xcodebuild -project Muster.xcodeproj -scheme Muster -configuration Debug \
             -destination 'platform=macOS' -derivedDataPath .build/CITest \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= test
+      # Every panel rendered to a PNG, light and dark, at the window's default and minimum size
+      # (AFC-707).  The test host renders off screen and never comes forward, and no panel's
+      # reader starts a process or reaches the network.  No pixel baselines, but a layout gate:
+      # a missing, blank or wrong-size PNG or a split view outside the window fails the job.
+      - name: Render the Muster panels
+        working-directory: muster
+        timeout-minutes: 15
+        run: script/render_panels.sh
+      - name: Upload the panel screenshots
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: panel-screenshots
+          path: muster/.build/panel-screenshots
+          if-no-files-found: error
+          retention-days: 14
+
+  # AFC-763.  Prints the skill token table and shared-paragraph report.
+  # Findings are warnings: the script exits 0, and continue-on-error keeps a
+  # crash of this report off the required test check.  --strict is the later
+  # switch that fails the process.  Do not add it here until the budget is a gate.
+  skill-token-lint:
+    name: Skill token lint
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/setup-python@v7
+      with:
+        python-version: '3.15'
+    - name: Report skill token budget and shared paragraphs
+      run: python3 scripts/skill_token_lint.py --annotations

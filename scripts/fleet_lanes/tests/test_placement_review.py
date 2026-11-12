@@ -741,7 +741,7 @@ class DoctorRows(TD.Case):
             return co.placement_violation
 
         self.assertTrue(verdict("Simple-With-Us/BotFleet"))
-        self.assertFalse(verdict("jaywedgeworth22/old-thing"))
+        self.assertFalse(verdict("Simple-With-Us/old-thing"))
 
     def test_a_row_near_its_expiry_is_a_warning_and_not_a_strict_failure(self) -> None:
         soon = (dt.date.today() + dt.timedelta(days=10)).isoformat()
@@ -1239,7 +1239,11 @@ class ShellOptions(ShimReview):
         # Running as sh turns posix on, and an exported SHELLOPTS would hand that to a #!/bin/bash hook.
         folder = self.home / "external"
         folder.mkdir()
-        (folder / "git-shows").symlink_to(shutil.which("printenv"))
+        # A #!/bin/bash hook that prints its environment.  Not a symlink to printenv:  a multi-call coreutils (uutils)
+        # refuses to run under another name ("Requested utility git-shows does not match executable name").
+        hook = folder / "git-shows"
+        hook.write_text('#!/bin/bash\nexec printenv "$@"\n', encoding="utf-8")
+        hook.chmod(0o755)
         res = self.git("shows", "SHELLOPTS", SHELLOPTS="errexit", PATH=f"{self.bin}:{folder}:/usr/bin:/bin")
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertIn("errexit", res.stdout)

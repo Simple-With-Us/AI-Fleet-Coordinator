@@ -69,6 +69,19 @@
       ]
     },
     {
+      "id": "service-fleet-ops-clone",
+      "pattern": "{code}/Fleet-OPS",
+      "class": "service",
+      "creator": "afc",
+      "reason": "Private repo with no GitHub credential on this host, by the owner's choice:  code-main-sync cannot fetch it, so the clone stays where it is and agents read Fleet-OPS through the fleet GitHub tools.",
+      "decided_by": "Jay, Nov 5, 2026",
+      "decided_on": "2026-11-05",
+      "expires": "2027-02-18",
+      "hosts": [
+        "server"
+      ]
+    },
+    {
       "id": "service-fleet-cli-repo",
       "pattern": "{home}/.local/share/fleet-cli",
       "class": "service",
