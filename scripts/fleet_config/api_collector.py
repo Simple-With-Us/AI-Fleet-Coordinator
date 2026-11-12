@@ -264,9 +264,7 @@ def validate_observer_url(
             "the api observer host %s is not on the approved allowlist" % host,
             ReasonCode.ERROR,
         )
-    if scheme == "https":
-        pass
-    elif scheme == "http" and allow_insecure_loopback and host in _LOOPBACK_HOSTS:
+    if scheme == "https" or scheme == "http" and allow_insecure_loopback and host in _LOOPBACK_HOSTS:
         pass
     else:
         raise CheckError(
