@@ -275,6 +275,8 @@ Use the relay verb in the right column, never `gh`.  `gh` is the logged fallbac
 
 List reads take `page` and `per_page`.  The list reads the relay tests cover, such as pull request reviews and comments, workflows, labels and repository hooks, default to 30 per page and cap `per_page` at 50, and a larger value is refused.
 
+`gr_wf_branches` lists one page of branches and takes the same `page` and `per_page` (30 by default, 50 at most).  Its result carries `page`, `has_more` and `complete`: `has_more` is true when the page came back full, so read the next `page` until a page comes back short, and `complete` is true only when page 1 itself came back short and so holds every branch.  A repository with more than 50 branches needs more than one call.
+
 `gr_wf_review_threads` pages five threads at a time.  Pass the returned end cursor back as `cursor` until the page reports no next page.  The relay binds only the first 100 threads of a pull request before it allows a fixed mutation, so a thread outside that bound is refused rather than changed.
 
 `gr_wf_checks` and `gr_wf_check_runs_page` need the full 40-character commit sha as `ref`, and a short sha is refused.  Read the sha from `gr_wf_pr_get` rather than retyping it.
