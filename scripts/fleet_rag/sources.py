@@ -18,9 +18,10 @@ Sources (payload `source` value):
                  generated trees, lockfiles, minified blobs, and files over DOC_MAX_BYTES.
   skill          ~/.claude/skills/*/SKILL.md, ~/.cursor/skills/*/SKILL.md and ~/.grok/skills/*/SKILL.md
                  (doc_id skill/<tree>/<name>; byte-identical copies collapse to the first tree).
-                 When FLEET_RAG_MIRROR is set, those three trees are read from that directory.
+                 A set FLEET_RAG_MIRROR, or the server mirror when that tree is in use,
+                 replaces these home trees.
   memory         ~/.claude/projects/*/memory/*.md and ~/.codex/memories/*.md.
-                 When FLEET_RAG_MIRROR is set, those trees are read from that directory.
+                 The same mirror replaces these home trees.
   apple-note     the iCloud "Coding" folder via notes_export (falls back to the on-disk cache
                  when Notes.app is unavailable and records a warning via `take_warnings`)
   chat-log       parsed agent transcripts (user + assistant text only) from Claude, Grok,
@@ -1324,8 +1325,8 @@ def skill_tree(skill_dir: pathlib.Path) -> str:
 
 
 def resolved_skill_dirs() -> tuple[pathlib.Path, ...]:
-    """Skill trees for this call.  A mirror, when configured, replaces the home trees."""
-    root = mirror.mirror_root()
+    """Skill trees for this call.  The mirror root replaces the home trees."""
+    root = mirror.configured_root()
     if root is not None:
         return mirror.skill_dirs(root)
     return SKILL_DIRS
@@ -1333,7 +1334,7 @@ def resolved_skill_dirs() -> tuple[pathlib.Path, ...]:
 
 def resolved_memory_dirs() -> tuple[pathlib.Path, pathlib.Path]:
     """Claude project memories and Codex memories for this call."""
-    root = mirror.mirror_root()
+    root = mirror.configured_root()
     if root is not None:
         return mirror.memory_claude(root), mirror.memory_codex(root)
     return CLAUDE_PROJECTS, CODEX_MEMORIES

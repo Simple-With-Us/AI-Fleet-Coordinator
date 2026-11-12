@@ -1764,6 +1764,39 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(skipped["mirror_stale"]["max_age_s"], 3600)
         self.assertGreater(skipped["mirror_stale"]["age_s"], 3600)
 
+    def test_unset_env_skips_skill_when_the_default_marker_is_missing(self) -> None:
+        skill_a = make_doc("skill/claude/alpha", LONG_A, source="skill")
+        skill_b = make_doc("skill/claude/beta", LONG_B, source="skill")
+        with mock.patch.object(ingest, "GENERATORS", self._gens(skill=[skill_a, skill_b])):
+            first = self._multi("skill", prune=True)
+        self.assertTrue(first["ok"], first["errors"])
+        live = pathlib.Path(self.tmp.name) / "default-current"
+        live.mkdir()
+        called: list[str] = []
+
+        def skill_gen(limit=None):  # noqa: ANN001
+            called.append("skill")
+            raise AssertionError("skill ingest ran against a missing default marker")
+
+        gens = self._gens()
+        gens["skill"] = skill_gen
+        with (
+            mock.patch.object(mirror, "DEFAULT_LIVE", live),
+            mock.patch.object(ingest, "GENERATORS", gens),
+            mock.patch.dict(os.environ, {ingest.PRUNE_FORCE_ENV: "1"}),
+        ):
+            os.environ.pop(mirror.MIRROR_ENV, None)
+            skipped = self._multi("skill", prune=True)
+            gate = ingest._prune_gate("skill")
+        self.assertTrue(skipped["ok"], skipped["errors"])
+        self.assertEqual(called, [])
+        self.assertEqual(skipped["per_source"]["skill"]["docs_seen"], 0)
+        self.assertEqual(skipped["per_source"]["skill"]["docs_pruned"], 0)
+        self.assertIn("skill/claude/beta", json.loads(self.state.read_text()))
+        self.assertEqual(skipped["mirror_stale"]["reason"], "missing-stamp")
+        self.assertIsNone(skipped["mirror_stale"]["age_s"])
+        self.assertEqual(gate[1], "missing-stamp")
+
     def test_server_job_skips_doc_prune_when_the_code_root_is_unset(self) -> None:
         self._run()
         self.docs["doc"] = [make_doc("doc/a", LONG_A)]

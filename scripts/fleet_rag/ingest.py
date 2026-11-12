@@ -1452,14 +1452,16 @@ def _prune_gate(name: str) -> tuple[str, str] | None:
     source, so doc and linear can still prune.  The ingest loop skips reading
     those sources, and apple-note, before this gate.  Force does not lift it.
     The code-root gate applies only when the server job asks for it, so a Mac
-    nightly that reads ~/Code keeps its current prune behavior.
+    nightly that reads ~/Code keeps its current prune behavior.  The mirror
+    root is the same one the freshness check uses, including the default
+    server tree when FLEET_RAG_MIRROR is unset.
     """
     if name == "doc" and os.environ.get("FLEET_RAG_REQUIRE_CODE_ROOT") == "1":
         if not (os.environ.get("FLEET_CODE_ROOT") or "").strip():
             return ("doc: pruning skipped; FLEET_CODE_ROOT is unset", "code-root-unset")
     if name not in mirror.MIRROR_SOURCES:
         return None
-    root = mirror.mirror_root()
+    root = mirror.configured_root()
     if root is None:
         return None
     status = mirror.mirror_status(root, time.time(), mirror.max_age_s())
