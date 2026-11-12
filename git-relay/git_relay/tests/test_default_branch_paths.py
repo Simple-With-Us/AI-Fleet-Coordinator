@@ -1,4 +1,5 @@
 """Exact default-branch paths for wf_file_put and wf_file_delete (AFC-633)."""
+
 import base64
 import importlib.util
 import json
@@ -9,8 +10,8 @@ from pathlib import Path
 from git_relay.github_client import RelayGitHubError
 from git_relay.policy import PolicyError, SeatPolicy
 from git_relay.workflow_verbs import (
-    DEFAULT_BRANCH_SHA_MISMATCH,
     _DEFAULT_BRANCH_PREFIX,
+    DEFAULT_BRANCH_SHA_MISMATCH,
     Refused,
     WorkflowVerbs,
 )
@@ -25,10 +26,16 @@ OTHER = "b" * 40
 
 
 class Boom(Client):
-    def _call(self, method, path, payload=None, bearer=None, expected_status=None, allow_empty_object=False):
-        value = super()._call(
-            method, path, payload, bearer, expected_status, allow_empty_object
-        )
+    def _call(
+        self,
+        method,
+        path,
+        payload=None,
+        bearer=None,
+        expected_status=None,
+        allow_empty_object=False,
+    ):
+        value = super()._call(method, path, payload, bearer, expected_status, allow_empty_object)
         if isinstance(value, BaseException):
             raise value
         return value

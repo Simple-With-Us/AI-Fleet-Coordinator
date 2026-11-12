@@ -23,18 +23,18 @@ condition failed (no key, the repository gate, a secret), 4 a write failed or th
 verify:  0 verified, 1 not verified (unsigned, tampered, wrong key, not JSON), 3 cannot check (no usable key),
 2 usage (never a verdict:  the open-loops consumer reads 2 as "this fleet-facts has no verify command").
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import os
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
-from . import __version__
+from . import __version__, safety, signing
 from . import repo as repomod
-from . import safety, signing
 from .gather import PARTS, build, normalize_parts
 
 EXIT_USAGE = 2
@@ -42,25 +42,65 @@ EXIT_UNSAFE = 3
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="fleet-facts", description="Fleet facts for the open-loops digest:  read-only gatherers, and the signed Mac facts publisher.")
+    parser = argparse.ArgumentParser(
+        prog="fleet-facts",
+        description="Fleet facts for the open-loops digest:  read-only gatherers, and the signed Mac facts publisher.",
+    )
     parser.add_argument("--version", action="version", version="fleet-facts " + __version__)
     sub = parser.add_subparsers(dest="command", metavar="{gather,publish-mac,publish,verify}")
-    gather = sub.add_parser("gather", help="gather the facts and print them",
-                            description="Gather read-only facts.  Parts:  %s." % ", ".join(PARTS))
-    gather.add_argument("--part", action="append", metavar="NAME", help="a part to run (repeatable, comma-separated; default all)")
-    gather.add_argument("--no-mac", action="store_true", help="cloud host:  skip and mark absent every Mac-only part")
+    gather = sub.add_parser(
+        "gather",
+        help="gather the facts and print them",
+        description="Gather read-only facts.  Parts:  %s." % ", ".join(PARTS),
+    )
+    gather.add_argument(
+        "--part",
+        action="append",
+        metavar="NAME",
+        help="a part to run (repeatable, comma-separated; default all)",
+    )
+    gather.add_argument(
+        "--no-mac",
+        action="store_true",
+        help="cloud host:  skip and mark absent every Mac-only part",
+    )
     gather.add_argument("--json", action="store_true", help="print the facts document as JSON")
-    cycle = sub.add_parser("publish-mac", help="one publish cycle (what the LaunchAgent runs)",
-                           description="Gather the Mac parts, sign them and write them to the private fleet-loops-data repository.")
-    cycle.add_argument("--dry-run", action="store_true", help="build and sign everything, write the files to --out, send nothing")
-    cycle.add_argument("--out", metavar="DIR", help="with --dry-run:  where to write the files (default ~/.local/state/fleet-facts/dry-run)")
-    one = sub.add_parser("publish", help="sign and write one file", description="Sign (a .json file) or scan (any other) and write one file.")
-    one.add_argument("--path", required=True, metavar="REL", help="mac-facts.json or a file under gb/")
+    cycle = sub.add_parser(
+        "publish-mac",
+        help="one publish cycle (what the LaunchAgent runs)",
+        description="Gather the Mac parts, sign them and write them to the private fleet-loops-data repository.",
+    )
+    cycle.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="build and sign everything, write the files to --out, send nothing",
+    )
+    cycle.add_argument(
+        "--out",
+        metavar="DIR",
+        help="with --dry-run:  where to write the files (default ~/.local/state/fleet-facts/dry-run)",
+    )
+    one = sub.add_parser(
+        "publish",
+        help="sign and write one file",
+        description="Sign (a .json file) or scan (any other) and write one file.",
+    )
+    one.add_argument(
+        "--path", required=True, metavar="REL", help="mac-facts.json or a file under gb/"
+    )
     one.add_argument("--file", required=True, metavar="LOCAL", help="the local file to write")
     one.add_argument("--dry-run", action="store_true", help="check and sign it, send nothing")
-    check = sub.add_parser("verify", help="check a signed file", description="Verify the HMAC signature of a signed file with $%s." % signing.KEY_ENV)
+    check = sub.add_parser(
+        "verify",
+        help="check a signed file",
+        description="Verify the HMAC signature of a signed file with $%s." % signing.KEY_ENV,
+    )
     check.add_argument("file", metavar="FILE", help="the signed JSON file")
-    check.add_argument("--path", metavar="REL", help="also require that the file was signed for this repository path")
+    check.add_argument(
+        "--path",
+        metavar="REL",
+        help="also require that the file was signed for this repository path",
+    )
     return parser
 
 
@@ -98,7 +138,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _signed_commands(args: argparse.Namespace) -> int:
-    from . import publish  # noqa: PLC0415 - the gatherers do not need it
+    from . import publish
+
     try:
         if args.command == "verify":
             code, line = publish.verify_file(args.file, os.environ, signed_for=args.path)
@@ -115,13 +156,19 @@ def _signed_commands(args: argparse.Namespace) -> int:
             if args.out and not args.dry_run:
                 sys.stderr.write("fleet-facts: --out only goes with --dry-run\n")
                 return EXIT_USAGE
-            folder = (Path(args.out).expanduser() if args.out else publish.state_dir() / "dry-run") if args.dry_run else None
+            folder = (
+                (Path(args.out).expanduser() if args.out else publish.state_dir() / "dry-run")
+                if args.dry_run
+                else None
+            )
             outcome = publish.run_cycle(dry_run_dir=folder, relay=relay)
     except safety.HelpersMissing as exc:
         sys.stderr.write("fleet-facts: %s;  nothing was published\n" % exc)
         return EXIT_UNSAFE
     except Exception as exc:  # noqa: BLE001 - say what kind, never what it held
-        sys.stderr.write("fleet-facts: unexpected error (%s);  nothing more was done\n" % type(exc).__name__)
+        sys.stderr.write(
+            "fleet-facts: unexpected error (%s);  nothing more was done\n" % type(exc).__name__
+        )
         return 1
     if args.command == "publish":
         for rel, what in outcome.files.items():

@@ -24,7 +24,9 @@ class PolicyError(ValueError):
 
 # Exact owner/name and exact repo path. No globs, no dot segments, no .github.
 _GRANT_REPO = re.compile(r"[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}")
-_GRANT_PATH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,99}){0,7}")
+_GRANT_PATH = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,99}){0,7}"
+)
 _MAX_DEFAULT_BRANCH_PATHS = 8
 
 
@@ -59,11 +61,7 @@ def parse_default_branch_paths(seat: str, raw, repos) -> dict[str, tuple[str, ..
             raise PolicyError(
                 f"seat {seat!r}: default_branch_paths repo is not in this seat's repos"
             )
-        if (
-            not isinstance(paths, list)
-            or not paths
-            or len(paths) > _MAX_DEFAULT_BRANCH_PATHS
-        ):
+        if not isinstance(paths, list) or not paths or len(paths) > _MAX_DEFAULT_BRANCH_PATHS:
             raise PolicyError(
                 f"seat {seat!r}: default_branch_paths needs 1 to {_MAX_DEFAULT_BRANCH_PATHS} paths"
             )

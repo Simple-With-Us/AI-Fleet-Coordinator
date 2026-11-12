@@ -87,9 +87,7 @@ COMPARE_FILES_CAP = 300  # GitHub returns at most 300 files from the compare end
 # Fixed public refusal for an unverifiable workflow-touch pre-read.  The hosted
 # front maps exactly this fixed string to a caller-visible reason, so keep it
 # byte-stable:  rewording it silently returns callers to a bare relay_refused.
-TOO_LARGE_TO_VERIFY = (
-    "PR changes too large to verify for workflow files; no write attempted"
-)
+TOO_LARGE_TO_VERIFY = "PR changes too large to verify for workflow files; no write attempted"
 MAX_PROJECT = 100
 MAX_WORKFLOW_TEXT = 40000
 # Opt-in bounded larger-text class (covers the 83854-byte mirror document class);
@@ -1287,8 +1285,7 @@ class WorkflowVerbs:
         changed = {path for path, row in head.items() if base.get(path) != row}
         changed |= {path for path in base if path not in head}
         return any(
-            name == ".github/workflows" or name.startswith(".github/workflows/")
-            for name in changed
+            name == ".github/workflows" or name.startswith(".github/workflows/") for name in changed
         )
 
     def _write_path_denied(self, path):

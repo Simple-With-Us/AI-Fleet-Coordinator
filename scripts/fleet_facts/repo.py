@@ -18,6 +18,7 @@ Writes go through the git-relay when `ContentsRelay` is configured (`wf_file_get
 content and the blob sha of the file being replaced) is in a private file, never on a command line;  there is no
 clone and no force.  A configured relay that refuses is not retried through `gh`.  A path must be `mac-facts.json` or a file under `gb/`, never a dotfile, never `..`.
 """
+
 from __future__ import annotations
 
 import base64
@@ -30,11 +31,22 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
+from typing import Any
 
 from .runner import Result, Runner
 
-__all__ = ["REPO", "Refused", "WriteFailed", "check_path", "guard", "Writer", "ContentsRelay", "json_stream", "git_blob_sha"]
+__all__ = [
+    "REPO",
+    "ContentsRelay",
+    "Refused",
+    "WriteFailed",
+    "Writer",
+    "check_path",
+    "git_blob_sha",
+    "guard",
+    "json_stream",
+]
 
 REPO = "Simple-With-Us/fleet-loops-data"
 _PATH_OK = re.compile(r"^(?:mac-facts\.json|gb(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,99}){1,4})\Z")
@@ -59,13 +71,22 @@ class WriteFailed(Exception):
 
 def check_path(rel: str) -> str:
     """`rel` if this job may write it, else Refused.  `mac-facts.json` or a file under `gb/`;  no `..`, no dotfile."""
-    if not isinstance(rel, str) or not _PATH_OK.match(rel) or ".." in rel or rel.startswith("/") or "/." in rel:
-        raise Refused("the path %r is not one this job writes (mac-facts.json or a file under gb/)" % (rel if isinstance(rel, str) else "?"))
+    if (
+        not isinstance(rel, str)
+        or not _PATH_OK.match(rel)
+        or ".." in rel
+        or rel.startswith("/")
+        or "/." in rel
+    ):
+        raise Refused(
+            "the path %r is not one this job writes (mac-facts.json or a file under gb/)"
+            % (rel if isinstance(rel, str) else "?")
+        )
     return rel
 
 
 def git_blob_sha(data: bytes) -> str:
-    return hashlib.sha1(b"blob %d\x00" % len(data) + data).hexdigest()  # noqa: S324 - git's own object id, not a security hash
+    return hashlib.sha1(b"blob %d\x00" % len(data) + data).hexdigest()
 
 
 def json_stream(text: str) -> Iterator[Any]:
@@ -120,28 +141,54 @@ def guard(run: Runner, gh: str, repo: str = REPO, *, allowed_apps: Iterable[str]
 
     view = _gh(run, gh, "repo", "view", repo, "--json", "visibility,isArchived,isFork")
     if view.reason or view.rc != 0:
-        raise Refused("cannot read the repository (gh repo view %s)" % (view.reason or "exited %s" % view.rc))
+        raise Refused(
+            "cannot read the repository (gh repo view %s)" % (view.reason or "exited %s" % view.rc)
+        )
     try:
         info = json.loads(view.out)
     except ValueError:
         raise Refused("gh repo view did not answer in JSON") from None
     if not isinstance(info, dict) or str(info.get("visibility", "")).upper() != "PRIVATE":
-        raise Refused("the repository is not private (visibility %s)" % str(info.get("visibility") if isinstance(info, dict) else "unknown")[:20])
+        raise Refused(
+            "the repository is not private (visibility %s)"
+            % str(info.get("visibility") if isinstance(info, dict) else "unknown")[:20]
+        )
     if info.get("isArchived") is not False or info.get("isFork") is not False:
         raise Refused("the repository is archived or a fork")
 
-    for label, endpoint in (("webhook", "repos/%s/hooks" % repo), ("deploy key", "repos/%s/keys" % repo)):
+    for label, endpoint in (
+        ("webhook", "repos/%s/hooks" % repo),
+        ("deploy key", "repos/%s/keys" % repo),
+    ):
         listed = _gh(run, gh, "api", "--paginate", endpoint)
         if listed.reason or listed.rc != 0:
-            raise Refused("cannot list the repository's %ss, so none can be ruled out (needs admin on the repository)" % label)
+            raise Refused(
+                "cannot list the repository's %ss, so none can be ruled out (needs admin on the repository)"
+                % label
+            )
         found = _items(listed, "the %s list" % label)
         if found:
-            raise Refused("the repository has %d %s%s" % (len(found), label, "" if len(found) == 1 else "s"))
+            raise Refused(
+                "the repository has %d %s%s" % (len(found), label, "" if len(found) == 1 else "s")
+            )
 
     # `--method GET`:  gh sends a POST as soon as a field (-f) is added, and these endpoints answer a POST with 404.
-    installs = _gh(run, gh, "api", "--paginate", "--method", "GET", "-f", "per_page=100", "orgs/%s/installations" % owner)
+    installs = _gh(
+        run,
+        gh,
+        "api",
+        "--paginate",
+        "--method",
+        "GET",
+        "-f",
+        "per_page=100",
+        "orgs/%s/installations" % owner,
+    )
     if installs.reason or installs.rc != 0:
-        raise Refused("cannot list the apps installed on %s, so none can be ruled out (needs organization admin)" % owner)
+        raise Refused(
+            "cannot list the apps installed on %s, so none can be ruled out (needs organization admin)"
+            % owner
+        )
     covering: list[str] = []
     notes: list[str] = []
     for item in _items(installs, "the app installation list", "installations"):
@@ -155,12 +202,25 @@ def guard(run: Runner, gh: str, repo: str = REPO, *, allowed_apps: Iterable[str]
             if not isinstance(install_id, int) or isinstance(install_id, bool):
                 reaches = True
             else:
-                repos = _gh(run, gh, "api", "--paginate", "--method", "GET", "-f", "per_page=100", "user/installations/%d/repositories" % install_id)
+                repos = _gh(
+                    run,
+                    gh,
+                    "api",
+                    "--paginate",
+                    "--method",
+                    "GET",
+                    "-f",
+                    "per_page=100",
+                    "user/installations/%d/repositories" % install_id,
+                )
                 if repos.reason or repos.rc != 0:
-                    reaches = True      # could not look:  assume it can read
+                    reaches = True  # could not look:  assume it can read
                 else:
-                    reaches = repo.lower() in {str(r.get("full_name", "")).lower() for r in _items(repos, "the app's repository list", "repositories")
-                                               if isinstance(r, dict)}
+                    reaches = repo.lower() in {
+                        str(r.get("full_name", "")).lower()
+                        for r in _items(repos, "the app's repository list", "repositories")
+                        if isinstance(r, dict)
+                    }
         elif selection != "all":
             reaches = True
         if not reaches:
@@ -172,8 +232,16 @@ def guard(run: Runner, gh: str, repo: str = REPO, *, allowed_apps: Iterable[str]
     if covering:
         shown = ", ".join(sorted(set(covering))[:SHOWN_APPS])
         more = len(set(covering)) - SHOWN_APPS
-        raise Refused("%d installed app%s can read the repository (%s%s);  narrow them to selected repositories without it, or name them in "
-                      "FLEET_LOOPS_DATA_ALLOWED_APPS" % (len(set(covering)), "" if len(set(covering)) == 1 else "s", shown, ", and %d more" % more if more > 0 else ""))
+        raise Refused(
+            "%d installed app%s can read the repository (%s%s);  narrow them to selected repositories without it, or name them in "
+            "FLEET_LOOPS_DATA_ALLOWED_APPS"
+            % (
+                len(set(covering)),
+                "" if len(set(covering)) == 1 else "s",
+                shown,
+                ", and %d more" % more if more > 0 else "",
+            )
+        )
     return sorted(set(notes))
 
 
@@ -193,19 +261,32 @@ class ContentsRelay:
     The token is sent only as a header and is never put in an error.
     """
 
-    def __init__(self, url: str, token: str, branch: str, *, post: Callable[[str, dict], tuple[int, dict]] | None = None) -> None:
+    def __init__(
+        self,
+        url: str,
+        token: str,
+        branch: str,
+        *,
+        post: Callable[[str, dict], tuple[int, dict]] | None = None,
+    ) -> None:
         if not isinstance(url, str) or not _RELAY_URL.fullmatch(url.rstrip("/")):
             raise Refused("the facts relay URL is not an https origin")
         if not isinstance(token, str) or len(token) < 16 or any(c.isspace() for c in token):
             raise Refused("the facts relay token is not usable")
-        if not isinstance(branch, str) or not _RELAY_BRANCH.fullmatch(branch) or ".." in branch.split("/"):
+        if (
+            not isinstance(branch, str)
+            or not _RELAY_BRANCH.fullmatch(branch)
+            or ".." in branch.split("/")
+        ):
             raise Refused("the facts relay branch is not a branch name")
         self.url, self.token, self.branch = url.rstrip("/"), token, branch
         self._post = post
         self._default_checked = False
 
     def call(self, action: str, body: dict[str, Any]) -> tuple[int, dict]:
-        status, doc = self._post(action, body) if self._post is not None else self._http(action, body)
+        status, doc = (
+            self._post(action, body) if self._post is not None else self._http(action, body)
+        )
         if not isinstance(status, int) or not isinstance(doc, dict):
             raise WriteFailed("the relay answer was not a JSON object")
         return status, doc
@@ -300,7 +381,9 @@ class Writer:
                 if attempt == 0 and status.startswith("5"):
                     self.sleep(5)
                     continue
-                raise WriteFailed("reading %s failed (%s)" % (rel, got.reason or "HTTP %s" % (status or "?")))
+                raise WriteFailed(
+                    "reading %s failed (%s)" % (rel, got.reason or "HTTP %s" % (status or "?"))
+                )
             raise WriteFailed("reading %s failed" % rel)
         for attempt in (0, 1):
             got = _gh(self.run, self.gh, "api", "repos/%s/contents/%s" % (self.repo, rel))
@@ -309,7 +392,11 @@ class Writer:
                     doc = json.loads(got.out)
                 except ValueError:
                     raise WriteFailed("the contents answer for %s was not JSON" % rel) from None
-                if isinstance(doc, dict) and isinstance(doc.get("sha"), str) and doc.get("type", "file") == "file":
+                if (
+                    isinstance(doc, dict)
+                    and isinstance(doc.get("sha"), str)
+                    and doc.get("type", "file") == "file"
+                ):
                     return doc["sha"]
                 raise WriteFailed("%s is not a file in the repository" % rel)
             status = _http(got)
@@ -318,8 +405,12 @@ class Writer:
             if attempt == 0 and (got.reason or status.startswith("5")):
                 self.sleep(5)
                 continue
-            raise WriteFailed("reading %s failed (%s)" % (rel, got.reason or "HTTP %s" % (status or "?")))
-        raise WriteFailed("reading %s failed" % rel)  # pragma: no cover - the loop always returns or raises
+            raise WriteFailed(
+                "reading %s failed (%s)" % (rel, got.reason or "HTTP %s" % (status or "?"))
+            )
+        raise WriteFailed(
+            "reading %s failed" % rel
+        )  # pragma: no cover - the loop always returns or raises
 
     def _send(self, method: str, rel: str, body: dict[str, Any]) -> Result:
         """Relay when one is configured, otherwise `gh api` with the body in a 0600 file, never on the command line."""
@@ -354,12 +445,25 @@ class Writer:
             fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump(body, fh)
-            return _gh(self.run, self.gh, "api", "-X", method, "repos/%s/contents/%s" % (self.repo, rel), "--input", target, timeout=120)
+            return _gh(
+                self.run,
+                self.gh,
+                "api",
+                "-X",
+                method,
+                "repos/%s/contents/%s" % (self.repo, rel),
+                "--input",
+                target,
+                timeout=120,
+            )
         finally:
             shutil.rmtree(folder, ignore_errors=True)
 
     def _put(self, rel: str, data: bytes, message: str, sha: str | None) -> Result:
-        body: dict[str, Any] = {"message": message, "content": base64.b64encode(data).decode("ascii")}
+        body: dict[str, Any] = {
+            "message": message,
+            "content": base64.b64encode(data).decode("ascii"),
+        }
         if sha:
             body["sha"] = sha
         return self._send("PUT", rel, body)
@@ -372,7 +476,7 @@ class Writer:
             return None, False
 
     def put(self, rel: str, data: bytes, message: str) -> str:
-        """"created", "updated" or "unchanged".  Raises Refused for a bad path and WriteFailed for anything else.
+        """ "created", "updated" or "unchanged".  Raises Refused for a bad path and WriteFailed for anything else.
 
         A write that fails is looked at before anything else is done:  a PUT that timed out may have landed, and then the retry would
         only be refused (the sha moved), so the file is read again and a blob that matches what was sent counts as written."""
@@ -388,11 +492,13 @@ class Writer:
         status = _http(result)
         fresh, readable = self._look(rel)
         if readable and fresh == want:
-            return done                                     # it landed after all
+            return done  # it landed after all
         if status in ("409", "422"):
             # Somebody (or a race with a second run) changed the file since we read it:  use the fresh sha once, never force.
             if not readable or fresh == sha:
-                raise WriteFailed("writing %s was refused (HTTP %s) and the file did not change" % (rel, status))
+                raise WriteFailed(
+                    "writing %s was refused (HTTP %s) and the file did not change" % (rel, status)
+                )
         elif result.reason or status.startswith("5"):
             self.sleep(5)
         else:
@@ -403,7 +509,9 @@ class Writer:
         again, readable = self._look(rel)
         if readable and again == want:
             return "updated" if again is not None and (fresh if readable else sha) else "created"
-        raise WriteFailed("writing %s failed (%s)" % (rel, retry.reason or "HTTP %s" % (_http(retry) or "?")))
+        raise WriteFailed(
+            "writing %s failed (%s)" % (rel, retry.reason or "HTTP %s" % (_http(retry) or "?"))
+        )
 
     def remove(self, rel: str, message: str) -> str:
         """Delete `mac-facts.json` (the path-bearing copy a knob governs) from the branch:  "removed", or "absent" when it was not there.
@@ -420,10 +528,12 @@ class Writer:
         status = _http(result)
         fresh, readable = self._look(rel)
         if readable and fresh is None:
-            return "removed"                                # it went after all (or someone else removed it)
+            return "removed"  # it went after all (or someone else removed it)
         if status in ("409", "422"):
             if not readable or fresh == sha:
-                raise WriteFailed("removing %s was refused (HTTP %s) and the file did not change" % (rel, status))
+                raise WriteFailed(
+                    "removing %s was refused (HTTP %s) and the file did not change" % (rel, status)
+                )
         elif result.reason or status.startswith("5"):
             self.sleep(5)
         else:
@@ -434,4 +544,6 @@ class Writer:
         again, readable = self._look(rel)
         if readable and again is None:
             return "removed"
-        raise WriteFailed("removing %s failed (%s)" % (rel, retry.reason or "HTTP %s" % (_http(retry) or "?")))
+        raise WriteFailed(
+            "removing %s failed (%s)" % (rel, retry.reason or "HTTP %s" % (_http(retry) or "?"))
+        )
