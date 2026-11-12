@@ -250,6 +250,37 @@ Per-seat policy is an allowlist layer over that credential: allowed actions, all
 
 A relay refusal arrives as a tool error carrying the relay's own HTTP status, never as one of the codes below: 401 unauthenticated, 403 policy denial, 400 a bad request or a terminal GitHub refusal, 409 a replay refused, 429 a GitHub rate limit (retryable), 502 an unknown outcome (not retryable — check GitHub before retrying) and 503 app-token minting unavailable.
 
+### gh Command To Relay Verb, And Paging
+
+Use the relay verb in the right column, never `gh`.  `gh` is the logged fallback only, for an operation no verb covers.  Hosted names are the `gr_*` and `gr_wf_*` tools; GR-MCP uses the same names without the `gr_` prefix, so `gr_wf_checks` is `wf_checks` there.
+
+| gh command (retired) | Relay verb |
+|---|---|
+| `gh pr view N --json commits,updatedAt` | `gr_wf_pr_get`; the commits page is `gr_wf_pr_commits_page`, which needs `expected_head_sha` |
+| `gh api graphql` reviewThreads | `gr_wf_review_threads`, with `number` and an optional `cursor` |
+| `gh api` call that replies to a review thread | `gr_reply_thread`, or `gr_wf_review_comment_reply` for a single review comment |
+| `gh api` call that resolves a review thread | `gr_resolve_thread`, or `gr_wf_review_thread_resolve` |
+| `gh api -X PUT repos/O/R/pulls/N/reviews/ID/dismissals` | `gr_wf_review_dismiss` |
+| `gh pr checks N` and `gh pr checks N --watch` | `gr_wf_checks` with the full 40-character head sha as `ref`; `gr_wf_check_runs_page` pages the runs of one check and needs that sha as `head_sha` plus the exact `check_name` |
+| `gh run rerun --failed` | `gr_wf_run_rerun` for the run; `gr_wf_job_rerun` for one job |
+| `gh pr merge N --squash --auto` | `gr_wf_automerge_enable` with `method` `SQUASH` |
+| `gh pr merge N --squash` | `gr_wf_merge_guarded` with `method` `squash` and `expected_head_sha`, the full head sha read from `gr_wf_pr_get` |
+| `gh pr create` | `gr_open_pr`, which is owner-authored by design |
+| `gh pr edit` | `gr_edit_pr` for the title and body; `wf_pr_edit` is ungranted |
+| `gh pr comment N` | `gr_comment_pr` |
+| `gh pr ready` and `gh pr ready --undo` | `gr_wf_pr_ready` and `gr_wf_pr_draft` |
+| `gh pr list` | `gr_wf_pr_list` |
+
+### Paging And Pins
+
+List reads default to 30 per page and cap `per_page` at 50, and a larger value is refused.  Not every list read pages:  `gr_wf_pr_reviews_page`, `gr_wf_pr_comments_page`, `gr_wf_pr_comments`, `gr_wf_workflows_page`, `gr_wf_pr_list_page`, `gr_wf_repo_hooks` and `gr_wf_branches` take `page` as well as `per_page`, while `gr_wf_pr_reviews`, `gr_wf_labels` and `gr_wf_workflows` take `per_page` only, refuse `page`, and stop at 50 rows.  To read past 50 reviews or workflows, use the `_page` verb.
+
+`gr_wf_branches` lists one page of branches and takes the same `page` and `per_page` (30 by default, 50 at most).  Its result carries `page`, `has_more` and `complete`: `has_more` is true when the page came back full, so read the next `page` until a page comes back short, and `complete` is true only when page 1 itself came back short and so holds every branch.  A repository with more than 50 branches needs more than one call.
+
+`gr_wf_review_threads` pages five threads at a time.  Pass the returned end cursor back as `cursor` until the page reports no next page.  The relay binds only the first 100 threads of a pull request before it allows a fixed mutation, so a thread outside that bound is refused rather than changed.
+
+`gr_wf_checks` needs the full 40-character commit sha as `ref`, and `gr_wf_check_runs_page` needs it as `head_sha` together with the exact `check_name`;  a short sha is refused.  Read the sha from `gr_wf_pr_get` rather than retyping it.
+
 ## Old Names and New Names
 
 Removed names are not aliased.  Calling one returns `unknown_tool` with the replacement (below).  Generated from `scripts/simple_tools/mcp/renamed-tools.json`.

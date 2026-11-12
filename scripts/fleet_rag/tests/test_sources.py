@@ -16,7 +16,7 @@ import time
 import unittest
 from unittest import mock
 
-from fleet_rag import ingest, linear_board, notes_export, sources
+from fleet_rag import ingest, linear_board, mirror, notes_export, sources
 from fleet_rag.notes_export import html_to_text, strip_title_line
 
 FINDINGS_DDL = """
@@ -2834,6 +2834,35 @@ class ServerNightlySources(unittest.TestCase):
             self.assertIn("memory/codex/keep.md", memories)
             without = {d.doc_id for d in sources.iter_skills()}
             self.assertNotIn("skill/claude/afc687-mirror-skill", without)
+
+    def test_default_server_mirror_replaces_home_trees_when_env_is_unset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            live = pathlib.Path(tmp) / "current"
+            skill = live / "skills" / "claude" / "from-default"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("---\nname: From default\n---\n# From default\n")
+            memory = live / "memory" / "codex"
+            memory.mkdir(parents=True)
+            (memory / "keep.md").write_text("# Keep\n")
+            (live / ".complete").write_text(
+                json.dumps({"complete": True, "at": int(time.time()), "files": {}}) + "\n"
+            )
+            with mock.patch.object(mirror, "DEFAULT_LIVE", live), mock.patch.dict(os.environ):
+                os.environ.pop(mirror.MIRROR_ENV, None)
+                skills = list(sources.iter_skills())
+                memories = list(sources.iter_memory())
+                self.assertIsNone(ingest._prune_gate("skill"))
+                self.assertIsNone(ingest._prune_gate("memory"))
+            self.assertEqual([d.doc_id for d in skills], ["skill/claude/from-default"])
+            self.assertTrue(all(d.path.startswith(str(live)) for d in skills))
+            self.assertIn("memory/codex/keep.md", {d.doc_id for d in memories})
+            self.assertTrue(all(str(live) in d.path for d in memories))
+            with (
+                mock.patch.object(mirror, "DEFAULT_LIVE", live),
+                mock.patch.dict(os.environ, {mirror.MIRROR_ENV: ""}),
+            ):
+                self.assertEqual(sources.resolved_skill_dirs(), sources.SKILL_DIRS)
+                self.assertEqual(sources.resolved_memory_dirs(), (sources.CLAUDE_PROJECTS, sources.CODEX_MEMORIES))
 
 
 

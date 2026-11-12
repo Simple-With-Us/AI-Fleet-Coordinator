@@ -133,6 +133,7 @@ SHIPPED = (
     "scripts/simple-chat",
     "scripts/simple-notes",
     "scripts/simple-board",
+    "scripts/simple-peer-actions",
     # The git tools CLI entry wrapper and implementation (mirrors the release policy).
     "scripts/simple-git",
     "scripts/git-tools/",
@@ -156,11 +157,11 @@ SHIPPED = (
     "docs/FLEET-MODE.md",
     "docs/protocols/simple-tools-guide.md",
 )
-# What a fleet-cli release ships:  mirrors EXACT and allowed_path in scripts/fleet-cli-release.py, so a
+# What a fleet-cli release ships:  mirrors shipped_path in scripts/fleet-cli-release.py, so a
 # commit that changes only tests or docs under those folders needs no push and is not drift.
 # The fallback copy of what a release ships, for a host with no checkout.  With a checkout,
-# is_shipped asks scripts/fleet-cli-release.py itself, so the two cannot drift;  a test pins this
-# copy to the release's EXACT.
+# is_shipped asks the receiver's shipped_path (or allowed_path on an older receiver), so the
+# copies cannot drift;  a test pins this copy to the release's EXACT minus REPO_ONLY.
 SHIPPED_EXACT = frozenset(
     {
         "scripts/simple-chat",
@@ -175,7 +176,6 @@ SHIPPED_EXACT = frozenset(
         "docs/protocols/simple-tools-partition.toml",
         "scripts/fleet-cli-release.py",
         "scripts/simple_tools/mcp/tools.json",
-        "scripts/simple_tools/mcp/fixtures.jsonl",
         "scripts/simple_tools/mcp/eavesdropper-tools.json",
         "scripts/simple_tools/mcp/renamed-tools.json",
         "scripts/simple_tools/mcp/gb-identities.json",
@@ -183,6 +183,8 @@ SHIPPED_EXACT = frozenset(
         "scripts/simple_tools/mcp/recall-tools.json",
         "scripts/linear-board/catalog/core-tools.json",
         "scripts/simple_tools/mcp/fleetlink-tools.json",
+        "scripts/simple-peer-actions",
+        "scripts/simple_tools/mcp/peer-actions-tools.json",
         # AFC-412 PR2:  mirrors the release EXACT entry for the operator registry outbox exporter.
         "scripts/simple_tools/operator_sheets_export.mjs",
         "scripts/simple_tools/operator_sheets_google.mjs",
@@ -211,10 +213,12 @@ SHIPPED_EXACT = frozenset(
         "scripts/fleet_rag/core.py",
         "scripts/fleet_rag/doctor.py",
         "scripts/fleet_rag/health.py",
+        "scripts/fleet_rag/infisical_settings.py",
         "scripts/fleet_rag/public_fallback.py",
         "scripts/fleet_rag/recall_api.py",
         "scripts/fleet_rag/recall_presentation.py",
         "scripts/fleet_rag/scrub.py",
+        "scripts/fleet_rag/search_cache.py",
         "scripts/fleet_rag/search_log.py",
         "scripts/fleet_rag/storage_guard.py",
         "scripts/fleet_rag/telemetry.py",
@@ -519,10 +523,33 @@ def release_policy():
     return _RELEASE_POLICY[0]
 
 
+# The fallback copy of the release's REPO_ONLY:  simple_tools modules that match the shipped pattern but stay
+# out of a release (nothing runs them).  A test pins this copy to the release's REPO_ONLY.
+SHIPPED_REPO_ONLY = frozenset(
+    {
+        *(
+            "scripts/simple_tools/" + name + ".py"
+            for name in (
+                "clarify",
+                "operator_github_client",
+                "operator_github_policy",
+                "operator_github_secrets",
+                "operator_send",
+            )
+        ),
+        "scripts/simple_tools/mcp/fixtures.jsonl",
+    }
+)
+
+
 def is_shipped(path: str) -> bool:
     policy = release_policy()
-    if policy is not None and callable(getattr(policy, "allowed_path", None)):
-        return bool(policy.allowed_path(path))
+    # shipped_path leaves out the release's repo-only files;  an older release has only allowed_path.
+    for name in ("shipped_path", "allowed_path"):
+        if policy is not None and callable(getattr(policy, name, None)):
+            return bool(getattr(policy, name)(path))
+    if path in SHIPPED_REPO_ONLY:
+        return False
     return path in SHIPPED_EXACT or bool(
         re.fullmatch(r"scripts/simple_tools/(?:mcp/)?[a-z][a-z0-9_]*\.py", path)
         or path in ("scripts/simple_tools/__init__.py", "scripts/simple_tools/mcp/__init__.py")

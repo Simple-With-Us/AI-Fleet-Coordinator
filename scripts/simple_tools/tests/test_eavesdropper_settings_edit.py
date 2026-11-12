@@ -1400,10 +1400,156 @@ class ControlVerbTests(Case):
 
     def test_the_editors_refusal_comes_back_as_a_refusal(self) -> None:
         document = {"tool": "eavesdropper-settings", "ok": False, "result": "refused", "errorCode": "apply_disabled", "detail": "apply is off"}
-        stdin = json.dumps({"set": {"seat.ZC.enabled": False}}).encode()
-        answer, code, _ = self.server("yes", stdin, FakeReader(document, status=2))
+        stdin = json.dumps({"set": {"seat.ZC.enabled": False}, "expectPlanSHA256": "b" * 64}).encode()
+        answer, code, reader = self.server("yes", stdin, FakeReader(document, status=2))
         self.assertEqual((code, answer["ok"], answer["result"], answer["errorCode"]), (2, False, "refused", "apply_disabled"))
+        self.assertEqual(len(reader.calls), 1)
         self.assertEqual(self.audit_rows()[0]["result"], "refused")
+
+    def watch_the_lock(self):
+        """A list that gains one entry each time the handler takes the action lock."""
+        taken = []
+        real = self.foc.action_lock
+        self.addCleanup(setattr, self.foc, "action_lock", real)
+
+        def recording(ctx):
+            taken.append(True)
+            return real(ctx)
+
+        self.foc.action_lock = recording
+        return taken
+
+    def test_an_apply_without_the_plan_hash_is_refused_before_the_lock_and_docker(self) -> None:
+        taken = self.watch_the_lock()
+        for stdin in (
+            json.dumps({"set": {"seat.ZC.enabled": False}}).encode(),
+            json.dumps({"set": {"seat.ZC.enabled": False}, "expectPlanSHA256": None}).encode(),
+            json.dumps({"set": {"seat.ZC.enabled": False}, "remove": []}).encode(),
+        ):
+            with self.subTest(stdin=stdin):
+                answer, code, reader = self.server("yes", stdin)
+                self.assertEqual(
+                    (code, answer["ok"], answer["result"], answer["errorCode"]),
+                    (2, False, "refused", "plan_hash_required"),
+                )
+                self.assertEqual(reader.calls, [])
+                self.assertIn("expectPlanSHA256", answer["detail"])
+        self.assertEqual(taken, [])
+        # Each refused `--yes` writes the one refusal row every refused `--yes` writes, naming no
+        # setting and no value;  no apply row is written.
+        rows = self.audit_rows()
+        self.assertEqual([row["result"] for row in rows], ["refused"] * 3)
+        self.assertEqual({row["target"] for row in rows}, {"eavesdropper settings"})
+        self.assertNotIn("ZC", json.dumps(rows))
+
+    def test_an_apply_with_a_malformed_plan_hash_is_refused(self) -> None:
+        taken = self.watch_the_lock()
+        for expect in ("abc", "A" * 64, "a" * 63, "a" * 65, "g" * 64, " " + "a" * 63, "a" * 64 + "\n", 7, ["a" * 64], {"sha": "a" * 64}, True, ""):
+            with self.subTest(expect=expect):
+                stdin = json.dumps({"set": {"seat.ZC.enabled": False}, "expectPlanSHA256": expect}).encode()
+                answer, code, reader = self.server("yes", stdin)
+                self.assertEqual(
+                    (code, answer["result"], answer["errorCode"]), (2, "refused", "plan_hash_invalid")
+                )
+                self.assertEqual(reader.calls, [])
+        self.assertEqual(taken, [])
+
+    def test_an_apply_with_a_valid_plan_hash_reaches_the_container_under_the_lock(self) -> None:
+        taken = self.watch_the_lock()
+        document = {"tool": "eavesdropper-settings", "ok": True, "result": "applied", "changes": [], "diff": [], "reload": {"ok": True, "code": "reloaded"}}
+        sha = "0123456789abcdef" * 4
+        stdin = json.dumps({"set": {"seat.ZC.enabled": False}, "expectPlanSHA256": sha}).encode()
+        answer, code, reader = self.server("yes", stdin, FakeReader(document))
+        self.assertEqual((code, answer["result"]), (0, "applied"), answer)
+        self.assertEqual(len(reader.calls), 1)
+        self.assertEqual(json.loads(reader.calls[0]["data"])["expectPlanSHA256"], sha)
+        self.assertEqual(taken, [True])
+
+    def test_a_get_and_a_plan_need_no_plan_hash(self) -> None:
+        taken = self.watch_the_lock()
+        answer, code, reader = self.server("plan")
+        self.assertEqual((code, answer["result"], len(reader.calls)), (0, "read", 1))
+        document = {"tool": "eavesdropper-settings", "ok": True, "result": "planned", "changes": [], "diff": []}
+        stdin = json.dumps({"set": {"seat.ZC.enabled": False}}).encode()
+        answer, code, reader = self.server("plan", stdin, FakeReader(document))
+        self.assertEqual((code, answer["result"], len(reader.calls)), (0, "planned", 1))
+        self.assertNotIn("expectPlanSHA256", json.loads(reader.calls[0]["data"]))
+        # A plan still may not carry a hash, valid or not.
+        stdin = json.dumps({"set": {"seat.ZC.enabled": False}, "expectPlanSHA256": "a" * 64}).encode()
+        answer, code, reader = self.server("plan", stdin)
+        self.assertEqual((code, answer["errorCode"], reader.calls), (2, "usage", []))
+        self.assertEqual(taken, [])
+        self.assertEqual(self.audit_rows(), [])
+
+    def test_the_file_form_keeps_expect_optional(self) -> None:
+        # The command-line form edits a copy or a fixture, so `--expect` stays optional there.
+        self.allow_apply()
+        code, answer = self.run_main(
+            ["eavesdropper-settings", "apply", "--set", "seat.ZC.enabled=false", "--file", str(self.live), "--yes", "--json"]
+        )
+        self.assertEqual((code, answer["result"]), (0, "applied"), answer)
+
+    def test_an_empty_file_is_refused_and_never_reaches_the_live_file(self) -> None:
+        # The editor reads an empty path as the live file, so `--file ""` must not count as a
+        # file and slip past the live-file rules.
+        self.allow_apply()
+        taken = self.watch_the_lock()
+        for action in ("plan", "apply"):
+            for empty in ("", "   "):
+                with self.subTest(action=action, empty=empty):
+                    reader = FakeReader({"tool": "eavesdropper-settings", "ok": True, "result": "applied"})
+                    argv = ["eavesdropper-settings", action, "--set", "seat.ZC.enabled=false", "--file", empty, "--json"]
+                    if action == "apply":
+                        argv.insert(-1, "--yes")
+                    code, answer = self.run_main(argv, self.ctx(platform="linux", reader=reader))
+                    self.assertEqual((code, answer["result"], answer["errorCode"]), (2, "refused", "usage"))
+                    self.assertEqual(reader.calls, [])
+        self.assertEqual(taken, [])
+        self.assert_untouched()
+
+    def test_a_plan_says_its_hash_in_its_output(self) -> None:
+        # The apply must name the plan's hash, so the plan's text output carries it, not only
+        # the JSON document.
+        code, answer = self.run_main(
+            ["eavesdropper-settings", "plan", "--set", "seat.ZC.enabled=false", "--file", str(self.live), "--json"]
+        )
+        self.assertEqual((code, answer["result"]), (0, "planned"), answer)
+        sha = answer["eavesdropperSettings"]["planSHA256"]
+        self.assertIn("planSHA256: " + sha + "\n", answer["output"])
+
+    def test_the_command_line_apply_to_the_live_file_needs_the_plan_hash(self) -> None:
+        # Without `--file`, on the server, the command-line form edits the live file in the
+        # container, so it needs `--expect` as the server `--yes` form needs `expectPlanSHA256`.
+        taken = self.watch_the_lock()
+        argv = ["eavesdropper-settings", "apply", "--set", "seat.ZC.enabled=false", "--yes", "--json"]
+        for extra, word in (
+            ([], "plan_hash_required"),
+            (["--expect", "abc"], "plan_hash_invalid"),
+            (["--expect", "A" * 64], "plan_hash_invalid"),
+            (["--expect", "a" * 63], "plan_hash_invalid"),
+            (["--expect", "a" * 64 + "\n"], "plan_hash_invalid"),
+            (["--expect", ""], "plan_hash_invalid"),
+        ):
+            with self.subTest(extra=extra):
+                reader = FakeReader({"tool": "eavesdropper-settings", "ok": True, "result": "applied"})
+                code, answer = self.run_main(argv + extra, self.ctx(platform="linux", reader=reader))
+                self.assertEqual(
+                    (code, answer["ok"], answer["result"], answer["errorCode"]), (2, False, "refused", word)
+                )
+                self.assertEqual(reader.calls, [])
+        self.assertEqual(taken, [])
+        rows = self.audit_rows()
+        self.assertEqual([row["result"] for row in rows], ["refused"] * 6)
+        self.assertNotIn("ZC", json.dumps(rows))
+        # With a well-formed hash the request reaches the container, under the lock.
+        document = {"tool": "eavesdropper-settings", "ok": True, "result": "applied", "changes": [], "diff": [], "reload": {"ok": True, "code": "reloaded"}}
+        reader = FakeReader(document)
+        sha = "0123456789abcdef" * 4
+        code, answer = self.run_main(argv + ["--expect", sha], self.ctx(platform="linux", reader=reader))
+        self.assertEqual((code, answer["result"]), (0, "applied"), answer)
+        self.assertEqual(len(reader.calls), 1)
+        self.assertEqual(json.loads(reader.calls[0]["data"])["expectPlanSHA256"], sha)
+        self.assertEqual(taken, [True])
 
     def test_bad_requests_on_stdin_are_refused_before_docker(self) -> None:
         for mode, stdin in (

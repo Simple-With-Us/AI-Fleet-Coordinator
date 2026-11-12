@@ -132,6 +132,34 @@ class OperatorRegistrationTest(unittest.TestCase):
         self.assertEqual(out["reason"], "seat_mismatch")
         self.assertEqual(len(OREG.pending_entries(self.db)), 1)
 
+    def test_answer_refuses_when_every_pair_is_live(self):
+        # The registry raises LabelExhausted when all 26 of the seat's doubled pairs are live (owner, Nov 11 2026:
+        # "ok just refuse actually is fine").  The answer is a readable refusal, never a traceback, and the question
+        # stays answerable for when a pair is freed.
+        from simple_tools import operator_registry as OR
+
+        entry = self.begin()["entry"]
+
+        def full_register(**identity):
+            raise OR.LabelExhausted("all 26 letters are active on platform 'muse'")
+
+        out = self.answer(entry["entry_id"], "mac", register=full_register)
+        self.assertEqual((out["status"], out["reason"]), ("refused", OREG.LABELS_EXHAUSTED))
+        pending = OREG.pending_entries(self.db)
+        self.assertEqual([p["state"] for p in pending], [OREG.STATE_ASKED])
+        text = OREG.answer_reply(out)
+        self.assertIn("all 26 of this seat's main-chat pairs (AA to ZZ) are live", text)
+        self.assertIn(entry["entry_id"], text)
+
+    def test_answer_lets_any_other_registry_error_through(self):
+        entry = self.begin()["entry"]
+
+        def broken_register(**identity):
+            raise RuntimeError("disk on fire")
+
+        with self.assertRaises(RuntimeError):
+            self.answer(entry["entry_id"], "mac", register=broken_register)
+
     def test_answer_reply_words_a_refusal(self):
         text = OREG.answer_reply(
             {"status": "refused", "reason": "resumed_closed", "entry_id": "reg-aaaaaaaaaaaa"}

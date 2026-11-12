@@ -142,11 +142,9 @@ jobs:
       usage: ${{ steps.usage.outputs.json }}
     steps:
       - name: Validate Model Switch
-        id: model_switch
         env:
           VAR_BASE: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL }}
           VAR_MODEL: ${{ vars.SWU_AUTOFIX_MODEL }}
-          FALLBACK_MODEL: ${{ inputs.model }}
           META_TOKEN: ${{ secrets.META_MODEL_API_TOKEN }}
         run: |
           set -euo pipefail
@@ -156,32 +154,23 @@ jobs:
           # https://api.meta.ai,  which requires a non-MiniMax model id and a provisioned
           # META_MODEL_API_TOKEN. Values are never echoed into the workflow command:
           # caller-controlled text there can inject runner commands (Kody 2026-10-21).
-          # MODEL-SWITCH-BEGIN - scripts/test_autofix_provider_model.py mirrors route rules.
-          source scripts/autofix_provider_model.sh
-          trimmed_base=$(autofix_trim "$VAR_BASE")
-          route=$(autofix_route_for_base "$trimmed_base")
+          route=
+          case "$VAR_BASE" in
+            "" | https://api.minimax.io/anthropic) route=minimax ;;
+            https://api.meta.ai) route=meta ;;
+          esac
           model_minimax=no
-          if autofix_model_is_minimax "$VAR_MODEL"; then model_minimax=yes; fi
-          if [ "$route" = minimax ]; then
+          case "$VAR_MODEL" in [Mm][Ii][Nn][Ii][Mm][Aa][Xx]*) model_minimax=yes ;; esac
+          if [ "$route" = "minimax" ]; then
             if [ -n "$VAR_MODEL" ] && [ "$model_minimax" = "no" ]; then
               echo "::error::SWU_AUTOFIX_MODEL names a non-MiniMax model id while SWU_AUTOFIX_MODEL_BASE_URL selects the MiniMax host;  use a MiniMax-* id or switch the base to https://api.meta.ai"
               exit 1
             fi
-          elif [ "$route" = meta ] && [ -n "$VAR_MODEL" ] && [ -n "$META_TOKEN" ] && [ "$model_minimax" = "no" ]; then
-            :
-          else
-            echo "::error::SWU_AUTOFIX_MODEL_BASE_URL must be unset or https://api.minimax.io/anthropic (MiniMax) or exactly https://api.meta.ai with a non-MiniMax SWU_AUTOFIX_MODEL and META_MODEL_API_TOKEN provisioned;  got base_set=$([ -n "$trimmed_base" ] && echo yes || echo no) model_set=$([ -n "$VAR_MODEL" ] && echo yes || echo no) token_set=$([ -n "$META_TOKEN" ] && echo yes || echo no)"
-            exit 1
+            exit 0
           fi
-          effective_base=$(autofix_default_base_for_route "$route")
-          effective_model=$(autofix_resolve_model_for_route "$route" "$VAR_MODEL" "$FALLBACK_MODEL")
-          {
-            echo "route=$route"
-            echo "base_url=$effective_base"
-            echo "model_id=$effective_model"
-          } >> "$GITHUB_OUTPUT"
-          echo "::notice::Autofix provider route=$route model_id=$effective_model (SWU_AUTOFIX_MODEL set=$([ -n "$VAR_MODEL" ] && echo yes || echo no))"
-          # MODEL-SWITCH-END
+          if [ "$route" = "meta" ] && [ -n "$VAR_MODEL" ] && [ -n "$META_TOKEN" ] && [ "$model_minimax" = "no" ]; then exit 0; fi
+          echo "::error::SWU_AUTOFIX_MODEL_BASE_URL must be unset or https://api.minimax.io/anthropic (MiniMax) or exactly https://api.meta.ai with a non-MiniMax SWU_AUTOFIX_MODEL and META_MODEL_API_TOKEN provisioned;  got base_set=$([ -n "$VAR_BASE" ] && echo yes || echo no) model_set=$([ -n "$VAR_MODEL" ] && echo yes || echo no) token_set=$([ -n "$META_TOKEN" ] && echo yes || echo no)"
+          exit 1
 
       - name: Autofix Request Gate
         id: request_gate
@@ -371,6 +360,15 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Configure Autofix Model Route
+        id: model_route
+        if: ${{ steps.guard.outputs.skip != 'true' && steps.request_gate.outputs.skip != 'true' }}
+        uses: Simple-With-Us/AI-Fleet-Coordinator/.github/actions/autofix-model-route@2070a456e1558ee14f3329297666f8c64ad1e147
+        with:
+          var_base: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL }}
+          var_model: ${{ vars.SWU_AUTOFIX_MODEL }}
+          default_model: ${{ inputs.model }}
+
       - name: Run Claude Autofix
         id: claude
         if: ${{ steps.guard.outputs.skip != 'true' && steps.request_gate.outputs.skip != 'true' }}
@@ -382,14 +380,11 @@ jobs:
         # id comes from the `model` input (MiniMax-M3.1-Flash, the id the
         # fleet's Harness route already uses over api anthropic-messages).
         env:
-          # Owner switch 2026-10-21:  org/repo Actions variables retarget every caller at
-          # once;  unset,  the MiniMax pins below are exactly what ran before.
-          ANTHROPIC_BASE_URL: ${{ steps.model_switch.outputs.base_url }}
-          ANTHROPIC_AUTH_TOKEN: ${{ steps.model_switch.outputs.route == 'meta' && (secrets.META_MODEL_API_TOKEN || 'MISSING-META-MODEL-API-TOKEN') || secrets.MINIMAX_API_KEY }}
-          ANTHROPIC_MODEL: ${{ steps.model_switch.outputs.model_id }}
-          ANTHROPIC_SMALL_FAST_MODEL: ${{ steps.model_switch.outputs.model_id }}
+          # Bearer auth for Meta (ANTHROPIC_AUTH_TOKEN);  MiniMax uses the same token env.
+          # Do not set ANTHROPIC_API_KEY on the Meta route — Model API rejects x-api-key.
+          ANTHROPIC_AUTH_TOKEN: ${{ steps.model_route.outputs.route == 'meta' && (secrets.META_MODEL_API_TOKEN || 'MISSING-META-MODEL-API-TOKEN') || secrets.MINIMAX_API_KEY }}
         with:
-          anthropic_api_key: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL == 'https://api.meta.ai' && (secrets.META_MODEL_API_TOKEN || 'MISSING-META-MODEL-API-TOKEN') || secrets.MINIMAX_API_KEY }}
+          anthropic_api_key: ${{ steps.model_route.outputs.anthropic_api_key_mode == 'minimax' && secrets.MINIMAX_API_KEY || '' }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           allowed_bots: ${{ inputs.allowed_bots }}
           prompt: ${{ inputs.prompt }}
@@ -403,14 +398,14 @@ jobs:
           # feature rather than rely on a classifier that can't authenticate.
           classify_inline_comments: "false"
 
-      - name: Log Autofix Failure Context
-        if: ${{ always() && steps.guard.outputs.skip != 'true' && steps.request_gate.outputs.skip != 'true' }}
-        continue-on-error: true
-        env:
-          ROUTE: ${{ steps.model_switch.outputs.route }}
-          BASE_URL: ${{ steps.model_switch.outputs.base_url }}
-          MODEL_ID: ${{ steps.model_switch.outputs.model_id }}
-        run: bash scripts/autofix_claude_failure_log.sh "$RUNNER_TEMP/claude-execution-output.json"
+      - name: Report Autofix Model Failure
+        if: ${{ always() && steps.guard.outputs.skip != 'true' && steps.request_gate.outputs.skip != 'true' && steps.claude.conclusion == 'failure' }}
+        uses: Simple-With-Us/AI-Fleet-Coordinator/.github/actions/autofix-report-failure@2070a456e1558ee14f3329297666f8c64ad1e147
+        with:
+          claude_step_outcome: ${{ steps.claude.outcome }}
+          route: ${{ steps.model_route.outputs.route }}
+          effective_model: ${{ steps.model_route.outputs.effective_model }}
+          base_url: ${{ steps.model_route.outputs.route == 'meta' && 'https://api.meta.ai' || 'https://api.minimax.io/anthropic' }}
 
       - name: Summarize Autofix Diagnostics
         if: ${{ always() && steps.guard.outputs.skip != 'true' && steps.request_gate.outputs.skip != 'true' }}
