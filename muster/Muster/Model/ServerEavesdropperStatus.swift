@@ -394,6 +394,16 @@ extension ServerRegistrySweepFields {
     /// True when the last pass was not clean.
     var isProblem: Bool { ok == false }
 
+    /// The row's glyph, three ways:  a clean pass, a pass that was not clean, and a pass whose
+    /// outcome the server did not report.  An unknown outcome never shows as healthy.
+    var symbolName: String {
+        switch ok {
+        case true?: return "checkmark.circle"
+        case false?: return "exclamationmark.triangle"
+        case nil: return "questionmark.circle"
+        }
+    }
+
     /// The short answer:  OK, or the reducer's error word.
     var label: String {
         switch ok {
@@ -437,7 +447,10 @@ extension ServerRegistrySweepFields {
             if !refusedPlatforms.isEmpty {
                 parts.append("Held back: \(refusedPlatforms.joined(separator: ", ")).")
             } else if let refused, refused > 0 {
-                parts.append(refused == 1 ? "It held back 1 platform." : "It held back \(refused) platforms.")
+                // `refused` counts platform-and-machine groups, not platforms.
+                parts.append(refused == 1
+                    ? "It held back one platform's chats on one machine."
+                    : "It held back \(refused) groups of chats, each one platform on one machine.")
             }
             parts.append("The share guard stopped it closing too many of a platform's open chats on one machine at once, so it left those chats open.")
         }

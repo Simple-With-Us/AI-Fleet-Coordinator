@@ -638,7 +638,7 @@ private let liveSweep = #"""
 /// A current server document generated at 9:13:30 PM Chicago time on November 11, 2026, with
 /// `sweep` as its `registry_sweep` (JSON text), or with no such key when it is nil.
 private func sweepDocument(_ sweep: String?) -> String {
-    let block = sweep.map { #","registry_sweep":"# + $0 } ?? ""
+    let block = sweep.map { #","registry_sweep":# + $0 } ?? ""
     return #"{"schema":1,"generated_at":"2026-11-12T03:13:30Z","instance":"server","status_updated":"2026-11-12T03:13:28Z","seats":[],"skipped":[],"disabled":[]"#
         + block + "}"
 }
@@ -660,6 +660,7 @@ final class ServerRegistrySweepTests: XCTestCase {
         XCTAssertEqual(sweep.refusedPlatforms, ["antigravity"])
         XCTAssertTrue(sweep.isReported)
         XCTAssertTrue(sweep.isProblem)
+        XCTAssertEqual(sweep.symbolName, "exclamationmark.triangle")
         XCTAssertEqual(sweep.label, "sweep_share_exceeded")
         let now = try date("2026-11-12T03:20:00Z")
         XCTAssertEqual(
@@ -684,6 +685,7 @@ final class ServerRegistrySweepTests: XCTestCase {
             #"{"ran_at":"2026-11-12T03:13:23Z","ok":true,"ended":1,"error":null,"stale_after_minutes":90,"refused":0,"refused_platforms":[]}"#
         )).registrySweep)
         XCTAssertFalse(clean.isProblem)
+        XCTAssertEqual(clean.symbolName, "checkmark.circle")
         XCTAssertEqual(clean.label, "OK")
         let now = try date("2026-11-12T03:20:00Z")
         XCTAssertEqual(clean.sentence(now: now), "It last ran at 9:13 PM." + gap + "It closed 1 chat quiet for more than 90 minutes.")
@@ -736,6 +738,15 @@ final class ServerRegistrySweepTests: XCTestCase {
         // `ran_at` was text, so the block still says something.
         XCTAssertTrue(odd.isReported)
         XCTAssertEqual(odd.label, "Not reported")
+        // Shown, but an unknown outcome is never drawn as healthy (Kody, PR #1884).
+        XCTAssertEqual(odd.symbolName, "questionmark.circle")
+        XCTAssertFalse(odd.isProblem)
+        // `refused` counts platform-and-machine groups, never platforms (Kody, PR #1884).
+        let twoGroups = try XCTUnwrap(try document(sweepDocument(
+            #"{"ran_at":"2026-11-12T03:13:23Z","ok":false,"ended":0,"error":"sweep_share_exceeded","stale_after_minutes":2160,"refused":2,"refused_platforms":[]}"#
+        )).registrySweep)
+        XCTAssertTrue(twoGroups.sentence(now: try date("2026-11-12T03:20:00Z"))
+            .contains("It held back 2 groups of chats, each one platform on one machine."))
 
         for block in [#""ok""#, "5", "[]", "true", "null"] {
             let status = try document(sweepDocument(block))

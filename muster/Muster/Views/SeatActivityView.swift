@@ -313,7 +313,7 @@ struct SeatActivityView: View {
     /// chats it closed,  and the platforms the share guard held back.
     private func registrySweepLine(_ sweep: ServerRegistrySweepFields, now: Date) -> some View {
         HStack(alignment: .top, spacing: 6) {
-            Image(systemName: sweep.isProblem ? "exclamationmark.triangle" : "checkmark.circle")
+            Image(systemName: sweep.symbolName)
                 .foregroundStyle(sweep.isProblem ? Color.orange : Color.secondary)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
