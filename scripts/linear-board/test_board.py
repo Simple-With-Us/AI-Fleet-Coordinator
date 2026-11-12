@@ -4476,7 +4476,12 @@ class CommentAuthorTests(BoardTest):
         )
         tagged = rows["2026-10-11T12:01:00Z"]
         self.assertEqual(
-            (tagged["author"], tagged["author_id"], tagged["author_app"], tagged.get("author_seat")),
+            (
+                tagged["author"],
+                tagged["author_id"],
+                tagged["author_app"],
+                tagged.get("author_seat"),
+            ),
             ("CLAUDE", self.APP, True, "CLAUDE"),
         )
 
