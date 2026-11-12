@@ -11,7 +11,7 @@ Verbs (action names carry the wf_ prefix so they cannot collide with registered 
   reads   wf_pr_list wf_pr_files wf_file_get wf_tree wf_branches wf_commits wf_code_search
           wf_runs wf_run_jobs wf_checks (needs checks:read, refused unless the ceiling carries it)
   writes  wf_update_branch (atomic expected_head_sha), wf_run_rerun, wf_run_cancel,
-          wf_run_approve, wf_file_put and wf_files_put (non-default branch only; the multi-file one is one commit through git-data, atomic on expected_head_sha), wf_merge_guarded
+          wf_run_approve, wf_file_put and wf_files_put (non-default branch only, except an exact path in the seat's default_branch_paths for wf_file_put and wf_file_delete; the multi-file one is one commit through git-data, atomic on expected_head_sha), wf_merge_guarded
           (atomic expected_head_sha)
 Check-run reads (wf_checks) need the checks permission, which is outside the shared
 ceiling, so that verb is refused until a seat's ceiling carries checks:read; without it
@@ -340,6 +340,19 @@ def _path(args, key="path"):
     ):
         raise Refused(f"invalid {key}")
     return value
+
+
+# Forced onto a default-branch contents commit so the history shows why it landed there.
+_DEFAULT_BRANCH_PREFIX = "default-branch-path: "
+DEFAULT_BRANCH_SHA_MISMATCH = "default-branch blob sha does not match"
+
+
+def _prefixed_default_message(message, *, encoded=False):
+    prefixed = _DEFAULT_BRANCH_PREFIX + message
+    size = len(prefixed.encode("utf-8")) if encoded else len(prefixed)
+    if size > 500 or "\x00" in prefixed or find_secret(prefixed):
+        raise Refused("invalid message")
+    return prefixed
 
 
 def _workflow_path(path):
@@ -1282,6 +1295,51 @@ class WorkflowVerbs:
         if path in (".github", ".github/workflows"):
             return True
         return _workflow_path(path) and not getattr(self, "workflow_write_allowed", False)
+
+    def _default_branch_path_allowed(self, repo, path):
+        """Exact grant only. A policy that cannot answer, or any error, stays refused."""
+        allowed = getattr(self.policy, "default_branch_path_allowed", None)
+        if not callable(allowed):
+            return False
+        try:
+            return allowed(self.seat, repo, path) is True
+        except Exception:
+            return False
+
+    def _default_branch_blob(self, repo, path, branch):
+        """Blob sha of the file on this branch, or None when GitHub says it is absent."""
+        try:
+            data = self._get(
+                f"/repos/{repo}/contents/{quote(path, safe='/')}?ref={quote(branch, safe='')}"
+            )
+        except RelayGitHubError as exc:
+            if exc.status == 404:
+                return None
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "default-branch pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        if (
+            not isinstance(data, dict)
+            or data.get("type") != "file"
+            or data.get("path") != path
+            or not isinstance(data.get("sha"), str)
+            or not _SHA.fullmatch(data["sha"])
+        ):
+            raise RelayGitHubError(502, "default-branch blob pre-read unverifiable")
+        return data["sha"]
+
+    def _require_default_branch_cas(self, args, remote):
+        """The caller's blob sha must be the file that is there, or absent for a create."""
+        if "prior_sha" not in args:
+            if remote is not None:
+                raise Refused(DEFAULT_BRANCH_SHA_MISMATCH)
+            return None
+        prior = _sha(args, "prior_sha")
+        if prior != remote:
+            raise Refused(DEFAULT_BRANCH_SHA_MISMATCH)
+        return prior
 
     def _get(self, path):
         return self.client._call("GET", path, None, bearer=self.bearer)
@@ -7587,8 +7645,11 @@ class WorkflowVerbs:
                     "repository pre-read unavailable; no write attempted"
                 ) from None
             raise
-        if branch == info["default_branch"]:
-            raise Refused("default branch is not writable")
+        on_default = branch == info["default_branch"]
+        if on_default:
+            if not self._default_branch_path_allowed(repo, path):
+                raise Refused("default branch is not writable")
+            message = _prefixed_default_message(message, encoded=True)
         try:
             target = self._get(f"/repos/{repo}/branches/{quote(branch, safe='')}")
             if (
@@ -7605,6 +7666,8 @@ class WorkflowVerbs:
                     "branch pre-read unavailable; no write attempted"
                 ) from None
             raise
+        if on_default and self._default_branch_blob(repo, path, branch) != sha:
+            raise Refused(DEFAULT_BRANCH_SHA_MISMATCH)
         result = self.client._call(
             "DELETE",
             f"/repos/{repo}/contents/{quote(path, safe='/')}",
@@ -7650,13 +7713,26 @@ class WorkflowVerbs:
             or unreviewed_file_secret(repo, path, raw, known=self.loaded_known)
         ):
             raise Refused("credential-shaped content refused")
-        payload = {"message": message, "content": content, "branch": branch}
+        # Shape is checked before any upstream read. The default-branch path still
+        # compares this sha with the blob it reads, or refuses a create over a file.
         if "prior_sha" in args:
-            payload["sha"] = _sha(args, "prior_sha")
+            _sha(args, "prior_sha")
+        payload = {"message": message, "content": content, "branch": branch}
         repo_info = _obj(self._get(f"/repos/{repo}"))
         default = repo_info.get("default_branch")
-        if not isinstance(default, str) or not default or branch == default:
+        if not isinstance(default, str) or not default:
             raise Refused("default branch is not writable")
+        if branch == default:
+            if not self._default_branch_path_allowed(repo, path):
+                raise Refused("default branch is not writable")
+            payload["message"] = _prefixed_default_message(message)
+            prior = self._require_default_branch_cas(
+                args, self._default_branch_blob(repo, path, branch)
+            )
+            if prior is not None:
+                payload["sha"] = prior
+        elif "prior_sha" in args:
+            payload["sha"] = _sha(args, "prior_sha")
         data = self.client._call(
             "PUT",
             f"/repos/{repo}/contents/{quote(path, safe='/')}",

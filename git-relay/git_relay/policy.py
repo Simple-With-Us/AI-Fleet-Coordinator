@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import threading
 import time
 
@@ -19,6 +20,71 @@ from .shared_bearer import SharedBearerVerifier
 
 class PolicyError(ValueError):
     """A seat config or request is invalid."""
+
+
+# Exact owner/name and exact repo path. No globs, no dot segments, no .github.
+_GRANT_REPO = re.compile(r"[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}")
+_GRANT_PATH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,99}){0,7}")
+_MAX_DEFAULT_BRANCH_PATHS = 8
+
+
+def _repo_pattern_allows(patterns, repo: str) -> bool:
+    for pattern in patterns:
+        if not isinstance(pattern, str):
+            continue
+        if pattern.endswith("/*"):
+            if repo.startswith(pattern[:-1]):
+                return True
+        elif repo == pattern:
+            return True
+    return False
+
+
+def parse_default_branch_paths(seat: str, raw, repos) -> dict[str, tuple[str, ...]]:
+    """Exact paths one seat may write on one repository's default branch.
+
+    Absent means none. A present value is a map of exact owner/name to a short
+    list of exact paths. Globs, dot segments and anything under .github are
+    refused at load, and each repository must already be in the seat's repos.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict) or not raw:
+        raise PolicyError(f"seat {seat!r}: default_branch_paths must be a non-empty object")
+    grants: dict[str, tuple[str, ...]] = {}
+    for repo, paths in raw.items():
+        if not isinstance(repo, str) or not _GRANT_REPO.fullmatch(repo):
+            raise PolicyError(f"seat {seat!r}: default_branch_paths repo must be owner/name")
+        if not _repo_pattern_allows(repos, repo):
+            raise PolicyError(
+                f"seat {seat!r}: default_branch_paths repo is not in this seat's repos"
+            )
+        if (
+            not isinstance(paths, list)
+            or not paths
+            or len(paths) > _MAX_DEFAULT_BRANCH_PATHS
+        ):
+            raise PolicyError(
+                f"seat {seat!r}: default_branch_paths needs 1 to {_MAX_DEFAULT_BRANCH_PATHS} paths"
+            )
+        cleaned: list[str] = []
+        for path in paths:
+            if (
+                not isinstance(path, str)
+                or not _GRANT_PATH.fullmatch(path)
+                or any(part in ("", ".", "..") for part in path.split("/"))
+                or path == ".github"
+                or path.startswith(".github/")
+                or any(ch in path for ch in "*?[]")
+            ):
+                raise PolicyError(
+                    f"seat {seat!r}: default_branch_paths entries must be exact paths"
+                )
+            if path in cleaned:
+                raise PolicyError(f"seat {seat!r}: default_branch_paths repeats a path")
+            cleaned.append(path)
+        grants[repo] = tuple(cleaned)
+    return grants
 
 
 # Closed, non-secret causes for a credential the relay will not treat as a seat.
@@ -415,16 +481,23 @@ class SeatPolicy:
                     raise PolicyError(
                         f"seat {seat!r}: mint_permissions outside the mint ceiling {outside}"
                     )
-            self._seats[seat] = {
+            repo_names = [str(r) for r in repos]
+            grants = parse_default_branch_paths(
+                seat, cfg.get("default_branch_paths", None), repo_names
+            )
+            stored = {
                 "auth": auth,
                 "identity": identity,
                 "oauth_assert": oauth_assert,
                 "token_hash": hashlib.sha256(token.encode()).hexdigest() if token else None,
                 "actions": set(actions),
-                "repos": [str(r) for r in repos],
+                "repos": repo_names,
                 "app_slug": app_slug,
                 "mint_permissions": dict(mint_perms),
             }
+            if grants:
+                stored["default_branch_paths"] = grants
+            self._seats[seat] = stored
         # Two seats may never claim the same verified identity:  resolution
         # would be order-dependent, and attribution is the point of the design.
         claimed = {}
@@ -606,6 +679,11 @@ class SeatPolicy:
     def repo_patterns(self, seat: str) -> tuple:
         """The seat's repository allowlist patterns (read-only copy)."""
         return tuple(self._seats[seat]["repos"])
+
+    def default_branch_path_allowed(self, seat: str, repo: str, path: str) -> bool:
+        """True only for an exact path granted to this seat on this repository."""
+        grants = self._seats.get(seat, {}).get("default_branch_paths") or {}
+        return path in grants.get(repo, ())
 
     @classmethod
     def is_write(cls, action: str) -> bool:

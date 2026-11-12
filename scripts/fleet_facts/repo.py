@@ -14,9 +14,9 @@ apps the owner allowed by name) can read what lands in it:
 Not checked, because the token that reads the rest cannot:  organization-level webhooks (they need the
 admin:org_hook scope).
 
-Writes go through `gh api -X PUT repos/<repo>/contents/<path> --input <0600 file>` (and, for `mac-facts.json` alone, `-X DELETE`):  the body (message, base64
+Writes go through the git-relay when `ContentsRelay` is configured (`wf_file_get`, `wf_file_put`, `wf_file_delete` on the repository's default branch).  `gh api -X PUT repos/<repo>/contents/<path> --input <0600 file>` (and, for `mac-facts.json` alone, `-X DELETE`) is the fallback only when no relay is configured:  the body (message, base64
 content and the blob sha of the file being replaced) is in a private file, never on a command line;  there is no
-clone and no force.  A path must be `mac-facts.json` or a file under `gb/`, never a dotfile, never `..`.
+clone and no force.  A configured relay that refuses is not retried through `gh`.  A path must be `mac-facts.json` or a file under `gb/`, never a dotfile, never `..`.
 """
 from __future__ import annotations
 
@@ -28,11 +28,13 @@ import re
 import shutil
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from typing import Any, Callable, Iterable, Iterator
 
 from .runner import Result, Runner
 
-__all__ = ["REPO", "Refused", "WriteFailed", "check_path", "guard", "Writer", "json_stream", "git_blob_sha"]
+__all__ = ["REPO", "Refused", "WriteFailed", "check_path", "guard", "Writer", "ContentsRelay", "json_stream", "git_blob_sha"]
 
 REPO = "Simple-With-Us/fleet-loops-data"
 _PATH_OK = re.compile(r"^(?:mac-facts\.json|gb(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,99}){1,4})\Z")
@@ -175,15 +177,131 @@ def guard(run: Runner, gh: str, repo: str = REPO, *, allowed_apps: Iterable[str]
     return sorted(set(notes))
 
 
+_RELAY_URL = re.compile(r"https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~/-]{0,200})?\Z")
+_RELAY_BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,120}\Z")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+class ContentsRelay:
+    """The seat's git-relay for the three contents calls this job makes.
+
+    `post`, when given, replaces the HTTP call: `(action, body) -> (status, object)`.
+    The token is sent only as a header and is never put in an error.
+    """
+
+    def __init__(self, url: str, token: str, branch: str, *, post: Callable[[str, dict], tuple[int, dict]] | None = None) -> None:
+        if not isinstance(url, str) or not _RELAY_URL.fullmatch(url.rstrip("/")):
+            raise Refused("the facts relay URL is not an https origin")
+        if not isinstance(token, str) or len(token) < 16 or any(c.isspace() for c in token):
+            raise Refused("the facts relay token is not usable")
+        if not isinstance(branch, str) or not _RELAY_BRANCH.fullmatch(branch) or ".." in branch.split("/"):
+            raise Refused("the facts relay branch is not a branch name")
+        self.url, self.token, self.branch = url.rstrip("/"), token, branch
+        self._post = post
+        self._default_checked = False
+
+    def call(self, action: str, body: dict[str, Any]) -> tuple[int, dict]:
+        status, doc = self._post(action, body) if self._post is not None else self._http(action, body)
+        if not isinstance(status, int) or not isinstance(doc, dict):
+            raise WriteFailed("the relay answer was not a JSON object")
+        return status, doc
+
+    def ensure_default(self, repo: str) -> None:
+        """Refuse before a write when the configured branch is not the repository default."""
+        if self._default_checked:
+            return
+        status, doc = self.call("wf_repo_get", {"repo": repo})
+        repository = doc.get("repository") if isinstance(doc.get("repository"), dict) else {}
+        if status != 200 or repository.get("default_branch") != self.branch:
+            raise Refused("the relay branch is not the repository default branch")
+        self._default_checked = True
+
+    def _http(self, action: str, body: dict[str, Any]) -> tuple[int, dict]:
+        raw = json.dumps(body).encode("utf-8")
+        request = urllib.request.Request(
+            self.url + "/v1/" + action,
+            data=raw,
+            method="POST",
+            headers={
+                "Authorization": "Bearer " + self.token,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        opener = urllib.request.build_opener(_NoRedirect)
+        try:
+            with opener.open(request, timeout=120) as response:
+                payload = response.read(1024 * 1024)
+                status = response.status
+        except urllib.error.HTTPError as exc:
+            payload = exc.read(8192)
+            status = exc.code
+        except (urllib.error.URLError, TimeoutError, OSError):
+            raise WriteFailed("the relay could not be reached") from None
+        try:
+            doc = json.loads(payload.decode("utf-8"))
+        except (UnicodeError, ValueError):
+            raise WriteFailed("the relay answer was not JSON") from None
+        if not isinstance(doc, dict):
+            raise WriteFailed("the relay answer was not a JSON object")
+        return status, doc
+
+
 class Writer:
     """Create or update files in the repository through the contents API.  One file at a time, sha-aware, never forced."""
 
-    def __init__(self, run: Runner, gh: str, repo: str = REPO, *, sleep: Callable[[float], None] = time.sleep) -> None:
+    def __init__(
+        self,
+        run: Runner,
+        gh: str,
+        repo: str = REPO,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+        relay: ContentsRelay | None = None,
+    ) -> None:
         if not _REPO_OK.match(repo):
             raise Refused("the repository name is not owner/name")
-        self.run, self.gh, self.repo, self.sleep = run, gh, repo, sleep
+        self.run, self.gh, self.repo, self.sleep, self.relay = run, gh, repo, sleep, relay
+
+    def _relay_result(self, action: str, body: dict[str, Any]) -> Result:
+        assert self.relay is not None
+        status, doc = self.relay.call(action, body)
+        if status == 200:
+            return Result(0, json.dumps(doc), "")
+        # The relay refuses a stale blob sha before GitHub writes.  The publisher's one retry
+        # already treats HTTP 409 as "read the sha again", which is the right recovery.
+        if doc.get("error") == "default-branch blob sha does not match":
+            return Result(1, "", "HTTP 409")
+        code = doc.get("github_status") if isinstance(doc.get("github_status"), int) else status
+        return Result(1, "", "HTTP %s" % code)
 
     def _remote_sha(self, rel: str) -> str | None:
+        if self.relay is not None:
+            self.relay.ensure_default(self.repo)
+            for attempt in (0, 1):
+                got = self._relay_result(
+                    "wf_file_get", {"repo": self.repo, "path": rel, "ref": self.relay.branch}
+                )
+                if got.rc == 0:
+                    try:
+                        doc = json.loads(got.out)
+                    except ValueError:
+                        raise WriteFailed("the contents answer for %s was not JSON" % rel) from None
+                    if isinstance(doc, dict) and isinstance(doc.get("sha"), str):
+                        return doc["sha"]
+                    raise WriteFailed("%s is not a file in the repository" % rel)
+                status = _http(got)
+                if status == "404":
+                    return None
+                if attempt == 0 and status.startswith("5"):
+                    self.sleep(5)
+                    continue
+                raise WriteFailed("reading %s failed (%s)" % (rel, got.reason or "HTTP %s" % (status or "?")))
+            raise WriteFailed("reading %s failed" % rel)
         for attempt in (0, 1):
             got = _gh(self.run, self.gh, "api", "repos/%s/contents/%s" % (self.repo, rel))
             if got.reason is None and got.rc == 0:
@@ -204,7 +322,31 @@ class Writer:
         raise WriteFailed("reading %s failed" % rel)  # pragma: no cover - the loop always returns or raises
 
     def _send(self, method: str, rel: str, body: dict[str, Any]) -> Result:
-        """`gh api -X <method> repos/<repo>/contents/<rel> --input <0600 file>`:  the body is never on the command line."""
+        """Relay when one is configured, otherwise `gh api` with the body in a 0600 file, never on the command line."""
+        if self.relay is not None:
+            if method == "PUT":
+                sent = {
+                    "repo": self.repo,
+                    "path": rel,
+                    "branch": self.relay.branch,
+                    "message": body["message"],
+                    "content_b64": body["content"],
+                }
+                if body.get("sha"):
+                    sent["prior_sha"] = body["sha"]
+                return self._relay_result("wf_file_put", sent)
+            if method == "DELETE":
+                return self._relay_result(
+                    "wf_file_delete",
+                    {
+                        "repo": self.repo,
+                        "path": rel,
+                        "branch": self.relay.branch,
+                        "message": body["message"],
+                        "prior_sha": body["sha"],
+                    },
+                )
+            raise WriteFailed("the relay has no contents method %s" % method)
         folder = tempfile.mkdtemp(prefix="fleet-facts-put-")
         try:
             os.chmod(folder, 0o700)

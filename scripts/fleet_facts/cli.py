@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Sequence
 
 from . import __version__
+from . import repo as repomod
 from . import safety, signing
 from .gather import PARTS, build, normalize_parts
 
@@ -103,14 +104,19 @@ def _signed_commands(args: argparse.Namespace) -> int:
             code, line = publish.verify_file(args.file, os.environ, signed_for=args.path)
             (sys.stdout if code == 0 else sys.stderr).write("fleet-facts: %s\n" % line)
             return code
+        try:
+            relay = None if args.dry_run else publish.load_relay()
+        except repomod.Refused as exc:
+            sys.stderr.write("fleet-facts: refused:  %s\n" % exc.reason)
+            return EXIT_UNSAFE
         if args.command == "publish":
-            outcome = publish.publish_file(args.path, args.file, dry_run=args.dry_run)
+            outcome = publish.publish_file(args.path, args.file, dry_run=args.dry_run, relay=relay)
         else:
             if args.out and not args.dry_run:
                 sys.stderr.write("fleet-facts: --out only goes with --dry-run\n")
                 return EXIT_USAGE
             folder = (Path(args.out).expanduser() if args.out else publish.state_dir() / "dry-run") if args.dry_run else None
-            outcome = publish.run_cycle(dry_run_dir=folder)
+            outcome = publish.run_cycle(dry_run_dir=folder, relay=relay)
     except safety.HelpersMissing as exc:
         sys.stderr.write("fleet-facts: %s;  nothing was published\n" % exc)
         return EXIT_UNSAFE
