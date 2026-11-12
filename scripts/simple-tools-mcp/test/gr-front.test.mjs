@@ -14,8 +14,10 @@ import {
   GR_UNAVAILABLE_REASON,
   grUnavailableWhenNoClient,
   grFrontMissing,
+  grNotConfiguredMessage,
 } from "../src/gr-tools.js";
 import { resolveGrSecrets } from "../src/gr-tools.js";
+import { MESSAGE_LIMIT } from "../src/contract.js";
 import { resolveGrVerifyKey, GR_VERIFY_KEY_VAR } from "../src/gr-verify.js";
 import { INFISICAL_EXPECT_DEFAULT } from "../src/infisical-manifest.js";
 import { _resetInfisicalForTests } from "../src/infisical.js";
@@ -306,12 +308,37 @@ test("gr tools answer not_configured when the relay env is missing", async () =>
   assert.match(err.message, /Missing:.*GR_UPSTREAM_URL/);
 });
 
+test("gr not_configured messages fit the delivered tool-error cap", () => {
+  const cases = [
+    { reason: GR_UNAVAILABLE_REASON.CONNECTION_NO_SEAT_RELAY_AUTH, missing: [] },
+    { reason: GR_UNAVAILABLE_REASON.RELAY_SIGNER_UNAVAILABLE, missing: [] },
+    { reason: GR_UNAVAILABLE_REASON.RELAY_ENV_MISSING, missing: ["GR_UPSTREAM_URL", "GR_ACCESS_CLIENT_ID", "GR_ACCESS_CLIENT_SECRET"] },
+    { reason: GR_UNAVAILABLE_REASON.RELAY_ENV_MISSING, missing: [] },
+  ];
+  for (const item of cases) {
+    const message = grNotConfiguredMessage(item);
+    assert.ok(
+      [...message].length <= MESSAGE_LIMIT,
+      `${item.reason} is ${[...message].length} code points`,
+    );
+  }
+  const auth = grNotConfiguredMessage({ reason: GR_UNAVAILABLE_REASON.CONNECTION_NO_SEAT_RELAY_AUTH, missing: [] });
+  assert.match(auth, /sbt_\*/);
+  assert.match(auth, /gbb_\*/);
+  assert.match(auth, /not the cause/);
+  assert.match(auth, /other tools still work/);
+  assert.doesNotMatch(auth, /GR_UPSTREAM_URL/);
+});
+
 test("gr tools on a connection with no seat relay auth never blame GR_UPSTREAM_URL", async () => {
   const bare = grHarness(null, { grUnavailableReason: GR_UNAVAILABLE_REASON.CONNECTION_NO_SEAT_RELAY_AUTH, grMissingEnv: [] });
   const missing = await bare.call("gr_merge_pr", { repo: "a/b", number: 1 });
   assert.equal(missing.isError, true);
   const err = JSON.parse(missing.content[0].text);
+  const full = grNotConfiguredMessage({ reason: GR_UNAVAILABLE_REASON.CONNECTION_NO_SEAT_RELAY_AUTH, missing: [] });
   assert.equal(err.reason, GR_UNAVAILABLE_REASON.CONNECTION_NO_SEAT_RELAY_AUTH);
+  assert.equal(err.message, full);
+  assert.equal([...err.message].length, [...full].length);
   assert.match(err.message, /seat bearer|sbt_\*|gbb_\*/i);
   assert.doesNotMatch(err.message, /GR_UPSTREAM_URL/);
 });

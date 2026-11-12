@@ -267,3 +267,33 @@ class GrWorkflowV1AttestationRowTests(TestCase):
         entry = (support.REPO, self.PATH, sha256(raw).hexdigest())
         with patch("git_relay.reviewed_fixtures._REVIEWED_FIXTURES", frozenset({entry})):
             self.assertIsNone(unreviewed_file_secret(support.REPO, self.PATH, raw))
+
+
+class GrFrontAttestationRowTests(TestCase):
+    """AFC-734 binds the live gr-front bytes. One changed byte fails closed."""
+
+    PATH = "scripts/simple-tools-mcp/test/gr-front.test.mjs"
+    PRIOR_DIGEST = "9de759b53f8cb987b16ade0a9cf99ff69d999659519a620b292f4aa748eee3b9"
+    repo_root = __import__("pathlib").Path(__file__).resolve().parents[3]
+
+    def test_live_bytes_are_the_only_attested_row(self):
+        raw = (self.repo_root / self.PATH).read_bytes()
+        digest = sha256(raw).hexdigest()
+        rows = [row for row in _REVIEWED_FIXTURES if row[1] == self.PATH]
+        self.assertEqual(rows, [(support.REPO, self.PATH, digest)])
+        self.assertNotEqual(digest, self.PRIOR_DIGEST)
+        self.assertNotIn(self.PRIOR_DIGEST, [row[2] for row in _REVIEWED_FIXTURES])
+        self.assertIsNone(unreviewed_file_secret(support.REPO, self.PATH, raw))
+        self.assertEqual(find_secret(raw.decode()), "bearer_credential")
+        drifted = bytearray(raw)
+        drifted[0] ^= 0x01
+        drifted = bytes(drifted)
+        self.assertNotIn(
+            (support.REPO, self.PATH, sha256(drifted).hexdigest()),
+            _REVIEWED_FIXTURES,
+        )
+        self.assertEqual(find_secret(drifted.decode()), "bearer_credential")
+        self.assertEqual(
+            unreviewed_file_secret(support.REPO, self.PATH, drifted),
+            "bearer_credential",
+        )

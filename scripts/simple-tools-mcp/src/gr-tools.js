@@ -75,12 +75,17 @@ export function grUnavailableWhenNoClient(resolvedSecrets, env, { relayAuthAvail
 
 export function grNotConfiguredMessage({ reason, missing }) {
   if (reason === GR_UNAVAILABLE_REASON.CONNECTION_NO_SEAT_RELAY_AUTH) {
+    // ToolError.asObject keeps 300 code points (contract.js MESSAGE_LIMIT).
+    // The cause, the seat-bearer shapes, and the "not the cause" line all have
+    // to land inside that cap; a longer sentence is cut off before the caller
+    // sees it.  The env var name stays out of this text so the refusal cannot
+    // be read as a request to set it.
     return (
       "GR-MCP is not available on this connection.  "
-      + "Web OAuth connectors (ChatGPT, Claude, Grok) do not send an sbt_* or gbb_* seat bearer to git-relay, "
-      + "and this connection has no OAuth assertion path for gr_* either (for example a paused or wake-only seat).  "
-      + "gr_* needs a seat-bearer MCP connection (minted with ST-MCP/GR-MCP acceptance in Admin) or GR-MCP over stdio (`git-relay mcp`).  "
-      + "Setting GR_UPSTREAM_URL or the Access pair will not help.  The other tools still work."
+      + "No sbt_* or gbb_* seat bearer is sent, and this connection has no OAuth assertion path for gr_*.  "
+      + "Use a seat-bearer MCP connection or GR-MCP over stdio (`git-relay mcp`).  "
+      + "The relay URL and Access pair are not the cause.  "
+      + "The other tools still work."
     );
   }
   if (reason === GR_UNAVAILABLE_REASON.RELAY_SIGNER_UNAVAILABLE) {

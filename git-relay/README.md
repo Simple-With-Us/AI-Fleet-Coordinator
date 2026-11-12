@@ -247,7 +247,7 @@ gap this attestation exists to close:
 | `scripts/test_operator_provenance.py` | `d3c23c8fd8b3ea6b73897c6ab456355a488e3f0a` | `a72e105b054617eecebdd2011dfca341e08dbc9377e378dccc8733aa7fea2c1b` |
 | `scripts/simple-tools-mcp/DEPLOY-PHASE0.md` | `cb10a4f133a5e90a1b3bdc77b1df818ad9dac0e9` | `5f85629a6a6979a763063ad3b79fd56b5d77ab93d2cd0e6da4c200485debca3f` |
 | `scripts/simple-tools-mcp/test/gr-assert.test.mjs` | `80f27a413e461e9adfc8924c881e29d4d9e2d21c` | `ecfa713b33754e1331a8fee0e07c67271fc186908a52830839f1b530a246dad8` |
-| `scripts/simple-tools-mcp/test/gr-front.test.mjs` | `b46549565f659d145f30d6ff1ede3af6515de64d` | `9de759b53f8cb987b16ade0a9cf99ff69d999659519a620b292f4aa748eee3b9` |
+| `scripts/simple-tools-mcp/test/gr-front.test.mjs` | `6b7b1b0df038846973c58fd69cdf3c8618f14f65` | `08390a5ac7c5fe290ec38a91cb22608dc1a86de4a13748228e5edf87c940f4a1` |
 | `scripts/simple-tools-mcp/test/gr-workflow-v1.test.mjs` | `804d547cb96bba4cade20a058e76ec32c1fa7022` | `8a0cf816252c39f32202429861483d0d128d4a30a7ff92e6cbbbad988ee7dad2` |
 | `scripts/simple-tools-mcp/test/integration.workerd.mjs` | `f122a279489d871d7fc3f71c97acd5e2ec9dcfaf` | `2b76ceeed6f6fdf66f6e04523d05cc9652e00377e82bcb55268ceaf143e10f8c` |
 | `scripts/simple_tools/tests/test_infisical_api_route.py` | `0c8b4ed4acf205c619f970824a7eba4d7e3a96b3` | `3ee7aac6e82c0f22bbadc29ba915cc05054c7d5e3c0962f9c84f9db5b8f94d88` |
@@ -295,6 +295,8 @@ controls are unchanged: dedicated shapes and loaded values still refuse, and
 superseded bytes fail closed (git_relay/tests/test_reviewed_fixtures.py). The
 attested bytes are a FUTURE target until PR #1707 merges; this source change deploys
 only through the relay operator's normal review and authorizes no write by itself.
+
+On November 12, 2026 the `scripts/simple-tools-mcp/test/gr-front.test.mjs` row was refreshed to the exact bytes on PR #1826 (source blob `6b7b1b0df038846973c58fd69cdf3c8618f14f65`, SHA-256 `08390a5ac7c5fe290ec38a91cb22608dc1a86de4a13748228e5edf87c940f4a1`, 30627 UTF-8 bytes).  The prior digest attested the copy on main before these tests.  The complete file was re-reviewed, not only the added lines.  Those lines are the not_configured reason tests.  They name seat-bearer shapes and never a credential literal, and none of the added lines match a dedicated secret pattern.  The whole file still matches bearer_credential because of the synthetic bearer header fixtures the prior attestation already covered.  Changing one byte of this file fails closed.  This source change deploys only through the relay operator's normal review and authorizes no write by itself.
 
 `mint_token` returns a raw App installation token, so it is NOT exposed over the MCP wrapper
 (a stdio transcript is too easy to capture);  seats that need a token for git-over-HTTPS call the

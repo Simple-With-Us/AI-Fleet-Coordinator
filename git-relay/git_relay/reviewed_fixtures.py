@@ -14,9 +14,10 @@ from .secret_scan import find_secret
 # Source of truth: the corrected rename checkpoint
 # 81d8bb0cd4f5a63d3dc330b8f42be4a3e93e87a3 (tree
 # b548e1a81d4fd18d72206f8c1f22cb41a6d19bcf, built on main
-# ac6d5d44500937274aeddfc794a05fb427158f8c); 12 of the 13 triples verify
-# byte-exact against that tree. The thirteenth, gr-workflow-v1.test.mjs, is the
-# PR #1707 exception recorded below and is not part of that tree. The first checkpoint
+# ac6d5d44500937274aeddfc794a05fb427158f8c); 11 of the 13 triples verify
+# byte-exact against that tree. gr-workflow-v1.test.mjs (PR #1707) and
+# gr-front.test.mjs (PR #1826) are the two exceptions recorded below and are
+# not the checkpoint bytes. The first checkpoint
 # 4977e6a7970dc0a25638181600137fe06167dcec is retained as original evidence
 # only, never as a shipping target. Ten rows are unchanged from that first
 # re-attestation; three rows (test_install_mcp.py, integration.workerd.mjs,
@@ -35,6 +36,10 @@ from .secret_scan import find_secret
 # The gr-workflow-v1.test.mjs row was refreshed 2026-11-10 to the exact bytes under
 # review in PR #1707 (source blob 804d547cb96bba4cade20a058e76ec32c1fa7022), not the
 # 81d8bb0c checkpoint bytes, which never landed on main; provenance in the README.
+# The gr-front.test.mjs row was refreshed 2026-11-12 to the AFC-734 bytes on
+# PR #1826 (source blob 6b7b1b0df038846973c58fd69cdf3c8618f14f65). Added lines
+# introduce no new dedicated secret pattern. The file still matches
+# bearer_credential from the synthetic bearer fixtures the prior row covered.
 _REVIEWED_FIXTURES = frozenset(
     {
         (
@@ -55,7 +60,7 @@ _REVIEWED_FIXTURES = frozenset(
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
             "scripts/simple-tools-mcp/test/gr-front.test.mjs",
-            "9de759b53f8cb987b16ade0a9cf99ff69d999659519a620b292f4aa748eee3b9",
+            "08390a5ac7c5fe290ec38a91cb22608dc1a86de4a13748228e5edf87c940f4a1",
         ),
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
