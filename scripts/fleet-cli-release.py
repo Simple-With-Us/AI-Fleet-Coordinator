@@ -87,10 +87,12 @@ RECALL_MODULES = (
     "core",
     "doctor",
     "health",
+    "infisical_settings",
     "public_fallback",
     "recall_api",
     "recall_presentation",
     "scrub",
+    "search_cache",
     "search_log",
     "telemetry",
 )
