@@ -219,7 +219,7 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
             rows["OPERATOR_REGISTRY_KEY"][:2],
             (MODULE.WAKE_ROUTER_PATH, "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"),
         )
-        self.assertNotIn("WAKE_ROUTER_KEY", rows, "the Eavesdropper does not use the router bearer yet")
+        self.assertEqual(rows["WAKE_ROUTER_KEY"][:2], ("/wake-router", "WAKE_ROUTER_KEY"), "one bearer, one home, no seat")
         self.assertTrue(MODULE.infisical_only_names().isdisjoint(MODULE.AUTH_ENV_VARS))
 
     def test_the_loader_sources_own_disjoint_names(self):
