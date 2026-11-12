@@ -207,10 +207,14 @@ class FileVerbs(unittest.TestCase):
             ):
                 h.run("wf_file_put", args)
             only_reads(self, c)
-        # The provider's answer names nothing, or another branch: fail closed.
+        # The provider's answer names nothing, or another branch: fail closed, as a retryable
+        # no-write failure (the server releases the idempotency key for PreReadUnavailable).
         for answer in ({}, {"name": ""}, {"name": 7}, {"name": "other"}, ["feature/x"]):
             h, c = handle("wf_file_put", {"default_branch": "main"}, answer)
-            with self.subTest(answer=answer), self.assertRaises(RelayGitHubError):
+            with (
+                self.subTest(answer=answer),
+                self.assertRaisesRegex(PreReadUnavailable, "no write attempted"),
+            ):
                 h.run("wf_file_put", args)
             only_reads(self, c)
         # A name the provider does not know (HEAD, a tag) is refused before any write.
@@ -318,6 +322,25 @@ class FileVerbs(unittest.TestCase):
             h.run("wf_file_rename", args)
         only_reads(self, c)
 
+    def test_file_rename_provider_ref_naming_another_branch_refused(self):
+        h, c = handle(
+            "wf_file_rename",
+            {"default_branch": "main"},
+            {"ref": "refs/heads/other", "object": {"type": "commit", "sha": SHA}},
+        )
+        args = {
+            "repo": REPO,
+            "source_path": "old.txt",
+            "destination_path": "new.txt",
+            "branch": "feature/x",
+            "message": "Rename file",
+            "expected_head_sha": SHA,
+            "prior_sha": "e" * 40,
+        }
+        with self.assertRaisesRegex(Refused, "exact branch head not matched"):
+            h.run("wf_file_rename", args)
+        only_reads(self, c)
+
     def test_file_rename_on_a_legitimate_branch_still_allowed(self):
         rename = test_file_rename.Rename()
         c = Client(*rename.replies())
@@ -366,6 +389,7 @@ class FileVerbs(unittest.TestCase):
         for answer in (
             {"ref": "refs/heads/main", "object": {"sha": SHA}},
             {"ref": "refs/heads/MAIN", "object": {"sha": SHA}},
+            {"ref": "refs/heads/other", "object": {"sha": SHA}},
             {"object": {"sha": SHA}},
         ):
             h, c = handle("wf_file_patch", {"default_branch": "main"}, answer)
@@ -391,6 +415,7 @@ class FileVerbs(unittest.TestCase):
         for answer in (
             {"ref": "refs/heads/main", "object": {"sha": SHA}},
             {"ref": "refs/heads/Main", "object": {"sha": SHA}},
+            {"ref": "refs/heads/other", "object": {"sha": SHA}},
             {"object": {"sha": SHA}},
         ):
             h, c = handle("wf_files_put", {"default_branch": "main"}, answer)

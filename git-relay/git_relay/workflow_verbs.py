@@ -7706,7 +7706,11 @@ class WorkflowVerbs:
             raise
         on_default = _is_default_branch(branch, info["default_branch"])
         if on_default:
-            if not self._default_branch_path_allowed(repo, path):
+            # Branch names are case-sensitive at the provider, so only the exact default name
+            # takes the grant and CAS route; any other spelling of it is refused unread.
+            if branch != info["default_branch"] or not self._default_branch_path_allowed(
+                repo, path
+            ):
                 raise Refused("default branch is not writable")
             message = _prefixed_default_message(message, encoded=True)
         try:
@@ -7782,33 +7786,38 @@ class WorkflowVerbs:
         if not isinstance(default, str) or not default:
             raise Refused("default branch is not writable")
         if _is_default_branch(branch, default):
-            if not self._default_branch_path_allowed(repo, path):
+            # Branch names are case-sensitive at the provider, so only the exact default name
+            # takes the grant and CAS route; any other spelling of it is refused unread.
+            if branch != default or not self._default_branch_path_allowed(repo, path):
                 raise Refused("default branch is not writable")
             payload["message"] = _prefixed_default_message(message)
+            # The contents read below proves the branch exists, so no branch read is made.
             prior = self._require_default_branch_cas(
                 args, self._default_branch_blob(repo, path, branch)
             )
             if prior is not None:
                 payload["sha"] = prior
-        elif "prior_sha" in args:
-            payload["sha"] = _sha(args, "prior_sha")
-        # The provider's own name for the branch decides, not the caller's spelling.  A name it
-        # does not know (HEAD, a tag, a typo) is refused before any write.
-        try:
-            target = self._get(f"/repos/{repo}/branches/{quote(branch, safe='')}")
-        except RelayGitHubError as exc:
-            if exc.status in (0, 408) or exc.status >= 500:
-                raise PreReadUnavailable(
-                    "branch pre-read unavailable; no write attempted"
-                ) from None
-            raise
-        provider_name = target.get("name") if isinstance(target, dict) else None
-        if not isinstance(provider_name, str) or not provider_name:
-            raise RelayGitHubError(502, "branch pre-read unverifiable")
-        if _is_default_branch(provider_name, default) != _is_default_branch(branch, default):
-            raise Refused("default branch is not writable")
-        if not _is_default_branch(branch, default) and provider_name != branch:
-            raise RelayGitHubError(502, "branch pre-read unverifiable")
+        else:
+            if "prior_sha" in args:
+                payload["sha"] = _sha(args, "prior_sha")
+            # The provider's own name for the branch decides, not the caller's spelling.  A name
+            # it does not know (HEAD, a tag, a typo) is refused before any write.  Every
+            # pre-read failure here is a retryable no-write failure, never an unknown outcome.
+            try:
+                target = self._get(f"/repos/{repo}/branches/{quote(branch, safe='')}")
+            except RelayGitHubError as exc:
+                if exc.status in (0, 408) or exc.status >= 500:
+                    raise PreReadUnavailable(
+                        "branch pre-read unavailable; no write attempted"
+                    ) from None
+                raise
+            provider_name = target.get("name") if isinstance(target, dict) else None
+            if not isinstance(provider_name, str) or not provider_name:
+                raise PreReadUnavailable("branch pre-read unverifiable; no write attempted")
+            if _is_default_branch(provider_name, default):
+                raise Refused("default branch is not writable")
+            if provider_name != branch:
+                raise PreReadUnavailable("branch pre-read unverifiable; no write attempted")
         data = self.client._call(
             "PUT",
             f"/repos/{repo}/contents/{quote(path, safe='/')}",
@@ -7977,6 +7986,8 @@ class WorkflowVerbs:
         provider_branch = _provider_ref_branch(prior_ref)
         if provider_branch is None or _is_default_branch(provider_branch, default):
             raise Refused("default branch is not writable")
+        if provider_branch != branch:
+            raise Refused("provider branch does not match the requested branch")
         if _sub(prior_ref, "object").get("sha") != head:
             raise Refused("branch head moved")
         base_commit = _obj(self._get(f"/repos/{repo}/git/commits/{head}"))
@@ -8122,6 +8133,8 @@ class WorkflowVerbs:
         provider_branch = _provider_ref_branch(ref)
         if provider_branch is None or _is_default_branch(provider_branch, default):
             raise Refused("default branch is not writable")
+        if provider_branch != branch:
+            raise Refused("provider branch does not match the requested branch")
         if _sub(ref, "object").get("sha") != head:
             raise Refused("branch head moved")
         base_tree = _sub(_obj(self._get(f"/repos/{repo}/git/commits/{head}")), "tree").get("sha")
