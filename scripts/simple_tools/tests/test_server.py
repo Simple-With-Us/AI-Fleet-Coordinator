@@ -59,6 +59,14 @@ MAC_CLI_SEATS = [
     "CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "OPENCODE", "ZC", "KIMI", "AMP",
 ]
 MAC_CLI_DISABLED = ["AMP", "GROK"]
+# A lone seat (ZC) naming the router's bearer in another role (OPS-1048):  its error and reason.
+LONE_BEARER_ERROR = (
+    "environment variable WAKE_ROUTER_KEY is the wake router's bearer and may be named only as a "
+    'routine key_env with auth = "bearer"; seat ZC names it in another role, so it gets no queue'
+)
+LONE_BEARER_REASON = (
+    "environment variable WAKE_ROUTER_KEY is the wake router's bearer, named in another role"
+)
 
 
 def routine_cfg(**kw) -> C.RoutineConfig:
@@ -266,6 +274,8 @@ class ConfigTests(unittest.TestCase):
             'creds = "env"\nwake = "http"\nroutine = { key_env = "ZULIP_GB_COMPILER_API_KEY" }': "uses ZULIP_GB_COMPILER_API_KEY for more than one setting",
             'creds = "env"\nkey_env = "K1"\nwake = "http"\nroutine = { url_env = "K1" }': "uses K1 for more than one",
             'bot = "GB-Compiler"\nwake = "http"\nroutine = { url_env = "ZULIP_SITE" }': "may not read ZULIP_SITE",
+            'bot = "GB-Compiler"\nwake = "http"\nroutine = { url_env = "%s" }' % C.outgoing_webhook_token_env("GB-COMPILER"): "may not read " + C.outgoing_webhook_token_env("GB-COMPILER"),
+            'bot = "GB-Compiler"\nwake = "http"\nroutine = { key_env = "%s" }' % C.outgoing_webhook_token_env("GB-COMPILER"): "may not read " + C.outgoing_webhook_token_env("GB-COMPILER"),
         }
         for body, expected in cases.items():
             with self.subTest(body=body):
@@ -306,6 +316,221 @@ class ConfigTests(unittest.TestCase):
             " ".join(cfg.errors),
         )
         self.assertEqual(sorted(cfg.seats), ["GB-ORACLE"])
+
+    # The one wake router's bearer (OPS-1048):  every router seat's routine names WAKE_ROUTER_KEY as its
+    # key_env, so that one name, in that one role, is the only variable two seats may share.
+    @staticmethod
+    def router_routine(
+        url_env: str, key_env: str = "WAKE_ROUTER_KEY", auth: str = "bearer"
+    ) -> str:
+        header = C.ROUTINE_DEFAULT_HEADER[auth]
+        return (
+            'wake = "http"\nroutine = { url_env = "%s", key_env = "%s", method = "POST", auth = "%s", '
+            'header = "%s", timeout_seconds = 15 }' % (url_env, key_env, auth, header)
+        )
+
+    def router_cfg(self, claude: str, zc: str, daemon: str = "") -> C.Config:
+        return self.parse(
+            '[daemon]\ninstance = "server"\n%s\n'
+            '[seat.CLAUDE]\ninstance = "server"\ncreds = "env"\n%s\n'
+            '[seat.ZC]\ninstance = "server"\ncreds = "env"\n%s\n'
+            '[seat.CODEX]\ninstance = "server"\ncreds = "env"\nwake = "inbox"\n' % (daemon, claude, zc)
+        )
+
+    def assert_both_dropped(self, cfg: C.Config, name: str) -> None:
+        self.assertIn(
+            "environment variable %s is named by more than one seat (CLAUDE, ZC); a seat's variables must "
+            "be its own, so none of them gets a queue" % name,
+            cfg.errors,
+        )
+        self.assertEqual(sorted(cfg.seats), ["CODEX"])
+        self.assertEqual(cfg.disabled, {})
+        for seat in ("CLAUDE", "ZC"):
+            self.assertIn(
+                "environment variable %s is shared with another seat" % name, cfg.skipped_seats[seat]
+            )
+
+    def test_the_router_bearer_is_the_one_name_and_matches_the_listener_loader(self) -> None:
+        self.assertEqual(C.ROUTER_BEARER_ENV, "WAKE_ROUTER_KEY")
+        spec = importlib.util.spec_from_file_location(
+            "simple_tools_infisical_env", SERVER_DIR / "infisical_env.py"
+        )
+        assert spec and spec.loader
+        loader = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(loader)
+        rows = {row[0]: row[1:3] for row in loader.INFISICAL_ONLY}
+        self.assertEqual(
+            rows.get(C.ROUTER_BEARER_ENV), (loader.WAKE_ROUTER_PATH, C.ROUTER_BEARER_ENV)
+        )
+
+    def test_router_seats_share_the_one_bearer_and_both_load(self) -> None:
+        cfg = self.router_cfg(
+            self.router_routine("CLAUDE_ROUTINE_URL"), self.router_routine("ZC_ROUTINE_URL")
+        )
+        self.assertEqual(cfg.errors, [])
+        self.assertEqual(cfg.skipped_seats, {})
+        self.assertEqual(sorted(cfg.seats), ["CLAUDE", "CODEX", "ZC"])
+        for seat, url_env in (("CLAUDE", "CLAUDE_ROUTINE_URL"), ("ZC", "ZC_ROUTINE_URL")):
+            routine = cfg.seats[seat].routine
+            self.assertEqual(cfg.seats[seat].wake, "http")
+            self.assertEqual((routine.url_env, routine.key_env), (url_env, C.ROUTER_BEARER_ENV))
+
+    def test_router_seats_sharing_a_routine_url_are_both_dropped(self) -> None:
+        cfg = self.router_cfg(self.router_routine("ROUTER_URL"), self.router_routine("ROUTER_URL"))
+        self.assert_both_dropped(cfg, "ROUTER_URL")
+        self.assertNotIn("WAKE_ROUTER_KEY is named by more than one seat", " ".join(cfg.errors))
+
+    def bearer_misuses(self) -> dict[str, str]:
+        """One seat's settings naming the router's bearer in each role but a bearer routine key."""
+        return {
+            "zulip key_env": 'key_env = "WAKE_ROUTER_KEY"\nwake = "inbox"',
+            "zulip email_env": 'email_env = "WAKE_ROUTER_KEY"\nwake = "inbox"',
+            "zulip site_env": 'site_env = "WAKE_ROUTER_KEY"\nwake = "inbox"',
+            "routine url_env": self.router_routine("WAKE_ROUTER_KEY", key_env="OTHER_ROUTINE_KEY"),
+            "header routine key": self.router_routine("OTHER_ROUTINE_URL", auth="header"),
+            # An hmac-sha256 routine's key is also its seat's read-API key
+            # (daemon.listener_api_keys).
+            "hmac-sha256 routine key": self.router_routine("OTHER_ROUTINE_URL", auth="hmac-sha256"),
+        }
+
+    def test_the_router_bearer_in_any_other_role_still_drops_every_seat_naming_it(self) -> None:
+        bearer = self.router_routine("BEARER_ROUTINE_URL")
+        for role, misuse in self.bearer_misuses().items():
+            # Both orders:  the outcome may not depend on which seat names the bearer first.
+            orders = {"ZC": (bearer, misuse), "CLAUDE": (misuse, bearer)}
+            for misuse_on, (claude, zc) in orders.items():
+                with self.subTest(role=role, misuse_on=misuse_on):
+                    self.assert_both_dropped(self.router_cfg(claude, zc), "WAKE_ROUTER_KEY")
+
+    def test_a_disabled_seat_misusing_the_router_bearer_still_drops_both(self) -> None:
+        # Disabled seats are checked like enabled ones.
+        bearer = self.router_routine("BEARER_ROUTINE_URL")
+        misuse = 'enabled = false\nkey_env = "WAKE_ROUTER_KEY"\nwake = "inbox"'
+        orders = {"ZC": (bearer, misuse), "CLAUDE": (misuse, bearer)}
+        for misuse_on, (claude, zc) in orders.items():
+            with self.subTest(misuse_on=misuse_on):
+                self.assert_both_dropped(self.router_cfg(claude, zc), "WAKE_ROUTER_KEY")
+
+    def test_a_lone_seat_naming_the_router_bearer_in_another_role_is_dropped(self) -> None:
+        # No other seat names it, but the seat would still send the router's bearer somewhere else.
+        for role, misuse in self.bearer_misuses().items():
+            for disabled in (False, True):
+                with self.subTest(role=role, disabled=disabled):
+                    cfg = self.router_cfg(
+                        'wake = "inbox"', ("enabled = false\n" if disabled else "") + misuse
+                    )
+                    self.assertEqual(cfg.errors, [LONE_BEARER_ERROR])
+                    self.assertEqual(sorted(cfg.seats), ["CLAUDE", "CODEX"])
+                    self.assertEqual(cfg.disabled, {})
+                    self.assertEqual(cfg.skipped_seats, {"ZC": [LONE_BEARER_REASON]})
+
+    def test_a_shared_routine_key_that_is_not_the_router_bearer_still_drops_both(self) -> None:
+        cfg = self.router_cfg(
+            self.router_routine("CLAUDE_ROUTINE_URL", key_env="SOME_ROUTINE_KEY"),
+            self.router_routine("ZC_ROUTINE_URL", key_env="SOME_ROUTINE_KEY"),
+        )
+        self.assert_both_dropped(cfg, "SOME_ROUTINE_KEY")
+
+    def test_a_routine_key_naming_another_seats_read_api_key_drops_both(self) -> None:
+        # A seat on the bearer still reads its read-API key from <CODE>_ROUTINE_KEY
+        # (daemon.listener_api_keys) though its config no longer names it;  no other seat's routine
+        # may send that key out.
+        for owner, other in (("CLAUDE", "ZC"), ("ZC", "CLAUDE")):
+            with self.subTest(owner=owner):
+                sections = {
+                    owner: self.router_routine("BEARER_ROUTINE_URL"),
+                    other: self.router_routine("OTHER_ROUTINE_URL", key_env=owner + "_ROUTINE_KEY"),
+                }
+                cfg = self.router_cfg(sections["CLAUDE"], sections["ZC"])
+                self.assert_both_dropped(cfg, owner + "_ROUTINE_KEY")
+
+    def test_a_disabled_seat_sharing_the_router_bearer_still_loads(self) -> None:
+        cfg = self.router_cfg(
+            self.router_routine("CLAUDE_ROUTINE_URL"),
+            "enabled = false\n" + self.router_routine("ZC_ROUTINE_URL"),
+        )
+        self.assertEqual(cfg.errors, [])
+        self.assertEqual(cfg.skipped_seats, {})
+        self.assertEqual(sorted(cfg.seats), ["CLAUDE", "CODEX"])
+        self.assertEqual(sorted(cfg.disabled), ["ZC"])
+        self.assertEqual(cfg.disabled["ZC"].routine.key_env, C.ROUTER_BEARER_ENV)
+
+    def test_the_outgoing_webhook_token_name_is_the_one_the_daemon_reads(self) -> None:
+        self.assertEqual(
+            C.outgoing_webhook_token_env("GB-COMPILER"), "ZULIP_OUTGOING_GB_COMPILER_TOKEN"
+        )
+
+    def test_a_seat_naming_another_seats_outgoing_webhook_token_drops_both(self) -> None:
+        # The daemon reads ZULIP_OUTGOING_<CODE>_TOKEN for every seat in outgoing_webhook_seats
+        # (daemon._configure_outgoing_webhook) though no setting names it, and the server loader
+        # exports it for every server seat, listed or not;  a seat that names another seat's token in
+        # any role would send it to its own routine or use it as its own Zulip credential.
+        for owner, other in (("CLAUDE", "ZC"), ("ZC", "CLAUDE")):
+            token = C.outgoing_webhook_token_env(owner)
+            misuses = {
+                "routine key_env": self.router_routine(
+                    "OTHER_ROUTINE_URL", key_env=token, auth="header"
+                ),
+                "routine url_env": self.router_routine(token),
+                "zulip key_env": 'key_env = "%s"\nwake = "inbox"' % token,
+            }
+            listings = {"listed": 'outgoing_webhook_seats = ["%s"]' % owner, "not listed": ""}
+            for role, misuse in misuses.items():
+                for listing, daemon in listings.items():
+                    with self.subTest(owner=owner, role=role, owner_is=listing):
+                        sections = {owner: self.router_routine("BEARER_ROUTINE_URL"), other: misuse}
+                        cfg = self.router_cfg(sections["CLAUDE"], sections["ZC"], daemon=daemon)
+                        self.assert_both_dropped(cfg, token)
+
+    def test_a_seat_whose_routine_reads_its_own_outgoing_webhook_token_falls_back_to_inbox(
+        self,
+    ) -> None:
+        env_name = C.outgoing_webhook_token_env("CLAUDE")
+        misuses = {
+            "routine key_env": self.router_routine(
+                "CLAUDE_ROUTINE_URL", key_env=env_name, auth="header"
+            ),
+            "routine url_env": self.router_routine(env_name),
+        }
+        listings = {"listed": 'outgoing_webhook_seats = ["CLAUDE"]', "not listed": ""}
+        for role, misuse in misuses.items():
+            for listing, daemon in listings.items():
+                with self.subTest(role=role, owner_is=listing):
+                    cfg = self.router_cfg(
+                        misuse,
+                        self.router_routine("ZC_ROUTINE_URL"),
+                        daemon=daemon,
+                    )
+                    self.assertIn("may not read " + env_name, " ".join(cfg.errors))
+                    self.assertEqual(cfg.skipped_seats, {})
+                    self.assertEqual(sorted(cfg.seats), ["CLAUDE", "CODEX", "ZC"])
+                    seat = cfg.seats["CLAUDE"]
+                    self.assertEqual((seat.wake, seat.routine), ("inbox", None))
+                    self.assertTrue(seat.config_problems)
+
+    def test_seats_in_outgoing_webhook_seats_with_their_own_names_still_load(self) -> None:
+        cfg = self.router_cfg(
+            self.router_routine("CLAUDE_ROUTINE_URL"),
+            "enabled = false\n" + self.router_routine("ZC_ROUTINE_URL"),
+            daemon='outgoing_webhook_seats = ["CLAUDE", "ZC", "CODEX"]',
+        )
+        self.assertEqual(cfg.errors, [])
+        self.assertEqual(cfg.skipped_seats, {})
+        self.assertEqual(cfg.outgoing_webhook_seats, frozenset({"CLAUDE", "ZC", "CODEX"}))
+        self.assertEqual(sorted(cfg.seats), ["CLAUDE", "CODEX"])
+        self.assertEqual(sorted(cfg.disabled), ["ZC"])
+
+    def test_listed_seats_whose_routine_key_is_their_own_routine_key_still_load(self) -> None:
+        # Each seat's own <CODE>_ROUTINE_KEY is counted twice for that one seat (routine key and
+        # read-API key) and its own outgoing token once;  none of that is a clash.
+        cfg = self.router_cfg(
+            self.router_routine("CLAUDE_ROUTINE_URL", key_env="CLAUDE_ROUTINE_KEY", auth="header"),
+            self.router_routine("ZC_ROUTINE_URL", key_env="ZC_ROUTINE_KEY", auth="hmac-sha256"),
+            daemon='outgoing_webhook_seats = ["CLAUDE", "ZC"]',
+        )
+        self.assertEqual(cfg.errors, [])
+        self.assertEqual(cfg.skipped_seats, {})
+        self.assertEqual(sorted(cfg.seats), ["CLAUDE", "CODEX", "ZC"])
 
 
 class EnvCredentialTests(ServerHarness):
@@ -793,6 +1018,7 @@ class RoutineRunnerTests(unittest.TestCase):
             with self.subTest(auth=kw["auth"]):
                 result = self.runner.deliver(self.target(**kw), self.body, idempotency_key="w1")
                 self.assertTrue(result.accepted)
+                self.assertIsNone(result.response, "a default runner keeps no answer body")
                 got = self.routine.received[-1]
                 self.assertEqual(got.header(header), value)
                 self.assertEqual(got.body, self.body)
@@ -890,6 +1116,7 @@ class LedgerAndSecrecyTests(ServerHarness):
             routine_extra=', header = "X-Signature-256", signature_prefix = "sha256="',
         )
         daemon = self.started()
+        self.assertFalse(daemon.routine_runner.keep_response, "the daemon never keeps an answer")
         self.routine.script = [401]
         dm = self.fake.add_direct_message(
             "Jay Wedgeworth", "deploy?", recipients=[self.gb], deliver=True

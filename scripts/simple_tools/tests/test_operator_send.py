@@ -700,13 +700,11 @@ class PolicyTests(unittest.TestCase):
             {}, identity="OPERATOR", recipients=[{"user_id": 11, "is_bot": True}], status=True
         )
 
-    def test_the_operator_may_still_ask_a_clarifying_question(self) -> None:
-        DMP.check_new_dm({}, identity="OPERATOR", recipients=[], clarifying=True)
-
     def test_the_operator_without_a_reason_still_may_not_open_a_dm(self) -> None:
+        # The clarifying question was the other reason, and it is gone (owner ruling, Nov 10, 2026).
         with self.assertRaises(DMP.DmRefused) as caught:
             DMP.check_new_dm({}, identity="OPERATOR", recipients=[])
-        self.assertEqual(caught.exception.reason, "operator_not_clarifying")
+        self.assertEqual(caught.exception.reason, "operator_not_status")
 
     def test_a_seat_cannot_claim_the_status_exemption(self) -> None:
         for seat in ("MM", "CLAUDE", "CODEX"):
