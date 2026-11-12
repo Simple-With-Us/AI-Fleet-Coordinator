@@ -1139,6 +1139,9 @@ def _run_locked(
         "errors": [],
         "warnings": [],
         "guard_trips": [],
+        "mirror_stale": mirror.stale_record(
+            mirror.configured_root(), time.time(), mirror.max_age_s()
+        ),
     }
 
     if cfg is None or (qd is None and not dry_run):
@@ -1177,6 +1180,21 @@ def _run_locked(
         pending_annotations: list[dict] = []
         t0 = time.monotonic()
         log(f"[{name}] start")
+        if report["mirror_stale"] and name in mirror.MIRROR_BACKED_SOURCES:
+            # A missing or stale marker must not read or delete these corpora.
+            # Force does not lift it, and the source is not a failure, so the
+            # other sources in the run still ingest and may still prune.
+            stale = report["mirror_stale"]
+            age = stale.get("age_s")
+            age_text = "unknown" if age is None else f"{age}s"
+            msg = (
+                f"{name}: ingest and prune skipped; mirror {stale.get('reason')} "
+                f"(marker age {age_text})"
+            )
+            report["warnings"].append(msg)
+            report["guard_trips"].append({"source": name, "reason": stale.get("reason")})
+            log(f"[{name}] WARNING {msg}")
+            continue
         group: list[tuple[sources.Doc, str]] = []
         group_chunks = 0
         yielded: set[str] = set()
@@ -1431,7 +1449,8 @@ def _prune_gate(name: str) -> tuple[str, str] | None:
     """Why this source must not be pruned, as (warning, guard reason), or None.
 
     A stale or missing skill/memory mirror is a guard trip and is not a failed
-    source, so doc and linear can still prune.  Force does not lift the gate.
+    source, so doc and linear can still prune.  The ingest loop skips reading
+    those sources, and apple-note, before this gate.  Force does not lift it.
     The code-root gate applies only when the server job asks for it, so a Mac
     nightly that reads ~/Code keeps its current prune behavior.
     """

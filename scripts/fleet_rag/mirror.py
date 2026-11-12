@@ -37,6 +37,11 @@ MIN_MAX_AGE_S = 3600
 MAX_MAX_AGE_S = 14 * 24 * 3600
 MIRROR_ENV = "FLEET_RAG_MIRROR"
 MIRROR_SOURCES = frozenset({"skill", "memory"})
+# Skill and memory files live in the mirror.  Apple Notes are gated with them
+# (AFC-760): a missing or stale marker skips ingest and prune for all three.
+MIRROR_BACKED_SOURCES = frozenset({"skill", "memory", "apple-note"})
+# The server live directory.  FLEET_RAG_MIRROR names this path in production.
+DEFAULT_LIVE = Path("/home/jay/fleet-rag-mirror/current")
 LIVE_NAME = "current"
 INCOMING_NAME = "incoming"
 
@@ -58,6 +63,7 @@ class MirrorStatus:
     fresh: bool
     reason: str
     at: int | None = None
+    age_s: int | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +104,59 @@ def max_age_s(env: dict | None = None) -> int:
     if value < MIN_MAX_AGE_S or value > MAX_MAX_AGE_S:
         return DEFAULT_MAX_AGE_S
     return value
+
+
+def configured_root(env: dict | None = None) -> Path | None:
+    """The live mirror whose marker decides ingest, or None for local trees.
+
+    An explicit ``FLEET_RAG_MIRROR`` wins, including a blank value, which
+    leaves the mirror off.  With the variable unset, the server tree is used
+    when that directory exists, and also when ``HOME`` is ``/home/jay`` so a
+    missing marker is still a skip.  A Mac run with neither hits None and
+    keeps reading its local skill and memory files.
+    """
+    root = mirror_root(env)
+    if root is not None:
+        return root
+    source = os.environ if env is None else env
+    if MIRROR_ENV in source:
+        return None
+    if DEFAULT_LIVE.parent.is_dir():
+        return DEFAULT_LIVE
+    home = (source.get("HOME") or "").strip()
+    if not home and env is None:
+        home = str(Path.home())
+    if home == "/home/jay":
+        return DEFAULT_LIVE
+    return None
+
+
+def _mtime_age(path: Path, now: float) -> int | None:
+    try:
+        return int(now) - int(path.stat().st_mtime)
+    except OSError:
+        return None
+
+
+def _stamp_age(at: object, now: float, fallback: int | None) -> int | None:
+    if isinstance(at, bool) or not isinstance(at, int):
+        return fallback
+    return int(now) - at
+
+
+def stale_record(root: Path | None, now: float, max_age: int) -> dict | None:
+    """The ``mirror_stale`` object, or None when mirror-backed sources may run."""
+    if root is None:
+        return None
+    status = mirror_status(root, now, max_age)
+    if status.fresh:
+        return None
+    return {
+        "age_s": status.age_s,
+        "reason": status.reason,
+        "marker": str(root / COMPLETE_NAME),
+        "max_age_s": max_age,
+    }
 
 
 def skill_dirs(root: Path) -> tuple[Path, Path, Path]:
@@ -167,26 +226,33 @@ def count_local(tree: Tree) -> int:
 
 
 def mirror_status(root: Path | None, now: float, max_age: int) -> MirrorStatus:
-    """Whether skill and memory may be pruned against this mirror."""
+    """Whether skill and memory may be read and pruned against this mirror.
+
+    ``age_s`` is seconds since the stamp's ``at`` when that field is an int,
+    otherwise seconds since the marker's mtime when the file exists.
+    """
     if root is None or not root.is_dir():
         return MirrorStatus(False, "missing")
     stamp = root / COMPLETE_NAME
     if not stamp.is_file() or stamp.is_symlink():
         return MirrorStatus(False, "missing-stamp")
+    file_age = _mtime_age(stamp, now)
     try:
         data = json.loads(stamp.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return MirrorStatus(False, "bad-stamp")
+        return MirrorStatus(False, "bad-stamp", age_s=file_age)
     if not isinstance(data, dict) or data.get("complete") is not True:
-        return MirrorStatus(False, "incomplete")
+        at = data.get("at") if isinstance(data, dict) else None
+        return MirrorStatus(False, "incomplete", age_s=_stamp_age(at, now, file_age))
     at = data.get("at")
     if isinstance(at, bool) or not isinstance(at, int):
-        return MirrorStatus(False, "bad-stamp")
+        return MirrorStatus(False, "bad-stamp", age_s=file_age)
+    age = int(now) - at
     if at > int(now) + 600:
-        return MirrorStatus(False, "bad-stamp", at)
-    if int(now) - at > max_age:
-        return MirrorStatus(False, "stale", at)
-    return MirrorStatus(True, "fresh", at)
+        return MirrorStatus(False, "bad-stamp", at, age)
+    if age > max_age:
+        return MirrorStatus(False, "stale", at, age)
+    return MirrorStatus(True, "fresh", at, age)
 
 
 def _fsync_dir(directory: Path) -> None:

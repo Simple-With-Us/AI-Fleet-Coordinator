@@ -3,8 +3,9 @@
 Runs ``recall ingest --source linear,doc,skill,memory --prune`` after a
 recent successful ``code-main-sync``, under its own lock, and reuses the
 ingest prune guards.  The service user reads that result.  It does not start
-the unit.  Apple Notes are never part of this command.  Skill and memory
-pruning stays off when the Mac mirror is missing or stale.
+the unit.  Apple Notes are never part of this command.  A missing or stale
+Mac mirror marker skips ingest and prune for skill, memory, and apple-note.
+The summary records mirror_stale with the marker age.  Other sources still run.
 
 The process is disabled until ``FLEET_RAG_NIGHTLY=1``.  It reads Infisical
 with service tokens only.  A machine-identity variable in the environment
@@ -321,7 +322,10 @@ def alert_text(summary: dict, tag: str, host: str, *, streak: int = 1) -> str:
         parts.append(f"{len(trips)} prune guard(s) tripped.")
     mirror_reason = _mirror_alert_reason(summary)
     if mirror_reason:
-        parts.append(f"skill/memory mirror is {mirror_reason}.")
+        parts.append(
+            "skill, memory, and apple-note ingest and prune skipped; "
+            f"mirror is {mirror_reason}."
+        )
     sync_exit = summary.get("code_sync_exit")
     if sync_exit not in (None, 0):
         parts.append(f"code-main-sync exited {sync_exit}.")
@@ -715,6 +719,7 @@ def _base(enabled_flag: bool) -> dict:
         "guard_trips": [],
         "sources": list(INGEST_SOURCES),
         "mirror": None,
+        "mirror_stale": None,
         "alert": "quiet",
     }
 
@@ -817,15 +822,28 @@ def _locked(summary, env, *, read_file, fetch, sync, ingest_runner, post, now) -
         return summary
     mirror_env = (env.get(mirror.MIRROR_ENV) or "").strip()
     updates = dict(loaded)
+    max_age = mirror.max_age_s(env)
     if not mirror_env:
-        updates[mirror.MIRROR_ENV] = str(summary_path(env).parent / "mirror-unconfigured")
+        unconfigured = summary_path(env).parent / "mirror-unconfigured"
+        updates[mirror.MIRROR_ENV] = str(unconfigured)
         summary["guard_trips"] = [{"source": "mirror", "reason": "unconfigured"}]
         summary["mirror"] = {"fresh": False, "reason": "unconfigured"}
+        summary["mirror_stale"] = {
+            "age_s": None,
+            "reason": "unconfigured",
+            "marker": str(unconfigured / mirror.COMPLETE_NAME),
+            "max_age_s": max_age,
+        }
     else:
-        status = mirror.mirror_status(Path(mirror_env), now, mirror.max_age_s(env))
+        root = Path(mirror_env)
+        status = mirror.mirror_status(root, now, max_age)
         summary["mirror"] = {"fresh": status.fresh, "reason": status.reason, "at": status.at}
+        summary["mirror_stale"] = mirror.stale_record(root, now, max_age)
         if not status.fresh:
             summary["guard_trips"] = [{"source": "mirror", "reason": status.reason}]
+    age_raw = (env.get("FLEET_RAG_MIRROR_MAX_AGE_S") or "").strip()
+    if age_raw:
+        updates["FLEET_RAG_MIRROR_MAX_AGE_S"] = age_raw
     updates["FLEET_RAG_REQUIRE_CODE_ROOT"] = "1"
     saved = _apply(updates)
     try:
@@ -868,8 +886,12 @@ def _locked(summary, env, *, read_file, fetch, sync, ingest_runner, post, now) -
         if snap.get("path"):
             summary["qdrant_snapshot"]["path"] = _public(str(snap["path"]))
     summary["ok"] = bool(report.get("ok")) and code == 0 and sync_exit == 0
-    # A guard trip keeps ok as the ingest reported it.  Unconfigured mirror
-    # still ingests, and the alert fires because guard_trips is non-empty.
+    reported = report.get("mirror_stale") if isinstance(report, dict) else None
+    if summary.get("mirror_stale") is None and isinstance(reported, dict):
+        summary["mirror_stale"] = reported
+    # A guard trip keeps ok as the ingest reported it.  A missing or stale
+    # mirror still runs the other sources.  The alert fires because
+    # guard_trips is non-empty.
     if not summary["ok"] and not summary["errors"]:
         summary["errors"] = [f"ingest-exit-{code}"]
     alert_env = {**env, **loaded}
