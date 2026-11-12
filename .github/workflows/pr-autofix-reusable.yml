@@ -581,7 +581,9 @@ jobs:
 
       - name: Validate Outcome Before Push
         id: validate
-        if: steps.guard.outputs.should_fix == 'true'
+        # always(): without it a failed or cancelled model step skips this step, and the
+        # superseded/cancelled handling below never runs.
+        if: ${{ always() && steps.guard.outputs.should_fix == 'true' }}
         env:
           START_HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           HAS_VERIFY: ${{ steps.trusted.outputs.has_verify }}
