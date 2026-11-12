@@ -545,6 +545,7 @@ class RegistryApiTest(unittest.TestCase):
         self.assertEqual(self.rows(), before)
         # ... and a host may still report such a chat gone.
         self.legacy("claude", "ZC", "session-gone-0001")
+        self.service.gone_report_live_minutes = 0  # a row seen this lately is otherwise kept as in use
         status, answer = self.call(
             "OPERATOR",
             "POST",
@@ -850,7 +851,7 @@ class OneWriterTest(RegistryApiTest):
         # The same chat id held by two rows (two profile scopes) is one id in the answer, and both rows stay open.
         for scope in ("one", "two"):
             OR.register_session(
-                self.db, platform="minimax", verified_host="mac", profile_scope=scope, native_session_id="twice-1",
+                self.db, platform="testbed", verified_host="mac", profile_scope=scope, native_session_id="twice-1",
                 seat="CLAUDE", source="test", issuer=OR.ISSUER_OPERATOR,
             )
         for sid in ("busy-2", "busy-1", "twice-1"):

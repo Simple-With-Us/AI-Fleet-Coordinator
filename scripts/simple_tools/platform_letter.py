@@ -143,6 +143,8 @@ GONE_REPORT_SECONDS = 3600
 GONE_QUIET_SECONDS = 3600
 GONE_SCAN_NOTES = 2000
 GONE_REPORT_IDS = 500
+#: The most bytes of the `--gone` JSON that are parsed (500 ids of a session id's length are about 40 KB).
+GONE_JSON_BYTES = 256 * 1024
 GONE_SENT_IDS = 2000
 #: What a chat with no letter carries where the letter goes ("??: Fix Login"), owner Nov 11, 2026:  "just make threads
 #: label themselves ??: Title whenever no letters are received".
@@ -987,18 +989,27 @@ def _report_gone_api(env: Mapping[str, str], args: Any) -> dict[str, Any]:
     registered at that location, is simply not among them.  `kept` names the chats the assigner left open
     because their hook ran lately:  a chat in use is not gone, whoever says so (an assigner from before that
     rule names none).  A refusal is the assigner's own answer, with its `code` (`gone_share_exceeded`) and `allowed_now`."""
+    # Bounded before it is parsed:  the argument is text from a command line, and the parser reads all of it.  500 ids of a
+    # session id's length are well under the cap.  Every refusal names the field and never echoes what was given.
+    raw = args.gone if isinstance(args.gone, str) else ""
+    if len(raw.encode("utf-8", "surrogatepass")) > GONE_JSON_BYTES:
+        return {"error": "the gone list is longer than %d bytes" % GONE_JSON_BYTES}
     try:
-        named = json.loads(args.gone)
-    except ValueError:
+        named = json.loads(raw)
+    except (ValueError, RecursionError):
         named = None
     if not isinstance(named, list):
         return {"error": "the gone list must be a JSON list of session ids"}
+    if len(named) > GONE_REPORT_IDS:
+        return {"error": "one report names at most %d chats" % GONE_REPORT_IDS}
     ids: list[str] = []
     for item in named:
+        if not isinstance(item, str):  # a nested list or object, a number, null:  not a session id
+            return {"error": "the gone list holds an entry that is not a session id"}
         try:
             sid = SI.check(item, "a gone session id")
         except ValueError:
-            return {"error": "the gone list must be a JSON list of session ids"}
+            return {"error": "the gone list holds an entry that is not a session id"}
         if sid not in ids:
             ids.append(sid)
     if len(ids) > GONE_REPORT_IDS:
@@ -1017,13 +1028,18 @@ def _report_gone_api(env: Mapping[str, str], args: Any) -> dict[str, Any]:
     )
     if "error" in out:
         return dict(out)
-    labels = {
-        str(row.get("native_session_id") or ""): str(row.get("label") or "")
-        for row in out.get("closed") or []
-        if isinstance(row, Mapping)
-    }
-    labels.pop("", None)
-    kept = [sid for sid in out.get("kept") or [] if isinstance(sid, str)]
+    # The answer is the assigner's, but every value is typed before it is used:  an id is a string, a letter is a string of
+    # the letter shape (anything else is no letter), and a list that is not a list is none.
+    closed = out.get("closed")
+    labels = {}
+    for row in closed if isinstance(closed, list) else []:
+        sid = row.get("native_session_id") if isinstance(row, Mapping) else None
+        if not isinstance(sid, str) or not sid or len(sid) > 200:
+            continue
+        label = row.get("label")
+        labels[sid] = label if isinstance(label, str) and LABEL_RE.fullmatch(label) else ""
+    kept_ids = out.get("kept")
+    kept = [sid for sid in (kept_ids if isinstance(kept_ids, list) else []) if isinstance(sid, str)]
     return {
         "ok": True,
         "gone": sorted(labels),
@@ -1226,6 +1242,8 @@ class Chat:
         tmp = ""
         try:
             folder = os.path.dirname(self.path)
+            if _folder_is_link(folder):
+                return False
             os.makedirs(folder, mode=0o700, exist_ok=True)
             # An unpredictable name made with O_EXCL:  a symlink planted at a guessable temporary name can never
             # redirect the write to another file.
@@ -1454,6 +1472,10 @@ def _apply(chat: Chat, answer: Mapping[str, Any], note: dict[str, Any]) -> dict[
     )
     if fresh:
         out["titled"] = False
+        # The name the platform kept over a "??" title while the chat held no letter (`unlettered_seen`) is not a rename
+        # the letter's hooks have handled, so it does not outlive the letterless period:  a rename to that very name,
+        # later, is still a rename.  (`seen` itself stays:  it also holds the name a chat started with.)
+        out.pop("unlettered_seen", None)
     out.pop("error", None)
     out.pop("failed_at", None)
     out.pop("sync_failed_at", None)  # the registry just answered
@@ -1559,15 +1581,20 @@ def unlettered(
             chat, note, current, data
         )  # a writer that failed is asked again on its own clock
         return None
-    if note.get("shown") == title and current in ("", title, note.get("seen")):
+    if note.get("shown") == title and current in (
+        "",
+        title,
+        note.get("seen"),
+        note.get("unlettered_seen"),
+    ):
         # Already on the chat, or already tried over the name the platform still shows (one it keeps over the
         # hook's title):  a steady "??" chat costs no rename on every prompt.
         return None
     shown = present(chat, note, title, current, data, reason, settable=settable)
     if current and current != title and note.get("shown") == title:
         # One try for each name the platform shows, never one for every prompt, as `_renamed` keeps it for a chat
-        # that holds a letter.
-        note["seen"] = current
+        # that holds a letter.  Its own key:  `seen` is read as "a rename already handled" once the chat has a letter.
+        note["unlettered_seen"] = current
     return shown
 
 
@@ -2637,9 +2664,13 @@ def on_rename(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     if note and not lettered(note) and note.get("state") not in ("mismatch", "closed"):
         # A chat with no letter keeps its "??" over a new name, and asks again when the stamp says it is due.
         words = bare(current, held(note))
-        if not words or current in (note.get("shown"), note.get("seen")):
+        if not words or current in (
+            note.get("shown"),
+            note.get("seen"),
+            note.get("unlettered_seen"),
+        ):
             return 0
-        note["seen"] = current
+        note["unlettered_seen"] = current
         parent = parent_of(chat, note, data)
         note = ask_again(chat, note, words, parent)
         if lettered(note):
@@ -3211,11 +3242,19 @@ def _read_json(path: str) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _folder_is_link(folder: str) -> bool:
+    """A note folder, or the seat's folder above it, that is a link is not ours to write through:  a note carries a
+    chat's title and would land wherever the link points.  Refused like any other save that cannot be made."""
+    return os.path.islink(folder) or os.path.islink(os.path.dirname(folder))
+
+
 def _save_json(path: str, data: Mapping[str, Any]) -> bool:
     """Save a small private file whole (an unpredictable temporary name, then a rename);  False when it cannot be."""
     tmp = ""
     try:
         folder = os.path.dirname(path)
+        if _folder_is_link(folder):
+            return False
         os.makedirs(folder, mode=0o700, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=folder, prefix=".letter-", suffix=".tmp")
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -3451,6 +3490,33 @@ def _allowed(value: object) -> int:
     return value if type(value) is int and value > 0 else 0
 
 
+GONE_CODE_RE = re.compile(r"[a-z][a-z0-9_]{0,40}")
+
+
+def gone_error(answer: Mapping[str, Any]) -> str:
+    """What a failed gone report says of why, from allow-listed fields of the assigner's answer only:  an integer `status`
+    in 100..599 and a `code` of the shape `[a-z][a-z0-9_]{0,40}`, or a fixed sentence.  The assigner's own message is
+    never printed or returned:  it is text from another host, and nothing in a report needs it."""
+    parts = []
+    status = answer.get("status")
+    if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+        parts.append("status %d" % status)
+    code = answer.get("code")
+    if isinstance(code, str) and GONE_CODE_RE.fullmatch(code):
+        parts.append("code %s" % code)
+    return (
+        "the assigner did not take it (%s)" % ", ".join(parts)
+        if parts
+        else "the assigner did not take it"
+    )
+
+
+def _strings_in(value: object) -> list[str]:
+    """The strings of a list the assigner answered, and nothing when the answer is not a list (a string would otherwise
+    be read a character at a time)."""
+    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+
 def report_gone(
     spec: PlatformSpec,
     env: Mapping[str, str],
@@ -3492,10 +3558,10 @@ def report_gone(
     if "error" in answer:
         if answer.get("code") == "gone_share_exceeded":
             _save_json(path, {"at": now, "allowed": max(1, _allowed(answer.get("allowed_now")))})
-        return {"gone": gone, "error": str(answer.get("error") or "no answer")[:200]}
+        return {"gone": gone, "error": gone_error(answer)}
     _save_json(path, {"at": now})
-    closed = [sid for sid in answer.get("gone") or [] if isinstance(sid, str)]
-    kept = {sid for sid in answer.get("kept") or [] if isinstance(sid, str)}
+    closed = _strings_in(answer.get("gone"))
+    kept = set(_strings_in(answer.get("kept")))
     for row in gone:
         if row["session_id"] in kept:
             continue  # the assigner left it open (its hook ran lately):  it is offered again on a later report
@@ -3554,11 +3620,11 @@ def report_gone_elsewhere(
     if "error" in answer:
         refused = answer.get("code") == "gone_share_exceeded"
         save(kept, max(1, _allowed(answer.get("allowed_now"))) if refused else 0)
-        return {"gone": fresh, "error": str(answer.get("error") or "no answer")[:200]}
+        return {"gone": fresh, "error": gone_error(answer)}
     # A chat the assigner left open because its hook ran lately is not remembered as sent:  it is offered again.
-    in_use = {sid for sid in answer.get("kept") or [] if isinstance(sid, str)}
+    in_use = set(_strings_in(answer.get("kept")))
     save(kept + [sid for sid in ids if sid not in in_use])
-    closed = [sid for sid in answer.get("gone") or [] if isinstance(sid, str)]
+    closed = _strings_in(answer.get("gone"))
     labels = answer.get("labels")
     for row in fresh:
         label = labels.get(row["session_id"]) if isinstance(labels, Mapping) else ""
@@ -3807,6 +3873,8 @@ def through_wrapper(argv: list[str], env: Mapping[str, str]) -> None:
     path = host_wrapper(env)
     if not path:
         return
+    if os.path.realpath(path) == os.path.realpath(checkout_script()):
+        return  # a plain link to the checkout's own script sets nothing:  re-running it would only run this again
     try:
         _exec(path, [path, *argv], {**env, ENV_WRAPPED: "1"})
     except OSError:
@@ -3833,11 +3901,17 @@ def retired_argv(program: str, argv: list[str], env: Mapping[str, str]) -> list[
         return None
     words = [("--mac-ssh" if word == "--remote" else word) for word in argv]
     words += ["--platform", platform]
-    if argv[0] == "hook":
-        for flag in ("--location", "--mac-ssh"):
-            value = _text(env.get(names.get(flag, "")))
-            if value and not _flag(words[1:], flag):
-                words += [flag, value]
+    # What the retired client read from the environment is read as the flag it means, for every verb whose parser takes
+    # that flag (`hook` and `install` take both, `registry` takes --location), and never over a flag already given.
+    takes = {
+        "hook": ("--location", "--mac-ssh"),
+        "install": ("--location", "--mac-ssh"),
+        "registry": ("--location",),
+    }
+    for flag in takes[argv[0]]:
+        value = _text(env.get(names.get(flag, "")))
+        if value and not _flag(words[1:], flag):
+            words += [flag, value]
     return words
 
 
@@ -3893,7 +3967,16 @@ def _is_retired(node: dict[str, Any], platform: str) -> bool:
         except ValueError:
             continue
         program = os.path.basename(words[0]) if words else ""
-        if RETIRED_HOOKS.get(program) == platform and words[1:2] and words[1].startswith("hook-"):
+        if RETIRED_HOOKS.get(program) != platform:
+            continue
+        if words[1:2] and words[1].startswith("hook-"):  # `mm-session-letter hook-stop`
+            return True
+        # `simple-chat letter hook`, with no --platform:  the Claude hook the retired client installed.
+        if (
+            program == "simple-chat"
+            and words[1:3] == ["letter", "hook"]
+            and not _flag(words[3:], "--platform")
+        ):
             return True
     return False
 

@@ -504,12 +504,13 @@ class RegistrySideTests(Base):
         self.assertEqual(out["outcome"], "seat_mismatch")
 
     def test_a_platform_under_another_platforms_seat_is_refused_and_nothing_is_stored(self) -> None:
-        # AFC-772:  codex is CODEX.  The registry side answers an error the hook reads as "no letter yet", exit 4.
+        # AFC-772:  codex is CODEX.  The registry API refuses it (400, code seat_platform_mismatch) and the client
+        # answers that refusal as it is, exit 5:  an answer with an error the hook reads as "no letter yet".
         argv = self.reg_argv("register", "s-0001")
         argv[argv.index("CODEX")] = "OPENCODE"
         code, out = self.registry(*argv)
-        self.assertEqual(code, 4, out)
-        self.assertIn("SeatPlatformMismatch", out["error"])
+        self.assertEqual(code, 5, out)
+        self.assertEqual(out["code"], "seat_platform_mismatch")
         self.assertIn("platform codex registers under seat CODEX, not OPENCODE", out["error"])
         self.assertNotIn("outcome", out)
         self.assertIsNone(self.lookup("s-0001"))
@@ -1606,7 +1607,8 @@ class HookTests(Base):
                         env=self.env(), platform="darwin")
         self.assertIn("No Operator letter yet", out["additionalContext"])
         self.assertIn("platform codex registers under seat CODEX, not OPENCODE", out["additionalContext"])
-        self.assertNotIn("sessionTitle", out)
+        # A chat that takes no letter is titled with the "??" mark (owner, Nov 11, 2026), never with a letter.
+        self.assertEqual(out["sessionTitle"], "??: New Chat")
         self.assertIsNone(self.lookup("s-0001", "mac"))
         with open(os.path.join(self.state, "OPENCODE", "letters", "s-0001.json")) as fh:
             self.assertEqual(json.load(fh)["state"], "failed")
@@ -2757,7 +2759,9 @@ class GoneReportTests(Base):
         self.gone = {"s-0001", "s-0002", "s-0003"}
         code, out = self.verb("--platform", "faux", "--apply", at=self.t0 + self.window + 5)
         self.assertEqual(code, 1, out)
-        self.assertIn("Faux gone report, mac:  3 gone, not reported:  the report would close 3 of 3 live rows", out)
+        # Only the assigner's allow-listed fields are said (its code), never its message.
+        self.assertIn("Faux gone report, mac:  3 gone, not reported:  the assigner did not take it (code gone_share_exceeded)", out)
+        self.assertNotIn("live rows", out)
         self.assertEqual(self.row_state("s-0001"), "active")
         broken = make_spec(platform="faux", source="faux-hook", display="Faux",
                            gone_sessions=mock.Mock(side_effect=OSError("gone")))
@@ -2765,6 +2769,61 @@ class GoneReportTests(Base):
             for argv in (["--platform", "faux"], ["--platform", "faux", "--apply"]):
                 code, out = self.verb(*argv, at=self.t0 + 2 * self.window + 9)
                 self.assertEqual((code, out), (1, "Faux gone report, mac:  could not read this host's chats (OSError)\n"))
+
+    def test_a_hostile_error_body_reaches_neither_the_returned_dict_nor_the_apply_output(self) -> None:
+        hostile = "ghp_" + "A1b2C3d4" * 5  # a token-shaped string, built here
+        self.assertTrue(PL.secretscan.scan(hostile))
+        bodies = (
+            {"error": "boom " + hostile, "code": "http_500"},
+            {"error": hostile, "code": hostile},
+            {"error": {"nested": hostile}, "code": ["x"], "status": "500 " + hostile},
+            {"error": hostile, "status": 503, "code": "unavailable"},
+            {"error": hostile, "status": 99999, "code": "Bad Code " + hostile},
+            {"error": hostile, "status": True, "code": "x" * 80},
+        )
+        for n, body in enumerate(bodies):
+            sid = "s-%04d" % n
+            self.start(sid, self.t0)
+            self.gone = {sid}
+            window = self.t0 + (n + 1) * (self.window + 5)
+
+            def hostile_transport(argv, body=body):
+                return dict(body)
+
+            out = io.StringIO()
+            code = PL.gone_main(["--platform", "faux", "--apply"], self.env(), out, now=window, platform="darwin",
+                                transport=hostile_transport)
+            self.assertEqual(code, 1, out.getvalue())
+            self.assertFalse(hostile in out.getvalue() or PL.secretscan.scan(out.getvalue()), body)
+            self.assertIn("not reported:  the assigner did not take it", out.getvalue())
+            # The library's own report call says the same, in the dict it returns.
+            spec = PL.load_spec("faux")
+            answer = PL.report_gone(spec, self.env(), "CODEX", "mac", now=window + 1, transport=hostile_transport, force=True)
+            self.assertNotIn(hostile, json.dumps(answer), body)
+            self.assertRegex(answer["error"], r"^the assigner did not take it( \((status [1-5]\d\d)?(, )?(code [a-z][a-z0-9_]{0,40})?\))?$")
+            self.gone = set()
+        # The allow-listed fields are said when they have the shape:  a status and a code.
+        self.assertEqual(PL.gone_error({"error": hostile, "status": 503, "code": "unavailable"}),
+                         "the assigner did not take it (status 503, code unavailable)")
+        self.assertEqual(PL.gone_error({"error": hostile}), "the assigner did not take it")
+
+    def test_a_report_answer_is_typed_before_it_is_used(self) -> None:
+        self.start("s-0001", self.t0)
+        self.start("s-0002", self.t0)
+        self.gone = {"s-0001", "s-0002"}
+        # `gone` as a string would be read a character at a time:  it is no list, so it names no chat.
+        answer = {"gone": "s-0001s-0002", "kept": {"s-0002": 1}, "closed": []}
+        spec = PL.load_spec("faux")
+        done = PL.report_gone(spec, self.env(), "CODEX", "mac", now=self.t0 + self.window + 5,
+                              transport=lambda argv: dict(answer), force=True)
+        self.assertEqual((done["closed"], done["kept"]), ([], []))
+        # The registry side's own answer drops what is not a string id with a letter-shaped letter.
+        args = types.SimpleNamespace(gone='["s-0001"]', platform="faux", location="mac")
+        with mock.patch.object(PL, "_call_api", return_value={"closed": [{"native_session_id": "s-0001", "label": {"a": 1}},
+                                                                          {"native_session_id": 7, "label": "AA"}, "x"],
+                                                              "kept": "s-0002"}):
+            got = PL._report_gone_api(self.env(), args)
+        self.assertEqual((got["labels"], got["kept"]), ({"s-0001": ""}, []))
 
     def test_the_verb_checks_its_arguments(self) -> None:
         code, out = self.verb("--platform", "codex")
@@ -2824,6 +2883,27 @@ class GoneReportTests(Base):
                 self.assertIn("error", answer)
         self.assertEqual(sent, [])
         self.assertEqual(self.row_state("s-0002"), "active")
+        # The argument is bounded before it is parsed, and nested or non-list shapes are refused by field, never echoed.
+        hostile = "ids-" + "q" * 20
+        cases = {
+            "an oversized argument": '["s-0002", "%s"]' % ("x" * (PL.GONE_JSON_BYTES + 1)),
+            "a deeply nested list": "[" * 100000 + "]" * 100000,
+            "a nested entry": json.dumps(["s-0002", [hostile]]),
+            "an object entry": json.dumps(["s-0002", {hostile: 1}]),
+            "an object": json.dumps({hostile: ["s-0002"]}),
+            "a null entry": '["s-0002", null]',
+            "too many repeats": json.dumps(["s-0002"] * (PL.GONE_REPORT_IDS + 1)),
+        }
+        for name, bad in cases.items():
+            with self.subTest(name), mock.patch.object(PL.json, "loads", wraps=PL.json.loads) as parsed:
+                code, answer = self.registry(*argv, "--gone=" + bad)
+                self.assertEqual(code, 5)
+                self.assertIn("error", answer)
+                self.assertNotIn(hostile, json.dumps(answer))  # the value is never echoed
+                if name == "an oversized argument":
+                    self.assertFalse(any(bad == call.args[0] for call in parsed.call_args_list))  # never parsed
+        # An argument at the bound's edge with 500 ids is accepted as before.
+        self.assertEqual(len(json.dumps(["s-%04d" % n for n in range(PL.GONE_REPORT_IDS)])) < PL.GONE_JSON_BYTES, True)
         # The assigner's own refusal comes back as it is, with what it would take now.
         code, answer = self.registry(*argv, "--gone=" + json.dumps(["s-0002", "s-0003", "s-0004"]))
         self.assertEqual((code, answer["code"]), (5, "gone_share_exceeded"))
@@ -3454,6 +3534,18 @@ class RetiredClientTests(Base):
         self.assertEqual(PL.retired_argv("simple-chat", ["hook"], env),
                          ["hook", "--platform", "claude", "--location", "server", "--mac-ssh", "jay@mac"])
         self.assertIsNone(PL.retired_argv("simple-chat", ["hook"], {"CLAUDE_LETTER": "0"}))  # its own off switch
+        # The same settings are the flags of every verb whose parser takes them, and never override one already given.
+        self.assertEqual(PL.retired_argv("simple-chat", ["install"], env),
+                         ["install", "--platform", "claude", "--location", "server", "--mac-ssh", "jay@mac"])
+        self.assertEqual(PL.retired_argv("simple-chat", ["install", "--location", "mac"], env),
+                         ["install", "--location", "mac", "--platform", "claude", "--mac-ssh", "jay@mac"])
+        self.assertEqual(PL.retired_argv("simple-chat", ["install", "--remote", "other@mac"], env),
+                         ["install", "--mac-ssh", "other@mac", "--platform", "claude", "--location", "server"])
+        self.assertEqual(PL.retired_argv("simple-chat", ["registry", "touch", "--session-id", "s-0001"], env),
+                         ["registry", "touch", "--session-id", "s-0001", "--platform", "claude", "--location", "server"])
+        # `registry` has no --mac-ssh, so the destination is not forwarded to it, and its own --location wins.
+        self.assertNotIn("--mac-ssh", PL.retired_argv("simple-chat", ["registry", "touch"], env))
+        self.assertEqual(PL.retired_argv("simple-chat", ["registry", "touch", "--location", "mac"], env).count("--location"), 1)
         # A command line that names a platform is this client's own, and so is every other verb and program.
         for program, argv in (
             ("simple-chat", ["hook", "--platform", "codex"]),
@@ -3549,6 +3641,49 @@ class RetiredClientTests(Base):
             "installed": {"SessionStart": True, "Stop": True}, "current": {"SessionStart": True, "Stop": True},
             "registry": {"configured": True}}))
         self.assertEqual(self.install()[1]["changed"], [])  # and it is idempotent
+
+    def test_the_claude_hook_of_the_retired_client_is_named_by_check_and_replaced_by_install(self) -> None:
+        # `simple-chat letter hook` (no --platform) is the retired Claude client's hook, as `mm-session-letter hook-...`
+        # is MiniMax's:  both are matched by the same rule, in place under a hooked event and removed under any other.
+        self.assertTrue(PL._is_retired({"command": "/h/.local/bin/simple-chat letter hook"}, "claude"))
+        self.assertTrue(PL._is_retired({"command": "/h/.local/bin/mm-session-letter hook-stop"}, "minimax"))
+        self.assertFalse(PL._is_retired({"command": ["simple-chat", "letter", "hook"]}, "claude"))  # words, not a line
+        self.assertFalse(PL._is_retired({"command": "simple-chat letter hook --platform codex"}, "claude"))
+        self.assertFalse(PL._is_retired({"command": "simple-chat letter request"}, "claude"))
+        self.assertFalse(PL._is_retired({"command": "simple-chat letter hook"}, "minimax"))  # another platform's row
+        self.assertFalse(PL._is_retired({"matcher": "simple-chat letter hook", "command": "other-tool"}, "claude"))
+        bin_dir = os.path.join(self.home, ".local", "bin")
+        os.makedirs(bin_dir)
+        for name in ("platform-letter",):
+            with open(os.path.join(bin_dir, name), "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\n")
+            os.chmod(os.path.join(bin_dir, name), 0o755)
+        old = os.path.join(bin_dir, "simple-chat") + " letter hook"
+        entry = lambda command: [{"hooks": [{"type": "command", "command": command}]}]  # noqa: E731
+        settings = {"hooks": {"SessionStart": entry(old), "UserPromptSubmit": entry(old), "SessionEnd": entry(old),
+                              "PreToolUse": entry(old), "Stop": entry("other-tool stop")}}
+        path = os.path.join(self.home, ".claude", "settings.json")
+        os.makedirs(os.path.dirname(path))
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(settings, fh)
+
+        def run(*argv: str) -> tuple[int, dict]:
+            out = io.StringIO()
+            code = PL.install_main(["--platform", "claude", *argv], self.env(), out)
+            return code, json.loads(out.getvalue())
+
+        code, answer = run("--check")
+        self.assertEqual(code, 1)
+        self.assertEqual(answer["retired"]["hooks"], ["PreToolUse"])  # named, where this row hooks nothing
+        self.assertFalse(any(answer["current"].values()))
+        code, answer = run()
+        self.assertEqual(code, 0, answer)
+        with open(path, encoding="utf-8") as fh:
+            hooks = json.load(fh)["hooks"]
+        self.assertNotIn("simple-chat letter hook", json.dumps(hooks))  # replaced in place, and the stray one gone
+        self.assertNotIn("PreToolUse", hooks)
+        self.assertEqual(json.dumps(hooks).count("platform-letter hook --platform claude"), 4)
+        self.assertEqual(run("--check")[0], 0)
 
     def test_remove_takes_them_out_too_and_an_event_left_empty_goes(self) -> None:
         hooks = self.old_hooks()
@@ -3736,6 +3871,24 @@ class DurableWriteTests(Base):
             self.assertTrue(chat.write({"state": "open", "label": "AA"}))
         self.assertEqual(seen, [("file", None), ("replace", chat.path), ("folder", self.folder_id(chat.path))])
         self.assertEqual(chat.read()["label"], "AA")
+
+    def test_a_note_is_not_written_through_a_link_in_its_folder_path(self) -> None:
+        outside = os.path.join(self.tmp.name, "outside")
+        os.makedirs(outside)
+        chat = PL.Chat(self.spec, self.env(), "mac", "s-0001", now=1.0)
+        folder = os.path.dirname(chat.path)
+        os.makedirs(os.path.dirname(folder))
+        os.symlink(outside, folder)  # the `letters` folder is a link
+        self.assertFalse(chat.write({"state": "open", "label": "AA"}))
+        self.assertEqual(os.listdir(outside), [])  # nothing went through the link
+        os.unlink(folder)
+        seat_dir = os.path.dirname(folder)
+        os.rmdir(seat_dir)
+        os.symlink(outside, seat_dir)  # the seat's folder above it is a link
+        self.assertFalse(chat.write({"state": "open", "label": "AA"}))
+        self.assertEqual(os.listdir(outside), [])
+        os.unlink(seat_dir)
+        self.assertTrue(chat.write({"state": "open", "label": "AA"}))  # a real folder is written as before
 
     def test_a_note_whose_folder_cannot_be_flushed_is_not_called_saved(self) -> None:
         chat = PL.Chat(self.spec, self.env(), "mac", "s-0001", now=1.0)
@@ -4298,6 +4451,30 @@ class HostWrapperTests(Base):
             code, calls, _ = self.run_retired(["--help"])
         self.assertEqual(code, 0)
 
+    def test_a_wrapper_that_is_a_link_to_this_checkouts_own_script_is_not_re_run(self) -> None:
+        # install.sh used to link ~/.local/bin/platform-letter straight at the checkout's script, which sets nothing.
+        os.makedirs(os.path.dirname(self.wrapper_path()))
+        os.symlink(PL.checkout_script(), self.wrapper_path())
+        calls = []
+        with mock.patch.dict(os.environ, {"HOME": self.home}, clear=True), \
+                mock.patch.object(PL, "_exec", lambda *a: calls.append(a)), \
+                mock.patch.object(registry_api, "_knob_value", return_value=""):
+            code = PL.main(["hook"], program="simple-chat", stdin=io.StringIO(""), stdout=io.StringIO(), stderr=io.StringIO())
+        self.assertEqual((code, calls), (0, []))
+        # A link to a different script (the host's own wrapper, in a libexec folder) is the wrapper:  it is run.
+        os.unlink(self.wrapper_path())
+        other = os.path.join(self.home, "libexec", "platform-letter")
+        os.makedirs(os.path.dirname(other))
+        with open(other, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\n")
+        os.chmod(other, 0o755)
+        os.symlink(other, self.wrapper_path())
+        with mock.patch.dict(os.environ, {"HOME": self.home}, clear=True), \
+                mock.patch.object(PL, "_exec", lambda *a: calls.append(a)), \
+                mock.patch.object(registry_api, "_knob_value", return_value=""):
+            PL.main(["hook"], program="simple-chat", stdin=io.StringIO(""), stdout=io.StringIO(), stderr=io.StringIO())
+        self.assertEqual(len(calls), 1)
+
     def test_a_wrapper_that_cannot_be_run_leaves_the_command_in_this_process(self) -> None:
         os.makedirs(os.path.dirname(self.wrapper_path()), exist_ok=True)
         with open(self.wrapper_path(), "w", encoding="utf-8") as fh:
@@ -4351,3 +4528,29 @@ class HostWrapperTests(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LetterlessSeenTests(Base):
+    """The name a platform kept over the "??" title of a chat with no letter is its own note key (`unlettered_seen`),
+    not `seen`:  `seen` is read as "a rename already handled" once the chat holds a letter, and the letterless name
+    must not swallow a rename to that very name."""
+
+    def test_the_name_kept_while_letterless_is_not_a_handled_rename_once_the_chat_has_a_letter(self) -> None:
+        chat = PL.Chat(self.spec, self.env(), "mac", "s-0001", now=1.0)
+        note = {"state": "failed", "label": "", "title": "Gamma"}
+        # A letterless chat that the platform still shows as "Alpha" is tried once for that name, in its own key.
+        shown = PL.unlettered(chat, note, "Alpha", "Alpha", {"hook_event_name": "UserPromptSubmit"}, "prompt")
+        self.assertEqual(note.get("unlettered_seen"), "Alpha", shown)
+        self.assertNotIn("seen", note)
+        answer = {"outcome": "registered", "label": "AB", "generation": 1, "record_id": "r1"}
+        note = PL._apply(chat, answer, note)
+        self.assertEqual((note["state"], note["label"]), ("open", "AB"))
+        self.assertNotIn("unlettered_seen", note)
+        # The Operator holds "Gamma";  a user who names the chat "Alpha" has renamed it:  the Operator must get the words.
+        note["shown"], note["title"] = "AB: Gamma", "Gamma"
+        self.assertEqual(PL._renamed(note, "Alpha")[0], "Alpha")
+        # Had the name been kept in `seen`, that rename was swallowed (what the separate key prevents).
+        self.assertEqual(PL._renamed(dict(note, seen="Alpha"), "Alpha"), ("", ""))
+        # A name a chat started with (`seen`, set at its start) is untouched by the letter.
+        kept = PL._apply(chat, answer, {"state": "failed", "label": "", "seen": "Inherited"})
+        self.assertEqual(kept["seen"], "Inherited")
