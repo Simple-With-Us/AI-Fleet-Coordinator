@@ -344,7 +344,9 @@ def read_cursor_key(env: Mapping[str, str], core: Any = None) -> str:
         raise KeyUnavailable("service-token-required")
     if core is None:
         try:
-            from fleet_secrets import core  # the checkout's own reviewed reader, beside simple_tools
+            from fleet_secrets import (
+                core,
+            )  # the checkout's own reviewed reader, beside simple_tools
         except Exception:  # noqa: BLE001 - no reader is "unavailable", never a traceback
             raise KeyUnavailable("scoped-reader-unavailable") from None
     try:
@@ -359,7 +361,12 @@ def read_cursor_key(env: Mapping[str, str], core: Any = None) -> str:
         # An empty mapping pins the default Infisical API and the one declared folder, so nothing in the caller's
         # environment can redirect or widen the read.
         found = core.fetch_project(
-            project, CURSOR_KEY_FOLDER, {}, token=token, names=[CURSOR_KEY_NAME], timeout=API_TIMEOUT
+            project,
+            CURSOR_KEY_FOLDER,
+            {},
+            token=token,
+            names=[CURSOR_KEY_NAME],
+            timeout=API_TIMEOUT,
         )
     except core.SecretsError as exc:
         raise KeyUnavailable(_reason(exc)) from None
@@ -409,9 +416,7 @@ def check(stdin: io.TextIOBase, env: Mapping[str, str] | None = None) -> dict[st
         ("registry_url", RA.base_url, RA.URL_KNOB),
         ("registry_key", RA.signing_key, RA.KEY_KNOB),
     ):
-        out[label] = (
-            "present" if getter(os.environ) else RA._KNOB_REASONS.get(knob, "unset")[:80]
-        )
+        out[label] = "present" if getter(os.environ) else RA._KNOB_REASONS.get(knob, "unset")[:80]
     RA.reset_knob_cache()  # nothing read here outlives the check
     os.environ.pop(KNOBS_TOKEN_ENV, None)
     base = dict(os.environ if env is None else env)
@@ -532,7 +537,13 @@ def sweep(
             rows.append(row)
             continue
         answer = register(
-            env, agent, runner=runner, now=now, remote=remote, transport=transport, api_only=api_only
+            env,
+            agent,
+            runner=runner,
+            now=now,
+            remote=remote,
+            transport=transport,
+            api_only=api_only,
         )
         label = str(answer.get("label") or "")
         if "error" in answer or not label:
@@ -585,7 +596,9 @@ def sweep(
         wait_for_steer = just_steered and told.get("steer") in STEER_DONE
         if bot and spent and not wait_for_steer and not dm_already(told, label, generation):
             if not send_dms:
-                row["dm"] = "off"  # the Operator sends no messages;  nothing is recorded, nothing goes out
+                row["dm"] = (
+                    "off"  # the Operator sends no messages;  nothing is recorded, nothing goes out
+                )
             elif clock() - started > budget:
                 row["dm"] = "deferred"
             else:
@@ -633,7 +646,9 @@ def main(argv: list[str] | None = None) -> int:
         help="reach the registry only through its HTTPS API (no ssh, no shared registry env file)",
     )
     s.add_argument(
-        "--no-dm", action="store_true", help="send no Zulip DM;  the steer through the Cursor API still goes out"
+        "--no-dm",
+        action="store_true",
+        help="send no Zulip DM;  the steer through the Cursor API still goes out",
     )
     sub.add_parser(
         "check",
@@ -649,7 +664,11 @@ def main(argv: list[str] | None = None) -> int:
     remote = "" if args.api_only else (args.remote or PL.remote_destination(env))
     try:
         out = sweep(
-            env, remote=remote, dry_run=args.dry_run, send_dms=not args.no_dm, api_only=args.api_only
+            env,
+            remote=remote,
+            dry_run=args.dry_run,
+            send_dms=not args.no_dm,
+            api_only=args.api_only,
         )
     except Exception as exc:  # noqa: BLE001 - one line for the log, never a traceback with a key in it
         # The Cursor API failure carries only an HTTP status and a code, never the response text.
