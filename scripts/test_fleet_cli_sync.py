@@ -160,34 +160,16 @@ class SourceTests(Fixture):
         if not actual.is_file():
             self.skipTest("Receiver integration runs from the owned source lane")
         text = actual.read_text()
-        old_set = """REPO_ONLY = frozenset(
-    {
-        *("scripts/simple_tools/" + name + ".py" for name in (
-            "clarify",
-            "operator_github_client",
-            "operator_github_policy",
-            "operator_github_secrets",
-            "operator_send",
-        )),
-        "scripts/simple_tools/mcp/fixtures.jsonl",
-    }
-)"""
-        new_set = """REPO_ONLY = frozenset(
-    {
-        *("scripts/simple_tools/" + name + ".py" for name in (
-            "clarify",
-            "operator_github_client",
-            "operator_github_policy",
-            "operator_github_secrets",
-            "operator_send",
-        )),
-        "scripts/simple_tools/mcp/fixtures.jsonl",
-        "fleet-apps.json",
-    }
-)"""
-        if old_set not in text:
+        # Pin typography-stable contents only:  ruff/autofix may reformat the set
+        # literal, and a byte-identical block would skip this safety check.
+        marker = "REPO_ONLY = frozenset"
+        needle = '"scripts/simple_tools/mcp/fixtures.jsonl"'
+        if marker not in text or text.count(needle) != 1:
             self.fail("REPO_ONLY block missing from receiver")
-        self.put("scripts/fleet-cli-release.py", text.replace(old_set, new_set, 1))
+        self.put(
+            "scripts/fleet-cli-release.py",
+            text.replace(needle, needle + ",\n        \"fleet-apps.json\"", 1),
+        )
         self.commit()
         self.assert_code("receiver_policy_invalid", S.build_bundle, self.repo)
 
