@@ -344,6 +344,7 @@ class Tests(unittest.TestCase):
                     ],
                 ],
             ),
+            patch.object(m, "kody_check_receipt", return_value=False),
             patch.object(m, "git", side_effect=AssertionError("No old comparison allowed")),
             self.assertRaises(RuntimeError),
         ):
