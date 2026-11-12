@@ -56,7 +56,7 @@ SECRETS
 WRITING ANYTHING A HUMAN READS
 - Put a visibly wider gap between sentences: a real U+00A0 plus a normal space, on every surface.
   The `&nbsp;` entity plus a normal space belongs only in the chat panes of Claude Code (the Code
-  tab) and MiniMax Code, which normalize a raw U+00A0 away.  If this surface strips the gap,
+  tab), MiniMax Code and Z Code, which normalize a raw U+00A0 away.  If this surface strips the gap,
   say so instead of dropping it.
 - Headings, buttons, titles and bubbled text are Title Case.  Write dates month first
   (`Oct-19-2026`) and times in 12-hour am/pm on the owner's clock, without naming a timezone.
