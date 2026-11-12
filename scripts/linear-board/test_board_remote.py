@@ -246,9 +246,7 @@ class Remote(unittest.TestCase):
     def test_write_without_by_still_sends_identity_after_identities(self):
         """Regression (AFC-587): hosted writes must name identity even when --by is omitted."""
         answers = [rpc(self.IDANS), rpc({"id": "AFC-9"}, text="done")]
-        code, _, err, calls = self.run_writes(
-            ["status", "AFC-9", "done"], answers
-        )
+        code, _, err, calls = self.run_writes(["status", "AFC-9", "done"], answers)
         self.assertEqual(code, 0, err)
         self.assertEqual(
             calls,
