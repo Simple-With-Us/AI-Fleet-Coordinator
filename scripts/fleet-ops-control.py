@@ -75,8 +75,9 @@ What it promises:
     fixed `docker exec -i --user simpletools eavesdropper` argv and the request on its standard
     input, so no word of a request reaches an argv.  Over ssh the verb is
     `server eavesdropper-settings server` with `--plan` (a get, or a plan when standard input holds
-    `{"set": {...}}`) or `--yes` (the apply, which may carry the plan's hash as
-    `expectPlanSHA256`);  `--file` and `--set` are not offered there.  A get is "standard input
+    `{"set": {...}}`) or `--yes` (the apply, which must carry the plan's hash as
+    `expectPlanSHA256`, or is refused with `plan_hash_required`, or `plan_hash_invalid` when the
+    hash is not 64 lowercase hex characters);  `--file` and `--set` are not offered there.  A get is "standard input
     ended with nothing on it", so the caller must close it (the `-n` option of ssh, or `</dev/null`):  a
     plain `ssh` from a terminal keeps it open, and the request is then refused (`usage`) after
     the bounded read's five seconds.  A table such as a
@@ -258,6 +259,8 @@ EAVESDROPPER_SETTINGS_EDIT_TIMEOUT = 180
 EAVESDROPPER_SETTINGS_STDIN_TIMEOUT = 5
 EAVESDROPPER_SETTINGS_AUDIT_TARGET = "eavesdropper settings"
 EAVESDROPPER_SETTINGS_CODE_RE = re.compile(r"[a-z][a-z0-9_]{0,47}")
+# The shape of a plan's `planSHA256`, which the server `--yes` form must carry as `expectPlanSHA256`.
+EAVESDROPPER_SETTINGS_PLAN_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 EAVESDROPPER_SETTINGS_RESULTS = ("read", "planned", "unchanged", "applied", "refused", "failed")
 
 EAVESDROPPER_UNAVAILABLE = {
@@ -1754,9 +1757,14 @@ def eavesdropper_settings_request_from_stdin(ctx, mode):
 
     Standard input is empty (a get, with `--plan` only) or one JSON object with `set`, an
     optional `remove` list (the sub-keys a whole-table value is meant to drop) and, for an
-    apply, an optional `expectPlanSHA256`.  Anything else is refused.  Empty means it ended:
+    apply, `expectPlanSHA256`.  Anything else is refused.  Empty means it ended:
     an input the caller leaves open (a plain `ssh` from a terminal, without `-n` or
-    `</dev/null`) is refused when the bounded read gives up, never taken for a get."""
+    `</dev/null`) is refused when the bounded read gives up, never taken for a get.
+
+    An apply (`--yes`) must carry the plan's hash as `expectPlanSHA256`.  Without it the request
+    is refused (`plan_hash_required`), and with a value that is not 64 lowercase hex characters
+    it is refused (`plan_hash_invalid`).  Both refusals come before the action lock and before
+    the container is called."""
     raw = ctx.stdin()
     if raw is None:
         raise Refused(
@@ -1783,8 +1791,19 @@ def eavesdropper_settings_request_from_stdin(ctx, mode):
             "standard input must be one JSON object with a non-empty set", error_code="usage"
         )
     expect = request.get("expectPlanSHA256")
-    if expect is not None and (mode != "yes" or not isinstance(expect, str)):
-        raise Refused("expectPlanSHA256 belongs to an apply", error_code="usage")
+    if mode != "yes":
+        if expect is not None:
+            raise Refused("expectPlanSHA256 belongs to an apply", error_code="usage")
+    elif expect is None:
+        raise Refused(
+            "an apply must carry the plan's hash as expectPlanSHA256;  run --plan first",
+            error_code="plan_hash_required",
+        )
+    elif not isinstance(expect, str) or not EAVESDROPPER_SETTINGS_PLAN_SHA256_RE.fullmatch(expect):
+        raise Refused(
+            "expectPlanSHA256 must be the plan's planSHA256, 64 lowercase hex characters",
+            error_code="plan_hash_invalid",
+        )
     action = "plan" if mode == "plan" else "apply"
     return action, request["set"], request.get("remove"), expect
 
@@ -3281,7 +3300,8 @@ def handle(
             # Allowlisted settings of the Eavesdropper's live config.  `--plan` reads or plans
             # and takes no lock and writes no audit row;  `--yes` is the apply, under the one
             # action lock, with one audit row that names no setting and no value.  The request
-            # itself is on standard input, never in the command.  The `--from-muster` route has no
+            # itself is on standard input, never in the command, and an apply there must name the
+            # plan's hash (refused before the lock otherwise).  The `--from-muster` route has no
             # approval form for this verb, so it is refused there outright.
             audit_target = EAVESDROPPER_SETTINGS_AUDIT_TARGET
             if require_approval:
@@ -3883,7 +3903,10 @@ def run_eavesdropper_settings(argv, ctx, out):
     KEY.SUBKEY` (repeatable) names a sub-key a whole-table value is meant to drop.  `--file PATH` is the
     file to act on, edited by the module in this process;  without it the server's container is
     used, on the server only.  `apply` needs `--yes`, holds the one action lock and writes one
-    audit row.  `--expect` is a plan's `planSHA256`."""
+    audit row.  `--expect` is a plan's `planSHA256`.  It is optional with `--file`, which edits
+    a copy or a fixture.  Without `--file` the apply edits the live file, so `--expect` is
+    required (`plan_hash_required`) and must be 64 lowercase hex characters (`plan_hash_invalid`),
+    both checked before the action lock."""
     as_json = "--json" in argv
     answer = {
         "ok": False,
@@ -3921,6 +3944,19 @@ def run_eavesdropper_settings(argv, ctx, out):
             raise Refused("pass --yes to apply, or use plan to see the changes")
         if args.file is None and not ctx.platform.startswith("linux"):
             raise Refused("pass --file PATH:  the live file is in the server's container")
+        if action == "apply" and args.file is None:
+            # Without `--file` the apply edits the live file in the container, so it must name
+            # the plan's hash, as the server `--yes` form must.  Refused before the action lock.
+            if args.expect is None:
+                raise Refused(
+                    "an apply to the live file must carry the plan's hash as --expect;  run plan first",
+                    error_code="plan_hash_required",
+                )
+            if not EAVESDROPPER_SETTINGS_PLAN_SHA256_RE.fullmatch(args.expect):
+                raise Refused(
+                    "--expect must be the plan's planSHA256, 64 lowercase hex characters",
+                    error_code="plan_hash_invalid",
+                )
         changes = None
         if action != "get":
             module = _load_eavesdropper_settings_editor(ctx)
