@@ -228,6 +228,56 @@ class ClassifyTests(unittest.TestCase):
         catalog.produced[other] = "Simple-With-Us/AI-Fleet-Coordinator"
         self.assertEqual(classify_monitor(monitor, catalog).category, "uncertain")
 
+    def test_unknown_ci_needs_a_finished_code_search(self):
+        monitor = parse_monitor_page(
+            [
+                {
+                    "slug": "ci-not-a-fleet-app-nightly",
+                    "status": "active",
+                    "project": {"slug": "fleet-infra"},
+                    "environments": [{"status": "error", "lastCheckIn": "2026-11-11T00:00:00Z"}],
+                }
+            ]
+        )[0]
+        self.assertEqual(classify_monitor(monitor, _catalog()).category, "uncertain")
+        finished = _catalog(search=CodeSearch("ok", "", {}))
+        self.assertEqual(classify_monitor(monitor, finished).category, "orphan")
+        mentioned = _catalog(
+            search=CodeSearch(
+                "ok",
+                "",
+                {
+                    "ci-not-a-fleet-app-nightly": (
+                        CodeHit("scripts/board.py", 'slug = "ci-not-a-fleet-app-nightly"'),
+                    )
+                },
+            )
+        )
+        self.assertEqual(classify_monitor(monitor, mentioned).category, "uncertain")
+
+    def test_bare_input_does_not_erase_a_schedule_map(self):
+        bare = "on:\n  workflow_call:\n    inputs:\n      cron_schedules:\n      app:\n"
+        self.assertIsNone(parse_reporter(".github/workflows/sentry-ci-report-reusable.yml", bare))
+        caller = (FIXTURES / "reusable.yml").read_text(encoding="utf-8")
+        extra = RepoSource(
+            full_name="Simple-With-Us/AI-Fleet-Coordinator",
+            readable=True,
+            names_known=True,
+            workflow_names=("Backup fleet GitHub repositories",),
+            files=(
+                (".github/workflows/sentry-ci-report.yml", caller),
+                (".github/workflows/sentry-ci-report-reusable.yml", bare),
+            ),
+        )
+        catalog = build_catalog(
+            [extra],
+            {"ai-fleet-coordinator": {"Simple-With-Us/AI-Fleet-Coordinator"}},
+        )
+        self.assertIn(
+            "ci-ai-fleet-coordinator-backup-fleet-github-repositories",
+            catalog.produced,
+        )
+
     def test_unreadable_identity_is_not_an_orphan(self):
         unread = RepoSource(
             full_name="Simple-With-Us/DealDex",
@@ -447,6 +497,100 @@ class CliTests(unittest.TestCase):
         self.assertIn("SENTRY_AUTH_TOKEN_FULLSCOPE", err.getvalue())
         self.assertNotIn("Bearer", err.getvalue())
 
+    def test_bad_fixtures_exit_2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            apps = directory / "apps.json"
+            apps.write_text(
+                json.dumps({"owner": "Simple-With-Us", "apps": []}),
+                encoding="utf-8",
+            )
+            err = io.StringIO()
+            with mock.patch("sys.stderr", err):
+                code = main(["--apps", str(apps), "--monitors", str(SMALL)])
+            self.assertEqual(code, 2)
+            self.assertIn("no apps", err.getvalue())
+
+            apps.write_text(
+                json.dumps(
+                    {
+                        "owner": "Simple-With-Us",
+                        "apps": [{"repo": "Socratic-Trade", "displayName": "Socratic Trade"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            source = directory / "sources"
+            source.mkdir()
+            (source / "repos.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "full_name": "Simple-With-Us/Socratic-Trade",
+                            "files": "scripts/sentry-ci-report.py",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            err = io.StringIO()
+            with mock.patch("sys.stderr", err):
+                code = main(
+                    ["--apps", str(apps), "--monitors", str(SMALL), "--sources", str(source)]
+                )
+            self.assertEqual(code, 2)
+            self.assertIn("not a list", err.getvalue())
+
+            (source / "repos.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "full_name": "Simple-With-Us/Socratic-Trade",
+                            "files": [{"path": "scripts/missing.py"}],
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            err = io.StringIO()
+            with mock.patch("sys.stderr", err):
+                code = main(
+                    ["--apps", str(apps), "--monitors", str(SMALL), "--sources", str(source)]
+                )
+            self.assertEqual(code, 2)
+            self.assertIn("could not read", err.getvalue())
+
+            (source / "repos.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "full_name": "Simple-With-Us/Socratic-Trade",
+                            "workflow_names": [],
+                            "files": [],
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            link = directory / "linked"
+            link.symlink_to(directory)
+            err = io.StringIO()
+            with mock.patch("sys.stderr", err):
+                code = main(
+                    [
+                        "--apps",
+                        str(apps),
+                        "--monitors",
+                        str(SMALL),
+                        "--sources",
+                        str(source),
+                        "--json",
+                        str(link / "out.json"),
+                    ]
+                )
+            self.assertEqual(code, 2)
+            self.assertIn("symlinked", err.getvalue())
+
 
 class WorkflowTests(unittest.TestCase):
     def test_weekly_workflow_skips_without_the_read_secret(self):
@@ -455,6 +599,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("pull_request:", text)
         self.assertIn("cron:", text)
         self.assertIn("SENTRY_AUTH_TOKEN_FULLSCOPE", text)
+        self.assertIn("github.event_name != 'pull_request'", text)
         self.assertIn("::notice::", text)
         self.assertIn("python3 -m cron_monitor_audit", text)
         self.assertIn('"$GITHUB_STEP_SUMMARY"', text)

@@ -140,7 +140,11 @@ def _json_schedules(raw: str | None) -> dict[str, str] | None:
     if raw is None:
         return None
     text = raw.strip()
-    if not text or text == "{}":
+    # A bare `cron_schedules:` input has no value. That is unknown, not an
+    # explicit empty map. Only the literal "{}" means the repo sends nothing.
+    if not text:
+        return None
+    if text == "{}":
         return {}
     if not text.startswith("{"):
         return None

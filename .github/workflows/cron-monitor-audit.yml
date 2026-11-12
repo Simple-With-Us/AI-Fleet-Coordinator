@@ -2,7 +2,9 @@ name: Cron monitor audit
 
 # Read-only. Lists Sentry cron monitors and matches them to check-in
 # senders in fleet workflows and scripts. Does not create, edit, or delete
-# monitors. If SENTRY_AUTH_TOKEN_FULLSCOPE is not configured, the job exits
+# monitors. Pull requests run the unit tests only. The audit step is not a
+# pull_request step, so pull-request code never sees the Sentry token.
+# If SENTRY_AUTH_TOKEN_FULLSCOPE is not configured, the scheduled job exits
 # 0 and posts a notice. SENTRY_AUTH_TOKEN cannot list monitors (HTTP 403).
 
 on:
@@ -32,6 +34,7 @@ jobs:
         run: python3 -m unittest discover -s tests -t . -v
 
       - name: Compare cron monitors with check-in senders
+        if: github.event_name != 'pull_request'
         working-directory: scripts/cron-monitor-audit
         env:
           SENTRY_AUTH_TOKEN_FULLSCOPE: ${{ secrets.SENTRY_AUTH_TOKEN_FULLSCOPE }}

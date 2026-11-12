@@ -211,8 +211,7 @@ def _code_hit(slug: str, catalog: Catalog) -> str:
     for hit in hits:
         if _hit_is_sender(slug, hit):
             return "sender"
-        if hit.path.endswith(_DOC_SUFFIXES):
-            saw_mention = True
+        saw_mention = True
     if saw_mention:
         return "mention"
     return ""
@@ -235,7 +234,7 @@ def _hit_where(slug: str, catalog: Catalog, sender: bool) -> str:
     for hit in catalog.code_search.hits.get(slug) or ():
         if sender and _hit_is_sender(slug, hit):
             return hit.path
-        if not sender and hit.path.endswith(_DOC_SUFFIXES):
+        if not sender and not _hit_is_sender(slug, hit):
             return hit.path
     return ""
 
@@ -248,7 +247,9 @@ def _confident_orphan(slug: str, catalog: Catalog) -> bool:
         return False
     if catalog.unreadable:
         return False
-    return catalog.code_search.state == "ok" or bool(catalog.readable)
+    # A readable checkout is not a full script search. An unknown ci-* slug
+    # is an orphan only when code search actually completed.
+    return catalog.code_search.state == "ok"
 
 
 def _orphan_reason(monitor: Monitor) -> str:
@@ -274,8 +275,10 @@ def _repo_schedules(repo: RepoSource) -> tuple[str, dict[str, str] | None]:
     CRON_SCHEDULES constant. An empty map means the repo was read and
     does not send ci check-ins.
     """
-    workflow: tuple[str, dict[str, str] | None] | None = None
-    script: tuple[str, dict[str, str] | None] | None = None
+    workflow_identity = ""
+    workflow_schedules: dict[str, str] | None = None
+    script_identity = ""
+    script_schedules: dict[str, str] | None = None
     saw_workflow_file = False
     saw_script = False
     for path, text in repo.files:
@@ -284,24 +287,45 @@ def _repo_schedules(repo: RepoSource) -> tuple[str, dict[str, str] | None]:
             continue
         if path.endswith(".py"):
             saw_script = True
-            script = (reporter.identity, reporter.schedules)
+            script_identity, script_schedules = _merge_reporter(
+                script_identity, script_schedules, reporter.identity, reporter.schedules
+            )
         else:
             saw_workflow_file = True
-            if reporter.schedules is not None or reporter.identity:
-                workflow = (reporter.identity, reporter.schedules)
-    if workflow and workflow[1] is not None:
-        identity = workflow[0] or (script[0] if script else "")
-        return identity, workflow[1]
-    if script and script[1] is not None:
-        identity = (workflow[0] if workflow and workflow[0] else "") or script[0]
-        return identity, script[1]
+            workflow_identity, workflow_schedules = _merge_reporter(
+                workflow_identity, workflow_schedules, reporter.identity, reporter.schedules
+            )
+    if workflow_schedules is not None:
+        return workflow_identity or script_identity, workflow_schedules
+    if script_schedules is not None:
+        return workflow_identity or script_identity, script_schedules
     if repo.names_known and not saw_script and not saw_workflow_file:
         return "", {}
-    if workflow and workflow[0]:
-        return workflow[0], workflow[1]
-    if script and script[0]:
-        return script[0], script[1]
+    if workflow_identity:
+        return workflow_identity, None
+    if script_identity:
+        return script_identity, None
     return "", None
+
+
+def _merge_reporter(
+    identity: str,
+    schedules: dict[str, str] | None,
+    next_identity: str,
+    next_schedules: dict[str, str] | None,
+) -> tuple[str, dict[str, str] | None]:
+    """Keep a known map. A later empty declaration must not erase it."""
+    if next_identity and not identity:
+        identity = next_identity
+    if next_schedules is None:
+        return identity, schedules
+    if next_schedules:
+        merged = dict(schedules or {})
+        merged.update(next_schedules)
+        return identity, merged
+    if schedules is None:
+        return identity, {}
+    return identity, schedules
 
 
 def category_heading(category: Category) -> str:

@@ -123,15 +123,28 @@ def _load_sources(path: Path) -> list[RepoSource]:
     for row in payload:
         if not isinstance(row, dict):
             raise AuditError("sources repos.json has a row that is not an object")
+        raw_files = row.get("files", [])
+        if raw_files is None:
+            raw_files = []
+        if not isinstance(raw_files, list):
+            raise AuditError("sources files was not a list")
         files = []
-        for item in row.get("files") or []:
+        for item in raw_files:
             if not isinstance(item, dict):
                 raise AuditError("sources file entry was not an object")
             rel = item.get("path")
-            if not isinstance(rel, str):
+            if not isinstance(rel, str) or not rel or Path(rel).is_absolute() or ".." in Path(rel).parts:
                 raise AuditError("sources file path is invalid")
-            files.append((rel, (path / rel).read_text(encoding="utf-8")))
-        names = row.get("workflow_names") or []
+            try:
+                text = (path / rel).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                raise AuditError(f"could not read {path / rel}") from exc
+            files.append((rel, text))
+        names = row.get("workflow_names", [])
+        if names is None:
+            names = []
+        if not isinstance(names, list):
+            raise AuditError("sources workflow_names was not a list")
         repos.append(
             RepoSource(
                 full_name=str(row.get("full_name") or ""),
@@ -149,10 +162,19 @@ def _load_search(path: Path) -> CodeSearch:
     payload = _read_json(path)
     if not isinstance(payload, dict):
         raise AuditError("code search fixture was not an object")
+    raw_hits = payload.get("hits", {})
+    if raw_hits is None:
+        raw_hits = {}
+    if not isinstance(raw_hits, dict):
+        raise AuditError("code search hits was not an object")
     hits = {}
-    for slug, rows in (payload.get("hits") or {}).items():
+    for slug, rows in raw_hits.items():
+        if not isinstance(rows, list):
+            raise AuditError("code search hit list was not a list")
         parsed = []
         for row in rows:
+            if not isinstance(row, dict):
+                raise AuditError("code search hit was not an object")
             parsed.append(CodeHit(str(row.get("path") or ""), str(row.get("fragment") or "")))
         hits[str(slug)] = tuple(parsed)
     return CodeSearch(
@@ -163,5 +185,11 @@ def _load_search(path: Path) -> CodeSearch:
 
 
 def _write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    parent = path.parent
+    if parent.is_symlink():
+        raise AuditError(f"refusing a symlinked output directory {parent}")
+    created = not parent.exists()
+    parent.mkdir(parents=True, exist_ok=True)
+    if created:
+        parent.chmod(0o700)
     path.write_text(text, encoding="utf-8")

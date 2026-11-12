@@ -26,4 +26,4 @@ python3 -m unittest discover -s tests -t . -v
 
 ## Workflow
 
-`.github/workflows/cron-monitor-audit.yml` runs weekly on Monday at 15:17 UTC, on `workflow_dispatch`, and on pull requests that touch this directory.  If `SENTRY_AUTH_TOKEN_FULLSCOPE` is not a repository secret, the job exits 0 and posts a notice naming that secret.  The job writes the markdown report to the GitHub Actions step summary.
+`.github/workflows/cron-monitor-audit.yml` runs weekly on Monday at 15:17 UTC and on `workflow_dispatch`.  Pull requests that touch this directory run the unit tests only.  The audit step does not run on a pull request, so pull-request code never sees the Sentry token.  If `SENTRY_AUTH_TOKEN_FULLSCOPE` is not a repository secret, the scheduled job exits 0 and posts a notice naming that secret.  The scheduled job writes the markdown report to the GitHub Actions step summary.

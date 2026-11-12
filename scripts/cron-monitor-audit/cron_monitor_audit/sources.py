@@ -72,7 +72,7 @@ def load_apps(path: Path) -> list[App]:
     apps = payload.get("apps")
     if not isinstance(owner, str) or not _github_name(owner):
         raise AuditError("fleet app list owner is invalid")
-    if not isinstance(apps, list):
+    if not isinstance(apps, list) or not apps:
         raise AuditError("fleet app list has no apps")
     rows: list[App] = []
     for app in apps:
