@@ -15,7 +15,7 @@ import sys
 import threading
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import github_api
@@ -272,9 +272,10 @@ def _read_runs(path):
 
 def main(argv=None):
     args = parse_args(argv)
-    end = datetime.now(timezone.utc).replace(microsecond=0)
+    end = datetime.now(UTC).replace(microsecond=0)
     start = end - timedelta(days=args.days)
     token = resolve_token()
+
     def refresh_token():
         try:
             fresh = resolve_token()

@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 import re
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import yaml
@@ -70,12 +70,12 @@ def parse_time(value):
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def format_time(moment):
-    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def rounded_ms(duration_ms):
@@ -157,7 +157,7 @@ def cron_hits_per_week(expr, origin=None):
         dows.discard(7)
     dom_star = fields[2] in ("*", "?")
     dow_star = fields[4] in ("*", "?")
-    start = origin or datetime(2026, 11, 9, tzinfo=timezone.utc)
+    start = origin or datetime(2026, 11, 9, tzinfo=UTC)
     hits = 0
     for offset in range(7 * 24 * 60):
         moment = start + timedelta(minutes=offset)
@@ -218,7 +218,8 @@ def minutes_from_timing(timing):
         positive_jobs = []
         if isinstance(job_runs, list):
             positive_jobs = [
-                job for job in job_runs
+                job
+                for job in job_runs
                 if isinstance(job, dict) and int(job.get("duration_ms") or 0) > 0
             ]
         if positive_jobs:
@@ -378,7 +379,7 @@ def _intentional_false(raw_text):
     for index, line in enumerate(lines):
         if not re.search(r"cancel-in-progress:\s*false\b", line):
             continue
-        window = "\n".join(lines[max(0, index - 3):index + 1])
+        window = "\n".join(lines[max(0, index - 3) : index + 1])
         if re.search(r"\bnever\b", window, re.IGNORECASE):
             return True
     return False
@@ -631,32 +632,36 @@ def assemble(runs, measured, profiles, meta):
         start = parse_time(run.get("run_started_at") or run.get("created_at"))
         end = parse_time(run.get("updated_at"))
         if start is not None and end is not None:
-            stats["rows"].append({
-                "sha": run.get("head_sha") or "",
-                "event": event,
-                "start": start,
-                "end": end,
-                "weighted": weighted(minutes),
-                "minutes": dict(minutes),
-            })
+            stats["rows"].append(
+                {
+                    "sha": run.get("head_sha") or "",
+                    "event": event,
+                    "start": start,
+                    "end": end,
+                    "weighted": weighted(minutes),
+                    "minutes": dict(minutes),
+                }
+            )
 
     workflows = []
     for stats in grouped.values():
         minutes = stats["minutes"]
-        workflows.append({
-            "path": stats["path"],
-            "name": stats["name"],
-            "runs": stats["runs"],
-            "open_runs": stats["open_runs"],
-            "linux_min": minutes["linux"],
-            "macos_min": minutes["macos"],
-            "windows_min": minutes["windows"],
-            "self_hosted_min": minutes["self_hosted"],
-            "other_min": minutes["other"],
-            "weighted": weighted(minutes),
-            "measured": stats["measured"],
-            "unmeasured": stats["unmeasured"],
-        })
+        workflows.append(
+            {
+                "path": stats["path"],
+                "name": stats["name"],
+                "runs": stats["runs"],
+                "open_runs": stats["open_runs"],
+                "linux_min": minutes["linux"],
+                "macos_min": minutes["macos"],
+                "windows_min": minutes["windows"],
+                "self_hosted_min": minutes["self_hosted"],
+                "other_min": minutes["other"],
+                "weighted": weighted(minutes),
+                "measured": stats["measured"],
+                "unmeasured": stats["unmeasured"],
+            }
+        )
     workflows.sort(key=lambda item: (-item["weighted"], -item["macos_min"], item["path"]))
     totals = {
         "runs": sum(item["runs"] for item in workflows),
@@ -696,7 +701,9 @@ def _notes(meta, totals):
     elif meta.get("method") == "timing":
         notes.append("Minutes come from the run timing API, rounded up per job.")
     else:
-        notes.append("Minutes come from the run timing API when it reports time, and otherwise from job timestamps.")
+        notes.append(
+            "Minutes come from the run timing API when it reports time, and otherwise from job timestamps."
+        )
     notes.append(
         "Weighted minutes price Linux at 1, Windows at 2, and macOS at 10, the standard GitHub-hosted runner multipliers."
     )
@@ -705,7 +712,9 @@ def _notes(meta, totals):
             f"{totals['unmeasured_runs']} completed runs were not measured, so these totals are a lower bound."
         )
     if meta.get("truncated"):
-        notes.append("The runs list hit the API page cap inside a slice, so some runs in that slice are missing.")
+        notes.append(
+            "The runs list hit the API page cap inside a slice, so some runs in that slice are missing."
+        )
     return notes
 
 
@@ -786,80 +795,100 @@ def propose_cuts(grouped, profiles):
         if per_week > 7 and schedule_weighted > 0:
             savings = schedule_weighted * (per_week - 7) / per_week
             crons = ", ".join(profile.get("crons") or [])
-            cuts.append({
-                "kind": "schedule",
-                "confidence": "measured",
-                "path": path,
-                "savings_weighted": savings,
-                "detail": (
-                    f"{path} cron {crons} fires {per_week} times a week and its schedule runs used "
-                    f"{schedule_weighted} weighted minutes, so a once-a-day cron would drop about "
-                    f"{round(savings)} of those weighted minutes."
-                ),
-            })
+            cuts.append(
+                {
+                    "kind": "schedule",
+                    "confidence": "measured",
+                    "path": path,
+                    "savings_weighted": savings,
+                    "detail": (
+                        f"{path} cron {crons} fires {per_week} times a week and its schedule runs used "
+                        f"{schedule_weighted} weighted minutes, so a once-a-day cron would drop about "
+                        f"{round(savings)} of those weighted minutes."
+                    ),
+                }
+            )
         duplicate = _duplicate_savings(stats["rows"])
         if duplicate > 0:
-            if profile.get("has_push") and profile.get("has_pull_request") and not profile.get("push_main_only"):
+            if (
+                profile.get("has_push")
+                and profile.get("has_pull_request")
+                and not profile.get("push_main_only")
+            ):
                 fix = "Restrict push to main, or drop one of the two triggers."
             else:
                 fix = "Drop the overlapping trigger or put both events in one concurrency group."
-            cuts.append({
-                "kind": "duplicate",
-                "confidence": "measured",
-                "path": path,
-                "savings_weighted": duplicate,
-                "detail": prose([
-                    (
-                        f"{path} ran a push and a pull request on the same commit, and the cheaper side "
-                        f"sums to about {round(duplicate)} weighted minutes."
+            cuts.append(
+                {
+                    "kind": "duplicate",
+                    "confidence": "measured",
+                    "path": path,
+                    "savings_weighted": duplicate,
+                    "detail": prose(
+                        [
+                            (
+                                f"{path} ran a push and a pull request on the same commit, and the cheaper side "
+                                f"sums to about {round(duplicate)} weighted minutes."
+                            ),
+                            fix,
+                        ]
                     ),
-                    fix,
-                ]),
-            })
-        portable_minutes, portable_names, required_minutes, required_names = _portable_macos_minutes(
-            profile, stats["by_job"], minutes["macos"]
+                }
+            )
+        portable_minutes, portable_names, required_minutes, required_names = (
+            _portable_macos_minutes(profile, stats["by_job"], minutes["macos"])
         )
         if portable_minutes > 0:
             savings = portable_minutes * 9
             names = ", ".join(portable_names)
-            cuts.append({
-                "kind": "macos-linux",
-                "confidence": "measured",
-                "path": path,
-                "savings_weighted": savings,
-                "detail": (
-                    f"Job {names} in {path} runs on macOS and its steps do not mention macOS-only tools, "
-                    f"so moving it to ubuntu-latest would drop the 10× premium, about {round(savings)} weighted minutes."
-                ),
-            })
+            cuts.append(
+                {
+                    "kind": "macos-linux",
+                    "confidence": "measured",
+                    "path": path,
+                    "savings_weighted": savings,
+                    "detail": (
+                        f"Job {names} in {path} runs on macOS and its steps do not mention macOS-only tools, "
+                        f"so moving it to ubuntu-latest would drop the 10× premium, about {round(savings)} weighted minutes."
+                    ),
+                }
+            )
         if required_minutes > 0 and not profile.get("paths_limited", True):
             savings = required_minutes * WEIGHTS["macos"]
             names = ", ".join(dict.fromkeys(required_names))
-            cuts.append({
-                "kind": "macos-paths",
-                "confidence": "upper-bound",
-                "path": path,
-                "savings_weighted": savings,
-                "detail": (
-                    f"Jobs {names} in {path} stay on macOS because their steps call macOS-only tools, and "
-                    f"the upper bound of a paths filter that skipped every current run is {round(savings)} weighted minutes."
-                ),
-            })
+            cuts.append(
+                {
+                    "kind": "macos-paths",
+                    "confidence": "upper-bound",
+                    "path": path,
+                    "savings_weighted": savings,
+                    "detail": (
+                        f"Jobs {names} in {path} stay on macOS because their steps call macOS-only tools, and "
+                        f"the upper bound of a paths filter that skipped every current run is {round(savings)} weighted minutes."
+                    ),
+                }
+            )
         cancel = profile.get("cancel")
         if cancel in ("missing", "false"):
             overlap = _overlap_savings(stats["rows"])
             if overlap >= 1:
-                state = "has no concurrency cancel-in-progress" if cancel == "missing" else "sets cancel-in-progress to false"
-                cuts.append({
-                    "kind": "cancel",
-                    "confidence": "measured",
-                    "path": path,
-                    "savings_weighted": overlap,
-                    "detail": (
-                        f"{path} {state}, and overlapping runs on the same commit spent about "
-                        f"{round(overlap)} weighted minutes after a newer run had already started."
-                    ),
-                })
+                state = (
+                    "has no concurrency cancel-in-progress"
+                    if cancel == "missing"
+                    else "sets cancel-in-progress to false"
+                )
+                cuts.append(
+                    {
+                        "kind": "cancel",
+                        "confidence": "measured",
+                        "path": path,
+                        "savings_weighted": overlap,
+                        "detail": (
+                            f"{path} {state}, and overlapping runs on the same commit spent about "
+                            f"{round(overlap)} weighted minutes after a newer run had already started."
+                        ),
+                    }
+                )
     cuts = [cut for cut in cuts if cut["savings_weighted"] >= 1]
     cuts.sort(key=lambda cut: (-cut["savings_weighted"], cut["path"], cut["kind"]))
     for index, cut in enumerate(cuts, 1):
@@ -920,10 +949,12 @@ def render_markdown(report, limit=10):
     lines = [
         "# Actions Spend Report",
         "",
-        prose([
-            f"This report covers {report['repo']} from {report['start']} to {report['end']}.",
-            f"There were {totals['runs']} runs and {totals['weighted']} weighted minutes.",
-        ]),
+        prose(
+            [
+                f"This report covers {report['repo']} from {report['start']} to {report['end']}.",
+                f"There were {totals['runs']} runs and {totals['weighted']} weighted minutes.",
+            ]
+        ),
         "",
         prose(report["notes"]),
         "",
@@ -943,7 +974,9 @@ def render_markdown(report, limit=10):
                 f"about {cut['savings_weighted']} weighted minutes."
             )
             lines.append(prose([lead, cut["detail"]]))
-    lines.extend(["", "## Every Workflow", "", _table(workflows, include_self_hosted, include_other), ""])
+    lines.extend(
+        ["", "## Every Workflow", "", _table(workflows, include_self_hosted, include_other), ""]
+    )
     return "\n".join(lines) + "\n"
 
 

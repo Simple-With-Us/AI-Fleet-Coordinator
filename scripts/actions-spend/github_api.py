@@ -27,7 +27,15 @@ class RateLimited(ApiError):
 
 
 class Client:
-    def __init__(self, token, sleep=time.sleep, max_wait_s=45 * 60, clock=time.time, max_long_waits=1, refresh=None):
+    def __init__(
+        self,
+        token,
+        sleep=time.sleep,
+        max_wait_s=45 * 60,
+        clock=time.time,
+        max_long_waits=1,
+        refresh=None,
+    ):
         self._token = token
         self._sleep = sleep
         self._max_wait_s = max_wait_s
@@ -156,12 +164,12 @@ class Client:
                     self._backoff(exc.headers)
                     continue
                 if exc.code >= 500 and attempt < 3:
-                    self._sleep(min(2 ** attempt, 8))
+                    self._sleep(min(2**attempt, 8))
                     continue
                 raise ApiError(exc.code, f"HTTP {exc.code} on {path}") from None
             except (urllib.error.URLError, TimeoutError):
                 if attempt < 3:
-                    self._sleep(min(2 ** attempt, 8))
+                    self._sleep(min(2**attempt, 8))
                     continue
                 raise ApiError(0, f"network error on {path}") from None
         raise RateLimited(f"rate limited on {path}")
