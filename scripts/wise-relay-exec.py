@@ -2,20 +2,26 @@
 """Fetch purpose-scoped Infisical config, relay-mint, verify principal, exec.
 
 No personal token fallback. Values stay in subprocess memory. The only
-persistent bootstrap is the consuming platform's Infisical service token.
+persistent bootstrap is the consuming platform's `WISE_RELAY_INFISICAL_TOKEN` service token.
 The folder's repository config is ST-specific even when relay permits more.
 """
 
 import json
 import os
 import re
-import subprocess
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from fleet_secrets import core as scoped_secrets
+
+AUTH_ENV_VARS = scoped_secrets.AUTH_ENV_VARS
+
 FOLDER = "/gr-front/wise-st"
+PROJECT_ENV = "INFISICAL_FLEET_OPS_PROJECT_ID"
+INFISICAL_TOKEN_ENV = "WISE_RELAY_INFISICAL_TOKEN"
 REPO = "Simple-With-Us/Socratic-Trade"
 ACTOR = "swu-wise[bot]"
 PERMISSIONS = {
@@ -39,8 +45,44 @@ class Refused(Exception):
     pass
 
 
+def infisical_environment(source):
+    env = dict(source)
+    token = env.pop(INFISICAL_TOKEN_ENV, "").strip()
+    if (
+        not token.startswith("st.")
+        or not 20 <= len(token) <= 2048
+        or any(c.isspace() for c in token)
+    ):
+        raise Refused(f"{INFISICAL_TOKEN_ENV} missing or malformed")
+    env["INFISICAL_TOKEN"] = token
+    for key in (
+        "INFISICAL_CLIENT_ID",
+        "INFISICAL_CLIENT_SECRET",
+        "INFISICAL_AUTOMATION_CLIENT_ID",
+        "INFISICAL_AUTOMATION_CLIENT_SECRET",
+        "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
+        "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET",
+    ):
+        env.pop(key, None)
+    return env
+
+
+def fetch_configuration(source):
+    env = infisical_environment(source)
+    token = env.pop("INFISICAL_TOKEN")
+    env[scoped_secrets.ENV_READ_PATHS] = FOLDER
+    project = (env.get(PROJECT_ENV) or "").strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", project):
+        raise Refused(f"set {PROJECT_ENV} to the expected project UUID")
+    env[scoped_secrets.ENV_TOKEN] = token
+    try:
+        return scoped_secrets.fetch_project(project, FOLDER, env, token=token)
+    except scoped_secrets.SecretsError:
+        raise Refused("Infisical scoped-folder fetch failed") from None
+
+
 def configuration(export):
-    # Infisical CLI versions emit either a name/value map or secret records.
+    # Validate the exact required relay values before use.
     if isinstance(export, list):
         values = {}
         for item in export:
@@ -148,58 +190,25 @@ def mint_verified(config, request=request_json):
 def main():
     if len(sys.argv) < 3 or sys.argv[1] != "--":
         raise Refused("usage: wise-relay-exec.py -- command [args]")
-    env = dict(os.environ)
-    if not env.get("INFISICAL_TOKEN", "").startswith("st."):
-        raise Refused("dedicated Infisical service token required")
+    env = infisical_environment(os.environ)
     for key in (
-        "INFISICAL_CLIENT_ID",
-        "INFISICAL_CLIENT_SECRET",
-        "INFISICAL_AUTOMATION_CLIENT_ID",
-        "INFISICAL_AUTOMATION_CLIENT_SECRET",
-        "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
-        "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET",
         "GH_TOKEN",
         "GITHUB_TOKEN",
         "GH_ENTERPRISE_TOKEN",
         "GITHUB_ENTERPRISE_TOKEN",
     ):
         env.pop(key, None)
-    try:
-        run = subprocess.run(
-            [
-                "infisical",
-                "export",
-                "--env",
-                "prod",
-                "--path",
-                FOLDER,
-                "--format",
-                "json",
-                "--expand=false",
-                "--include-imports=false",
-                "--secret-overriding=false",
-                "--silent",
-                "--telemetry=false",
-            ],
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=40,
-            check=True,
-        )
-        if len(run.stdout) > 65536:
-            raise Refused("configuration too large")
-        config = configuration(json.loads(run.stdout))
-    except (subprocess.SubprocessError, OSError, ValueError):
-        raise Refused("Infisical dedicated-folder fetch failed") from None
+    config = configuration(fetch_configuration(os.environ))
     # The caller's configured merge principal must be the relay principal; never overwrite it silently.
     if os.environ.get("EXPECTED_MERGE_ACTOR", ACTOR) != ACTOR:
         raise Refused("caller merge principal does not match the relay principal")
     token = mint_verified(config)
     if os.environ.get("GITHUB_ACTIONS") == "true":
         print("::add-mask::" + token, flush=True)
-    # Do not pass bearer or Infisical bootstrap to the consumer command.
-    env.pop("INFISICAL_TOKEN", None)
+    # Do not pass any shared Infisical binding to the consumer command.  A caller may
+    # inherit unrelated read/write/project aliases, none of which belongs to the child.
+    for key in AUTH_ENV_VARS:
+        env.pop(key, None)
     env["GH_TOKEN"] = token
     env["SHEPHERD_EXPECTED_ACTOR"] = ACTOR
     env["EXPECTED_MERGE_ACTOR"] = ACTOR

@@ -256,7 +256,7 @@ LaunchAgent `com.jay.fleet-work-backup`, every 3 hours (`StartInterval` 10800), 
   a day while runs stay not ok (the mention and the note go with each).  When a complete run follows, the
   all-clear goes out to the owner by DM and to the topic as a post with **no** mention and no note, so good news
   spends no one's wake budget.  The CLI is `~/.local/bin/simple-chat` (launchd's `PATH` lacks it;
-  `FLEET_WORK_BACKUP_AGENT_SYNC` overrides).  `FLEET_WORK_BACKUP_ALERT_TOPIC` and `FLEET_WORK_BACKUP_ALERT_SEAT`
+  `FLEET_WORK_BACKUP_SIMPLE_CHAT` overrides).  `FLEET_WORK_BACKUP_ALERT_TOPIC` and `FLEET_WORK_BACKUP_ALERT_SEAT`
   change the topic and the seat.  When neither send is delivered the detail log says `alert-not-posted` (naming
   `post`, `dm` or both);  when only one is, it says `alert-partly-posted` and names the other, and the alert
   counts as sent for that day, so a DM that failed beside a post that landed is not retried until tomorrow.

@@ -36,16 +36,39 @@ FORBIDDEN_SWIFT = (
 )
 
 
+# The one hand-written Info.plist the app merges into its generated one:  the build stamp and
+# the Sparkle keys.  Any key outside this list fails the test, so the file cannot grow an
+# entry point.
+PARTIAL_INFO_PLIST = "Support/Info.plist"
+ALLOWED_PARTIAL_KEYS = {
+    "MusterCommit",
+    "MusterCommitTime",
+    "MusterBuildChannel",
+    "SUFeedURL",
+    "SUPublicEDKey",
+    "SUEnableAutomaticChecks",
+    "SUAutomaticallyUpdate",
+    "SUAllowsAutomaticUpdates",
+    "SUScheduledCheckInterval",
+    "SUVerifyUpdateBeforeExtraction",
+}
+
+
 class NoExternalEntryPointTests(unittest.TestCase):
     def test_project_definition_declares_no_entry_point_keys(self):
         text = (MUSTER / "project.yml").read_text()
         for key in FORBIDDEN_PLIST_KEYS:
             self.assertNotIn(key, text, key)
-        self.assertIsNone(
-            re.search(r"(?<![A-Z_])INFOPLIST_FILE", text),
-            "a hand-written Info.plist could declare one",
-        )
+        named = re.findall(r"(?<![A-Z_])INFOPLIST_FILE:\s*(\S+)", text)
+        self.assertEqual(named, [PARTIAL_INFO_PLIST], "only the build-stamp plist may be merged")
         self.assertIn("GENERATE_INFOPLIST_FILE: YES", text)
+
+    def test_the_merged_info_plist_holds_only_the_allowed_keys(self):
+        data = plistlib.loads((MUSTER / PARTIAL_INFO_PLIST).read_bytes())
+        self.assertIsInstance(data, dict)
+        self.assertEqual(set(data) - ALLOWED_PARTIAL_KEYS, set())
+        for key in FORBIDDEN_PLIST_KEYS:
+            self.assertNotIn(key, data, key)
 
     def test_no_hand_written_info_plist_or_intent_definitions(self):
         sources = MUSTER / "Muster"

@@ -1,6 +1,17 @@
 name = "alert-ingress"
 main = "src/index.js"
 compatibility_date = "2026-10-01"
+# Vendors post to workers.dev, which stays on;  preview URLs would keep old
+# versions callable after a fix, so they stay off.
+preview_urls = false
+
+# Runaway backstop per invocation, and it covers the AlertWriter class too
+# (measured peak 36 ms CPU).  Past the subrequest limit a sweep marks incidents
+# announced with no message and leaves standing messages stale, so this stays at
+# the Free maximum of 50.  docs/cloudflare-workers.md has the design.
+[limits]
+cpu_ms = 200
+subrequests = 50
 
 # The standing status message per topic, and each alertable thing's state.
 # This is the namespace the Worker has used since its first deployment, so
@@ -25,3 +36,4 @@ crons = ["*/5 * * * *"]
 
 [observability]
 enabled = true
+head_sampling_rate = 1

@@ -1,10 +1,10 @@
 # Handbook checker notifications as Operator
 
-Source preparation only.  This does not deploy the listener or change the ordinary agent roster.
+Source preparation only.  This does not deploy the eavesdropper or change the ordinary agent roster.
 
 The Mac checker uses `simple-chat handbook-service post|read`, not `--as OPERATOR`.  Operator is an existing administrator service bot, not an agent seat.  The adapter reads its named credential from Fleet-OPS `/zulip_operator`, checks the stored realm before authentication, then verifies authenticated bot ID, email and owner.  It refuses launched seats and remote mode.  No admin API, DM, subscription or privilege operation is exposed.
 
-Posts are restricted to `jaywedgeworth22/Fleet-OPS` in Work-In-Progress / AFC handbook changes.  The normal secret scanner and text formatter run before the send.  Caller mentions are neutralized; only the pinned owner can be mentioned.  The service label identifies the deterministic sender.  A delivery ledger returns a previously successful ID and refuses to replay an uncertain send; an unknown outcome requires reconciliation before another attempt.
+Posts are restricted to `Simple-With-Us/Fleet-OPS` in Work-In-Progress / AFC handbook changes.  The normal secret scanner and text formatter run before the send.  Caller mentions are neutralized; only the pinned owner can be mentioned.  The service label identifies the deterministic sender.  A delivery ledger returns a previously successful ID and refuses to replay an uncertain send; an unknown outcome requires reconciliation before another attempt.
 
 Read returns only messages in that same stream/topic.  The former Claude-authored owner-approval posts remain readable as historical context; their sender and any owner reaction do not gate a handbook change.  The Operator notice reports the change, while the checker continues to enforce its mechanical build, privacy, dirty-tree, install and CI/review safety holds.
 
@@ -12,7 +12,7 @@ Read returns only messages in that same stream/topic.  The former Claude-author
 
 1. Review and merge the adapter and checker source.  Install the simple-chat runtime from its qualified source before selecting the checker transport.
 2. Set checker `notification_service: operator`, `operator_user_id`, `operator_email`, `owner_user_id` and `zulip_site` from verified live service metadata.  No key belongs in checker config.  Missing pins fail closed, with no Claude fallback.
-3. Use the existing reviewed merged-source checker installer.  Preserve state.json and its notice records, message IDs and timestamps.  Do not reset historical records, patch the installed manifest, or redeploy the Operator listener for this change.
+3. Use the existing reviewed merged-source checker installer.  Preserve state.json and its notice records, message IDs and timestamps.  Do not reset historical records, patch the installed manifest, or redeploy the Operator eavesdropper for this change.
 4. Verify the next naturally required notice's actual sender and that it is posted to the fixed topic.  Do not manufacture a production notice for a test.
 
 The explicit `legacy-seat` checker transport exists for migration/regression coverage, not as an automatic fallback.  Pending historical direct-message notices cannot be read by the topic-only Operator adapter; preserve and reconcile their records during cutover, but do not treat their missing owner reactions as an approval gate.  Existing state, message IDs and timestamps remain intact.

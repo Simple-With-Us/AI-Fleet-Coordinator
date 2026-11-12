@@ -126,7 +126,22 @@ def _expected_from_dict(raw: Any) -> ExpectedState:
         names=tuple(data.get("names") or ()),
         mode=data.get("mode"),
         timeout_seconds=data.get("timeoutSeconds"),
+        guards=_guards_from_cache(data.get("guards")),
     )
+
+
+def _guards_from_cache(raw: Any) -> tuple[str, ...]:
+    """The guard scopes of a cached expectation,  refusing a shape that is not a list of text.
+
+    The cache file is read back as input,  so a string would otherwise become one scope
+    per character and a number would become a scope of its own.  A malformed value makes
+    the whole cache entry unreadable,  which the loader treats as no cache at all.
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+        raise ValueError("the cached guards are not a list of text")
+    return tuple(raw)
 
 
 def _observed_from_dict(raw: Any) -> ObservedState:

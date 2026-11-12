@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""recall -- search and grow the fleet-agents knowledge corpus.
+"""recall -- search and grow the fleet knowledge corpus.
 
 Credentials are read from the environment, then Infisical via a machine identity in the
 environment, then `fleet-secrets` when it is installed.  Values are never printed.  Reads use the read-only Qdrant key when it is
@@ -10,37 +10,49 @@ QDRANT_FLEET_COLLECTION in the environment and no Infisical account or credentia
 is needed.  See docs/RAG-FLEET-INFRA.md "Run your own".
 
 Usage:
-  recall "query text" [--limit 5] [--category X] [--app X] [--source X] [--seat X]
-                      [--since-days N] [--per-doc N] [--no-rerank] [--no-lessons] [--full] [--json]
+  recall "query text" [--limit 3] [--category X] [--app X] [--source X] [--seat X]
+                      [--since-days N] [--per-doc N] [--no-rerank] [--no-lessons]
+                      [--fields A,B,C] [--full] [--json]
   recall stats [--json]
   recall contribute "text" --category lesson [--app fleet] [--seat CLAUDE] [--title T] [--url U]
                     [--force]
   recall contribute --file PATH --category lesson ...      (PATH may be - for stdin)
   recall contribute - --category lesson ...                (text on stdin)
+  recall correct DOC_ID "replacement text" --reason WHY [--title T] [--url U] [--json]
+  recall correct DOC_ID - --reason WHY                     (replacement text on stdin)
+  recall retract DOC_ID --reason WHY [--json]              (take a lesson back; keep audit)
   recall digest [--days 7] [--app X] [--json]
   recall eval [--k 5] [--threshold 0.6] [--per-doc N] [--no-rerank] [--no-lessons] [--compare]
               [--json]
-  recall doctor [--json]
+  recall eval --retrieval [--offline] [--source S] [--app A] [--category C] [--json] [--out FILE]
+  recall eval --compare BEFORE.json AFTER.json
+  recall doctor [--json]                 # setup health: token file, Qdrant, mirror, nightly, install
   recall doctor --platforms [--box] [--json]
   recall ingest [--all | --source board,doc,...] [--dry-run] [--limit N] [--since 7d] [--prune]
 
 The first argument is treated as a search query unless some argument (before any "--") is
-one of: search, stats, contribute, digest, eval, doctor, ingest.
+one of: search, stats, contribute, correct, retract, digest, eval, doctor, ingest.
 
 Search returns one hit per document (--per-doc 1..3 keeps the best N chunks of each), boosts
 agent lessons into the fusion (--no-lessons for raw document research) and reranks the
 candidates with the cross-encoder when TEI_RERANK_URL / TEI_RERANK_API_KEY are configured
 (--no-rerank keeps the fused order).  The mode line says which engaged ("hybrid+rerank"); a
-reranked hit prints rerank= and fused= next to its score.  `recall eval --compare` scores the
-golden set with lessons / rerank each on and off and prints the deltas.
+reranked hit prints rerank= and fused= next to its score.  `recall eval --compare` with no
+paths scores the weekly golden set with lessons / rerank each on and off and prints the
+deltas.  `recall eval --compare BEFORE.json AFTER.json` diffs two retrieval-quality reports.
+`recall eval --retrieval` scores recall@1, recall@5, recall@10 and MRR for
+`retrieval_golden.json` against the live fleet collection.  `recall eval --offline`
+builds a BM25 fixture from the repo files that set names, with no Qdrant credentials.
 
 Contribute refuses a near-duplicate: when an existing agent contribution scores >= 0.92
 cosine against the candidate it prints "similar lesson already exists: <doc_id> (score S)"
 and exits 1; pass --force to store it anyway.  `recall digest` lists the contributions of the
 last N days grouped by app then category (the weekly Oracle routine and the owner's note).
-`recall doctor --platforms` prints a parity table (MCP registration per platform, skill copies,
-hooks, seat-mcp routes, BotFleet routines, ingest freshness; --box adds the Hetzner health
-rows over ssh) and exits 1 when any row is FAIL.
+`recall doctor` prints a setup health table (Infisical token file mode 600, scoped read, TEI,
+Qdrant collection, Mac mirror freshness and nightly last.json where configured, install layout,
+ingest.lock) and exits 1 when any row is FAIL; inapplicable checks are SKIP.  `recall doctor
+--platforms` prints the Mac parity table (MCP registration, skills, hooks, seat-mcp, BotFleet
+routines, ingest freshness; --box adds Hetzner health rows over ssh).
 
 Contribute text that might contain a credential (a log excerpt, a command line, a config
 snippet) should go through --file PATH or stdin (-), never as a shell argument: an argument
@@ -92,8 +104,9 @@ from fleet_rag import (
 )  # noqa: E402
 from fleet_rag.core import FleetRagError  # noqa: E402
 
-SUBCOMMANDS = ("search", "stats", "contribute", "digest", "eval", "doctor", "ingest")
-EXCERPT = 300
+SUBCOMMANDS = (
+    "search", "stats", "contribute", "correct", "retract", "digest", "eval", "doctor", "ingest"
+)
 _CT = zoneinfo.ZoneInfo("America/Chicago")
 
 
@@ -122,29 +135,62 @@ def fmt_hit(i: int, h: dict, full: bool) -> str:
     if h.get("url"):
         lines.append(f"     {h['url']}")
     text = h.get("text", "")
-    if not full and len(text) > EXCERPT:
-        text = text[:EXCERPT].rstrip() + "..."
+    if not full and not h.get("text_truncated"):
+        limit = recall_presentation.snippet_chars()
+        if len(text) > limit:
+            text = text[:limit].rstrip() + "..."
     lines.extend("     " + ln for ln in text.splitlines())
     return "\n".join(lines)
 
 
 def cmd_search(a: argparse.Namespace) -> int:
-    kwargs = dict(
-        limit=a.limit,
-        category=a.category,
-        app=a.app,
-        source=a.source,
-        seat=a.seat,
-        since_days=a.since_days,
-        per_doc=a.per_doc,
-        prefer_lessons=a.prefer_lessons,
-        rerank=a.rerank,
-    )
+    raw_args: dict = {
+        "query": a.query,
+        "limit": a.limit,
+        "category": a.category,
+        "app": a.app,
+        "source": a.source,
+        "seat": a.seat,
+        "since_days": a.since_days,
+        "per_doc": a.per_doc,
+        "prefer_lessons": a.prefer_lessons,
+        "rerank": a.rerank,
+        "include_retracted": getattr(a, "include_retracted", False),
+        "full": a.full,
+    }
+    if getattr(a, "fields", None):
+        raw_args["fields"] = a.fields
+    search_args, presentation = recall_presentation.split_search_arguments(raw_args)
+    fallback_args = dict(search_args)
+    if presentation.full:
+        fallback_args["full"] = True
+    if getattr(a, "fields", None):
+        fallback_args["fields"] = list(presentation.fields)
+    search_kwargs = {
+        k: search_args[k]
+        for k in (
+            "limit",
+            "category",
+            "app",
+            "source",
+            "seat",
+            "since_days",
+            "per_doc",
+            "prefer_lessons",
+            "rerank",
+            "include_retracted",
+        )
+        if k in search_args
+    }
     res = public_fallback.call_with_fallback(
         "recall_search",
-        {**kwargs, "query": a.query},
-        lambda: recall_api.recall_search(a.query, **kwargs),
+        fallback_args,
+        lambda: recall_api.recall_search(
+            a.query, compact=not a.full, full=bool(a.full), **search_kwargs
+        ),
     )
+    if not a.json and not a.full:
+        res = recall_presentation.present_search_result(res, presentation)
     if a.json:
         # Keep stdout's machine contract unchanged. The warning is not corpus text.
         print(recall_presentation.UNTRUSTED_NOTE, file=sys.stderr)
@@ -215,6 +261,25 @@ def check_duplicate(text: str) -> dict:
     return contribute_guard.near_duplicate(cfg, recall_api.Qdrant(cfg), text)
 
 
+def deterministic_duplicate_message(existing: dict, text: str) -> str:
+    doc_id = recall_api._doc_id(existing.get("doc_id"))
+    stored_hash = existing.get("content_hash")
+    if not isinstance(stored_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", stored_hash):
+        raise FleetRagError("duplicate response contains an invalid content_hash")
+    retracted = existing.get("retracted")
+    if not isinstance(retracted, bool):
+        raise FleetRagError("duplicate response contains an invalid retracted flag")
+    if retracted:
+        return f"lesson {doc_id} is already retracted and excluded from search; nothing was written"
+    clean, _ = recall_api.scrub(text.strip())
+    if stored_hash != recall_api.content_hash(clean):
+        return (
+            f"lesson {doc_id} was corrected to different text; "
+            "your text is not stored; nothing was written"
+        )
+    return f"identical text is already stored as {doc_id}; nothing was written"
+
+
 def cmd_contribute(a: argparse.Namespace) -> int:
     text = contribute_text(a.text, a.file)
     if not text.strip():
@@ -250,6 +315,20 @@ def cmd_contribute(a: argparse.Namespace) -> int:
     res = public_fallback.call_with_fallback(
         "recall_contribute", kwargs, lambda: recall_api.recall_contribute(**kwargs)
     )
+    if res.get("status") == "duplicate":
+        existing = res.get("existing") if isinstance(res.get("existing"), dict) else {}
+        try:
+            message = deterministic_duplicate_message(existing, text)
+        except FleetRagError:
+            # A deterministic match can hit a shared-collection point that is not an agent
+            # contribution, or an older service can omit the state fields.  Refuse the duplicate
+            # without converting a storage-state mismatch into a usage error.
+            message = "a matching lesson is already stored; nothing was written"
+        if a.json:
+            print(json.dumps({**res, "message": message}, indent=2))
+        else:
+            print(message, file=sys.stderr)
+        return 1
     if guard and guard["candidates"]:
         res["nearest"] = guard["candidates"][0]
     if a.json:
@@ -262,6 +341,54 @@ def cmd_contribute(a: argparse.Namespace) -> int:
     if guard and guard["candidates"]:
         top = guard["candidates"][0]
         print(f"nearest : {top['doc_id'] or top['id']} (score {top['score']:.2f})")
+    return 0
+
+
+def cmd_correct(a: argparse.Namespace) -> int:
+    text = contribute_text(a.text, a.file)
+    if not text.strip():
+        raise FleetRagError("correct needs non-empty replacement text")
+    kwargs = dict(
+        doc_id=a.doc_id,
+        text=text,
+        reason=a.reason,
+        seat=a.seat,
+        title=a.title,
+        url=a.url,
+        expected_revision=a.expected_revision,
+    )
+    res = public_fallback.call_mutation(
+        "recall_correct", kwargs, lambda: recall_api.recall_correct(**kwargs)
+    )
+    if a.json:
+        print(json.dumps(res, indent=2))
+        return 0
+    print(f"{res['status']} {res['doc_id']}  revision {res['revision']}")
+    print(f"id       : {res['id']}")
+    print(f"hash     : {res['previous_content_hash'][:8]} -> {res['content_hash'][:8]}")
+    if res.get("corrected_by"):
+        print(f"corrected: {_date(res.get('corrected_at'))} by {res['corrected_by']}")
+    if res.get("scrubbed"):
+        print(f"scrubbed : {', '.join(res['scrubbed'])}")
+    return 0
+
+
+def cmd_retract(a: argparse.Namespace) -> int:
+    kwargs = dict(
+        doc_id=a.doc_id,
+        reason=a.reason,
+        seat=a.seat,
+        expected_revision=a.expected_revision,
+    )
+    res = public_fallback.call_mutation(
+        "recall_retract", kwargs, lambda: recall_api.recall_retract(**kwargs)
+    )
+    if a.json:
+        print(json.dumps(res, indent=2))
+        return 0
+    print(f"{res['status']} {res['doc_id']}  revision {res['revision']}")
+    print(f"id        : {res['id']}")
+    print(f"retracted : {_date(res.get('retracted_at'))} by {res.get('retracted_by', '')}")
     return 0
 
 
@@ -279,14 +406,47 @@ def cmd_digest(a: argparse.Namespace) -> int:
 
 
 def cmd_eval(a: argparse.Namespace) -> int:
+    # Lazy on purpose: eval and retrieval_eval stay off the server mirror.  The release
+    # allowlist follows only the imports recall reaches without a function-body import.
+    compare = a.compare if isinstance(a.compare, list) else ([] if a.compare else None)
+    if compare is not None and len(compare) == 2:
+        from fleet_rag import retrieval_eval as rq
+
+        try:
+            return rq.compare_files(compare[0], compare[1], as_json=a.json, out=a.out)
+        except FleetRagError as e:
+            print(f"eval: {e}", file=sys.stderr)
+            return 2
+    if compare is not None and len(compare) != 0:
+        print("eval: --compare takes no paths, or exactly two JSON runs", file=sys.stderr)
+        return 2
+    config_compare = compare is not None
+    if a.retrieval or a.offline:
+        if config_compare:
+            print(
+                "eval: --retrieval does not run the lessons/rerank matrix; save two JSON runs "
+                "and pass them to --compare",
+                file=sys.stderr,
+            )
+            return 2
+        if not a.offline:
+            public_fallback.require_direct_path("eval")
+        from fleet_rag import retrieval_eval as rq
+
+        # None means the flag was absent, including abbreviated forms such as --thresh.
+        # retrieval_eval then applies its own 0.9 default.
+        return rq.run_from_namespace(a)
+
     from fleet_rag import eval as ev
 
     public_fallback.require_direct_path("eval")
+    if a.threshold is None:
+        a.threshold = 0.6
     golden = a.golden or ev.GOLDEN
     # per_doc is not one of the A/B axes, so it is bound onto the search callable and applies to
     # every configuration; --no-rerank / --no-lessons are the axes and go through search_kwargs.
     search = functools.partial(recall_api.recall_search, per_doc=a.per_doc)
-    if a.compare:
+    if config_compare:
         res = ev.run_compare(a.k, golden, search=search)
         print(json.dumps(res, indent=2) if a.json else ev.render_compare(res))
         return 0 if res["runs"]["both"]["recall_at_k"] >= a.threshold else 1
@@ -321,6 +481,8 @@ def cmd_ingest(a: argparse.Namespace) -> int:
         argv.append("--no-heartbeat")
     if a.prune:
         argv.append("--prune")
+    if a.full:
+        argv.append("--full")
     if a.lock_timeout is not None:
         #  The operator override the docs promise.  It was documented on the ingest CLI but
         #  never exposed here, so `recall ingest --lock-timeout 0` died in argparse with
@@ -330,12 +492,12 @@ def cmd_ingest(a: argparse.Namespace) -> int:
 
 
 def cmd_doctor(a: argparse.Namespace) -> int:
+    blocked = (
+        not public_fallback.using_fake_backend()
+        and not public_fallback.local_override_active()
+        and public_fallback.direct_path_blocked(public_fallback.tailscale_status_text())
+    )
     if a.platforms:
-        blocked = (
-            not public_fallback.using_fake_backend()
-            and not public_fallback.local_override_active()
-            and public_fallback.direct_path_blocked(public_fallback.tailscale_status_text())
-        )
         rep = doctor.platforms_report(box=a.box, direct_path_blocked=blocked)
         if a.json:
             print(json.dumps(rep, indent=2))
@@ -344,60 +506,14 @@ def cmd_doctor(a: argparse.Namespace) -> int:
         return 0 if rep["ok"] else 1
     if a.box:
         raise FleetRagError("--box only applies with --platforms")
-    public_fallback.require_direct_path("doctor")
-    rep: dict = {
-        "version": __version__,
-        "env_keys": [k for k in core.ALL_KEYS if os.environ.get(k)],
-        "fleet_secrets": core._fleet_secrets_bin() is not None,
-        "gitleaks": bool(shutil.which("gitleaks")),
-    }
-    ok = True
-    try:
-        cfg = recall_api.load_config(need_write=False)
-        rep["keys_found"] = [k for k in core.ALL_KEYS if k in cfg]
-        rep["key_mode"] = recall_api.key_mode(cfg)
-        rep["write_key"] = bool(cfg.get("QDRANT_API_KEY"))
-        rep["embedder_healthy"] = core.embedder_healthy(cfg)
-        q = recall_api.Qdrant(cfg)
-        rep["qdrant_healthz"] = q.healthz()
-        try:
-            info = q.info()
-            rep["collection"] = q.collection
-            rep["collection_status"] = info.get("status", "?")
-            rep["points"] = info.get("points_count", 0)
-        except FleetRagError as e:
-            rep["collection"] = q.collection
-            rep["collection_status"] = f"ERROR {e}"
-            ok = False
-        ok = ok and rep["embedder_healthy"] and rep["qdrant_healthz"]
-    except FleetRagError as e:
-        rep["credentials_error"] = str(e)
-        ok = False
-    rep["ok"] = ok
+    from fleet_rag import doctor_setup
+
+    rep = doctor_setup.setup_report(direct_path_blocked=blocked)
     if a.json:
         print(json.dumps(rep, indent=2))
-        return 0 if ok else 2
-
-    def yn(v: object) -> str:
-        return "yes" if v else "NO"
-
-    print(f"recall {rep['version']}")
-    print(f"env keys        : {', '.join(rep['env_keys']) or '(none)'}")
-    print(f"fleet-secrets   : {yn(rep['fleet_secrets'])}  (Mac credential source)")
-    if "credentials_error" in rep:
-        print(f"credentials     : ERROR {rep['credentials_error']}")
     else:
-        print(f"keys found      : {', '.join(rep['keys_found'])}")
-        print(f"key mode        : {rep['key_mode']}  (write key present: {yn(rep['write_key'])})")
-        print(f"embedder        : {'healthy' if rep['embedder_healthy'] else 'UNREACHABLE'}")
-        print(f"qdrant healthz  : {yn(rep['qdrant_healthz'])}")
-        print(
-            f"collection      : {rep.get('collection')}  {rep.get('collection_status')}"
-            f"  points={rep.get('points', '?')}"
-        )
-    print(f"gitleaks        : {yn(rep['gitleaks'])}")
-    print(f"overall         : {'ok' if ok else 'PROBLEMS'}")
-    return 0 if ok else 2
+        print(doctor.format_platforms(rep))
+    return 0 if rep["ok"] else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -410,7 +526,7 @@ def build_parser() -> argparse.ArgumentParser:
         "search", help="hybrid search (default when the first arg is not a subcommand)"
     )
     s.add_argument("query")
-    s.add_argument("--limit", type=int, default=5)
+    s.add_argument("--limit", type=int, default=recall_presentation.DEFAULT_AGENT_LIMIT)
     s.add_argument("--category")
     s.add_argument("--app")
     s.add_argument("--source")
@@ -435,7 +551,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="do not boost agent lessons into the fusion (raw document research)",
     )
-    s.add_argument("--full", action="store_true", help="print whole chunks, not 300-char excerpts")
+    s.add_argument(
+        "--fields",
+        help="comma-separated hit fields for compact output (default keeps score, title, doc_id, url, source, app, category, text)",
+    )
+    s.add_argument("--full", action="store_true", help="print whole chunks and every stored hit field")
+    s.add_argument(
+        "--include-retracted",
+        dest="include_retracted",
+        action="store_true",
+        help="include retracted contributions for audit (normal search hides them)",
+    )
     s.add_argument("--json", action="store_true")
 
     st = sub.add_parser("stats", help="collection status and counts by source / app")
@@ -467,6 +593,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     c.add_argument("--json", action="store_true")
 
+    corr = sub.add_parser(
+        "correct", help="replace one contribution in place, preserving its revision audit"
+    )
+    corr.add_argument("doc_id", help="exact contrib/... lesson id")
+    corr.add_argument(
+        "text",
+        nargs="?",
+        help="replacement text, or - to read it from stdin (prefer --file / - for credentials)",
+    )
+    corr.add_argument(
+        "--file", help="read replacement text from PATH (- for stdin), safest for log excerpts"
+    )
+    corr.add_argument("--reason", required=True, help="why the correction is being made")
+    corr.add_argument("--seat", default=os.environ.get("AGENT_SEAT"))
+    corr.add_argument("--title")
+    corr.add_argument("--url")
+    corr.add_argument("--expected-revision", dest="expected_revision", type=int)
+    corr.add_argument("--json", action="store_true")
+
+    ret = sub.add_parser(
+        "retract", help="take one contribution back; keep it only as searchable audit metadata"
+    )
+    ret.add_argument("doc_id", help="exact contrib/... lesson id")
+    ret.add_argument("--reason", required=True, help="why the contribution is being retracted")
+    ret.add_argument("--seat", default=os.environ.get("AGENT_SEAT"))
+    ret.add_argument("--expected-revision", dest="expected_revision", type=int)
+    ret.add_argument("--json", action="store_true")
+
     dg = sub.add_parser(
         "digest", help="agent contributions of the last N days, by app then category"
     )
@@ -479,9 +633,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dg.add_argument("--json", action="store_true")
 
-    e = sub.add_parser("eval", help="score golden.jsonl: Recall@1, Recall@k, MRR")
+    e = sub.add_parser("eval", help="score a golden set: Recall@k and MRR")
     e.add_argument("--k", type=int, default=5)
-    e.add_argument("--threshold", type=float, default=0.6)
+    e.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help="fail under this score. Weekly Recall@k defaults to 0.6; retrieval recall@10 defaults to 0.9",
+    )
     e.add_argument("--golden")
     e.add_argument(
         "--per-doc",
@@ -496,13 +655,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     e.add_argument(
         "--compare",
-        action="store_true",
-        help="score lessons / rerank each on and off and print the deltas vs both-off "
-        "(--no-rerank / --no-lessons are ignored; every configuration runs)",
+        nargs="*",
+        metavar="RUN.json",
+        help="with no paths, score lessons / rerank each on and off (weekly golden). "
+        "With two JSON paths, print the delta between those retrieval-quality runs",
     )
     e.add_argument("--json", action="store_true")
+    e.add_argument(
+        "--retrieval",
+        action="store_true",
+        help="score retrieval_golden.json at recall@1/5/10 and MRR (live collection unless --offline)",
+    )
+    e.add_argument(
+        "--offline",
+        action="store_true",
+        help="build a BM25 fixture from the golden set's repo files; no Qdrant credentials",
+    )
+    e.add_argument("--out", help="write the JSON report to this path")
+    e.add_argument("--repo", help="repo root for --offline")
+    e.add_argument("--chunk-target", dest="chunk_target", type=int)
+    e.add_argument("--chunk-overlap", dest="chunk_overlap", type=int)
+    e.add_argument("--chunk-hard-max", dest="chunk_hard_max", type=int)
+    e.add_argument("--source")
+    e.add_argument("--app")
+    e.add_argument("--category")
+    e.add_argument("--since-days", dest="since_days", type=int)
 
-    d = sub.add_parser("doctor", help="credentials (names only), embedder, qdrant, key mode")
+    d = sub.add_parser(
+        "doctor",
+        help="setup health (token file, Infisical read, Qdrant, mirror, nightly, install)",
+    )
     d.add_argument(
         "--platforms",
         action="store_true",
@@ -519,13 +701,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--all", action="store_true", help="every source (default when --source is omitted)"
     )
     ingp.add_argument(
-        "--source", help="comma-separated subset: board,effort-log,doc,skill,memory,apple-note"
+        "--source", help="comma-separated subset: linear,doc,skill,memory,apple-note,chat-log"
     )
     ingp.add_argument("--fix-seeds", dest="fix_seeds", action="store_true")
     ingp.add_argument("--dry-run", dest="dry_run", action="store_true")
     ingp.add_argument("--limit", type=int)
     ingp.add_argument("--since")
     ingp.add_argument("--prune", action="store_true")
+    ingp.add_argument(
+        "--full",
+        action="store_true",
+        help="force a full Linear read this run (FLEET_RAG_LINEAR_FULL)",
+    )
     ingp.add_argument("--no-heartbeat", dest="no_heartbeat", action="store_true")
     ingp.add_argument(
         "--lock-timeout",
@@ -538,14 +725,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 # ---------------------------------------------------------------- remote read transport (opt-in)
 #
-# SIMPLE_RECALL_REMOTE=1 sends `search` and `stats` to the hosted ST-MCP endpoint with the bot's own bearer
+# SIMPLE_RECALL_REMOTE=1 sends the supported recall tools to the hosted ST-MCP endpoint with the bot's own bearer
 # (SIMPLE_TOOLS_BEARER, process environment only).  The hosted server serves Recall from ONE shared backend
 # credential set, so this proves which bot asked, not a per-bot Recall credential.  The endpoint is the fixed
 # constant below (no override), nothing here reads a Recall, Qdrant, Infisical or Access credential, and a
 # failure never falls back to the direct or public route.  Every other verb, and every search flag with no
 # hosted equivalent, is refused.  Output is the hosted tool's text (fenced as untrusted) and structured result,
 # not this CLI's formatted lines.  The hosted bearer holds every hosted tool of its seat; this mode only ever
-# calls recall_search and recall_stats, which is a client choice and not a server restriction.
+# calls the recall tools named by the CLI verb, which is a client choice and not a server restriction.
 REMOTE_MCP_URL = "https://agents.simplewithus.com/mcp"
 REMOTE_BEARER_ENV = "SIMPLE_TOOLS_BEARER"
 REMOTE_BEARER_RE = re.compile(r"[A-Za-z0-9_\-]{20,200}")
@@ -559,11 +746,12 @@ def remote_selected() -> bool:
 REMOTE_MAX_BYTES = 4_000_000
 REMOTE_MAX_DEPTH = 64
 REMOTE_MAX_NODES = 100_000
-# The error codes the hosted server can return (the ToolError codes in scripts/agent-sync-mcp/src);  a test keeps
+# The error codes the hosted server can return (the ToolError codes in scripts/simple-tools-mcp/src);  a test keeps
 # this list in step with that source.  Anything else, including a code that merely looks safe, prints as "error".
 _REMOTE_CODES = frozenset(
     (
         "invalid_argument",
+        "invalid_response",
         "unavailable",
         "upstream_error",
         "not_authorized",
@@ -588,8 +776,13 @@ _REMOTE_CODES = frozenset(
         "forbidden",
         "fleetlink_seat_disabled",
         "fleetlink_refused",
+        "fleetlink_not_found",
+        "fleetlink_expired",
         "dm_not_allowed",
         "budget_exhausted",
+        "invalid_secret",
+        "sheets_auth_failed",
+        "sheets_write_failed",
     )
 )
 _REMOTE_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
@@ -723,13 +916,13 @@ def _remote_code(value) -> str:
 
 def _remote_error_object(result: dict, sc) -> dict:
     """The hosted server's error object.  The server answers a tool error with isError and NO structuredContent: the
-    object (code, retry_after_s, ...) is in `_meta["agent-sync/error"]` and, as JSON, in the first text part that is a JSON object.  A
+    object (code, retry_after_s, ...) is in `_meta["simple-tools/error"]` and, as JSON, in the first text part that is a JSON object.  A
     structuredContent that carries a code still wins.  Only the code and the retry-after are ever shown, and
     the code only when it is allow-listed, so nothing the server wrote is copied."""
     if isinstance(sc, dict) and "code" in sc:
         return sc
     meta = result.get("_meta")
-    cand = meta.get("agent-sync/error") if isinstance(meta, dict) else None
+    cand = meta.get("simple-tools/error") if isinstance(meta, dict) else None
     if not isinstance(cand, dict):
         cand = None
         for part in result.get("content") or []:
@@ -843,11 +1036,11 @@ def _remote_scan_arguments(scanner, arguments, bearer: str) -> str | None:
 
 
 def _remote_scanner():
-    """The fleet's secret scanner (scripts/agent_sync/secretscan.py, standard library only), loaded by path.  If it
+    """The fleet's secret scanner (scripts/simple_tools/secretscan.py, standard library only), loaded by path.  If it
     cannot be loaded nothing is sent:  remote mode has no unscanned route."""
     import importlib.util
 
-    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "agent_sync", "secretscan.py")
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "simple_tools", "secretscan.py")
     try:
         spec = importlib.util.spec_from_file_location("_remote_secretscan", path)
         module = importlib.util.module_from_spec(spec)
@@ -860,8 +1053,54 @@ def _remote_scanner():
         ) from None
 
 
-def remote_call(tool: str, arguments: dict, write: bool = False) -> dict:
-    bearer = os.environ.get(REMOTE_BEARER_ENV, "").strip()
+def _remote_principal(result: dict) -> str:
+    """The one seat assigned by this same bearer's authenticated identities answer.
+
+    Neither the caller's --seat nor the bearer token's spelling selects an actor.
+    Match the strict principal checks used by git-tools, before any write is sent.
+    """
+    sc = result.get("structuredContent")
+    if not isinstance(sc, dict):
+        raise FleetRagError("the hosted server sent no structured identities result")
+    # Same tag shape as recall_api._SEAT_RE (underscores allowed);  a seat the server
+    # accepts must never be refused client-side as malformed.
+    seat_re = r"[A-Z][A-Z0-9_-]{0,31}"
+    usable = []
+    for key in ("authenticated_seat", "default_identity"):
+        value = sc.get(key)
+        # Both fields are required:  a missing authenticated_seat must never be covered
+        # by the server's default alone, exactly the git-tools strict check.
+        if not isinstance(value, str) or re.fullmatch(seat_re, value) is None:
+            raise FleetRagError("the hosted server reported a malformed seat field")
+        usable.append(value)
+    if len(set(usable)) != 1:
+        raise FleetRagError("the hosted server reported missing or contradictory seats")
+    seat = usable[0]
+    advertised = sc.get("identities")
+    if not isinstance(advertised, list) or not advertised or not all(
+        isinstance(entry, dict)
+        and isinstance(entry.get("identity"), str)
+        and re.fullmatch(seat_re, entry["identity"])
+        for entry in advertised
+    ):
+        raise FleetRagError("the hosted server advertised no usable identities")
+    if seat not in [entry["identity"] for entry in advertised]:
+        raise FleetRagError("the advertised identities omit the authenticated seat")
+    launcher = os.environ.get("AGENT_LAUNCHER", "").strip()
+    launch_seat = os.environ.get("AGENT_LAUNCH_SEAT", "").strip().upper()
+    # Established rule (fleet_bearer.py / seat_auth.py):  AGENT_LAUNCH_SEAT alone is the
+    # valid launched assignment;  only a launcher WITHOUT a bound seat is refused.
+    if launcher and not launch_seat:
+        raise FleetRagError("launcher has no assigned seat")
+    for name in ("AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG"):
+        hint = os.environ.get(name, "").strip().upper()
+        if hint and hint != seat:
+            raise FleetRagError("the authenticated seat conflicts with this process's identity")
+    return seat
+
+
+def remote_call(tool: str, arguments: dict, write: bool = False, *, _bearer: str | None = None) -> dict:
+    bearer = os.environ.get(REMOTE_BEARER_ENV, "").strip() if _bearer is None else _bearer
     if not bearer:
         raise FleetRagError(
             f"remote mode needs this bot's own bearer in {REMOTE_BEARER_ENV}; there is no fallback "
@@ -874,6 +1113,15 @@ def remote_call(tool: str, arguments: dict, write: bool = False) -> dict:
     hit = _remote_scan_arguments(_remote_scanner(), arguments, bearer)
     if hit:
         raise FleetRagError(f"refused before sending: {hit}")
+    if write and tool.startswith("recall_"):
+        # Capture one bearer for both calls. A failed discovery never reaches a
+        # mutation and never falls back to direct/public credentials.  Scoped to
+        # this client's own mutation tools:  a generic write=True call (no recall
+        # tool exists for it) must keep the plain transport-outcome contract.
+        seat = _remote_principal(remote_call("identities", {}, _bearer=bearer))
+        if "identity" in arguments and arguments["identity"] != seat:
+            raise FleetRagError("the requested identity differs from the authenticated seat")
+        arguments = {**arguments, "identity": seat}
     body = json.dumps(
         {
             "jsonrpc": "2.0",
@@ -909,31 +1157,52 @@ _ARGV: list[str] = []
 
 
 def remote_main(a: argparse.Namespace) -> int:
-    if a.cmd not in ("search", "stats", "contribute"):
+    if a.cmd not in ("search", "stats", "contribute", "correct", "retract"):
         raise FleetRagError(
             f"`{a.cmd}` is not available in remote mode (SIMPLE_RECALL_REMOTE=1 supports only "
-            "search, stats and contribute); it is not run directly either"
+            "search, stats, contribute, correct and retract); it is not run directly either"
         )
-    if a.cmd == "contribute":
-        # A write: its own switch, the hosted recall_contribute tool only, and never a seat of the caller's choosing
+    if a.cmd in ("contribute", "correct", "retract"):
+        # A write: its own switch and an authenticated identity assertion, never a caller-selected seat
         # (the hosted server attributes the lesson to the bearer's seat).  The near-duplicate guard is local and
         # has no hosted equivalent, so --force is refused rather than ignored.
         if os.environ.get("SIMPLE_RECALL_REMOTE_WRITES") != "1":
             raise FleetRagError(
-                "contribute is a write:  set SIMPLE_RECALL_REMOTE_WRITES=1 as well as "
+                f"{a.cmd} is a write:  set SIMPLE_RECALL_REMOTE_WRITES=1 as well as "
                 "SIMPLE_RECALL_REMOTE=1 (it is not sent directly instead)"
             )
-        if a.force or any(x == "--seat" or x.startswith("--seat=") for x in _ARGV):
+        if getattr(a, "force", False) or any(
+            x == "--seat" or x.startswith("--seat=") for x in _ARGV
+        ):
             raise FleetRagError(
                 "--force and --seat have no meaning in remote mode (no local duplicate guard; "
-                "the hosted server attributes the lesson to this bearer's seat)"
+                "the hosted server attributes the operation to this bearer's seat)"
             )
-        args = {"text": contribute_text(a.text, a.file), "category": a.category, "app": a.app}
-        if a.title:
-            args["title"] = a.title
-        if a.url:
-            args["url"] = a.url
-        result = remote_call("recall_contribute", args, write=True)
+        if a.cmd == "contribute":
+            args = {"text": contribute_text(a.text, a.file), "category": a.category, "app": a.app}
+            if a.title:
+                args["title"] = a.title
+            if a.url:
+                args["url"] = a.url
+            result = remote_call("recall_contribute", args, write=True)
+        elif a.cmd == "correct":
+            args = {
+                "doc_id": a.doc_id,
+                "text": contribute_text(a.text, a.file),
+                "reason": a.reason,
+            }
+            if a.title:
+                args["title"] = a.title
+            if a.url:
+                args["url"] = a.url
+            if a.expected_revision is not None:
+                args["expected_revision"] = a.expected_revision
+            result = remote_call("recall_correct", args, write=True)
+        else:
+            args = {"doc_id": a.doc_id, "reason": a.reason}
+            if a.expected_revision is not None:
+                args["expected_revision"] = a.expected_revision
+            result = remote_call("recall_retract", args, write=True)
     elif a.cmd == "stats":
         result = remote_call("recall_stats", {})
     else:
@@ -957,6 +1226,8 @@ def remote_main(a: argparse.Namespace) -> int:
             args["app"] = a.app
         if a.category:
             args["category"] = a.category
+        if a.include_retracted:
+            args["include_retracted"] = True
         result = remote_call("recall_search", args)
     if a.json:
         print(
@@ -987,6 +1258,8 @@ def normalize_argv(argv: list[str]) -> list[str]:
     if not argv:
         return argv
     head = argv[: argv.index("--")] if "--" in argv else argv
+    if len(head) == 1 and head[0] in ("correct", "retract"):
+        return ["search"] + argv
     if any(x in SUBCOMMANDS or x in ("-h", "--help") for x in head):
         return argv
     return ["search"] + argv
@@ -1011,6 +1284,8 @@ def main(argv: list[str] | None = None) -> int:
         "search": cmd_search,
         "stats": cmd_stats,
         "contribute": cmd_contribute,
+        "correct": cmd_correct,
+        "retract": cmd_retract,
         "digest": cmd_digest,
         "eval": cmd_eval,
         "doctor": cmd_doctor,

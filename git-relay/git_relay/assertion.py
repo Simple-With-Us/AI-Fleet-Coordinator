@@ -7,7 +7,7 @@ PER-CALL HMAC assertion and sends it as the call's bearer.  The signing key live
 in the dedicated Fleet-OPS /gr-assert-signing runtime folder:  this process holds NO mint-capable
 material at all, so the relay verifies by asking the Worker back over the same
 signed internal channel as the shared-bearer route (GR_BEARER_VERIFY_KEY, the
-X-Agent-Sync-Signature wake scheme - git_relay/shared_bearer.py).
+X-Simple-Tools-Signature wake scheme - git_relay/shared_bearer.py).
 
     token   gra2_<base64url JSON claims>_<64 hex HMAC-SHA256>
     claims  {v:"gr-assert/2", aud:"git-relay", seat, iat, exp, jti, action,
@@ -58,7 +58,7 @@ MAX_TTL_S = 120
 FUTURE_SKEW_S = 60
 MIN_KEY_LEN = 32
 
-SIGNATURE_HEADER = "X-Agent-Sync-Signature"
+SIGNATURE_HEADER = "X-Simple-Tools-Signature"
 MAX_RESPONSE_BYTES = 4096
 REQUEST_TIMEOUT_S = 10
 NEGATIVE_CACHE_S = 30  # a refused or replayed assertion must not hammer the Worker

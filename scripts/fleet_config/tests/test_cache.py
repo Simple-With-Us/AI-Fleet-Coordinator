@@ -176,6 +176,29 @@ class CacheTests(FleetTestCase):
         self.assertIsNone(loaded)
         self.assertEqual(note, "unreadable")
 
+    def test_the_guard_scopes_of_an_expectation_survive_the_cache(self):
+        expected = cache._expected_from_dict({"description": "d", "guards": ["shell", "file"]})
+        self.assertEqual(expected.guards, ("shell", "file"))
+        self.assertEqual(cache._expected_from_dict({"description": "d"}).guards, ())
+
+    def test_a_guard_scope_that_is_not_a_list_of_text_is_refused_not_coerced(self):
+        """A string would become one scope per character,  and a number its own scope."""
+        for bad in ("shell", 7, [1], ["shell", None], {"shell": True}):
+            with self.subTest(guards=bad), self.assertRaises(ValueError):
+                cache._expected_from_dict({"description": "d", "guards": bad})
+
+    def test_a_copy_with_malformed_guard_scopes_is_refused(self):
+        cache.save_report(a_report())
+        path = cache.cache_path()
+        document = json.loads(_read(path).decode("utf-8"))
+        document["report"]["results"][0]["expected"]["guards"] = "shell"
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(document))
+        os.chmod(path, 0o600)
+        loaded, note = cache.load_report()
+        self.assertIsNone(loaded)
+        self.assertEqual(note, "unreadable")
+
     def test_a_fresh_report_is_not_stale_and_an_old_one_is(self):
         report = a_report()
         self.assertFalse(cache.report_is_stale(report, MOMENT))

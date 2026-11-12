@@ -1,12 +1,12 @@
 # Per-Call Identity, Tool Names and Apple Notes
 
-Owner ask 2026-10-15 (AFC-331), design approved 2026-10-16.  This page is the contract for three changes to Agent-Sync:  every tool call names the bot it acts as, every tool carries a family prefix, and Apple Notes can be written from any transport.
+Owner ask 2026-10-15 (AFC-331), design approved 2026-10-16.  This page is the contract for three changes to Simple-Tools:  every tool call names the bot it acts as, every tool carries a family prefix, and Apple Notes can be written from any transport.
 
 ## 1. Why Identity Moves Into the Call
 
 One MCP connection no longer means one bot.
 
-- The hosted CURSOR grant is shared by Cursor, Grok on web and iOS, and the Grok Bot personas.
+- The hosted CURSOR grant is shared by Cursor, Grok on web and iOS, and the Grok bots.
 - Mac apps copy MCP config from each other, so an `simple-chat mcp --as CLAUDE` entry can end up inside Cursor or Codex and post as Claude.
 
 So the connection says who may act, and each call says who is acting.  Bots are taken at their word inside the connection's allowed set, the same way `simple-board` takes `AGENT_SEAT`.
@@ -19,8 +19,8 @@ So the connection says who may act, and each call says who is acting.  Bots are 
 4. The claimed identity must be in the connection's **allowed set** (section 3), or the call is refused with `identity_not_allowed`, naming the set.
 5. The server resolves that identity's **own** credential and keeps every existing check against it:  Zulip `users/me` must be that bot (`check_bot`), and a Linear write still refuses when the viewer is not that identity's own app.  Taking a bot at its word never means using a key that belongs to someone else.
 6. A launcher pin still wins.  With `AGENT_LAUNCH_SEAT` set, `identity` must equal it (exit 3 / `identity_not_allowed` otherwise), as today.
-7. The post tag is built from the claimed identity:  `[GB-FIXER·session8]`.
-8. Every write is audited with the connection (grant id or stdio pid and client name from MCP `initialize`), the claimed identity and the tool.  Hosted:  the seat-gate audit log.  Stdio and CLI:  `~/.agent-sync/logs/identity.jsonl` (mode 600, ids only, no bodies).
+7. The post header uses the claimed identity and the [fleet post-header policy](../../AGENTS.md#fleet-post-headers-owner-ruling): for example `[GB-FIXER 📁AFC]`.  The legacy formatter built `[GB-FIXER·session8]`; that describes legacy output, not the required header or a verified formatter update.  Authentication and runtime session identifiers remain unchanged.
+8. Every write is audited with the connection (grant id or stdio pid and client name from MCP `initialize`), the claimed identity and the tool.  Hosted:  the seat-gate audit log.  Stdio and CLI:  `~/.simple-tools/logs/identity.jsonl` (mode 600, ids only, no bodies).
 
 `whoami` takes `identity` too, and a new `identities` tool lists the connection's allowed set and its default.
 
@@ -28,22 +28,22 @@ So the connection says who may act, and each call says who is acting.  Bots are 
 
 | Connection | May act as |
 |---|---|
-| Hosted CURSOR grant | CURSOR, GROK-WEB, and every **enabled** GB-* persona in `delegated-identities.js` (twelve today:  DIRECTOR, FIXER, DESIGNER, COMPILER, HOUSEKEEPER, PUBLISHER, DEPLOYER, MONITOR, PLUMBER, ORACLE, TRADER, ENGINEER) |
-| Hosted GROK-WEB grant | GROK-WEB, CURSOR, and the same enabled GB-* personas (one shared group) |
+| Hosted CURSOR grant | CURSOR, GROK-WEB, and every **enabled** GB-* bot in `delegated-identities.js` (twelve today:  DIRECTOR, FIXER, DESIGNER, COMPILER, HOUSEKEEPER, PUBLISHER, DEPLOYER, MONITOR, PLUMBER, ORACLE, TRADER, ENGINEER) |
+| Hosted GROK-WEB grant | GROK-WEB, CURSOR, and the same enabled GB-* bots (one shared group) |
 | Any other hosted grant | Its own seat |
 | Stdio MCP (`simple-chat mcp`) on the Mac or the server | Its own seat only:  the seat whose own bearer (`~/.secrets/fleet-tools/<seat>`) the hosted gateway confirms at start and again before every call.  No seat, or a bearer that is missing, unsafe, revoked or another seat's, serves nothing.  Other bots this host holds keys for are refused as `identity_not_allowed` |
 | CLI on the Mac or the server (`simple-chat identities` and the verbs) | Every agent bot whose credential the host holds:  the seat bots, BF-* and GB-* (unchanged) |
 
-Never in any set:  the owner's own account, the realm-admin bot (`ZULIP_OPERATOR_*` in `/zulip_operator`, used only by the owner-run provisioning script) and the integration bots (BetterStack, Datadog, Linear, PagerDuty, Sentry), whatever `/zulip` key names exist (`zulip.NOT_SEAT_PREFIXES` drops the owner's, `REALM_ADMIN_*` and the rest).  The listener daemon keeps its partition (`agent-sync-partition.toml`) unchanged:  this page is about who an agent may act as, not which instance listens for whom.
+Never in any set:  the owner's own account, the realm-admin bot (`ZULIP_OPERATOR_*` in `/zulip_operator`, used only by the owner-run provisioning script) and the integration bots (BetterStack, Datadog, Linear, PagerDuty, Sentry), whatever `/zulip` key names exist (`zulip.NOT_SEAT_PREFIXES` drops the owner's, `REALM_ADMIN_*` and the rest).  The listener daemon keeps its partition (`simple-tools-partition.toml`) unchanged:  this page is about who an agent may act as, not which instance listens for whom.
 
-GB-ENGINEER was enabled on 2026-10-22.  A persona joins a set only by being enabled in the table with a verified credential, never by being named in a call.  The allowed-set builder reads `GB_IDENTITIES` from that table and never keeps a list of its own, so the page and the runtime cannot drift apart.
+GB-ENGINEER was enabled on 2026-10-22.  A bot joins a set only by being enabled in the table with a verified credential, never by being named in a call.  The allowed-set builder reads `GB_IDENTITIES` from that table and never keeps a list of its own, so the page and the runtime cannot drift apart.
 
 ### Which Connection a Client Gets
 
 - **A Mac app that can run a local command** uses the stdio server (`simple-chat mcp --default-seat SEAT`).  It needs no OAuth and no arming, but it needs the seat's own private bearer file and a reachable gateway, and its allowed set is that one seat.
-- **A client that only speaks remote MCP** (a web app, a phone, or a Mac app with no local command support) uses the hosted server.  The owner arms the seat in `/admin` before the client starts OAuth, as `scripts/agent-sync-mcp/ARMING-JAY.md` describes.  The armed seat becomes the grant's default identity and picks its allowed set from the table above, and each call still names the bot it acts as.
+- **A client that only speaks remote MCP** (a web app, a phone, or a Mac app with no local command support) uses the hosted server.  The owner arms the seat in `/admin` before the client starts OAuth, as `scripts/simple-tools-mcp/ARMING-JAY.md` describes.  The armed seat becomes the grant's default identity and picks its allowed set from the table above, and each call still names the bot it acts as.
 
-The hosted shared group lives in one table (`delegated-identities.js`), replacing `CURSOR_IDENTITIES`.  Its persona list is `scripts/agent_sync/mcp/gb-identities.json`, which `delegated-identities.js` imports as `GB_IDENTITIES` and the stdio server reads too, so there is still one list.  Its credentials stay in the encrypted `GB_IDENTITY_CREDENTIALS` bundle;  GROK-WEB and CURSOR keep their own per-seat secrets.
+The hosted shared group lives in one table (`delegated-identities.js`), replacing `CURSOR_IDENTITIES`.  Its bot list is `scripts/simple_tools/mcp/gb-identities.json`, which `delegated-identities.js` imports as `GB_IDENTITIES` and the stdio server reads too, so there is still one list.  Its credentials stay in the encrypted `GB_IDENTITY_CREDENTIALS` bundle;  GROK-WEB and CURSOR keep their own per-seat secrets.
 
 ## 4. Tool Names
 

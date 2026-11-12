@@ -68,6 +68,7 @@ RULES_FILES: dict[str, str] = {
     "clutch": ".clutch/dsh/AGENTS.md",
     "kimi": ".kimi-code/AGENTS.md",
     "opencode": ".config/opencode/AGENTS.md",
+    "zcode": ".zcode/AGENTS.md",
 }
 
 # The platforms whose rules file belongs to the owner, so applying to it needs the
@@ -86,6 +87,7 @@ TOOLS_FILES: dict[str, str] = {
     "clutch": ".clutch/dsh/cordis.patch.yml",
     "kimi": ".kimi-code/config.toml",
     "minimax": ".minimax/plugins/fleet-guard/hooks/hooks.json",
+    "zcode": ".zcode/cli/config.json",
 }
 
 # The MCP config target each platform uses.  Mirrors ``fleet_lanes.install_mcp.TARGET_KEYS``
@@ -98,6 +100,7 @@ MCP_TARGETS: dict[str, str] = {
     "minimax": "minimax",
     "fx": "fx",
     "clutch": "clutch",
+    "zcode": "zcode",
 }
 
 # The file each MCP target writes.  Mirrors ``fleet_lanes.install_mcp.JSON_TARGETS``.
@@ -108,6 +111,7 @@ MCP_FILES: dict[str, str] = {
     "minimax": ".minimax/mcp.json",
     "fx": ".fx/mcp.json",
     "clutch": ".clutch/dsh/cordis.patch.yml",
+    "zcode": ".zcode/cli/config.json",
 }
 
 # Every platform id this package knows about.  A platform the manifest names that is not

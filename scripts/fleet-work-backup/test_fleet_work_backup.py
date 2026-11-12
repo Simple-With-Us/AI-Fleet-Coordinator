@@ -2323,10 +2323,10 @@ class RunBehaviourCase(RunBase):
         fwb.cmd_run(self.cfg, self.args)
         self.assertEqual(fwb.read_state(self.cfg)["consecutive_not_ok"], 0)
 
-    def stub_agent_sync(self, rc: int = 0, dm_rc: int | None = None) -> Path:
-        """A stand-in for agent-sync.  ``rc`` is the exit code of ``post``, ``dm_rc`` (default ``rc``) that of ``dm``.
+    def stub_simple_tools(self, rc: int = 0, dm_rc: int | None = None) -> Path:
+        """A stand-in for the chat CLI.  ``rc`` is the exit code of ``post``, ``dm_rc`` (default ``rc``) that of ``dm``.
         argv goes to as-argv.log, stdin to as-text.log (all calls) and to as-<subcommand>-text.log."""
-        stub = self.tmp / "agent-sync"
+        stub = self.tmp / "simple-tools"
         stub.write_text(
             "#!/bin/bash\n"
             'echo "$@" >> "$STUB_DIR/as-argv.log"\n'
@@ -2343,8 +2343,8 @@ class RunBehaviourCase(RunBase):
         p = self.stubdir / (f"as-{sub}-text.log" if sub else "as-text.log")
         return [t.strip() for t in p.read_text().split("---") if t.strip()] if p.exists() else []
 
-    def agent_sync_calls(self) -> list[str]:
-        """One line per agent-sync call, its arguments joined with spaces, in call order."""
+    def simple_tools_calls(self) -> list[str]:
+        """One line per chat CLI call, its arguments joined with spaces, in call order."""
         p = self.stubdir / "as-argv.log"
         return p.read_text().splitlines() if p.exists() else []
 
@@ -2367,7 +2367,7 @@ class RunBehaviourCase(RunBase):
         self.assertEqual(fwb.read_state(self.cfg)["consecutive_not_ok"], 2)
 
     def test_runs_that_stay_not_ok_post_one_alert_then_once_a_day_and_say_when_it_is_over(self):
-        self.cfg.agent_sync_bin = str(self.stub_agent_sync())
+        self.cfg.simple_tools_bin = str(self.stub_simple_tools())
         self.cfg.alert_to = ("Jay",)
         t = [1_800_000_000.0]
         self.cfg.now_fn = lambda: t[0]
@@ -2406,9 +2406,9 @@ class RunBehaviourCase(RunBase):
             self.assertNotIn(secret, "".join(texts))
         self.assertNotIn("last_alert", fwb.read_state(self.cfg))
 
-    def test_the_alert_uses_the_job_homes_agent_sync_only(self):
+    def test_the_alert_uses_the_job_homes_simple_tools_only(self):
         self.assertEqual(
-            fwb.agent_sync_path(self.cfg), str(self.home / ".local" / "bin" / "agent-sync")
+            fwb.simple_chat_path(self.cfg), str(self.home / ".local" / "bin" / "simple-chat")
         )
         self.assertFalse(
             fwb.post_alert(self.cfg, "x")
@@ -2428,7 +2428,7 @@ class RunBehaviourCase(RunBase):
         dm_rc: int | None = None,
         note: str = "NOTE: please fix it.",
     ) -> None:
-        self.cfg.agent_sync_bin = str(self.stub_agent_sync(rc, dm_rc))
+        self.cfg.simple_tools_bin = str(self.stub_simple_tools(rc, dm_rc))
         self.cfg.alert_to = ("BF-PLUMBER", "GB-PLUMBER")
         self.cfg.alert_dm_owner = dm
         self.cfg.alert_note = note
@@ -2440,7 +2440,7 @@ class RunBehaviourCase(RunBase):
         failed: list = []
         self.assertTrue(fwb.post_alert(self.cfg, "Base text.", failed=failed))
         self.assertEqual(failed, [])
-        calls = self.agent_sync_calls()
+        calls = self.simple_tools_calls()
         self.assertEqual(
             calls,
             [
@@ -2460,8 +2460,8 @@ class RunBehaviourCase(RunBase):
     def test_without_the_owner_dm_setting_only_the_topic_post_is_sent(self):
         self.alert_cfg(dm=False)
         self.assertTrue(fwb.post_alert(self.cfg, "Base text."))
-        self.assertEqual(len(self.agent_sync_calls()), 1)
-        self.assertTrue(self.agent_sync_calls()[0].startswith("post "))
+        self.assertEqual(len(self.simple_tools_calls()), 1)
+        self.assertTrue(self.simple_tools_calls()[0].startswith("post "))
         self.assertEqual(self.alerts("dm"), [])
         self.assertEqual(self.alerts("post"), ["Base text.\u00a0 NOTE: please fix it."])
 
@@ -2476,14 +2476,14 @@ class RunBehaviourCase(RunBase):
         failed: list = []
         self.assertTrue(fwb.post_alert(self.cfg, "Base text.", failed=failed))
         self.assertEqual(failed, ["dm"])
-        self.assertEqual(len(self.agent_sync_calls()), 2)
+        self.assertEqual(len(self.simple_tools_calls()), 2)
         (self.stubdir / "as-argv.log").unlink()
         self.alert_cfg(rc=1, dm_rc=0)  # the post fails, the DM is still sent and lands
         failed = []
         self.assertTrue(fwb.post_alert(self.cfg, "Base text.", failed=failed))
         self.assertEqual(failed, ["post"])
-        self.assertEqual(len(self.agent_sync_calls()), 2)
-        self.assertTrue(self.agent_sync_calls()[1].startswith("dm "))
+        self.assertEqual(len(self.simple_tools_calls()), 2)
+        self.assertTrue(self.simple_tools_calls()[1].startswith("dm "))
 
     def test_both_failing_is_false_and_the_run_notes_alert_not_posted_without_setting_last_alert(
         self,
@@ -2500,8 +2500,8 @@ class RunBehaviourCase(RunBase):
         self.assertIn("not delivered:  post, dm", note)
         self.assertNotIn("alert-partly-posted", note)
 
-    def test_no_agent_sync_binary_fails_both_and_never_raises(self):
-        self.cfg.agent_sync_bin = str(self.tmp / "missing-agent-sync")
+    def test_no_simple_tools_binary_fails_both_and_never_raises(self):
+        self.cfg.simple_tools_bin = str(self.tmp / "missing-simple-tools")
         self.cfg.alert_dm_owner = True
         failed: list = []
         self.assertFalse(fwb.post_alert(self.cfg, "x", failed=failed))
@@ -2560,7 +2560,7 @@ class RunBehaviourCase(RunBase):
             "NOTE", self.alerts("post")[1]
         )  # "please fix it" on a recovery would be wrong
         self.assertEqual(self.alerts("post")[1], self.alerts("dm")[1])
-        calls = self.agent_sync_calls()
+        calls = self.simple_tools_calls()
         self.assertEqual(
             calls[2], f"post --as CLAUDE --session fwbackup --topic {fwb.ALERT_TOPIC} -"
         )  # no --to:  no wake
@@ -2570,7 +2570,7 @@ class RunBehaviourCase(RunBase):
         self.alert_cfg(dm=False)
         self.assertTrue(fwb.post_alert(self.cfg, "All clear.", wake=False))
         self.assertEqual(
-            self.agent_sync_calls(),
+            self.simple_tools_calls(),
             [f"post --as CLAUDE --session fwbackup --topic {fwb.ALERT_TOPIC} -"],
         )
         self.assertEqual(self.alerts("post"), ["All clear."])

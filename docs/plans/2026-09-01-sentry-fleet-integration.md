@@ -144,7 +144,7 @@ Do **not** add a second Mac host monitor.  Extend `fleet-sentry-monitor`.
 ### 4. Operating
 
 - **Alerts (the actual hole).**  Create org workflows:
-  - New or regressing issue, priority ≥ high, environment `production` → Slack `#agent-sync` (or a new `#sentry`).
+  - New or regressing issue, priority ≥ high, environment `production` → Slack `#Work-In-Progress` (or a new `#sentry`).
   - Same + `app:socratic-trade` trading-path tags → PagerDuty critical.
   - Cron missed/failed for `scheduler-tick`, `usage-monitor-scheduler`, `fleet-host-monitor` → Slack.
   - Do not page on CI failures; those stay Sentry issues for agents.

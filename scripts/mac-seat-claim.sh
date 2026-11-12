@@ -3,6 +3,8 @@
 #
 # Run by hand or from launchd com.jay.mac-seat-watch (anytime, 7 days/week).
 # Does not impersonate the Shellular phone client.  Does not claim compile passed.
+# Issue reads (needs-mac list, issue body) go through simple-git to the relay.
+# The claim comment and mac-seat-claimed label still use gh.
 #
 # Usage:
 #   ./scripts/mac-seat-claim.sh --by GROK --once
@@ -22,13 +24,12 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FLEET_APPS="${REPO_ROOT}/fleet-apps.json"
-OWNER="${GITHUB_OWNER:-jaywedgeworth22}"
+OWNER="${GITHUB_OWNER:-Simple-With-Us}"
 LOG_DIR="${HOME}/Library/Logs/mac-seat-claim"
 GROK_BIN="${GROK_BIN:-/Users/jay/.grok/bin/grok}"
 CURSOR_AGENT="${CURSOR_AGENT:-cursor-agent}"
 # Zulip posting needs no shared secret: the simple-chat CLI reads the seat's own
-# Zulip credential (Infisical Fleet-OPS /zulip).  The old AGENT_SYNC_ENV / AGENT_SYNC_POST_URL
-# relay is retired and deliberately not referenced here.
+# Zulip credential (Infisical Fleet-OPS /zulip).
 ZULIP_CHANNEL="${ZULIP_CHANNEL:-Work-In-Progress}"
 
 BY=""
@@ -116,7 +117,7 @@ print("prompt=" + prompt.replace("\n", "\\n"))
 PY
 }
 
-post_agent_sync() {
+post_simple_tools() {
   # Post to Zulip with the seat's own bot via the simple-chat CLI.
   # The CLI resolves that seat's own Zulip credential (Infisical /zulip) itself, so
   # there is no shared bearer token to parse, rotate, or leak in this script.
@@ -173,33 +174,88 @@ spawn_local_agent() {
     echo $! >"${logfile}.pid"
   )
   echo "mac-seat-claim: spawned ${agent} pid $(cat "${logfile}.pid") log ${logfile}"
-  post_agent_sync "repo: ${issue_ref} | mac-seat claimed ${issue_ref}; spawned ${agent} -p (log ${logfile}).  Not claiming compile passed." "mac seat claims${REPO_FILTER:+ $REPO_FILTER}"
+  post_simple_tools "repo: ${issue_ref} | mac-seat claimed ${issue_ref}; spawned ${agent} -p (log ${logfile}).  Not claiming compile passed." "mac seat claims${REPO_FILTER:+ $REPO_FILTER}"
+}
+
+# One relay read.  The child starts a new session so a missing bearer is a
+# refusal, not a hidden prompt that would stall launchd.  Prints the structured
+# JSON object.  Exit 1 is an unreadable answer.
+relay_call() {
+  local tool="$1" payload="$2"
+  python3 - "$SIMPLE_GIT_BIN" "$tool" "$payload" "$BY" <<'PY'
+import json, os, subprocess, sys
+bin_path, tool, payload, seat = sys.argv[1:5]
+env = os.environ.copy()
+env["AGENT_SEAT"] = seat
+proc = subprocess.run(
+    [bin_path, "call", tool, "--json", "--args-json", payload],
+    env=env,
+    capture_output=True,
+    text=True,
+    start_new_session=True,
+)
+if proc.returncode != 0:
+    raise SystemExit(1)
+try:
+    data = json.loads(proc.stdout)
+except json.JSONDecodeError:
+    raise SystemExit(1)
+structured = data.get("structured") if isinstance(data, dict) else None
+if not isinstance(structured, dict) or not structured:
+    text = data.get("text") if isinstance(data, dict) else None
+    if not isinstance(text, str) or not text.strip():
+        raise SystemExit(1)
+    try:
+        structured = json.loads(text)
+    except json.JSONDecodeError:
+        raise SystemExit(1)
+if not isinstance(structured, dict):
+    raise SystemExit(1)
+json.dump(structured, sys.stdout)
+PY
 }
 
 pick_issue() {
-  local full_repo="$1"
+  local full_repo="$1" open_json claimed_json
   if [ -n "$ISSUE_NUM" ]; then
     echo "$ISSUE_NUM"
     return 0
   fi
-  gh issue list \
-    --repo "$full_repo" \
-    --label "needs-mac" \
-    --state open \
-    --json number,labels \
-    --limit 20 \
-    | python3 - <<'PY'
+  open_json="$(relay_call gr_wf_issue_list "$(python3 -c 'import json,sys; print(json.dumps({"repo":sys.argv[1],"state":"open","per_page":20,"labels":"needs-mac"}))' "$full_repo")")" || return 1
+  claimed_json="$(relay_call gr_wf_issue_list "$(python3 -c 'import json,sys; print(json.dumps({"repo":sys.argv[1],"state":"open","per_page":20,"labels":"needs-mac,mac-seat-claimed"}))' "$full_repo")")" || return 1
+  python3 - "$open_json" "$claimed_json" <<'PY'
 import json, sys
-items = json.load(sys.stdin)
-candidates = []
-for item in items:
-    labels = {l.get("name", "") for l in item.get("labels", [])}
-    if "mac-seat-claimed" in labels:
-        continue
-    candidates.append(item["number"])
+def numbers(raw):
+    data = json.loads(raw)
+    issues = data.get("issues") if isinstance(data, dict) else None
+    if not isinstance(issues, list):
+        raise SystemExit(1)
+    found = []
+    for item in issues:
+        number = item.get("number") if isinstance(item, dict) else None
+        if isinstance(number, int) and not isinstance(number, bool) and number > 0:
+            found.append(number)
+    return set(found)
+candidates = sorted(numbers(sys.argv[1]) - numbers(sys.argv[2]))
 if not candidates:
     raise SystemExit(1)
-print(min(candidates))
+print(candidates[0])
+PY
+}
+
+issue_body() {
+  local full_repo="$1" number="$2" payload got
+  payload="$(python3 -c 'import json,sys; print(json.dumps({"repo":sys.argv[1],"number":int(sys.argv[2])}))' "$full_repo" "$number")"
+  got="$(relay_call gr_wf_issue_get "$payload")" || return 1
+  python3 - "$got" <<'PY'
+import json, sys
+data = json.loads(sys.argv[1])
+issue = data.get("issue") if isinstance(data, dict) else None
+if not isinstance(issue, dict) or not isinstance(issue.get("body"), str):
+    raise SystemExit(1)
+if issue.get("body_withheld") is True:
+    raise SystemExit(2)
+sys.stdout.write(issue["body"])
 PY
 }
 
@@ -221,19 +277,37 @@ if [ -n "$ISSUE_NUM" ] && [ -z "$REPO_FILTER" ]; then
   die "--issue requires --repo"
 fi
 command -v gh >/dev/null 2>&1 || die "gh CLI is required"
+if command -v simple-git >/dev/null 2>&1; then
+  SIMPLE_GIT_BIN="$(command -v simple-git)"
+elif [ -x "${REPO_ROOT}/scripts/simple-git" ]; then
+  SIMPLE_GIT_BIN="${REPO_ROOT}/scripts/simple-git"
+else
+  die "simple-git is required for issue reads"
+fi
 
 mapfile -t REPOS < <(fleet_repos)
 [ "${#REPOS[@]}" -gt 0 ] || die "no repos to scan (fleet-apps.json missing?)"
 
 claim_one() {
-  local full_repo issue_num body issue_ref
+  local full_repo issue_num body issue_ref body_status
   for full_repo in "${REPOS[@]}"; do
     [ -n "$full_repo" ] || continue
     if ! issue_num="$(pick_issue "$full_repo" 2>/dev/null)"; then
       continue
     fi
     issue_ref="${full_repo}#${issue_num}"
-    body="$(gh issue view "$issue_num" --repo "$full_repo" --json body -q .body)"
+    set +e
+    body="$(issue_body "$full_repo" "$issue_num" 2>/dev/null)"
+    body_status=$?
+    set -e
+    if [ "$body_status" -eq 2 ]; then
+      echo "mac-seat-claim: skip ${issue_ref} (issue body withheld)" >&2
+      continue
+    fi
+    if [ "$body_status" -ne 0 ]; then
+      echo "mac-seat-claim: skip ${issue_ref} (issue body unreadable)" >&2
+      continue
+    fi
     if ! mapfile -t META < <(parse_needs_mac_block "$body"); then
       echo "mac-seat-claim: skip ${issue_ref} (missing needs-mac block)" >&2
       continue

@@ -15,44 +15,75 @@
 
 const API = "https://simplewithus.zulipchat.com/api/v1";
 
-/** Basic-auth fetch against the Zulip API.  Returns null on any failure. */
+// Measured: a whole Datadog delivery, up to three Zulip calls, has a p99 of 1.5 s
+// and PagerDuty's documented webhook timeout is 5 s.  A timed-out POST holds its
+// topic until an operator reconciles it, so this stays well above a normal call.
+const ZULIP_TIMEOUT_MS = 5000;
+
+/**
+ * Basic-auth fetch against the Zulip API.  A non-2xx reply throws with
+ * `error.outcome` set, and a network failure or timeout throws without one, which
+ * callers read as unknown.  A 2xx reply that is not a usable success returns null.
+ */
 async function zulip(path, { email, apiKey, method = "GET", form } = {}) {
   const auth = btoa(`${email}:${apiKey}`);
-  const res = await fetch(`${API}${path}`, {
-    method,
-    signal: AbortSignal.timeout(10000),
-    headers: {
-      Authorization: `Basic ${auth}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: form ? new URLSearchParams(form).toString() : undefined,
-  });
-  if (!res.ok) {
-    const error = new Error("Zulip rejected request");
-    error.outcome =
-      res.status >= 400 && res.status < 500 ? "refused" : "unknown";
-    // The status code and the retry hint are safe to keep: they say what the
-    // upstream answered, not what it said.  The caller needs them to decide
-    // whether a refusal may be retried and how long to wait.
-    error.status = res.status;
-    const retryAfter = Number(res.headers?.get?.("retry-after"));
-    if (Number.isInteger(retryAfter)) error.retryAfter = retryAfter;
-    throw error;
-  }
+  // A pending timer keeps a Durable Object active and billed, so the timer is
+  // cleared as soon as the call ends.  AbortSignal.timeout gives no handle to
+  // clear, and it held the object for the full timeout after every call.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ZULIP_TIMEOUT_MS);
   try {
-    const data = await res.json();
-    if (
-      !data ||
-      typeof data !== "object" ||
-      Array.isArray(data) ||
-      data.result !== "success"
-    )
+    const res = await fetch(`${API}${path}`, {
+      method,
+      signal: controller.signal,
+      headers: {
+        Authorization: `Basic ${auth}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: form ? new URLSearchParams(form).toString() : undefined,
+    });
+    if (!res.ok) {
+      const error = new Error("Zulip rejected request");
+      // A 429 is definitive like any refusal, since nothing landed, but it says
+      // to wait rather than that the request was wrong.
+      error.outcome =
+        res.status === 429
+          ? "rate_limited"
+          : res.status >= 400 && res.status < 500
+            ? "refused"
+            : "unknown";
+      // The status code and the retry hint are safe to keep: they say what the
+      // upstream answered, not what it said.  The caller needs them to decide
+      // whether a refusal may be retried and how long to wait.
+      error.status = res.status;
+      const retryAfter = Number(res.headers?.get?.("retry-after"));
+      if (Number.isFinite(retryAfter) && retryAfter >= 0) {
+        error.retryAfter = Math.ceil(retryAfter);
+      }
+      // The body is never read on this path, and an open connection also keeps
+      // the object active.
+      try {
+        await res.body?.cancel?.();
+      } catch {}
+      throw error;
+    }
+    try {
+      const data = await res.json();
+      if (
+        !data ||
+        typeof data !== "object" ||
+        Array.isArray(data) ||
+        data.result !== "success"
+      )
+        return null;
+      if (method === "POST" && (!Number.isSafeInteger(data.id) || data.id <= 0))
+        return null;
+      return data;
+    } catch {
       return null;
-    if (method === "POST" && (!Number.isSafeInteger(data.id) || data.id <= 0))
-      return null;
-    return data;
-  } catch {
-    return null;
+    }
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -259,8 +290,8 @@ export function renderStatus({ topic, states, updatedAt, source }) {
   // vendor it belongs to.
   // The sentence gap is U+00A0 plus a space, which Zulip keeps (owner, Oct 23, 2026).
   const footer = source
-    ? `_Updated ${updatedAt}.  Source: ${source}.  This message is edited in place, and each change is logged in #**Alerts-Log**, same topic._`
-    : `_Updated ${updatedAt}.  This message is edited in place, and each change is logged in #**Alerts-Log**, same topic._`;
+    ? `_Last changed ${updatedAt}.  Source: ${source}.  This message is edited in place, and each change is logged in #**Alerts-Log**, same topic._`
+    : `_Last changed ${updatedAt}.  This message is edited in place, and each change is logged in #**Alerts-Log**, same topic._`;
 
   return [
     `${STANDING_BLOCK_HEADER}${topic}**`,

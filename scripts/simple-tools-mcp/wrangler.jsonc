@@ -1,0 +1,263 @@
+{
+  // Hosted ST-MCP server (docs/protocols/simple-tools-mcp.md section 3).
+  // Account Usage.Jays.Services, hostname agents.simplewithus.com (decision D1).
+  // Deploy by hand from DEPLOY.md.  Never from CI and never on merge:  agents
+  // auto-merge to main, so a merge must not be a deploy (spec 3.2).
+  //
+  // Secrets (never in this file):  ZULIP_KEY_GROK_WEB, ZULIP_KEY_JET,
+  // ZULIP_KEY_ECHO, ZULIP_KEY_WISE, ZULIP_KEY_CURSOR and
+  // ZULIP_CLAUDE_API_KEY (Worker provisioning unconfirmed), from Infisical
+  // Fleet-OPS /zulip, and the three recall secrets
+  // RECALL_API_TOKEN, RECALL_ACCESS_CLIENT_ID and RECALL_ACCESS_CLIENT_SECRET
+  // (DEPLOY.md, "Fleet recall").  AFC-477 spike (temporary):  SPIKE_HMAC_KEY
+  // and the flag SPIKE_EXTRA_EVENTS are secrets too, so a deploy from main
+  // never flips the flag (DEPLOY.md, "AFC-477 second-event spike").
+  // OPERATOR_NOTES_KEY signs the notes_* tools' Operator requests (DEPLOY.md,
+  // "Notes, recall and the guide").
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // The Worker script name is `simple-tools-mcp`, matching production.  The
+  // SeatGate Durable Object namespace (id c544eb9aabc84742bbf6b5c5f3f838fa)
+  // was created under the retired script name, so its internal name still
+  // carries that prefix:  a creation-time artifact, not an ownership fact.
+  // The namespaces registry lists this script as the namespace's script, the
+  // binding resolves by namespace id, and a deploy of this config attaches
+  // SeatGate to that namespace and its state (the arming windows, grant
+  // epochs, pause flags, write spacing, budgets, idempotency rows, role
+  // cache, audit logs and cached Linear tokens, spec 3.7).  A
+  // transferred_classes migration cannot rename the namespace now:  the
+  // source script no longer exists, and Cloudflare refuses the transfer
+  // (error 10074, verified against scratch Workers on Nov 3, 2026).  The
+  // internal namespace name is therefore the documented exception to the
+  // retired-name sweep (owner decision, Nov 3, 2026).  Never deploy this
+  // tree under a different script name, and never declare a deleted_classes
+  // or fresh new_sqlite_classes migration for SeatGate:  either would
+  // strand the live namespace and its state.
+  "name": "simple-tools-mcp",
+  "main": "src/index.js",
+  "account_id": "3a9368057468d0909cafaa85df12d1b7",
+  "compatibility_date": "2026-09-24",
+  // nodejs_compat:  agents imports node:async_hooks.
+  // global_fetch_strictly_public:  the OAuth library advertises and fetches
+  // client metadata documents only with this flag, and it keeps those fetches
+  // off private addresses.
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+
+  // Only the custom domain.  workers.dev and preview URLs would bypass the
+  // path-scoped Access app and keep old versions callable (spec 3.2).
+  // agents.simplewithus.com is the only custom domain here, and src/policy.js
+  // refuses any other host as an unknown Host.  No alias, no redirect, no fallback.
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "agents.simplewithus.com", "custom_domain": true }
+  ],
+
+  // Our own console.log lines are the audit trail.  The automatic per-request
+  // invocation logs are off, because nothing proves they omit the
+  // Cf-Access-Jwt-Assertion header or cookies (spec 3.9 never-logged list).
+  // Sampling stays at 1:  the tool log lines are the per-seat attribution.
+  "observability": { "enabled": true, "head_sampling_rate": 1, "logs": { "enabled": true, "invocation_logs": false } },
+
+  // Runaway backstop per invocation, about 2.5x the measured p99.9 CPU, and it
+  // covers the SeatGate class too.  200 subrequests because one GET /admin makes
+  // about 131 SeatGate calls, plus its Infisical reads.
+  // docs/cloudflare-workers.md has the design;  scripts/check-worker-guards.py
+  // holds these to scripts/worker-registry.json.
+  "limits": { "cpu_ms": 300, "subrequests": 200 },
+
+  "kv_namespaces": [
+    // Grants, hashed tokens and encrypted props (the OAuth library's store).
+    // DEPLOY-PHASE0.md step 3 creates it and fills in the id.
+    { "binding": "OAUTH_KV", "id": "877c08ea88a847dfa080a7d55db00f52" }
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      // One per seat:  arming window, grant epoch, pause flag, spacing,
+      // budgets, idempotency, role cache and the audit logs.
+      { "name": "SEAT_GATE", "class_name": "SeatGate" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["SeatGate"] }
+  ],
+
+  // Per-IP cap on /oauth/token (spec 3.3).  The namespace id is any integer
+  // unique to this account's rate limiters.
+  "ratelimits": [
+    { "name": "TOKEN_RATE_LIMITER", "namespace_id": "4711", "simple": { "limit": 30, "period": 60 } },
+    // Every authenticated /mcp request per credential hash (AFC-617), checked
+    // before any Durable Object, secret or SDK work.  The observed peak is about
+    // 141 requests a minute for one seat.
+    { "name": "MCP_RATE_LIMITER", "namespace_id": "4712", "simple": { "limit": 300, "period": 60 } },
+    // Failed /mcp authentication per IP.  Seats on one host share an IP, but this
+    // only blocks credentials not already verified in the isolate.  One credential
+    // counts once per minute per isolate, while this count is per location, so 120
+    // is at least twice the code's identities:  a fleet-wide rotation on one host
+    // should not 429 its valid neighbours.  test/invocation.test.mjs pins that.
+    { "name": "AUTH_FAIL_RATE_LIMITER", "namespace_id": "4713", "simple": { "limit": 120, "period": 60 } }
+  ],
+
+  "vars": {
+    // Must equal the compiled hostname;  the Worker refuses to start otherwise.
+    // Seats this deploy serves (owner decisions D1, D2).  JET was left out while
+    // openai-dot-bot was a realm administrator, because hosted seats accept
+    // member (400) only (spec 3.6).  Jay demoted every bot to member on Fri,
+    // Oct 9, so JET is served again, with its key installed (deployed at about
+    // 8:10am;  DEPLOY.md, "Re-enable JET").
+    // ECHO and WISE (Fri, Oct 9) are two identities of the Instinct app
+    // (instinct.com), each posting as its own member bot.
+    // CLAUDE hosted configuration is prepared; its key and connection are pending.
+    // JET-CHAT is the Jet seat's chat half after the wake split:  the same
+    // openai-dot-bot under its own seat and email var.  CODEX (codex-bot)
+    // joined with its captured ChatGPT pair.  Both were live in production
+    // before this file said so;  the Nov 3, 2026 parity change records them.
+    "HOSTED_SEATS": "JET,JET-CHAT,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE,CODEX",
+    "EVENTS_ONLY_SEATS": "JET",
+    // Bot emails (plain vars, spec 3.6).  The keys are Worker secrets.  A key
+    // whose users/me is not this bot, not a bot, or not a member is refused.
+    "ZULIP_EMAIL_GROK_WEB": "grok-web-bot@simplewithus.zulipchat.com",
+    "ZULIP_EMAIL_CURSOR": "cursor-bot@simplewithus.zulipchat.com",
+    "ZULIP_EMAIL_JET": "openai-dot-bot@simplewithus.zulipchat.com",
+    "ZULIP_EMAIL_JET_CHAT": "openai-dot-bot@simplewithus.zulipchat.com",
+    "ZULIP_EMAIL_CODEX": "codex-bot@simplewithus.zulipchat.com",
+    "ZULIP_EMAIL_ECHO": "instinct-bat-bot@simplewithus.zulipchat.com",
+    "ZULIP_EMAIL_WISE": "instinct-owl-bot@simplewithus.zulipchat.com",
+    "ZULIP_CLAUDE_EMAIL": "claude-bot@simplewithus.zulipchat.com",
+    // Channels:  any public channel the seat's bot is subscribed to (owner
+    // ruling Sat, Oct 10, 2026;  src/channels.js).  Private streams are never
+    // allowed.  CHANNELS_DENY lists stream ids no seat may use even when they
+    // are public;  every check is by id, so a rename cannot dodge it.
+    "CHANNELS_DENY": [],
+    // OPERATOR_NOTES_KEY (AFC-486) is a Worker secret, never set or committed here:  the key the notes_* tools sign
+    // their Operator requests with (principal WORKER), Infisical AI Fleet Coordinator prod /operator
+    // OPERATOR_NOTES_WORKER_KEY (DEPLOY.md, "Notes, recall and the guide").  The notes tools also need
+    // LISTENER_API_URL below;  without both they answer not_configured.
+    // MCP Events callback hosts (src/events.js).  ChatGPT's real callback host
+    // is not documented;  a refused one shows on /admin under refusals as
+    // callback_host_not_allowed with its host, and is added here.
+    "EVENT_CALLBACK_HOSTS": "chatgpt.com,*.chatgpt.com,openai.com,*.openai.com",
+    // Jay's Zulip user id and human clients (the eavesdropper's owner rule).  The
+    // `owner` flag on a message is a routing hint, never authority.
+    "OWNER_USER_ID": "1211974",
+    "OWNER_CLIENTS": "website,ZulipMobile,ZulipFlutter,ZulipElectron,ZulipDesktop",
+    // Redirect and client allowlist per seat.  A redirect URI belongs to
+    // exactly one seat, and that is the only seat a consent can bind it to.
+    // GROK-WEB uses Grok's published client metadata document (fetched
+    // 2026-10-09:  token_endpoint_auth_method "none", two redirect URIs).  Its
+    // second redirect, https://console.x.ai/connectors-oauth-exchange-code/, is
+    // left out until Jay's xAI account is Business or Enterprise (spec 4).
+    // A manual Grok form still works through the /admin fallback client, which
+    // takes the redirect URIs listed here (ARMING-JAY.md).
+    "SEATS": {
+      // Cursor's published CIMD client and static manual client share only
+      // Cursor's exact Cloud callback.  No other published redirects are enabled.
+      "CURSOR": {
+        "redirect_uris": ["https://www.cursor.com/agents/mcp/oauth/callback"],
+        "cimd_client_ids": ["https://cursor.com/oauth/mcp-client.json"]
+      },
+      // Hosted Claude apps only.  Use an independently tagged public manual
+      // client; no native callback or guessed CIMD identity is added.
+      "CLAUDE": {
+        "redirect_uris": ["https://claude.ai/api/mcp/auth_callback"],
+        "cimd_client_ids": []
+      },
+      "JET": {
+        // ChatGPT's newer connectors send their own callback and client metadata
+        // document.  The first pair is the older shared one;  the second pair is
+        // Jay's connector, copied from the refusal log (Fri, Oct 9,
+        // 8:05pm).  Add each connector's pair by hand as exact strings, never a
+        // pattern, so another ChatGPT user's connector id stays refused.
+        "redirect_uris": [
+          "https://chatgpt.com/connector_platform_oauth_redirect",
+          "https://chatgpt.com/connector/oauth/Aa3WqJNIVGqM"
+        ],
+        "cimd_client_ids": [
+          "https://chatgpt.com/oauth/client.json",
+          "https://chatgpt.com/oauth/Aa3WqJNIVGqM/client.json"
+        ]
+      },
+      // JET-CHAT and CODEX carry only the shared ChatGPT callback.  A shared
+      // callback belongs to the whole JET / JET-CHAT / CODEX cohort
+      // (SHARED_CHATGPT_SEATS in src/config.js), never to one seat.
+      "JET-CHAT": {
+        "redirect_uris": ["https://chatgpt.com/connector_platform_oauth_redirect"],
+        "cimd_client_ids": []
+      },
+      "CODEX": {
+        "redirect_uris": ["https://chatgpt.com/connector_platform_oauth_redirect"],
+        "cimd_client_ids": []
+      },
+      "GROK-WEB": {
+        "redirect_uris": ["https://grok.com/connectors-oauth-exchange-code/"],
+        "cimd_client_ids": ["https://grok.com/oauth/mcp-client.json"]
+      },
+      // ECHO and WISE run inside one Instinct app on its own computer and
+      // share its loopback callback (RFC 8252), as Echo told Jay on Fri, Oct 9.
+      // A loopback redirect is the only kind two seats may share:  /authorize
+      // binds it to whichever of them is armed, and refuses when both are.
+      // The client id is not known yet:  add a CIMD id here when the refusal
+      // log shows one, or create a manual client for the seat on /admin.
+      "ECHO": {
+        "redirect_uris": ["http://127.0.0.1:8737/callback"],
+        "cimd_client_ids": []
+      },
+      "WISE": {
+        "redirect_uris": ["http://127.0.0.1:8737/callback"],
+        "cimd_client_ids": []
+      }
+    },
+    // Cloudflare Access, re-verified by the Worker on /authorize and /admin.
+    // ACCESS_TEAM_DOMAIN is not a credential, so it can live here.  ACCESS_AUD is
+    // deliberately absent:  it is a private Cloudflare resource identifier and
+    // this repo does not commit those.  `infra_phase0.py write-config --apply`
+    // provisions it as an encrypted Worker secret (wrangler secret put).  Until
+    // it is set, /authorize and /admin answer 500 and say which variable is
+    // missing (fail closed).
+    "ACCESS_TEAM_DOMAIN": "silent-frost-37e0.cloudflareaccess.com",
+    // Must match the Access policy's emails exactly.  Spec 3.3:  mail@jays.services
+    // only.  The identity provider is One-time PIN, so a second address would make
+    // that inbox a full admin credential for this server.
+    "OWNER_EMAILS": "mail@jays.services",
+    // Fleet recall (spec 1.1):  the recall service's REST twin.  The Worker
+    // accepts exactly this origin.  Its three secrets are RECALL_API_TOKEN,
+    // RECALL_ACCESS_CLIENT_ID and RECALL_ACCESS_CLIENT_SECRET (DEPLOY.md);
+    // without them the recall tools answer not_configured and the rest works.
+    "RECALL_BASE_URL": "https://recall.jays.services",
+    // Linear writes (AFC-289):  "1" lets linear_file, linear_claim,
+    // linear_comment and linear_status write.  Reads need no switch.  Set it
+    // only after the owner's secrets are installed and linear_whoami answers
+    // with the seat's own app (DEPLOY.md step 2c).
+    "LINEAR_TOOLS_WRITES": "1",
+    // The server eavesdropper's signed read API (AFC-330):  the https origin the
+    // reverse proxy serves /listener/v1/ on.  Empty means the eavesdropper_* tools
+    // answer not_configured.  Each seat signs with its WAKE_HMAC_KEY_<SEAT>.
+    // Set it only after DEPLOY.md "Eavesdropper read API" step 3 passes.  The same
+    // origin serves the Operator's /notes/v1/ API for the notes_* tools (AFC-486):
+    // operator.simplewithus.com, the Operator's own domain (owner rename,
+    // Nov 4, 2026), carries /listener/v1/, /notes/v1/, /linear/v1/,
+    // and /registry/v1/ to the eavesdropper's port 8788.
+    "LISTENER_API_URL": "https://operator.simplewithus.com",
+    // The git-relay upstream the gr_* tools call.  GR_WORKFLOW_TOOLS "on"
+    // lists and enables the gr_wf_ workflow verb tools (src/config.js);
+    // without it they are neither listed nor callable.
+    "GR_UPSTREAM_URL": "https://git-relay.simplewithus.com",
+    "GR_WORKFLOW_TOOLS": "on",
+    // Infisical fallback reads (src/infisical.js):  mode "fallback" lets a
+    // seat-key read fall back to the Fleet-OPS project when the primary path
+    // has no key.  INFISICAL_WORKSPACE_ID is deliberately absent, like
+    // ACCESS_AUD above:  the project id names the secret store itself, so it
+    // is provisioned as an encrypted Worker secret (wrangler secret put),
+    // never committed.  Until it is set, the fallback reads answer
+    // not_configured and the rest works (fail closed).
+    "INFISICAL_MODE": "fallback",
+    // How long an isolate keeps a successful Infisical read or folder listing (src/infisical.js,
+    // AFC-617).  Each refresh is about 5 subrequests and 8 ms of Worker CPU per isolate, so 60
+    // seconds put it on every active isolate every minute.  300 means a rotation reaches an
+    // isolate within 5 minutes;  remove the var to return to 60 seconds.  Failed listings and the
+    // mint-capable isolated reads stay at 60 seconds either way.
+    "INFISICAL_CACHE_TTL_S": "300",
+    // Kill switch step 4:  "1" makes /mcp answer 503.
+    "MCP_DISABLED": "0"
+  }
+}

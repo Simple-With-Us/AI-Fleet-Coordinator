@@ -25,7 +25,8 @@ REPO = SCRIPTS.parent
 # The inventory the open-loops plan (K1) names, key by key, plus FLEET_LOOPS_DATA_ALLOWED_APPS:  the one decision the
 # F7 publisher's repository gate leaves to the owner (which installed apps may read fleet-loops-data;  empty by default), and
 # FLEET_FACTS_PUBLISH_FULL_COPY (the path-bearing mac-facts.json is published only when the owner turns it on) and the publisher's
-# time cap and load limit (FLEET_FACTS_PUBLISH_CAP_MINUTES, FLEET_FACTS_PUBLISH_MAX_LOAD1).
+# time cap and load limit (FLEET_FACTS_PUBLISH_CAP_MINUTES, FLEET_FACTS_PUBLISH_MAX_LOAD1), and the
+# git-relay publish route (FLEET_FACTS_RELAY_URL, FLEET_FACTS_RELAY_BRANCH, FLEET_FACTS_RELAY_TOKEN).
 PLAN_KEYS = {
     "FLEET_AUTOPUSH_MODE",
     "FLEET_AUTOPUSH_REPOS",
@@ -36,6 +37,8 @@ PLAN_KEYS = {
     "NEEDS_OWNER_NOTIFY_PAUSED",
     "NEEDS_OWNER_CAPS",
     "OWNER_LINEAR_USER_ID",
+    "NEEDS_OWNER_BAR",  # the owner bar:  off, warn or enforce on `needs-owner file --why-owner`
+    "NEEDS_OWNER_SEAT_DAILY_MAX",  # the most filings one seat may make in 24 hours (0 means no cap)
     "CLAIM_EXPIRY_MODE",
     "CLAIM_EXPIRY_CAPS",
     "CLAIM_EXPIRY_LAUNCH_AT",
@@ -50,19 +53,56 @@ PLAN_KEYS = {
     "FLEET_FACTS_PUBLISH_FULL_COPY",
     "FLEET_FACTS_PUBLISH_CAP_MINUTES",
     "FLEET_FACTS_PUBLISH_MAX_LOAD1",
+    "FLEET_FACTS_RELAY_URL",
+    "FLEET_FACTS_RELAY_BRANCH",
+    "FLEET_FACTS_RELAY_TOKEN",
     "OPERATOR_API_URL",  # AFC-486:  where Apple Notes requests go off a Mac (the Operator notes queue)
     "FLEET_SHEET_INGEST_ENABLED",
     "FLEET_SHEET_INGEST_TIMEOUT_MS",  # AFC-423:  the sheet sync's Fleet RAG ingest
     "APPLE_NOTES_PIN_RETRY",  # AFC-431:  whether the pin Shortcut run is retried
     "COMPLIANCE_CERT_EXPIRY_DAYS",  # AFC-400:  the certificate expiry window the compliance rule reads
     "COMPLIANCE_SECRETS_FINDINGS_MAX",  # AFC-400:  the secrets-hygiene tolerance the compliance rule reads
+    "CF_USAGE_WATCHDOG_MODE",  # AFC-617:  observe or enforce
+    "CF_USAGE_WATCHDOG_PROFILE",  # AFC-617:  which threshold profile applies
+    # OPS-1048:  the wake router's switch, its seats, and its retry and cap settings
+    "WAKE_ROUTER_DELIVERY_ENABLED",
+    "WAKE_ROUTER_DELIVERY_SEATS",
+    "WAKE_ROUTER_WORKERS",
+    "WAKE_ROUTER_MAX_DELIVERIES",
+    "WAKE_ROUTER_MAX_ATTEMPTS",
+    "WAKE_ROUTER_RETRY_BACKOFF",
+    "WAKE_ROUTER_BUSY_RETRY_SECONDS",
+    "WAKE_ROUTER_UNREACHABLE_RETRY_SECONDS",
+    "WAKE_ROUTER_MAX_AGE_SECONDS",
+    "WAKE_ROUTER_SHUTDOWN_WAIT_SECONDS",
+    "WAKE_ROUTER_RESUME_TIMEOUT_SECONDS",
+    "WAKE_ROUTER_CONFIRM_SECONDS",
+    "WAKE_ROUTER_SETTINGS_REFRESH_SECONDS",
+    "WAKE_ROUTER_MAC_SSH",
+    "WAKE_ROUTER_KEY",
+    "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL",
+    "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
 }
+# The signing key, the facts relay bearer, the wake router's one bearer and its registry signing key.
+SECRETS = [
+    "FLEET_FACTS_SIGNING_KEY",
+    "FLEET_FACTS_RELAY_TOKEN",
+    "WAKE_ROUTER_KEY",
+    "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
+]
 
 
 class InventoryTests(unittest.TestCase):
-    def test_the_registry_holds_every_planned_knob_and_only_one_secret(self):
+    def test_the_registry_holds_every_planned_knob_and_only_these_secrets(self):
         self.assertEqual({s.name for s in REGISTRY}, PLAN_KEYS)
-        self.assertEqual([s.name for s in REGISTRY if s.secret], ["FLEET_FACTS_SIGNING_KEY"])
+        self.assertEqual([s.name for s in REGISTRY if s.secret], SECRETS)
+
+    def test_a_knob_outside_the_root_says_its_folder_in_the_table(self):
+        for spec in REGISTRY:
+            row = next(r for r in inventory.rows() if r.startswith(f"| `{spec.name}` |"))
+            with self.subTest(name=spec.name):
+                self.assertEqual(f"in folder `{spec.folder}`" in row, spec.folder != "/")
+                self.assertEqual(len([c for c in row.strip("|").split("|")]), 7)
 
     def test_infisical_md_carries_the_generated_block(self):
         text = (REPO / "INFISICAL.md").read_text(encoding="utf-8")
@@ -124,7 +164,7 @@ class CliTests(KnobTestCase):
         self.fake.set(mode="fail")
         code, out, _err = self.run_cli("status")
         self.assertEqual(code, 3)
-        self.assertIn("fetch: failed (exit-1)", out)
+        self.assertIn("fetch: failed (scoped-read-failed)", out)
         self.assertIn("stale", out)
 
     def test_get_prints_a_non_secret_and_refuses_a_secret(self):
@@ -158,17 +198,24 @@ class CliTests(KnobTestCase):
 
 
 class PackagingTests(KnobTestCase):
-    def test_a_copy_of_just_this_package_runs_under_isolated_python(self):
-        """The packaging rule:  a stable copy run with `python3 -I` carries every package it
-        imports.  Copy only fleet_knobs (no tests, no fleet_rag) and run it."""
+    def test_a_stable_package_uses_the_installed_scoped_reader_helper(self):
+        """An isolated copy resolves the fleet-secrets helper through its configured path."""
         dest = self.root / "stable"
         shutil.copytree(
             SCRIPTS / "fleet_knobs",
             dest / "fleet_knobs",
             ignore=shutil.ignore_patterns("tests", "__pycache__", "*.pyc"),
         )
-        self.fake.set(
-            secrets={"CLAIM_EXPIRY_MODE": "ping-only", "FLEET_FACTS_SIGNING_KEY": SIGNING}
+        helper = dest / "fleet_secrets"
+        helper.mkdir()
+        (helper / "core.py").write_text(
+            "class SecretsError(Exception): pass\n"
+            "def fetch_project(project, path, env, *, token=None, names=None, timeout=None):\n"
+            "    assert env.get('INFISICAL_AI_FLEET_COORDINATOR_TOKEN', '').startswith('st.')\n"
+            "    assert token == env['INFISICAL_AI_FLEET_COORDINATOR_TOKEN']\n"
+            "    values = {'CLAIM_EXPIRY_MODE': 'ping-only', 'FLEET_AUTOPUSH_MODE': 'off'}\n"
+            "    return values if names is None else {k: v for k, v in values.items() if k in names}\n",
+            encoding="utf-8",
         )
         code = (
             "import sys; sys.path.insert(0, sys.argv[1])\n"
@@ -179,6 +226,7 @@ class PackagingTests(KnobTestCase):
             "sys.exit(__import__('fleet_knobs.__main__', fromlist=['main']).main(['get', 'FLEET_AUTOPUSH_MODE']))\n"
         )
         env = dict(os.environ)
+        env["FLEET_SECRETS_HOME"] = str(dest)
         for var in ("PYTHONPATH", "PYTHONHOME"):
             env.pop(var, None)
         proc = subprocess.run(

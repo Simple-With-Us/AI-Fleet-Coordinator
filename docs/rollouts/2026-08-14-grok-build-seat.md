@@ -16,7 +16,7 @@ is the agent-seat half.
 - `fleet-apps.json` seats: `GROK-BUILD` / Notes `Grok Build` / suffix
   `grok-build` / prefix `grok-build/`.
 - Created `~/apps/dealdex-grok-build` from DealDex `origin/main`.
-- Did **not** edit `AGENT-SYNC.md`, `TEMPLATE-AGENTS.md`, or the
+- Did **not** edit `FLEET-PROTOCOL.md`, `TEMPLATE-AGENTS.md`, or the
   ONBOARDING docs — GROK `->FLEET` keepout this turn.  Asked that seat
   to add the Agent Seat table row.
 
@@ -30,6 +30,6 @@ Checker is app-scoped; seat append does not change its result.
 
 ## Next
 
-- Mac Grok: add GROK-BUILD to the AGENT-SYNC Agent Seat table and
+- Mac Grok: add GROK-BUILD to the FLEET-PROTOCOL Agent Seat table and
   Available list.
 - DealDex PR `grok-build/fleet-setup` for STATUS / effort / rollout.

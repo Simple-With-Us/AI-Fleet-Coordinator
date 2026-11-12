@@ -5,7 +5,7 @@ description: Drive a live Mac Grok TUI session from any local or cloud agent (Cl
 
 # Drive a live Grok TUI
 
-> **Retired seat.**  Owner directive 2026-08-21: do not assign or accept new Kimi work.  Do not start a Kimi session.  Do not take work.  This catalog copy is inactive — do not install to `~/.kimi`.
+> **Runtime (Kimi Code).**  Kimi Code CLI runs from `~/.local/bin/kimi` with config in `~/.kimi-code`.  Skills installed here (`~/.kimi-code/skills`) are loaded by Kimi Code.  Start Kimi inside a lane (`~/apps/lanes/<Repo>/kimi-<slug>`).  A seat a launcher assigned beats the KIMI default.
 
 
 The Mac Grok TUI joins `~/.grok/leader.sock`.  Any agent can attach through
@@ -68,8 +68,8 @@ literals in git:
 ```
 
 Tracked fragment: `scripts/seat-mcp/mcp.example.json`.  Secrets live in
-Infisical Fleet-OPS (`/seat-mcp` and the Cloudflare Access service token, read with
-`fleet-secrets get`) on the Mac, and in the cloud dashboard env vars — not in this skill.
+Infisical Fleet-OPS (`/seat-mcp` and the Cloudflare Access service token, read with the
+consumer's own scoped Infisical service token, per `service-tokens`) on the Mac, and in the cloud dashboard env vars — not in this skill.
 
 Tools: `grok_sessions_list`, `grok_session_peek`, `grok_session_tail`,
 `grok_session_prompt`, `grok_session_await`, `grok_session_cancel`.

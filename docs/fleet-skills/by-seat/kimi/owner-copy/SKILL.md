@@ -5,10 +5,12 @@ description: Fleet human-facing prose — two spaces between sentences (a real U
 
 # Owner-facing copy (KIMI)
 
-> **Retired seat.**  Owner directive 2026-08-21: do not assign or accept new Kimi work.  Do not start a Kimi session.  Do not take work.  This catalog copy is inactive — do not install to `~/.kimi`.
+> **This install is for `KIMI`.**  Chat tag `[KIMI·session8]`.  Notes `Kimi`.  Branches `kimi/`.  Lanes `~/apps/lanes/<Repo>/kimi-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `KIMI`, credential in Infisical Fleet-OPS `/zulip` (`KIMI_ZULIP_EMAIL`, `KIMI_ZULIP_KEY`, `KIMI_ZULIP_SITE`).  Session tag `[KIMI·session8]`, and the `simple-chat` CLI writes it for you.
+
+> **Runtime (Kimi Code).**  Kimi Code CLI runs from `~/.local/bin/kimi` with config in `~/.kimi-code`.  Skills installed here (`~/.kimi-code/skills`) are loaded by Kimi Code.  Start Kimi inside a lane (`~/apps/lanes/<Repo>/kimi-<slug>`).  A seat a launcher assigned beats the KIMI default.
 
 
-Canonical detail: `/Users/jay/apps/FLEET-UI-COPY.md`.  Policy: `/Users/jay/apps/FLEET-PROTOCOL.md` § Two spaces, timestamps, TestFlight metadata.
+Canonical detail: `~/apps/FLEET-UI-COPY.md`.  Policy: `~/apps/FLEET-PROTOCOL.md` § Two spaces, timestamps, TestFlight metadata.
 
 ## Two spaces between sentences
 
@@ -95,12 +97,12 @@ baseline; a real tooltip component is better where the app already has one.
 
 The year appears only when it is not the current year.  An ISO date is for machines: file names, branch names, code, logs inside a code block, and source-file comments.  The Apple Notes script rewrites any ISO date it finds in a note's prose into this form, so a note always reads the same whichever agent wrote it.
 
-Say every time on the owner's clock: 12-hour, with am or pm.  That clock is Central.  Do not type CDT, CST, or CT.  The owner assumes am/pm is their time.  Write `3:15am`, not `3:15am CDT` and not `08:15Z`.  Give only the Central time (`America/Chicago`), with no zone label and no UTC stamp beside it (owner 2026-10-18): convert every other zone first, including times read from logs, APIs, CI and dashboards, so a log line at `11:42Z` is `6:42am` and the market opens at `8:30am`.  Quote a raw stamp only when the owner asks for one, or inside a code block that is machine output.  Never lead with Zulu or a 24-hour UTC stamp in chat, Notes, Zulip, boards, or PRs.  `00:00 UTC` is 7:00pm the previous calendar day during daylight saving, and 6:00pm the previous calendar day after the fall-back.  Convert with `TZ=America/Chicago date` or Python `ZoneInfo("America/Chicago")`.  Printing a zone abbreviation on a local time is the failure mode.  Binding for every agent, bot, and platform.
+Say every time on the owner's clock: 12-hour, with am or pm.  That clock is Central.  Do not type CDT, CST, or CT.  The owner assumes am/pm is their time.  The zone is assumed and never named either:  `Central` is as wrong as `CST`, and `America/Chicago` does not belong beside a time (owner 2026-10-29, reaffirmed 2026-11-03).  Write `3:15am`, not `3:15am CDT` and not `08:15Z`.  Give only the Central time (`America/Chicago`), with no zone label and no UTC stamp beside it (owner 2026-10-18): convert every other zone first, including times read from logs, APIs, CI and dashboards, so a log line at `11:42Z` is `6:42am` on a summer day and `5:42am` in winter, and the market opens at `8:30am`.  Quote a raw stamp only when the owner asks for one, or inside a code block that is machine output.  Never lead with Zulu or a 24-hour UTC stamp in chat, Notes, Zulip, boards, or PRs.  `00:00 UTC` is 7:00pm the previous calendar day during daylight saving, and 6:00pm the previous calendar day after the fall-back.  Convert with `TZ=America/Chicago date` or Python `ZoneInfo("America/Chicago")`.  Printing a zone abbreviation on a local time is the failure mode.  The rule covers the times a human reads in agent prose:  product UI renders in the viewer's own timezone, a market bell stays as the market writes it (`9:30 AM ET`), and a machine-readable field keeps its own format, so a build number or a commit stamp is build provenance and not an owner-facing sentence.  Quote a field you repeat verbatim as it is;  convert only when you write the time in prose.  Binding for every agent, bot, and platform.
 
 Product UI times are the **viewer's** timezone except market-day accounting (Chicago) and session bells (`9:30 AM ET`).
 
 ## Canon
 
-- `/Users/jay/apps/FLEET-UI-COPY.md`
-- `/Users/jay/apps/FLEET-PROTOCOL.md` § Two spaces; Theme via FLEET-UI-COPY; TestFlight template
+- `~/apps/FLEET-UI-COPY.md`
+- `~/apps/FLEET-PROTOCOL.md` § Two spaces; Theme via FLEET-UI-COPY; TestFlight template
 - Skills: `apple-notes`, `sentence-gap`, `closeout`

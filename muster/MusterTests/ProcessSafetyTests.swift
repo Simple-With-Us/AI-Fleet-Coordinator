@@ -125,6 +125,72 @@ final class ProcessSafetyTests: XCTestCase {
         }
     }
 
+    // MARK: The knob reader and the simple-chat runner
+
+    func test_knobStatus_kills_a_child_that_ignores_SIGTERM() async throws {
+        // The child ignores SIGTERM and its own child holds the pipe open,  so only SIGKILL
+        // and a bounded drain end the read.
+        let script = try makeScript("#!/bin/sh\ntrap '' TERM\nsleep 15\n")
+        let start = Date()
+        let reading = await KnobStatusReader.read(location: makeLocation(interpreter: script), timeout: 1)
+        guard case .failed(let reason) = reading else {
+            return XCTFail("expected a failed reading, got \(reading)")
+        }
+        XCTAssertTrue(reason.contains("did not answer"), reason)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 10)
+    }
+
+    func test_knobStatus_reads_a_good_answer() async throws {
+        let script = try makeScript("""
+        #!/bin/sh
+        echo '{"schema": 1, "fetch": "ok", "write_token": "missing", "knobs": []}'
+        """)
+        let reading = await KnobStatusReader.read(location: makeLocation(interpreter: script), timeout: 10)
+        guard case .read(let status) = reading else {
+            return XCTFail("expected a reading, got \(reading)")
+        }
+        XCTAssertTrue(status.fetchOK)
+        XCTAssertEqual(status.writeToken, .missing)
+    }
+
+    func test_knobStatus_says_when_the_answer_was_too_large() {
+        let outcome = FleetViewService.ProcessOutcome(
+            status: 0, stdout: Data("{".utf8), stderr: Data(), timedOut: false, stdoutExceeded: true
+        )
+        guard case .failed(let reason) = KnobStatusReader.reading(from: .success(outcome), timeout: 40) else {
+            return XCTFail("expected a failed reading")
+        }
+        XCTAssertTrue(reason.contains("larger than"), reason)
+    }
+
+    func test_knobStatus_says_when_the_engine_could_not_start() {
+        let outcome: Result<FleetViewService.ProcessOutcome, Error> =
+            .failure(FleetViewService.ServiceError.launchFailed("no such file"))
+        guard case .failed(let reason) = KnobStatusReader.reading(from: outcome, timeout: 40) else {
+            return XCTFail("expected a failed reading")
+        }
+        XCTAssertTrue(reason.contains("no such file"), reason)
+    }
+
+    func test_simpleTools_kills_a_child_that_ignores_SIGTERM() async throws {
+        let base = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("muster-safety-\(UUID().uuidString)", isDirectory: true)
+        let scripts = base.appendingPathComponent("scripts", isDirectory: true)
+        try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+        let command = scripts.appendingPathComponent("simple-chat")
+        try "#!/bin/sh\ntrap '' TERM\nwhile true; do sleep 1; done\n"
+            .write(to: command, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: command.path)
+        let location = EngineLocation(root: base, interpreter: URL(fileURLWithPath: "/usr/bin/python3"))
+        let runner = SimpleToolsCLI(location: { location })
+
+        let start = Date()
+        let result = try await runner.run(SimpleToolsInvocation(["status"], timeout: 1))
+
+        XCTAssertTrue(result.timedOut)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 10)
+    }
+
     func test_fleetView_decodes_a_valid_envelope() throws {
         let script = try makeScript("""
         #!/bin/sh

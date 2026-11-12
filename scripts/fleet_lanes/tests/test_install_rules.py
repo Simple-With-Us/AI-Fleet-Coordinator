@@ -418,7 +418,7 @@ class ContradictionTests(unittest.TestCase):
             "~/apps/lanes/_codex/fix/BotFleet and ~/apps/lanes/BotFleet/active-engines-display-e380b8",
             "/Users/jay/apps/lanes/AI-Fleet-Coordinator/claude-x and ~/apps/lanes/congress-trading-shared/cursor-y",
             "~/apps/lanes/homebrew-tap/codex-x",
-            "Printer: ~/apps/fleet-mode and ~/apps/agent-sync/consumer.mjs",
+            "Printer: ~/apps/fleet-mode and ~/apps/FLEET-PROTOCOL.md",
             "run ~/apps/lane new fleet my-slug",
             "~/apps/scratch/claude/topic",
             "~/Code/Socratic-Trade is the integration tree",
@@ -1152,8 +1152,8 @@ def _load_seat_block_checker():
 class FleetBasicsTests(HomeCase):
     """Clutch, Kimi and Copilot CLI get the Fleet Basics ahead of the Lane Map in one marker block."""
 
-    NEW = {"clutch": (".clutch/dsh/AGENTS.md", "clutch"), "kimi": (".kimi-code/AGENTS.md", "nodefault"),
-           "copilot": (".copilot/copilot-instructions.md", "nodefault")}
+    NEW = {"clutch": (".clutch/dsh/AGENTS.md", "clutch"), "kimi": (".kimi-code/AGENTS.md", "kimi"),
+           "zcode": (".zcode/AGENTS.md", "zcode"), "copilot": (".copilot/copilot-instructions.md", "nodefault")}
 
     def test_the_new_platforms_name_their_file_and_variant(self) -> None:
         for name, (rel, variant) in self.NEW.items():

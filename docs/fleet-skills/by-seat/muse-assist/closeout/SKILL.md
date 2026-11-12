@@ -17,7 +17,7 @@ Start-of-work is a claim on the Linear issue and a post in its Zulip topic.  En
 - Merged to `main`?  Do **not** use commit ancestry after a squash-merge (`git merge-base --is-ancestor` lies because squash rewrites SHAs and `delete_branch_on_merge` removes the remote).  Use PR state, then a three-dot diff:
 
 ```bash
-gh pr list --head "$BRANCH" --state all --json number,state,mergedAt,url
+# MCP tool: gr_wf_pr_list_page --repo <owner/repo> --head "$BRANCH" --state all   -> number, state, mergedAt, url
 git fetch origin
 git diff origin/main...HEAD    # three-dot: remaining unique work vs merge-base
 # helper: scripts/branch-landed.sh [repo] [branch]
@@ -29,16 +29,16 @@ A two-dot `git diff origin/main HEAD` on a stale lane is actively misleading.  
 
 ## 2. Linear
 
-```bash
-simple-board status <id> completed --resolution "Landed in #<PR>.  <one line>."
-# or: deployed — only after health verify
+```text
+linear_status   id=<id>  status=completed   # or: deployed — only after health verify
+linear_comment  id=<id>  body="Landed in #<PR>.  <one line>."
 ```
 
-The PR body carried `Fixes <ID>` when the PR finished the issue.  Once Linear's GitHub automation is on, that moves the issue to Done on merge; before then, run the command above.  It is the same move done by hand and is safe to repeat.  A PR that carried only `Refs <ID>` never closes the issue, so run the command yourself, or leave the issue open on purpose.  Writes need your bearer-verified seat (`simple-board whoami`), and `--by` must equal it.
+The PR body carried `Fixes <ID>` when the PR finished the issue.  Once Linear's GitHub automation is on, that moves the issue to Done on merge; before then, run the command above.  It is the same move done by hand and is safe to repeat.  A PR that carried only `Refs <ID>` never closes the issue, so run the command yourself, or leave the issue open on purpose.  Writes need your bearer-verified seat (the MCP tool `linear_whoami` names it), and the write's `identity` must equal it.
 
 - **Completed** = merged to main.
 - **Deployed** = released and verified (say how).
-- Correct a wrong status or resolution with a new `simple-board comment` or `simple-board status`, never by editing another seat's comment.
+- Correct a wrong status or resolution with a new `linear_comment` or `linear_status`, never by editing another seat's comment.
 
 Every imported GitHub issue has a Linear twin; work and close the Linear issue, not the GitHub one.  A new GitHub issue filed after the cutover is copied into Linear one way, by Linear's GitHub sync, as an issue with its own id; close that Linear issue, not the GitHub one.  Cross-app work gets an issue on each affected team, linked in the descriptions.
 
@@ -48,17 +48,17 @@ There is no effort log to update and nothing for writeback to copy.  The effort
 
 The PR body names the issue (`Fixes <ID>` or `Refs <ID>`), and the branch is `<seat>/<id>-<slug>`.  Say in the closeout post which of the two you used.
 
-Opening, editing, replying to, resolving and merging a PR all have a credential-safe path: `git-relay`, with the MCP wrapper **GR-MCP** (`git-relay mcp`), which exposes `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`; `mint_token` is deliberately not exposed over MCP, because it returns a raw credential.  A seat reaches the tools with its own bearer token: ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server — the tool names are the same either way.  **The relay is not deployed yet** (verified Oct 23 2026): there is no daemon, no launchd job and no seat pointed at it, so the interim `gh` and shell path is still the one that works, until the owner decides the cutover.
+Opening, editing, replying to, resolving and merging a PR all have a credential-safe path: `git-relay`, with the MCP wrapper **GR-MCP** (`git-relay mcp`), which exposes `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`; `mint_token` is deliberately not exposed over MCP, because it returns a raw credential.  A seat reaches the tools with its own bearer token: ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server — the tool names are the same either way.  **The relay tools are live** (verified Nov 4 2026): a seat connected through Fleet MCP calls `gr_open_pr`, `gr_edit_pr`, `gr_reply_thread`, `gr_comment_pr`, `gr_resolve_thread`, `gr_merge_pr` and the `gr_wf_*` workflow verbs as its own GitHub App, so every PR write goes through the relay tools.  A personal `gh` credential is not the fleet's route, and another seat's credential is never borrowed: a seat with no relay connection says so and stops.
 
 ## 4. Zulip
 
 Linear first, then the work topic — the same one you claimed in.
 
-```bash
-simple-chat post --topic "<ID> <subject>" $'repo:  <project>  |  DONE\npr: #<n>\nissue: <ID>\ngates: <what ran>\nwork: <what landed>'
+```text
+zulip_post   channel=<channel>   topic="<ID> <subject>"   text="repo:  <project>  |  DONE\npr: #<n>\nissue: <ID>\ngates: <what ran>\nwork: <what landed>"
 ```
 
-Then resolve the topic when the issue reaches Deployed or Parked: `simple-chat resolve --topic "<topic>"`.  Resolving renames the topic, so post your last words first.  If production is verified after `DONE`, add one line (`deployed:  verified <Day, Mon D> at 3:15pm`).
+Then resolve the topic when the issue reaches Deployed or Parked with the MCP tool `zulip_resolve_topic` (`channel`, `topic`).  Resolving renames the topic, so post your last words first.  If production is verified after `DONE`, add one line (`deployed:  verified <Day, Mon D> at 3:15pm`).
 
 Not a fleet wake (`@**all**`) for a normal closeout.
 
@@ -68,7 +68,7 @@ Substantial work: living Completion note, `--update` in place.  Title `[TEAM_KE
 
 ## 6. Mac local processes
 
-If this unit created, loaded, bootout, or retired a LaunchAgent, cron, login item, pm2 KeepAlive job, **or a helper other agents run**: add/update a row on `/Users/jay/apps/MAC-LOCAL-PROCESSES.md` **and** `--update "⭐️ Background Jobs Master List"` in the same change.  Say always-on vs on-demand.  Retire in place; never delete historical rows.
+If this unit created, loaded, bootout, or retired a LaunchAgent, cron, login item, pm2 KeepAlive job, **or a helper other agents run**: add/update a row on `~/apps/MAC-LOCAL-PROCESSES.md` **and** `--update "⭐️ Background Jobs Master List"` in the same change.  Say always-on vs on-demand.  Retire in place; never delete historical rows.
 
 Do not SIGKILL `com.jay.claude-remote-control`.
 
@@ -82,7 +82,7 @@ If you shipped a flag that is off, reserve a Planned enablement row (ST: also `d
 
 ## Parked, not done
 
-If you stop without merge: the issue stays accurate (`simple-board status <id> open` to release it, or `parked`, plus a comment "parked because …"), the work topic says `BLOCKED`/`PARKED` with a `reason:` line, worktree is not dirty with uncommitted finished code.  In Progress after you left is how three agents redo the same slice.
+If you stop without merge: the issue stays accurate (`linear_status` with `id` and `status` = `open` to release it, or `parked`, plus a `linear_comment` "parked because …"), the work topic says `BLOCKED`/`PARKED` with a `reason:` line, worktree is not dirty with uncommitted finished code.  In Progress after you left is how three agents redo the same slice.
 
 ## Fleet recall (every closeout)
 
@@ -96,8 +96,8 @@ or MCP `recall_contribute`.  40–4000 chars, one idea, category `lesson | pref
 
 ## Canon
 
-- `/Users/jay/apps/FLEET-PROTOCOL.md` — Linear and the claim lifecycle; Apple Notes; Mac local processes; always-commit
-- `/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` — retired stub: the effort logs are archived
+- `~/apps/FLEET-PROTOCOL.md` — Linear and the claim lifecycle; Apple Notes; Mac local processes; always-commit
+- `~/apps/EFFORT-LOG-PROTOCOL.md` — retired stub: the effort logs are archived
 - Skills: `board-ops`, `apple-notes`, `deploy-verify`, `land-lane`
 
 ## Living Handoff Morphing to Closeout

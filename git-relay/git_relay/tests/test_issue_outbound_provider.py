@@ -10,6 +10,21 @@ PREFIXES = ("sk-", "sk-ant-", "sk-proj-", "sk_live_", "sk_test_")
 REPO = "o/r"
 
 
+def synthetic_provider(prefix, leading=""):
+    # A bare prefix inside another word is ambiguous. Use the established full
+    # legacy structure for embedded legacy adversarial cases, not an arbitrary
+    # longer word. Boundary-start legacy rows still test markerless shapes.
+    body = "X" * 32
+    if leading:
+        if prefix == "sk-":
+            body = "X" * 20 + "T3BlbkFJ" + "Y" * 20
+        elif prefix == "sk-ant-":
+            body = "api03-" + "X" * 93 + "AA"
+        elif prefix == "sk-proj-":
+            body = "X" * 74 + "T3BlbkFJ" + "Y" * 74
+    return leading + prefix + body
+
+
 class IssueOutboundProviderTests(unittest.TestCase):
     def handle(self, client, action):
         return WorkflowVerbs(client, Policy(), "swu-wise", "opaque", "swu-wise", action, REPO)
@@ -74,7 +89,7 @@ class IssueOutboundProviderTests(unittest.TestCase):
                     args = {"repo": REPO, "title": "safe issue", "body": "safe body"}
                     if action == "wf_issue_update":
                         args["number"] = 1
-                    args[field] = "embedded" + prefix + "X" * 32
+                    args[field] = synthetic_provider(prefix, "embedded")
                     with (
                         self.subTest(prefix=prefix, field=field, action=action),
                         self.assertRaises(Refused),
@@ -88,7 +103,11 @@ class IssueOutboundProviderTests(unittest.TestCase):
             for prefix in PREFIXES:
                 for leading in ("", "embedded"):
                     client = Client()
-                    args = {"repo": REPO, "comment_id": 1, "body": leading + prefix + "X" * 32}
+                    args = {
+                        "repo": REPO,
+                        "comment_id": 1,
+                        "body": synthetic_provider(prefix, leading),
+                    }
                     with self.subTest(action=action, prefix=prefix, leading=leading):
                         with self.assertRaises(Refused):
                             self.handle(client, action).run(action, args)
@@ -109,7 +128,7 @@ class IssueOutboundProviderTests(unittest.TestCase):
     def test_git_writers_provider_shapes_refused_before_client_call(self):
         for prefix in PREFIXES:
             for leading in ("", "embedded"):
-                text = leading + prefix + "X" * 32
+                text = synthetic_provider(prefix, leading)
                 for action, args in (
                     ("wf_git_blob_create", {"text": text}),
                     (
@@ -149,7 +168,7 @@ class IssueOutboundProviderTests(unittest.TestCase):
         # Runtime-assembled synthetic scanner shapes only, never credentials.
         for prefix in PREFIXES:
             for leading in ("", "embedded"):
-                path = "docs/" + leading + prefix + "X" * 32 + ".txt"
+                path = "docs/" + synthetic_provider(prefix, leading) + ".txt"
                 client = Client()
                 action = "wf_git_tree_create"
                 with self.subTest(prefix=prefix, leading=leading):
@@ -177,3 +196,21 @@ class IssueOutboundProviderTests(unittest.TestCase):
         )
         self.assertEqual(result["tree"]["files"], 1)
         self.assertEqual(client.calls[0][:2], ("POST", "/repos/o/r/git/trees"))
+
+    def test_ordinary_filename_paths_are_accepted_by_git_tree_writer(self):
+        for name in [
+            "risk-bunchofotherthings",
+            "test-disk-janitor-cleanmymac-safety.sh",
+            "mac-disk-reclaim-policy-current",
+        ]:
+            client = Client({"sha": "b" * 40, "truncated": False, "tree": []})
+            action = "wf_git_tree_create"
+            self.handle(client, action).run(
+                action,
+                {
+                    "repo": REPO,
+                    "base_tree": "a" * 40,
+                    "files": [{"path": "docs/" + name, "mode": "100644", "text": "safe"}],
+                },
+            )
+            self.assertEqual(client.calls[0][:2], ("POST", "/repos/o/r/git/trees"))

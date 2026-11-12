@@ -1,6 +1,6 @@
 # Named Linear MCP Commands
 
-AFC-318 adds 175 named commands to the hosted Agent Sync MCP, alongside the existing issue convenience commands and general GraphQL tools.  AFC-319 adds 11 fixed tools forwarded through Linear’s official MCP service, bringing the hosted Linear inventory to 196 tools (209 hosted tools overall).  The named-command catalog is checked against Linear’s official GraphQL schema; availability still depends on the seat app’s permissions and workspace plan.
+AFC-318 adds 175 named commands to the hosted Simple Tools MCP, alongside the existing issue convenience commands and general GraphQL tools.  AFC-319 adds 11 fixed tools forwarded through Linear’s official MCP service, bringing the hosted Linear inventory to 196 tools (209 hosted tools overall).  The named-command catalog is checked against Linear’s official GraphQL schema; availability still depends on the seat app’s permissions and workspace plan.
 
 ## Use
 

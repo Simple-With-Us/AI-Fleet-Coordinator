@@ -15,8 +15,8 @@ import sys
 import unittest
 from unittest import mock
 
-from fleet_rag import recall_api
-from fleet_rag.core import build_point
+from fleet_rag import recall_api, recall_presentation
+from fleet_rag.core import FleetRagError, build_point
 
 SERVER = pathlib.Path(__file__).resolve().parents[2] / "fleet-recall-mcp.py"
 
@@ -69,7 +69,7 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual(by_id[2]["result"], {})
 
         tools = by_id[3]["result"]["tools"]
-        self.assertEqual([t["name"] for t in tools], ["recall_search", "recall_stats", "recall_contribute"])
+        self.assertEqual([t["name"] for t in tools], ["recall_search", "recall_stats", "recall_contribute", "recall_correct", "recall_retract"])
         for t in tools:
             self.assertEqual(t["inputSchema"]["type"], "object")
             self.assertIn("description", t)
@@ -127,7 +127,7 @@ class McpServerTests(unittest.TestCase):
                               env=env, timeout=60)
         out = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
         self.assertEqual(out[0]["result"]["protocolVersion"], "2025-06-18")
-        self.assertEqual(len(out[1]["result"]["tools"]), 3)
+        self.assertEqual(len(out[1]["result"]["tools"]), 5)
 
     def test_missing_seat_is_tool_error_not_crash(self):
         msgs = [
@@ -175,7 +175,7 @@ class McpRobustnessTests(unittest.TestCase):
         self.assertTrue(by_id[5]["result"]["isError"])
         self.assertIn("source must be one of", by_id[5]["result"]["content"][0]["text"])
         self.assertEqual(by_id[6]["error"]["code"], -32602)
-        self.assertEqual(len(by_id[7]["result"]["tools"]), 3)                 # loop still alive
+        self.assertEqual(len(by_id[7]["result"]["tools"]), 5)                 # loop still alive
         stats = json.loads(by_id[8]["result"]["content"][0]["text"])
         self.assertEqual(stats["points"], 3)
         self.assertEqual(stats["by_app"], {"fleet": 3, "other": 0})
@@ -250,7 +250,7 @@ class McpRobustnessTests(unittest.TestCase):
         batch = [ln for ln in lines if isinstance(ln, list)]
         self.assertEqual(len(batch), 1)
         self.assertEqual([m["id"] for m in batch[0]], [5, 3])
-        self.assertEqual(len(by_id[6]["result"]["tools"]), 3)                 # still serving
+        self.assertEqual(len(by_id[6]["result"]["tools"]), 5)                 # still serving
         self.assertEqual(len(flat), 7)
         err = stderr.getvalue()
         self.assertIn("RuntimeError", err)
@@ -323,6 +323,8 @@ class SearchOptionsTests(unittest.TestCase):
             self.assertEqual(props[key]["type"], "boolean")
             self.assertIs(props[key]["default"], True)
             self.assertIn("description", props[key])
+        self.assertIs(props["compact"]["default"], True)
+        self.assertIs(props["full"]["default"], False)
         self.assertEqual(self.mod.TOOLS[0]["inputSchema"]["required"], ["query"])
         self.assertIn("per_doc", self.mod.TOOLS[0]["description"])
 
@@ -336,11 +338,20 @@ class SearchOptionsTests(unittest.TestCase):
         with mock.patch.object(recall_api, "recall_search", spy):
             res = self.search({"query": "q", "per_doc": "2", "rerank": False, "prefer_lessons": False})
             self.assertFalse(res["isError"])
-            self.assertEqual(seen[-1], {"query": "q", "per_doc": 2, "rerank": False, "prefer_lessons": False})
+            self.assertEqual(
+                seen[-1],
+                {
+                    "query": "q",
+                    "per_doc": 2,
+                    "rerank": False,
+                    "prefer_lessons": False,
+                    "limit": recall_presentation.DEFAULT_AGENT_LIMIT,
+                },
+            )
             self.search({"query": "q"})
-            self.assertEqual(seen[-1], {"query": "q"})                      # defaults left to recall_search
+            self.assertEqual(seen[-1], {"query": "q", "limit": recall_presentation.DEFAULT_AGENT_LIMIT})
             self.search({"query": "q", "per_doc": None, "rerank": None, "prefer_lessons": None})
-            self.assertEqual(seen[-1], {"query": "q"})                      # null means default
+            self.assertEqual(seen[-1], {"query": "q", "limit": recall_presentation.DEFAULT_AGENT_LIMIT})
             self.search({"query": "q", "per_doc": 3, "rerank": True, "prefer_lessons": True, "limit": 7})
             self.assertEqual(seen[-1], {"query": "q", "per_doc": 3, "rerank": True, "prefer_lessons": True,
                                         "limit": 7})
@@ -368,8 +379,16 @@ class SearchOptionsTests(unittest.TestCase):
             recall_api.FakeQdrant.points.append({"id": pt["id"], "payload": pt["payload"]})
         one = self.search({"query": "pm2 update-env", "limit": 5})["structuredContent"]
         self.assertEqual([h["doc_id"] for h in one["hits"]].count("doc/pm2-env"), 1)
-        two = self.search({"query": "pm2 update-env", "limit": 5, "per_doc": 2,
-                                      "prefer_lessons": False, "rerank": False})["structuredContent"]
+        two = self.search(
+            {
+                "query": "pm2 update-env",
+                "limit": 5,
+                "per_doc": 2,
+                "prefer_lessons": False,
+                "rerank": False,
+                "full": True,
+            }
+        )["structuredContent"]
         self.assertEqual([h["doc_id"] for h in two["hits"]].count("doc/pm2-env"), 2)
         self.assertEqual(two["mode"], "hybrid")
         self.assertTrue(all(h["group_hits"] == 3 for h in two["hits"] if h["doc_id"] == "doc/pm2-env"))
@@ -497,6 +516,33 @@ class DuplicateGuardTests(unittest.TestCase):
         self.assertTrue(res["isError"])
         self.assertIn("too short", res["content"][0]["text"])
         self.assertEqual(recall_api.FakeQdrant.calls, [])                 # guard never searched
+
+
+class MutationResponseValidationTests(unittest.TestCase):
+    def load(self):
+        loader = importlib.machinery.SourceFileLoader("fleet_recall_mcp_validation_test", str(SERVER))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        return mod
+
+    def test_returned_doc_id_must_be_canonical(self):
+        mod = self.load()
+        result = {
+            "id": "point-1",
+            "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+            "seat": "CLAUDE",
+            "status": "completed",
+            "revision": 2,
+            "retracted": True,
+            "retracted_at": 1,
+            "retracted_by": "CLAUDE",
+            "retraction_reason": "obsolete",
+        }
+        self.assertEqual(mod._validate_mutation_result("recall_retract", dict(result)), result)
+        result["doc_id"] = "lesson:1"
+        with self.assertRaisesRegex(FleetRagError, "doc_id"):
+            mod._validate_mutation_result("recall_retract", result)
 
 
 if __name__ == "__main__":

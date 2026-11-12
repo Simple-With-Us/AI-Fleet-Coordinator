@@ -18,6 +18,6 @@ Source additions:
 - `git-relay/git_relay/workflow_verbs.py`: closed shape/read classification.
 - `git-relay/git_relay/policy.py`: recognized action, no live policy changes.
 - `git-relay/git_relay/server.py`: authenticated dispatcher special case, no `token_for`.
-- `scripts/agent-sync-mcp/src/gr-workflow-v1.js`: closed input, safe strict output, read-tool classification and generated hosted catalog.
+- `scripts/simple-tools-mcp/src/gr-workflow-v1.js`: closed input, safe strict output, read-tool classification and generated hosted catalog.
 
 Runtime writer must adapt the reviewed delta to the current held live baseline, preserving unrelated actions, ledger/grants, credentials, audit and unknown-outcome handling. Do not replace entire runtime files or seat policy. No host or Worker deployment is performed by this source PR. Qualification receipts distinguish merged source, relay activation, MCP catalog activation, actual own-call metadata and subsequent workflow-write execution.

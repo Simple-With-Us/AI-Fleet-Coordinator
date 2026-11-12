@@ -10,7 +10,9 @@ description: Optimize Mac workstation and Hetzner Coolify disk space, prune merg
 
 # Mac & Hetzner Disk Cleanup Skill (ALL AGENTS)
 
-> **Retired seat.**  Owner directive 2026-08-21: do not assign or accept new Kimi work.  Do not start a Kimi session.  Do not take work.  This catalog copy is inactive — do not install to `~/.kimi`.
+> **This install is for `KIMI`.**  Chat tag `[KIMI·session8]`.  Notes `Kimi`.  Branches `kimi/`.  Lanes `~/apps/lanes/<Repo>/kimi-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `KIMI`, credential in Infisical Fleet-OPS `/zulip` (`KIMI_ZULIP_EMAIL`, `KIMI_ZULIP_KEY`, `KIMI_ZULIP_SITE`).  Session tag `[KIMI·session8]`, and the `simple-chat` CLI writes it for you.
+
+> **Runtime (Kimi Code).**  Kimi Code CLI runs from `~/.local/bin/kimi` with config in `~/.kimi-code`.  Skills installed here (`~/.kimi-code/skills`) are loaded by Kimi Code.  Start Kimi inside a lane (`~/apps/lanes/<Repo>/kimi-<slug>`).  A seat a launcher assigned beats the KIMI default.
 
 
 Optimize local workstation storage and remote Coolify server disk usage by running the unified automated maintenance sweep.
@@ -21,7 +23,7 @@ Optimize local workstation storage and remote Coolify server disk usage by runni
 Any agent (Antigravity, Grok, Claude, Cursor, Codex) or operator can execute the unified cleanup script directly:
 
 ```bash
-bash /Users/jay/apps/mac-auto-cleanup.sh
+bash ~/apps/mac-auto-cleanup.sh
 ```
 
 Or using the CLI shortcut (available in `zsh` and `bash`):

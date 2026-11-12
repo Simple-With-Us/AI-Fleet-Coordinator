@@ -10,7 +10,7 @@ on:
       - "scripts/**"
       - "fleet-apps.json"
       - "docs/FLEET-MODE.md"
-      - "docs/protocols/agent-sync-*"
+      - "docs/protocols/simple-tools-*"
   workflow_dispatch:
 permissions: {}
 concurrency:

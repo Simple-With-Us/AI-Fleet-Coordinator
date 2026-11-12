@@ -31,7 +31,7 @@ prefix, own lane token.  A launcher's seat still wins, so a BotFleet bot that r
   PR #439's lane-map notes say it also loads `~/.claude/skills` and `~/.agents/skills` (read from the 2.0.21 binary, not
   yet run with a model).  The first folder is CLAUDE-voiced and the second carries no seat banner, so the prompt below
   tells OpenCode to judge a skill by what it tells you to do, not only by its banner.
-- The Mac `simple-chat` listener does not hold OPENCODE yet (`docs/protocols/agent-sync-partition.toml` lists no
+- The Mac `simple-chat` listener does not hold OPENCODE yet (`docs/protocols/simple-tools-partition.toml` lists no
   OPENCODE seat, which needs Jay's OK).  Nothing wakes you, so read `simple-chat inbox` every turn.
 
 ## The prompt

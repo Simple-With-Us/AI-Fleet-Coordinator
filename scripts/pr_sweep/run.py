@@ -162,9 +162,25 @@ def default_launch(
     return proc.returncode, ""
 
 
+def resolve_lane_tool(home: str | None = None) -> str | None:
+    """Return the lane tool binary, or None when no usable one exists.
+
+    The Mac installs it at ~/apps/lane; other hosts (the fleet server) put it
+    on PATH instead.  A directory or a non-executable file at either place is
+    not a tool, and handing either to subprocess raises PermissionError.
+    """
+    base = os.path.join(os.path.expanduser(home or "~"), "apps", "lane")
+    if os.path.isfile(base) and os.access(base, os.X_OK):
+        return base
+    found = shutil.which("lane")
+    if found and os.path.isfile(found) and os.access(found, os.X_OK):
+        return found
+    return None
+
+
 def default_lane(argv: Sequence[str]) -> tuple[int, str]:
-    lane = os.path.expanduser("~/apps/lane")
-    if not os.path.exists(lane):
+    lane = resolve_lane_tool()
+    if lane is None:
         return 127, "~/apps/lane is not installed"
     proc = subprocess.run(
         [lane, *argv],

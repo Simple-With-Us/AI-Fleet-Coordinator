@@ -100,8 +100,7 @@ grok_leader_lock_held() {
 # mac-collab-sync and mac-collab-writeback (all retired 2026-10-19, AFC-363;  the board
 # archive is gone, Linear is the tracker), scout, senate-relay,
 # senate-tunnel, residential-proxy, Congress/Socratic/Usage mac-xcode runners.
-# Slack retired in the hard cut to Zulip on 2026-10-07: agent-sync-push
-# (the Slack relay, :8787), cursor-slack-sync and the slack-agent-inbox
+# Slack retired on 2026-10-07: cursor-slack-sync and the slack-agent-inbox
 # launchd job are gone and must not be watched or resurrected.
 # The BotFleet MCP server is not in this list:  the owner parked it on purpose
 # (BotFleet stopped.marker, Oct 25 2026), and the BotFleet Control app's Fleet

@@ -179,7 +179,7 @@ class AppleEventTimeoutTests(unittest.TestCase):
         cap.  This test is what keeps the two from drifting apart.
         """
         sys.path.insert(0, str(SCRIPTS))
-        from agent_sync import notes
+        from simple_tools import notes
 
         self.assertGreater(
             notes.SCRIPT_TIMEOUT_S,

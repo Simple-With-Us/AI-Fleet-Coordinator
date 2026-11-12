@@ -144,6 +144,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
 from . import layout as L
+from . import placement as P
 
 __all__ = [
     "FRESH_DAYS",
@@ -960,6 +961,7 @@ class Checkout:
     ignored_regenerable: int | None = None
     unpushed: int | None = None
     unpushed_all_branches: int | None = None
+    newest_unpushed_age_hours: float | None = None
     has_stash: bool | None = None
     upstream: str | None = None
     upstream_state: str = "unknown"
@@ -991,6 +993,14 @@ class Checkout:
     layout_reasons: list[str] = field(default_factory=list)
     layout_target: str | None = None
     branch_verdict: str = ""
+    # Placement reporting (AFC-618), separate from everything the cleaners read.  `sanctioned` is the map's answer,
+    # `cleanup_eligible` says a lane here may still be retired, and only the second one feeds cleaner_candidates.
+    sanctioned: bool | None = None
+    cleanup_eligible: bool | None = None
+    placement_exception: str | None = None
+    placement_exception_expired: bool = False
+    placement_violation: bool = False
+    placement_reason: str | None = None
     safety: str = "UNKNOWN"
     safety_reasons: list[str] = field(default_factory=list)
     dropped_ball: bool | None = False
@@ -1062,6 +1072,9 @@ def _days(now: float, then: float | None) -> float | None:
 GIT_OP_FILES = ("MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG",
                 "sequencer", "index.lock")
 STALE_LOCK_HOURS = 1.0
+# A clone in the Code root more commits behind origin's default branch than this is reported.  The keeper moves a clean
+# clone within minutes, so a clone this far back is one the keeper cannot move.
+MAIN_CLONE_BEHIND_LIMIT = 20
 DIRTY_STAT_CAP = 3000          # at most this many dirty paths are stat'ed per checkout; more sets dirty_times_partial
 NEVER_PUSHED_LIST_CAP = 5000   # the oldest unpushed commit is looked up only for a lane with at most this many
 KEEP_READ_LIMIT = 4096         # bytes of a .janitor-keep file that are read
@@ -1449,6 +1462,17 @@ def _not_remotes(trusted: list[str] | None) -> list[str]:
     return ["--not", *(f"--remotes={name}" for name in trusted)] if trusted else []
 
 
+def _newest_unpushed_age(ctx: _Ctx, path: str, not_args: Sequence[str]) -> float | None:
+    """Hours since the newest commit on any local branch that no trusted remote has, by committer date, or None if it could not be
+    read.  rev-list lists newest first."""
+    res = _call(ctx, ["git", "rev-list", "--max-count=1", "--branches", *not_args], path)
+    newest = res.out.strip() if res.ok else ""
+    if not _SHA.match(newest):
+        return None
+    res = _call(ctx, ["git", "log", "-1", "--no-show-signature", "--format=%ct", newest], path)
+    return _hours(ctx.now, float(res.out.strip())) if res.ok and res.out.strip().isdigit() else None
+
+
 def _probe_git(co: Checkout, ctx: _Ctx, path: str) -> None:
     errors = co.read_errors
     res = _call(ctx, ["git", "rev-parse", "HEAD"], path)
@@ -1547,6 +1571,8 @@ def _probe_git(co: Checkout, ctx: _Ctx, path: str) -> None:
         count = _as_count(res)
         if count is not None:
             co.unpushed_all_branches = count
+            if count:
+                co.newest_unpushed_age_hours = _newest_unpushed_age(ctx, path, not_args)
         else:
             errors.append("unpushed-all-branches: " + _why(res))
         res = _call(ctx, ["git", "for-each-ref", "--count=1", "--format=%(refname)", "refs/stash"], path)
@@ -1566,7 +1592,7 @@ _SEAT_TOOLS = {
     "claude": "claude-cli", "monet": "claude-cli", "renoir": "claude-cli", "codex": "codex",
     "cursor": "cursor", "grok": "grok", "grok-build": "grok", "fx": "fx", "antigravity": "antigravity",
     "minimax": "minimax", "deepseek": "deepseek", "kimi": "kimi", "muse-assist": "muse-assist",
-    "muse-code": "muse-code",
+    "muse-code": "muse-code", "zcode": "zcode",
 }
 
 
@@ -1934,6 +1960,157 @@ def _is_strict_violation(co: Checkout) -> bool:
     return co.location_class == "UNSANCTIONED" and not co.tool_cache and co.scope != "third-party"
 
 
+def _throwaway_in_temp(co: Checkout, roots: L.Roots) -> bool:
+    """A test repo in a temp folder cloned from another local repo, which lane-map.md allows.  _origin_url has already followed that
+    origin, so a clone of a fleet repo is scope `fleet` by now.  A dead origin that sat under a fleet root still counts as fleet."""
+    if co.scope == "fleet" or not co._origin_local or "in-temp-dir" not in co.layout_reasons:
+        return False
+    origin = os.path.realpath(co._origin_local)
+    return not any(origin == os.fspath(root) or origin.startswith(os.fspath(root) + os.sep)
+                   for root in (roots.code_root, roots.apps_root, roots.lanes_root, *roots.external_lanes_roots))
+
+
+def placement_verdict(co: Checkout, roots: L.Roots, rows: Sequence[P.ExceptionRow], host: str,
+                      today: _dt.date | None = None, registry: L.Registry | None = None) -> None:
+    """Fill the placement fields of `co`.  Reads no file and changes nothing a cleaner reads.
+
+    A violation is a fleet checkout the map calls wrong or unsanctioned, or a full clone in a lane folder, that no
+    in-date exception row excuses.  A tool cache, a third-party repo and a local repo with no remote are not.  A row excuses what
+    its class allows (placement.row_excuses_checkout):  a cache or a personal folder never excuses a linked worktree, and a personal
+    folder never excuses a clone of a registered app.
+    """
+    parts = L._parts(co.realpath, roots)  # noqa: SLF001 - same package
+    harness = L._harness_for(parts, roots)  # noqa: SLF001
+    co.sanctioned = co.layout_status not in ("wrong", "unsanctioned")
+    co.cleanup_eligible = harness[1].cleanup_eligible if harness is not None else co.location_class in _LANE_LIKE
+    hit = P.find_exception((co.path, co.realpath, L.to_logical(co.realpath, roots)), roots, rows, host=host, today=today)
+    if hit is not None:
+        co.placement_exception = hit.row.id
+        co.placement_exception_expired = hit.expired
+    # A tool cache holds a tool's own clones.  A linked worktree in one was made by something else, so it is judged.
+    if (co.tool_cache and co.kind != "LINKED-WORKTREE") or co.scope == "third-party" or (co.scope != "fleet" and not co.remote_url):
+        return
+    if _throwaway_in_temp(co, roots):
+        return
+    reason: str | None = None
+    if co.layout_status in ("wrong", "unsanctioned"):
+        reason = ", ".join(co.layout_reasons) or str(co.layout_status)
+    elif co.kind == "FULL-CLONE":
+        lanes = [L._parts(root, roots) for root in (roots.lanes_root, *roots.external_lanes_roots)]  # noqa: SLF001
+        for root in lanes:
+            if parts[: len(root)] == root and len(parts) > len(root) and not parts[len(root)].startswith("_"):
+                reason = "full clone in a lane folder"
+                break
+    if reason is None:
+        return
+    if hit is not None and not hit.expired:
+        owner_repo = (co.owner_repo or "").casefold()
+        registered = bool(owner_repo) and registry is not None and any(
+            (app.owner_repo or "").casefold() == owner_repo for app in registry.apps
+        )
+        if P.row_excuses_checkout(hit.row, linked_worktree=co.kind == "LINKED-WORKTREE", registered_app=registered):
+            return
+        hit = None
+    co.placement_violation = True
+    co.placement_reason = f"{reason}; exception {hit.row.id} expired {hit.row.expires}" if hit is not None else reason
+
+
+def _default_branch_ref(ctx: _Ctx, path: str) -> tuple[str, str] | None:
+    """(branch name, remote-tracking ref) of origin's default branch, from local refs only."""
+    res = _call(ctx, ["git", "rev-parse", "--abbrev-ref", "origin/HEAD"], path)
+    if res.ok and res.out.strip().startswith("origin/") and res.out.strip() != "origin/HEAD":
+        ref = res.out.strip()
+        return ref[len("origin/"):], ref
+    for name in DEFAULT_BRANCHES:
+        probe = _call(ctx, ["git", "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{name}"], path)
+        if probe.ok and probe.out.strip():
+            return name, f"origin/{name}"
+    return None
+
+
+def _rev_count(ctx: _Ctx, path: str, include: str, exclude: str, limit: int) -> int | None:
+    """How many commits, counted up to `limit`:  the checks only ask whether a clone is past its limit, so a sweep never walks a
+    long divergent history."""
+    res = _call(ctx, ["git", "rev-list", "--count", f"--max-count={limit}", include, "--not", exclude], path)
+    return int(res.out.strip()) if res.ok and res.out.strip().isdigit() else None
+
+
+def main_clone_status(ctx: _Ctx, co: Checkout, behind_limit: int) -> dict:
+    """One clone directly in the Code root against the owner's rule that it sits on origin's default branch.
+
+    It reads local refs and never fetches, because the keeper job fetches every minute (Mac) or ten (server), so a
+    clone the keeper cannot move shows up here as behind.
+    """
+    issues: list[str] = []
+    ahead = behind = None
+    default = _default_branch_ref(ctx, co.path)
+    if default is None:
+        issues.append("no-default-branch-ref")
+        name = None
+    else:
+        name, ref = default
+        ahead = _rev_count(ctx, co.path, "HEAD", ref, behind_limit + 1)
+        behind = _rev_count(ctx, co.path, ref, "HEAD", behind_limit + 1)
+        if co.branch is None:
+            issues.append("detached")
+        elif co.branch != name:
+            issues.append("off-default-branch")
+        if ahead:
+            issues.append("ahead")
+        if behind is not None and behind > behind_limit:
+            issues.append("behind")
+    if co.index_lock_age_hours is not None and co.index_lock_age_hours >= STALE_LOCK_HOURS:
+        issues.append("stale-index-lock")
+    return {
+        "repo": os.path.basename(co.path.rstrip(os.sep)),
+        "path": co.path,
+        "branch": co.branch,
+        "detached_sha": co.detached_sha,
+        "default_branch": name,
+        "ahead": ahead,
+        "behind": behind,
+        "dirty_tracked": co.dirty_tracked,
+        "index_lock_age_hours": co.index_lock_age_hours,
+        "issues": issues,
+        "exception": co.placement_exception if not co.placement_exception_expired else None,
+    }
+
+
+def _main_clones(ctx: _Ctx, ordered: Sequence[Checkout], behind_limit: int) -> list[dict]:
+    code_root = L._parts(ctx.roots.code_root, ctx.roots)  # noqa: SLF001 - same package
+    out: list[dict] = []
+    for co in ordered:
+        parts = L._parts(co.realpath, ctx.roots)  # noqa: SLF001
+        # A local repo with no remote has no default branch to be on, and someone else's repo is not held to the owner's rule.
+        if co.scope == "third-party" or co.tool_cache:
+            continue
+        if parts[:-1] == code_root and co.kind == "FULL-CLONE" and co.remote_url:
+            out.append(main_clone_status(ctx, co, behind_limit))
+    return out
+
+
+CODE_WORK_OLD_DAYS = 30
+
+
+def _code_clone_work(ordered: Sequence[Checkout], main_clones: Sequence[dict]) -> list[dict]:
+    """A clone in the Code root with work HEAD does not reach that no remote has, which a reset of it would strand.  `old_branches_only`
+    is that work when all of it is local branches past CODE_WORK_OLD_DAYS, which is what an old squash-merged branch looks like.  An
+    age or a stash that could not be read is not old."""
+    by_path = {co.path: co for co in ordered}
+    out: list[dict] = []
+    for row in main_clones:
+        co = by_path[row["path"]]
+        other = max(0, (co.unpushed_all_branches or 0) - (co.unpushed or 0))
+        held = ([f"{other} commit(s) on other branches"] if other else []) + (["a stash"] if co.has_stash else [])
+        if not held or row["exception"]:
+            continue
+        age = co.newest_unpushed_age_hours
+        old = bool(other) and co.has_stash is False and co.unpushed == 0 and age is not None and age > CODE_WORK_OLD_DAYS * 24
+        detail = " and ".join(held) + (f", the newest {int(age / 24)} days old" if old else "")
+        out.append({"type": "CODE-WORK", "path": co.path, "detail": detail, "old_branches_only": old})
+    return out
+
+
 def _anomalies_for(co: Checkout) -> list[dict]:
     out: list[dict] = []
 
@@ -1998,6 +2175,28 @@ def external_lane_warnings(roots: L.Roots) -> list[str]:
     return out
 
 
+def unreadable_roots(roots: L.Roots) -> list[dict]:
+    """External lanes roots that are there and refuse to be read, as launchd meets an external disk it has no permission for.  A sweep
+    finds nothing on such a root and looks clean, so it says so.  A root that is not there is not this:  that is an unmounted disk."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for root in (os.fspath(r) for r in roots.external_lanes_roots):
+        parts = root.split("/")
+        mount = "/".join(parts[:3]) if len(parts) > 3 and parts[1] == "Volumes" else None
+        for path in filter(None, (mount, root)):
+            try:
+                with os.scandir(path):
+                    pass
+            except PermissionError as exc:
+                if path not in seen:
+                    seen.add(path)
+                    out.append({"path": path, "error": exc.strerror or type(exc).__name__})
+                break
+            except OSError:
+                break
+    return out
+
+
 def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = None, *,
                  cwd: str | os.PathLike[str] | None = None,
                  tmp_scan_roots: Iterable[str | os.PathLike[str]] | None = None,
@@ -2010,7 +2209,8 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
                  clock: Callable[[], _dt.datetime] | None = None, workers: int = 8,
                  case_insensitive: bool | None = None, only_class: str | None = None,
                  gh_limit: int = GH_LIMIT, fresh_days: float = FRESH_DAYS,
-                 cleaner_retention_days: int | None = None) -> dict:
+                 cleaner_retention_days: int | None = None,
+                 main_clone_behind: int = MAIN_CLONE_BEHIND_LIMIT) -> dict:
     """Run the whole sweep and return the JSON-ready report.
 
     Everything that touches the machine is injectable: `run` (every subprocess), `gh_prs`
@@ -2236,6 +2436,39 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
     anomalies.sort(key=lambda a: (_ANOMALY_ORDER.index(a["type"]), a["path"]))
     strict_violations = sum(1 for co in ordered if _is_strict_violation(co))
     total_found = len(ordered)
+    exception_rows, exceptions_problem = P.load_exceptions_reporting(env=env)
+    host_kind = P.host_kind(env)
+    for co in ordered:
+        placement_verdict(co, roots, exception_rows, host_kind, registry=registry)
+    main_clones = _main_clones(ctx, ordered, main_clone_behind)
+    placement_anomalies = [
+        {"type": "MISPLACED", "path": co.path, "detail": co.placement_reason}
+        for co in ordered if co.placement_violation
+    ]
+    placement_anomalies += [
+        {"type": "MAIN-CLONE", "path": row["path"], "detail": ", ".join(row["issues"])}
+        for row in main_clones if row["issues"] and not row["exception"]
+    ]
+    placement_anomalies += [
+        {"type": "EXPIRED-EXCEPTION", "path": row.pattern, "detail": f"{row.id} expired {row.expires}"}
+        for row in P.expired_rows(exception_rows, host=host_kind)
+    ]
+    # Everything above is judged without the rows it has lost, so say that first and let the reader discount the rest.
+    if exceptions_problem:
+        placement_anomalies.insert(0, {"type": "EXCEPTIONS-UNUSABLE", "path": P.EXCEPTIONS_NAME, "detail": exceptions_problem})
+    # A warning, not an anomaly:  nothing is wrong yet, so --strict-placement still passes, and the watcher files it ahead of the day.
+    placement_warnings = [
+        {"type": "EXPIRING-EXCEPTION", "path": row.pattern, "detail": f"{row.id} expires {row.expires}"}
+        for row in P.expiring_rows(exception_rows, host=host_kind)
+    ]
+    # Also a warning:  old squash-merged branches look the same, so this asks a person to look and fails no check.
+    placement_warnings += _code_clone_work(ordered, main_clones)
+    placement_warnings += [
+        {"type": "MODE-FILE", "path": f"mode-file:{problem}", "detail": "that line of the lane-guard mode file does nothing"}
+        for problem in P.read_mode(os.fspath(roots.home), env).problems
+    ]
+    no_read = unreadable_roots(roots)
+    warnings += [f"{row['path']} cannot be read ({row['error']}), so no checkout on it is in this report." for row in no_read]
     shown = ordered
     if only_class:
         want_cls = only_class.upper()
@@ -2245,6 +2478,8 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
     summary = _summarize(shown, anomalies)
     summary["total_found"] = total_found
     summary["strict_violations"] = strict_violations
+    # The whole machine, like strict_violations, and counted only by --strict-placement.
+    summary["placement_violations"] = len(placement_anomalies)
     # A repo counts as gh-ok only when its bulk lookup returned a list.  A MERGED or CLOSED match can
     # only come from such a list, so this is the same fact stated per repo for a consumer to audit.
     gh_ok_repos = {repo for repo, data in prs_by_repo.items() if data is not None}
@@ -2269,6 +2504,10 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
         "checkouts": [c.to_dict() for c in shown],
         "anomalies": anomalies,
         "cleaner_candidates": candidates,
+        "main_clones": main_clones,
+        "placement_anomalies": placement_anomalies,
+        "placement_warnings": placement_warnings,
+        "unreadable_roots": no_read,
         "summary": summary,
     }
 
@@ -2378,7 +2617,16 @@ def render_text(report: Mapping) -> str:
         floor = report.get("cleaner_min_days", FRESH_DAYS)
         out.append(f"Cleaner candidates {len(report['cleaner_candidates'])} (merged PR, clean, idle {floor:g}+ days; "
                    "--cleaner-list prints the paths)")
+    if report.get("main_clones") is not None:
+        out.append(f"Placement problems {s.get('placement_violations', 0)}   "
+                   f"Main clones {len(report['main_clones'])}")
     out.append("")
+    if report.get("shim_reach") is not None:
+        out += _shim_reach_module().render(report["shim_reach"]) + [""]
+    if report.get("placement_anomalies"):
+        out.append(f"PLACEMENT ({len(report['placement_anomalies'])})")
+        out += [f"  {a['type']:<18} {a['path']}  {a['detail']}" for a in report["placement_anomalies"]]
+        out.append("")
     cos = report["checkouts"]
     dropped = [c for c in cos if c["dropped_ball"] is True]
     tmp = [c for c in cos if c["location_class"] == "FORBIDDEN_TMP" and c not in dropped]
@@ -2438,8 +2686,16 @@ the 1-to-90-day floor, no .janitor-keep, no process cwd, no read
 errors, a successful gh lookup for the repo, and that are registered linked worktrees.  Check
 generated_at, gh and lsof in the JSON before acting on a saved report.
 
-exit codes: 0 normally, 2 with --strict when a forbidden or unsanctioned checkout exists, 64 for a
-usage error."""
+placement: placement_anomalies in the JSON lists what the Lane Map does not allow:  a fleet checkout the map calls
+wrong or unsanctioned, a full clone in a lane folder, a clone in the Code root off its default branch, detached, ahead,
+over --main-clone-behind commits behind or holding a stale index.lock, and an exception past its expiry.  Rows of
+fleet_lanes/placement-exceptions.json excuse a checkout.  --strict leaves all of this out, so a worktree under
+~/Code/<Repo>/.muse or .claude still passes it;  --strict-placement counts them.  sanctioned and cleanup_eligible are
+separate fields, and only cleanup_eligible matters to cleaner_candidates.
+
+exit codes: 0 normally, 2 with --strict when a forbidden or unsanctioned checkout exists or with --strict-placement
+when placement_anomalies is not empty, 64 for a usage error.  --strict-placement also says which shell shapes find the git shim,
+which fails no check:  fleet_lanes/shim_reach.py."""
 
 
 def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = None,
@@ -2478,6 +2734,13 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
     p.add_argument("--tmp-root", metavar="PATH", action="append",
                    help="scan this temp root instead of the real ones (repeatable; tests)")
     p.add_argument("--strict", action="store_true", help="exit 2 if any forbidden or unsanctioned checkout exists")
+    p.add_argument("--strict-placement", action="store_true",
+                   help="exit 2 if placement_anomalies is not empty (see placement, below)")
+    p.add_argument("--shim-reach", action="store_true",
+                   help="also say which common shell shapes find the git shim (--strict-placement implies this; it starts those shells)")
+    p.add_argument("--main-clone-behind", metavar="N", type=int, default=MAIN_CLONE_BEHIND_LIMIT,
+                   help=f"report a clone in the Code root more than N commits behind its default branch "
+                        f"(default {MAIN_CLONE_BEHIND_LIMIT})")
     p.add_argument("--only-class", metavar="CLASS", type=str.upper,
                    choices=[str(c) for c in L.LocationClass], help="show only this location class")
     args = p.parse_args(argv)
@@ -2494,7 +2757,14 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
         home, env, cwd=cwd if cwd is not None else os.getcwd(), tmp_scan_roots=args.tmp_root,
         deep=args.deep, sizes=args.sizes, use_gh=not args.no_gh, run=run, gh_prs=gh_prs,
         lsof_cwds=lsof_cwds, clock=clock, only_class=args.only_class, gh_limit=args.gh_limit,
-        fresh_days=args.fresh_days, cleaner_retention_days=args.cleaner_retention_days)
+        fresh_days=args.fresh_days, cleaner_retention_days=args.cleaner_retention_days,
+        main_clone_behind=args.main_clone_behind)
+    if args.shim_reach or args.strict_placement:
+        reach = _shim_reach_module()
+        if reach is not None:
+            report["shim_reach"] = reach.shim_reach(home, env)
+        else:
+            report["warnings"].append("this copy of the tools has no shim_reach module, so shim reach was not checked.")
     text = json.dumps(report, indent=2, sort_keys=False) + "\n"
     if args.write:
         _write_atomic(args.write, text)
@@ -2504,7 +2774,18 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
             stderr.write(f"fleet_lanes.doctor: {note}\n")
     else:
         stdout.write(text if args.json else render_text(report))
-    return 2 if args.strict and report["summary"]["strict_violations"] else 0
+    if args.strict and report["summary"]["strict_violations"]:
+        return 2
+    return 2 if args.strict_placement and report["summary"]["placement_violations"] else 0
+
+
+def _shim_reach_module():
+    """Imported only when asked for, because the server's reviewed CLI bundle carries the doctor without it, and `lane` must still run."""
+    try:
+        from . import shim_reach
+    except ImportError:
+        return None
+    return shim_reach
 
 
 def _cleaner_notes(report: Mapping) -> list[str]:

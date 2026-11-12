@@ -52,6 +52,10 @@ from pathlib import Path
 
 HOME = Path(os.environ.get("HOME", "/root")).expanduser()
 
+# The last directory `which` tries for a tool that is on neither PATH nor under the home.  A name, so a test can point it
+# away from the machine's real one (a host with a real `claude` there would otherwise change what the tests see).
+SYSTEM_BIN = Path("/usr/local/bin")
+
 # The volume a server host keeps its integration trees and its apps folder on.
 # The path is not in this repository:  the host names it in the environment, and a
 # host that names none has no volume, so the copy under the home is the fallback.
@@ -324,7 +328,7 @@ def which(name: str) -> str:
     found = shutil.which(name)
     if found:
         return found
-    for directory in (HOME / ".opencode" / "bin", HOME / ".local" / "bin", Path("/usr/local/bin")):
+    for directory in (HOME / ".opencode" / "bin", HOME / ".local" / "bin", SYSTEM_BIN):
         candidate = directory / name
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)

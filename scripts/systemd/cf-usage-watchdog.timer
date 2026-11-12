@@ -1,0 +1,10 @@
+[Unit]
+Description=Poll Cloudflare account usage every minute (cf-usage-watchdog)
+
+[Timer]
+OnCalendar=minutely
+AccuracySec=5s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

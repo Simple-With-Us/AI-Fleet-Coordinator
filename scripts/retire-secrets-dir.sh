@@ -58,7 +58,7 @@ SKIP_DIRS="lanes node_modules .git .venv venv projects sessions logs file-histor
 VENDOR_DIRS="node_modules .git .venv venv"
 # Where the plain-file scan looks.
 MAC_ROOTS=("$HOME_DIR/apps" "$HOME_DIR/bin" "$HOME_DIR/.local/bin" "$HOME_DIR/.local/libexec" \
-  "$HOME_DIR/Library/LaunchAgents" "$HOME_DIR/vision-worker" "$HOME_DIR/.agent-sync" "$HOME_DIR/.claude" \
+  "$HOME_DIR/Library/LaunchAgents" "$HOME_DIR/vision-worker" "$HOME_DIR/.simple-tools" "$HOME_DIR/.claude" \
   "$HOME_DIR/.codex" "$HOME_DIR/.cursor" "$HOME_DIR/.config" "$HOME_DIR/.claude-merge-shepherd" \
   "$HOME_DIR/Library/Application Support/ShellularWatchdog" \
   "$HOME_DIR/.zshrc" "$HOME_DIR/.zprofile" "$HOME_DIR/.zshenv" "$HOME_DIR/.bash_profile" "$HOME_DIR/.bashrc")
@@ -239,7 +239,7 @@ scan_checkouts() {
 
 # Symlinks anywhere under $HOME (outside the folder) that point into it:  they would dangle after the archive.
 scan_symlinks() {
-  local root roots=("$HOME_DIR/.appstoreconnect" "$HOME_DIR/.local" "$HOME_DIR/bin" "$HOME_DIR/.agent-sync" "$HOME_DIR/.config" \
+  local root roots=("$HOME_DIR/.appstoreconnect" "$HOME_DIR/.local" "$HOME_DIR/bin" "$HOME_DIR/.simple-tools" "$HOME_DIR/.config" \
     "$HOME_DIR/.claude" "$HOME_DIR/.codex" "$HOME_DIR/.cursor" "$HOME_DIR/.ssh" "$HOME_DIR/Library/LaunchAgents")
   for root in "${roots[@]}"; do
     [ -e "$root" ] || continue

@@ -401,6 +401,8 @@ class OpenCodePluginShapeTests(World):
         )
         if run.returncode != 0 and "bad option" in run.stderr:
             self.skipTest("this node has no --experimental-strip-types")
+        if run.returncode != 0 and "ERR_NO_TYPESCRIPT" in run.stderr:
+            self.skipTest("this node takes --experimental-strip-types but is not built with TypeScript support")
         return run
 
     def prepare(self, source: str, *, stub_guard: bool = True) -> tuple[Path, Path]:

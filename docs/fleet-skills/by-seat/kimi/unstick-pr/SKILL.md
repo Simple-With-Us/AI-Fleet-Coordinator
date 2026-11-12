@@ -5,16 +5,16 @@ description: Diagnose and repair a PR that will not merge — phantom vs real co
 
 # Unstick a blocked PR (KIMI)
 
-> **Retired seat.**  Owner directive 2026-08-21: do not assign or accept new Kimi work.  Do not start a Kimi session.  Do not take work.  This catalog copy is inactive — do not install to `~/.kimi`.
+> **This install is for `KIMI`.**  Chat tag `[KIMI·session8]`.  Notes `Kimi`.  Branches `kimi/`.  Lanes `~/apps/lanes/<Repo>/kimi-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `KIMI`, credential in Infisical Fleet-OPS `/zulip` (`KIMI_ZULIP_EMAIL`, `KIMI_ZULIP_KEY`, `KIMI_ZULIP_SITE`).  Session tag `[KIMI·session8]`, and the `simple-chat` CLI writes it for you.
+
+> **Runtime (Kimi Code).**  Kimi Code CLI runs from `~/.local/bin/kimi` with config in `~/.kimi-code`.  Skills installed here (`~/.kimi-code/skills`) are loaded by Kimi Code.  Start Kimi inside a lane (`~/apps/lanes/<Repo>/kimi-<slug>`).  A seat a launcher assigned beats the KIMI default.
 
 
-Works in every fleet repo.  Substitute owner/repo from `gh repo view --json nameWithOwner`.
+Works in every fleet repo.  Substitute owner/repo from the lane's git remote.
 
 ## 1. Snapshot
 
-```bash
-gh pr view <N> --json state,mergeable,mergeStateStatus,autoMergeRequest,statusCheckRollup,url
-```
+Read the PR with the relay tool `gr_wf_pr_get` (`repo`, `number`):  it returns state, mergeable, mergeStateStatus, autoMergeRequest, statusCheckRollup and url.
 
 Note `mergeable` and `mergeStateStatus`.  Continue if OPEN and not cleanly mergeable, or if auto-merge is null.
 
@@ -47,13 +47,13 @@ GitHub recomputes in ~20–60s and re-dispatches CI.  If several PRs are stuck,
 
 ### B) BLOCKED, checks green
 
-Unresolved review threads.  Branch protection requires conversation resolution (`enforce_admins: true`).  Use `codex-triage` (all review bots, not only Codex).  Re-check `gh pr view` after.
+Unresolved review threads.  Branch protection requires conversation resolution (`enforce_admins: true`).  Use `codex-triage` (all review bots, not only Codex).  Re-check with the relay tool `gr_wf_pr_get` after.
 
 ### C) Required check FAILURE
 
 Do not guess.  Open the failing job.
 
-- First-time flake on a known-flaky e2e job: `gh run rerun <run-id> --failed` **once**.  A second identical failure is real.
+- First-time flake on a known-flaky e2e job:  rerun the failed jobs with the relay tool `gr_wf_run_rerun` (`repo`, `run_id`) **once**.  A second identical failure is real.
 - ST Playwright `smoke` (`test/e2e/dashboard-smoke.spec.ts`) has a documented flake class: `docs/rollouts/2026-06-22-e2e-smoke-auth-fix.md`.
 - Money-path / typecheck / gitleaks failures are real until proven otherwise.
 
@@ -65,22 +65,19 @@ Same class as phantom.  Push a fresh head as in A.
 
 ## 3. Re-arm auto-merge
 
-```bash
-gh pr merge <N> --squash --auto
-gh pr view <N> --json autoMergeRequest
-```
+Arm auto-merge with the relay tool `gr_wf_automerge_enable` (`repo`, `number`, `method` = `SQUASH`), then confirm `autoMergeRequest` with the relay tool `gr_wf_pr_get`.
 
 `autoMergeRequest` must be an object, not `null`.  Not `--admin`.
 
-The merge, reply and thread-resolution actions have a credential-safe path: `git-relay`, with the MCP wrapper **GR-MCP** (`git-relay mcp`), which exposes `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`; `mint_token` is deliberately not exposed over MCP, because it returns a raw credential.  A seat reaches the tools with its own bearer token: ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server — the tool names are the same either way.  **The relay is not deployed yet** (verified Oct 23 2026): there is no daemon, no launchd job and no seat pointed at it, so the interim `gh` and shell path above is still the one that works, until the owner decides the cutover.
+The merge, reply and thread-resolution actions have a credential-safe path: `git-relay`, with the MCP wrapper **GR-MCP** (`git-relay mcp`), which exposes `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`; `mint_token` is deliberately not exposed over MCP, because it returns a raw credential.  A seat reaches the tools with its own bearer token: ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server — the tool names are the same either way.  **The relay tools are live** (verified Nov 4 2026): a seat connected through Fleet MCP calls `gr_open_pr`, `gr_edit_pr`, `gr_reply_thread`, `gr_comment_pr`, `gr_resolve_thread`, `gr_merge_pr` and the `gr_wf_*` workflow verbs as its own GitHub App, so the merge, the reply and the resolution go through the relay tools.  A personal `gh` credential is not the fleet's route, and another seat's credential is never borrowed.
 
 ## 4. If it still hangs
 
-Repeat `1–3`.  Comment on the matching Linear issue (`simple-board comment <id> ...`).  Do not force-merge, do not disable protection, do not resolve threads without a reply.
+Repeat `1–3`.  Comment on the matching Linear issue (the MCP tool `linear_comment`, with `id` and `body`).  Do not force-merge, do not disable protection, do not resolve threads without a reply.
 
 ## Canon
 
-- `/Users/jay/apps/FLEET-PROTOCOL.md` — Merge requirements; CI runner policy
+- `~/apps/FLEET-PROTOCOL.md` — Merge requirements; CI runner policy
 - App `AGENTS.md` Pull requests section
 - Skills: `codex-triage`, `land-lane`
 - ST flake origin: `docs/rollouts/2026-06-22-e2e-smoke-auth-fix.md`
