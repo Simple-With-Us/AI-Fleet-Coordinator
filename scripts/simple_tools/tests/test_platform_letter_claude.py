@@ -1049,12 +1049,12 @@ class GoneElsewhereTests(HookBase):
         self.server_home = os.path.join(self.tmp.name, "server-home")
         os.makedirs(self.server_home)
 
-    def record(self, host: str, cli: str, *, archived: object = True, ssh: object = True, age: float = 7200,
-               **extra) -> str:
+    def record(self, host: str, cli: str, *, archived: object = True, remote: object = True,
+               age: float = 7200, **extra) -> str:
         """One record of the app, last changed `age` seconds ago."""
         body = {"sessionId": host, "cliSessionId": cli, "isArchived": archived, "title": "Secret Title", **extra}
-        if ssh is not False:
-            body["sshConfig"] = {"sshHost": "the-server"} if ssh is True else ssh
+        if remote is not False:  # the app runs the chat on another host, or `remote` is the record's own field
+            body["sshConfig"] = {"sshHost": "the-server"} if remote is True else remote
         path = write(self.home, host, body)
         os.utime(path, (time.time() - age, time.time() - age))
         return path
@@ -1097,7 +1097,7 @@ class GoneElsewhereTests(HookBase):
         self.begin("m-0002", now=self.t0)
         for sid in ("r-0001", "r-0002", "r-0003"):
             self.server_chat(sid)
-        self.record(local, "m-0001", ssh=False)  # archived, and it runs here
+        self.record(local, "m-0001", remote=False)  # archived, and it runs here
         self.record(remote, "r-0001")  # archived, and the app runs it over ssh
         self.record("local_cccccccc-0003", "r-0002", archived=False)  # run over ssh, not archived
         letter = self.row("r-0001", "server")["label"]
@@ -1127,13 +1127,13 @@ class GoneElsewhereTests(HookBase):
     def test_an_unarchived_or_doubtful_ssh_record_is_not_named(self) -> None:
         self.record("local_aaaaaaaa-0001", "r-0001")  # the one that is named
         self.record("local_aaaaaaaa-0002", "r-0002", archived=False)
-        self.record("local_aaaaaaaa-0003", "r-0003", ssh=False)  # archived, and it runs on this Mac
-        self.record("local_aaaaaaaa-0004", "r-0004", ssh={})  # no ssh host at all
+        self.record("local_aaaaaaaa-0003", "r-0003", remote=False)  # archived, and it runs on this Mac
+        self.record("local_aaaaaaaa-0004", "r-0004", remote={})  # no ssh host at all
         self.record("local_aaaaaaaa-0005", "r-0005", archived="true")  # only a true flag is an archive
         self.record("local_aaaaaaaa-0006", "../not-an-id")
         write(self.home, "local_aaaaaaaa-0007", {"isArchived": True, "sshConfig": {"sshHost": "x"}})  # never ran
         self.record("local_aaaaaaaa-0008", "r-0008")
-        self.record("local_bbbbbbbb-0008", "r-0008", archived=False, ssh=False)  # two records, and one says no
+        self.record("local_bbbbbbbb-0008", "r-0008", archived=False, remote=False)  # two records, and one says no
         self.record("local_aaaaaaaa-0009", "r-0009")
         os.utime(write(self.home, "local_bbbbbbbb-0009", '{"cliSessionId": "r-0009", "isArchived": tr'),
                  (time.time() - 7200,) * 2)  # a second record of it, caught mid-write
