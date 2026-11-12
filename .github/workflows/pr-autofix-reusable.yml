@@ -552,7 +552,7 @@ jobs:
         with:
           name: pr-autofix-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.diagnostics.outputs.summary-path }}
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 7
 
       - name: Extract Usage Counts
@@ -587,7 +587,14 @@ jobs:
           HAS_VERIFY: ${{ steps.trusted.outputs.has_verify }}
         run: |
           set -euo pipefail
-          if [ "${{ steps.fix.outcome }}" != "success" ]; then
+          echo "proceed_push=true" >> "$GITHUB_OUTPUT"
+          fix_outcome="${{ steps.fix.outcome }}"
+          if [ "$fix_outcome" != "success" ]; then
+            if [ "$fix_outcome" = "cancelled" ] || [ "$fix_outcome" = "skipped" ]; then
+              echo "::notice::Autofix model step was $fix_outcome; another run or writer likely superseded this one"
+              echo "proceed_push=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             echo "::error::Claude Code exited unsuccessfully; refusing to push"
             exit 1
           fi
@@ -605,8 +612,9 @@ jobs:
           fi
           current=$(gh pr view "$PR_NUMBER" --json headRefOid -q .headRefOid)
           if [ "$current" != "$START_HEAD_SHA" ]; then
-            echo "::error::PR head moved during autofix ($START_HEAD_SHA -> $current); refusing to push"
-            exit 1
+            echo "::notice::PR head moved during autofix ($START_HEAD_SHA -> $current); treating this run as superseded"
+            echo "proceed_push=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           if [ "$HAS_VERIFY" = "true" ]; then
             bash -euo pipefail "$RUNNER_TEMP/verify.sh"
@@ -614,7 +622,7 @@ jobs:
 
       - name: Commit And Push
         id: push
-        if: steps.validate.outcome == 'success'
+        if: steps.validate.outcome == 'success' && steps.validate.outputs.proceed_push == 'true'
         env:
           BRANCH: ${{ steps.pr.outputs.branch }}
           ITERATION: ${{ steps.guard.outputs.iteration }}
@@ -625,8 +633,8 @@ jobs:
           set -euo pipefail
           current=$(gh pr view "$PR_NUMBER" --json headRefOid -q .headRefOid)
           if [ "$current" != "$START_HEAD_SHA" ]; then
-            echo "::error::PR head moved before push ($START_HEAD_SHA -> $current); aborting"
-            exit 1
+            echo "::notice::PR head moved before push ($START_HEAD_SHA -> $current); treating this run as superseded"
+            exit 0
           fi
           # GITHUB_TOKEN may not create or change files under .github/workflows, and GitHub rejects
           # the whole push when one does.  Leave them out so the rest of the fix still lands.

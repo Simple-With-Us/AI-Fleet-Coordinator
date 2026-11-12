@@ -34,7 +34,21 @@ test('sanitized diagnostics are retained without raw transcripts', () => {
   assert(steps.indexOf(runFix) < steps.indexOf(diagnostics));
   assert(steps.indexOf(diagnostics) < steps.indexOf(upload));
   assert.match(upload, /steps\.diagnostics\.outputs\.summary-path != ''/);
+  assert.match(upload, /if-no-files-found: warn/);
   assert.match(upload, /retention-days: 7\s*$/);
+});
+
+test('superseded and no-op model runs succeed without marking the workflow failed (AFC-765)', () => {
+  assert(validate && push);
+  assert.match(validate, /proceed_push=true/);
+  assert.match(validate, /fix_outcome/);
+  assert.match(validate, /fix_outcome" = "cancelled" \] \|\| \[ "\$fix_outcome" = "skipped" \]/);
+  assert.match(validate, /treating this run as superseded/);
+  assert.match(validate, /proceed_push=false/);
+  assert.match(push, /steps\.validate\.outputs\.proceed_push == 'true'/);
+  assert.match(push, /treating this run as superseded/);
+  assert.doesNotMatch(validate, /head moved during autofix[\s\S]*exit 1/);
+  assert.doesNotMatch(push, /head moved before push[\s\S]*exit 1/);
 });
 
 test('trusted policy is loaded from the default branch, not the PR checkout', () => {
