@@ -1673,6 +1673,7 @@ export class HostedTools {
     return this.grCall("workflow_dispatch", parsed);
   }
   async tool_gr_resolve_thread(args) { return this.grCall("resolve_thread", args); }
+  async tool_gr_create_repo(args) { return this.grCall("create_repo", args); }
 
   /** One recall call, its failure as a ToolError (never a response body but a 400's own message). */
   async recallCall(fn, { write = false, retrySafe = false } = {}) {
@@ -2466,7 +2467,7 @@ for (const action of TYPED_V1_ACTIONS) {
     return this.grCall(action, args, {typedPrincipal: principal});
   };
 }
-// gr_wf_* : same relay transport as the seven gr_ tools (POST /v1/<action>, caller bearer, Access
+// gr_wf_* : same relay transport as the gr_ tools (POST /v1/<action>, caller bearer, Access
 // headers, grCall error mapping incl. outcome_unknown on 5xx).  The relay owns outcome/idempotency
 // (durable outcome rows, replay refusal) and head fences travel in the args.  Default off.
 for (const action of WF_V1_ACTIONS) {

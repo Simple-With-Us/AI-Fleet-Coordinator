@@ -13,7 +13,7 @@ import json
 import re
 import urllib.error
 import urllib.request
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, quote
 
 from .secret_scan import mask_credential
 
@@ -285,6 +285,42 @@ class DispatchPreReadUnavailable(Exception):
     """Dispatch source read failed before any write was attempted."""
 
 
+def _redirected(exc: RelayGitHubError) -> bool:
+    """A 3xx or a recognized repository move.  The redirect was not followed."""
+    return exc.code == "repository_moved" or 300 <= exc.status < 400
+
+
+def _safe_error_code(code) -> bool:
+    return isinstance(code, str) and re.fullmatch(r"[A-Za-z0-9_]{1,64}", code) is not None
+
+
+def _create_repo_receipt(repo: str, body, result: str) -> dict:
+    """A small receipt.  Upstream prose, description and tokens stay out."""
+    if not isinstance(body, dict):
+        raise RelayGitHubError(502, "create receipt did not match", code="receipt_mismatch")
+    full_name = body.get("full_name")
+    if not isinstance(full_name, str) or full_name.casefold() != repo.casefold():
+        if result == "created":
+            raise RelayGitHubError(502, "create receipt did not match", code="receipt_mismatch")
+        raise RelayGitHubError(400, "github refused the request")
+    receipt = {"repo": repo, "result": result}
+    private = body.get("private")
+    if type(private) is bool:
+        receipt["visibility"] = "private" if private else "public"
+    elif result == "created":
+        raise RelayGitHubError(502, "create receipt did not match", code="receipt_mismatch")
+    repo_id = body.get("id")
+    if type(repo_id) is int and 0 < repo_id <= 2**53 - 1:
+        receipt["id"] = repo_id
+    elif result == "created":
+        raise RelayGitHubError(502, "create receipt did not match", code="receipt_mismatch")
+    html_url = body.get("html_url")
+    expected = f"https://github.com/{repo}"
+    if isinstance(html_url, str) and html_url.casefold() == expected.casefold():
+        receipt["url"] = expected
+    return receipt
+
+
 class GitHubClient:
     def __init__(self, token: str, base_url: str = "https://api.github.com", opener=None):
         if not token:
@@ -535,6 +571,85 @@ class GitHubClient:
         parts = repo.split("/")
         if len(parts) != 2 or not all(parts) or ".." in repo:
             raise ValueError(f"repo must look like owner/name, got {repo!r}")
+
+    def create_repo(
+        self,
+        repo: str,
+        visibility: str,
+        description: str | None = None,
+        license_template: str | None = None,
+        bearer: str | None = None,
+        kind: str | None = None,
+    ) -> dict:
+        """Create one repository, or report that it already exists.
+
+        GET first.  200 or any 3xx (the redirect is never followed) is
+        already_exists and does not POST.  Only a 404 continues to a single
+        POST.  A 422 on that POST is checked with one more GET; a confirming
+        read is already_exists and there is never a second POST.  GitHub's
+        default for private is false, so private is sent on every create.
+        """
+        self._check_repo(repo)
+        if not bearer:
+            raise ValueError("empty task credential; refusing to use the owner token")
+        if visibility not in ("private", "public"):
+            raise ValueError("visibility must be private or public")
+        if kind not in ("org", "user"):
+            raise ValueError("invalid repository")
+        owner, name = repo.split("/", 1)
+        get_path = f"/repos/{quote(owner, safe='')}/{quote(name, safe='')}"
+        try:
+            found = self._call("GET", get_path, bearer=bearer)
+        except RelayGitHubError as exc:
+            if _redirected(exc):
+                return {"repo": repo, "result": "already_exists"}
+            if exc.status != 404:
+                if exc.status in (0, 408) or exc.status >= 500:
+                    raise RelayGitHubError(
+                        exc.status,
+                        "create pre-read unavailable",
+                        code="create_repo_pre_read",
+                        retry_after=exc.retry_after,
+                    ) from None
+                raise
+            found = None
+        else:
+            return _create_repo_receipt(repo, found, "already_exists")
+        payload = {
+            "name": name,
+            "private": visibility != "public",
+            "visibility": visibility,
+        }
+        if description is not None:
+            payload["description"] = description
+        if license_template is not None:
+            payload["license_template"] = license_template
+            payload["auto_init"] = True
+        post_path = f"/orgs/{quote(owner, safe='')}/repos" if kind == "org" else "/user/repos"
+        try:
+            created = self._call("POST", post_path, payload, bearer=bearer)
+        except RelayGitHubError as exc:
+            if exc.status in (409, 422) or _redirected(exc):
+                return self._confirm_repo_after_post(get_path, repo, bearer, exc)
+            raise
+        return _create_repo_receipt(repo, created, "created")
+
+    def _confirm_repo_after_post(self, get_path: str, repo: str, bearer: str, original) -> dict:
+        """One confirming GET after a refused POST.  Never POSTs again."""
+        try:
+            found = self._call("GET", get_path, bearer=bearer)
+        except RelayGitHubError as exc:
+            if _redirected(exc):
+                return {"repo": repo, "result": "already_exists"}
+            if exc.status == 404:
+                code = original.code if _safe_error_code(original.code) else None
+                raise RelayGitHubError(
+                    original.status, "github refused the request", code=code
+                ) from None
+            raise RelayGitHubError(
+                502, "create receipt did not match", code="receipt_mismatch"
+            ) from None
+        return _create_repo_receipt(repo, found, "already_exists")
 
     def open_pr(
         self, repo: str, base: str, head: str, title: str, body: str, draft: bool = False

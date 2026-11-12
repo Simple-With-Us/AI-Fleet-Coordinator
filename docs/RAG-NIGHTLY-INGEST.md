@@ -22,9 +22,27 @@ recall ingest --source linear,doc,skill,memory --prune --no-heartbeat
 
 `--no-heartbeat` keeps the process off `fleet-secrets`.  That reader can use a machine identity.  This job never calls it.
 
-The unit owns the code sync.  `fleet-rag-nightly.service` has `Wants=code-main-sync.service` and `After=code-main-sync.service`, so systemd runs the sync first and starts the job when it finishes.  The unit sets `FLEET_RAG_CODE_SYNC_BY_UNIT=1`, and the job then reads the sync's `Result` with `systemctl show` instead of starting it.  It passes only when `Result` is `success`, the exit status is 0, and that run started within the last hour, so a success left over from an earlier run does not count.  A `User=` service cannot start another unit without polkit (the first night failed with "interactive authentication required").  The unit uses `Wants=` rather than `Requires=` so a failed sync still reaches the job, which writes the summary and alerts instead of leaving only a dependency failure in the journal.  A result other than `success` skips the ingest, writes the summary, posts an alert, and exits 1.  Without the flag, the job still runs `systemctl start --wait code-main-sync.service` itself, for a manual run as root.
+The nightly accepts a recent successful code-main-sync and does not start that unit.  The read is `systemctl show` on `code-main-sync.service`, which the service account can do.  It passes when the unit is not running, `Result` is `success`, `ExecMainStatus` is 0, and that run started within the last hour.  A success older than an hour does not count.  If the unit is still running, the job polls that same read until the oneshot finishes or 30 minutes pass.  It does not call `systemctl start` to wait.
+
+The first night, 2:30am CT on Nov 11 2026, exited `code-main-sync-exit-1` before ingest.  The job ran as User=jay and `systemctl start` returned Access denied, while `code-main-sync.timer` had already succeeded.  A start is attempted only when that read is a failed or stale run, or did not answer, and the process is allowed to start the unit.  Root may start it.  `FLEET_RAG_CODE_SYNC_START=1` may start it.  `FLEET_RAG_CODE_SYNC_BY_UNIT=1`, which the unit sets, never starts it.  If a start comes back Access denied or interactive authentication required, the job reads the result again and still accepts a fresh success.  A denial with nothing fresh skips ingest, writes the summary, posts an alert, and the process exits with status 1.  The lock behavior is unchanged.
+
+`fleet-rag-nightly.service` still has `Wants=code-main-sync.service` and `After=code-main-sync.service`, using `Wants=` rather than `Requires=`, so a failed sync still reaches the job.  That ordering is not required for the denied-start fix.  The script in the checkout is what stops the denied start.
+
+When `FLEET_CODE_SYNC_STATE` is set, code-main-sync writes a JSON stamp (`ok`, `exit`, `at`) at mode 0644 after a finished run, and not after a dry run.  The nightly trusts that file only when `systemctl show` did not answer, the file is not a symlink, it is not group or world writable, and a non-root reader does not own it.  A failed or stale Result from systemd is final, so an older stamp cannot hide it.  No polkit rule is required, and no unit reinstall is required for the denied-start failure.  After merge, the checkout named by `FLEET_RAG_CHECKOUT` has to be on this commit before the next 02:30 run.  The timer fast-forwards clean clones under `FLEET_CODE_ROOT`.  If the nightly checkout is that clone, the timer does it.  A manual root run with the flag unset still starts the unit when the last success is stale.
 
 Prune uses the guards from AFC-677. Nothing is pruned when any source in the run failed.  A prune is refused when the source yielded nothing and documents would go, when more documents would go than were yielded, or when a whole `doc/<repo>/` of 5 or more documents would vanish.  `FLEET_RAG_PRUNE_FORCE=1` lifts only the second and third of those.  Linear rows are still skipped, because that generator is not a deletion inventory.
+
+The doc diet excludes coverage and framework output, vendored and generated trees, lockfiles, minified files, and binaries, on top of the older `node_modules`, dist, and build skips.  A dry run writes `doc-diet-report.json` beside the state file, mode 0600, with document and chunk counts before and after.  Newly excluded documents stay in the yielded set, so a normal `--prune` does not delete them.  Passing `--prune-excluded`, or setting `FLEET_RAG_PRUNE_EXCLUDED` to 1, releases every held id.  `FLEET_RAG_PRUNE_EXCLUDED_ALLOW` releases an exact doc id, or a prefix that ends in `*`.  That release needs a dry-run stamp whose `rules_hash` matches the current rules.  Force does not lift a missing stamp.  When the gone set includes a released id, the prune also refuses if more than 20% of that source's tracked documents would go.  Exactly 20% is allowed.  `FLEET_RAG_PRUNE_FORCE=1` lifts that cap the same way it lifts the yielded and whole-repo guards.  It does not lift a failed source or the stamp.  Identical chunk bodies are embedded once per doc-source run.  Later paths are stored on `also_paths`.
+
+## Linear incremental read
+
+The Linear source keeps an `updatedAt` cursor in the ingest state under `_linear_sync`.  A nightly run asks Linear only for issues updated since that cursor, minus a safety overlap.  The overlap defaults to 2 hours (`FLEET_RAG_LINEAR_OVERLAP_HOURS`, from 1 to 168).  The cursor moves only after that source finishes without error.  A dry run, a `--limit` run, a `--since` run that skips an issue, a skipped issue, or a failed read leaves the cursor where it was.
+
+A full id sweep runs when the cursor is missing, corrupt, or older than the sweep interval, and when the last successful full sweep is older than that same interval.  The interval defaults to 7 days (`FLEET_RAG_LINEAR_SWEEP_DAYS`, from 1 to 90).  An invalid value keeps the default.  `--full`, also forwarded by `recall ingest --full`, sets `FLEET_RAG_LINEAR_FULL` for that run.  That forces a full id sweep and refetches every issue body.  A scheduled sweep still uses the per-issue `updatedAt` cache.  The content hash still skips re-embedding when the body is unchanged.
+
+A full read that returns zero issues aborts.  That is a broken read, not an empty board.  An incremental read that returns zero changed issues is a quiet window, and the cursor still advances.  Linear rows are still not pruned.  The seat order is unchanged: BF-ORACLE, then GB-ORACLE.
+
+The full id scan of about 14.9k issues is about 19 minutes of a 47-minute nightly.  Incremental nights skip that scan.  They read the overlap window plus issues updated since the last successful cursor.  One night each week still pays for the full id sweep.
 
 Apple Notes stay out of the command.  A run that does include `apple-note` records a warning and does not prune that source.  Force does not override that.  Notes are upserted at write time (AFC-685).
 
@@ -34,7 +52,7 @@ If `FLEET_RAG_MIRROR` is unset, the job points it at a directory that is not cre
 
 The server source set attests health, and so does `--all`.  Merging this change leaves a Mac `--all --prune` able to update the sentinel.  Apple Notes remain in `--all`.
 
-A successful run is quiet.  Zulip gets a post on the Alerts stream, topic `fleet-rag-nightly`, when `ok` is false or a guard tripped.  The tag is `[GB-ORACLE 📁AFC]`.  A failed alert post does not change the ingest exit.  The summary is `~/.local/state/fleet-rag-nightly/last.json`, mode 0600. It holds reasons and counts.  Secret values are withheld.
+A successful run is quiet.  Zulip gets a post on the OPS stream, topic `fleet-rag-nightly`, when `ok` is false, a prune guard trips, the mirror is missing or stale, or `code-main-sync` failed or is too old to count for tonight.  The tag is `[GB-ORACLE 📁AFC]`.  The same failure on consecutive nights posts a short “still failing, night N” line instead of repeating the full detail.  A failed alert post does not change the ingest exit.  The summary is `~/.local/state/fleet-rag-nightly/last.json`, mode 0600.  It holds reasons, counts, `alert_fingerprint`, and `alert_streak`.  When a real prune ran, it also records `qdrant_snapshot.name` (and `path` when the snapshot was archived under `qdrant-prune-snapshots/`).  Secret values are withheld.
 
 ## Mac job
 
@@ -120,7 +138,7 @@ sudo systemctl start fleet-rag-nightly.service
 sudo systemctl enable --now fleet-rag-nightly.timer
 ```
 
-8. Read `last.json` after the first real run.  Success stays off Zulip.  A guard trip or a failure posts to Alerts.
+8. Read `last.json` after the first real run.  Success stays off Zulip.  A guard trip, stale mirror, code-sync failure, or ingest failure posts to OPS.
 
 ## Enable the Mac job
 
