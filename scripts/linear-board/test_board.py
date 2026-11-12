@@ -1472,7 +1472,8 @@ class BearerSeatTests(BoardTest):
         )
         self.assertIn("as ECHO", p.stdout)
         body = self.comments_of(self.issue_by_ident("OPS-10"))[-1]
-        self.assertTrue(body.startswith("[ECHO\u00b75e55105a] Bearer run."), body)
+        self.assertTrue(body.startswith("Bearer run."), body)
+        self.assertNotIn("[ECHO", body)
         q = self.verify_store["queries"][-1]
         self.assertEqual(q["contract"], "gr-bearer-verify/1")
         self.assertEqual(q["identity"], "ECHO")
@@ -1725,40 +1726,51 @@ class BearerTransportSeamTests(unittest.TestCase):
 
 
 class OwnIntroTagTests(unittest.TestCase):
-    """AFC-692:  a body that already opens with the seat's own intro gets no second seat tag."""
+    """AFC-692:  the board never prepends a seat tag, even when the body has no intro."""
 
-    def test_own_intro_is_not_tagged_twice(self):
+    def test_tagged_passes_the_body_through(self):
         cli = load_cli()
         for text in (
             "[GB-PLUMBER 📁AFC] PR opened",
             "👀 [GB-PLUMBER 📁AFC, OPS] quiet",
             "[GB-PLUMBER] PR opened",
             "[GB-PLUMBER: HH.1.C 📁AFC] status",
+            "PR opened",
+            "[GB-DIRECTOR 📁AFC] spoof",
+            "[GB-PLUMBERX] x",
         ):
             with self.subTest(text=text):
                 self.assertEqual(cli.tagged("GB-PLUMBER", None, text), text)
+                self.assertEqual(cli.tagged("GB-PLUMBER", ["abcd-1234-ffff"], text), text)
                 self.assertTrue(cli.comment_body("GB-PLUMBER", None, text).startswith(text))
+                self.assertIn("Reported by: GB-PLUMBER", cli.comment_body("GB-PLUMBER", None, text))
+                self.assertNotIn("[GB-PLUMBER]", cli.comment_body("GB-PLUMBER", None, "PR opened"))
 
-    def test_a_supplied_session_replaces_the_intro_session_without_a_second_tag(self):
+    def test_parse_comment_reads_reported_by_on_an_untagged_body(self):
+        """AFC-692:  [needs-owner] is not a seat tag;  the footer names the signer."""
         cli = load_cli()
-        for text, want in (
-            ("[GB-PLUMBER 📁AFC] status", "[GB-PLUMBER·abcd1234 📁AFC] status"),
-            ("[GB-PLUMBER·stale999 📁AFC] status", "[GB-PLUMBER·abcd1234 📁AFC] status"),
-            ("👀 [GB-PLUMBER] note", "👀 [GB-PLUMBER·abcd1234] note"),
-        ):
-            with self.subTest(text=text):
-                self.assertEqual(cli.tagged("GB-PLUMBER", ["abcd-1234-ffff"], text), want)
-
-    def test_untagged_and_foreign_bodies_keep_the_seat_tag(self):
-        cli = load_cli()
-        self.assertEqual(cli.tagged("GB-PLUMBER", None, "PR opened"), "[GB-PLUMBER] PR opened")
-        self.assertEqual(
-            cli.tagged("GB-PLUMBER", None, "[GB-DIRECTOR 📁AFC] spoof"),
-            "[GB-PLUMBER] [GB-DIRECTOR 📁AFC] spoof",
+        parsed = cli.parse_comment(
+            {
+                "id": "c1",
+                "body": "[needs-owner] notified msg 630000000\ntopic: OWNER AFC-300 x\n\nReported by: CLAUDE",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "fleet", "name": "Fleet", "app": True},
+            }
         )
+        self.assertEqual(parsed["author"], "CLAUDE")
         self.assertEqual(
-            cli.tagged("GB-PLUMBER", None, "[GB-PLUMBERX] x"), "[GB-PLUMBER] [GB-PLUMBERX] x"
+            parsed["text"], "[needs-owner] notified msg 630000000\ntopic: OWNER AFC-300 x"
         )
+        tagged = cli.parse_comment(
+            {
+                "id": "c2",
+                "body": "[CODEX·abcd1234] owner replied:  msg 5",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "fleet", "name": "Fleet", "app": True},
+            }
+        )
+        self.assertEqual(tagged["author"], "CODEX")
+        self.assertEqual(tagged["text"], "owner replied:  msg 5")
 
 
 class SeatAliasTests(unittest.TestCase):
@@ -2236,9 +2248,11 @@ class WriteTests(BoardTest):
         self.assertEqual((iss["state"], iss["priority"], iss["team"]), ("Todo", 2, "CT"))
         self.assertEqual(self.label_names(iss), ["Env/Cloud", "Kind/agent-report", "Severity/P1"])
         self.assertTrue(
-            iss["description"].startswith("\\[CLAUDE·5e55105a\\] Filed with the board CLI."),
+            iss["description"].lstrip().startswith("Details."),
             iss["description"],
         )
+        self.assertNotIn("[CLAUDE", iss["description"])
+        self.assertIn("**Filed with the board CLI**", iss["description"])
         self.assertIn("## Recommended fix\n\nRetry.", iss["description"])
         self.assertEqual(
             [a["url"] for a in self.mock.attachments], ["https://github.com/o/r/issues/1"]
@@ -2384,7 +2398,8 @@ class WriteTests(BoardTest):
         self.assertIn("seat:CLAUDE", self.label_names(iss))
         self.assertIn("Env/Mac", self.label_names(iss))
         body = self.comments_of(iss)[-1]
-        self.assertTrue(body.startswith("[CLAUDE·b854d9ad] CLAIMED"), body)
+        self.assertTrue(body.startswith("CLAIMED"), body)
+        self.assertNotIn("[CLAUDE", body)
         self.assertIn("Where: Mac, ~/apps/lanes/X @ claude/x", body)
         d = json.loads(self.board("show", "OPS-10", "--json").stdout)
         self.assertEqual(d["location"], "Mac, ~/apps/lanes/X @ claude/x")
@@ -2452,7 +2467,7 @@ class WriteTests(BoardTest):
         self.assertEqual(iss["state"], "Done")
         self.assertEqual(
             self.comments_of(iss)[-1],
-            f"[CLAUDE·5e55105a] Resolution (completed): Landed in #2894.\n\nSessions: {BASE_SESSION}",
+            f"Resolution (completed): Landed in #2894.\n\nSessions: {BASE_SESSION}\n\nReported by: CLAUDE",
         )
         d = json.loads(self.board("show", "OPS-10", "--json").stdout)
         self.assertEqual(d["resolution"], "Landed in #2894.")
@@ -2468,7 +2483,7 @@ class WriteTests(BoardTest):
             self.assertEqual(self.mock.issues[hy(B_C)]["state"], state)
         self.assertEqual(
             self.comments_of(self.mock.issues[hy(B_C)])[-1],
-            f"[CLAUDE·5e55105a] Status: parked\n\nSessions: {BASE_SESSION}",
+            f"Status: parked\n\nSessions: {BASE_SESSION}\n\nReported by: CLAUDE",
         )
         self.board("status", B_C[:8], "bogus", code=2)
         self.board("status", B_C[:8], "completed", "--of", "OPS-10", code=2)
@@ -2518,7 +2533,7 @@ class WriteTests(BoardTest):
         body = self.comments_of(self.mock.issues[hy(B_A)])[-1]
         self.assertEqual(
             body,
-            "[CLAUDE·sess1] Verified on main.\n\nWhere: Mac, ~/apps/lanes/A @ b\n\nSessions: sess-1, sess-2",
+            "Verified on main.\n\nWhere: Mac, ~/apps/lanes/A @ b\n\nSessions: sess-1, sess-2\n\nReported by: CLAUDE",
         )
         p = self.board("show", "OPS-10")
         self.assertIn("CLAUDE (Mac, ~/apps/lanes/A @ b): Verified on main.", p.stdout)
@@ -3352,7 +3367,7 @@ class SeatAppTests(BoardTest):
         iss = self.mock.issues[hy(B_A)]
         self.assertIn("claimed:CLAUDE", self.label_names(iss))
         self.assertIn("seat:CLAUDE", self.label_names(iss))
-        self.assertTrue(self.comments_of(iss)[-1].startswith("[CLAUDE·b854d9ad] CLAIMED"))
+        self.assertTrue(self.comments_of(iss)[-1].startswith("CLAIMED"))
         self.assertEqual(self.callers_since(n), {claude})
         self.assertEqual(self.mock.ops.count("BoardWhoami"), 1)  # identity confirmed once per token
         self.as_seat("CLAUDE", "comment", B_A[:8], "--by", "CLAUDE", "--text", "second write")
@@ -4026,7 +4041,7 @@ class FileInputTests(BoardTest):
         iss = self.mock.issues[hy(B_A)]
         self.assertEqual(
             self.comments_of(iss)[-1],
-            f"[CLAUDE·5e55105a] Checked on main.\n\nNo change needed.\n\nSessions: {BASE_SESSION}",
+            f"Checked on main.\n\nNo change needed.\n\nSessions: {BASE_SESSION}\n\nReported by: CLAUDE",
         )
         n = len(self.mock.comments)
         p = self.board(
@@ -4046,7 +4061,8 @@ class FileInputTests(BoardTest):
             stdin="From standard input.\n",
         )
         self.assertEqual(
-            self.comments_of(iss)[-1], "[CLAUDE·sess1] From standard input.\n\nSessions: sess-1"
+            self.comments_of(iss)[-1],
+            "From standard input.\n\nSessions: sess-1\n\nReported by: CLAUDE",
         )
         ops = len(self.mock.ops)
         p = self.board("comment", "OPS-10", "--text-file", f, code=2)

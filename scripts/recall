@@ -26,7 +26,7 @@ Usage:
               [--json]
   recall eval --retrieval [--offline] [--source S] [--app A] [--category C] [--json] [--out FILE]
   recall eval --compare BEFORE.json AFTER.json
-  recall doctor [--json]
+  recall doctor [--json]                 # setup health: token file, Qdrant, mirror, nightly, install
   recall doctor --platforms [--box] [--json]
   recall ingest [--all | --source board,doc,...] [--dry-run] [--limit N] [--since 7d] [--prune]
 
@@ -48,9 +48,11 @@ Contribute refuses a near-duplicate: when an existing agent contribution scores 
 cosine against the candidate it prints "similar lesson already exists: <doc_id> (score S)"
 and exits 1; pass --force to store it anyway.  `recall digest` lists the contributions of the
 last N days grouped by app then category (the weekly Oracle routine and the owner's note).
-`recall doctor --platforms` prints a parity table (MCP registration per platform, skill copies,
-hooks, seat-mcp routes, BotFleet routines, ingest freshness; --box adds the Hetzner health
-rows over ssh) and exits 1 when any row is FAIL.
+`recall doctor` prints a setup health table (Infisical token file mode 600, scoped read, TEI,
+Qdrant collection, Mac mirror freshness and nightly last.json where configured, install layout,
+ingest.lock) and exits 1 when any row is FAIL; inapplicable checks are SKIP.  `recall doctor
+--platforms` prints the Mac parity table (MCP registration, skills, hooks, seat-mcp, BotFleet
+routines, ingest freshness; --box adds Hetzner health rows over ssh).
 
 Contribute text that might contain a credential (a log excerpt, a command line, a config
 snippet) should go through --file PATH or stdin (-), never as a shell argument: an argument
@@ -183,7 +185,9 @@ def cmd_search(a: argparse.Namespace) -> int:
     res = public_fallback.call_with_fallback(
         "recall_search",
         fallback_args,
-        lambda: recall_api.recall_search(a.query, **search_kwargs),
+        lambda: recall_api.recall_search(
+            a.query, compact=not a.full, full=bool(a.full), **search_kwargs
+        ),
     )
     if not a.json and not a.full:
         res = recall_presentation.present_search_result(res, presentation)
@@ -488,12 +492,12 @@ def cmd_ingest(a: argparse.Namespace) -> int:
 
 
 def cmd_doctor(a: argparse.Namespace) -> int:
+    blocked = (
+        not public_fallback.using_fake_backend()
+        and not public_fallback.local_override_active()
+        and public_fallback.direct_path_blocked(public_fallback.tailscale_status_text())
+    )
     if a.platforms:
-        blocked = (
-            not public_fallback.using_fake_backend()
-            and not public_fallback.local_override_active()
-            and public_fallback.direct_path_blocked(public_fallback.tailscale_status_text())
-        )
         rep = doctor.platforms_report(box=a.box, direct_path_blocked=blocked)
         if a.json:
             print(json.dumps(rep, indent=2))
@@ -502,60 +506,14 @@ def cmd_doctor(a: argparse.Namespace) -> int:
         return 0 if rep["ok"] else 1
     if a.box:
         raise FleetRagError("--box only applies with --platforms")
-    public_fallback.require_direct_path("doctor")
-    rep: dict = {
-        "version": __version__,
-        "env_keys": [k for k in core.ALL_KEYS if os.environ.get(k)],
-        "fleet_secrets": core._fleet_secrets_bin() is not None,
-        "gitleaks": bool(shutil.which("gitleaks")),
-    }
-    ok = True
-    try:
-        cfg = recall_api.load_config(need_write=False)
-        rep["keys_found"] = [k for k in core.ALL_KEYS if k in cfg]
-        rep["key_mode"] = recall_api.key_mode(cfg)
-        rep["write_key"] = bool(cfg.get("QDRANT_API_KEY"))
-        rep["embedder_healthy"] = core.embedder_healthy(cfg)
-        q = recall_api.Qdrant(cfg)
-        rep["qdrant_healthz"] = q.healthz()
-        try:
-            info = q.info()
-            rep["collection"] = q.collection
-            rep["collection_status"] = info.get("status", "?")
-            rep["points"] = info.get("points_count", 0)
-        except FleetRagError as e:
-            rep["collection"] = q.collection
-            rep["collection_status"] = f"ERROR {e}"
-            ok = False
-        ok = ok and rep["embedder_healthy"] and rep["qdrant_healthz"]
-    except FleetRagError as e:
-        rep["credentials_error"] = str(e)
-        ok = False
-    rep["ok"] = ok
+    from fleet_rag import doctor_setup
+
+    rep = doctor_setup.setup_report(direct_path_blocked=blocked)
     if a.json:
         print(json.dumps(rep, indent=2))
-        return 0 if ok else 2
-
-    def yn(v: object) -> str:
-        return "yes" if v else "NO"
-
-    print(f"recall {rep['version']}")
-    print(f"env keys        : {', '.join(rep['env_keys']) or '(none)'}")
-    print(f"fleet-secrets   : {yn(rep['fleet_secrets'])}  (Mac credential source)")
-    if "credentials_error" in rep:
-        print(f"credentials     : ERROR {rep['credentials_error']}")
     else:
-        print(f"keys found      : {', '.join(rep['keys_found'])}")
-        print(f"key mode        : {rep['key_mode']}  (write key present: {yn(rep['write_key'])})")
-        print(f"embedder        : {'healthy' if rep['embedder_healthy'] else 'UNREACHABLE'}")
-        print(f"qdrant healthz  : {yn(rep['qdrant_healthz'])}")
-        print(
-            f"collection      : {rep.get('collection')}  {rep.get('collection_status')}"
-            f"  points={rep.get('points', '?')}"
-        )
-    print(f"gitleaks        : {yn(rep['gitleaks'])}")
-    print(f"overall         : {'ok' if ok else 'PROBLEMS'}")
-    return 0 if ok else 2
+        print(doctor.format_platforms(rep))
+    return 0 if rep["ok"] else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -723,7 +681,10 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--category")
     e.add_argument("--since-days", dest="since_days", type=int)
 
-    d = sub.add_parser("doctor", help="credentials (names only), embedder, qdrant, key mode")
+    d = sub.add_parser(
+        "doctor",
+        help="setup health (token file, Infisical read, Qdrant, mirror, nightly, install)",
+    )
     d.add_argument(
         "--platforms",
         action="store_true",
@@ -819,6 +780,9 @@ _REMOTE_CODES = frozenset(
         "fleetlink_expired",
         "dm_not_allowed",
         "budget_exhausted",
+        "invalid_secret",
+        "sheets_auth_failed",
+        "sheets_write_failed",
     )
 )
 _REMOTE_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
