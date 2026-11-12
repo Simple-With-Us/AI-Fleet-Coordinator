@@ -132,11 +132,15 @@ class GitHubClient:
                     wait = (
                         float(retry_after) if retry_after is not None else min(60.0, 2.0**attempt)
                     )
-                    if exc.status == 403:
-                        self._secondary_backoff = max(wait, 2.0)
                     if attempt >= self._max_retries:
+                        # Do not leak a pending 403 backoff into the next call.
+                        self._secondary_backoff = 0.0
                         raise
-                    self._sleep(wait)
+                    if exc.status == 403:
+                        # Secondary rate limit: the loop head sleeps this once.
+                        self._secondary_backoff = max(wait, 2.0)
+                    else:
+                        self._sleep(wait)
                     continue
                 raise
             try:
