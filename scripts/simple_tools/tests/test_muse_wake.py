@@ -1513,13 +1513,25 @@ class SubscriptionCappingTest(unittest.TestCase):
 
     def test_usd_per_day_never_blocks_a_muse_seat(self) -> None:
         # Every wake costs 0, so a ceiling of dollars spent against dollars spent is a real ceiling
-        # that is never reached, rather than a fictional reserve.
-        cfg = _config_with_wake("muse")
+        # that is never reached, rather than a fictional reserve.  The ceiling has no default
+        # any more (owner, Nov 10, 2026), so the seat writes one here;  the key is still accepted.
+        cfg = _config_with_wake("muse", {"budget": {"usd_per_day": 2.0}})
         budget = dict(cfg.seats["MM"].budget)
         self.assertGreater(budget["usd_per_day"], 0)
-        self.assertIsNone(
-            W.budget_block({}, budget, owner=True, key="t", now=time.time(), run_max=0.0)
-        )
+        now = time.time()
+        self.assertIsNone(W.budget_block({}, budget, owner=True, key="t", now=now, run_max=0.0))
+        # Nor with costed rows on the ledger, $50 against $2:  nothing adds dollars up any more.
+        ran = {
+            "w%d" % i: {
+                "state": "done",
+                "owner": True,
+                "topic_key": "t",
+                "cost_usd": 1.0,
+                "times": {"accepted": now - 60},
+            }
+            for i in range(50)
+        }
+        self.assertIsNone(W.budget_block(ran, budget, owner=True, key="t", now=now, run_max=0.0))
 
 
 class MuseConfigTest(unittest.TestCase):
