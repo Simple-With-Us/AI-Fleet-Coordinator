@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+from simple_tools import adapters as A
+from simple_tools import config as C
 from simple_tools import daemon as D
 from simple_tools import live as L
 from simple_tools.tests.test_daemon import DaemonHarness
@@ -163,6 +165,16 @@ SEAT_KEYS = {
     "quota",
     "leases",
     "letters",
+    "routine",
+}
+ROUTINE = {"ready", "auth", "why"}
+ROUTINE_AUTH = {"header", "bearer", "hmac-sha256", "other", None}
+ROUTINE_WHY = {
+    "routine_not_configured",
+    "routine_key_refused",
+    "routine_url_refused",
+    "other",
+    None,
 }
 QUOTA = {
     "known",
@@ -278,6 +290,12 @@ def check_shape(case: unittest.TestCase, doc: Any) -> None:
         case.assertEqual(set(seat["letters"]), {"known", "why"})
         is_bool(seat["letters"]["known"])
         case.assertIn(seat["letters"]["why"], ("partial", None))
+        routine = seat["routine"]
+        if routine is not None:
+            case.assertEqual(set(routine), ROUTINE)
+            optional(routine["ready"], is_bool)
+            case.assertIn(routine["auth"], ROUTINE_AUTH)
+            case.assertIn(routine["why"], ROUTINE_WHY)
     case.assertLessEqual(len(doc["skipped"]), RS.MAX_SKIPPED)
     for row in doc["skipped"]:
         case.assertEqual(set(row), {"seat", "reason"})
@@ -437,6 +455,21 @@ def live_sweep() -> dict[str, Any]:
     }
 
 
+def live_routine(**changes: Any) -> dict[str, Any]:
+    """A seat's `routine` in the shape the live status.json carried it for CLAUDE on November 12,
+    2026 (the router's host replaced by a made-up one)."""
+    block = {
+        "auth": "bearer",
+        "method": "POST",
+        "ready": True,
+        "why": None,
+        "detail": "",
+        "host": "hosted.invalid",
+    }
+    block.update(changes)
+    return block
+
+
 def status_document(**changes: Any) -> dict[str, Any]:
     """A listener status.json as the server's eavesdropper writes it, a few seats of each kind."""
     quota = {
@@ -454,7 +487,7 @@ def status_document(**changes: Any) -> dict[str, Any]:
             wake="http",
             wakes_24h=7,
             held_back={"count": 85, "reasons": {"wakes_per_day": 85}},
-            routine={"ready": True, "why": None, "host": "hosted.invalid", "method": "POST"},
+            routine=live_routine(),
         ),
         "CLAUDE": seat_row(
             bot="Claude",
@@ -1216,6 +1249,154 @@ class RegistrySweepTests(unittest.TestCase):
         )
 
 
+class RoutineTests(unittest.TestCase):
+    """A seat's `routine`:  whether the router its wakes go to is ready, as a flag and two fixed
+    words.  The router's host, the detail sentence and the method are never copied."""
+
+    def reduced(self, block: Any) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        document = status_document()
+        if block is ABSENT:
+            document["seats"]["JET"].pop("routine")
+        else:
+            document["seats"]["JET"]["routine"] = block
+        out = RS.reduce_status(document, NOW, "server")
+        check_shape(self, out)
+        self.assertEqual(len(out["seats"]), 7, "the rest of the document is still reduced")
+        return out, seats_by_name(out)["JET"]["routine"]
+
+    def routine(self, block: Any) -> dict[str, Any] | None:
+        return self.reduced(block)[1]
+
+    def test_a_ready_routine_as_the_live_server_wrote_it(self) -> None:
+        self.assertEqual(
+            self.routine(live_routine()), {"ready": True, "auth": "bearer", "why": None}
+        )
+
+    def test_every_auth_mode_the_daemon_allows_is_kept(self) -> None:
+        # The reducer stays stdlib-only, so it keeps its own copy of the daemon's auth modes;
+        # this ties the copy to the daemon's list, so a new mode cannot quietly read as "other".
+        self.assertEqual(set(RS._ROUTINE_AUTH), set(C.ROUTINE_AUTH))
+        for auth in C.ROUTINE_AUTH:
+            with self.subTest(auth=auth):
+                self.assertEqual(self.routine(live_routine(auth=auth))["auth"], auth)
+
+    def test_every_reason_the_daemon_gives_is_kept(self) -> None:
+        # Each reason code resolve_routine can return, driven through the daemon's own code, is
+        # one the reducer keeps, so a new code cannot quietly read as "other".
+        cfg = C.RoutineConfig(
+            url_env="JET_ROUTINE_URL",
+            key_env="JET_ROUTINE_KEY",
+            method="POST",
+            header="Authorization",
+            auth="bearer",
+            timeout=5.0,
+            cost_usd=0.0,
+            signature_prefix="",
+        )
+        url = "https://router.invalid/wake"
+        cases = (
+            (None, {}),
+            (cfg, {}),
+            (cfg, {"JET_ROUTINE_URL": url}),
+            (cfg, {"JET_ROUTINE_URL": url, "JET_ROUTINE_KEY": "k\x00ey"}),
+            (cfg, {"JET_ROUTINE_URL": "http://router.invalid/wake", "JET_ROUTINE_KEY": "key"}),
+            (cfg, {"JET_ROUTINE_URL": "ftp://router.invalid/", "JET_ROUTINE_KEY": "key"}),
+        )
+        seen: set[str | None] = set()
+        for given, env in cases:
+            with self.subTest(env=sorted(env)):
+                target, why, _detail = A.resolve_routine(given, env)
+                self.assertIsNone(target)
+                self.assertIn(why, RS._ROUTINE_WHY)
+                seen.add(why)
+                self.assertEqual(self.routine(live_routine(ready=False, why=why))["why"], why)
+        self.assertEqual(seen, set(RS._ROUTINE_WHY), "every kept reason is one the daemon gives")
+        ready = A.resolve_routine(cfg, {"JET_ROUTINE_URL": url, "JET_ROUTINE_KEY": "key"})
+        self.assertIsNotNone(ready[0])
+        self.assertIsNone(ready[1])
+
+    def test_a_routine_that_is_not_ready_says_why_and_never_its_detail(self) -> None:
+        for why, detail in (
+            (
+                "routine_not_configured",
+                "environment variables not set: JET_ROUTINE_URL, JET_ROUTINE_KEY; restart it",
+            ),
+            ("routine_not_configured", "no routine block"),
+            ("routine_key_refused", "JET_ROUTINE_KEY holds a control character"),
+            ("routine_url_refused", "the URL in JET_ROUTINE_URL is refused: it must be an https URL"),
+        ):
+            with self.subTest(why=why, detail=detail[:20]):
+                out, routine = self.reduced(
+                    live_routine(ready=False, why=why, detail=detail, host=None)
+                )
+                self.assertEqual(routine, {"ready": False, "auth": "bearer", "why": why})
+                self.assertNotIn(detail, json.dumps(out))
+                self.assertNotIn("JET_ROUTINE", json.dumps(out))
+
+    def test_an_http_seat_with_no_routine_block_has_no_auth(self) -> None:
+        # The daemon's own words for an "http" seat whose config has no routine table.
+        block = {
+            "ready": False,
+            "why": "routine_not_configured",
+            "detail": "no routine block",
+            "host": None,
+            "method": None,
+            "auth": None,
+        }
+        self.assertEqual(
+            self.routine(block), {"ready": False, "auth": None, "why": "routine_not_configured"}
+        )
+
+    def test_a_seat_with_no_routine_reads_as_null(self) -> None:
+        for block in (ABSENT, None, "ready", 5, True, 1.5, [], [live_routine()], (), b"{}"):
+            with self.subTest(block=repr(block)[:30]):
+                self.assertIsNone(self.routine(block))
+        out = RS.reduce_status(status_document(), NOW, "server")
+        seats = seats_by_name(out)
+        self.assertEqual(
+            {name for name, seat in seats.items() if seat["routine"] is not None}, {"JET"}
+        )
+
+    def test_an_empty_block_reads_as_all_null(self) -> None:
+        self.assertEqual(self.routine({}), {"ready": None, "auth": None, "why": None})
+
+    def test_the_host_detail_and_method_never_reach_the_output(self) -> None:
+        block = live_routine(
+            host=WWW, detail="the URL in " + URL + " at " + PATH, method="DELETE " + EMAIL
+        )
+        out, routine = self.reduced(block)
+        self.assertEqual(routine, {"ready": True, "auth": "bearer", "why": None})
+        whole = json.dumps(out)
+        for probe in (WWW, URL, PATH, EMAIL, "hosted.invalid", "DELETE", "POST"):
+            self.assertNotIn(probe, whole)
+        for key in ('"host"', '"detail"', '"method"', '"url"'):
+            self.assertNotIn(key, whole)
+
+    def test_a_hostile_why_or_auth_becomes_other_and_is_never_copied(self) -> None:
+        hostile = (
+            URL, WWW, PATH, WINDOWS, TILDE, EMAIL, UUID, USER_ID, KEY, KEY2, VALUE, HUGE, CONTROL,
+            "", " ", "Routine_Not_Configured", "routine_not_configured\n", "routine_unknown",
+            "bearer ", "Bearer", "basic", "hmac-sha512", 5, 0, True, False, 1.5, [], {},
+            ["bearer"], {"auth": "bearer"}, b"bearer", float("nan"),
+        )  # fmt: skip
+        for value in hostile:
+            for field in ("why", "auth"):
+                with self.subTest(field=field, value=repr(value)[:30]):
+                    out, routine = self.reduced(live_routine(**{field: value}))
+                    self.assertEqual(routine[field], "other")
+                    other = "auth" if field == "why" else "why"
+                    self.assertEqual(routine[other], {"auth": "bearer", "why": None}[other])
+                    self.assertIs(routine["ready"], True)
+                    if isinstance(value, str) and len(value) > 2:
+                        self.assertNotIn(value, json.dumps(out))
+
+    def test_ready_is_a_flag_only_when_the_source_is_a_boolean(self) -> None:
+        for value in (1, 0, 1.0, "true", "yes", None, [], {}, [True]):
+            with self.subTest(value=repr(value)):
+                self.assertIsNone(self.routine(live_routine(ready=value))["ready"])
+        self.assertIs(self.routine(live_routine(ready=False))["ready"], False)
+
+
 class LeaseTitleTests(unittest.TestCase):
     """Lease titles are never emitted (the design owner's privacy ruling)."""
 
@@ -1583,6 +1764,62 @@ class FromRealDaemonStatusTests(DaemonHarness):
         self.assertRegex(written["since"], ISO)
         self.assertEqual(read, {"available": True, "code": None, "since": written["since"]})
 
+    ROUTINE_SEAT = (
+        "[seat.CLAUDE]\n"
+        'bot = "Claude"\n'
+        'wake = "http"\n'
+        "routine = {}\n"
+    )
+
+    def reduced_routine(self, **env: str) -> tuple[dict[str, Any], dict[str, Any], str]:
+        """A real daemon's status for a seat that wakes through the router, the seat's `routine`
+        as the daemon wrote it, and the reduced document as JSON text."""
+        self.write_config(rewake=True, seats=self.ROUTINE_SEAT)
+        daemon = self.started(env=self.env(**env))
+        daemon.write_status()
+        with open(os.path.join(L.listener_dir(self.root), "status.json"), encoding="utf-8") as fh:
+            document = json.load(fh)
+        out = RS.reduce_status(document, document["updated"] + 1, "server")
+        check_shape(self, out)
+        return document["seats"]["CLAUDE"]["routine"], seats_by_name(out)["CLAUDE"], json.dumps(out)
+
+    def test_a_real_ready_routine_reduces_to_ready_and_its_auth_without_its_host(self) -> None:
+        written, seat, text = self.reduced_routine(
+            CLAUDE_ROUTINE_URL="https://router.invalid/hook?token=t",
+            CLAUDE_ROUTINE_KEY="rk-test-key",
+        )
+        self.assertEqual(written["host"], "router.invalid")
+        self.assertEqual(seat["wake"], "http")
+        self.assertEqual(seat["routine"], {"ready": True, "auth": "bearer", "why": None})
+        for private in ("router.invalid", "token=t", "rk-test-key", "/hook", '"host"', '"detail"'):
+            self.assertNotIn(private, text)
+
+    def test_a_real_routine_with_no_url_or_key_reduces_to_not_configured(self) -> None:
+        written, seat, text = self.reduced_routine()
+        self.assertIn("CLAUDE_ROUTINE_URL", written["detail"])
+        self.assertEqual(
+            seat["routine"], {"ready": False, "auth": "bearer", "why": "routine_not_configured"}
+        )
+        self.assertNotIn("CLAUDE_ROUTINE", text)
+        self.assertNotIn(written["detail"], text)
+
+    def test_a_real_routine_with_a_refused_url_reduces_to_url_refused(self) -> None:
+        written, seat, text = self.reduced_routine(
+            CLAUDE_ROUTINE_URL="http://router.invalid/hook", CLAUDE_ROUTINE_KEY="rk-test-key"
+        )
+        self.assertIsNone(written["host"])
+        self.assertEqual(
+            seat["routine"], {"ready": False, "auth": "bearer", "why": "routine_url_refused"}
+        )
+        for private in ("router.invalid", "rk-test-key", "CLAUDE_ROUTINE", "https"):
+            self.assertNotIn(private, text)
+
+    def test_a_real_seat_that_does_not_wake_through_the_router_has_no_routine(self) -> None:
+        document = self.written_status()
+        self.assertIsNone(document["seats"]["CLAUDE"]["routine"])
+        out = RS.reduce_status(document, document["updated"] + 1, "server")
+        check_shape(self, out)
+        self.assertIsNone(seats_by_name(out)["CLAUDE"]["routine"])
 
     def test_a_real_status_goes_stale_and_the_seat_becomes_unknown(self) -> None:
         document = self.written_status()
