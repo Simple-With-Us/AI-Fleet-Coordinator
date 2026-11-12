@@ -82,7 +82,12 @@ class RegistryFactsTests(KnobTestCase):
         secret = [k for k in doc["knobs"] if k["secret"]]
         self.assertEqual(
             [k["name"] for k in secret],
-            ["FLEET_FACTS_SIGNING_KEY", "WAKE_ROUTER_KEY", "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"],
+            [
+                "FLEET_FACTS_SIGNING_KEY",
+                "FLEET_FACTS_RELAY_TOKEN",
+                "WAKE_ROUTER_KEY",
+                "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
+            ],
         )
         for entry in secret:
             self.assertIsNone(entry["default"])

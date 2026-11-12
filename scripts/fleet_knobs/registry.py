@@ -146,6 +146,11 @@ _COMPLIANCE = (("the fleet-config compliance rules", "scripts/fleet_config/seed_
 _WATCHDOG = (("the Cloudflare usage watchdog", "scripts/cf-usage-watchdog/watchdog.py"),)
 _WAKE = (("the wake router", "scripts/simple_tools/wake_settings.py"),)
 _REGISTRY = _WAKE + (("the registry client", "scripts/simple_tools/registry_api.py"),)
+# The registry key's server side:  the Eavesdropper's loader reads it from /wake-router at every start and
+# exports it as OPERATOR_REGISTRY_KEY (the image ships no fleet_knobs, so it uses its own scoped reader).
+_REGISTRY_KEY = _REGISTRY + (
+    ("the Eavesdropper's loader", "scripts/simple_tools/server/infisical_env.py"),
+)
 
 REGISTRY: tuple[Spec, ...] = (
     # C1 fleet-autopush
@@ -267,6 +272,49 @@ REGISTRY: tuple[Spec, ...] = (
         consumers=_PUBLISHER,
         unit="load average",
         step=10,
+    ),
+    _S(
+        "FLEET_FACTS_RELAY_URL",
+        "str",
+        "F7",
+        default="",
+        local="deny",
+        pattern=r"^(https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]{0,200})?)?$",
+        note="git-relay base URL for facts publishes;  empty keeps the gh contents API, and a set URL never falls back to gh",
+        group="Facts Publisher",
+        label="Facts Relay URL",
+        hosts="mac",
+        consumers=_PUBLISHER,
+        format="empty, or an https URL with no userinfo",
+        example="https://relay.example.test",
+    ),
+    _S(
+        "FLEET_FACTS_RELAY_BRANCH",
+        "str",
+        "F7",
+        default="",
+        local="deny",
+        pattern=r"^$|^[A-Za-z0-9][A-Za-z0-9._/-]{0,120}$",
+        note="branch the facts publisher asks the relay to write;  it must be that repository's default branch, and it is read only when the relay URL is set",
+        group="Facts Publisher",
+        label="Facts Relay Branch",
+        hosts="mac",
+        consumers=_PUBLISHER,
+        format="empty, or a branch name",
+        example="main",
+    ),
+    _S(
+        "FLEET_FACTS_RELAY_TOKEN",
+        "str",
+        "F7",
+        secret=True,
+        local="deny",
+        pattern=r"^[A-Za-z0-9_-]{16,256}$",
+        note="seat bearer for the facts publisher's relay writes;  fetched only when the relay URL is set, never cached, and a missing token refuses the publish",
+        group="Facts Publisher",
+        label="Facts Relay Token",
+        hosts="mac",
+        consumers=_PUBLISHER,
     ),
     _S(
         "FLEET_LOOPS_DATA_ALLOWED_APPS",
@@ -894,7 +942,7 @@ REGISTRY: tuple[Spec, ...] = (
         group="Wake Router",
         label="Operator Registry Key",
         hosts="both",
-        consumers=_REGISTRY,
+        consumers=_REGISTRY_KEY,
         folder=WAKE_ROUTER_FOLDER,
     ),
 )
