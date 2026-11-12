@@ -377,6 +377,24 @@ def app_name_ok(name, accepted, seat: str = "") -> bool:
     return isinstance(name, str) and name.casefold() in ok
 
 
+def seat_for_linear_author(name: str | None) -> str | None:
+    """The seat whose Linear app (primary name, alias, or tag) this viewer or comment
+    author belongs to.  None when the name is empty, unknown, or shared by more than
+    one seat (JET and JET-CHAT both sign as Jet)."""
+    if not isinstance(name, str) or not name.strip():
+        return None
+    key = name.casefold()
+    hits: list[str] = []
+    for seat, primary in SEAT_APP_NAMES.items():
+        accepted = {primary.casefold(), seat.casefold()}
+        accepted.update(a.casefold() for a in SEAT_APP_ALIASES.get(seat, ()))
+        if key in accepted:
+            hits.append(seat)
+    # Preserve table order and drop duplicates (JET / JET-CHAT).
+    unique = list(dict.fromkeys(hits))
+    return unique[0] if len(unique) == 1 else None
+
+
 # The importer writes "Reported by x, addressed by y" through str.capitalize(),
 # so the line is lower case after its first letter; "Addressed by y" when there
 # was no reporter.  Linear hands bullets back as `*`.
@@ -2753,29 +2771,20 @@ def split_description(desc: str | None) -> dict:
     return out
 
 
-def _where_sessions(body: str) -> tuple[str, str, str, str]:
-    """Strip trailing Where/Sessions/Reported by footer lines.
-
-    Returns (body, where, sessions, reported_by).  `Reported by` is the AFC-692
-    seat attribution on an untagged write:  the body is no longer opened with a
-    `[SEAT]` / `[SEAT·session]` tag, and the shared Fleet app cannot name the
-    seat on its own.
-    """
+def _where_sessions(body: str) -> tuple[str, str, str]:
+    """Strip trailing Where/Sessions footer lines.  Returns (body, where, sessions)."""
     lines = body.rstrip().split("\n")
     where = ""
     sessions = ""
-    reported_by = ""
-    while lines and (not lines[-1].strip() or re.match(r"^(Where|Sessions|Reported by): ", lines[-1])):
+    while lines and (not lines[-1].strip() or re.match(r"^(Where|Sessions): ", lines[-1])):
         k, _, v = lines.pop().partition(": ")
         if not v:
             continue
         if k == "Where":
             where = v.strip()
-        elif k == "Sessions":
-            sessions = v.strip()
         else:
-            reported_by = v.strip()
-    return "\n".join(lines).strip(), where, sessions, reported_by
+            sessions = v.strip()
+    return "\n".join(lines).strip(), where, sessions
 
 
 def parse_comment(c: dict) -> dict:
@@ -2785,28 +2794,31 @@ def parse_comment(c: dict) -> dict:
     sessions = ""
     tm = TAG_RE.match(body)
     mm = MIGRATED_COMMENT_RE.match(body)
-    reported_by = ""
+    author_seat = None
     if tm:
         author = tm.group(1)
-        body, where, sessions, reported_by = _where_sessions(body[tm.end() :])
+        author_seat = author
+        body, where, sessions = _where_sessions(body[tm.end() :])
     elif mm:
         author = mm.group(1)
+        author_seat = seat_for_linear_author(author)
         where = mm.group(3) or ""
         body = body[mm.end() :]
     else:
-        body, where, sessions, reported_by = _where_sessions(body)
-        if reported_by:
-            author = norm_seat(reported_by)
+        body, where, sessions = _where_sessions(body)
+        author_seat = seat_for_linear_author(author)
     body = HTML_COMMENT_RE.sub("\n", body).strip()
-    # `author` is the name a reader shows and the seat a tag line claims;  anyone who can write a comment can type a
-    # tag line, so a consumer that has to know WHO wrote it (the needs-owner notifier, for the owner's reply) reads
-    # `author_id` and `author_app`, which are Linear's own account fields and never come from the text.
+    # `author` is the name a reader shows:  a legacy `[SEAT]` tag line when one is present,
+    # otherwise Linear's own user name (the seat app that wrote the comment).  Anyone can
+    # type a tag line, so a consumer that has to know WHO wrote it (the needs-owner notifier)
+    # reads `author_seat` (tag or mapped Linear app name), `author_id` and `author_app`.
     user = c.get("user") or {}
     author_id = user.get("id") if isinstance(user.get("id"), str) and user.get("id") else None
     author_app = user.get("app") if isinstance(user.get("app"), bool) else None
     return {
         "id": c.get("id"),
         "author": author,
+        "author_seat": author_seat,
         "text": body,
         "where": where,
         "sessions": sessions,
@@ -3311,10 +3323,6 @@ def comment_body(
         extra.append(f"Where: {loc}")
     if sessions:
         extra.append(f"Sessions: {', '.join(sessions)}")
-    # AFC-692:  no prepended seat tag.  Record the writing seat in a trailing
-    # footer so a shared Fleet-app comment still has a signer (needs-owner).
-    if seat and not re.search(r"(?m)^Reported by: ", body):
-        extra.append(f"Reported by: {seat}")
     return body + "".join("\n\n" + x for x in extra)
 
 
