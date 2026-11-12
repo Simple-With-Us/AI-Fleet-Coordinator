@@ -39,7 +39,8 @@ test("MA is not hosted yet, and hosting it without its email var fails closed", 
 test("the key installer reads MA's existing Fleet-OPS entry instead of duplicating it", () => {
   const installer = readFileSync(path.join(ROOT, "install_seat_key.py"), "utf8");
   const flat = installer.replace(/\s+/g, " ");
-  assert.match(flat, /FLEET_OPS_PROJECT = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"/);
+  assert.match(flat, /def fleet_ops_project\(\)/);
+  assert.doesNotMatch(flat, /FLEET_OPS_PROJECT\s*=\s*"[0-9a-f-]{36}"/i);
   // None:  the Fleet-OPS project is resolved at call time, as for CODEX
   // (seat_entry and fleet_ops_project, pinned behaviorally in codex-seat.test.mjs).
   assert.match(flat, /"MA": \( None, "MA_ZULIP_EMAIL", "MA_ZULIP_KEY", "ZULIP_KEY_MA", "ZULIP_EMAIL_MA", \)/);
