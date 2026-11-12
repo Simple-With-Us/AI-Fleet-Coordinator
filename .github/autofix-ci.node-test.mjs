@@ -95,6 +95,18 @@ test('without the App token, autofix-ci/action runs exactly as before, with a no
   assert(steps.indexOf(push) < steps.indexOf(fallback));
 });
 
+test('workflow-directory files are named, and no step says they get fixed', () => {
+  // No route may push them:  the App token is kept off workflow files, and autofix-ci/action refuses
+  // any path under .github and fails.  So the log names the files and says they need hand formatting.
+  assert.match(push, /workflow_files=\$\(git diff --name-only -- \.github\/workflows \| paste -sd ' ' -\)/);
+  assert.match(push, /::warning::[^\n]*\$\{workflow_files\}[^\n]*need formatting by hand/);
+  assert.match(push, /::notice::[^\n]*\$\{workflow_files\}[^\n]*does not fix them/);
+  assert.doesNotMatch(push, /autofix-ci\/action handles them/);
+  // A mixed change pushes the other files, then reaches the workflow-only exit on the next run, whose
+  // head is this App's commit;  that exit has to come before the loop guard, or the guard would fire.
+  assert(push.indexOf('fallback=true') < push.indexOf('Loop guard'));
+});
+
 test('step if expressions never reference secrets so startup validation passes', () => {
   for (const step of steps) {
     assert(!ifOf(step).includes('secrets.'), `step if must not reference secrets: ${ifOf(step)}`);

@@ -105,14 +105,19 @@ jobs:
           set -euo pipefail
           # The App token may not change workflow files;  leave them out so the rest still lands.
           git add -A -- . ':(exclude).github/workflows'
-          if ! git diff --quiet -- .github/workflows; then
-            echo "::warning::Ruff changed files under .github/workflows;  they are left out of the autofix commit"
+          workflow_files=$(git diff --name-only -- .github/workflows | paste -sd ' ' -)
+          if [ -n "$workflow_files" ]; then
+            echo "::warning::Ruff changed files under .github/workflows (${workflow_files});  they are left out of the autofix commit and need formatting by hand."
           fi
           if git diff --cached --quiet; then
-            if ! git diff --quiet -- .github/workflows; then
-              # Only workflow files changed:  hand them to autofix-ci/action instead of dropping them.
+            if [ -n "$workflow_files" ]; then
+              # Only workflow files changed.  A mixed change gets here one run later, on the head this
+              # App pushed, which is why this sits before the loop guard.  No route may push them:
+              # autofix-ci/action refuses to modify anything under .github and fails its step.  Run it
+              # anyway, as before this workflow pushed anything, so the unformatted files fail the
+              # check instead of passing unnoticed.
               echo "fallback=true" >> "$GITHUB_OUTPUT"
-              echo "::notice::Ruff only changed files under .github/workflows;  autofix-ci/action handles them."
+              echo "::notice::Ruff only changed files under .github/workflows (${workflow_files});  autofix-ci/action reports them and does not fix them."
               exit 0
             fi
             echo "Ruff made no changes;  nothing to push."
