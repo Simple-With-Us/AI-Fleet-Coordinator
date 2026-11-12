@@ -236,12 +236,13 @@ class TestAntigravityDeliverLocal(BaseTest):
             os.close(fd)
 
         # AG_WAKE_STATE custom directory contention
-        custom_bridge = self.root / "custom-ag-wake"
+        custom_base = self.root / "custom-state"
+        custom_bridge = custom_base / "ag-wake"
         custom_bridge.mkdir(parents=True)
         fd2 = os.open(custom_bridge / f"session-{SID_VALID}.lock", os.O_CREAT | os.O_RDWR, 0o600)
         fcntl.flock(fd2, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
-            env_custom = {**self.env, "AG_WAKE_STATE": str(custom_bridge)}
+            env_custom = {**self.env, "AG_WAKE_STATE": str(custom_base)}
             delivery2 = AGW.deliver_local(env_custom, AGW.DEFAULTS, SID_VALID, self.wake())
             self.assertEqual((delivery2.outcome, delivery2.code), ("busy", "session-locked"))
         finally:

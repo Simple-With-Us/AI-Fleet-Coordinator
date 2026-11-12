@@ -330,12 +330,10 @@ def deliver_local(
         except OSError:
             return WR.Delivery("busy", "resume", code="session-locked")
 
-        bridge_state = env.get("AG_WAKE_STATE")
-        if bridge_state:
-            bridge_dir = Path(bridge_state)
-        else:
-            bridge_home = str(env.get("HOME") or os.path.expanduser("~"))
-            bridge_dir = Path(bridge_home) / ".local" / "state" / "ag-wake"
+        bridge_base = env.get("AG_WAKE_STATE") or os.path.join(
+            str(env.get("HOME") or os.path.expanduser("~")), ".local", "state"
+        )
+        bridge_dir = Path(bridge_base) / "ag-wake"
         bridge_lock = None
         if bridge_dir.is_dir():
             try:
