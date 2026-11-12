@@ -55,7 +55,7 @@ jobs:
       - run: python3 scripts/test-deploy-mapped-worker.py
       - name: Load scoped deploy credential from Fleet-OPS
         env:
-          INFISICAL_PROJECT_ID: 8dae6d03-8f12-48b2-adf3-e5c1b881c8c5
+          INFISICAL_PROJECT_ID: ${{ secrets.INFISICAL_FLEET_OPS_PROJECT_ID }}
           INFISICAL_ENVIRONMENT: prod
           INFISICAL_SECRET_PATH: /
           INFISICAL_NAMES: CLOUDFLARE_FLEET_API_TOKEN
