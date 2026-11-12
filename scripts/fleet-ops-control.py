@@ -3524,6 +3524,10 @@ def handle(
             fields, code = operator_read(ctx, action, target, mode)
             answer.update(fields)
             return answer, code
+        if scope == "server" and action == ROUTER_HEALTH_VERB:
+            fields, code = router_health_read(ctx, target, mode)
+            answer.update(fields)
+            return answer, code
         if scope == "server" and action in ("resource-status", "resource-policy"):
             if not config["resourcePolicy"]:
                 raise Refused(
