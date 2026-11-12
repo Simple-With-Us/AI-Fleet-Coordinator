@@ -204,15 +204,34 @@ public extension FleetSecrets {
         return try Self.parseNamesByPath([(path, text)]).first?.names ?? []
     }
 
+    /// The Infisical project the fleet's knobs live in,  by the name `fleet-secrets --project`
+    /// takes.  It is `PROJECT_ID` in `scripts/fleet_knobs/source.py`,  AI Fleet Coordinator,
+    /// not the fleet-ops project `names` lists by default.
+    static let knobProject = "ai-fleet-coordinator"
+
+    /// The projects `fleet-secrets names --project` takes.  Anything else is refused here
+    /// before a command runs.
+    static let listableProjects: Set<String> = ["fleet-ops", "ai-fleet-coordinator"]
+
     /// Names grouped by path, for the Controls panel.
-    func secretNamesGrouped(paths: [String] = ["/"]) throws -> [SecretNameGroup] {
-        try Self.parseNamesByPath(paths.map { ($0, try secretNamesText(path: $0)) })
+    ///
+    /// With no project,  `fleet-secrets` lists its default project,  fleet-ops.
+    func secretNamesGrouped(paths: [String] = ["/"], project: String? = nil) throws -> [SecretNameGroup] {
+        try Self.parseNamesByPath(paths.map { ($0, try secretNamesText(path: $0, project: project)) })
     }
 
-    private func secretNamesText(path: String) throws -> String {
-        guard Self.isValidPath(path) else { throw FleetSecretError.invalidName(path) }
+    /// The arguments for one `names` read:  the path,  and the project when one is named.
+    static func namesArguments(path: String, project: String?) throws -> [String] {
+        guard isValidPath(path) else { throw FleetSecretError.invalidName(path) }
+        guard let project else { return ["names", "--path", path] }
+        guard listableProjects.contains(project) else { throw FleetSecretError.invalidName(project) }
+        return ["names", "--path", path, "--project", project]
+    }
+
+    private func secretNamesText(path: String, project: String? = nil) throws -> String {
+        let arguments = try Self.namesArguments(path: path, project: project)
         do {
-            return try commands.run(secretsExecutable, ["names", "--path", path],
+            return try commands.run(secretsExecutable, arguments,
                                     environment: secretsEnvironment, timeout: 20)
         } catch { throw FleetSecretError.fromNonKeyRead(error, name: path) }
     }

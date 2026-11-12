@@ -94,6 +94,7 @@ def apply(
     payload = {
         "enabled": bool(enable),
         "home": str(home),
+        "log": str(log_path),
         "ssh_target": target,
         "remote_root": root,
         "remote_python": remote_python,
@@ -129,10 +130,16 @@ def apply(
 
 def _launchctl_bootstrap(plist: Path) -> int:
     uid = os.getuid()
-    proc = subprocess.run(
-        ["launchctl", "bootstrap", f"gui/{uid}", str(plist)],
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            ["launchctl", "bootstrap", f"gui/{uid}", str(plist)],
+            check=False,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return 124
+    except FileNotFoundError:
+        return 127
     return proc.returncode
 
 

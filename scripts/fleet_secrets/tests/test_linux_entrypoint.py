@@ -21,15 +21,28 @@ TOKEN = "st.fixture-service-token-for-tests"
 
 class ServiceTokenEntryTests(unittest.TestCase):
     def test_missing_and_malformed_tokens_fail_closed(self):
-        for token in (None, "", "not-a-token", "st.short", "st.fixture has-space"):
+        for token in (None, ""):
             with (
                 self.subTest(token=token),
                 mock.patch.dict(os.environ, {"INFISICAL_TOKEN": token or ""}, clear=True),
+                mock.patch.object(entry.sys.stdin, "isatty", return_value=False),
             ):
                 with self.assertRaises(entry.EntryError) as caught:
                     entry.authenticated_env()
-                self.assertRegex(
-                    str(caught.exception), "scoped service token|scoped service-token|scoped reader"
+                message = str(caught.exception)
+                self.assertIn("scoped service token", message)
+                self.assertIn("INFISICAL_TOKEN", message)
+                self.assertIn("INFISICAL_AI_FLEET_COORDINATOR_TOKEN", message)
+                self.assertIn("INFISICAL_WRITE_TOKEN", message)
+        for token in ("not-a-token", "st.short", "st.fixture has-space"):
+            with (
+                self.subTest(token=token),
+                mock.patch.dict(os.environ, {"INFISICAL_TOKEN": token}, clear=True),
+            ):
+                with self.assertRaises(entry.EntryError) as caught:
+                    entry.authenticated_env()
+                self.assertIn(
+                    "invalid scoped reader binding: INFISICAL_TOKEN", str(caught.exception)
                 )
 
     def test_scoped_reader_and_writer_tokens_are_preserved_separately(self):
@@ -88,7 +101,11 @@ class ServiceTokenEntryTests(unittest.TestCase):
                 contextlib.redirect_stderr(stderr),
             ):
                 self.assertEqual(entry.main(), 4)
-            self.assertIn("scoped service token", stderr.getvalue())
+            message = stderr.getvalue()
+            self.assertIn("scoped service token", message)
+            self.assertIn("INFISICAL_TOKEN", message)
+            self.assertIn("INFISICAL_AI_FLEET_COORDINATOR_TOKEN", message)
+            self.assertIn("INFISICAL_WRITE_TOKEN", message)
             with (
                 mock.patch.dict(
                     os.environ,

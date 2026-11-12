@@ -446,7 +446,7 @@ enum ListenerSeatHost: Equatable {
         case .mac:
             return nil
         case .server:
-            return "Held by the server eavesdropper.\u{00A0} Change it there."
+            return "Held by the server eavesdropper.\u{00A0} Its settings live on the server listener, not in the Mac's file, so they are not edited here."
         case .noListener:
             return "No eavesdropper holds this seat."
         case .unlisted:
@@ -546,6 +546,24 @@ struct ListenerPartition: Equatable {
             found[seat] = instance
         }
         return ListenerPartition(seats: found)
+    }
+
+    /// The agent seats the partition gives to the Mac, sorted, or nil when it could not be read.
+    /// The Operator stays listed for the Mac as a service identity, not as an agent seat, so it is
+    /// not one of them.
+    var macAgentSeats: [String]? {
+        guard let seats else { return nil }
+        return seats
+            .filter { $0.value == Self.thisInstance && $0.key != OperatorOptions.seatTag }
+            .map(\.key)
+            .sorted()
+    }
+
+    /// Whether the partition was read and gives the Mac no agent seat.  Since the one-listener
+    /// cutover of Nov 10 the server listener holds every seat, and the Mac's eavesdropper is
+    /// retired.  A partition that could not be read says nothing either way, so it is never this.
+    var givesTheMacNoAgentSeat: Bool {
+        macAgentSeats?.isEmpty == true
     }
 
     /// Who holds a seat.  The eavesdropper upper-cases a section's name before it looks it up.
@@ -1197,6 +1215,14 @@ struct WakeSeat: Identifiable, Equatable {
 
     var id: String { seat }
 
+    /// Whether the panel offers edits to this seat's settings.  Only a seat the partition gives to
+    /// the Mac is written, because only the Mac's file is written:  a seat the server holds keeps
+    /// its settings on the server listener, so an edit here would reach no listener.
+    var settingsEditable: Bool { host.isTheMac }
+
+    /// Why this seat's settings are not offered for editing, or nil when they are.
+    var settingsReadOnlyReason: String? { host.readOnlyReason }
+
     /// The settings that are not a plain pass.
     var problems: [WakeSetting] {
         settings.filter { $0.state.isProblem }
@@ -1455,6 +1481,46 @@ struct WakeSettingsModel: Equatable {
     var rewake: RewakeVerification?
     /// The instance the status names, when it is not the Mac's.
     var foreignInstance: String?
+    /// Whether the seat partition gives the Mac no agent seat, so the Mac's eavesdropper is
+    /// retired and the server listener holds every seat (the one-listener cutover of Nov 10).
+    var macListenerRetired: Bool = false
+
+    /// The line that leads the panel:  the Mac's eavesdropper's own state.  Once the Mac holds no
+    /// agent seat, a Mac eavesdropper that is stopped, or whose status could not be read, is
+    /// retired and not down, and one that is running is said plainly, because it should hold no
+    /// seat.
+    var listenerTitle: String {
+        guard macListenerRetired else { return runState.title }
+        switch runState {
+        case .running: return Self.retiredButRunningTitle
+        case .stopped, .unknown: return Self.retiredTitle
+        }
+    }
+
+    /// The headline when the Mac's eavesdropper is retired.
+    static let retiredTitle = "The Mac's eavesdropper is retired:  the server listener holds every seat"
+    /// The headline when a retired Mac eavesdropper is running.
+    static let retiredButRunningTitle = "The Mac's eavesdropper is running, but it is retired and should hold no seat"
+
+    /// What the panel says under the headline when the Mac's eavesdropper is retired, or nil when
+    /// it is not.
+    var retiredNote: String? {
+        guard macListenerRetired else { return nil }
+        if runState == .running {
+            return "The seat partition gives the Mac no agent seat, so nothing should be running here.\u{00A0} The server listener has held every seat since the Nov 10 one-listener cutover."
+        }
+        return Self.retiredNoteText
+    }
+
+    /// The note for a retired Mac eavesdropper that is not running.
+    static let retiredNoteText = "The seat partition gives the Mac no agent seat, so the Mac's eavesdropper was retired at the Nov 10 one-listener cutover and the server listener holds every seat.\u{00A0} Nothing the Mac's eavesdropper last published is shown as current."
+
+    /// Where the server listener's own state is.  This panel reads only the Mac's files.
+    static let serverPointer = "This panel does not read the server listener.\u{00A0} Its own status is in the Seats panel, read through the server's control helper.\u{00A0} Seats it holds are listed here as On The Server, read only, with nothing from the Mac's files."
+
+    /// What the Operator line says when the Mac's eavesdropper is retired and its status is not
+    /// current.
+    static let retiredOperatorVoice = "The Mac's eavesdropper was retired at the Nov 10 one-listener cutover, so this panel has no current word on whether the Operator can post.\u{00A0} The server listener's own status is in the Seats panel."
 
     /// Why the header calls a running eavesdropper's status not current, and nil when it is
     /// current or the eavesdropper is not running.  A status another instance wrote is named as
@@ -1581,6 +1647,15 @@ enum WakeSettingsBuilder {
         // status makes it.  `statusIsCurrent` already rules out another instance's status.
         if model.statusIsCurrent {
             model.rewake = sources.status?.status?.rewake
+        }
+        // Since the one-listener cutover the partition gives the Mac no agent seat, and the Mac's
+        // eavesdropper is retired.  Unless its status is current, what it last published is
+        // history:  its errors and its word on the Operator are not shown as if they were.  A retired
+        // eavesdropper that is running and current is still read, and the headline says it runs.
+        model.macListenerRetired = sources.partition.givesTheMacNoAgentSeat
+        if model.macListenerRetired, !model.statusIsCurrent {
+            model.listenerErrors = []
+            model.operatorVoice = .notRead(WakeSettingsModel.retiredOperatorVoice)
         }
         return model
     }

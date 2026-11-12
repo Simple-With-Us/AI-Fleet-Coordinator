@@ -1113,3 +1113,12 @@ test("MA spellings: every alias that reaches MA is treated as MA (label-only, no
     assert.equal(fake.requests.length, 0, `${spelling}: nothing was sent to Linear`);
   }
 });
+
+test("AFC-722:  linear_comment writes the house gap for one or more spaces, and sentence_gap false keeps the text", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-gap", identifier: "AFC-722" });
+  ok(await tools.call("linear_comment", { id: "AFC-722", body: "Landed. tests pass.  Next is 2. Done." }), "linear_comment");
+  assert.equal(fake.mutations().at(-1).body.variables.input.body, "Landed.  tests pass.  Next is 2.  Done.");
+  ok(await tools.call("linear_comment", { id: "AFC-722", body: "Landed. tests pass.", sentence_gap: false }), "linear_comment");
+  assert.equal(fake.mutations().at(-1).body.variables.input.body, "Landed. tests pass.");
+});

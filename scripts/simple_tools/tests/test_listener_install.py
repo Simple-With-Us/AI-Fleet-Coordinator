@@ -73,23 +73,21 @@ class InstallTests(ListenerHarness):
         self.assertIn("does not run launchctl", result.out)
         sample = (self.home / ".simple-tools" / "listener.toml").read_text()
         self.assertEqual(mode_of(self.home / ".simple-tools" / "listener.toml"), 0o600)
-        self.assertIn("[seat.CLAUDE]", sample)
-        self.assertIn("# [seat.CODEX]", sample)
-        self.assertIn(
-            'the partition gives them to "mac"',
-            sample,
-            "the sample says the other Mac seats can be enabled",
+        # One listener, on the server, holds every seat (owner, Tue, Nov 10):  the Mac sample
+        # holds no [seat.*] table, and keeps [daemon] and [platform.claude-code] for the CLI.
+        # The comments name the table ("no [seat.*] table");  no line outside a comment opens one.
+        self.assertEqual(
+            [line for line in sample.splitlines() if "[seat." in line and not line.lstrip().startswith("#")],
+            [],
         )
-        self.assertIn("# [seat.MM]", sample)
-        self.assertNotIn("[seat.AG]", sample, "a seat with no credential file is not listed")
-        self.assertIn("no reader on this Mac (left out on purpose): BF-BUILDER", sample)
+        self.assertIn(
+            "no reader on this Mac (left out on purpose): CLAUDE, CODEX, MM, BF-BUILDER\n",
+            sample,
+            "a bot with a credential file is named (CLAUDE too, now a server seat), and AG (no file) is not",
+        )
         cfg = C.from_dict(__import__("tomllib").loads(sample))
-        self.assertEqual(sorted(cfg.seats), ["CLAUDE"])
-        self.assertEqual(cfg.seats["CLAUDE"].budget["usd_per_day"], 2.0)
-        self.assertEqual(cfg.seats["CLAUDE"].budget["board_per_day"], 0)
-        for cap in C.WAKE_CAP_KEYS:
-            self.assertNotIn(cap, cfg.seats["CLAUDE"].budget, "the sample sets no wake cap")
-        self.assertIn("unset is no limit", sample)
+        self.assertEqual((sorted(cfg.seats), sorted(cfg.disabled)), ([], []))
+        self.assertEqual(cfg.errors, [])
         self.assertEqual(cfg.claude_seat, "CLAUDE")
         self.assertFalse(cfg.rewake_verified)
         again = self.run_cli(
@@ -217,6 +215,15 @@ class InitAndTestWakeTests(ListenerHarness):
         self.assertEqual(cfg.owner_user_id, 12)
         # claude, codex, cursor and grok-bot@ (tag GROK) are pinned; Sentry and minimax-bot@ (tag MINIMAX) are not.
         self.assertEqual(sorted(cfg.eligible_user_ids), [10, 11, 13, 14])
+        # The sample init writes holds no seat since the one-listener cutover (owner, Tue, Nov 10),
+        # so the CLAUDE credential is named as present and not checked as an enabled seat.
+        self.assertIn("credentials present (not enabled by this command): CLAUDE\n", result.out)
+        self.assertNotIn("CLAUDE: file mode ok", result.out)
+        # An enabled seat is still checked:  a Mac config holding [seat.CLAUDE], on the
+        # two-instance fixture the harness reads.
+        self.write_config()
+        result = self.run_cli("daemon", "init", "--yes")
+        self.assertEqual(result.code, 0, result.err)
         self.assertIn("CLAUDE: file mode ok, role 400", result.out)
 
     def codex_rc(self) -> Path:

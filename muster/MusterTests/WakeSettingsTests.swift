@@ -160,10 +160,10 @@ final class WakeSettingsTests: XCTestCase {
             .deletingLastPathComponent()
         let partition = ListenerPartition.load(from: root.appendingPathComponent(ListenerPartition.relativePath))
         XCTAssertNil(partition.problem)
-        for seat in ["CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "OPERATOR", "OPENCODE", "ZC", "KIMI", "AMP"] {
-            XCTAssertEqual(partition.host(of: seat), .mac, seat)
-        }
-        for seat in ["MA", "ECHO", "WISE", "GROK-WEB", "JET", "GB-FIXER", "BF-DIRECTOR", "BF-COMPILER", "BF-ENGINEER", "BF-TRADER"] {
+        // One listener, on the server, since Nov 10:  only the Operator's service identity stays on the Mac.
+        XCTAssertEqual(partition.host(of: "OPERATOR"), .mac)
+        for seat in ["CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "OPENCODE", "ZC", "KIMI", "AMP",
+                     "MA", "ECHO", "WISE", "GROK-WEB", "JET", "GB-FIXER", "BF-DIRECTOR", "BF-COMPILER", "BF-ENGINEER", "BF-TRADER"] {
             XCTAssertEqual(partition.host(of: seat), .server, seat)
         }
         XCTAssertEqual(partition.host(of: "BF-BUILDER"), .noListener)

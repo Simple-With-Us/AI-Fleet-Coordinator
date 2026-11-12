@@ -5920,15 +5920,16 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-# ---------------------------------------------------------------- remote read transport (opt-in)
+# ---------------------------------------------------------------- remote transport (opt-in)
 #
-# SIMPLE_BOARD_REMOTE=1 sends the three read verbs (whoami, show, list) to the hosted ST-MCP endpoint with the
-# bot's OWN bearer, which the hosted service resolves to exactly one identity and one Linear app.  Nothing here
-# reads a Linear credential, mints a token or touches the Linear cache.  The endpoint is the fixed constant
-# below (no environment override), the bearer comes from the process environment only (SIMPLE_TOOLS_BEARER,
-# never an argument, file or log line), and a failure never falls back to the direct path.  Every other verb
-# is refused in this mode rather than run directly.  The prefix of the bearer is a claim and is never used to
-# pick a seat:  the answer to whoami names the identity, as the server decided it.
+# SIMPLE_BOARD_REMOTE=1 sends whoami, show and list to the hosted ST-MCP endpoint with the bot's OWN bearer,
+# which the hosted service resolves to exactly one identity and one Linear app.  With SIMPLE_BOARD_REMOTE_WRITES=1
+# as well, claim, comment, status and file go through the same endpoint; remote_write calls identities first,
+# names that seat as identity on every write tool call, and refuses locally when --by names a different seat.
+# Nothing here reads a Linear credential, mints a token or touches the Linear cache.  The endpoint is the fixed
+# constant below (no environment override), the bearer comes from the process environment only
+# (SIMPLE_TOOLS_BEARER, never an argument, file or log line), and a failure never falls back to the direct path.
+# Every other verb is refused in this mode rather than run directly.
 REMOTE_MCP_URL = "https://agents.simplewithus.com/mcp"
 REMOTE_BEARER_ENV = "SIMPLE_TOOLS_BEARER"
 REMOTE_TIMEOUT_S = 40

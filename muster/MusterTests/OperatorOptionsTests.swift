@@ -77,11 +77,11 @@ final class OperatorOptionsTests: XCTestCase {
         XCTAssertTrue(kept.summary.contains("Captures Only, with no routine table"))
     }
 
-    /// The decider every platform shares is read from `[muse_bridge] consult_backup`, under its own
+    /// The decider every platform shares is read from `[decider.consult_backup]`, under its own
     /// header or inline, and only its runtime and model are shown.
     func test_the_decider_is_read_from_the_file() {
         let header = OperatorDecider.read(from: ListenerConfigDocument(text: """
-        [muse_bridge.consult_backup]
+        [decider.consult_backup]
         runtime = "openrouter"
         model = "@preset/operator-inbox-router"
         key_env = "OPERATOR_OPENROUTER_API_KEY"
@@ -93,19 +93,50 @@ final class OperatorOptionsTests: XCTestCase {
         XCTAssertFalse(header.sentence.contains("OPERATOR_OPENROUTER_API_KEY"))
 
         let inline = OperatorDecider.read(from: ListenerConfigDocument(text: """
-        [muse_bridge]
+        [decider]
         consult_backup = { runtime = "openrouter", model = "@preset/operator-inbox-router" }
         """))
         XCTAssertEqual(inline, header)
 
-        let options = OperatorOptions.build(from: ListenerConfigDocument(text: "[muse_bridge.consult_backup]\nruntime = \"openrouter\"\nmodel = \"m\"\n"))
+        let options = OperatorOptions.build(from: ListenerConfigDocument(text: "[decider.consult_backup]\nruntime = \"openrouter\"\nmodel = \"m\"\n"))
         XCTAssertEqual(options.decider, .set(runtime: "openrouter", model: "m"))
         XCTAssertTrue(OperatorDecider.help.contains("One decider serves every platform."))
     }
 
+    /// A file that still holds only the leftover `[muse_bridge]` location of the deleted Muse inbox
+    /// bridge is read the way the listener reads it, and `[decider]` wins when both are there.
+    func test_the_leftover_location_is_read_until_the_decider_table_exists() {
+        let leftover = OperatorDecider.read(from: ListenerConfigDocument(text: """
+        [muse_bridge]
+        enabled = false
+        remote_seats = []
+
+        [muse_bridge.consult_backup]
+        runtime = "openrouter"
+        model = "@preset/operator-inbox-router"
+        """))
+        XCTAssertEqual(leftover, .set(runtime: "openrouter", model: "@preset/operator-inbox-router"))
+        let inline = OperatorDecider.read(from: ListenerConfigDocument(text: """
+        [muse_bridge]
+        consult_backup = { runtime = "openrouter", model = "@preset/operator-inbox-router" }
+        """))
+        XCTAssertEqual(inline, leftover)
+
+        let both = OperatorDecider.read(from: ListenerConfigDocument(text: """
+        [muse_bridge.consult_backup]
+        runtime = "openrouter"
+        model = "@preset/old"
+
+        [decider.consult_backup]
+        runtime = "openrouter"
+        model = "@preset/new"
+        """))
+        XCTAssertEqual(both, .set(runtime: "openrouter", model: "@preset/new"))
+    }
+
     /// A file with no decider table says so, and a file that was not read leaves it not known.
     func test_a_missing_decider_says_none_is_set() {
-        let missing = OperatorDecider.read(from: ListenerConfigDocument(text: "[muse_bridge]\nenabled = true\n"))
+        let missing = OperatorDecider.read(from: ListenerConfigDocument(text: "[muse_bridge]\nenabled = false\n"))
         XCTAssertEqual(missing, .notSet)
         XCTAssertEqual(missing.sentence, "No decider is set.")
         XCTAssertFalse(missing.hasUnexpectedRuntime)
@@ -118,11 +149,11 @@ final class OperatorOptionsTests: XCTestCase {
 
     /// A decider whose runtime is not the one expected, or names none, is marked plainly.
     func test_a_decider_with_an_unexpected_runtime_is_marked() {
-        let other = OperatorDecider.read(from: ListenerConfigDocument(text: "[muse_bridge.consult_backup]\nruntime = \"muse\"\nmodel = \"x\"\n"))
+        let other = OperatorDecider.read(from: ListenerConfigDocument(text: "[decider.consult_backup]\nruntime = \"muse\"\nmodel = \"x\"\n"))
         XCTAssertEqual(other, .set(runtime: "muse", model: "x"))
         XCTAssertTrue(other.hasUnexpectedRuntime)
         XCTAssertTrue(other.sentence.contains("The runtime expected is openrouter."))
-        let unnamed = OperatorDecider.read(from: ListenerConfigDocument(text: "[muse_bridge.consult_backup]\nmodel = \"x\"\n"))
+        let unnamed = OperatorDecider.read(from: ListenerConfigDocument(text: "[decider.consult_backup]\nmodel = \"x\"\n"))
         XCTAssertEqual(unnamed, .set(runtime: nil, model: "x"))
         XCTAssertTrue(unnamed.hasUnexpectedRuntime)
         XCTAssertTrue(unnamed.sentence.hasPrefix("Runtime not set, model x."))

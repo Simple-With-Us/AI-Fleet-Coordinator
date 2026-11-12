@@ -24,21 +24,31 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import CONTRACT from "../../simple_tools/mcp/tools.json" with { type: "json" };
 import { ROOT, wranglerConfig, testEnv, browserPostOrigin, CHATGPT_CLIENT, CHATGPT_REDIRECT, RESOURCE } from "./helpers.mjs";
 import { FakeZulip, REALM, STREAMS, OWNER_ID, zulipShapedKey } from "./fake-zulip.mjs";
-import { GB_IDENTITIES, delegatedNames } from "../src/delegated-identities.js";
+import { FENCED_READS, GB_IDENTITIES, delegatedNames } from "../src/delegated-identities.js";
 import { ADDITIONAL_BEARER_SEATS } from "../src/bearer-identities.js";
 import { FakeLinear, opOf } from "./fake-linear.mjs";
 
 const TOOLS = CONTRACT.tools;
+
+/** The items of a fenced read, parsed from its text:  a fenced read carries no structuredContent (AFC-637). */
+function fencedItems(result) {
+  assert.equal(result.structuredContent, undefined, "a fenced read carries no structuredContent");
+  const lines = result.content[0].text.split("\n");
+  const begin = lines.findIndex((line) => /^BEGIN_UNTRUSTED_[A-Z]+ nonce=[0-9a-f]{16}$/.test(line));
+  const end = lines.findIndex((line) => /^END_UNTRUSTED_[A-Z]+ nonce=[0-9a-f]{16}$/.test(line));
+  assert.ok(begin >= 0 && end > begin, "the text is fenced");
+  return lines.slice(begin + 1, end).map((line) => JSON.parse(line));
+}
 // The hosted server lists the first ten tools.json tools, hosted-only recall and Linear tools, then
 // the FleetLink tools (AFC-328), the rest of tools.json and the eavesdropper tools (AFC-330).
 const HOSTED_NAMES = ["whoami", "identities", "guide", "catalog", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "recall_correct", "recall_retract", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name), ...FLEETLINK_TOOLS.map((t) => t.name),
   // AFC-330:  the rest of Zulip (every tools.json tool after the first ten) and the read-only eavesdropper tools.
-  ...TOOLS.slice(12).map((t) => t.name), "eavesdropper_status", "eavesdropper_inbox", "operator_inbox_pending", "eavesdropper_owner_queue", "eavesdropper_wakes", "eavesdropper_held_back", "notes_create", "notes_update", "notes_pin", "notes_unpin", "notes_read", "notes_list", "notes_status", "notes_log",
+  ...TOOLS.slice(12).map((t) => t.name), "eavesdropper_status", "eavesdropper_inbox", "operator_inbox_pending", "eavesdropper_owner_queue", "eavesdropper_wakes", "eavesdropper_held_back", "notes_create", "notes_update", "notes_pin", "notes_delete", "notes_unpin", "notes_read", "notes_list", "notes_status", "notes_log",
   // The GR-MCP front (gr-tools.js):  listed like every other family;  without
   // GR_UPSTREAM_URL the calls answer not_configured.  The committed config
   // enables the gr_wf_ workflow verb tools (GR_WORKFLOW_TOOLS "on", matching
   // production), so they are listed after the front.
-  "gr_open_pr", "gr_edit_pr", "gr_reply_thread", "gr_comment_pr", "gr_merge_pr", "gr_workflow_dispatch", "gr_resolve_thread", ...WF_V1_TOOLS.map((t) => t.name)];
+  "gr_open_pr", "gr_edit_pr", "gr_reply_thread", "gr_comment_pr", "gr_merge_pr", "gr_workflow_dispatch", "gr_resolve_thread", "gr_create_repo", ...WF_V1_TOOLS.map((t) => t.name)];
 const JET_KEY = zulipShapedKey(11);
 // Jet's bot login comes from the committed var, never a literal copy:  it is not a secret, and the bot-email check, the
 // openai-dot tag mapping and seatProblem accept no other address, so a synthetic one cannot stand in (kody, PR 889).
@@ -650,9 +660,13 @@ try {
       const required = (served.inputSchema.required ?? []).filter((name) => name !== "identity");
       const inputSchema = { ...served.inputSchema, properties: rest, ...(spec.inputSchema.required ? { required } : {}) };
       if (!spec.inputSchema.required) delete inputSchema.required;
-      assert.deepEqual(Object.fromEntries(Object.keys(spec).map((key) => [key, key === "inputSchema" ? inputSchema : served[key]])), spec, spec.name);
+      // A fenced read is served without its outputSchema (AFC-637);  every other key is the shared spec's.
+      const expected = FENCED_READS.has(spec.name) ? (({ outputSchema: _counts, ...rest }) => rest)(spec) : spec;
+      assert.deepEqual(Object.fromEntries(Object.keys(expected).map((key) => [key, key === "inputSchema" ? inputSchema : served[key]])), expected, spec.name);
+      if (FENCED_READS.has(spec.name)) assert.equal(served.outputSchema, undefined, spec.name);
     }
-    for (const name of ["zulip_dm_list", "zulip_dm_read", "zulip_dm_send"]) assert.ok(tools.find((item) => item.name === name).outputSchema, name);
+    for (const name of ["zulip_dm_list", "zulip_dm_read"]) assert.equal(tools.find((item) => item.name === name).outputSchema, undefined, name);
+    assert.ok(tools.find((item) => item.name === "zulip_dm_send").outputSchema, "zulip_dm_send");
     assert.match(init.json.result.instructions, /Direct messages \(zulip_dm_list, zulip_dm_read, zulip_dm_send/);
     const who = await call(chatTokens.access_token, "whoami");
     assert.equal(who.json.result.structuredContent.seat, "JET-CHAT");
@@ -935,10 +949,11 @@ try {
   await step("DMs with a read-only grant:  dm_list and dm_read answer fenced, dm_send names the zulip:write challenge and sends nothing", async () => {
     const list = await call(chatTokens.access_token, "zulip_dm_list");
     assert.equal(list.json.result.isError, undefined, summarize(list.json));
-    assert.deepEqual(list.json.result.structuredContent, { count: 0, ids: [], unread_total: 0 });
+    assert.deepEqual(fencedItems(list.json.result), []);
+    assert.match(list.json.result.content[0].text, /0 conversations, 0 unread messages/);
     assert.match(list.json.result.content[0].text, /^BEGIN_UNTRUSTED_ZULIP nonce=[0-9a-f]{16}$/m);
     const read = await call(chatTokens.access_token, "zulip_dm_read", { user_ids: [OWNER_ID] });
-    assert.deepEqual(read.json.result.structuredContent, { count: 0, ids: [], next_since_id: null });
+    assert.deepEqual(fencedItems(read.json.result), []);
     const before = zulip.requestsTo("POST", "messages").length;
     const send = await call(chatTokens.access_token, "zulip_dm_send", { user_ids: [OWNER_ID], text: "x" });
     assert.equal(send.json.result.isError, true);
@@ -1121,7 +1136,7 @@ try {
     assert.equal(posted.subject, "hosted smoke");
     assert.equal(posted.content, "[GROK-WEB] Hello from Grok.\u00a0 Two sentences.");
     const read = await call(t.body.access_token, "zulip_read_topic", { channel: "sandbox", topic: "hosted smoke", include_self: true });
-    assert.deepEqual(read.json.result.structuredContent.ids, [posted.id]);
+    assert.deepEqual(fencedItems(read.json.result).map((item) => item.id), [posted.id]);
     assert.match(read.json.result.content[0].text, /^BEGIN_UNTRUSTED_ZULIP nonce=[0-9a-f]{16}$/m);
     const off = await call(t.body.access_token, "zulip_post", { channel: "general", topic: "t", text: "x", identity: "GROK-WEB" });
     assert.equal(off.json.result._meta["simple-tools/error"].code, "channel_not_allowed");
@@ -1214,12 +1229,12 @@ try {
     assert.equal(dm.content, "[GROK-WEB→JAY] Direct note from Grok.\u00a0 Please read.");
     const answer = zulip.addDm("Jay Wedgeworth", [], "Got it, thanks");
     const dmRead = await call(t.body.access_token, "zulip_dm_read", { emails: ["jay@zulip.test"] });
-    assert.deepEqual(dmRead.json.result.structuredContent.ids, [dm.id, answer.id]);
+    assert.deepEqual(fencedItems(dmRead.json.result).map((item) => item.id), [dm.id, answer.id]);
     assert.match(dmRead.json.result.content[0].text, /^BEGIN_UNTRUSTED_ZULIP nonce=[0-9a-f]{16}$/m);
     const dmList = await call(t.body.access_token, "zulip_dm_list", {});
-    assert.deepEqual(dmList.json.result.structuredContent, { count: 1, ids: [answer.id], unread_total: 1 });
+    assert.deepEqual(fencedItems(dmList.json.result).map((item) => [item.last_message_id, item.unread]), [[answer.id, 1]]);
     const inboxDm = await call(t.body.access_token, "zulip_inbox", {});
-    assert.deepEqual(inboxDm.json.result.structuredContent.ids, [answer.id]);
+    assert.deepEqual(fencedItems(inboxDm.json.result).map((item) => item.id), [answer.id]);
     assert.match(inboxDm.json.result.content[0].text, /"dm":true/);
     // The admin page shows the call rows and the role check, never a body.
     const admin = await (await browser("/admin")).text();

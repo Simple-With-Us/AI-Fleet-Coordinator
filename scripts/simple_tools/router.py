@@ -6,10 +6,10 @@ dedupe (cursor and ring), the files, the coalescing and the budgets.
 Steps (design section 2), for each (seat, message) pair:
 
   1. Drop a muted topic unless the message is `direct` or a DM.
-  2. Classify:  own, owner, eligible, direct, fleet, wildcard, dm, wake_tag, stale, reply_to.
-     `fleet` is the fleet-wide wake:  a stream-wide wildcard (`@**all**`) in #work-in-progress > `fleet`
-     (owner 2026-10-09: there is no `fleet` user group and none will be made).  A wildcard anywhere
-     else is only `wildcard`.
+  2. Classify:  own, owner, eligible, direct, fleet, wildcard, dm, wake_tag, stale, reply_to,
+     reply_to_chat.  `fleet` is the fleet-wide wake:  a stream-wide wildcard (`@**all**`) in
+     #work-in-progress > `fleet` (owner 2026-10-09: there is no `fleet` user group and none will be
+     made).  A wildcard anywhere else is only `wildcard`.  `reply_to_chat` is the liberal wake below.
   3. Own posts go to other leases on the topic as passive sibling items.  Never inbox, never wake.
   4. A leased topic:  every live lease on it gets the item, interrupt or passive.  Done.
   5. A mention-class item in an unleased topic goes to the one live, wake-capable claude-code
@@ -56,16 +56,31 @@ The broadcast tokens (owner, Oct 27 2026):  `@all`, `@channel` and `@stream` all
 like `@all`; `@everyone` on its own is still inert.  `@topic` is not a broadcast token and never
 was.  A silent `@_**all**` (an escaped mention) is not a token either:  the leading underscore
 keeps it out of the wildcard set, and a message that carries no token is ordinary text.
+
+Replies wake the chat they answer (owner, Nov 10 2026):  "if anything I'd want it to be more liberal with
+what it considered a wake like a reply to a post that didn't have address to any chat thread", "too many
+wakes ais not my concern and I long for the day that I am annoyed by too many wakes", and for the core
+case "if someone comments a reply to someone that tagged tehm".  Seat S has a chat (header letter AA) that
+tagged seat T in a topic, and T's chat answers there without tagging anyone:  that wakes S, with letter AA.
+The class is `reply_to_chat` and it is computed from the topic ledger (`TopicLedger` in this file, fed by the
+daemon):  an eligible, fresh, untagged stream post wakes every seat that posted earlier in the topic, other
+than its own sender, as the seat's most recent chat there (preferring one that tagged the sender's seat).
+It is a wake like a direct mention for the leases, the seat inbox, a routine seat's router, the stale rule,
+the no-wake marker and the presence topics, and nothing throttles it:  no new budget, cap or loop guard.
 """
 
 from __future__ import annotations
 
+import bisect
+import collections
 import re
+import threading
 from collections.abc import Iterable, Mapping
-from typing import Any
+from typing import Any, NamedTuple
 
-from .identity import seat_tag_for
+from .identity import canonical_seat, seat_tag_for
 from .live import is_presence, topic_key
+from .service_identity import SERVICE_SEATS
 from .zulip import DEFAULT_CHANNEL
 
 INTERRUPT = "interrupt"
@@ -136,6 +151,18 @@ _COMPACT_INTRO_RE = re.compile(
 _FOLDER_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 _SESSION_TAG_ENDS = ("]", "\u2192", "->", " ", ":", "\t")
 
+# Reply wakes.  A loud mention:  `@**Name**`, `@**Name|id**` or a user group `@*group*`.  A silent one
+# (`@_**Name**`) has the underscore between the at sign and the stars, so it matches neither pattern.
+_LOUD_MENTION_RE = re.compile(r"(?<![\\\w*])@(?:\*\*[^*\n]+\*\*|\*[^*\s][^*\n]*\*)")
+_MENTION_NAME_RE = re.compile(r"(?<![\\\w*])@\*\*([^*|\n]+?)(?:\|\d+)?\*\*")
+_THREAD_LETTER_RE = re.compile(r"\s*:\s*([A-Za-z0-9]+)")
+MAX_LETTER_LENGTH = 8
+_LEGACY_ARROW_RE = re.compile(r"(?:\u2192|->)([^\]]*)\]")
+#: Seats that never get a reply wake:  the deterministic service seats (the Operator).  A service seat is
+#: not a chat:  its posts are its own alerts and notes, there is no chat to wake, and it answers nobody
+#: (owner ruling, Nov 10 2026).  They are already kept out of the eligible senders (config.fleet_tags).
+NO_REPLY_WAKE_SEATS = SERVICE_SEATS
+
 
 def _sender_seat_tag(message: Mapping[str, Any]) -> str | None:
     """The seat tag the sender signs its posts with (`MM`, `CLAUDE`), or None when the sender is
@@ -192,6 +219,84 @@ def parse_leading_compact_intro(content: str) -> dict[str, Any] | None:
         "peers": peers,
         "rest": text[match.end() :],
     }
+
+
+def header_letter(thread: str) -> str:
+    """The session letter of a compact intro's `thread` group (`: AA.1.S` gives `AA`), "" when it has none.
+    A real letter is a pair or less:  anything over `MAX_LETTER_LENGTH` characters is not one, and it
+    travels in a wake body, so it is dropped here."""
+    match = _THREAD_LETTER_RE.match(thread or "")
+    letter = match.group(1).upper() if match else ""
+    return letter if len(letter) <= MAX_LETTER_LENGTH else ""
+
+
+def header_peers(content: str) -> list[str]:
+    """The seats a post's leading tag addresses with `→`:  the compact intro's list, else a legacy tag's
+    (`[CLAUDE·aa→CODEX]`).  Empty when the post opens with no tag or the tag names nobody."""
+    intro = parse_leading_compact_intro(content)
+    if intro:
+        return list(intro["peers"])
+    text = _without_leading_no_wake(content)
+    tag = _SEAT_TAG_PREFIX_RE.match(text)
+    arrow = _LEGACY_ARROW_RE.search(tag.group(0)) if tag else None
+    if not arrow:
+        return []
+    return [p.strip() for p in re.split(r"\s*,\s*", arrow.group(1)) if p.strip()]
+
+
+def mentioned_names(visible: str) -> list[str]:
+    """The names of the users loudly mentioned (`@**Name**`, `@**Name|id**`) in text that is already
+    outside code and quotes."""
+    return [m.group(1).strip() for m in _MENTION_NAME_RE.finditer(visible)]
+
+
+def tags_anyone(content: str) -> bool:
+    """Does this post address anyone?  A `→` list in its leading tag, a loud mention of a user or a group
+    (the owner and any bot included), or a broadcast token (`@all`, `@channel`, `@stream`, and `@everyone`
+    too), outside code and quotes.  A silent mention (`@_**Name**`) addresses nobody."""
+    visible = outside_code(content)
+    return bool(
+        header_peers(content)
+        or _LOUD_MENTION_RE.search(visible)
+        or _broadcast_tokens_visible(visible)
+    )
+
+
+def topic_post(
+    message: Mapping[str, Any], *, seat: str = "", names: Mapping[str, str] | None = None
+) -> TopicPost | None:
+    """The topic-ledger entry for one stream message, or None for a direct message or one with no id.
+
+    `seat` is the sender's seat tag when the sender is a fleet bot and "" otherwise (the daemon decides,
+    from the realm user list, never from the message).  `names` maps a fleet bot's full name, case-folded,
+    to its seat tag, so a loud `@**Name**` mention reads as a tagged seat.  The post's session letter is
+    read from its own header only when that header names the sender's own seat:  a bot cannot sign as
+    another seat's chat.  Seats tagged are the header's `→` list and the fleet bots mentioned loudly."""
+    message_id = message.get("id")
+    if (
+        message.get("type") == "private"
+        or not isinstance(message_id, int)
+        or isinstance(message_id, bool)
+    ):
+        return None
+    content = str(message.get("content") or "")
+    names = names or {}
+    letter = ""
+    intro = parse_leading_compact_intro(content)
+    if intro and seat and canonical_seat(intro["seat"]) == seat:
+        letter = header_letter(intro["thread"])
+    tagged = {names.get(p.casefold()) or canonical_seat(p) for p in header_peers(content)}
+    for name in mentioned_names(outside_code(content)):
+        if names.get(name.casefold()):
+            tagged.add(names[name.casefold()])
+    sender = message.get("sender_id")
+    return TopicPost(
+        message_id,
+        sender if isinstance(sender, int) and not isinstance(sender, bool) else None,
+        seat,
+        letter,
+        frozenset(t for t in tagged if t),
+    )
 
 
 def _without_leading_no_wake(content: str) -> str:
@@ -414,6 +519,7 @@ class Context:
         followed: Iterable[str] = (),
         operator_user_id: int = 0,
         seat_has_routine: bool = False,
+        topic_ledger: Any = None,
     ) -> None:
         self.owner_user_id = owner_user_id
         self.owner_clients = set(owner_clients)
@@ -432,6 +538,9 @@ class Context:
         # delivers and wakes).  Only that router can honour a session letter (`@**Claude** AB`), so
         # such a seat never hands a mention-class message to a lease, whoever follows the topic (`route`).
         self.seat_has_routine = seat_has_routine
+        # The topic ledger (TopicLedger below) that decides a reply wake, or None:  with none, no
+        # post is a reply to a chat and routing is exactly what it was before reply wakes.
+        self.topic_ledger = topic_ledger
 
 
 class LeaseView:
@@ -486,11 +595,21 @@ class Classes:
         self.no_wake = False
         self.owner_topic = self.owner_topic_peer = self.owner_note = False
         self.reply_to: int | None = None
+        # The chat this untagged post answers (owner, Nov 10 2026):  the (seat, session letter) of the
+        # seat's most recent earlier post in the topic.  None for every post that does not wake a seat
+        # this way.  Labelled `reply`.
+        self.reply_to_chat: ReplyTarget | None = None
         self.channel = ""
         self.topic = ""
         self.key = ""
 
     def labels(self) -> list[str]:
+        found = self._labels()
+        if self.reply_to_chat is not None:
+            found.append("reply")
+        return found
+
+    def _labels(self) -> list[str]:
         return [
             name
             for name in (
@@ -606,7 +725,54 @@ def classify(message: Mapping[str, Any], me: SeatIdentity, ctx: Context) -> Clas
     first_line = content.split("\n", 1)[0]
     match = _REPLY_TO_RE.search(first_line)
     c.reply_to = int(match.group(1)) if match else None
+    c.reply_to_chat = _reply_target(message, c, me, ctx, content)
     return c
+
+
+def _reply_target(
+    message: Mapping[str, Any], c: Classes, me: SeatIdentity, ctx: Context, content: str
+) -> ReplyTarget | None:
+    """The chat of this seat that an untagged post answers, or None (class `reply_to_chat`).
+
+    The post must be one that could wake the seat at all:  eligible (the owner or a fleet bot, never the
+    seat's own bot or a sibling bot of the same seat), fresh, in a channel topic that is not a presence
+    topic, not a peer's post in an OWNER topic, and with none of the markers that keep a post from waking
+    anyone (the `·wake` and `·route` tags, the no-wake marker).  It must tag nobody:  no `→` list, no
+    loud mention, no `@all`, `@channel`, `@stream` or `@everyone`, and not a direct message.  Then the
+    topic ledger decides:  the seat posted earlier in the topic, strictly before this post, and the
+    answer is that post's chat (`TopicLedger.reply_target`)."""
+    ledger = ctx.topic_ledger
+    if ledger is None or me.seat in NO_REPLY_WAKE_SEATS:
+        return None
+    if (
+        c.dm
+        or c.own
+        or not c.eligible
+        or c.stale
+        or c.wake_tag
+        or c.route_tag
+        or c.no_wake
+        or c.owner_topic_peer
+        or c.direct
+        or c.fleet
+        or c.wildcard
+        or c.broadcast_all
+        or c.everyone_inert
+    ):
+        return None
+    message_id = message.get("id")
+    if not isinstance(message_id, int) or isinstance(message_id, bool):
+        return None
+    sender_seat = ""
+    if not c.owner:
+        sender_seat = _sender_seat_tag(message) or ""
+        if sender_seat == me.seat:
+            return None  # a sibling bot that signs as this seat is the seat's own voice
+    # The ledger first:  most seats never posted in the topic, and for them nothing else is read.
+    target = ledger.reply_target(c.key, me.seat, me.user_id, message_id, sender_seat)
+    if target is None or is_presence(c.channel, c.topic, ctx.presence) or tags_anyone(content):
+        return None
+    return target
 
 
 class Decision:
@@ -622,9 +788,15 @@ class Decision:
         )
         self.wake_owner = False
         self.throttled: list[tuple[str, str]] = []  # (lease id, reason) for interrupts made passive
+        # "reply" when the item reached the seat because it answers one of the seat's chats (class
+        # `reply_to_chat`), and the session letter of that chat ("" when its post had none).  Shown in the
+        # route log line and carried on the seat-inbox row and the wake ledger row, so a wrong pick can
+        # be read back.
+        self.linked_by: str | None = None
+        self.reply_target_letter: str | None = None
 
     def describe(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "drop": self.drop_reason,
             "leases": [[l, c, k] for l, c, k in self.lease_items],
             "inbox": self.seat_inbox,
@@ -632,6 +804,10 @@ class Decision:
             "wake": self.wake,
             "wake_block": self.wake_block,
         }
+        if self.linked_by:
+            out["linked_by"] = self.linked_by
+            out["reply_target_letter"] = self.reply_target_letter or ""
+        return out
 
 
 def prefilter(c: Classes) -> tuple[str | None, str | None]:
@@ -654,6 +830,12 @@ def prefilter(c: Classes) -> tuple[str | None, str | None]:
         # A fleet bot's `@all` wakes like the owner's (owner, Oct 27 2026):  the same stale rule,
         # the same loop guard, the peer budgets.  It is still peer data, never owner authority.
         return (None, "stale") if c.stale else ("peer", None)
+    if c.reply_to_chat is not None:
+        # An untagged post that answers one of the seat's chats (owner, Nov 10 2026:  "more liberal
+        # with what it considered a wake").  The class already excludes a stale, no-wake, `·wake`,
+        # presence or owner-topic-peer post, so there is nothing left to refuse here.  The owner's
+        # reply wakes as the owner's, a bot's as a peer's:  still peer data, never owner authority.
+        return ("owner" if c.owner else "peer"), None
     if c.fleet or c.wildcard:
         return None, "group_or_wildcard"
     return None, "not_a_mention"
@@ -673,6 +855,9 @@ def route(
     # addressed seat's inbox; undirected visibility posts fall through to chatter/own drops.
     d.wake_worthy = kind is not None and not c.no_wake
     d.wake_owner = kind == "owner" and not c.no_wake
+    if c.reply_to_chat is not None:
+        d.linked_by = "reply"
+        d.reply_target_letter = c.reply_to_chat.letter
     if not c.dm and c.key in ctx.muted and not c.direct:
         d.drop_reason = "muted"
         return c, d
@@ -696,6 +881,10 @@ def route(
             # The owner's and a fleet bot's channel-wide mention (owner, Oct 27 2026):  both take a
             # claude-code lease with `mentions`, and the seat-inbox copy is marked delivered_to.
             or (c.eligible and c.broadcast_all and not c.owner_topic)
+            # An untagged reply to one of the seat's chats is a mention too (owner, Nov 10 2026):  a
+            # routine seat's router picks the chat, any other seat hands it to its session as it would
+            # a direct mention.
+            or c.reply_to_chat is not None
         )
     )
     # One wake path:  a seat with a routine never hands a mention-class message to a session, neither
@@ -729,6 +918,8 @@ def route(
                     # A fleet bot's `@all` interrupts a leased topic like the owner's (owner,
                     # Oct 27 2026):  the lease on the topic is woken, under the peer budgets.
                     or (c.peer_broadcast and not c.owner_topic)
+                    # So does an untagged reply to one of the seat's chats, as a direct mention would.
+                    or c.reply_to_chat is not None
                 )
             )
             klass = PASSIVE
@@ -764,6 +955,7 @@ def route(
         or c.broadcast_all
         or c.owner
         or c.wildcard
+        or c.reply_to_chat is not None
         or c.key in ctx.followed
     ):
         d.seat_inbox = True
@@ -774,3 +966,170 @@ def route(
         return c, d
     d.drop_reason = "chatter"
     return c, d
+
+
+# ---- The topic ledger (reply wakes) ----------------------------------------
+#
+# Folded in from topic_ledger.py, which the Fleet CLI release could not ship as a 166th file.
+#
+# The per-topic post ledger behind reply wakes (owner, Nov 10 2026):  who posted recently in each topic,
+# as which chat, and whom they tagged.
+#
+# Owner rulings this exists for, in his words:  "if anything I'd want it to be more liberal with what it
+# considered a wake like a reply to a post that didn't have address to any chat thread", and "too many
+# wakes ais not my concern and I long for the day that I am annoyed by too many wakes".  The core case:
+# "if someone comments a reply to someone that tagged tehm".  Chat A (seat S, header letter AA) tags seat
+# T in a topic, T's chat answers in the topic without tagging anyone, and that answer wakes chat A.  The
+# router (`router.classify`, class `reply_to_chat`) asks this ledger whether seat S posted earlier in the
+# topic, and which chat it posted as.
+#
+# No I/O and no clock:  the daemon feeds it every stream message (`record`) and the router reads it
+# (`reply_target`).  It is thread-safe (the router thread and the wake workers both read it) and bounded:
+# at most `max_topics` topics, least recently written first out, and at most `per_topic` posts in a topic,
+# oldest first out.  Direct messages never come here.  A restart empties it (it is memory only).
+#
+# Order matters in one way only:  a message is judged against the posts strictly EARLIER than itself
+# (`before_id`).  Every seat's queue delivers the same message, and the queues are not in step, so by the
+# time one seat classifies message m the ledger may already hold m and even later ones.  Reading only ids
+# below m makes the answer the same whichever seat's queue got there first.
+
+#: How many topics the ledger keeps and how many recent posts it keeps in each.
+MAX_TOPICS = 2000
+POSTS_PER_TOPIC = 40
+
+
+class TopicPost(NamedTuple):
+    """One post as the ledger keeps it.  `seat` is the sender's seat tag when the sender is a fleet bot
+    and "" for the owner or anyone else.  `letter` is the session letter of the post's own header
+    (`[CLAUDE: AA.1.S 📁AFC]` gives `AA`), "" when the post has none.  `tagged` is the set of seats the
+    post addressed:  the header's `→` list and the loud `@**Name**` mentions of fleet bots."""
+
+    message_id: int
+    sender_id: int | None
+    seat: str
+    letter: str
+    tagged: frozenset[str]
+
+
+class ReplyTarget(NamedTuple):
+    """The chat an untagged post is answering:  seat S, the header `letter` of S's post it answers ("" when
+    that post carried none) and that post's message id (for the wake record)."""
+
+    seat: str
+    letter: str
+    message_id: int
+
+
+class TopicLedger:
+    def __init__(self, *, max_topics: int = MAX_TOPICS, per_topic: int = POSTS_PER_TOPIC) -> None:
+        self.max_topics = max(1, int(max_topics))
+        self.per_topic = max(1, int(per_topic))
+        self._lock = threading.Lock()
+        # topic key -> its recent posts, oldest first (ascending message id), least recently written first.
+        self._topics: collections.OrderedDict[str, list[TopicPost]] = collections.OrderedDict()
+
+    def record(self, key: str, post: TopicPost) -> bool:
+        """Keep one post.  False when its message id is already there (a message reaches the daemon once
+        per seat and again when an edit or a retry routes it, and it is kept once), or when it is older
+        than every post of a full topic and so not worth keeping."""
+        with self._lock:
+            posts = self._topics.get(key)
+            if posts is None:
+                posts = self._topics[key] = []
+            self._topics.move_to_end(key)
+            at = bisect.bisect_left(posts, post.message_id, key=_message_id)
+            if at < len(posts) and posts[at].message_id == post.message_id:
+                return False
+            posts.insert(at, post)
+            kept = True
+            if len(posts) > self.per_topic:
+                kept = at >= len(posts) - self.per_topic
+                del posts[: len(posts) - self.per_topic]
+            while len(self._topics) > self.max_topics:
+                self._topics.popitem(last=False)
+            return kept
+
+    def seen(self, key: str, message_id: int) -> bool:
+        """Is this message already kept in the topic?  A cheap check, so the daemon builds a post only
+        for the first copy of a message."""
+        with self._lock:
+            posts = self._topics.get(key)
+            if not posts:
+                return False
+            at = bisect.bisect_left(posts, message_id, key=_message_id)
+            return at < len(posts) and posts[at].message_id == message_id
+
+    def posts(self, key: str, before_id: int | None = None) -> list[TopicPost]:
+        """The topic's kept posts, oldest first, only those with an id below `before_id` when given."""
+        with self._lock:
+            found = self._topics.get(key) or []
+            if before_id is None:
+                return list(found)
+            return found[: bisect.bisect_left(found, before_id, key=_message_id)]
+
+    def reply_target(
+        self,
+        key: str,
+        seat: str,
+        user_id: int | None,
+        before_id: int,
+        sender_seat: str = "",
+    ) -> ReplyTarget | None:
+        """The chat of `seat` that a post with id `before_id`, by a sender of seat `sender_seat` ("" for
+        the owner), is answering, or None when the seat has not posted in the topic before it.
+
+        `seat`'s posts are those by its bot (`user_id`) and any other bot that signs as the seat.  The
+        answer is the MOST RECENT such post, except that a post which tagged the sender's seat is
+        preferred over a more recent one that did not:  the chat that called on the sender is the one the
+        sender is most likely answering.  A post with no letter answers with "" (no letter)."""
+        with self._lock:
+            found = self._topics.get(key)
+            if not found:
+                return None
+            earlier = found[: bisect.bisect_left(found, before_id, key=_message_id)]
+        mine = [
+            p
+            for p in earlier
+            if (user_id is not None and p.sender_id == user_id) or (seat and p.seat == seat)
+        ]
+        if not mine:
+            return None
+        pick = mine[-1]
+        if sender_seat:
+            for post in reversed(mine):
+                if sender_seat in post.tagged:
+                    pick = post
+                    break
+        return ReplyTarget(seat, pick.letter, pick.message_id)
+
+    def rename(self, old_key: str, new_key: str) -> None:
+        """A topic was renamed or moved:  its kept posts follow it.  Posts already under the new key are
+        merged in (deduplicated by message id, bounded as ever)."""
+        if old_key == new_key:
+            return
+        with self._lock:
+            moved = self._topics.pop(old_key, None)
+            if not moved:
+                return
+            merged = {p.message_id: p for p in self._topics.get(new_key) or []}
+            merged.update((p.message_id, p) for p in moved)
+            posts = sorted(merged.values(), key=_message_id)
+            self._topics[new_key] = posts[-self.per_topic :]
+            self._topics.move_to_end(new_key)
+            while len(self._topics) > self.max_topics:
+                self._topics.popitem(last=False)
+
+    def stats(self) -> dict[str, int]:
+        with self._lock:
+            return {
+                "topics": len(self._topics),
+                "posts": sum(len(v) for v in self._topics.values()),
+            }
+
+    def keys(self) -> Iterable[str]:
+        with self._lock:
+            return list(self._topics)
+
+
+def _message_id(post: TopicPost) -> int:
+    return post.message_id

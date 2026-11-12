@@ -57,8 +57,6 @@ from . import inbox_delivery as IDEL
 from . import listener_api as LAPI
 from . import listener_registry as LREG
 from . import live as L
-from . import muse_bridge as MB
-from . import muse_bridge_mac as MBM
 from . import notes_queue as NQ
 from . import notes_wire as NW
 from . import operator_candidates as OC
@@ -70,6 +68,7 @@ from . import outgoing_webhook as OW
 from . import router as R
 from . import session_ids as SI
 from . import subscribe_all as SUB
+from . import thread_registry as TR
 from . import typing_signal as TYPING
 from . import wakes as W
 from . import zulip as Z
@@ -91,6 +90,8 @@ DEAD_QUEUE_SECONDS = 180.0
 DOWN_NOTIFY_SECONDS = 30 * 60.0
 CLOCK_JUMP_SECONDS = 120.0
 TOPIC_BACKFILL_CAP = 200
+#: How many of a seat's own latest posts seed the topic ledger at its first connect (one request).
+LEDGER_SEED_POSTS = 200
 PAGE = 100
 #: Session letters that are also ordinary English words.  They count as a tagged address only when
 #: they stand alone at the end of the message;  inside a sentence ("@**MiniMax** I think we ship")
@@ -313,6 +314,8 @@ class SeatRunner:
         self.users: dict[int, dict[str, Any]] = {}
         self.users_version = 0  # bumped on every change to `users`, so the fleet-bot set is cached
         self.fleet_cache: tuple[Any, set[int]] | None = None
+        self.bot_names_cache: tuple[Any, dict[str, str]] | None = None
+        self.ledger_seeded = False  # the topic ledger was seeded from this seat's own recent posts
         self.streams: dict[int, str] = {}
         self.muted: set[str] = set()
         self.followed: set[str] = set()
@@ -734,6 +737,7 @@ class Daemon:
         self.secrets_dir = Z.override_secrets_dir(self.env)
         self.hidden: list[str] = []
         self.hidden_lock = threading.Lock()
+        self._thread_store_lock = threading.Lock()
         self.stdout = stdout or sys.stdout
         tee = (
             self.stdout
@@ -869,6 +873,10 @@ class Daemon:
             enabled=self.config.wake_loop_prevention,
         )
         self.global_ring = Ring()
+        # Who posted recently in each topic, as which chat and tagging whom (router.TopicLedger).  It is
+        # what turns an untagged reply into a wake for the chat it answers (router `reply_to_chat`).
+        # In memory only:  a restart empties it, and it fills again as posts arrive.
+        self.topic_ledger = R.TopicLedger()
         self.agents_cache: tuple[float, dict[int, str] | None] = (-1e9, None)
         self.start_cache: dict[int, tuple[float, int]] = {}
         self.children: set[subprocess.Popen[Any]] = (
@@ -904,12 +912,15 @@ class Daemon:
         # Infisical service token for the Operator's Linear developer token resolves.
         self.linear_comments: Any | None = None
         self._linear_comments_spec: tuple[Any, ...] | None = None
-        # The Operator's session registry API (listener_registry.py), served by the
-        # listener API under /registry/v1/:  rebuilt with the API server on every start
-        # and reload (_configure_listener_api), None while the listener API is off or
-        # no principal has a key.
+        # The Operator's session registry service (listener_registry.py), rebuilt on every
+        # start and reload (_configure_listener_api calls _configure_registry first).  It
+        # exists on the server instance only, whether or not the listener API is on;  the
+        # API serves it under /registry/v1/ when a principal has a key (AFC-721).
         self.registry_service: LREG.RegistryService | None = None
         self._registry_spec: tuple[Any, ...] | None = None
+        # The one stale sweeper (AFC-721), built with the registry service and run from the
+        # tick only while it belongs to the live service, so it stops when the service does.
+        self.registry_sweeper: LREG.Sweeper | None = None
         self.backfill_lock = threading.Lock()
         self.started_at = self.clock.time()
         self.last_tick = {
@@ -918,10 +929,8 @@ class Daemon:
             "grace": -1e9,
             "prune": -1e9,
             "held": -1e9,
-            "muse_bridge": -1e9,
             "linear_comments": -1e9,
         }
-        self.muse_bridge_thread: threading.Thread | None = None
         self.config_notified = False
         self.reload_requested = False
         self.acronyms = A.fleet_acronyms()
@@ -1515,33 +1524,74 @@ class Daemon:
             )
 
     def _configure_registry(self) -> LREG.RegistryService | None:
-        """The Operator's session registry API for the listener API to serve under /registry/v1/, or None:
-        off unless at least one principal has a key.  The principals are the seats this instance holds, keyed
+        """The Operator's session registry service, or None off the server instance.  The listener API serves
+        it under /registry/v1/ only when at least one principal has a key;  the service itself, the location
+        answers and the sweeper do not depend on a key or on the API being on (AFC-721).  The principals are the seats this instance holds, keyed
         exactly as the read API keys them (the seat's routine `key_env` key), plus the OPERATOR principal,
         whose key is the value of the env var listener_registry.OPERATOR_KEY_ENV when it is set.  Every key
         value is hidden from the log by listener_api_keys / here, before anything can print it.  A reload that
         leaves the principals and the store as they were keeps the same service object.  Construction opens
-        no file:  the service opens the registry per call, through the registry's own functions."""
+        no file:  the service opens the registry per call, through the registry's own functions.
+
+        One writer (AFC-721):  only the server instance builds the service, and with it the one stale
+        sweeper ([registry] settings);  every other instance gets None and writes no registry row."""
         old = getattr(self, "registry_service", None)
         old_spec = getattr(self, "_registry_spec", None)
+        old_sweeper = getattr(self, "registry_sweeper", None)
         self.registry_service = None
         self._registry_spec = None
+        self.registry_sweeper = None
+        # One writer (AFC-721):  only the server instance, the Eavesdropper, holds the registry.
+        # Any other instance serves no registry API and writes no row, whatever keys it has.
+        if getattr(self.config, "instance", "mac") != "server":
+            return None
         keys = self.listener_api_keys()
         operator_key = Z._strip_quotes(self.env.get(LREG.OPERATOR_KEY_ENV) or "")
         if operator_key:
             self.hide_values([operator_key])
             keys[LREG.OPERATOR] = operator_key
-        usable = sorted(name for name, key in keys.items() if len(key) >= LREG.MIN_KEY_LEN)
-        if not usable:
-            return None
+        # The service is built on the server whether or not any principal has a usable key, and
+        # whether or not the API is on or bound:  the location answers and the sweeper run in
+        # process and need no key.  The keys decide only whether the API serves /registry/v1/.
         db_path = OR.registry_db_path(self.root, self.env)
-        spec = (db_path, tuple(sorted((name, key) for name, key in keys.items())))
+        share = self.config.registry_gone_report_max_share
+        window = self.config.registry_gone_report_window_minutes
+        spec = (db_path, share, window, tuple(sorted((name, key) for name, key in keys.items())))
         if old is not None and old_spec == spec:
             service = old
         else:
-            service = LREG.RegistryService(db_path, keys, clock=self.clock.time, log=self.log.write)
+            service = LREG.RegistryService(
+                db_path,
+                keys,
+                clock=self.clock.time,
+                log=self.log.write,
+                gone_report_max_share=share,
+                gone_report_window_minutes=window,
+            )
         self.registry_service = service
         self._registry_spec = spec
+        service.sweeper = None
+        if self.config.registry_sweep_enabled:
+            interval = self.config.registry_sweep_interval_minutes
+            stale = self.config.registry_stale_after_hours
+            max_share = self.config.registry_sweep_max_share
+            if (
+                old_sweeper is not None
+                and old_sweeper.service is service
+                and old_sweeper.interval_s == interval * 60.0
+                and old_sweeper.stale_after_minutes == max(1, round(stale * 60))
+                and old_sweeper.max_share == max_share
+            ):
+                self.registry_sweeper = old_sweeper
+                service.sweeper = old_sweeper
+            else:
+                self.registry_sweeper = LREG.Sweeper(
+                    service,
+                    interval_minutes=interval,
+                    stale_after_hours=stale,
+                    max_share=max_share,
+                    log=self.log.write,
+                )
         return service
 
     def _configure_listener_api(self) -> None:
@@ -1555,13 +1605,15 @@ class Daemon:
         self.listener_api_server = None
         if old is not None:
             old.close()
+        # The registry service and its sweeper live with the instance, not with the API
+        # (AFC-721):  an API that is off or fails to bind leaves them running.
+        service = self._configure_registry()
+        registry = service if service is not None and service.keys else None
         if not self.config.listener_api_enabled:
             self.notes_queue = None
             self._notes_queue_spec = None
             self.linear_projects_hook = None
             self._linear_projects_spec = None
-            self.registry_service = None
-            self._registry_spec = None
             if self.config.notes_queue_enabled:
                 self.log.write(
                     "notes-queue-off",
@@ -1576,7 +1628,6 @@ class Daemon:
         keys = self.listener_api_keys()
         notes = self._configure_notes_queue()
         hook = self._configure_linear_projects()
-        registry = self._configure_registry()
         if not keys and notes is None and hook is None and registry is None:
             self.log.write(
                 "listener-api-deny-all",
@@ -1605,8 +1656,6 @@ class Daemon:
             self._notes_queue_spec = None
             self.linear_projects_hook = None
             self._linear_projects_spec = None
-            self.registry_service = None
-            self._registry_spec = None
             return
         self.listener_api_server = server
         host, port = server.address
@@ -2011,7 +2060,53 @@ class Daemon:
             followed=runner.followed,
             operator_user_id=OPV.pinned_user_id(self.env),
             seat_has_routine=runner.cfg.routine is not None,
+            topic_ledger=self.topic_ledger,
         )
+
+    def fleet_bot_names(self, runner: SeatRunner) -> dict[str, str]:
+        """The fleet bots' full names (case-folded) mapped to their seat tags, so a loud `@**Name**`
+        mention in a post reads as a tagged seat.  Cached until the user list, the tags or the owner pin
+        changes, like `eligible_ids`.  Only the realm's own fleet bots count (router.fleet_bots_by_seat)."""
+        key = (
+            runner.users_version,
+            self.fleet_tags,
+            self.config.owner_user_id,
+            self.config.outgoing_webhook_seats,
+        )
+        if runner.bot_names_cache is None or runner.bot_names_cache[0] != key:
+            names: dict[str, str] = {}
+            by_seat = R.fleet_bots_by_seat(
+                runner.users,
+                self.fleet_tags,
+                self.config.owner_user_id,
+                outgoing_webhook_seats=self.config.outgoing_webhook_seats,
+            )
+            for seat, bots in by_seat.items():
+                for bot in bots:
+                    name = str(bot.get("full_name") or "").strip().casefold()
+                    if name:
+                        names.setdefault(name, seat)
+            runner.bot_names_cache = (key, names)
+        return runner.bot_names_cache[1]
+
+    def record_topic_post(self, runner: SeatRunner, message: Mapping[str, Any]) -> None:
+        """Keep one stream message in the topic ledger, once (the ledger dedupes by message id, so the
+        same message arriving on every seat's queue, an edit's re-route and a retry change nothing).  A
+        direct message is never kept.  The seat of the sender is the realm's own answer, never the
+        message's:  only a fleet bot has one."""
+        message_id = message.get("id")
+        if message.get("type") == "private" or not isinstance(message_id, int):
+            return
+        key = L.topic_key(Z.message_channel(message), Z.message_topic(message))
+        if self.topic_ledger.seen(key, message_id):
+            return  # the first seat to route it kept it
+        sender = message.get("sender_id")
+        seat = ""
+        if isinstance(sender, int) and sender in self.eligible_ids(runner):
+            seat = seat_tag_for({"is_bot": True, "email": message.get("sender_email")})
+        post = R.topic_post(message, seat=seat, names=self.fleet_bot_names(runner))
+        if post is not None:
+            self.topic_ledger.record(key, post)
 
     def handle_events(self, runner: SeatRunner, events: Iterable[Mapping[str, Any]]) -> None:
         for event in events:
@@ -2138,7 +2233,46 @@ class Daemon:
         runner.gaps = []
         runner.flush_cursor(force=True)
 
+    def _thread_registry_store(self) -> TR.ThreadRegistryStore:
+        store = getattr(self, "_thread_store", None)
+        if store is None:
+            # Double-checked under a lock:  two routing threads racing the lazy
+            # creation must not build two stores whose cached data clobber each
+            # other's flushes.
+            with self._thread_store_lock:
+                store = getattr(self, "_thread_store", None)
+                if store is None:
+                    store = TR.ThreadRegistryStore(TR.thread_store_path(self.root, self.env))
+                    self._thread_store = store
+        return store
+
+    def _observe_thread(self, runner: SeatRunner, message: Mapping[str, Any]) -> None:
+        """Fold one routed message into the Operator's thread registry
+        (thread_registry.py).  Observation is best-effort by design:  a registry failure
+        is logged and never touches routing, and the store deduplicates by message id,
+        so the same message arriving for several seats, or again through backfill,
+        counts once."""
+        if not isinstance(message, Mapping) or message.get("type") != "stream":
+            return
+        try:
+            enriched = dict(message)
+            sender_id = message.get("sender_id")
+            if isinstance(sender_id, int):
+                person = runner.users.get(sender_id)
+                if isinstance(person, dict) and isinstance(person.get("is_bot"), bool):
+                    enriched["sender_is_bot"] = person["is_bot"]
+            stream_id = message.get("stream_id")
+            stream_name = runner.streams.get(stream_id) if isinstance(stream_id, int) else None
+            self._thread_registry_store().observe(enriched, stream_name=stream_name)
+        except Exception as exc:  # the registry must never break routing
+            self.log.write(
+                "thread-registry-error",
+                seat=runner.seat,
+                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+            )
+
     def route_message(self, runner: SeatRunner, message: Mapping[str, Any]) -> None:
+        self._observe_thread(runner, message)
         self._observe_linear_message(runner, message)
         self._route_message(runner, message, advance_cursor=True)
 
@@ -2272,7 +2406,7 @@ class Daemon:
             if c.dm
             else []
         )
-        return {
+        item: dict[str, Any] = {
             "kind": "message",
             "id": message.get("id"),
             "type": "private" if c.dm else "stream",
@@ -2294,11 +2428,14 @@ class Daemon:
             "stale": c.stale,
             "wake_worthy": d.wake_worthy,
             "wake_owner": d.wake_owner,
-            "muse_bridge": bool(
-                d.wake and not d.delivered_to and MB.enabled(self.config, runner.seat)
-            ),
             "routed_at": self.clock.time(),
         }
+        if c.reply_to_chat is not None:
+            # Why this untagged post reached the seat:  it answers the seat's own earlier post in the
+            # topic.  The letter is that post's chat ("" when it had none) and the id is that post.
+            item["reply_target_letter"] = c.reply_to_chat.letter
+            item["reply_target_id"] = c.reply_to_chat.message_id
+        return item
 
     def _route(
         self,
@@ -2317,6 +2454,18 @@ class Daemon:
         done = set() if done is None else done
         now = self.clock.time()
         views = self.lease_views(runner)
+        # The ledger takes the message before it is classified, and the classification reads only posts
+        # strictly earlier than the message, so the order of the seats' queues never changes an answer.
+        # A failure here costs one reply wake and never the routing of the message itself.
+        try:
+            self.record_topic_post(runner, message)
+        except Exception as exc:  # noqa: BLE001 - the ledger must never quarantine a message
+            self.log.write(
+                "topic-ledger-error",
+                seat=runner.seat,
+                id=message.get("id"),
+                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+            )
         c, d = R.route(message, runner.me, self.context(runner), views)
         first_seen = message["id"] not in self.global_ring
         if first_seen:
@@ -2440,15 +2589,6 @@ class Daemon:
             if "inbox" not in done:
                 self._append_seat_inbox(runner, [row])
                 done.add("inbox")
-            if (
-                d.wake
-                and not d.delivered_to
-                and "wake" not in done
-                and MB.enabled(self.config, runner.seat)
-            ):
-                # The inbox is the durable source for the central router.  Keep the original wake
-                # adapter configured, but never start it in parallel with a bridge decision.
-                done.add("wake")
             if d.wake and not d.delivered_to and "wake" not in done:
                 if self._broadcast_all(c):
                     # Handed off, not delivered:  start_fanout (above, same gate) owns this wake.  The
@@ -2596,6 +2736,9 @@ class Daemon:
         if not old_channel:
             return
         old_key = L.topic_key(old_channel, old_topic)
+        # The posts the ledger kept follow the topic to its new name, so a reply after a rename still
+        # finds the chat it answers.  Every seat's queue brings this event, and the second move is a no-op.
+        self.topic_ledger.rename(old_key, L.topic_key(new_channel, new_topic))
         renamed = 0
         for lease_id in L.list_lease_ids(runner.paths):
 
@@ -6004,7 +6147,7 @@ class Daemon:
                 continue
             try:
                 c, d = R.route(message, runner.me, self.context(runner), self.lease_views(runner))
-                if not d.wake or d.delivered_to or MB.enabled(self.config, seat):
+                if not d.wake or d.delivered_to:
                     continue
                 item = self.make_item(runner, message, c, d)
                 mid = message.get("id")
@@ -6695,8 +6838,9 @@ class Daemon:
         First run:  nothing has ever registered, so the file does not exist yet, and the
         registry layer fails closed on that (its wake-path rule:  never let a lookup
         bring a registry into being).  At this boundary a missing file is the truthful
-        "no letters yet" - asking is harmless, and the answer path's register creates
-        the file.  A file that exists but cannot be read still raises
+        "no letters yet" - asking is harmless.  The answer path never creates the file
+        (AFC-721):  it registers only through the Eavesdropper's registry service, which
+        refuses a missing store.  A file that exists but cannot be read still raises
         RegistryUnavailable:  that is a broken identity source, not an empty one.
         """
         if not os.path.isfile(str(db)):
@@ -6715,6 +6859,15 @@ class Daemon:
         per question (the notified stamp), and a failure here never breaks the wake that
         found the chats - the worst case is a chat that stays unlettered, which is today.
         """
+        # One writer (AFC-721):  only an instance with the registry service can take the answer,
+        # so only that instance asks.  Anywhere else a question could never be acted on.
+        if getattr(self, "registry_service", None) is None:
+            if not getattr(self, "_registration_ask_off_logged", False):
+                self._registration_ask_off_logged = True
+                self.log.write(
+                    "operator-registration-ask-off", reason="no registry service on this instance"
+                )
+            return
         try:
             owner = int(getattr(self.config, "owner_user_id", 0) or 0)
             # The question posts in the chat's own topic, never a DM:  owner DM permission
@@ -7058,6 +7211,21 @@ class Daemon:
                 if sent.get("status") != "sent":
                     self._confirmation_not_landed(sent, message_id, done)
                 return True
+            # One writer (AFC-721):  only the Eavesdropper's registry service issues a
+            # letter.  An instance without one never answers a registration, so the
+            # message follows its normal wake path and nothing is written here.  The
+            # check sits after the retry branch above (kody 4544460563):  a route retry
+            # whose letter was already issued only resends its confirmation, which needs
+            # no service, so it is never left unconfirmed.
+            service = getattr(self, "registry_service", None)
+            if service is None:
+                self.log.write(
+                    "operator-registration-answer",
+                    entry_id=parsed["entry_id"],
+                    status="refused",
+                    reason="no registry service on this instance",
+                )
+                return False
             db = self._registration_db()
             # Asked entries answer directly;  conflicted ones settle through the same
             # path (operator_registration.answer re-runs every cross-check).
@@ -7111,8 +7279,8 @@ class Daemon:
                 entry_id=parsed["entry_id"],
                 location=parsed["location"],
                 registrations=lambda pf, sid: self._registrations(db, pf, sid),
-                register=lambda **identity: OR.register_session(
-                    db, source="chat-topic-answer", issuer=OR.ISSUER_OPERATOR, **identity
+                register=lambda **identity: service.operator_register(
+                    source="chat-topic-answer", **identity
                 ),
                 # Only the pinned owner's own answer attests an uncorroborated location;
                 # the seat bot's word needs discovery evidence (kody 4366047282).
@@ -8482,61 +8650,6 @@ class Daemon:
         return pending
 
     # ---- periodic work -------------------------------------------------------------------------
-    def _muse_bridge_native(self) -> None:
-        """Consume one approved server routine using the addressed seat's original runner."""
-        decision = MB.claim_native(self.root)
-        if decision is None:
-            return
-        seat, message_id, receipt = decision["source_seat"], decision["id"], decision["receipt"]
-        runner = self.seats.get(seat)
-        row = MB.find_source(self.root, self.config, seat, message_id)
-        if (
-            runner is None
-            or row is None
-            or row.get("seq") != decision.get("seq")
-            or runner.cfg.routine is None
-        ):
-            MB.finish_native(self.root, receipt, "held")
-            self.log.write("muse-bridge-held", seat=seat, id=message_id, reason="source_changed")
-            return
-        now = self.clock.time()
-        pending = W.Pending(
-            "muse-bridge-" + receipt[:32],
-            seat,
-            row,
-            owner=row.get("owner") is True,
-            now=now,
-            due=now,
-        )
-        pending.add(row, row.get("owner") is True)
-        try:
-            self.run_wake(runner, pending)
-        except Exception as exc:
-            # The pre-dispatch claim remains uncertain after an exception.  A retry could invoke the
-            # external routine twice, so an operator must inspect its receipt first.
-            self.log.write(
-                "muse-bridge-dispatch-uncertain",
-                seat=seat,
-                id=message_id,
-                error=self.scrub(type(exc).__name__),
-            )
-            return
-        # routine_delivered is the Worker's integer count, so the ledger's surfaced flag decides.
-        state = MB.native_outcome(runner.ledger.wakes().get(pending.wake_id) or {})
-        MB.finish_native(self.root, receipt, state)
-        self.log.write("muse-bridge-dispatch", seat=seat, id=message_id, state=state)
-
-    def _muse_bridge_mac_loop(self) -> None:
-        bridge = MBM.MacBridge(self)
-        while not self.stop.is_set():
-            try:
-                bridge.run_once()
-            except (
-                Exception
-            ) as exc:  # an unavailable server or model must leave inbox cursors untouched
-                self.log.write("muse-bridge-error", error=self.scrub(type(exc).__name__))
-            self.stop.wait(5.0)
-
     def tick(self) -> None:
         now = self.clock.time()
         if self.reload_requested:
@@ -8555,16 +8668,6 @@ class Daemon:
             self.last_tick["reap"] = now
             for runner in self.seats.values():
                 self.reap(runner)
-        if (
-            self.config.instance == "server"
-            and self.config.muse_bridge_enabled
-            and now - self.last_tick["muse_bridge"] >= 2
-        ):
-            self.last_tick["muse_bridge"] = now
-            try:
-                self._muse_bridge_native()
-            except Exception as exc:  # the bridge must not stop ordinary listener routing
-                self.log.write("muse-bridge-error", error=self.scrub(type(exc).__name__))
         if now - self.last_tick["grace"] >= 30:
             self.last_tick["grace"] = now
             for runner in self.seats.values():
@@ -8608,6 +8711,7 @@ class Daemon:
                 )
         for runner in self.seats.values():
             runner.flush_cursor()
+        self._maybe_start_registry_sweep(now)
         if now - self.last_tick["status"] >= STATUS_TICK_SECONDS:
             self.last_tick["status"] = now
             self.write_status()
@@ -8628,7 +8732,7 @@ class Daemon:
             classes = set(item.get("classes") or [])
             key = L.topic_key(str(item.get("channel") or ""), str(item.get("topic") or ""))
             if (
-                not (classes & {"direct", "dm", "fleet", "owner", "wildcard"})
+                not (classes & {"direct", "dm", "fleet", "owner", "wildcard", "reply"})
                 and key not in runner.followed
             ):
                 continue
@@ -8951,7 +9055,6 @@ class Daemon:
                 "last_event": runner.last_event_wall,
                 "wake": runner.cfg.wake,
                 "routine": routine,
-                "muse_bridge": MB.enabled(self.config, seat),
                 "pinned": (pin or muse_pin or or_pin or {}).get("pinned"),
                 "pin": pin or muse_pin or or_pin,
                 "claude": claude,
@@ -9003,17 +9106,6 @@ class Daemon:
             "updated": now,
             "instance": self.config.instance,
             "disabled": sorted(self.config.disabled),
-            "muse_bridge": {
-                "enabled": self.config.muse_bridge_enabled,
-                "remote_seats": list(self.config.muse_bridge_remote_seats),
-                "pin": (
-                    MBM.pin_state(
-                        self.root, MBM.resolve_bridge_muse(self.wake_path), C.MUSE_DEFAULT_MODEL
-                    )[1]
-                    if self.config.instance == "mac" and self.config.muse_bridge_enabled
-                    else "inactive"
-                ),
-            },
             "skipped_seats": {
                 seat: [self.scrub(p) for p in problems]
                 for seat, problems in sorted(self.config.skipped_seats.items())
@@ -9039,9 +9131,46 @@ class Daemon:
             # Whether the Operator itself can speak (AFC-602):  a listener that is up with a dead
             # Operator voice drops every wake it would have reported, and nothing else says so.
             "operator_voice": self.operator_voice.snapshot(),
+            # The one stale sweeper's last pass (AFC-721):  null where no sweeper runs (every
+            # instance but the server) and before the first pass.
+            "registry_sweep": self._registry_sweep_status(),
             "drain": self._drain_status(),
             "seats": seats,
         }
+
+    def _maybe_start_registry_sweep(self, now: float) -> None:
+        """Start the one stale sweeper's due pass on its own thread (AFC-721, kody 4544460899).
+
+        A pass is one write transaction, which can wait on the store's lock;  on its own thread
+        that wait never stalls routing.  One pass at a time:  while one runs, a due pass is not
+        claimed, so it starts on the first tick after the running one ends.  A sweeper whose
+        service has been dropped starts nothing."""
+        sweeper = getattr(self, "registry_sweeper", None)
+        if sweeper is None or sweeper.service is not getattr(self, "registry_service", None):
+            return
+        running = getattr(self, "_registry_sweep_thread", None)
+        if running is not None and running.is_alive():
+            return
+        if not sweeper.claim(now):
+            return
+
+        def sweep() -> None:
+            try:
+                sweeper.run(now)
+            except Exception as exc:  # noqa: BLE001 - a sweep must never stop the router
+                self.log.write(
+                    "registry-sweep-error", error=self.scrub(type(exc).__name__ + ": " + str(exc))
+                )
+
+        thread = threading.Thread(target=sweep, name="registry-sweep", daemon=True)
+        self._registry_sweep_thread = thread
+        thread.start()
+
+    def _registry_sweep_status(self) -> dict[str, Any] | None:
+        sweeper = getattr(self, "registry_sweeper", None)
+        if sweeper is None or sweeper.service is not getattr(self, "registry_service", None):
+            return None
+        return sweeper.last
 
     def _drain_status(self) -> dict[str, Any]:
         """The planned-drain observability surface (AFC-652, F1):  every field a qualified
@@ -9150,7 +9279,55 @@ class Daemon:
         runner.failures = 0
         runner.down_since = None
         self.log.write("connected", seat=runner.seat, backfill=len(messages))
+        self._seed_topic_ledger(runner)
         return messages
+
+    def _seed_topic_ledger(self, runner: SeatRunner) -> None:
+        """Fill the topic ledger from the seat's own latest posts, once per seat per run.
+
+        The ledger is memory only, so after a restart a chat that tagged a peer an hour ago would not be
+        woken by the peer's reply until that chat posted again.  The seat's own posts are all the reply
+        rule ever reads (`TopicLedger.reply_target`), and one bounded page of them (`LEDGER_SEED_POSTS`,
+        newest first, one request, no paging) puts the recent ones back.  This runs on the seat's own
+        connect thread, never the router's, and only records:  nothing is routed, no lease or inbox is
+        touched and no wake can follow.  A failed read is logged and costs only that restart's gap."""
+        if (
+            runner.ledger_seeded
+            or runner.me is None
+            or runner.client is None
+            or runner.seat in R.NO_REPLY_WAKE_SEATS
+        ):
+            return
+        try:
+            page = runner.fetch(
+                [{"operator": "sender", "operand": runner.me.user_id}],
+                anchor="newest",
+                before=LEDGER_SEED_POSTS,
+            )
+        except (Z.SimpleToolsError, ValueError, OSError) as exc:
+            self.log.write(
+                "topic-ledger-seed-error",
+                seat=runner.seat,
+                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+            )
+            return
+        runner.ledger_seeded = True
+        kept = 0
+        for message in sorted(
+            (m for m in page if isinstance(m, dict) and isinstance(m.get("id"), int)),
+            key=lambda m: m["id"],
+        ):
+            try:
+                self.record_topic_post(runner, message)
+                kept += 1
+            except Exception as exc:  # noqa: BLE001 - one odd message never costs the rest
+                self.log.write(
+                    "topic-ledger-error",
+                    seat=runner.seat,
+                    id=message.get("id"),
+                    error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+                )
+        self.log.write("topic-ledger-seed", seat=runner.seat, posts=kept)
 
     def _refuse(self, runner: SeatRunner, text: str) -> None:
         """A credential or role problem:  no queue, retried slowly (every 5 minutes), never spun."""
@@ -9547,15 +9724,6 @@ class Daemon:
         self.operator_voice.warm()
         try:
             while not self.stop.is_set():
-                if (
-                    self.config.instance == "mac"
-                    and self.config.muse_bridge_enabled
-                    and (self.muse_bridge_thread is None or not self.muse_bridge_thread.is_alive())
-                ):
-                    self.muse_bridge_thread = threading.Thread(
-                        target=self._muse_bridge_mac_loop, name="muse-bridge", daemon=True
-                    )
-                    self.muse_bridge_thread.start()
                 # Threads belong to a runner object, not a seat name:  a seat removed by a reload
                 # keeps its old threads only until they see runner.stop, and a seat added back
                 # gets a new runner with fresh threads.

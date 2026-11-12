@@ -27,7 +27,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: main
+          # Release the exact head the triggering CI run proved:  a CI success
+          # attests its own head_sha, never whatever main moved on to (AFC-653).
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || 'main' }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@v7

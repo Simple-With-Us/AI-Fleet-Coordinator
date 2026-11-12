@@ -19,6 +19,7 @@
 #   apple-notes-coding.sh --unpin-only "Exact Note Title"
 #   apple-notes-coding.sh --read "Exact Note Title"                 # or --read --title "Exact Note Title"
 #   apple-notes-coding.sh --list [--query TEXT] [--limit N]         # N from 1 to 500, 100 when not given
+#   apple-notes-coding.sh --delete --note-id "x-coredata://..."     # only notes the fleet writer created (AFC-728)
 #   APPLE_NOTES_PIN=0 apple-notes-coding.sh "Title" ...        # skip pinning
 #   APPLE_NOTES_PIN_RETRY=0 apple-notes-coding.sh "Title" ...  # pin Shortcut: one attempt, no retry
 #   APPLE_NOTES_ACTIVATE=1 apple-notes-coding.sh "Title" ... # bring Notes to front
@@ -79,6 +80,7 @@
 set -euo pipefail
 
 MODE=create
+DELETE_NOTE_ID=""
 WANT_ACTIVATE=0
 WANT_NOTIFY=0
 NEEDS_OWNER=0
@@ -409,6 +411,15 @@ while [[ $# -gt 0 ]]; do
       MODE=list
       shift || true
       ;;
+    --delete)
+      MODE=delete
+      shift || true
+      ;;
+    --note-id)
+      shift || true
+      DELETE_NOTE_ID="${1:-}"
+      shift || true
+      ;;
     --existing-only)
       EXISTING_ONLY=1
       shift || true
@@ -496,6 +507,20 @@ if [[ "$MODE" != "list" ]] && [[ -n "$LIST_QUERY" || "$_LIST_LIMIT_SET" == "1" ]
   echo "--query and --limit go with --list" >&2
   exit 2
 fi
+if [[ "$MODE" == "delete" ]]; then
+  if [[ -z "$DELETE_NOTE_ID" ]]; then
+    echo "--delete needs --note-id with the note's exact x-coredata id (from notes_list or notes_read)" >&2
+    exit 2
+  fi
+  if [[ "$DELETE_NOTE_ID" == *"*"* || "$DELETE_NOTE_ID" == *"?"* || "$DELETE_NOTE_ID" == *"%"* ]]; then
+    echo "note id must be exact:  wildcards are not allowed" >&2
+    exit 2
+  fi
+  if [[ -n "$TITLE" || $# -gt 0 ]]; then
+    echo "--delete takes only --note-id, not a title or body" >&2
+    exit 2
+  fi
+fi
 if [[ "$MODE" == "list" ]]; then
   _limit_re='^[1-9][0-9]{0,2}$'
   if [[ "$_LIST_LIMIT_SET" != "1" ]]; then
@@ -514,7 +539,7 @@ if [[ "$MODE" == "read" && $# -gt 0 ]]; then
   exit 2
 fi
 
-if [[ -z "$TITLE" && "$MODE" != "list" ]]; then
+if [[ -z "$TITLE" && "$MODE" != "list" && "$MODE" != "delete" ]]; then
   echo "usage: $0 [--update [--existing-only]] [--pin-only|--unpin-only|--pin|--activate|--notify|--needs-owner|--summary text|--pr \"18\"|--html path|--session id] \"Title\" [body]  |  $0 --read [--title] \"Title\"  |  $0 --list [--query text] [--limit 1-500]" >&2
   exit 2
 fi
@@ -657,6 +682,31 @@ function iso(when) {
 function run() {
   var notFound = '__APPLE_NOTES_NOT_FOUND__';
   var folder = Application('Notes').accounts.byName('iCloud').folders.byName('Coding');
+  if (env('APPLE_NOTES_JXA_MODE') === 'delete_fetch' || env('APPLE_NOTES_JXA_MODE') === 'delete_do') {
+    if (!folder.exists()) {
+      return notFound;
+    }
+    var wantId = env('APPLE_NOTES_NOTE_ID');
+  var notes = folder.notes;
+  var ids = notes.id();
+  var idx = ids.indexOf(wantId);
+    if (idx < 0) {
+      return notFound;
+    }
+    var target = notes[idx];
+    if (env('APPLE_NOTES_JXA_MODE') === 'delete_do') {
+      Application('Notes').delete(target);
+      return wantId;
+    }
+    return ascii(JSON.stringify({
+      title: target.name(),
+      id: target.id(),
+      created: iso(target.creationDate()),
+      modified: iso(target.modificationDate()),
+      body: target.body(),
+      plaintext: target.plaintext()
+    }));
+  }
   if (env('APPLE_NOTES_JXA_MODE') === 'list') {
     if (!folder.exists()) {
       return '{"names":[],"ids":[],"created":[],"modified":[]}';
@@ -693,6 +743,45 @@ function run() {
 }
 JXA
 }
+
+if [[ "$MODE" == "delete" ]]; then
+  _SCRIPTS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+  _NOTES_OUT=$(mktemp /tmp/apple-note-delete.XXXXXX)
+  _jxa_rc=0
+  APPLE_NOTES_NOTE_ID="$DELETE_NOTE_ID" _notes_jxa delete_fetch >"$_NOTES_OUT" || _jxa_rc=$?
+  if [[ "$_jxa_rc" != "0" ]]; then
+    echo "notes: delete did not complete (osascript exit $_jxa_rc)" >&2
+    exit 1
+  fi
+  if grep -qxF "$_NOTES_NOT_FOUND" "$_NOTES_OUT"; then
+    echo "no note with that id in the Coding folder" >&2
+    exit 3
+  fi
+  _delete_guard="${_SCRIPTS_ROOT}/notes_delete_guard.py"
+  if [[ ! -f "$_delete_guard" ]]; then
+    echo "notes: delete guard script missing at $_delete_guard" >&2
+    exit 1
+  fi
+  _guard_rc=0
+  python3 "$_delete_guard" <"$_NOTES_OUT" || _guard_rc=$?
+  if [[ "$_guard_rc" == "5" ]]; then
+    exit 5
+  fi
+  if [[ "$_guard_rc" != "0" ]]; then
+    echo "notes: delete guard did not complete (python exit $_guard_rc)" >&2
+    exit 1
+  fi
+  TITLE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("title") or "")' "$_NOTES_OUT")
+  _jxa_rc=0
+  APPLE_NOTES_NOTE_ID="$DELETE_NOTE_ID" _notes_jxa delete_do >"$_NOTES_OUT" || _jxa_rc=$?
+  if [[ "$_jxa_rc" != "0" ]]; then
+    echo "notes: delete did not complete (osascript exit $_jxa_rc)" >&2
+    exit 1
+  fi
+  NOTE_ID="$DELETE_NOTE_ID"
+  echo "deleted note id=$DELETE_NOTE_ID"
+  exit 0
+fi
 
 if [[ "$MODE" == "read" ]]; then
   _NOTES_OUT=$(mktemp /tmp/apple-note-read.XXXXXX)
@@ -1463,7 +1552,7 @@ CURSOR_HOST = "cursor.com"
 GH_BUDGET_S = 8.0
 
 #  A repository that is not under the default owner.
-REPO_OWNER = {"Fleet-OPS": "jaywedgeworth22"}
+REPO_OWNER = {}
 
 TEAM_TO_REPO = {
     #  One Linear team per repository:  the team key names the repository that team works in.
@@ -2529,6 +2618,10 @@ sys.stdout.write("<h1>" + html.escape(title) + "</h1>" + body)
 if [[ "$SKIP_BODY" == "0" ]]; then
   _LOG_LINKS_FILE=$(mktemp /tmp/apple-notes-links.XXXXXX 2>/dev/null) || _LOG_LINKS_FILE=""
   FULL_HTML=$(printf '%s' "$FULL_HTML" | NOTE_TITLE="$TITLE" NOTES_LINK_COUNTS_FILE="$_LOG_LINKS_FILE" _html_autolink)
+fi
+
+if [[ "$MODE" == "create" ]]; then
+  FULL_HTML="${FULL_HTML}<!-- fleet-notes-tool:v1 -->"
 fi
 
 if [[ "${APPLE_NOTES_PRINT_HTML:-0}" == "1" ]]; then

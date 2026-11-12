@@ -713,6 +713,19 @@ class ShippedListTests(unittest.TestCase):
         for path in release.EXACT:
             self.assertTrue(doctor.is_shipped(path), path)
 
+    def test_the_fallback_repo_only_list_is_the_release_list(self):
+        rspec = importlib.util.spec_from_file_location(
+            "release_for_doctor_repo_only", HERE / "fleet-cli-release.py"
+        )
+        release = importlib.util.module_from_spec(rspec)
+        rspec.loader.exec_module(release)
+        self.assertEqual(doctor.SHIPPED_REPO_ONLY, release.REPO_ONLY)
+        # With no checkout the fallback must agree with the release:  a repo-only module is not drift.
+        with mock.patch.object(doctor, "release_policy", return_value=None):
+            for path in release.REPO_ONLY:
+                self.assertFalse(doctor.is_shipped(path), path)
+            self.assertTrue(doctor.is_shipped("scripts/simple_tools/notes_cli.py"))
+
 
 class McpStartupTests(unittest.TestCase):
     def test_a_release_that_cannot_list_its_tools_fails(self):
@@ -1646,6 +1659,11 @@ class ReportAndRunTests(HomeCase):
             for key in doctor.ROW_FIELDS:
                 self.assertIn(key, row)
         self.assertEqual((doc["schemaVersion"], doc["host"]), (1, "server"))
+        agent = [row for row in doc["checks"] if row["check"] == "agent-config"]
+        self.assertEqual(len(agent), 1)
+        self.assertEqual(agent[0]["status"], "OK")
+        self.assertEqual(agent[0]["category"], "agent-config")
+        self.assertEqual(agent[0]["state"], "current")
         self.assertIsNone(doc["expected"]["rev"])
         self.assertEqual(doc["doctorCommit"], TIP)
         rows = {r["check"]: r for r in doc["checks"]}

@@ -234,7 +234,12 @@ struct WakeSettingsReader {
         for tag in sources.config.seatTags where !tags.contains(where: { $0.uppercased() == tag.uppercased() }) {
             tags.append(tag)
         }
-        for tag in status?.seatTags ?? [] where !tags.contains(where: { $0.uppercased() == tag.uppercased() }) {
+        // A retired Mac eavesdropper's last status lists the seats it held before the one-listener
+        // cutover, so those are not added as seats of their own unless the status is current.
+        let retiredAndStale = sources.partition.givesTheMacNoAgentSeat
+            && !WakeSettingsBuilder.statusIsCurrent(sources)
+        let statusTags = retiredAndStale ? [] : (status?.seatTags ?? [])
+        for tag in statusTags where !tags.contains(where: { $0.uppercased() == tag.uppercased() }) {
             tags.append(tag)
         }
         sources.seats = tags

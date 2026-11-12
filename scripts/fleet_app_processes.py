@@ -121,6 +121,7 @@ EXPLICIT_RULES = (
     ("AFC", "systemd", "fleet-coding-memory.service", True),
     ("AFC", "systemd", "fleet-health-recover@", False),
     ("AFC", "systemd", "fleet-housekeep.service", True),
+    ("AFC", "systemd", "fleet-rag-collection-health.service", True),
     ("AFC", "systemd", "fleet-rag-nightly.service", True),
     ("AFC", "systemd", "fleet-server-status.service", True),
     ("AFC", "systemd", "fleet-tools-doctor.service", True),
@@ -133,6 +134,11 @@ EXPLICIT_RULES = (
     # AFC-665:  the AG seat's wake bridge (the template installs as
     # afc-ag-wake-bridge.service, but the attribution matches the shipped file name).
     ("AFC", "systemd", "ag-wake-bridge.service", True),
+    # The wake router for every platform (OPS-1048), a systemd --user unit installed under the
+    # name it ships with.
+    ("AFC", "systemd", "afc-wake-router.service", True),
+    # Its TLS front on the tailnet address (install-wake-router.sh), also a systemd --user unit.
+    ("AFC", "systemd", "afc-wake-tls.service", True),
     # Clutch's browser UI, and Congress.Trade's scanned-PTR worker (docs/MAC-LOCAL-PROCESSES.md).
     ("C", "pm2", "clutch-web", True),
     ("CT", "pm2", "vision-worker", True),

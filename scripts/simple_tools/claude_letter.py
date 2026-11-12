@@ -1,7 +1,7 @@
 """`simple-chat letter`:  an Operator session letter, and the title "<letter>: <Title>", for every Claude Code chat
 on the Mac and on the server (AFC-564, owner request Oct 28, 2026).
 
-    letter hook                        the Claude Code hook:  SessionStart, UserPromptSubmit and SessionEnd
+    letter hook                        the Claude Code hook:  SessionStart, UserPromptSubmit, Stop and SessionEnd
     letter show [--session-id S]       this chat's letter from its local note;  no network
     letter install [--location L]      add the hooks to ~/.claude/settings.json (--check, --remove)
     letter registry OP ...             the registry side:  register, title, touch or close one chat
@@ -30,6 +30,11 @@ What the hook does.
   reaches the title), retries a registration or a title the registry did not take (at most every ten minutes), and marks
   the chat seen at most every half hour, whatever the title did.  When the Operator reissues a different pair, the model is
   told the new one as well as the title.
+- Stop, at the end of every turn (AFC-702), reports what the turn touched:  the Linear issues its new transcript lines
+  and its folder's branch name go to the registry (only when the set of ids changed), and the Zulip topics it posted to
+  are kept in the chat's note (`platform_letter.end_of_turn`).  So the last turn of a chat is recorded without a next
+  prompt.  UserPromptSubmit runs the same scan from the same point, as the fallback for a turn whose Stop never ran.
+  Stop prints nothing and never blocks the turn from ending.
 - SessionEnd closes the registration when the chat is replaced by `/clear` or logged out, which frees its letter
   (CLOSE_REASONS).  Any other end keeps the letter:  an exit at the prompt, a `/resume`, and `other`, which Claude Code
   sends for an archive but also when the app quits or an ssh connection drops, so it cannot tell an archive apart.
@@ -99,6 +104,7 @@ Python 3.11+, standard library only.
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 import os
@@ -127,7 +133,7 @@ SOURCE = "claude-letter-hook"
 MANAGED_SOURCES = (SOURCE, "claude-chat-start")
 ENTRYPOINTS = ("cli", "claude-desktop")
 LOCATIONS = ("mac", "server")
-HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "SessionEnd")
+HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "Stop", "SessionEnd")
 TITLE_SOURCES = (
     "startup",
     "resume",
@@ -564,15 +570,29 @@ def evict_oldest(OR: Any, db: str, keep: tuple[str, str], size: int = 0) -> int:
     return _close_records(OR, db, [oldest["record_id"]], "claude-letter-evict")
 
 
+def refused_text(OR: Any, limit: int = 0) -> str:
+    """What a chat reads when every main-chat pair is live:  the limit is the 26 doubled pairs, not every pair."""
+    limit = limit or len(getattr(OR, "PRIMARY_ORDER", ())) or 26
+    return (
+        "all %d Claude main-chat pairs (AA to ZZ) are live:  the Operator refused this chat a letter"
+        % limit
+    )
+
+
 def _with_room(
     OR: Any, db: str, keep: tuple[str, str], allocate: Callable[[], Any]
 ) -> tuple[Any, int]:
-    """Run one allocation;  when every letter of the space is live, close the least recently seen Claude chat that
-    holds a letter of that space and try once more.  A second LabelExhausted is the caller's to report."""
+    """Run one allocation.  When all 26 doubled pairs are live the Operator refuses the letter (owner, Nov 11 2026:
+    "ok just refuse actually is fine"), and the refusal is the caller's to report:  no live chat is closed to make
+    room.  Only a space other than the pairs (none is issued now) would still close the least recently seen chat that
+    holds a letter of it and try once more."""
     try:
         return allocate(), 0
     except OR.LabelExhausted as exc:
-        size = len(next(iter(OR.LETTER_SPACES[getattr(exc, "space", "single")])))
+        space = getattr(exc, "space", "double")
+        if space == "double" or space not in OR.LETTER_SPACES:
+            raise
+        size = len(next(iter(OR.LETTER_SPACES[space])))
         if not evict_oldest(OR, db, keep, size):
             raise
         return allocate(), 1
@@ -664,11 +684,7 @@ def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, An
             finally:
                 reg.close_db()
     except OR.LabelExhausted as exc:
-        space = getattr(exc, "space", LETTER_SPACE)
-        return {
-            "error": "all %d Claude letters are in use" % len(OR.LETTER_SPACES[space]),
-            "swept": swept,
-        }
+        return {"error": refused_text(OR, getattr(exc, "limit", 0)), "swept": swept}
     out["swept"] = swept
     out["evicted"] = evicted
     if no_parent and out.get("outcome") in ("registered", "reopened"):
@@ -697,6 +713,16 @@ def _on_record(OR: Any, db: str, args: Any, sid: str) -> dict[str, Any]:
                 "closed": reg.close(rid, actor=args.seat, source=args.source),
                 "label": rec["label"],
             }
+        elif args.op == "issues":
+            from . import platform_letter as PL
+
+            identity = {
+                "platform": PLATFORM,
+                "location": args.location,
+                "scope": SCOPE,
+                "session_id": sid,
+            }
+            return PL.record_issues_local(OR, db, identity, args.issues)
         return {
             "ok": True,
             "label": rec["label"],
@@ -756,10 +782,7 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
         params["parent_session_id"] = parent
     out = PL._call_api(env, "register", params)
     if out.get("code") == "labels_exhausted":
-        return {
-            "error": "all %d Claude letters are in use" % len(OR.LETTER_SPACES[LETTER_SPACE]),
-            "swept": 0,
-        }
+        return {"error": refused_text(OR), "swept": 0}
     error = PL._api_error(out)
     if error is not None:
         return error
@@ -774,10 +797,7 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
             reopen_params["parent_session_id"] = parent
         reopened = PL._call_api(env, "reopen", reopen_params)
         if reopened.get("code") == "labels_exhausted":
-            return {
-                "error": "all %d Claude letters are in use" % len(OR.LETTER_SPACES[LETTER_SPACE]),
-                "swept": 0,
-            }
+            return {"error": refused_text(OR), "swept": 0}
         if reopened.get("code") == "space_lost":
             return {
                 "error": "this registry cannot give a closed chat a pair letter again yet",
@@ -830,6 +850,8 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
         if out.get("outcome") == "already_closed":
             return {"retired": True, "record_id": out.get("record_id", "")}
         return {"closed": bool(out.get("closed")), "label": out.get("label", "")}
+    if args.op == "issues":
+        return PL.record_issues_api(env, identity, args.issues)
     probe = PL._call_api(env, "touch", identity)
     error = PL._api_error(probe)
     if error is not None:
@@ -862,11 +884,12 @@ def registry_main(
     from . import registry_api
 
     parser = argparse.ArgumentParser(prog="simple-chat letter registry", add_help=True)
-    parser.add_argument("op", choices=("register", "title", "touch", "close"))
+    parser.add_argument("op", choices=("register", "title", "touch", "close", "issues"))
     parser.add_argument("--location", required=True, choices=LOCATIONS)
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--seat", default=SEAT_DEFAULT)
     parser.add_argument("--title", default="")
+    parser.add_argument("--issues", default="[]")  # the `issues` op's list, as JSON (AFC-694)
     parser.add_argument("--source", default=SOURCE)
     parser.add_argument("--parent-session-id", default="")
     parser.add_argument("--host-session-id", default="")
@@ -1180,7 +1203,9 @@ class Chat:
 
     # ---- the registry ----------------------------------------------------------------------
 
-    def registry(self, op: str, title: str = "", after_clear: bool = False) -> dict[str, Any]:
+    def registry(
+        self, op: str, title: str = "", after_clear: bool = False, issues: str = ""
+    ) -> dict[str, Any]:
         argv = [
             op,
             "--location",
@@ -1190,6 +1215,8 @@ class Chat:
             "--seat",
             self.seat,
         ]
+        if issues and op == "issues":
+            argv += ["--issues=" + issues]  # the list as JSON (AFC-694)
         if title:
             # One argument in the --flag=VALUE form:  a chat renamed "-v" or "--db x" must reach the registry as a
             # title, not be read by its parser as an option.
@@ -1696,6 +1723,19 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
                     % (held, what, str(note.get("error") or "no answer"), held, RETRY_SECONDS // 60)
                 )
     context = _join_context(context, _agent_title_fix(chat, note))
+    if note.get("state") == "open" and note.get("label"):
+        # The Linear issues the turn before touched (AFC-694):  its new transcript lines (only a transcript under
+        # ~/.claude is read) and its folder's branch.  Sent only when the set of ids changed;  silent on any failure.
+        from . import platform_letter as PL
+
+        home = str(chat.env.get("HOME") or os.path.expanduser("~"))
+        PL.sync_issues(
+            note,
+            data,
+            os.path.join(home, ".claude"),
+            chat.now,
+            lambda text: chat.registry("issues", issues=text),
+        )
     chat.write(note)
     if (title and title != current) or context:
         _hook_out(
@@ -1704,6 +1744,33 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
             context=context,
             title=title if title and title != current else None,
         )
+    return 0
+
+
+def on_stop(chat: Chat, data: Mapping[str, Any]) -> int:
+    """The end of a turn (AFC-702):  report the Linear issues and Zulip topics the turn touched, through the shared
+    end-of-turn entry, so the registry has the last turn of a chat without waiting for its next prompt.  Prints
+    nothing (any Stop output could keep the turn going) and is silent on every failure;  a registry that does not
+    answer is asked again no sooner than RETRY_SECONDS."""
+    note = chat.read()
+    if not note or note.get("state") != "open" or not note.get("label"):
+        return 0
+    from . import platform_letter as PL
+
+    home = str(chat.env.get("HOME") or os.path.expanduser("~"))
+    before = copy.deepcopy(note)
+    PL.end_of_turn(
+        note,
+        data,
+        os.path.join(home, ".claude"),
+        chat.now,
+        lambda text: chat.registry("issues", issues=text),
+    )
+    # The registry call can take seconds:  only the report's own keys go back, onto the note as it is now, so a
+    # SessionEnd or a prompt that wrote it meanwhile is never undone by this stale copy.
+    merged = PL.turn_note(before, note, chat.read())
+    if merged is not None:
+        chat.write(merged)
     return 0
 
 
@@ -1773,6 +1840,8 @@ def hook(
         return on_start(chat, data, stdout, home)
     if event == "UserPromptSubmit":
         return on_prompt(chat, data, stdout)
+    if event == "Stop":
+        return on_stop(chat, data)
     return on_end(chat, data)
 
 
@@ -1801,8 +1870,9 @@ def show(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
 # --------------------------------------------------------------------------------------------
 
 #: The hook events and their timeouts in seconds.  SessionEnd's default budget is 1.5 seconds, too short for the
-#: ssh round trip from the server, so every entry names its own.
-HOOK_TIMEOUTS = {"SessionStart": 20, "UserPromptSubmit": 15, "SessionEnd": 15}
+#: ssh round trip from the server, so every entry names its own.  Stop (AFC-702) makes at most one registry call,
+#: inside REMOTE_TIMEOUT.
+HOOK_TIMEOUTS = {"SessionStart": 20, "UserPromptSubmit": 15, "Stop": 15, "SessionEnd": 15}
 HOOK_MARK = " letter hook"
 
 
@@ -1825,7 +1895,7 @@ def _write_private(path: str, data: bytes, mode: int) -> None:
 
 
 def install(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
-    """`letter install [--location server|mac] [--remote DEST] [--check | --remove]`:  add the three hook entries
+    """`letter install [--location server|mac] [--remote DEST] [--check | --remove]`:  add the four hook entries
     (and, when named, CLAUDE_LETTER_LOCATION and CLAUDE_LETTER_REMOTE) to ~/.claude/settings.json, keeping a dated
     0600 backup, or check or remove them;  --remove takes the two settings out as well.  Running it twice changes
     nothing.  The command names this host's own simple-chat wrapper by absolute path."""

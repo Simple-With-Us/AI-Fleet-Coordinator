@@ -10,7 +10,6 @@ leaves unset is no limit while `0` still pauses wakes.
 from __future__ import annotations
 
 import json
-import time
 import tomllib
 import unittest
 from typing import Any
@@ -18,7 +17,6 @@ from typing import Any
 from simple_tools import config as C
 from simple_tools import listener_cli as CLI
 from simple_tools import live as L
-from simple_tools import muse_bridge_mac as MBM
 from simple_tools import wakes as W
 from simple_tools.tests.listener_harness import ListenerHarness
 
@@ -93,7 +91,6 @@ class SeatKeySchema(unittest.TestCase):
             creds = "file"
             bot = "Codex"
             bearer_file = "/home/x/.secrets/fleet-tools/codex"
-            muse_bridge = false
             budget = { wakes_per_hour = 4, usd_per_day = 2.0 }
             held_back = { max = 50 }
             live = { per_hour = 7 }
@@ -148,12 +145,30 @@ class SeatKeySchema(unittest.TestCase):
         self.assertEqual(C.SEAT_KEYS & C.SEAT_KEYS_LEGACY, frozenset())
         self.assertEqual(C.SEAT_KEYS & C.SEAT_KEYS_RETIRED, frozenset())
         self.assertEqual(C.SEAT_KEYS_LEGACY & C.SEAT_KEYS_RETIRED, frozenset())
-        for key in ("instance", "enabled", "creds", "bot", "bearer_file", "muse_bridge", "budget",
+        leftover = frozenset(C.SEAT_KEYS_LEFTOVER)
+        for other in (C.SEAT_KEYS, C.SEAT_KEYS_LEGACY, C.SEAT_KEYS_RETIRED):
+            self.assertEqual(leftover & other, frozenset())
+        for key in ("instance", "enabled", "creds", "bot", "bearer_file", "budget",
                     "held_back", "live", "routine"):
             self.assertIn(key, C.SEAT_KEYS)
+        self.assertNotIn("muse_bridge", C.SEAT_KEYS, "the Muse inbox bridge was deleted (Nov 10, 2026)")
+        self.assertIn("muse_bridge", C.SEAT_KEYS_LEFTOVER)
         for key in ("wake", "model", "claude", "muse", "mcode", "mcode_model", "provider", "fallback",
                     "fallback_model", "fallback_uncontained_ok", "typing_indicator", "route_enabled"):
             self.assertIn(key, C.SEAT_KEYS_LEGACY)
+
+    def test_the_leftover_bridge_key_warns_once_and_changes_nothing(self) -> None:
+        # A live config written before the Muse inbox bridge was deleted still names it per seat.
+        plain = load(LEGACY_CLAUDE_SEAT)
+        for value in ("false", "true", '"yes"'):
+            with self.subTest(value=value):
+                leftover = load(LEGACY_CLAUDE_SEAT + "muse_bridge = %s\n" % value)
+                self.assertEqual(leftover.errors, [])
+                self.assertEqual(shape(leftover.seats["CLAUDE"]), shape(plain.seats["CLAUDE"]))
+                extra = [w for w in leftover.warnings if w not in plain.warnings]
+                self.assertEqual(len(extra), 1, extra)
+                self.assertIn("seat.CLAUDE.muse_bridge is left over", extra[0])
+                self.assertIn("it can be deleted", extra[0])
 
     def test_an_unknown_key_warns_and_changes_nothing(self) -> None:
         plain = load(LEGACY_CLAUDE_SEAT)
@@ -258,7 +273,7 @@ class SeatMode(unittest.TestCase):
                 self.assertEqual(seat.mode, want)
 
     def test_for_every_seat_the_config_can_produce_a_routine_and_wake_http_agree(self) -> None:
-        """The reason the bridge may ask `routine is not None` instead of `wake == "http"`:  the parser
+        """The reason a caller may ask `routine is not None` instead of `wake == "http"`:  the parser
         never leaves an http seat without its routine, and never gives a routine to another wake."""
         shapes = (
             ROUTINE_SEAT % "",
@@ -383,7 +398,7 @@ class WakeBudgetCaps(unittest.TestCase):
         self.assertIsNone(self.block(only_day, 3), "the unset hourly cap adds no limit of its own")
         self.assertEqual(self.block(only_day, 4), "wakes_per_day")
 
-    def test_a_null_cap_from_a_bridge_export_is_no_limit(self) -> None:
+    def test_a_null_cap_is_no_limit(self) -> None:
         self.assertIsNone(self.block({"wakes_per_hour": None, "wakes_per_day": None}, 50))
         self.assertFalse(W.at_cap(10**6, {"x": None}, "x"))
         self.assertFalse(W.at_cap(10**6, {}, "x"))
@@ -437,45 +452,6 @@ class StatusCapText(unittest.TestCase):
         self.assertEqual(text({"wakes_per_day": 40}), "cap 40/day, no limit/hour")
         self.assertEqual(text({"wakes_per_hour": 6}), "cap no limit/day, 6/hour")
         self.assertEqual(text({"wakes_per_day": 0, "wakes_per_hour": 0}), "cap 0/day, 0/hour", "0 is a pause")
-
-
-class BridgeBudgetReason(unittest.TestCase):
-    """The Mac bridge checks the budget the server exports for a seat.  The five wake caps may be absent
-    (no limit);  the rest of the budget must still arrive, and a cap that is present must be a number."""
-
-    item = {"source_seat": "JET", "owner": False, "channel": "c", "topic": "t"}
-
-    def reason(self, budget: Any, decisions: dict[str, Any] | None = None) -> str | None:
-        return MBM.MacBridge._budget_reason(self.item, budget, decisions or {})
-
-    def test_a_budget_with_no_caps_is_usable_and_holds_nothing(self) -> None:
-        self.assertIsNone(self.reason(dict(C.BUDGET_DEFAULTS)))
-
-    def test_a_missing_rest_of_the_budget_or_a_damaged_value_is_still_unavailable(self) -> None:
-        self.assertEqual(self.reason(None), "budget_unavailable")
-        self.assertEqual(self.reason({}), "budget_unavailable")
-        short = {k: v for k, v in C.BUDGET_DEFAULTS.items() if k != "usd_per_day"}
-        self.assertEqual(self.reason(short), "budget_unavailable")
-        for bad in (-1, True, "6", None):
-            with self.subTest(bad=bad):
-                self.assertEqual(self.reason(dict(C.BUDGET_DEFAULTS, wakes_per_hour=bad)), "budget_unavailable")
-
-    def test_a_cap_that_is_present_still_holds(self) -> None:
-        self.assertEqual(self.reason(dict(C.BUDGET_DEFAULTS, wakes_per_hour=0)), "wakes_per_hour")
-        key = L.topic_key("c", "t")
-        now = time.time()
-        decisions = {
-            "d%d" % i: {
-                "source_seat": "JET",
-                "model_attempted": True,
-                "owner": False,
-                "topic_key": key,
-                "at": now - 10 - i,
-            }
-            for i in range(2)
-        }
-        self.assertIsNone(self.reason(dict(C.BUDGET_DEFAULTS), decisions))
-        self.assertEqual(self.reason(dict(C.BUDGET_DEFAULTS, per_topic_per_hour=2), decisions), "per_topic_per_hour")
 
 
 class CheckConfigWarnings(ListenerHarness):

@@ -37,9 +37,16 @@ const BAD_REQUEST_REASONS = new Map([
   ["unexpected argument", "bad_request_invalid_arguments"],
   ["unsupported workflow action", "bad_request_unsupported_action"],
   ["invalid repository", "bad_request_invalid_repository"],
+  ["repository owner is not allowed", "bad_request_owner_not_allowed"],
   ["files too large", "bad_request_content_too_large"],
   ["file too large", "bad_request_content_too_large"],
   ["file content budget exceeded", "bad_request_content_too_large"],
+  ["additive label does not exist", "bad_request_label_not_found"],
+  ["additive label target not found", "bad_request_label_target_not_found"],
+  ["additive label was not applied", "bad_request_label_not_applied"],
+  ["auto-merge is not armed", "bad_request_auto_merge_not_armed"],
+  ["auto-merge enable was refused", "bad_request_auto_merge_refused"],
+  ["auto-merge is armed with a different method", "bad_request_auto_merge_method_mismatch"],
 ]);
 
 /** The relay's fixed head, ref and identity fences:  the caller's expected
@@ -59,6 +66,7 @@ const FENCE_MISMATCH_ERRORS = new Set([
   "commit not matched",
   "check identity or commit changed",
   "comment body changed",
+  "default-branch blob sha does not match",
   "workflow identity, attempt or state not matched",
   "label identity does not match",
   "release asset does not match expected_name",
@@ -187,7 +195,7 @@ const REASON_TEXT = Object.freeze({
   repository_moved: repositoryMovedText(),
   read_too_large: "GitHub's answer to this read is larger than git-relay's read bound.  Ask for less per call:  a smaller per_page, or the paged verb (for example gr_wf_pr_reviews_page, gr_wf_pr_comments_page or gr_wf_compare_commits_page).",
   bad_request_pr_not_issue_target: "The target is a pull request, not an issue.  Use the pull-request tool for it.",
-  bad_request_default_branch_protected: "The relay refuses to write to or move the default branch.  Use a feature branch and a pull request.",
+  bad_request_default_branch_protected: "The relay refuses to write the default branch, except wf_file_put and wf_file_delete for an exact path in that seat's default_branch_paths.  Anything else stays on a feature branch and a pull request.",
   bad_request_pr_not_open: "The pull request is not open.",
   bad_request_pr_merged: "The pull request is already merged and cannot change state.",
   bad_request_workflow_path_permission: "The change touches a workflow path, which needs the workflow permission this seat's App does not have.",
@@ -197,7 +205,14 @@ const REASON_TEXT = Object.freeze({
   bad_request_invalid_arguments: "The relay rejected the arguments as invalid or unexpected.  Check the tool's schema.",
   bad_request_unsupported_action: "The relay does not support this workflow action.",
   bad_request_invalid_repository: "The repository is not a valid owner/name.",
+  bad_request_owner_not_allowed: "That repository owner is outside the accounts this relay can create under.  Use Simple-With-Us or jaywedgeworth22.",
   bad_request_content_too_large: "The content is over the relay's size or budget limit.  Send less per call.",
+  bad_request_label_not_found: "That label is not in the repository yet.  Create the fleet hold label, then send the call again.",
+  bad_request_label_target_not_found: "That number is not a pull request this call can label.",
+  bad_request_label_not_applied: "The label is still absent after the pull-request path.  Nothing further was written.",
+  bad_request_auto_merge_not_armed: "A follow-up read shows squash, merge, or rebase auto-merge is off.  Sending the call again is safe.",
+  bad_request_auto_merge_refused: "GitHub refused the enable, and a follow-up read shows auto-merge is off.",
+  bad_request_auto_merge_method_mismatch: "A follow-up read shows auto-merge is on with a different merge method.  Read the pull request before enabling again.",
 });
 
 /** Fixed caller-facing text for a reason id, or null when there is none. */

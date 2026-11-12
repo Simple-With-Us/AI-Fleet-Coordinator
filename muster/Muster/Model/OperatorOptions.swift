@@ -169,9 +169,10 @@ struct OperatorOptions: Equatable {
 
 /// The decider:  the one model every platform shares, for when a seat's routine cannot pick a
 /// chat by letter, topic words or recency.  The eavesdropper reads it from `listener.toml`'s
-/// `[muse_bridge] consult_backup` table.  Muster shows its runtime and its model slug, read only,
-/// and never a key:  its OpenRouter key lives in the eavesdropper's environment, and Muster reads
-/// no credential.
+/// `[decider.consult_backup]` table, or, while a file still holds only the old location, from the
+/// leftover `[muse_bridge.consult_backup]` of the deleted Muse inbox bridge.  Muster shows its
+/// runtime and its model slug, read only, and never a key:  its OpenRouter key lives in the
+/// eavesdropper's environment, and Muster reads no credential.
 enum OperatorDecider: Equatable {
     /// The configuration file was not read, so the decider is not known.  The text says why.
     case notKnown(String)
@@ -187,15 +188,16 @@ enum OperatorDecider: Equatable {
     static let help = "One decider serves every platform.\u{00A0} It runs only when a seat's routine can't pick the chat by letter, topic words or recency.\u{00A0} Changing it is a deliberate edit of listener.toml, because its slug has to match expected_models."
 
     /// Where the table lives, and the names its keys may take.  The block may be renamed, so each
-    /// name is listed once here, and a rename is a change to one line.
-    static let sectionNames = ["muse_bridge"]
+    /// name is listed once here, and a rename is a change to one line.  The first section that holds
+    /// the table wins, so `[decider]` wins over the leftover `[muse_bridge]`, as it does in the listener.
+    static let sectionNames = ["decider", "muse_bridge"]
     static let tableNames = ["consult_backup"]
     static let runtimeKeys = ["runtime", "provider"]
     static let modelKeys = ["model", "slug", "preset"]
 
-    /// The decider table, read generously:  under its own `[muse_bridge.consult_backup]` header,
-    /// or inline as `consult_backup = { … }` in `[muse_bridge]`.  Only the runtime and the model
-    /// are read from it.
+    /// The decider table, read generously:  under its own `[decider.consult_backup]` header, or
+    /// inline as `consult_backup = { … }` in `[decider]`, and the same two shapes under the leftover
+    /// `[muse_bridge]`.  Only the runtime and the model are read from it.
     static func read(from config: ListenerConfigDocument, configProblem: String? = nil) -> OperatorDecider {
         if let configProblem {
             return .notKnown("The configuration file was not read, so the decider is not known.\u{00A0} \(configProblem)")

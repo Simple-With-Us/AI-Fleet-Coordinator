@@ -1252,11 +1252,27 @@ class HeldBackRoutineTests(HeldMixin, ServerHarness):
 
 
 class HeldBackJetTests(HeldMixin, CloudSeatHarness):
-    """JET:  an `http` routine that is the hosted MCP Worker, with the shipped sample's budget, and the
+    """JET:  an `http` routine that is the hosted MCP Worker, with a capped budget of its own, and the
     inbox cloud seats, which never wake and so never hold anything back."""
 
     seat = "JET"
     text = "@**%s** please look" % CLOUD_SEATS["JET"][1]
+
+    def setUp(self) -> None:
+        super().setUp()
+        # The shipped sample sets no wake-count limit on JET (owner ruling, Nov 10), so this class
+        # gives its own JET the capped budget the held-back path needs.  The sample is not changed.
+        text = self.config_file.read_text()
+        jet = re.search(r"(?ms)^\[seat\.JET\]\n(.*?)(?=^\[|\Z)", text)
+        self.assertIsNotNone(jet)
+        body, n = re.subn(
+            r"(?m)^budget = .*$",
+            "budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, "
+            "owner_per_day = 30, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }",
+            jet.group(1),
+        )
+        self.assertEqual(n, 1, "the sample's JET section carries one budget line to replace")
+        self.config_file.write_text(text[: jet.start(1)] + body + text[jet.end(1):])
 
     def test_jet_holds_a_wake_back_and_the_next_signed_wake_carries_it(self) -> None:
         jet_key = secrets.token_hex(32)
@@ -1269,7 +1285,7 @@ class HeldBackJetTests(HeldMixin, CloudSeatHarness):
         )
         self.assertTrue(daemon.connect_seat("JET"), daemon.seats["JET"].error)
         ids = []
-        for _ in range(3):  # the sample's per-topic budget:  2 an hour
+        for _ in range(3):  # this class's per-topic budget for JET:  2 an hour
             ids.append(self.mention(daemon, "jet topic"))
             self.step(daemon, 25)
         self.assertEqual(

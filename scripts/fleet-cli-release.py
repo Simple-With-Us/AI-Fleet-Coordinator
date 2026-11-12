@@ -22,9 +22,10 @@ import tomllib
 import uuid
 from pathlib import Path, PurePosixPath
 
-MAX_BUNDLE_BYTES = 8 * 1024 * 1024
-# The reviewed allowlisted runtime contains 154 files.  Keep the exact minimum
-# ceiling in sender and receiver: a new file still needs an explicit policy review.
+# 9 MiB.  The encoded allowlist crossed 8 MiB when the recall eval command landed on the
+# current runtime (383 bytes over).  Sender and receiver keep the same ceiling.
+MAX_BUNDLE_BYTES = 9 * 1024 * 1024
+# The reviewed allowlisted runtime contains 154 files.  Keep the exact minimum# ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
 # platform_letter_opencode.py and opencode_letter_plugin/index.js (the OpenCode adapter);  the 137th is operator_post.py
@@ -58,7 +59,17 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # simple_tools/platform_letter_fx.py (the Fx session-letter adapter, which registers from the fx session store).
 # The 165th is simple_tools/operator_linear.py (AFC-565, the Operator's Zulip-to-Linear living comments
 # service the daemon hosts).
-MAX_FILES = 165
+# The 166th and 167th are simple_tools/wake_router.py and simple_tools/claude_wake.py (OPS-1048, the shared wake
+# router and Claude's delivery;  `simple-chat wake-deliver` has to run on the Mac, so they ship).
+# The 168th is simple_tools/wake_settings.py (OPS-1048, the router's settings through fleet_knobs).
+# The 169th and 170th are simple_tools/thread_registry.py (the Operator chat-thread registry the listener
+# keeps) and simple_tools/thread_registry_export.mjs (its Google drain, a data file beside the Python
+# modules), added for that review.
+# The 171st is simple_tools/wake_service.py (OPS-1048, the one wake router service for every platform).
+# From here the cap is 180, set once (Nov 11, 2026) with room for the platform modules the wake router
+# registers ahead of them (codex_wake, muse_wake, zcode_wake), so a new module no longer has to move it;
+# fleet-cli-sync.py keeps the same number, and a test checks the two agree and the bundle fits.
+MAX_FILES = 180
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,
@@ -138,6 +149,9 @@ EXACT = frozenset(
         "scripts/simple_tools/operator_sheets_google.mjs",
         # OPS-1037:  the production drain runner, shipped beside the exporter and adapter it wires.
         "scripts/simple_tools/operator_sheets_drain.mjs",
+        # The Operator chat-thread registry drain:  the same shape as the outbox exporter above — the Node
+        # writer that owns the service-account auth, shipped as a data file beside the Python modules.
+        "scripts/simple_tools/thread_registry_export.mjs",
         # AFC-564:  the OpenCode letter plugin, a data file beside the Python modules (OpenCode loads it from the path
         # `platform-letter install --platform opencode` writes).  Its node test lives under tests/ and is not shipped.
         "scripts/simple_tools/opencode_letter_plugin/index.js",
@@ -149,6 +163,26 @@ EXACT = frozenset(
         # AFC-665:  the AG seat's wake bridge (delivering Operator wakes via the local agy CLI daemon API).
         "scripts/ag-wake-bridge",
     }
+)
+# Modules in scripts/simple_tools/ that match the shipped pattern but that nothing runs, on any host, so they
+# stay in the repository and out of the release (AFC-768, Nov 11, 2026).  Every module that a host or an
+# installer still runs or loads stays in the release, even when today's hosts run it from a git checkout:
+# the release path is dormant (the server runs from git since Oct 19, 2026), and a release must still be
+# whole if it is ever used again.  Each one below has no importer outside this set and the repo-only tests:
+#   - operator_github_client, operator_github_policy, operator_github_secrets:  the OPS-966 token broker's
+#     outer layers, which git-relay replaced as the one minting path (owner decision Oct 22, 2026);  kept for
+#     review history and their repo-only tests.
+#   - operator_send and clarify:  Operator DM paths that are not wired in (simple_tools/README.md).
+# A new module still ships by default:  this list only ever names a module that nothing runs.
+REPO_ONLY = frozenset(
+    "scripts/simple_tools/" + name + ".py"
+    for name in (
+        "clarify",
+        "operator_github_client",
+        "operator_github_policy",
+        "operator_github_secrets",
+        "operator_send",
+    )
 )
 # What every release ever installed contains.  verify_retained, rollback and status judge a retained
 # release by this set, so a release that predates the AFC-331 tools stays valid and can be rolled back to.
@@ -222,6 +256,8 @@ def allowed_path(path: str) -> bool:
         return False
     if path in EXACT:
         return True
+    if path in REPO_ONLY:
+        return False
     return bool(
         re.fullmatch(r"scripts/simple_tools/(?:mcp/)?[a-z][a-z0-9_]*\.py", path)
         or path in ("scripts/simple_tools/__init__.py", "scripts/simple_tools/mcp/__init__.py")
@@ -759,6 +795,13 @@ def verify_existing(release: Path, files: dict) -> None:
             raise Refused("existing_release_changed")
 
 
+def retained_path(path: str) -> bool:
+    # A retained release was judged by the policy that installed it.  A path that policy shipped and REPO_ONLY
+    # has since kept out is still a valid member of that older release, so status and rollback keep accepting
+    # it:  narrowing the release must never strand the rollback target it exists for.
+    return allowed_path(path) or path in REPO_ONLY
+
+
 def verify_retained(release: Path) -> dict:
     metadata = release / "release.json"
     if (
@@ -781,7 +824,7 @@ def verify_retained(release: Path) -> dict:
             raise Refused("invalid_release_metadata")
         for name, entry in files.items():
             if (
-                not allowed_path(name)
+                not retained_path(name)
                 or set(entry) != {"mode", "sha256"}
                 or type(entry["mode"]) is not int
                 or entry["mode"] not in (0o644, 0o755)

@@ -206,6 +206,7 @@ CI enforces it twice.  `scripts/simple-tools-mcp/test/linear-catalog-parity.tes
 - **Scope.**  `read,write,app:assignable,app:mentionable` is a constant in the script.  Asking for a different scope string revokes every token the app holds, so it changes only by a reviewed edit, after pilot gate 1.
 - **Endpoints.**  Only `https://api.linear.app/graphql` and `https://api.linear.app/oauth/token`.  The URL overrides accept `http://127.0.0.1:<port>` only (the test mock).  Redirects are refused and proxy variables are ignored.
 - **Writes.**  Gated by the bearer-verified seat alone, checked before any credential is read or request is sent.  `label` is a write like the other four.
+- **Hosted remote mode.**  When `SIMPLE_BOARD_REMOTE=1`, `whoami`, `list` and `show` use the hosted ST-MCP server with `SIMPLE_TOOLS_BEARER` only (no local Linear app credentials).  With `SIMPLE_BOARD_REMOTE_WRITES=1` as well, `file`, `claim`, `status` and `comment` use the hosted `linear_*` tools.  Each write calls hosted `identities` first, names the bearer's seat as `identity` on the tool call (required by the server), and refuses locally when `--by` names a different seat.  A Mac seat helper may set these switches; see Environment.
 - **Input files.**  `--desc-file`, `--fix-file` and `--text-file` refuse anything but a private regular file (see Input files), so a seat never puts free text in `argv`.
 - **Rate limits.**  Seats on the shared Fleet app share one request budget; each seat app has its own.  Every connection asks for an explicit `first:` and follows `endCursor`.  Team, state and label ids are cached for a day.  Linear's rate limit (HTTP 400 with `RATELIMITED`, or 429) is retried with backoff to `X-RateLimit-Requests-Reset`, but never past `LINEAR_BOARD_MAX_WAIT`; past it the CLI exits 5 and says when the budget resets.
 - **Idempotence.**  Issues, relations and labels are created with client ids, so a retried request cannot create a second copy.  A failed create is judged by reading the id back, not by Linear's wording.  Comment ids are fixed too: they come from the issue, seat, verb, a hash of the text and the session (the Central day when there is none), so rerunning a `claim`, `status` or `comment` that stopped part way posts the comment once, and a rerun inside one session or day never posts the same words twice.  The CLI says so on stderr when it skips one.  The same words from a new session, or on another day, post again.
@@ -216,6 +217,9 @@ CI enforces it twice.  `scripts/simple-tools-mcp/test/linear-catalog-parity.tes
 | Variable | Default | Meaning |
 |---|---|---|
 | `SIMPLE_BOARD_BEARER_FILE` | required for writes | The path of the private file (mode 0600) holding the seat's own bearer; the verifier names the seat every write carries.  `AGENT_SEAT` is ignored.  `list`, `show`, `stats` and `whoami` run without it |
+| `SIMPLE_BOARD_REMOTE` | off | `1` sends `whoami`, `list` and `show` through the hosted ST-MCP endpoint with `SIMPLE_TOOLS_BEARER` (no direct Linear credentials on that path) |
+| `SIMPLE_BOARD_REMOTE_WRITES` | off | `1` with `SIMPLE_BOARD_REMOTE=1` also sends `file`, `claim`, `status` and `comment` through the hosted server; each write names hosted `identity` from the `identities` answer |
+| `SIMPLE_TOOLS_BEARER` | unset | The seat's own admin-minted bearer for hosted remote mode (environment only, never an argument) |
 | `BOARD_BACKEND` | `linear` | `mac-collab` runs the archived old board CLI (rollback); the server it used is retired |
 | `BOARD_MAC_COLLAB_CLI` | `~/apps/_retired/mac-collab-20261019/board` | The archived old CLI that `BOARD_BACKEND=mac-collab` runs |
 | `SIMPLE_BOARD_TOOLS_TOKEN_FILE`, `SIMPLE_BOARD_TOOLS_TOKEN`, `SIMPLE_BOARD_TOOLS_PROJECT_ID` | unset | The read-scoped service token for the bearer verify key in Fleet-OPS prod `/tools`, from a private file (or the variable on a cloud host), and the Fleet-OPS project id |
@@ -242,6 +246,7 @@ Exit codes: 0 ok, 1 error or not found, 2 usage (including a `--by` mismatch, a 
 
 ```bash
 python3 scripts/linear-board/test_board.py
+python3 scripts/linear-board/test_board_remote.py      # hosted remote transport (hermetic)
 python3 scripts/linear-board/test_board_parity.py      # Simple-Tools parity, about a minute
 cd scripts/simple-tools-mcp && node --test test/linear-catalog-parity.test.mjs
 ```

@@ -113,6 +113,7 @@ WRITE_TOOLS = {
     "notes_create",
     "notes_update",
     "notes_pin",
+    "notes_delete",
     "notes_unpin",
     "recall_contribute",
     "recall_correct",
@@ -1144,7 +1145,11 @@ class WriteToolTests(McpHarness):
                 self.assertEqual(
                     self.fake.messages[-1]["content"], "[CLAUDE·%s] %s" % (TAG, case["expect"])
                 )
-                self.assertNotIn("mentioned", self.fake._flags(self.fake.messages[-1], 11))
+                flags = self.fake._flags(self.fake.messages[-1], 11)
+                if case.get("notifies"):
+                    self.assertIn("mentioned", flags)
+                else:
+                    self.assertNotIn("mentioned", flags)
         self.assert_structured(
             "zulip_post",
             session.call("zulip_post", {"topic": "to", "text": "please look", "to": ["codex"]}),

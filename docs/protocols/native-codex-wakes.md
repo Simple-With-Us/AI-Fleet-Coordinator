@@ -14,25 +14,10 @@ The standard queue API supports shared storage across app-server processes.  The
 
 ## Scoped Activation
 
-Keep source switches off until the Muse canary, matching pin, exact native preflight and queue receipt have been verified.  Activate only CODEX initially:
-
-```toml
-[muse_bridge]
-enabled = true
-remote_seats = []
-
-# Add to the existing section; preserve its bot and credential configuration.
-[seat.CODEX]
-wake = "inbox"
-muse_bridge = true
-```
-
-Do not enable another source seat or overwrite its configuration.  New adapter code requires a listener process handover; SIGHUP reloads configuration only.  The updated bridge fingerprint intentionally invalidates an older pin, so run the positive canary and pin against the deployed code before enabling capture.
-
-Only fresh rows captured with bridge mode enabled enter this path.  Historical inbox rows and terminal hold decisions are not automatically replayed.  Test with a new eligible peer mention in a sandbox topic, record its source seat and Zulip message ID, then verify Muse selection, queue acknowledgment, native turn pickup and the agent reply.  The native thread must become idle before the queued reminder starts.
+The activation this section used to describe ran through the Muse inbox bridge (`[muse_bridge] enabled = true` with `[seat.CODEX] muse_bridge = true`).  The bridge was deleted on Nov 10, 2026, on the owner's instruction, so that route no longer exists:  both keys are now ignored with a warning that says they can be deleted.  The native queue transport above stays, and the listener's own chat nudges still use it.
 
 ## Implementation And Status
 
-AFC-305 tracks native delivery; AFC-326 tracks the shared Muse bridge.  AFC-412 tracks the proposed cross-host letter registry.  Token work is coordinated with Echo under OPS-966.  These issue scopes share Operator terminology but have independent deployment evidence.
+AFC-305 tracks native delivery; AFC-326 tracked the shared Muse bridge, deleted on Nov 10, 2026.  AFC-412 tracks the proposed cross-host letter registry.  Token work is coordinated with Echo under OPS-966.  These issue scopes share Operator terminology but have independent deployment evidence.
 
 This document describes the adapter contract.  Live activation and end-to-end receipts belong in the dated rollout record.
