@@ -3040,6 +3040,24 @@ class Http(Base):
         status, answer = self.request(port, body=body, key=self.key)
         self.assertEqual((status, answer["picked"], answer["reason"]), (200, "letter", "letter"))
 
+    def test_another_seats_letter_shows_in_the_answer_and_in_health(self) -> None:
+        self.registry.rows.append(row(SID_B, "II", "A Mac chat", host="mac", seat="ZC"))
+        port = self.serve(self.router())
+        before = self.request(port, "/health/CLAUDE", method="GET")
+        self.assertEqual(before, (200, {"seat": "CLAUDE", "healthy": True, "delivery": True}))
+        status, answer = self.request(port, body=self.body(test=True, letter="II"), key=self.key)
+        self.assertEqual(
+            (status, answer["picked_letter"], answer["letter_other_seat"]), (200, "AA", "ZC")
+        )
+        status, health = self.request(port, "/health/CLAUDE", method="GET")
+        self.assertEqual((status, health["healthy"], health["other_seat_rows"]), (200, True, 1))
+        # No time of the read:  health needs no key, and that would show when the seat last woke.
+        self.assertEqual(set(health), {"seat", "healthy", "delivery", "other_seat_rows"})
+        status, every = self.request(port, "/health", method="GET")
+        self.assertEqual((status, every["seats"]["CLAUDE"]["other_seat_rows"]), (200, 1))
+        for private in (SID_A, SID_B, "A Mac chat", "Only chat", BODY_MARK):
+            self.assertNotIn(private, json.dumps([health, every]))
+
     def test_the_answer_does_not_wait_for_the_delivery(self) -> None:
         release = threading.Event()
 
@@ -5280,6 +5298,206 @@ class RegistryNotConfigured(Base):
     def test_serve_starts_without_it(self) -> None:
         # Infisical may be down at start:  the router starts and says so on /health instead.
         self.assertNotIn("registry API URL is not set", Path(WR.__file__).read_text())
+
+
+MAC_SIDS = tuple("d000000%d-0000-4000-8000-00000000000%d" % (n, n) for n in (1, 2, 3))
+MAC_TITLE = "A-MAC-CHAT-TITLE-THAT-MUST-NOT-TRAVEL"
+
+
+def mac_rows() -> list[dict]:
+    """Three open Claude chats registered under another seat's tag, as in AFC-772."""
+    return [
+        row(sid, letter, MAC_TITLE, host="mac", seat="ZC")
+        for sid, letter in zip(MAC_SIDS, ("II", "JJ", "KK"), strict=True)
+    ]
+
+
+class OtherSeat(Base):
+    """A chat of this platform registered under another seat is never picked, and the router says
+    so:  on the wake's receipt when its letter was addressed, and as a count in the seat's health
+    (AFC-772).  Who is picked does not change."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.mine = row(SID_B, "BB", "Two", issues=[issue("AFC-772")])
+        self.registry.rows = [self.mine, *mac_rows()]
+
+    def health(self, router: WR.Router) -> tuple[int, dict]:
+        return WR.Seats([router]).seat_health("CLAUDE")
+
+    def test_an_addressed_letter_on_another_seat_keeps_the_pick_and_says_so(self) -> None:
+        router = self.router()
+        dead = router.pick(self.wake(letter="PR", topic="AFC-772 wake"))
+        pick = router.pick(self.wake(letter="II", topic="AFC-772 wake"))
+        self.assertEqual((pick.target.session_id, pick.picked), (SID_B, "linear-issue"))
+        self.assertEqual(replace(pick, letter_other_seat=""), dead, "the pick itself is unchanged")
+        self.assertEqual((pick.letter_live, pick.letter_other_seat), (False, "ZC"))
+        self.assertEqual(dead.letter_other_seat, "")
+        self.assertIn("wake-router: CLAUDE w-1 letter-other-seat:ZC\n", self.stderr.getvalue())
+
+    def test_the_receipt_and_the_log_entry_carry_it(self) -> None:
+        router = self.router()
+        router.accept(self.wake(letter="II", topic="AFC-772 wake"))
+        self.drain(router)
+        self.assertEqual(self.delivered, [(SID_B, "w-1")])
+        receipt = self.done()
+        self.assertEqual(
+            (receipt["status"], receipt["letter"], receipt["picked_letter"], receipt["reason"]),
+            ("delivered", "II", "BB", "linear-issue"),
+        )
+        self.assertEqual((receipt["letter_live"], receipt["letter_other_seat"]), (False, "ZC"))
+        log = (self.state / "wakes.jsonl").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(json.loads(log[-1]), receipt)
+        for private in (*MAC_SIDS, MAC_TITLE):
+            self.assertNotIn(private, json.dumps(receipt))
+
+    def test_a_test_wake_answers_it(self) -> None:
+        answer = self.router().test_answer(self.wake(letter="JJ"))
+        self.assertEqual((answer["picked_letter"], answer["letter_other_seat"]), ("BB", "ZC"))
+
+    def test_a_wake_with_no_live_chat_still_says_so(self) -> None:
+        self.registry.rows = mac_rows()
+        router = self.router(max_attempts=1)
+        router.accept(self.wake(letter="II"))
+        self.drain(router)
+        receipt = self.done()
+        self.assertEqual((receipt["status"], receipt["reason"]), ("dead", "no-live-session"))
+        self.assertEqual(receipt["letter_other_seat"], "ZC")
+        self.assertEqual(self.delivered, [])
+
+    def test_a_history_outage_after_the_letter_was_read_still_says_so(self) -> None:
+        real = self.registry
+
+        def history_down(env, op, params=None, *, timeout=25):
+            if op == "history":
+                real.calls.append((op, dict(params or {})))
+                return {"error": "the registry did not answer in time", "code": "timeout"}
+            return real(env, op, params, timeout=timeout)
+
+        router = self.router(max_attempts=1)
+        with mock.patch.object(WR.registry_api, "call", history_down):
+            pick = router.pick(self.wake(letter="II"))
+            self.assertEqual((pick.target, pick.retry, pick.letter_live), (None, True, False))
+            self.assertEqual((pick.reason, pick.letter_other_seat), ("registry-unavailable", "ZC"))
+            # A dead letter read before the same outage names no seat.
+            self.assertEqual(router.pick(self.wake(letter="PR")).letter_other_seat, "")
+            self.registry.calls.clear()
+            router.accept(self.wake(letter="II"))
+            self.drain(router)
+        self.assertEqual([op for op, _ in self.registry.calls], ["resolve", "history"])
+        receipt = self.done()
+        self.assertEqual((receipt["status"], receipt["reason"]), ("dead", "registry-unavailable"))
+        self.assertEqual((receipt["letter_live"], receipt["letter_other_seat"]), (False, "ZC"))
+        log = (self.state / "wakes.jsonl").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(json.loads(log[-1]), receipt)
+        self.assertEqual(self.delivered, [])
+        self.assertIsNone(router.other_seat_scan, "no history was read, so there is no count")
+
+    def test_a_letter_that_is_not_another_seats_names_none(self) -> None:
+        cases = {
+            "this seat's": row(SID_A, "II", "Mine"),
+            "this seat's, in lower case": row(SID_A, "II", "Mine", seat="claude"),
+            "no seat": seatless(SID_A, "II", "x"),
+            "closed": row(SID_A, "II", "x", seat="ZC", state="closed"),
+            "closed at": row(SID_A, "II", "x", seat="ZC", closed_at=OLDER),
+            "a bad session id": row("-p", "II", "x", seat="ZC"),
+            "no generation": row(SID_A, "II", "x", seat="ZC", generation=None),
+        }
+        for seat in (None, "", 7, ["ZC"], "Z C", "ZC ", "ΖC", "Z" * 33):
+            cases["a malformed seat %r" % (seat,)] = row(SID_A, "II", "x", seat=seat)
+        for label, held in cases.items():
+            with self.subTest(label):
+                self.registry.rows = [self.mine]
+                self.registry.letters = {"II": held}
+                pick = self.router().pick(self.wake(letter="II", topic="AFC-772 wake"))
+                self.assertEqual(pick.letter_other_seat, "")
+        self.assertNotIn("letter-other-seat", self.stderr.getvalue())
+
+    def test_the_tag_is_upper_cased_and_only_a_seat_tag(self) -> None:
+        self.registry.letters = {"II": row(SID_A, "II", "x", seat="zc")}
+        self.assertEqual(self.router().pick(self.wake(letter="II")).letter_other_seat, "ZC")
+        self.assertEqual(WR.other_seat(row(SID_A, "II", "x", seat="ZC"), "", CW.SESSION_RE), "")
+        self.assertEqual(WR.other_seat(row(SID_A, "II", "x"), "ZC", CW.SESSION_RE), "CLAUDE")
+
+    def test_a_pending_file_from_before_reads_as_none(self) -> None:
+        self.assertEqual(WR._pick_from({"reason": "most-recent"}).letter_other_seat, "")
+
+    def test_health_has_no_count_before_a_history_is_read(self) -> None:
+        router = self.router()
+        want = {"seat": "CLAUDE", "delivery": True, "healthy": True}
+        self.assertEqual(self.health(router), (200, want))
+        # A letter that picks its chat reads no history, so there is still nothing to count.
+        self.registry.letters = {"BB": self.mine}
+        self.assertEqual(router.pick(self.wake(letter="BB")).picked, "letter")
+        self.assertEqual(self.health(router), (200, want))
+        self.assertEqual(self.registry.calls, [("resolve", {"platform": "claude", "letter": "BB"})])
+
+    def test_health_counts_the_open_rows_of_another_seat(self) -> None:
+        self.registry.rows += [
+            row(SID_A, "LL", MAC_TITLE, seat="ZC", retired_at=OLDER),
+            row(SID_A, "MM", MAC_TITLE, seat="ZC", closed_at=OLDER),
+            row(SID_A, "NN", MAC_TITLE, seat="ZC", state="closed"),
+            row(MAC_SIDS[0], "OO", MAC_TITLE, seat="ZC"),  # the same chat again:  counted once
+            row(SID_B, "PP", MAC_TITLE, seat="ZC"),  # a chat this seat has too:  not left out
+            seatless(SID_C, "QQ", MAC_TITLE),
+            row(SID_C, "RR", MAC_TITLE, seat="Z C"),
+            row("-p", "SS", MAC_TITLE, seat="ZC"),
+            row(SID_C, "TT", MAC_TITLE, seat="ZC", generation=0),
+        ]
+        router = self.router()
+        pick = router.pick(self.wake(topic="AFC-772 wake"))
+        self.assertEqual((pick.target.session_id, pick.picked), (SID_B, "linear-issue"))
+        calls = list(self.registry.calls)
+        status, answer = self.health(router)
+        self.assertEqual(
+            (status, answer),
+            (
+                200,
+                {
+                    "seat": "CLAUDE",
+                    "delivery": True,
+                    "healthy": True,
+                    "other_seat_rows": 3,
+                },
+            ),
+        )
+        every = WR.Seats([router]).health()
+        self.assertEqual(every[0], 200)
+        self.assertEqual(
+            every[1]["seats"]["CLAUDE"],
+            {"delivery": True, "healthy": True, "other_seat_rows": 3},
+        )
+        self.assertEqual(self.registry.calls, calls, "health asks the registry nothing")
+        shown = json.dumps([answer, every[1]])
+        for private in (*MAC_SIDS, SID_A, SID_B, SID_C, MAC_TITLE, "ZC", "II"):
+            self.assertNotIn(private, shown)
+
+    def test_the_count_is_the_latest_read(self) -> None:
+        router = self.router()
+        router.pick(self.wake())
+        self.assertEqual(self.health(router)[1]["other_seat_rows"], 3)
+        # An outage reads nothing, so the last count and its time stay.
+        self.clock.now += 60
+        self.registry.down = True
+        self.assertTrue(router.pick(self.wake()).retry)
+        self.assertEqual(router.other_seat_scan, (3, 1000.0))
+        # Repaired in the registry:  the next read says none, with its own time.
+        self.registry.down = False
+        repaired = [row(r["native_session_id"], r["letter"], "x") for r in mac_rows()]
+        self.registry.rows = [self.mine, *repaired]
+        router.pick(self.wake())
+        answer = self.health(router)[1]
+        self.assertEqual(answer["other_seat_rows"], 0)
+        self.assertEqual(router.other_seat_scan, (0, 1060.0))
+        self.assertNotIn("other_seat_scan_at", answer)
+
+    def test_the_count_never_makes_a_seat_unhealthy_or_healthy(self) -> None:
+        router = self.router()
+        router.pick(self.wake())
+        self.key_answer = ("", "unset")
+        status, answer = self.health(router)
+        self.assertEqual((status, answer["healthy"], answer["other_seat_rows"]), (503, False, 3))
+        self.assertEqual(answer["reason"], "routine-key-unavailable:unset")
 
 
 class SeatNeverRan(Base):

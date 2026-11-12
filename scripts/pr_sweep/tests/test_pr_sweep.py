@@ -739,7 +739,7 @@ class AuditTests(unittest.TestCase):
         for actor in (
             {"__typename": "Bot", "login": "swu-claude"},
             {"__typename": "Bot", "login": "swu-claude[bot]"},
-            {"__typename": "Bot", "login": "swu-zc"},
+            {"__typename": "Bot", "login": "swu-codex"},
         ):
             tl = {"nodes": [self.dismissal(actor, kody)]}
             self.assertEqual(A.check_pr(self.pr(timelineItems=tl), [])["violations"], [], actor)
@@ -767,7 +767,11 @@ class AuditTests(unittest.TestCase):
     def test_the_app_list_comes_from_the_seat_registry(self) -> None:
         slugs = A.seat_app_slugs()
         self.assertIn("swu-claude", slugs)
-        self.assertIn("swu-zc", slugs)
+        # swu-zc stays out while the seat is pending its proven first-seat admission
+        # (owner 2026-11-02;  git-relay README "Admitting one new seat"):  the policy
+        # image never carries an unproven row, so the registry - and this pin - name
+        # the seat again only after the admission lands and the source file is updated.
+        self.assertNotIn("swu-zc", slugs)
         self.assertEqual(A.DEFAULT_ALLOWED_APP_DISMISSERS, slugs)
         with tempfile.TemporaryDirectory() as tmp:
             missing = Path(tmp) / "nope.json"

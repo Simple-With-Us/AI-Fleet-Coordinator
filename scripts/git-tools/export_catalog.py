@@ -119,6 +119,8 @@ INPUT_LIMITS = {
     "gr_wf_release_asset_upload_binary": 253952,
     "gr_wf_file_put": 6 * 1024 * 1024,
     "gr_wf_files_put": 6 * 1024 * 1024,
+    "gr_wf_git_blob_create": 212992,
+    "gr_wf_git_tree_create": 245760,
 }
 DEFAULT_INPUT_LIMIT = 65536
 
