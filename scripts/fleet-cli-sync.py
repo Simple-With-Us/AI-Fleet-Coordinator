@@ -59,7 +59,7 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # From here the cap is 180, set once (Nov 11, 2026) with room for the wake router's platform modules;
 # fleet-cli-release.py carries the same number and the reason.
 MAX_FILES = 180
-# Must equal fleet-cli-release.MAX_BUNDLE_BYTES.  8 MiB no longer holds the encoded runtime.
+# Same ceiling as fleet-cli-release.MAX_BUNDLE_BYTES.  8 MiB no longer holds the encoded allowlist.
 MAX_BYTES = 9 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65

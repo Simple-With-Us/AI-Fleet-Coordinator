@@ -85,7 +85,7 @@ COPY include the shared helper. These source changes do not install, restart or 
 runtime by themselves.
 
 | `apple-note` | every note in the iCloud folder **Coding**, exported by AppleScript without stealing focus, cached by modification date | app and seat parsed from the `[TEAM_KEY, Agent] Topic` title convention |
-| `doc` | markdown in fleet app repos under `~/Code` (`README.md`, `AGENTS.md`, `STATUS.md`, `CLAUDE.md`, `docs/**/*.md`), plus the broader walk of AI-Fleet-Coordinator and fleet-ops, top-level `~/apps/*.md` except effort logs, `~/.claude/CLAUDE.md`, `~/.grok/docs/**/*.md`, and `~/.grok/skills/**/SKILL.md` | GitHub blob URL when the file is in a repo.  Skip `node_modules`, `.git`, backups, dist, build, vendor, and `reviews/raw`.  Deduped by resolved path. |
+| `doc` | markdown in fleet app repos under `~/Code` (`README.md`, `AGENTS.md`, `STATUS.md`, `CLAUDE.md`, `docs/**/*.md`), plus the broader walk of AI-Fleet-Coordinator and fleet-ops, top-level `~/apps/*.md` except effort logs, `~/.claude/CLAUDE.md`, `~/.grok/docs/**/*.md`, and `~/.grok/skills/**/SKILL.md` | GitHub blob URL when the file is in a repo.  Skip `node_modules`, `.git`, backups, dist, build, vendor, and `reviews/raw`.  Also skip coverage and framework output, vendored and third-party trees, lockfiles, generated names, minified files, binaries, and files over the size cap.  Those new excludes are held out of prune until a dry run writes `doc-diet-report.json` and the operator passes `--prune-excluded`, sets `FLEET_RAG_PRUNE_EXCLUDED=1`, or sets `FLEET_RAG_PRUNE_EXCLUDED_ALLOW`.  Identical chunk bodies in one doc-source run are stored once, and later paths are listed on `also_paths`.  Deduped by resolved path. |
 | `effort-log` | `~/apps/*-EFFORT-LOG.md` and the protocol | one doc per file, app from the filename |
 | `skill` | `~/.claude/skills/*/SKILL.md`, `~/.cursor/skills/*/SKILL.md`, and `~/.grok/skills/*/SKILL.md` | deduped by content |
 | `memory` | `~/.claude/projects/*/memory/*.md`, `~/.codex/memories/*.md` | the per-seat silos, so their lessons are shared |
@@ -96,7 +96,7 @@ Mirror rules keep one copy of each document: the live `~/apps/*.md` copy wins ov
 repo mirror (FLEET-PROTOCOL, MAC-LOCAL-PROCESSES, FLEET-UI-COPY, TEMPLATE-AGENTS), the by-seat and
 repo copies of skills are skipped in favour of the `skill` source, effort-log mirrors are skipped
 in favour of the live boards, and checkouts reachable under two spellings are walked once.
-`recall ingest --prune` deletes the chunks of documents a source no longer yields.
+`recall ingest --prune` deletes the chunks of documents a source no longer yields.  Documents the doc diet newly excludes stay until that explicit release.
 
 The nightly server job and the Mac mirror are in `docs/RAG-NIGHTLY-INGEST.md` (AFC-687).  Both ship disabled.
 

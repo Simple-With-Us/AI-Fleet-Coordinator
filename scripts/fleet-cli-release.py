@@ -22,9 +22,8 @@ import tomllib
 import uuid
 from pathlib import Path, PurePosixPath
 
-# 8 MiB no longer holds the encoded allowlisted runtime.  This checkout encodes
-# past that cap, and main already did before the scroll-envelope change.  The
-# sender in fleet-cli-sync.py uses the same ceiling.
+# 9 MiB.  The encoded allowlist crossed 8 MiB when the recall eval command landed on the
+# current runtime (383 bytes over).  Sender and receiver keep the same ceiling.
 MAX_BUNDLE_BYTES = 9 * 1024 * 1024
 # The reviewed allowlisted runtime contains 154 files.  Keep the exact minimum# ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
