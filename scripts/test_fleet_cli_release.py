@@ -158,7 +158,9 @@ class ReleaseTests(unittest.TestCase):
                     found = {(node.module or "").rsplit(".", 1)[-1]} | {a.name for a in node.names}
                 else:
                     continue
-                self.assertFalse(found & names, "%s imports repo-only %s" % (path, sorted(found & names)))
+                self.assertFalse(
+                    found & names, "%s imports repo-only %s" % (path, sorted(found & names))
+                )
 
     def test_board_ships_with_its_simple_tools_catalog(self):
         # `board commands`, `board run` and `board mcp` read these beside board;  a release without them
@@ -720,7 +722,9 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(release.release_at(self.base, "previous").name, old["bundle_sha256"])
         result = release.control(self.home, "rollback")
         self.assertEqual(result["bundle_sha256"], old["bundle_sha256"])
-        self.assertEqual(release.control(self.home, "status")["bundle_sha256"], old["bundle_sha256"])
+        self.assertEqual(
+            release.control(self.home, "status")["bundle_sha256"], old["bundle_sha256"]
+        )
         self.assertTrue((self.base / "releases" / old["bundle_sha256"] / extra).is_file())
 
     def test_a_new_bundle_with_a_repo_only_module_is_refused(self):
