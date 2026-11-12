@@ -445,8 +445,9 @@ export function neutralizeMentions(text) {
   return text.replace(LOUD_RE, "@_*");
 }
 
-/** Group mentions are removed and stray @* tokens silenced;  every @** mention stays real, wildcards
- * included (owner, Nov 10 2026, AFC-689). */
+/** Group mentions are removed and stray @* tokens silenced;  a typed @**Name** mention stays
+ * real and notifies that seat (owner ruling, Nov 11 2026).  Wildcard forms stay as written and are
+ * gated server-side by the realm's wildcard-mention permission. */
 export function sanitizeComposeMentions(text) {
   for (;;) {
     const changed = text.replace(GROUP_RE, "");

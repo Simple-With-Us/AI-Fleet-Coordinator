@@ -112,6 +112,8 @@ MANAGED_KEYS = (
         "RECALL_ADMIN_TOKEN",
         "RECALL_OWNER_TOKEN",
         "RECALL_SOCKET_TIMEOUT",
+        "RECALL_SEARCH_CACHE_SIZE",
+        "RECALL_SEARCH_CACHE_TTL_SECONDS",
         "SETTINGS_REFRESH_SECONDS",
         "HOST",
         "PORT",
@@ -203,6 +205,11 @@ TOOLS: list[JsonDict] = [
                     "type": "boolean",
                     "default": False,
                     "description": "Include retracted contributions for audit; normal search hides them.",
+                },
+                "compact": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Cache key for the excerpt view. Hit text stays complete until presentation.",
                 },
                 "full": {
                     "type": "boolean",
@@ -371,10 +378,13 @@ def call_tool(name: str, args: JsonDict) -> JsonDict:
         _bool(search_args, "rerank")
         _bool(search_args, "prefer_lessons")
         _bool(search_args, "include_retracted")
+        _bool(search_args, "compact")
         _bool(args, "full")
         if "fields" in args and args["fields"] is not None and not isinstance(args["fields"], list):
             raise FleetRagError("fields must be a list of field names")
-        raw = recall_api.recall_search(**search_args)
+        raw = recall_api.recall_search(
+            **search_args, **({"full": True} if presentation.full else {})
+        )
         return recall_presentation.present_search_result(raw, presentation)
     if name == "recall_stats":
         return recall_api.recall_stats()
