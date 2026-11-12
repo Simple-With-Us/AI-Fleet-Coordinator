@@ -323,8 +323,7 @@ def alert_text(summary: dict, tag: str, host: str, *, streak: int = 1) -> str:
     mirror_reason = _mirror_alert_reason(summary)
     if mirror_reason:
         parts.append(
-            "skill, memory, and apple-note ingest and prune skipped; "
-            f"mirror is {mirror_reason}."
+            f"skill, memory, and apple-note ingest and prune skipped; mirror is {mirror_reason}."
         )
     sync_exit = summary.get("code_sync_exit")
     if sync_exit not in (None, 0):
