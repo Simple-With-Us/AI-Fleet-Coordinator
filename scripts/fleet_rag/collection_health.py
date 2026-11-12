@@ -22,14 +22,16 @@ import json
 import os
 import stat
 import sys
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from fleet_rag.core import FleetRagError, Qdrant, infisical_fetch
 from simple_tools.secretscan import scan as scan_secrets
+
+from fleet_rag.core import FleetRagError, Qdrant, infisical_fetch
 
 # Same names nightly_job.MACHINE_IDENTITY_ENV refuses.  A test locks the two tuples together.
 MACHINE_IDENTITY_ENV = (
@@ -452,9 +454,7 @@ def render_markdown(report: dict[str, Any]) -> str:
                         f"{orphans['points']} points across {orphans['docs']} documents "
                         "are not in it."
                     ),
-                    (
-                        "A point with no doc_id counts as an orphan point and not as a document."
-                    ),
+                    ("A point with no doc_id counts as an orphan point and not as a document."),
                     (
                         "The ingest sentinel meta/ingest-status is not an ingest state row, "
                         "so it counts here when it is present."
@@ -500,9 +500,7 @@ def render_markdown(report: dict[str, Any]) -> str:
             )
         )
         changed = [
-            (name, row)
-            for name, row in delta["by_source"].items()
-            if row["points"] or row["docs"]
+            (name, row) for name, row in delta["by_source"].items() if row["points"] or row["docs"]
         ]
         if changed:
             lines.extend(
