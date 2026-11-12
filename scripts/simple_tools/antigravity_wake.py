@@ -135,13 +135,18 @@ def find_conversation_record(
                     return None, "schema-missing-idle"
                 if "killed" not in cols:
                     return None, "schema-missing-killed"
-                fields = ["conversation_id", "not_fully_idle", "killed"]
-                for col in (
-                    "title",
-                    "workspace_uris",
+                if "parent_conversation_id" not in cols:
+                    return None, "schema-missing-parent"
+                if "nesting_depth" not in cols:
+                    return None, "schema-missing-depth"
+                fields = [
+                    "conversation_id",
+                    "not_fully_idle",
+                    "killed",
                     "parent_conversation_id",
                     "nesting_depth",
-                ):
+                ]
+                for col in ("title", "workspace_uris"):
                     if col in cols:
                         fields.append(col)
                 query = (
@@ -155,12 +160,12 @@ def find_conversation_record(
                         "conversation_id": row[0],
                         "not_fully_idle": row[1],
                         "killed": row[2],
+                        "parent_conversation_id": row[3],
+                        "nesting_depth": row[4],
                         "title": "",
                         "workspace_uris": "",
-                        "parent_conversation_id": "",
-                        "nesting_depth": 0,
                     }
-                    for idx, col in enumerate(fields[3:], start=3):
+                    for idx, col in enumerate(fields[5:], start=5):
                         data[col] = row[idx]
                     return data, None
             finally:

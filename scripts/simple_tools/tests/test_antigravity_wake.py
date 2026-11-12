@@ -356,23 +356,77 @@ class TestAntigravityDeliverLocal(BaseTest):
         self.assertIsNone(rec2)
         self.assertEqual(err2, "schema-missing-killed")
 
+        # Schema missing parent_conversation_id fails closed (zero execution)
+        db_missing_parent = self.root / "missing_parent.db"
+        conn = sqlite3.connect(db_missing_parent)
+        try:
+            conn.execute(
+                "CREATE TABLE conversation_summaries ("
+                "conversation_id TEXT PRIMARY KEY, not_fully_idle INTEGER, killed INTEGER, "
+                "nesting_depth INTEGER, workspace_uris TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO conversation_summaries VALUES (?, 0, 0, 0, ?)",
+                (SID_VALID, json.dumps([f"file://{self.valid_project}"])),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        rec_p, err_p = AGW.find_conversation_record(
+            {**self.env, "AG_WAKE_STORE": str(db_missing_parent)}, SID_VALID
+        )
+        self.assertIsNone(rec_p)
+        self.assertEqual(err_p, "schema-missing-parent")
+        d_p = AGW.deliver_local(
+            {**self.env, "AG_WAKE_STORE": str(db_missing_parent)}, AGW.DEFAULTS, SID_VALID, self.wake()
+        )
+        self.assertEqual((d_p.outcome, d_p.code), ("failed", "store-schema-missing-parent"))
+
+        # Schema missing nesting_depth fails closed (zero execution)
+        db_missing_depth = self.root / "missing_depth.db"
+        conn = sqlite3.connect(db_missing_depth)
+        try:
+            conn.execute(
+                "CREATE TABLE conversation_summaries ("
+                "conversation_id TEXT PRIMARY KEY, not_fully_idle INTEGER, killed INTEGER, "
+                "parent_conversation_id TEXT, workspace_uris TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO conversation_summaries VALUES (?, 0, 0, '', ?)",
+                (SID_VALID, json.dumps([f"file://{self.valid_project}"])),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        rec_d, err_d = AGW.find_conversation_record(
+            {**self.env, "AG_WAKE_STORE": str(db_missing_depth)}, SID_VALID
+        )
+        self.assertIsNone(rec_d)
+        self.assertEqual(err_d, "schema-missing-depth")
+        d_d = AGW.deliver_local(
+            {**self.env, "AG_WAKE_STORE": str(db_missing_depth)}, AGW.DEFAULTS, SID_VALID, self.wake()
+        )
+        self.assertEqual((d_d.outcome, d_d.code), ("failed", "store-schema-missing-depth"))
+
         # deliver_local maps schema-missing to retryable failed
         delivery = AGW.deliver_local(
             {**self.env, "AG_WAKE_STORE": str(db_missing_idle)}, AGW.DEFAULTS, SID_VALID, self.wake()
         )
         self.assertEqual((delivery.outcome, delivery.code), ("failed", "store-schema-missing-idle"))
 
-        # Minimal schema with both required columns succeeds
+        # Minimal schema with all required columns succeeds
         db_ok = self.root / "minimal_ok.db"
         conn = sqlite3.connect(db_ok)
         try:
             conn.execute(
                 "CREATE TABLE conversation_summaries ("
                 "conversation_id TEXT PRIMARY KEY, not_fully_idle INTEGER, killed INTEGER, "
-                "workspace_uris TEXT)"
+                "parent_conversation_id TEXT, nesting_depth INTEGER, workspace_uris TEXT)"
             )
             conn.execute(
-                "INSERT INTO conversation_summaries VALUES (?, 0, 0, ?)",
+                "INSERT INTO conversation_summaries VALUES (?, 0, 0, '', 0, ?)",
                 (SID_VALID, json.dumps([f"file://{self.valid_project}"])),
             )
             conn.commit()
@@ -386,8 +440,9 @@ class TestAntigravityDeliverLocal(BaseTest):
         self.assertIsNotNone(rec3)
         self.assertEqual(rec3["not_fully_idle"], 0)
         self.assertEqual(rec3["killed"], 0)
-        self.assertEqual(rec3["title"], "")
+        self.assertEqual(rec3["parent_conversation_id"], "")
         self.assertEqual(rec3["nesting_depth"], 0)
+        self.assertEqual(rec3["title"], "")
 
     def test_find_conversation_record_locked_corrupt_read_error(self) -> None:
         # Corrupt DB file
