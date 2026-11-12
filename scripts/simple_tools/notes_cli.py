@@ -32,10 +32,10 @@ from . import identities as X
 from . import identity as I
 from . import notes as N
 from . import notes_client as NC
-from .mcp import list_presentation as LP
 from . import session_ids as SID
 from . import zulip as Z
 from .idem import IdemStore
+from .mcp import list_presentation as LP
 from .secretscan import scan as scan_text
 from .state import state_root
 
