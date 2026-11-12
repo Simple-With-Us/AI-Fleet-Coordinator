@@ -59,7 +59,7 @@ CLAUDE_CODE_ENTRYPOINT=cli in its environment and marker hooks in that file, no 
 `claude` row (opencode_letter_plugin/README.md).  So `claude_letter` never runs for an OpenCode chat, and this
 adapter registers under the platform `opencode` and the seat OPENCODE only.
 
-Installing.  `platform-letter install --platform opencode [--location server --remote mac] [--check | --remove]` puts
+Installing.  `platform-letter install --platform opencode [--location server] [--check | --remove]` puts
 the plugin directory in the `plugins` array and touches nothing else of opencode.json (its other keys are never read
 into the output).  The plugin is not copied: the entry names the directory inside the host's managed checkout (the
 Mac's managed runtime, the server's fleet-cli `current` link), so a merge updates the plugin with the checkout, and
@@ -207,17 +207,15 @@ def is_ours(entry: object) -> bool:
     return len(parts) >= 2 and parts[-1] == PLUGIN_DIRNAME and parts[-2] == PACKAGE_DIRNAME
 
 
-def make_entry(
-    directory: str, where: str, remote: str, kept: Mapping[str, Any] | None = None
-) -> Any:
-    """A bare path where the plugin needs to be told nothing (the Mac), else the object form with the options.  `kept`
+def make_entry(directory: str, where: str, kept: Mapping[str, Any] | None = None) -> Any:
+    """A bare path where the plugin needs to be told nothing (the Mac), else the object form with the options.  `kept`
     are the options of the entry being replaced: every key of them stays (the plugin's `log` and `command` are set by
-    hand, and a refresh must not drop them), and `where` and `remote` replace only the ones they name."""
+    hand, and a refresh must not drop them) except `remote`, the ssh hop that no longer exists, and `where` replaces
+    only the location."""
     options: dict[str, Any] = dict(kept or {})
+    options.pop("remote", None)
     if where:
         options["location"] = where
-    if remote:
-        options["remote"] = remote
     return {"package": directory, "options": options} if options else directory
 
 
@@ -274,18 +272,16 @@ def _indent(text: str) -> str | int:
 
 
 def install(options: PL.InstallOptions, env: Mapping[str, str], stdout: TextIO) -> int:
-    """`install --platform opencode [--location server|mac] [--remote DEST] [--check | --remove]`.
+    """`install --platform opencode [--location server|mac] [--check | --remove]`.
 
     It is idempotent: a current entry is left alone, an outdated one is replaced where it stands, a missing one is
-    appended, and running it again without --location or --remote keeps the ones installed, and every option set by
+    appended, and running it again without --location keeps the one installed, and every option set by
     hand (`log`, `command`, `shared`, `settle`) stays too, so a refresh and `--check` agree.  The file it rewrites is
     backed up first (`<file>.bak-letter-<UTC stamp>`, 0600), keeps its mode and its indent, and is replaced whole or
     not at all.  A file that is not a JSON object, has a duplicate key, or whose `plugins` is not a list is refused
     untouched.  Only the entry is described in the answer: no other key of opencode.json is ever printed."""
     home = _text(env.get("HOME")) or os.path.expanduser("~")
     path = config_file(env, home)
-    if options.remote and not PL.DEST_RE.fullmatch(options.remote):
-        return PL._emit(stdout, {"error": "--remote must name an ssh destination"}, 2)
     if options.location and options.location not in PL.LOCATIONS:
         return PL._emit(stdout, {"error": "--location must be mac or server"}, 2)
     if not os.path.isdir(os.path.dirname(path)):
@@ -311,7 +307,6 @@ def install(options: PL.InstallOptions, env: Mapping[str, str], stdout: TextIO) 
     installed = next(iter(have), None)
     inherited = entry_options(installed)
     where = options.location or _text(inherited.get("location"))
-    remote = options.remote or _text(inherited.get("remote"))
     try:
         directory = plugin_dir(env, home)
     except PluginDirError as exc:
@@ -319,7 +314,7 @@ def install(options: PL.InstallOptions, env: Mapping[str, str], stdout: TextIO) 
             directory = entry_path(installed) if installed is not None else ""
         else:
             return PL._emit(stdout, {"error": str(exc)}, 2)
-    want = make_entry(directory, where, remote, inherited) if directory else None
+    want = make_entry(directory, where, inherited) if directory else None
     hook = os.path.join(home, ".local", "bin", PL.ENTRY)
     if options.check:
         answer = {
@@ -359,10 +354,8 @@ def install(options: PL.InstallOptions, env: Mapping[str, str], stdout: TextIO) 
         notes = []
         if not os.path.exists(hook):
             notes.append("%s does not exist yet; the plugin takes no letter until it does" % hook)
-        if sys.platform != "darwin" and not (where and remote):
-            notes.append(
-                "this host is not the Mac: install with --location server --remote <ssh destination>"
-            )
+        if sys.platform != "darwin" and not where:
+            notes.append("this host is not the Mac: install with --location server")
         if notes:
             answer["notes"] = notes
     return PL._emit(stdout, answer, 0)

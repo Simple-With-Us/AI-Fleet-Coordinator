@@ -26,7 +26,6 @@ from __future__ import annotations
 import io
 import json
 import os
-import subprocess
 import sys
 from collections.abc import Mapping
 from typing import Any, TextIO
@@ -118,10 +117,8 @@ def hook_main(
     stdin: TextIO,
     stdout: TextIO,
     *,
-    runner: PL.Runner = subprocess.run,
     transport: PL.Transport | None = None,
     location_flag: str = "",
-    remote_flag: str = "",
     stderr: TextIO | None = None,
     now: float | None = None,
     platform: str = sys.platform,
@@ -140,12 +137,10 @@ def hook_main(
                 env,
                 io.StringIO(json.dumps(data)),
                 printed,
-                runner=runner,
                 now=now,
                 platform=platform,
                 transport=transport,
                 location_flag=location_flag,
-                remote_flag=remote_flag,
                 stderr=stderr,
             )
             answer = answer_for(printed.getvalue(), env, SPEC.session_id(data, env), event)

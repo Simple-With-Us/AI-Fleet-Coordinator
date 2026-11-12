@@ -17,6 +17,7 @@ from unittest import mock
 from simple_tools import cursor_cloud_letters as CCL
 from simple_tools import operator_registry as OR
 from simple_tools import platform_letter as PL
+from simple_tools.tests.registry_fake import FakeRegistry
 
 A1 = "bc-11111111-aaaa-4bbb-8ccc-000000000001"
 A2 = "bc-22222222-aaaa-4bbb-8ccc-000000000002"
@@ -57,9 +58,12 @@ class SweepTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.state = os.path.join(self.tmp.name, "state")
-        self.db = os.path.join(self.state, "operator", "registry.sqlite3")
-        OR.SessionRegistry(self.db).close_db()
-        self.env = {"HOME": self.tmp.name, "SIMPLE_TOOLS_STATE_DIR": self.state, "AGENT_SEAT": "CLAUDE"}
+        # The one assigner:  the registry API, served in process over a temporary store.
+        self.assigner = FakeRegistry(os.path.join(self.tmp.name, "assigner")).install()
+        self.addCleanup(self.assigner.uninstall)
+        self.db = self.assigner.db
+        self.env = {"HOME": self.tmp.name, "SIMPLE_TOOLS_STATE_DIR": self.state, "AGENT_SEAT": "CLAUDE",
+                    **self.assigner.env()}
         self.agents = [agent(A1, "GB-Director: tidy the board"), agent(A2, "fix the login page")]
         self.dm = Fake()
         self.steer = Steer()

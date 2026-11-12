@@ -25,12 +25,11 @@ live registry by accident.
 
 Scope of the hard cut (AFC-720).  This module has no store:  a host with no URL or no key
 answers code "not_configured" for every op, nothing is opened, created or written here,
-and a failed call answers with its failure rather than falling back to a file.  That is a
-promise about this module only.  The callers (operator_registry.main,
-platform_letter.registry_main, claude_letter, mm_session_letter and the platform adapters)
-still choose their own local-file or ssh branch when base_url() is empty;  P4 and P6 of the
-AFC-694 consolidation delete those branches, and until they land a caller with no URL can
-still write a local file.
+and a failed call answers with its failure rather than falling back to a file.  The shared
+letter client (platform_letter and every platform adapter on it) has no other branch:  a
+host with no URL gets no letter and titles the chat "??".  operator_registry.main,
+claude_letter and mm_session_letter still choose their own local-file or ssh branch when
+base_url() is empty, until the next AFC-694 stages delete them.
 
 Python 3.11+, standard library only.
 """

@@ -51,7 +51,7 @@ app-server for each hook's current hash (`hooks/list`) and records the hash of t
 never runs it: `python3 -m simple_tools.platform_letter_codex trust [--check]`.  Until it has run, the hooks are inert
 and Codex opens its blocking "Hooks need review" prompt at the next start of a TUI (the unattended `codex resume`
 seat included), so every `install` answer says whether this adapter's entries are trusted, `install --check` exits 0
-only when they are installed, current and trusted, and any install that changes the command (a new `--location`, a new `--remote`) makes them
+only when they are installed, current and trusted, and any install that changes the command (a new `--location`) makes them
 `modified` and needs `trust` again.
 Each hook command ends in `|| true`.  Codex blocks a prompt when a UserPromptSubmit hook exits 2 with a message on
 stderr, and `python3` exits 2 when the script it is asked to run is gone (the server's managed `platform-letter`
@@ -808,7 +808,7 @@ ANCESTOR_DEPTH = 8  # how far up a sub-thread's parents are followed to find an 
 SID_SHAPE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 USAGE = (
     "usage: python3 -m simple_tools.platform_letter_codex trust [--check]\n"
-    "       python3 -m simple_tools.platform_letter_codex release [--apply] [--location mac|server] [--db FILE]"
+    "       python3 -m simple_tools.platform_letter_codex release [--apply] [--location mac|server]"
     " [--store FILE]\n"
 )
 
@@ -877,30 +877,19 @@ def open_store(path: str) -> sqlite3.Connection:
     return conn
 
 
-def live_registrations(
-    env: Mapping[str, str], location: str, db: str
-) -> tuple[list[dict[str, Any]], str]:
-    """The live Codex registrations of this host, newest letter first, and "" (or [] and an error).  When the page of
+def live_registrations(env: Mapping[str, str], location: str) -> tuple[list[dict[str, Any]], str]:
+    """The live Codex registrations of this host, newest letter first, and "" (or [] and an error).  When the page of
     history was full, a last row `{"truncated": True}` says older letters were not read.
 
-    The registry API answers when its URL is configured (the server's store, the one store now), else the local
-    registry file;  a host with neither has nothing to release."""
-    from . import operator_registry as OR
+    The one assigner's registry API answers;  a host with no API configured gets `not_configured` and has nothing
+    to release."""
     from . import registry_api as RA
 
-    if RA.base_url(env):
-        answer = RA.call(env, "history", {"platform": PLATFORM, "limit": HISTORY_LIMIT})
-        items = answer.get("items") if isinstance(answer, dict) else None
-        if not isinstance(items, list):
-            code = answer.get("code") if isinstance(answer, dict) else ""
-            return [], "the registry history could not be read (%s)" % (code or "no items")
-    elif os.path.isfile(db):
-        try:
-            items = OR.letter_history(db, PLATFORM, HISTORY_LIMIT)
-        except (sqlite3.Error, OSError, OR.RegistryUnavailable) as exc:
-            return [], "the registry could not be read (%s)" % type(exc).__name__
-    else:
-        return [], "no Operator registry on this host"
+    answer = RA.call(env, "history", {"platform": PLATFORM, "limit": HISTORY_LIMIT})
+    items = answer.get("items") if isinstance(answer, dict) else None
+    if not isinstance(items, list):
+        code = answer.get("code") if isinstance(answer, dict) else ""
+        return [], "the registry history could not be read (%s)" % (code or "no items")
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in items:
@@ -941,7 +930,7 @@ def _close_note(env: Mapping[str, str], sid: str, reason: str) -> None:
 
 
 def release_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
-    """`release [--apply] [--location mac|server] [--db FILE] [--store FILE]`:  free the letter of each chat the
+    """`release [--apply] [--location mac|server] [--store FILE]`:  free the letter of each chat the
     registry holds for Codex on this host whose thread Codex has archived (`threads.archived`), and of each sub-thread
     one of whose parents it has archived.
 
@@ -953,13 +942,11 @@ def release_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int
     store or the registry could not be read (nothing is closed then)."""
     import argparse
 
-    from . import operator_registry as OR
     from . import registry_api as RA
 
     parser = argparse.ArgumentParser(prog="platform_letter_codex release", add_help=False)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--location", default="", choices=("",) + PL.LOCATIONS)
-    parser.add_argument("--db", default="")
     parser.add_argument("--store", default="")
     try:
         args = parser.parse_args(argv)
@@ -968,15 +955,14 @@ def release_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int
     location = args.location or PL.location(env) or ""
     if location not in PL.LOCATIONS:
         return _emit(stdout, {"error": "no host location (pass --location mac or server)"}, 2)
-    db = args.db or OR.registry_db_path(PL.L.state_root(env), env)
-    if not args.db and not RA.base_url(env) and not os.path.isfile(db):
+    if not RA.base_url(env):
         env = PL.with_registry_env(env)  # the hook's own rule:  the host's shared registry env file
     try:
         conn = open_store(args.store or store_file(env))
     except StoreUnreadable as exc:
         return _emit(stdout, {"error": str(exc)}, 2)
     try:
-        rows, error = live_registrations(env, location, db)
+        rows, error = live_registrations(env, location)
         if error:
             conn.close()
             return _emit(stdout, {"error": error}, 2)
@@ -1022,8 +1008,6 @@ def release_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int
                 "--source",
                 RELEASE_SOURCE,
             ]
-            if args.db:
-                argv_close += ["--db", args.db]
             code = PL.registry_main(argv_close, env=env, stdout=buf)
             answer = PL._last_json(buf.getvalue()) or {}
             if code == 0 and answer.get("closed"):

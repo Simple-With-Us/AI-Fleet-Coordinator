@@ -1,7 +1,7 @@
 """Operator session letters for Cursor Cloud agents, and the letter in each chat's title (owner request,
 Nov 7, 2026; titles set by the sweep, Nov 9, 2026).
 
-    python3 -m simple_tools.cursor_cloud_letters sweep [--dry-run] [--remote DEST]
+    python3 -m simple_tools.cursor_cloud_letters sweep [--dry-run]
 
 A Cloud agent runs its hooks on Cursor's own workers, which cannot reach the Operator's registry and drop the context a
 hook gives at the start, so `platform_letter_cursor` leaves Cloud agents alone and this sweep gives them their letters
@@ -21,8 +21,7 @@ instead.  Each run:
     When the account refuses a steer, a title that names a Grok Bot still gets the Zulip DM (owner, Nov 7, 2026).
     A DM whose outcome is unknown counts as sent, so a bot is never told twice.
 
-The registry is reached the way the hooks reach it:  in process where the registry is (the Mac, or wherever the
-registry API URL is configured), else over ssh to the destination in SESSION_LETTER_REMOTE or --remote.  The DM goes
+The registry is reached the way the hooks reach it:  one registry API call per op (`platform_letter.Chat`).  The DM goes
 out from the seat this runs as (AGENT_SEAT), through `simple-chat dm`.  What it told each bot is kept in
 `<state>/CURSOR/cloud-letters.json`.
 
@@ -33,7 +32,6 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import io
 import json
 import os
 import re
@@ -126,42 +124,20 @@ def write_state(env: Mapping[str, str], state: Mapping[str, Any]) -> None:
         raise
 
 
-def local_registry(env: Mapping[str, str]) -> bool:
-    """Whether the registry answers in process here:  the Mac keeps the file, and a configured API URL is the store."""
-    from . import registry_api
-
-    return sys.platform == "darwin" or bool(registry_api.base_url(env))
-
-
-def in_process(env: Mapping[str, str]) -> Transport:
-    def call(argv: list[str]) -> dict[str, Any]:
-        out = io.StringIO()
-        PL.registry_main(list(argv), env=env, stdout=out)
-        return PL._last_json(out.getvalue()) or {"error": "the registry gave no answer"}
-
-    return call
-
-
 def register(
     env: Mapping[str, str],
     agent: Mapping[str, Any],
     *,
-    runner: Runner,
     now: float,
-    remote: str,
     transport: Transport | None,
 ) -> dict[str, Any]:
     """Register one Cloud agent and answer with the registry's JSON (an `error` key when it failed)."""
-    if transport is None and local_registry(env):
-        transport = in_process(env)
     chat = PL.Chat(
         SPEC,
         env,
         LOCATION,
         str(agent["session_id"]),
-        runner=runner,
         now=now,
-        remote=remote,
         transport=transport,
         seat=PC.SEAT,
     )
@@ -317,7 +293,6 @@ def sweep(
     runner: Runner = subprocess.run,
     transport: Transport | None = None,
     steer: Callable[[str, str], str] | None = None,
-    remote: str = "",
     dry_run: bool = False,
     now: float | None = None,
     clock: Callable[[], float] = time.monotonic,
@@ -358,7 +333,7 @@ def sweep(
         if dry_run:
             rows.append(row)
             continue
-        answer = register(env, agent, runner=runner, now=now, remote=remote, transport=transport)
+        answer = register(env, agent, now=now, transport=transport)
         label = str(answer.get("label") or "")
         if "error" in answer or not label:
             row["error"] = str(answer.get("error") or "no letter")[:200]
@@ -448,12 +423,10 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument(
         "--dry-run", action="store_true", help="read the agents and print what it would do"
     )
-    s.add_argument("--remote", default="", help="the ssh destination that holds the registry")
     args = parser.parse_args(argv)
     env = os.environ
-    remote = args.remote or PL.remote_destination(env)
     try:
-        out = sweep(env, remote=remote, dry_run=args.dry_run)
+        out = sweep(env, dry_run=args.dry_run)
     except Exception as exc:  # noqa: BLE001 - one line for the log, never a traceback with a key in it
         # The Cursor API failure carries only an HTTP status and a code, never the response text.
         print(
