@@ -143,6 +143,7 @@ class ApiObserverTarget:
     max_rows: int = MAX_API_ROWS
     timeout_seconds: int = 10
     allow_insecure_loopback: bool = False
+    allow_private_ips: bool = False
     header_provider: Callable[[], Mapping[str, str]] | None = None
 
 
@@ -226,16 +227,26 @@ def scrub_secrets(text: str, extra_secrets: Sequence[str] = ()) -> str:
 def _check_ip_safety(
     ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address,
     *,
-    explicitly_allowed: bool,
+    allow_loopback: bool,
+    allow_private_ips: bool,
     raw_host: str,
 ) -> None:
-    """Refuse link-local/metadata/multicast targets and unapproved private addresses."""
+    """Refuse link-local/metadata/multicast targets and unapproved loopback/private addresses."""
     if ip_obj.is_link_local or ip_obj.is_multicast or ip_obj.is_unspecified:
         raise CheckError(
             "the api observer refused link-local or metadata host %s" % raw_host,
             ReasonCode.ERROR,
         )
-    if (ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_reserved) and not explicitly_allowed:
+    if ip_obj.is_loopback and not (allow_loopback or allow_private_ips):
+        raise CheckError(
+            "the api observer refused unapproved loopback address %s" % raw_host,
+            ReasonCode.ERROR,
+        )
+    if (
+        (ip_obj.is_private or ip_obj.is_reserved)
+        and not ip_obj.is_loopback
+        and not allow_private_ips
+    ):
         raise CheckError(
             "the api observer refused unapproved private address %s" % raw_host,
             ReasonCode.ERROR,
@@ -247,6 +258,7 @@ def validate_observer_url(
     *,
     allowed_hosts: frozenset[str],
     allow_insecure_loopback: bool = False,
+    allow_private_ips: bool = False,
 ) -> str:
     """Validate an observer URL against pinned scheme, host, and SSRF rules."""
     if not isinstance(url, str) or not url.strip():
@@ -276,11 +288,22 @@ def validate_observer_url(
     except ValueError:
         ip_obj = None
     if ip_obj is not None:
-        _check_ip_safety(ip_obj, explicitly_allowed=host in normalized_allow, raw_host=host)
+        _check_ip_safety(
+            ip_obj,
+            allow_loopback=allow_insecure_loopback and host in _LOOPBACK_HOSTS,
+            allow_private_ips=allow_private_ips,
+            raw_host=host,
+        )
     return url
 
 
-def _verify_dns_targets(url: str, *, allowed_hosts: frozenset[str]) -> None:
+def _verify_dns_targets(
+    url: str,
+    *,
+    allowed_hosts: frozenset[str],
+    allow_insecure_loopback: bool = False,
+    allow_private_ips: bool = False,
+) -> None:
     """Ensure DNS resolution for a hostname does not target metadata or unapproved private IPs."""
     parsed = urllib.parse.urlsplit(url)
     host = (parsed.hostname or "").lower().rstrip(".")
@@ -291,7 +314,7 @@ def _verify_dns_targets(url: str, *, allowed_hosts: frozenset[str]) -> None:
         return
     except ValueError:
         pass
-    normalized_allow = {item.lower().rstrip(".") for item in allowed_hosts if item.strip()}
+    del allowed_hosts
     port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
     try:
         records = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
@@ -305,7 +328,12 @@ def _verify_dns_targets(url: str, *, allowed_hosts: frozenset[str]) -> None:
             ip_obj = ipaddress.ip_address(addr_text)
         except ValueError:
             continue
-        _check_ip_safety(ip_obj, explicitly_allowed=host in normalized_allow, raw_host=host)
+        _check_ip_safety(
+            ip_obj,
+            allow_loopback=allow_insecure_loopback and host in _LOOPBACK_HOSTS,
+            allow_private_ips=allow_private_ips,
+            raw_host=host,
+        )
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -349,6 +377,7 @@ def http_fetch_observer(
     *,
     allowed_hosts: frozenset[str],
     allow_insecure_loopback: bool = False,
+    allow_private_ips: bool = False,
     max_retries: int = DEFAULT_MAX_RETRIES,
     opener: urllib.request.OpenerDirector | None = None,
     resolve_dns: bool = True,
@@ -363,9 +392,15 @@ def http_fetch_observer(
         url,
         allowed_hosts=allowed_hosts,
         allow_insecure_loopback=allow_insecure_loopback,
+        allow_private_ips=allow_private_ips,
     )
     if resolve_dns:
-        _verify_dns_targets(safe_url, allowed_hosts=allowed_hosts)
+        _verify_dns_targets(
+            safe_url,
+            allowed_hosts=allowed_hosts,
+            allow_insecure_loopback=allow_insecure_loopback,
+            allow_private_ips=allow_private_ips,
+        )
     limit = max(1, int(timeout))
     transport = opener if opener is not None else urllib.request.build_opener(_NoRedirectHandler())
     attempts = 1 + max(0, int(max_retries))
@@ -546,10 +581,21 @@ def _observed_from_row(obs_raw: Any, secret_canaries: Sequence[str]) -> Observed
 def _matches_expected(rule: Rule, observed: ObservedState) -> tuple[bool, str]:
     """Compare observed cloud facts against the reviewed rule's ``ExpectedState``."""
     exp = rule.expected
-    if exp.present is True and observed.present is False:
-        return False, "the expected remote target is absent"
-    if exp.present is False and observed.present is True:
-        return False, "a remote target is present where absence is expected"
+    has_constraint = any(
+        (
+            exp.present is not None,
+            exp.sha256 is not None,
+            bool(exp.names),
+            exp.mode is not None,
+            exp.timeout_seconds is not None,
+        )
+    )
+    if not has_constraint:
+        return False, "the rule defines no verifiable expected constraints"
+    if exp.present is True and observed.present is not True:
+        return False, "the expected remote target is absent or unconfirmed"
+    if exp.present is False and observed.present is not False:
+        return False, "remote target absence could not be confirmed"
     if exp.sha256 is not None and observed.sha256 != exp.sha256:
         return False, "observed digest does not match expected manifest digest"
     if exp.names:
@@ -868,7 +914,6 @@ def evaluate_api_observation(
     observed_iso = iso_utc(observed_dt)
     expires_iso = iso_utc(effective_expires)
     observer_id = str(matched.get("observerId") or doc.get("observerId") or "unknown-observer")
-    observed_state = _observed_from_row(matched.get("observed"), secret_canaries)
     sidecar = build_evidence_sidecar(
         matched,
         rule=rule,
@@ -882,6 +927,26 @@ def evaluate_api_observation(
         manifest_digest=manifest_digest,
         secret_canaries=secret_canaries,
     )
+    obs_raw = matched.get("observed")
+    if not isinstance(obs_raw, Mapping):
+        return (
+            replace(
+                build_result(
+                    rule,
+                    platform,
+                    CheckState.UNKNOWN,
+                    "the api observation is missing a valid observed mapping",
+                    ReasonCode.UNPARSEABLE,
+                    ObservedState(),
+                    ctx,
+                    collector=Collector.API,
+                ),
+                checked_at=observed_iso,
+                expires_at=expires_iso,
+            ),
+            sidecar,
+        )
+    observed_state = _observed_from_row(obs_raw, secret_canaries)
 
     if effective_expires <= now_utc:
         stale_result = CheckResult(
@@ -1031,6 +1096,7 @@ def api_collect(rule: Rule, platform: str, ctx: CheckContext) -> CheckResult:
             ),
             allowed_hosts=target.allowed_hosts,
             allow_insecure_loopback=target.allow_insecure_loopback,
+            allow_private_ips=target.allow_private_ips,
         )
         if runtime.fetcher is not None:
             raw = runtime.fetcher(request_url, headers, timeout, target.max_bytes)
@@ -1042,6 +1108,7 @@ def api_collect(rule: Rule, platform: str, ctx: CheckContext) -> CheckResult:
                 target.max_bytes,
                 allowed_hosts=target.allowed_hosts,
                 allow_insecure_loopback=target.allow_insecure_loopback,
+                allow_private_ips=target.allow_private_ips,
                 resolve_dns=runtime.resolve_dns,
             )
     except CheckError as exc:
