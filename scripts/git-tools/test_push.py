@@ -804,13 +804,19 @@ class Refusals(PushCase):
         ]  # valid to git, a second spelling here
         for name in git_refuses + ours:
             self.assertFalse(G._push_branch_ok(name), name)
-            for spec in (f"feature:{name}", f"HEAD:refs/heads/{name}"):
+            # "feature:refs/heads/x" is the ordinary spelling of branch x:  only the doubled form is refused.
+            specs = [f"HEAD:refs/heads/{name}"] + (
+                [] if name.startswith("refs/heads/") else [f"feature:{name}"]
+            )
+            for spec in specs:
                 code, _out, err = self.push(spec)
                 self.assertEqual(code, G.EXIT_USAGE, spec)
-                self.assertIn("is not a branch name push accepts", err, spec)
+                self.assertIn(
+                    "is not a branch", err, spec
+                )  # "...name push accepts" or "...:  push only moves"
         for name in git_refuses:
             proc = subprocess.run(
-                ["git", "check-ref-format", "refs/heads/" + name], capture_output=True, env=GIT_ENV
+                ["git", "check-ref-format", "--branch", name], capture_output=True, env=GIT_ENV
             )
             self.assertNotEqual(proc.returncode, 0, name)
         # The spellings that would have named the default branch (trunk here) past a string compare.
