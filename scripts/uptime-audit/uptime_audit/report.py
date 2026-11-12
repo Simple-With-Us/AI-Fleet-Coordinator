@@ -17,7 +17,9 @@ def normalize_url(url: str) -> str:
     parts = urlsplit(url.strip())
     host = (parts.hostname or "").lower().rstrip(".")
     port = parts.port
-    if port and not ((parts.scheme == "https" and port == 443) or (parts.scheme == "http" and port == 80)):
+    if port and not (
+        (parts.scheme == "https" and port == 443) or (parts.scheme == "http" and port == 80)
+    ):
         netloc = f"{host}:{port}"
     else:
         netloc = host

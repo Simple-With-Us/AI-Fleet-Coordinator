@@ -109,7 +109,9 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(report["unexpected_hosts"][0]["host"], "gone.example")
         self.assertEqual(report["excluded_hosts"][0]["host"], "old.example")
         self.assertEqual(report["health_url_mismatches"][0]["url"], "https://app.example/other")
-        self.assertIn("https://app.example/api/health", report["health_url_mismatches"][0]["expected_urls"])
+        self.assertIn(
+            "https://app.example/api/health", report["health_url_mismatches"][0]["expected_urls"]
+        )
         self.assertEqual(report["health_path_unspecified"][0]["host"], "dash.example")
         self.assertEqual([row["id"] for row in report["unresolved"]], ["dashboard", "redacted"])
         disabled_ids = {row["id"] for row in report["disabled_or_muted"]}
@@ -169,7 +171,9 @@ class SentryClientTests(unittest.TestCase):
         self.assertTrue(is_covering({"status": 0, "url": "https://example.com"}))
         self.assertFalse(is_covering({"status": "disabled", "url": "https://example.com"}))
         self.assertFalse(is_covering({"status": 1, "url": "https://example.com"}))
-        self.assertFalse(is_covering({"status": "active", "muted": True, "url": "https://example.com"}))
+        self.assertFalse(
+            is_covering({"status": "active", "muted": True, "url": "https://example.com"})
+        )
         self.assertFalse(is_covering({"enabled": False, "url": "https://example.com"}))
         self.assertFalse(is_covering({"url": "https://example.com"}))
 
@@ -182,7 +186,7 @@ class SentryClientTests(unittest.TestCase):
                 pages.append(request.full_url)
                 if len(pages) == 1:
                     link = (
-                        '<https://us.sentry.io/api/0/organizations/example-org/uptime/?cursor=next>; '
+                        "<https://us.sentry.io/api/0/organizations/example-org/uptime/?cursor=next>; "
                         'rel="next"; results="true"'
                     )
                     return Response(b"[]", link)
@@ -200,7 +204,9 @@ class SentryClientTests(unittest.TestCase):
     def test_http_error_hides_the_body(self):
         class Opener:
             def open(self, request, timeout=None):
-                raise HTTPError(request.full_url, 403, "no", EmailMessage(), io.BytesIO(b"secret-body"))
+                raise HTTPError(
+                    request.full_url, 403, "no", EmailMessage(), io.BytesIO(b"secret-body")
+                )
 
         with self.assertRaises(AuditError) as caught:
             fetch_monitors("example-org", "test-token", opener=Opener())

@@ -15,7 +15,9 @@ from urllib.parse import urlsplit
 from uptime_audit.errors import AuditError
 
 _ID = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-_HOST = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$")
+_HOST = re.compile(
+    r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+)
 _ROOT_KEYS = {"version", "org", "entries", "excluded"}
 _ENTRY_KEYS = {"id", "owner", "host", "health_url", "certainty", "source", "note"}
 _EXCLUDED_KEYS = {"host", "reason"}
