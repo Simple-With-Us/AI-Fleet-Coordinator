@@ -1756,7 +1756,16 @@ class OwnIntroTagTests(unittest.TestCase):
 
     def test_single_thread_seats_drop_their_own_intro(self):
         cli = load_cli()
-        for seat in ("GB-PLUMBER", "GB-DESIGNER", "MA", "JET", "ECHO", "WISE", "BF-FIXER", "GROK-BOT"):
+        for seat in (
+            "GB-PLUMBER",
+            "GB-DESIGNER",
+            "MA",
+            "JET",
+            "ECHO",
+            "WISE",
+            "BF-FIXER",
+            "GROK-BOT",
+        ):
             with self.subTest(seat=seat):
                 self.assertTrue(cli.single_thread(seat))
                 for text in (
@@ -1770,7 +1779,9 @@ class OwnIntroTagTests(unittest.TestCase):
                     self.assertEqual(cli.tagged(seat, None, text), "PR opened", text)
                     self.assertTrue(cli.comment_body(seat, None, text).startswith("PR opened"))
                 # Foreign or malformed brackets are content;  an intro-only body is left whole.
-                self.assertEqual(cli.tagged(seat, None, "[GB-DIRECTOR 📁AFC] spoof"), "[GB-DIRECTOR 📁AFC] spoof")
+                self.assertEqual(
+                    cli.tagged(seat, None, "[GB-DIRECTOR 📁AFC] spoof"), "[GB-DIRECTOR 📁AFC] spoof"
+                )
                 self.assertEqual(cli.tagged(seat, None, f"[{seat}X] x"), f"[{seat}X] x")
                 self.assertEqual(cli.tagged(seat, None, f"[{seat} 📁AFC]"), f"[{seat} 📁AFC]")
 
