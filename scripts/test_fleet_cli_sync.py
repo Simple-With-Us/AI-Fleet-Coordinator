@@ -24,7 +24,7 @@ S = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(S)
 
 POLICY = """import hashlib,json
-MAX_BUNDLE_BYTES=12*1024*1024
+MAX_BUNDLE_BYTES=9*1024*1024
 def allowed_path(path):
     if path in {"scripts/simple-chat","scripts/fleet-cli-release.py","fleet-apps.json","docs/protocols/simple-tools-partition.toml","scripts/linear-board/board","scripts/linear-board/board-ids.txt"}: return True
     parts=path.split("/")
@@ -153,8 +153,8 @@ class SourceTests(Fixture):
         self.assertNotIn("scripts/simple_tools/seat_control.py", bundle["files"])
 
     def test_receiver_cap_may_exceed_sender_cap_but_never_trail_it(self):
-        self.assertEqual(S.MAX_BYTES, 8 * 1024 * 1024)
-        self.put("scripts/fleet-cli-release.py", POLICY.replace("12*1024*1024", "4*1024*1024"))
+        self.assertEqual(S.MAX_BYTES, 9 * 1024 * 1024)
+        self.put("scripts/fleet-cli-release.py", POLICY.replace("9*1024*1024", "4*1024*1024"))
         self.commit()
         self.assert_code("receiver_policy_invalid", S.build_bundle, self.repo)
 
@@ -251,7 +251,8 @@ class SourceTests(Fixture):
         self.assert_code("bundle_too_many_files", S.build_bundle, self.repo)
 
     def test_encoded_size_limit_is_checked_after_base64(self):
-        self.put("scripts/simple_tools/large.py", "x" * (6 * 1024 * 1024))
+        # Raw stays under the ceiling.  Base64 of 7 MiB, plus the other files, crosses it.
+        self.put("scripts/simple_tools/large.py", "x" * (7 * 1024 * 1024))
         self.commit()
         self.assert_code("bundle_too_large", S.build_bundle, self.repo)
 

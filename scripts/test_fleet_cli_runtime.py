@@ -271,7 +271,7 @@ class ActualRuntime(unittest.TestCase):
         )
         sender = importlib.util.module_from_spec(sender_spec)
         sender_spec.loader.exec_module(sender)
-        # Two-step cap raise:  the real bundle must fit what the sender ships (and so any older receiver).
+        # The real bundle must fit what the sender ships, and the receiver cap must not trail the sender.
         self.assertLessEqual(len(self.raw), sender.MAX_BYTES)
         self.assertLessEqual(sender.MAX_BYTES, self.receiver.MAX_BUNDLE_BYTES)
         # The cap is checked by what it is for:  both sides agree and the real bundle fits.  It is
