@@ -2791,28 +2791,58 @@ def fleet_secrets_path(cfg: Config) -> str:
 
 def read_credentials(cfg: Config) -> dict[str, str]:
     """The credentials this job uses that ``fleet-secrets`` can supply (OPS-818;  the old flat
-    credentials file is retired), from one Infisical fetch.  Callers overlay the environment
-    on top.  A missing command or any failure is an empty dict, so the caller reports the missing NAMES.
-    Skipped when the environment already holds all four job credentials.  Values stay in this process."""
+    credentials file is retired).  Callers overlay the environment on top.  A missing command or any
+    failure is an empty dict, so the caller reports the missing NAMES.  Skipped when the environment
+    already holds all four job credentials.  Values stay in this process.
+
+    Least privilege:  one ``run --only`` fetch injects just the job's own names into the child (a plain
+    ``run`` would inject every secret the token can read), and the B2 master key names are asked for only
+    when FLEET_WORK_BACKUP_ALLOW_MASTER=1, the same gate ``restic_env`` applies before it uses them.
+    ``--only`` exits non-zero when any one name is absent, so a failure falls back to one ``get`` per name:
+    the names that do exist still come back and the caller reports the rest."""
     if all(os.environ.get(n) for n in CRED_NAMES.values()):
         return {}
     binary = fleet_secrets_path(cfg)
     if not os.access(binary, os.X_OK):
         return {}
-    wanted = list(CRED_NAMES.values()) + list(MASTER_NAMES.values())
+    wanted = list(CRED_NAMES.values())
+    if os.environ.get("FLEET_WORK_BACKUP_ALLOW_MASTER") == "1":
+        wanted += list(MASTER_NAMES.values())  # only a restore may use the master key
     try:
         p = subprocess.run(
-            [binary, "run", "--", sys.executable, "-c", _PICK_CREDENTIALS, *wanted],
+            [
+                binary,
+                "run",
+                "--only",
+                ",".join(wanted),
+                "--",
+                sys.executable,
+                "-c",
+                _PICK_CREDENTIALS,
+                *wanted,
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=120,
         )
-        if p.returncode != 0:
-            return {}
-        got = json.loads(p.stdout.decode("utf-8", "replace") or "{}")
+        if p.returncode == 0:
+            got = json.loads(p.stdout.decode("utf-8", "replace") or "{}")
+            return {k: v for k, v in got.items() if k in wanted and isinstance(v, str) and v}
+        out: dict[str, str] = {}
+        for name in wanted:
+            g = subprocess.run(
+                [binary, "get", name],
+                stdin=subprocess.DEVNULL,  # a terminal's stdin would let `get` use a person's own login
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=30,  # a timeout ends the whole read (the except below), never four in a row
+            )
+            value = g.stdout.decode("utf-8", "replace").strip() if g.returncode == 0 else ""
+            if value:
+                out[name] = value
+        return out
     except (OSError, subprocess.SubprocessError, ValueError):
         return {}
-    return {k: v for k, v in got.items() if k in wanted and isinstance(v, str) and v}
 
 
 def restic_env(cfg: Config, allow_master: bool = False) -> tuple[dict | None, list[str]]:
