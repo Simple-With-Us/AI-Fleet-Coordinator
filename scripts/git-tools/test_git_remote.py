@@ -2552,6 +2552,41 @@ class TestReadiness(unittest.TestCase):
                 self.assertEqual(status, 1)
                 self.assertEqual(json.loads(output.getvalue())["verdict"], "unknown")
 
+    def test_a_relay_refusal_is_named_instead_of_unknown(self):
+        from types import SimpleNamespace
+
+        reasons = (
+            "seat_not_in_policy",
+            "bearer_rejected",
+            "no_app_credential",
+            "verifier_unavailable",
+            "unauthenticated",
+        )
+        for reason in reasons:
+            with (
+                mock.patch.object(git, "validate_arguments"),
+                mock.patch.object(git, "resolve_actor", side_effect=lambda e, a, *x: a),
+                mock.patch.object(
+                    git,
+                    "remote_call",
+                    side_effect=git.HostedToolExit(1, "relay_refused", reason),
+                ),
+            ):
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    status = git.cmd_readiness(
+                        {"gr_wf_pr_get": {"read": True}},
+                        SimpleNamespace(repo="Owner/Repo", number=1, expected_head=None),
+                        "bearer",
+                        "ZC",
+                        None,
+                    )
+                report = json.loads(output.getvalue())
+                self.assertEqual(status, 1, reason)
+                self.assertEqual(report["verdict"], reason)
+                self.assertEqual(report["relay_reason"], reason)
+                self.assertEqual(report["unknowns"], [])
+
     def test_parser_report_only(self):
         a = git.build_parser().parse_args(
             ["readiness", "Owner/Repo", "1", "--expected-head", "a" * 40]

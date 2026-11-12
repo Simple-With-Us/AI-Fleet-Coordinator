@@ -24,7 +24,7 @@ S = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(S)
 
 POLICY = """import hashlib,json
-MAX_BUNDLE_BYTES=8*1024*1024
+MAX_BUNDLE_BYTES=9*1024*1024
 def allowed_path(path):
     if path in {"scripts/simple-chat","scripts/fleet-cli-release.py","fleet-apps.json","docs/protocols/simple-tools-partition.toml","scripts/linear-board/board","scripts/linear-board/board-ids.txt"}: return True
     parts=path.split("/")
@@ -233,7 +233,8 @@ class SourceTests(Fixture):
         self.assert_code("bundle_too_many_files", S.build_bundle, self.repo)
 
     def test_encoded_size_limit_is_checked_after_base64(self):
-        self.put("scripts/simple_tools/large.py", "x" * (6 * 1024 * 1024))
+        # Raw stays under the ceiling.  Base64 of 7 MiB, plus the other files, crosses it.
+        self.put("scripts/simple_tools/large.py", "x" * (7 * 1024 * 1024))
         self.commit()
         self.assert_code("bundle_too_large", S.build_bundle, self.repo)
 
@@ -371,6 +372,14 @@ class HookTests(unittest.TestCase):
         self.assertIn("alarm 95", hook)
         self.assertIn("COOLIFY-CLI-SYNC-FAILED", hook)
         self.assertNotIn("--install", hook[start : hook.index("if ! git -C", start)])
+
+    def test_mac_gitops_check_runs_before_fetch(self):
+        hook = Path(__file__).with_name("simple-tools-runtime-sync.sh").read_text()
+        gitops = hook.index("Mac GitOps G7")
+        fetch = hook.index("if ! rgit fetch")
+        self.assertLess(gitops, fetch)
+        self.assertIn("mac-gitops-check.enabled", hook)
+        self.assertIn("mac-gitops-reconcile.py", hook)
 
 
 if __name__ == "__main__":

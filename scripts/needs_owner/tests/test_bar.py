@@ -391,13 +391,13 @@ class CapTests(BarCase):
         self.assertEqual(row["t"], w.now.timestamp())
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
-    def test_a_count_that_cannot_be_written_never_blocks_a_filing(self) -> None:
+    def test_an_enforced_cap_that_cannot_be_reserved_refuses_before_filing(self) -> None:
         w = self.world("enforce", 5)
         self.filings_file(w).mkdir(parents=True)  # the ledger path is a folder:  it can be neither read nor replaced
         r = self.file(why="money", w=w)
-        self.assertEqual(r.code, 0, r.err)
-        self.assertEqual(r.err, "", "the lock was fine, so there is nothing to warn about")
-        self.assertEqual(len(w.board_state()["issues"]), 1)
+        self.assertEqual(r.code, 2, r.err)
+        self.assertIn("cannot be reserved safely", r.err)
+        self.assertEqual(len(w.board_state()["issues"]), 0)
 
 
 # ---- an item that already exists is not a new filing -------------------------------------------------
@@ -506,7 +506,7 @@ class LockTests(BarCase):
         self.assertEqual(self.file(why="money", w=w).code, 0)
         self.assertEqual(lock.stat().st_mode & 0o777, 0o600)
 
-    def test_the_lock_is_held_across_the_linear_filing_and_freed_after(self) -> None:
+    def test_a_reservation_counts_but_the_lock_is_free_during_filing(self) -> None:
         w = self.world("enforce", 5)
         seen: dict = {}
         real = verbs.file_new
@@ -518,17 +518,17 @@ class LockTests(BarCase):
         with mock.patch.object(verbs, "file_new", spy):
             r = self.file(why="money", w=w)
         self.assertEqual(r.code, 0, r.err)
-        self.assertIs(seen["free_during"], False, "another filing cannot slip in while this one is filed")
+        self.assertIs(seen["free_during"], True, "the durable reservation, not a network-held lock, protects the cap")
         self.assertTrue(self.can_take(w), "and it is freed once the filing is recorded")
 
-    def test_a_failed_filing_records_nothing_and_frees_the_slot_and_the_lock(self) -> None:
+    def test_an_ambiguous_filing_counts_but_frees_the_lock(self) -> None:
         w = self.world("enforce", 1)
         failed = w.file(Q, "Yes", "No", extra=("--why-owner", "money"), env=w.env(FAKE_BOARD_FAIL="file"))
         self.assertEqual(failed.code, 1, failed.err)
-        self.assertFalse(self.filings_file(w).exists(), "nothing was reserved")
+        self.assertEqual(bar.filings_in_window(w.env(), "CLAUDE", w.now.timestamp()), 1)
         self.assertTrue(self.can_take(w))
         ok = self.file(why="money", w=w)
-        self.assertEqual(ok.code, 0, "the one slot was not used up by the failure:  " + ok.err)
+        self.assertEqual(ok.code, 2, "an ambiguous failure must keep the daily cap place:  " + ok.err)
         refused = self.file("A second question?", why="money", w=w)
         self.assertEqual(refused.code, 2)
         self.assertTrue(self.can_take(w), "a refusal frees it too")
@@ -689,15 +689,15 @@ class SlotTests(unittest.TestCase):
         self.assertEqual(sorted(outputs), ["refused"] * 3 + ["won"])
         self.assertEqual(len(bar._rows(self.env)), 1)
 
-    def test_a_slot_that_fails_inside_records_nothing_and_frees_the_lock(self) -> None:
+    def test_a_slot_with_unexpected_failure_keeps_reservation_and_frees_lock(self) -> None:
         with self.assertRaises(RuntimeError):
             with bar.Slot(self.policy, self.env, "CLAUDE", None, lambda line: None) as slot:
                 slot.check()
                 raise RuntimeError("the filing failed")
-        self.assertEqual(bar._rows(self.env), [])
+        self.assertEqual(len(bar._rows(self.env)), 1)
         results: dict = {}
         self.attempt(results, 1, 0)
-        self.assertEqual(results, {1: "won"}, "the reservation did not survive the failure")
+        self.assertEqual(results, {1: "refused"}, "unexpected failure keeps its reservation")
 
     def test_a_dead_holder_does_not_keep_the_lock(self) -> None:
         scripts = str(Path(__file__).resolve().parents[2])

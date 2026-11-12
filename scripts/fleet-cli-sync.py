@@ -25,8 +25,7 @@ from pathlib import Path
 
 DEFAULT_SOURCE = "/Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime"
 RECEIVER_PATH = "scripts/fleet-cli-release.py"
-# The reviewed allowlisted runtime contains 152 files.  Keep the exact minimum
-# ceiling in sender and receiver: a new file still needs an explicit policy review.
+# The reviewed allowlisted runtime contains 166 files. Keep the exact minimum# ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
 # platform_letter_opencode.py and opencode_letter_plugin/index.js (the OpenCode adapter);  the 137th is operator_post.py
@@ -52,8 +51,16 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # The 162nd is scripts/ag-wake-bridge (AFC-665), the AG seat's wake bridge.
 # The 163rd and 164th are the Clutch and Fx session-letter adapters;  fleet-cli-release.py carries the
 # same ledger.
-MAX_FILES = 165
-MAX_BYTES = 8 * 1024 * 1024
+# The 166th and 167th are simple_tools/wake_router.py and simple_tools/claude_wake.py (OPS-1048).
+# The 168th is simple_tools/wake_settings.py (OPS-1048).
+# The 169th and 170th are simple_tools/thread_registry.py and thread_registry_export.mjs (the Operator
+# chat-thread registry and its Google drain);  fleet-cli-release.py carries the same ledger.
+# The 171st is simple_tools/wake_service.py (OPS-1048, the one wake router service for every platform).
+# From here the cap is 180, set once (Nov 11, 2026) with room for the wake router's platform modules;
+# fleet-cli-release.py carries the same number and the reason.
+MAX_FILES = 180
+# Same ceiling as fleet-cli-release.MAX_BUNDLE_BYTES.  8 MiB no longer holds the encoded allowlist.
+MAX_BYTES = 9 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")

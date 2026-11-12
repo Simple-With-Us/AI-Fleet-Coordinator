@@ -25,7 +25,8 @@ REPO = SCRIPTS.parent
 # The inventory the open-loops plan (K1) names, key by key, plus FLEET_LOOPS_DATA_ALLOWED_APPS:  the one decision the
 # F7 publisher's repository gate leaves to the owner (which installed apps may read fleet-loops-data;  empty by default), and
 # FLEET_FACTS_PUBLISH_FULL_COPY (the path-bearing mac-facts.json is published only when the owner turns it on) and the publisher's
-# time cap and load limit (FLEET_FACTS_PUBLISH_CAP_MINUTES, FLEET_FACTS_PUBLISH_MAX_LOAD1).
+# time cap and load limit (FLEET_FACTS_PUBLISH_CAP_MINUTES, FLEET_FACTS_PUBLISH_MAX_LOAD1), and the
+# git-relay publish route (FLEET_FACTS_RELAY_URL, FLEET_FACTS_RELAY_BRANCH, FLEET_FACTS_RELAY_TOKEN).
 PLAN_KEYS = {
     "FLEET_AUTOPUSH_MODE",
     "FLEET_AUTOPUSH_REPOS",
@@ -52,6 +53,9 @@ PLAN_KEYS = {
     "FLEET_FACTS_PUBLISH_FULL_COPY",
     "FLEET_FACTS_PUBLISH_CAP_MINUTES",
     "FLEET_FACTS_PUBLISH_MAX_LOAD1",
+    "FLEET_FACTS_RELAY_URL",
+    "FLEET_FACTS_RELAY_BRANCH",
+    "FLEET_FACTS_RELAY_TOKEN",
     "OPERATOR_API_URL",  # AFC-486:  where Apple Notes requests go off a Mac (the Operator notes queue)
     "FLEET_SHEET_INGEST_ENABLED",
     "FLEET_SHEET_INGEST_TIMEOUT_MS",  # AFC-423:  the sheet sync's Fleet RAG ingest
@@ -60,13 +64,45 @@ PLAN_KEYS = {
     "COMPLIANCE_SECRETS_FINDINGS_MAX",  # AFC-400:  the secrets-hygiene tolerance the compliance rule reads
     "CF_USAGE_WATCHDOG_MODE",  # AFC-617:  observe or enforce
     "CF_USAGE_WATCHDOG_PROFILE",  # AFC-617:  which threshold profile applies
+    # OPS-1048:  the wake router's switch, its seats, and its retry and cap settings
+    "WAKE_ROUTER_DELIVERY_ENABLED",
+    "WAKE_ROUTER_DELIVERY_SEATS",
+    "WAKE_ROUTER_WORKERS",
+    "WAKE_ROUTER_MAX_DELIVERIES",
+    "WAKE_ROUTER_MAX_ATTEMPTS",
+    "WAKE_ROUTER_RETRY_BACKOFF",
+    "WAKE_ROUTER_BUSY_RETRY_SECONDS",
+    "WAKE_ROUTER_UNREACHABLE_RETRY_SECONDS",
+    "WAKE_ROUTER_MAX_AGE_SECONDS",
+    "WAKE_ROUTER_SHUTDOWN_WAIT_SECONDS",
+    "WAKE_ROUTER_RESUME_TIMEOUT_SECONDS",
+    "WAKE_ROUTER_CONFIRM_SECONDS",
+    "WAKE_ROUTER_SETTINGS_REFRESH_SECONDS",
+    "WAKE_ROUTER_MAC_SSH",
+    "WAKE_ROUTER_KEY",
+    "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL",
+    "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
 }
+# The signing key, the facts relay bearer, the wake router's one bearer and its registry signing key.
+SECRETS = [
+    "FLEET_FACTS_SIGNING_KEY",
+    "FLEET_FACTS_RELAY_TOKEN",
+    "WAKE_ROUTER_KEY",
+    "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
+]
 
 
 class InventoryTests(unittest.TestCase):
-    def test_the_registry_holds_every_planned_knob_and_only_one_secret(self):
+    def test_the_registry_holds_every_planned_knob_and_only_these_secrets(self):
         self.assertEqual({s.name for s in REGISTRY}, PLAN_KEYS)
-        self.assertEqual([s.name for s in REGISTRY if s.secret], ["FLEET_FACTS_SIGNING_KEY"])
+        self.assertEqual([s.name for s in REGISTRY if s.secret], SECRETS)
+
+    def test_a_knob_outside_the_root_says_its_folder_in_the_table(self):
+        for spec in REGISTRY:
+            row = next(r for r in inventory.rows() if r.startswith(f"| `{spec.name}` |"))
+            with self.subTest(name=spec.name):
+                self.assertEqual(f"in folder `{spec.folder}`" in row, spec.folder != "/")
+                self.assertEqual(len([c for c in row.strip("|").split("|")]), 7)
 
     def test_infisical_md_carries_the_generated_block(self):
         text = (REPO / "INFISICAL.md").read_text(encoding="utf-8")

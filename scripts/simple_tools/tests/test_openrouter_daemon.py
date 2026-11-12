@@ -1,7 +1,8 @@
 """The OpenRouter wake in the daemon:  as a seat's wake, and as the fallback behind a muse or claude seat.
 
 Everything runs against the fake Zulip server, a fake OpenRouter on 127.0.0.1 and fake `muse` and `claude`
-executables.  The Operator posts every reply (the listener harness fails any test where a seat's bot writes),
+executables.  The Operator posts no reply at all (it never answers on behalf of a platform;  the listener
+harness fails any test where a seat's bot writes),
 no test reaches openrouter.ai, and the key is made at run time by repeating a pattern.
 
 The runner, the key reader, the config and the pin are in test_openrouter_wake.py.
@@ -211,9 +212,9 @@ class PrimaryTests(OpenRouterHarness):
         self.mm_config("openrouter")
         self.pin_openrouter()
 
-    def test_a_wake_makes_one_call_and_the_operator_posts_the_reply(self) -> None:
+    def test_a_wake_makes_one_call_and_the_reply_is_dropped_never_posted(self) -> None:
         daemon = self.mm()
-        mid = self.mm_wake(daemon)
+        self.mm_wake(daemon)
         # One call, to the seat's model, with the contract as the system message and the fenced prompt
         # as the user message, and nothing offered to call.
         (seen,) = self.router.requests()
@@ -224,10 +225,9 @@ class PrimaryTests(OpenRouterHarness):
         self.assertIn("BEGIN_UNTRUSTED_ZULIP", user)
         self.assertIn("can you check the AFC cutover?", user)
         self.assertEqual(seen.body["response_format"]["json_schema"]["schema"]["required"][:2], ["action", "reply"])
-        # The Operator said it, tagged with the seat's wake, and no seat bot wrote a thing.
-        (post,) = self.operator_posts()
-        self.assertTrue(post["content"].startswith("[OPERATOR·wake] re=%d\n" % mid), post["content"])
-        self.assertEqual((post["display_recipient"], post["subject"]), ("simple-tools", "t"))
+        # Nobody said anything:  the Operator never answers on behalf of a platform, and no seat bot
+        # wrote a thing either.
+        self.assertEqual(self.operator_posts(), [])
         self.assertEqual(self.seat_requests(), [])
         # The ledger names the runtime, the model and what the call reported, and nothing secret.
         started = [r for r in self.ledger("MM") if r["state"] == "started"][0]
@@ -238,7 +238,8 @@ class PrimaryTests(OpenRouterHarness):
         self.assertEqual((done["model"], done["runtime_role"], done["http_status"]), (MODEL, "primary", 200))
         self.assertEqual(done["usage"]["total_tokens"], 1280)
         self.assertEqual(done["served_model"], "meta/muse-spark-1.3-contributor-20260902")
-        self.assertEqual((done["posted_by"], done["posted_id"]), ("OPERATOR", post["id"]))
+        self.assertEqual((done["post_error"], done["posted_id"]), ("operator_never_answers", None))
+        self.assertNotIn("posted_by", done)
         self.assertNotIn("cost_usd", done)
         # The key came from Fleet-OPS /wake, by its one name.
         self.assertTrue(self.fetch_paths)
@@ -308,7 +309,7 @@ class PrimaryTests(OpenRouterHarness):
         self.assertEqual(banners, ["OpenRouter wakes are failing: HTTP 402 (credits exhausted)"])
         self.mm_wake(daemon, "b")  # the account was topped up
         self.assertEqual(self.final()["state"], "done")
-        self.assertEqual(len(self.operator_posts()), 1)
+        self.assertEqual(self.operator_posts(), [], "the reply is dropped, not posted")
 
     def test_each_failure_class_fails_the_wake_with_its_phrase_and_posts_nothing(self) -> None:
         daemon = self.mm()
@@ -466,9 +467,8 @@ class FallbackTests(OpenRouterHarness):
         row = self.final()
         self.assertEqual(row["state"], "done", row)
         self.assertEqual((row["adapter"], row["runtime_role"], row["model"]), ("openrouter", "fallback", FALLBACK_MODEL))
-        (post,) = self.operator_posts()
-        self.assertTrue(post["content"].startswith("[OPERATOR·wake] re="), "the reply carries the Operator's own tag")
-        self.assertEqual(row["posted_by"], "OPERATOR")
+        self.assertEqual(self.operator_posts(), [], "the fallback's reply is dropped like any other")
+        self.assertEqual(row["post_error"], "operator_never_answers")
         self.assertEqual(self.seat_requests(), [])
         return row
 
@@ -502,7 +502,7 @@ class FallbackTests(OpenRouterHarness):
                     label,
                 )
                 self.assertEqual(self.models_asked()[-1], FALLBACK_MODEL, label)
-        self.assertEqual(len(self.operator_posts()), len(cases))
+        self.assertEqual(self.operator_posts(), [], "every fallback answer is dropped, never posted")
 
     def test_a_primary_that_times_out_falls_back(self) -> None:
         self.set_muse(mode="hang", hang=20)
@@ -688,8 +688,7 @@ class OpenRouterBehindOpenRouterTests(OpenRouterHarness):
         self.assertEqual((row["state"], row["model"], row["runtime_role"]), ("done", FALLBACK_MODEL, "fallback"))
         started = [r for r in self.ledger("MM") if r["state"] == "started"][0]
         self.assertEqual((started["adapter"], started["model"], started["runtime_role"]), ("openrouter", MODEL, "primary"))
-        (post,) = self.operator_posts()
-        self.assertTrue(post["content"].startswith("[OPERATOR·wake] re="))
+        self.assertEqual(self.operator_posts(), [])
 
     def test_a_schema_invalid_primary_answer_is_answered_by_the_other_model(self) -> None:
         self.router.reply(Reply(body=completion({"action": "reply"})))
@@ -697,7 +696,7 @@ class OpenRouterBehindOpenRouterTests(OpenRouterHarness):
         self.mm_wake(daemon)
         self.assertEqual(self.models_asked(), [MODEL, FALLBACK_MODEL])
         self.assertEqual(self.final()["state"], "done")
-        self.assertEqual(len(self.operator_posts()), 1)
+        self.assertEqual(self.operator_posts(), [])
 
     def test_both_models_failing_keeps_both_reasons_and_posts_nothing(self) -> None:
         self.router.reply(Reply(status=500, body="x"), Reply(status=429, body="y"))
@@ -763,7 +762,7 @@ class ClaudeSeatTests(OpenRouterHarness):
         row = self.final("CLAUDE")
         self.assertEqual((row["state"], row["adapter"], row["runtime_role"]), ("done", "openrouter", "fallback"))
         self.assertFalse(row.get("limited"))
-        self.assertEqual(len(self.operator_posts()), 1)
+        self.assertEqual(self.operator_posts(), [])
 
     def test_a_safety_refusal_never_falls_back(self) -> None:
         self.set_claude(mode="tool", hang=30, output=reply_output())
@@ -891,7 +890,7 @@ class CliTests(OpenRouterHarness):
         self.mm_wake(daemon, "after")
         self.assertEqual(self.final()["state"], "done")
         self.assertEqual(len(self.router.requests()), before + 1)
-        self.assertEqual(len(self.operator_posts()), 1)
+        self.assertEqual(self.operator_posts(), [])
 
     def test_the_fallback_role_is_tested_and_pinned_on_its_own_model_and_files(self) -> None:
         passed = self.run_cli("daemon", "test-wake", "--seat", "MM", "--runtime", "fallback", "--run")

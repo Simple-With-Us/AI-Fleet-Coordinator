@@ -35,7 +35,7 @@ after the POST is handled.
   `target_host` set to `"mac"` in `~/.local/state/ag-wake/config.json`.
 - Cross-platform registry environment loading:  `platform_letter.with_registry_env` automatically
   loads `SIMPLE_TOOLS_OPERATOR_REGISTRY_URL` and `SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY` from
-  `$HOME/.local/bin/mm-registry-env` when they are not already in the hook process environment,
+  `$HOME/.local/bin/operator-registry-env` when they are not already in the hook process environment,
   so Antigravity, Codex, OpenCode, Muse and ZCode hooks reach the Operator registry API on both
   the server and the Mac without requiring custom shell wrappers.
 - Target rules:  target IDs must match a strict UUID regex (`TARGET_RE`), sub-agent conversations

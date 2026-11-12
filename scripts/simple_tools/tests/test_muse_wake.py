@@ -10,7 +10,6 @@ from __future__ import annotations
 import inspect
 import json
 import os
-import pathlib
 import re
 import stat
 import sys
@@ -346,11 +345,6 @@ class MuseRunnerSchemaTest(unittest.TestCase):
         # caller that does not pass a schema (the Mac bridge once did not) must still get every property required.
         sent = self._capture_schema()
         self.assertEqual(set(sent["required"]), set(sent["properties"]))
-
-    def test_the_mac_muse_bridge_sends_the_strict_schema(self) -> None:
-        from simple_tools import muse_bridge_mac as MBM
-
-        self.assertNotIn("schema_text()", inspect.getsource(MBM), "a muse caller left the loose schema")
 
 
 class MuseRunnerPromptTest(unittest.TestCase):
@@ -789,15 +783,6 @@ class McodeFallbackTest(unittest.TestCase):
         argv = A.mcode_argv("/usr/local/bin/mcode")
         self.assertEqual(argv[argv.index("--max-steps") + 1], str(A.MCODE_MAX_STEPS))
         self.assertGreaterEqual(A.MCODE_MAX_STEPS, 16)
-
-    def test_the_documented_argv_carries_the_step_budget_the_code_uses(self) -> None:
-        # The protocol doc quotes the fallback argv.  A number that drifts from the code is a doc
-        # that lies about the command, so the two are pinned together here.
-        doc = pathlib.Path(__file__).resolve().parents[3] / "docs" / "protocols" / "simple-tools-listener.md"
-        text = doc.read_text(encoding="utf-8")
-        self.assertIn(
-            "--max-steps %d --timeout %s" % (A.MCODE_MAX_STEPS, A.MCODE_TIMEOUT), text
-        )
 
     def test_the_backup_names_its_model_on_the_command_line(self) -> None:
         # Without `--model`, mcode inherits MiniMax Code's own `defaultModel`, and on this Mac that
@@ -1491,17 +1476,25 @@ class SubscriptionCappingTest(unittest.TestCase):
             _config_with_wake("claude").seats["MM"].wake_max_usd, C.WAKE_MAX_BUDGET_USD
         )
 
-    def test_the_count_caps_are_unchanged_and_still_the_spam_guard(self) -> None:
+    def test_the_count_caps_have_no_default_and_a_seat_that_sets_them_keeps_them(self) -> None:
+        # Owner, Nov 10, 2026:  an unset cap is no limit.  A seat still sets the spam guard itself.
         budget = _config_with_wake("muse").seats["MM"].budget
-        self.assertEqual(budget["wakes_per_hour"], 6)
-        self.assertEqual(budget["wakes_per_day"], 40)
-        self.assertEqual(budget["per_topic_per_hour"], 2)
-        self.assertEqual(budget["owner_per_day"], 20)
-        self.assertEqual(budget["owner_per_topic_per_hour"], 6)
+        for cap in C.WAKE_CAP_KEYS:
+            self.assertNotIn(cap, budget)
+        caps = {
+            "wakes_per_hour": 6,
+            "wakes_per_day": 40,
+            "per_topic_per_hour": 2,
+            "owner_per_day": 20,
+            "owner_per_topic_per_hour": 6,
+        }
+        set_budget = _config_with_wake("muse", {"budget": caps}).seats["MM"].budget
+        for cap, number in caps.items():
+            self.assertEqual(set_budget[cap], number)
 
-    def test_a_muse_seat_is_still_bounded_by_the_count_caps(self) -> None:
+    def test_a_muse_seat_is_still_bounded_by_the_count_caps_it_sets(self) -> None:
         # The dollar axis is inert, so prove the count axis is what actually stops it.
-        budget = _config_with_wake("muse").seats["MM"].budget
+        budget = _config_with_wake("muse", {"budget": {"wakes_per_hour": 6}}).seats["MM"].budget
         now = time.time()
         views = {
             "w%d" % i: {

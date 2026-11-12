@@ -1513,6 +1513,18 @@ class InstallerRepoOnlyTests(unittest.TestCase):
         self.assertIn("Home-dir installs: skipped (--repo-only)", out)
         self.assertNotIn("fx-scanned", out)
 
+    def test_home_only_writes_home_and_skips_repo(self) -> None:
+        out = self._run(["--home-only"])
+        self.assertFalse((self.repo / "skills").exists())
+        self.assertFalse((self.repo / "docs" / "fleet-skills" / "by-seat").exists())
+        self.assertNotIn("Repo-tracked platform copies:", out)
+        self.assertIn("Home-dir installs:", out)
+        self.assertTrue((self.home / ".fx" / "skills" / "session-start" / "SKILL.md").is_file())
+
+    def test_home_only_and_repo_only_are_rejected(self) -> None:
+        with self.assertRaises(SystemExit):
+            self._run(["--repo-only", "--home-only"])
+
     def test_repo_only_copies_equal_a_fresh_render(self) -> None:
         self._run(["--repo-only"])
         for dest, seat in repo_platform_copies(str(self.repo)):
@@ -2007,7 +2019,6 @@ class PrivateInventoryTests(unittest.TestCase):
         "docs/MAC-LOCAL-PROCESSES.md": "AFC-505: the live inventory of Mac local processes",
         "docs/protocols/coolify-fleet-cli-sync.md": "AFC-505: the protocol for the sync that reaches the box",
         "fleet-sentry-monitor/monitor.py": "AFC-505: a live monitor that defaults to the alias",
-        "scripts/simple_tools/muse_bridge_mac.py": "AFC-505: the live bridge that defaults to the alias",
         "scripts/fleet-cli-sync.py": "AFC-505: a live sync that names the receiver it ships to",
         "scripts/fleet_rag/doctor.py": "AFC-505: a live doctor that defaults to the alias",
         "scripts/recall-tunnel": "AFC-505: a live tunnel that reaches the box by alias and address",
