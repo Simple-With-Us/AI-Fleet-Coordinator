@@ -314,8 +314,8 @@ struct ApplyReport: Equatable {
         for line in lines.dropFirst() {
             if line.hasPrefix("      ") {
                 let body = line.trimmingCharacters(in: .whitespaces)
-                if body.hasPrefix("file:") {
-                    stepFiles.append(ApplyPlanParser.value(of: body, after: "file:"))
+                if let path = ApplyReport.writtenFilePath(from: line) {
+                    stepFiles.append(path)
                 } else if !body.hasPrefix("command:") {
                     details.append(body)
                 }
@@ -339,6 +339,17 @@ struct ApplyReport: Equatable {
         }
         closeStep()
         return ApplyReport(steps: steps, refusalReason: refusal, verdictAfter: verdict)
+    }
+
+    /// The engine prints each written path as `      file:  <path>` (two spaces after the
+    /// label, and a nonempty path with no whitespace).  Other indented `file:` lines are
+    /// installer text and stay in `details`.
+    static func writtenFilePath(from line: String) -> String? {
+        let prefix = "      file:  "
+        guard line.hasPrefix(prefix) else { return nil }
+        let value = String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+        guard !value.isEmpty, value.rangeOfCharacter(from: .whitespaces) == nil else { return nil }
+        return value
     }
 }
 
@@ -406,7 +417,18 @@ struct ApplyPartialResult: Equatable {
                 lines.append("  \(step.ruleID): " + ApplyCopy.normalize(why))
             }
         }
+        if let sentence = reproofSentence {
+            lines.append(sentence)
+        }
         return lines.joined(separator: "\n")
+    }
+
+    /// A sentence about the target cell's re-proof.  Nil when the cell proved green, so a
+    /// partial sheet does not hide a still-red or missing re-proof behind the written list.
+    var reproofSentence: String? {
+        guard let reproved else { return "The cell could not be re-proved." }
+        if reproved.isProven { return nil }
+        return "The cell is still \(reproved.state.label.lowercased())."
     }
 }
 
@@ -435,6 +457,13 @@ enum ApplyOutcome: Equatable {
             if let result { return "Apply finished but the cell is still \(result.state.label.lowercased())." }
             return "Apply finished but the cell could not be re-proved."
         case .partlyApplied(let partial):
+            if let sentence = partial.reproofSentence {
+                return ApplyCopy.join(
+                    "Apply was partial, with \(partial.written.count) written and \(partial.notWritten.count) not written.",
+                    "Nothing was retried.",
+                    sentence
+                )
+            }
             return ApplyCopy.join(
                 "Apply was partial, with \(partial.written.count) written and \(partial.notWritten.count) not written.",
                 "Nothing was retried."

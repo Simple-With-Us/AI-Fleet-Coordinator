@@ -312,7 +312,12 @@ final class OutcomeMappingTests: XCTestCase {
         _ steps: [(outcome: String, rule: String, files: [String], detail: String)],
         refused: String? = nil
     ) -> String {
-        var lines = ["Applied 1 change;  0 skipped,  1 failed."]
+        let applied = steps.filter { $0.outcome == "applied" }.count
+        let skipped = steps.filter { $0.outcome == "skipped" }.count
+        let failed = steps.filter { $0.outcome == "failed" || $0.outcome == "refused" }.count
+        var lines = [
+            "Applied \(applied) change\(applied == 1 ? "" : "s");  \(skipped) skipped,  \(failed) failed."
+        ]
         for step in steps {
             lines.append("  \(step.outcome)  \(step.rule)  hooks  claude")
             lines.append("      command:  python3 -m fleet_lanes.install_tools apply claude")
@@ -340,6 +345,25 @@ final class OutcomeMappingTests: XCTestCase {
         XCTAssertTrue(parsed.steps[1].isNotWritten)
         let fromFixture = try XCTUnwrap(ApplyReport.parse(try fixture("apply_report_applied", "txt")))
         XCTAssertEqual(fromFixture.steps[0].files, [".claude/settings.json"])
+    }
+
+    func testInstallerFilePrefixIsDetailNotAWrittenPath() throws {
+        let text = report([
+            ("applied", rule, [".claude/settings.json"], "file: not found"),
+        ])
+        let parsed = try XCTUnwrap(ApplyReport.parse(text))
+        XCTAssertEqual(parsed.steps[0].files, [".claude/settings.json"])
+        XCTAssertEqual(parsed.steps[0].detail, "file: not found")
+        // A `file:` line with the engine's two-space label but a value that contains
+        // spaces is also installer text, not a written path.
+        let spaced = [
+            "Applied 1 change;  0 skipped,  0 failed.",
+            "  applied  \(rule)  hooks  claude",
+            "      file:  not a path",
+        ].joined(separator: "\n")
+        let parsedSpaced = try XCTUnwrap(ApplyReport.parse(spaced))
+        XCTAssertEqual(parsedSpaced.steps[0].files, [])
+        XCTAssertEqual(parsedSpaced.steps[0].detail, "file:  not a path")
     }
 
     func testTargetAppliedWithASiblingFailedIsPartNotGreen() throws {
@@ -449,17 +473,30 @@ final class OutcomeMappingTests: XCTestCase {
             outcome: "failed", ruleID: sibling, kind: "skills", platform: "claude",
             detail: "the installer exited 1", files: []
         )
-        let partial = ApplyPartialResult(written: [written], notWritten: [missed], reproved: nil)
+        let missing = result(state: .missing)
+        let partial = ApplyPartialResult(written: [written], notWritten: [missed], reproved: missing)
         XCTAssertEqual(
             partial.detail,
-            "Written:\n  \(rule) (~/.claude/settings.json)\nNot written:\n  \(sibling): the installer exited 1"
+            "Written:\n  \(rule) (~/.claude/settings.json)\nNot written:\n  \(sibling): the installer exited 1\nThe cell is still missing."
         )
         XCTAssertEqual(
             ApplyOutcome.partlyApplied(partial).summary,
-            "Apply was partial, with 1 written and 1 not written.\u{00A0} Nothing was retried."
+            "Apply was partial, with 1 written and 1 not written.\u{00A0} Nothing was retried.\u{00A0} The cell is still missing."
         )
         let none = ApplyPartialResult(written: [], notWritten: [missed], reproved: nil)
         XCTAssertTrue(none.detail.hasPrefix("Nothing was written."))
+        XCTAssertTrue(none.detail.contains("The cell could not be re-proved."))
+        XCTAssertEqual(
+            ApplyOutcome.partlyApplied(none).summary,
+            "Apply was partial, with 0 written and 1 not written.\u{00A0} Nothing was retried.\u{00A0} The cell could not be re-proved."
+        )
+        let proven = ApplyPartialResult(written: [written], notWritten: [missed], reproved: result(state: .pass))
+        XCTAssertFalse(proven.detail.contains("The cell is still"))
+        XCTAssertFalse(proven.detail.contains("could not be re-proved"))
+        XCTAssertEqual(
+            ApplyOutcome.partlyApplied(proven).summary,
+            "Apply was partial, with 1 written and 1 not written.\u{00A0} Nothing was retried."
+        )
     }
 
     func testEngineLevelRefusalWithoutReport() {
