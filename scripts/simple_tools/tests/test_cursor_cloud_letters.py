@@ -229,6 +229,28 @@ class SweepTests(unittest.TestCase):
         # Words that hold no secret still go, with their marks taken out as before.
         self.assertEqual(CCL.plain("fix `the` *login* page"), "fix the login page")
 
+    def test_a_title_that_reads_as_a_secret_is_in_no_steer_and_no_rename_title(self) -> None:
+        # The title goes into an instruction to the agent:  a title that reads as a secret, as a line or in one word,
+        # contributes no text at all (the values are built here, so no key-shaped literal is in the file).
+        key = "sk-" + "ant-" + "a1B2c3D4e5F6g7H8i9J0k1L2"
+        split = ("AK" + "IA", "ABCDEFGHIJKLMNOP")
+        for current in ("rotate %s today" % key, key, "%s%s" % split, "fix the login page %s" % split[0] + split[1]):
+            wanted = CCL.wanted_title("AB", current)
+            self.assertEqual(wanted, PL.compose("AB", ""), current[:8])
+            self.assertFalse(any(part in wanted for part in (key, split[1], "rotate", "login")))
+            prompt = CCL.rename_prompt(wanted, False)
+            self.assertFalse(PL.secretscan.scan(prompt))
+            self.assertFalse(any(part in prompt for part in (key, split[1])))
+        # A title with no secret in it is as before.
+        self.assertEqual(CCL.wanted_title("AB", "fix the login page"), "AB: fix the login page")
+        # End to end:  an agent whose title carries a key is steered with the letter and no text of its title.
+        self.steer = Steer("sent")
+        self.agents = [agent(A1, "rotate %s today" % key)]
+        self.run_sweep()
+        self.assertTrue(self.steer.calls)
+        self.assertFalse(any(key in text or split[1] in text for _, text in self.steer.calls))
+        self.assertFalse(any(PL.secretscan.scan(text) for _, text in self.steer.calls))
+
     def test_a_bot_name_shaped_like_a_key_is_no_bots_name(self) -> None:
         name = "GB-" + "aB3dE6gH" + "9jK2mN5p" + "Q8sT1vW4" + "yZ7bC0dF"  # 32 mixed-case letters and digits
         self.assertTrue(PL.secretscan.scan(name))

@@ -815,13 +815,20 @@ class ArchiveStatesTests(StoreBase):
         self.assertEqual(PC.archive_states(self.home, ()), {})
         self.assertEqual(PC.archive_states(self.home, {"", None, 7}), {})
 
-    def test_only_a_true_flag_is_an_archive(self) -> None:
-        for n, flag in enumerate(("true", 1, None, "yes", [True], {"a": 1})):
+    def test_the_shapes_of_the_archive_flag(self) -> None:
+        # A flag is a JSON boolean or a 0 or 1;  an absent field says not archived;  anything else is no flag, and the
+        # chat is kept as UNREADABLE (a null is not an absent field).
+        shapes = [(True, PC.ARCHIVED), (1, PC.ARCHIVED), (False, PC.UNARCHIVED), (0, PC.UNARCHIVED)]
+        shapes += [(flag, PC.UNREADABLE) for flag in ("true", "yes", "", None, [True], {"a": 1}, 2, -1, 1.5)]
+        for n, (flag, state) in enumerate(shapes):
             self.record("local_aaaaaaaa-%04d" % n, "s-%04d" % n, archived=flag)
         write(self.home, "local_aaaaaaaa-0099", {"cliSessionId": "s-0099"})  # no flag at all
-        states = PC.archive_states(self.home, {"s-%04d" % n for n in range(6)} | {"s-0099"})
-        self.assertEqual(set(states.values()), {PC.UNARCHIVED})
-        self.assertEqual(len(states), 7)
+        states = PC.archive_states(self.home, {"s-%04d" % n for n in range(len(shapes))} | {"s-0099"})
+        for n, (flag, state) in enumerate(shapes):
+            self.assertEqual(states["s-%04d" % n], state, repr(flag))
+        self.assertEqual(states["s-0099"], PC.UNARCHIVED)
+        # No shape that is not a flag is ever called archived, so no such chat is freed.
+        self.assertEqual(PC.claude_gone({"HOME": self.home}, set(states)), {"s-0000", "s-0001"})
 
     def test_one_unarchived_record_of_two_keeps_the_chat(self) -> None:
         self.record("local_aaaaaaaa-0001", "s-0001")
@@ -902,6 +909,21 @@ class ArchiveStatesTests(StoreBase):
         with mock.patch.object(PC, "ARCHIVE_SCAN_RECORDS", 1):
             self.assertEqual(PC.archive_states(self.home, {"s-0003", "s-0001"}),
                              {"s-0003": PC.UNARCHIVED, "s-0001": PC.UNREADABLE})
+
+    def test_a_scan_is_bounded_by_the_clock_and_what_it_did_not_read_keeps_its_chats(self) -> None:
+        # A hook scans twice inside one SessionStart's budget:  a scan stops at ARCHIVE_SCAN_SECONDS, and the records it
+        # did not get to could hold a live record of any chat, so no chat is called archived on its word.
+        for n in range(1, 5):
+            path = self.record("local_aaaaaaaa-%04d" % n, "s-%04d" % n)
+            os.utime(path, (1000 + n, 1000 + n))
+        wanted = {"s-0001", "s-0004"}
+        self.assertEqual(PC.archive_states(self.home, wanted), {"s-0001": PC.ARCHIVED, "s-0004": PC.ARCHIVED})
+        ticks = iter(x * 0.9 for x in range(1000))  # every look at the clock is 0.9 s later
+        with mock.patch.object(PC.time, "monotonic", lambda: next(ticks)):
+            self.assertEqual(PC.archive_states(self.home, wanted), {"s-0001": PC.UNREADABLE, "s-0004": PC.UNREADABLE})
+            self.assertEqual(PC.claude_gone({"HOME": self.home}, wanted), set())
+        self.assertLessEqual(PC.ARCHIVE_SCAN_SECONDS * 2 + 2 + 3 * PL._API_TIMEOUT, PC.HOOK_TIMEOUTS["SessionStart"])
+        self.assertLess(PC.ARCHIVE_SCAN_BYTES, 1 << 30)
 
     def test_an_archived_record_does_not_stand_beside_an_oversized_live_record_of_the_same_chat(self) -> None:
         # The review's case:  one archived record, and one live record of the same session id that is too big to read.
@@ -1316,7 +1338,8 @@ class ParentFromMacTests(HookBase):
         self.assertEqual(parent, "p-0001")
         cmd, timeout = self.calls[0]
         self.assertEqual(cmd, [
-            "ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=2", "-o", "ControlMaster=no",
+            "ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=2", "-o", "ServerAliveInterval=1",
+            "-o", "ServerAliveCountMax=2", "-o", "ControlMaster=no",
             "-o", "ControlPath=none", "-o", "IdentitiesOnly=yes",
             "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "--", self.DEST,
             "platform-letter parent --platform claude --session-id c-0001 --app-id local_bbbbbbbb-0002",

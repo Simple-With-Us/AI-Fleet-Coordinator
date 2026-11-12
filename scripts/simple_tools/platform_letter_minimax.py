@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from collections.abc import Mapping
 from typing import Any
@@ -142,6 +143,26 @@ def _cache_dirs(env: Mapping[str, str]) -> list[str]:
     return dirs
 
 
+#: The most characters of each field of the retired cache that are taken (the file itself is read to CACHE_BYTES).
+CACHE_FIELD_CHARS = {"letter": 8, "host": 16, "topic": 500, "space": 16}
+
+
+def _cache_note(data: object, seen: float) -> dict[str, Any] | None:
+    """The fields of one retired-cache file that are taken, each checked:  a string within its length.  A field that is
+    not (a number, a list, null, a longer string) is ignored, as if it were not there;  a file whose letter is missing or
+    not valid is no note at all.  Nothing here raises:  the file is the retired client's, and a hook never fails on it."""
+    if not isinstance(data, dict):
+        return None
+    fields: dict[str, str | None] = {}
+    for name, cap in CACHE_FIELD_CHARS.items():
+        value = data.get(name)
+        fields[name] = value if isinstance(value, str) and 0 < len(value) <= cap else None
+    letter = fields["letter"]
+    if letter is None or not re.fullmatch(r"[A-Z]{1,2}", letter):
+        return None
+    return {"label": letter, "location": fields["host"], "title": fields["topic"], "seen": seen}
+
+
 def minimax_retired_note(env: Mapping[str, str], sid: str) -> dict[str, Any] | None:
     """What the retired MiniMax client cached for a chat it lettered (`<scope>/session-letters/<sid>.json`:  letter,
     topic, host, space), as the library adopts it:  the letter, where the chat is registered, its words and when
@@ -162,15 +183,9 @@ def minimax_retired_note(env: Mapping[str, str], sid: str) -> dict[str, Any] | N
             seen = os.stat(path).st_mtime
         except (OSError, ValueError, RecursionError):
             continue
-        if isinstance(data, dict) and isinstance(data.get("letter"), str) and data["letter"]:
-            found.append(
-                {
-                    "label": data["letter"],
-                    "location": data.get("host"),
-                    "title": data.get("topic"),
-                    "seen": seen,
-                }
-            )
+        note = _cache_note(data, seen)
+        if note is not None:
+            found.append(note)
     return max(found, key=lambda note: note["seen"]) if found else None
 
 

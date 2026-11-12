@@ -331,6 +331,36 @@ class MiniMaxRetiredClient(Base):
         self.assertIsNone(PM.minimax_retired_note(env, "m-0200"))
         self.assertIs(PM.SPEC.retired_note, PM.minimax_retired_note)
 
+    def test_every_field_of_the_retired_cache_is_typed_and_a_bad_one_is_ignored(self) -> None:
+        env = self.env()
+        good = {"letter": "QQ", "topic": "Memory sync", "host": "mac", "space": "double"}
+        for n, (body, want) in enumerate((
+            # a field that is not a string, or too long, is ignored (as if absent);  the note still stands
+            (dict(good, host=7), {"label": "QQ", "location": None, "title": "Memory sync"}),
+            (dict(good, host=["mac"]), {"label": "QQ", "location": None, "title": "Memory sync"}),
+            (dict(good, host="m" * 17), {"label": "QQ", "location": None, "title": "Memory sync"}),
+            (dict(good, topic={"a": 1}), {"label": "QQ", "location": "mac", "title": None}),
+            (dict(good, topic="t" * 501), {"label": "QQ", "location": "mac", "title": None}),
+            (dict(good, topic=None, space=3), {"label": "QQ", "location": "mac", "title": None}),
+            (dict(good, topic=""), {"label": "QQ", "location": "mac", "title": None}),
+            # a letter that is missing or not a letter rejects the whole note
+            (dict(good, letter=None), None), (dict(good, letter=["Q"]), None), (dict(good, letter="qq"), None),
+            (dict(good, letter="QQQ"), None), (dict(good, letter="Q" * 5000), None), (dict(good, letter=1.5), None),
+            ({"topic": "only a topic"}, None), ([good], None), ("QQ", None), (7, None), (None, None),
+        )):
+            sid = "m-03%02d" % n
+            self.cache(sid, body)
+            got = PM.minimax_retired_note(env, sid)  # never raises
+            if want is None:
+                self.assertIsNone(got, body)
+            else:
+                self.assertEqual({k: got[k] for k in want}, want, body)
+                self.assertIsInstance(got["seen"], float)
+        # What the library adopts of such a note is typed too:  a bad location is the chat's own, a bad title is none.
+        self.cache("m-0400", dict(good, host=7, topic=["x"]))
+        note = PL.adopted_note(PM.SPEC, env, "m-0400", "mac")
+        self.assertEqual((note["label"], note["location"], note["title"]), ("QQ", "mac", ""))
+
     def test_a_chat_open_across_the_change_keeps_its_letter_at_its_next_turn_end(self) -> None:
         # The retired client registered the chat and cached its letter.  No start event comes for an open chat:
         # the row's first event for it is the end of a turn.

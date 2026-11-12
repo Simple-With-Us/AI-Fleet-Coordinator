@@ -147,10 +147,16 @@ MAC_TIMEOUT_SECONDS = 2.0
 # ssh of the account (ControlMaster=no starts none and ControlPath=none joins none, so an open master of the account
 # can never carry this command, and it never runs on a channel that skips the key's forced command), nothing
 # forwarded, and only the key the destination's own ssh config names (IdentitiesOnly=yes, so an agent's other keys are
-# not offered first), whatever the account's own ssh config says for the host.
+# not offered first), whatever the account's own ssh config says for the host.  What bounds the child when the hook that
+# started it is killed (a SIGTERM runs no cleanup):  ConnectTimeout=2 ends a connect, ServerAliveInterval=1 with
+# ServerAliveCountMax=2 ends a connected session whose peer stops answering after about 2 seconds more, BatchMode never
+# waits for a person, and the command on the Mac is a short read-only lookup.  A live hook kills it at the hard timeout
+# (`subprocess.run` kills and waits), so the child never outlives its hook by more than about 4 seconds.
 SSH_OPTIONS = (
     "BatchMode=yes",
     "ConnectTimeout=%d" % MAC_CONNECT_SECONDS,
+    "ServerAliveInterval=1",
+    "ServerAliveCountMax=2",
     "ControlMaster=no",
     "ControlPath=none",
     "IdentitiesOnly=yes",
@@ -167,7 +173,13 @@ UNARCHIVED = "unarchived"
 # anywhere in the folder.  These bound it:  a record past them is not looked at, and once any record was not looked
 # at no chat is called archived, so the bound can only keep a letter, never free one.
 ARCHIVE_SCAN_RECORDS = 3000
-ARCHIVE_SCAN_BYTES = 1 << 30
+# A record is about 0.65 MB (the real store:  112 records, 69 MB, a scan of it takes 0.15 to 0.5 s with the files
+# cached).  512 MiB is some 800 records, or 5 s of reading at a slow disk's 100 MB/s, so ARCHIVE_SCAN_SECONDS bounds a
+# scan by the clock as well:  a hook scans twice (for its own chats and for the ones the app runs elsewhere) inside one
+# SessionStart's budget of 20 seconds, after 2 for the ssh call and 12 for the registry calls, so two scans may take
+# 4 at most.  A scan that runs out of either stops, and what it did not read keeps its chats (`unseen`).
+ARCHIVE_SCAN_BYTES = 512 << 20
+ARCHIVE_SCAN_SECONDS = 2.0
 
 
 # --------------------------------------------------------------------------------------------
@@ -247,11 +259,26 @@ def _project_title(data: object) -> dict[str, Any] | None:
     }
 
 
+def _archived_flag(data: Mapping[str, Any]) -> bool | None:
+    """What a record's `isArchived` says:  True, False (a field that is absent says the chat is not archived), or None
+    when the field is there and is not a flag.  A JSON true or 1 is archived and a false or 0 is not;  anything else (a
+    string, null, a list, a number past 1) is not a flag at all, and the chat is kept (`archive_states` answers it
+    UNREADABLE) rather than guessed at."""
+    if "isArchived" not in data:
+        return False
+    value = data["isArchived"]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    return None
+
+
 def _project_archive(data: object) -> dict[str, Any] | None:
     """The two fields the archive reader takes, `cliSessionId` and `isArchived`, and nothing else of the record."""
     if not isinstance(data, dict):
         return None
-    out: dict[str, Any] = {"isArchived": data.get("isArchived") is True}
+    out: dict[str, Any] = {"isArchived": _archived_flag(data)}
     if isinstance(data.get("cliSessionId"), str):
         out["cliSessionId"] = data["cliSessionId"]
     return out
@@ -766,10 +793,11 @@ def archive_states(home: str, session_ids: Iterable[str]) -> dict[str, str] | No
             states[sid] = state
 
     spent = 0
+    began = time.monotonic()
     records = _records(root)
     unseen = len(records) > ARCHIVE_SCAN_RECORDS  # a record past the bound is one nobody looked at
     for _, size, path in records[:ARCHIVE_SCAN_RECORDS]:
-        if spent > ARCHIVE_SCAN_BYTES:
+        if spent > ARCHIVE_SCAN_BYTES or time.monotonic() - began > ARCHIVE_SCAN_SECONDS:
             unseen = True
             break
         if size > RECORD_BYTES:
@@ -793,7 +821,8 @@ def archive_states(home: str, session_ids: Iterable[str]) -> dict[str, str] | No
             continue
         cli = record.get("cliSessionId")
         if cli in wanted:
-            note(cli, ARCHIVED if record["isArchived"] else UNARCHIVED)
+            flag = record["isArchived"]
+            note(cli, UNREADABLE if flag is None else ARCHIVED if flag else UNARCHIVED)
     if unseen:
         for sid in wanted:
             if states.get(sid) != UNARCHIVED:

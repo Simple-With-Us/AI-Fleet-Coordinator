@@ -255,7 +255,12 @@ def plain(text: object) -> str:
 
 def wanted_title(label: str, current: object) -> str:
     """The title the chat should carry: its letter, then its words, cut to what rename-chat accepts."""
-    title = PL.compose(label, PL.bare(current))
+    words = PL.bare(current)
+    # The title goes into an instruction to the agent and on to the app:  a title that reads as a secret (as a line or in
+    # any one word) contributes nothing, so the chat is titled with its letter and the placeholder and no text of it.
+    if PL.secretscan.scan(words) or any(PL.secretscan.scan(word) for word in words.split(" ")):
+        words = ""
+    title = PL.compose(label, words)
     if len(title) <= TITLE_LIMIT:
         return title
     prefix = "%s: " % label
