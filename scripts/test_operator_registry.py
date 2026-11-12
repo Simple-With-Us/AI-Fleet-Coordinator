@@ -435,7 +435,9 @@ class RegistryTest(unittest.TestCase):
         self._labels(["a"])  # AA
         row = self._labels(["a-%d" % i for i in range(25)], parent="a")  # AB ... AZ
         self.assertEqual(row[-1], "AZ")
-        self.reg.close(self.reg.lookup("claude", "mac-1", "simplewithus", "a")["record_id"])  # AA is free
+        self.reg.close(
+            self.reg.lookup("claude", "mac-1", "simplewithus", "a")["record_id"]
+        )  # AA is free
         # A child of AZ wraps past Z to A, which would be AA, the row's doubled pair:  it is skipped, the rest of row A
         # is live, so the subthread takes the main-chat pair, BB, and not AA.
         child = self._pair("p-1", "primary", "a-24")
@@ -510,7 +512,9 @@ class RegistryTest(unittest.TestCase):
             first = self._pair("n-1", "primary")  # AA
             self.reg.close(first["record_id"])
             self._labels(["n-2", "n-3"])  # BB, CC:  AA is not handed out again in generation 1
-            self.assertEqual(self._pair("n-4", "primary")["label"], "AA")  # generation 2 starts at AA
+            self.assertEqual(
+                self._pair("n-4", "primary")["label"], "AA"
+            )  # generation 2 starts at AA
             self.reg.close(self.reg.lookup("claude", "mac-1", "simplewithus", "n-2")["record_id"])
             letter, generation, previous = self.reg.reopen(first["record_id"], pick="primary")
         self.assertEqual((letter, generation, previous), ("BB", 2, "AA"))
@@ -671,7 +675,9 @@ class RegistryTest(unittest.TestCase):
                 self.reg.close(m["record_id"])
         return made
 
-    def test_keep_advancing_mc_last_got_cc_so_the_next_is_dd_even_when_aa_and_bb_were_released(self):
+    def test_keep_advancing_mc_last_got_cc_so_the_next_is_dd_even_when_aa_and_bb_were_released(
+        self,
+    ):
         self.assertEqual([m["label"] for m in self._issue("mc", 3)], ["AA", "BB", "CC"])
         self._close_native("mc-0")  # AA released
         self._close_native("mc-1")  # BB released
@@ -742,7 +748,9 @@ class RegistryTest(unittest.TestCase):
         self._seat_pair("k-2", parent="mc-0")  # AC
         self.reg.close(first["record_id"])
         third = self._seat_pair("k-3", parent="mc-0")
-        self.assertEqual((third["label"], third["generation"]), ("AB", 2))  # the first free pair after AA, as before
+        self.assertEqual(
+            (third["label"], third["generation"]), ("AB", 2)
+        )  # the first free pair after AA, as before
         fourth = self._seat_pair("k-4", parent="mc-0")
         self.assertEqual(fourth["label"], "AD")  # AB and AC are live
         dupes = self.reg._conn.execute(
@@ -766,7 +774,9 @@ class RegistryTest(unittest.TestCase):
         lock = threading.Lock()
 
         def work(index: int) -> None:
-            reg = R.SessionRegistry(self.db)  # one connection per thread, as two processes would hold
+            reg = R.SessionRegistry(
+                self.db
+            )  # one connection per thread, as two processes would hold
             try:
                 for n in range(5):
                     got = reg.resolve_or_register(
@@ -792,13 +802,17 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(len(out), 20)
         self.assertEqual(len(set(out)), 20)  # no pair handed out twice
-        self.assertEqual(sorted(out), sorted(R.PRIMARY_ORDER[:20]))  # and the losers took the next ones in order
+        self.assertEqual(
+            sorted(out), sorted(R.PRIMARY_ORDER[:20])
+        )  # and the losers took the next ones in order
 
     def test_legacy_rows_count_each_pairs_issues(self):
         # History the old lowest-first pick left behind:  AA issued 4 times, BB twice, DD once, CC never.  The fewest
         # issued free pair goes first, the earlier on a tie, and each takes its own count plus one.
         rows = [("AA", 1), ("AA", 2), ("AA", 3), ("AA", 4), ("BB", 1), ("BB", 2), ("DD", 1)]
-        old = self.reg.resolve_or_register(ident(seat="MUSE", platform="muse", native="old"))  # a single letter
+        old = self.reg.resolve_or_register(
+            ident(seat="MUSE", platform="muse", native="old")
+        )  # a single letter
         with self.reg._conn:
             for letter, generation in rows:
                 self.reg._conn.execute(

@@ -708,8 +708,12 @@ class SessionRegistry:
         }
         if space == "double":
             doubled = tuple(p for p in PRIMARY_ORDER if p in members)
-            main = sorted((p for p in doubled if p not in live), key=lambda p: (issued.get(p, 0), p))
-            follow = [p for p in pairs_after(after) if p in members and p not in live] if after else []
+            main = sorted(
+                (p for p in doubled if p not in live), key=lambda p: (issued.get(p, 0), p)
+            )
+            follow = (
+                [p for p in pairs_after(after) if p in members and p not in live] if after else []
+            )
             candidates = follow + [p for p in main if p not in follow]
         elif pick == "oldest":
             last_use = {
@@ -1769,7 +1773,9 @@ def touch_session(
         if row["closed_at"]:
             closed: dict[str, Any] = {"record_id": row["record_id"], "outcome": "closed"}
             if held_issues:
-                closed["issues"] = held_issues  # a closed session keeps its list, as update reports it
+                closed["issues"] = (
+                    held_issues  # a closed session keeps its list, as update reports it
+                )
             return closed
         registry.mark_seen(row["record_id"])
         out: dict[str, Any] = {"record_id": row["record_id"], "outcome": "seen"}
