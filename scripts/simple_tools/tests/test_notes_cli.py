@@ -650,6 +650,15 @@ class GatewayTests(NotesCliHarness):
         self.assertEqual(bad.code, 2)
         self.assertEqual(self.notes("runner", "--once").code, 3, "no Operator origin:  not configured")
 
+    def test_the_runner_verb_refuses_plainly_without_the_runner_module(self):
+        # A fleet-cli release does not carry notes_runner.py (the Mac runs it from its runtime checkout).
+        import sys
+
+        with mock.patch.dict(sys.modules, {"simple_tools.notes_runner": None}):
+            result = self.notes("runner", "--once", "--claim-wait", "0")
+        self.assertEqual(result.code, 2)
+        self.assertIn("the Mac's notes runner", result.err)
+
 
 if __name__ == "__main__":  # pragma: no cover
     import unittest

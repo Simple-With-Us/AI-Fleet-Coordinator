@@ -120,7 +120,6 @@ EXACT = frozenset(
         "docs/protocols/simple-tools-partition.toml",
         "scripts/fleet-cli-release.py",
         "scripts/simple_tools/mcp/tools.json",
-        "scripts/simple_tools/mcp/fixtures.jsonl",
         # AFC-331:  the stdio server reads these beside tools.json (the listener tools, the removed-name map
         # and the enabled Grok bots).
         "scripts/simple_tools/mcp/eavesdropper-tools.json",
@@ -161,6 +160,41 @@ EXACT = frozenset(
         # AFC-665:  the AG seat's wake bridge (delivering Operator wakes via the local agy CLI daemon API).
         "scripts/ag-wake-bridge",
     }
+)
+# Modules in scripts/simple_tools/ that match the shipped pattern but that no installed host runs, so they
+# stay in the repository and out of the release.  A release goes to the Coolify server (fleet-cli-sync.py's
+# one target);  the Mac runs every tool from its managed runtime checkout.  Each one below is run, if at all,
+# from a checkout, and none is imported at module level by anything the release ships (checked against every
+# entry point's import closure, Nov 11, 2026):
+#   - the OPS-966 GitHub token broker:  an offline-reviewed prototype that git-relay replaced as the one
+#     minting path (owner decision Oct 22, 2026);  kept for review history and its repo-only tests.
+#   - operator_provenance:  the broker's and notes queue's audit-event allowlist;  only its test imports it.
+#   - operator_send and clarify:  Operator DM paths that are not wired in (simple_tools/README.md).
+#   - selftest:  the onboarding check, run as `python3 scripts/simple_tools/selftest.py` from a checkout.
+#   - wake_alerter:  the Mac banner poller, which its LaunchAgent runs from the managed runtime checkout.
+#   - notes_runner:  the Mac runner for the Operator's notes queue (it runs apple-notes-coding.sh), which its
+#     LaunchAgent runs from the managed runtime checkout;  `simple-notes runner` imports it lazily and says
+#     so plainly on a host that has no copy.
+#   - textsafe:  loaded by path from the needs-owner and fleet-facts stable copies, which their installers
+#     copy from a checkout;  no shipped module imports it.
+# A new module still ships by default:  this list only ever names a module that has no shipped importer.
+REPO_ONLY = frozenset(
+    "scripts/simple_tools/" + name + ".py"
+    for name in (
+        "clarify",
+        "github_token_router",
+        "operator_github",
+        "operator_github_client",
+        "operator_github_policy",
+        "operator_github_secrets",
+        "operator_github_state",
+        "operator_provenance",
+        "notes_runner",
+        "operator_send",
+        "selftest",
+        "textsafe",
+        "wake_alerter",
+    )
 )
 # What every release ever installed contains.  verify_retained, rollback and status judge a retained
 # release by this set, so a release that predates the AFC-331 tools stays valid and can be rolled back to.
@@ -234,6 +268,8 @@ def allowed_path(path: str) -> bool:
         return False
     if path in EXACT:
         return True
+    if path in REPO_ONLY:
+        return False
     return bool(
         re.fullmatch(r"scripts/simple_tools/(?:mcp/)?[a-z][a-z0-9_]*\.py", path)
         or path in ("scripts/simple_tools/__init__.py", "scripts/simple_tools/mcp/__init__.py")

@@ -115,6 +115,44 @@ class ReleaseTests(unittest.TestCase):
         ]:
             self.assertFalse(release.allowed_path(path), path)
 
+    def test_repo_only_modules_stay_out_and_nothing_shipped_imports_them(self):
+        # AFC bundle cap trim (Nov 11, 2026):  these modules match the simple_tools pattern but no installed
+        # host runs them, so they stay in the repository and out of the release.  The test golden cases
+        # (mcp/fixtures.jsonl) stay out too:  only the test suites read them.
+        import ast
+
+        root = Path(__file__).resolve().parent.parent
+        self.assertFalse(release.allowed_path("scripts/simple_tools/mcp/fixtures.jsonl"))
+        names = set()
+        for path in release.REPO_ONLY:
+            self.assertTrue((root / path).is_file(), path)
+            self.assertFalse(release.allowed_path(path), path)
+            names.add(Path(path).stem)
+        # The one lazy import a shipped module may keep:  `simple-notes runner` refuses plainly without it.
+        lazy = {("scripts/simple_tools/notes_cli.py", "notes_runner")}
+        shipped = [
+            p.relative_to(root).as_posix()
+            for directory in ("scripts/simple_tools", "scripts/simple_tools/mcp")
+            for p in (root / directory).glob("*.py")
+        ]
+        shipped += list(release.EXACT)  # the entry scripts too;  data files simply do not parse
+        for path in sorted(set(shipped)):
+            if not release.allowed_path(path) or not (root / path).is_file():
+                continue
+            try:
+                tree = ast.parse((root / path).read_text())
+            except (SyntaxError, ValueError, UnicodeDecodeError):
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    found = {a.name.rsplit(".", 1)[-1] for a in node.names}
+                elif isinstance(node, ast.ImportFrom):
+                    found = {(node.module or "").rsplit(".", 1)[-1]} | {a.name for a in node.names}
+                else:
+                    continue
+                for name in found & names:
+                    self.assertIn((path, name), lazy, "%s imports repo-only %s" % (path, name))
+
     def test_board_ships_with_its_simple_tools_catalog(self):
         # `board commands`, `board run` and `board mcp` read these beside board;  a release without them
         # would leave those verbs dead on the host.
@@ -1119,6 +1157,8 @@ class ShippedDataFilesTests(unittest.TestCase):
             and "/tests/" not in p
             and not p.endswith((".md", ".sh"))
             and "/server/" not in p
+            # The golden test cases:  only the test suites read them (tools.load_fixtures), never a host.
+            and p != "scripts/simple_tools/mcp/fixtures.jsonl"
         ]
         self.assertTrue(data)
         missing = [p for p in data if not release.allowed_path(p)]
