@@ -100,7 +100,7 @@ This section keeps the ban in this repository now that the Fleet-OPS handbook re
 
 UI changes must be covered by automated visual verification where feasible: Playwright screenshot assertions for web surfaces, `xcrun simctl io booted screenshot` for iOS simulator.  The owner never takes manual screenshots and does not run local UI preview sessions.  Native Mac app UI is verified through code review and CI.
 
-Web surfaces in this repo live under `site/` (fleet daily digest GitHub Pages site) and `scripts/safari-start/public/` (operator start redirect page).  Their Playwright smoke + screenshot specs are in `visual-tests/` (run: `cd visual-tests && npm ci && npx playwright test`; baselines in `tests/visual.spec-snapshots/`).
+Web surfaces in this repo: the fleet daily digest (built output + `site/agent-logos/` source; live site on GitHub Pages) and `scripts/safari-start/public/` (operator start redirect page).  Playwright specs pin digest markup via `visual-tests/tests/fixtures/digest-2day.html`, not committed `site/index.html` on `main` (AFC-736).  Run: `cd visual-tests && npm ci && npx playwright test`; baselines in `tests/visual.spec-snapshots/`.
 
 ## Operator dashboard and admin panel
 
