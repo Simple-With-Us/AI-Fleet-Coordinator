@@ -504,8 +504,6 @@ def _compliance_rules() -> list[dict[str, object]]:
                 "and scoped credential (AFC-398)."
             ),
         ),
-        # keep outer list closing intact -> note existing code had "        )," already!
-        ),
     ]
 
 
