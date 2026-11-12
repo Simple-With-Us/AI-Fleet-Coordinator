@@ -38,6 +38,7 @@ f5bc75267bdef2fd7a6d0adddfd4864b6a29c872:scripts/fleet-work-backup/test_fleet_wo
 # AFC-764 redaction-test fixture: a made-up mixed-case string on TOKEN = before the next commit
 # replaced it with a fixture-built value;  gitleaks scans every commit in the PR range.
 975527505c814404510915cb1da46953050e872e:scripts/test_autofix_claude_failure_log.py:generic-api-key:15
+b15b463dc42a9dd812fbba53f0796434669836f6:scripts/test_autofix_claude_failure_log.py:generic-api-key:15
 
 # Idempotency-key test values in the stdio recall_contribute tests, one commit of PR #588 (AFC-331).
 # The values were made-up retry ids matched by generic-api-key;  the next commit replaces them.

@@ -12,7 +12,10 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(ROOT, "scripts", "autofix_claude_failure_log.sh")
 
-TOKEN = "not-a-real-" + "fixture-credential-placeholder"
+
+def fixture_token() -> str:
+    """Made-up credential shape for redaction tests; not a real secret."""
+    return "not-a-real-" + "fixture-credential-placeholder"
 
 
 def run_log(result_field: str) -> str:
@@ -43,26 +46,27 @@ def run_log(result_field: str) -> str:
 class RedactionTests(unittest.TestCase):
     def assert_redacted(self, field: str) -> None:
         out = run_log(field)
-        self.assertNotIn(TOKEN, out)
+        token = fixture_token()
+        self.assertNotIn(token, out)
         self.assertIn("[REDACTED]", out)
 
     def test_authorization_bearer_header(self) -> None:
-        self.assert_redacted(f"401 Authorization: Bearer {TOKEN} rejected")
+        self.assert_redacted(f"401 Authorization: Bearer {fixture_token()} rejected")
 
     def test_bare_bearer(self) -> None:
-        self.assert_redacted(f"sent bearer {TOKEN}")
+        self.assert_redacted(f"sent bearer {fixture_token()}")
 
     def test_api_key_colon_space(self) -> None:
-        self.assert_redacted(f"header api-key: {TOKEN}")
+        self.assert_redacted(f"header api-key: {fixture_token()}")
 
     def test_x_api_key_equals(self) -> None:
-        self.assert_redacted(f"x-api-key={TOKEN}")
+        self.assert_redacted(f"x-api-key={fixture_token()}")
 
     def test_json_quoted_api_key(self) -> None:
-        self.assert_redacted(f'{{"api_key": "{TOKEN}"}}')
+        self.assert_redacted(f'{{"api_key": "{fixture_token()}"}}')
 
     def test_sk_key(self) -> None:
-        self.assert_redacted(f"key sk-{TOKEN}")
+        self.assert_redacted(f"key sk-{fixture_token()}")
 
     def test_plain_text_kept(self) -> None:
         out = run_log("model not found: meta/muse-spark")
