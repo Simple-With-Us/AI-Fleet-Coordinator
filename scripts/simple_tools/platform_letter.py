@@ -2772,7 +2772,18 @@ def _run_hook(
 
 
 def show(spec: PlatformSpec, argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
-    sid = argv[1] if len(argv) > 1 and argv[0] == "--session-id" else spec.session_id({}, env)
+    """Print a chat's note:  the chat named with --session-id, else the one this shell runs in, by the spec's own
+    reader and then its session id variables (`session_env`, AGENT_SESSION), as `request` finds it."""
+    sid = argv[1] if len(argv) > 1 and argv[0] == "--session-id" else ""
+    if not sid:
+        try:
+            # The spec's own reader, for one that reads the environment.
+            own = spec.session_id({}, env)
+        except Exception:  # noqa: BLE001 - a reader that cannot answer here names no chat
+            own = ""
+        names = (*spec.session_env, "AGENT_SESSION")
+        found = [own, *(_text(env.get(name)) for name in names)]
+        sid = next((value for value in found if value), "")
     try:
         sid = SI.check(sid, "the session id")
     except ValueError as exc:
@@ -3925,7 +3936,7 @@ def install_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int
 USAGE = (
     "usage: platform-letter {hook --platform P [--location L]\n"
     "                        | registry OP --platform P ...\n"
-    "                        | show --platform P [--session-id S]\n"
+    "                        | show [--platform P] [--session-id S]\n"
     "                        | install --platform P [--location L] [--mac-ssh DEST] [--check | --remove]\n"
     "                        | request [--session-id S]\n"
     "                        | gone [--platform P] [--location L] [--apply]\n"
@@ -4018,6 +4029,13 @@ def main(
         except ValueError:
             stderr.write(USAGE)
             return 2
+        if "platform" not in flags:
+            # No platform named:  the chat this shell runs in (or the one named), found by its note, as `request`
+            # finds it.
+            found = find_chat(env, flags.get("session-id", ""))
+            if isinstance(found, str):
+                return _emit(stdout, {"error": found}, 1)
+            return show(found[0], ["--session-id", found[1]], env, stdout)
         spec = load_spec(flags.get("platform", ""))
         if spec is None:
             return _emit(stdout, {"error": "no adapter for the platform"}, 2)

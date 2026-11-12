@@ -1421,5 +1421,85 @@ class ParentFromMacTests(HookBase):
         self.assertEqual(sorted(hooks), ["SessionEnd", "SessionStart", "Stop", "UserPromptSubmit"])
 
 
+class StoredTitleTests(HookBase):
+    """A resumed chat with no title gets the one its first prompt gives, read from its own transcript."""
+
+    def transcript(self, *entries, name: str = "s-0001.jsonl", home: str | None = None) -> str:
+        folder = os.path.join(home or self.home, ".claude", "projects", "p")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            for entry in entries:
+                fh.write((entry if isinstance(entry, str) else json.dumps(entry)) + "\n")
+        return path
+
+    def title(self, path: object) -> str:
+        return PC.claude_stored_title({"transcript_path": path}, {"HOME": self.home})
+
+    def test_the_claude_row_reads_a_stored_title(self) -> None:
+        self.assertIs(PC.SPEC.stored_title, PC.claude_stored_title)
+
+    def test_resume_titles_from_the_transcript(self) -> None:
+        path = self.transcript(
+            {"type": "user", "isMeta": True, "message": {"content": "<local-command>"}},
+            {"type": "assistant", "message": {"content": "an answer is not a prompt"}},
+            {"type": "user", "message": {"content": "<system-reminder>not what a person typed</system-reminder>"}},
+            {"type": "user", "message": {"content": "Caveat: the messages below were generated"}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "content": "tool output"},
+                                                     {"type": "text", "text": "rotate the infisical tokens"}]}},
+            {"type": "user", "message": {"content": "a later prompt"}},
+        )
+        for source in ("resume", "fork"):
+            sid = "s-%s" % source
+            out = self.answer({"hook_event_name": "SessionStart", "session_id": sid, "source": source,
+                               "transcript_path": path})
+            self.assertEqual(out["sessionTitle"], "%s: Rotate the Infisical Tokens" % self.label(sid))
+            self.assertEqual(self.row(sid)["title"], "Rotate the Infisical Tokens")
+        # A chat that has a title keeps it, and a new chat is not titled from a transcript.
+        out = self.answer({"hook_event_name": "SessionStart", "session_id": "s-0002", "source": "resume",
+                           "transcript_path": path, "session_title": "Named Already"})
+        self.assertEqual(out["sessionTitle"], "%s: Named Already" % self.label("s-0002"))
+        out = self.answer({"hook_event_name": "SessionStart", "session_id": "s-0003", "source": "startup",
+                           "transcript_path": path})
+        self.assertEqual(out["sessionTitle"], "%s: New Chat" % self.label("s-0003"))
+
+    def test_a_resumed_chats_first_prompt_is_scanned_too(self) -> None:
+        body = "A1b2C3d4" * 5
+        path = self.transcript({"type": "user", "message": {"content": "use ghp_%s to push" % body}})
+        title = self.title(path)
+        self.assertEqual(title, "Use to Push")
+        self.assertNotIn(body, title)
+
+    def test_outside_paths_are_not_read(self) -> None:
+        stray = os.path.join(self.tmp.name, "stray.jsonl")
+        with open(stray, "w") as fh:
+            fh.write(json.dumps({"type": "user", "message": {"content": "secret plans"}}) + "\n")
+        self.assertEqual(self.title(stray), "")
+        inside = self.transcript({"type": "user", "message": {"content": "fix the build"}})
+        self.assertEqual(self.title(inside), "Fix the Build")
+        link = os.path.join(self.home, ".claude", "projects", "p", "link.jsonl")
+        os.symlink(stray, link)  # a link out of the folder is followed to where it really is, and refused
+        self.assertEqual(self.title(link), "")
+        self.assertEqual(self.title(os.path.join(self.home, ".claude", "projects", "p", "..", "..", "..", "..",
+                                                 os.path.basename(self.tmp.name), "stray.jsonl")), "")
+        for bad in ("", None, 7, ["x"], os.path.join(self.home, ".claude", "projects", "missing.jsonl"),
+                    os.path.join(self.home, ".claude", "projects", "p")):
+            self.assertEqual(self.title(bad), "", bad)
+
+    def test_only_the_first_lines_are_read(self) -> None:
+        filler = [{"type": "assistant", "message": {"content": "x"}}] * 5
+        path = self.transcript(*filler, {"type": "user", "message": {"content": "fix the build"}})
+        self.assertEqual(self.title(path), "Fix the Build")
+        with mock.patch.object(PC, "TRANSCRIPT_LINES", 5):
+            self.assertEqual(self.title(path), "")
+        with mock.patch.object(PC, "TRANSCRIPT_BYTES", 40):
+            self.assertEqual(self.title(path), "")
+        # Lines that are not JSON, or not objects, are stepped over, and a prompt with no words waits for the next.
+        path = self.transcript("not json", "[1, 2]", '{"type": "user", "message": 7}',
+                               {"type": "user", "message": {"content": "/clear"}},
+                               {"type": "user", "message": {"content": "review the parser"}})
+        self.assertEqual(self.title(path), "Review the Parser")
+
+
 if __name__ == "__main__":
     unittest.main()

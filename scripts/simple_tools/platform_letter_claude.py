@@ -48,6 +48,8 @@ never fails a chat's start over this file.
   tool is the one thing it takes, and only the chat's model can call that, so the model is told to, once per title
   (the library holds a repeat back);  a chat another chat has just started is told to check its title itself.  A
   name a person gave (`titleSource` "user") is left alone:  the tool would stop to ask them to approve it.
+- A resumed chat's title (`claude_stored_title`).  A chat that is resumed with no title gets the one its first
+  prompt gives, read from the first lines of its own transcript, and only a transcript under `~/.claude`.
 - Archived chats (`claude_gone`, `archive_states`).  The app marks an archived chat in its record (`isArchived`).
   A chat's start has the library report this host's archived chats to the assigner, which frees their letters
   (`platform-letter gone --platform claude` shows them).  Any doubt keeps a chat:  an unreadable or missing
@@ -137,6 +139,9 @@ REMOTE_QUIET_SECONDS = 3600
 MAC_COMMAND = '"$HOME"/.local/bin/platform-letter parent --platform claude'
 MAC_CONNECT_SECONDS = 3
 MAC_TIMEOUT_SECONDS = 5.0
+# A resumed chat's title (`claude_stored_title`):  how much of its transcript is read for its first prompt.
+TRANSCRIPT_LINES = 400
+TRANSCRIPT_BYTES = 4 << 20
 # A chat's state in the app (`archive_states`).  A chat with no record at all is left out of the answer.
 ARCHIVED = "archived"
 UNARCHIVED = "unarchived"
@@ -510,6 +515,65 @@ def claude_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
 
 
 # --------------------------------------------------------------------------------------------
+# A resumed chat's title
+# --------------------------------------------------------------------------------------------
+
+
+def _user_texts(entry: Mapping[str, Any]) -> list[str]:
+    """What a person typed in one transcript entry, or nothing for any other entry."""
+    if entry.get("type") != "user" or entry.get("isMeta"):
+        return []
+    message = entry.get("message")
+    content = message.get("content") if isinstance(message, Mapping) else None
+    if isinstance(content, str):
+        return [content]
+    if isinstance(content, list):
+        return [
+            str(part.get("text") or "")
+            for part in content
+            if isinstance(part, Mapping) and part.get("type") == "text"
+        ]
+    return []
+
+
+def claude_stored_title(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
+    """The title a resumed chat's first prompt gives, read from its own transcript (`transcript_path`), or "".
+
+    Only a transcript under `~/.claude` is read, and only its first lines (TRANSCRIPT_LINES, TRANSCRIPT_BYTES), so
+    a stray path in the hook input cannot point anywhere else.  The words go through the library's own title
+    rule, the one a first prompt goes through, secret scan included."""
+    path = payload.get("transcript_path")
+    if not isinstance(path, str) or not path:
+        return ""
+    root = os.path.realpath(os.path.join(_home(env), ".claude")) + os.sep
+    real = os.path.realpath(path)
+    if not real.startswith(root) or not os.path.isfile(real):
+        return ""
+    read = 0
+    try:
+        with open(real, encoding="utf-8", errors="replace") as fh:
+            for n, line in enumerate(fh):
+                read += len(line)
+                if n >= TRANSCRIPT_LINES or read > TRANSCRIPT_BYTES:
+                    break
+                try:
+                    entry = json.loads(line)
+                except (ValueError, RecursionError):
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                for words in _user_texts(entry):
+                    if words.lstrip().startswith(("<", "Caveat:")):
+                        continue
+                    title = PL.title_from_prompt(words)
+                    if title:
+                        return title
+    except OSError:
+        return ""
+    return ""
+
+
+# --------------------------------------------------------------------------------------------
 # The title the app shows
 # --------------------------------------------------------------------------------------------
 
@@ -737,6 +801,7 @@ SPEC = PL.PlatformSpec(
     session_id=PL.from_payload("session_id"),
     parent_id=claude_parent,
     kind=claude_kind,
+    stored_title=claude_stored_title,
     events=EVENTS,
     close_reasons=CLOSE_REASONS,
     title_in_output=True,

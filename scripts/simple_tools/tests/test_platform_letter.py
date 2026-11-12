@@ -3263,6 +3263,54 @@ class ParentTests(Base):
                          "--platform faux --location server")
 
 
+class ShowTests(Base):
+    """`simple-chat letter show` with no flags prints the note of the chat this shell runs in, found the way
+    `request` finds it:  by the spec's own reader, then its session id variables."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.spec = make_spec(platform="faux", source="faux-hook", display="Faux",
+                              session_env=("FAUX_SESSION_ID",))
+        patch = mock.patch.dict(PL.SPECS, {"faux": self.spec})
+        patch.start()
+        self.addCleanup(patch.stop)
+        PL.hook(self.spec, self.env(), io.StringIO(json.dumps(
+            {"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"})), io.StringIO(),
+            platform="darwin")
+
+    def show(self, *argv: str, **env: str) -> tuple[int, dict]:
+        out = io.StringIO()
+        code = PL.main(["show", *argv], env=self.env(**env), stdout=out, stderr=out)
+        return code, json.loads(out.getvalue())
+
+    def test_no_flags_finds_this_shells_chat(self) -> None:
+        code, note = self.show(FAUX_SESSION_ID="s-0001")
+        self.assertEqual((code, note["session_id"], note["platform"], note["state"]), (0, "s-0001", "faux", "open"))
+        self.assertRegex(note["label"], PAIR)
+        self.assertEqual(self.show(AGENT_SESSION="s-0001")[1], note)  # the fleet's own name for it works too
+        self.assertEqual(self.show("--session-id", "s-0001")[1], note)  # and a chat named by its id, on any platform
+        self.assertEqual(self.fake.requests[1:], [])  # no network:  the note alone
+
+    def test_a_platform_named_without_a_session_id_uses_the_same_variables(self) -> None:
+        code, note = self.show("--platform", "faux", FAUX_SESSION_ID="s-0001")
+        self.assertEqual((code, note["session_id"]), (0, "s-0001"))
+        self.assertEqual(self.show("--platform", "faux", AGENT_SESSION="s-0001")[0], 0)
+        self.assertEqual(self.show("--platform", "faux", "--session-id", "s-0001")[1], note)
+
+    def test_no_chat_here_says_so(self) -> None:
+        code, answer = self.show()
+        self.assertEqual(code, 1)
+        self.assertIn("no chat with a letter note runs in this shell", answer["error"])
+        code, answer = self.show(FAUX_SESSION_ID="s-0404")  # a stray variable names no note
+        self.assertEqual(code, 1)
+        code, answer = self.show("--session-id", "s-0404")
+        self.assertEqual((code, "no chat with the session id s-0404" in answer["error"]), (1, True))
+        self.assertEqual(self.show("--platform", "faux")[0], 2)  # a platform named, and no session id anywhere
+        self.assertEqual(self.show("--platform", "faux", "--session-id", "s-0404"),
+                         (1, {"session_id": "s-0404", "letter": None}))
+        self.assertEqual(self.show("--platform", "nosuch", "--session-id", "s-0001")[0], 2)
+
+
 class DurableWriteTests(Base):
     """A file renamed into place survives a crash only when its folder is flushed too:  the note, the gone stamp and
     a platform's hook file are each fsynced, renamed, and then their folder is fsynced."""
