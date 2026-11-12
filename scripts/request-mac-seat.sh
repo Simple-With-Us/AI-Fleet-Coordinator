@@ -35,7 +35,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FLEET_APPS="${REPO_ROOT}/fleet-apps.json"
-OWNER="${GITHUB_OWNER:-jaywedgeworth22}"
+OWNER="${GITHUB_OWNER:-Simple-With-Us}"
 # Zulip posting needs no shared secret: the simple-chat CLI reads the seat's own
 # Zulip credential (Infisical Fleet-OPS /zulip).
 ZULIP_CHANNEL="${ZULIP_CHANNEL:-Work-In-Progress}"

@@ -152,9 +152,9 @@ The old JET login must not lose its tools before the new JET-CHAT login works.  
 
 Every run also pins the bot owner:  `users/me`'s `bot_owner_id` must equal `ZULIP_OWNER_USER_ID`, resolved through `handoff()` (environment first, then `fleet-secrets get`, which reads Fleet-OPS prod root).  The pin fails closed:  without it the script exits before any check output, for every seat.  The value is the realm owner's Zulip user id (the same id `wrangler.jsonc` pins as `OWNER_USER_ID`);  each hosted bot's `bot_owner_id` equals it.  Seeding it at Fleet-OPS prod root is a direct Infisical write, owner-gated:  `fleet-secrets set` refuses every name outside its `/linear` CACHE_* allowlist (exit 2 before auth, INFISICAL.md), and widening that list is a reviewed change.  Until the owner seeds it, export it for the run:  `ZULIP_OWNER_USER_ID=<realm owner id> python3 -I install_seat_key.py <SEAT> --apply`.
 
-For each seat the script reads `ZULIP_<SEAT>_EMAIL` and `ZULIP_<SEAT>_API_KEY` (`ZULIP_GROK_WEB_*`, `ZULIP_JET_*`, `ZULIP_CLAUDE_*`) from Infisical (project "AI Fleet Coordinator", `prod`, `/zulip`) through the INFISICAL_AUTOMATION identity, and refuses unless the seat is in `HOSTED_SEATS`, the email equals the seat's configured Worker email binding (`ZULIP_EMAIL_<SEAT>` for every seat except CLAUDE, which uses the canonical `ZULIP_CLAUDE_EMAIL`), and Zulip's `users/me` for the key is that bot, a bot, and a member (role 400).  The value goes to wrangler on stdin and is never printed, logged or written to a file.  `wrangler secret put` deploys a new version at once.
+For each seat the script reads `ZULIP_<SEAT>_EMAIL` and `ZULIP_<SEAT>_API_KEY` (`ZULIP_GROK_WEB_*`, `ZULIP_JET_*`, `ZULIP_CLAUDE_*`) from Infisical (project "AI Fleet Coordinator", `prod`, `/zulip`) with `SIMPLE_TOOLS_MCP_SEAT_KEY_AFC_INFISICAL_READ_TOKEN` (AI Fleet Coordinator, prod, `/zulip`, read-only) or `SIMPLE_TOOLS_MCP_SEAT_KEY_FLEETOPS_INFISICAL_READ_TOKEN` (Fleet-OPS, prod, `/zulip`, read-only, for CODEX and MA), and refuses unless the seat is in `HOSTED_SEATS`, the email equals the seat's configured Worker email binding (`ZULIP_EMAIL_<SEAT>` for every seat except CLAUDE, which uses the canonical `ZULIP_CLAUDE_EMAIL`), and Zulip's `users/me` for the key is that bot, a bot, and a member (role 400).  The value goes to wrangler on stdin and is never printed, logged or written to a file.  `wrangler secret put` deploys a new version at once.
 
-Spec 3.6 wants Infisical's Cloudflare Workers sync to push the key, from a location no agent identity can read.  Neither exists yet (owner items A1 and A4), and D8 accepts that:  this script is the sync, run by hand, and the key stays in `/zulip` where the automation identity can read it.  When Jay sets up the sync with "Disable Secret Deletion", stop using the script for that seat.
+Spec 3.6 wants Infisical's Cloudflare Workers sync to push the key, from a location no agent identity can read.  Neither exists yet (owner items A1 and A4), and D8 accepts that:  this script is the sync, run by hand, and the key stays in `/zulip`, where that seat-key read token can read it.  A machine identity is not a deploy route.  When Jay sets up the sync with "Disable Secret Deletion", stop using the script for that seat.
 
 ## Step 2b:  Fleet recall secrets (once)
 
@@ -230,13 +230,13 @@ What only Jay can verify, because it needs his Access sign-in and consent:  the 
 
 ## Wake Jet (MCP Events, once)
 
-The Worker answers `POST /internal/wake/<SEAT>` from the server listener and fans each wake out as an MCP event (spec section 3.12).  A seat's wake works only once its shared HMAC key is a Worker secret.  The key lives in Infisical Fleet-OPS as `JET_ROUTINE_KEY` (64 hex characters, made with `openssl rand -hex 32`;  Jay stores a new one there himself).  It is installed without printing it (same environment as Step 1):
+The Worker answers `POST /internal/wake/<SEAT>` from the server listener and fans each wake out as an MCP event (spec section 3.12).  A seat's wake works only once its shared HMAC key is a Worker secret.  The key lives in Infisical AI Fleet Coordinator prod `/zulip` as `JET_ROUTINE_KEY`, its one home (64 hex characters, made with `openssl rand -hex 32`;  Jay stores a new one there himself).  No Fleet-OPS copy may remain:  the Eavesdropper's loader loads a routine key held by both projects from neither (AFC-759).  It is installed without printing it (same environment as Step 1):
 
 ```bash
-fleet-secrets get JET_ROUTINE_KEY | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_JET >/dev/null && echo "set WAKE_HMAC_KEY_JET"
+fleet-secrets get JET_ROUTINE_KEY --path /zulip --project ai-fleet-coordinator | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_JET >/dev/null && echo "set WAKE_HMAC_KEY_JET"
 ```
 
-The listener half is Jay's step (ARMING-JAY.md, "Wake Jet", step 1):  two Coolify variables (`JET_ROUTINE_URL=https://agents.simplewithus.com/internal/wake/JET`, and `JET_ROUTINE_KEY` set to the same key), a scoped edit of the **live** `/data/listener.toml` (the volume keeps the copy seeded on first start, so the repo sample's new JET section never reaches it), and a restart.  Rotating the key means rerunning both.  Check:  `POST /internal/wake/JET` with no signature answers 401 (not 404, which would mean the secret is missing), and `infra_phase0.py check` probes it.  `EVENT_CALLBACK_HOSTS` in `wrangler.jsonc` lists the hosts ChatGPT may give as a callback.  A refused one shows on `/admin` as `callback_host_not_allowed`, and adding it is a var change and a deploy.
+The listener half is Jay's step (ARMING-JAY.md, "Wake Jet", step 1):  two names in Infisical AFC prod `/zulip`, never Coolify variables (`JET_ROUTINE_URL=https://agents.simplewithus.com/internal/wake/JET`, and `JET_ROUTINE_KEY` set to the same key;  the Eavesdropper's loader reads them from there only, AFC-759), a scoped edit of the **live** `/data/listener.toml` (the volume keeps the copy seeded on first start, so the repo sample's new JET section never reaches it), and a restart.  Rotating the key means rerunning both.  Check:  `POST /internal/wake/JET` with no signature answers 401 (not 404, which would mean the secret is missing), and `infra_phase0.py check` probes it.  `EVENT_CALLBACK_HOSTS` in `wrangler.jsonc` lists the hosts ChatGPT may give as a callback.  A refused one shows on `/admin` as `callback_host_not_allowed`, and adding it is a var change and a deploy.
 
 **Deploy order for the wake fixes (Sat, Oct 10).**  The Worker now delivers inside the listener's request and answers 503 when no delivery got through, so the listener's own retry is the retry path.  It also delivers a channel wake only when the body's `stream_id` is a channel the seat may use (spec 3.12, items 8, 11 and 12;  then the `CHANNELS` allowlist, since Sat, Oct 10, 2026 any public channel the bot is subscribed to, section "Any public channel" below).  Deploy the server listener first:  it starts sending `stream_id`, which the deployed Worker ignores.  Then deploy this Worker (step 1).  The other order fails safe:  until the listener sends `stream_id`, the Worker answers every channel wake 202 `channel_refused` and wakes nobody.  Nothing is activated yet, so either order wakes nobody today.  There are no secret, var, binding or migration changes.  Check after the Worker deploy:  `POST /internal/wake/JET` with no signature still answers 401.  JET's routine `timeout_seconds` must stay at 15 or more, or the listener abandons requests that are still delivering.
 
@@ -286,7 +286,7 @@ The `eavesdropper_status`, `eavesdropper_inbox`, `eavesdropper_owner_queue`, `ea
    Set the fleet knob to the same origin before deploying:  `OPERATOR_API_URL` in Infisical (project "AI Fleet Coordinator", `prod`, root path) is what the Python clients read (simple-notes, the stdio `notes_*` tools, the Mac runner), and the contract is one origin for both (`docs/protocols/operator-notes.md`).  A deploy that moves only the var splits each notes request/response pair across two hosts.
 3. Make sure each seat that should read its records has `WAKE_HMAC_KEY_<SEAT>` (JET already does;  CLAUDE, CODEX, CURSOR and MA have a read key from Nov 10, 2026 (owner:  "make the wake key for everyone", each in `LISTENER_READ_SECRETS`), and a further hosted seat needs its own entry there and a Worker secret of the same name):
    ```bash
-   fleet-secrets get JET_ROUTINE_KEY | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_JET >/dev/null && echo "set WAKE_HMAC_KEY_JET"
+   fleet-secrets get JET_ROUTINE_KEY --path /zulip --project ai-fleet-coordinator | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_JET >/dev/null && echo "set WAKE_HMAC_KEY_JET"
    ```
 4. Deploy (step 1).  From a connected JET chat, `eavesdropper_status` answers counts;  a 401 there means the two keys differ or the clocks are more than five minutes apart, a 404 that the listener has no key for the seat.  **Not deployed yet.**
 
@@ -304,7 +304,7 @@ The `eavesdropper_status`, `eavesdropper_inbox`, `eavesdropper_owner_queue`, `ea
 
 ## Notes, recall and the guide (AFC-331, AFC-486)
 
-The eight notes tools (`notes_create`, `notes_update`, `notes_pin`, `notes_unpin`, `notes_read`, `notes_list`, `notes_status` and `notes_log`, in `src/notes.js`) send each request to the Operator's notes queue over signed HTTPS, and the Mac runner does the work (`docs/protocols/operator-notes.md`).  No Zulip message is involved:  the `#notes-relay` transport of AFC-331 is retired (owner, Thu, Oct 22, 2026:  "I don't want notes going from Zulip to Apple notes").  The Worker signs every request as the principal `WORKER` with the Worker secret `OPERATOR_NOTES_KEY`, which holds the Infisical key `OPERATOR_NOTES_WORKER_KEY` (AI Fleet Coordinator, `prod`, folder `/operator`), and it reaches the Operator at `LISTENER_API_URL`, the same https origin as the listener read API.  The seat a request acts for is always the grant's.  Until both the secret and the var are set, every notes tool answers `not_configured` and nothing else changes.
+The nine notes tools (`notes_create`, `notes_update`, `notes_pin`, `notes_delete`, `notes_unpin`, `notes_read`, `notes_list`, `notes_status` and `notes_log`, in `src/notes.js`) send each request to the Operator's notes queue over signed HTTPS, and the Mac runner does the work (`docs/protocols/operator-notes.md`).  No Zulip message is involved:  the `#notes-relay` transport of AFC-331 is retired (owner, Thu, Oct 22, 2026:  "I don't want notes going from Zulip to Apple notes").  The Worker signs every request as the principal `WORKER` with the Worker secret `OPERATOR_NOTES_KEY`, which holds the Infisical key `OPERATOR_NOTES_WORKER_KEY` (AI Fleet Coordinator, `prod`, folder `/operator`), and it reaches the Operator at `LISTENER_API_URL`, the same https origin as the listener read API.  The seat a request acts for is always the grant's.  Until both the secret and the var are set, every notes tool answers `not_configured` and nothing else changes.
 
 1. The Operator half first:  `[notes_queue] enabled = true` with this Worker's seats in `worker_seats`, the three keys in Infisical `/operator`, and the public route that sends `/notes/v1/` to port 8788 (`docs/protocols/operator-notes.md`, "Operator Configuration").
 2. Install the key with Step 1's credentials.  The value goes to wrangler on stdin and is never printed:
@@ -400,12 +400,36 @@ Jay regenerates the bot's key in Zulip (the old one dies at once), updates `ZULI
 
 ## Open owner items
 
-- **A4:**  Infisical's Cloudflare Workers sync for the hosted keys, with "Disable Secret Deletion" (replaces step 2).
+- **A4:** the Worker secret sync in the section below.  The owner creates the Infisical folder, the digest key, the read-only service token, and the GitHub secret named there.  Apply stays off.  The sync never deletes a Worker secret.
 - **A5:**  done for deploys:  the scoped per-Worker token and its reader replaced the Global key (2026-11-08 record in `ops/`).  Whether that token may also run `wrangler secret put` is unverified.
-- **A1 and D8:**  a key location no agent identity can read.  Until then the INFISICAL_AUTOMATION identity can reach GROK-WEB's key.  The Global key is retired and not a deploy route.
+- **A1 and D8:** a key location no agent identity can read is still an owner choice.  Until then the seat-key read token can reach GROK-WEB's key, because the key still lives in `/zulip`.  The sync folder is readable by its own CI service token, so a key that must stay unreadable does not go there.  A machine identity is not a deploy route.  The Global key is retired and is not a deploy route.
 - **ECHO and WISE:**  connect one at a time from the Instinct app's own computer ([ARMING-JAY.md](ARMING-JAY.md), "Connect Echo" and "Connect Wise").  The Worker serves both and both keys are installed (Fri, Oct 9, about 10:24pm);  the client id comes from the first attempt.
 - **JET:**  arm it and connect ChatGPT ([ARMING-JAY.md](ARMING-JAY.md)).  The bot is a member, the Worker serves JET and its key is installed (Fri, Oct 9, about 8:10am), so nothing else blocks it.
 
+
+## Worker secret sync ([AFC-380](https://linear.app/simple-with-us/issue/AFC-380))
+
+This is owner items A4 and A1.  The mapped deploy path compares one Infisical folder to the Worker and prints names only.  Apply stays off.
+
+### What the owner creates in Infisical
+
+1. Folder `/workers/simple-tools-mcp` in the AI Fleet Coordinator project, environment `prod`.  `scripts/worker-secret-folders.json` is the only Worker-to-folder map, and the service token's project id must match the id in that file.
+
+2. One secret for each name in `scripts/worker-secret-allowlists/simple-tools-mcp.json`.  Add a name to that file before apply will put it.  Also create `FLEET_SECRET_DIGEST_KEY` in the same folder, at least 16 random bytes.  That key is not put on the Worker, and it must not be added to the allowlist.  Git holds names only.
+
+3. One read-only Infisical service token for that project, `prod`, and exactly `/workers/simple-tools-mcp`, with an expiry.  Do not create a universal-auth identity or a machine identity.  Register the token on the service-tokens sheet.  Store it as the GitHub Actions secret `WORKER_SECRET_SYNC_INFISICAL_TOKEN`.  Do not widen `AFC_WORKER_DEPLOY_INFISICAL_TOKEN`.  That secret stays the Fleet-OPS prod `/` reader for `CLOUDFLARE_FLEET_API_TOKEN`.
+
+4. Leave the repository variable `WORKER_SECRET_SYNC_APPLY` unset.  After the folder and the token exist, set `WORKER_SECRET_CHECK_ENABLED` to `true` to run the dry-run.  Read the names under `missing-on-worker`, `only-on-worker`, and `differ`.  Set `WORKER_SECRET_SYNC_APPLY` to the exact string `true` only when that dry-run is acceptable.  The deploy step passes `--apply` only in that case, and the script still refuses to put unless both are set.
+
+### How a difference is decided
+
+Cloudflare returns secret names and types, never values, so a metadata secret cannot be read back on the next check.  The sync computes HMAC-SHA256 over the secret name, a NUL byte, and the Infisical value, using `FLEET_SECRET_DIGEST_KEY`.  It compares that hex digest to the map in the Worker plain-text binding `FLEET_SECRET_DIGESTS`.  The script settings API returns that binding's text and still omits every secret value.  The binding holds digests, not values.  Until the binding exists, a name present on both sides is `differ`, because nothing has proved the values match.  A partial Infisical or Cloudflare read aborts before any put.
+
+When apply is on, the job puts only allowlisted names that are missing or that differ.  The value goes to the Worker secrets API in the request body, the same write as `wrangler secret put`, and it is never printed.  Names that exist only on the Worker are reported and not deleted.  That is the Disable Secret Deletion behavior.
+
+### What A1 still requires
+
+This folder is readable by the deploy job's service token.  It is not a location no agent identity can read.  A key that must stay out of that job does not belong in the folder and does not belong on the allowlist.  GROK-WEB's key still lives in `/zulip`, where the seat-key read token can reach it.  A machine identity is not a deploy route.  The Global key stays retired.
 
 ## Add Cursor Cloud (AFC-294)
 
@@ -523,16 +547,7 @@ At deploy (AFC-331):  the tool names change (`post` is now `zulip_post`, and so 
 
 ## FleetLink (AFC-328)
 
-The `fleetlink_*` tools need one Worker secret, `FLEETLINK_AGENT_SECRET`:  `fls_` plus 64 hex.  FleetLink's own `DEPLOY.md` now lists its shared static credentials as retired and deleted from its Worker, so check its "Agent Accounts" section (`docs/multi-user.md`) before relying on this secret.  Without it the FleetLink tools answer `not_configured` and everything else works.  The value lives in Infisical, project "AI Fleet Coordinator", `prod`, `/fleetlink`, as `FLEETLINK_AGENT_SECRET` (INFISICAL.md).  It was made and installed on both Workers on Thu, Oct 15, 2026.  To reinstall it here, read it with the INFISICAL_AUTOMATION identity and pipe it straight in, with the Step 1 credentials exported in the same subshell.  Never print it:
-
-```bash
-(
-  set +x
-  # fetch prints only the value, to the pipe:  universal-auth login, then
-  # GET /v3/secrets/raw/FLEETLINK_AGENT_SECRET?workspaceId=<project>&environment=prod&secretPath=/fleetlink
-  fetch_fleetlink_secret | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put FLEETLINK_AGENT_SECRET >/dev/null && echo "set FLEETLINK_AGENT_SECRET"
-)
-```
+The `fleetlink_*` tools need one Worker secret, `FLEETLINK_AGENT_SECRET`:  `fls_` plus 64 hex.  FleetLink's own `DEPLOY.md` now lists its shared static credentials as retired and deleted from its Worker, so check its "Agent Accounts" section (`docs/multi-user.md`) before relying on this secret.  Without it the FleetLink tools answer `not_configured` and everything else works.  The value lives in Infisical, project "AI Fleet Coordinator", `prod`, `/fleetlink`, as `FLEETLINK_AGENT_SECRET` (INFISICAL.md).  It was made and installed on both Workers on Thu, Oct 15, 2026.  To reinstall it here, read `FLEETLINK_AGENT_SECRET` with the bearer `SIMPLE_TOOLS_MCP_FLEETLINK_INFISICAL_READ_TOKEN` (AI Fleet Coordinator, prod, `/fleetlink`, read-only) and pipe only that secret value to `wrangler secret put`.  A 0600 file may hold the token, named by `SIMPLE_TOOLS_MCP_FLEETLINK_INFISICAL_TOKEN_FILE`.  A missing or malformed token fails closed and names `SIMPLE_TOOLS_MCP_FLEETLINK_INFISICAL_READ_TOKEN`.  Use `infisical secrets --token` or `GET /api/v3/secrets/raw` with that bearer.  Do not log in with a machine identity, and do not print the token or the secret.
 
 FleetLink no longer holds a matching shared secret, so there is nothing to install on its side.  A seat signs in with its own token (below), and the tools answer `not_authorized` with HTTP 401 when FleetLink refuses a credential.
 

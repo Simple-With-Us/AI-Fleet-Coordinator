@@ -72,6 +72,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -122,6 +127,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Issue ID or identifier.",
             "minLength": 1,
@@ -224,6 +234,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -274,6 +289,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Comment ID.",
             "minLength": 1,
@@ -376,6 +396,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -426,6 +451,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Attachment ID.",
             "minLength": 1,
@@ -528,6 +558,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -578,6 +613,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Cycle ID.",
             "minLength": 1,
@@ -680,6 +720,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -730,6 +775,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Custom view ID.",
             "minLength": 1,
@@ -832,6 +882,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -892,6 +947,11 @@
             "description": "Read the document content starting at this character offset (default 0).  The result carries content_total and content_offset so slices can be walked.",
             "minimum": 0,
             "type": "integer"
+          },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
           },
           "id": {
             "description": "Document ID.",
@@ -995,6 +1055,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -1045,6 +1110,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Workflow state ID.",
             "minLength": 1,
@@ -1098,6 +1168,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Triage responsibility ID.",
             "minLength": 1,
@@ -1200,6 +1275,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -1250,6 +1330,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Issue label ID.",
             "minLength": 1,
@@ -1352,6 +1437,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -1402,6 +1492,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Project label ID.",
             "minLength": 1,
@@ -1504,6 +1599,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -1554,6 +1654,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Project ID.",
             "minLength": 1,
@@ -1656,6 +1761,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -1706,6 +1816,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Project milestone ID.",
             "minLength": 1,
@@ -1808,6 +1923,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -1858,6 +1978,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Team ID or key.",
             "minLength": 1,
@@ -1960,6 +2085,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -2010,6 +2140,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "User ID.",
             "minLength": 1,
@@ -2052,6 +2187,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "max_chars": {
             "default": 24000,
             "maximum": 1000000,
@@ -2086,6 +2226,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "max_chars": {
             "default": 24000,
             "maximum": 1000000,
@@ -2167,6 +2312,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived templates.",
@@ -2217,6 +2367,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Template ID.",
             "minLength": 1,
@@ -2319,6 +2474,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -2369,6 +2529,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Notification ID.",
             "minLength": 1,
@@ -2471,6 +2636,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -2521,6 +2691,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Project update ID.",
             "minLength": 1,
@@ -2623,6 +2798,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -2673,6 +2853,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Initiative ID.",
             "minLength": 1,
@@ -2775,6 +2960,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -2825,6 +3015,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Initiative update ID.",
             "minLength": 1,
@@ -2912,6 +3107,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -2962,6 +3162,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Favorite ID.",
             "minLength": 1,
@@ -3049,6 +3254,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -3099,6 +3309,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Roadmap ID.",
             "minLength": 1,
@@ -3201,6 +3416,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -3251,6 +3471,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Customer need ID.",
             "minLength": 1,
@@ -3353,6 +3578,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -3403,6 +3633,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Customer ID.",
             "minLength": 1,
@@ -3505,6 +3740,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -3555,6 +3795,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Release ID or slug.",
             "minLength": 1,
@@ -3657,6 +3902,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -3707,6 +3957,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Release note ID or slug.",
             "minLength": 1,
@@ -3809,6 +4064,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -3859,6 +4119,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Release pipeline ID or slug.",
             "minLength": 1,
@@ -3961,6 +4226,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -4011,6 +4281,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Release stage ID.",
             "minLength": 1,
@@ -4113,6 +4388,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -4163,6 +4443,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Agent skill ID.",
             "minLength": 1,
@@ -4265,6 +4550,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -4315,6 +4605,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Workflow state ID.",
             "minLength": 1,
@@ -4417,6 +4712,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -4467,6 +4767,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "id": {
             "description": "Project milestone ID.",
             "minLength": 1,
@@ -4569,6 +4874,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "includeArchived": {
             "default": false,
             "description": "Include archived records when supported by the resource.",
@@ -4667,6 +4977,11 @@
             "maximum": 100,
             "minimum": 1,
             "type": "integer"
+          },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
           },
           "includeArchived": {
             "default": false,

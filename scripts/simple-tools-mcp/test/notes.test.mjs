@@ -196,14 +196,14 @@ function fence(text, tool) {
 
 // ---------------------------------------------------------------- the contract
 
-test("the hosted notes tools are notes-tools.json unchanged:  eight tools, four writes and four reads", () => {
+test("the hosted notes tools are notes-tools.json unchanged:  nine tools, five writes and four reads", () => {
   assert.deepEqual(NOTES_TOOLS, SPECS);
-  assert.deepEqual(NOTES_TOOLS.map((t) => t.name), ["notes_create", "notes_update", "notes_pin", "notes_unpin", "notes_read", "notes_list", "notes_status", "notes_log"]);
+  assert.deepEqual(NOTES_TOOLS.map((t) => t.name), ["notes_create", "notes_update", "notes_pin", "notes_delete", "notes_unpin", "notes_read", "notes_list", "notes_status", "notes_log"]);
   for (const tool of NOTES_TOOLS) {
     assert.ok(HOSTED_TOOLS_BY_NAME[tool.name], tool.name);
     assert.equal(typeof HostedTools.prototype[`tool_${tool.name}`], "function", tool.name);
     const write = NOTES_WRITE_TOOLS.has(tool.name);
-    assert.equal(write, ["notes_create", "notes_update", "notes_pin", "notes_unpin"].includes(tool.name));
+    assert.equal(write, ["notes_create", "notes_update", "notes_pin", "notes_delete", "notes_unpin"].includes(tool.name));
     assert.equal(HOSTED_WRITE_TOOLS.has(tool.name), write, tool.name);
     assert.equal(HOSTED_READ_TOOLS.has(tool.name), !write, tool.name);
     assert.equal(tool.annotations.readOnlyHint, !write, tool.name);
@@ -334,6 +334,34 @@ test("a request still running when the wait runs out answers running, and notes_
   assert.match(status.pin_skipped, /12 pinned/);
   assert.match(status.queued_at, /^2026-10-22T15:00:0\dZ$/);
   assert.match(status.finished_at, /^2026-10-22T15:00:\d\dZ$/);
+});
+
+test("a pin that ran omits pin_skipped on the write and on notes_status", async () => {
+  const { operator, tools } = harness();
+  operator.onPoll = finishOn(operator, 1, "done", writeDone());
+  const out = ok(await tools.call("notes_create", { session: SESSION, title: TITLE, markdown: "x", request_id: "pin-ok-request1" }), "notes_create");
+  assert.equal(out.status, "done");
+  assert.equal(out.pin_skipped, undefined);
+  assert.equal(out.note_id, NOTE_ID);
+  const status = ok(await tools.call("notes_status", { request_id: "pin-ok-request1" }), "notes_status");
+  assert.equal(status.pin_skipped, undefined);
+  assert.equal(status.note_id, NOTE_ID);
+  assert.equal(status.status, "done");
+});
+
+test("a skipped pin is one field on the write and on every later notes_status", async () => {
+  const reason = "Pin Coding Note Shortcut failed; note saved unpinned";
+  const { operator, tools } = harness();
+  operator.onPoll = finishOn(operator, 1, "done", writeDone({ pin_skipped: reason }));
+  const out = ok(await tools.call("notes_update", { title: STATIC_TITLE, markdown: "x", session: SESSION, request_id: "pin-skip-0001" }), "notes_update");
+  assert.equal(out.pin_skipped, reason);
+  assert.equal(out.status, "done");
+  const first = ok(await tools.call("notes_status", { request_id: "pin-skip-0001" }), "notes_status");
+  const second = ok(await tools.call("notes_status", { request_id: "pin-skip-0001" }), "notes_status");
+  assert.equal(first.pin_skipped, reason);
+  assert.equal(first.action, "update");
+  assert.deepEqual(first, second);
+  assert.equal(operator.posts().length, 1, "reading status does not post another acknowledgement");
 });
 
 test("a poll that fails ends the wait:  the request is queued, so the answer is its status and request_id, not an error", async () => {

@@ -756,13 +756,30 @@ def _with_room(
 ) -> tuple[Any, int]:
     """Run one allocation; when every letter of the space is live, close the least recently seen chat of this
     adapter and try once more.  A second LabelExhausted is the caller's to report."""
+    # Owner, Nov 11 2026:  "ok just refuse actually is fine".  When all 26 doubled pairs are live the refusal is the
+    # caller's to report, and no live chat is closed to make room.  Only a space other than the pairs (none is issued
+    # now) would still close the least recently seen chat of this adapter that holds a letter of it.
     try:
         return allocate(), 0
     except OR.LabelExhausted as exc:
-        space = getattr(exc, "space", args.letter_space)
+        space = getattr(exc, "space", "double")
+        if space == "double":
+            raise
         if not evict_oldest(OR, db, args.platform, args.source, keep, space):
             raise
         return allocate(), 1
+
+
+def refused_text(OR: Any, platform: str, limit: int = 0) -> str:
+    """What a chat reads when every main-chat pair is live:  the limit is the 26 doubled pairs, not every pair."""
+    limit = limit or len(getattr(OR, "PRIMARY_ORDER", ())) or 26
+    return (
+        "all %d %s main-chat pairs (AA to ZZ) are live:  the Operator refused this chat a letter"
+        % (
+            limit,
+            platform,
+        )
+    )
 
 
 def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, Any]:
@@ -832,8 +849,8 @@ def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, An
                     )  # register keeps an existing record's old title
             finally:
                 reg.close_db()
-    except OR.LabelExhausted:
-        return {"error": "all %s letters are in use" % args.letter_space, "swept": swept}
+    except OR.LabelExhausted as exc:
+        return {"error": refused_text(OR, args.platform, getattr(exc, "limit", 0)), "swept": swept}
     except SpaceLost:
         return {
             "error": "this registry cannot give a closed chat a pair letter again yet",
@@ -1021,7 +1038,7 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
         params["parent_session_id"] = parent
     out = _call_api(env, "register", params)
     if out.get("code") == "labels_exhausted":
-        return {"error": "all %s letters are in use" % args.letter_space, "swept": 0}
+        return {"error": refused_text(OR, args.platform), "swept": 0}
     error = _api_error(out)
     if error is not None:
         return error
@@ -1036,7 +1053,7 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
             reopen_params["parent_session_id"] = parent
         reopened = _call_api(env, "reopen", reopen_params)
         if reopened.get("code") == "labels_exhausted":
-            return {"error": "all %s letters are in use" % args.letter_space, "swept": 0}
+            return {"error": refused_text(OR, args.platform), "swept": 0}
         if reopened.get("code") == "space_lost":
             return {
                 "error": "this registry cannot give a closed chat a pair letter again yet",
