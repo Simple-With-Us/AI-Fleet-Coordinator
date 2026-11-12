@@ -185,13 +185,16 @@ EXACT = frozenset(
 # A new module still ships by default:  this list only ever names a path that nothing runs.
 REPO_ONLY = frozenset(
     {
-        *("scripts/simple_tools/" + name + ".py" for name in (
-            "clarify",
-            "operator_github_client",
-            "operator_github_policy",
-            "operator_github_secrets",
-            "operator_send",
-        )),
+        *(
+            "scripts/simple_tools/" + name + ".py"
+            for name in (
+                "clarify",
+                "operator_github_client",
+                "operator_github_policy",
+                "operator_github_secrets",
+                "operator_send",
+            )
+        ),
         "scripts/simple_tools/mcp/fixtures.jsonl",
     }
 )

@@ -527,13 +527,16 @@ def release_policy():
 # out of a release (nothing runs them).  A test pins this copy to the release's REPO_ONLY.
 SHIPPED_REPO_ONLY = frozenset(
     {
-        *("scripts/simple_tools/" + name + ".py" for name in (
-            "clarify",
-            "operator_github_client",
-            "operator_github_policy",
-            "operator_github_secrets",
-            "operator_send",
-        )),
+        *(
+            "scripts/simple_tools/" + name + ".py"
+            for name in (
+                "clarify",
+                "operator_github_client",
+                "operator_github_policy",
+                "operator_github_secrets",
+                "operator_send",
+            )
+        ),
         "scripts/simple_tools/mcp/fixtures.jsonl",
     }
 )
