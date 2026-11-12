@@ -28,6 +28,8 @@ Owner rule, Nov 11, 2026.  Infisical is the sole source of truth for every secre
 | `RECALL_ADMIN_TOKEN` | secret | **to be filled by admin** (the admin settings surface answers 403 until it is set) |
 | `RECALL_OWNER_TOKEN` | secret | **to be filled by admin** (OWNER recall mutations answer 403 until it is set; the shared seat bearer never proves OWNER) |
 | `RECALL_SOCKET_TIMEOUT` | tunable knob | set in prod |
+| `RECALL_SEARCH_CACHE_SIZE` | tunable knob | optional; default 256 entries when unset |
+| `RECALL_SEARCH_CACHE_TTL_SECONDS` | tunable knob | optional; default 600 seconds (10 minutes) when unset |
 | `SETTINGS_REFRESH_SECONDS` | tunable knob | set in prod (controls the background refresh cadence) |
 | `HOST`, `PORT` | env config | managed keys; currently supplied by the container env |
 

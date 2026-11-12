@@ -35,6 +35,7 @@ COMPLETE_NAME = ".complete"
 DEFAULT_MAX_AGE_S = 36 * 3600
 MIN_MAX_AGE_S = 3600
 MAX_MAX_AGE_S = 14 * 24 * 3600
+LOG_MAX_BYTES = 2 * 1024 * 1024
 MIRROR_ENV = "FLEET_RAG_MIRROR"
 MIRROR_SOURCES = frozenset({"skill", "memory"})
 # Skill and memory files live in the mirror.  Apple Notes are gated with them
@@ -83,6 +84,7 @@ class Tree:
 class PushResult:
     promoted: bool
     reason: str
+    folder_counts: dict[str, int]
 
 
 def mirror_root(env: dict | None = None) -> Path | None:
@@ -173,6 +175,53 @@ def memory_claude(root: Path) -> Path:
 
 def memory_codex(root: Path) -> Path:
     return root / "memory" / "codex"
+
+
+def default_log_path(home: Path) -> Path:
+    return home / "Library" / "Logs" / "fleet-rag-mirror.log"
+
+
+def maybe_rotate_log(path: Path, *, max_bytes: int = LOG_MAX_BYTES) -> None:
+    """Rotate ``path`` to ``path.1`` when it grows past ``max_bytes`` (single generation)."""
+    try:
+        if path.is_file() and path.stat().st_size > max_bytes:
+            rotated = path.with_name(path.name + ".1")
+            if rotated.is_file():
+                rotated.unlink()
+            os.replace(path, rotated)
+    except OSError:
+        pass
+
+
+def append_mirror_log(path: Path, line: str, *, max_bytes: int = LOG_MAX_BYTES) -> None:
+    """Append one line to the Mac mirror log, rotating on size when needed."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        maybe_rotate_log(path, max_bytes=max_bytes)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(line.rstrip("\n") + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+    except OSError:
+        pass
+
+
+def format_push_summary(
+    *,
+    outcome: str,
+    duration_s: float,
+    folder_counts: dict[str, int],
+    detail: str = "",
+) -> str:
+    """One parseable summary line for a push run."""
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+    parts = [f"{stamp} mirror summary outcome={outcome} duration_s={duration_s:.3f}"]
+    if detail:
+        parts.append(f"detail={detail}")
+    if folder_counts:
+        files = ",".join(f"{rel}:{count}" for rel, count in sorted(folder_counts.items()))
+        parts.append(f"files={files}")
+    return " ".join(parts)
 
 
 def default_trees(home: Path) -> tuple[Tree, ...]:
@@ -436,36 +485,40 @@ def push(
     """
     target = _check_target(ssh_target)
     root = _check_root(remote_root)
+    folder_counts: dict[str, int] = {}
     incoming_prefix = f"{target}:{root}/{INCOMING_NAME}/"
     code = run(reset_incoming_argv(target, root), None)
     if code != 0:
-        return PushResult(False, "incoming-reset-failed")
+        return PushResult(False, "incoming-reset-failed", folder_counts)
     expect: dict[str, int | None] = {}
     for tree in default_trees(home):
         if tree.local.is_dir():
             spec = incoming_prefix + tree.rel + "/"
             if not spec.startswith(incoming_prefix):
-                return PushResult(False, "bad-destination")
+                return PushResult(False, "bad-destination", folder_counts)
             code = run(
                 rsync_argv(tree.local, spec, delete=True, filters=tree.filters),
                 None,
             )
             if code != 0:
-                return PushResult(False, f"rsync-failed:{tree.rel}")
+                folder_counts[tree.rel] = count_local(tree)
+                return PushResult(False, f"rsync-failed:{tree.rel}", folder_counts)
             expect[tree.rel] = count_local(tree)
+            folder_counts[tree.rel] = expect[tree.rel]
         else:
             code = run(preserve_argv(target, root, tree.rel), None)
             if code != 0:
-                return PushResult(False, f"preserve-failed:{tree.rel}")
+                return PushResult(False, f"preserve-failed:{tree.rel}", folder_counts)
             expect[tree.rel] = None
+            folder_counts[tree.rel] = 0
     payload = json.dumps(expect, sort_keys=True)
     code = run(
         promote_argv(target, remote_python, remote_script, root),
         payload,
     )
     if code != 0:
-        return PushResult(False, "promote-failed")
-    return PushResult(True, "promoted")
+        return PushResult(False, "promote-failed", folder_counts)
+    return PushResult(True, "promoted", folder_counts)
 
 
 def _default_run(argv: list[str], input_text: str | None) -> int:
@@ -493,12 +546,50 @@ def _load_config(path: Path) -> dict:
     return data
 
 
+def _write_push_summary(
+    log_path: Path,
+    *,
+    outcome: str,
+    duration_s: float,
+    folder_counts: dict[str, int],
+    detail: str = "",
+) -> None:
+    line = format_push_summary(
+        outcome=outcome,
+        duration_s=duration_s,
+        folder_counts=folder_counts,
+        detail=detail,
+    )
+    append_mirror_log(log_path, line)
+    sys.stderr.write(line + "\n")
+
+
 def _cmd_push(config_path: Path) -> int:
+    started = time.monotonic()
     cfg = _load_config(config_path)
+    home = Path(cfg.get("home") or Path.home())
+    log_path = Path(cfg.get("log") or default_log_path(home))
+
+    def finish(
+        outcome: str,
+        *,
+        folder_counts: dict[str, int] | None = None,
+        detail: str = "",
+        exit_code: int,
+    ) -> int:
+        duration_s = time.monotonic() - started
+        _write_push_summary(
+            log_path,
+            outcome=outcome,
+            duration_s=duration_s,
+            folder_counts=folder_counts or {},
+            detail=detail,
+        )
+        return exit_code
+
     if cfg.get("enabled") is not True:
         sys.stderr.write("mirror: disabled\n")
-        return 0
-    home = Path(cfg.get("home") or Path.home())
+        return finish("disabled", exit_code=0)
     lock_path = Path(cfg.get("lock") or (home / ".local" / "state" / "fleet-rag-mirror.lock"))
     lock_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
@@ -507,7 +598,7 @@ def _cmd_push(config_path: Path) -> int:
     except BlockingIOError:
         os.close(fd)
         sys.stderr.write("mirror: skip, another push is active\n")
-        return 0
+        return finish("skipped", detail="concurrent", exit_code=0)
     try:
         result = push(
             home=home,
@@ -521,9 +612,14 @@ def _cmd_push(config_path: Path) -> int:
         os.close(fd)
     if not result.promoted:
         sys.stderr.write(f"mirror: {result.reason}\n")
-        return 1
+        return finish(
+            "failed",
+            folder_counts=result.folder_counts,
+            detail=result.reason,
+            exit_code=1,
+        )
     sys.stderr.write("mirror: promoted\n")
-    return 0
+    return finish("promoted", folder_counts=result.folder_counts, exit_code=0)
 
 
 def _cmd_promote(incoming: Path, live: Path) -> int:

@@ -64,7 +64,7 @@ import uuid
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from . import core, health, mirror, qdrant_snapshot, sources, telemetry
+from . import core, health, mirror, qdrant_snapshot, search_cache, sources, telemetry
 from .chunk import chunk_markdown
 from .core import FleetRagError, Qdrant, build_point, content_hash, eprint, match_filter, now_ms
 from .scrub import GitleaksError, gitleaks_flagged, scrub
@@ -1424,6 +1424,10 @@ def _run_locked(
             if report["ok"] and heartbeat:
                 _heartbeat()
         _append_log(log_path, report)
+        search_cache.note_ingest_complete(
+            report,
+            epoch_path=last_run_path.with_name(search_cache.EPOCH_NAME),
+        )
     return report
 
 
@@ -1784,7 +1788,7 @@ def ingest_rows(
     kept, dropped = gitleaks_drop(_dedupe_rows(points))
     new_rows = writer.missing(kept)
     writer.write(new_rows)
-    return {
+    result = {
         "rows": len(rows),
         "scrubbed": scrubbed,
         "dropped_by_gitleaks": dropped,
@@ -1793,6 +1797,9 @@ def ingest_rows(
         "would_write": len(new_rows) if dry_run else 0,
         "run_id": run_id,
     }
+    if not dry_run:
+        search_cache.note_ingest_complete(result)
+    return result
 
 
 # --------------------------------------------------------------------------- seeds

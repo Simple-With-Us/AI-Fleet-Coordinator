@@ -683,9 +683,17 @@ export function neutralizeLinearMentions(body) {
   return out;
 }
 
-/** clean() (which removes the Zulip markers) plus the Linear markers.  Returns [text, truncated]. */
+// AFC-722 review:  clean() folds NFKC, which turns U+00A0 into a plain space, so a Linear read could never show the
+// sentence gap a write stored and every agent saw it as missing.  U+00A0 rides through the fold as a private-use
+// placeholder and comes back as itself.  The marker patterns treat both as a separator, so nothing hides a marker.
+const NBSP_HOLD = "\uF8FE";
+const NBSP_HOLD_RE = /\uF8FE/g;
+
+/** clean() (which removes the Zulip markers) plus the Linear markers, keeping U+00A0.  Returns [text, truncated]. */
 export function linearClean(value, limit = null) {
-  const [text] = clean(value);
+  const raw = value === null || value === undefined ? "" : String(value);
+  const [held] = clean(raw.replace(NBSP_HOLD_RE, " ").replaceAll("\u00a0", NBSP_HOLD));
+  const text = held.replace(NBSP_HOLD_RE, "\u00a0");
   const stripped = text.replace(LINEAR_MARKER_RE, "[marker removed]");
   if (limit !== null) {
     const points = [...stripped];
