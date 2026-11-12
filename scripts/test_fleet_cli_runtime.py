@@ -499,8 +499,8 @@ print(json.dumps(result))
         self.assertEqual(replies[0]["result"]["serverInfo"]["name"], "simple-chat")
         # What the real server serves:  tools.json, eavesdropper-tools.json (AFC-330), notes-tools.json and
         # recall-tools.json (AFC-331), then the linear_* tools built from the board catalogs, then
-        # fleetlink-tools.json.  Every file must ship, or `simple-chat mcp` fails at startup on the server (it
-        # did, 2026-10-16).
+        # peer-actions-tools.json, then fleetlink-tools.json last (the hosted Worker specs).  Every file
+        # must ship, or `simple-chat mcp` fails at startup on the server (it did, 2026-10-16).
         mcp = self.release / "scripts/simple_tools/mcp"
         served = []
         for name in (
@@ -533,8 +533,8 @@ print(json.dumps(result))
         self.assertTrue(fleetlink)
         self.assertTrue(peer_actions)
         tail = listed[len(served) + len(linear) :]
-        self.assertEqual(tail[: len(fleetlink)], fleetlink)
-        self.assertEqual(tail[len(fleetlink) :], peer_actions)
+        self.assertEqual(tail[: len(peer_actions)], peer_actions)
+        self.assertEqual(tail[len(peer_actions) :], fleetlink)
 
     def test_generated_wrapper_isolation_flags(self):
         for name in (
