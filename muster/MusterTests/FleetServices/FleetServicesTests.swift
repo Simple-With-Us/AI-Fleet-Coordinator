@@ -25,12 +25,12 @@ final class FleetServicesTests: XCTestCase {
     }
 
     /// The Mac's eavesdropper (`com.jay.operator`) is on the Services list as a LaunchAgent,
-    /// so its state is launchd's and its restart takes the LaunchAgent route.  The wake
-    /// alerter is not:  whether it should run is the owner's call.
+    /// so its state is launchd's.  It was retired at the one-listener cutover,  so its policy
+    /// says so.  The wake alerter is not on the list:  whether it should run is the owner's call.
     func testTheOperatorEavesdropperIsALaunchAgentServiceAndTheWakeAlerterIsNot() {
         let descriptor = FleetServiceRegistry.descriptor(for: "com.jay.operator")
         XCTAssertEqual(descriptor?.kind, .launchAgent(label: "com.jay.operator"))
-        XCTAssertEqual(descriptor?.policy, .alwaysOn)
+        XCTAssertEqual(descriptor?.policy, .retired)
         XCTAssertEqual(descriptor?.host, .mac)
         XCTAssertEqual(descriptor, FleetServiceRegistry.operatorEavesdropper)
         XCTAssertNil(FleetServiceRegistry.descriptor(for: "com.jay.operator-wake-alerter"))
@@ -40,25 +40,102 @@ final class FleetServicesTests: XCTestCase {
         }
         XCTAssertTrue(labels.contains("com.jay.operator"))
         XCTAssertFalse(labels.contains("com.jay.operator-wake-alerter"))
-        // Muster never starts it on its own:  launchd keeps it alive.
+        // Muster never starts or stops it on its own:  it was retired.
         XCTAssertEqual(ServicePolicyTable.policy(for: "com.jay.operator"), .leaveAlone)
         XCTAssertEqual(ServicePolicyTable.row(for: "com.jay.operator")?.source, .servicesList)
+        XCTAssertTrue(ServicePolicyTable.reason(for: "com.jay.operator").contains("retired at the Nov 10 one-listener cutover"))
     }
 
-    /// Its row reads launchd's state and offers the restart a running LaunchAgent gets.
-    func testTheOperatorEavesdropperRowCarriesItsLaunchdStateAndOffersARestart() {
-        let running = FleetServices(serverState: .running, states: ["com.jay.operator": .running])
-        let entry = running.entries.first { $0.id == "com.jay.operator" }
-        XCTAssertEqual(entry?.state, .running)
-        XCTAssertEqual(entry?.summary, "running")
-        XCTAssertEqual(entry?.availableActions, [.stop, .restart])
-        let failed = FleetServices(serverState: .running, states: ["com.jay.operator": .failed])
-        let failedEntry = failed.entries.first { $0.id == "com.jay.operator" }
-        XCTAssertEqual(failedEntry?.availableActions, [.start, .restart])
-        XCTAssertEqual(failedEntry?.needsAttention, true)
-        // A state nobody read is not known,  never running.
-        let unread = FleetServices(serverState: .running, states: [:])
-        XCTAssertEqual(unread.entries.first { $0.id == "com.jay.operator" }?.state, .unknown)
+    // MARK: - The retired Mac listener
+
+    private func operatorEntry(_ state: ManagedServiceState?,
+                               stoppedByOwner: Bool = false) -> FleetServiceEntry? {
+        let id = FleetServiceRegistry.operatorEavesdropper.id
+        let states: [String: ManagedServiceState] = state.map { [id: $0] } ?? [:]
+        let services = FleetServices(serverState: .running, states: states,
+                                     stoppedByOwner: stoppedByOwner ? [id] : [])
+        return services.entries.first { $0.id == id }
+    }
+
+    /// Stopped is the retired listener's normal state:  its row reads Retired,  says since when
+    /// and who holds the seats,  is never something to look at,  and offers nothing to start.
+    func testAStoppedRetiredListenerReadsRetiredAndIsNotDown() throws {
+        for state in [ManagedServiceState.stopped, .notInstalled] {
+            let entry = try XCTUnwrap(operatorEntry(state))
+            XCTAssertTrue(entry.isRetired)
+            XCTAssertTrue(entry.isRetiredAndDown)
+            XCTAssertEqual(entry.wanted, false)
+            XCTAssertEqual(entry.summary, "retired")
+            XCTAssertFalse(entry.needsAttention, "\(state)")
+            XCTAssertFalse(MachineMenuCopy.isProblem(entry))
+            XCTAssertFalse(entry.stateNoteIsWarning)
+            XCTAssertEqual(entry.availableActions, [])
+            XCTAssertNil(entry.whyNoActions)
+            XCTAssertEqual(entry.marker, ServiceStateMarker(word: "Retired", symbol: "archivebox", tone: .neutral))
+            XCTAssertEqual(entry.stateNote,
+                           "Retired since the Nov 10 one-listener cutover.\u{00A0} The server listener holds every seat, so this Mac listener is expected to be stopped.")
+            XCTAssertEqual(entry.menuNote, "since the Nov 10 one-listener cutover")
+            let row = MachineMenuCopy.serviceRow(entry, allowlist: OpsAllowlist(), pm2Answered: true)
+            XCTAssertEqual(row.title, "Operator Eavesdropper:  retired (since the Nov 10 one-listener cutover)")
+            XCTAssertTrue(row.actions.isEmpty)
+        }
+        // It counts as retired,  never as stopped,  in the menu's line.
+        let stopped = try XCTUnwrap(operatorEntry(.stopped))
+        let shellular = FleetServiceEntry(descriptor: try XCTUnwrap(FleetServiceRegistry.descriptor(for: "shellular")),
+                                          wanted: true, state: .running)
+        XCTAssertEqual(MachineMenuCopy.serviceCounts([shellular, stopped]), "1 running, 0 stopped, 1 retired")
+        // The sidebar's Services badge does not count it.
+        let now = Date()
+        XCTAssertNil(SidebarBadges.services([shellular, stopped], pm2Answered: true, readAt: now, now: now))
+    }
+
+    /// A retired listener found running is said plainly:  a warning,  and only a Stop.
+    func testARunningRetiredListenerIsAPlainWarning() throws {
+        let entry = try XCTUnwrap(operatorEntry(.running))
+        XCTAssertTrue(entry.isRetiredButLive)
+        XCTAssertEqual(entry.summary, "running, but it is retired and should hold no seat")
+        XCTAssertEqual(entry.marker.word, "Running")
+        XCTAssertEqual(entry.marker.tone, .warning)
+        XCTAssertTrue(entry.stateNoteIsWarning)
+        XCTAssertEqual(entry.stateNote,
+                       "It is running, but it was retired at the Nov 10 one-listener cutover and should hold no seat.\u{00A0} The server listener holds every seat.")
+        XCTAssertEqual(entry.menuNote, "running, but retired:  the server listener holds every seat")
+        XCTAssertEqual(entry.availableActions, [.stop])
+        // A running listener is not down,  so it is not counted as down.
+        XCTAssertFalse(entry.needsAttention)
+        XCTAssertEqual(MachineMenuCopy.serviceCounts([entry]), "1 running, 0 stopped")
+    }
+
+    /// A state nobody read is still not known,  never running and never retired-and-stopped,
+    /// and a failure is still a failure.
+    func testAnUnreadOrFailedRetiredListenerIsStillSaidAsItIs() throws {
+        let unread = try XCTUnwrap(operatorEntry(nil))
+        XCTAssertEqual(unread.state, .unknown)
+        XCTAssertFalse(unread.isRetiredAndDown)
+        XCTAssertTrue(unread.needsAttention)
+        XCTAssertEqual(unread.availableActions, [])
+        let failed = try XCTUnwrap(operatorEntry(.failed))
+        XCTAssertTrue(failed.needsAttention)
+        XCTAssertEqual(failed.marker.word, "Failed")
+        XCTAssertEqual(failed.availableActions, [])
+        XCTAssertTrue(failed.stateNote?.contains("retired at the Nov 10 one-listener cutover") == true)
+    }
+
+    /// A retired listener found running says so in the menu even after an owner stop was asked
+    /// for, because something is running that should hold no seat (Kody on #1788).
+    func testARunningRetiredListenerWarnsInTheMenuEvenAfterAnOwnerStop() throws {
+        let entry = try XCTUnwrap(operatorEntry(.running, stoppedByOwner: true))
+        XCTAssertTrue(entry.isRetiredButLive)
+        XCTAssertEqual(entry.menuNote, "running, but retired:  the server listener holds every seat")
+    }
+
+    /// A stop the owner asked for stays on its row,  beside why the listener is retired.
+    func testAnOwnerStopOnTheRetiredListenerKeepsBothLines() throws {
+        let entry = try XCTUnwrap(operatorEntry(.stopped, stoppedByOwner: true))
+        XCTAssertEqual(entry.menuNote, "stopped by you")
+        XCTAssertTrue(entry.stateNote?.hasPrefix("Stopped on purpose") == true, entry.stateNote ?? "")
+        XCTAssertTrue(entry.stateNote?.contains("Retired since the Nov 10 one-listener cutover.") == true, entry.stateNote ?? "")
+        XCTAssertEqual(entry.availableActions, [])
     }
 
     func testTheMCPServerIsSupervisedByPM2AndFollowsTheBotFleetServer() {
@@ -69,7 +146,8 @@ final class FleetServicesTests: XCTestCase {
     }
 
     func testEveryOtherServiceIsWantedOnItsOwn() {
-        for descriptor in FleetServiceRegistry.all where descriptor.id != "botfleet-mcp" {
+        for descriptor in FleetServiceRegistry.all
+        where descriptor.id != "botfleet-mcp" && descriptor.id != FleetServiceRegistry.operatorEavesdropper.id {
             XCTAssertEqual(descriptor.policy, .alwaysOn, "\(descriptor.id) follows the wrong rule")
         }
     }

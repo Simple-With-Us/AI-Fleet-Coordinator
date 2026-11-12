@@ -13,10 +13,15 @@ Sources (payload `source` value):
                  AI-Fleet-Coordinator, fleet-ops (its handbook/ pages too, private ones only when an
                  FLEET-PROTOCOL.md is ingested:  the public ones are the text of that file),
                  top-level ~/apps/*.md (not effort logs),
-                 ~/.claude/CLAUDE.md, ~/.grok/docs/**/*.md, ~/.grok/skills/**/SKILL.md
-  skill          ~/.claude/skills/*/SKILL.md and ~/.cursor/skills/*/SKILL.md
-                 (doc_id skill/<tree>/<name>; byte-identical copies collapse to the first tree)
-  memory         ~/.claude/projects/*/memory/*.md and ~/.codex/memories/*.md
+                 ~/.claude/CLAUDE.md, ~/.grok/docs/**/*.md, ~/.grok/skills/**/SKILL.md.
+                 Skips node_modules, VCS, backups, build/dist/coverage output, vendored and
+                 generated trees, lockfiles, minified blobs, and files over DOC_MAX_BYTES.
+  skill          ~/.claude/skills/*/SKILL.md, ~/.cursor/skills/*/SKILL.md and ~/.grok/skills/*/SKILL.md
+                 (doc_id skill/<tree>/<name>; byte-identical copies collapse to the first tree).
+                 A set FLEET_RAG_MIRROR, or the server mirror when that tree is in use,
+                 replaces these home trees.
+  memory         ~/.claude/projects/*/memory/*.md and ~/.codex/memories/*.md.
+                 The same mirror replaces these home trees.
   apple-note     the iCloud "Coding" folder via notes_export (falls back to the on-disk cache
                  when Notes.app is unavailable and records a warning via `take_warnings`)
   chat-log       parsed agent transcripts (user + assistant text only) from Claude, Grok,
@@ -42,6 +47,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 
+from . import linear_board, mirror
 from .core import FleetRagError, now_ms
 
 HOME = pathlib.Path.home()
@@ -85,7 +91,9 @@ JSONL_LINE_MAX = 200_000
 
 # Restricted walk for product app repos (fleet coordinator / fleet-ops keep a broader walk).
 DOC_ROOT_NAMES = ("README.md", "AGENTS.md", "STATUS.md", "CLAUDE.md")
-DOC_SKIP_DIR_NAMES = frozenset(
+# Directories the walk already skipped before the AFC-746 diet.  Files under these are not
+# held back from prune: they were never part of the corpus this diet is migrating.
+DOC_SKIP_DIR_NAMES_LEGACY = frozenset(
     {
         "node_modules",
         ".git",
@@ -96,6 +104,110 @@ DOC_SKIP_DIR_NAMES = frozenset(
         ".secrets",
     }
 )
+# Directories the diet adds.  A hit is excluded and held out of prune until a dry-run
+# report and an explicit migration (FLEET_RAG_PRUNE_EXCLUDED or an allowlist).
+DOC_DIET_DIR_NAMES = frozenset(
+    {
+        "coverage",
+        ".next",
+        "out",
+        ".output",
+        "storybook-static",
+        ".turbo",
+        ".cache",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "target",
+        "third_party",
+        "third-party",
+        "vendored",
+        "external",
+        "bower_components",
+        "generated",
+        ".generated",
+        "htmlcov",
+        "site-packages",
+        "Pods",
+        "Carthage",
+        "DerivedData",
+        ".build",
+        ".yarn",
+        "dist-types",
+        ".parcel-cache",
+        ".svelte-kit",
+        ".nuxt",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".tox",
+        ".eggs",
+    }
+)
+DOC_SKIP_DIR_NAMES = DOC_SKIP_DIR_NAMES_LEGACY | DOC_DIET_DIR_NAMES
+DOC_DIET_DIR_NAMES_FOLDED = frozenset(name.casefold() for name in DOC_DIET_DIR_NAMES)
+DOC_DIET_VERSION = "afc-746-1"
+# Reasons introduced by the diet.  The older reasons stay out of the prune hold.
+DOC_DIET_REASONS = frozenset({"skipped-dir", "lockfile", "minified", "generated", "binary"})
+DOC_LOCKFILE_NAMES = frozenset(
+    {
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "bun.lock",
+        "bun.lockb",
+        "cargo.lock",
+        "poetry.lock",
+        "pipfile.lock",
+        "composer.lock",
+        "gemfile.lock",
+        "packages.lock.json",
+        "package.resolved",
+        "go.sum",
+        "npm-shrinkwrap.json",
+        "shrinkwrap.yaml",
+        "pubspec.lock",
+        "flake.lock",
+        "uv.lock",
+        "gradle.lockfile",
+    }
+)
+DOC_BINARY_SUFFIXES = frozenset(
+    {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".ico",
+        ".pdf",
+        ".zip",
+        ".gz",
+        ".tgz",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".eot",
+        ".mp4",
+        ".mp3",
+        ".wasm",
+        ".pyc",
+        ".so",
+        ".dylib",
+        ".a",
+        ".o",
+        ".class",
+        ".jar",
+        ".exe",
+        ".dll",
+        ".bin",
+        ".sqlite",
+        ".db",
+    }
+)
+# A line this long with almost no whitespace is a minified bundle, not prose.
+MINIFIED_LINE_CHARS = 8000
+MINIFIED_WHITESPACE_MAX = 0.05
 DOC_APP_REPOS = (
     "Socratic.Trade",
     "Socratic-Trade",  # the checkout's current name;  missing it pruned the repo (AFC-677)
@@ -128,6 +240,12 @@ SKIP_SKILL_COPY = "skill-copy"  # (b) covered by the skill source
 SKIP_EFFORT_LOG = "effort-log-mirror"  # (c) covered by the effort-log source
 SKIP_HANDBOOK_MIRROR = "handbook-mirror"  # (d) Fleet-OPS generated/ and public handbook pages: any ingested FLEET-PROTOCOL.md
 DOC_SKIPS: list[tuple[str, str]] = []
+# Diet excludes from the last iter_docs call: (reason, path).  Legacy skips are not listed.
+DOC_EXCLUDED_NEW: list[tuple[str, pathlib.Path]] = []
+# doc_ids of diet excludes.  Ingest withholds them from prune until a migration.
+DOC_HELD_IDS: set[str] = set()
+# {"kept": [Path], "excluded_new": [(reason, Path)]} from the last iter_docs, or None.
+LAST_DOC_WALK: dict | None = None
 
 
 def take_doc_skips() -> list[tuple[str, str]]:
@@ -137,12 +255,22 @@ def take_doc_skips() -> list[tuple[str, str]]:
     return out
 
 
+def take_held_doc_ids() -> set[str]:
+    """Return and clear doc_ids the last doc walk excluded under the diet rules."""
+    out = set(DOC_HELD_IDS)
+    DOC_HELD_IDS.clear()
+    return out
+
+
 SOURCES = ("linear", "doc", "skill", "memory", "apple-note", "chat-log")
 # Nightly / `ingest --all`.  chat-log is an infrequent owner-policy scan, not a lesson dump
 # (owner 2026-09-02).  Pass `--source chat-log` explicitly.
 # board and effort-log are retired sources (owner 2026-11-03: Linear is the only issue home).
 # Their iter_* readers stay for tests until the data is deleted;  they are not registered.
-NIGHTLY_SOURCES = ("linear", "doc", "skill", "memory", "apple-note")
+# apple-note is write-time upsert only (AFC-685); nightly ingest must not read Apple Notes.
+NIGHTLY_SOURCES = ("linear", "doc", "skill", "memory")
+# The Hetzner nightly (AFC-687) is this same set.  It attests health without Apple Notes.
+SERVER_NIGHTLY_SOURCES = NIGHTLY_SOURCES
 
 WARNINGS: list[str] = []
 
@@ -627,9 +755,13 @@ def iter_effort_logs(
 # --------------------------------------------------------------------------- docs
 
 
-def _skip_doc(p: pathlib.Path) -> bool:
-    parts = set(p.parts)
-    if parts & DOC_SKIP_DIR_NAMES:
+def _legacy_skip(p: pathlib.Path) -> bool:
+    """True when the pre-diet walk already dropped this file.
+
+    Those files are not held from prune.  An unreadable path counts as already
+    skipped, matching the old ``_skip_doc`` which treated ``OSError`` as a skip.
+    """
+    if set(p.parts) & DOC_SKIP_DIR_NAMES_LEGACY:
         return True
     if "reviews" in p.parts and "raw" in p.name.lower():
         return True
@@ -639,6 +771,103 @@ def _skip_doc(p: pathlib.Path) -> bool:
     except OSError:
         return True
     return False
+
+
+@functools.lru_cache(maxsize=4096)
+def _git_toplevel(start: str) -> str:
+    """Git toplevel for ``start``, or "" when it is not in a repo. Cached per directory."""
+    if not start:
+        return ""
+    top = _git(["rev-parse", "--show-toplevel"], pathlib.Path(start))
+    if not top:
+        return ""
+    try:
+        return os.fspath(canonical_path(top.strip()))
+    except OSError:
+        return top.strip()
+
+
+def _diet_dir_parts(p: pathlib.Path) -> set[str]:
+    """Directory names that count for the diet.
+
+    Inside a git checkout, only the path relative to that checkout counts, so a parent
+    named ``out`` or ``target`` above the repo is not a build directory. With no repo,
+    the path relative to the home directory is the scope.
+    """
+    start = p if p.is_dir() else p.parent
+    try:
+        start_s = os.fspath(start)
+    except OSError:
+        start_s = ""
+    top = _git_toplevel(start_s) if start_s else ""
+    try:
+        full = canonical_path(p)
+    except OSError:
+        full = p
+    if top:
+        try:
+            rel = full.relative_to(top)
+        except ValueError:
+            rel = full
+    else:
+        try:
+            rel = full.resolve().relative_to(HOME)
+        except (ValueError, OSError):
+            rel = full
+    return {part.casefold() for part in rel.parts}
+
+
+def doc_exclude_reason(p: pathlib.Path) -> str | None:
+    """Why the doc walk drops ``p``, or None to keep it.
+
+    ``legacy-dir``, ``reviews-raw``, ``too-large`` and ``unreadable`` are the old
+    walk.  ``skipped-dir``, ``lockfile``, ``minified``, ``generated`` and ``binary``
+    are the diet.  Only the diet reasons are held out of prune.
+    """
+    if set(p.parts) & DOC_SKIP_DIR_NAMES_LEGACY:
+        return "legacy-dir"
+    if _diet_dir_parts(p) & DOC_DIET_DIR_NAMES_FOLDED:
+        return "skipped-dir"
+    fold = p.name.casefold()
+    if fold in DOC_LOCKFILE_NAMES or fold.endswith("-lock.json") or fold.endswith(".lock"):
+        return "lockfile"
+    if ".min." in fold or fold.endswith(".min"):
+        return "minified"
+    if fold.endswith(".generated.md") or fold.endswith(".gen.md") or ".generated." in fold:
+        return "generated"
+    if p.suffix.casefold() in DOC_BINARY_SUFFIXES:
+        return "binary"
+    if "reviews" in p.parts and "raw" in p.name.lower():
+        return "reviews-raw"
+    try:
+        size = p.stat().st_size
+    except OSError:
+        return "unreadable"
+    if size > DOC_MAX_BYTES:
+        return "too-large"
+    try:
+        with open(p, "rb") as fh:
+            sample = fh.read(8192)
+    except OSError:
+        return "unreadable"
+    if b"\x00" in sample:
+        return "binary"
+    if size == 0:
+        return None
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "unreadable"
+    if not any(len(line) >= MINIFIED_LINE_CHARS for line in text.splitlines()):
+        return None
+    whitespace = sum(1 for ch in text if ch.isspace())
+    if text and whitespace / len(text) < MINIFIED_WHITESPACE_MAX:
+        return "minified"
+    return None
+
+
+def _skip_doc(p: pathlib.Path) -> bool:
+    return doc_exclude_reason(p) is not None
 
 
 def _is_effort_log_name(name: str) -> bool:
@@ -815,12 +1044,39 @@ def _unique_paths(files: Iterable[pathlib.Path]) -> list[pathlib.Path]:
     return out
 
 
+def doc_id_for_path(p: pathlib.Path, doc_prefix: str = "doc") -> str:
+    """The ``doc_id`` ``doc_from_file`` would assign, without reading the body."""
+    info = repo_info(p)
+    rel = ""
+    if info:
+        try:
+            rel = str(canonical_path(p).relative_to(info["top"]))
+        except (ValueError, OSError):
+            rel = ""
+    if info and rel:
+        repo = info["repo"] or pathlib.Path(info["top"]).name
+        return f"{doc_prefix}/{repo}/{rel}"
+    try:
+        home_rel = str(p.resolve().relative_to(HOME))
+    except (ValueError, OSError):
+        home_rel = str(p).lstrip("/")
+    return f"{doc_prefix}/local/{home_rel}"
+
+
 def _dedupe_docs(files: Iterable[pathlib.Path]) -> list[pathlib.Path]:
     seen: set[tuple] = set()
     out: list[pathlib.Path] = []
     for f in files:
         try:
+            # _skip_doc stays the predicate tests patch.  OSError, including a patch
+            # that raises, drops the file the way the pre-diet walk did and does not
+            # hold it.
             if not f.is_file() or _skip_doc(f):
+                reason = doc_exclude_reason(f) if f.is_file() else None
+                if reason in DOC_DIET_REASONS and not _legacy_skip(f):
+                    DOC_EXCLUDED_NEW.append((reason, f))
+                    DOC_SKIPS.append((f"diet-{reason}", str(f)))
+                    DOC_HELD_IDS.add(doc_id_for_path(f))
                 continue
             key = fs_key(f)
         except OSError:
@@ -949,16 +1205,11 @@ def doc_from_file(
             rel = str(canonical_path(p).relative_to(info["top"]))
         except (ValueError, OSError):
             rel = ""
+    doc_id = doc_id_for_path(p, doc_prefix)
     if info and rel:
-        doc_id = f"{doc_prefix}/{info['repo'] or pathlib.Path(info['top']).name}/{rel}"
         url = blob_url(info, rel)
         created = info["dates"].get(rel, 0) * 1000 or mtime_ms(p)
     else:
-        try:
-            home_rel = str(p.resolve().relative_to(HOME))
-        except ValueError:
-            home_rel = str(p.resolve()).lstrip("/")
-        doc_id = f"{doc_prefix}/local/{home_rel}"
         url = ""
         created = mtime_ms(p)
     md = read_text(p)
@@ -978,25 +1229,60 @@ def doc_from_file(
     )
 
 
+# An omitted directory follows the host env at call time.  An explicit None still
+# skips that walk, which is what the tests use to keep a fixture off the code tree.
+_CALLER_DEFAULT = object()
+
+
+def _configured_dir(value: object, env_name: str, fallback: pathlib.Path) -> pathlib.Path | None:
+    if value is None:
+        return None
+    if value is _CALLER_DEFAULT:
+        raw = (os.environ.get(env_name) or "").strip()
+        return pathlib.Path(raw) if raw else fallback
+    return pathlib.Path(str(value))
+
+
+def _default_checkout(name: str) -> pathlib.Path:
+    """A clone under FLEET_CODE_ROOT, or under ~/Code when that root is unset."""
+    root = _configured_dir(_CALLER_DEFAULT, "FLEET_CODE_ROOT", CODE_DIR)
+    if root is None:
+        root = CODE_DIR
+    return root / name
+
+
 def iter_docs(
-    fleet_repo: pathlib.Path | str = FLEET_REPO,
-    fleet_ops: pathlib.Path | str = FLEET_OPS_REPO,
+    fleet_repo: object = _CALLER_DEFAULT,
+    fleet_ops: object = _CALLER_DEFAULT,
     extra: Iterable[pathlib.Path] = EXTRA_DOCS,
     limit: int | None = None,
-    code_dir: pathlib.Path | str | None = CODE_DIR,
-    apps_dir: pathlib.Path | str | None = APPS_DIR,
+    code_dir: object = _CALLER_DEFAULT,
+    apps_dir: object = _CALLER_DEFAULT,
     grok_home: pathlib.Path | str | None = GROK_HOME,
 ) -> Iterator[Doc]:
-    ops = pathlib.Path(fleet_ops)
+    global LAST_DOC_WALK
+    repo = (
+        _default_checkout("AI-Fleet-Coordinator")
+        if fleet_repo is _CALLER_DEFAULT
+        else pathlib.Path(str(fleet_repo))
+    )
+    ops = (
+        _default_checkout("fleet-ops")
+        if fleet_ops is _CALLER_DEFAULT
+        else pathlib.Path(str(fleet_ops))
+    )
     DOC_SKIPS.clear()
+    DOC_EXCLUDED_NEW.clear()
+    DOC_HELD_IDS.clear()
     files = _doc_files(
-        pathlib.Path(fleet_repo),
+        repo,
         ops,
         extra,
-        code_dir=None if code_dir is None else pathlib.Path(code_dir),
-        apps_dir=None if apps_dir is None else pathlib.Path(apps_dir),
+        code_dir=_configured_dir(code_dir, "FLEET_CODE_ROOT", CODE_DIR),
+        apps_dir=_configured_dir(apps_dir, "FLEET_APPS_ROOT", APPS_DIR),
         grok_home=None if grok_home is None else pathlib.Path(grok_home),
     )
+    LAST_DOC_WALK = {"kept": list(files), "excluded_new": list(DOC_EXCLUDED_NEW)}
     _log_doc_skips()
     for i, p in enumerate(files):
         if limit and i >= limit:
@@ -1005,11 +1291,13 @@ def iter_docs(
 
 
 def _log_doc_skips() -> None:
-    """One warning per mirror rule: count plus up to three example paths (home-relative)."""
+    """One warning per mirror or diet rule: count plus up to three example paths."""
     by_rule: dict[str, list[str]] = {}
     for rule, path in DOC_SKIPS:
         by_rule.setdefault(rule, []).append(path)
-    for rule in (SKIP_APPS_MIRROR, SKIP_SKILL_COPY, SKIP_EFFORT_LOG, SKIP_HANDBOOK_MIRROR):
+    known = (SKIP_APPS_MIRROR, SKIP_SKILL_COPY, SKIP_EFFORT_LOG, SKIP_HANDBOOK_MIRROR)
+    diet = tuple(rule for rule in sorted(by_rule) if rule.startswith("diet-"))
+    for rule in known + diet:
         paths = by_rule.get(rule)
         if not paths:
             continue
@@ -1036,15 +1324,32 @@ def skill_tree(skill_dir: pathlib.Path) -> str:
     return tree or "local"
 
 
+def resolved_skill_dirs() -> tuple[pathlib.Path, ...]:
+    """Skill trees for this call.  The mirror root replaces the home trees."""
+    root = mirror.configured_root()
+    if root is not None:
+        return mirror.skill_dirs(root)
+    return SKILL_DIRS
+
+
+def resolved_memory_dirs() -> tuple[pathlib.Path, pathlib.Path]:
+    """Claude project memories and Codex memories for this call."""
+    root = mirror.configured_root()
+    if root is not None:
+        return mirror.memory_claude(root), mirror.memory_codex(root)
+    return CLAUDE_PROJECTS, CODEX_MEMORIES
+
+
 def iter_skills(
-    skill_dirs: Iterable[pathlib.Path] = SKILL_DIRS, limit: int | None = None
+    skill_dirs: Iterable[pathlib.Path] | None = None, limit: int | None = None
 ) -> Iterator[Doc]:
     """One Doc per SKILL.md.  doc_id is unique per tree (skill/claude/<name>, skill/cursor/<name>);
     a byte-identical copy in a later tree is skipped (the first tree wins) so the same content is
-    not chunked twice under two ids."""
+    not chunked twice under two ids.  An omitted directory list is resolved at call time."""
+    chosen = resolved_skill_dirs() if skill_dirs is None else skill_dirs
     seen_hash: set[str] = set()
     n = 0
-    for d in skill_dirs:
+    for d in chosen:
         d = pathlib.Path(d)
         if not d.exists():
             continue
@@ -1161,12 +1466,14 @@ def _memory_doc(p: pathlib.Path, seat: str, doc_id: str, app: str) -> Doc:
 
 
 def iter_memory(
-    claude_projects: pathlib.Path | str = CLAUDE_PROJECTS,
-    codex_memories: pathlib.Path | str = CODEX_MEMORIES,
+    claude_projects: pathlib.Path | str | None = None,
+    codex_memories: pathlib.Path | str | None = None,
     limit: int | None = None,
 ) -> Iterator[Doc]:
+    """Memory files.  An omitted path is resolved at call time, including the mirror."""
+    default_claude, default_codex = resolved_memory_dirs()
     n = 0
-    cp = pathlib.Path(claude_projects)
+    cp = pathlib.Path(default_claude if claude_projects is None else claude_projects)
     if cp.exists():
         for mem_dir in sorted(cp.glob("*/memory")):
             slug = project_slug(mem_dir.parent.name)
@@ -1179,7 +1486,7 @@ def iter_memory(
                 yield _memory_doc(
                     p, "CLAUDE", f"memory/claude/{slug}/{p.name}", app_from_project(slug)
                 )
-    cm = pathlib.Path(codex_memories)
+    cm = pathlib.Path(default_codex if codex_memories is None else codex_memories)
     if cm.exists():
         for p in sorted(cm.glob("*.md")):
             if limit and n >= limit:
@@ -1764,17 +2071,19 @@ def iter_chat_logs(
 # THE BOARD was retired 2026-10-19 (AFC-363);  the frozen findings.db keeps the old rows
 # searchable, but nothing new can ever arrive from it, so the corpus has missed every board
 # point since the freeze.  Linear is the live board now (docs/protocols/linear-migration.md).
-# This generator reads Linear through the installed `simple-board` CLI - read verbs only,
-# which need no bearer and run as the shared Fleet app - so credential lookup, token caching
-# and rate limiting stay in the one sanctioned place instead of being duplicated here.
+# This generator reads Linear through the board CLI stack (in-process, read-only GraphQL)
+# so credential lookup, per-run token reuse, refresh on expiry or 401, and rate limiting
+# stay in the one sanctioned place instead of being duplicated here.
 #
 # Linear replaces the frozen board corpus. Every live or archived issue is eligible,
 # including imported issues untouched since the freeze. Only committed ingest state may
-# suppress a routine refetch; FULL bypasses that cache. Retired coverage files are used
-# only by explicit migration verification, never by the normal Linear source.
+# suppress a routine refetch; FULL bypasses that cache. A committed updatedAt cursor
+# limits the id scan to issues updated since that cursor minus an overlap. The cursor
+# advances only after a clean source run. A missing, corrupt, or stale cursor, and a
+# weekly full sweep, read every id. Retired coverage files are used only by explicit
+# migration verification, never by the normal Linear source.
 
 LINEAR_FREEZE = os.environ.get("FLEET_RAG_LINEAR_FREEZE", "2026-10-19T00:00:00.000Z")
-SIMPLE_BOARD_CLI = os.environ.get("FLEET_RAG_SIMPLE_BOARD", "simple-board")
 LINEAR_PAGE = 250
 LINEAR_FULL_PAGE = 50  # full nodes are heavy (descriptions + comments);  keep each call modest
 # Keep the CLI cap. Halve issue chunks, then retry a single issue with one node per
@@ -1879,6 +2188,7 @@ def reset_linear_seat_state() -> None:
     global LINEAR_SEAT_USED
     _linear_failed_seats.clear()
     LINEAR_SEAT_USED = None
+    linear_board.reset_sessions()
 
 
 def _linear_seat_names() -> list[str]:
@@ -1941,58 +2251,109 @@ def _linear_is_auth_failure(proc: subprocess.CompletedProcess) -> bool:
     return proc.returncode == 4 or bool(_LINEAR_AUTH_RE.search(proc.stderr or ""))
 
 
-def _linear_run(query: str, timeout_s: int) -> subprocess.CompletedProcess:
-    """Run one simple-board read as the first configured seat whose credentials have not failed
-    this run, falling back seat by seat on a credential failure (and only on one)."""
+def _linear_is_auth_failure_board(err: linear_board.BoardCliFailure) -> bool:
+    if err.code in (4, 6):
+        return True
+    return bool(_LINEAR_AUTH_RE.search(err.stderr or ""))
+
+
+def _linear_board_failure(err: linear_board.BoardCliFailure) -> LinearSourceError:
+    stderr = err.stderr or ""
+    if "exceeds --max-chars" in stderr:
+        return LinearSourceError(
+            f"linear: simple-board api query exited {err.code}: response exceeds the CLI size cap",
+            overflow=True,
+        )
+    if "no Linear app credentials" in stderr or err.code == 4:
+        return LinearSourceError(
+            f"linear: simple-board api query exited {err.code}: no Linear app identity "
+            f"for this run (the shared Fleet app was retired 2026-11-05;  export "
+            f"LINEAR_BF_ORACLE_CLIENT_ID/_SECRET or LINEAR_GB_ORACLE_CLIENT_ID/_SECRET, or "
+            f"LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET)"
+        )
+    return LinearSourceError(f"linear: simple-board api query exited {err.code}")
+
+
+def _linear_budget_left(deadline: float, timeout_s: int) -> float:
+    """The caller's remaining budget for this read, or a fail-closed budget error.
+
+    Every board attempt is forwarded the remaining budget as its own socket/retry
+    deadline, so the budget binds the blocking read itself on any thread and no
+    process-wide timer is ever touched."""
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise _linear_board_failure(
+            linear_board.BoardCliFailure(124, f"linear: query exceeded {timeout_s}s budget")
+        )
+    return left
+
+
+def _linear_run(query: str, timeout_s: int) -> dict:
+    """One board GraphQL read as the first configured seat whose credentials have not failed
+    this run, falling back seat by seat on a credential failure (and only on one).  ``timeout_s``
+    is the caller's total budget for the read, seat fallbacks included:  each attempt gets
+    the remaining budget, never the board client's unrelated default."""
+    deadline = time.monotonic() + max(1, timeout_s)
     global LINEAR_SEAT_USED
-    argv = [SIMPLE_BOARD_CLI, "api", "query", "--max-chars", str(LINEAR_MAX_CHARS), query]
     candidates = _linear_seat_envs()
     if not candidates:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s)
+        cid = os.environ.get("LINEAR_CLIENT_ID", "").strip()
+        sec = os.environ.get("LINEAR_CLIENT_SECRET", "").strip()
+        if not (cid and sec):
+            raise _linear_board_failure(
+                linear_board.BoardCliFailure(4, "no Linear app credentials")
+            )
+        try:
+            return linear_board.query(
+                "LINEAR_CLIENT_ID",
+                cid,
+                sec,
+                query,
+                max_chars=LINEAR_MAX_CHARS,
+                timeout_s=_linear_budget_left(deadline, timeout_s),
+            )
+        except linear_board.BoardCliFailure as err:
+            raise _linear_board_failure(err) from None
     live = [c for c in candidates if c[0] not in _linear_failed_seats] or candidates[-1:]
-    proc = None
+    last_err: linear_board.BoardCliFailure | None = None
     for n, (seat, env) in enumerate(live):
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s, env=env)
-        if not _linear_is_auth_failure(proc):
-            if LINEAR_SEAT_USED != seat:
-                LINEAR_SEAT_USED = seat
-                warn(f"linear: reading Linear as {seat}")
-            return proc
-        _linear_failed_seats.add(seat)
-        if n + 1 < len(live):
-            warn(f"linear: {seat} credentials failed (exit {proc.returncode});  falling back")
-    return proc
+        try:
+            data = linear_board.query(
+                seat,
+                env["LINEAR_CLIENT_ID"],
+                env["LINEAR_CLIENT_SECRET"],
+                query,
+                max_chars=LINEAR_MAX_CHARS,
+                timeout_s=_linear_budget_left(deadline, timeout_s),
+            )
+        except linear_board.BoardCliFailure as err:
+            last_err = err
+            if not _linear_is_auth_failure_board(err):
+                raise _linear_board_failure(err) from None
+            _linear_failed_seats.add(seat)
+            if n + 1 < len(live):
+                warn(f"linear: {seat} credentials failed (exit {err.code});  falling back")
+            continue
+        if LINEAR_SEAT_USED != seat:
+            LINEAR_SEAT_USED = seat
+            warn(f"linear: reading Linear as {seat}")
+        return data
+    if last_err is not None:
+        raise _linear_board_failure(last_err)
+    raise LinearSourceError("linear: no configured Linear seat credentials")
 
 
 def _linear_query(query: str, timeout_s: int = LINEAR_QUERY_TIMEOUT_S) -> dict:
-    """One GraphQL read through the simple-board CLI.  Fail-closed:  any transport, exit-code or
+    """One GraphQL read through the board stack.  Fail-closed:  any transport, exit-code or
     GraphQL error raises LinearSourceError so a broken read can never look like an empty board."""
     try:
-        proc = _linear_run(query, timeout_s)
-    except (OSError, subprocess.TimeoutExpired) as e:
+        data = _linear_run(query, timeout_s)
+    except LinearSourceError:
+        raise
+    except linear_board.BoardCliFailure as err:
+        raise _linear_board_failure(err) from None
+    except (OSError, ImportError) as e:
         raise LinearSourceError(f"linear: simple-board api query failed to run: {e}") from None
-    if proc.returncode != 0:
-        # stderr can carry request data or credentials, so it never reaches the error:  only
-        # the exit code plus a normalized reason from an allow-list of fixed CLI messages.
-        stderr = proc.stderr or ""
-        if "exceeds --max-chars" in stderr:
-            raise LinearSourceError(
-                f"linear: simple-board api query exited {proc.returncode}: response exceeds "
-                f"the CLI size cap",
-                overflow=True,
-            )
-        if "no Linear app credentials" in stderr:
-            raise LinearSourceError(
-                f"linear: simple-board api query exited {proc.returncode}: no Linear app identity "
-                f"for this run (the shared Fleet app was retired 2026-11-05;  export "
-                f"LINEAR_BF_ORACLE_CLIENT_ID/_SECRET or LINEAR_GB_ORACLE_CLIENT_ID/_SECRET, or "
-                f"LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET)"
-            )
-        raise LinearSourceError(f"linear: simple-board api query exited {proc.returncode}")
-    try:
-        data = json.loads(proc.stdout)
-    except ValueError as e:
-        raise LinearSourceError(f"linear: unreadable JSON from simple-board: {e}") from None
     if isinstance(data, dict) and data.get("errors"):
         raise LinearSourceError(f"linear: GraphQL errors: {str(data['errors'])[:300]}")
     if not isinstance(data, dict):
@@ -2000,18 +2361,21 @@ def _linear_query(query: str, timeout_s: int = LINEAR_QUERY_TIMEOUT_S) -> dict:
     return data
 
 
-def _linear_light_scan(deadline: float | None = None) -> dict:
+def _linear_light_scan(deadline: float | None = None, updated_since: str | None = None) -> dict:
     """Every issue's id -> {identifier, updatedAt}, one 250-wide page at a time, oldest update
-    first.  Fail closed:  a missing connection or a zero-issue scan is a broken read, never an
-    empty board."""
+    first.  ``updated_since`` is a strict UTC timestamp:  the scan then asks only for issues
+    updated at or after that instant.  Fail closed:  a missing connection is a broken read.
+    A zero-issue scan is a broken read on a full sweep, and a quiet incremental window when
+    ``updated_since`` is set."""
     deadline = deadline if deadline is not None else _linear_deadline()
+    filt = _linear_updated_since_clause(updated_since)
     out: dict = {}
     after = None
     while True:
         clause = f', after: "{after}"' if after else ""
         data = _linear_query(
-            "query { issues(first: %d, includeArchived: true, orderBy: updatedAt%s) { %s } }"
-            % (LINEAR_PAGE, clause, _LINEAR_LIGHT_FIELDS),
+            "query { issues(first: %d, includeArchived: true%s, orderBy: updatedAt%s) { %s } }"
+            % (LINEAR_PAGE, filt, clause, _LINEAR_LIGHT_FIELDS),
             timeout_s=_linear_remaining(deadline),
         )
         conn = data.get("issues")
@@ -2031,7 +2395,7 @@ def _linear_light_scan(deadline: float | None = None) -> dict:
             }
         page = conn.get("pageInfo") or {}
         if not page.get("hasNextPage"):
-            if not out:
+            if not out and updated_since is None:
                 raise LinearSourceError(
                     "linear: the issue scan returned zero issues;  refusing to treat a broken "
                     "read as an empty board"
@@ -2407,6 +2771,27 @@ def _linear_scan_entry(node) -> tuple:
     return "", str(node or "")
 
 
+def _linear_state_path() -> pathlib.Path:
+    raw = os.environ.get("FLEET_RAG_LINEAR_STATE")
+    if raw:
+        return pathlib.Path(raw)
+    return pathlib.Path.home() / "apps" / "fleet-rag" / "state" / "ingest-state.json"
+
+
+def _linear_load_state() -> dict:
+    """The ingest state object, or {} when the file is missing or unreadable.
+
+    An unreadable file is the safe direction:  the next read is a full sweep and no
+    per-issue row is treated as fresh."""
+    try:
+        loaded = json.loads(_linear_state_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    return loaded
+
+
 def _linear_ingested_versions() -> dict:
     """doc_id -> ingest state row for the linear rows of the ingest state file, so a routine
     run fetches only issues Linear changed since they were ingested.  Any read problem
@@ -2414,27 +2799,150 @@ def _linear_ingested_versions() -> dict:
     Linear is never a deletion inventory: FULL refetches selected issues but can
     still omit truncated ones. The orchestrator skips Linear prune in nightly
     runs and refuses a separate Linear prune before any write."""
-    path = pathlib.Path(
-        os.environ.get("FLEET_RAG_LINEAR_STATE")
-        or (pathlib.Path.home() / "apps" / "fleet-rag" / "state" / "ingest-state.json")
-    )
-    try:
-        state = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
     out: dict = {}
-    for doc_id, rec in state.items():
+    for doc_id, rec in _linear_load_state().items():
         if (
             isinstance(doc_id, str)
             and doc_id.startswith("linear/")
             and isinstance(rec, dict)
             and isinstance(rec.get("updated_at"), int)
+            and not isinstance(rec.get("updated_at"), bool)
         ):
             out[doc_id] = rec
     return out
 
 
 LINEAR_REFRESH_DAYS = 7  # FLEET_RAG_LINEAR_REFRESH_DAYS overrides
+# updatedAt high-water mark lives in the ingest state under this key.  It is not a
+# document:  it has no source and no chunk ids, so prune never treats it as a row.
+LINEAR_CURSOR_KEY = "_linear_sync"
+LINEAR_SWEEP_DAYS = 7  # FLEET_RAG_LINEAR_SWEEP_DAYS overrides
+LINEAR_OVERLAP_HOURS = 2  # FLEET_RAG_LINEAR_OVERLAP_HOURS overrides
+# Only this form is interpolated into the GraphQL filter.
+_LINEAR_CURSOR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+
+
+def _linear_bounded_int(name: str, default: int, lo: int, hi: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        warn(f"linear: {name}={raw!r} is not an integer; using {default}")
+        return default
+    if value < lo or value > hi:
+        warn(f"linear: {name}={value} is outside {lo}..{hi}; using {default}")
+        return default
+    return value
+
+
+def _linear_sweep_ms() -> int:
+    days = _linear_bounded_int("FLEET_RAG_LINEAR_SWEEP_DAYS", LINEAR_SWEEP_DAYS, 1, 90)
+    return days * 24 * 3600 * 1000
+
+
+def _linear_overlap_ms() -> int:
+    hours = _linear_bounded_int("FLEET_RAG_LINEAR_OVERLAP_HOURS", LINEAR_OVERLAP_HOURS, 1, 168)
+    return hours * 3600 * 1000
+
+
+def _linear_epoch_ms(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
+def _linear_iso(ms: int) -> str:
+    """UTC timestamp in the only form the incremental filter will interpolate."""
+    stamp = _dt.datetime.fromtimestamp(ms / 1000, _dt.timezone.utc)
+    text = stamp.strftime("%Y-%m-%dT%H:%M:%S.") + f"{ms % 1000:03d}Z"
+    if not _LINEAR_CURSOR_RE.fullmatch(text):
+        raise LinearSourceError("linear: could not format an updatedAt cursor")
+    return text
+
+
+def _linear_updated_since_clause(updated_since: str | None) -> str:
+    if updated_since is None:
+        return ""
+    if not _LINEAR_CURSOR_RE.fullmatch(updated_since):
+        raise LinearSourceError("linear: incremental updatedAt bound is not a timestamp")
+    return f', filter: {{ updatedAt: {{ gte: "{updated_since}" }} }}'
+
+
+def _linear_sync_status(state: dict) -> tuple[str, dict | None]:
+    """``missing``, ``corrupt``, or ``ok`` for the updatedAt cursor record."""
+    if LINEAR_CURSOR_KEY not in state:
+        return "missing", None
+    record = state.get(LINEAR_CURSOR_KEY)
+    if not isinstance(record, dict):
+        return "corrupt", None
+    cursor = record.get("updated_at_cursor")
+    if not isinstance(cursor, str) or not _LINEAR_CURSOR_RE.fullmatch(cursor):
+        return "corrupt", None
+    if parse_ts_ms(cursor) <= 0:
+        return "corrupt", None
+    return "ok", record
+
+
+def linear_read_plan(now: int | None = None) -> dict:
+    """Decide a full id sweep or an updatedAt window.
+
+    A full sweep is the explicit full flag, a missing or corrupt cursor, a cursor
+    older than the sweep interval, or a last successful full sweep older than that
+    interval.  An incremental read asks for issues updated since the cursor minus
+    the overlap.  The cursor itself advances only after the orchestrator commits a
+    fully successful source run.
+    """
+    current = now_ms() if now is None else int(now)
+    sweep_ms = _linear_sweep_ms()
+    overlap_ms = _linear_overlap_ms()
+    force_bodies = bool(os.environ.get("FLEET_RAG_LINEAR_FULL"))
+    status, record = _linear_sync_status(_linear_load_state())
+    cursor = record.get("updated_at_cursor") if record else None
+    cursor_ms = parse_ts_ms(cursor) if isinstance(cursor, str) else 0
+    last_full = _linear_epoch_ms(record.get("last_full_sweep_at_ms")) if record else None
+    reason = "incremental"
+    full_scan = False
+    if force_bodies:
+        full_scan = True
+        reason = "flag"
+    elif status == "missing":
+        full_scan = True
+        reason = "missing"
+    elif status == "corrupt" or cursor_ms <= 0:
+        full_scan = True
+        reason = "corrupt"
+    elif current - cursor_ms >= sweep_ms:
+        full_scan = True
+        reason = "cursor_stale"
+    elif last_full is None or current - last_full >= sweep_ms:
+        full_scan = True
+        reason = "sweep_due"
+    updated_since = None
+    if not full_scan:
+        updated_since = _linear_iso(max(0, cursor_ms - overlap_ms))
+    return {
+        "full_scan": full_scan,
+        "force_bodies": force_bodies,
+        "reason": reason,
+        "updated_since": updated_since,
+        "cursor": cursor if isinstance(cursor, str) and cursor_ms > 0 else None,
+        "scan_started_ms": current,
+        "cursor_candidate": _linear_iso(current),
+    }
+
+
+def _linear_mark_cursor(receipt: dict) -> None:
+    """A finished read may advance the cursor only when nothing was left unread."""
+    if receipt.get("limited"):
+        receipt["cursor_advance"] = False
+        return
+    rows = receipt.get("issues") or {}
+    receipt["cursor_advance"] = not any(
+        isinstance(row, dict) and row.get("status") in ("skipped", "not_fetched")
+        for row in rows.values()
+    )
 
 
 def iter_linear(
@@ -2452,9 +2960,17 @@ def iter_linear(
     Legacy map_path/freeze/covered_ids arguments remain accepted for callers, but cannot
     exclude issues. FULL forces every scanned issue to be fetched. A receipt describes
     source reads, not permission to delete or proof of a committed corpus replacement.
+    The updatedAt cursor selects an incremental window; the orchestrator advances it
+    only after this generator finishes cleanly.
     """
     reset_linear_seat_state()
-    light_scan = light_scan or _linear_light_scan
+    plan = linear_read_plan()
+
+    def _production_scan() -> dict:
+        since = None if plan["full_scan"] else plan["updated_since"]
+        return _linear_light_scan(updated_since=since)
+
+    light_scan = light_scan or _production_scan
     fetch_full = fetch_full or _linear_fetch_full
     scan = light_scan()
     selected = list(scan)
@@ -2462,7 +2978,14 @@ def iter_linear(
         receipt.update(
             {
                 "schema": 1,
-                "full": bool(os.environ.get("FLEET_RAG_LINEAR_FULL")),
+                "full": bool(plan["force_bodies"]),
+                "full_scan": bool(plan["full_scan"]),
+                "read_mode": "full" if plan["full_scan"] else "incremental",
+                "full_reason": plan["reason"] if plan["full_scan"] else "",
+                "updated_since": plan["updated_since"],
+                "cursor_before": plan["cursor"],
+                "cursor_candidate": plan["cursor_candidate"],
+                "cursor_advance": False,
                 "limited": limit is not None,
                 "scan_count": len(scan),
                 "source_complete": False,
@@ -2476,6 +2999,11 @@ def iter_linear(
                 "scan_updated_at": updated,
                 "status": "not_fetched",
             }
+    if plan["full_scan"] and not scan:
+        raise LinearSourceError(
+            "linear: the issue scan returned zero issues;  refusing to treat a broken "
+            "read as an empty board"
+        )
     if not os.environ.get("FLEET_RAG_LINEAR_FULL"):
         ingested = _linear_ingested_versions()
         refresh_ms = (
@@ -2511,6 +3039,8 @@ def iter_linear(
     if receipt is not None:
         receipt["selected_count"] = len(selected)
     if not selected:
+        if receipt is not None:
+            _linear_mark_cursor(receipt)
         return
     found = set()
     incomplete = []
@@ -2594,6 +3124,7 @@ def iter_linear(
             and len(found) == len(scan)
             and all(row["status"] == "fetched" for row in receipt["issues"].values())
         )
+        _linear_mark_cursor(receipt)
 
     if os.environ.get("FLEET_RAG_LINEAR_FULL") and incomplete and receipt is None:
         raise LinearSourceError(

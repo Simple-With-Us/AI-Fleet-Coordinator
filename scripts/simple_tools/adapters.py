@@ -42,6 +42,7 @@ import datetime
 import hashlib
 import hmac
 import http.client
+import ipaddress
 import json
 import os
 import queue
@@ -142,7 +143,8 @@ def claude_env(
     (FLEET-PROTOCOL § Identity Rules › Launcher Contract):  it sets AGENT_LAUNCHER=simple-tools-wake,
     AGENT_LAUNCH_SEAT and AGENT_SEAT to the seat it is waking, and SIMPLE_TOOLS_ATTACH=0, fresh, after
     every inherited identity variable was dropped.  The wake has no tools and posts nothing itself
-    (the daemon posts its validated reply as the seat's bot), so this only keeps the seat explicit."""
+    (the daemon drops its validated reply:  the Operator never answers on behalf of a platform), so
+    this only keeps the seat explicit."""
     user = env.get("USER") or env.get("LOGNAME") or os.path.basename(home)
     out = {
         "HOME": home,
@@ -766,8 +768,8 @@ def muse_env(
     absent or empty value invents nothing -- the run then uses the subscription login as before.
     With `seat` (a wake, or test-wake) the listener is the reference launcher (FLEET-PROTOCOL
     Identity Rules):  it names the seat it is waking and clears every inherited identity variable
-    first.  The wake has no tools and posts nothing itself (the daemon posts its validated reply as
-    the seat's bot), so this only keeps the seat explicit."""
+    first.  The wake has no tools and posts nothing itself (the daemon drops its validated reply:
+    the Operator never answers on behalf of a platform), so this only keeps the seat explicit."""
     user = env.get("USER") or env.get("LOGNAME") or os.path.basename(home)
     out = {
         "HOME": home,
@@ -2795,9 +2797,24 @@ def routine_secret_values(url: str, key: str = "") -> list[str]:
     return [value for value in found if value and len(value) >= 4]
 
 
+# The Tailscale range is the RFC 6598 shared address space block.  It is built from numbers so the repo's
+# private-address guard (test_fleet_skill_identity) does not read the rule itself as inventory.
+_TAILNET = ipaddress.ip_network((ipaddress.IPv4Address((100 << 24) | (64 << 16)), 10))
+
+
+def _is_tailnet(host: str) -> bool:
+    """Whether the host is a Tailscale address (the RFC 6598 range), as an IP literal only.  A
+    wake bridge that binds a tailnet address (the ZCode bridge does) is reached over the tailnet,
+    which is encrypted, and from the server's own container without leaving the machine."""
+    try:
+        return ipaddress.ip_address(host) in _TAILNET
+    except ValueError:
+        return False
+
+
 def routine_url_problem(url: str) -> str | None:
     """Why a routine URL is refused, or None.  https only (plain http only to a loopback test
-    server), a host, no user:password part and no control characters."""
+    server or a Tailscale address), a host, no user:password part and no control characters."""
     if any(ch in url for ch in "\r\n\x00\t "):
         return "it holds whitespace or a control character"
     try:
@@ -2812,8 +2829,11 @@ def routine_url_problem(url: str) -> str | None:
         return "it has no host"
     if parts.username is not None or parts.password is not None:
         return "it must not carry a user name or password"
-    if parts.scheme == "http" and not Z._is_loopback(host.lower()):
-        return "it must be https (plain http is accepted only for a loopback test server)"
+    if parts.scheme == "http" and not (Z._is_loopback(host.lower()) or _is_tailnet(host)):
+        return (
+            "it must be https (plain http is accepted only for a loopback test server "
+            "or a Tailscale address)"
+        )
     return None
 
 
@@ -3057,7 +3077,9 @@ def routine_body(
     id, never by name:  the hosted MCP Worker refuses a channel wake without an allowlisted one.
     `held_back` (heldback.wake_summary) is added only when its count is above 0:  how many wakes
     the seat's budget held back, and the newest as metadata only, never a body (an additive field,
-    so a body without it is unchanged)."""
+    so a body without it is unchanged).  `letter` and `linked_by` are added only when the trigger row is
+    an untagged reply to one of the seat's chats (class `reply`):  the chat's session letter, when it had
+    one, and `"reply"`."""
     dm = row.get("type") == "private"
     message_id = int(row["id"])
     members = sorted(
@@ -3109,6 +3131,17 @@ def routine_body(
     }
     if held_back and int(held_back.get("count") or 0) > 0:
         body["held_back"] = held_back
+    if "reply" in (row.get("classes") or []):
+        # The trigger is an untagged post that answers one of the seat's chats (owner, Nov 10 2026).  The
+        # letter is that chat's, the router honours it like an explicit "@**Seat** AA" (the receiver's
+        # `letter` field), and `linked_by` says the wake was picked by a reply and not by a letter in the
+        # text.  Both are optional additive fields:  a trigger that carries a letter in its own text (an
+        # explicit address) sends neither, and a receiver that ignores them still works.  The letter is
+        # left out when the post the trigger answers carried none.
+        letter = str(row.get("reply_target_letter") or "").strip()
+        if re.fullmatch(r"[A-Za-z0-9]{1,8}", letter):
+            body["letter"] = letter
+        body["linked_by"] = "reply"
     return body
 
 

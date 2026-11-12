@@ -48,6 +48,18 @@ CREDENTIAL_PATHS = ["scripts/infisical-fetch.mjs"]
 # Bumped when the receipt's meaning changes, so an older receipt cannot arm a release.
 RECEIPT_GATE = 2
 
+# Paths whose merge must still be Kody-qualified before an alert-worker release. The
+# deploy tooling's package.json and lockfile stay in: `wrangler deploy` runs from the
+# lockfile installed on the workflow head, so dependency bumps need the same review.
+RELEASE_REVIEW_PATHS = [
+    path for path in RELEASE_PATHS if path != "docs/releases/alert-credentials-qualified.json"
+]
+
+KODY_CHECK_NAME = "Kody Code Review"
+KODY_APP_SLUG = "kody-ai"
+KODY_CHECK_TITLE = "Code Review Complete"
+KODY_CHECK_SUMMARY_PREFIX = "Review finished successfully"
+
 
 def git(*args):
     return subprocess.check_output(["git", *args], text=True, timeout=30).strip()
@@ -128,6 +140,29 @@ def guard_tripped(name):
     return m.guard_tripped(name, cloudflare)
 
 
+def kody_check_receipt(head_sha):
+    """A completed Kody check on the PR head, when manual mode leaves no PR review object."""
+    runs = github("/commits/" + head_sha + "/check-runs?per_page=100")["check_runs"]
+    if len(runs) >= 100:
+        raise RuntimeError("Incomplete Kody check-run evidence")
+    for run in runs:
+        app = run.get("app") if isinstance(run.get("app"), dict) else {}
+        output = run.get("output") if isinstance(run.get("output"), dict) else {}
+        title = output.get("title") or ""
+        summary = output.get("summary") or ""
+        if (
+            run.get("name") == KODY_CHECK_NAME
+            and app.get("slug") == KODY_APP_SLUG
+            and run.get("status") == "completed"
+            and run.get("conclusion") == "success"
+            and title == KODY_CHECK_TITLE
+            and summary.startswith(KODY_CHECK_SUMMARY_PREFIX)
+            and run.get("head_sha") == head_sha
+        ):
+            return True
+    return False
+
+
 def outstanding_requests(reviews):
     # COMMENTED does not clear a formal request. Only a later decisive review
     # by that same reviewer supersedes its prior decision; never mutate history.
@@ -160,6 +195,9 @@ def reviewed(sha):
             raise RuntimeError("Review pagination needs explicit resolution")
         if outstanding_requests(reviews):
             raise RuntimeError("Changes-requested review needs explicit resolution")
+        head = pr.get("head", {}).get("sha")
+        if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
+            continue
         qualified = [
             r
             for r in reviews
@@ -168,12 +206,11 @@ def reviewed(sha):
             and r.get("state") in ("APPROVED", "COMMENTED")
         ]
         # COMMENTED is a completed substantive Kody review, not an issue comment.
-        # The owner permits reviewed source with findings appropriately resolved.
-        # Review must cover the actual composition, not any older review on the PR.
-        if not qualified:
-            continue
-        head = pr["head"]["sha"]
-        if not any(r.get("commit_id") == head for r in qualified):
+        # Manual Kody mode can leave only the check run; that receipt matches auto-merge.
+        kody_qualified = any(r.get("commit_id") == head for r in qualified) or kody_check_receipt(
+            head
+        )
+        if not kody_qualified:
             continue
         # GraphQL includes actual thread resolution, unlike review state.
         owner, repo = os.environ["GITHUB_REPOSITORY"].split("/")
@@ -191,7 +228,7 @@ def reviewed(sha):
         if threads["pageInfo"]["hasNextPage"] or any(not t["isResolved"] for t in threads["nodes"]):
             raise RuntimeError("Unresolved or incomplete review thread evidence")
         return
-    raise RuntimeError("Target commit lacks qualified merged Kody-reviewed PR")
+    raise RuntimeError("Target commit lacks qualified merged Kody-reviewed PR: " + sha)
 
 
 def probe(target):
@@ -321,12 +358,14 @@ def credential_receipt():
 
 
 def main():
-    if not credential_receipt():
-        raise RuntimeError("Missing credential qualification receipt; deployment blocked")
     sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, timeout=30).strip()
     if current_main() != sha:
+        # A superseded run has nothing to deploy; it must exit cleanly even when
+        # the checkout predates a valid credential receipt.
         print("Superseded")
         return
+    if not credential_receipt():
+        raise RuntimeError("Missing credential qualification receipt; deployment blocked")
     runs = github(
         "/actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=" + sha + "&per_page=100"
     )["workflow_runs"]
@@ -362,7 +401,7 @@ def main():
                 live + ".." + sha,
                 "--",
                 target["root"],
-                *RELEASE_PATHS,
+                *RELEASE_REVIEW_PATHS,
             ],
             text=True,
             timeout=30,

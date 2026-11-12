@@ -61,7 +61,9 @@ final class ServerSeatRowTests: XCTestCase {
         XCTAssertTrue(row.isCurrent)
         XCTAssertEqual(row.state, "Connected")
         XCTAssertFalse(row.stateIsProblem)
-        XCTAssertEqual(row.details, ["Running", "Wake: Claude", "Last event 1:59 PM"])
+        // The server still sends the old wake word, and one the panel gives no meaning to is
+        // shown as the server wrote it.
+        XCTAssertEqual(row.details, ["Running", "Wake: claude", "Last event 1:59 PM"])
         XCTAssertEqual(row.sessions, "1 session")
         XCTAssertTrue(row.sessionsLive)
         XCTAssertEqual(row.sessionLines, [
@@ -87,7 +89,7 @@ final class ServerSeatRowTests: XCTestCase {
         let row = try presentation("DOWN", at: "2026-11-08T20:01:00Z")
         XCTAssertEqual(row.state, "Not connected")
         XCTAssertTrue(row.stateIsProblem)
-        XCTAssertEqual(row.details, ["Stopped", "Wake: Inbox"])
+        XCTAssertEqual(row.details, ["Stopped", "Captures Only"])
         XCTAssertEqual(row.sessions, "None")
         XCTAssertFalse(row.sessionsLive)
         XCTAssertEqual(row.quota, "Not known")
@@ -100,7 +102,7 @@ final class ServerSeatRowTests: XCTestCase {
         let row = try presentation("HALTED", at: "2026-11-08T20:01:00Z")
         XCTAssertEqual(row.state, "Paused")
         XCTAssertTrue(row.stateIsProblem)
-        XCTAssertEqual(row.details, ["Connected", "Running", "Wake: Inbox"])
+        XCTAssertEqual(row.details, ["Connected", "Running", "Captures Only"])
     }
 
     /// A session whose liveness is not said is never counted as ended, and no session list
@@ -133,7 +135,7 @@ final class ServerSeatRowTests: XCTestCase {
         XCTAssertTrue(row.noteIsProblem)
         XCTAssertEqual(row.note,
             "The server read this at 2:00 PM, more than 5 minutes ago, so it is not current."
-                + rowGap + "The last reading said: Connected, Running, wake Claude, quota Used up."
+                + rowGap + "The last reading said: Connected, Running, Wake: claude, quota Used up."
                 + rowGap + "That is old evidence, not the seat's state now.")
         XCTAssertEqual(row.help, "The server read this at 2:00 PM, more than 5 minutes ago, so it is not current.")
     }
@@ -271,7 +273,11 @@ final class ServerSeatRowTests: XCTestCase {
         let compiler = ServerSeatRowPresentation(
             reading: reading.seat("BF-COMPILER", now: now), status: status, readAt: now, loading: false, now: now
         )
-        XCTAssertEqual(compiler.details, ["Running", "Wake: Inbox", "Last event 6:50 PM"])
+        XCTAssertEqual(compiler.details, ["Running", "Captures Only", "Last event 6:50 PM"])
+        let plumber = ServerSeatRowPresentation(
+            reading: reading.seat("GB-PLUMBER", now: now), status: status, readAt: now, loading: false, now: now
+        )
+        XCTAssertEqual(plumber.details, ["Running", "Wakes", "Last event 6:50 PM"])
         XCTAssertEqual(compiler.sessions, "None")
         XCTAssertEqual(compiler.quota, "Not known")
 

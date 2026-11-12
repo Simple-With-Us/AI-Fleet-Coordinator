@@ -61,7 +61,7 @@
       "bundleId": "net.dealdex",
       "platform": "IOS",
       "repo": "DealDex",
-      "paths": ["native/ios"],
+      "paths": ["apps/ios"],
       "ship": { "workflow": "ios-ship.yml", "inputs": {} },
       "sourceWorkflows": ["ios-ship.yml"],
       "compileCheck": "ios / xcodebuild (unsigned)",
@@ -73,7 +73,7 @@
       "bundleId": "com.contactlogo",
       "platform": "IOS",
       "repo": "ContactLogo",
-      "paths": ["Apps/ContactLogoiOS", "Sources/ContactLogoKit", "project.yml"],
+      "paths": ["apps/ios", "Sources/ContactLogoKit", "project.yml"],
       "ship": { "workflow": "ios-testflight.yml", "inputs": {} },
       "sourceWorkflows": ["ios-testflight.yml"],
       "compileCheck": "apple (ContactLogoiOS*",
@@ -85,8 +85,11 @@
       "bundleId": "com.contactlogo.macos",
       "platform": "MAC_OS",
       "repo": "ContactLogo",
-      "paths": ["Apps/ContactLogoMac", "Sources", "project.yml"],
-      "skip": "the Mac app ships through Sparkle GitHub releases (mac-release.yml), not TestFlight"
+      "paths": ["apps/macos", "apps/macos-app-store", "Sources/ContactLogoKit", "project.yml"],
+      "ship": { "workflow": "mac-testflight.yml", "inputs": {} },
+      "sourceWorkflows": ["mac-testflight.yml", "testflight.yml"],
+      "compileCheck": "Mac TestFlight*",
+      "autoRemedy": false
     },
     "botfleet": {
       "displayName": "BotFleet",

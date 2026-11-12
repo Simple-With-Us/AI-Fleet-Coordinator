@@ -9,7 +9,7 @@ Standard library only, Python 3.11+.
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -94,4 +94,14 @@ CREATE TABLE IF NOT EXISTS export_attempts (
 );
 CREATE INDEX IF NOT EXISTS idx_export_attempts_outbox
     ON export_attempts (outbox_id, destination, tab, kind);
+
+-- Version 3 (AFC-694):  the Linear issues a session works on, for the wake router.  A side
+-- table, so a registry from before it keeps every row as it is and gains the table the next
+-- time a writer opens it;  a session with no row here has no issues.  `issues` is a JSON
+-- list of at most 8 {"id", "seen_at"} entries, newest first (operator_registry.normalize_issues).
+CREATE TABLE IF NOT EXISTS session_issues (
+    record_id TEXT PRIMARY KEY REFERENCES sessions(record_id),
+    issues TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL
+);
 """

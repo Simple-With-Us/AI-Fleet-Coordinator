@@ -367,7 +367,10 @@ def cmd_check_config(rt: Any, args: argparse.Namespace) -> int:
 
     `--partition` names the partition to judge by.  The running listener can read another checkout's
     copy than this command's, and that copy is the one that can refuse the file, so a tool that knows
-    it (the status's `partition_file`) passes it."""
+    it (the status's `partition_file`) passes it.
+
+    `warnings` are the candidate's schema notes (a deprecated seat setting that still works, a seat key
+    nothing reads).  They are printed and reported, and they never change `ok` or the exit code."""
     root = _root(rt)
     current = _config_path(rt)
     partition_file = (
@@ -376,7 +379,7 @@ def cmd_check_config(rt: Any, args: argparse.Namespace) -> int:
     partition, partition_problem = C.load_partition(partition_file)
     env_instance = (rt.env.get(C.ENV_INSTANCE) or "").strip().casefold() or None
 
-    def judge(path: str) -> tuple[list[str], list[str]]:
+    def judge(path: str) -> tuple[list[str], list[str], list[str]]:
         cfg = C.load(root, path)
         if partition_problem:
             refused = [partition_problem + "; cannot check the seat partition, so no seat is held"]
@@ -384,17 +387,18 @@ def cmd_check_config(rt: Any, args: argparse.Namespace) -> int:
             refused = C.partition_errors(
                 cfg, partition, partition_file=partition_file, env_instance=env_instance
             )
-        return list(cfg.errors), refused
+        return list(cfg.errors), refused, list(cfg.warnings)
 
     raw, parse_error = L.load_config(root, args.file)
     if parse_error is None and not raw:
         parse_error = "%s holds no settings" % args.file
     errors: list[str] = []
     refused: list[str] = []
+    warnings: list[str] = []
     new_errors: list[str] = []
     if parse_error is None:
-        errors, refused = judge(args.file)
-        before_errors, before_refused = judge(current)
+        errors, refused, warnings = judge(args.file)
+        before_errors, before_refused, _before_warnings = judge(current)
         before = set(before_errors) | set(before_refused)
         new_errors = [e for e in errors + refused if e not in before]
     ok = parse_error is None and not new_errors and not refused
@@ -410,6 +414,7 @@ def cmd_check_config(rt: Any, args: argparse.Namespace) -> int:
                     "errors": errors,
                     "new_errors": new_errors,
                     "refused": refused,
+                    "warnings": warnings,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -420,12 +425,29 @@ def cmd_check_config(rt: Any, args: argparse.Namespace) -> int:
         rt.out("the listener would %s %s\n" % ("take" if ok else "not take", args.file))
         for problem in ([parse_error] if parse_error else []) + refused + new_errors:
             rt.out("  %s\n" % problem)
+        for note in warnings:
+            rt.out("  warning: %s\n" % note)
     return 0 if ok else 1
 
 
 # --------------------------------------------------------------------------------------------
 # status
 # --------------------------------------------------------------------------------------------
+
+
+def _wake_caps_text(budget: Any) -> str:
+    """The wake count caps a status line shows:  `cap 40/day, 6/hour`, with `no limit` for a cap the
+    seat leaves unset, and `no cap` when neither is set.  An unset cap is no limit (owner, Nov 10,
+    2026), so it is never shown as 0, which would read as a pause."""
+    caps = budget if isinstance(budget, dict) else {}
+
+    def one(name: str) -> str:
+        value = caps.get(name)
+        return "no limit" if value is None else str(int(value))
+
+    if caps.get("wakes_per_day") is None and caps.get("wakes_per_hour") is None:
+        return "no cap"
+    return "cap %s/day, %s/hour" % (one("wakes_per_day"), one("wakes_per_hour"))
 
 
 def _wake_loop_status_line(status: dict[str, Any]) -> str | None:
@@ -435,43 +457,11 @@ def _wake_loop_status_line(status: dict[str, Any]) -> str | None:
     return "wake loop prevention: " + ("ON" if enabled else "OFF (topic loop guard bypassed)")
 
 
-def _bridge_gate_counts(root: str, now: float) -> dict[str, Any] | None:
-    """The Mac bridge's consult counts per seat, from `muse-bridge-mac.json`, or None when the file is
-    there and cannot be trusted.  A file that does not exist is a real zero (`{}`): a Mac that has not
-    consulted yet.  A file that cannot be read, is not JSON, or is not the bridge's shape is None, and
-    status then prints no bridge line at all, because a false zero would say the bridge is quiet."""
-    path = os.path.join(L.listener_dir(root), "muse-bridge-mac.json")
-    try:
-        with open(path, "rb") as fh:
-            data = json.loads(fh.read())
-    except FileNotFoundError:
-        return {}
-    except (OSError, ValueError, RecursionError):
-        return None
-    decisions = data.get("decisions") if isinstance(data, dict) else None
-    if not isinstance(decisions, dict):
-        return None
-    try:
-        return W.gate_counts([d for d in decisions.values() if isinstance(d, dict)], now, W.DAY)
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _gate_status_lines(
-    root: str,
-    seat: str,
-    bridge_counts: dict[str, Any] | None,
-    now: float,
-    *,
-    ledger: bool,
-    bridged: bool,
-) -> list[str]:
-    """The model gate's status lines for one seat (phase 1): `model starts 24h N (avoidable M)` from the
-    seat's own wake ledger, and `bridge consults 24h N (avoidable M)` from the Mac bridge's decisions.  The
-    ledger is read from its END, down to the window, so the cost is the day and not the 90 days a ledger
-    keeps.  Read-only, and never a reason for `status` to fail.  A line is printed only when what it
-    counts could be read: a ledger that cannot be read leaves its line out, and `bridge_counts` None (a
-    server listener, which has no bridge file, or a file that cannot be trusted) leaves out the bridge line."""
+def _gate_status_lines(root: str, seat: str, now: float, *, ledger: bool) -> list[str]:
+    """The model gate's status line for one seat (phase 1): `model starts 24h N (avoidable M)` from the
+    seat's own wake ledger.  The ledger is read from its END, down to the window, so the cost is the day
+    and not the 90 days a ledger keeps.  Read-only, and never a reason for `status` to fail.  The line is
+    printed only when the ledger could be read."""
     lines: list[str] = []
     if ledger:
         try:
@@ -480,8 +470,6 @@ def _gate_status_lines(
                 lines.append(W.gate_line(W.gate_counts(rows, now, W.DAY).get(seat)))
         except Exception:  # noqa: BLE001
             pass
-    if bridge_counts is not None and (bridged or seat in bridge_counts):
-        lines.append(W.bridge_line(bridge_counts.get(seat)))
     return lines
 
 
@@ -545,12 +533,6 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
                 else "no",
             )
         )
-        bridge = status.get("muse_bridge") or {}
-        if bridge.get("enabled"):
-            lines.append(
-                "Muse inbox bridge: enabled; pin %s; remote seats %s"
-                % (bridge.get("pin") or "?", ", ".join(bridge.get("remote_seats") or []) or "none")
-            )
         nudges = status.get("chat_nudges")
         if isinstance(nudges, dict):
             # Accept the older flat status snapshot during managed-runtime upgrades.
@@ -588,14 +570,6 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
             lines.append("%-12s NOT LOADED  nothing is captured for this seat" % seat)
             for problem in why or []:
                 lines.append("  RED %s" % problem)
-        # The Mac bridge's decisions, read once:  each carries the gate of its own consult.  Only a Mac
-        # listener has the file, so a server listener never prints a bridge line, and a file that cannot
-        # be trusted prints none either (None), where a missing one is a real zero.
-        bridge_counts = (
-            _bridge_gate_counts(root, time.time())
-            if (status.get("instance") or "mac") == "mac"
-            else None
-        )
         for seat, s in sorted((status.get("seats") or {}).items()):
             routine = s.get("routine") or {}
             if s.get("wake") == "claude":
@@ -646,29 +620,24 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
                     "" if s.get("route_enabled", True) else " (routing off)",
                 )
             lines.append(
-                "%-12s %s  last event %s  cursor %s  wake %s%s  wakes 24h %s (cap %s/day, %s/hour)%s"
+                "%-12s %s  last event %s  cursor %s  wake %s%s  wakes 24h %s (%s)%s"
                 % (
                     seat,
                     "connected" if s.get("connected") else "DOWN",
                     _when(s.get("last_event")),
                     s.get("cursor"),
                     s.get("wake"),
-                    state + (" (Muse bridge)" if s.get("muse_bridge") else ""),
+                    state,
                     s.get("wakes_24h"),
-                    int((s.get("budget") or {}).get("wakes_per_day", 0)),
-                    int((s.get("budget") or {}).get("wakes_per_hour", 0)),
+                    _wake_caps_text(s.get("budget")),
                     routes,
                 )
             )
-            bridged = bool(s.get("muse_bridge"))
             for gate_text in _gate_status_lines(
                 root,
                 seat,
-                bridge_counts,
                 time.time(),
-                ledger=s.get("wake") != "inbox"
-                or bridged,  # an unbridged inbox seat starts no model
-                bridged=bridged,
+                ledger=s.get("wake") != "inbox",  # an inbox seat starts no model
             ):
                 lines.append("  " + gate_text)
             for red in s.get("red") or []:
@@ -687,14 +656,6 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
                         lease.get("pending"),
                     )
                 )
-        # A seat of the server that the Mac bridge consulted for is not in this listener's own status.  Its
-        # consults are in the Mac's bridge file, so they are shown; its wake ledger is on the server, which
-        # this command does not read, so its starts and forwards are not.
-        for remote in sorted(set(bridge_counts or {}) - set(status.get("seats") or {})):
-            lines.append(
-                "%-12s %s  (not a seat of this listener: only the Mac bridge's consults are visible here)"
-                % (remote, W.bridge_line(bridge_counts[remote]))
-            )
         loop_status = _wake_loop_status_line(status)
         if loop_status:
             lines.append(loop_status)

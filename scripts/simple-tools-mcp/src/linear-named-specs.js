@@ -1,4 +1,5 @@
 // Named Linear tools are thin adapters over the existing GraphQL policy path.
+import { FULL_ARG } from './linear-full-arg.js';
 import { LINEAR_READ_COMMANDS } from './linear-read-catalog.js';
 import { LINEAR_WRITE_COMMANDS } from './linear-write-catalog.js';
 
@@ -77,6 +78,7 @@ export const LINEAR_NAMED_TOOLS = Object.freeze(LINEAR_NAMED_COMMANDS.map((comma
     properties.content_length = { type: "integer", minimum: 1, maximum: 1000000, description: "Read at most this many content characters from content_offset.  Omit to read to the end of the document." };
   }
   if (command.selection) properties.selection = selection;
+  if (!command.write) properties.full = FULL_ARG;
   const required = Object.entries(command.args).filter(([, arg]) => arg.required).map(([name]) => name);
   if (command.write) {
     properties.idempotency_key = idem;

@@ -756,8 +756,9 @@ final class ServiceActionRouterTests: XCTestCase {
         XCTAssertEqual(busy, FleetServices.restartBody(work: "1 bot turn"))
     }
 
-    /// The Mac's eavesdropper is not on the allowlist,  so it takes the direct route,  and its
-    /// restart drops every Mac seat at once:  it always asks first,  and its title says so.
+    /// The Mac's eavesdropper is not on the allowlist,  so it takes the direct route.  It was
+    /// retired,  and a restart would bring it back:  where the router is asked for one,  it always
+    /// asks first,  and its title says so.  Its row never offers one (`FleetServicesTests`).
     func testRestartingTheOperatorEavesdropperAlwaysAsksFirst() async throws {
         let rig = await makeRig()
         let id = FleetServiceRegistry.operatorEavesdropper.id

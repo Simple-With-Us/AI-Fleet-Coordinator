@@ -2,7 +2,7 @@
 
 One GraphQL search per owner (`is:pr is:open archived:false user:<owner>`, 50 a page, paged by hand with the
 cursor variable named `$endCursor`), so the fleet repos of fleet-apps.json and every other repo of
-Simple-With-Us and jaywedgeworth22 come back in a handful of calls.  A PR from a fork is kept but marked
+Simple-With-Us comes back in a handful of calls.  A PR from a fork is kept but marked
 `cross_repo` (its head branch is not in the repo; workers cannot push to it).
 
 Record fields (also what `plan` reads):  owner, repo, full, n, title, url, author, head, base, head_oid, draft,
