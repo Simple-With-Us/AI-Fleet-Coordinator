@@ -522,10 +522,26 @@ def release_policy():
     return _RELEASE_POLICY[0]
 
 
+# The fallback copy of the release's REPO_ONLY:  simple_tools modules that match the shipped pattern but stay
+# out of a release (nothing runs them).  A test pins this copy to the release's REPO_ONLY.
+SHIPPED_REPO_ONLY = frozenset(
+    "scripts/simple_tools/" + name + ".py"
+    for name in (
+        "clarify",
+        "operator_github_client",
+        "operator_github_policy",
+        "operator_github_secrets",
+        "operator_send",
+    )
+)
+
+
 def is_shipped(path: str) -> bool:
     policy = release_policy()
     if policy is not None and callable(getattr(policy, "allowed_path", None)):
         return bool(policy.allowed_path(path))
+    if path in SHIPPED_REPO_ONLY:
+        return False
     return path in SHIPPED_EXACT or bool(
         re.fullmatch(r"scripts/simple_tools/(?:mcp/)?[a-z][a-z0-9_]*\.py", path)
         or path in ("scripts/simple_tools/__init__.py", "scripts/simple_tools/mcp/__init__.py")

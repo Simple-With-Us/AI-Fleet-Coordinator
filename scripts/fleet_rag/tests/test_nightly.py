@@ -797,6 +797,11 @@ class NightlyJobTests(unittest.TestCase):
         self.assertNotIn(needle, example)
         self.assertNotIn(needle, plist)
         self.assertIn("<key>RunAtLoad</key>\n  <false/>", plist)
+        self.assertIn("<key>StandardOutPath</key>", plist)
+        self.assertIn("<key>StandardErrorPath</key>", plist)
+        self.assertIn("@LOG@", plist)
+        mirror_env = (REPO / "scripts/launchd/fleet-rag-mirror.env.example").read_text(encoding="utf-8")
+        self.assertIn("FLEET_RAG_MIRROR_REMOTE_SCRIPT=", mirror_env)
         self.assertIn("@PYTHON@", plist)
         self.assertEqual(
             nightly_job.INGEST_ARGV,
@@ -905,11 +910,15 @@ class MirrorTests(unittest.TestCase):
 
     def test_a_disabled_push_does_not_run_a_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = Path(tmp) / "mirror.json"
+            root = Path(tmp)
+            log_path = root / "mirror.log"
+            cfg = root / "mirror.json"
             cfg.write_text(
                 json.dumps(
                     {
                         "enabled": False,
+                        "home": str(root),
+                        "log": str(log_path),
                         "ssh_target": "server",
                         "remote_root": "/srv/mirror",
                         "remote_script": "/srv/repo/scripts/fleet_rag/mirror.py",
@@ -920,6 +929,7 @@ class MirrorTests(unittest.TestCase):
             os.chmod(cfg, 0o600)
             with mock.patch.object(mirror.subprocess, "run", side_effect=AssertionError("ran")):
                 self.assertEqual(mirror._cmd_push(cfg), 0)
+            self.assertIn("outcome=disabled", log_path.read_text(encoding="utf-8"))
 
     def test_status_reasons(self) -> None:
         now = 1_700_000_000
@@ -990,6 +1000,9 @@ class InstallTests(unittest.TestCase):
             payload = json.loads((root / "mirror.json").read_text(encoding="utf-8"))
             plist = (root / "agent.plist").read_text(encoding="utf-8")
             mode = stat.S_IMODE((root / "mirror.json").stat().st_mode)
+        self.assertEqual(payload["log"], str(home / "Library" / "Logs" / "fleet-rag-mirror.log"))
+        self.assertIn("StandardOutPath", plist)
+        self.assertIn("fleet-rag-mirror.log", plist)
         self.assertFalse(payload["enabled"])
         self.assertFalse(result["bootstrapped"])
         self.assertEqual(mode, 0o600)
