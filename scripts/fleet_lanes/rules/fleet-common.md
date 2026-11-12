@@ -10,7 +10,7 @@ Every fleet tool presents the same one bearer, the one your seat owns:  ~/.secre
 
 ### Name Your Thread
 
-Your session carries a letter from the Operator registry.  Name this thread `<LETTER>: <short topic in English>` as soon as you know the work, not at the end:  the owner scans the letters, and a thread with no letter is invisible to that scan.  A thread that got no letter is titled `??: <Title>` and asks again on its own;  `simple-chat letter request` asks now and prints the letter or the reason in one line.  State the same letter in the first line of every post and every board item you file, so a reply knows where it is going.
+Your session carries a letter from the Operator registry.  Name this thread `<LETTER>: <short topic in English>` as soon as you know the work, not at the end:  the owner scans the letters, and a thread with no letter is invisible to that scan.  State the same letter in the first line of every post and every board item you file, so a reply knows where it is going.
 
 ### Land Your Work
 
