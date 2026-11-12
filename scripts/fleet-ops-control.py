@@ -2216,6 +2216,119 @@ def operator_read(ctx, action, target, mode):
     return {"ok": True, "result": "planned", "detail": detail, key: reduced}, 0
 
 
+def _router_seat_state(healthy, delivery, raw_reason):
+    """`(installed, registry_configured, reason_word)` derived from a `/health` seat row."""
+    if raw_reason == "not-installed":
+        return False, None, "not_installed"
+    if raw_reason.startswith("seat-not-served:"):
+        return True, None, "seat_not_served"
+    if raw_reason.startswith("routine-key-unavailable:"):
+        return True, None, "routine_key_unavailable"
+    if raw_reason == "registry-not-configured":
+        return True, False, "registry_not_configured"
+    if healthy is True:
+        return True, True, None
+    installed = True if delivery is not None else None
+    reason = "other" if raw_reason else None
+    return installed, None, reason
+
+
+def reduce_router_health(document, now):
+    """The `routerHealth` object of `server router-health`, from the router's `/health` JSON.
+
+        {"schema": 1, "generated_at": ISO, "instance": "server",
+         "healthy": bool | null,
+         "counts": {"total": int, "installed": int, "not_installed": int,
+                    "healthy": int, "delivery_on": int, "registry_configured": int},
+         "truncated": bool, "dropped": int,
+         "seats": [{"seat": name, "installed": bool | null, "healthy": bool | null,
+                    "delivery": bool | null, "registry_configured": bool | null,
+                    "reason": code | null}]}
+    """
+    if not isinstance(document, dict) or not isinstance(document.get("seats"), dict):
+        raise ValueError("not_json")
+    raw_seats = document["seats"]
+    seats = []
+    dropped = 0
+    counts = {
+        "total": 0,
+        "installed": 0,
+        "not_installed": 0,
+        "healthy": 0,
+        "delivery_on": 0,
+        "registry_configured": 0,
+    }
+    for seat_raw in sorted(raw_seats, key=str)[:OPERATOR_MAX_SEATS]:
+        entry = raw_seats[seat_raw]
+        seat = _operator_text(seat_raw, OPERATOR_SEAT_RE)
+        if seat is None or not isinstance(entry, dict):
+            dropped += 1
+            continue
+        healthy = _operator_flag(entry.get("healthy"))
+        delivery = _operator_flag(entry.get("delivery"))
+        raw_reason = entry.get("reason") if isinstance(entry.get("reason"), str) else ""
+        installed, registry_configured, reason = _router_seat_state(healthy, delivery, raw_reason)
+        row = {
+            "seat": seat,
+            "installed": installed,
+            "healthy": healthy,
+            "delivery": delivery,
+            "registry_configured": registry_configured,
+            "reason": reason,
+        }
+        seats.append(row)
+        counts["total"] += 1
+        if installed is True:
+            counts["installed"] += 1
+        elif installed is False:
+            counts["not_installed"] += 1
+        if healthy is True:
+            counts["healthy"] += 1
+        if delivery is True:
+            counts["delivery_on"] += 1
+        if registry_configured is True:
+            counts["registry_configured"] += 1
+    return {
+        "schema": OPERATOR_SCHEMA,
+        "generated_at": _operator_stamp(now),
+        "instance": OPERATOR_TARGET,
+        "healthy": _operator_flag(document.get("healthy")),
+        "counts": counts,
+        "truncated": len(raw_seats) > OPERATOR_MAX_SEATS,
+        "dropped": dropped,
+        "seats": seats,
+    }
+
+
+def router_health_read(ctx, target, mode):
+    """`(fields, exit_status)` of `server router-health server --plan`, or Refused."""
+    _server_only(ctx)
+    if mode != "plan":
+        raise Refused("router-health only reads: pass --plan")
+    if target != OPERATOR_TARGET:
+        raise Refused("only the server's wake router can be read here")
+    document, reason = ctx.router_health()
+    if document is not None:
+        try:
+            reduced = reduce_router_health(document, ctx.now())
+        except Exception:  # noqa: BLE001 - a malformed document is answered as unavailable
+            document, reason = None, "not_json"
+    if document is None:
+        reason_code = reason if reason in ROUTER_HEALTH_UNAVAILABLE else "read_failed"
+        return {
+            "ok": False,
+            "result": "unavailable",
+            "detail": ROUTER_HEALTH_UNAVAILABLE[reason_code],
+            "errorCode": reason_code,
+        }, 1
+    return {
+        "ok": True,
+        "result": "planned",
+        "detail": "read-only health of the server's wake router",
+        "routerHealth": reduced,
+    }, 0
+
+
 def _pm2_prefix(ctx):
     node = ctx.pm2_node
     if node is None:
