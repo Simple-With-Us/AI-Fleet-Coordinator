@@ -1749,20 +1749,26 @@ class OwnIntroTagTests(unittest.TestCase):
     def test_parse_comment_reads_reported_by_on_an_untagged_body(self):
         """AFC-692:  [needs-owner] is not a seat tag;  the footer names the signer."""
         cli = load_cli()
-        parsed = cli.parse_comment({
-            "id": "c1",
-            "body": "[needs-owner] notified msg 630000000\ntopic: OWNER AFC-300 x\n\nReported by: CLAUDE",
-            "createdAt": "2026-10-11T08:00:00.000Z",
-            "user": {"id": "fleet", "name": "Fleet", "app": True},
-        })
+        parsed = cli.parse_comment(
+            {
+                "id": "c1",
+                "body": "[needs-owner] notified msg 630000000\ntopic: OWNER AFC-300 x\n\nReported by: CLAUDE",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "fleet", "name": "Fleet", "app": True},
+            }
+        )
         self.assertEqual(parsed["author"], "CLAUDE")
-        self.assertEqual(parsed["text"], "[needs-owner] notified msg 630000000\ntopic: OWNER AFC-300 x")
-        tagged = cli.parse_comment({
-            "id": "c2",
-            "body": "[CODEX·abcd1234] owner replied:  msg 5",
-            "createdAt": "2026-10-11T08:00:00.000Z",
-            "user": {"id": "fleet", "name": "Fleet", "app": True},
-        })
+        self.assertEqual(
+            parsed["text"], "[needs-owner] notified msg 630000000\ntopic: OWNER AFC-300 x"
+        )
+        tagged = cli.parse_comment(
+            {
+                "id": "c2",
+                "body": "[CODEX·abcd1234] owner replied:  msg 5",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "fleet", "name": "Fleet", "app": True},
+            }
+        )
         self.assertEqual(tagged["author"], "CODEX")
         self.assertEqual(tagged["text"], "owner replied:  msg 5")
 
@@ -4054,7 +4060,10 @@ class FileInputTests(BoardTest):
             "sess-1",
             stdin="From standard input.\n",
         )
-        self.assertEqual(self.comments_of(iss)[-1], "From standard input.\n\nSessions: sess-1\n\nReported by: CLAUDE")
+        self.assertEqual(
+            self.comments_of(iss)[-1],
+            "From standard input.\n\nSessions: sess-1\n\nReported by: CLAUDE",
+        )
         ops = len(self.mock.ops)
         p = self.board("comment", "OPS-10", "--text-file", f, code=2)
         self.assertIn("--by", p.stderr)
