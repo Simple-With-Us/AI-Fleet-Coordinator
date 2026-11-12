@@ -1,0 +1,16 @@
+# Sunday 06:30 America/Chicago.  Confirm the next elapse with systemd-analyze
+# calendar before enabling.  Persistent runs a missed week after boot.  Enabling
+# this timer still does nothing until /etc/fleet/rag-collection-health.env exists
+# and sets FLEET_RAG_COLLECTION_HEALTH=1.  See docs/RAG-FLEET-INFRA.md.
+[Unit]
+Description=Fleet RAG collection health report on Sunday at 06:30 America/Chicago
+
+[Timer]
+OnCalendar=Sun *-*-* 06:30:00 America/Chicago
+Persistent=true
+AccuracySec=1min
+RandomizedDelaySec=0
+Unit=fleet-rag-collection-health.service
+
+[Install]
+WantedBy=timers.target

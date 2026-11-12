@@ -28,7 +28,7 @@ A consumer that reads one folder of Infisical on its own (an app on its own proj
 
 The flat file `~/.secrets/global-api-keys` is retired in favor of Infisical (OPS-818).  Nothing may read the flat file; there is no `global-api-keys.env` either, and the superseded sibling is a recovery net, not a source.
 
-The shared reader `fleet-secrets` is for the shared Fleet-OPS reader alone, and it needs a working login on this host:  without `INFISICAL_AUTOMATION_CLIENT_ID` and `INFISICAL_AUTOMATION_CLIENT_SECRET` it cannot authenticate, so stop and report that instead of substituting another source.  It is never the path for new work; the shared Automation identity is not for a consumer that reads one folder.
+The shared reader `fleet-secrets` is for the shared Fleet-OPS reader alone, and it authenticates only with the caller's own scoped service token bound as `INFISICAL_TOKEN` (or `INFISICAL_AI_FLEET_COORDINATOR_TOKEN` for that project).  A missing token fails closed and names that variable.  It does not log in with a machine identity.  It is never the path for a consumer that reads one folder; that consumer uses its own scoped service token.
 
 On the Mac:
 
@@ -68,7 +68,7 @@ fleet-secrets run -- env
 # Read / open-file / cat / less / bat on any secrets file
 ```
 
-Allowed:  the shared `fleet-secrets` reader, and it needs a working login on this host — without one it cannot authenticate, so stop and report that instead of substituting another source.  A consumer that reads one folder uses its own scoped service token (`service-tokens`) instead.
+Allowed:  the shared `fleet-secrets` reader, which authenticates only with `INFISICAL_TOKEN` and fails closed naming that variable when it is missing.  A consumer that reads one folder uses its own scoped service token (`service-tokens`) instead.
 
 ```bash
 fleet-secrets names

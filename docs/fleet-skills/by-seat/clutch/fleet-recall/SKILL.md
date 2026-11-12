@@ -1,7 +1,7 @@
 ---
 name: fleet-recall
 description: >-
-  Search the fleet's shared knowledge corpus (board resolutions, Apple Notes, effort logs, protocol docs, seat memories) before re-deriving a lesson, and contribute a reusable lesson after you learn one.  Use at the start of any task that smells familiar (an incident, a deploy gotcha, an owner preference), whenever a peer says "we solved this before", and at closeout.  Backed by the self-hosted fleet-agents Qdrant collection on the Hetzner box.
+  Search the fleet's shared knowledge corpus (board resolutions, Apple Notes, effort logs, protocol docs, seat memories) before re-deriving a lesson, and contribute a reusable lesson after you learn one.  Use at the start of any task that smells familiar (an incident, a deploy gotcha, an owner preference), whenever a peer says "we solved this before", and at closeout.  Backed by the self-hosted fleet Qdrant collection on the Hetzner box.
 ---
 
 # Fleet recall
@@ -9,7 +9,7 @@ description: >-
 > **Runtime (Clutch).**  Clutch runs the DSH engine (`clutch`, pm2 `clutch-web`, the Clutch Mac app).  The engine finds skills in `~/.clutch/dsh/skills` before the shared `~/.agents/skills` pack it also reads, so this pack shadows that one.  It loads `~/.clutch/dsh/AGENTS.md` and then the project `AGENTS.md` chain, and reads neither `~/AGENTS.md` nor `~/.claude/CLAUDE.md`.  Start `clutch` inside a lane (`~/apps/lanes/Clutch/clutch-<slug>`).  A seat a launcher assigned (BotFleet, a bridge) beats the CLUTCH default.
 
 
-The fleet has one shared memory: the `fleet-agents` collection in the self-hosted Qdrant on the
+The fleet has one shared memory: the collection named by `QDRANT_FLEET_COLLECTION` in the self-hosted Qdrant on the
 Hetzner box, embedded by the self-hosted bge-m3 endpoint.  It holds every row of the old board with its
 resolution (Linear issues join when the `linear` recall source ships), the Apple Notes archive, every effort log, the fleet protocol docs, the skills, and
 each seat's memory files, refreshed nightly by the BotFleet bot Oracle.  Canonical doc:
@@ -107,6 +107,10 @@ Cloud seats (Cursor cloud, Codex cloud, Claude cloud, Grok bots) reach the same 
 tools through the fleet MCP gateway (`docs/RECALL-ACCESS-CHECK.md` names the URL; Cloudflare Access +
 bearer, see `docs/fleet-skills/drive-grok-tui`).  Nothing else on the internet can reach the
 corpus; both services bind to the Tailscale mesh only.
+
+## Retrieval-Quality Eval
+
+`recall eval --retrieval` scores `scripts/fleet_rag/retrieval_golden.json` against the live collection at recall@1, recall@5, recall@10 and MRR.  `recall eval --offline` builds a small BM25 index from the repo files those queries name, so CI can run it with no Qdrant credentials.  Save two JSON reports and pass them to `recall eval --compare BEFORE.json AFTER.json` to see what a chunking or filter change did.  The weekly `recall eval` on `golden.jsonl` is unchanged.
 
 ## Rules
 

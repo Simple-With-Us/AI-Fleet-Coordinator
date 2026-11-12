@@ -1,7 +1,7 @@
 ---
 name: fleet-recall
 description: >-
-  Search the fleet's shared knowledge corpus (board resolutions, Apple Notes, effort logs, protocol docs, seat memories) before re-deriving a lesson, and contribute a reusable lesson after you learn one.  Use at the start of any task that smells familiar (an incident, a deploy gotcha, an owner preference), whenever a peer says "we solved this before", and at closeout.  Backed by the self-hosted fleet-agents Qdrant collection on the Hetzner box.
+  Search the fleet's shared knowledge corpus (board resolutions, Apple Notes, effort logs, protocol docs, seat memories) before re-deriving a lesson, and contribute a reusable lesson after you learn one.  Use at the start of any task that smells familiar (an incident, a deploy gotcha, an owner preference), whenever a peer says "we solved this before", and at closeout.  Backed by the self-hosted fleet Qdrant collection on the Hetzner box.
 ---
 
 # Fleet recall
@@ -9,7 +9,7 @@ description: >-
 > **Runtime fork (Grok).**  Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build: one seat (owner 2026-10-08), and everything is signed `GROK`.  Its Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10): the tools accept it as a seat name and sign GROK, so do not write it as a tag, a branch prefix or a lane folder.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
 
-The fleet has one shared memory: the `fleet-agents` collection in the self-hosted Qdrant on the
+The fleet has one shared memory: the collection named by `QDRANT_FLEET_COLLECTION` in the self-hosted Qdrant on the
 Hetzner box, embedded by the self-hosted bge-m3 endpoint.  It holds every row of the old board with its
 resolution (Linear issues join when the `linear` recall source ships), the Apple Notes archive, every effort log, the fleet protocol docs, the skills, and
 each seat's memory files, refreshed nightly by the BotFleet bot Oracle.  Canonical doc:
@@ -107,6 +107,10 @@ Cloud seats (Cursor cloud, Codex cloud, Claude cloud, Grok bots) reach the same 
 tools through the fleet MCP gateway (`docs/RECALL-ACCESS-CHECK.md` names the URL; Cloudflare Access +
 bearer, see `docs/fleet-skills/drive-grok-tui`).  Nothing else on the internet can reach the
 corpus; both services bind to the Tailscale mesh only.
+
+## Retrieval-Quality Eval
+
+`recall eval --retrieval` scores `scripts/fleet_rag/retrieval_golden.json` against the live collection at recall@1, recall@5, recall@10 and MRR.  `recall eval --offline` builds a small BM25 index from the repo files those queries name, so CI can run it with no Qdrant credentials.  Save two JSON reports and pass them to `recall eval --compare BEFORE.json AFTER.json` to see what a chunking or filter change did.  The weekly `recall eval` on `golden.jsonl` is unchanged.
 
 ## Rules
 
