@@ -2236,14 +2236,14 @@ def _router_seat_state(healthy, delivery, raw_reason):
 def reduce_router_health(document, now):
     """The `routerHealth` object of `server router-health`, from the router's `/health` JSON.
 
-        {"schema": 1, "generated_at": ISO, "instance": "server",
-         "healthy": bool | null,
-         "counts": {"total": int, "installed": int, "not_installed": int,
-                    "healthy": int, "delivery_on": int, "registry_configured": int},
-         "truncated": bool, "dropped": int,
-         "seats": [{"seat": name, "installed": bool | null, "healthy": bool | null,
-                    "delivery": bool | null, "registry_configured": bool | null,
-                    "reason": code | null}]}
+    {"schema": 1, "generated_at": ISO, "instance": "server",
+     "healthy": bool | null,
+     "counts": {"total": int, "installed": int, "not_installed": int,
+                "healthy": int, "delivery_on": int, "registry_configured": int},
+     "truncated": bool, "dropped": int,
+     "seats": [{"seat": name, "installed": bool | null, "healthy": bool | null,
+                "delivery": bool | null, "registry_configured": bool | null,
+                "reason": code | null}]}
     """
     if not isinstance(document, dict) or not isinstance(document.get("seats"), dict):
         raise ValueError("not_json")
