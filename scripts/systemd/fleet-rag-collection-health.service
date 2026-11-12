@@ -1,0 +1,30 @@
+# Fleet RAG weekly collection health report (AFC-762).  Disabled until both of
+# these are true: the env file exists, and FLEET_RAG_COLLECTION_HEALTH=1 inside
+# it.  Copying this unit does not enable the timer.  The service has no install
+# section on purpose.
+#
+# The account that owns the report is a host drop-in, not this file:
+#   sudo systemctl edit fleet-rag-collection-health.service
+#   [Service]
+#   User=<account>
+#   Group=<account>
+# HOME in the env file must be that account's home.  The code root stays in
+# /etc/fleet/lanes.conf.  This file does not name a volume path.
+[Unit]
+Description=Fleet RAG weekly collection health report (no-op until FLEET_RAG_COLLECTION_HEALTH=1)
+ConditionPathExists=/etc/fleet/rag-collection-health.env
+# Same ordering as fleet-rag-nightly: systemd starts code-main-sync first.
+# The report still runs when that sync does not succeed.
+Wants=code-main-sync.service
+After=network-online.target code-main-sync.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=2h
+UMask=0077
+Nice=10
+EnvironmentFile=-/etc/fleet/lanes.conf
+EnvironmentFile=/etc/fleet/rag-collection-health.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -I ${FLEET_RAG_CHECKOUT}/scripts/fleet_rag/collection_health.py
+SyslogIdentifier=fleet-rag-collection-health

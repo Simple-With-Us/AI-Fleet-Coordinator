@@ -304,7 +304,7 @@ The `eavesdropper_status`, `eavesdropper_inbox`, `eavesdropper_owner_queue`, `ea
 
 ## Notes, recall and the guide (AFC-331, AFC-486)
 
-The eight notes tools (`notes_create`, `notes_update`, `notes_pin`, `notes_unpin`, `notes_read`, `notes_list`, `notes_status` and `notes_log`, in `src/notes.js`) send each request to the Operator's notes queue over signed HTTPS, and the Mac runner does the work (`docs/protocols/operator-notes.md`).  No Zulip message is involved:  the `#notes-relay` transport of AFC-331 is retired (owner, Thu, Oct 22, 2026:  "I don't want notes going from Zulip to Apple notes").  The Worker signs every request as the principal `WORKER` with the Worker secret `OPERATOR_NOTES_KEY`, which holds the Infisical key `OPERATOR_NOTES_WORKER_KEY` (AI Fleet Coordinator, `prod`, folder `/operator`), and it reaches the Operator at `LISTENER_API_URL`, the same https origin as the listener read API.  The seat a request acts for is always the grant's.  Until both the secret and the var are set, every notes tool answers `not_configured` and nothing else changes.
+The nine notes tools (`notes_create`, `notes_update`, `notes_pin`, `notes_delete`, `notes_unpin`, `notes_read`, `notes_list`, `notes_status` and `notes_log`, in `src/notes.js`) send each request to the Operator's notes queue over signed HTTPS, and the Mac runner does the work (`docs/protocols/operator-notes.md`).  No Zulip message is involved:  the `#notes-relay` transport of AFC-331 is retired (owner, Thu, Oct 22, 2026:  "I don't want notes going from Zulip to Apple notes").  The Worker signs every request as the principal `WORKER` with the Worker secret `OPERATOR_NOTES_KEY`, which holds the Infisical key `OPERATOR_NOTES_WORKER_KEY` (AI Fleet Coordinator, `prod`, folder `/operator`), and it reaches the Operator at `LISTENER_API_URL`, the same https origin as the listener read API.  The seat a request acts for is always the grant's.  Until both the secret and the var are set, every notes tool answers `not_configured` and nothing else changes.
 
 1. The Operator half first:  `[notes_queue] enabled = true` with this Worker's seats in `worker_seats`, the three keys in Infisical `/operator`, and the public route that sends `/notes/v1/` to port 8788 (`docs/protocols/operator-notes.md`, "Operator Configuration").
 2. Install the key with Step 1's credentials.  The value goes to wrangler on stdin and is never printed:
@@ -400,12 +400,36 @@ Jay regenerates the bot's key in Zulip (the old one dies at once), updates `ZULI
 
 ## Open owner items
 
-- **A4:**  Infisical's Cloudflare Workers sync for the hosted keys, with "Disable Secret Deletion" (replaces step 2).
+- **A4:** the Worker secret sync in the section below.  The owner creates the Infisical folder, the digest key, the read-only service token, and the GitHub secret named there.  Apply stays off.  The sync never deletes a Worker secret.
 - **A5:**  done for deploys:  the scoped per-Worker token and its reader replaced the Global key (2026-11-08 record in `ops/`).  Whether that token may also run `wrangler secret put` is unverified.
-- **A1 and D8:**  a key location no agent identity can read.  Until then the seat-key read token can reach GROK-WEB's key, because the key still lives in `/zulip`.  A machine identity is not a deploy route.  The Global key is retired and not a deploy route.
+- **A1 and D8:** a key location no agent identity can read is still an owner choice.  Until then the seat-key read token can reach GROK-WEB's key, because the key still lives in `/zulip`.  The sync folder is readable by its own CI service token, so a key that must stay unreadable does not go there.  A machine identity is not a deploy route.  The Global key is retired and is not a deploy route.
 - **ECHO and WISE:**  connect one at a time from the Instinct app's own computer ([ARMING-JAY.md](ARMING-JAY.md), "Connect Echo" and "Connect Wise").  The Worker serves both and both keys are installed (Fri, Oct 9, about 10:24pm);  the client id comes from the first attempt.
 - **JET:**  arm it and connect ChatGPT ([ARMING-JAY.md](ARMING-JAY.md)).  The bot is a member, the Worker serves JET and its key is installed (Fri, Oct 9, about 8:10am), so nothing else blocks it.
 
+
+## Worker secret sync ([AFC-380](https://linear.app/simple-with-us/issue/AFC-380))
+
+This is owner items A4 and A1.  The mapped deploy path compares one Infisical folder to the Worker and prints names only.  Apply stays off.
+
+### What the owner creates in Infisical
+
+1. Folder `/workers/simple-tools-mcp` in the AI Fleet Coordinator project, environment `prod`.  `scripts/worker-secret-folders.json` is the only Worker-to-folder map, and the service token's project id must match the id in that file.
+
+2. One secret for each name in `scripts/worker-secret-allowlists/simple-tools-mcp.json`.  Add a name to that file before apply will put it.  Also create `FLEET_SECRET_DIGEST_KEY` in the same folder, at least 16 random bytes.  That key is not put on the Worker, and it must not be added to the allowlist.  Git holds names only.
+
+3. One read-only Infisical service token for that project, `prod`, and exactly `/workers/simple-tools-mcp`, with an expiry.  Do not create a universal-auth identity or a machine identity.  Register the token on the service-tokens sheet.  Store it as the GitHub Actions secret `WORKER_SECRET_SYNC_INFISICAL_TOKEN`.  Do not widen `AFC_WORKER_DEPLOY_INFISICAL_TOKEN`.  That secret stays the Fleet-OPS prod `/` reader for `CLOUDFLARE_FLEET_API_TOKEN`.
+
+4. Leave the repository variable `WORKER_SECRET_SYNC_APPLY` unset.  After the folder and the token exist, set `WORKER_SECRET_CHECK_ENABLED` to `true` to run the dry-run.  Read the names under `missing-on-worker`, `only-on-worker`, and `differ`.  Set `WORKER_SECRET_SYNC_APPLY` to the exact string `true` only when that dry-run is acceptable.  The deploy step passes `--apply` only in that case, and the script still refuses to put unless both are set.
+
+### How a difference is decided
+
+Cloudflare returns secret names and types, never values, so a metadata secret cannot be read back on the next check.  The sync computes HMAC-SHA256 over the secret name, a NUL byte, and the Infisical value, using `FLEET_SECRET_DIGEST_KEY`.  It compares that hex digest to the map in the Worker plain-text binding `FLEET_SECRET_DIGESTS`.  The script settings API returns that binding's text and still omits every secret value.  The binding holds digests, not values.  Until the binding exists, a name present on both sides is `differ`, because nothing has proved the values match.  A partial Infisical or Cloudflare read aborts before any put.
+
+When apply is on, the job puts only allowlisted names that are missing or that differ.  The value goes to the Worker secrets API in the request body, the same write as `wrangler secret put`, and it is never printed.  Names that exist only on the Worker are reported and not deleted.  That is the Disable Secret Deletion behavior.
+
+### What A1 still requires
+
+This folder is readable by the deploy job's service token.  It is not a location no agent identity can read.  A key that must stay out of that job does not belong in the folder and does not belong on the allowlist.  GROK-WEB's key still lives in `/zulip`, where the seat-key read token can reach it.  A machine identity is not a deploy route.  The Global key stays retired.
 
 ## Add Cursor Cloud (AFC-294)
 
