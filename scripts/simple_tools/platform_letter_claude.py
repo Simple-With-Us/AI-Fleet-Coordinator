@@ -34,10 +34,12 @@ never fails a chat's start over this file.
   sub-thread here.
 - A parent, asked of the Mac (`parent_from_mac`).  The app keeps its records on the Mac, and it runs most chats
   on the server over ssh, where the chat's hook finds no store.  A hook on a host with no store asks the Mac, when
-  it was told where the Mac is (SESSION_LETTER_MAC_SSH, the hook's `--mac-ssh`):  one read-only ssh call that
-  runs `platform-letter parent --platform claude` there and prints the parent's session id or nothing.  The ids
-  are checked before they reach the command line, the call is bounded (MAC_TIMEOUT_SECONDS), and a Mac that does
-  not answer is no parent.  Nothing but that question crosses:  the registry is never reached over ssh.
+  it was told where the Mac is (SESSION_LETTER_MAC_SSH, the hook's `--mac-ssh`):  one read-only ssh call whose
+  whole command is the question (`platform_letter.parent_ssh_command`), answered with the parent's session id or
+  nothing.  On the Mac the key is forced to `platform-letter parent-ssh-gate`, which matches that command whole
+  and runs nothing else, so the key gives no shell.  The ids are checked before they reach the command line, the
+  call is bounded (MAC_TIMEOUT_SECONDS), and a Mac that does not answer is no parent.  Nothing but that question
+  crosses:  the registry is never reached over ssh.
 - A parent registered first (`claude_chat_payload`).  The library registers a sub-thread's parent ahead of it when the
   parent holds no letter on this host, and asks this file about the parent with a payload that says so.  Only a chat
   whose record this host holds and that runs on this host is one:  a chat the app runs over ssh (`sshConfig`) has its
@@ -69,7 +71,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 import subprocess
 import time
 from collections.abc import Callable, Iterable, Mapping
@@ -134,11 +135,23 @@ REMOTE_LOCATION = "server"
 REMOTE_SCAN_DAYS = 14
 REMOTE_SCAN_RECORDS = 300
 REMOTE_QUIET_SECONDS = 3600
-# Asking the Mac for a chat's parent (`parent_from_mac`):  the command it runs there, how long ssh may take to
-# connect (an asleep or unreachable Mac costs this much), and the whole round trip, inside SessionStart's budget.
-MAC_COMMAND = '"$HOME"/.local/bin/platform-letter parent --platform claude'
-MAC_CONNECT_SECONDS = 3
-MAC_TIMEOUT_SECONDS = 5.0
+# Asking the Mac for a chat's parent (`parent_from_mac`):  how long ssh may take to connect, and the whole round
+# trip (an asleep or unreachable Mac costs this much, once per RETRY_SECONDS for a chat).  It must fit the
+# tightest hook budget together with what follows it in the same hook run.  A chat with no letter asks on a
+# prompt or a turn end, whose budget is 15 seconds:  2 for this call, then the register chain of at most three
+# registry calls of 4 seconds each (platform_letter._API_TIMEOUT), 14 in all.  A start has 20:  2, the same 12,
+# and one gone report of 4.
+MAC_CONNECT_SECONDS = 2
+MAC_TIMEOUT_SECONDS = 2.0
+# ssh as it is run:  no prompt, the connect bounded, no connection shared with (or left behind for) any other
+# ssh of the account, and nothing forwarded, whatever the account's own ssh config says for the host.
+SSH_OPTIONS = (
+    "BatchMode=yes",
+    "ConnectTimeout=%d" % MAC_CONNECT_SECONDS,
+    "ControlMaster=no",
+    "ClearAllForwardings=yes",
+    "ForwardAgent=no",
+)
 # A resumed chat's title (`claude_stored_title`):  how much of its transcript is read for its first prompt.
 TRANSCRIPT_LINES = 400
 TRANSCRIPT_BYTES = 4 << 20
@@ -388,10 +401,28 @@ def lookup(
 
 
 def _run_ssh(cmd: list[str], timeout: float) -> Any:
-    """Run one ssh command with nothing on its standard input.  The one seam a test replaces."""
+    """Run one ssh command with nothing on its standard input and its own messages thrown away (a banner or a
+    warning is not the answer, and a full pipe nobody reads must not hold it up).  The one seam a test replaces."""
     return subprocess.run(
-        cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, check=False
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        timeout=timeout,
+        check=False,
     )
+
+
+def _answered(out: object) -> str:
+    """The session id on the last line ssh printed, or "".  Only a whole line counts:  an answer cut off before its
+    newline is not one."""
+    if isinstance(out, bytes):
+        out = out.decode("utf-8", "replace")
+    if not isinstance(out, str) or not out.endswith("\n"):
+        return ""
+    lines = [line.strip() for line in out.splitlines() if line.strip()]
+    return _session_id(lines[-1]) if lines else ""
 
 
 #: What the Mac answered in this process, so one hook run asks it once however many readers want the parent.
@@ -404,35 +435,42 @@ def parent_from_mac(
     """The session id of the chat that started chat `sid`, asked of the Mac, or "".
 
     The desktop app's records are on the Mac, and a chat the app runs over ssh has its hook on the other host.  So
-    a hook that finds no store asks the Mac, with ONE ssh call that only reads:  it runs `platform-letter parent`
-    there, which prints the parent's session id or nothing.  The destination is the host's own setting
-    (`platform_letter.mac_ssh`);  with none, nothing is asked.  The session id and the app id are checked against
-    their own patterns before they are put on the command line (an app id that fails is left out, a session id
-    that fails asks nothing), ssh may not prompt (BatchMode) and the round trip is cut at MAC_TIMEOUT_SECONDS.
-    Any failure, a timeout, or an answer that is not a session id is no parent."""
+    a hook that finds no store asks the Mac, with ONE ssh call that only reads.  The command it sends is the
+    question itself, exactly the string the Mac's gate accepts (`platform_letter.parent_ssh_command`):  the key is
+    forced to `platform-letter parent-ssh-gate` there, which matches the string whole and answers with the
+    parent's session id or nothing, so the key can run nothing else and no shell reads the ids.  The destination
+    is the host's own setting (`platform_letter.mac_ssh`);  with none, nothing is asked.  The session id and the
+    app id are checked against their own patterns first (an app id that fails is left out, a session id that
+    fails asks nothing), ssh may not prompt, shares no connection and forwards nothing (SSH_OPTIONS), and the
+    round trip is cut at MAC_TIMEOUT_SECONDS.  An answer that arrived whole before the cut still counts.  Any
+    failure, a timeout with no answer, or an answer that is not a session id is no parent."""
     dest = PL.mac_ssh(env)
     sid = _session_id(sid)
     if not dest or not sid:
         return ""
-    words = ["--session-id", sid]
+    app_id = ""
     if isinstance(host_session_id, str) and HOST_ID.fullmatch(host_session_id):
-        words += ["--app-id", host_session_id]
-    if cleared:
-        words += ["--source", "clear"]
-    key = (dest, *words)
+        app_id = host_session_id
+    remote = PL.parent_ssh_command(PLATFORM, sid, app_id, "clear" if cleared else "")
+    if not remote:
+        return ""  # not a command the gate would take:  nothing is sent
+    key = (dest, remote)
     if key in _ASKED:
         return _ASKED[key]
-    remote = MAC_COMMAND + " " + " ".join(shlex.quote(word) for word in words)
-    cmd = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=%d" % MAC_CONNECT_SECONDS]
+    cmd = ["ssh", "-T"]
+    for option in SSH_OPTIONS:
+        cmd += ["-o", option]
     cmd += ["--", dest, remote]
     parent = ""
     try:
         done = _run_ssh(cmd, MAC_TIMEOUT_SECONDS)
         if done.returncode == 0:
-            lines = [line.strip() for line in str(done.stdout or "").splitlines() if line.strip()]
-            parent = _session_id(lines[-1]) if lines else ""
+            parent = _answered(done.stdout)
+    except subprocess.TimeoutExpired as late:
+        # The answer may be in hand though ssh did not exit (something of the account's still holds its pipe).
+        parent = _answered(late.stdout)
     except (OSError, subprocess.SubprocessError):
-        parent = ""  # the Mac is asleep, unreachable or slow:  no parent is known
+        parent = ""  # the Mac is unreachable, or ssh could not run:  no parent is known
     if parent == sid:
         parent = ""
     _ASKED[key] = parent

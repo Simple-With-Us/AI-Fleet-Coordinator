@@ -1233,6 +1233,7 @@ class ParentFromMacTests(HookBase):
                 return self.answer(cmd)
             return SimpleNamespace(returncode=0, stdout=self.answer, stderr="")
 
+        self.real_run_ssh = PC._run_ssh
         patch = mock.patch.object(PC, "_run_ssh", run)
         patch.start()
         self.addCleanup(patch.stop)
@@ -1261,18 +1262,25 @@ class ParentFromMacTests(HookBase):
         self.assertEqual(parent, "p-0001")
         cmd, timeout = self.calls[0]
         self.assertEqual(cmd, [
-            "ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "--", self.DEST,
-            '"$HOME"/.local/bin/platform-letter parent --platform claude --session-id c-0001'
-            " --app-id local_bbbbbbbb-0002",
+            "ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=2", "-o", "ControlMaster=no",
+            "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "--", self.DEST,
+            "platform-letter parent --platform claude --session-id c-0001 --app-id local_bbbbbbbb-0002",
         ])
-        self.assertEqual((timeout, PC.MAC_TIMEOUT_SECONDS), (5.0, 5.0))
-        self.assertLess(PC.MAC_TIMEOUT_SECONDS, PC.HOOK_TIMEOUTS["SessionStart"])
+        # The command is the question itself, word for word what the Mac's gate accepts:  no path, no quotes.
+        self.assertTrue(PL.PARENT_SSH_RE.fullmatch(cmd[-1]))
+        self.assertEqual((timeout, PC.MAC_TIMEOUT_SECONDS, PC.MAC_CONNECT_SECONDS), (2.0, 2.0, 2))
+        # The budgets:  the call, then a register chain of three registry calls, inside the tightest hook's
+        # timeout (a prompt or a turn end);  and on a start one gone report more.
+        chain = 3 * PL._API_TIMEOUT
+        self.assertLess(PC.MAC_TIMEOUT_SECONDS + chain, min(PC.HOOK_TIMEOUTS["UserPromptSubmit"],
+                                                            PC.HOOK_TIMEOUTS["Stop"]))
+        self.assertLess(PC.MAC_TIMEOUT_SECONDS + chain + PL._API_TIMEOUT, PC.HOOK_TIMEOUTS["SessionStart"])
         # The start after a /clear says so, and a chat with no app id is asked about by its session id alone.
         PC.claude_parent({"hook_event_name": "SessionStart", "session_id": "c-0002", "source": "clear"},
                          self.server_env())
         self.assertTrue(self.calls[-1][0][-1].endswith("--session-id c-0002 --app-id local_bbbbbbbb-0002 --source clear"))
         PC.claude_parent({"session_id": "c-0003"}, self.server_env(host=""))
-        self.assertTrue(self.calls[-1][0][-1].endswith("parent --platform claude --session-id c-0003"))
+        self.assertEqual(self.calls[-1][0][-1], "platform-letter parent --platform claude --session-id c-0003")
         # One hook run asks once, however many readers want the parent.
         before = len(self.calls)
         self.assertEqual(PC.claude_parent({"session_id": "c-0003"}, self.server_env(host="")), "p-0001")
@@ -1280,7 +1288,8 @@ class ParentFromMacTests(HookBase):
 
     def test_a_mac_that_fails_or_does_not_answer_is_no_parent(self) -> None:
         for n, answer in enumerate((
-            subprocess.TimeoutExpired("ssh", 5.0),
+            subprocess.TimeoutExpired("ssh", 2.0),
+            subprocess.TimeoutExpired("ssh", 2.0, output="p-00"),  # cut off before its newline:  not an answer
             OSError("no ssh here"),
             lambda cmd: SimpleNamespace(returncode=255, stdout="", stderr="ssh: connect to host: timed out"),
             lambda cmd: SimpleNamespace(returncode=126, stdout="p-0001\n", stderr="not allowed on this key"),
@@ -1299,6 +1308,20 @@ class ParentFromMacTests(HookBase):
         # A banner line before the answer does not hide it:  the last line is the answer.
         self.answer = "Welcome to the Mac\np-0001\n"
         self.assertEqual(PC.claude_parent({"session_id": "c-0100"}, self.server_env()), "p-0001")
+        # An answer that came whole before the cut still counts (something of the account's kept ssh's pipe open),
+        # as text or as the bytes a timeout hands back.
+        for n, late in enumerate(("p-0001\n", b"p-0001\n")):
+            self.answer = subprocess.TimeoutExpired("ssh", 2.0, output=late)
+            self.assertEqual(PC.claude_parent({"session_id": "c-020%d" % n}, self.server_env()), "p-0001")
+
+    def test_ssh_runs_with_nothing_on_stdin_and_its_own_messages_thrown_away(self) -> None:
+        ran = SimpleNamespace(returncode=0, stdout="p-0001\n")
+        with mock.patch.object(subprocess, "run", return_value=ran) as run:
+            self.assertIs(self.real_run_ssh(["ssh", "-T", "--", self.DEST, "x"], 2.0), ran)
+        run.assert_called_once_with(
+            ["ssh", "-T", "--", self.DEST, "x"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, timeout=2.0, check=False,
+        )
 
     def test_a_hostile_id_never_reaches_the_command_line(self) -> None:
         for sid in ("c-0001; rm -rf /", "$(id)", "../x", "a b", "", "x" * 200):
@@ -1308,7 +1331,7 @@ class ParentFromMacTests(HookBase):
             PC._ASKED.clear()
             self.assertEqual(PC.claude_parent({"session_id": "c-0001"}, self.server_env(host=host)), "p-0001")
             self.assertEqual(self.calls[-1][0][-1],
-                             '"$HOME"/.local/bin/platform-letter parent --platform claude --session-id c-0001', host)
+                             "platform-letter parent --platform claude --session-id c-0001", host)
         # A destination that is not one, or none at all, asks nothing either:  it is configuration, never a guess.
         self.calls.clear()
         for dest in ("", "-oProxyCommand=evil", "mac; id", "a b"):
@@ -1352,10 +1375,12 @@ class ParentFromMacTests(HookBase):
         self.app_record(self.CHILD, "c-0001", started_by=self.PARENT, sshConfig={"sshHost": "the-server"})
 
         def mac(cmd):
-            words = shlex.split(cmd[-1].replace('"$HOME"', "HOME"))
-            self.assertEqual(words[:2], ["HOME/.local/bin/platform-letter", "parent"])
-            out = io.StringIO()
-            code = PL.parent_main(words[2:], {"HOME": self.home}, out)
+            # What sshd does with a key that has the forced command:  the gate runs, with what the client asked
+            # for in SSH_ORIGINAL_COMMAND, and no shell reads it.
+            out, err = io.StringIO(), io.StringIO()
+            code = PL.main([PL.PARENT_GATE], env={"HOME": self.home, PL.ENV_SSH_COMMAND: cmd[-1]}, stdout=out,
+                           stderr=err)
+            self.assertEqual(err.getvalue(), "")
             return SimpleNamespace(returncode=code, stdout=out.getvalue(), stderr="")
 
         self.answer = mac
@@ -1376,7 +1401,7 @@ class ParentFromMacTests(HookBase):
         self.assertEqual(len(self.calls), 2)
 
     def test_the_answer_is_kept_in_the_note_for_the_window(self) -> None:
-        self.answer = subprocess.TimeoutExpired("ssh", 5.0)
+        self.answer = subprocess.TimeoutExpired("ssh", 2.0)
         down = Calls(self, fail=TimeoutError("down"))
         start = {"hook_event_name": "SessionStart", "session_id": "c-0001", "source": "startup"}
         prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "c-0001", "prompt": "go"}
@@ -1419,6 +1444,48 @@ class ParentFromMacTests(HookBase):
         self.assertEqual(commands, {shlex.quote(os.path.join(self.server_home, ".local", "bin", "platform-letter"))
                                     + " hook --platform claude --location server --mac-ssh " + self.DEST})
         self.assertEqual(sorted(hooks), ["SessionEnd", "SessionStart", "Stop", "UserPromptSubmit"])
+
+    def test_the_gate_answers_the_clients_own_command_and_nothing_else(self) -> None:
+        self.app_record(self.PARENT, "p-0001")
+        self.app_record(self.CHILD, "c-0001", started_by=self.PARENT)
+
+        def gate(command: object) -> tuple[int, str, str]:
+            env = {"HOME": self.home}
+            if command is not None:
+                env[PL.ENV_SSH_COMMAND] = command
+            out, err = io.StringIO(), io.StringIO()
+            return PL.parent_ssh_gate_main(env, out, err), out.getvalue(), err.getvalue()
+
+        # Every command the client can build, for every combination of its flags, is taken, and answered.
+        for app_id in ("", self.CHILD):
+            for source in ("", "clear"):
+                command = PL.parent_ssh_command("claude", "c-0001", app_id, source)
+                self.assertTrue(command, (app_id, source))
+                self.assertEqual(gate(command), (0, "p-0001\n", ""), command)
+        refused = (126, "", "parent-ssh-gate: that command is not allowed on this key\n")
+        good = "platform-letter parent --platform claude --session-id c-0001"
+        for command in (
+            None, "", " ", "true", "sh", good + " ", " " + good, good + "\n", good + "; id", good + " && id",
+            good + " | cat", good + " $(id)", good + " `id`", good + " > /tmp/x", good + " extra",
+            good + " --app-id", good + " --app-id local_a b", good + " --app-id 'local_a'",
+            good + " --source compact", good + " --source clear --app-id local_a",  # the flags have one order
+            good.replace("parent", "registry"), good.replace("parent", "install"),
+            good.replace("platform-letter", "/bin/sh -c"), good.replace("platform-letter", "simple-chat letter"),
+            '"$HOME"/.local/bin/' + good, good.replace("c-0001", "c-0001;id"), good.replace("c-0001", "../../x"),
+            good.replace("c-0001", "$(id)"), good.replace("claude", "Claude"), good.replace(" --session-id c-0001", ""),
+            "platform-letter gone --platform claude --apply", "scp -t /tmp", 7,
+        ):
+            self.assertEqual(gate(command), refused, command)
+        # The verb takes no words of its own on its command line either.
+        out = io.StringIO()
+        self.assertEqual(PL.main([PL.PARENT_GATE, "anything"], env={"HOME": self.home, PL.ENV_SSH_COMMAND: good},
+                                 stdout=out, stderr=out), 126)
+
+    def test_a_hostile_part_builds_no_command(self) -> None:
+        for bad in (("claude", "c-0001; id"), ("claude", "c-0001 --app-id local_x"), ("claude", ""), ("Claude", "c-0001"),
+                    ("claude x", "c-0001"), ("claude", "c-0001", "local_a b"), ("claude", "c-0001", "$(id)"),
+                    ("claude", "c-0001", "", "compact"), ("claude", "c-0001", "", "clear --app-id x")):
+            self.assertEqual(PL.parent_ssh_command(*bad), "", bad)
 
 
 class StoredTitleTests(HookBase):

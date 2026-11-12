@@ -10,6 +10,7 @@ every interactive chat on every platform (owner request, Oct 29, 2026;  one clie
                                             a platform's app):  what the hooks would report, or report it now
     platform-letter parent --platform P --session-id S   the chat that started a chat, from this host's own
                                             records:  what another host's hook asks this one (read only)
+    platform-letter parent-ssh-gate         the forced command of the ssh key that question arrives on
 
 `simple-chat letter <verb>` is the same command with the same verbs.  An adapter is one file,
 `simple_tools/platform_letter_<platform>.py`, with a `SPEC` (a PlatformSpec: where the platform's session id, parent
@@ -64,8 +65,10 @@ reports it now.
 A parent on another host.  A platform's app can keep its record of which chat started which on one host (the
 Mac) while the chat's hook runs on another.  SESSION_LETTER_MAC_SSH (the hook's `--mac-ssh` flag, which `install
 --mac-ssh DEST` writes) names the ssh destination of the Mac for an adapter that can ask it (`mac_ssh`), and
-`parent` is the read-only verb such an adapter runs there:  it prints the parent's session id, or nothing.  A
-chat's parent is asked for once:  the note keeps one that was found, and a lookup that found none is not
+`parent` is the read-only verb such an adapter runs there:  it prints the parent's session id, or nothing.  The
+key it arrives on is installed on the Mac with a forced command, `parent-ssh-gate`, so it can run nothing else:
+the gate compares the whole command with the one shape `parent_ssh_command` builds and never hands it to a
+shell.  A chat's parent is asked for once:  the note keeps one that was found, and a lookup that found none is not
 repeated for RETRY_SECONDS (`parent_of`).
 
 The title reaches the chat the way the platform allows: in the hook's own output (`hook` style, a `sessionTitle`
@@ -3042,6 +3045,76 @@ def parent_main(
     return 0
 
 
+#: The verb a key for the `parent` question is forced to (its authorized_keys line is `parent_key_line`).
+PARENT_GATE = "parent-ssh-gate"
+#: Where sshd puts the command a client asked for, when the key has a forced command.
+ENV_SSH_COMMAND = "SSH_ORIGINAL_COMMAND"
+#: What the gate answers for anything else.  Never ssh's own 255, which a caller reads as a host that did not
+#: answer.
+PARENT_GATE_REFUSED = 126
+#: The ONE command the question is, word for word (`parent_ssh_command`), with the patterns of its parts:  a
+#: platform name, a session id, the platform's own id for the chat and a start source.  No quotes, no path and
+#: nothing a shell would read:  the gate matches the whole string and no shell ever sees it.
+PARENT_SSH_RE = re.compile(
+    r"platform-letter parent --platform (?P<platform>%s) --session-id (?P<sid>%s)"
+    r"(?: --app-id (?P<app>%s))?(?: --source (?P<source>startup|resume|clear|fork))?"
+    % (PLATFORM_RE.pattern, SI.ID_PATTERN.strip("^$"), APP_ID_RE.pattern)
+)
+
+
+def parent_ssh_command(platform: str, sid: str, app_id: str = "", source: str = "") -> str:
+    """The command a host sends over ssh to ask another for a chat's parent:  exactly the string the gate on the
+    other side accepts, or "" when a part of it is not what the gate would take.  Each part is checked by itself
+    before it is joined, so no part can carry a space into the next."""
+    parts = [(PLATFORM_RE, platform), (re.compile(SI.ID_PATTERN.strip("^$")), sid)]
+    words = ["platform-letter", "parent", "--platform", platform, "--session-id", sid]
+    if app_id:
+        parts.append((APP_ID_RE, app_id))
+        words += ["--app-id", app_id]
+    if source:
+        parts.append((re.compile("startup|resume|clear|fork"), source))
+        words += ["--source", source]
+    if not all(isinstance(value, str) and pattern.fullmatch(value) for pattern, value in parts):
+        return ""
+    command = " ".join(words)
+    return command if PARENT_SSH_RE.fullmatch(command) else ""
+
+
+def parent_key_line() -> str:
+    """The authorized_keys line that lets a host's key ask this one for a chat's parent and do nothing else.  The
+    owner of the host that answers (the Mac) adds it, with the asking host's public key:  no installer edits
+    authorized_keys."""
+    gate = "$HOME/.local/bin/%s %s" % (ENTRY, PARENT_GATE)
+    return 'restrict,command="%s" <key-type> <public-key> letter-parent' % gate
+
+
+def parent_ssh_gate_main(
+    env: Mapping[str, str] | None = None,
+    stdout: TextIO | None = None,
+    stderr: TextIO | None = None,
+) -> int:
+    """`parent-ssh-gate`:  the only thing the key for the `parent` question can run (`parent_key_line`).
+
+    sshd runs it in place of whatever the client asked for, and puts what the client asked for in
+    SSH_ORIGINAL_COMMAND.  The gate matches that string, whole, against the one command shape
+    (PARENT_SSH_RE), takes the words out of the match and calls `parent_main` with them.  The string is never
+    handed to a shell, split by one or evaluated.  Anything else (another verb, an extra word, a quote, an empty
+    command, an interactive login) is one line on stderr and exit 126."""
+    env = os.environ if env is None else env
+    stdout, stderr = stdout or sys.stdout, stderr or sys.stderr
+    command = env.get(ENV_SSH_COMMAND)
+    match = PARENT_SSH_RE.fullmatch(command) if isinstance(command, str) else None
+    if match is None:
+        stderr.write("%s: that command is not allowed on this key\n" % PARENT_GATE)
+        return PARENT_GATE_REFUSED
+    argv = ["--platform", match["platform"], "--session-id", match["sid"]]
+    if match["app"]:
+        argv += ["--app-id", match["app"]]
+    if match["source"]:
+        argv += ["--source", match["source"]]
+    return parent_main(argv, env, stdout)
+
+
 # --------------------------------------------------------------------------------------------
 # Chats that are gone for good:  one report per host, platform and location, from the hooks
 # --------------------------------------------------------------------------------------------
@@ -3939,7 +4012,8 @@ USAGE = (
     "                        | install --platform P [--location L] [--mac-ssh DEST] [--check | --remove]\n"
     "                        | request [--session-id S]\n"
     "                        | gone [--platform P] [--location L] [--apply]\n"
-    "                        | parent --platform P --session-id S [--app-id A] [--source SRC]}\n"
+    "                        | parent --platform P --session-id S [--app-id A] [--source SRC]\n"
+    "                        | parent-ssh-gate}\n"
 )
 
 
@@ -4050,6 +4124,12 @@ def main(
         return request_main(argv[1:], env, stdout, transport=transport)
     if argv[0] == "parent":
         return parent_main(argv[1:], env, stdout)
+    if argv[0] == PARENT_GATE:
+        # It takes no words of its own:  the question is in SSH_ORIGINAL_COMMAND, and anything else is refused.
+        if argv[1:]:
+            stderr.write("%s: that command is not allowed on this key\n" % PARENT_GATE)
+            return PARENT_GATE_REFUSED
+        return parent_ssh_gate_main(env, stdout, stderr)
     if argv[0] in ("gone", "sweep-archived"):  # the second is the verb's name before this client
         return gone_main(argv[1:], env, stdout, transport=transport)
     stderr.write(USAGE)

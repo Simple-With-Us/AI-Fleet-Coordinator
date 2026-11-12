@@ -3200,6 +3200,50 @@ class ParentTests(Base):
             self.assertEqual(self.verb(*bad), (2, ""), bad)
         self.assertEqual(self.lookups, [])
 
+    # ---- `platform-letter parent-ssh-gate`:  the forced command of the key that question arrives on ----
+
+    def gate(self, command: object, **env: str) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        given = self.env(**env)
+        if command is not None:
+            given[PL.ENV_SSH_COMMAND] = command
+        return PL.parent_ssh_gate_main(given, out, err), out.getvalue(), err.getvalue()
+
+    def test_the_gate_takes_the_one_command_the_client_builds(self) -> None:
+        self.parents["c-0001"] = "p-0001"
+        for app_id in ("", "local_abc-1"):
+            for source in ("", "startup", "resume", "clear", "fork"):
+                command = PL.parent_ssh_command("faux", "c-0001", app_id, source)
+                self.assertEqual(self.gate(command), (0, "p-0001\n", ""), command)
+                payload = self.lookups[-1]["payload"]
+                self.assertEqual((payload["session_id"], payload.get(PL.PARENT_APP_ID, ""), payload["source"]),
+                                 ("c-0001", app_id, source or "startup"))
+        self.assertEqual(PL.parent_ssh_command("faux", "c-0001"),
+                         "platform-letter parent --platform faux --session-id c-0001")
+        self.assertEqual(self.gate(PL.parent_ssh_command("faux", "x-0001")), (0, "", ""))  # no parent:  no line
+
+    def test_the_gate_refuses_everything_else_and_no_shell_ever_reads_it(self) -> None:
+        refused = (126, "", "parent-ssh-gate: that command is not allowed on this key\n")
+        good = "platform-letter parent --platform faux --session-id c-0001"
+        for command in (
+            None, "", "true", good + ";id", good + " ; id", good + " && id", good + " | sh", good + " $(id)",
+            good + " `id`", good + "\nid", good + " extra", good + " --app-id", good + " --app-id a b",
+            good + " --source compact", good.replace("parent", "registry"), good.replace("parent", "gone"),
+            good.replace("platform-letter", "sh -c"), "'" + good + "'", good.replace("c-0001", "c-0001;id"),
+            good.replace("c-0001", "$(id)"), good.replace(" --session-id c-0001", ""), good.upper(),
+        ):
+            self.assertEqual(self.gate(command), refused, command)
+        self.assertEqual(self.lookups, [])  # nothing was looked up for any of them
+        with mock.patch.object(PL.subprocess, "run", side_effect=AssertionError("no shell")), \
+                mock.patch.object(PL.os, "system", side_effect=AssertionError("no shell")):
+            self.parents["c-0001"] = "p-0001"
+            self.assertEqual(self.gate(good), (0, "p-0001\n", ""))
+        self.assertIn("parent-ssh-gate", PL.USAGE)
+
+    def test_the_key_line_forces_the_gate_and_restricts_the_key(self) -> None:
+        self.assertEqual(PL.parent_key_line(), 'restrict,command="$HOME/.local/bin/platform-letter parent-ssh-gate"'
+                                               " <key-type> <public-key> letter-parent")
+
     # ---- SESSION_LETTER_MAC_SSH:  where the Mac is, for a hook on another host ----
 
     def test_the_mac_destination_is_a_setting_that_is_checked(self) -> None:
