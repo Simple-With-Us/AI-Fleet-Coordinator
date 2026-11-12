@@ -11,8 +11,7 @@ ruling.
 
 This module is the one place the daemon gets that client:
 
-  - it is built the same way `operator_registration_ask.send_location_question` builds it: the
-    credential is read from Fleet-OPS `/zulip_operator` through `service_identity.operator_credentials`
+  - the credential is read from Fleet-OPS `/zulip_operator` through `service_identity.operator_credentials`
     (never from a seat's section, never from a file), and `users/me` has to be the pinned Operator
     bot, owned by the pinned owner (`service_identity.operator_bot`), before anything is sent;
   - it is built once and kept, because every post would otherwise cost a `fleet-secrets` call and a
