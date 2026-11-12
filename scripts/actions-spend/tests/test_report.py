@@ -586,7 +586,6 @@ class WorkflowFileTests(unittest.TestCase):
         self.assertNotIn("ghp_", loaded)
 
 
-
 class _Response:
     def __init__(self, body):
         self._body = body
@@ -648,7 +647,9 @@ class ReviewFollowUpTests(unittest.TestCase):
     def test_malformed_cache_lines_are_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "cache.jsonl"
-            path.write_text('{"id": 1, "result": {"ok": 1}}\n{torn\n{"result": 2}\n[]\n', encoding="utf-8")
+            path.write_text(
+                '{"id": 1, "result": {"ok": 1}}\n{torn\n{"result": 2}\n[]\n', encoding="utf-8"
+            )
             self.assertEqual(report._load_cache(path), {1: {"ok": 1}})
 
     def test_cache_save_prunes_ids_outside_the_window(self):
@@ -687,13 +688,21 @@ class ReviewFollowUpTests(unittest.TestCase):
 
     def test_numeric_cancel_in_progress_counts(self):
         self.assertEqual(spend._cancel_mode({"concurrency": {"cancel-in-progress": 1}}, ""), "true")
-        self.assertEqual(spend._cancel_mode({"concurrency": {"cancel-in-progress": True}}, ""), "true")
+        self.assertEqual(
+            spend._cancel_mode({"concurrency": {"cancel-in-progress": True}}, ""), "true"
+        )
 
     def test_remote_or_pinned_callee_is_not_resolved_locally(self):
         docs = {"reusable.yml": {"jobs": {}}}
-        self.assertIs(spend._local_callee("./.github/workflows/reusable.yml", docs), docs["reusable.yml"])
-        self.assertIsNone(spend._local_callee("other/repo/.github/workflows/reusable.yml@main", docs))
-        self.assertIsNone(spend._local_callee("owner/repo/.github/workflows/reusable.yml@0123abc", docs))
+        self.assertIs(
+            spend._local_callee("./.github/workflows/reusable.yml", docs), docs["reusable.yml"]
+        )
+        self.assertIsNone(
+            spend._local_callee("other/repo/.github/workflows/reusable.yml@main", docs)
+        )
+        self.assertIsNone(
+            spend._local_callee("owner/repo/.github/workflows/reusable.yml@0123abc", docs)
+        )
 
     def test_empty_sha_rows_do_not_count_as_duplicates(self):
         rows = [
