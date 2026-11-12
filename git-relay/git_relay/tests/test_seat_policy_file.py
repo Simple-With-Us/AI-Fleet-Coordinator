@@ -50,7 +50,9 @@ SEATS = seat_policy.render(DOC)
 # seat shape stays pinned here.
 SEATS_WITH_ZC = dict(
     seat_policy.render(
-        dict(DOC, seats=DOC["seats"] + [{"identity": "ZC", "app_slug": "swu-zc", "profile": "fleet"}])
+        dict(
+            DOC, seats=DOC["seats"] + [{"identity": "ZC", "app_slug": "swu-zc", "profile": "fleet"}]
+        )
     )
 )
 ORG = "Simple-With-Us/"
