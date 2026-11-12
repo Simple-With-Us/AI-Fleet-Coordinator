@@ -65,11 +65,11 @@ test("install_seat_key seat_entry: CODEX and MA resolve the Fleet-OPS project at
     "import json, sys",
     "sys.path.insert(0, sys.argv[1])",
     "import install_seat_key as m",
-    "print(json.dumps({'codex': m.seat_entry('CODEX'), 'ma': m.seat_entry('MA'), 'cursor': m.seat_entry('CURSOR'), 'afc': m.INFISICAL_PROJECT, 'fleetops': m.FLEET_OPS_PROJECT}))",
+    "print(json.dumps({'codex': m.seat_entry('CODEX'), 'ma': m.seat_entry('MA'), 'cursor': m.seat_entry('CURSOR'), 'afc': m.INFISICAL_PROJECT}))",
   ].join("\n");
   // An empty HOME and a cleared INFISICAL_FLEET_OPS_PROJECT_ID, so the host's
   // own ~/.simple-tools/fleet-ops-project-id or environment cannot stand in for
-  // the committed fallback.
+  // the test fixture.
   const home = mkdtempSync(path.join(tmpdir(), "codex-seat-home-"));
   const run = (env = {}) =>
     execFileSync("python3", ["-c", program, ROOT], {
@@ -81,17 +81,15 @@ test("install_seat_key seat_entry: CODEX and MA resolve the Fleet-OPS project at
     /\(INFISICAL_FLEET_OPS_PROJECT_ID or ~\/\.simple-tools\/fleet-ops-project-id\) is not a UUID/.test(err.stderr) &&
     !err.stderr.includes(bad);
   try {
-    const d = JSON.parse(run());
-    // Ordered tuples, names pinned; the project ids themselves come from the
-    // module (fleet-infra mock-data rule: no literal ids in fixtures).
-    assert.deepEqual(d.codex, [d.fleetops, "CODEX_ZULIP_EMAIL", "CODEX_ZULIP_KEY", "ZULIP_KEY_CODEX", "ZULIP_EMAIL_CODEX"]);
-    assert.deepEqual(d.ma, [d.fleetops, "MA_ZULIP_EMAIL", "MA_ZULIP_KEY", "ZULIP_KEY_MA", "ZULIP_EMAIL_MA"]);
-    assert.deepEqual(d.cursor, [d.afc, "ZULIP_CURSOR_EMAIL", "ZULIP_CURSOR_API_KEY", "ZULIP_KEY_CURSOR", "ZULIP_EMAIL_CURSOR"]);
-    // The environment wins over the committed fallback, for both Fleet-OPS
-    // seats;  legacy seats are unaffected.
     const envId = "00000000-0000-4000-8000-000000000000";
+    const d = JSON.parse(run({ INFISICAL_FLEET_OPS_PROJECT_ID: envId }));
+    // Ordered tuples, names pinned; Fleet-OPS ids come from resolution only.
+    assert.deepEqual(d.codex, [envId, "CODEX_ZULIP_EMAIL", "CODEX_ZULIP_KEY", "ZULIP_KEY_CODEX", "ZULIP_EMAIL_CODEX"]);
+    assert.deepEqual(d.ma, [envId, "MA_ZULIP_EMAIL", "MA_ZULIP_KEY", "ZULIP_KEY_MA", "ZULIP_EMAIL_MA"]);
+    assert.deepEqual(d.cursor, [d.afc, "ZULIP_CURSOR_EMAIL", "ZULIP_CURSOR_API_KEY", "ZULIP_KEY_CURSOR", "ZULIP_EMAIL_CURSOR"]);
+    // The environment resolves Fleet-OPS seats;  legacy seats are unaffected.
     const d2 = JSON.parse(run({ INFISICAL_FLEET_OPS_PROJECT_ID: envId }));
-    assert.equal(d2.codex[0], envId, "INFISICAL_FLEET_OPS_PROJECT_ID resolves ahead of the fallback");
+    assert.equal(d2.codex[0], envId, "INFISICAL_FLEET_OPS_PROJECT_ID resolves for CODEX");
     assert.equal(d2.ma[0], envId, "MA follows the same resolution as CODEX");
     assert.equal(d2.cursor[0], d.afc);
     // With the environment unset, the first line of ~/.simple-tools/fleet-ops-project-id.
@@ -107,6 +105,16 @@ test("install_seat_key seat_entry: CODEX and MA resolve the Fleet-OPS project at
     assert.throws(() => run({ INFISICAL_FLEET_OPS_PROJECT_ID: "zz-typo-zz" }), refusesNonUuid("zz-typo-zz"));
     writeFileSync(idFile, "yy-typo-yy\n");
     assert.throws(() => run(), refusesNonUuid("yy-typo-yy"));
+    // Without env or file, resolution fails closed.
+    assert.throws(
+      () =>
+        execFileSync("python3", ["-c", program, ROOT], {
+          env: { ...process.env, HOME: mkdtempSync(path.join(tmpdir(), "codex-seat-home-empty-")), INFISICAL_FLEET_OPS_PROJECT_ID: "" },
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        }),
+      /is not set/,
+    );
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -160,7 +168,7 @@ test("install_seat_key requires its scoped token and refuses malformed Infisical
     "]",
     "results = []",
     "secret_calls = []",
-    "token_name = m.INFISICAL_TOKEN_ENVS[m.INFISICAL_PROJECT]",
+    "token_name = m.AFC_TOKEN_ENV",
     "m.http_json = lambda *a, **k: (_ for _ in ()).throw(AssertionError('unexpected request'))",
     "os.environ.pop(token_name, None)",
     "try: m.infisical_pair('E', 'K', m.INFISICAL_PROJECT)",

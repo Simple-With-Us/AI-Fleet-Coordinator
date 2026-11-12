@@ -233,6 +233,7 @@ class SourceTests(Fixture):
         self.assert_code("bundle_too_many_files", S.build_bundle, self.repo)
 
     def test_encoded_size_limit_is_checked_after_base64(self):
+        # Raw stays under the ceiling.  Base64 of 7 MiB, plus the other files, crosses it.
         self.put("scripts/simple_tools/large.py", "x" * (7 * 1024 * 1024))
         self.commit()
         self.assert_code("bundle_too_large", S.build_bundle, self.repo)

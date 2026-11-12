@@ -6,7 +6,9 @@ import unittest
 from git_relay.app_tokens import AppTokenError, AppTokenMinter
 
 ORG = "Simple-With-Us/AI-Fleet-Coordinator"
-BOTL = "jaywedgeworth22/Fleet-OPS"
+BOTL = "Simple-With-Us/Fleet-OPS"
+# Offline mock only: GitHub still keys personal vs org installations by owner in the API path.
+LEGACY_PERSONAL_REPO = "jaywedgeworth22/Fleet-OPS"
 # The mint endpoint name is owned by the minter; this offline test matches only the shape of
 # an installation-scoped POST, so it carries no endpoint literal and the repo-wide mint-site
 # scan stays unmodified and still sees the one real minter.
@@ -47,7 +49,7 @@ class InstallationOwnerTests(unittest.TestCase):
     def test_org_and_personal_use_different_installations_same_own_app(self):
         minter, calls = self.build()
         perms = {"pull_requests": "write", "issues": "read"}
-        for repo in (ORG, BOTL):
+        for repo in (ORG, LEGACY_PERSONAL_REPO):
             minter.token_for("swu-wise", repo, perms)
         writes = [call for call in calls if call[0] == "POST"]
         self.assertEqual(
@@ -63,7 +65,10 @@ class InstallationOwnerTests(unittest.TestCase):
         )
         self.assertEqual(
             [c[1] for c in calls if c[1].endswith("/installation")],
-            ["/repos/" + ORG + "/installation", "/repos/" + BOTL + "/installation"],
+            [
+                "/repos/" + ORG + "/installation",
+                "/repos/" + LEGACY_PERSONAL_REPO + "/installation",
+            ],
         )
 
     def test_cross_account_installation_is_refused_before_token_post(self):
