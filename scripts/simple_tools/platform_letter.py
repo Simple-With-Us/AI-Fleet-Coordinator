@@ -49,7 +49,9 @@ What the hook does.
 The title reaches the chat the way the platform allows: in the hook's own output (`hook` style, a `sessionTitle`
 field), through the adapter's `title_writer` (a callable that renames the chat natively), or from a plugin that reads
 the `json` output.  A writer that fails leaves the title pending and is tried again on the next prompt.  A platform
-with neither route is told its letter and asked to keep it in a name the owner gives.
+with neither route is told its letter and asked to keep it in a name the owner gives.  A platform that takes the
+hook's title for some chats only says so through its adapter's `title_advice`:  the line it answers goes to the
+chat's own model with the start or prompt context, once per RETRY_SECONDS while it stays the same (`advice`).
 
 The hook never blocks a chat: every failure is a line of context, or nothing, and exit 0.  Only interactive chats
 take part: a launcher-run session never does (`identity.launched`, unless the spec names that launcher), nor a
@@ -283,6 +285,9 @@ class TitleRequest:
 
 
 TitleWriter = Callable[[TitleRequest], bool]
+#: An adapter's `title_advice`:  from the title the hook wants on the chat (a TitleRequest, `reason` start or
+#: prompt), the line to give the chat's own model when the platform will not take that title from the hook, or "".
+TitleAdvice = Callable[[TitleRequest], str]
 
 
 @dataclass(frozen=True)
@@ -313,6 +318,8 @@ class PlatformSpec:
     chat_payload               from a native session id, the payload that chat's own start event would carry; it lets
                                the library look up a chat the hook did not fire for.  A sub-thread registers after its
                                parent, so a spec that has it registers a parent that holds no live registration first
+    title_advice               for a platform that takes the hook's title for some chats only:  from the title the
+                               hook wants on the chat, the line that has the chat's own model set it, or "" (`advice`)
     """
 
     platform: str
@@ -335,6 +342,7 @@ class PlatformSpec:
     quiet_events: tuple[str, ...] = ()
     chat_payload: Callable[[str], Mapping[str, Any]] | None = None
     session_env: tuple[str, ...] = ()
+    title_advice: TitleAdvice | None = None
 
     def __post_init__(self) -> None:
         if not PLATFORM_RE.fullmatch(self.platform):
@@ -1304,6 +1312,59 @@ def no_letter(spec: PlatformSpec, note: Mapping[str, Any]) -> str:
     )
 
 
+def _join(*parts: str) -> str:
+    """Context lines as one context, a sentence gap between them."""
+    return "  ".join(part for part in parts if part)
+
+
+def advice(
+    chat: Chat, note: dict[str, Any], current: str, data: Mapping[str, Any], reason: str
+) -> str:
+    """The line the adapter gives the chat's own model about a title the platform will not take from this hook (the
+    spec's `title_advice`), or "".
+
+    The adapter is asked on a start and on a prompt, about the title the hook wants on the chat now, because only it
+    can tell which chats its platform keeps a title of its own for.  The same line is not given again for
+    RETRY_SECONDS (the note's `title_fix_for` and `title_fix_at`), so a start and its first prompt ask once, and a
+    chat that never does as it is told is not asked on every prompt;  a line that differs (the letter changed, the
+    chat was renamed) goes at once.  An adapter that raises has no advice:  a hook never blocks a chat."""
+    advise = chat.spec.title_advice
+    if advise is None or note.get("state") not in ("open", "failed"):
+        return ""
+    label = str(note.get("label") or "") if lettered(note) else ""
+    mark = label or UNLETTERED
+    want = str(note.get("want") or "")
+    title = want if want.startswith(mark + ": ") else compose(mark, str(note.get("title") or ""))
+    request = TitleRequest(
+        platform=chat.spec.platform,
+        session_id=chat.session_id,
+        label=label,
+        title=title,
+        words=bare(title, (label,)),
+        current=current,
+        reason=reason,
+        data=data,
+        env=chat.env,
+        shown=str(note.get("shown") or ""),
+        held=held(note),
+    )
+    try:
+        text = advise(request)
+    except Exception:  # noqa: BLE001 - an adapter's advice never blocks a chat
+        return ""
+    text = text.strip() if isinstance(text, str) else ""
+    if not text:
+        return ""
+    try:
+        asked_at = float(note.get("title_fix_at") or 0)
+    except (TypeError, ValueError):
+        asked_at = 0.0
+    if note.get("title_fix_for") == text and chat.now - asked_at < RETRY_SECONDS:
+        return ""
+    note.update(title_fix_for=text, title_fix_at=chat.now)
+    return text
+
+
 def unlettered(
     chat: Chat,
     note: dict[str, Any],
@@ -1328,9 +1389,16 @@ def unlettered(
             chat, note, current, data
         )  # a writer that failed is asked again on its own clock
         return None
-    if note.get("shown") == title and current in ("", title):
-        return None  # already on the chat:  a steady "??" chat costs no rename on every prompt
-    return present(chat, note, title, current, data, reason, settable=settable)
+    if note.get("shown") == title and current in ("", title, note.get("seen")):
+        # Already on the chat, or already tried over the name the platform still shows (one it keeps over the
+        # hook's title):  a steady "??" chat costs no rename on every prompt.
+        return None
+    shown = present(chat, note, title, current, data, reason, settable=settable)
+    if current and current != title and note.get("shown") == title:
+        # One try for each name the platform shows, never one for every prompt, as `_renamed` keeps it for a chat
+        # that holds a letter.
+        note["seen"] = current
+    return shown
 
 
 def ask_again(
@@ -2203,8 +2271,9 @@ def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
         shown = unlettered(
             chat, note, loose, current, data, "start", settable=source in spec.title_sources
         )
+        fix = advice(chat, note, current, data, "start")
         chat.write(note)
-        out.emit("start", context=no_letter(spec, note), title=shown)
+        out.emit("start", context=_join(no_letter(spec, note), fix), title=shown)
         return 0
     label = note["label"]
     text = loose
@@ -2224,9 +2293,13 @@ def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
     shown = present(
         chat, note, title, current, data, "start", settable=source in spec.title_sources
     )
+    fix = advice(chat, note, current, data, "start")
     chat.write(note)
     out.emit(
-        "start", context=_reissued(spec, answer) + reminder(spec, note), title=shown, label=label
+        "start",
+        context=_join(_reissued(spec, answer) + reminder(spec, note), fix),
+        title=shown,
+        label=label,
     )
     return 0
 
@@ -2274,9 +2347,12 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
             shown = unlettered(
                 chat, note, _first_title(note, current, data.get("prompt")), current, data, "prompt"
             )
+            fix = advice(chat, note, current, data, "prompt")
             chat.write(note)
-            if shown and shown != current:
-                out.emit("prompt", title=shown)
+            if shown == current:
+                shown = None
+            if shown or fix:
+                out.emit("prompt", context=fix, title=shown)
             return 0
     # The model has not been told this letter yet:  a letter given while this chat was a sub-thread's parent, or one
     # that came after the chat had none, is news.
@@ -2350,11 +2426,12 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
             chat.now,
             lambda text: chat.registry("issues", issues=text),
         )
+    fix = advice(chat, note, current, data, "prompt")
     chat.write(note)
-    if announce or (shown and shown != current):
+    if announce or (shown and shown != current) or fix:
         out.emit(
             "prompt",
-            context=moved + reminder(spec, note) if announce else "",
+            context=_join(moved + reminder(spec, note) if announce else "", fix),
             title=shown,
             label=str(note.get("label") or ""),
         )

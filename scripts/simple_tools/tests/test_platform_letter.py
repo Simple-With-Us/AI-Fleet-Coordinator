@@ -2160,6 +2160,116 @@ class HookTests(Base):
                                      "session_title": "??: Fix Login"}, transport=down))
         self.assertEqual(len(down.calls), 1)  # the stamp holds every prompt inside the wait
 
+    def test_a_no_letter_chat_whose_platform_keeps_its_own_title_is_retitled_once_per_name(self) -> None:
+        # A platform that will not take the hook's title goes on showing its own:  the mark is sent once for each
+        # name it shows, never on every prompt.
+        down = Calls(self, fail=TimeoutError("down"))
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup",
+                         "session_title": "Review PR"}, transport=down)
+        self.assertEqual(out["sessionTitle"], "??: Review PR")
+        prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go on"}
+        for _ in range(3):
+            self.assertIsNone(self.hook(dict(prompt, session_title="Review PR"), transport=down))
+        out = self.hook(dict(prompt, session_title="Another Name"), transport=down)
+        self.assertEqual(out["sessionTitle"], "??: Another Name")
+        self.assertIsNone(self.hook(dict(prompt, session_title="Another Name"), transport=down))
+        self.assertEqual(len(down.calls), 1)
+
+    # ---- A title the platform will not take from the hook:  the adapter's `title_advice` ----
+
+    def test_title_advice_goes_to_the_model_with_the_start_and_is_not_repeated_on_every_prompt(self) -> None:
+        asked: list[PL.TitleRequest] = []
+        line = ["Set this chat's title yourself."]
+
+        def advise(request: PL.TitleRequest) -> str:
+            asked.append(request)
+            return line[0]
+
+        spec = make_spec(title_advice=advise)
+        t0 = time.time()
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"},
+                        spec=spec, now=t0)
+        label = self.label("s-0001")
+        # The reminder is still there, and the advice follows it after a sentence gap.
+        self.assertIn('"@**Codex** %s"' % label, out["additionalContext"])
+        self.assertTrue(out["additionalContext"].endswith("renamed.  " + line[0]), out["additionalContext"])
+        request = asked[0]
+        self.assertEqual((request.label, request.title, request.reason, request.session_id),
+                         (label, "%s: New Chat" % label, "start", "s-0001"))
+        self.assertIn(label, request.held)
+        prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix login",
+                  "session_title": "%s: New Chat" % label}
+        first = self.hook(prompt, spec=spec, now=t0 + 1)
+        self.assertEqual(first["sessionTitle"], "%s: Fix Login" % label)
+        self.assertNotIn("additionalContext", first)  # asked at the start:  not again on its first prompt
+        self.assertEqual((asked[-1].title, asked[-1].reason), ("%s: Fix Login" % label, "prompt"))
+        steady = dict(prompt, session_title="%s: Fix Login" % label)
+        self.assertIsNone(self.hook(steady, spec=spec, now=t0 + 2))
+        later = self.hook(steady, spec=spec, now=t0 + PL.RETRY_SECONDS + 1)
+        self.assertEqual(later, {"hookEventName": "UserPromptSubmit", "additionalContext": line[0]})
+        self.assertIsNone(self.hook(steady, spec=spec, now=t0 + PL.RETRY_SECONDS + 2))
+        # A line that differs is news, and goes at once.
+        line[0] = "Set it to something else."
+        self.assertEqual(self.hook(steady, spec=spec, now=t0 + PL.RETRY_SECONDS + 3)["additionalContext"], line[0])
+        # Nothing to say:  nothing is said, and the note keeps what was asked last.
+        line[0] = ""
+        self.assertIsNone(self.hook(steady, spec=spec, now=t0 + 3 * PL.RETRY_SECONDS))
+        self.assertEqual(self.note("s-0001")["title_fix_for"], "Set it to something else.")
+
+    def test_title_advice_for_a_chat_with_no_letter_is_held_back_the_same_way(self) -> None:
+        asked: list[PL.TitleRequest] = []
+
+        def advise(request: PL.TitleRequest) -> str:
+            asked.append(request)
+            return "Name this chat %s." % request.title
+
+        spec = make_spec(title_advice=advise)
+        down = Calls(self, fail=TimeoutError("down"))
+        t0 = time.time()
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup",
+                         "session_title": "Review PR"}, spec=spec, transport=down, now=t0)
+        self.assertEqual(out["sessionTitle"], "??: Review PR")
+        self.assertIn("No Operator letter yet", out["additionalContext"])
+        self.assertTrue(out["additionalContext"].endswith("asks now.  Name this chat ??: Review PR."))
+        self.assertEqual((asked[0].label, asked[0].title, asked[0].held), ("", "??: Review PR", ()))
+        # The platform keeps its own title:  neither the title nor the same advice goes again on every prompt.
+        prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go on",
+                  "session_title": "Review PR"}
+        for n in range(1, 4):
+            self.assertIsNone(self.hook(prompt, spec=spec, transport=down, now=t0 + n))
+        # Once the wait is over the chat asks for a letter again, and is told again, once.
+        later = self.hook(prompt, spec=spec, transport=down, now=t0 + PL.RETRY_SECONDS + 1)
+        self.assertEqual(later, {"hookEventName": "UserPromptSubmit",
+                                 "additionalContext": "Name this chat ??: Review PR."})
+        self.assertIsNone(self.hook(prompt, spec=spec, transport=down, now=t0 + PL.RETRY_SECONDS + 2))
+
+    def test_an_adapter_whose_title_advice_fails_says_nothing_and_blocks_nothing(self) -> None:
+        def broken(request: PL.TitleRequest) -> str:
+            raise RuntimeError("the platform's store is gone")
+
+        for n, advise in enumerate((broken, lambda request: None, lambda request: 7, lambda request: "  ")):
+            sid = "s-%04d" % (n + 1)
+            with self.subTest(sid=sid):
+                out = self.hook({"hook_event_name": "SessionStart", "session_id": sid, "source": "startup"},
+                                spec=make_spec(title_advice=advise))
+                self.assertTrue(out["additionalContext"].endswith("renamed."), out["additionalContext"])
+                self.assertRegex(out["sessionTitle"], r"^[A-Z]{2}: New Chat$")
+                self.assertNotIn("title_fix_for", self.note(sid))
+
+    def test_a_chat_another_seat_holds_is_asked_nothing(self) -> None:
+        asked: list[PL.TitleRequest] = []
+        spec = make_spec(title_advice=lambda request: asked.append(request) or "Set the title.")
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, spec=spec,
+                        transport=lambda argv: {"outcome": "seat_mismatch"})
+        self.assertNotIn("Set the title.", out["additionalContext"])
+        self.assertIsNone(self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go"},
+                                    spec=spec))
+        # A chat that learns it on a prompt (its hooks were installed after it started) is asked nothing either.
+        self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0002", "prompt": "go"}, spec=spec,
+                  transport=lambda argv: {"outcome": "seat_mismatch"})
+        self.assertEqual(self.note("s-0002")["state"], "mismatch")
+        self.assertEqual(asked, [])
+
     def test_a_refused_chat_gets_its_letter_once_one_is_free(self) -> None:
         with self.no_letters():
             self.start("s-0001")
