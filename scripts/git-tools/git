@@ -2297,7 +2297,7 @@ PUSH_REF_TOTAL_BYTES = 4 * 1024 * 1024  # all blobs named by sha in one call (MA
 PUSH_TREE_FILES = 20  # files in one call (MAX_FILES)
 PUSH_TREE_WIRE_BYTES = 200000  # serialized text in one call, under the 245760-byte request allowance
 PUSH_MESSAGE_BYTES = 32768
-_PUSH_BRANCH = re.compile(r"(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]{1,200}")
+_PUSH_BRANCH = re.compile(r"[A-Za-z0-9._/-]{1,200}")
 _PUSH_REMOTE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 _PUSH_SHA = re.compile(r"[0-9a-f]{40}")
 _PUSH_URL = re.compile(
@@ -2307,18 +2307,120 @@ _PUSH_URL = re.compile(
 )
 
 
-def _local_git(repo_dir: str, args: list[str], ok: tuple = (0,)) -> tuple[int, bytes]:
+PUSH_HELP = f"""\
+Replay the local commits a remote branch lacks through the relay's git-data tools, as this bot's own GitHub
+App, then create the branch or move it forward from the sha it was read at.  There is no git push and no
+force, and the default branch is refused.  Each commit keeps its tree, its parents (a merge keeps both, in
+order) and its message.
+
+What push cannot carry.  Every commit is checked first, and one that needs any of these is refused by name
+before anything is written, so a push that cannot finish does not start:
+  - a deletion, and so a rename or a move (a rename is a deletion plus a new file)
+  - a binary file, or any file that is not UTF-8 text
+  - a symlink or a submodule;  any mode other than 100644 and 100755
+  - a workflow path (.github/workflows/...)
+  - a file over {PUSH_LARGE_TEXT_BYTES} bytes
+  - a root commit (one with no parent) and an octopus merge (more than two parents)
+  - a commit message that is blank, not UTF-8 or over {PUSH_MESSAGE_BYTES} bytes
+  - content or a commit message the secret scan flags (the path or the short commit id is named, never the text)
+  - more than {PUSH_MAX_COMMITS} commits in one push
+
+Commit ids differ on the remote.  The relay's commit verb sets the author, the committer and the dates to this
+bot's GitHub App, and drops signatures, so each replayed commit has a new id.  This machine remembers each
+pair (push-replay-map.json in ~/.simple-tools, or in SIMPLE_GIT_STATE_DIR) and the next push continues from
+them.  To put the local branch on the pushed commits, with files and index left as they are:
+    simple-git fetch REMOTE BRANCH
+    git reset --soft NEW_SHA                         (when BRANCH is checked out)
+    git update-ref refs/heads/BRANCH NEW_SHA OLD_SHA   (when it is not)
+A successful push prints these commands with the real ids.
+
+A branch name is letters, digits and . _ / - only:  not HEAD, no leading dash, no "..", nothing under "refs/"
+beyond one leading "refs/heads/", and no part that is empty, starts with "." or ends with "." or ".lock".
+"""
+
+
+def _push_branch_ok(name: str) -> bool:
+    """Is `name` a branch name in the one spelling git itself would keep?
+
+    This is `git check-ref-format --branch` narrowed to the relay's character set, decided here so that the
+    name is never handed to git as an argument:  no leading dash, no "..", and no path segment that is empty,
+    is ".", begins with "." or ends with "." or ".lock".  It also refuses HEAD and anything that still begins
+    with "refs/" after the one "refs/heads/" the caller strips, because "refs/heads/refs/heads/main" is not
+    the branch "main" to a string compare and may be exactly that to whatever resolves it later.  The default
+    branch guard compares names, so two spellings of one branch must not both get this far."""
+    if _PUSH_BRANCH.fullmatch(name) is None or name == "HEAD" or name.startswith(("-", "refs/")) or ".." in name:
+        return False
+    return not any(
+        not part or part.startswith(".") or part.endswith((".", ".lock")) for part in name.split("/")
+    )
+
+
+# What a local git child may inherit.  Everything else in this process's environment stays here:  the bearer,
+# and any other token the caller's shell happens to hold, never reach a program a repository can name.
+_LOCAL_GIT_ENV_KEEP = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR")
+# GIT_NO_LAZY_FETCH:  in a partial clone a missing object is an error here, never a fetch with some other
+# credential.
+_LOCAL_GIT_ENV_SET = {"GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", "GIT_NO_LAZY_FETCH": "1", "LC_ALL": "C"}
+_LOCAL_GIT_ENV_ALLOWED = frozenset(_LOCAL_GIT_ENV_KEEP) | frozenset(_LOCAL_GIT_ENV_SET)
+# A repository's own configuration can name a program:  core.fsmonitor is run by any command that reads the
+# index (diff-tree does), and hooks live wherever core.hooksPath says.  Neither is honoured here.  None of the
+# plumbing commands push uses runs a hook;  the second setting keeps that true if one is ever added.
+_LOCAL_GIT_CONFIG = ("-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.devnull)
+_LOCAL_GIT_END_OF_OPTIONS: list | None = None
+
+
+def _local_git_env() -> dict:
+    env = {key: os.environ[key] for key in _LOCAL_GIT_ENV_KEEP if key in os.environ}
+    env.update(_LOCAL_GIT_ENV_SET)
+    return env
+
+
+def _local_git_end_of_options() -> list:
+    """["--end-of-options"] when the installed git takes it in every command push uses (rev-parse learned it
+    last, in 2.30), else [].  Without it nothing is lost:  an operand that begins with a dash is refused by
+    _local_git itself, on every version."""
+    global _LOCAL_GIT_END_OF_OPTIONS
+    if _LOCAL_GIT_END_OF_OPTIONS is None:
+        try:
+            out = subprocess.run(
+                [_git_binary(), "--version"],
+                env=_local_git_env(),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+            ).stdout.decode("ascii", "replace")
+        except (OSError, subprocess.TimeoutExpired):
+            out = ""
+        found = re.match(r"git version ([0-9]{1,4})\.([0-9]{1,4})(?![0-9])", out)
+        new_enough = found is not None and (int(found.group(1)), int(found.group(2))) >= (2, 30)
+        _LOCAL_GIT_END_OF_OPTIONS = ["--end-of-options"] if new_enough else []
+    return _LOCAL_GIT_END_OF_OPTIONS
+
+
+def _local_git(repo_dir: str, args: list[str], ok: tuple = (0,), operands: tuple = ()) -> tuple[int, bytes]:
     """One LOCAL git plumbing command (rev-list, cat-file, diff-tree ...):  it reads this clone and never talks
-    to a remote, not even to fetch a missing object.  The bearer is taken out of its environment, and its
-    stderr is not shown."""
-    child_env = {k: v for k, v in os.environ.items() if k != REMOTE_BEARER_ENV}
-    # GIT_NO_LAZY_FETCH:  in a partial clone a missing object is an error here, never a fetch with some other
-    # credential.
-    child_env.update({"GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", "GIT_NO_LAZY_FETCH": "1", "LC_ALL": "C"})
+    to a remote, not even to fetch a missing object.
+
+    `args` are the options this client wrote itself;  `operands` are the revisions and object names, which can
+    come from the caller or from the server.  They go after --end-of-options where git has it, and one that
+    begins with a dash is refused outright, so none is ever read as an option.  The child gets a short
+    allow-listed environment (no bearer, no other token), no fsmonitor program and no hooks, and its stderr
+    is not shown."""
+    if any(not isinstance(item, str) or not item or item.startswith("-") or "\0" in item for item in operands):
+        die(f"local git {args[0]} was given a name that is empty or starts with a dash;  refusing", EXIT_USAGE)
     try:
         proc = subprocess.run(
-            [_git_binary(), "-C", repo_dir, *args],
-            env=child_env,
+            [
+                _git_binary(),
+                "-C",
+                repo_dir,
+                *_LOCAL_GIT_CONFIG,
+                *args,
+                *(_local_git_end_of_options() if operands else ()),
+                *operands,
+            ],
+            env=_local_git_env(),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -2346,9 +2448,14 @@ def _push_spec(spec: str | None) -> tuple[str | None, str | None]:
     if dst.startswith("refs/"):
         if not dst.startswith("refs/heads/"):
             die(f"{dst!r} is not a branch:  push only moves branches (refs/heads/...)", EXIT_USAGE)
-        dst = dst[len("refs/heads/") :]
-    if dst == "HEAD" or _PUSH_BRANCH.fullmatch(dst) is None:
-        die(f"{dst!r} is not a branch name the relay accepts", EXIT_USAGE)
+        dst = dst[len("refs/heads/") :]  # once:  what is left must be a plain branch name
+    if not _push_branch_ok(dst):
+        die(
+            f"{_visible(dst)!r} is not a branch name push accepts:  letters, digits and . _ / - only, not HEAD, "
+            'no leading dash or "refs/", no "..", and no part that is empty, starts with "." or ends with '
+            '"." or ".lock"',
+            EXIT_USAGE,
+        )
     return _plain_arg(src, "the source"), dst
 
 
@@ -2385,15 +2492,18 @@ def _push_repo(a) -> str:
 
 def _push_rev(repo_dir: str, rev: str) -> str | None:
     """The full sha of a local commit-ish, or None."""
-    code, out = _local_git(repo_dir, ["rev-parse", "--verify", "--quiet", rev + "^{commit}"], ok=(0, 1, 128))
-    sha = out.decode("ascii", "replace").strip()
+    code, out = _local_git(
+        repo_dir, ["rev-parse", "--verify", "--quiet"], ok=(0, 1, 128), operands=(rev + "^{commit}",)
+    )
+    # The last line:  some git versions print the --end-of-options marker back before the sha.
+    sha = (out.decode("ascii", "replace").split() or [""])[-1]
     return sha if code == 0 and _PUSH_SHA.fullmatch(sha) else None
 
 
 def _push_read_commit(repo_dir: str, sha: str) -> dict:
     """One local commit object, from its raw bytes:  tree, parents, the message exactly as stored, and whether
     it carries what the commit verb cannot keep (a signature, a non-UTF-8 encoding)."""
-    _, raw = _local_git(repo_dir, ["cat-file", "commit", sha])
+    _, raw = _local_git(repo_dir, ["cat-file"], operands=("commit", sha))
     head, _sep, body = raw.partition(b"\n\n")
     info = {"sha": sha, "tree": "", "parents": [], "encoding": "", "signed": False, "raw_message": body}
     for line in head.split(b"\n"):
@@ -2423,7 +2533,9 @@ def _push_read_commit(repo_dir: str, sha: str) -> dict:
 def _push_diff(repo_dir: str, base_tree: str, tree: str) -> list[tuple[str, str, str, bytes]]:
     """(status, new mode, new blob sha, path bytes) for every path that differs between two local trees."""
     _, raw = _local_git(
-        repo_dir, ["diff-tree", "-r", "-z", "--raw", "--no-renames", "--no-abbrev", base_tree, tree]
+        repo_dir,
+        ["diff-tree", "-r", "-z", "--raw", "--no-renames", "--no-abbrev", "--no-ext-diff"],
+        operands=(base_tree, tree),
     )
     parts = raw.split(b"\0")
     rows = []
@@ -2438,7 +2550,7 @@ def _push_diff(repo_dir: str, base_tree: str, tree: str) -> list[tuple[str, str,
 def _push_tree_blobs(repo_dir: str, tree: str, cache: dict) -> frozenset:
     """Every blob sha in one local tree.  A tree the remote has holds blobs the remote has."""
     if tree not in cache:
-        _, raw = _local_git(repo_dir, ["ls-tree", "-r", "-z", tree])
+        _, raw = _local_git(repo_dir, ["ls-tree", "-r", "-z"], operands=(tree,))
         found = set()
         for row in raw.split(b"\0"):
             meta = row.split(b"\t", 1)[0].split(b" ")
@@ -2480,7 +2592,7 @@ def _push_tree_files(repo_dir: str, base_tree: str, tree: str, remote_blobs, bea
         if path in (".github", ".github/workflows") or path.startswith(".github/workflows/"):
             reasons.append(f"{shown} is a workflow path;  the relay refuses workflow files")
             continue
-        _, out = _local_git(repo_dir, ["cat-file", "-s", blob])
+        _, out = _local_git(repo_dir, ["cat-file", "-s"], operands=(blob,))
         size = int(out.decode("ascii", "replace").strip() or -1)
         known = blob in remote_blobs
         limit = PUSH_REF_BLOB_BYTES if known else PUSH_LARGE_TEXT_BYTES
@@ -2490,7 +2602,7 @@ def _push_tree_files(repo_dir: str, base_tree: str, tree: str, remote_blobs, bea
                 "(larger files are AFC-623)"
             )
             continue
-        _, data = _local_git(repo_dir, ["cat-file", "blob", blob])
+        _, data = _local_git(repo_dir, ["cat-file"], operands=("blob", blob))
         try:
             text = data.decode("utf-8")
         except UnicodeDecodeError:
@@ -2610,6 +2722,7 @@ def _push_remote_commit(tools: dict, repo: str, sha: str, bearer: str, seat: str
         or not isinstance(commit.get("tree_sha"), str)
         or _PUSH_SHA.fullmatch(commit["tree_sha"]) is None
         or not isinstance(commit.get("parents"), list)
+        or not all(isinstance(p, str) and _PUSH_SHA.fullmatch(p) for p in commit["parents"])
         or not isinstance(commit.get("message"), str)
     ):
         die("the server sent a commit this client cannot read", EXIT_ERROR)
@@ -2626,7 +2739,7 @@ def _push_same_message(local: str | None, read: str) -> bool:
 # The replay map:  local commit sha -> the sha the relay created for it, per repository, beside the publish
 # outcome store (SIMPLE_GIT_STATE_DIR, else ~/.simple-tools), so every clone and worktree on this machine shares
 # it and nothing is written into a repository.  It is a shortcut, never an authority:  a pair is used only after
-# the remote commit was read back and its tree and message are the local commit's.
+# the remote commit was read back and its tree, its message and its parents are the local commit's.
 
 
 def _push_map_path() -> Path:
@@ -2669,6 +2782,22 @@ def _push_map_save(path: Path, store: dict) -> None:
         _fsync_dir(path.parent)
     except OSError as exc:
         die(f"the replay map at {path} cannot be written ({type(exc).__name__})", EXIT_ERROR)
+
+
+def _push_map_record(path: Path, repo: str, added: dict, dropped: dict) -> None:
+    """Write one push's changes into the replay map.  The caller holds the push lock.
+
+    The map is read again here, never written from the copy this push loaded:  every seat and every repository
+    on this machine shares the file, and this push read it before it held the lock, so another push may have
+    added pairs since.  Only this push's own pairs are added, and a pair it found stale is removed only while
+    it is still that stale pair."""
+    store = _push_map_load(path)
+    pairs = store["replayed"].setdefault(repo, {})
+    for local, remote in dropped.items():
+        if pairs.get(local) == remote:
+            del pairs[local]
+    pairs.update(added)
+    _push_map_save(path, store)
 
 
 def _push_lock(path: Path, deadline_s: float = 30.0):
@@ -2757,7 +2886,8 @@ def cmd_push(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
     Order:  every refusal this client can see (default branch, stale remote head, a commit the verbs cannot
     carry, a size limit, a path, a secret-scan hit) happens before the first write.  Then each commit, oldest
     first, becomes a tree and a commit on the remote, unattached;  the pair is recorded as soon as the commit
-    exists.  The ref moves once, last, and is read back:  the remote tip's tree must equal the local one."""
+    exists, and a merge is read back at once.  The ref moves once, last, and is read back:  the remote tip's
+    tree must equal the local one and its parents must be the ones this push gave it."""
     _push_refuse_early(a)
     repo_dir = a.dir
     if _local_git(repo_dir, ["rev-parse", "--git-dir"], ok=(0, 128))[0] != 0:
@@ -2792,13 +2922,17 @@ def cmd_push(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
         )
     head = _push_remote_head(tools, repo, branch, bearer, seat, deadline)
 
+    # This push's working copy of the map.  It is read without the lock (a dry run takes none and writes
+    # nothing), so it is never written back:  _push_map_record re-reads the file under the lock.
     map_path = _push_map_path()
-    store = _push_map_load(map_path)
-    pairs = store["replayed"].setdefault(repo, {})
+    pairs = dict(_push_map_load(map_path)["replayed"].get(repo, {}))
 
     # Local commits no remote-tracking ref of this remote reaches, oldest first, each with its parents.
+    # The second --not ends the exclusion, so the tip that follows it is what is listed.
     _, out = _local_git(
-        repo_dir, ["rev-list", "--topo-order", "--reverse", "--parents", tip, "--not", f"--remotes={a.remote}"]
+        repo_dir,
+        ["rev-list", "--topo-order", "--reverse", "--parents", "--not", f"--remotes={a.remote}", "--not"],
+        operands=(tip,),
     )
     local_only: dict = {}
     for line in out.decode("ascii", "replace").splitlines():
@@ -2807,8 +2941,38 @@ def cmd_push(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
 
     remote_id: dict = {}  # local sha -> the sha the remote knows that commit by
     needed: dict = {}  # local sha -> commit info, for commits to replay
-    stale: list = []
+    dropped: dict = {}  # local sha -> a recorded pair that is not that commit on the remote
+    trusted: dict = {}  # local sha -> (local commit, remote commit) for a recorded pair this run relied on
     stack = [tip]
+
+    def wanted_parents(info: dict) -> list:
+        """For each parent of a local commit, in order, the ids the remote may know it by:  the id it was
+        replayed as in this run;  else its own id, when the remote has that very commit;  else its own id or
+        the pair recorded for it."""
+        wanted = []
+        for parent in info["parents"]:
+            if parent in remote_id:
+                wanted.append((remote_id[parent],))
+            elif parent in local_only and parent in pairs:
+                wanted.append((parent, pairs[parent]))
+            else:
+                wanted.append((parent,))
+        return wanted
+
+    def parents_kept(info: dict, there: dict) -> bool:
+        """Does a remote commit have the parents this client means the local commit to have there, the same
+        number in the same order?  A tree and a message can be right on a merge that lost a parent."""
+        wanted = wanted_parents(info)
+        return len(there["parents"]) == len(wanted) and all(
+            theirs in mine for theirs, mine in zip(there["parents"], wanted)
+        )
+
+    def parents_shown(info: dict, there: dict) -> str:
+        return (
+            f"parents [{' '.join(there['parents'])}] where this push meant "
+            f"[{' '.join(mine[-1] for mine in wanted_parents(info))}]"
+        )
+
     while stack:
         sha = stack.pop()
         if sha in remote_id or sha in needed:
@@ -2820,11 +2984,16 @@ def cmd_push(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
         recorded = pairs.get(sha)
         if recorded is not None:
             there = _push_remote_commit(tools, repo, recorded, bearer, seat, deadline)
-            if there is not None and there["tree_sha"] == info["tree"] and _push_same_message(info["message"], there["message"]):
+            if (
+                there is not None
+                and there["tree_sha"] == info["tree"]
+                and _push_same_message(info["message"], there["message"])
+                and parents_kept(info, there)
+            ):
                 remote_id[sha] = recorded  # replayed by an earlier push, and still what the remote holds
+                trusted[sha] = (info, there)
                 continue
-            del pairs[sha]
-            stale.append(sha)
+            dropped[sha] = pairs.pop(sha)
         needed[sha] = info
         if len(needed) > PUSH_MAX_COMMITS:
             die(
@@ -2845,15 +3014,29 @@ def cmd_push(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
             if _push_remote_commit(tools, repo, sha, bearer, seat, deadline) is not None:
                 remote_id[sha] = sha
                 del needed[sha]
+    # A recorded pair was trusted while its parents were still being sorted out.  Now every ancestor is either
+    # known on the remote or going to be replayed under a new id, so its parents are checked once more:  a child
+    # recorded on top of a pair that turned out stale does not have the parent this push is about to give it.
+    settled = False
+    while not settled:
+        settled = True
+        for sha, (info, there) in list(trusted.items()):
+            if sha in remote_id and not parents_kept(info, there):
+                dropped[sha] = pairs.pop(sha)
+                del remote_id[sha], trusted[sha]
+                needed[sha] = info
+                settled = False
     order = [sha for sha in local_only if sha in needed]  # parents before children
 
     # The remote head must be part of what is pushed, or this is not a fast-forward and nothing is sent.  It
     # is part of it when it is an ancestor of the local tip under its own id, or when it is the recorded pair
     # of one (a replayed commit, whether or not this clone has since fetched it).
     if head is not None:
-        candidates = ([head] if _push_rev(repo_dir, head) else []) + [k for k, v in pairs.items() if v == head]
+        here = _push_rev(repo_dir, head)
+        candidates = ([here] if here else []) + [k for k, v in pairs.items() if v == head]
         if not any(
-            _local_git(repo_dir, ["merge-base", "--is-ancestor", c, tip], ok=(0, 1, 128))[0] == 0 for c in candidates
+            _local_git(repo_dir, ["merge-base", "--is-ancestor"], ok=(0, 1, 128), operands=(c, tip))[0] == 0
+            for c in candidates
         ):
             die(
                 f"the remote branch {branch} is at {head}, which is not part of what you are pushing (it has "
@@ -2876,7 +3059,9 @@ def cmd_push(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
             remote_trees.add(tree)
         plan = _push_plan_commit(repo_dir, info, parent_trees, remote_trees, frozenset(sent_blobs), bearer, cache)
         plans[sha] = plan
-        problems.extend(f"commit {sha[:10]} ({info['subject']}):  {why}" for why in plan["reasons"])
+        # The short sha only.  A commit's subject is part of its message, and a message is what the secret
+        # scan may have just flagged:  no refusal, context or progress line on stderr ever carries one.
+        problems.extend(f"commit {sha[:10]}:  {why}" for why in plan["reasons"])
         remote_trees.add(info["tree"])
         sent_blobs.update(f["blob"] for f in plan["files"] if "text" in f)
     if problems:
@@ -2885,7 +3070,8 @@ def cmd_push(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
             sys.stderr.write(f"{prog()}:   {line}\n")
         raise SystemExit(EXIT_USAGE)
 
-    tip_tree = needed[tip]["tree"] if tip in needed else _push_read_commit(repo_dir, tip)["tree"]
+    tip_info = needed[tip] if tip in needed else _push_read_commit(repo_dir, tip)
+    tip_tree = tip_info["tree"]
     where = f"{repo} {branch}"
     if not order and head == remote_id[tip]:
         print(f"Everything up-to-date:  {where} is at {head}")
@@ -2912,11 +3098,13 @@ def cmd_push(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
 
     lock = _push_lock(map_path)
     try:
-        if stale:
-            _push_map_save(map_path, store)
+        added: dict = {}  # the pairs this push made
+        if dropped:
+            _push_map_record(map_path, repo, added, dropped)
         for sha in order:
             info, plan = needed[sha], plans[sha]
-            label = f"commit {sha[:10]} ({info['subject']})"
+            # No subject here either:  the relay's own scan may refuse this very message.
+            label = f"commit {sha[:10]}"
             if plan["batches"]:
                 built = plan["base"]
                 for files, large in plan["batches"]:
@@ -2951,8 +3139,24 @@ def cmd_push(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
                     },
                 ),
             )
-            remote_id[sha] = pairs[sha] = _push_result_sha(out, "commit", "sha")
-            _push_map_save(map_path, store)  # durable before the next call:  a rerun never replays this commit again
+            remote_id[sha] = pairs[sha] = added[sha] = _push_result_sha(out, "commit", "sha")
+            # Durable before the next call:  a rerun never replays this commit again.
+            _push_map_record(map_path, repo, added, dropped)
+            if len(info["parents"]) > 1:
+                # A merge is read back before anything is built on it, while the branch has not moved.
+                made = _push_step(
+                    f"{label} (reading the merge back)",
+                    lambda: _push_remote_commit(tools, repo, remote_id[sha], bearer, seat, deadline),
+                )
+                if made is None or not parents_kept(info, made):
+                    dropped[sha] = added.pop(sha)
+                    _push_map_record(map_path, repo, added, dropped)
+                    die(
+                        f"push stopped at {label}:  PARENT MISMATCH:  the relay created {dropped[sha]} with "
+                        + ("no readable commit" if made is None else parents_shown(info, made))
+                        + ";  nothing refers to that commit and the branch was not moved",
+                        EXIT_ERROR,
+                    )
         target = remote_id[tip]
         if head is None:
             out = _push_step(
@@ -2996,6 +3200,8 @@ def cmd_push(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
                 f"commit {tip} has tree {tip_tree}.  {moved}",
                 EXIT_ERROR,
             )
+        if target != tip and not parents_kept(tip_info, there):
+            die(f"PARENT MISMATCH after the push:  the remote tip {target} has {parents_shown(tip_info, there)}.  {moved}", EXIT_ERROR)
     finally:
         lock.close()
 
@@ -3003,10 +3209,12 @@ def cmd_push(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
     print(f"   {head[:10] + '..' + target[:10] if head else '* [new branch]'}  {src} -> {branch}")
     for sha in order:
         print(f"   replayed {sha[:10]} as {remote_id[sha][:10]}  {needed[sha]['subject']}")
-    print(f"verified:  the remote tip {target} has tree {tip_tree}, the same as the local commit {tip}")
+    print(
+        f"verified:  the remote tip {target} has tree {tip_tree}, the same as the local commit {tip}"
+        + (", and the parents this push gave it" if target != tip else "")
+    )
     if target != tip:
-        info = needed.get(tip) or _push_read_commit(repo_dir, tip)
-        if not _push_same_message(info["message"], there["message"]):
+        if not _push_same_message(tip_info["message"], there["message"]):
             print("note:  the remote tip's message does not read back as the local one")
         if any(needed[sha]["signed"] for sha in order):
             print("note:  signatures on the local commits were not carried over")
@@ -3308,14 +3516,8 @@ def build_parser() -> argparse.ArgumentParser:
         "push",
         help="replay local commits onto a remote branch as this bot:  push [REMOTE] [[SRC:]BRANCH]",
         allow_abbrev=False,
-        description="Replay the local commits a remote branch lacks through the relay's git-data tools, as this "
-        "bot's own GitHub App, then create the branch or move it forward from the sha it was read at.  There is "
-        "no git push and no force.  The default branch is refused.  Each commit keeps its tree, its parents (a "
-        "merge keeps both) and its message;  the author, the committer and the dates become this bot's, so the "
-        "remote commit ids differ and this machine remembers each pair for the next push.  The tree verb takes "
-        f"UTF-8 text files up to {PUSH_LARGE_TEXT_BYTES} bytes with mode 100644 or 100755:  a commit that deletes "
-        "a path or holds a binary file, a symlink, a submodule or a workflow file is refused by name before "
-        "anything is sent.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=PUSH_HELP,
     )
     px.add_argument("remote", nargs="?", default="origin", help="the remote whose branch moves (default: origin)")
     px.add_argument(

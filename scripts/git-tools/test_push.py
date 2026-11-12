@@ -60,6 +60,35 @@ def git(cwd, *args, stdin: bytes | None = None, env: dict | None = None, ok=(0,)
     return proc.stdout.decode().strip()
 
 
+def local_git_calls(seen, work):
+    """(subcommand, argv, environment) of every local git command the client ran in `work`, from a spy on
+    subprocess.run.  The client's own calls are `git -C DIR -c k=v ... SUBCOMMAND ...` with an explicit env."""
+    found = []
+    for argv, env in seen:
+        if argv[1:3] != ["-C", str(work)] or argv[3:4] != ["-c"] or env is None:
+            continue
+        at = 3
+        while argv[at] == "-c":
+            at += 2
+        found.append((argv[at], argv, env))
+    return found
+
+
+def run_spy(seen):
+    real = subprocess.run
+
+    def spy(argv, **kw):
+        seen.append((list(argv), kw.get("env")))
+        return real(argv, **kw)
+
+    return spy
+
+
+def fake_token():
+    """A token-shaped string, assembled at run time so that this file holds no token-shaped literal."""
+    return "ghp_" + "a1b2c3d4" * 5
+
+
 class FakeRelay:
     """The relay's git-data tools over a real bare repository.  Every call is recorded."""
 
@@ -250,11 +279,19 @@ class PushCase(unittest.TestCase):
         git(self.work, "checkout", "-q", "-b", "feature")
         self.relay = FakeRelay(self.bare, self.default)
         # The bearer is in the environment, as it is under the seat helper:  it must never reach local git.
-        # The replay map goes to a state folder of this test's own, never the real one.
+        # The replay map goes to a state folder of this test's own, never the real one.  HOME is an empty
+        # folder:  the client's git children inherit HOME and none of the GIT_ variables above, so this is
+        # what keeps the host's own git configuration out of them.
         self.state = root / "state"
+        (root / "home").mkdir()
         patch = mock.patch.dict(
             os.environ,
-            {**GIT_ENV, G.REMOTE_BEARER_ENV: BEARER, "SIMPLE_GIT_STATE_DIR": str(self.state)},
+            {
+                **GIT_ENV,
+                G.REMOTE_BEARER_ENV: BEARER,
+                "SIMPLE_GIT_STATE_DIR": str(self.state),
+                "HOME": str(root / "home"),
+            },
         )
         patch.start()
         self.addCleanup(patch.stop)
@@ -682,6 +719,160 @@ class Refusals(PushCase):
         self.assertNotIn("a1b2c3d4", out + err)
         self.assert_nothing_written()
 
+    # The two tests below assert with booleans only:  a failing assertIn would print the very text they
+    # exist to keep off the screen.
+
+    def test_a_message_the_client_scan_flags_is_named_by_short_sha_never_by_subject(self):
+        token = fake_token()
+        self.write("a.txt", "a\n")
+        self.commit("A fine commit first")
+        git(self.work, "rm", "-q", "docs/notes.md")  # a second reason on the same commit
+        flagged = self.commit(f"{token} rotate the deploy key\n\nBody line.")
+        code, out, err = self.push()
+        shown = out + err
+        self.assertEqual(code, G.EXIT_USAGE)
+        self.assertTrue(
+            f"commit {flagged[:10]}:  its message was flagged by the secret scan (message not shown)"
+            in err,
+            "the refusal does not name the commit by its short sha",
+        )
+        self.assertTrue(
+            f"commit {flagged[:10]}:  it deletes 'docs/notes.md'" in err,
+            "the commit's other reason is not named by its short sha",
+        )
+        self.assertTrue(token not in shown, "the flagged subject was printed")
+        self.assertTrue("a1b2c3d4" not in shown, "part of the flagged subject was printed")
+        self.assertTrue(
+            "rotate the deploy key" not in shown, "the flagged subject's words were printed"
+        )
+        self.assertTrue("A fine commit first" not in err, "a subject reached an error line")
+        self.assert_nothing_written()
+
+    def test_a_message_the_relay_scan_refuses_is_named_by_short_sha_never_by_subject(self):
+        token = fake_token()
+        self.write("a.txt", "a\n")
+        flagged = self.commit(f"{token} rotate the deploy key")
+        # A shape this client's scanner does not know and the relay's does.
+        blind = types.SimpleNamespace(scan=lambda text, known=(): None)
+        for refusal in ({"code": "refused_secret"}, {"reason": "credential_scan"}):
+
+            def relay_scan(args, nth, refusal=refusal):
+                if token in args["message"]:
+                    self.relay.refuse("gr_wf_git_commit_create", **refusal)
+
+            self.relay.before["gr_wf_git_commit_create"] = relay_scan
+            with mock.patch.object(G, "_scanner", return_value=blind):
+                code, out, err = self.push()
+            shown = out + err
+            self.assertEqual(code, G.EXIT_ERROR)
+            self.assertTrue(
+                f"push stopped at commit {flagged[:10]}:  the relay's secret scan refused the commit "
+                "message (message not shown);  the branch was not moved" in err,
+                "the relay refusal is not reported by short sha",
+            )
+            self.assertTrue(token not in shown, "the refused subject was printed")
+            self.assertTrue("a1b2c3d4" not in shown, "part of the refused subject was printed")
+            self.assertTrue(
+                "rotate the deploy key" not in shown, "the refused subject's words were printed"
+            )
+            self.assertIsNone(self.relay.head("feature"))
+            self.assertIsNone(self.replay_map())
+
+    def test_a_branch_name_git_would_refuse_or_rewrite_is_refused_before_any_call(self):
+        self.write("a.txt", "a\n")
+        self.commit("One")
+        git_refuses = [  # git itself takes none of these as a branch name
+            "./trunk",
+            "trunk/.",
+            "trunk.",
+            "trunk/",
+            "trunk//x",
+            "a//b",
+            ".hidden",
+            "a/.b",
+            "a/b.",
+            "x.lock",
+            "a.lock/b",
+            "a..b",
+            "-x",
+        ]
+        ours = [
+            "refs/heads/trunk",
+            "refs/heads/x",
+            "refs/x",
+            "HEAD",
+        ]  # valid to git, a second spelling here
+        for name in git_refuses + ours:
+            self.assertFalse(G._push_branch_ok(name), name)
+            for spec in (f"feature:{name}", f"HEAD:refs/heads/{name}"):
+                code, _out, err = self.push(spec)
+                self.assertEqual(code, G.EXIT_USAGE, spec)
+                self.assertIn("is not a branch name push accepts", err, spec)
+        for name in git_refuses:
+            proc = subprocess.run(
+                ["git", "check-ref-format", "refs/heads/" + name], capture_output=True, env=GIT_ENV
+            )
+            self.assertNotEqual(proc.returncode, 0, name)
+        # The spellings that would have named the default branch (trunk here) past a string compare.
+        for spec in ("HEAD:refs/heads/refs/heads/trunk", "feature:./trunk", "feature:trunk/."):
+            self.assertEqual(self.push(spec)[0], G.EXIT_USAGE, spec)
+        self.assertEqual(self.relay.calls, [])  # not one call, read or write
+        self.assertEqual(self.relay.head("trunk"), self.base)
+        self.assertFalse(self.state.exists())
+        # Before any credential is read, as force is.
+        for spec in (
+            "HEAD:refs/heads/refs/heads/trunk",
+            "HEAD:./trunk",
+            "HEAD:trunk.",
+            "HEAD:a//b",
+        ):
+            err = io.StringIO()
+            with (
+                mock.patch.object(
+                    G, "remote_bearer", side_effect=AssertionError("a credential was read")
+                ),
+                contextlib.redirect_stderr(err),
+                self.assertRaises(SystemExit) as caught,
+            ):
+                G.main(["push", "origin", spec, "--dir", str(self.work)])
+            self.assertEqual(caught.exception.code, G.EXIT_USAGE, spec)
+            self.assertIn("is not a branch name push accepts", err.getvalue())
+        # What the rule accepts, git accepts under the same name.
+        for name in ("feature", "a/b", "a.b", "v1.2-x_y", "lock", "a.lockb", "refs-x", "heads/x"):
+            self.assertTrue(G._push_branch_ok(name), name)
+            proc = subprocess.run(
+                ["git", "check-ref-format", "--branch", name], capture_output=True, env=GIT_ENV
+            )
+            self.assertEqual((proc.returncode, proc.stdout.decode().strip()), (0, name))
+
+    def test_a_rename_a_root_commit_and_an_octopus_merge_are_refused_by_name(self):
+        git(self.work, "mv", "docs/notes.md", "docs/renamed.md")
+        self.commit("Rename the notes")
+        code, _out, err = self.push()
+        self.assertEqual(code, G.EXIT_USAGE)
+        self.assertIn("it deletes 'docs/notes.md'", err)
+        self.assert_nothing_written()
+        git(self.work, "reset", "-q", "--hard", self.base)
+        for side in ("s1", "s2"):
+            git(self.work, "checkout", "-q", "-b", side, self.base)
+            self.write(f"{side}.txt", f"{side}\n")
+            self.commit(f"Side {side}")
+        git(self.work, "checkout", "-q", "feature")
+        self.write("mine.txt", "mine\n")
+        self.commit("Mine")
+        git(self.work, *ME, "merge", "-q", "--no-ff", "-m", "Merge two sides at once", "s1", "s2")
+        code, _out, err = self.push()
+        self.assertEqual(code, G.EXIT_USAGE)
+        self.assertIn("it merges 3 parents", err)
+        self.assert_nothing_written()
+        git(self.work, "checkout", "-q", "--orphan", "lone")
+        self.commit("A commit with no parent")
+        code, _out, err = self.push()
+        self.assertEqual(code, G.EXIT_USAGE)
+        self.assertIn("it has no parent", err)
+        self.assertEqual(self.relay.writes(), [])
+        self.assertIsNone(self.relay.head("lone"))
+
     def test_a_policy_denial_stops_before_the_ref_moves(self):
         self.write("a.txt", "a\n")
         self.commit("One")
@@ -822,6 +1013,164 @@ class Integrity(PushCase):
         self.assertEqual(len(self.relay.named("gr_wf_git_commit_create")), 1)
         self.assertEqual(self.replay_map()[local], self.relay.head("feature"))
 
+    # -- the replay map is shared by every push on the machine, and parents are checked as well as trees
+
+    def make_merge(self):
+        self.write("src/app.py", "print('feature side')\n")
+        ours = self.commit("Feature side")
+        git(self.work, "checkout", "-q", "-b", "side", self.base)
+        self.write("docs/guide.md", "guide from the side\n")
+        theirs = self.commit("Side change")
+        git(self.work, "checkout", "-q", "feature")
+        git(self.work, *ME, "merge", "-q", "--no-ff", "-m", "Merge side into feature", "side")
+        return git(self.work, "rev-parse", "HEAD"), ours, theirs
+
+    def test_a_pair_another_push_recorded_in_the_meantime_survives_this_pushs_saves(self):
+        for index in range(2):
+            self.write(f"f{index}.txt", f"{index}\n")
+            self.commit(f"Commit {index}")
+        path = self.state / "push-replay-map.json"
+        other = {"Other-Org/Other-Repo": {"1" * 40: "2" * 40}}
+
+        def concurrent_push(args, nth):
+            # Another repository's push, on this machine, saves its pair after this one loaded the map.
+            if nth == 1:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                current = (
+                    json.loads(path.read_text())
+                    if path.exists()
+                    else {"version": 1, "replayed": {}}
+                )
+                current["replayed"].update(other)
+                path.write_text(json.dumps(current))
+
+        self.relay.before["gr_wf_git_commit_create"] = concurrent_push
+        code, _out, err = self.push()
+        self.assertEqual((code, err), (0, ""))
+        saved = json.loads(path.read_text())["replayed"]
+        self.assertTrue(
+            saved.get("Other-Org/Other-Repo") == other["Other-Org/Other-Repo"],
+            "another push's pair was lost",
+        )
+        self.assertEqual(len(saved[REPO]), 2)  # and this push's own pairs are there too
+
+    def test_a_merge_that_lost_a_parent_on_the_relay_side_stops_before_the_branch_moves(self):
+        merge, _ours, _theirs = self.make_merge()
+
+        def lose_a_parent(args, nth):
+            if len(args["parents"]) == 2:
+                args["parents"] = args["parents"][:1]
+
+        self.relay.before["gr_wf_git_commit_create"] = lose_a_parent
+        code, out, err = self.push()
+        self.assertEqual(code, G.EXIT_ERROR)
+        self.assertIn("PARENT MISMATCH", err)
+        self.assertIn(f"push stopped at commit {merge[:10]}", err)
+        self.assertEqual(self.relay.named("gr_wf_branch_create"), [])
+        self.assertIsNone(self.relay.head("feature"))
+        self.assertNotIn(merge, self.replay_map() or {})  # the bad commit is not remembered as good
+        self.assertNotIn("verified", out)
+
+    def test_a_tip_whose_parents_read_back_wrong_is_loud_and_says_the_branch_moved(self):
+        self.write("a.txt", "a\n")
+        self.commit("One")
+        self.write("b.txt", "b\n")
+        self.commit("Two")
+
+        def lie(args, structured):  # only the read-back of the pushed tip, after the branch exists
+            if self.relay.named("gr_wf_branch_create"):
+                structured["commit"]["parents"] = [self.base]
+            return structured
+
+        self.relay.after["gr_wf_git_commit_get"] = lie
+        code, out, err = self.push()
+        self.assertEqual(code, G.EXIT_ERROR)
+        self.assertIn("PARENT MISMATCH after the push", err)
+        self.assertIn(f"The branch feature WAS moved to {self.relay.head('feature')}", err)
+        self.assertNotIn("verified", out)
+
+    def test_a_recorded_pair_with_the_wrong_parents_is_dropped_and_the_commit_replayed(self):
+        self.write("a.txt", "a\n")
+        first = self.commit("One")
+        self.write("b.txt", "b\n")
+        second = self.commit("Two")
+        self.assertEqual(self.push()[0], 0)
+        pairs = self.replay_map()
+        # A remote commit with the second commit's tree and message and the wrong parent (the base, not the first).
+        who = {
+            "GIT_AUTHOR_NAME": "r",
+            "GIT_AUTHOR_EMAIL": "r@example.invalid",
+            "GIT_COMMITTER_NAME": "r",
+            "GIT_COMMITTER_EMAIL": "r@example.invalid",
+        }
+        wrong = git(
+            self.bare, "commit-tree", self.tree(second), "-p", self.base, stdin=b"Two\n", env=who
+        )
+        path = self.state / "push-replay-map.json"
+        path.write_text(
+            json.dumps({"version": 1, "replayed": {REPO: {first: pairs[first], second: wrong}}})
+        )
+        git(self.bare, "update-ref", "-d", "refs/heads/feature")
+        self.relay.calls.clear()
+        code, _out, err = self.push()
+        self.assertEqual((code, err), (0, ""))
+        created = self.relay.named("gr_wf_git_commit_create")
+        self.assertEqual(len(created), 1)  # the second commit was replayed, the first was trusted
+        self.assertEqual(created[0]["parents"], [pairs[first]])
+        head = self.relay.head("feature")
+        self.assertNotEqual(head, wrong)
+        self.assertEqual(
+            git(self.bare, "rev-list", "--parents", "-1", head).split()[1], pairs[first]
+        )
+        self.assertEqual(self.replay_map()[second], head)
+
+    def test_a_recorded_child_of_a_pair_found_stale_through_another_path_is_replayed(self):
+        # base - P - C (pushed, so recorded), and later X on P and a merge M of X and C.  P's recorded pair
+        # goes stale and C's recorded pair sits on top of that stale commit.  C is reached first and trusted;
+        # P is reached through X and found stale.  C must be replayed on P's new commit, not kept.
+        self.write("p.txt", "p\n")
+        parent = self.commit("P")
+        self.write("c.txt", "c\n")
+        child = self.commit("C")
+        self.assertEqual(self.push()[0], 0)
+        git(self.work, "checkout", "-q", "-b", "x", parent)
+        self.write("x.txt", "x\n")
+        self.commit("X")
+        git(self.work, "checkout", "-q", "feature")
+        git(self.work, *ME, "merge", "-q", "--no-ff", "-m", "Merge x", "x")
+        merge = git(self.work, "rev-parse", "HEAD")
+        who = {
+            "GIT_AUTHOR_NAME": "r",
+            "GIT_AUTHOR_EMAIL": "r@example.invalid",
+            "GIT_COMMITTER_NAME": "r",
+            "GIT_COMMITTER_EMAIL": "r@example.invalid",
+        }
+        stale = git(
+            self.bare, "commit-tree", self.tree(self.base), "-p", self.base, stdin=b"P\n", env=who
+        )
+        on_stale = git(
+            self.bare, "commit-tree", self.tree(child), "-p", stale, stdin=b"C\n", env=who
+        )
+        path = self.state / "push-replay-map.json"
+        path.write_text(
+            json.dumps({"version": 1, "replayed": {REPO: {parent: stale, child: on_stale}}})
+        )
+        git(self.bare, "update-ref", "-d", "refs/heads/feature")
+        self.relay.calls.clear()
+        code, _out, err = self.push()
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(
+            len(self.relay.named("gr_wf_git_commit_create")), 4
+        )  # P, C, X and the merge
+        pairs = self.replay_map()
+        self.assertTrue(pairs[parent] != stale and pairs[child] != on_stale)
+        tip = self.relay.head("feature")
+        self.assertEqual(tip, pairs[merge])
+        self.assertEqual(
+            git(self.bare, "rev-parse", f"{pairs[child]}^"), pairs[parent]
+        )  # C sits on P's new commit
+        self.assertEqual(self.tree(tip, self.bare), self.tree(merge))
+
     def test_a_dry_run_lists_the_work_and_sends_nothing(self):
         self.write("a.txt", "aaaa\n")
         first = self.commit("One")
@@ -857,16 +1206,10 @@ class Identity(PushCase):
         self.write("a.txt", "a\n")
         self.commit("One")
         seen = []
-        real = subprocess.run
-
-        def spy(argv, **kw):
-            seen.append((list(argv), kw.get("env")))
-            return real(argv, **kw)
-
-        with mock.patch.object(G.subprocess, "run", spy):
+        with mock.patch.object(G.subprocess, "run", run_spy(seen)):
             code, _out, err = self.push()
         self.assertEqual((code, err), (0, ""))
-        mine = [(argv, env) for argv, env in seen if argv[1:3] == ["-C", str(self.work)]]
+        mine = local_git_calls(seen, self.work)
         self.assertTrue(mine)
         allowed = {
             "rev-parse",
@@ -878,14 +1221,110 @@ class Identity(PushCase):
             "ls-tree",
             "merge-base",
         }
-        for argv, env in mine:
-            self.assertIn(argv[3], allowed, argv)
+        for name, argv, env in mine:
+            self.assertIn(name, allowed, argv)
             # Booleans, never assertNotIn:  a failure must not print the environment it is checking.
             self.assertTrue(G.REMOTE_BEARER_ENV not in env, "the bearer variable reached local git")
             self.assertTrue(
                 all(BEARER not in value for value in [*argv, *env.values()]),
                 "the bearer reached local git",
             )
+
+    def test_a_repository_configured_fsmonitor_program_is_never_run(self):
+        self.write("a.txt", "a\n")
+        self.commit("One")
+        marker = self.work.parent / "fsmonitor-ran"
+        hook = self.work.parent / "fsmonitor-hook.sh"
+        hook.write_text(f"#!/bin/sh\ntouch '{marker}'\nprintf '\\0'\n")
+        hook.chmod(0o755)
+        git(self.work, "config", "core.fsmonitor", str(hook))
+        # Prove the setup:  a plain git of this machine does run it on a command that reads the index.
+        git(self.work, "status", "--porcelain")
+        self.assertTrue(
+            marker.exists(), "the hook is not run by git here, so this test proves nothing"
+        )
+        marker.unlink()
+        for dry_run in (True, False):
+            code, _out, err = self.push(dry_run=dry_run)
+            self.assertEqual((code, err), (0, ""))
+            self.assertTrue(not marker.exists(), "a repository's fsmonitor program was run by push")
+            if not dry_run:
+                self.assertEqual(
+                    self.tree(self.relay.head("feature"), self.bare), self.tree("HEAD")
+                )
+
+    def test_local_git_children_get_only_the_allow_listed_environment(self):
+        self.write("a.txt", "a\n")
+        self.commit("One")
+        seen = []
+        extra = {
+            "SOME_OTHER_SERVICE_TOKEN": "decoy-value",
+            "GH_TOKEN": "decoy-value",
+            "AWS_PROFILE": "decoy",
+        }
+        with (
+            mock.patch.dict(os.environ, extra),
+            mock.patch.object(G.subprocess, "run", run_spy(seen)),
+        ):
+            code, _out, err = self.push()
+        self.assertEqual((code, err), (0, ""))
+        mine = local_git_calls(seen, self.work)
+        self.assertTrue(mine)
+        allowed = {
+            "PATH",
+            "HOME",
+            "LANG",
+            "LC_ALL",
+            "TMPDIR",
+            "GIT_TERMINAL_PROMPT",
+            "GIT_OPTIONAL_LOCKS",
+            "GIT_NO_LAZY_FETCH",
+        }
+        self.assertEqual(set(G._LOCAL_GIT_ENV_ALLOWED), allowed)
+        for name, _argv, env in mine:
+            # Key sets only:  a failure must not print values.
+            self.assertTrue(set(env) <= allowed, f"{name} got a variable outside the allow-list")
+            for key in extra:
+                self.assertTrue(key not in env, f"{key} reached local git")
+            self.assertTrue(
+                "GIT_CONFIG_GLOBAL" not in env, "a GIT_ variable of the caller reached local git"
+            )
+
+    def test_local_git_runs_with_no_fsmonitor_no_hooks_and_operands_after_end_of_options(self):
+        self.write("a.txt", "a\n")
+        self.commit("One")
+        seen = []
+        with mock.patch.object(G.subprocess, "run", run_spy(seen)):
+            self.assertEqual(self.push()[0], 0)
+        for _name, argv, _env in local_git_calls(seen, self.work):
+            pairs = [(argv[i + 1]) for i, item in enumerate(argv) if item == "-c"]
+            self.assertIn("core.fsmonitor=false", pairs)
+            self.assertIn("core.hooksPath=" + os.devnull, pairs)
+        # An operand that begins with a dash is never given to git, on any version.
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            G._local_git(str(self.work), ["cat-file"], operands=("-p", "HEAD"))
+
+    def test_the_push_help_states_what_push_cannot_carry(self):
+        out = io.StringIO()
+        with self.assertRaises(SystemExit), contextlib.redirect_stdout(out):
+            G.build_parser().parse_args(["push", "--help"])
+        text = " ".join(out.getvalue().split())
+        for phrase in (
+            "a deletion",
+            "a rename",
+            "a binary file",
+            "a symlink or a submodule",
+            "a workflow path",
+            f"a file over {G.PUSH_LARGE_TEXT_BYTES} bytes",
+            "a root commit",
+            "an octopus merge",
+            "refused by name before anything is written",
+            "Commit ids differ on the remote",
+            "git reset --soft NEW_SHA",
+            "git update-ref refs/heads/BRANCH NEW_SHA OLD_SHA",
+        ):
+            self.assertTrue(phrase in text, f"the help does not say: {phrase}")
+        self.assertEqual(G.PUSH_LARGE_TEXT_BYTES, 100000)
 
     def test_the_repository_comes_from_the_remote_url_or_the_flag(self):
         for url in (
