@@ -5863,20 +5863,27 @@ class RouterHealthTests(Base):
                     doc, err = foc.read_router_health_http(url=url)
                     self.assertIsNone(err)
                     self.assertEqual(doc["healthy"], True)
-                    state.update(status=503, body=b'{"healthy": false, "seats": {"MC": {"healthy": false, "reason": "not-installed"}}}')
+                    state.update(
+                        status=503,
+                        body=b'{"healthy": false, "seats": {"MC": {"healthy": false, "reason": "not-installed"}}}',
+                    )
                     doc, err = foc.read_router_health_http(url=url)
                     self.assertIsNone(err)
                     self.assertEqual(doc["healthy"], False)
                     state.update(status=500, body=b"{}")
                     self.assertEqual(foc.read_router_health_http(url=url), (None, "bad_status"))
-                    state.update(status=302, body=b"{}", headers={"Location": "https://example.invalid/"})
+                    state.update(
+                        status=302, body=b"{}", headers={"Location": "https://example.invalid/"}
+                    )
                     self.assertEqual(foc.read_router_health_http(url=url), (None, "bad_status"))
                     state.update(status=200, headers={}, body=b"not-json")
                     self.assertEqual(foc.read_router_health_http(url=url), (None, "not_json"))
                     state.update(status=200, body=b'{"healthy": true}')
                     self.assertEqual(foc.read_router_health_http(url=url), (None, "not_json"))
                     state.update(status=200, body=b'{"healthy": true, "seats": {}}')
-                    self.assertEqual(foc.read_router_health_http(url=url, max_bytes=8), (None, "too_large"))
+                    self.assertEqual(
+                        foc.read_router_health_http(url=url, max_bytes=8), (None, "too_large")
+                    )
                 finally:
                     if old_proxy is None:
                         os.environ.pop("HTTP_PROXY", None)
