@@ -8,6 +8,7 @@
 
 import base64
 import hashlib
+import json
 import unittest
 
 from git_relay.github_client import RelayGitHubError
@@ -335,6 +336,419 @@ class ChecksTests(unittest.TestCase):
         s, _ = svc(checks_page([row], 1))
         with self.assertRaises(RelayGitHubError):
             s.run("wf_checks", {"repo": REPO, "ref": SHA})
+
+
+def detail_run(i, name="Kody Code Review", started_at="2026-11-03T00:00:00Z", **extra):
+    row = check_run(i)
+    row["name"] = name
+    if started_at is not None:
+        row["started_at"] = started_at
+    row.update(extra)
+    return row
+
+
+class ChecksDetailTests(unittest.TestCase):
+    OLD_KEYS = (
+        "id",
+        "name",
+        "status",
+        "conclusion",
+        "completed_at",
+        "head_sha",
+        "app_id",
+        "app_slug",
+    )
+    NEW_KEYS = (
+        "started_at",
+        "title",
+        "title_truncated",
+        "summary",
+        "summary_truncated",
+        "output_withheld",
+    )
+    MARKER = "<withheld: credential-shaped text>"
+
+    def one(self, row, **args):
+        s, _ = svc(checks_page([row], 1))
+        return s.run("wf_checks", dict({"repo": REPO, "ref": SHA}, **args))
+
+    def test_receipt_fields_are_present(self):
+        out = self.one(
+            detail_run(
+                9,
+                started_at="2026-11-02T23:58:00Z",
+                output={
+                    "title": "Code Review Complete",
+                    "summary": "Review finished successfully, 2 findings",
+                    "text": "not returned",
+                    "annotations_count": 3,
+                },
+            )
+        )
+        row = out["checks"][0]
+        self.assertEqual(set(row), set(self.OLD_KEYS + self.NEW_KEYS))
+        self.assertEqual(row["id"], 9)
+        self.assertEqual(row["title"], "Code Review Complete")
+        self.assertEqual(row["summary"], "Review finished successfully, 2 findings")
+        self.assertEqual(row["started_at"], "2026-11-02T23:58:00Z")
+        self.assertEqual(row["completed_at"], "2026-11-03T00:00:00Z")
+        self.assertIs(row["title_truncated"], False)
+        self.assertIs(row["summary_truncated"], False)
+        self.assertIs(row["output_withheld"], False)
+
+    def test_default_answer_keeps_every_existing_key_and_value(self):
+        out = self.one(check_run(1))
+        self.assertEqual(
+            {k: out["checks"][0][k] for k in self.OLD_KEYS},
+            {
+                "id": 1,
+                "name": "kody",
+                "status": "completed",
+                "conclusion": "success",
+                "completed_at": "2026-11-03T00:00:00Z",
+                "head_sha": SHA,
+                "app_id": 123,
+                "app_slug": "kody-ai",
+            },
+        )
+        self.assertIs(out["complete"], True)
+        self.assertIs(out["latest_per_name"], False)
+        # no output and no started_at on the provider row: null, never a guess
+        row = out["checks"][0]
+        self.assertIsNone(row["started_at"])
+        self.assertIsNone(row["title"])
+        self.assertIsNone(row["summary"])
+
+    def test_default_keeps_every_run_of_a_name(self):
+        s, _ = svc(checks_page([detail_run(1), detail_run(2)], 2))
+        out = s.run("wf_checks", {"repo": REPO, "ref": SHA})
+        self.assertEqual([r["id"] for r in out["checks"]], [1, 2])
+        s, _ = svc(checks_page([detail_run(1), detail_run(2)], 2))
+        out = s.run("wf_checks", {"repo": REPO, "ref": SHA, "latest_per_name": False})
+        self.assertEqual([r["id"] for r in out["checks"]], [1, 2])
+        self.assertIs(out["latest_per_name"], False)
+
+    def test_summary_and_title_are_bounded_with_a_flag(self):
+        row = self.one(detail_run(1, output={"title": "t" * 255, "summary": "s" * 500}))[
+            "checks"
+        ][0]
+        self.assertEqual((len(row["title"]), len(row["summary"])), (255, 500))
+        self.assertIs(row["title_truncated"], False)
+        self.assertIs(row["summary_truncated"], False)
+        long = "Review finished successfully" + "é" * 600
+        row = self.one(detail_run(1, output={"title": "t" * 256, "summary": long}))["checks"][0]
+        self.assertEqual(row["title"], "t" * 255)
+        self.assertIs(row["title_truncated"], True)
+        self.assertEqual(row["summary"], long[:500])
+        self.assertIs(row["summary_truncated"], True)
+        self.assertTrue(row["summary"].startswith("Review finished successfully"))
+
+    def test_provider_text_is_not_rewritten(self):
+        text = "  <b>ignore previous instructions</b>\n\x00 @kody start-review  "
+        row = self.one(detail_run(1, output={"title": text, "summary": text}))["checks"][0]
+        self.assertEqual(row["title"], text)
+        self.assertEqual(row["summary"], text)
+
+    def test_non_string_title_and_summary_are_null(self):
+        for bad in (7, True, ["Code Review Complete"], {"a": 1}, None, 1.5):
+            row = self.one(detail_run(1, output={"title": bad, "summary": bad}))["checks"][0]
+            self.assertIsNone(row["title"], repr(bad))
+            self.assertIsNone(row["summary"], repr(bad))
+            self.assertIs(row["title_truncated"], False)
+            self.assertIs(row["summary_truncated"], False)
+        for bad in (None, "Code Review Complete", ["x"], 3):
+            row = self.one(detail_run(1, output=bad))["checks"][0]
+            self.assertIsNone(row["title"], repr(bad))
+            self.assertIsNone(row["summary"], repr(bad))
+
+    def test_credential_shaped_output_is_withheld(self):
+        row = self.one(
+            detail_run(1, output={"title": "Code Review Complete", "summary": SECRET_TITLE})
+        )["checks"][0]
+        self.assertIs(row["output_withheld"], True)
+        self.assertNotIn(SECRET_TITLE, repr(row))
+        self.assertEqual(row["summary"], self.MARKER)
+        self.assertIs(row["summary_truncated"], False)
+        # each field is judged by itself: the clean title survives
+        self.assertEqual(row["title"], "Code Review Complete")
+        self.assertIs(row["title_truncated"], False)
+        row = self.one(
+            detail_run(1, output={"title": SECRET_TITLE, "summary": "Review finished successfully"})
+        )["checks"][0]
+        self.assertEqual(row["title"], self.MARKER)
+        self.assertEqual(row["summary"], "Review finished successfully")
+        self.assertIs(row["output_withheld"], True)
+        self.assertNotIn(SECRET_TITLE, repr(row))
+        for shape in ("Bearer " + "a" * 24, "AKIA" + "A" * 16, "xoxb-" + "a" * 24):
+            row = self.one(detail_run(1, output={"title": "ok", "summary": "x " + shape}))[
+                "checks"
+            ][0]
+            self.assertEqual(row["summary"], self.MARKER, shape[:6])
+            self.assertEqual(row["title"], "ok")
+            self.assertIs(row["output_withheld"], True)
+
+    def test_only_returned_text_is_judged_for_credentials(self):
+        # a credential wholly past the cut is never returned, so the clean head stays
+        head = "Review finished successfully" + "s" * 572
+        row = self.one(detail_run(1, output={"title": "ok", "summary": head + " " + SECRET_TITLE}))[
+            "checks"
+        ][0]
+        self.assertEqual(row["summary"], head[:500])
+        self.assertIs(row["summary_truncated"], True)
+        self.assertIs(row["output_withheld"], False)
+        self.assertNotIn("ghp_", repr(row))
+        # one that begins before the cut is withheld whole, never returned as a prefix
+        for start in (0, 480, 499):
+            row = self.one(detail_run(1, output={"summary": "s" * start + SECRET_TITLE}))[
+                "checks"
+            ][0]
+            self.assertEqual(row["summary"], self.MARKER, start)
+            self.assertIs(row["summary_truncated"], False)
+            self.assertIs(row["output_withheld"], True)
+            self.assertNotIn("ghp_", repr(row))
+        row = self.one(detail_run(1, output={"title": "t" * 250 + SECRET_TITLE}))["checks"][0]
+        self.assertEqual(row["title"], self.MARKER)
+        row = self.one(detail_run(1, output={"title": "t" * 255 + SECRET_TITLE}))["checks"][0]
+        self.assertEqual(row["title"], "t" * 255)
+        self.assertIs(row["title_truncated"], True)
+        self.assertIs(row["output_withheld"], False)
+
+    def test_answer_stays_under_the_hosted_size_limit(self):
+        # 500 rows of full-length text the relay must escape: 12 bytes a character
+        wide = "\U0001f600"
+        output = {"title": wide * 300, "summary": wide * 600}
+        pages = [
+            checks_page([detail_run(50 * p + i + 1, output=output) for i in range(50)], 500)
+            for p in range(10)
+        ]
+        s, _ = svc(*pages)
+        out = s.run("wf_checks", {"repo": REPO, "ref": SHA, "per_page": 50})
+        rows = out["checks"]
+        self.assertEqual(len(rows), 500)
+        self.assertLess(len(json.dumps(out).encode()), 1048576)
+        first, last = rows[0], rows[-1]
+        self.assertEqual(first["title"], wide * 255)
+        self.assertEqual(first["summary"], wide * 500)
+        self.assertIs(first["title_truncated"], True)
+        self.assertIsNone(last["title"])
+        self.assertIsNone(last["summary"])
+        self.assertIs(last["title_truncated"], True)
+        self.assertIs(last["summary_truncated"], True)
+        self.assertIs(last["output_withheld"], False)
+        self.assertEqual(last["id"], 500)
+        # text is dropped only from the row where the budget ran out onward
+        dropped = [r["summary"] is None for r in rows]
+        self.assertEqual(dropped, sorted(dropped))
+        self.assertGreater(dropped.count(False), 50)
+        # a row with no text keeps false flags when the budget is spent
+        pages[-1]["check_runs"][-1] = detail_run(500)
+        s, _ = svc(*pages)
+        last = s.run("wf_checks", {"repo": REPO, "ref": SHA, "per_page": 50})["checks"][-1]
+        self.assertIsNone(last["title"])
+        self.assertIs(last["title_truncated"], False)
+        self.assertIs(last["summary_truncated"], False)
+        # ordinary answers are far under the budget and lose nothing
+        s, _ = svc(
+            *[
+                checks_page(
+                    [
+                        detail_run(50 * p + i + 1, output={"title": "t" * 255, "summary": "s" * 500})
+                        for i in range(50)
+                    ],
+                    500,
+                )
+                for p in range(10)
+            ]
+        )
+        rows = s.run("wf_checks", {"repo": REPO, "ref": SHA, "per_page": 50})["checks"]
+        self.assertTrue(all(r["summary"] == "s" * 500 for r in rows))
+
+    def test_timestamps_are_iso_or_null(self):
+        for good in (
+            "2026-11-03T00:00:00Z",
+            "2026-11-03T00:00:00.123Z",
+            "2026-11-02T18:00:00-06:00",
+        ):
+            row = self.one(detail_run(1, started_at=good, completed_at=good))["checks"][0]
+            self.assertEqual(row["started_at"], good)
+            self.assertEqual(row["completed_at"], good)
+        for bad in (
+            None,
+            0,
+            1762128000,
+            True,
+            "",
+            "yesterday",
+            "2026-11-03",
+            "2026-11-03 00:00:00Z",
+            "2026-13-03T00:00:00Z",
+            "2026-11-03T25:00:00Z",
+            "2026-11-03T00:00:00",
+            "2026-11-03T00:00:00Z\n",
+            ["2026-11-03T00:00:00Z"],
+            # digits outside ASCII are not the provider's ISO text
+            "٢٠٢٦-11-03T00:00:00Z",
+            "2026-11-03T00:00:0０Z",
+        ):
+            row = self.one(detail_run(1, started_at=bad, completed_at=bad))["checks"][0]
+            self.assertIsNone(row["started_at"], repr(bad))
+            self.assertIsNone(row["completed_at"], repr(bad))
+
+    def latest(self, *runs):
+        s, _ = svc(checks_page(list(runs), len(runs)))
+        out = s.run("wf_checks", {"repo": REPO, "ref": SHA, "latest_per_name": True})
+        self.assertIs(out["latest_per_name"], True)
+        self.assertIs(out["complete"], True)
+        return [r["id"] for r in out["checks"]]
+
+    def test_latest_per_name_keeps_the_newest_started_run(self):
+        ids = self.latest(
+            detail_run(1, started_at="2026-11-03T00:00:00Z"),
+            detail_run(2, "merge-gate", started_at="2026-11-03T00:00:00Z"),
+            detail_run(3, started_at="2026-11-03T02:00:00Z"),
+            detail_run(4, started_at="2026-11-03T01:00:00Z"),
+            detail_run(5, "merge-gate", started_at="2026-11-02T00:00:00Z"),
+        )
+        self.assertEqual(ids, [2, 3])  # provider order of the rows that stay
+
+    def test_latest_per_name_compares_instants_not_text(self):
+        # 19:30-06:00 is 01:30Z the next day: later than 01:00Z although it sorts first
+        ids = self.latest(
+            detail_run(1, started_at="2026-11-03T01:00:00Z"),
+            detail_run(2, started_at="2026-11-02T19:30:00-06:00"),
+        )
+        self.assertEqual(ids, [2])
+        ids = self.latest(
+            detail_run(1, started_at="2026-11-03T01:00:00.5Z"),
+            detail_run(2, started_at="2026-11-03T01:00:00Z"),
+        )
+        self.assertEqual(ids, [1])
+
+    def test_latest_per_name_tie_goes_to_the_higher_id(self):
+        same = "2026-11-03T00:00:00Z"
+        low, high = detail_run(5, started_at=same), detail_run(8, started_at=same)
+        self.assertEqual(self.latest(high, low), [8])
+        self.assertEqual(self.latest(low, high), [8])
+
+    def test_latest_per_name_missing_started_at_loses(self):
+        ids = self.latest(
+            detail_run(9, started_at=None),
+            detail_run(2, started_at="2020-01-01T00:00:00Z"),
+            detail_run(7, started_at="not a time"),
+        )
+        self.assertEqual(ids, [2])
+        # with no started_at on any run of the name, the higher id stays
+        ids = self.latest(detail_run(4, started_at=None), detail_run(3, started_at=None))
+        self.assertEqual(ids, [4])
+
+    def test_latest_per_name_reads_every_page_and_reports_incomplete(self):
+        s, _ = svc(
+            checks_page([detail_run(i) for i in range(1, 31)], 31),
+            checks_page([detail_run(31, started_at="2026-11-04T00:00:00Z")], 31),
+        )
+        out = s.run("wf_checks", {"repo": REPO, "ref": SHA, "latest_per_name": True})
+        self.assertEqual([r["id"] for r in out["checks"]], [31])
+        self.assertIs(out["complete"], True)
+        # the page bound cut the read: the filter still runs, complete says so
+        s, _ = svc(
+            *[
+                checks_page([detail_run(30 * p + i + 1) for i in range(30)], 1000)
+                for p in range(10)
+            ]
+        )
+        out = s.run("wf_checks", {"repo": REPO, "ref": SHA, "latest_per_name": True})
+        self.assertEqual([r["id"] for r in out["checks"]], [300])
+        self.assertIs(out["complete"], False)
+        self.assertIs(out["latest_per_name"], True)
+        s, _ = svc(checks_page([detail_run(1)], 50))
+        out = s.run("wf_checks", {"repo": REPO, "ref": SHA, "latest_per_name": True})
+        self.assertEqual(out["complete"], "unknown")
+
+    def test_latest_per_name_needs_a_string_name(self):
+        for bad in (None, 7, ["kody"]):
+            s, _ = svc(checks_page([detail_run(1, name=bad)], 1))
+            with self.assertRaises(RelayGitHubError, msg=repr(bad)):
+                s.run("wf_checks", {"repo": REPO, "ref": SHA, "latest_per_name": True})
+
+    def test_latest_per_name_is_per_app_and_name(self):
+        # two apps publish the same check name: neither hides the other
+        def run(i, app_id, slug, started_at):
+            return detail_run(i, started_at=started_at, app={"id": app_id, "slug": slug})
+
+        ids = self.latest(
+            run(1, 413034, "kody-ai", "2026-11-03T00:00:00Z"),
+            run(2, 999, "other-app", "2026-11-03T05:00:00Z"),
+            run(3, 413034, "kody-ai", "2026-11-03T01:00:00Z"),
+            run(4, 999, "other-app", "2026-11-03T04:00:00Z"),
+        )
+        self.assertEqual(ids, [2, 3])
+        s, _ = svc(
+            checks_page(
+                [
+                    run(1, 413034, "kody-ai", "2026-11-03T00:00:00Z"),
+                    run(2, 999, "kody-ai", "2026-11-03T05:00:00Z"),
+                ],
+                2,
+            )
+        )
+        out = s.run("wf_checks", {"repo": REPO, "ref": SHA, "latest_per_name": True})
+        self.assertEqual([(r["id"], r["app_id"]) for r in out["checks"]], [(1, 413034), (2, 999)])
+
+    def test_latest_per_name_with_withheld_and_cut_rows(self):
+        s, _ = svc(
+            checks_page(
+                [
+                    detail_run(1, started_at="2026-11-03T02:00:00Z", output={"summary": "old"}),
+                    detail_run(
+                        2,
+                        started_at="2026-11-03T03:00:00Z",
+                        output={"title": "t" * 300, "summary": SECRET_TITLE},
+                    ),
+                    detail_run(3, "merge-gate", output={"summary": "s" * 501}),
+                ],
+                3,
+            )
+        )
+        out = s.run("wf_checks", {"repo": REPO, "ref": SHA, "latest_per_name": True})
+        self.assertEqual([r["id"] for r in out["checks"]], [2, 3])
+        kept, gate = out["checks"]
+        self.assertEqual(kept["title"], "t" * 255)
+        self.assertIs(kept["title_truncated"], True)
+        self.assertEqual(kept["summary"], self.MARKER)
+        self.assertIs(kept["output_withheld"], True)
+        self.assertEqual(gate["summary"], "s" * 500)
+        self.assertIs(gate["summary_truncated"], True)
+        self.assertNotIn("ghp_", repr(out))
+
+    def test_latest_per_name_with_per_page(self):
+        s, c = svc(
+            checks_page([detail_run(1), detail_run(2, "merge-gate")], 3),
+            checks_page([detail_run(3, started_at="2026-11-04T00:00:00Z")], 3),
+        )
+        out = s.run(
+            "wf_checks", {"repo": REPO, "ref": SHA, "per_page": 2, "latest_per_name": True}
+        )
+        self.assertEqual([r["id"] for r in out["checks"]], [2, 3])
+        self.assertIs(out["complete"], True)
+        self.assertIs(out["latest_per_name"], True)
+        self.assertEqual(len(c.calls), 2)
+        self.assertTrue(all("per_page=2&" in repr(call) for call in c.calls))
+
+    def test_argument_validation(self):
+        for bad in (None, "true", "false", 1, 0, "", [], {}, 1.0):
+            s, c = svc()
+            with self.assertRaises(Refused, msg=repr(bad)):
+                s.run("wf_checks", {"repo": REPO, "ref": SHA, "latest_per_name": bad})
+            self.assertEqual(c.calls, [])
+        for extra in ("latest", "latest_by_name", "filter", "check_name"):
+            s, c = svc()
+            with self.assertRaises(Refused, msg=extra):
+                s.run("wf_checks", {"repo": REPO, "ref": SHA, extra: True})
+            self.assertEqual(c.calls, [])
+        s, c = svc()
+        with self.assertRaises(Refused):
+            s.run("wf_checks", {"repo": REPO, "ref": "main", "latest_per_name": True})
+        self.assertEqual(c.calls, [])
 
 
 class MergeGuardedTests(unittest.TestCase):
