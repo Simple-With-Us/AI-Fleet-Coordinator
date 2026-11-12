@@ -179,7 +179,11 @@ class ParagraphTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _write(root, "skills/alpha/SKILL.md", SHARED + "\n\n" + OTHER + "\n")
-            _write(root, "skills/beta/SKILL.md", SHARED + "\n\n" + SHARED_NEAR + " extra unique ending words here now\n")
+            _write(
+                root,
+                "skills/beta/SKILL.md",
+                SHARED + "\n\n" + SHARED_NEAR + " extra unique ending words here now\n",
+            )
             report = lint.scan(root, budget=10_000, similarity=1.0)
         self.assertEqual(len(report.shared), 1)
         self.assertIn("shared memory", report.shared[0].sample)

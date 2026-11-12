@@ -205,7 +205,9 @@ def one_line(text: str, limit: int = 160) -> str:
     return collapsed[: limit - 3].rstrip() + "..."
 
 
-def make_shingles(words: list[str], size: int = SHINGLE_SIZE, cap: int = SHINGLE_CAP) -> frozenset[tuple[str, ...]]:
+def make_shingles(
+    words: list[str], size: int = SHINGLE_SIZE, cap: int = SHINGLE_CAP
+) -> frozenset[tuple[str, ...]]:
     total = len(words) - size + 1
     if total <= 0:
         return frozenset()
@@ -352,7 +354,9 @@ def _cluster(paragraphs: list[Paragraph], similarity: float) -> list[SharedGroup
                 chars=representative.norm_chars,
             )
         )
-    groups.sort(key=lambda group: (-len(group.skills), -group.similarity, -group.chars, group.skills))
+    groups.sort(
+        key=lambda group: (-len(group.skills), -group.similarity, -group.chars, group.skills)
+    )
     return groups
 
 
@@ -394,7 +398,9 @@ def scan(
         skill = skill_slug(path)
         chars = len(text)
         tokens = estimate_tokens(text, chars_per_token)
-        files.append(FileSize(path=rel, skill=skill, chars=chars, tokens=tokens, over=tokens > budget))
+        files.append(
+            FileSize(path=rel, skill=skill, chars=chars, tokens=tokens, over=tokens > budget)
+        )
         for paragraph in _paragraphs_for(skill, rel, text, min_paragraph_chars):
             key = (skill, paragraph.normalized)
             if key in seen_paragraph:
@@ -452,12 +458,16 @@ def _table(headers: tuple[str, ...], rows: list[tuple[object, ...]]) -> str:
     return "\n".join(lines)
 
 
-def render_text(report: Report, *, strict: bool = False, max_groups: int = DEFAULT_MAX_GROUPS) -> str:
+def render_text(
+    report: Report, *, strict: bool = False, max_groups: int = DEFAULT_MAX_GROUPS
+) -> str:
     over_files = [row for row in report.files if row.over]
     over_skills = [row for row in report.skills if row.over]
     if report.has_findings:
         status = "FAIL" if strict else "WARNING"
-        blocking = "Strict mode fails the process." if strict else "This job warns and does not block."
+        blocking = (
+            "Strict mode fails the process." if strict else "This job warns and does not block."
+        )
         pieces = [
             (
                 f"{_count(len(over_files), 'file', 'files')} "
@@ -582,13 +592,32 @@ def resolve_budget(cli_value: int | None) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, default=None, help="repository root (default: this repo)")
-    parser.add_argument("--budget", type=int, default=None, help=f"token budget (default {DEFAULT_BUDGET}, or SKILL_TOKEN_BUDGET)")
+    parser.add_argument(
+        "--root", type=Path, default=None, help="repository root (default: this repo)"
+    )
+    parser.add_argument(
+        "--budget",
+        type=int,
+        default=None,
+        help=f"token budget (default {DEFAULT_BUDGET}, or SKILL_TOKEN_BUDGET)",
+    )
     parser.add_argument("--min-paragraph-chars", type=int, default=DEFAULT_MIN_PARAGRAPH_CHARS)
-    parser.add_argument("--similarity", type=float, default=DEFAULT_SIMILARITY, help="near-duplicate threshold in (0, 1]")
-    parser.add_argument("--max-groups", type=int, default=DEFAULT_MAX_GROUPS, help="shared groups to print in text mode")
+    parser.add_argument(
+        "--similarity",
+        type=float,
+        default=DEFAULT_SIMILARITY,
+        help="near-duplicate threshold in (0, 1]",
+    )
+    parser.add_argument(
+        "--max-groups",
+        type=int,
+        default=DEFAULT_MAX_GROUPS,
+        help="shared groups to print in text mode",
+    )
     parser.add_argument("--strict", action="store_true", help="exit 1 when the report has findings")
-    parser.add_argument("--annotations", action="store_true", help="also print GitHub ::warning annotations")
+    parser.add_argument(
+        "--annotations", action="store_true", help="also print GitHub ::warning annotations"
+    )
     parser.add_argument("--format", choices=("text", "json"), default="text")
     args = parser.parse_args(argv)
 
