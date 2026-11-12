@@ -10,8 +10,9 @@ QDRANT_FLEET_COLLECTION in the environment and no Infisical account or credentia
 is needed.  See docs/RAG-FLEET-INFRA.md "Run your own".
 
 Usage:
-  recall "query text" [--limit 5] [--category X] [--app X] [--source X] [--seat X]
-                      [--since-days N] [--per-doc N] [--no-rerank] [--no-lessons] [--full] [--json]
+  recall "query text" [--limit 3] [--category X] [--app X] [--source X] [--seat X]
+                      [--since-days N] [--per-doc N] [--no-rerank] [--no-lessons]
+                      [--fields A,B,C] [--full] [--json]
   recall stats [--json]
   recall contribute "text" --category lesson [--app fleet] [--seat CLAUDE] [--title T] [--url U]
                     [--force]
@@ -104,7 +105,6 @@ from fleet_rag.core import FleetRagError  # noqa: E402
 SUBCOMMANDS = (
     "search", "stats", "contribute", "correct", "retract", "digest", "eval", "doctor", "ingest"
 )
-EXCERPT = 300
 _CT = zoneinfo.ZoneInfo("America/Chicago")
 
 
@@ -133,30 +133,60 @@ def fmt_hit(i: int, h: dict, full: bool) -> str:
     if h.get("url"):
         lines.append(f"     {h['url']}")
     text = h.get("text", "")
-    if not full and len(text) > EXCERPT:
-        text = text[:EXCERPT].rstrip() + "..."
+    if not full and not h.get("text_truncated"):
+        limit = recall_presentation.snippet_chars()
+        if len(text) > limit:
+            text = text[:limit].rstrip() + "..."
     lines.extend("     " + ln for ln in text.splitlines())
     return "\n".join(lines)
 
 
 def cmd_search(a: argparse.Namespace) -> int:
-    kwargs = dict(
-        limit=a.limit,
-        category=a.category,
-        app=a.app,
-        source=a.source,
-        seat=a.seat,
-        since_days=a.since_days,
-        per_doc=a.per_doc,
-        prefer_lessons=a.prefer_lessons,
-        rerank=a.rerank,
-        include_retracted=getattr(a, "include_retracted", False),
-    )
+    raw_args: dict = {
+        "query": a.query,
+        "limit": a.limit,
+        "category": a.category,
+        "app": a.app,
+        "source": a.source,
+        "seat": a.seat,
+        "since_days": a.since_days,
+        "per_doc": a.per_doc,
+        "prefer_lessons": a.prefer_lessons,
+        "rerank": a.rerank,
+        "include_retracted": getattr(a, "include_retracted", False),
+        "full": a.full,
+    }
+    if getattr(a, "fields", None):
+        raw_args["fields"] = a.fields
+    search_args, presentation = recall_presentation.split_search_arguments(raw_args)
+    fallback_args = dict(search_args)
+    if presentation.full:
+        fallback_args["full"] = True
+    if getattr(a, "fields", None):
+        fallback_args["fields"] = list(presentation.fields)
+    search_kwargs = {
+        k: search_args[k]
+        for k in (
+            "limit",
+            "category",
+            "app",
+            "source",
+            "seat",
+            "since_days",
+            "per_doc",
+            "prefer_lessons",
+            "rerank",
+            "include_retracted",
+        )
+        if k in search_args
+    }
     res = public_fallback.call_with_fallback(
         "recall_search",
-        {**kwargs, "query": a.query},
-        lambda: recall_api.recall_search(a.query, **kwargs),
+        fallback_args,
+        lambda: recall_api.recall_search(a.query, **search_kwargs),
     )
+    if not a.json and not a.full:
+        res = recall_presentation.present_search_result(res, presentation)
     if a.json:
         # Keep stdout's machine contract unchanged. The warning is not corpus text.
         print(recall_presentation.UNTRUSTED_NOTE, file=sys.stderr)
@@ -538,7 +568,7 @@ def build_parser() -> argparse.ArgumentParser:
         "search", help="hybrid search (default when the first arg is not a subcommand)"
     )
     s.add_argument("query")
-    s.add_argument("--limit", type=int, default=5)
+    s.add_argument("--limit", type=int, default=recall_presentation.DEFAULT_AGENT_LIMIT)
     s.add_argument("--category")
     s.add_argument("--app")
     s.add_argument("--source")
@@ -563,7 +593,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="do not boost agent lessons into the fusion (raw document research)",
     )
-    s.add_argument("--full", action="store_true", help="print whole chunks, not 300-char excerpts")
+    s.add_argument(
+        "--fields",
+        help="comma-separated hit fields for compact output (default keeps score, title, doc_id, url, source, app, category, text)",
+    )
+    s.add_argument("--full", action="store_true", help="print whole chunks and every stored hit field")
     s.add_argument(
         "--include-retracted",
         dest="include_retracted",
