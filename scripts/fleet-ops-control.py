@@ -16,6 +16,7 @@
                                        [--expect SHA256] [--yes] [--json]
   python3 scripts/fleet-ops-control.py server operator-sessions server --plan [--json]
   python3 scripts/fleet-ops-control.py server operator-wakes server    --plan [--json]
+  python3 scripts/fleet-ops-control.py server router-health server     --plan [--json]
   python3 scripts/fleet-ops-control.py --from-ssh                         (the forced command)
   python3 scripts/fleet-ops-control.py --from-muster                      (the forced command of muster-exec)
   python3 scripts/fleet-ops-control.py --check-token                      (install check, not over ssh)
