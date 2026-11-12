@@ -169,7 +169,7 @@ def plugin_dir(env: Mapping[str, str], home: str, source: str = "") -> str:
     # link moves the plugin with it.
     current = os.path.join(home, ".local", "share", "fleet-cli", "current")
     root = os.path.realpath(current)
-    resolved = os.path.realpath(real)  # both sides resolved, so a link in the path (macOS /var) cannot hide a match
+    resolved = os.path.realpath(real)  # a link in the path (macOS /var) must not hide the match
     if os.path.isdir(root) and (resolved == root or resolved.startswith(root + os.sep)):
         return os.path.join(current, os.path.relpath(resolved, root))
     parts = real.split(os.sep)
