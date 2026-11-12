@@ -268,6 +268,8 @@ def cmd_ingest_all(args: argparse.Namespace) -> int:
         argv.append("--no-heartbeat")
     if args.prune:
         argv.append("--prune")
+    if args.full:
+        argv.append("--full")
     return ingest.main(argv)
 
 
@@ -323,6 +325,11 @@ def main() -> int:
         "--prune",
         action="store_true",
         help="after a source finishes cleanly, delete chunks of documents it no longer yields",
+    )
+    a.add_argument(
+        "--full",
+        action="store_true",
+        help="force a full Linear read this run (FLEET_RAG_LINEAR_FULL)",
     )
 
     args = ap.parse_args()

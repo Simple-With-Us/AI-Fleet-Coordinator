@@ -105,10 +105,11 @@ journal is protected only by being a root-only file in a 0700 directory: these c
 and mismatches, not someone who can already write as root. A real reboot test on the host is a separate
 released run. Adding a seat stays the proof-gated `install-seat`.
 
-
 ## Auth refusals a seat can name
 
 A recognizable seat bearer whose identity is not a shared seat in the loaded policy is refused as `seat_not_in_policy`.  That names the loaded file, which can differ from the reviewed source in `deploy/seat-policy.json`.  Install the reviewed row with `git-relay/deploy/seat_policy.py`.  `install` needs `--unit`, and `--apply` needs the digest the dry run printed.  Adding one seat uses `install-seat` with `--unit`, `--seat`, `--row-json`, `--expect-before`, `--expect-after` and `--receipt`.  The installer restarts the unit.  `bearer_rejected` means the identity is in the loaded policy and the Worker did not confirm the bearer.  `verifier_unavailable` means the Worker could not be asked.  `no_app_credential` means Fleet-OPS prod `/github-apps` has no usable `GH_APP_<SLUG>_ID` or `GH_APP_<SLUG>_PRIVATE_KEY`.  For ZC those names are `GH_APP_SWU_ZC_ID` and `GH_APP_SWU_ZC_PRIVATE_KEY`.  Add the missing key and restart the relay, because an absent name is remembered for the process lifetime.  This document does not install a row or write a secret.
+
+A seat the loaded file does not name yet uses `install-seat --first-seat`, documented below.  The `--receipt` gate is unchanged for a seat the file already names.
 
 ## First-seat bootstrap: proving a seat the policy does not yet name
 
@@ -139,15 +140,6 @@ with a bootstrap proof:
    addition the receipt's claimed identity must equal the seat row's
    configured `identity` AND the audited verifier-confirmed identity, so the
    proven-denied bearer is exactly the seat being added.
-
-### Proof-key custody (proposal; enacting it needs the host owner's approval)
-
-`seat_policy.py proof-key` mints the operator proof key into a root-owned
-0600 file named by GIT_RELAY_PROOF_KEY_FILE. It never prints the key and
-never overwrites an existing one (rotation would orphan outstanding
-receipts). Any offline backup, for example a Fleet-OPS /git-relay-owner
-folder, is a separate, explicitly authorized operational step and is not
-part of the mint command.
 
 ### Bootstrap limits, stated exactly
 
@@ -180,3 +172,37 @@ part of the mint command.
   by fstat on the OPENED descriptor (regular file, operator-owned, 0600 as
   root, non-empty), so a symlink swap or a replace between check and open
   lands on the descriptor actually read, not a second lookup.
+
+## Provisional admission for a seat the policy does not name
+
+`ExternalProof` cannot succeed before the seat is in the live policy.  Its read has to answer 200, and an unconfigured seat is refused before any read.  `install-seat --first-seat` is the path for that one case.  It does not replace `--receipt` or `--bootstrap-receipt`.  A seat the policy already names still presents a signed receipt, and that receipt is still checked before any write.
+
+The same transaction lock and the same digest fence apply.
+
+1. The live file's full canonical digest must equal `--expect-before`.  `seat_add_policy.prepare` must append exactly the named seat, and that result's digest must equal `--expect-after`.  The proof key must load.  The new seat's bearer file (`GIT_RELAY_FIRST_SEAT_BEARER_FILE`) must load under the same custody rules as the proof key.  The bearer is never printed and is never written into the marker.
+2. A proof id already in the replay store is refused before any write.  A dry run stops here and writes nothing.
+3. `--apply` writes a mode 0600 marker beside the policy holding the prior bytes, then the additive row, then restarts the unit and checks health.  An unhealthy restart restores the prior bytes.
+4. After that healthy restart the installer runs the existing `ExternalProof` with the bearer, against `ExternalProof`'s own URL.  This path does not take an operator-url override.
+5. The row stays only when the proof is `PROVEN` for this seat, this proof id and both digests, and the existing receipt gates bind it to exactly one audit row.  The proof id is consumed only then.
+6. A refused proof, an inconclusive proof, a proof that names another seat, a missing audit row or an interruption restores the prior digest and restarts again.  The proof id is not consumed.  An inconclusive probe may already have reached the relay, so a retry uses a fresh `--proof-id`.
+7. If the process is killed after the provisional write, the next `install-seat` of any mode reads the marker before it trusts the live file.  An unproven row is rolled back.  A row whose proof id is already in the replay store is kept, and the marker is removed.
+
+The marker file is root-owned and mode 0600.  It sits in the seats directory.  That directory follows the live seats file: a real directory, not group-writable or world-writable, owned by root or by the account that owns the seats file.  A service-owned seats directory is valid.  The proof-key ancestor rule does not apply here, so crash recovery can still read the marker.  Recovery trusts the marker only when the opened file is root-owned 0600.
+
+`--first-seat` refuses a seat the live policy already names.  It cannot be combined with `--receipt` or `--bootstrap-receipt`.
+
+Between the restart and the proof result the new seat's reviewed grants are live.  A failed proof removes the row.  It does not undo a provider write the seat made in that window.  The grants are the reviewed row, not a wider one, and the command holds the transaction lock for the whole window.
+
+### Proof key: who owns it and how to mint it
+
+The operator proof key is owned by root.  Root here is the relay host operator, the account that runs `install-seat` and `proof-key`.  The relay service user does not own the file and does not read it.  No seat owns it.
+
+`seat_policy.py proof-key` is the generation command.  Run it as root, once.
+
+1. Choose a directory that root owns and that only root can write.  When the caller is root, every ancestor has to be the same: root-owned, not group-writable, not world-writable, and not a symlink.
+2. Set `GIT_RELAY_PROOF_KEY_FILE` to the absolute path of the new file inside that directory.
+3. Run `python3 -I <copy>/seat_policy.py proof-key`.
+4. The command creates the file mode 0600 and prints the path.  It never prints the key.  A non-root caller is refused.  An existing file is never overwritten, because every outstanding receipt is bound to the key that signed it.
+5. Confirm with `stat` that the owner uid is 0 and the mode is 0600.  Do not print the file.
+
+An offline backup is a separate authorized step.  It is not part of the mint command.  The replay store is not minted here.  `install-seat` creates it.

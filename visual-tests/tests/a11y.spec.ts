@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { DIGEST_FIXTURE_PATH } from './digest-fixture-path';
 import { serveRepo, serveErrors } from './serve-repo';
 
 /**
@@ -13,7 +14,7 @@ for (const viewport of viewports) {
     test.setTimeout(120_000);
     await page.setViewportSize(viewport);
     await serveRepo(page);
-    await page.goto('/site/index.html');
+    await page.goto(DIGEST_FIXTURE_PATH);
     await expect(page.locator('.day').first()).toBeVisible();
     const results = await new AxeBuilder({ page })
       .withTags(['wcag2a', 'wcag2aa'])

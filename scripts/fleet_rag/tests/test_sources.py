@@ -676,6 +676,125 @@ class ExtraDocWalkerTests(unittest.TestCase):
         paths = [d.path for d in docs]
         self.assertEqual(len(paths), len(set(pathlib.Path(p).resolve() for p in paths)))
 
+    def test_diet_excludes_are_held_and_legacy_skips_are_not(self) -> None:
+        docs = self.fleet / "docs"
+        paragraph = "A normal paragraph about the diet.\n"
+        (docs / "keep.md").write_text("# Keep\n\n" + paragraph)
+        (docs / "copy.md").write_text("# Copy\n\n" + paragraph)
+        (docs / "essay.md").write_text("# Essay\n\n" + ("word " * 2000) + "\n")
+        (docs / "Build").mkdir()
+        (docs / "Build" / "notes.md").write_text("# Notes\n\nkept because Build is not the legacy dir.\n")
+        (docs / "generated").mkdir()
+        (docs / "generated" / "api.md").write_text("# API\n\nbuilt\n")
+        (docs / "Coverage").mkdir()
+        (docs / "Coverage" / "index.md").write_text("# cov\n")
+        (docs / "third_party").mkdir()
+        (docs / "third_party" / "lib.md").write_text("# tp\n")
+        (docs / "vendored").mkdir()
+        (docs / "vendored" / "lib.md").write_text("# ven\n")
+        (docs / "out").mkdir()
+        (docs / "out" / "page.md").write_text("# out\n")
+        (docs / "app.min.md").write_text("# Min\n\nnope\n")
+        (docs / "schema.generated.md").write_text("# Schema\n\ngenerated\n")
+        (docs / "bundle.md").write_text("a" * sources.MINIFIED_LINE_CHARS + "\n")
+        (docs / "blob.md").write_bytes(b"# Blob\n\n\x00binary\n")
+        (docs / "node_modules" / "pkg").mkdir(parents=True)
+        (docs / "node_modules" / "pkg" / "README.md").write_text("# nm\n")
+        (docs / "dist").mkdir()
+        (docs / "dist" / "out.md").write_text("# dist\n")
+        (docs / "big.md").write_text("x" * (sources.DOC_MAX_BYTES + 1))
+        (self.fleet / "package-lock.json").write_text("{}\n")
+        (docs / "yarn.lock").write_text("lock\n")
+        (self.fleet / "custom.lock").write_text("lock\n")
+
+        walked = list(
+            sources.iter_docs(
+                self.fleet,
+                self.ops,
+                extra=[],
+                code_dir=None,
+                apps_dir=None,
+                grok_home=None,
+            )
+        )
+        names = {pathlib.Path(d.path).name for d in walked}
+        for kept in ("keep.md", "copy.md", "essay.md", "notes.md", "README.md"):
+            self.assertIn(kept, names, kept)
+        for gone in (
+            "api.md",
+            "index.md",
+            "lib.md",
+            "page.md",
+            "app.min.md",
+            "schema.generated.md",
+            "bundle.md",
+            "blob.md",
+            "out.md",
+            "big.md",
+        ):
+            self.assertNotIn(gone, names, gone)
+
+        diet_files = [
+            docs / "generated" / "api.md",
+            docs / "Coverage" / "index.md",
+            docs / "third_party" / "lib.md",
+            docs / "vendored" / "lib.md",
+            docs / "out" / "page.md",
+            docs / "app.min.md",
+            docs / "schema.generated.md",
+            docs / "bundle.md",
+            docs / "blob.md",
+        ]
+        held = sources.take_held_doc_ids()
+        self.assertEqual(held, {sources.doc_id_for_path(p) for p in diet_files})
+        legacy = [
+            docs / "node_modules" / "pkg" / "README.md",
+            docs / "dist" / "out.md",
+            docs / "big.md",
+        ]
+        self.assertTrue(held.isdisjoint(sources.doc_id_for_path(p) for p in legacy))
+
+        self.assertEqual(sources.doc_exclude_reason(self.fleet / "package-lock.json"), "lockfile")
+        self.assertEqual(sources.doc_exclude_reason(docs / "yarn.lock"), "lockfile")
+        self.assertEqual(sources.doc_exclude_reason(self.fleet / "custom.lock"), "lockfile")
+        self.assertIsNone(sources.doc_exclude_reason(docs / "keep.md"))
+        self.assertIsNone(sources.doc_exclude_reason(docs / "essay.md"))
+        self.assertIsNone(sources.doc_exclude_reason(docs / "Build" / "notes.md"))
+        self.assertEqual(
+            sources.doc_exclude_reason(docs / "node_modules" / "pkg" / "README.md"), "legacy-dir"
+        )
+        self.assertEqual(sources.doc_exclude_reason(docs / "bundle.md"), "minified")
+        self.assertEqual(sources.doc_exclude_reason(docs / "blob.md"), "binary")
+        self.assertEqual(sources.doc_exclude_reason(docs / "schema.generated.md"), "generated")
+        self.assertEqual(sources.doc_exclude_reason(docs / "Coverage" / "index.md"), "skipped-dir")
+
+        warnings = sources.take_warnings()
+        diet_rules = {w.split()[3] for w in warnings if w.split()[3].startswith("diet-")}
+        self.assertEqual(
+            diet_rules, {"diet-skipped-dir", "diet-minified", "diet-generated", "diet-binary"}
+        )
+        census = ingest.doc_diet_census(sources.LAST_DOC_WALK)
+        self.assertEqual(census["docs_after"], len(walked))
+        self.assertEqual(census["docs_before"], census["docs_after"] + census["docs_excluded"])
+        self.assertEqual(census["docs_excluded"], len(diet_files))
+        self.assertGreater(census["chunks_before"], census["chunks_after"])
+        self.assertGreaterEqual(census["chunks_deduped"], 1)
+        self.assertEqual(census["rules_version"], sources.DOC_DIET_VERSION)
+        self.assertEqual(census["rules_hash"], ingest.diet_rules_hash())
+        self.assertGreaterEqual(census["excluded_by_rule"]["skipped-dir"], 5)
+
+    def test_a_diet_dir_above_the_checkout_does_not_exclude_it(self) -> None:
+        checkout = self.root / "out" / "target" / "checkout"
+        (checkout / "docs" / "out").mkdir(parents=True)
+        readme = checkout / "README.md"
+        readme.write_text("# Hello\n\nkept\n")
+        nested = checkout / "docs" / "out" / "page.md"
+        nested.write_text("# Out\n\nbuilt\n")
+        subprocess.run(["git", "init"], cwd=checkout, check=True, capture_output=True)
+        sources._git_toplevel.cache_clear()
+        self.assertIsNone(sources.doc_exclude_reason(readme))
+        self.assertEqual(sources.doc_exclude_reason(nested), "skipped-dir")
+
 
 class MirrorSkipTests(unittest.TestCase):
     """Doc-walk dedupe at the source: live ~/apps copy wins, skill copies and effort-log mirrors
@@ -1875,6 +1994,7 @@ class LinearSourceTests(unittest.TestCase):
             fetch_full=lambda ids: [node], receipt=receipt)))
         self.assertFalse(receipt["source_complete"])
         self.assertEqual("skipped", receipt["issues"]["uuid-1"]["status"])
+        self.assertFalse(receipt["cursor_advance"])
 
     def test_overlong_thread_is_skipped_not_ingested_partial(self) -> None:
         node = _linear_node()
@@ -2469,6 +2589,174 @@ class LinearSourceTests(unittest.TestCase):
         self.assertEqual(first[0].doc_id, second[0].doc_id)
         self.assertNotEqual(first[0].text_markdown, second[0].text_markdown)
         self.assertLess(first[0].updated_at_ms, second[0].updated_at_ms)
+
+    def _write_sync(self, cursor: str, last_full_ms: int | None) -> None:
+        record: dict = {"kind": "linear-sync", "updated_at_cursor": cursor}
+        if last_full_ms is not None:
+            record["last_full_sweep_at_ms"] = last_full_ms
+        path = pathlib.Path(self.tmp) / "ingest-state.json"
+        path.write_text(
+            json.dumps({sources.LINEAR_CURSOR_KEY: record}),
+            encoding="utf-8",
+        )
+
+    def test_incremental_window_overlaps_the_cursor_and_empty_is_ok(self) -> None:
+        now = sources.parse_ts_ms("2026-11-12T00:00:00.000Z")
+        cursor = "2026-11-11T12:00:00.000Z"
+        self._write_sync(cursor, now)
+        with mock.patch.object(sources, "now_ms", return_value=now):
+            plan = sources.linear_read_plan()
+        self.assertFalse(plan["full_scan"])
+        self.assertEqual(plan["reason"], "incremental")
+        self.assertEqual(plan["updated_since"], "2026-11-11T10:00:00.000Z")
+        seen: list[str] = []
+
+        def fake_query(query, timeout_s=0):
+            seen.append(query)
+            return {"issues": {"nodes": [], "pageInfo": {"hasNextPage": False}}}
+
+        with mock.patch.object(sources, "_linear_query", side_effect=fake_query):
+            self.assertEqual(
+                sources._linear_light_scan(updated_since=plan["updated_since"]), {}
+            )
+        self.assertIn(
+            'filter: { updatedAt: { gte: "2026-11-11T10:00:00.000Z" } }', seen[0]
+        )
+        self.assertIn("includeArchived: true", seen[0])
+        with mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_OVERLAP_HOURS": "5"}):
+            with mock.patch.object(sources, "now_ms", return_value=now):
+                wider = sources.linear_read_plan()
+        self.assertEqual(wider["updated_since"], "2026-11-11T07:00:00.000Z")
+        with mock.patch.object(sources, "_linear_query", side_effect=AssertionError("queried")):
+            with self.assertRaises(sources.LinearSourceError):
+                sources._linear_light_scan(updated_since='"); mutation { drop }')
+
+    def test_full_sweep_triggers_and_corrupt_cursor_falls_back(self) -> None:
+        now = sources.parse_ts_ms("2026-11-12T00:00:00.000Z")
+        fresh_cursor = sources._linear_iso(now - 2 * 3600 * 1000)
+        fresh_full = now - 3600 * 1000
+        stale_ms = now - 8 * 24 * 3600 * 1000
+        stale_cursor = sources._linear_iso(stale_ms)
+        cases = [
+            (fresh_cursor, fresh_full, False, "incremental"),
+            (stale_cursor, fresh_full, True, "cursor_stale"),
+            (fresh_cursor, stale_ms, True, "sweep_due"),
+            (fresh_cursor, None, True, "sweep_due"),
+        ]
+        for cursor, last_full, full, reason in cases:
+            self._write_sync(cursor, last_full)
+            with mock.patch.object(sources, "now_ms", return_value=now):
+                plan = sources.linear_read_plan()
+            self.assertEqual(plan["full_scan"], full, reason)
+            self.assertEqual(plan["reason"], reason)
+        path = pathlib.Path(self.tmp) / "ingest-state.json"
+        path.write_text("{}", encoding="utf-8")
+        with mock.patch.object(sources, "now_ms", return_value=now):
+            missing = sources.linear_read_plan()
+        self.assertTrue(missing["full_scan"])
+        self.assertEqual(missing["reason"], "missing")
+        for bad in ("not-a-timestamp", "2026-11-11T12:00:00Z", ""):
+            path.write_text(
+                json.dumps(
+                    {sources.LINEAR_CURSOR_KEY: {"updated_at_cursor": bad, "last_full_sweep_at_ms": fresh_full}}
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.object(sources, "now_ms", return_value=now):
+                plan = sources.linear_read_plan()
+            self.assertTrue(plan["full_scan"], bad)
+            self.assertEqual(plan["reason"], "corrupt", bad)
+        path.write_text(json.dumps({sources.LINEAR_CURSOR_KEY: "nope"}), encoding="utf-8")
+        with mock.patch.object(sources, "now_ms", return_value=now):
+            plan = sources.linear_read_plan()
+        self.assertEqual(plan["reason"], "corrupt")
+        old_full = now - 36 * 3600 * 1000
+        self._write_sync(fresh_cursor, old_full)
+        with mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_SWEEP_DAYS": "1"}):
+            with mock.patch.object(sources, "now_ms", return_value=now):
+                plan = sources.linear_read_plan()
+        self.assertEqual(plan["reason"], "sweep_due")
+        with mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_FULL": "1"}):
+            with mock.patch.object(sources, "now_ms", return_value=now):
+                plan = sources.linear_read_plan()
+        self.assertTrue(plan["full_scan"])
+        self.assertEqual(plan["reason"], "flag")
+        self.assertTrue(plan["force_bodies"])
+
+    def test_incremental_zero_issues_advances_and_full_zero_aborts(self) -> None:
+        now = sources.parse_ts_ms("2026-11-12T00:00:00.000Z")
+        self._write_sync(sources._linear_iso(now - 3600 * 1000), now - 1000)
+        receipt: dict = {}
+
+        def empty(query, timeout_s=0):
+            self.assertIn("updatedAt", query)
+            return {"issues": {"nodes": [], "pageInfo": {"hasNextPage": False}}}
+
+        with mock.patch.object(sources, "now_ms", return_value=now):
+            with mock.patch.object(sources, "_linear_query", side_effect=empty):
+                docs = list(sources.iter_linear(receipt=receipt))
+        self.assertEqual(docs, [])
+        self.assertEqual(receipt["read_mode"], "incremental")
+        self.assertTrue(receipt["cursor_advance"])
+        self.assertFalse(receipt["full"])
+        path = pathlib.Path(self.tmp) / "ingest-state.json"
+        path.unlink()
+        with mock.patch.object(
+            sources,
+            "_linear_query",
+            return_value={"issues": {"nodes": [], "pageInfo": {"hasNextPage": False}}},
+        ):
+            with self.assertRaises(sources.LinearSourceError) as ctx:
+                list(sources.iter_linear())
+        self.assertIn("zero issues", str(ctx.exception))
+
+    def test_incremental_scan_falls_back_from_bf_oracle_to_gb_oracle(self) -> None:
+        env = {
+            "LINEAR_BF_ORACLE_CLIENT_ID": "bf-id",
+            "LINEAR_BF_ORACLE_CLIENT_SECRET": "bf-sec",
+            "LINEAR_GB_ORACLE_CLIENT_ID": "gb-id",
+            "LINEAR_GB_ORACLE_CLIENT_SECRET": "gb-sec",
+        }
+        since = "2026-11-11T10:00:00.000Z"
+        calls: list[str] = []
+
+        def fake(seat, cid, sec, q, *, max_chars, timeout_s=None):
+            calls.append(cid)
+            self.assertIn(since, q)
+            if cid == "bf-id":
+                raise linear_board.BoardCliFailure(1, "invalid_client")
+            return {"issues": {"nodes": [], "pageInfo": {"hasNextPage": False}}}
+
+        with mock.patch.dict(os.environ, env, clear=False):
+            os.environ.pop("LINEAR_CLIENT_ID", None)
+            os.environ.pop("LINEAR_CLIENT_SECRET", None)
+            os.environ.pop(sources.LINEAR_SEATS_ENV, None)
+            sources.reset_linear_seat_state()
+            with mock.patch.object(sources.linear_board, "query", side_effect=fake):
+                self.assertEqual(sources._linear_light_scan(updated_since=since), {})
+        self.assertEqual(calls, ["bf-id", "gb-id"])
+        sources.reset_linear_seat_state()
+        sources.take_warnings()
+
+    def test_a_failed_fetch_does_not_mark_the_cursor_advance(self) -> None:
+        now = sources.parse_ts_ms("2026-11-12T00:00:00.000Z")
+        self._write_sync(sources._linear_iso(now - 3600 * 1000), now - 1000)
+        receipt: dict = {}
+
+        def fetch(ids):
+            raise sources.LinearSourceError("linear: stopped after the scan")
+
+        with mock.patch.object(sources, "now_ms", return_value=now):
+            with self.assertRaises(sources.LinearSourceError):
+                list(
+                    sources.iter_linear(
+                        light_scan=lambda: {"uuid-1": "2026-11-11T23:30:00.000Z"},
+                        fetch_full=fetch,
+                        receipt=receipt,
+                    )
+                )
+        self.assertFalse(receipt["cursor_advance"])
+        self.assertEqual(receipt["read_mode"], "incremental")
 
 
 class ServerNightlySources(unittest.TestCase):
