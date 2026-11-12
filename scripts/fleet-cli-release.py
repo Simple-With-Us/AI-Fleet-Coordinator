@@ -22,9 +22,10 @@ import tomllib
 import uuid
 from pathlib import Path, PurePosixPath
 
-# 9 MiB.  The encoded allowlist crossed 8 MiB when the recall eval command landed on the
-# current runtime (383 bytes over).  Sender and receiver keep the same ceiling.
-MAX_BUNDLE_BYTES = 9 * 1024 * 1024
+# Two-step cap raise (Nov 11, 2026).  Step 1 (this value):  the receiver accepts up to 12 MiB, while the
+# sender (fleet-cli-sync.py MAX_BYTES) still ships at most 8 MiB, so every bundle stays one an 8 MiB receiver
+# also accepts.  Step 2 raises the sender cap only after every host runs this receiver.
+MAX_BUNDLE_BYTES = 12 * 1024 * 1024
 # The reviewed allowlisted runtime contains 154 files.  Keep the exact minimum# ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
@@ -67,7 +68,6 @@ MAX_BUNDLE_BYTES = 9 * 1024 * 1024
 # modules), added for that review.
 # The 171st is simple_tools/wake_service.py (OPS-1048, the one wake router service for every platform).
 # The 172nd is simple_tools/mcp/list_presentation.py (AFC-756, compact list/search read payloads for seat MCP).
-# The bundle byte cap is 9 MiB (Nov 12, 2026):  headroom after catalog growth on main plus AFC-756.
 # From here the cap is 180, set once (Nov 11, 2026) with room for the platform modules the wake router
 # registers ahead of them (codex_wake, muse_wake, zcode_wake), so a new module no longer has to move it;
 # fleet-cli-sync.py keeps the same number, and a test checks the two agree and the bundle fits.
@@ -108,6 +108,7 @@ SCOPED_READER_MODULES = ("__init__", "core")
 LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout", "placement", "temp_build")
 AFC331_FILES = (
     "scripts/simple_tools/mcp/notes-tools.json",
+    "scripts/simple_tools/mcp/peer-actions-tools.json",
     "scripts/simple_tools/mcp/recall-tools.json",
     "scripts/linear-board/catalog/core-tools.json",
     "docs/protocols/simple-tools-guide.md",
@@ -116,6 +117,7 @@ EXACT = frozenset(
     {
         "scripts/simple-chat",
         "scripts/simple-notes",
+        "scripts/simple-peer-actions",
         "scripts/simple-board",
         # The git tools CLI entry wrapper and implementation.
         "scripts/simple-git",
@@ -211,6 +213,7 @@ TOOL_REQUIRED = frozenset(
         # stays a valid rollback target.
         "scripts/simple-chat",
         "scripts/simple-notes",
+        "scripts/simple-peer-actions",
         "scripts/simple-board",
         # The git tools CLI.  TOOL_REQUIRED, not BASE_REQUIRED:  a retained pre-git release stays a valid
         # rollback target (the smoke skips cases whose script a rollback target does not carry).
@@ -238,6 +241,8 @@ TOOL_REQUIRED = frozenset(
         "scripts/simple_tools/secretscan.py",
         # Imported by notes_client: new bundles need it, older rollback targets do not.
         "scripts/simple_tools/notes_service_reader.py",
+        "scripts/simple_tools/peer_actions.py",
+        "scripts/simple_tools/peer_actions_cli.py",
         "scripts/simple_tools/fleet_bearer.py",
         # New stdio bundles must carry the hard-imported own-bearer gate. Older rollback targets stay valid.
         "scripts/simple_tools/mcp/bearer_gate.py",
@@ -248,6 +253,11 @@ REQUIRED = BASE_REQUIRED | TOOL_REQUIRED
 
 class Refused(Exception):
     """Only fixed, non-sensitive error codes leave this program."""
+
+
+def shipped_path(path: str) -> bool:
+    """What a new bundle carries:  the allowlist minus the repo-only files."""
+    return allowed_path(path) and path not in REPO_ONLY
 
 
 def allowed_path(path: str) -> bool:
@@ -676,6 +686,7 @@ def wrapper_files(home: Path) -> dict[Path, tuple[bytes, int]]:
         bin_dir / "simple-git": (wrapper(home, "scripts/simple-git"), 0o755),
         bin_dir / "simple-chat": (wrapper(home, "scripts/simple-chat"), 0o755),
         bin_dir / "simple-notes": (wrapper(home, "scripts/simple-notes"), 0o755),
+        bin_dir / "simple-peer-actions": (wrapper(home, "scripts/simple-peer-actions"), 0o755),
         bin_dir / "simple-chat-codex-mcp": (
             wrapper(
                 home,

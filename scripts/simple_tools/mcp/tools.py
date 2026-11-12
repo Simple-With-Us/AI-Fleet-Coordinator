@@ -51,6 +51,7 @@ from .. import listener_records as LR
 from .. import live as LIVE
 from .. import notes as NOTES
 from .. import notes_client as NOTES_CLIENT
+from .. import peer_actions as PEER_ACTIONS
 from .. import secretscan
 from .. import session_ids as SESSION_IDS
 from .. import wakes as W
@@ -73,6 +74,7 @@ EAVESDROPPER_TOOLS_PATH = os.path.join(HERE, "eavesdropper-tools.json")
 NOTES_TOOLS_PATH = os.path.join(HERE, "notes-tools.json")
 RECALL_TOOLS_PATH = os.path.join(HERE, "recall-tools.json")
 FLEETLINK_TOOLS_PATH = os.path.join(HERE, "fleetlink-tools.json")
+PEER_ACTIONS_TOOLS_PATH = os.path.join(HERE, "peer-actions-tools.json")
 FIXTURES_PATH = os.path.join(HERE, "fixtures.jsonl")
 
 TRANSPORT = "stdio"
@@ -133,6 +135,7 @@ WRITE_TOOLS = (
             "recall_contribute",
             "recall_correct",
             "recall_retract",
+            "peer_actions_log",
         }
     )
     | LINEAR.write_names()
@@ -249,6 +252,7 @@ CLI_VERBS: dict[str, tuple[str, ...]] = {
 # for the core ones).
 # fleetlink_* are FleetLink's own CLI, `fleetlink` (its MCP_TO_CLI table in the FleetLink repo,
 # test/cli-mcp-parity.test.mjs);  the stdio server runs each one as `fleetlink tool NAME` (fleetlink_tools.py).
+# peer_actions_log runs `simple-peer-actions log`.
 EXTERNAL_CLI: dict[str, str] = {
     "recall_search": "recall search",
     "recall_stats": "recall stats",
@@ -270,6 +274,7 @@ EXTERNAL_CLI: dict[str, str] = {
     "fleetlink_renew_share": "fleetlink renew",
     "fleetlink_delete_share": "fleetlink delete",
     "fleetlink_whoami": "fleetlink whoami",
+    "peer_actions_log": "simple-peer-actions log",
 }
 UPLOAD_MCP_MAX = 1024 * 1024  # an MCP upload carries the file in its arguments:  at most 1 MB
 UNTRUSTED_NOTE = (
@@ -321,14 +326,16 @@ def _load(path: str) -> dict[str, Any]:
 def load_served_tools() -> dict[str, Any]:
     """What stdio tools/list serves:  tools.json, then eavesdropper-tools.json, notes-tools.json (the notes_*
     tools), recall-tools.json (the recall_* tools, generated from the hosted src/recall.js), the linear_*
-    tools from the board catalogs (linear_tools.py) and fleetlink-tools.json (the fleetlink_* tools, generated
-    from the hosted src/fleetlink.js).  The hosted Worker serves the same names."""
+    tools from the board catalogs (linear_tools.py), peer-actions-tools.json (peer_actions_log) and
+    fleetlink-tools.json (the fleetlink_* tools, generated from the hosted src/fleetlink.js, served last).
+    The hosted Worker serves the same names."""
     return {
         "tools": load_tools()["tools"]
         + load_eavesdropper_tools()["tools"]
         + _load(NOTES_TOOLS_PATH)["tools"]
         + _load(RECALL_TOOLS_PATH)["tools"]
         + LINEAR.tool_specs()
+        + _load(PEER_ACTIONS_TOOLS_PATH)["tools"]
         + _load(FLEETLINK_TOOLS_PATH)["tools"]
     }
 
@@ -634,6 +641,8 @@ def map_exception(exc: BaseException, *, write: bool = False, sent: bool = False
             "could not reach Zulip%s" % (" (timed out)" if exc.timeout else ""),
             retryable=not write,
         )
+    if isinstance(exc, PEER_ACTIONS.PeerActionsError):
+        return ToolError(exc.code, exc.message, retryable=exc.retryable)
     return ToolError("internal", "internal error (%s)" % type(exc).__name__)
 
 
@@ -2574,6 +2583,23 @@ class Tools:
             raise self._notes_error(exc) from None
         header = "notes_log:  %d entries from the %s log" % (info["count"], info["source"])
         return self.ok(self._notes_fenced(header, info), info)
+
+    def _tool_peer_actions_log(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        acting = args.get("acting_seat") or self.seat
+        entry = PEER_ACTIONS.build_entry(
+            acting_seat=acting,
+            requesting_seat=args["requesting_seat"],
+            request_source=args["request"],
+            action_taken=args["action_taken"],
+            result=args["result"],
+        )
+        structured = PEER_ACTIONS.log_row(entry, dry_run=bool(args.get("dry_run")))
+        header = "peer_actions_log:  %s" % (
+            "dry-run"
+            if structured.get("dry_run")
+            else structured.get("updated_range") or "appended"
+        )
+        return self.ok(json.dumps(structured, ensure_ascii=False), structured)
 
     # ---- FleetLink (fleetlink_tools.py) --------------------------------------------------------
     def _tool_fleetlink(self, name: str, args: Mapping[str, Any]) -> dict[str, Any]:
