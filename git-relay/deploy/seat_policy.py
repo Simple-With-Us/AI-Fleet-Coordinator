@@ -697,8 +697,7 @@ def _load_bearer(path) -> str:
     except UnicodeError:
         raise ValueError("bearer-file is not utf-8")
     bearer = text.strip("\n")
-    if bearer.endswith("\r"):
-        bearer = bearer[:-1]
+    bearer = bearer.removesuffix("\r")
     if not bearer or any(ch.isspace() for ch in bearer):
         raise ValueError("bearer-file must be a single token")
     return bearer
@@ -779,9 +778,7 @@ def proof_key(args) -> int:
 
 def _hex64(value) -> bool:
     return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(c in "0123456789abcdef" for c in value)
+        isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
     )
 
 
@@ -1066,7 +1063,9 @@ def _admit_first_seat(
             print("refusing:  the provisional policy is not JSON;  rolled back to the prior digest")
             return rollback()
         if canonical_digest(live) != after:
-            print("refusing:  the live policy left the reviewed digest before the proof;  rolled back")
+            print(
+                "refusing:  the live policy left the reviewed digest before the proof;  rolled back"
+            )
             return rollback()
         try:
             record = _external_proof(
