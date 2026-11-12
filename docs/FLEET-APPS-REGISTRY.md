@@ -146,7 +146,7 @@
 
 ### 8. Editing This Sheet
 
-- **SHEET-1 (This spreadsheet is strictly private.)**: Never enable public link sharing or anonymous viewing. Programmatic access uses the service account at ~/.secrets/google-sheets-sa.json only.
+- **SHEET-1 (This spreadsheet is strictly private.)**: Never enable public link sharing or anonymous viewing. Programmatic access uses the service account in Infisical Fleet-OPS /google-sheets-sa (GOOGLE_SHEETS_SA, read with fleet-secrets get) only.
 - **SHEET-2 (To change a rule, edit sheet-rules.json and re-run the sync.)**: Editing the cell directly is lost on the next run.
 - **SHEET-3 (The sync runs during iOS releases and on demand.)**: node /Users/jay/apps/fleet-apps-sheet-sync.mjs — wired into ios-fleet/publish-ios-versions.sh.
 - **SHEET-4 (Tabs are generated. Only the Legacy tab holds historical hand-written notes.)**: The Legacy tab is preserved for reference and is not updated by the sync.

@@ -53,10 +53,10 @@ python3 ~/apps/cursor-chat-surfaces/cursor_chat_surfaces.py list-cloud
 
 Cloud Agents API is **not** the CLI login cookie.  Prefer **`CURSOR_SYNC_API_KEY`**
 from Infisical Fleet-OPS (`fleet-secrets get CURSOR_SYNC_API_KEY`;  the CLI no longer reads the
-flat `global-api-keys` file, OPS-818).  Also accepted:
-`CURSOR_API_KEY` in the environment, or a chmod-600 `~/.secrets/cursor-api-key`.
+flat `global-api-keys` file, OPS-818, or any file in the old secrets folder, AFC-359).  Also accepted:
+`CURSOR_API_KEY` in the environment.
 
-Never `cat` or `grep` those files in a transcript.  Names only.
+Never print the key in a transcript.  Names only.
 
 Until one of those exists, `status` exits 2 and Shellular Cursor stays local ACP.
 

@@ -1,0 +1,719 @@
+"""One `#alerts` post for every seat's held-back wakes on the server (AFC-257).
+
+The server listener held a wake back, wrote it to `/data/<SEAT>/owner-queue.jsonl`, and nothing read
+that queue, so the hold was durable and invisible, and an eviction was written to the same unread
+place.  These tests drive the real daemon over the fake Zulip and the fake clock:  one post for the
+whole instance per window, none at all when nothing is held, and every line naming the seat, the
+reason and the count.
+"""
+from __future__ import annotations
+
+import re
+import threading
+import unittest
+
+from simple_tools import config as C
+from simple_tools import heldalert as HELDALERT
+from simple_tools import heldback as HELD
+from simple_tools import live as L
+from simple_tools import router as R
+from simple_tools import operator_post as OPV
+from simple_tools import zulip as Z
+from simple_tools.tests.listener_harness import OPERATOR_USER_ID
+from simple_tools.tests.test_heldback import HeldBackRoutineTests, HeldMixin
+from simple_tools.tests.test_router import ctx as router_ctx
+from simple_tools.tests.test_router import lease as router_lease
+from simple_tools.tests.test_router import msg as router_msg
+from simple_tools.tests.test_server import CLOUD_SEATS, GB_EMAIL, SEAT, CloudSeatHarness
+from simple_tools.tests.test_server import SERVER_DIR
+SAMPLE_CONFIG = SERVER_DIR / "listener.toml"
+
+
+class HeldAlertTests(HeldBackRoutineTests):
+    """The held-back harness (fake clock, fake Zulip, a server config) plus the `#alerts` post."""
+
+    def alerts(self):
+        """Every message posted to `#alerts`, whichever bot sent it."""
+        return [m for m in self.fake.messages
+                if m.get("type") == "stream" and m.get("display_recipient") == HELDALERT.CHANNEL]
+
+    def alert_texts(self):
+        return [m["content"] for m in self.alerts()]
+
+    def alert_daemon(self, **kw):
+        """A server daemon with the digest on and no catch-up, so only the digest acts."""
+        self.write_server_config(budget="wakes_per_hour = 0", seat_extra="held_back = { catch_up = false }", **kw)
+        daemon = self.started()
+        self.warm_operator(daemon)  # the digest runs on the router thread, which never waits for a build
+        return daemon
+
+    def hold_for(self, seat: str, message_id: int, reason: str = "wakes_per_day", **kw) -> None:
+        """One held-back record for `seat`, as the budget refusals write it."""
+        HELD.hold(L.SeatPaths(self.root, seat), [{"message_id": message_id, "reason": reason,
+                                                  "at": self.clock.time(), "channel": "work-in-progress", "topic": "t",
+                                                  "stream_id": 642232, "sender_full_name": "Codex"}],
+                  cap=kw.pop("cap", 200), overflow_cap=kw.pop("overflow_cap", 1000), now=self.clock.time())
+
+    def hold_one(self, daemon, topic: str = "batch") -> None:
+        """One mention the budget refuses, so exactly one record is held back."""
+        self.mention(daemon, topic)
+        self.wake_cycle(daemon)
+        self.mention(daemon, topic)
+
+    # ---- one post for the whole instance ---------------------------------------------------------
+    def test_one_post_names_the_seat_the_reason_and_the_count(self) -> None:
+        daemon = self.alert_daemon()
+        self.hold_one(daemon)
+        self.step(daemon, 31)
+        texts = self.alert_texts()
+        self.assertEqual(len(texts), 1, "a hold on the server must be visible somewhere")
+        self.assertEqual([(m["display_recipient"], m["subject"]) for m in self.alerts()],
+                         [(HELDALERT.CHANNEL, HELDALERT.TOPIC)])
+        self.assertIn("**%s**: 1 held (wakes_per_hour 1)" % SEAT, texts[0])
+
+    def test_a_seat_with_nothing_held_is_not_named(self) -> None:
+        daemon = self.alert_daemon()
+        self.hold_one(daemon)
+        self.step(daemon, 31)
+        for name in CLOUD_SEATS:
+            if name != SEAT:
+                self.assertNotIn("**%s**" % name, self.alert_texts()[0])
+
+    def edits(self, message_id: int) -> int:
+        """How many times that message's content has been rewritten."""
+        return max(0, len(self.fake.histories.get(message_id, [])) - 1)
+
+    # ---- the window ------------------------------------------------------------------------------
+    def test_at_most_one_write_per_window_and_the_next_one_edits(self) -> None:
+        """One standing message (AFC-569):  the window that follows edits it rather than posting."""
+        daemon = self.alert_daemon()
+        self.hold_one(daemon)
+        self.step(daemon, 31)
+        self.assertEqual(len(self.alert_texts()), 1)
+        first = self.alerts()[0]["id"]
+        self.step(daemon, 600)
+        self.assertEqual(self.edits(first), 0, "still inside the hour")
+        self.step(daemon, 4000)
+        self.assertEqual(len(self.alert_texts()), 1, "the next window edits, it never posts again")
+        self.assertEqual(self.edits(first), 1, "and the edit lands on the same message")
+        self.assertEqual(
+            HELDALERT.standing(self.root), {"seat": OPV.VOICE, "message_id": first, "clear": False}
+        )
+
+    def test_nothing_held_means_no_post_at_all(self) -> None:
+        """An all-clear a minute after the last alert teaches the eye to skip the channel."""
+        daemon = self.alert_daemon()
+        self.step(daemon, 31)
+        self.step(daemon, 4000)
+        self.assertEqual(self.alert_texts(), [], "an idle instance stays silent")
+
+    def test_the_window_off_posts_nothing(self) -> None:
+        daemon = self.alert_daemon(daemon_extra="held_alert_minutes = 0")
+        self.hold_one(daemon)
+        self.step(daemon, 31)
+        self.assertEqual(self.alert_texts(), [], "0 turns the digest off")
+
+    def test_the_window_and_the_standing_message_survive_a_restart(self) -> None:
+        """`last_post` and the standing pair are the whole state, so a restart inside the window does
+        not re-post, and a restart after it edits the same message rather than starting a new one."""
+        daemon = self.alert_daemon()
+        self.hold_one(daemon)
+        self.step(daemon, 31)
+        self.assertEqual(len(self.alert_texts()), 1)
+        first = self.alerts()[0]["id"]
+        daemon.stop.set()  # a restart:  the same root and state, a fresh daemon object
+        again = self.started()
+        self.warm_operator(again)  # as Daemon.run does in the background at start
+        self.step(again, 31)
+        self.assertEqual(self.edits(first), 0, "the window is not reset by a restart")
+        self.step(again, 4000)
+        self.assertEqual(len(self.alert_texts()), 1)
+        self.assertEqual(self.edits(first), 1)
+
+    # ---- the standing message ----------------------------------------------------------------------
+    def test_an_all_clear_is_an_edit_of_the_standing_message(self) -> None:
+        """When every hold clears the list is rewritten to say so, once, and never as a fresh post."""
+        daemon = self.alert_daemon()
+        self.hold_one(daemon)
+        self.step(daemon, 31)
+        first = self.alerts()[0]["id"]
+        HELD.surface(self.seat_paths(SEAT), message_ids=[r["message_id"] for r in self.held()], lost=0)
+        self.step(daemon, 4000)
+        self.assertEqual(len(self.alerts()), 1, "an all-clear is never a new post")
+        self.assertIn("Nothing is held back now", self.alert_texts()[0])
+        self.assertNotIn("**%s**" % SEAT, self.alert_texts()[0], "the stale list is gone")
+        self.assertTrue(HELDALERT.standing(self.root)["clear"])
+        self.step(daemon, 4000)
+        self.step(daemon, 4000)
+        self.assertEqual(self.edits(first), 1, "a cleared message is left alone while nothing is held")
+
+    def test_a_new_hold_after_the_clear_edits_the_same_message(self) -> None:
+        daemon = self.alert_daemon()
+        self.hold_one(daemon)
+        self.step(daemon, 31)
+        first = self.alerts()[0]["id"]
+        HELD.surface(self.seat_paths(SEAT), message_ids=[r["message_id"] for r in self.held()], lost=0)
+        self.step(daemon, 4000)
+        self.hold_for(SEAT, 990)
+        self.step(daemon, 4000)
+        self.assertEqual([m["id"] for m in self.alerts()], [first])
+        self.assertIn("**%s**: 1 held" % SEAT, self.alert_texts()[0])
+        self.assertFalse(HELDALERT.standing(self.root)["clear"])
+
+    def test_a_refused_edit_posts_a_fresh_standing_message(self) -> None:
+        """The message is gone (or this bot may not edit it):  Zulip refuses, nothing can bring it
+        back, so the same attempt posts a fresh one and that becomes the standing message."""
+        daemon = self.alert_daemon()
+        self.hold_one(daemon)
+        self.step(daemon, 31)
+        first = self.alerts()[0]
+        with self.fake.cond:
+            self.fake.messages.remove(first)
+        self.step(daemon, 4000)
+        self.assertEqual(len(self.alerts()), 1)
+        fresh = self.alerts()[0]["id"]
+        self.assertNotEqual(fresh, first["id"])
+        self.assertEqual(HELDALERT.standing(self.root)["message_id"], fresh)
+
+    def test_an_ambiguous_edit_failure_never_posts_a_second_copy(self) -> None:
+        """A timeout may have landed, so it is retried as an edit next window, not turned into a post."""
+        daemon = self.alert_daemon()
+        self.hold_one(daemon)
+        self.step(daemon, 31)
+        first = self.alerts()[0]["id"]
+        self.fail_post_for(daemon, error=Z.NetworkError("timed out", timeout=True, maybe_sent=True))
+        self.step(daemon, 4000)
+        self.assertEqual(self.count_attempts(daemon), 1)
+        self.assertEqual([m["id"] for m in self.alerts()], [first], "no second copy of the list")
+        self.assertEqual(HELDALERT.standing(self.root)["message_id"], first)
+        for _ in range(60):
+            self.step(daemon, 30)
+        self.assertEqual(self.count_attempts(daemon), 1, "a failed edit spends the window too")
+        self.fail_post_for(daemon, fail=False)
+        self.step(daemon, 2400)
+        self.assertEqual(self.edits(first), 1, "the next window edits the same message")
+
+    def test_a_refused_key_keeps_the_stale_list_for_its_owner(self) -> None:
+        """A 401 is the bot's key, not the message:  the key can come back, so an all-clear keeps the
+        pointer and clears the list once it does, instead of orphaning it (Kody, PR #1112)."""
+        daemon = self.alert_daemon()
+        self.hold_one(daemon)
+        self.step(daemon, 31)
+        first = self.alerts()[0]["id"]
+        HELD.surface(self.seat_paths(SEAT), message_ids=[r["message_id"] for r in self.held()], lost=0)
+        self.fail_post_for(daemon, error=Z.ApiError("Invalid API key", code="UNAUTHORIZED", status=401))
+        self.step(daemon, 4000)
+        self.assertEqual(self.count_attempts(daemon), 1)
+        self.assertEqual(HELDALERT.standing(self.root)["message_id"], first, "kept for its owner")
+        for _ in range(60):
+            self.step(daemon, 30)
+        self.assertEqual(self.count_attempts(daemon), 1, "a refused edit spends the window too")
+        self.fail_post_for(daemon, fail=False)
+        self.step(daemon, 2400)
+        self.assertEqual([m["id"] for m in self.alerts()], [first])
+        self.assertIn("Nothing is held back now", self.alert_texts()[0], "cleared once the key is back")
+
+    def test_a_refused_key_with_no_other_seat_posts_nothing_and_waits(self) -> None:
+        daemon = self.alert_daemon()
+        self.hold_one(daemon)
+        self.step(daemon, 31)
+        self.fail_post_for(daemon, error=Z.ApiError("Invalid API key", code="UNAUTHORIZED", status=401))
+        self.step(daemon, 4000)
+        for _ in range(60):
+            self.step(daemon, 30)
+        self.assertEqual(self.count_attempts(daemon), 1, "one edit an hour against a refused key")
+        self.assertEqual(len(self.alerts()), 1)
+
+    def test_the_posted_text_carries_the_fleet_sentence_gap(self) -> None:
+        """The composer writes two ASCII spaces and the client turns each into U+00A0 plus a space on
+        the way out (zulip.outbound_params), for the post and the edit alike."""
+        daemon = self.alert_daemon()
+        self.hold_one(daemon)
+        self.step(daemon, 31)
+        self.assertIn("  ", self.alert_texts()[0])
+        self.assertNotIn(".  ", self.alert_texts()[0])
+        HELD.surface(self.seat_paths(SEAT), message_ids=[r["message_id"] for r in self.held()], lost=0)
+        self.step(daemon, 4000)
+        self.assertIn("listener.**  Nothing is held back now", self.alert_texts()[0])
+        self.assertIn(".  This message is edited in place", self.alert_texts()[0])
+
+    def test_a_digest_a_seat_posted_is_forgotten_and_the_operator_posts_a_fresh_one(self) -> None:
+        """A standing message from before the Operator carried the digest names a seat's bot.  The
+        Operator cannot edit it and the seat's bot must not, so it is forgotten (the old message is
+        left as it is) and the digest starts again as the Operator's own message."""
+        daemon = self.alert_daemon()
+        HELDALERT.note_standing(self.root, "NOT-HERE", 123456, clear=False)
+        self.hold_one(daemon)
+        self.step(daemon, 31)
+        self.assertEqual(len(self.alerts()), 1)
+        self.assertEqual(self.alerts()[0]["sender_id"], OPERATOR_USER_ID)
+        self.assertEqual(
+            HELDALERT.standing(self.root),
+            {"seat": OPV.VOICE, "message_id": self.alerts()[0]["id"], "clear": False},
+        )
+        self.assertIn("held-alert-seat-message-dropped", (self.state_dir / "logs" / "listener.log").read_text())
+
+    def test_nothing_is_posted_to_clear_a_digest_a_seat_posted(self) -> None:
+        """With nothing held, a standing list a seat's bot owns is forgotten and not cleared: the
+        Operator cannot edit it, a fresh all-clear post would be the noise the no-post rule forbids,
+        and the seat's bot may not touch it."""
+        daemon = self.alert_daemon()
+        HELDALERT.note_standing(self.root, "NOT-HERE", 123456, clear=False)
+        self.step(daemon, 31)
+        self.step(daemon, 4000)
+        self.assertEqual(self.alerts(), [])
+        self.assertIsNone(HELDALERT.standing(self.root), "forgotten, not kept for a seat")
+        self.assertEqual(self.seat_requests(), [])
+
+    # ---- the Operator carries it, and only the Operator (owner ruling, Oct 30 2026) ----------------
+    def test_the_digest_and_its_edit_are_the_operators_and_no_seat_wrote(self) -> None:
+        daemon = self.alert_daemon()
+        self.hold_one(daemon)
+        self.step(daemon, 31)
+        first = self.alerts()[0]
+        self.assertEqual(first["sender_id"], OPERATOR_USER_ID)
+        self.step(daemon, 4000)
+        self.assertEqual(self.edits(first["id"]), 1)
+        edits = [r for r in self.fake.requests if r.method == "PATCH" and r.path == "messages/%d" % first["id"]]
+        self.assertEqual([r.user_id for r in edits], [OPERATOR_USER_ID], "the Operator edited its own message")
+        self.assertEqual(self.seat_requests(), [], "no seat's bot wrote anything")
+
+    def test_with_no_operator_nothing_is_posted_and_the_window_is_not_spent(self) -> None:
+        """The vault cannot be read: the digest is not posted as a seat instead, the refusal is
+        logged, and the window is NOT consumed, so it goes out the moment the Operator can."""
+        self.operator_available = False
+        daemon = self.alert_daemon()
+        self.hold_one(daemon)
+        self.step(daemon, 31)
+        self.assertEqual(self.alerts(), [])
+        self.assertIsNone(HELDALERT.load(self.root).get("last_post"), "nothing was sent, so no attempt was spent")
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertIn('"event": "operator-post-refused"', log)
+        self.assertIn('"site": "held-alert"', log)
+        self.assertEqual(self.seat_requests(), [], "and no seat's bot was tried instead")
+        for _ in range(10):  # five minutes of held ticks with the Operator still away
+            self.step(daemon, 30)
+        again = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertEqual(
+            len([line for line in again.splitlines() if '"site": "held-alert"' in line]),
+            1,
+            "a line per window, not a line per held tick",
+        )
+        self.operator_available = True
+        self.step(daemon, 130)  # past the two minutes a failed build is remembered: the build starts
+        self.settle_operator(daemon)  # in the background, the router thread does not wait for it
+        self.step(daemon, 30)
+        self.assertEqual(len(self.alerts()), 1)
+        self.assertEqual(self.alerts()[0]["sender_id"], OPERATOR_USER_ID)
+
+    def test_the_router_thread_never_waits_for_the_operator_client_to_be_built(self) -> None:
+        """The digest runs in the router's tick.  A build of the client reads the vault (up to a minute
+        in the daemon), so with none ready the tick skips the digest, leaves the window unspent and
+        goes on, and the build finishes in the background; the next tick posts."""
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def stuck(owner_user_id):
+            release.wait(30)
+            return self.operator_client(owner_user_id)
+
+        self.write_server_config(budget="wakes_per_hour = 0", seat_extra="held_back = { catch_up = false }")
+        daemon = self.started(operator_client_factory=stuck)
+        self.hold_one(daemon)
+        self.clock.advance(31)
+        ticking = threading.Thread(target=daemon.tick, daemon=True)
+        ticking.start()
+        ticking.join(3.0)
+        self.assertFalse(ticking.is_alive(), "the router's tick waited for the Operator client to be built")
+        self.assertEqual(self.alerts(), [])
+        self.assertIsNone(HELDALERT.load(self.root).get("last_post"), "a skipped digest spends no window")
+        release.set()
+        self.settle_operator(daemon)
+        self.step(daemon, 30)
+        self.assertEqual([m["sender_id"] for m in self.alerts()], [OPERATOR_USER_ID])
+
+    # ---- what the post says ----------------------------------------------------------------------
+    def test_every_hold_reason_is_named_with_its_count(self) -> None:
+        daemon = self.alert_daemon()
+        records = [{"message_id": 700 + n, "reason": reason, "at": self.clock.time(), "channel": "work-in-progress",
+                    "topic": "t", "stream_id": 642232, "sender_full_name": "Codex"}
+                   for n, reason in enumerate(["wakes_per_day", "wakes_per_day", "usd_per_day", "overflow"])]
+        HELD.hold(self.seat_paths(SEAT), records, cap=200, now=self.clock.time())
+        self.step(daemon, 31)
+        text = self.alert_texts()[0]
+        self.assertIn("wakes_per_day 2", text)
+        self.assertIn("usd_per_day 1", text)
+        self.assertIn("overflow 1", text)
+
+    def test_an_evicted_id_is_called_out_apart_from_the_holds(self) -> None:
+        """Ids lost past both caps left the file and nothing can surface them, so they are named, and
+        they still stand after every record is gone."""
+        daemon = self.alert_daemon()
+        for n in (800, 801, 802):  # the third overflows the overflow and is evicted
+            self.hold_for(SEAT, n, reason="overflow", cap=1, overflow_cap=1)
+        self.assertEqual(HELD.summary(self.seat_paths(SEAT), self.clock.time())["evicted"], 1)
+        self.step(daemon, 31)
+        self.assertIn("**1 lost past the caps**", self.alert_texts()[0])
+        # And the eviction alone, with nothing held any more, is still worth a post.
+        HELD.surface(self.seat_paths(SEAT), message_ids=[r["message_id"] for r in self.held()], lost=0)
+        self.assertEqual(len(self.held()), 0)
+        self.step(daemon, 4000)
+        self.assertEqual(len(self.alerts()), 1, "edited in place")
+        self.assertIn("**1 lost past the caps**", self.alert_texts()[0],
+                      "a lost id is still owed an answer after the holds are gone")
+        self.assertNotIn("Nothing is held back now", self.alert_texts()[0])
+
+    def test_the_post_is_actionable_and_does_not_blame(self) -> None:
+        daemon = self.alert_daemon()
+        self.hold_one(daemon)
+        self.step(daemon, 31)
+        text = self.alert_texts()[0]
+        self.assertIn("Nothing was dropped", text)
+        self.assertIn("listener.toml", text, "says which budget to raise")
+        self.assertIn("in that seat's inbox", text, "says where the message actually is")
+
+    def test_two_spaces_between_sentences_in_the_post(self) -> None:
+        """Fleet prose carries two:  the Kody autofix bot collapses a single one."""
+        daemon = self.alert_daemon()
+        self.hold_one(daemon)
+        self.step(daemon, 31)
+        for line in self.alert_texts()[0].splitlines():
+            for match in re.finditer(r"[.!?:] [A-Za-z`]", line):
+                self.fail("a single space between sentences in %r" % line)
+
+    # ---- it must not become a second reason wakes are held back -----------------------------------
+    def test_the_post_never_wakes_a_seat(self) -> None:
+        """`#alerts` is already a presence topic, so router.route keeps this PASSIVE for every seat.
+        An alert that woke its own subjects would hold back more wakes, in the very channel meant
+        to report that."""
+        me = R.SeatIdentity(SEAT, self.gb["user_id"], "GB-Compiler", GB_EMAIL)
+        post = router_msg(sender=self.gb["user_id"], channel=HELDALERT.CHANNEL, topic=HELDALERT.TOPIC,
+                          content="**%s**: 1 held (wakes_per_hour 1)" % SEAT, flags=["mentioned"])
+        leases = [router_lease(topics=[(HELDALERT.CHANNEL, HELDALERT.TOPIC)])]
+        for presence in ([(HELDALERT.CHANNEL, "*")], []):
+            with self.subTest(presence=presence):
+                _, decision = R.route(post, me, router_ctx(presence=presence), leases)
+                self.assertNotIn(R.INTERRUPT, [item[1] for item in decision.lease_items],
+                                 "a `#alerts` post must never interrupt the seat it names")
+
+    def test_a_mention_in_the_alerts_topic_is_not_wake_worthy(self) -> None:
+        """The composer writes bold names, never `@**Seat**`;  this pins that an actual mention in
+        that topic would not become a wake either, so a future edit cannot smuggle one in."""
+        me = R.SeatIdentity(SEAT, self.gb["user_id"], "GB-Compiler", GB_EMAIL)
+        post = router_msg(sender=self.gb["user_id"], channel=HELDALERT.CHANNEL, topic=HELDALERT.TOPIC,
+                          content="@**GB-Compiler** held back", flags=["mentioned"])
+        _, decision = R.route(post, me, router_ctx(presence=[(HELDALERT.CHANNEL, "*")]), [])
+        self.assertFalse(decision.wake_worthy)
+
+    def test_the_post_carries_no_mention_of_a_seat(self) -> None:
+        """A `@**Seat**` would be a wake, whatever the topic.  Names are bold, never mentions."""
+        daemon = self.alert_daemon()
+        self.hold_one(daemon)
+        self.step(daemon, 31)
+        self.assertNotIn("@**", self.alert_texts()[0])
+        self.assertIn("**%s**" % SEAT, self.alert_texts()[0])
+
+    # ---- it must survive its own failure ---------------------------------------------------------
+    def test_a_refused_post_waits_a_window_and_still_retries(self) -> None:
+        """A failed post is an attempt, so it consumes the window:  a key that stays broken must not
+        cost a post every 30-second tick.  The hold is untouched and the next window retries, so the
+        signal survives without becoming the flood this design exists to prevent."""
+        self.write_server_config(budget="wakes_per_hour = 0", seat_extra="held_back = { catch_up = false }")
+        daemon = self.started()
+        self.fail_post_for(daemon)  # before the hold, which is what triggers the first attempt
+        self.hold_one(daemon)
+        self.step(daemon, 31)
+        self.assertEqual(self.alert_texts(), [], "the post was refused")
+        self.assertEqual(self.count_attempts(daemon), 1)
+        self.assertIsNotNone(HELDALERT.load(self.root).get("last_post"), "an attempt consumes the window")
+        for _ in range(60):  # half an hour of held ticks
+            self.step(daemon, 30)
+        self.assertEqual(self.count_attempts(daemon), 1,
+                         "a refused post must not retry every tick inside the window")
+        self.fail_post_for(daemon, fail=False)
+        self.step(daemon, 2400)
+        self.assertEqual(self.count_attempts(daemon), 2, "the next window retries exactly once")
+        self.assertEqual(len(self.alert_texts()), 1, "and the hold is reported then")
+
+    def test_a_long_broken_key_costs_one_attempt_a_window(self) -> None:
+        """The bound itself:  an hour of ticks against a refused key is ONE attempt, not 120."""
+        self.write_server_config(budget="wakes_per_hour = 0", seat_extra="held_back = { catch_up = false }")
+        daemon = self.started()
+        self.hold_one(daemon)
+        self.fail_post_for(daemon)
+        self.step(daemon, 31)  # the first attempt, which fails and consumes the window
+        for _ in range(119):  # the rest of the hour in HELD_TICK_SECONDS steps: 119 ticks, not 119 attempts
+            self.step(daemon, 30)
+        self.assertEqual(self.count_attempts(daemon), 1, "one attempt an hour, not one a tick")
+
+    def fail_post_for(self, daemon, *, fail: bool = True, error: Exception | None = None) -> None:
+        """Make the OPERATOR's client refuse a stream post or a message edit, the way a refused or
+        expired key does (or raise `error` instead).  The Operator carries the digest, never a seat
+        (owner ruling, Oct 30 2026), so this wraps the client the daemon's voice builds.
+
+        The wrapping sits on the voice's factory, so a client the voice drops after a 401 and builds
+        again is wrapped too, and the counter and the live flag are shared by every client it builds:
+        re-calling this never stacks guards or leaves a stale refusal behind."""
+        state = getattr(self, "_alert_state", None)
+        if state is None:
+            # A tick before this call may have started the background build with the old factory: let it
+            # end first, or it would publish a client without the guards.
+            self.settle_operator(daemon)
+            state = self._alert_state = {"n": 0, "fail": False, "error": None}
+            voice = daemon.operator_voice
+            real_factory = voice._factory
+
+            def factory(owner_user_id):
+                client = real_factory(owner_user_id)
+                real_post, real_patch = client.post, client.patch
+
+                def attempt() -> None:
+                    state["n"] += 1
+                    if state["fail"]:
+                        raise state["error"] or Z.SimpleToolsError("fake refused the post")
+
+                def guarded_post(path, params=None, **kw):
+                    if path == "messages" and (params or {}).get("type") == "stream":
+                        attempt()
+                    return real_post(path, params, **kw)
+
+                def guarded_patch(path, params=None, **kw):
+                    if re.fullmatch(r"messages/\d+", path):
+                        attempt()
+                    return real_patch(path, params, **kw)
+
+                client.post, client.patch = guarded_post, guarded_patch
+                return client
+
+            voice._factory = factory
+            voice.forget(voice._client)  # the next build is a wrapped client
+        state["fail"], state["error"] = fail, error
+        # The digest runs on the router thread, which never waits for a build, so build the wrapped
+        # client here (a no-op when the cached one already is).
+        self.warm_operator(daemon)
+
+    def count_attempts(self, daemon) -> int:
+        """How many stream posts and message edits the Operator has attempted since the first
+        refusal in this test."""
+        return int(getattr(self, "_alert_state", {}).get("n", 0))
+
+    # ---- the records themselves are untouched ------------------------------------------------------
+    def test_the_digest_does_not_let_records_expire(self) -> None:
+        """A `#alerts` post the owner has not opened is not the owner being shown a hold, so it must
+        not advance `told_seq`:  server records keep AFC-253's no-TTL behaviour."""
+        daemon = self.alert_daemon()
+        self.hold_one(daemon)
+        before = [r["message_id"] for r in self.held()]
+        self.step(daemon, 31)
+        self.assertTrue(set(before) <= {r["message_id"] for r in self.held()},
+                        "a `#alerts` post must not remove a hold:  the catch-up still owes it")
+        self.assertFalse(HELD.load(self.seat_paths(SEAT)).get("told_seq"),
+                         "no entry may expire unsurfaced from a `#alerts` post")
+
+
+class HeldAlertMultiSeatTests(HeldMixin, CloudSeatHarness):
+    """Coalescing across seats, over the shipped sample config:  the five cloud seats plus the
+    bot, all connected on one instance, which is the fleet shape the decision was made about.
+    Only the cross-seat tests live here;  the single-seat ones are on `HeldAlertTests`."""
+
+    def alerts(self):
+        return [m for m in self.fake.messages
+                if m.get("type") == "stream" and m.get("display_recipient") == HELDALERT.CHANNEL]
+
+    def alert_texts(self):
+        return [m["content"] for m in self.alerts()]
+
+    def hold_for(self, seat: str, message_id: int, reason: str = "wakes_per_day", **kw) -> None:
+        HELD.hold(L.SeatPaths(self.root, seat), [{"message_id": message_id, "reason": reason,
+                                                  "at": self.clock.time(), "channel": "work-in-progress", "topic": "t",
+                                                  "stream_id": 642232, "sender_full_name": "Codex"}],
+                  cap=kw.pop("cap", 200), overflow_cap=kw.pop("overflow_cap", 1000), now=self.clock.time())
+
+    def connected(self, daemon):
+        seats = [SEAT] + sorted(CLOUD_SEATS)
+        for seat in seats:
+            self.assertTrue(daemon.connect_seat(seat), "%s: %s" % (seat, daemon.seats.get(seat)))
+        self.warm_operator(daemon)  # the digest runs on the router thread, which never waits for a build
+        return seats
+
+    def test_many_seats_holding_at_once_are_one_post(self) -> None:
+        """The whole reason for coalescing at the listener and not per seat:  the post count is
+        bounded by the window, never by the number of seats holding.  The seats must be RUNNING on
+        this instance, since a digest reports what this instance holds, not the whole fleet."""
+        daemon = self.server_daemon(env=self.cloud_env())
+        running = self.connected(daemon)
+        for n, seat in enumerate(running):
+            self.hold_for(seat, 9000 + n)
+        self.step(daemon, 31)
+        texts = self.alert_texts()
+        self.assertEqual(len(texts), 1, "%d seats holding at once must not be %d posts"
+                         % (len(running), len(running)))
+        for seat in running:
+            self.assertIn("**%s**:" % seat, texts[0], "every holding seat is named")
+        self.assertIn("%d seats have" % len(running), texts[0])
+
+    def test_one_holding_seat_alone_names_only_itself(self) -> None:
+        daemon = self.server_daemon(env=self.cloud_env())
+        self.connected(daemon)
+        self.hold_for("JET", 9101)
+        self.step(daemon, 31)
+        text = self.alert_texts()[0]
+        self.assertIn("**JET**:", text)
+        self.assertIn("1 seat has", text)
+        for seat in CLOUD_SEATS:
+            if seat != "JET":
+                self.assertNotIn("**%s**" % seat, text)
+
+    def test_the_posting_seat_setting_no_longer_chooses_a_poster(self) -> None:
+        """`held_alert_seat` is still read, so an old config loads, but it names no poster any more:
+        the Operator carries the digest whatever it says (owner ruling, Oct 30 2026)."""
+        text = re.sub(r'(?m)^held_alert_seat = "MA".*$', 'held_alert_seat = "JET"', self.config_file.read_text())
+        self.assertIn('held_alert_seat = "JET"', text)
+        self.config_file.write_text(text)
+        daemon = self.server_daemon(env=self.cloud_env())
+        self.assertEqual(daemon.config.held_alert_seat, "JET", "the key is still read")
+        self.connected(daemon)
+        self.hold_for("JET", 9102)
+        self.hold_for("MA", 9103)
+        self.step(daemon, 31)
+        self.assertEqual([m["sender_id"] for m in self.alerts()], [OPERATOR_USER_ID],
+                         "the Operator posts, naming every seat either way")
+        self.assertEqual(self.seat_requests(), [])
+
+    def test_the_operator_that_posted_is_the_one_that_edits_whatever_the_seats_do(self) -> None:
+        """Zulip lets only the sender edit, so the standing pair names the Operator and the Operator
+        edits.  A seat whose key is refused changes nothing: no seat carries the digest any more."""
+        daemon = self.server_daemon(env=self.cloud_env())
+        self.connected(daemon)
+        self.hold_for("JET", 9201)
+        self.step(daemon, 31)
+        first = self.alerts()[0]
+        self.assertEqual(first["sender_id"], OPERATOR_USER_ID)
+        self.assertEqual(HELDALERT.standing(self.root)["seat"], OPV.VOICE)
+        self.step(daemon, 4000)
+        self.assertEqual(len(self.alerts()), 1, "the Operator edited its own message")
+        daemon.seats["MA"].fatal = True
+        self.step(daemon, 4000)
+        self.assertEqual(len(self.alerts()), 1, "a refused seat key changes nothing")
+        self.assertEqual(HELDALERT.standing(self.root)["message_id"], first["id"])
+        self.assertEqual(self.seat_requests(), [])
+
+    def test_the_sample_carries_the_digest_on(self) -> None:
+        """The shipped sample is what the container starts from, so the decision has to be in it."""
+        import tomllib
+        cfg = tomllib.loads(SAMPLE_CONFIG.read_text())
+        self.assertEqual(cfg["daemon"]["held_alert_minutes"], 60)
+        self.assertEqual(cfg["daemon"]["held_alert_seat"], "MA")
+        self.assertEqual(HELDALERT.CHANNEL, "alerts", "the channel the owner chose, created by nothing here")
+        self.assertIn(["alerts", "*"], cfg["daemon"]["presence_topics"],
+                      "the post lands in a presence topic, so it never wakes a seat")
+
+
+class HeldAlertConfigTests(unittest.TestCase):
+    def parse(self, daemon_extra: str) -> C.Config:
+        import tomllib
+        return C.from_dict(tomllib.loads("[daemon]\nowner_user_id = 12\nnotify_banners = false\n%s\n"
+                                        % daemon_extra))
+
+    def test_the_window_defaults_to_an_hour(self) -> None:
+        self.assertEqual(self.parse("").held_alert_minutes, 60.0)
+
+    def test_the_window_is_read_and_bounded(self) -> None:
+        self.assertEqual(self.parse("held_alert_minutes = 15").held_alert_minutes, 15.0)
+        for bad in ("held_alert_minutes = 5000", "held_alert_minutes = -1", "held_alert_minutes = \"yes\""):
+            with self.subTest(bad=bad):
+                self.assertFalse(self.parse(bad).ok, bad)
+
+    def test_the_posting_seat_is_optional_and_validated(self) -> None:
+        self.assertIsNone(self.parse("").held_alert_seat)
+        self.assertEqual(self.parse("held_alert_seat = \"jet\"").held_alert_seat, "JET")
+        self.assertFalse(self.parse("held_alert_seat = \"not a seat\"").ok)
+
+
+class HeldAlertUnitTests(unittest.TestCase):
+    """The composer and the window, with no daemon:  the rules that decide what a post says."""
+
+    def held(self, **kw):
+        base = {"count": 1, "overflow": 0, "evicted": 0, "oldest_age": 60, "reasons": {"wakes_per_hour": 1}}
+        base.update(kw)
+        return base
+
+    def test_compose_is_empty_without_a_seat(self) -> None:
+        self.assertEqual(HELDALERT.compose([]), "")
+
+    def test_compose_names_every_seat_sorted(self) -> None:
+        text = HELDALERT.compose([("JET", self.held(count=2, reasons={"wakes_per_hour": 2})),
+                                  ("GB-COMPILER", self.held(oldest_age=30))])
+        self.assertLess(text.index("GB-COMPILER"), text.index("JET"), "seats are sorted")
+        self.assertIn("2 seats have", text)
+
+    def test_compose_agrees_with_itself_about_one_seat(self) -> None:
+        self.assertIn("1 seat has a wake the budget would not run", HELDALERT.compose([("JET", self.held())]))
+        self.assertIn("2 seats have wakes the budget would not run",
+                      HELDALERT.compose([("JET", self.held()), ("MA", self.held())]))
+
+    def test_holding_counts_evictions_alone(self) -> None:
+        self.assertTrue(HELDALERT.holding({"count": 0, "evicted": 2}), "lost ids are still owed an answer")
+        self.assertFalse(HELDALERT.holding({"count": 0, "evicted": 0}))
+        self.assertFalse(HELDALERT.holding({}))
+
+    def test_an_unknown_reason_is_reported_not_dropped(self) -> None:
+        """A reason this build does not know is still a hold somebody owes an answer for."""
+        self.assertIn("brand_new_cap 1", HELDALERT.seat_line("JET", self.held(reasons={"brand_new_cap": 1})))
+
+    def test_a_seat_with_only_evictions_says_only_that(self) -> None:
+        """No "0 held" and no age for a seat that has nothing held:  an empty hold reported as if it
+        were a hold is the noise that gets a channel ignored."""
+        line = HELDALERT.seat_line("MA", {"count": 0, "overflow": 0, "evicted": 2, "oldest_age": 0,
+                                          "reasons": {}})
+        self.assertEqual(line, "**MA**: **2 lost past the caps**")
+
+    def test_age_text(self) -> None:
+        self.assertEqual([HELDALERT.age_text(n) for n in (5, 65, 3700, 90000)], ["5s", "1m", "1h", "1d"])
+
+    def test_the_window_is_a_rate_limit_and_zero_is_off(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(HELDALERT.due(tmp, every=3600, now=1000.0), "the first hold posts at once")
+            HELDALERT.note_post(tmp, 1000.0)
+            self.assertFalse(HELDALERT.due(tmp, every=3600, now=2000.0))
+            self.assertTrue(HELDALERT.due(tmp, every=3600, now=4600.0))
+            self.assertFalse(HELDALERT.due(tmp, every=0, now=99999.0), "0 is off")
+
+    def test_the_standing_pair_round_trips_and_rejects_junk(self) -> None:
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(HELDALERT.standing(tmp))
+            HELDALERT.note_post(tmp, 1000.0)
+            HELDALERT.note_standing(tmp, "MA", 42, clear=False)
+            self.assertEqual(HELDALERT.standing(tmp), {"seat": "MA", "message_id": 42, "clear": False})
+            self.assertEqual(HELDALERT.load(tmp)["last_post"], 1000.0, "the window is kept beside it")
+            HELDALERT.note_standing(tmp, "MA", 42, clear=True)
+            self.assertTrue(HELDALERT.standing(tmp)["clear"])
+            HELDALERT.drop_standing(tmp)
+            self.assertIsNone(HELDALERT.standing(tmp))
+            for junk in ({"seat": "MA", "message_id": True}, {"seat": "", "message_id": 4},
+                         {"seat": "MA", "message_id": -1}, {"seat": "MA"}, "MA:42"):
+                with self.subTest(junk=junk):
+                    with open(HELDALERT.path_for(tmp), "w", encoding="utf-8") as handle:
+                        json.dump({"standing": junk}, handle)
+                    self.assertIsNone(HELDALERT.standing(tmp), "a damaged record costs one fresh post")
+
+    def test_the_all_clear_says_so_and_names_no_one(self) -> None:
+        text = HELDALERT.compose_clear(updated="Thu, Oct 29, 9:50am")
+        self.assertIn("Nothing is held back now", text)
+        self.assertIn("_Updated Thu, Oct 29, 9:50am.", text)
+        self.assertNotIn("@**", text)
+        for line in text.splitlines():
+            self.assertIsNone(re.search(r"[.!?:] [A-Za-z`]", line), "two spaces between sentences in %r" % line)
+
+    def test_the_digest_says_when_it_was_updated(self) -> None:
+        text = HELDALERT.compose([("JET", self.held())], updated="Thu, Oct 29, 9:50am")
+        self.assertTrue(text.endswith("_Updated Thu, Oct 29, 9:50am.  This message is edited in place each "
+                                      "window while anything is held._"))
+        self.assertNotIn("_Updated", HELDALERT.compose([("JET", self.held())]), "no time, no line")
+
+
+if __name__ == "__main__":  # pragma: no cover
+    unittest.main()

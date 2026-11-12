@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Weekly "fleet-mode compliance digest": posts a #agent-sync summary of
+// Weekly "fleet-mode compliance digest": posts a summary of
 // frontier-vs-non-frontier Claude-family model usage and Sentry sub-agent
 // tier mix across the fleet, trailing 7 days.
 //
@@ -10,13 +10,13 @@
 //
 // Data sources:
 //   1. Usage Monitor `GET /api/agent-model-mix?days=7`
-//      Bearer USAGE_READ_TOKEN.  May 404 / connection-refused if the sibling
+//      Authorized with the USAGE_READ_TOKEN env var.  May 404 / connection-refused if the sibling
 //      PR (Usage-Monitor `claude/agent-model-mix-endpoint`) is not yet
 //      merged/deployed -- handled gracefully as "unavailable this week".
 //   2. Sentry `agent-sessions` project, events endpoint, dataset=ourlogs,
 //      query `message:*subagent*` (matches `claude_code.subagent_completed`;
 //      an exact `message:subagent_completed` query returns zero results).
-//      Bearer SENTRY_AUTH_TOKEN_FULLSCOPE (plain SENTRY_AUTH_TOKEN 403s on
+//      Authorized with the SENTRY_AUTH_TOKEN_FULLSCOPE env var (plain SENTRY_AUTH_TOKEN 403s on
 //      this endpoint -- confirmed against this org).
 //
 // Usage:
@@ -30,13 +30,13 @@
 //                        sentryRows: <events response `data` array or null> }
 //
 // Posting (no --dry-run): shells out to the canonical Mac-local relay
-// helper, per AGENT-SYNC.md -- never hand-rolls a Zulip client call and
+// helper, per FLEET-PROTOCOL.md -- never hand-rolls a Zulip client call and
 // never reads a bot key directly:
-//   agent-sync post --as CLAUDE --channel agent-sync --topic "fleet-mode digest" "<message>"
+//   simple-chat post --as CLAUDE --topic "fleet-mode digest" "<message>"
 //
 // SECRETS: USAGE_READ_TOKEN and SENTRY_AUTH_TOKEN_FULLSCOPE are loaded
 // value-blind from environment first, then `fleet-secrets get NAME` (OPS-818;
-// the flat file ~/.secrets/global-api-keys is retired).  Neither value is
+// the old flat secrets file is retired, AFC-359).  Neither value is
 // ever printed, logged, or included in the composed message.
 //
 // Install the LaunchAgent (every Monday 8:00 AM Central, matches system tz):
@@ -67,8 +67,8 @@ const REQUEST_TIMEOUT_MS = 20_000;
 // recurring post, so it threads in a single standing topic.
 const DIGEST_TOPIC = "fleet-mode digest";
 // cron and launchd run with a minimal PATH, so call the CLI by absolute path.
-const AGENT_SYNC_BIN =
-  process.env.AGENT_SYNC_BIN || `${process.env.HOME}/.local/bin/agent-sync`;
+const SIMPLE_CHAT_BIN =
+  process.env.SIMPLE_CHAT_BIN || `${process.env.HOME}/.local/bin/simple-chat`;
 
 // Claude-family tier vocabulary, mirroring
 // ~/.claude/hooks/subagent-economy-pretooluse.py's resolve_tier: bare tier
@@ -88,7 +88,7 @@ function resolveTier(raw) {
 
 // Frontier vs non-frontier per fleet-mode: opus is frontier-tier; haiku and
 // sonnet are non-frontier (mechanical/default).  fable is Claude's historical
-// frontier-equivalent tag (see AGENT-SYNC.md seat registry note) so it counts
+// frontier-equivalent tag (see FLEET-PROTOCOL.md seat registry note) so it counts
 // as frontier too.
 const FRONTIER_TIERS = new Set(["opus", "fable"]);
 
@@ -402,13 +402,13 @@ function composeMessage({ umResult, sentryResult, now = new Date() }) {
 // ---------------------------------------------------------------- post ---
 
 function postToZulip(text) {
-  // Posts through the agent-sync CLI as the CLAUDE seat, which resolves that
-  // seat's own ~/.secrets/Zulip/Claude-zuliprc.  No token is read here.
+  // Posts through the simple-chat CLI as the CLAUDE seat, which resolves that
+  // seat's own Zulip credential (Infisical /zulip).  No token is read here.
   // Zulip needs a channel AND a topic on every message, so the topic is passed
   // explicitly rather than left to the transport.
   const result = spawnSync(
-    AGENT_SYNC_BIN,
-    ["post", "--as", "CLAUDE", "--channel", "agent-sync", "--topic", DIGEST_TOPIC, text],
+    SIMPLE_CHAT_BIN,
+    ["post", "--as", "CLAUDE", "--topic", DIGEST_TOPIC, text],
     {
       env: { ...process.env },
       encoding: "utf8",
@@ -416,11 +416,11 @@ function postToZulip(text) {
     },
   );
   if (result.error) {
-    throw new Error(`agent-sync failed to launch: ${result.error.message}`);
+    throw new Error(`simple-chat failed to launch: ${result.error.message}`);
   }
   if (result.status !== 0) {
     throw new Error(
-      `agent-sync exited ${result.status}: ${(result.stderr || "").trim()}`,
+      `simple-chat exited ${result.status}: ${(result.stderr || "").trim()}`,
     );
   }
   return result.stdout;
@@ -462,7 +462,7 @@ async function main() {
     process.exit(0);
   }
 
-  log("posting to #agent-sync via agent-sync");
+  log("posting via simple-chat, to the channel the CLI resolves");
   postToZulip(message);
   log("posted.");
 }

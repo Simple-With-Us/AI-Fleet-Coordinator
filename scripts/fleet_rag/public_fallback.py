@@ -36,15 +36,16 @@ This module gives those two surfaces a fast, actionable alternative:
   3. The public retry needs three names: `RECALL_API_TOKEN` and `CF_ACCESS_CLIENT_ID` /
      `CF_ACCESS_CLIENT_SECRET` (the Cloudflare Access service token) -- see
      docs/RECALL-ACCESS-CHECK.md.  A value already in the environment wins; otherwise each is
-     read from where it lives (RECALL_API_TOKEN from `fleet-secrets get`, the Access pair from
-     ~/.secrets/agents-jays-services-access-service-token.env) so this works from the stock
+     read from Infisical through `fleet-secrets get` (RECALL_API_TOKEN, and the Access pair under
+     its AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_ prefix) so this works from the stock
      `python3 fleet-recall-mcp.py` MCP registration with no shell wrapper.  The request also
      carries a real `User-Agent` (core.http_json sends none, and urllib's default trips
      Cloudflare's bot management -- 403, "error code: 1010").  A missing name, or a failure on
      the public path too (a rejected bearer, Access rejecting the service token, the box itself
      down), produces one plain-English, actionable line -- never a second opaque exception.
 
-Only recall_search / recall_stats / recall_contribute are covered (the shared tool contract).
+Only recall_search / recall_stats / recall_contribute / recall_correct / recall_retract are covered
+(the shared tool contract).
 The public service's recall_search route now accepts every recall_search() keyword, including
 `per_doc`, `rerank`, and `prefer_lessons` (see `scripts/fleet-recall-service/server.py` TOOLS).
 The CLI-only `--force` dedup-guard override is accepted and ignored by the public service
@@ -63,7 +64,6 @@ from __future__ import annotations
 
 import ipaddress
 import os
-import pathlib
 import re
 import subprocess
 import sys
@@ -79,6 +79,7 @@ TAILSCALE_STATUS_TIMEOUT = 3.0
 # BotFleet LaunchAgent / other GUI-less callers set this so `recall stats --json` never
 # starts Tailscale.app and never waits 120s on private Qdrant.
 SKIP_PRIVATE_ENV = "RECALL_SKIP_PRIVATE"
+LOCAL_MUTATION_ENV = "FLEET_RECALL_LOCAL_MUTATIONS"
 
 # macOS-only corroborating signal for when tailscale_status_text() itself returns None (no
 # Tailscale.app to ask).  Tailscale's mesh addresses are all inside this CGNAT range
@@ -94,6 +95,7 @@ ROUTE_TIMEOUT = 2.0
 
 PUBLIC_BASE = "https://recall.jays.services"
 PUBLIC_ENV_KEYS = ("RECALL_API_TOKEN", "CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET")
+PUBLIC_OPTIONAL_ENV_KEYS = ("RECALL_OWNER_TOKEN",)
 PUBLIC_TIMEOUT = 15
 PUBLIC_RETRIES = 1
 # `urllib.request`'s default User-Agent ("Python-urllib/3.x") trips Cloudflare's bot management
@@ -108,39 +110,33 @@ USER_AGENT = (
 # (no shell wrapper, no env sourcing -- see install-fleet-rag.sh), so these three names are
 # rarely already in os.environ.  Mirror core.py's own env-then-fallback pattern instead of
 # requiring every MCP config to be rewritten as a `sh -c 'set -a; . ...; exec ...'` wrapper:
-# RECALL_API_TOKEN comes from `fleet-secrets get` (OPS-818;  the flat file
-# ~/.secrets/global-api-keys is retired);  the Cloudflare Access service token is a separate file per docs/RECALL-ACCESS-
-# CHECK.md (~/.secrets/agents-jays-services-access-service-token.env, shared with agents.jays.
-# services).  A value already in the environment always wins.
-CF_ACCESS_FILE = pathlib.Path.home() / ".secrets" / "agents-jays-services-access-service-token.env"
-PUBLIC_ENV_FILES = {
-    "CF_ACCESS_CLIENT_ID": CF_ACCESS_FILE,
-    "CF_ACCESS_CLIENT_SECRET": CF_ACCESS_FILE,
+# a name not in the environment comes from Infisical through `fleet-secrets get` (AFC-359:  no
+# credential file is read).  RECALL_API_TOKEN is a root key of that name;  the Cloudflare
+# Access service token (docs/RECALL-ACCESS-CHECK.md, shared with agents.jays.services) lives
+# under the AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_ prefix.  A value already in the
+# environment always wins.
+PUBLIC_INFISICAL_NAMES = {
+    "RECALL_API_TOKEN": "RECALL_API_TOKEN",
+    "CF_ACCESS_CLIENT_ID": "AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_CF_ACCESS_CLIENT_ID",
+    "CF_ACCESS_CLIENT_SECRET": "AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_CF_ACCESS_CLIENT_SECRET",
+    "RECALL_OWNER_TOKEN": "RECALL_OWNER_TOKEN",
 }
-
-
-def _read_named_line(path: pathlib.Path, name: str) -> str | None:
-    """The value of one `NAME=value` line in a chmod-600 credentials file, or None.  Same quote-
-    stripping as core._identity(); never logs the path's other contents."""
-    try:
-        if not path.exists():
-            return None
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    pattern = re.compile(rf"^{re.escape(name)}=(.*)$", re.MULTILINE)
-    m = pattern.search(text)
-    if not m:
-        return None
-    return m.group(1).strip().strip('"').strip("'")
 
 
 REST_PATH = {
     "recall_search": "/recall/search",
     "recall_stats": "/recall/stats",
     "recall_contribute": "/recall/contribute",
+    "recall_correct": "/recall/correct",
+    "recall_retract": "/recall/retract",
 }
-REST_METHOD = {"recall_search": "POST", "recall_stats": "GET", "recall_contribute": "POST"}
+REST_METHOD = {
+    "recall_search": "POST",
+    "recall_stats": "GET",
+    "recall_contribute": "POST",
+    "recall_correct": "POST",
+    "recall_retract": "POST",
+}
 # The public tool contract mirrors the local one (scripts/fleet-recall-service/server.py TOOLS)
 # for recall_search -- every recall_search() keyword argument has a public route.  recall_
 # contribute stays a deliberate subset: `force` is a local-only dedup-guard nicety (see the
@@ -158,9 +154,22 @@ PUBLIC_ALLOWED_ARGS = {
         "per_doc",
         "rerank",
         "prefer_lessons",
+        "include_retracted",
+        "full",
+        "fields",
     },
     "recall_stats": set(),
     "recall_contribute": {"text", "category", "app", "seat", "title", "url"},
+    "recall_correct": {
+        "doc_id",
+        "text",
+        "reason",
+        "seat",
+        "title",
+        "url",
+        "expected_revision",
+    },
+    "recall_retract": {"doc_id", "reason", "seat", "expected_revision"},
 }
 
 RunLocal = Callable[[], dict]
@@ -334,6 +343,17 @@ def guard_may_run() -> bool:
     return not tailscale_believed_down(tailscale_status_text())
 
 
+def local_mutation_override_active() -> bool:
+    """True only for an explicit operator-local mutation corpus.
+
+    QDRANT_URL/TEI_URL alone select the direct backend for reads and ordinary writes; an SSH
+    tunnel can point them at the fleet corpus, so they are not authority to bypass the recall
+    service's mutation lock.  Setting FLEET_RECALL_LOCAL_MUTATIONS=1 is the deliberate
+    Run-your-own/operator-corpus override for correction and retraction.
+    """
+    return os.environ.get(LOCAL_MUTATION_ENV, "").strip() == "1"
+
+
 def local_override_active() -> bool:
     """True when an operator has pointed this Mac at Qdrant/TEI directly -- both QDRANT_URL and
     TEI_URL are non-empty in the environment (e.g. the SSH tunnel opened by `recall-tunnel up`
@@ -386,32 +406,38 @@ def public_credentials() -> dict[str, str] | None:
     """The three names the public REST twin needs, or None if any is missing/blank.
 
     Environment first (a value there always wins, and is all the unit tests ever set); when a
-    name is not in the environment, read it from its file (PUBLIC_ENV_FILES) or `fleet-secrets` the same
+    name is not in the environment, read it from Infisical through `fleet-secrets` the same
     way core.load_config() falls back to Infisical for TEI_URL / QDRANT_URL -- so the fallback
     works from the stock `python3 fleet-recall-mcp.py` MCP registration with no shell wrapper
     and no change to any client's MCP config.
     """
     vals = _resolve_public_env()
-    return vals if all(vals.values()) else None
+    return vals if all(vals[k] for k in PUBLIC_ENV_KEYS) else None
 
 
 def _resolve_public_env() -> dict[str, str]:
-    """Every PUBLIC_ENV_KEYS name resolved env-then-file; a name found nowhere maps to "" so
-    the caller can still tell which one(s) are missing."""
+    """Every required PUBLIC_ENV_KEYS name resolved env-then-Infisical; a name found nowhere maps
+    to "" so the caller can still tell which one(s) are missing.  RECALL_OWNER_TOKEN is resolved
+    lazily for OWNER mutations only, so ordinary calls do not need an owner credential."""
     vals = {}
     for k in PUBLIC_ENV_KEYS:
-        v = (os.environ.get(k) or "").strip()
-        if not v and k in PUBLIC_ENV_FILES:
-            v = _read_named_line(PUBLIC_ENV_FILES[k], k) or ""
-        if not v and k not in PUBLIC_ENV_FILES:
-            v = (core.fleet_secret(k) or "").strip()
-        vals[k] = v
+        vals[k] = _resolve_public_env_key(k)
     return vals
 
 
-def _public_headers(creds: dict[str, str]) -> dict[str, str]:
+def _resolve_public_env_key(key: str) -> str:
+    v = (os.environ.get(key) or "").strip()
+    if not v:
+        v = (core.fleet_secret(PUBLIC_INFISICAL_NAMES.get(key, key)) or "").strip()
+    return v
+
+
+def _public_headers(
+    creds: dict[str, str], *, owner_mutation: bool = False, owner_token: str = ""
+) -> dict[str, str]:
+    token = owner_token if owner_mutation else creds["RECALL_API_TOKEN"]
     return {
-        "Authorization": f"Bearer {creds['RECALL_API_TOKEN']}",
+        "Authorization": f"Bearer {token}",
         "CF-Access-Client-Id": creds["CF_ACCESS_CLIENT_ID"],
         "CF-Access-Client-Secret": creds["CF_ACCESS_CLIENT_SECRET"],
         "User-Agent": USER_AGENT,
@@ -434,16 +460,28 @@ def call_public(name: str, kwargs: dict) -> dict:
             + " -- set them in the environment, or see docs/RECALL-ACCESS-CHECK.md for the"
             " credential sources that normally supply them"
         )
+    owner_mutation = (
+        name in ("recall_correct", "recall_retract")
+        and str(kwargs.get("seat") or "").strip().upper() == "OWNER"
+    )
+    owner_token = _resolve_public_env_key("RECALL_OWNER_TOKEN") if owner_mutation else ""
+    if owner_mutation and not owner_token:
+        raise FleetRagError(
+            "public fallback needs RECALL_OWNER_TOKEN for an OWNER recall mutation; "
+            "the shared recall bearer does not prove the owner identity"
+        )
     url = PUBLIC_BASE + REST_PATH[name]
     method = REST_METHOD[name]
     body = dict(kwargs) if method == "POST" else None
     res = core.http_json(
         url,
         body,
-        _public_headers(creds),
+        _public_headers(creds, owner_mutation=owner_mutation, owner_token=owner_token),
         method=method,
         timeout=PUBLIC_TIMEOUT,
-        retries=PUBLIC_RETRIES,
+        retries=0
+        if name in ("recall_contribute", "recall_correct", "recall_retract")
+        else PUBLIC_RETRIES,
     )
     if isinstance(res, dict) and res.get("ok") is False:
         raise FleetRagError(
@@ -452,6 +490,39 @@ def call_public(name: str, kwargs: dict) -> dict:
     if isinstance(res, dict):
         res = {k: v for k, v in res.items() if k != "ok"}
     return res
+
+
+# --------------------------------------------------------------------------- mutation routing
+
+
+def call_mutation(name: str, kwargs: dict, run_local: RunLocal) -> dict:
+    """Run one correction / retraction through its supported mutation path.
+
+    The stock fleet path goes straight to recall.jays.services:  that single service process owns
+    the mutation lock in recall_api, so concurrent correction and retraction requests cannot race
+    a read-modify-write from several Macs.  QDRANT_URL/TEI_URL alone do not override that route;
+    they may name an SSH tunnel into the fleet corpus.  Only the explicit
+    FLEET_RECALL_LOCAL_MUTATIONS=1 operator-corpus override runs a mutation in the caller's
+    process, outside the fleet service's serialization.  A local OWNER mutation still requires
+    RECALL_OWNER_TOKEN so a bare client-supplied seat is not enough.  Tests with the fake backend
+    run locally and never touch the network.
+    """
+    if name not in ("recall_correct", "recall_retract"):
+        raise FleetRagError(f"no mutation route for {name!r}")
+    if using_fake_backend():
+        return run_local()
+    if local_mutation_override_active():
+        if str(kwargs.get("seat") or "").strip().upper() == "OWNER" and not _resolve_public_env_key(
+            "RECALL_OWNER_TOKEN"
+        ):
+            raise FleetRagError(
+                "a local OWNER recall mutation needs RECALL_OWNER_TOKEN; "
+                "a client-supplied OWNER seat alone is not authority"
+            )
+        return run_local()
+    allowed = PUBLIC_ALLOWED_ARGS.get(name, set())
+    public_kwargs = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+    return call_public(name, public_kwargs)
 
 
 # --------------------------------------------------------------------------- orchestration

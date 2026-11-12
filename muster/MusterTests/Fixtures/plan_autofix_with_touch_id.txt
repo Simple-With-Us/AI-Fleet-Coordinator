@@ -1,0 +1,17 @@
+Plan for CLAUDE:  3 entries,  2 auto-fixable.
+  MISSING     claude-hooks-lane-guard  hooks  claude
+      the hooks config for claude is missing;  install_tools would write .claude/settings.json
+      installer:  python3 -m fleet_lanes.install_tools apply claude --home <HOME>
+      file:  .claude/settings.json
+      autofix:  yes,  but this is a persistence-class write and needs a Touch ID confirmation
+  DRIFT       claude-instructions-lane-map  instructions  claude
+      the instructions config for claude is missing;  install_rules would write .claude/CLAUDE.md
+      installer:  python3 -m fleet_lanes.install_rules apply claude --create --i-own-this-file --home <HOME>
+      file:  .claude/CLAUDE.md
+      autofix:  yes
+  MISSING     claude-skills-fleet  skills  claude
+      the skills config for claude is missing;  install_tools would write .claude/settings.json
+      installer:  python3 -m fleet_lanes.install_tools apply claude --home <HOME>
+      file:  .claude/settings.json
+      autofix:  no  (the manifest does not allow an automatic fix for this rule)
+  note:  a note here

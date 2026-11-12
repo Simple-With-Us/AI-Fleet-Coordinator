@@ -1,0 +1,4 @@
+Plan for CLAUDE (permissions):  1 entry,  0 auto-fixable.
+  DRIFT       claude-permissions-zulip-retired-file  permissions  claude
+      the permissions config for claude does not match the manifest;  no installer can repair it
+      autofix:  no  (the manifest does not allow an automatic fix for this rule)

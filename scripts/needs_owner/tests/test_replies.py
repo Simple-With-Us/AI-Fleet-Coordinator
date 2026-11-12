@@ -26,7 +26,7 @@ class RepliesCase(NotifierCase):
 
     def replied(self, ident: str) -> list[str]:
         """The reply records the notifier wrote (CLAUDE's comments), not anything a test or a person typed."""
-        return [c for c in self.w.comments(ident) if c.startswith("[CLAUDE") and "owner replied:" in c]
+        return [c for c in self.w.comments(ident) if "owner replied:" in c and ("Reported by: CLAUDE" in c or c.startswith("[CLAUDE"))]
 
     def notes(self) -> list[dict]:
         return [c for c in self.sent_by_notifier() if "--to" in c["argv"]]
@@ -41,7 +41,7 @@ class TapTests(RepliesCase):
         self.assertEqual((replied["id"], replied["kind"], replied["option"], replied["ref"]),
                          (record["identifier"], "reaction", 1, record["notified_msg_id"]))
         (comment,) = self.replied(record["identifier"])
-        self.assertIn("[CLAUDE", comment)
+        self.assertIn("Reported by: CLAUDE", comment)
         self.assertIn("owner replied:  reaction 1 on msg %d" % record["notified_msg_id"], comment)
         self.assertNotIn("Revive", comment, "the record never holds the answer's words")
         # the filer is woken by one directed note in the item's own topic
@@ -175,7 +175,7 @@ class TypedReplyTests(RepliesCase):
         (note,) = self.notes()
         self.assertIn("message %d in this topic" % reply, note["stdin"])
         self.assertNotIn("Option 2", note["stdin"])
-        verifies = [c for c in self.w.calls("agent-sync") if c["argv"][0] == "verify-owner-msg"]
+        verifies = [c for c in self.w.calls("simple-chat") if c["argv"][0] == "verify-owner-msg"]
         self.assertEqual(len(verifies), 1)
         self.assertEqual(verifies[0]["argv"][verifies[0]["argv"].index("--after") + 1], str(record["notified_msg_id"]))
         self.assertEqual(verifies[0]["argv"][verifies[0]["argv"].index("--topic") + 1], record["topic"])
@@ -188,10 +188,10 @@ class TypedReplyTests(RepliesCase):
         result = self.run_notify()
         self.assertEqual(self.events(result, "replied"), [])
         self.assertEqual(self.sent_by_notifier(), [])
-        verifies = [c for c in self.w.calls("agent-sync") if c["argv"][0] == "verify-owner-msg"]
+        verifies = [c for c in self.w.calls("simple-chat") if c["argv"][0] == "verify-owner-msg"]
         self.assertEqual(len(verifies), 1, "only the owner's own id is asked about, and a bot or another person is not")
         self.run_notify()
-        self.assertEqual(len([c for c in self.w.calls("agent-sync") if c["argv"][0] == "verify-owner-msg"]), 1, "a rejection is remembered")
+        self.assertEqual(len([c for c in self.w.calls("simple-chat") if c["argv"][0] == "verify-owner-msg"]), 1, "a rejection is remembered")
         # a real message after them still counts
         good = self.w.add_message(record["topic"], "Option 1")
         self.assertEqual([e["ref"] for e in self.events(self.run_notify(), "replied")], [good])
@@ -203,7 +203,7 @@ class TypedReplyTests(RepliesCase):
         good = self.w.add_message(record["topic"], "Option 1")
         first = self.run_notify()
         self.assertEqual(self.events(first, "replied"), [], "ten calls a run at the most")
-        asked = len([c for c in self.w.calls("agent-sync") if c["argv"][0] == "verify-owner-msg"])
+        asked = len([c for c in self.w.calls("simple-chat") if c["argv"][0] == "verify-owner-msg"])
         self.assertEqual(asked, notifier.VERIFY_PER_TOPIC)
         second = self.run_notify()
         self.assertEqual([e["ref"] for e in self.events(second, "replied")], [good], "the rejected ten are remembered:  three more, then the answer")
@@ -231,7 +231,9 @@ class TypedReplyTests(RepliesCase):
         self.w.set_zulip(verify_fails=False)
         self.assertEqual([e["ref"] for e in self.events(self.run_notify(), "replied")], [reply])
 
-    def test_a_record_that_cannot_be_written_sends_no_note_and_is_tried_again(self) -> None:
+    def test_a_record_that_may_have_landed_sends_no_note_and_is_not_written_again(self) -> None:
+        """The board's exit-1 failure may have applied the comment, so the record is not written again:  the
+        reply stays unrecorded and no note goes out."""
         record = self.item()
         self.w.add_message(record["topic"], "Option 1")
         failing = self.w.env(FAKE_BOARD_FAIL="comment")
@@ -239,8 +241,10 @@ class TypedReplyTests(RepliesCase):
         self.assertEqual(self.events(result, "record-failed")[0]["id"], record["identifier"])
         self.assertEqual(self.notes(), [])
         self.assertEqual(self.w.notifier_state()["notes"], {}, "no note is due for a record that was never written")
-        self.assertEqual(len(self.events(self.run_notify(), "replied")), 1)
-        self.assertEqual(len(self.notes()), 1)
+        again = self.run_notify()
+        self.assertEqual(self.events(again, "replied"), [], "the record may have landed:  it is not written again")
+        self.assertEqual(self.events(again, "record-failed")[0]["id"], record["identifier"])
+        self.assertEqual(self.notes(), [])
 
 
 class LinearReplyTests(RepliesCase):

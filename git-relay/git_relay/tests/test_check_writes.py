@@ -1,0 +1,128 @@
+import unittest
+
+try:
+    from .test_workflow_verbs import REPO, SHA, Client, Minter, Policy
+except ImportError:
+    from test_workflow_verbs import REPO, SHA, Client, Minter, Policy
+from git_relay.github_client import RelayGitHubError
+from git_relay.workflow_verbs import Refused, WorkflowVerbs
+
+
+class Checks(unittest.TestCase):
+    def test_no_implicit_check_permissions(self):
+        with self.assertRaises(Refused):
+            WorkflowVerbs.for_action(
+                Client(), Policy(), Minter(), "swu-wise", "wf_check_create", REPO
+            )
+        m = Minter()
+        WorkflowVerbs.for_action(
+            Client(),
+            Policy({"checks": "write", "metadata": "read"}),
+            m,
+            "swu-wise",
+            "wf_check_create",
+            REPO,
+        )
+        self.assertEqual(m.calls[0][2], {"checks": "write", "metadata": "read"})
+
+    def test_fixed_create_update_and_head_binding(self):
+        for action in ("wf_check_create", "wf_check_update"):
+            args = {
+                "repo": REPO,
+                "name": "swu-wise/report",
+                "status": "in_progress",
+                "conclusion": "none",
+                "title": "Build",
+                "summary": "Running",
+            }
+            args.update(
+                {"sha": SHA} if action.endswith("create") else {"check_id": 1, "expected_sha": SHA}
+            )
+            row = {
+                "id": 1,
+                "head_sha": SHA,
+                "name": "swu-wise/report",
+                "status": "in_progress",
+                "conclusion": None,
+            }
+            c = Client(*([row] if action.endswith("create") else [row, row]))
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", action, REPO)
+            self.assertEqual(h.run(action, args)["check"]["head_sha"], SHA)
+            self.assertEqual(c.calls[-1][3], "own")
+            with self.assertRaises(Refused):
+                WorkflowVerbs.check_shape(action, {**args, "status": "completed"}, REPO)
+
+    def test_malformed_write_and_changed_head(self):
+        args = {
+            "repo": REPO,
+            "sha": SHA,
+            "name": "swu-wise/report",
+            "status": "completed",
+            "conclusion": "success",
+            "title": "Build",
+            "summary": "Done",
+        }
+        c = Client({})
+        h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", "wf_check_create", REPO)
+        with self.assertRaises(RelayGitHubError):
+            h.run("wf_check_create", args)
+        c = Client({"id": 1, "head_sha": "b" * 40})
+        h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", "wf_check_update", REPO)
+        args.pop("sha")
+        args.update({"check_id": 1, "expected_sha": SHA})
+        with self.assertRaises(Refused):
+            h.run("wf_check_update", args)
+        self.assertEqual(len(c.calls), 1)
+
+    def test_check_name_cannot_impersonate_ci(self):
+        for name in ("test", "gitleaks", "swu-echo/report"):
+            c = Client()
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", "wf_check_create", REPO)
+            with self.assertRaises(Refused):
+                h.run(
+                    "wf_check_create",
+                    {
+                        "repo": REPO,
+                        "sha": SHA,
+                        "name": name,
+                        "status": "completed",
+                        "conclusion": "success",
+                        "title": "Build",
+                        "summary": "Done",
+                    },
+                )
+            self.assertEqual(c.calls, [])
+
+    def test_stale_is_github_only_not_a_writable_conclusion(self):
+        for action in ("wf_check_create", "wf_check_update"):
+            args = {
+                "repo": REPO,
+                "name": "swu-wise/report",
+                "status": "completed",
+                "conclusion": "stale",
+                "title": "Report",
+                "summary": "Done",
+            }
+            args.update(
+                {"sha": SHA} if action.endswith("create") else {"check_id": 1, "expected_sha": SHA}
+            )
+            with self.assertRaises(Refused):
+                WorkflowVerbs.check_shape(action, args, REPO)
+
+    def test_malformed_preread_id_never_writes(self):
+        args = {
+            "repo": REPO,
+            "name": "swu-wise/report",
+            "status": "completed",
+            "conclusion": "success",
+            "title": "Report",
+            "summary": "Done",
+            "check_id": 1,
+            "expected_sha": SHA,
+        }
+        for ident in (True, 1.0, "1", None):
+            c = Client({"id": ident, "head_sha": SHA})
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", "wf_check_update", REPO)
+            with self.assertRaises(Refused):
+                h.run("wf_check_update", args)
+            self.assertEqual(len(c.calls), 1)

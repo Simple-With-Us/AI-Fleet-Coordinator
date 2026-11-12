@@ -35,6 +35,7 @@ from fleet_lanes import guard as G
 from fleet_lanes import install_tools as T
 from fleet_lanes import lane_guard_hook as H
 from fleet_lanes.tests import fixtures_guard as F
+from fleet_lanes.tests import hermetic
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[2]
 REAL_PKG = SCRIPTS_DIR / "fleet_lanes"
@@ -206,6 +207,27 @@ def grok_imported() -> dict:
     }
 
 
+def zcode_config() -> dict:
+    return {
+        "hooks": {
+            "events": {
+                "PreToolUse": [
+                    {
+                        "matcher": "tool",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "/dummy/tool-hook",
+                                "timeout": 5,
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+    }
+
+
 MUSE_SETTINGS = {"schema_version": 1, "provider": "x", "model": "y", "tui": {}, "permissions": {}}
 
 SHAPES = {
@@ -215,6 +237,7 @@ SHAPES = {
     ".gemini/config/hooks.json": gemini_hooks,
     ".grok/hooks/imported-from-claude.json": grok_imported,
     ".config/muse/settings.json": lambda: copy.deepcopy(MUSE_SETTINGS),
+    ".zcode/cli/config.json": zcode_config,
 }
 
 
@@ -245,7 +268,10 @@ def snapshot(root: Path) -> dict:
 
 def run_main(*argv: str) -> tuple[int, str, str]:
     out, err = io.StringIO(), io.StringIO()
-    rc = T.main(list(argv), stdout=out, stderr=err)
+    # T.main reads os.environ for the fleet roots, and these tests pass --home for a fake home:  without this a root in the
+    # caller's environment (on a server, the live apps folder) would decide where the install goes (hermetic.py).
+    with hermetic.without_fleet_roots():
+        rc = T.main(list(argv), stdout=out, stderr=err)
     return rc, out.getvalue(), err.getvalue()
 
 
@@ -266,6 +292,14 @@ def path_without_muse() -> str:
     return os.pathsep.join(keep)
 
 
+def shell_group_index(doc: dict) -> int:
+    """The index of the PreToolUse group that holds our shell hook (Claude also has a file-guard group after it)."""
+    for i, group in enumerate(doc["hooks"]["PreToolUse"]):
+        if any(T.is_ours(h.get("command")) for h in group.get("hooks") or ()):
+            return i
+    raise AssertionError("no shell hook group")
+
+
 class World(unittest.TestCase):
     """A fake home, a small source tree, and helpers.  Nothing here touches the real home."""
 
@@ -273,12 +307,17 @@ class World(unittest.TestCase):
         path_patch = mock.patch.dict(os.environ, {"PATH": path_without_muse()})
         path_patch.start()
         self.addCleanup(path_patch.stop)
+        hermetic.clear()  # the fleet roots, if any got back in;  path_patch.stop restores the caller's environment
         tmp = tempfile.TemporaryDirectory(prefix="lane-tools-test-")
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(os.path.realpath(tmp.name))
         self.home = self.tmp / "home"
         self.home.mkdir()
         self.paths = T.make_paths(str(self.home))
+        # Several tests delete and rebuild these:  refuse before any of them can touch a folder outside the temp tree.
+        hermetic.assert_inside(
+            self.tmp, self.paths.home, self.paths.stable, self.paths.apps_dir, self.paths.lane_shim, self.paths.hook_shim
+        )
         self.source = self.make_source("src")
 
     # -- builders
@@ -290,6 +329,8 @@ class World(unittest.TestCase):
         pkg.mkdir(parents=True)
         for m in T.REQUIRED_MODULES:
             shutil.copy(REAL_PKG / m, pkg / m)
+        # A real install ships it, and a deny says so when it is missing.
+        shutil.copy(REAL_PKG / T.EXCEPTIONS_FILE, pkg / T.EXCEPTIONS_FILE)
         if guard is not None:
             (pkg / "guard.py").write_text(guard, encoding="utf-8")
         if with_lane:
@@ -318,6 +359,7 @@ class World(unittest.TestCase):
             ".cursor/hooks.json",
             ".gemini/config/hooks.json",
             ".grok/hooks/imported-from-claude.json",
+            ".zcode/cli/config.json",
         )
 
     def install(self, platforms: tuple = T.SUPPORTED_KEYS, source: T.Source | None = None) -> None:
@@ -477,6 +519,64 @@ class ProbeTests(unittest.TestCase):
 # --------------------------------------------------------------------------- merge (pure)
 
 
+class PathsTests(unittest.TestCase):
+    def test_the_apps_folder_defaults_under_the_home(self) -> None:
+        p = T.make_paths("/h", env={})
+        self.assertEqual(p.apps_dir, "/h/apps")
+        self.assertEqual(p.stable, "/h/apps/lane-tools")
+        self.assertEqual(p.lane_shim, "/h/apps/lane")
+
+    def test_the_apps_root_from_the_environment(self) -> None:
+        """A server host keeps the apps folder on a volume and links no ~/apps into the home."""
+        p = T.make_paths("/h", env={"FLEET_APPS_ROOT": "/srv/fleet/apps"})
+        self.assertEqual(p.apps_dir, "/srv/fleet/apps")
+        self.assertEqual(p.stable, "/srv/fleet/apps/lane-tools")
+        self.assertEqual(p.lane_shim, "/srv/fleet/apps/lane")
+
+    def test_a_tilde_apps_root_expands_against_the_home(self) -> None:
+        self.assertEqual(T.make_paths("/h", env={"FLEET_APPS_ROOT": "~/v/apps"}).apps_dir, "/h/v/apps")
+        self.assertEqual(T.make_paths("/h", env={"FLEET_APPS_ROOT": "rel/apps"}).apps_dir, "/h/rel/apps")
+
+    def test_an_explicit_stable_dir_still_wins(self) -> None:
+        p = T.make_paths("/h", "/srv/lane-tools", env={"FLEET_APPS_ROOT": "/srv/fleet/apps"})
+        self.assertEqual(p.stable, "/srv/lane-tools")
+
+    def test_the_host_apps_root_follows_the_home_when_it_has_one(self) -> None:
+        """A host that keeps its apps folder in the home keeps it there."""
+        with tempfile.TemporaryDirectory() as home:
+            os.mkdir(os.path.join(home, "apps"))
+            p = T.host_paths(home, env={})
+            self.assertEqual(p.apps_dir, os.path.join(home, "apps"))
+            self.assertEqual(p.stable, os.path.join(home, "apps", "lane-tools"))
+
+    def test_the_host_apps_root_falls_back_to_the_volume_the_host_names(self) -> None:
+        """A server host keeps the apps folder on a volume and links no ~/apps into the home.
+
+        An install there must write to the volume, not create a second apps folder under
+        the home:  the owner asked for the /root alias to be gone for good.  The volume's
+        path is named by the host in the environment, so it is not in this repository.
+        """
+        with tempfile.TemporaryDirectory() as home:
+            with tempfile.TemporaryDirectory() as volume:
+                apps = os.path.join(volume, "apps")
+                os.makedirs(apps)
+                p = T.host_paths(home, env={"FLEET_SERVER_VOLUME": volume})
+                self.assertEqual(p.apps_dir, apps)
+                self.assertEqual(p.stable, os.path.join(apps, "lane-tools"))
+
+    def test_a_host_that_names_no_volume_keeps_the_copy_under_the_home(self) -> None:
+        """Without a named volume there is no volume, so the home copy is the only folder."""
+        with tempfile.TemporaryDirectory() as home:
+            p = T.host_paths(home, env={})
+            self.assertEqual(p.apps_dir, os.path.join(home, "apps"))
+            self.assertEqual(p.stable, os.path.join(home, "apps", "lane-tools"))
+
+    def test_a_configured_apps_root_wins_over_the_volume(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            p = T.host_paths(home, env={"FLEET_APPS_ROOT": "/srv/fleet/apps"})
+            self.assertEqual(p.apps_dir, "/srv/fleet/apps")
+
+
 class MergeTests(unittest.TestCase):
     P = T.make_paths("/h")
 
@@ -500,7 +600,7 @@ class MergeTests(unittest.TestCase):
                 self.assertEqual(action, "added")
                 found = T.locate(new, T.PLATFORMS[key])
                 self.assertEqual([e.command for e in found], [self.cmd(key)])
-                self.assertEqual(new["hooks"]["PreToolUse"][0]["matcher"], "Bash")
+                self.assertEqual(new["hooks"]["PreToolUse"][0]["matcher"], T.CLAUDE_MATCHER if key == "claude" else "Bash")
                 self.assertEqual(new, T.new_document(T.PLATFORMS[key], self.cmd(key)))
 
     def test_claude_into_populated_appends_a_last_group_and_keeps_everything(self) -> None:
@@ -512,7 +612,7 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(
             groups[:-1], orig["hooks"]["PreToolUse"]
         )  # positions unchanged (Codex trust is positional)
-        self.assertEqual(groups[-1]["matcher"], "Bash")
+        self.assertEqual(groups[-1]["matcher"], T.CLAUDE_MATCHER)
         self.assertEqual(groups[-1]["hooks"][0]["command"], self.cmd("claude"))
         trimmed = copy.deepcopy(new)
         trimmed["hooks"]["PreToolUse"].pop()
@@ -560,7 +660,18 @@ class MergeTests(unittest.TestCase):
         }
         new, action, _ = self.merge("claude", doc)
         self.assertEqual(action, "updated")
-        self.assertEqual(new["hooks"]["PreToolUse"][0]["matcher"], "Bash")
+        self.assertEqual(new["hooks"]["PreToolUse"][0]["matcher"], T.CLAUDE_MATCHER)
+
+    def test_our_bash_only_group_is_widened_and_a_shared_one_is_not(self) -> None:
+        ours = {"matcher": "Bash", "hooks": [{"type": "command", "command": self.cmd("claude")}]}
+        new, action, notes = self.merge("claude", {"hooks": {"PreToolUse": [copy.deepcopy(ours)]}})
+        self.assertEqual(action, "updated")
+        self.assertEqual(new["hooks"]["PreToolUse"][0]["matcher"], T.CLAUDE_MATCHER)
+        self.assertTrue(any("widened" in n for n in notes))
+        shared = copy.deepcopy(ours)
+        shared["hooks"].append({"type": "command", "command": "/x/theirs.sh"})
+        new, action, _ = self.merge("claude", {"hooks": {"PreToolUse": [shared]}})
+        self.assertEqual((action, new["hooks"]["PreToolUse"][0]["matcher"]), ("unchanged", "Bash"))
 
     def test_an_entry_under_another_event_does_not_count(self) -> None:
         doc = {
@@ -928,7 +1039,7 @@ class ToolsTests(World):
         s = self.stable()
         names = sorted(p.name for p in (s / "fleet_lanes").iterdir())
         self.assertEqual(
-            names, sorted(list(T.REQUIRED_MODULES) + ["lane.py", T.SECRET_GUARD_MODULE])
+            names, sorted(list(T.REQUIRED_MODULES) + ["lane.py", T.SECRET_GUARD_MODULE, T.EXCEPTIONS_FILE])
         )  # no tests, no __pycache__
         self.assertFalse((s / "fleet_lanes" / "tests").exists())
         self.assertTrue((s / "fleet-apps.json").is_file())
@@ -1338,7 +1449,7 @@ class VerifyTests(World):
     def test_fails_when_the_config_command_was_edited(self) -> None:
         # a path that does not exist
         doc = self.load("claude")
-        doc["hooks"]["PreToolUse"][-1]["hooks"][0]["command"] = (
+        doc["hooks"]["PreToolUse"][shell_group_index(doc)]["hooks"][0]["command"] = (
             "/nonexistent/dir/lane-guard-hook --format claude"
         )
         write_json(self.config("claude"), doc)
@@ -1356,7 +1467,7 @@ class VerifyTests(World):
 
     def test_fails_when_the_entry_is_not_where_the_platform_gates_on_it(self) -> None:
         doc = self.load("claude")
-        group = doc["hooks"]["PreToolUse"].pop()
+        group = doc["hooks"]["PreToolUse"].pop(shell_group_index(doc))
         doc["hooks"]["PostToolUse"].append(group)  # runs, prints a deny, protects nothing
         write_json(self.config("claude"), doc)
         checks = self.verify("claude")
@@ -1610,8 +1721,29 @@ class CliTests(World):
         self.assertEqual(rc, 0, text)
         self.assertIn("self-test PASS", text)
         self.assertIn("with guard.py renamed", text)
+        self.assertIn("with the MiniMax hook shim allowing everything", text)
+        self.assertIn("with the MiniMax adapter renamed", text)
+        self.assertIn("FAIL  minimax", text)
+        self.assertIn("Read/probe-placeholder/deny/hook-env", text)
+        self.assertIn("Write/probe-placeholder/deny/hook-env", text)
         self.assertIn("FAIL  claude", text)  # the failures it provoked are printed
         self.assertNotIn("self-test FAIL", text)
+
+    def test_the_self_test_stays_inside_its_fake_home(self) -> None:
+        # A server host keeps the apps folder on a volume, and the self-test must never touch it:
+        # it writes a whole install, so a path that resolved to the host's apps folder would
+        # write into production (Sentry's finding on AFC-541).
+        with tempfile.TemporaryDirectory() as outside:
+            marker = os.path.join(outside, "lane-tools")
+            os.makedirs(marker)
+            with mock.patch.dict(os.environ, {"FLEET_SERVER_VOLUME": outside}):
+                lines: list[str] = []
+                rc = T.self_test(lines.append, timeout=TIMEOUT, minimal_path=False, source=self.source)
+            text = "\n".join(lines)
+            self.assertEqual(rc, 0, text)
+            self.assertIn("self-test PASS", text)
+            self.assertEqual(os.listdir(outside), ["lane-tools"],
+                             "the self-test wrote into the host's apps folder")
 
     def test_self_test_reports_a_verify_that_cannot_fail(self) -> None:
         # if verify never failed, the self-test must say so instead of passing
@@ -1624,6 +1756,7 @@ class CliTests(World):
             rc = T.self_test(lines.append, timeout=TIMEOUT, minimal_path=False, source=self.source)
         self.assertEqual(rc, 1, "\n".join(lines))
         self.assertIn("did NOT fail", "\n".join(lines))
+        self.assertIn("did NOT fail minimax Read/probe-placeholder/deny/hook-env", "\n".join(lines))
 
 
 # --------------------------------------------------------------------------- review round 2: confirmed findings
@@ -1761,13 +1894,16 @@ class StableDirOwnershipTests(World):
             sorted(p.name for p in stable.iterdir()),
             [
                 "VERSION",
+                "claude-file-guard-hook",
                 "clutch",
                 "fleet-apps.json",
                 "fleet-guard-hook",
                 "fleet_lanes",
                 "lane-guard-hook",
+                "minimax-guard-hook",
                 "muse-plugin",
                 "muse-seat",
+                "opencode-plugin",
             ],
         )
 
@@ -2464,7 +2600,9 @@ class ApplyAllProbeTests(World):
         src = self.make_source(name, sha=sha)
         hook = Path(src.scripts_dir) / "fleet_lanes" / "lane_guard_hook.py"
         text = hook.read_text(encoding="utf-8")
-        broken = text.replace('if fmt in ("grok", "antigravity"):', 'if fmt in ("antigravity",):')
+        broken = text.replace(
+            'if fmt in ("grok", "antigravity"):', 'if fmt in ("antigravity"):'
+        )
         self.assertNotEqual(broken, text, "the grok output branch moved; update this test")
         hook.write_text(broken, encoding="utf-8")
         return src
@@ -2535,7 +2673,9 @@ class ApplyAllProbeTests(World):
         hook = Path(self.paths.package_dir) / "lane_guard_hook.py"
         text = hook.read_text(encoding="utf-8")
         hook.write_text(
-            text.replace('if fmt in ("grok", "antigravity"):', 'if fmt in ("antigravity",):'),
+            text.replace(
+                'if fmt in ("grok", "antigravity"):', 'if fmt in ("antigravity"):'
+            ),
             encoding="utf-8",
         )
         res = T.apply_platform(
@@ -2783,7 +2923,7 @@ def bash_payload(
         "hook_event_name": "PreToolUse",
         "tool_name": tool,
         "tool_input": {"command": command, "description": "test"},
-        "cwd": "/Users/jay",
+        "cwd": "/Users/fixture-home",
     }
     doc.update(extra)
     return json.dumps(doc, ensure_ascii=ensure_ascii).encode("utf-8")
@@ -2862,7 +3002,7 @@ class GuardFactsTests(World):
     def test_a_source_tree_with_an_odd_trigger_is_read_the_same_way(self) -> None:
         odd = {
             "regex": self.guard_with('r"clone|worktree', 'r"clon.|worktree'),
-            "re.I alias": self.guard_with("re.IGNORECASE)\n\n_UNK", "re.I)\n\n_UNK"),
+            "re.I alias": self.guard_with("re.IGNORECASE", "re.I"),
             "no trigger at all": BROKEN_GUARD,
             "syntax error": "def evaluate(:\n",
         }
@@ -2875,7 +3015,8 @@ class GuardFactsTests(World):
         ok = self.make_source(
             "fewer",
             guard=self.guard_with(
-                'r"clone|worktree|archive|codeload|tarball|zipball|fetch|pull|remote|checkout-index"',
+                'r"clone|worktree|archive|codeload|tarball|zipball|fetch|pull|remote|checkout-index"\n'
+                '    r"|deriveddatapath|bundlepath|ymroot|objroot|target-dir|build-path|cratch-path"',
                 'r"clone|pull"',
             ),
         )
@@ -2917,7 +3058,7 @@ class GuardFactsTests(World):
         self.install(())
         checks = {c.name: c for c in T.verify_tools(self.paths, timeout=TIMEOUT)}
         self.assertEqual(checks["prefilter"].status, "PASS", checks["prefilter"].line())
-        self.assertIn("10 trigger words", checks["prefilter"].detail)
+        self.assertIn("17 trigger words", checks["prefilter"].detail)
 
     def test_the_generated_patterns_are_exactly_the_guards_words(self) -> None:
         text = T.render_hook_shim()
@@ -3064,7 +3205,7 @@ class PrefilterShimTests(World):
         # "clone" decodes to "clone"; a prefilter that only looked at the raw text would let it through
         command = "gh repo cl\\u006fne Simple-With-Us/HogHunter /tmp/hh-verify"
         raw = (
-            '{"tool_name":"Bash","tool_input":{"command":"' + command + '"},"cwd":"/Users/jay"}'
+            '{"tool_name":"Bash","tool_input":{"command":"' + command + '"},"cwd":"/Users/fixture-home"}'
         ).encode("ascii")
         self.assertNotIn(b"clone", raw)
         self.assertEqual(
@@ -3107,7 +3248,7 @@ class PrefilterShimTests(World):
 
     SJIS_REPRO = (
         '{"tool_name":"Bash","tool_input":{"command":"c=あclone; gh repo ${c#あ} '
-        'Simple-With-Us/HogHunter /tmp/hh-verify"},"cwd":"/Users/jay"}'
+        'Simple-With-Us/HogHunter /tmp/hh-verify"},"cwd":"/Users/fixture-home"}'
     ).encode()
 
     def test_a_multibyte_locale_cannot_hide_a_trigger_word(self) -> None:
@@ -4161,7 +4302,7 @@ class MusePlanApplyVerifyTests(World):
         self.assertIn("new      muse-seat", out)
         self.assertIn("muse-plugin/fleet-lane-guard/hooks/lane-guard.sh", out)
         self.assertIn("muse-plugin/fleet-lane-guard/.muse-plugin/plugin.json", out)
-        self.assertIn("prefilter: derived from guard.py _TRIGGER (10 words: clone, worktree", out)
+        self.assertIn("prefilter: derived from guard.py _TRIGGER (17 words: clone, worktree", out)
         self.assertTrue(all(ord(c) < 128 for c in out), "plan output must print on any terminal")
 
     def test_plan_all_default_still_lists_muse_and_exits_zero(self) -> None:
@@ -4599,7 +4740,7 @@ ORDINARY_COMMANDS = (
     "git status",
     "ls -la ~/apps",
     "python3 -m unittest fleet_lanes.tests.test_x",
-    "cd /Users/jay/apps/lanes && ls",
+    "cd /Users/fixture-home/apps/lanes && ls",
     "echo hi && pwd",
     "cat README.md",
     "gh pr merge 5 --squash --auto",
@@ -4617,7 +4758,7 @@ def _payload(command: str, ascii_only: bool) -> bytes:
         {
             "tool_name": "Bash",
             "tool_input": {"command": command},
-            "cwd": "/Users/jay/apps/lanes/X/y",
+            "cwd": "/Users/fixture-home/apps/lanes/X/y",
             "session_id": "s1",
             "hook_event_name": "PreToolUse",
         },
@@ -4886,6 +5027,76 @@ class FleetHookStableCopyTests(World):
         r = T.apply_tools(self.source, self.paths, timeout=TIMEOUT, minimal_path=False)
         self.assertEqual(r.status, "refused", r)
         self.assertFalse(os.path.exists(self.paths.stable))
+
+    def test_a_staged_minimax_adapter_that_cannot_deny_a_shell_call_is_never_swapped_in(
+        self,
+    ) -> None:
+        # MM owns its adapter, so a copy whose Bash branch no longer matches tool names would allow
+        # every shell call.  The shared shell probes say nothing about it; the staged MM copy is
+        # probed through its own hook, compatible (Bash) and native (bash).
+        adapter = Path(self.source.scripts_dir) / "fleet_lanes" / "minimax_guard_hook.py"
+        text = adapter.read_text()
+        damaged = text.replace(
+            'if payload.get("tool_name") in ("Bash", "bash"):',
+            'if payload.get("tool_name") in ():',
+        )
+        self.assertNotEqual(damaged, text, "the Bash branch is not where it was expected")
+        adapter.write_text(damaged)
+        lines: list[str] = []
+        r = T.apply_tools(
+            self.source, self.paths, timeout=TIMEOUT, minimal_path=False, emit=lines.append
+        )
+        self.assertEqual(r.status, "refused", r)
+        self.assertFalse(os.path.exists(self.paths.stable))
+        self.assertTrue(any(line.startswith("FAIL  staged-mm") for line in lines), "\n".join(lines))
+        self.assertFalse(
+            any(line.startswith("FAIL  staged-mm") and "/hook-env" in line for line in lines),
+            "the file probes should still pass, so this is shell coverage",
+        )
+
+    def test_staged_minimax_secret_shell_denials_cover_both_tool_spellings(self) -> None:
+        adapter = Path(self.source.scripts_dir) / "fleet_lanes" / "minimax_guard_hook.py"
+        original = adapter.read_text()
+        forwarding = "denial = fleet.decide(normalized, secret_guard)"
+        self.assertIn(forwarding, original)
+        for tool in ("Bash", "bash"):
+            with self.subTest(tool=tool):
+                adapter.write_text(
+                    original.replace(
+                        forwarding,
+                        f'denial = (None, "") if payload.get("tool_name") == {tool!r} '
+                        'and command.strip() == "ps aux" else fleet.decide(normalized, secret_guard)',
+                    )
+                )
+                lines: list[str] = []
+                r = T.apply_tools(
+                    self.source, self.paths, timeout=TIMEOUT, minimal_path=False, emit=lines.append
+                )
+                self.assertEqual(r.status, "refused", r)
+                self.assertFalse(os.path.exists(self.paths.stable))
+                failed = [line for line in lines if line.startswith("FAIL  staged-mm")]
+                self.assertTrue(failed, "\n".join(lines))
+                self.assertTrue(all("secret/" in line for line in failed), "\n".join(failed))
+
+    def test_staged_minimax_requires_the_module_backed_file_secret_policy(self) -> None:
+        secret = Path(self.source.scripts_dir) / "hooks" / "secret-guard-pretooluse.py"
+        original = secret.read_text()
+        for damage in ("SECRET_FILE_PATTERNS = ()", "del SECRET_FILE_PATTERNS"):
+            with self.subTest(damage=damage):
+                secret.write_text(original + "\n" + damage + "\n")
+                lines: list[str] = []
+                r = T.apply_tools(
+                    self.source, self.paths, timeout=TIMEOUT, minimal_path=False, emit=lines.append
+                )
+                self.assertEqual(r.status, "refused", r)
+                self.assertFalse(os.path.exists(self.paths.stable))
+                self.assertTrue(
+                    any(
+                        "FAIL  minimax" in line and "Read/.env/deny/hook-env" in line
+                        for line in lines
+                    ),
+                    "\n".join(lines),
+                )
 
     def test_probe_command_secret_case_fails_a_lane_only_command(self) -> None:
         self.install(())
@@ -5757,6 +5968,27 @@ class KimiBlockTests(World):
 # --------------------------------------------------------------------------- minimax: a plugin bundle under ~/.minimax/plugins
 
 
+class MinimaxProbeBytesTests(unittest.TestCase):
+    def test_configuration_refusal_is_not_a_successful_policy_probe(self):
+        def run(command, payload, env, timeout):
+            doc = json.loads(payload)
+            path = next(iter(doc["tool_input"].values()))
+            reason = "MiniMax SECRET_FILE_PATTERNS is unavailable"
+            output = json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny", "permissionDecisionReason": reason
+            }}).encode() if ".env" in path else b""
+            return T.RunResult(0, output, b"")
+
+        with mock.patch.object(T, "registry_tree", return_value="ExampleRepo"):
+            with mock.patch.object(T, "run_shell", side_effect=run):
+                checks = T.probe_minimax_files("hook", "/synthetic-home", "registry", 1, True)
+        env_check = next(check for check in checks if check.name == "Read/.env/deny/hook-env")
+        self.assertEqual(env_check.status, "FAIL")
+        self.assertIn("required file policy", env_check.detail)
+        self.assertIn("SECRET_FILE_PATTERNS", env_check.detail)
+
+
 class MinimaxBundleTests(World):
     """MiniMax Code takes hooks from a local plugin: a real directory with .claude-plugin/plugin.json and hooks/hooks.json."""
 
@@ -5794,6 +6026,42 @@ class MinimaxBundleTests(World):
     def verify_mm(self) -> list:
         return T.verify_minimax(self.paths, timeout=TIMEOUT, minimal_path=False)
 
+    def test_required_registry_refusal_is_structured_by_the_verify_cli(self) -> None:
+        self.assertEqual(self.apply().status, "added")
+        registry = Path(self.paths.registry)
+        for raw in (None, "[]", '{"apps": []}'):
+            with self.subTest(registry=raw):
+                if raw is None:
+                    registry.unlink()
+                else:
+                    registry.write_text(raw)
+                rc, out, err = run_main(
+                    "verify",
+                    "--home",
+                    str(self.home),
+                    "--timeout",
+                    str(TIMEOUT),
+                    "--no-minimal-path",
+                    "minimax",
+                )
+                self.assertEqual(rc, 1, out)
+                self.assertIn("REFUSED required integration registry", out)
+                self.assertIn(str(registry), out)
+                self.assertEqual(err, "")
+
+    def test_the_registry_refusal_names_the_source_registry_not_the_staged_copy(self) -> None:
+        # The staged copy is deleted with the stage, so its path is not actionable: the refusal
+        # has to name the registry the operator must repair.
+        Path(self.source.registry).write_text(json.dumps({"apps": [], "seats": []}))
+        lines: list[str] = []
+        r = T.apply_tools(
+            self.source, self.paths, timeout=TIMEOUT, minimal_path=False, emit=lines.append
+        )
+        self.assertEqual(r.status, "refused", r)
+        failed = [line for line in lines if "registry-tree" in line]
+        self.assertTrue(failed, "\n".join(lines))
+        self.assertIn(self.source.registry, failed[0])
+
     # -- where it sits in the platform table
 
     def test_it_is_in_all_but_not_a_config_file_platform(self) -> None:
@@ -5827,8 +6095,8 @@ class MinimaxBundleTests(World):
             "[new]",
             ".claude-plugin/plugin.json",
             "hooks/hooks.json",
-            '"matcher": "Bash"',
-            "--format claude",
+            '"matcher": "Bash|Read|Write|Edit|bash|read|write|edit"',
+            "minimax-guard-hook",
             '"timeout": 10',
             "UNVERIFIED",
             "No SessionStart seat hook",
@@ -5862,11 +6130,11 @@ class MinimaxBundleTests(World):
         self.assertEqual(set(doc), {"hooks"})
         self.assertEqual(set(doc["hooks"]), {"PreToolUse"})
         (group,) = doc["hooks"]["PreToolUse"]
-        self.assertEqual(group["matcher"], "Bash")
+        self.assertEqual(group["matcher"], "Bash|Read|Write|Edit|bash|read|write|edit")
         (hook,) = group["hooks"]
         self.assertEqual(hook["type"], "command")
-        self.assertEqual(hook["command"], T.fleet_hook_command(self.paths, "claude"))
-        self.assertTrue(hook["command"].endswith("fleet-guard-hook --format claude"))
+        self.assertEqual(hook["command"], T.minimax_hook_command(self.paths))
+        self.assertTrue(hook["command"].endswith("minimax-guard-hook"))
         self.assertTrue(os.path.isabs(hook["command"].split()[0]))
         self.assertIs(type(hook["timeout"]), int)
         self.assertTrue(1 <= hook["timeout"] <= 10, hook)
@@ -6031,9 +6299,22 @@ class MinimaxBundleTests(World):
         self.assertIn("dangling", r.detail)
 
     def test_it_is_never_wired_in_when_the_fleet_hook_cannot_deny(self) -> None:
-        shim = Path(self.paths.fleet_shim)
+        shim = Path(self.paths.stable) / T.MINIMAX_HOOK_NAME
         shim.write_text("#!/bin/sh\nexit 0\n")
         os.chmod(shim, 0o755)
+        r = self.apply()
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("fails its probes", r.detail)
+        self.assertFalse(self.bundle.exists())
+
+    def test_file_policy_must_pass_before_the_plugin_is_wired(self) -> None:
+        adapter = Path(self.paths.package_dir) / "minimax_guard_hook.py"
+        adapter.write_text(
+            adapter.read_text().replace(
+                'if __name__ == "__main__":',
+                'def file_reason(*args, **kwargs):\n    return None\n\nif __name__ == "__main__":',
+            )
+        )
         r = self.apply()
         self.assertEqual(r.status, "refused", r)
         self.assertIn("fails its probes", r.detail)
@@ -6068,7 +6349,7 @@ class MinimaxBundleTests(World):
             self.assertEqual(by[n].status, "PASS", by[n].line())
         self.assertIn("permissionDecision", by["deny/login-PATH"].detail)
         self.assertIn("deny", by["secret/hook-env"].detail)
-        self.assertEqual(by["hook command"].detail, T.fleet_hook_command(self.paths, "claude"))
+        self.assertEqual(by["hook command"].detail, T.minimax_hook_command(self.paths))
         self.assertEqual(by["fires"].status, "SKIP")
         self.assertAllPass(
             [
@@ -6094,7 +6375,7 @@ class MinimaxBundleTests(World):
 
     def test_verify_fails_when_the_fleet_hook_allows_everything(self) -> None:
         self.apply()
-        shim = Path(self.paths.fleet_shim)
+        shim = Path(self.paths.stable) / T.MINIMAX_HOOK_NAME
         shim.write_text("#!/bin/sh\nexit 0\n")
         os.chmod(shim, 0o755)
         checks = self.verify_mm()
@@ -6173,6 +6454,106 @@ class MinimaxBundleTests(World):
         hooks.unlink()
         self.assertFails(self.verify_mm(), "hooks.json")
 
+    def test_a_hook_path_in_another_users_home_is_refused_and_fails_verify(self) -> None:
+        # The server incident:  the installer ran as root for jay's home and wrote
+        # /root/apps/lane-tools/minimax-guard-hook into jay's hooks.json.  Root's own probes ran it
+        # fine, but jay's MiniMax got Permission denied and so let every tool call through.
+        self.assertEqual(self.apply().status, "added")
+        healthy = self.verify_mm()
+        self.assertTrue(
+            any(c.name == "hook runnable by home owner" and c.status == "PASS" for c in healthy),
+            healthy,
+        )
+        other_home = str(Path(self.paths.stable).parent)
+        root_like = mock.Mock(pw_name="root", pw_uid=0, pw_dir=other_home)
+        with mock.patch.object(T, "_login_users", return_value=[root_like]):
+            checks = self.verify_mm()
+            r = self.apply()
+        failed = [c for c in checks if c.name == "hook runnable by home owner"]
+        self.assertEqual([c.status for c in failed], ["FAIL"], checks)
+        self.assertIn("inside root's home", failed[0].detail)
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("inside root's home", r.detail)
+
+    def test_a_hook_the_home_owner_cannot_execute_is_refused(self) -> None:
+        self.assertEqual(self.apply().status, "added")
+        shim = Path(self.paths.stable) / T.MINIMAX_HOOK_NAME
+        mode = shim.stat().st_mode
+        shim.chmod(0o644)
+        self.addCleanup(shim.chmod, mode)
+        problem = T.hook_home_problem(str(shim), str(self.home))
+        self.assertIsNotNone(problem)
+        self.assertIn("not executable", problem)
+
+    @unittest.skipIf(
+        os.geteuid() == 0, "root passes every search and owner check, so the mode bits cannot deny it"
+    )
+    def test_the_mode_bit_check_answers_for_the_target_user_not_the_caller(self) -> None:
+        # Root's os.access says yes to almost anything, so a check for another user reads the mode bits.
+        me = os.getuid()
+        gids = {os.getgid()}
+        inner = self.tmp / "inner"
+        inner.mkdir()
+        hook = inner / "hook"
+        hook.write_text("#!/bin/sh\n")
+        hook.chmod(0o700)
+        self.assertIsNone(T._runnable_by(str(hook), me, gids))
+        hook.chmod(0o070)  # group can run it, the owner cannot:  owner bits decide for the owner
+        self.assertIn("not executable", T._runnable_by(str(hook), me, gids) or "")
+        hook.chmod(0o300)  # execute without read:  the kernel cannot read a script's interpreter line
+        self.assertIn("not readable", T._runnable_by(str(hook), me, gids) or "")
+        hook.chmod(0o700)
+        inner.chmod(0o600)  # the owner cannot search the directory on the way
+        self.addCleanup(inner.chmod, 0o700)
+        self.assertIn(str(inner), T._runnable_by(str(hook), me, gids) or "")
+
+    def test_an_account_whose_home_holds_the_target_home_still_guards_its_other_paths(self) -> None:
+        # An account whose home contains the target home covers only paths inside the target home.
+        outside = self.tmp / "elsewhere" / "hook"
+        outside.parent.mkdir()
+        outside.write_text("#!/bin/sh\n")
+        outside.chmod(0o755)
+        inside = self.home / "hook"
+        inside.write_text("#!/bin/sh\n")
+        inside.chmod(0o755)
+        parent = mock.Mock(pw_name="parent", pw_uid=1500, pw_dir=str(self.tmp))
+        with mock.patch.object(T, "_login_users", return_value=[parent]):
+            self.assertIn("inside parent's home", T.hook_home_problem(str(outside), str(self.home)) or "")
+            self.assertIsNone(T.hook_home_problem(str(inside), str(self.home)))
+
+    def test_a_home_reached_through_a_symlink_gets_the_same_verdict(self) -> None:
+        real_homes = self.tmp / "real-homes"
+        (real_homes / "seat").mkdir(parents=True)
+        (real_homes / "elsewhere").mkdir()
+        link = self.tmp / "homes"
+        link.symlink_to(real_homes)
+        for rel in ("seat/hook", "elsewhere/hook"):
+            (real_homes / rel).write_text("#!/bin/sh\n")
+            (real_homes / rel).chmod(0o755)
+        parent = mock.Mock(pw_name="parent", pw_uid=1500, pw_dir=str(real_homes))
+        with mock.patch.object(T, "_login_users", return_value=[parent]):
+            for home, base in ((link / "seat", link), (real_homes / "seat", real_homes)):
+                with self.subTest(home=str(home)):
+                    self.assertIsNone(T.hook_home_problem(str(base / "seat" / "hook"), str(home)))
+                    self.assertIn(
+                        "inside parent's home",
+                        T.hook_home_problem(str(base / "elsewhere" / "hook"), str(home)) or "",
+                    )
+
+    def test_login_accounts_outside_the_regular_uid_range_still_count(self) -> None:
+        def account(name: str, uid: int, shell: str) -> mock.Mock:
+            return mock.Mock(pw_name=name, pw_uid=uid, pw_dir=f"/srv/{name}", pw_shell=shell)
+
+        users = [
+            account("svc", 200, "/bin/bash"),
+            account("daemon", 1, "/usr/sbin/nologin"),
+            account("nobody", 65534, "/usr/bin/false"),
+            account("person", 1001, "/bin/zsh"),
+        ]
+        with mock.patch.object(T.pwd, "getpwall", return_value=users):
+            names = [u.pw_name for u in T._login_users()]
+        self.assertEqual(names, ["svc", "person"])
+
     def test_an_unwired_bundle_is_a_skip_unless_the_platform_is_named(self) -> None:
         checks = self.verify_mm()
         self.assertEqual([(c.name, c.status) for c in checks], [("bundle", "SKIP")])
@@ -6235,6 +6616,614 @@ class MinimaxBundleTests(World):
         )
         self.assertRegex(out, r"PASS\s+minimax\s+hook command")
         self.assertNotRegex(out, r"FAIL\s+minimax")
+
+
+TEXT_SUFFIXES = frozenset(
+    {".py", ".md", ".sh", ".json", ".yml", ".yaml", ".mjs", ".js", ".swift", ".plist", ".toml", ".txt"}
+)
+
+
+def _repo_text_files(root: Path):
+    """Every text file of the repository, the .git directory left out."""
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [
+            d for d in dirnames if d not in (".git", "node_modules", "__pycache__", ".venv", "dist")
+        ]
+        for name in sorted(filenames):
+            path = Path(dirpath) / name
+            if path.suffix in TEXT_SUFFIXES:
+                yield path
+
+
+class ServerRootResolutionTests(World):
+    """The generated hook shims resolve the fleet roots themselves, and the installed registry names this
+    host's roots.
+
+    A server host keeps the integration trees and the apps folder on the volume it names in
+    FLEET_SERVER_VOLUME, and the root account has no ~/Code and no ~/apps.  A hook process often inherits no
+    profile either, so the shim resolves the roots the way server_working_dirs.py resolves them:  the
+    environment, then the home directory, then the volume, and a candidate counts only when the directory is
+    there.  The registry that goes into the stable dir names the same roots, so the disk janitor looks for
+    checkouts where they are.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.volume = self.tmp / "volume"
+        (self.volume / "Code").mkdir(parents=True)
+        (self.volume / "apps" / "lanes").mkdir(parents=True)
+        # a fake python3 that prints the roots the shim exported
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+        fake = self.bin / "python3"
+        fake.write_text(
+            "#!/bin/sh\n"
+            "printf 'code=%s\\napps=%s\\nlanes=%s\\n' "
+            '"${FLEET_CODE_ROOT-}" "${FLEET_APPS_ROOT-}" "${FLEET_LANES_ROOT-}"\n',
+            encoding="utf-8",
+        )
+        os.chmod(fake, 0o755)
+
+    # -- helpers
+
+    def shim(self, text: str) -> Path:
+        path = self.tmp / "shim" / T.HOOK_NAME
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        os.chmod(path, 0o755)
+        return path
+
+    def roots(self, shim: Path, home: Path, **extra: str) -> dict:
+        """The roots the shim exported, read from the python3 it started."""
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(home)}
+        env.update(extra)
+        payload = json.dumps(
+            {"tool_name": "Bash", "tool_input": {"command": "git clone x y"}}
+        ).encode("utf-8")
+        rc, out, err = run_bytes([str(shim), "--format", "claude"], payload, env)
+        self.assertEqual(rc, 0, err)
+        got = {}
+        for line in out.decode("utf-8").splitlines():
+            key, _, value = line.partition("=")
+            got[key] = value
+        return got
+
+    # -- the shim
+
+    def test_every_hook_carries_the_root_resolution(self) -> None:
+        for text in (T.render_hook_shim(), T.render_fleet_hook_shim(), T.render_minimax_hook_shim()):
+            with self.subTest(shim=text.splitlines()[0]):
+                self.assertIn("_lg_root()", text)
+                self.assertIn("FLEET_SERVER_VOLUME", text)
+                self.assertIn('export FLEET_CODE_ROOT="$_lg_code"', text)
+                self.assertIn('export FLEET_APPS_ROOT="$_lg_apps"', text)
+                self.assertIn('export FLEET_LANES_ROOT="$_lg_lanes"', text)
+
+    def test_a_host_with_no_code_and_no_apps_uses_the_volume(self) -> None:
+        shim = self.shim(T.render_hook_shim())
+        got = self.roots(shim, self.home, FLEET_SERVER_VOLUME=str(self.volume))
+        self.assertEqual(got["code"], str(self.volume / "Code"))
+        self.assertEqual(got["apps"], str(self.volume / "apps"))
+        self.assertEqual(got["lanes"], str(self.volume / "apps" / "lanes"))
+
+    def test_the_home_wins_over_the_volume(self) -> None:
+        (self.home / "Code").mkdir()
+        (self.home / "apps" / "lanes").mkdir(parents=True)
+        shim = self.shim(T.render_hook_shim())
+        got = self.roots(shim, self.home, FLEET_SERVER_VOLUME=str(self.volume))
+        self.assertEqual(got["code"], str(self.home / "Code"))
+        self.assertEqual(got["apps"], str(self.home / "apps"))
+        self.assertEqual(got["lanes"], str(self.home / "apps" / "lanes"))
+
+    def test_the_environment_wins_over_both(self) -> None:
+        code = self.tmp / "elsewhere" / "Code"
+        code.mkdir(parents=True)
+        (self.home / "Code").mkdir()
+        shim = self.shim(T.render_hook_shim())
+        got = self.roots(
+            shim, self.home, FLEET_CODE_ROOT=str(code), FLEET_SERVER_VOLUME=str(self.volume)
+        )
+        self.assertEqual(got["code"], str(code))
+        self.assertEqual(got["apps"], str(self.volume / "apps"))
+
+    def test_a_configured_root_that_is_not_there_is_skipped(self) -> None:
+        """A candidate counts only when the directory is there, the rule server_working_dirs.py uses.
+
+        A stale setting must not point the guard at a path that is not on this host, so the next candidate
+        answers instead.
+        """
+        code = self.tmp / "elsewhere" / "Code"  # never created
+        (self.home / "Code").mkdir()
+        shim = self.shim(T.render_hook_shim())
+        got = self.roots(shim, self.home, FLEET_CODE_ROOT=str(code))
+        self.assertEqual(got["code"], str(self.home / "Code"))
+
+    def test_an_exported_volume_beats_the_baked_one(self) -> None:
+        """The volume is baked in as the default, so an environment that names another volume wins."""
+        other = self.tmp / "other-volume"
+        (other / "Code").mkdir(parents=True)
+        shim = self.shim(T.render_hook_shim(volume=str(self.volume)))
+        got = self.roots(shim, self.home, FLEET_SERVER_VOLUME=str(other))
+        self.assertEqual(got["code"], str(other / "Code"))
+
+    def test_the_volume_is_baked_in_for_a_process_that_inherits_nothing(self) -> None:
+        shim = self.shim(T.render_hook_shim(volume=str(self.volume)))
+        got = self.roots(shim, self.home)
+        self.assertEqual(got["code"], str(self.volume / "Code"))
+        self.assertEqual(got["apps"], str(self.volume / "apps"))
+        self.assertEqual(got["lanes"], str(self.volume / "apps" / "lanes"))
+
+    def test_the_shim_still_relocates_and_still_short_circuits(self) -> None:
+        # the roots block must not break the two properties the shim is built on
+        shim = self.shim(T.render_hook_shim())
+        moved = self.tmp / "moved"
+        moved.mkdir()
+        (moved / T.HOOK_NAME).write_bytes(shim.read_bytes())
+        os.chmod(moved / T.HOOK_NAME, 0o755)
+        got = self.roots(moved / T.HOOK_NAME, self.home, FLEET_SERVER_VOLUME=str(self.volume))
+        self.assertEqual(got["code"], str(self.volume / "Code"))
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home)}
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls -la"}}).encode()
+        rc, out, err = run_bytes([str(shim), "--format", "claude"], payload, env)
+        self.assertEqual((rc, out), (0, b""), err)  # no trigger word, no Python
+
+    # -- the registry
+
+    def build_registry(self, env: dict) -> tuple:
+        with mock.patch.dict(os.environ, env, clear=True):
+            files = T.build_files(self.source, self.paths)
+        return json.loads(files["fleet-apps.json"].decode("utf-8")), files
+
+    def test_the_installed_registry_names_this_hosts_roots(self) -> None:
+        reg, files = self.build_registry(
+            {"HOME": str(self.home), "FLEET_SERVER_VOLUME": str(self.volume)}
+        )
+        self.assertEqual(reg["codeRoot"], str(self.volume / "Code"))
+        self.assertEqual(reg["appsRoot"], str(self.volume / "apps"))
+        self.assertNotIn("/Users/jay", files["fleet-apps.json"].decode("utf-8"))
+
+    def test_the_apps_and_the_seats_are_the_sources_own(self) -> None:
+        reg, files = self.build_registry(
+            {"HOME": str(self.home), "FLEET_SERVER_VOLUME": str(self.volume)}
+        )
+        source = json.loads(Path(self.source.registry).read_text(encoding="utf-8"))
+        self.assertEqual(reg["apps"], source["apps"])
+        self.assertEqual(reg["seats"], source["seats"])
+        self.assertEqual(sorted(reg), sorted(source))
+        # every byte but the two root values is the source's own
+        text = files["fleet-apps.json"].decode("utf-8")
+        self.assertEqual(
+            text.replace(str(self.volume / "Code"), source["codeRoot"]).replace(
+                str(self.volume / "apps"), source["appsRoot"]
+            ),
+            Path(self.source.registry).read_text(encoding="utf-8"),
+        )
+
+    def test_a_host_with_code_and_apps_keeps_them(self) -> None:
+        (self.home / "Code").mkdir()
+        (self.home / "apps").mkdir()
+        reg, _ = self.build_registry({"HOME": str(self.home)})
+        self.assertEqual(reg["codeRoot"], str(self.home / "Code"))
+        self.assertEqual(reg["appsRoot"], str(self.home / "apps"))
+
+    def test_the_installed_registry_names_a_configured_root(self) -> None:
+        """A root the host names is the root the registry names, the same one the shim exports."""
+        code = self.tmp / "elsewhere" / "Code"
+        apps = self.tmp / "elsewhere" / "apps"
+        code.mkdir(parents=True)
+        apps.mkdir(parents=True)
+        reg, _ = self.build_registry(
+            {"HOME": str(self.home), "FLEET_CODE_ROOT": str(code), "FLEET_APPS_ROOT": str(apps)}
+        )
+        self.assertEqual(reg["codeRoot"], str(code))
+        self.assertEqual(reg["appsRoot"], str(apps))
+
+    def test_the_installed_registry_skips_a_configured_root_that_is_not_there(self) -> None:
+        """A stale setting cannot point the janitor at a path that is not on this host."""
+        code = self.tmp / "elsewhere" / "Code"  # never created
+        (self.home / "Code").mkdir()
+        reg, _ = self.build_registry({"HOME": str(self.home), "FLEET_CODE_ROOT": str(code)})
+        self.assertEqual(reg["codeRoot"], str(self.home / "Code"))
+
+    def test_the_source_registry_is_never_rewritten(self) -> None:
+        before = Path(self.source.registry).read_bytes()
+        self.build_registry({"HOME": str(self.home), "FLEET_SERVER_VOLUME": str(self.volume)})
+        self.assertEqual(Path(self.source.registry).read_bytes(), before)
+
+    # -- the rule templates travel with the package
+
+    def source_with_the_rules(self) -> T.Source:
+        """A source package that carries the rule templates and the module that reads them.
+
+        The shared fixture is a small source tree on purpose, and it holds neither:  the real package has
+        both, and this is where the difference shows.
+        """
+        pkg = Path(self.source.scripts_dir) / "fleet_lanes"
+        shutil.copytree(REAL_PKG / "rules", pkg / "rules")
+        for module in ("install_rules.py", "doctor.py"):
+            shutil.copy(REAL_PKG / module, pkg / module)
+        return self.source
+
+    def test_the_installed_copy_carries_the_rule_templates(self) -> None:
+        """install_rules reads its templates beside itself, so the installed copy has to carry them.
+
+        Without them the tool cannot run from the stable dir at all:  it dies on the missing template.
+        """
+        files = T.build_files(self.source_with_the_rules(), self.paths)
+        rules = sorted(rel for rel in files if rel.startswith("fleet_lanes/rules/"))
+        self.assertEqual(
+            rules,
+            sorted(f"fleet_lanes/rules/{p.name}" for p in (REAL_PKG / "rules").iterdir() if p.is_file()),
+        )
+        for rel in rules:
+            self.assertEqual(files[rel], (REAL_PKG / "rules" / rel.rsplit("/", 1)[1]).read_bytes())
+
+    def test_the_installed_install_rules_finds_its_templates(self) -> None:
+        """The copy the stable dir holds runs the tool, and the tool finds the templates it reads."""
+        files = T.build_files(self.source_with_the_rules(), self.paths)
+        stable = self.tmp / "stable"
+        for rel, data in files.items():
+            path = stable / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        env = dict(os.environ)
+        env["FLEET_APPS_JSON"] = str(stable / "fleet-apps.json")
+        env["PYTHONPATH"] = str(stable)
+        proc = subprocess.run(
+            [sys.executable, "-m", "fleet_lanes.install_rules", "plan", "codex", "--home", str(self.home)],
+            env=env,
+            cwd=str(self.tmp),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=TIMEOUT,
+        )
+        out = proc.stdout.decode("utf-8", "replace")
+        err = proc.stderr.decode("utf-8", "replace")
+        self.assertNotIn("FileNotFoundError", err)
+        self.assertNotIn("Traceback", err)
+        self.assertIn("== codex", out)
+        self.assertEqual(proc.returncode, 0, err)
+
+    def test_an_installed_dir_with_the_rule_templates_plans_clean(self) -> None:
+        """The installed rule templates are this tool's own shape, not foreign extras.
+
+        The templates travel under fleet_lanes/rules/, so a second plan over an installed
+        dir must see them as ours:  extras here would refuse every later apply.
+        """
+        source = self.source_with_the_rules()
+        res = T.apply_tools(source, self.paths, probes=False)
+        self.assertTrue(res.ok, res)
+        plan = T.plan_tools(source, self.paths)
+        self.assertEqual((plan.state, plan.problems), ("current", []))
+
+    # -- the repository
+
+    def test_no_server_volume_path_is_written_in_the_repository(self) -> None:
+        """The volume's path is host configuration:  the host names it in the environment and a shim bakes
+        it in when it is generated, so the repository holds no volume path at all.
+
+        The needle is assembled from two halves, so this file does not hold it either.
+        """
+        needle = "/mnt/" + "fleet-extra"
+        for path in sorted(_repo_text_files(SCRIPTS_DIR.parent)):
+            self.assertNotIn(needle, path.read_text(encoding="utf-8", errors="replace"), str(path))
+
+    def test_the_lane_map_rule_templates_stay_ascii_apart_from_the_gap(self) -> None:
+        """Every seat reads the rules on every platform, so they stay ASCII apart from the house gap.
+
+        The house gap is a real U+00A0 plus a normal space (owner 2026-10-23).  The rule
+        templates are prose every seat reads in its own AGENTS.md, so the gap character is
+        allowed; every other non-ASCII character is refused, because a smart quote or an
+        em dash in a file the installer writes into every seat home breaks a shell reader.
+        """
+        for name in ("lane-map.full.md", "lane-map.minimal.md"):
+            text = (REAL_PKG / "rules" / name).read_text(encoding="utf-8")
+            stripped = text.replace("\u00a0", "")
+            self.assertEqual(stripped.encode("ascii").decode("ascii"), stripped, name)
+
+    def test_the_installed_rule_templates_are_not_foreign_files(self) -> None:
+        """A second run must not call the installed templates foreign and refuse.
+
+        build_files copies the rule templates into the stable dir, so scan_stable has to read them as files
+        this tool writes:  the shape check knew only the modules, and a template fell into the extras, which
+        is what `apply tools` refuses on.
+        """
+        files = T.build_files(self.source_with_the_rules(), self.paths)
+        stable = self.tmp / "stable"
+        for rel, data in files.items():
+            path = stable / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        found, extras = T.scan_stable(str(stable))
+        rules = sorted(rel for rel in found if rel.startswith("fleet_lanes/rules/"))
+        self.assertTrue(rules, "the rule templates were not read as files this tool writes")
+        self.assertEqual([e for e in extras if e.startswith("fleet_lanes/rules")], [])
+
+    def test_a_configured_apps_root_does_not_move_the_lanes_root(self) -> None:
+        """The host tools resolve the lanes root from FLEET_LANES_ROOT, the home and the volume.
+
+        They never derive it from the apps root, so a shim that offered that candidate would point the
+        guard at a different directory than the host tools read, and the two would disagree about where a
+        lane lives.
+        """
+        apps = self.tmp / "elsewhere" / "apps"
+        (apps / "lanes").mkdir(parents=True)
+        (self.home / "apps" / "lanes").mkdir(parents=True)
+        shim = self.shim(T.render_hook_shim())
+        got = self.roots(shim, self.home, FLEET_APPS_ROOT=str(apps))
+        self.assertEqual(got["apps"], str(apps))
+        self.assertEqual(got["lanes"], str(self.home / "apps" / "lanes"))
+
+    def test_a_relative_root_with_no_home_is_the_relative_path(self) -> None:
+        """A relative root is joined onto the home, and with no home there is nothing to join it onto.
+
+        Python reads it as os.path.join(home, raw), which with an empty home is the relative path itself,
+        so the shim has to read it the same way or the two disagree about where the trees are.
+        """
+        work = self.tmp / "work"
+        (work / "relcode").mkdir(parents=True)
+        shim = self.shim(T.render_hook_shim())
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": ""}
+        payload = json.dumps(
+            {"tool_name": "Bash", "tool_input": {"command": "git clone x y"}}
+        ).encode("utf-8")
+        rc, out, err = run_bytes(
+            [str(shim), "--format", "claude"],
+            payload,
+            dict(env, FLEET_CODE_ROOT="relcode"),
+            cwd=str(work),
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertIn("code=relcode", out.decode("utf-8"))
+        rc, out, err = run_bytes(
+            [str(shim), "--format", "claude"],
+            payload,
+            dict(env, FLEET_CODE_ROOT="~/relcode"),
+            cwd=str(work),
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertIn("code=relcode", out.decode("utf-8"))
+
+
+class VerifierShimVolumeTests(World):
+    """The copilot and opencode verifiers accept the shim the install wrote.
+
+    A shim carries the host's volume as its default, so a verify that runs in an environment the install
+    did not see has to accept that rendering too.  verify_tools and verify_minimax do; these two did not,
+    so an install on a server host failed its own verify.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.volume = self.tmp / "volume"
+        (self.volume / "Code").mkdir(parents=True)
+
+    def shim_with_the_volume(self) -> None:
+        facts = T.read_guard_facts(self.paths.stable)
+        shim = Path(self.paths.fleet_shim)
+        shim.parent.mkdir(parents=True, exist_ok=True)
+        shim.write_text(T.render_fleet_hook_shim(facts, volume=str(self.volume)), encoding="utf-8")
+        os.chmod(shim, 0o755)
+
+    def test_the_copilot_verifier_accepts_a_shim_that_carries_the_volume(self) -> None:
+        self.shim_with_the_volume()
+        hooks = Path(self.paths.copilot_hooks)
+        hooks.parent.mkdir(parents=True, exist_ok=True)
+        hooks.write_text("{}\n", encoding="utf-8")
+        checks = T.verify_copilot(self.paths, minimal_path=False)
+        check = next(c for c in checks if c.name == "shim fleet-guard-hook")
+        self.assertEqual(check.status, "PASS", check.detail)
+
+    def test_the_opencode_verifier_accepts_a_shim_that_carries_the_volume(self) -> None:
+        self.shim_with_the_volume()
+        plugin = Path(self.paths.opencode_plugin)
+        plugin.parent.mkdir(parents=True, exist_ok=True)
+        plugin.write_text(T.render_opencode_plugin(), encoding="utf-8")
+        (Path(self.home) / ".config" / "opencode").mkdir(parents=True, exist_ok=True)
+        checks = T.verify_opencode(self.paths, minimal_path=False)
+        check = next(c for c in checks if c.name == "shim fleet-guard-hook")
+        self.assertEqual(check.status, "PASS", check.detail)
+
+
+class MinimaxProbeRootTests(World):
+    """The probe writes into the code root the guard watches.
+
+    The guard denies writes into the integration tree, so the probe has to write there.  On a server host
+    the trees live on the volume and the root account has no ~/Code, so a probe that wrote under the home
+    would test a path the guard does not watch:  the guard would allow that write, the probe would read the
+    allow as a failure to deny, and `apply tools` would refuse a correct install.
+    """
+
+    def test_the_probe_writes_into_the_volume_code_root(self) -> None:
+        volume = self.tmp / "volume"
+        (volume / "Code").mkdir(parents=True)
+        seen: list = []
+
+        def run(command, payload, env, timeout):
+            doc = json.loads(payload)
+            seen.append(doc["tool_input"].get("path", ""))
+            return T.RunResult(0, b"", b"")
+
+        with mock.patch.object(T, "registry_tree", return_value="ExampleRepo"):
+            with mock.patch.object(T, "run_shell", side_effect=run):
+                T.probe_minimax_files(
+                    "hook", str(self.home), "registry", 1, True, volume=str(volume)
+                )
+        self.assertTrue(seen)
+        self.assertIn(
+            os.path.join(str(volume), "Code", "ExampleRepo", "probe-placeholder"), seen
+        )
+
+
+class ClaudeFileGuardInstallTests(World):
+    """Claude Code's file guard:  its own shim, its own PreToolUse group, its own probes."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.seed(".claude/settings.json")
+        r = T.apply_tools(self.source, self.paths, timeout=TIMEOUT, probes=False)
+        self.assertTrue(r.ok, r)
+
+    def groups(self) -> list:
+        return self.load("claude")["hooks"]["PreToolUse"]
+
+    def file_groups(self) -> list:
+        return [
+            g for g in self.groups() if any(T.is_claude_file_hook(h.get("command")) for h in g["hooks"])
+        ]
+
+    def test_the_stable_copy_has_the_shim_and_the_modules(self) -> None:
+        files = T.build_files(self.source, self.paths)
+        self.assertIn(T.CLAUDE_FILE_HOOK_NAME, files)
+        self.assertIn("fleet_lanes/file_guard.py", files)
+        self.assertIn("fleet_lanes/claude_file_guard_hook.py", files)
+        self.assertEqual(T.file_mode(T.CLAUDE_FILE_HOOK_NAME), 0o755)
+        shim = files[T.CLAUDE_FILE_HOOK_NAME].decode("utf-8")
+        self.assertIn("fleet_lanes.claude_file_guard_hook", shim)
+        self.assertNotIn("*) exit 0 ;;", shim)  # no prefilter:  every file path reaches Python
+        self.assertTrue(os.access(self.paths.claude_file_shim, os.X_OK))
+        self.assertAllPass(
+            [c for c in T.verify_tools(self.paths, timeout=TIMEOUT) if T.CLAUDE_FILE_HOOK_NAME in c.name]
+        )
+
+    def test_apply_adds_a_second_group_and_keeps_the_shell_group(self) -> None:
+        before = len(self.groups())
+        r = T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True)
+        self.assertEqual(r.status, "added", r)
+        groups = self.groups()
+        self.assertEqual(len(groups), before + 2)
+        shell = groups[shell_group_index(self.load("claude"))]
+        self.assertEqual(shell["matcher"], T.CLAUDE_MATCHER)
+        self.assertEqual(len(self.file_groups()), 1)
+        group = self.file_groups()[0]
+        self.assertEqual(group["matcher"], T.CLAUDE_FILE_MATCHER)
+        self.assertEqual(
+            group["hooks"],
+            [
+                {
+                    "type": "command",
+                    "command": T.claude_file_hook_command(self.paths),
+                    "timeout": T.CLAUDE_FILE_HOOK_TIMEOUT_S,
+                    "statusMessage": "Checking file path",
+                }
+            ],
+        )
+        again = T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True)
+        self.assertEqual(again.status, "unchanged", again)
+
+    def test_a_shell_only_install_from_before_gets_the_file_group(self) -> None:
+        T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True)
+        doc = self.load("claude")
+        doc["hooks"]["PreToolUse"] = [
+            g for g in doc["hooks"]["PreToolUse"] if g not in self.file_groups()
+        ]
+        write_json(self.config("claude"), doc, 0o600)
+        self.assertFails(self.verify("claude"), "no claude-file-guard-hook hook")
+        plan = T.plan_platform(T.PLATFORMS["claude"], self.paths)
+        self.assertEqual(plan.action, "add")
+        self.assertTrue(any(T.CLAUDE_FILE_HOOK_NAME in line for line in plan.diff), plan.diff)
+        r = T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True)
+        self.assertEqual(r.status, "added", r)
+        self.assertEqual(len(self.file_groups()), 1)
+
+    def test_a_narrow_or_stale_file_group_is_corrected(self) -> None:
+        T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True)
+        doc = self.load("claude")
+        for g in doc["hooks"]["PreToolUse"]:
+            if any(T.is_claude_file_hook(h.get("command")) for h in g["hooks"]):
+                g["matcher"] = "Write|Edit"
+                g["hooks"][0]["command"] = "/old/place/claude-file-guard-hook"
+        write_json(self.config("claude"), doc, 0o600)
+        self.assertFails(self.verify("claude"), "never matches Read, MultiEdit, NotebookEdit")
+        r = T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True)
+        self.assertEqual(r.status, "updated", r)
+        group = self.file_groups()[0]
+        self.assertEqual(group["matcher"], T.CLAUDE_FILE_MATCHER)
+        self.assertEqual(group["hooks"][0]["command"], T.claude_file_hook_command(self.paths))
+
+    def test_verify_runs_the_file_probes_and_they_pass(self) -> None:
+        T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True)
+        checks = self.verify("claude")
+        self.assertAllPass(checks)
+        names = {c.name for c in checks}
+        for name in (
+            "file-guard",
+            "Read/probe-placeholder/deny/login-PATH",
+            "Read/.env/deny/login-PATH",
+            "Write/integration/deny/login-PATH",
+            "MultiEdit/probe-placeholder/deny/login-PATH",
+            "NotebookEdit/probe-placeholder.ipynb/deny/login-PATH",
+            "Read/integration/allow/login-PATH",
+            "Write/public-placeholder/allow/login-PATH",
+        ):
+            self.assertIn(name, names)
+
+    def test_verify_fails_when_the_file_guard_lets_a_secret_read_through(self) -> None:
+        T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True)
+        doc = self.load("claude")
+        for g in doc["hooks"]["PreToolUse"]:
+            for h in g["hooks"]:
+                if T.is_claude_file_hook(h.get("command")):
+                    h["command"] = "/bin/true # claude-file-guard-hook"
+        write_json(self.config("claude"), doc, 0o600)
+        self.assertFails(self.verify("claude"), "Read/probe-placeholder/deny")
+
+    def test_verify_checks_every_file_guard_entry_not_only_the_first(self) -> None:
+        """Claude Code runs every entry, so a stale duplicate fails verify (Kody finding on #1423)."""
+        T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True)
+        doc = self.load("claude")
+        current = copy.deepcopy(self.file_groups()[0])
+        doc["hooks"]["PreToolUse"].append(copy.deepcopy(current))
+        write_json(self.config("claude"), doc, 0o600)
+        checks = self.verify("claude")
+        self.assertNotIn("FAIL", {c.status for c in checks})
+        self.assertIn("file-guard duplicates", {c.name for c in checks if c.status == "WARN"})
+        stale = copy.deepcopy(current)
+        stale["hooks"][0]["command"] = "/bin/true # claude-file-guard-hook"
+        doc["hooks"]["PreToolUse"].append(stale)
+        write_json(self.config("claude"), doc, 0o600)
+        checks = self.verify("claude")
+        self.assertFails(checks, "remove the stale entry by hand")
+        self.assertFails(checks, "Read/probe-placeholder/deny")
+        narrow = copy.deepcopy(current)
+        narrow["matcher"] = "Write"
+        doc["hooks"]["PreToolUse"][-1] = narrow
+        write_json(self.config("claude"), doc, 0o600)
+        self.assertFails(self.verify("claude"), "never matches Read, Edit, MultiEdit, NotebookEdit")
+
+    def test_verify_probes_at_most_the_current_and_one_stale_command(self) -> None:
+        """A settings file bloated with stale entries must not multiply the probe matrix (Kody on #1423)."""
+        T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True)
+        doc = self.load("claude")
+        current = copy.deepcopy(self.file_groups()[0])
+        for n in range(4):
+            stale = copy.deepcopy(current)
+            stale["hooks"][0]["command"] = f"/old/{n}/claude-file-guard-hook"
+            doc["hooks"]["PreToolUse"].append(stale)
+        write_json(self.config("claude"), doc, 0o600)
+        with mock.patch.object(T, "probe_claude_files", return_value=[]) as probe:
+            checks = self.verify("claude")
+        probed = [c.args[0] for c in probe.call_args_list]
+        self.assertEqual(probed, [T.claude_file_hook_command(self.paths), "/old/0/claude-file-guard-hook"])
+        self.assertEqual(sum(1 for c in checks if "remove the stale entry by hand" in c.detail), 4)
+
+    def test_apply_refuses_to_wire_in_a_missing_file_shim(self) -> None:
+        os.unlink(self.paths.claude_file_shim)
+        r = T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP)
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("file-guard shim", r.detail)
+
+    def test_the_merge_never_touches_another_hook(self) -> None:
+        doc = {"hooks": {"PreToolUse": [{"matcher": "Read", "hooks": [{"type": "command", "command": "x"}]}]}}
+        new, action, _notes = T.merge_claude_files(doc, "/s/claude-file-guard-hook")
+        self.assertEqual(action, "added")
+        self.assertTrue(T._is_extension(doc, new))
+        self.assertEqual(new["hooks"]["PreToolUse"][0], doc["hooks"]["PreToolUse"][0])
+        self.assertEqual(T._combine_actions("unchanged", "added"), "added")
+        self.assertEqual(T._combine_actions("updated", "added"), "updated")
+        self.assertEqual(T._combine_actions("unchanged", "unchanged"), "unchanged")
+        self.assertFalse(T.is_ours("/s/claude-file-guard-hook"))
+        self.assertTrue(T.is_claude_file_hook("'/s p/claude-file-guard-hook'"))
 
 
 if __name__ == "__main__":

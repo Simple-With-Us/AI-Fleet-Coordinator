@@ -1,0 +1,5 @@
+Applied 0 changes;  0 skipped,  1 failed.
+  refused          claude-hooks-lane-guard  hooks  claude
+      file:  .claude/settings.json
+      the Touch ID helper is not built;  build it with scripts/fleet_config/touchid_helper/build.sh,  so the write can be confirmed
+  REFUSED:  the Touch ID helper is not built;  build it with scripts/fleet_config/touchid_helper/build.sh,  so the write can be confirmed

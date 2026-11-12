@@ -7,9 +7,9 @@
 #   open-loops            the entry script          (python3 -I $HOME/apps/open-loops/open-loops --help)
 #   open_loops/*.py       this package, without its tests
 #   fleet_facts/*.py     the F6 gatherers it imports (without their tests and CI checker)
-#   agent_sync/           an empty __init__.py plus the three F3 helpers loaded by path:
+#   simple_tools/           an empty __init__.py plus the three F3 helpers loaded by path:
 #                         textsafe.py (render_untrusted), secretscan.py (secret scan, redact_fields) and
-#                         textfmt.py (sentence_gap, the same gap rule agent-sync applies on the way out)
+#                         textfmt.py (sentence_gap, the same gap rule simple-chat applies on the way out)
 #   c2-id                 only with --c2-id:  the C2 umbrella issue id (such as AFC-123) the heartbeat topic
 #                         `<C2 ID> open-loops heartbeat` is named from.  A reinstall keeps the one already there.
 # and $HOME/.local/bin/open-loops is a symlink to the entry script.
@@ -18,7 +18,7 @@
 # /opt/homebrew/bin/python3), so a BotFleet routine's short PATH cannot pick an older Python and the link
 # always runs isolated.  If no Python 3.11 is found the line is left as it is and a note says so.
 #
-# It touches nothing else:  no LaunchAgent, no pm2, no network, and nothing under ~/.secrets.  Every path is
+# It touches nothing else:  no LaunchAgent, no pm2, no network, and no credential files.  Every path is
 # built from $HOME, so a test can point HOME at a temp folder.  Run it from a checkout of the repository
 # (a lane or the managed runtime checkout), never from the human tree under ~/Code.
 set -eu
@@ -56,7 +56,7 @@ link_dir="$HOME/.local/bin"
 link="$link_dir/open-loops"
 
 for need in "$scripts_dir/open-loops" "$here/cli.py" "$scripts_dir/fleet_facts/gather.py" \
-            "$scripts_dir/agent_sync/textsafe.py" "$scripts_dir/agent_sync/secretscan.py" "$scripts_dir/agent_sync/textfmt.py"; do
+            "$scripts_dir/simple_tools/textsafe.py" "$scripts_dir/simple_tools/secretscan.py" "$scripts_dir/simple_tools/textfmt.py"; do
   [ -f "$need" ] || { echo "install.sh: missing $need (run this from a full checkout)" >&2; exit 1; }
 done
 
@@ -79,7 +79,7 @@ if [ "$apply" -eq 1 ]; then
   stage="$HOME/apps/.open-loops.new.$$"
   trap 'rm -rf "$stage"' EXIT
   rm -rf "$stage"
-  mkdir -p "$stage/open_loops" "$stage/fleet_facts" "$stage/agent_sync"
+  mkdir -p "$stage/open_loops" "$stage/fleet_facts" "$stage/simple_tools"
   for f in "$here"/*.py; do cp "$f" "$stage/open_loops/"; done
   for f in "$scripts_dir"/fleet_facts/*.py; do
     case "$(basename "$f")" in check_fixtures.py) continue ;; esac   # a CI tool, not part of the runtime
@@ -90,15 +90,15 @@ if [ "$apply" -eq 1 ]; then
   else
     cp "$scripts_dir/open-loops" "$stage/open-loops"
   fi
-  cp "$scripts_dir/agent_sync/textsafe.py" "$scripts_dir/agent_sync/secretscan.py" "$scripts_dir/agent_sync/textfmt.py" "$stage/agent_sync/"
-  : > "$stage/agent_sync/__init__.py"
+  cp "$scripts_dir/simple_tools/textsafe.py" "$scripts_dir/simple_tools/secretscan.py" "$scripts_dir/simple_tools/textfmt.py" "$stage/simple_tools/"
+  : > "$stage/simple_tools/__init__.py"
   if [ -n "$c2" ]; then
     printf '%s\n' "$c2" > "$stage/c2-id"
   elif [ -f "$dest/c2-id" ]; then
     cp "$dest/c2-id" "$stage/c2-id"
   fi
   chmod 755 "$stage/open-loops"
-  chmod 644 "$stage"/open_loops/*.py "$stage"/fleet_facts/*.py "$stage"/agent_sync/*.py
+  chmod 644 "$stage"/open_loops/*.py "$stage"/fleet_facts/*.py "$stage"/simple_tools/*.py
   [ ! -f "$stage/c2-id" ] || chmod 644 "$stage/c2-id"
   prev="$dest.prev"
   rm -rf "$prev"

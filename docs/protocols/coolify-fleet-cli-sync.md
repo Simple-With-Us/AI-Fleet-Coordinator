@@ -1,6 +1,8 @@
 # CODEX fleet CLI sync on Coolify
 
-The Mac's existing `com.jay.agent-sync-runtime-sync` job publishes a narrow set of fleet CLI code to the existing `root@coolify` SSH target.  Its existing two-minute schedule remains the only update trigger.  Coolify does not receive a new listener, timer, or service, and active Codex sessions are not restarted.
+**Retired on the Hetzner server, 2026-10-19.**  The server now runs the fleet tools from a git checkout of main (`docs/protocols/fleet-cli-from-git.md`).  Its receiver is paused with a `retired` note, and the Mac's opt-in marker `~/.simple-tools/coolify-cli-sync.enabled` is renamed to `.disabled`, so nothing below runs any more.  The page stays as the record of the old path.
+
+The Mac's existing `com.jay.simple-tools-runtime-sync` job publishes a narrow set of fleet CLI code to the existing `root@coolify` SSH target.  Its existing two-minute schedule remains the only update trigger.  Coolify does not receive a new listener, timer, or service, and active Codex sessions are not restarted.
 
 This is a code distribution path.  It does not provision authentication, create chats, route wakes, or change fleet seat ownership.  CODEX and JET remain separate app identities.
 
@@ -8,15 +10,15 @@ This is a code distribution path.  It does not provision authentication, create 
 
 The deployment target is Linux with `/usr/bin/python3` version 3.11 or newer.  The receiver and wrappers use isolated Python execution.
 
-The source is the published revision selected by the Mac managed checkout at `~/apps/lanes/_managed/fleet/agent-sync-runtime`.  The pusher requires the expected AI-Fleet-Coordinator origin, a clean tracked checkout, and a commit reachable from `origin/main`.  It reads Git blobs by object ID rather than archiving a working directory.  Git attributes cannot substitute different release content.
+The source is the published revision selected by the Mac managed checkout at `~/apps/lanes/_managed/fleet/simple-tools-runtime`.  The pusher requires the expected AI-Fleet-Coordinator origin, a clean tracked checkout, and a commit reachable from `origin/main`.  It reads Git blobs by object ID rather than archiving a working directory.  Git attributes cannot substitute different release content.
 
-The allowlist contains the board executable and its non-secret registry files, the Agent-Sync Python runtime and MCP schemas, the partition policy, the release receiver, and the sources of the other three fleet tools (`recall`, `lane` and `fleet-mode`, below).  Credentials, caches, user configuration, handbook mirrors, chat data, and untracked files are excluded.  Bundles have file-count and byte limits and a digest over every file's path, mode, and content hash.
+The allowlist contains the board executable and its non-secret registry files, the Simple-Tools Python runtime and MCP schemas, the partition policy, the release receiver, and the sources of the other three fleet tools (`recall`, `lane` and `fleet-mode`, below).  Credentials, caches, user configuration, handbook mirrors, chat data, and untracked files are excluded.  Bundles have file-count and byte limits and a digest over every file's path, mode, and content hash.
 
 The pusher uses the existing SSH authorization with batch mode and strict host-key checks.  It does not create keys, accept unknown host keys, or copy SSH configuration.  SSH failures are reported without relaying arbitrary remote output.  A failed server update does not block the Mac's existing runtime update.
 
 ## The five fleet tools (AFC-331)
 
-The server carries the same five tools as the Mac, so a Claude or Codex thread there works the same way:  `agent-sync`, `board`, `recall`, `lane` and `fleet-mode`.  `apple-notes-coding.sh` is deliberately not mirrored;  a separate Notes relay handles the server.  What each shipped tool runs from, and what the server must provide:
+The server carries the same five tools as the Mac, so a Claude or Codex thread there works the same way:  `simple-chat`, `simple-board`, `recall`, `lane` and `fleet-mode`.  `apple-notes-coding.sh` is deliberately not mirrored;  `simple-notes` on the server reaches Apple Notes through the Operator's notes queue and the Mac runner (`docs/protocols/operator-notes.md`).  What each shipped tool runs from, and what the server must provide:
 
 - **`recall`.**  `scripts/recall` plus ten `scripts/fleet_rag/` modules (its static import closure:  `__init__`, `contribute_guard`, `core`, `doctor`, `health`, `public_fallback`, `recall_api`, `scrub`, `search_log`, `telemetry`).  `recall eval` and `recall ingest` import `eval` and `ingest` lazily and are Mac and box jobs, so they are not shipped and fail with an ImportError on the server.  No credentials ship.  The server provides them, either `QDRANT_URL`, `QDRANT_API_KEY`, `TEI_URL`, `TEI_API_KEY` and `QDRANT_FLEET_COLLECTION` (and optionally `TEI_RERANK_URL` and `TEI_RERANK_API_KEY`) in the environment, or a chmod-600 file named by `FLEET_RAG_HANDOFF_FILE` holding the Infisical machine identity (there is no default file any more:  `FLEET_RAG_HANDOFF_FILE` is explicit-only, because the flat `~/.secrets/global-api-keys` is retired under OPS-818;  supply the keys through the environment, or `fleet-secrets run` on the Mac).  `contribute` also wants `gitleaks` on PATH, or it marks the lesson `gitleaks-unavailable`.  Everything else is relative to `$HOME`.
 - **`lane`.**  The checkout's own bash shim, `scripts/fleet_lanes/bin/lane`, which finds `scripts/` from its location, plus `fleet_lanes/{__init__,lane,doctor,guard,layout}.py` and the already-shipped `fleet-apps.json`.  The canonical source is the repo shim, not the Mac's `~/apps/lane`:  that file is a generated copy (`fleet_lanes.install_tools`) that points at the stable tree `~/apps/lane-tools` and is meant for the Mac only.  `lane` takes every path from `$HOME`, so repositories under `/root/Code/<Repo>` and lanes under `/root/apps/lanes/<Repo>` work.  It needs `git`, and `gh` for `--review --pr`.
@@ -33,17 +35,17 @@ An ordinary update also writes the wrapper for any command a newer release adds 
 | `.local/share/fleet-cli/previous` | Previous release available for rollback |
 | `.local/share/fleet-cli/update.lock` | Prevent overlapping activation |
 | `.local/share/fleet-cli/paused` | Operator pause marker |
-| `.local/bin/board` | Board CLI wrapper |
-| `.local/bin/agent-sync` | Agent-Sync CLI wrapper |
-| `.local/bin/agent-sync-codex-mcp` | CODEX-scoped local MCP entry point |
+| `.local/bin/simple-board` | Board CLI wrapper |
+| `.local/bin/simple-chat` | Simple-Tools CLI wrapper |
+| `.local/bin/simple-chat-codex-mcp` | CODEX-scoped local MCP entry point |
 | `.local/bin/fleet-cli-release` | Status, pause, resume, and rollback control |
 | `.local/bin/recall` | Fleet-agents corpus search and contribute (`scripts/recall`) |
 | `.local/bin/lane` | Lane and PR-review checkout creator (`scripts/fleet_lanes/bin/lane`) |
 | `.local/bin/fleet-mode` | Prints the Fleet mode briefing (`scripts/fleet-mode`) |
-| `.codex/config.toml` | Existing configuration with one Agent-Sync MCP entry |
+| `.codex/config.toml` | Existing configuration with one Simple-Tools MCP entry |
 | `.codex/backups/fleet-cli-*/config.toml` | Initial configuration backup |
 
-Initial installation refuses conflicting unmanaged wrappers or a different existing Agent-Sync MCP entry.  Existing configuration settings and file modes are preserved.  Subsequent code updates leave configuration and existing wrappers unchanged, and only add the wrappers for commands that are new to the host.
+Initial installation refuses conflicting unmanaged wrappers or a different existing Simple-Tools MCP entry.  Existing configuration settings and file modes are preserved.  Subsequent code updates leave configuration and existing wrappers unchanged, and only add the wrappers for commands that are new to the host.
 
 Each release is checked for allowlisted paths, hashes, regular-file modes, and Python syntax, then exercised with an empty temporary home and no inherited credentials.  Board identity lookup must fail with the expected missing-credentials result, and `recall --help`, `lane --help` and the `fleet-mode` block must each succeed.  A release becomes current only after those checks pass.  Wrappers resolve the selected release once, so an already running process continues using its original code.
 
@@ -51,9 +53,9 @@ Each release is checked for allowlisted paths, hashes, regular-file modes, and P
 
 From the published managed runtime, inspect the bounded bundle with `python3 scripts/fleet-cli-sync.py --dry-run`, then perform the initial wrapper and MCP registration with `python3 scripts/fleet-cli-sync.py --install`.  Ordinary scheduled runs omit `--install` and preserve configuration.  `--force` requests a fresh remote receipt when the bundle is already cached; it does not bypass source validation.
 
-The private Mac state at `~/.agent-sync/coolify-cli-sync/state.json` records the last check time and outcome, including cached skips, separately from the last successful remote receipt.  This distinguishes an executing scheduled hook from an old installation record.
+The private Mac state at `~/.simple-tools/coolify-cli-sync/state.json` records the last check time and outcome, including cached skips, separately from the last successful remote receipt.  This distinguishes an executing scheduled hook from an old installation record.
 
-The Mac opt-in marker is `~/.agent-sync/coolify-cli-sync.enabled`.  Remove that marker to disable future pushes.  The existing Mac runtime pause mechanism also pauses this hook.  The hook runs before the Mac fetch, so a newly selected Mac revision normally reaches Coolify on the following scheduled run.
+The Mac opt-in marker is `~/.simple-tools/coolify-cli-sync.enabled`.  Remove that marker to disable future pushes.  The existing Mac runtime pause mechanism also pauses this hook.  The hook runs before the Mac fetch, so a newly selected Mac revision normally reaches Coolify on the following scheduled run.
 
 On Coolify, use:
 

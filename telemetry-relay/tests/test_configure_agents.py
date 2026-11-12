@@ -1,16 +1,27 @@
-"""Hermetic test of scripts/telemetry/configure-agents.sh (stub Infisical, temp HOME)."""
+"""Offline test of scripts/telemetry/configure-agents.sh (mock Infisical, temp HOME)."""
+
 from __future__ import annotations
 
+import http.server
 import json
 import os
 import secrets
 import stat
 import subprocess
+import sys
 import tempfile
+import threading
 import unittest
+import urllib.parse
 from pathlib import Path
+from unittest import mock
 
 from relay_common import CONFIGURE, PRODUCERS
+
+scripts_path = Path(__file__).resolve().parents[2] / "scripts"
+sys.path[:0] = [str(scripts_path), str(scripts_path / "telemetry")]
+from configure_agents import fetch_export
+from fleet_secrets import core
 
 
 def _token() -> str:
@@ -32,24 +43,82 @@ class ConfigureAgentsTests(unittest.TestCase):
             "RELAY_BEARER_GROK": _token(),
             "RELAY_BEARER_SHIM": _token(),
         }
-        export = self.tmp / "export.json"
-        export.write_text(json.dumps(self.tokens), encoding="utf-8")
-        stub = self.bin / "infisical"
-        stub.write_text(
-            "#!/usr/bin/env bash\n"
-            "printf '%%s\\n' \"$*\" >> \"%s\"\n"
-            "cat \"%s\"\n" % (self.tmp / "infisical.args", export),
-            encoding="utf-8",
-        )
-        stub.chmod(0o755)
+        self.project = "00000000-0000-4000-8000-000000000042"
+        self.service_token = "st." + secrets.token_urlsafe(32)
+        self.metadata = {
+            "projectId": self.project,
+            "workspace": self.project,
+            "permissions": ["read"],
+            "scopes": [{"environment": "prod", "secretPath": "/"}],
+            "expiresAt": None,
+        }
+        self.requests = []
+        self.request_lock = threading.Lock()
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
+        self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.server_thread.start()
+        self.addCleanup(self._stop_server)
         self.env = {
             **os.environ,
-            "PATH": "%s:%s" % (self.bin, os.environ.get("PATH", "")),
+            "PATH": os.environ.get("PATH", ""),
             "HOME": str(self.home),
-            "INFISICAL_PROJECT_ID": "00000000-0000-0000-0000-000000000000",
+            "INFISICAL_TELEMETRY_CONFIG_PROJECT_ID": self.project,
+            "INFISICAL_TELEMETRY_CONFIG_READ_TOKEN": self.service_token,
+            "FLEET_SECRETS_API": "http://127.0.0.1:%d/api" % self.server.server_address[1],
             "OUT_DIR": str(self.out),
             "RELAY_URL": "",
         }
+
+    def _stop_server(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.server_thread.join(timeout=2)
+
+    def _handler(self):
+        owner = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_GET(self):
+                with owner.request_lock:
+                    owner.requests.append((self.path, self.headers.get("Authorization")))
+                parsed = urllib.parse.urlsplit(self.path)
+                if self.headers.get("Authorization") != "Bearer " + owner.service_token:
+                    self.send_response(401)
+                    body = b"{}"
+                elif parsed.path == "/api/v2/service-token":
+                    self.send_response(200)
+                    body = json.dumps(owner.metadata).encode()
+                elif parsed.path == "/api/v3/secrets/raw":
+                    params = urllib.parse.parse_qs(parsed.query)
+                    owner.query = params
+                    self.send_response(200)
+                    body = json.dumps(
+                        {
+                            "secrets": [
+                                {
+                                    "secretKey": key,
+                                    "secretValue": value,
+                                    "type": "shared",
+                                    "workspace": owner.project,
+                                    "environment": "prod",
+                                    "secretPath": "/",
+                                }
+                                for key, value in owner.tokens.items()
+                            ]
+                        }
+                    ).encode()
+                else:
+                    self.send_response(404)
+                    body = b"{}"
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        return Handler
 
     def tearDown(self) -> None:
         # Temp tree only; never touch the real HOME.
@@ -114,15 +183,43 @@ class ConfigureAgentsTests(unittest.TestCase):
     def test_infisical_call_is_prod_only(self) -> None:
         proc = self._run("--relay-url", "https://relay.example.test")
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        args = (self.tmp / "infisical.args").read_text(encoding="utf-8")
-        self.assertIn("--env=prod", args)
-        self.assertNotIn("--env=dev", args)
-        self.assertNotIn("--env=staging", args)
+        self.assertEqual(self.query["workspaceId"], [self.project])
+        self.assertEqual(self.query["environment"], ["prod"])
+        self.assertEqual(self.query["secretPath"], ["/"])
+        self.assertEqual(
+            [path.split("?", 1)[0] for path, _ in self.requests],
+            ["/api/v2/service-token", "/api/v3/secrets/raw"],
+        )
+        self.assertTrue(all(auth == "Bearer " + self.service_token for _, auth in self.requests))
+
+    def test_missing_dedicated_token_rejects_legacy_credentials_without_api_call(self) -> None:
+        proc = self._run(
+            extra={
+                "INFISICAL_TELEMETRY_CONFIG_READ_TOKEN": "",
+                "INFISICAL_TOKEN": "st.generic-unrelated-token-fixture",
+                "INFISICAL_AUTOMATION_CLIENT_ID": "legacy-id-fixture",
+                "INFISICAL_AUTOMATION_CLIENT_SECRET": "legacy-secret-fixture",
+            }
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("INFISICAL_TELEMETRY_CONFIG_READ_TOKEN", proc.stderr)
+        self.assertEqual(self.requests, [])
+        self.assertFalse(self.out.exists())
+
+    def test_inexact_metadata_fails_before_secret_read(self) -> None:
+        self.metadata["scopes"] = [
+            {"environment": "prod", "secretPath": "/"},
+            {"environment": "prod", "secretPath": "/other"},
+        ]
+        proc = self._run("--relay-url", "https://relay.example.test")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(
+            [path.split("?", 1)[0] for path, _ in self.requests], ["/api/v2/service-token"]
+        )
+        self.assertFalse(self.out.exists())
 
     def test_empty_bearer_fails_closed(self) -> None:
-        broken = dict(self.tokens)
-        broken["RELAY_BEARER_CODEX"] = ""
-        (self.tmp / "export.json").write_text(json.dumps(broken), encoding="utf-8")
+        self.tokens["RELAY_BEARER_CODEX"] = ""
         proc = self._run("--relay-url", "https://relay.example.test")
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("RELAY_BEARER_CODEX=empty", proc.stdout + proc.stderr)
@@ -144,6 +241,93 @@ class ConfigureAgentsTests(unittest.TestCase):
         self.assertIn(":4320", src)
         self.assertIn("4321", src)
         self.assertEqual(PRODUCERS["claude"]["port"], 4318)
+
+    def test_helper_uses_dedicated_token_and_exact_scope_metadata(self) -> None:
+        calls = []
+
+        def api(method, path, token, body, env, **_kwargs):
+            calls.append((method, path, token))
+            if path == "/v2/service-token":
+                return 200, self.metadata
+            return 200, {
+                "secrets": [
+                    {
+                        "secretKey": key,
+                        "secretValue": value,
+                        "type": "shared",
+                        "workspace": self.project,
+                        "environment": "prod",
+                        "secretPath": "/",
+                    }
+                    for key, value in self.tokens.items()
+                ]
+            }
+
+        env = {
+            **self.env,
+            "INFISICAL_TOKEN": "st.generic-unrelated-token-fixture",
+            "INFISICAL_AUTOMATION_CLIENT_ID": "legacy-id-fixture",
+            "INFISICAL_AUTOMATION_CLIENT_SECRET": "legacy-secret-fixture",
+        }
+        with mock.patch.object(core, "_api_json", side_effect=api):
+            result = fetch_export(env)
+        self.assertEqual(result, self.tokens)
+        self.assertEqual(
+            [path.split("?", 1)[0] for _, path, _ in calls],
+            ["/v2/service-token", "/v3/secrets/raw"],
+        )
+        self.assertTrue(all(token == self.service_token for _, _, token in calls))
+
+    def test_helper_rejects_invalid_metadata_before_secret_read(self) -> None:
+        bad_metadata = dict(self.metadata, projectId="00000000-0000-4000-8000-000000000099")
+        calls = []
+
+        def api(method, path, token, body, env, **_kwargs):
+            calls.append(path)
+            return (200, bad_metadata) if path == "/v2/service-token" else (200, {"secrets": []})
+
+        with mock.patch.object(core, "_api_json", side_effect=api):
+            with self.assertRaises(core.SecretsError):
+                fetch_export(self.env)
+        self.assertEqual(calls, ["/v2/service-token"])
+
+    def test_helper_rejects_missing_or_malformed_configured_project_without_network(self) -> None:
+        for project in ("", "invalid-project"):
+            with (
+                self.subTest(project=project),
+                self.assertRaisesRegex(
+                    core.SecretsError, "set INFISICAL_TELEMETRY_CONFIG_PROJECT_ID"
+                ),
+            ):
+                fetch_export({**self.env, "INFISICAL_TELEMETRY_CONFIG_PROJECT_ID": project})
+        self.assertEqual(self.requests, [])
+
+    def test_helper_configured_project_is_authority_and_token_must_match(self) -> None:
+        with mock.patch.object(core, "_api_json", return_value=(200, self.metadata)) as api:
+            with self.assertRaisesRegex(core.SecretsError, "token-scope-mismatch"):
+                fetch_export(
+                    {
+                        **self.env,
+                        "INFISICAL_TELEMETRY_CONFIG_PROJECT_ID": "00000000-0000-4000-8000-000000000099",
+                    }
+                )
+        self.assertEqual(api.call_count, 1)
+
+    def test_generic_project_selector_cannot_supply_telemetry_bootstrap(self) -> None:
+        env = {**self.env, "INFISICAL_PROJECT_ID": self.project}
+        env.pop("INFISICAL_TELEMETRY_CONFIG_PROJECT_ID")
+        with (
+            mock.patch.object(core, "_api_json") as api,
+            self.assertRaisesRegex(core.SecretsError, "set INFISICAL_TELEMETRY_CONFIG_PROJECT_ID"),
+        ):
+            fetch_export(env)
+        api.assert_not_called()
+
+    def test_dedicated_project_selector_ignores_an_unrelated_generic_selector(self) -> None:
+        env = {**self.env, "INFISICAL_PROJECT_ID": "00000000-0000-4000-8000-000000000099"}
+        with mock.patch.object(core, "fetch_project", return_value=self.tokens) as fetch:
+            self.assertEqual(fetch_export(env), self.tokens)
+        self.assertEqual(fetch.call_args.args[0], self.project)
 
 
 if __name__ == "__main__":

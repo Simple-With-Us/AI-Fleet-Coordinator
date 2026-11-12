@@ -1,14 +1,15 @@
 """The F3 safety helpers, loaded by path.
 
-`agent_sync/textsafe.py` (render_untrusted) and `agent_sync/secretscan.py` (redact_fields) import nothing
-from their package, so they are loaded by file path from `<this package's parent>/agent_sync/`.  That is
-`scripts/agent_sync/` in the repository and `<stable copy>/agent_sync/` in an installed copy (install.sh
+`simple_tools/textsafe.py` (render_untrusted) and `simple_tools/secretscan.py` (redact_fields) import nothing
+from their package, so they are loaded by file path from `<this package's parent>/simple_tools/`.  That is
+`scripts/simple_tools/` in the repository and `<stable copy>/simple_tools/` in an installed copy (install.sh
 copies exactly those two files plus an empty `__init__.py`).  A stable copy run with `python3 -I` therefore
 needs nothing else, and there is no second copy of either function in this package.
 
 If a helper cannot be found the gatherers refuse to produce output (`HelpersMissing`):  facts are never
 printed unredacted.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -17,7 +18,18 @@ import sys
 from pathlib import Path
 from typing import Any
 
-__all__ = ["HelpersMissing", "clean", "safe_ref", "safe_path", "safe_token", "redact", "render", "textsafe", "secretscan", "textfmt"]
+__all__ = [
+    "HelpersMissing",
+    "clean",
+    "redact",
+    "render",
+    "safe_path",
+    "safe_ref",
+    "safe_token",
+    "secretscan",
+    "textfmt",
+    "textsafe",
+]
 
 
 class HelpersMissing(RuntimeError):
@@ -28,7 +40,7 @@ _loaded: dict[str, Any] = {}
 
 
 def _helper_dir() -> Path:
-    return Path(__file__).resolve().parent.parent / "agent_sync"
+    return Path(__file__).resolve().parent.parent / "simple_tools"
 
 
 def _load(name: str):
@@ -36,7 +48,10 @@ def _load(name: str):
         return _loaded[name]
     path = _helper_dir() / (name + ".py")
     if not path.is_file():
-        raise HelpersMissing("the F3 helper %s.py was not found next to this package (looked in %s)" % (name, _helper_dir().name))
+        raise HelpersMissing(
+            "the F3 helper %s.py was not found next to this package (looked in %s)"
+            % (name, _helper_dir().name)
+        )
     module_name = "_fleet_facts_" + name
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
@@ -47,7 +62,9 @@ def _load(name: str):
         spec.loader.exec_module(module)
     except Exception as exc:  # a broken helper is a missing helper:  fail closed
         sys.modules.pop(module_name, None)
-        raise HelpersMissing("the F3 helper %s.py failed to load (%s)" % (name, type(exc).__name__)) from exc
+        raise HelpersMissing(
+            "the F3 helper %s.py failed to load (%s)" % (name, type(exc).__name__)
+        ) from exc
     _loaded[name] = module
     return module
 
@@ -61,7 +78,7 @@ def secretscan():
 
 
 def textfmt():
-    """`agent_sync/textfmt.py` (sentence_gap), for a caller that needs the same gap rule agent-sync applies on
+    """`simple_tools/textfmt.py` (sentence_gap), for a caller that needs the same gap rule simple-chat applies on
     the way out (open-loops C2-1's DM lint).  Loaded only when asked for:  fleet-facts itself never needs it,
     so its stable copy does not carry the file."""
     return _load("textfmt")

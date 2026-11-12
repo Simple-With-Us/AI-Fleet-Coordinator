@@ -19,11 +19,12 @@ from unittest.mock import patch
 SCRIPTS = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SCRIPTS / "seat-mcp"))
 
+from fleet_rag import public_fallback  # noqa: E402
 from seat_mcp import recall_bridge  # noqa: E402
 from seat_mcp.seats import SeatError  # noqa: E402
 from seat_mcp.tools import TOOL_IMPL, tool_schemas  # noqa: E402
 
-RECALL_TOOLS = ("recall_search", "recall_stats", "recall_contribute")
+RECALL_TOOLS = ("recall_search", "recall_stats", "recall_contribute", "recall_correct", "recall_retract")
 LEGACY_TOOLS = (
     "seat_launch", "seat_status", "seat_reply", "seat_result",
     "grok_sessions_list", "grok_session_peek", "grok_session_tail",
@@ -36,9 +37,11 @@ def _stub_api() -> types.ModuleType:
     mod = types.ModuleType("fleet_rag.recall_api")
     mod.calls = []  # type: ignore[attr-defined]
 
-    def recall_search(query, limit=5, category=None, app=None, source=None, seat=None, since_days=None):
+    def recall_search(query, limit=5, category=None, app=None, source=None, seat=None, since_days=None,
+                      include_retracted=False):
         mod.calls.append(("search", dict(query=query, limit=limit, category=category, app=app,
-                                         source=source, seat=seat, since_days=since_days)))
+                                         source=source, seat=seat, since_days=since_days,
+                                         include_retracted=include_retracted)))
         return {"hits": [{"score": 0.9, "text": "t", "source": "doc", "app": "fleet", "category": "lesson",
                           "seat": "CLAUDE", "doc_id": "doc/x", "chunk_index": 0, "heading": "", "title": "x",
                           "url": "", "path": "", "created_at": 1}], "mode": "hybrid"}
@@ -56,7 +59,19 @@ def _stub_api() -> types.ModuleType:
 
     mod.recall_search = recall_search  # type: ignore[attr-defined]
     mod.recall_stats = recall_stats  # type: ignore[attr-defined]
+    def recall_correct(doc_id, text, reason, seat=None, title=None, url=None, expected_revision=None):
+        mod.calls.append(("correct", dict(doc_id=doc_id, text=text, reason=reason, seat=seat,
+                                          title=title, url=url, expected_revision=expected_revision)))
+        return {"id": "uuid", "doc_id": doc_id, "seat": seat, "revision": 2, "status": "completed", "corrected_at": 1, "corrected_by": seat, "previous_content_hash": "old", "content_hash": "new", "scrubbed": []}
+
+    def recall_retract(doc_id, reason, seat=None, expected_revision=None):
+        mod.calls.append(("retract", dict(doc_id=doc_id, reason=reason, seat=seat,
+                                          expected_revision=expected_revision)))
+        return {"id": "uuid", "doc_id": doc_id, "seat": seat, "revision": 2, "retracted": True, "status": "completed", "retracted_at": 1, "retracted_by": seat, "retraction_reason": reason}
+
     mod.recall_contribute = recall_contribute  # type: ignore[attr-defined]
+    mod.recall_correct = recall_correct  # type: ignore[attr-defined]
+    mod.recall_retract = recall_retract  # type: ignore[attr-defined]
     return mod
 
 
@@ -84,8 +99,10 @@ class RegistrationTests(unittest.TestCase):
             set(schemas["recall_contribute"]["inputSchema"]["properties"]["category"]["enum"]),
             {"lesson", "preference", "infrastructure", "decision", "runbook"},
         )
-        for key in ("category", "app", "source", "seat", "since_days", "limit"):
+        for key in ("category", "app", "source", "seat", "since_days", "limit", "include_retracted"):
             self.assertIn(key, schemas["recall_search"]["inputSchema"]["properties"])
+        self.assertEqual(set(schemas["recall_correct"]["inputSchema"]["required"]), {"doc_id", "text", "reason", "seat"})
+        self.assertEqual(set(schemas["recall_retract"]["inputSchema"]["required"]), {"doc_id", "reason", "seat"})
 
 
 class StubbedBridgeTests(unittest.TestCase):
@@ -94,8 +111,13 @@ class StubbedBridgeTests(unittest.TestCase):
         recall_bridge._reset_api_cache()
         self._p = patch.object(recall_bridge, "_load_api", return_value=self.api)
         self._p.start()
+        self._mutation = patch.object(
+            public_fallback, "call_mutation", lambda name, args, run_local: run_local()
+        )
+        self._mutation.start()
 
     def tearDown(self) -> None:
+        self._mutation.stop()
         self._p.stop()
         recall_bridge._reset_api_cache()
 
@@ -107,7 +129,9 @@ class StubbedBridgeTests(unittest.TestCase):
         kind, kw = self.api.calls[-1]
         self.assertEqual(kind, "search")
         self.assertEqual(kw, dict(query="grep trap", limit=3, category="lesson", app="fleet",
-                                  source=None, seat="CLAUDE", since_days=7))
+                                  source=None, seat="CLAUDE", since_days=7, include_retracted=False))
+        TOOL_IMPL["recall_search"]({"query": "grep trap", "include_retracted": True})
+        self.assertTrue(self.api.calls[-1][1]["include_retracted"])
 
     def test_search_requires_query(self) -> None:
         with self.assertRaises(SeatError):
@@ -151,6 +175,49 @@ class StubbedBridgeTests(unittest.TestCase):
         self.assertEqual(kw["app"], "fleet")
         self.assertEqual(kw["title"], "grep trap")
 
+    def test_correct_and_retract_require_seat_and_pass_contract(self) -> None:
+        doc = "contrib/GROK/2026-11-05/472fc36e"
+        for name, args in (("recall_correct", {"doc_id": doc, "text": "x" * 60, "reason": "current"}),
+                           ("recall_retract", {"doc_id": doc, "reason": "obsolete"})):
+            with self.subTest(name), self.assertRaises(SeatError):
+                TOOL_IMPL[name](args)
+        out = TOOL_IMPL["recall_correct"]({"doc_id": doc, "text": "x" * 60, "reason": "current",
+                                           "seat": "grok", "expected_revision": 2})
+        self.assertEqual(out["revision"], 2)
+        self.assertEqual(self.api.calls[-1][1]["seat"], "GROK")
+        self.assertEqual(self.api.calls[-1][1]["expected_revision"], 2)
+        with self.assertRaisesRegex(SeatError, "shared bearer does not prove the owner identity"):
+            TOOL_IMPL["recall_retract"]({"doc_id": doc, "reason": "obsolete", "seat": "OWNER"})
+        self.assertNotEqual(self.api.calls[-1][0], "retract")
+        out = TOOL_IMPL["recall_retract"]({"doc_id": doc, "reason": "obsolete", "seat": "grok"})
+        self.assertTrue(out["retracted"])
+        self.assertEqual(self.api.calls[-1], ("retract", {"doc_id": doc, "reason": "obsolete",
+                                                           "seat": "GROK", "expected_revision": None}))
+
+    def test_mutation_arguments_and_response_are_fail_closed(self) -> None:
+        doc = "contrib/GROK/2026-11-05/472fc36e"
+        with self.assertRaisesRegex(SeatError, "doc_id must"):
+            TOOL_IMPL["recall_retract"]({"doc_id": "docs/not-a-contribution", "reason": "obsolete",
+                                          "seat": "GROK"})
+        with self.assertRaisesRegex(SeatError, "reason must"):
+            TOOL_IMPL["recall_retract"]({"doc_id": doc, "reason": "x" * 501, "seat": "GROK"})
+
+        deep = {}
+        cursor = deep
+        for _ in range(17):
+            cursor["x"] = {}
+            cursor = cursor["x"]
+        with self.assertRaisesRegex(SeatError, "depth"):
+            TOOL_IMPL["recall_retract"]({"doc_id": doc, "reason": "obsolete", "seat": "GROK",
+                                          "extra": deep})
+        wide = {"expected_revision": {str(i): i for i in range(300)}}
+        with self.assertRaisesRegex(SeatError, "node"):
+            TOOL_IMPL["recall_retract"]({"doc_id": doc, "reason": "obsolete", "seat": "GROK", **wide})
+
+        self.api.recall_retract = lambda **kwargs: {"id": "uuid", "doc_id": doc}  # type: ignore[method-assign]
+        with self.assertRaisesRegex(SeatError, "invalid response field"):
+            TOOL_IMPL["recall_retract"]({"doc_id": doc, "reason": "obsolete", "seat": "GROK"})
+
     def test_api_value_error_becomes_seat_error(self) -> None:
         with self.assertRaises(SeatError) as ctx:
             TOOL_IMPL["recall_contribute"]({"text": "too short", "category": "lesson", "seat": "GROK"})
@@ -176,6 +243,7 @@ class MissingPackageTests(unittest.TestCase):
             pkg = Path(home) / "fleet_rag"
             pkg.mkdir()
             (pkg / "__init__.py").write_text("")
+            (pkg / "public_fallback.py").write_text("def call_mutation(name, kwargs, run_local):\n    return run_local()\n")
             (pkg / "recall_api.py").write_text(
                 "def recall_search(query, limit=5, category=None, app=None, source=None, seat=None, since_days=None):\n"
                 "    return {'hits': [], 'mode': 'dense'}\n"
@@ -184,6 +252,10 @@ class MissingPackageTests(unittest.TestCase):
                 "            'by_source': {}, 'by_app': {}}\n"
                 "def recall_contribute(text, category, app='fleet', seat=None, title=None, url=None):\n"
                 "    return {'id': 'i', 'doc_id': 'd', 'scrubbed': [], 'status': 'ok'}\n"
+                "def recall_correct(doc_id, text, reason, seat=None, title=None, url=None, expected_revision=None):\n"
+                "    return {'id': 'i', 'doc_id': doc_id, 'status': 'ok'}\n"
+                "def recall_retract(doc_id, reason, seat=None, expected_revision=None):\n"
+                "    return {'id': 'i', 'doc_id': doc_id, 'retracted': True, 'status': 'ok'}\n"
             )
             saved = {k: v for k, v in sys.modules.items() if k == "fleet_rag" or k.startswith("fleet_rag.")}
             for k in saved:

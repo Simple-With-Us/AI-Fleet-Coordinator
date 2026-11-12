@@ -16,7 +16,7 @@ At the start of **every** turn, evaluate whether the request, error, or next pla
 matches any of the **4 Mandatory Search Triggers**:
 1. **Error / Stack Trace**: An error message, build failure, test failure, crash, exception, or non-zero exit code.
 2. **Infrastructure / Deployment**: Coolify, Hetzner, Docker, Caddy, Cloudflare, Infisical, Tailscale, pm2, ports, domains, or certificates.
-3. **Cross-App / Protocol Decisions**: Inter-agent sync conventions, the archived effort log format, the Linear and `board` protocol, seat tag policies, or owner preferences.
+3. **Cross-App / Protocol Decisions**: Inter-agent coordination conventions, the archived effort log format, the Linear and `board` protocol, seat tag policies, or owner preferences.
 4. **Smells Familiar**: A problem, warning, or task that feels like it has been solved before or might have an established fleet pattern.
 
 **Action**: If ANY trigger fires, you MUST execute `recall "<query>"` or call MCP `recall_search(query=...)`

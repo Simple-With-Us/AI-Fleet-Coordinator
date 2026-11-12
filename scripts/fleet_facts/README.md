@@ -15,7 +15,7 @@ fleet-facts gather [--part NAME]... [--no-mac] [--json]
 | `lanes` | the lane doctor report, `lane ls --json` (`lanes.py`) | yes |
 | `autopush` | C1 `fleet-autopush status --json` (`interfaces.py`) | yes |
 | `backup` | P1 `fleet_work_backup.py health --json` (`backup.py`) | yes |
-| `asks` | C3 `agent-sync asks status --json` | yes |
+| `asks` | C3 `simple-chat asks status --json` | yes |
 | `report` | C4 `~/apps/claim-expiry/state/report-latest.json` | yes |
 | `needs_owner` | C6 `needs-owner list --all --json` (every labelled issue, answered and closed ones too) | yes |
 | `consult` | C7 `consult status --all --json` | yes |
@@ -107,9 +107,7 @@ fleet-facts publish --path REL --file LOCAL [--dry-run]    sign (a .json file) o
 fleet-facts verify FILE [--path REL]                       check a signed file
 ```
 
-A cycle gathers the Mac parts (`lanes`, `autopush`, `backup`, `needs_owner`) and the full list (`open-loops gather` then
-`open-loops render --markdown`), and writes up to three files to the PRIVATE repository `Simple-With-Us/fleet-loops-data` through
-sha-aware `gh api -X PUT` calls (no clone, never forced), in this order:
+A cycle gathers the Mac parts (`lanes`, `autopush`, `backup`, `needs_owner`) and the full list (`open-loops gather` then `open-loops render --markdown`), and writes up to three files to the PRIVATE repository `Simple-With-Us/fleet-loops-data`.  When `FLEET_FACTS_RELAY_URL` is set, those writes and the `mac-facts.json` delete go through git-relay (`wf_file_put`, `wf_file_delete` and `wf_file_get`) on `FLEET_FACTS_RELAY_BRANCH`, which must be that repository's default branch.  A set URL with a missing token or branch refuses the run and does not call `gh`.  An empty URL keeps the sha-aware `gh api` contents calls.  There is no clone and no force.  The repository gate (webhooks, deploy keys and org installations) still uses `gh`, because those reads have no relay verb.  In this order:
 
 | File | What it is |
 | --- | --- |
@@ -171,7 +169,7 @@ scripts/fleet_facts/install.sh --apply    # ~/apps/fleet-facts + ~/.local/bin/fl
 ```
 
 The stable copy holds the entry script, the package (no tests), the `mac-facts-publish` launcher that F7's
-LaunchAgent runs, `fleet_knobs/` (K1, no tests;  `publish` and `publish-mac` fetch the signing key through it), and `agent_sync/` with only `__init__.py`, `textsafe.py` and `secretscan.py`:  a tool
+LaunchAgent runs, `fleet_knobs/` (K1, no tests;  `publish` and `publish-mac` fetch the signing key through it), and `simple_tools/` with only `__init__.py`, `textsafe.py` and `secretscan.py`:  a tool
 run with `python3 -I` cannot import what it did not copy, and `-I` leaves the script's own folder off
 `sys.path`, so the entry script puts its real directory first.  A test installs into a temp HOME and runs
 `python3 -I <stable copy>/fleet-facts`.  The installer loads no LaunchAgent and touches nothing under
