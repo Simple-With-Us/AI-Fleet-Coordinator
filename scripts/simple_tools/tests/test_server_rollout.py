@@ -8,6 +8,7 @@ import io
 import ipaddress
 import json
 import os
+import re
 import secrets
 import shutil
 import stat
@@ -364,8 +365,35 @@ class InfisicalEnvTests(unittest.TestCase):
         self.assertFalse(IE.seat_value_usable("JET_ROUTINE_URL", '"https://jet.test/wake'))
         self.assertFalse(IE.seat_value_usable("JET_ROUTINE_URL", "\"https://jet.test/wake'"))
         self.assertFalse(IE.seat_value_usable("JET_ROUTINE_KEY", '"short"'))
-        for value in ('"https://jet.test/wake"', "'x'", '"', "", " a ", "\"a'"):
-            self.assertEqual(IE._strip_quotes(value), zulip._strip_quotes(value), value)
+        # The loader's copy of the daemon's reading is held to it over every shape a stored value can take:  each
+        # core, bare or wrapped once or twice in either quote or a mismatched pair, with each padding inside and out.
+        cores = ("", "a", "https://jet.test/wake", "k" * 40, "a b", '"', "'", "`x`")
+        wraps = ("%s", '"%s"', "'%s'", "\"%s'", "'%s\"", '""%s""', "''%s''", "'\"%s\"'", "\"'%s'\"", '"%s', "%s'")
+        pads = ("", " ", "  ", "\t", "\n", "\r\n")
+        corpus = {out + (wrap % (inner + core + inner)) + out
+                  for core in cores for wrap in wraps for inner in pads for out in pads}
+        self.assertGreater(len(corpus), 2000)
+        for value in sorted(corpus):
+            self.assertEqual(IE._strip_quotes(value), zulip._strip_quotes(value), repr(value))
+
+    def test_a_seat_with_a_quoted_routine_pair_keeps_its_wake_pair_at_start(self) -> None:
+        # End to end, through build_env:  the seat's two names are loaded as stored (the daemon strips the quotes
+        # itself) and the start line counts the seat instead of naming its values not usable.
+        with FakeInfisical(self.cid, self.csecret, dict(self.values)) as fake:
+            _, plain_line = IE.build_env(self.env(fake))
+        counted = re.search(r"server seats with a wake pair from Infisical: (\d+) of (\d+)", plain_line)
+        self.assertIsNotNone(counted, plain_line)
+        for quote in ('"', "'"):
+            url = quote + self.values["JET_ROUTINE_URL"] + quote
+            key = quote + self.values["JET_ROUTINE_KEY"] + quote
+            values = dict(self.values, JET_ROUTINE_URL=url, JET_ROUTINE_KEY=key)
+            with FakeInfisical(self.cid, self.csecret, values) as fake:
+                out, line = IE.build_env(self.env(fake))
+            self.assertEqual(out["JET_ROUTINE_URL"], url)
+            self.assertEqual(out["JET_ROUTINE_KEY"], key)
+            self.assertNotIn("not usable", line)
+            self.assertIn(counted.group(0), line)  # the same count as with the pair stored bare
+            self.assertNotIn(self.values["JET_ROUTINE_KEY"], line)
 
     def test_the_routine_url_rule_matches_the_daemons(self) -> None:
         # The ZCode bridge is plain http to a Tailscale address;  the daemon accepts that, so the loader does too.
