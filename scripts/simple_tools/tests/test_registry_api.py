@@ -237,7 +237,7 @@ class OperatorCliTests(ApiBase):
             verified_host="server",
             profile_scope="default",
             native_session_id="mm-old",
-            seat="MA",
+            seat="MM",
             source="test",
             issuer=OR.ISSUER_OPERATOR,
         )
@@ -261,7 +261,7 @@ class OperatorCliTests(ApiBase):
             verified_host="server",
             profile_scope="default",
             native_session_id="mm-new",
-            seat="MA",
+            seat="MM",
             source="test",
             issuer=OR.ISSUER_OPERATOR,
         )
@@ -287,7 +287,7 @@ class OperatorCliTests(ApiBase):
                 "--platform",
                 "minimax",
                 "--seat",
-                "MA",
+                "MM",
                 "--stale-after-minutes",
                 "120",
             ],
@@ -319,7 +319,7 @@ class OperatorCliTests(ApiBase):
                 "--session-id",
                 "mm-cli-1",
                 "--seat",
-                "MA",
+                "MM",
                 "--source",
                 "test",
             ],
@@ -344,7 +344,7 @@ class OperatorCliTests(ApiBase):
     def test_a_dead_api_is_a_visible_failure_and_writes_nothing(self) -> None:
         env = self.api_env(**{registry_api.URL_ENV: "http://127.0.0.1:1"})
         code, answer = self.run_cli(
-            ["sweep", "--platform", "minimax", "--seat", "MA"], env
+            ["sweep", "--platform", "minimax", "--seat", "MM"], env
         )
         self.assertEqual(code, 2)
         self.assertIn("error", answer)
@@ -365,7 +365,7 @@ class OperatorCliTests(ApiBase):
                 "--session-id",
                 "mm-outbox-1",
                 "--seat",
-                "MA",
+                "MM",
                 "--source",
                 "test",
             ],
