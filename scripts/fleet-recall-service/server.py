@@ -382,7 +382,9 @@ def call_tool(name: str, args: JsonDict) -> JsonDict:
         _bool(args, "full")
         if "fields" in args and args["fields"] is not None and not isinstance(args["fields"], list):
             raise FleetRagError("fields must be a list of field names")
-        raw = recall_api.recall_search(**search_args)
+        raw = recall_api.recall_search(
+            **search_args, **({"full": True} if presentation.full else {})
+        )
         return recall_presentation.present_search_result(raw, presentation)
     if name == "recall_stats":
         return recall_api.recall_stats()
