@@ -5,6 +5,7 @@ apple-notes-coding.sh calls this on stdin JSON from delete_fetch.  Exit 5 matche
 not-deletable code.  Re-execs with Homebrew python3 when /usr/bin/python3 is only 3.9 (same pattern
 as scripts/simple-notes).
 """
+
 from __future__ import annotations
 
 import json
@@ -25,7 +26,7 @@ if sys.version_info < (3, 11):
 _SCRIPTS = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, _SCRIPTS)
 
-from simple_tools.notes import is_tool_created_note  # noqa: E402
+from simple_tools.notes import is_tool_created_note
 
 
 def main() -> int:
