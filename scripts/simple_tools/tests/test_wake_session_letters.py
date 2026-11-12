@@ -762,7 +762,7 @@ class WakeLetterTests(DaemonHarness):
 
     def test_the_row_identity_joins_on_platform_location_scope_and_session(self) -> None:
         d, r, p = self.setup_rows([self.row()])
-        self.register(d, platform="codex", native_session_id="mvs_abc")
+        self.register(d, platform="codex", seat="CODEX", native_session_id="mvs_abc")
         context = d.chat_context(r, p)
         self.assertEqual(context[0]["label"], "")
         # The registry's host key is the fleet location, so a registration made under a
@@ -1310,7 +1310,8 @@ class LetterCandidateTests(DaemonHarness):
     A and B.
     """
 
-    AMBIGUOUS = (("MM", "minimax"), ("CODEX", "claude-code"))
+    # Each seat on its own platform:  the registry refuses a platform under another seat (AFC-772).
+    AMBIGUOUS = (("MM", "minimax"), ("CODEX", "codex"))
 
     def seed(self, d, seats):
         db = OR.registry_db_path(d.root, d.env)

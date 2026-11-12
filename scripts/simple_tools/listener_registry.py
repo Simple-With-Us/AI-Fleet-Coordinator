@@ -39,6 +39,15 @@ Authority, enforced here and in `operator_registry` itself:
     check the stored row's seat against the principal, `sweep` may name only the principal's
     own seat, `resolve` answers only for the principal's own session, and `history` is
     filtered to the principal's own rows.  The OPERATOR principal acts for any seat.
+  * A session is filed under one of its platform's seats (AFC-772):  `register` and `relabel`
+    refuse a known platform under another seat (a claude chat under ZC) with 400 and the code
+    `seat_platform_mismatch`, before anything is written.  The pairs are fleet-apps.json
+    `seatApps` (operator_registry.check_seat_platform);  a platform it does not name registers
+    under any seat.  A known platform's seat is stored as its tag (`claude` is filed as CLAUDE).
+    A row filed under a wrong seat earlier can still be touched and closed, and while it is live
+    `register` still resumes it under that seat, so its chat can end it.  A `register` that names
+    the platform's one seat (the payload's, not the signed principal's) re-seats such a row and
+    answers as the platform's own row (event `reseat`);  never the other way.
   * The export outbox is the Operator's own:  `pending-outbox` and `mark-exported` require
     the OPERATOR principal.
   * No op brings a store into being:  every op, `register` and `relabel` included, answers
@@ -237,6 +246,8 @@ class RegistryService:
         self.gone_report_window_minutes = int(gone_report_window_minutes)
         # The one stale sweeper (Sweeper sets itself here), which the `sweep` op runs.
         self.sweeper: Sweeper | None = None
+        # Why the platform's seats could not be read the last time a letter was asked for, or "".
+        self._seat_table_problem = ""
         self.keys = {
             principal.upper(): key
             for principal, key in keys.items()
@@ -307,6 +318,18 @@ class RegistryService:
             status, answer = getattr(self, "_op_" + op.replace("-", "_"))(principal, payload)
         except OR.LabelExhausted as exc:
             return 409, {"error": str(exc), "code": "labels_exhausted"}
+        except OR.SeatPlatformMismatch as exc:
+            # A platform's chat under a seat that is not one of that platform's (AFC-772):  the
+            # caller's mistake, so 400, with its own code and nothing written.
+            self.log(
+                "registry-api-refused",
+                principal=principal,
+                op=op,
+                reason=exc.code,
+                platform=exc.platform,
+                seat=exc.seat,
+            )
+            return 400, exc.answer()
         except OR.SessionClosed as exc:
             return 409, {"error": str(exc), "code": "closed_session"}
         except OR.SessionUnknown as exc:
@@ -357,6 +380,17 @@ class RegistryService:
         if not os.path.isfile(self.db_path):
             raise OR.RegistryUnavailable("the registry %s is not there" % self.db_path)
 
+    def _note_seat_table(self) -> None:
+        """Log when the platform's seats stop or start being readable (AFC-772).
+
+        The registry's seat check refuses nothing while fleet-apps.json cannot be read, so a
+        letter is still issued;  this line is how anyone learns the check is off.  It is written
+        when the state changes, not on every call."""
+        problem = OR.seat_table_problem()
+        if problem != self._seat_table_problem:
+            self._seat_table_problem = problem
+            self.log("registry-seat-table", ok=not problem, error=problem)
+
     # ---- the Operator's own writes --------------------------------------------
 
     def operator_register(self, **fields: Any) -> dict[str, Any]:
@@ -368,6 +402,7 @@ class RegistryService:
         starting a second registry that would hand out colliding letters.  The issuer is
         always the Operator, whatever the caller passes."""
         self._require_store()
+        self._note_seat_table()
         fields = {name: value for name, value in fields.items() if name != "issuer"}
         return OR.register_session(self.db_path, issuer=OPERATOR, **fields)
 
@@ -465,6 +500,7 @@ class RegistryService:
         if refused:
             return refused
         self._require_store()
+        self._note_seat_table()
         identity = _identity(payload)
         out = OR.relabel_session(
             self.db_path,

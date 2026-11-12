@@ -26,14 +26,18 @@ from simple_tools import operator_registry as R
 SYNTHETIC_SECRET = "A1b2C3d4" * 4
 
 
-# The seat each platform namespace belongs to, for fixtures that name only a platform.
+# The seat each platform namespace belongs to, for fixtures that name only a platform.  The registry
+# refuses a platform under another seat (AFC-772, SeatGuardTest below), so a fixture has to name the
+# platform's own;  a BotFleet bot's seat is any BF-<ROLE>.
 SEATS = {
+    "botfleet": "BF-BUILDER",
     "claude": "CLAUDE",
     "codex": "CODEX",
     "cursor": "CURSOR",
     "grok-leader": "GROK",
     "minimax": "MM",
     "muse": "MC",
+    "opencode": "OPENCODE",
 }
 
 
@@ -736,7 +740,7 @@ class RegistryTest(unittest.TestCase):
     def _seat_pair(self, native, platform="muse", parent="", pick="primary"):
         return self.reg.resolve_or_register(
             ident(
-                seat=platform.upper(),
+                seat=SEATS.get(platform, platform.upper()),
                 platform=platform,
                 native=native,
                 letter_space="double",
@@ -914,7 +918,7 @@ class RegistryTest(unittest.TestCase):
                 for n in range(5):
                     got = reg.resolve_or_register(
                         ident(
-                            seat="MUSE",
+                            seat="MC",
                             platform="muse",
                             native="c-%d-%d" % (index, n),
                             letter_space="double",
@@ -1039,7 +1043,7 @@ class RegistryTest(unittest.TestCase):
         labels += [
             self.reg.resolve_or_register(
                 ident(
-                    seat="MUSE",
+                    seat="MC",
                     platform="muse",
                     native="s-%d" % i,
                     letter_space="single",
@@ -2380,3 +2384,602 @@ class ReopenCommandTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(answer["code"], "reopen_failed")
         self.assertEqual(answer["outcome"], "reopen_refused")
+
+
+class SeatGuardTest(unittest.TestCase):
+    """AFC-772:  a platform's chat is filed under one of that platform's seats.
+
+    Three Claude Code chats registered as platform "claude" under the seat ZC, because their host
+    exported ZCode's seat and the letter hook passed it on.  The registry took them, the wake router
+    (which picks only rows of its own seat) skipped them, and nothing could move them.  Now the
+    registry refuses the pair before it writes anything.  The pairs are fleet-apps.json `seatApps`
+    (identity.platform_seats), so there is no second table here to keep equal.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "registry.sqlite3")
+
+    def register(self, platform, seat, native="native-1", **kw):
+        return R.register_session(
+            self.db,
+            platform=platform,
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id=native,
+            seat=seat,
+            source="test",
+            issuer=R.ISSUER_OPERATOR,
+            **kw,
+        )
+
+    def relabel(self, platform, seat, native="native-1", **kw):
+        return R.relabel_session(
+            self.db,
+            platform=platform,
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id=native,
+            seat=seat,
+            source="test",
+            issuer=R.ISSUER_OPERATOR,
+            **kw,
+        )
+
+    def legacy(self, platform, seat, native="native-1"):
+        """A row as one was filed before the check existed:  the pair went in unquestioned."""
+        with mock.patch.object(R, "check_seat_platform", lambda *_: None):
+            return self.register(platform, seat, native)
+
+    def sql(self, statement, *args):
+        conn = sqlite3.connect(self.db)
+        try:
+            with conn:
+                return conn.execute(statement, args).fetchall()
+        finally:
+            conn.close()
+
+    def counts(self):
+        return tuple(
+            self.sql(f"SELECT COUNT(*) FROM {table}")[0][0]
+            for table in ("sessions", "alias_assignments", "events", "export_outbox")
+        )
+
+    def where(self, platform="claude", native="native-1"):
+        return {
+            "platform": platform,
+            "verified_host": "mac",
+            "profile_scope": "default",
+            "native_session_id": native,
+        }
+
+    # ---- register ----
+
+    def test_a_claude_chat_under_zc_is_refused_and_nothing_is_written(self):
+        with self.assertRaises(R.SeatPlatformMismatch) as caught:
+            self.register("claude", "ZC")
+        refusal = caught.exception
+        self.assertIsInstance(
+            refusal, ValueError
+        )  # so every caller that catches ValueError still does
+        self.assertEqual(
+            refusal.answer(),
+            {
+                "error": "platform claude registers under seat CLAUDE, not ZC",
+                "code": "seat_platform_mismatch",
+                "platform": "claude",
+                "seat": "ZC",
+                "expected": ["CLAUDE"],
+            },
+        )
+        self.assertFalse(os.path.exists(self.db), "refused before the store is opened")
+        R.SessionRegistry(self.db).close_db()
+        with self.assertRaises(R.SeatPlatformMismatch):
+            self.register("claude", "ZC")
+        self.assertEqual(self.counts(), (0, 0, 0, 0))
+
+    def test_the_one_place_a_row_is_made_refuses_it_too(self):
+        reg = R.SessionRegistry(self.db)
+        self.addCleanup(reg.close_db)
+        with self.assertRaises(R.SeatPlatformMismatch):
+            reg.resolve_or_register(ident(seat="ZC", platform="claude"))
+        self.assertEqual(self.counts(), (0, 0, 0, 0))
+        self.assertEqual(reg.resolve_or_register(ident(platform="claude"))["label"], "AA")
+
+    def test_each_platforms_own_seat_is_accepted(self):
+        for platform, seat in (
+            ("claude", "CLAUDE"),
+            ("zcode", "ZC"),
+            ("codex", "CODEX"),
+            ("cursor", "CURSOR"),
+            ("grok-leader", "GROK"),
+            ("minimax", "MM"),
+            ("muse", "MC"),
+            ("antigravity", "AG"),
+            ("fx", "FX"),
+            ("opencode", "OPENCODE"),
+            ("clutch", "CLUTCH"),
+        ):
+            with self.subTest(platform=platform):
+                out = self.register(platform, seat)
+                self.assertEqual((out["outcome"], out["label"]), ("registered", "AA"))
+                self.assertEqual(self.register(platform, seat)["outcome"], "resumed")
+
+    def test_a_platform_the_table_does_not_know_registers_under_any_seat(self):
+        # Letters are liberal:  only a known platform under another seat is refused.
+        labels = [
+            self.register("testbed", seat, native=f"native-{index}")["label"]
+            for index, seat in enumerate(("ZC", "CLAUDE", "BF-FIXER", "SOMETHING-NEW"))
+        ]
+        self.assertEqual(labels, ["AA", "BB", "CC", "DD"])
+
+    def test_a_launchers_bots_match_a_pattern_and_not_one_seat(self):
+        self.assertEqual(self.register("botfleet", "BF-FIXER", "bf-1")["label"], "AA")
+        self.assertEqual(self.register("botfleet", "bf-oracle", "bf-2")["label"], "BB")
+        with self.assertRaises(R.SeatPlatformMismatch) as caught:
+            self.register("botfleet", "CLAUDE", "bf-3")
+        self.assertEqual(caught.exception.expected, ("BF-*",))
+        self.assertEqual(self.register("grok-bot", "GB-COMPILER", "gb-1")["label"], "AA")
+        self.assertEqual(self.register("grok-bot", "GROK-BOT", "gb-2")["label"], "BB")
+        with self.assertRaises(R.SeatPlatformMismatch) as caught:
+            self.register("grok-bot", "BF-COMPILER", "gb-3")
+        self.assertEqual(caught.exception.expected, ("GROK-BOT", "GB-*"))
+        self.assertEqual(self.sql("SELECT COUNT(*) FROM sessions")[0][0], 4)
+
+    def test_case_aliases_and_adapter_names_do_not_get_around_it(self):
+        for platform, seat, namespace in (
+            ("Claude", "zc", "claude"),
+            (" CLAUDE ", "Zc", "claude"),
+            ("cursor-cloud", "ZC", "cursor"),
+            ("cursor-local", "CLAUDE", "cursor"),
+            ("grok", "ZC", "grok-leader"),
+            ("GROK-BUILD", "MM", "grok-leader"),
+            ("minimax", "MINIMAX", "minimax"),  # the tag is MM, and identity has no such alias
+        ):
+            with self.subTest(platform=platform, seat=seat):
+                with self.assertRaises(R.SeatPlatformMismatch) as caught:
+                    self.register(platform, seat)
+                self.assertEqual(caught.exception.platform, namespace)
+        self.assertFalse(os.path.exists(self.db))
+        # ... and the same spellings of the right seat are that seat.
+        for index, (platform, seat, namespace, tag) in enumerate(
+            (
+                ("Claude", "claude", "claude", "CLAUDE"),
+                ("claude", " CLAUDE ", "claude", "CLAUDE"),
+                ("cursor-cloud", "Cursor", "cursor", "CURSOR"),
+                # The Grok leader is Grok Build, so its seat is GROK.
+                ("grok-build", "Grok Build", "grok-leader", "GROK"),
+                ("grok", "GROK-BUILD", "grok-leader", "GROK"),
+            )
+        ):
+            with self.subTest(platform=platform, seat=seat):
+                native = f"right-{index}"
+                out = self.register(platform, seat, native=native)
+                self.assertEqual(out["outcome"], "registered")
+                # It is stored as the tag, not as typed:  a row filed as "Grok Build" could never be
+                # resumed under GROK, and the wake router would not read it as a seat.
+                self.assertEqual(
+                    self.sql(
+                        "SELECT platform, seat FROM sessions WHERE record_id = ?", out["record_id"]
+                    ),
+                    [(namespace, tag)],
+                )
+                self.assertEqual(
+                    self.sql(
+                        "SELECT DISTINCT actor FROM events WHERE session_record_id = ?",
+                        out["record_id"],
+                    ),
+                    [(tag,)],
+                )
+                for spelling in (tag, seat):
+                    again = self.register(namespace, spelling, native=native)
+                    self.assertEqual(
+                        (again["outcome"], again["record_id"]), ("resumed", out["record_id"])
+                    )
+
+    def test_a_platform_the_table_does_not_know_keeps_its_seat_as_given(self):
+        made = self.register("testbed", "some-seat")
+        self.assertEqual(self.sql("SELECT seat FROM sessions"), [("some-seat",)])
+        self.assertEqual(self.register("testbed", "some-seat")["outcome"], "resumed")
+        self.assertEqual(self.register("testbed", "SOME-SEAT")["outcome"], "seat_mismatch")
+        self.assertEqual(self.sql("SELECT seat FROM sessions"), [("some-seat",)])
+        self.assertEqual(made["label"], "AA")
+
+    def test_what_is_not_a_seat_tag_is_not_repeated_back(self):
+        with self.assertRaises(R.SeatPlatformMismatch) as caught:
+            self.register("claude", "not a seat; rm -rf")
+        self.assertEqual(caught.exception.seat, "")
+        self.assertEqual(
+            str(caught.exception), "platform claude registers under seat CLAUDE, not the seat given"
+        )
+
+    # ---- relabel ----
+
+    def test_a_relabel_into_a_mismatch_is_refused(self):
+        made = self.legacy("claude", "ZC")
+        self.sql("UPDATE alias_assignments SET letter = 'A' WHERE record_id = ?", made["record_id"])
+        before = self.counts()
+        with self.assertRaises(R.SeatPlatformMismatch) as caught:
+            self.relabel("claude", "ZC", letter_space="double")
+        self.assertEqual(caught.exception.answer()["code"], "seat_platform_mismatch")
+        # Naming the platform's own seat does not move another seat's row either (the rule from before).
+        with self.assertRaises(ValueError) as other:
+            self.relabel("claude", "CLAUDE", letter_space="double")
+        self.assertNotIsInstance(other.exception, R.SeatPlatformMismatch)
+        self.assertIn("belongs to seat ZC", str(other.exception))
+        self.assertEqual(self.counts(), before)
+        live = self.sql("SELECT letter FROM alias_assignments WHERE retired_at IS NULL")
+        self.assertEqual([row[0] for row in live], ["A"])
+        # A row under its platform's own seat still moves onto a pair.
+        good = self.register("claude", "CLAUDE", native="native-2")
+        self.sql("UPDATE alias_assignments SET letter = 'B' WHERE record_id = ?", good["record_id"])
+        self.assertEqual(
+            self.relabel("claude", "CLAUDE", native="native-2")["outcome"], "relabelled"
+        )
+
+    def test_a_relabel_names_the_seat_in_any_spelling_the_check_accepts(self):
+        # The seat is stored as the tag, so the relabel compares the tag:  "claude" is CLAUDE's row.
+        for index, (platform, seat, tag) in enumerate(
+            (("claude", "claude", "CLAUDE"), ("grok", "Grok Build", "GROK"))
+        ):
+            with self.subTest(platform=platform, seat=seat):
+                native = f"spelled-{index}"
+                made = self.register(platform, tag, native=native)
+                self.sql(
+                    "UPDATE alias_assignments SET letter = ? WHERE record_id = ?",
+                    "CD"[index],
+                    made["record_id"],
+                )
+                moved = self.relabel(platform, seat, native=native)
+                self.assertEqual(moved["outcome"], "relabelled")
+                actors = self.sql(
+                    "SELECT DISTINCT actor FROM events WHERE session_record_id = ?",
+                    made["record_id"],
+                )
+                self.assertEqual(actors, [(tag,)])
+
+    # ---- a row filed under a wrong seat before the check existed ----
+
+    def test_a_row_filed_under_a_wrong_seat_earlier_is_still_seen_updated_and_ended(self):
+        made = self.legacy("claude", "ZC")
+        where = self.where()
+        self.assertEqual(R.touch_session(self.db, **where)["outcome"], "seen")
+        self.assertEqual(
+            R.update_session(self.db, title="Still Here", **where)["outcome"], "updated"
+        )
+        found = R.resolve_label(self.db, "claude", made["label"])
+        self.assertEqual((found["seat"], found["record_id"]), ("ZC", made["record_id"]))
+        # (A register under the right seat would heal it:  see the reseat tests below.)
+        ended = R.close_session(self.db, reason="session ended", **where)
+        self.assertEqual((ended["closed"], ended["label"]), (True, made["label"]))
+        self.assertEqual(R.touch_session(self.db, **where)["outcome"], "closed")
+        self.assertIsNone(R.resolve_label(self.db, "claude", made["label"]))
+
+    def test_a_live_row_filed_under_a_wrong_seat_earlier_is_still_resumed_until_it_is_closed(self):
+        # A refused resume left the chat's hook with a failed note, and a failed note never closes
+        # its row:  the letter stayed live with nothing left to end it.  So the resume of a live row
+        # under the seat it is stored under goes through, as it did before the check.
+        made = self.legacy("claude", "ZC")
+        before = self.sql("SELECT last_seen_at FROM sessions")[0][0]
+        self.sql("UPDATE sessions SET last_seen_at = '2026-01-01T00:00:00.000Z'")
+        for spelling in ("ZC", "zc"):
+            again = self.register("claude", spelling)
+            self.assertEqual(
+                (again["outcome"], again["record_id"], again["label"]),
+                ("resumed", made["record_id"], made["label"]),
+            )
+        self.assertGreaterEqual(self.sql("SELECT last_seen_at FROM sessions")[0][0], before)
+        self.assertEqual(self.sql("SELECT seat FROM sessions"), [("ZC",)])
+        # Only that row, and only under that seat:  another wrong seat, and a new chat under the
+        # same wrong seat, are refused as before, with nothing written.
+        counts = self.counts()
+        with self.assertRaises(R.SeatPlatformMismatch):
+            self.register("claude", "MM")
+        with self.assertRaises(R.SeatPlatformMismatch):
+            self.register("claude", "ZC", native="native-2")
+        self.assertEqual(self.counts(), counts)
+        # Closed, it is not brought back under the wrong seat (a resume of a closed row leads to a
+        # reopen, and with it a new letter under ZC).
+        R.close_session(self.db, reason="session ended", **self.where())
+        counts = self.counts()
+        with self.assertRaises(R.SeatPlatformMismatch):
+            self.register("claude", "ZC")
+        self.assertEqual(self.counts(), counts)
+        self.assertEqual(self.sql("SELECT state FROM sessions"), [("closed",)])
+
+    def test_the_stale_sweep_still_ends_a_row_filed_under_a_wrong_seat(self):
+        old = self.legacy("claude", "ZC", "old-1")
+        self.sql(
+            "UPDATE sessions SET last_seen_at = '2026-01-01T00:00:00.000Z' WHERE record_id = ?",
+            old["record_id"],
+        )
+        self.legacy("claude", "ZC", "new-1")
+        ended = R.sweep_stale(self.db, platform="claude", seat="ZC", stale_after_minutes=120)
+        self.assertEqual([row["record_id"] for row in ended], [old["record_id"]])
+
+    # ---- the heal:  a register under the platform's own seat re-seats a row filed under another ----
+
+    def reseat_events(self):
+        return self.sql(
+            "SELECT event, actor, outcome, details, label FROM events WHERE event = 'reseat'"
+        )
+
+    def test_a_register_under_the_platforms_own_seat_heals_a_row_filed_under_another(self):
+        # The shape of the three live rows:  platform claude, seat ZC, open, host mac.
+        made = self.legacy("claude", "ZC")
+        self.assertEqual(
+            self.sql("SELECT seat, state, verified_host FROM sessions"), [("ZC", "active", "mac")]
+        )
+        before = self.sql(
+            "SELECT record_id, registered_at, closed_at, state, platform FROM sessions"
+        )
+        events = len(self.sql("SELECT 1 FROM events"))
+        again = self.register("claude", "CLAUDE")
+        self.assertEqual(
+            (
+                again["outcome"],
+                again["record_id"],
+                again["label"],
+                again["generation"],
+                again["created"],
+            ),
+            ("resumed", made["record_id"], made["label"], made["generation"], False),
+        )
+        # The seat is the one thing that changed, and the record, letter and state are the same row's.
+        self.assertEqual(self.sql("SELECT seat FROM sessions"), [("CLAUDE",)])
+        self.assertEqual(
+            self.sql("SELECT record_id, registered_at, closed_at, state, platform FROM sessions"),
+            before,
+        )
+        self.assertEqual(R.resolve_label(self.db, "claude", made["label"])["seat"], "CLAUDE")
+        # One audit event of kind reseat, naming the old and the new seat, then the usual resume.
+        self.assertEqual(
+            self.reseat_events(),
+            [("reseat", "CLAUDE", "reseated", "seat ZC to CLAUDE", made["label"])],
+        )
+        self.assertEqual(len(self.sql("SELECT 1 FROM events")), events + 2)
+        # ... and the outbox row for the changed row carries the new seat, with the event's own.
+        outbox = [
+            (kind, json.loads(payload)["cells"])
+            for kind, payload in self.sql(
+                "SELECT kind, payload FROM export_outbox ORDER BY created_at, rowid"
+            )
+        ]
+        upserts = [cells for kind, cells in outbox if kind == "session_upsert"]
+        self.assertIn("CLAUDE", upserts[-1])
+        self.assertNotIn("ZC", upserts[-1])
+        self.assertTrue(any(kind == "event_append" and "reseat" in cells for kind, cells in outbox))
+        # Healed once:  the next register is a plain resume.
+        self.assertEqual(self.register("claude", "CLAUDE")["outcome"], "resumed")
+        self.assertEqual(len(self.reseat_events()), 1)
+
+    def test_the_heal_reads_the_seat_the_caller_sends_in_any_spelling_the_check_accepts(self):
+        made = self.legacy("claude", "ZC")
+        again = self.register("Claude", " claude ")
+        self.assertEqual((again["outcome"], again["record_id"]), ("resumed", made["record_id"]))
+        self.assertEqual(self.sql("SELECT seat FROM sessions"), [("CLAUDE",)])
+
+    def test_the_heal_never_goes_the_other_way(self):
+        # The row has the right seat and the caller sends a wrong one:  still refused, nothing written.
+        self.register("claude", "CLAUDE")
+        counts = self.counts()
+        with self.assertRaises(R.SeatPlatformMismatch):
+            self.register("claude", "ZC")
+        self.assertEqual(self.counts(), counts)
+        self.assertEqual(self.sql("SELECT seat FROM sessions"), [("CLAUDE",)])
+        self.assertEqual(self.reseat_events(), [])
+        # A wrong seat against a wrongly filed live row is not a heal either:  it is the resume the
+        # earlier test describes, and the stored seat stays.
+        self.legacy("claude", "ZC", "native-2")
+        self.assertEqual(self.register("claude", "ZC", native="native-2")["outcome"], "resumed")
+        self.assertEqual(
+            self.sql("SELECT seat FROM sessions WHERE native_session_id = 'native-2'"), [("ZC",)]
+        )
+        self.assertEqual(self.reseat_events(), [])
+
+    def test_a_platform_the_table_does_not_know_is_not_healed(self):
+        self.register("testbed", "some-seat")
+        counts = self.counts()
+        out = self.register("testbed", "other-seat")
+        self.assertEqual((out["outcome"], out["label"]), ("seat_mismatch", "AA"))
+        self.assertEqual(self.sql("SELECT seat FROM sessions"), [("some-seat",)])
+        self.assertEqual(self.reseat_events(), [])
+        # What it always wrote for a mismatch (one resolve event), and no row changed.
+        self.assertEqual(self.counts()[:2], counts[:2])
+        self.assertEqual(
+            self.sql("SELECT outcome FROM events WHERE event = 'resolve'"), [("seat_mismatch",)]
+        )
+
+    def test_a_platform_with_no_single_seat_is_not_healed(self):
+        # A launcher's bots each have a seat (a role pattern), and instinct is two tags:  there is no one
+        # right seat to move a row to, so the seat_mismatch answer stands.
+        for platform, first, second in (
+            ("botfleet", "BF-FIXER", "BF-ORACLE"),
+            ("grok-bot", "GB-FIXER", "GB-ORACLE"),
+            ("instinct", "ECHO", "WISE"),
+        ):
+            with self.subTest(platform=platform):
+                native = f"native-{platform}"
+                self.register(platform, first, native=native)
+                out = self.register(platform, second, native=native)
+                self.assertEqual(out["outcome"], "seat_mismatch")
+                self.assertEqual(
+                    self.sql("SELECT seat FROM sessions WHERE native_session_id = ?", native),
+                    [(first,)],
+                )
+        self.assertEqual(self.reseat_events(), [])
+
+    def test_a_closed_row_filed_under_a_wrong_seat_is_reseated_and_left_closed(self):
+        made = self.legacy("claude", "ZC")
+        R.close_session(self.db, reason="session ended", **self.where())
+        closed_at = self.sql("SELECT closed_at FROM sessions")[0][0]
+        out = self.register("claude", "CLAUDE")
+        # The same answer a closed row of the right seat gets, with no letter, and it is not reopened.
+        self.assertEqual(
+            (out["outcome"], out["record_id"], out["label"], out["created"]),
+            ("resumed_closed", made["record_id"], "", False),
+        )
+        self.assertEqual(
+            self.sql("SELECT seat, state, closed_at FROM sessions"),
+            [("CLAUDE", "closed", closed_at)],
+        )
+        self.assertEqual(len(self.reseat_events()), 1)
+        self.assertEqual(
+            self.sql("SELECT COUNT(*) FROM alias_assignments WHERE retired_at IS NULL"), [(0,)]
+        )
+
+    def test_two_rows_are_healed_one_after_the_other(self):
+        first = self.legacy("claude", "ZC", "native-1")
+        second = self.legacy("claude", "ZC", "native-2")
+        a = self.register("claude", "CLAUDE", native="native-1")
+        b = self.register("claude", "CLAUDE", native="native-2")
+        self.assertEqual(
+            [(a["record_id"], a["label"]), (b["record_id"], b["label"])],
+            [(first["record_id"], first["label"]), (second["record_id"], second["label"])],
+        )
+        self.assertNotEqual(a["label"], b["label"])
+        self.assertEqual(self.sql("SELECT DISTINCT seat FROM sessions"), [("CLAUDE",)])
+        self.assertEqual(len(self.reseat_events()), 2)
+
+    def test_the_heal_is_atomic(self):
+        made = self.legacy("claude", "ZC")
+        counts = self.counts()
+        failing = mock.patch.object(
+            R.SessionRegistry,
+            "_enqueue_session_upsert",
+            side_effect=RuntimeError("after the reseat"),
+        )
+        with failing, self.assertRaises(RuntimeError):
+            self.register("claude", "CLAUDE")
+        self.assertEqual(self.sql("SELECT seat FROM sessions"), [("ZC",)])
+        self.assertEqual(self.counts(), counts)
+        self.assertEqual(self.reseat_events(), [])
+        # Nothing half-done is left in the way:  the next register heals it.
+        self.assertEqual(self.register("claude", "CLAUDE")["record_id"], made["record_id"])
+        self.assertEqual(self.sql("SELECT seat FROM sessions"), [("CLAUDE",)])
+
+    def test_no_heal_while_the_table_cannot_be_read(self):
+        self.legacy("claude", "ZC")
+        missing = os.path.join(self.tmp.name, "no-such", "fleet-apps.json")
+        with mock.patch.dict(os.environ, {"FLEET_APPS_JSON": missing}):
+            self.assertEqual(R.fixed_seat("claude"), "")
+            self.assertEqual(self.register("claude", "CLAUDE")["outcome"], "seat_mismatch")
+        self.assertEqual(self.sql("SELECT seat FROM sessions"), [("ZC",)])
+        self.assertEqual(self.register("claude", "CLAUDE")["outcome"], "resumed")
+
+    def test_a_cursor_row_under_another_seat_is_healed_through_either_adapter(self):
+        # cursor-cloud and cursor-local fold to the one namespace "cursor", whose only seat is CURSOR (the
+        # Cursor Cloud registrar registers platform cursor, seat CURSOR).
+        for adapter in ("cursor", "cursor-cloud", "cursor-local"):
+            self.assertEqual(R.normalize_platform(adapter), "cursor")
+            self.assertEqual(R.fixed_seat(adapter), "CURSOR")
+        made = self.legacy("cursor-cloud", "MM")
+        self.assertEqual(self.sql("SELECT platform, seat FROM sessions"), [("cursor", "MM")])
+        again = self.register("cursor-local", "CURSOR")
+        self.assertEqual((again["outcome"], again["record_id"]), ("resumed", made["record_id"]))
+        self.assertEqual(self.sql("SELECT platform, seat FROM sessions"), [("cursor", "CURSOR")])
+        self.assertEqual(self.reseat_events()[0][3], "seat MM to CURSOR")
+
+    def test_the_fixed_seat_of_each_platform(self):
+        for platform, seat in (
+            ("claude", "CLAUDE"),
+            ("Claude", "CLAUDE"),
+            ("zcode", "ZC"),
+            ("grok", "GROK"),
+            ("grok-leader", "GROK"),
+            ("minimax", "MM"),
+            ("botfleet", ""),
+            ("grok-bot", ""),
+            ("instinct", ""),
+            ("testbed", ""),
+            ("", ""),
+        ):
+            with self.subTest(platform=platform):
+                self.assertEqual(R.fixed_seat(platform), seat)
+        self.assertEqual(R.fixed_seat(None), "")
+
+    # ---- the table ----
+
+    def test_the_check_is_off_and_says_so_while_the_table_cannot_be_read(self):
+        missing = os.path.join(self.tmp.name, "no-such", "fleet-apps.json")
+        self.assertEqual(R.seat_table_problem(), "")
+        with mock.patch.dict(os.environ, {"FLEET_APPS_JSON": missing}):
+            self.assertIn("cannot read", R.seat_table_problem())
+            # Liberal:  a letter is still issued, for any pair, rather than none for every platform.
+            self.assertEqual(self.register("claude", "ZC")["outcome"], "registered")
+        self.assertEqual(R.seat_table_problem(), "")
+        with self.assertRaises(R.SeatPlatformMismatch):
+            self.register("claude", "ZC", native="native-2")
+
+    def test_every_letter_client_and_the_router_name_a_pair_the_registry_takes(self):
+        # The registry holds no copy of these:  each client says its own platform and seat, the
+        # router's table says its own, and all of them have to be pairs fleet-apps.json agrees with,
+        # or a platform's own chats would be refused a letter.
+        import importlib
+        import pkgutil
+
+        import mm_session_letter
+        import simple_tools
+        from simple_tools import claude_letter, claude_wake, wake_service
+        from simple_tools import identity as I
+
+        pairs = {
+            ("claude_letter", claude_letter.PLATFORM, claude_letter.SEAT_DEFAULT),
+            ("claude_wake", claude_wake.PLATFORM, claude_wake.SEAT),
+            ("mm_session_letter", mm_session_letter.PLATFORM, mm_session_letter.SEAT),
+        }
+        for seat, builder in wake_service.BUILDERS.items():
+            pairs.add(("wake_service.BUILDERS", builder.platform, seat))
+        for info in pkgutil.iter_modules(simple_tools.__path__):
+            if info.name.startswith("platform_letter_"):
+                spec = importlib.import_module("simple_tools." + info.name).SPEC
+                if isinstance(spec.seat, str):  # a launcher's spec reads each bot's seat instead
+                    pairs.add((info.name, spec.platform, spec.seat))
+        self.assertGreaterEqual(len({platform for _source, platform, _seat in pairs}), 11)
+        for source, platform, seat in sorted(pairs):
+            with self.subTest(source=source, platform=platform, seat=seat):
+                R.check_seat_platform(platform, seat)  # raises when the registry would refuse it
+                owners = I.platform_seats(R.normalize_platform(platform))
+                self.assertIsNotNone(
+                    owners,
+                    f"the registry cannot check {platform}:  give its seat a row in fleet-apps.json"
+                    " seatApps (and identity.PLATFORM_APPS when the namespace is not the app's name)",
+                )
+                self.assertEqual(owners.seats, (seat,))
+
+    # ---- the CLI ----
+
+    def cli(self, *argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = R.main(list(argv), env={})
+        return code, json.loads(out.getvalue().splitlines()[-1])
+
+    def test_the_cli_answers_the_refusal_as_json_with_its_code(self):
+        R.SessionRegistry(self.db).close_db()
+        identity = [
+            "--db",
+            self.db,
+            "--platform",
+            "claude",
+            "--location",
+            "mac",
+            "--scope",
+            "default",
+        ]
+        identity += ["--session-id", "native-1", "--source", "test"]
+        code, answer = self.cli("register", *identity, "--seat", "ZC")
+        self.assertEqual(code, 2)
+        self.assertEqual(
+            (answer["code"], answer["platform"], answer["seat"], answer["expected"]),
+            ("seat_platform_mismatch", "claude", "ZC", ["CLAUDE"]),
+        )
+        self.assertEqual(self.counts(), (0, 0, 0, 0))
+        self.legacy("claude", "ZC")
+        code, answer = self.cli("relabel", *identity, "--seat", "ZC")
+        self.assertEqual((code, answer["code"]), (2, "seat_platform_mismatch"))
+        code, answer = self.cli(
+            "register", *identity, "--seat", "CLAUDE", "--session-id", "native-2"
+        )
+        self.assertEqual((code, answer["outcome"]), (0, "registered"))
