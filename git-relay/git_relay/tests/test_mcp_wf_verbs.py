@@ -143,7 +143,9 @@ class WfForwarding(unittest.TestCase):
         )
         self.assertEqual(seen["url"], "http://127.0.0.1:8471/v1/wf_issue_list")
         self.assertEqual(seen["body"]["labels"], "needs-mac")
-        self.assertEqual(json.loads(listed["result"]["content"][0]["text"])["issues"][0]["number"], 2)
+        self.assertEqual(
+            json.loads(listed["result"]["content"][0]["text"])["issues"][0]["number"], 2
+        )
         got = self._call(server, "wf_issue_get", {"repo": "o/r", "number": 2})
         self.assertEqual(seen["url"], "http://127.0.0.1:8471/v1/wf_issue_get")
         issue = json.loads(got["result"]["content"][0]["text"])["issue"]
