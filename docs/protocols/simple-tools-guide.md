@@ -243,6 +243,8 @@ Per-seat policy is an allowlist layer over that credential: allowed actions, all
 
 **Large files.**  A tool argument is a poor way to send a big file, because the model has to write out all of it.  `simple-git publish --repo OWNER/NAME --branch BRANCH --message TEXT --file LOCAL[=REPO_PATH]` reads the files from disk and commits them through `gr_wf_files_put`, with up to 2 MiB per file.  It splits a set past 20 files or 4 MiB into several commits, in order.  `--base BRANCH` creates the branch first.
 
+**One exact path on the default branch.**  `wf_file_put` and `wf_file_delete` may write the default branch when that seat's `default_branch_paths` names the exact repository and the exact path.  The relay prefixes the commit message with `default-branch-path: `.  It reads the blob first and refuses unless `prior_sha` matches.  Leave `prior_sha` out only to create a file that is not there.  A mismatch is `fence_mismatch` (`default-branch blob sha does not match`).  Any other path, seat or verb is still `bad_request_default_branch_protected`, including `wf_files_put`.
+
 A relay refusal arrives as a tool error carrying the relay's own HTTP status, never as one of the codes below: 401 unauthenticated, 403 policy denial, 400 a bad request or a terminal GitHub refusal, 409 a replay refused, 429 a GitHub rate limit (retryable), 502 an unknown outcome (not retryable — check GitHub before retrying) and 503 app-token minting unavailable.
 
 ## Old Names and New Names
@@ -370,7 +372,7 @@ A hosted `gr_*` refusal (`code: "relay_refused"`) names its cause in a `reason` 
 | `seat_policy` | The relay's allowlist for this seat does not permit the action or repository (or the seat's App ceiling is too low).  Retrying will not help; the seat's relay policy has to change |
 | `seat_rate_limit` | The seat used its hourly call or write quota.  Wait, then retry |
 | `github_refused` | GitHub itself refused it. `github_status` is the numeric status: 403 is permission or a branch rule, 405 is a merge block, 422 is a rejected change.  Fix the cause on GitHub; the seat policy is not the problem |
-| `fence_mismatch` | The head, base, ref or state the call expected is no longer what the relay read just before the write.  Read the current state and send the call again with the fresh value |
+| `fence_mismatch` | The head, base, ref, default-branch blob sha or other state the call expected is no longer what the relay read just before the write.  Read the current state and send the call again with the fresh value |
 | `credential_scan` | The content looked like a credential.  The code is `refused_secret` instead; nothing was written |
 | `unauthenticated` | The relay did not accept the seat's credential |
 | `bad_request_<id>` | A fixed relay verdict on the request itself: `bad_request_pr_not_issue_target` (a pull request sent to an issue tool), `bad_request_default_branch_protected`, `bad_request_pr_not_open`, `bad_request_pr_merged`, `bad_request_workflow_path_permission`, `bad_request_review_not_pending`, `bad_request_nothing_to_change`, `bad_request_invalid_files`, `bad_request_invalid_arguments`, `bad_request_unsupported_action`, `bad_request_invalid_repository`, `bad_request_content_too_large` |

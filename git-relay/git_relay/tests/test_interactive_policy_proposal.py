@@ -44,7 +44,7 @@ EXPECTED_REPOS = {
     "Simple-With-Us/Usage-Monitor",
     "Simple-With-Us/congress-trading-shared",
     "Simple-With-Us/homebrew-tap",
-    "jaywedgeworth22/Fleet-OPS",
+    "Simple-With-Us/Fleet-OPS",
 }
 EXPECTED_SEAT_KEYS = {"auth", "identity", "actions", "repos", "app_slug", "mint_permissions"}
 
@@ -72,18 +72,18 @@ class InteractivePolicyProposalTest(unittest.TestCase):
         self.assertEqual(self.cfg["app_slug"], "swu-wise")
         self.assertNotIn("token", self.cfg)
 
-    def test_repos_are_the_org_repos_plus_the_one_personal_repo(self):
+    def test_repos_are_all_org_repos_including_fleet_ops(self):
         repos = self.cfg["repos"]
         self.assertEqual(set(repos), EXPECTED_REPOS)
         self.assertEqual(len(repos), 18)
         self.assertEqual(len(set(repos)), 18)
         personal = [r for r in repos if not r.startswith("Simple-With-Us/")]
-        self.assertEqual(personal, ["jaywedgeworth22/Fleet-OPS"])
+        self.assertEqual(personal, [])
         org = [r for r in repos if r.startswith("Simple-With-Us/")]
-        self.assertEqual(len(org), 17)
+        self.assertEqual(len(org), 18)
         for repo in repos:
             self.assertRegex(repo, r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$")
-        self.assertNotIn("Simple-With-Us/Fleet-OPS", repos)
+        self.assertIn("Simple-With-Us/Fleet-OPS", repos)
 
     def test_mint_ceiling_has_no_checks_or_admin(self):
         self.assertEqual(

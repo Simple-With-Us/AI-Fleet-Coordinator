@@ -68,6 +68,7 @@ from . import outgoing_webhook as OW
 from . import router as R
 from . import session_ids as SI
 from . import subscribe_all as SUB
+from . import thread_registry as TR
 from . import typing_signal as TYPING
 from . import wakes as W
 from . import zulip as Z
@@ -736,6 +737,7 @@ class Daemon:
         self.secrets_dir = Z.override_secrets_dir(self.env)
         self.hidden: list[str] = []
         self.hidden_lock = threading.Lock()
+        self._thread_store_lock = threading.Lock()
         self.stdout = stdout or sys.stdout
         tee = (
             self.stdout
@@ -910,12 +912,15 @@ class Daemon:
         # Infisical service token for the Operator's Linear developer token resolves.
         self.linear_comments: Any | None = None
         self._linear_comments_spec: tuple[Any, ...] | None = None
-        # The Operator's session registry API (listener_registry.py), served by the
-        # listener API under /registry/v1/:  rebuilt with the API server on every start
-        # and reload (_configure_listener_api), None while the listener API is off or
-        # no principal has a key.
+        # The Operator's session registry service (listener_registry.py), rebuilt on every
+        # start and reload (_configure_listener_api calls _configure_registry first).  It
+        # exists on the server instance only, whether or not the listener API is on;  the
+        # API serves it under /registry/v1/ when a principal has a key (AFC-721).
         self.registry_service: LREG.RegistryService | None = None
         self._registry_spec: tuple[Any, ...] | None = None
+        # The one stale sweeper (AFC-721), built with the registry service and run from the
+        # tick only while it belongs to the live service, so it stops when the service does.
+        self.registry_sweeper: LREG.Sweeper | None = None
         self.backfill_lock = threading.Lock()
         self.started_at = self.clock.time()
         self.last_tick = {
@@ -1519,33 +1524,74 @@ class Daemon:
             )
 
     def _configure_registry(self) -> LREG.RegistryService | None:
-        """The Operator's session registry API for the listener API to serve under /registry/v1/, or None:
-        off unless at least one principal has a key.  The principals are the seats this instance holds, keyed
+        """The Operator's session registry service, or None off the server instance.  The listener API serves
+        it under /registry/v1/ only when at least one principal has a key;  the service itself, the location
+        answers and the sweeper do not depend on a key or on the API being on (AFC-721).  The principals are the seats this instance holds, keyed
         exactly as the read API keys them (the seat's routine `key_env` key), plus the OPERATOR principal,
         whose key is the value of the env var listener_registry.OPERATOR_KEY_ENV when it is set.  Every key
         value is hidden from the log by listener_api_keys / here, before anything can print it.  A reload that
         leaves the principals and the store as they were keeps the same service object.  Construction opens
-        no file:  the service opens the registry per call, through the registry's own functions."""
+        no file:  the service opens the registry per call, through the registry's own functions.
+
+        One writer (AFC-721):  only the server instance builds the service, and with it the one stale
+        sweeper ([registry] settings);  every other instance gets None and writes no registry row."""
         old = getattr(self, "registry_service", None)
         old_spec = getattr(self, "_registry_spec", None)
+        old_sweeper = getattr(self, "registry_sweeper", None)
         self.registry_service = None
         self._registry_spec = None
+        self.registry_sweeper = None
+        # One writer (AFC-721):  only the server instance, the Eavesdropper, holds the registry.
+        # Any other instance serves no registry API and writes no row, whatever keys it has.
+        if getattr(self.config, "instance", "mac") != "server":
+            return None
         keys = self.listener_api_keys()
         operator_key = Z._strip_quotes(self.env.get(LREG.OPERATOR_KEY_ENV) or "")
         if operator_key:
             self.hide_values([operator_key])
             keys[LREG.OPERATOR] = operator_key
-        usable = sorted(name for name, key in keys.items() if len(key) >= LREG.MIN_KEY_LEN)
-        if not usable:
-            return None
+        # The service is built on the server whether or not any principal has a usable key, and
+        # whether or not the API is on or bound:  the location answers and the sweeper run in
+        # process and need no key.  The keys decide only whether the API serves /registry/v1/.
         db_path = OR.registry_db_path(self.root, self.env)
-        spec = (db_path, tuple(sorted((name, key) for name, key in keys.items())))
+        share = self.config.registry_gone_report_max_share
+        window = self.config.registry_gone_report_window_minutes
+        spec = (db_path, share, window, tuple(sorted((name, key) for name, key in keys.items())))
         if old is not None and old_spec == spec:
             service = old
         else:
-            service = LREG.RegistryService(db_path, keys, clock=self.clock.time, log=self.log.write)
+            service = LREG.RegistryService(
+                db_path,
+                keys,
+                clock=self.clock.time,
+                log=self.log.write,
+                gone_report_max_share=share,
+                gone_report_window_minutes=window,
+            )
         self.registry_service = service
         self._registry_spec = spec
+        service.sweeper = None
+        if self.config.registry_sweep_enabled:
+            interval = self.config.registry_sweep_interval_minutes
+            stale = self.config.registry_stale_after_hours
+            max_share = self.config.registry_sweep_max_share
+            if (
+                old_sweeper is not None
+                and old_sweeper.service is service
+                and old_sweeper.interval_s == interval * 60.0
+                and old_sweeper.stale_after_minutes == max(1, round(stale * 60))
+                and old_sweeper.max_share == max_share
+            ):
+                self.registry_sweeper = old_sweeper
+                service.sweeper = old_sweeper
+            else:
+                self.registry_sweeper = LREG.Sweeper(
+                    service,
+                    interval_minutes=interval,
+                    stale_after_hours=stale,
+                    max_share=max_share,
+                    log=self.log.write,
+                )
         return service
 
     def _configure_listener_api(self) -> None:
@@ -1559,13 +1605,15 @@ class Daemon:
         self.listener_api_server = None
         if old is not None:
             old.close()
+        # The registry service and its sweeper live with the instance, not with the API
+        # (AFC-721):  an API that is off or fails to bind leaves them running.
+        service = self._configure_registry()
+        registry = service if service is not None and service.keys else None
         if not self.config.listener_api_enabled:
             self.notes_queue = None
             self._notes_queue_spec = None
             self.linear_projects_hook = None
             self._linear_projects_spec = None
-            self.registry_service = None
-            self._registry_spec = None
             if self.config.notes_queue_enabled:
                 self.log.write(
                     "notes-queue-off",
@@ -1580,7 +1628,6 @@ class Daemon:
         keys = self.listener_api_keys()
         notes = self._configure_notes_queue()
         hook = self._configure_linear_projects()
-        registry = self._configure_registry()
         if not keys and notes is None and hook is None and registry is None:
             self.log.write(
                 "listener-api-deny-all",
@@ -1609,8 +1656,6 @@ class Daemon:
             self._notes_queue_spec = None
             self.linear_projects_hook = None
             self._linear_projects_spec = None
-            self.registry_service = None
-            self._registry_spec = None
             return
         self.listener_api_server = server
         host, port = server.address
@@ -2188,7 +2233,46 @@ class Daemon:
         runner.gaps = []
         runner.flush_cursor(force=True)
 
+    def _thread_registry_store(self) -> TR.ThreadRegistryStore:
+        store = getattr(self, "_thread_store", None)
+        if store is None:
+            # Double-checked under a lock:  two routing threads racing the lazy
+            # creation must not build two stores whose cached data clobber each
+            # other's flushes.
+            with self._thread_store_lock:
+                store = getattr(self, "_thread_store", None)
+                if store is None:
+                    store = TR.ThreadRegistryStore(TR.thread_store_path(self.root, self.env))
+                    self._thread_store = store
+        return store
+
+    def _observe_thread(self, runner: SeatRunner, message: Mapping[str, Any]) -> None:
+        """Fold one routed message into the Operator's thread registry
+        (thread_registry.py).  Observation is best-effort by design:  a registry failure
+        is logged and never touches routing, and the store deduplicates by message id,
+        so the same message arriving for several seats, or again through backfill,
+        counts once."""
+        if not isinstance(message, Mapping) or message.get("type") != "stream":
+            return
+        try:
+            enriched = dict(message)
+            sender_id = message.get("sender_id")
+            if isinstance(sender_id, int):
+                person = runner.users.get(sender_id)
+                if isinstance(person, dict) and isinstance(person.get("is_bot"), bool):
+                    enriched["sender_is_bot"] = person["is_bot"]
+            stream_id = message.get("stream_id")
+            stream_name = runner.streams.get(stream_id) if isinstance(stream_id, int) else None
+            self._thread_registry_store().observe(enriched, stream_name=stream_name)
+        except Exception as exc:  # the registry must never break routing
+            self.log.write(
+                "thread-registry-error",
+                seat=runner.seat,
+                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+            )
+
     def route_message(self, runner: SeatRunner, message: Mapping[str, Any]) -> None:
+        self._observe_thread(runner, message)
         self._observe_linear_message(runner, message)
         self._route_message(runner, message, advance_cursor=True)
 
@@ -6754,8 +6838,9 @@ class Daemon:
         First run:  nothing has ever registered, so the file does not exist yet, and the
         registry layer fails closed on that (its wake-path rule:  never let a lookup
         bring a registry into being).  At this boundary a missing file is the truthful
-        "no letters yet" - asking is harmless, and the answer path's register creates
-        the file.  A file that exists but cannot be read still raises
+        "no letters yet" - asking is harmless.  The answer path never creates the file
+        (AFC-721):  it registers only through the Eavesdropper's registry service, which
+        refuses a missing store.  A file that exists but cannot be read still raises
         RegistryUnavailable:  that is a broken identity source, not an empty one.
         """
         if not os.path.isfile(str(db)):
@@ -6774,6 +6859,15 @@ class Daemon:
         per question (the notified stamp), and a failure here never breaks the wake that
         found the chats - the worst case is a chat that stays unlettered, which is today.
         """
+        # One writer (AFC-721):  only an instance with the registry service can take the answer,
+        # so only that instance asks.  Anywhere else a question could never be acted on.
+        if getattr(self, "registry_service", None) is None:
+            if not getattr(self, "_registration_ask_off_logged", False):
+                self._registration_ask_off_logged = True
+                self.log.write(
+                    "operator-registration-ask-off", reason="no registry service on this instance"
+                )
+            return
         try:
             owner = int(getattr(self.config, "owner_user_id", 0) or 0)
             # The question posts in the chat's own topic, never a DM:  owner DM permission
@@ -7117,6 +7211,21 @@ class Daemon:
                 if sent.get("status") != "sent":
                     self._confirmation_not_landed(sent, message_id, done)
                 return True
+            # One writer (AFC-721):  only the Eavesdropper's registry service issues a
+            # letter.  An instance without one never answers a registration, so the
+            # message follows its normal wake path and nothing is written here.  The
+            # check sits after the retry branch above (kody 4544460563):  a route retry
+            # whose letter was already issued only resends its confirmation, which needs
+            # no service, so it is never left unconfirmed.
+            service = getattr(self, "registry_service", None)
+            if service is None:
+                self.log.write(
+                    "operator-registration-answer",
+                    entry_id=parsed["entry_id"],
+                    status="refused",
+                    reason="no registry service on this instance",
+                )
+                return False
             db = self._registration_db()
             # Asked entries answer directly;  conflicted ones settle through the same
             # path (operator_registration.answer re-runs every cross-check).
@@ -7170,8 +7279,8 @@ class Daemon:
                 entry_id=parsed["entry_id"],
                 location=parsed["location"],
                 registrations=lambda pf, sid: self._registrations(db, pf, sid),
-                register=lambda **identity: OR.register_session(
-                    db, source="chat-topic-answer", issuer=OR.ISSUER_OPERATOR, **identity
+                register=lambda **identity: service.operator_register(
+                    source="chat-topic-answer", **identity
                 ),
                 # Only the pinned owner's own answer attests an uncorroborated location;
                 # the seat bot's word needs discovery evidence (kody 4366047282).
@@ -8602,6 +8711,7 @@ class Daemon:
                 )
         for runner in self.seats.values():
             runner.flush_cursor()
+        self._maybe_start_registry_sweep(now)
         if now - self.last_tick["status"] >= STATUS_TICK_SECONDS:
             self.last_tick["status"] = now
             self.write_status()
@@ -9021,9 +9131,46 @@ class Daemon:
             # Whether the Operator itself can speak (AFC-602):  a listener that is up with a dead
             # Operator voice drops every wake it would have reported, and nothing else says so.
             "operator_voice": self.operator_voice.snapshot(),
+            # The one stale sweeper's last pass (AFC-721):  null where no sweeper runs (every
+            # instance but the server) and before the first pass.
+            "registry_sweep": self._registry_sweep_status(),
             "drain": self._drain_status(),
             "seats": seats,
         }
+
+    def _maybe_start_registry_sweep(self, now: float) -> None:
+        """Start the one stale sweeper's due pass on its own thread (AFC-721, kody 4544460899).
+
+        A pass is one write transaction, which can wait on the store's lock;  on its own thread
+        that wait never stalls routing.  One pass at a time:  while one runs, a due pass is not
+        claimed, so it starts on the first tick after the running one ends.  A sweeper whose
+        service has been dropped starts nothing."""
+        sweeper = getattr(self, "registry_sweeper", None)
+        if sweeper is None or sweeper.service is not getattr(self, "registry_service", None):
+            return
+        running = getattr(self, "_registry_sweep_thread", None)
+        if running is not None and running.is_alive():
+            return
+        if not sweeper.claim(now):
+            return
+
+        def sweep() -> None:
+            try:
+                sweeper.run(now)
+            except Exception as exc:  # noqa: BLE001 - a sweep must never stop the router
+                self.log.write(
+                    "registry-sweep-error", error=self.scrub(type(exc).__name__ + ": " + str(exc))
+                )
+
+        thread = threading.Thread(target=sweep, name="registry-sweep", daemon=True)
+        self._registry_sweep_thread = thread
+        thread.start()
+
+    def _registry_sweep_status(self) -> dict[str, Any] | None:
+        sweeper = getattr(self, "registry_sweeper", None)
+        if sweeper is None or sweeper.service is not getattr(self, "registry_service", None):
+            return None
+        return sweeper.last
 
     def _drain_status(self) -> dict[str, Any]:
         """The planned-drain observability surface (AFC-652, F1):  every field a qualified

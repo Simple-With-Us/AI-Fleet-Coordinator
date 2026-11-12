@@ -1450,6 +1450,19 @@ class CliTests(RecallBase):
         # Absent the flag, nothing is forwarded, so the module keeps its own default.
         self.assertEqual(seen[2], ["--all", "--prune"])
 
+    def test_ingest_forwards_the_full_flag(self):
+        seen: list[list[str]] = []
+
+        def fake_main(argv=None):
+            seen.append(list(argv or []))
+            return 0
+
+        import fleet_rag.ingest as ing
+        with mock.patch.object(ing, "main", fake_main):
+            rc = self.cli.main(["ingest", "--source", "linear", "--full"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen, [["--source", "linear", "--full"]])
+
     def test_fake_backend_short_circuits_the_direct_path_preflight(self):
         # The fake backend installed by RecallBase.setUp() makes using_fake_backend() True, so
         # eval/ingest must never even ask whether Tailscale is down -- exactly like

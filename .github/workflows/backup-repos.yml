@@ -2,8 +2,13 @@ name: Backup fleet GitHub repositories
 
 # Secondary offsite: zip artifacts retained 90 days.
 # Canonical Google Drive copy is the Mac job com.jay.fleet-gdrive-backup
-# (scripts/backup-fleet-to-gdrive.py).  Do not set GH_TOKEN to an empty
-# secret — that overrides git and fails the job (Personal-Site 2026-08-13..22).
+# (scripts/backup-fleet-to-gdrive.py).
+# Clone auth uses GH_BACKUP_TOKEN when set (org read on every fleet repo);  the
+# workflow GITHUB_TOKEN only reaches repos GitHub grants to this workflow, so
+# private targets such as Fleet-OPS and fleetlink-legacy fail with gh's
+# "Could not resolve to a Repository" until that secret exists.  Do not create
+# GH_BACKUP_TOKEN with an empty value — that overrides the github.token fallback
+# and fails every clone (Personal-Site 2026-08-13..22).
 
 on:
   schedule:
@@ -20,7 +25,7 @@ jobs:
 
       - name: Archive fleet repositories
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_BACKUP_TOKEN || github.token }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -34,11 +39,10 @@ jobs:
           PY
 
           mkdir -p backups
-          # Authenticated full-history clone with the built-in GITHUB_TOKEN
-          # (contents: read):  an unauthenticated shallow clone cannot see
-          # private fleet repos and used to fail green,  so a missing repo
-          # was a silent gap in the offsite.  Full history keeps the backup
-          # a restore,  not a tip snapshot.
+          # Authenticated full-history clone (GH_BACKUP_TOKEN or github.token):
+          # an unauthenticated shallow clone cannot see private fleet repos and
+          # used to fail green,  so a missing repo was a silent gap in the
+          # offsite.  Full history keeps the backup a restore,  not a tip snapshot.
           #
           # AFC-682:  one failed target must not discard the archives that
           # succeeded.  The script records failures, keeps the partial set,

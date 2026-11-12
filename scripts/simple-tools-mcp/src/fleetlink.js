@@ -445,9 +445,10 @@ export class FleetLinkError extends Error {
   }
 }
 
-/** FleetLink's own message, one line and cut. */
+/** FleetLink's own message, one line and cut.  ASCII whitespace collapses; a no-break space stays (AFC-729). */
 export function fleetlinkMessage(message) {
-  return clean(String(message ?? "").replace(/\s+/g, " ").trim(), FLEETLINK_MESSAGE_LIMIT)[0];
+  const flat = String(message ?? "").replace(/[ \t\n\r\f\v\u2028\u2029]+/g, " ").replace(/^[ \t]+|[ \t]+$/g, "");
+  return clean(flat, FLEETLINK_MESSAGE_LIMIT)[0];
 }
 
 /** A FleetLinkError as the ToolError the caller sees. */
