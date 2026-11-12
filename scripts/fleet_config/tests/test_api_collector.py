@@ -43,7 +43,6 @@ from fleet_config.types import (
     ConfigKind,
     ExpectedState,
     Manifest,
-    ObservedState,
     ProofLevel,
     ReasonCode,
     Rule,
@@ -128,7 +127,7 @@ class _FakeHTTPResponse:
     def read(self, n: int = -1) -> bytes:
         return self._stream.read(n)
 
-    def __enter__(self) -> "_FakeHTTPResponse":
+    def __enter__(self) -> _FakeHTTPResponse:
         return self
 
     def __exit__(self, *_args: object) -> None:
