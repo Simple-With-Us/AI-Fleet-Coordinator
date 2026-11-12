@@ -33,7 +33,7 @@ import threading
 import time
 import zipfile
 import zlib
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from urllib.parse import quote, urlsplit
 
 from .app_tokens import AppTokenError
@@ -108,7 +108,7 @@ _CHECK_INSTANT = re.compile(
 _CHECK_PROVIDER_SHAPES = re.compile(
     PROVIDER_PATTERN + "|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}"
 )
-_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 def _check_text(value, limit):
@@ -152,7 +152,7 @@ def _check_instant(value):
             int((m.group(7) or "")[:6].ljust(6, "0")),
             tzinfo=timezone(offset),
         )
-        return value, instant.astimezone(timezone.utc)
+        return value, instant.astimezone(UTC)
     except (ValueError, OverflowError):
         return None, None
 

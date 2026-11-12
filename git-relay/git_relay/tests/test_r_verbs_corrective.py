@@ -429,9 +429,9 @@ class ChecksDetailTests(unittest.TestCase):
         self.assertIs(out["latest_per_name"], False)
 
     def test_summary_and_title_are_bounded_with_a_flag(self):
-        row = self.one(detail_run(1, output={"title": "t" * 255, "summary": "s" * 500}))[
-            "checks"
-        ][0]
+        row = self.one(detail_run(1, output={"title": "t" * 255, "summary": "s" * 500}))["checks"][
+            0
+        ]
         self.assertEqual((len(row["title"]), len(row["summary"])), (255, 500))
         self.assertIs(row["title_truncated"], False)
         self.assertIs(row["summary_truncated"], False)
@@ -499,9 +499,9 @@ class ChecksDetailTests(unittest.TestCase):
         self.assertNotIn("ghp_", repr(row))
         # one that begins before the cut is withheld whole, never returned as a prefix
         for start in (0, 480, 499):
-            row = self.one(detail_run(1, output={"summary": "s" * start + SECRET_TITLE}))[
-                "checks"
-            ][0]
+            row = self.one(detail_run(1, output={"summary": "s" * start + SECRET_TITLE}))["checks"][
+                0
+            ]
             self.assertEqual(row["summary"], self.MARKER, start)
             self.assertIs(row["summary_truncated"], False)
             self.assertIs(row["output_withheld"], True)
@@ -552,7 +552,9 @@ class ChecksDetailTests(unittest.TestCase):
             *[
                 checks_page(
                     [
-                        detail_run(50 * p + i + 1, output={"title": "t" * 255, "summary": "s" * 500})
+                        detail_run(
+                            50 * p + i + 1, output={"title": "t" * 255, "summary": "s" * 500}
+                        )
                         for i in range(50)
                     ],
                     500,
@@ -651,10 +653,7 @@ class ChecksDetailTests(unittest.TestCase):
         self.assertIs(out["complete"], True)
         # the page bound cut the read: the filter still runs, complete says so
         s, _ = svc(
-            *[
-                checks_page([detail_run(30 * p + i + 1) for i in range(30)], 1000)
-                for p in range(10)
-            ]
+            *[checks_page([detail_run(30 * p + i + 1) for i in range(30)], 1000) for p in range(10)]
         )
         out = s.run("wf_checks", {"repo": REPO, "ref": SHA, "latest_per_name": True})
         self.assertEqual([r["id"] for r in out["checks"]], [300])
@@ -725,9 +724,7 @@ class ChecksDetailTests(unittest.TestCase):
             checks_page([detail_run(1), detail_run(2, "merge-gate")], 3),
             checks_page([detail_run(3, started_at="2026-11-04T00:00:00Z")], 3),
         )
-        out = s.run(
-            "wf_checks", {"repo": REPO, "ref": SHA, "per_page": 2, "latest_per_name": True}
-        )
+        out = s.run("wf_checks", {"repo": REPO, "ref": SHA, "per_page": 2, "latest_per_name": True})
         self.assertEqual([r["id"] for r in out["checks"]], [2, 3])
         self.assertIs(out["complete"], True)
         self.assertIs(out["latest_per_name"], True)
