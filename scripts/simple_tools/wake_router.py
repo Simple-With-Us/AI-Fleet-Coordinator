@@ -39,6 +39,17 @@ or the registry come back before `max_attempts` or `max_age_seconds` runs out.  
 is always told how it was linked (`Wake.link_note`), and for recency that the router is not sure the
 wake is meant for it.
 
+Another seat's rows.  A chat registered on this platform under another seat's tag is no target
+here (AFC-772:  three Claude chats were registered as seat ZC and their letters went unanswered).
+Who is picked does not change;  the router only says what it left out, in two places.  When the
+addressed letter is open on such a row, the receipt names that seat in `letter_other_seat`, and
+stderr gets the code `letter-other-seat:<SEAT>`.  Each read of the platform's history counts the
+open chats it left out for that reason alone (`other_seat`), and `/health/<SEAT>` gives the latest
+count as `other_seat_rows`.  Health needs no key, so it does not say when that read happened:  that
+would show when a seat was last woken.  The count is absent until a history has been read in this
+process, health asks the registry nothing, and the count never changes `healthy`.  A row with no
+seat or a malformed one is not counted:  it names nobody.
+
 A reply link.  The listener may add `"linked_by": "reply"` when the message answers one a chat
 posted, with the letter of that chat.  Any other value is ignored.  It changes no step of the pick:
 when that letter picks the chat, the receipt says `picked: "reply"` and `reason: "reply"`, and the
@@ -379,6 +390,8 @@ class Pick:
     retry: bool = False
     candidates: tuple[str, ...] = ()
     link_note: str = ""
+    # The seat tag on the addressed letter's open row when it is another seat's, else "".
+    letter_other_seat: str = ""
 
 
 def clean(value: object, limit: int = NAME_CHARS) -> str:
@@ -759,6 +772,9 @@ class Router:
         self._stopping = False
         self._threads: list[threading.Thread] = []
         self._retiring: set[threading.Thread] = set()
+        # The latest read of the platform's history:  (open chats left out only because their row
+        # names another seat, when it was read).  None until one has been read in this process.
+        self.other_seat_scan: tuple[int, float] | None = None
 
     def routine_key(self) -> tuple[str, str]:
         """(key, why) for this request:  the key, or "" and a reason token.  A source that fails
@@ -776,6 +792,18 @@ class Router:
     def _valid(self, row: Mapping[str, Any]) -> Target | None:
         return target_from_row(row, self.platform.seat, self.platform.target_re)
 
+    def _other_seat(self, row: Mapping[str, Any]) -> str:
+        return other_seat(row, self.platform.seat, self.platform.target_re)
+
+    def other_seat_health(self) -> dict[str, Any]:
+        """What this seat's health says about the latest history read:  a count, never an id, a
+        title or the time of the read (health needs no key, and the time would show when the seat
+        was last woken), and {} before any read.  It reads only what a pick left here."""
+        scan = self.other_seat_scan
+        if scan is None:
+            return {}
+        return {"other_seat_rows": scan[0]}
+
     def _excluded(self, targets: list[Target]) -> set[str]:
         return self.platform.exclude(targets) if self.platform.exclude and targets else set()
 
@@ -788,8 +816,11 @@ class Router:
         chat whose title best shares the topic's words;  the optional decider;  recency.  A tie goes
         to the most recent of the tied, and no step picks the sender's own chat.  A registry that
         cannot be read asks for a retry:  it is not "no live chat".  No live chat asks for one too,
-        because a chat may register in time."""
+        because a chat may register in time.  A chat whose row names another seat is never picked;
+        the pick only records that the addressed letter is on one (`letter_other_seat`) and how
+        many the history held (`other_seat_scan`)."""
         letter_live = False
+        letter_other_seat = ""
 
         def chosen(
             target: Target, picked: str, reason: str, among: Any = (), issue: str = ""
@@ -801,6 +832,7 @@ class Router:
                 letter_live=letter_live,
                 candidates=tuple(t.letter for t in among),
                 link_note=LINK_NOTES[reason].format(issue=issue),
+                letter_other_seat=letter_other_seat,
             )
 
         if wake.letter:
@@ -824,6 +856,11 @@ class Router:
                 ):
                     how = "reply" if wake.linked_by == "reply" else "letter"
                     return chosen(target, how, how)
+            elif live:
+                # The letter is open on a chat of another seat:  no target here, and said so.
+                letter_other_seat = self._other_seat(answer)
+                if letter_other_seat:
+                    self._log("letter-other-seat:" + letter_other_seat, wake.wake_id)
         answer = registry_api.call(
             self.env,
             "history",
@@ -831,26 +868,41 @@ class Router:
             timeout=timeout,
         )
         if not isinstance(answer, Mapping) or "error" in answer:
-            return Pick(reason=registry_trouble(answer), retry=True)
+            # The letter was read before the outage, so what it said still goes on the receipt.
+            return Pick(
+                reason=registry_trouble(answer), retry=True, letter_other_seat=letter_other_seat
+            )
         live: dict[str, Target] = {}
         seen: dict[str, float | None] = {}
         row_issues: dict[str, list[tuple[str, float | None]]] = {}
+        others: set[str] = set()  # open chats left out only because their row names another seat
         for row in answer.get("items") or []:
             if not isinstance(row, dict):
                 continue
             if _closed(row):
                 continue
             target = self._valid(row)
-            if target is not None and target.session_id not in live:
+            if target is None:
+                if self._other_seat(row):
+                    others.add(str(row.get("native_session_id")))
+                continue
+            if target.session_id not in live:
                 live[target.session_id] = target
                 seen[target.session_id] = _row_time(row)
                 row_issues[target.session_id] = _issues_of(row)
+        # One assignment, so a health read on another thread sees a whole pair.
+        self.other_seat_scan = (len(others - live.keys()), self.clock())
         excluded = self._excluded(list(live.values()))
         candidates = [
             t for sid, t in live.items() if sid not in excluded and not _is_sender(t, wake)
         ]
         if not candidates:
-            return Pick(reason="no-live-session", letter_live=letter_live, retry=True)
+            return Pick(
+                reason="no-live-session",
+                letter_live=letter_live,
+                retry=True,
+                letter_other_seat=letter_other_seat,
+            )
 
         named = _named_session(wake, live)
         target = next((t for t in candidates if t.session_id == named), None)
@@ -972,8 +1024,8 @@ class Router:
 
     def test_answer(self, wake: Wake) -> dict[str, Any]:
         """A test wake's answer:  `test`, `wake_id`, `receipt_id`, `picked`, `picked_letter`,
-        `picked_generation`, `session_id`, `reason`, `candidates`, `link_note`, `delivered`.  It
-        delivers nothing and reserves nothing."""
+        `picked_generation`, `session_id`, `reason`, `candidates`, `link_note`, `delivered`,
+        `letter_other_seat`.  It delivers nothing and reserves nothing."""
         pick = self.pick(wake, consult=False, timeout=TEST_REGISTRY_TIMEOUT)
         answer = self._receipt(
             {"wake": asdict(wake), "receipt_id": secrets.token_hex(8), "attempts": 0},
@@ -1357,6 +1409,8 @@ class Router:
             "status": status,
             "letter": wake["letter"],
             "letter_live": pick.letter_live,
+            # A seat tag (`row_seat`) or "":  the addressed letter is open under that other seat.
+            "letter_other_seat": pick.letter_other_seat,
             "picked": pick.picked,
             "picked_letter": target.letter if target else "",
             "picked_generation": target.generation if target else 0,
@@ -1483,6 +1537,19 @@ def target_from_row(row: Mapping[str, Any], seat: str, target_re: Pattern[str]) 
         thread_link=str(row.get("thread_link") or ""),
         generation=generation,
     )
+
+
+def other_seat(row: Mapping[str, Any], seat: str, target_re: Pattern[str]) -> str:
+    """The seat tag an open registry row names when that is the only thing keeping it from being
+    a chat of `seat`, else "".  The tag is `row_seat`'s, so it is shaped as a seat tag and nothing
+    else of the row is kept.  A row with no seat or a malformed one answers "":  it names nobody,
+    which is a row that cannot be read, not another seat's chat.  So does one whose session id,
+    letter or generation would not make a target under its own seat either.  The caller has
+    already ruled out a closed row, and the registry was asked for this platform's rows."""
+    theirs = row_seat(row)
+    if not seat or not theirs or theirs == seat:
+        return ""
+    return theirs if target_from_row(row, theirs, target_re) is not None else ""
 
 
 def holds(
@@ -1673,7 +1740,8 @@ class Seats:
         return self.down.get(seat)
 
     def seat_health(self, seat: str) -> tuple[int, dict[str, Any]]:
-        """One seat's state:  reason tokens only, never a value."""
+        """One seat's state:  reason tokens, and for a served seat the other-seat count and its
+        time (`Router.other_seat_health`), never a value."""
         router = self.routers.get(seat)
         if router is None:
             if seat in self.not_installed:
@@ -1681,7 +1749,8 @@ class Seats:
             reason = "seat-not-served:" + self.down.get(seat, "unknown")
             return 503, {"seat": seat, "healthy": False, "reason": reason}
         delivery = router.config.get("delivery_enabled") is True
-        answer: dict[str, Any] = {"seat": seat, "delivery": delivery}
+        # The other-seat count is a warning beside the answer:  it never changes `healthy`.
+        answer: dict[str, Any] = {"seat": seat, "delivery": delivery, **router.other_seat_health()}
         key, why = router.routine_key()
         if not key:
             reason = "routine-key-unavailable:" + why
