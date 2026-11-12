@@ -83,6 +83,7 @@ RECALL_MODULES = (
     "core",
     "doctor",
     "health",
+    "mirror",
     "public_fallback",
     "recall_api",
     "recall_presentation",
