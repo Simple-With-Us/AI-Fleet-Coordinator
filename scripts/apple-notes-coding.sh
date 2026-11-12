@@ -757,17 +757,19 @@ if [[ "$MODE" == "delete" ]]; then
     echo "no note with that id in the Coding folder" >&2
     exit 3
   fi
-  if ! SCRIPTS_ROOT="$_SCRIPTS_ROOT" /usr/bin/python3 -I -c '
-import json, os, sys
-sys.path.insert(0, os.environ["SCRIPTS_ROOT"])
-from simple_tools.notes import is_tool_created_note
-data = json.load(sys.stdin)
-title = str(data.get("title") or "")
-if not is_tool_created_note(title, str(data.get("body") or ""), str(data.get("plaintext") or "")):
-    sys.stderr.write("this note was not written through the fleet notes tool, so delete was refused" + chr(10))
-    sys.exit(5)
-' <"$_NOTES_OUT"; then
+  _delete_guard="${_SCRIPTS_ROOT}/notes_delete_guard.py"
+  if [[ ! -f "$_delete_guard" ]]; then
+    echo "notes: delete guard script missing at $_delete_guard" >&2
+    exit 1
+  fi
+  _guard_rc=0
+  python3 "$_delete_guard" <"$_NOTES_OUT" || _guard_rc=$?
+  if [[ "$_guard_rc" == "5" ]]; then
     exit 5
+  fi
+  if [[ "$_guard_rc" != "0" ]]; then
+    echo "notes: delete guard did not complete (python exit $_guard_rc)" >&2
+    exit 1
   fi
   TITLE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("title") or "")' "$_NOTES_OUT")
   _jxa_rc=0
