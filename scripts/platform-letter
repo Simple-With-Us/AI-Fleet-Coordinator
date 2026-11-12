@@ -7,6 +7,7 @@ scripts/simple_tools/README.md (Platform Session Letters).
     platform-letter show --platform P       this chat's letter from its local note
     platform-letter install --platform P    add the platform's hooks (--check, --remove)
     platform-letter request [--session-id S]   ask the assigner for this chat's letter now
+    platform-letter gone [--platform P] [--apply]   the chats of this host that are gone for good (archived)
 
 This file is symlinked as ~/.local/bin/platform-letter on the Mac (simple_tools/install.sh) and is a fleet-cli managed
 wrapper on the server (fleet-cli-release.py), so it resolves its own real path before it puts the scripts directory
