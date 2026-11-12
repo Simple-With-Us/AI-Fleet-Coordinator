@@ -9,6 +9,13 @@ on:
   schedule:
     - cron: "35 6 * * *"
   workflow_dispatch:
+  # GitHub only registers workflow_dispatch against the default branch; on a PR
+  # branch this path trigger runs the same job so the artifact can be verified
+  # before merge (AFC-737).
+  pull_request:
+    paths:
+      - ".github/workflows/ci-red-report.yml"
+      - "scripts/ci-red-report/**"
 
 permissions:
   contents: read
