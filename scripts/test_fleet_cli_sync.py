@@ -168,7 +168,7 @@ class SourceTests(Fixture):
             self.fail("REPO_ONLY block missing from receiver")
         self.put(
             "scripts/fleet-cli-release.py",
-            text.replace(needle, needle + ",\n        \"fleet-apps.json\"", 1),
+            text.replace(needle, needle + ',\n        "fleet-apps.json"', 1),
         )
         self.commit()
         self.assert_code("receiver_policy_invalid", S.build_bundle, self.repo)
