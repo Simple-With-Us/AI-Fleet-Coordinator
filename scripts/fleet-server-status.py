@@ -204,10 +204,14 @@ FILE_READ_LIMIT = 4 * 1024 * 1024
 # Where scripts/hetzner/install-resource-control.sh installs the resource broker,  and the files
 # it writes there.  Its `fleet_secrets` package is never listed,  because that path looks like a
 # credential.
-BROKER_DIR = Path("/usr/local/lib/fleet-resource-control")
+#
+# It is the home folder of the account that runs this report and the helper (jay on the server),
+# never /usr/local/lib, which held the earlier root-owned layout.
+BROKER_DIR = Path.home() / ".local/lib/fleet-resource-control"
 BROKER_FILES = (
     "fleet-ops-control.py",
     "fleet-ops-control.json",
+    "fleet-ops-eavesdropper-settings.json",
     "fleet_resource_control.py",
     "fleet_seat_inventory.py",
     "hetzner/__init__.py",
