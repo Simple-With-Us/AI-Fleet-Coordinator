@@ -628,6 +628,270 @@ final class ServerEavesdropperCurrencyTests: XCTestCase {
     }
 }
 
+/// The registry's stale sweep (AFC-721), as `reduce_status` sends it.  `liveSweep` is the
+/// reducer's output for the server's live block of November 11, 2026, whose source carried the
+/// letters, record ids and machines this document never has.
+private let liveSweep = #"""
+{"ran_at":"2026-11-12T03:13:23Z","ok":false,"ended":11,"error":"sweep_share_exceeded","stale_after_minutes":2160,"refused":1,"refused_platforms":["antigravity"]}
+"""#
+
+/// A current server document generated at 9:13:30 PM Chicago time on November 11, 2026, with
+/// `sweep` as its `registry_sweep` (JSON text), or with no such key when it is nil.
+private func sweepDocument(_ sweep: String?) -> String {
+    let block = sweep.map { #","registry_sweep":"# + $0 } ?? ""
+    return #"{"schema":1,"generated_at":"2026-11-12T03:13:30Z","instance":"server","status_updated":"2026-11-12T03:13:28Z","seats":[],"skipped":[],"disabled":[]"#
+        + block + "}"
+}
+
+final class ServerRegistrySweepTests: XCTestCase {
+    private let gap = "\u{00A0} "
+
+    /// The live block reads in full:  when it ran, its error, what it closed and the platform the
+    /// share guard held back, in sentences with the house gap.
+    func test_the_live_block_reads_in_full() throws {
+        let status = try document(sweepDocument(liveSweep))
+        let sweep = try XCTUnwrap(status.registrySweep)
+        XCTAssertEqual(sweep.ranAt, try date("2026-11-12T03:13:23Z"))
+        XCTAssertEqual(sweep.ok, false)
+        XCTAssertEqual(sweep.ended, 11)
+        XCTAssertEqual(sweep.error, "sweep_share_exceeded")
+        XCTAssertEqual(sweep.staleAfterMinutes, 2160)
+        XCTAssertEqual(sweep.refused, 1)
+        XCTAssertEqual(sweep.refusedPlatforms, ["antigravity"])
+        XCTAssertTrue(sweep.isReported)
+        XCTAssertTrue(sweep.isProblem)
+        XCTAssertEqual(sweep.symbolName, "exclamationmark.triangle")
+        XCTAssertEqual(sweep.label, "sweep_share_exceeded")
+        let now = try date("2026-11-12T03:20:00Z")
+        XCTAssertEqual(
+            sweep.sentence(now: now),
+            "It last ran at 9:13 PM." + gap
+                + "It closed 11 chats quiet for more than 36 hours." + gap
+                + "Held back: antigravity." + gap
+                + "The share guard stopped it closing too many of a platform's open chats on one machine at once, so it left those chats open."
+        )
+        // Shown only from a current reading, as the panel does.
+        let reading = ServerEavesdropperReading.reading(of: status)
+        XCTAssertEqual(reading.currentStatus(now: try date("2026-11-12T03:14:00Z"))?.registrySweep, sweep)
+        XCTAssertNil(reading.currentStatus(now: try date("2026-11-12T03:30:00Z")))
+        // Through the parser too.
+        let parsed = ServerEavesdropperReading(outcome: outcome(planned(sweepDocument(liveSweep))))
+        XCTAssertEqual(parsed.status?.registrySweep, sweep)
+    }
+
+    /// A clean pass reads OK, and a store problem says so in words.
+    func test_a_clean_pass_and_a_store_problem() throws {
+        let clean = try XCTUnwrap(try document(sweepDocument(
+            #"{"ran_at":"2026-11-12T03:13:23Z","ok":true,"ended":1,"error":null,"stale_after_minutes":90,"refused":0,"refused_platforms":[]}"#
+        )).registrySweep)
+        XCTAssertFalse(clean.isProblem)
+        XCTAssertEqual(clean.symbolName, "checkmark.circle")
+        XCTAssertEqual(clean.label, "OK")
+        let now = try date("2026-11-12T03:20:00Z")
+        XCTAssertEqual(clean.sentence(now: now), "It last ran at 9:13 PM." + gap + "It closed 1 chat quiet for more than 90 minutes.")
+
+        let missing = try XCTUnwrap(try document(sweepDocument(
+            #"{"ran_at":"2026-11-12T03:13:23Z","ok":false,"ended":0,"error":"registry_unavailable","stale_after_minutes":2160,"refused":0,"refused_platforms":[]}"#
+        )).registrySweep)
+        XCTAssertEqual(missing.label, "registry_unavailable")
+        XCTAssertEqual(
+            missing.sentence(now: now),
+            "It last ran at 9:13 PM." + gap
+                + "It closed no chats quiet for more than 36 hours." + gap
+                + "The session registry was not there, so it closed nothing."
+        )
+        XCTAssertFalse(missing.sentence(now: now).contains("Held back"))
+        XCTAssertEqual(ServerRegistrySweepFields.quietText(60), "1 hour")
+        XCTAssertEqual(ServerRegistrySweepFields.quietText(1), "1 minute")
+        XCTAssertNil(ServerRegistrySweepFields.quietText(0))
+        XCTAssertNil(ServerRegistrySweepFields.quietText(nil))
+    }
+
+    /// An older helper sends no block, and the Mac or a server that has not swept yet sends one
+    /// with every field null:  neither is shown.
+    func test_an_absent_or_all_null_block_is_not_reported() throws {
+        XCTAssertNil(try document(sweepDocument(nil)).registrySweep)
+        XCTAssertNil(try XCTUnwrap(sampleReading().status).registrySweep)
+        let empty = try XCTUnwrap(try document(sweepDocument(
+            #"{"ran_at":null,"ok":null,"ended":null,"error":null,"stale_after_minutes":null,"refused":null,"refused_platforms":[]}"#
+        )).registrySweep)
+        XCTAssertFalse(empty.isReported)
+        XCTAssertFalse(empty.isProblem)
+        XCTAssertEqual(empty.label, "Not reported")
+        XCTAssertEqual(empty.sentence(now: Date()), "It does not say when it last ran.")
+    }
+
+    /// A field of the wrong type is nil and costs no other field;  a block that is not an object
+    /// is nil and costs nothing else in the document.
+    func test_a_malformed_block_degrades_field_by_field() throws {
+        let odd = try XCTUnwrap(try document(sweepDocument(
+            #"{"ran_at":"yesterday","ok":"yes","ended":"11","error":7,"stale_after_minutes":-5,"refused":1.5,"refused_platforms":["cursor",5,null,"  ","a‮b","p1","p2","p3","p4","p5","p6","p7","p8","p9","p10","p11","p12","p13","p14","p15","p16"]}"#
+        )).registrySweep)
+        XCTAssertNil(odd.ranAt)
+        XCTAssertNil(odd.ok)
+        XCTAssertNil(odd.ended)
+        XCTAssertNil(odd.error)
+        XCTAssertNil(odd.staleAfterMinutes)
+        XCTAssertNil(odd.refused)
+        XCTAssertEqual(odd.refusedPlatforms.count, ServerRegistrySweepFields.maxPlatforms)
+        XCTAssertEqual(Array(odd.refusedPlatforms.prefix(3)), ["cursor", "ab", "p1"])
+        // `ran_at` was text, so the block still says something.
+        XCTAssertTrue(odd.isReported)
+        XCTAssertEqual(odd.label, "Not reported")
+        // Shown, but an unknown outcome is never drawn as healthy (Kody, PR #1884).
+        XCTAssertEqual(odd.symbolName, "questionmark.circle")
+        XCTAssertFalse(odd.isProblem)
+        // `refused` counts platform-and-machine groups, never platforms (Kody, PR #1884).
+        let twoGroups = try XCTUnwrap(try document(sweepDocument(
+            #"{"ran_at":"2026-11-12T03:13:23Z","ok":false,"ended":0,"error":"sweep_share_exceeded","stale_after_minutes":2160,"refused":2,"refused_platforms":[]}"#
+        )).registrySweep)
+        XCTAssertTrue(twoGroups.sentence(now: try date("2026-11-12T03:20:00Z"))
+            .contains("It held back 2 groups of chats, each one platform on one machine."))
+
+        for block in [#""ok""#, "5", "[]", "true", "null"] {
+            let status = try document(sweepDocument(block))
+            XCTAssertNil(status.registrySweep, block)
+            XCTAssertEqual(status.instance, "server", block)
+            XCTAssertEqual(status.schema, 1, block)
+        }
+    }
+}
+
+/// A current server document generated at 12:00 PM Chicago time on November 12, 2026, holding
+/// the one seat `seat` (JSON text).
+private func routineDocument(_ seat: String) -> String {
+    #"{"schema":1,"generated_at":"2026-11-12T18:00:00Z","instance":"server","status_updated":"2026-11-12T17:59:58Z","seats":["#
+        + seat + #"],"skipped":[],"disabled":[]}"#
+}
+
+/// Whether a seat's wakes go to a ready router:  the reducer's per-seat `routine` (a flag and two
+/// fixed words), and the one line a seat's row shows for it.
+final class ServerSeatRouterTests: XCTestCase {
+    private func seat(_ text: String) throws -> ServerSeatFacts {
+        try XCTUnwrap(try document(routineDocument(text)).seat(named: "CLAUDE"))
+    }
+
+    /// The live server's CLAUDE seat on November 12, as the reducer sends it.
+    func test_a_ready_routine_reads_as_ready() throws {
+        let facts = try seat(
+            #"{"seat":"CLAUDE","connected":true,"running":"running","wake":"http","routine":{"ready":true,"auth":"bearer","why":null}}"#
+        )
+        XCTAssertTrue(facts.routineReported)
+        XCTAssertEqual(facts.routine, ServerSeatRoutineFields(ready: true, auth: "bearer", why: nil))
+        XCTAssertEqual(facts.router, .ready)
+        XCTAssertEqual(facts.router.line, "Wakes go to the router, ready")
+        XCTAssertFalse(facts.router.isProblem)
+        // Readiness only:  the line never claims a wake was delivered or accepted.
+        let line = try XCTUnwrap(facts.router.line)
+        for word in ["202", "accepted", "delivered", "reached"] {
+            XCTAssertFalse(line.contains(word), word)
+        }
+        // Shown from a current reading only.
+        let reading = ServerEavesdropperReading.reading(of: try document(routineDocument(
+            #"{"seat":"CLAUDE","wake":"http","routine":{"ready":true,"auth":"bearer","why":null}}"#
+        )))
+        XCTAssertEqual(reading.seat("CLAUDE", now: try date("2026-11-12T18:01:00Z")).facts?.router, .ready)
+        XCTAssertNil(reading.seat("CLAUDE", now: try date("2026-11-12T18:30:00Z")).facts)
+    }
+
+    /// A routine that is not ready says why in plain words, and is a problem.
+    func test_a_routine_that_is_not_ready_says_why() throws {
+        let cases: [(String, String)] = [
+            (#""routine_not_configured""#, "its address or key is not set on the server"),
+            (#""routine_key_refused""#, "its key cannot be used"),
+            (#""routine_url_refused""#, "its address cannot be used"),
+            (#""other""#, "the server did not say why"),
+            ("null", "the server did not say why"),
+        ]
+        for (why, words) in cases {
+            let facts = try seat(
+                #"{"seat":"CLAUDE","wake":"http","routine":{"ready":false,"auth":"bearer","why":"# + why + "}}"
+            )
+            XCTAssertEqual(facts.router, .notReady(words), why)
+            XCTAssertEqual(facts.router.line, "Wakes go to the router, not ready: " + words, why)
+            XCTAssertTrue(facts.router.isProblem, why)
+        }
+    }
+
+    /// A reducer that sends the key with null says the seat has no routine:  a seat whose mentions
+    /// stay in its inbox only captures, and gets no router line, because its listener cell already
+    /// says Captures Only;  a seat that wakes some other way gets no line either.
+    func test_a_null_routine_is_capture_only_for_an_inbox_seat() throws {
+        let inbox = try seat(#"{"seat":"CLAUDE","wake":"inbox","routine":null}"#)
+        XCTAssertTrue(inbox.routineReported)
+        XCTAssertNil(inbox.routine)
+        XCTAssertEqual(inbox.router, .captureOnly)
+        XCTAssertNil(inbox.router.line)
+        XCTAssertFalse(inbox.router.isProblem)
+        XCTAssertEqual(inbox.wakeKind.rowText, "Captures Only")
+
+        let headless = try seat(#"{"seat":"CLAUDE","wake":"claude","routine":null}"#)
+        XCTAssertEqual(headless.router, .notSaid)
+        XCTAssertNil(headless.router.line)
+
+        // A seat that wakes through the router always has a routine, so a null one is a routine
+        // the reducer could not read, never a ready one.
+        let unread = try seat(#"{"seat":"CLAUDE","wake":"http","routine":null}"#)
+        XCTAssertEqual(unread.router, .readinessNotReported)
+        XCTAssertEqual(unread.router.line, "Wakes go to the router, readiness not reported")
+    }
+
+    /// An older reducer sends no `routine` key at all:  Muster then says nothing about the
+    /// router, whatever the seat's wake is.
+    func test_an_absent_routine_from_an_older_reducer_says_nothing() throws {
+        for wake in [#""http""#, #""inbox""#, #""claude""#, "null"] {
+            let facts = try seat(#"{"seat":"CLAUDE","wake":"# + wake + "}")
+            XCTAssertFalse(facts.routineReported, wake)
+            XCTAssertNil(facts.routine, wake)
+            XCTAssertEqual(facts.router, .notSaid, wake)
+            XCTAssertNil(facts.router.line, wake)
+        }
+        let status = try XCTUnwrap(sampleReading().status)
+        for facts in status.seats {
+            XCTAssertNil(facts.router.line, facts.seat)
+        }
+    }
+
+    /// A block of the wrong shape is rejected whole, never read field by field:  decoding it
+    /// throws, the seat then has no routine, and the rest of the seat still reads.
+    func test_a_malformed_routine_is_rejected_whole() throws {
+        let malformed = [
+            #"{"ready":"true","auth":7,"why":["x"]}"#,
+            // One bad field rejects the good ones beside it.
+            #"{"ready":true,"auth":7,"why":null}"#,
+            #"{"ready":true,"auth":"bearer","why":5}"#,
+            // A word the reducer never sends.
+            #"{"ready":true,"auth":"basic","why":null}"#,
+            #"{"ready":false,"auth":"bearer","why":"router.invalid"}"#,
+        ]
+        for block in malformed {
+            XCTAssertThrowsError(
+                try JSONDecoder().decode(ServerSeatRoutineFields.self, from: Data(block.utf8)), block)
+            let facts = try seat(#"{"seat":"CLAUDE","wake":"http","routine":"# + block + "}")
+            XCTAssertNil(facts.routine, block)
+            XCTAssertEqual(facts.router, .readinessNotReported, block)
+        }
+
+        // Keys the reducer never sends are not read, and do not spoil a good block.
+        let extra = try seat(
+            #"{"seat":"CLAUDE","wake":"http","routine":{"ready":true,"auth":"bearer","why":null,"host":"router.invalid","detail":"not set"}}"#
+        )
+        XCTAssertEqual(extra.routine, ServerSeatRoutineFields(ready: true, auth: "bearer", why: nil))
+        XCTAssertEqual(extra.router, .ready)
+
+        for block in [#""ready""#, "5", "[]", "true"] {
+            let facts = try seat(#"{"seat":"CLAUDE","wake":"inbox","routine":"# + block + "}")
+            XCTAssertNil(facts.routine, block)
+            XCTAssertTrue(facts.routineReported, block)
+            XCTAssertEqual(facts.router, .captureOnly, block)
+        }
+        // The rest of the seat still reads.
+        let rest = try seat(#"{"seat":"CLAUDE","connected":true,"wake":"http","routine":"bad"}"#)
+        XCTAssertEqual(rest.connected, true)
+        XCTAssertEqual(rest.wakeKind, .wakes)
+    }
+}
+
 @MainActor
 final class ServerEavesdropperStoreTests: XCTestCase {
     actor Counter {
