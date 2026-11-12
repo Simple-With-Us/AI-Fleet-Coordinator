@@ -133,7 +133,12 @@ def _load_sources(path: Path) -> list[RepoSource]:
             if not isinstance(item, dict):
                 raise AuditError("sources file entry was not an object")
             rel = item.get("path")
-            if not isinstance(rel, str) or not rel or Path(rel).is_absolute() or ".." in Path(rel).parts:
+            if (
+                not isinstance(rel, str)
+                or not rel
+                or Path(rel).is_absolute()
+                or ".." in Path(rel).parts
+            ):
                 raise AuditError("sources file path is invalid")
             try:
                 text = (path / rel).read_text(encoding="utf-8")
