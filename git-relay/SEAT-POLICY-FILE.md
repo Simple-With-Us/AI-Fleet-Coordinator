@@ -187,6 +187,8 @@ The same transaction lock and the same digest fence apply.
 6. A refused proof, an inconclusive proof, a proof that names another seat, a missing audit row or an interruption restores the prior digest and restarts again.  The proof id is not consumed.  An inconclusive probe may already have reached the relay, so a retry uses a fresh `--proof-id`.
 7. If the process is killed after the provisional write, the next `install-seat` of any mode reads the marker before it trusts the live file.  An unproven row is rolled back.  A row whose proof id is already in the replay store is kept, and the marker is removed.
 
+The marker file is root-owned and mode 0600.  It sits in the seats directory.  That directory follows the live seats file: a real directory, not group-writable or world-writable, owned by root or by the account that owns the seats file.  A service-owned seats directory is valid.  The proof-key ancestor rule does not apply here, so crash recovery can still read the marker.  Recovery trusts the marker only when the opened file is root-owned 0600.
+
 `--first-seat` refuses a seat the live policy already names.  It cannot be combined with `--receipt` or `--bootstrap-receipt`.
 
 Between the restart and the proof result the new seat's reviewed grants are live.  A failed proof removes the row.  It does not undo a provider write the seat made in that window.  The grants are the reviewed row, not a wider one, and the command holds the transaction lock for the whole window.

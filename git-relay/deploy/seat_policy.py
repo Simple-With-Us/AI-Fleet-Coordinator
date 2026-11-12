@@ -193,6 +193,8 @@ PROOF_KEY_FILE_VAR = "GIT_RELAY_PROOF_KEY_FILE"
 FIRST_SEAT_BEARER_VAR = "GIT_RELAY_FIRST_SEAT_BEARER_FILE"
 # Crash record beside the seats file.  Holds the prior policy bytes so a
 # killed provisional admission can be rolled back by the next install-seat.
+# The file is root-owned 0600.  Its directory follows the live seats file
+# (service-owned is allowed), not the proof-key ancestor rule.
 PROVISIONAL_SUFFIX = ".first-seat-provisional"
 _MARKER_KEYS = frozenset({"v", "seat", "proof_id", "before", "after", "policy_before"})
 # server.py's default audit path, relative to the unit's WorkingDirectory.
@@ -644,17 +646,16 @@ def _proof_key_dir_trust(path, kind="proof-key"):
         raise ValueError(f"{kind} directory must not be group/world-writable")
 
 
-def _read_private(path, kind="proof-key", max_bytes=1 << 16) -> bytes:
-    """Read a custody-checked file;  never logs the bytes.
+def _read_opened(path, kind, max_bytes) -> bytes:
+    """Read one file the caller has already trusted the directory of.
 
-    The directory chain is checked first.  The file itself is opened
-    O_NOFOLLOW | O_NONBLOCK (a FIFO must refuse, not hang) and verified by
-    fstat on the OPENED descriptor:  a regular file, owned by the current
-    euid (root-owned in production), 0600 when running as root, at most
-    max_bytes.  A symlink swap or a replace between check and open lands on
-    the descriptor that is actually read, never a second lookup.
+    The file is opened O_NOFOLLOW | O_NONBLOCK (a FIFO must refuse, not hang)
+    and verified by fstat on the OPENED descriptor:  a regular file, owned by
+    the current euid (root-owned in production), 0600 when running as root,
+    at most max_bytes.  A symlink swap or a replace between check and open
+    lands on the descriptor that is actually read, never a second lookup.
+    The bytes are never logged.
     """
-    _proof_key_dir_trust(path, kind)
     try:
         fd = os.open(
             path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
@@ -676,6 +677,39 @@ def _read_private(path, kind="proof-key", max_bytes=1 << 16) -> bytes:
         return os.read(fd, max_bytes)
     finally:
         os.close(fd)
+
+
+def _read_private(path, kind="proof-key", max_bytes=1 << 16) -> bytes:
+    """Read a proof-key or bearer file.  The directory chain is the proof-key rule."""
+    _proof_key_dir_trust(path, kind)
+    return _read_opened(path, kind, max_bytes)
+
+
+def _marker_dir_trust(seats_path: str) -> None:
+    """Trust the seats directory the way the live seats file is allowed to live there.
+
+    policy_input accepts that file owned by the service uid or by root, in a
+    service-controlled directory.  This checks the immediate directory only:
+    a real directory, not a symlink, not group- or world-writable, and as root
+    owned by root or by the same uid as the seats file.  The proof-key ancestor
+    rule does not apply.  A service-owned directory is the file input's normal
+    place, and crash recovery has to read the marker there.  The marker file
+    itself stays root-owned 0600, so the service user cannot forge one.
+    """
+    parent = os.path.dirname(os.path.abspath(seats_path)) or "/"
+    try:
+        pst = os.lstat(parent)
+        fst = os.lstat(seats_path)
+    except OSError:
+        raise ValueError("provisional-marker directory unreadable")
+    if stat.S_ISLNK(pst.st_mode) or not stat.S_ISDIR(pst.st_mode):
+        raise ValueError("provisional-marker directory must be a real directory")
+    if stat.S_IMODE(pst.st_mode) & 0o022:
+        raise ValueError("provisional-marker directory must not be group/world-writable")
+    if os.geteuid() == 0 and pst.st_uid not in (0, fst.st_uid):
+        raise ValueError(
+            "provisional-marker directory must be owned by root or the seats-file owner"
+        )
 
 
 def _load_proof_key(path):
@@ -807,7 +841,13 @@ def _marker_path(path: str) -> str:
 
 
 def _write_provisional(path: str, payload: dict) -> None:
-    """Write the crash record.  It holds the prior policy, never a bearer."""
+    """Write the crash record.  It holds the prior policy, never a bearer.
+
+    The file is created by this process, so as root it is root-owned, then
+    forced to 0600.  The directory check is the seats-file rule, not the
+    proof-key ancestor rule.
+    """
+    _marker_dir_trust(path)
     marker = _marker_path(path)
     if os.path.lexists(marker):
         raise ValueError("provisional marker already exists")
@@ -833,14 +873,17 @@ def _read_provisional(path: str, proof_ok) -> dict | None:
 
     A symlink, a non-private file or a marker whose embedded prior policy does
     not digest to its own `before` field refuses.  The marker is not deleted:
-    root has to remove a marker this function cannot trust.
+    root has to remove a marker this function cannot trust.  The directory
+    uses the seats-file rule.  The file itself must be root-owned 0600 when
+    this process is root.
     """
     marker = _marker_path(path)
     if not os.path.lexists(marker):
         return None
     if os.path.islink(marker):
         raise ValueError("provisional marker is a symlink")
-    raw = _read_private(marker, "provisional-marker", (4 << 20) + 8192)
+    _marker_dir_trust(path)
+    raw = _read_opened(marker, "provisional-marker", (4 << 20) + 8192)
     try:
         doc = json.loads(raw.decode("utf-8"))
         if not isinstance(doc, dict) or set(doc) != _MARKER_KEYS or doc.get("v") != 1:

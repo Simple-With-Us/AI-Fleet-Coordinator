@@ -11,6 +11,7 @@ import importlib.util
 import io
 import json
 import os
+import pwd
 import sys
 import tempfile
 import time
@@ -366,6 +367,103 @@ class FirstSeatAdmitTests(unittest.TestCase):
         self.assertEqual(sp.canonical_digest(self.live()), self.after)
         self.assertFalse(self.marker().exists())
         self.assertIn("committed", out)
+
+    def _root_marker_fstat(self):
+        """Claim the opened marker is root-owned 0600.  This process cannot chown it."""
+        real_fstat = os.fstat
+        marker = os.path.abspath(self.marker())
+
+        def fstat(fd):
+            st = real_fstat(fd)
+            try:
+                name = os.path.abspath(os.readlink("/proc/self/fd/%d" % fd))
+            except OSError:
+                return st
+            if name == marker:
+                return SimpleNamespace(st_mode=0o100600, st_uid=0, st_size=st.st_size)
+            return st
+
+        return fstat
+
+    def _plant_unproven(self):
+        original = self.seats_path.read_text()
+        installed = {**self.policy, "swu-zc": dict(NEW_ROW)}
+        self.seats_path.write_text(json.dumps(installed))
+        sp._write_provisional(
+            str(self.seats_path),
+            {
+                "v": 1,
+                "seat": "swu-zc",
+                "proof_id": PROOF_ID,
+                "before": self.before,
+                "after": self.after,
+                "policy_before": original,
+            },
+        )
+
+    def test_crash_recovery_in_a_service_owned_seats_directory(self):
+        """A service-owned seats directory must not block rollback after a crash.
+
+        The live seats file may live in that directory.  The marker file stays
+        root-owned 0600.  This process is not root, so geteuid is 0, the opened
+        marker claims uid 0 and mode 0600, and chown is a no-op.
+        """
+        me = pwd.getpwuid(os.getuid())
+        self.unit.user = me.pw_name
+        directory = self.seats_path.parent
+        self.assertNotEqual(directory.stat().st_uid, 0)
+        self.assertEqual(self.seats_path.stat().st_uid, directory.stat().st_uid)
+        self.assertEqual(directory.stat().st_mode & 0o022, 0)
+        self._plant_unproven()
+
+        def proof(*_args):
+            raise AssertionError("proof ran")
+
+        fake = _FakeSubprocess()
+        out = io.StringIO()
+        with (
+            mock.patch.object(os, "geteuid", return_value=0),
+            mock.patch.object(os, "fstat", self._root_marker_fstat()),
+            mock.patch.object(os, "chown"),
+            mock.patch.object(sp, "_external_proof", proof),
+            mock.patch.object(sp, "subprocess", fake),
+            mock.patch.object(sp, "_healthy", lambda *a: True),
+            contextlib.redirect_stdout(out),
+        ):
+            rc = sp.install_seat(self.receipt_args(apply=True), self.unit)
+        text = out.getvalue()
+        self.assertEqual(rc, 3)
+        self.assertEqual(self.live(), self.policy)
+        self.assertFalse(self.marker().exists())
+        self.assertFalse(self.store().seen(PROOF_ID))
+        self.assertIn("unproven", text)
+        self.assertIn("rolled back", text)
+        self.assertFalse(BEARER in text)
+
+    def test_a_group_writable_seats_directory_still_refuses_recovery(self):
+        me = pwd.getpwuid(os.getuid())
+        self.unit.user = me.pw_name
+        self._plant_unproven()
+        os.chmod(self.seats_path.parent, 0o707)
+
+        def proof(*_args):
+            raise AssertionError("proof ran")
+
+        out = io.StringIO()
+        with (
+            mock.patch.object(os, "geteuid", return_value=0),
+            mock.patch.object(os, "fstat", self._root_marker_fstat()),
+            mock.patch.object(os, "chown"),
+            mock.patch.object(sp, "_external_proof", proof),
+            mock.patch.object(sp, "subprocess", _FakeSubprocess()),
+            mock.patch.object(sp, "_healthy", lambda *a: True),
+            contextlib.redirect_stdout(out),
+        ):
+            rc = sp.install_seat(self.receipt_args(apply=True), self.unit)
+        self.assertEqual(rc, 2)
+        self.assertEqual(sp.canonical_digest(self.live()), self.after)
+        self.assertTrue(self.marker().exists())
+        self.assertIn("group/world-writable", out.getvalue())
 
     def test_a_marker_whose_write_never_landed_is_cleared(self):
         original = self.seats_path.read_text()
