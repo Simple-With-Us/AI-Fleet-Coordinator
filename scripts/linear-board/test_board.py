@@ -1785,6 +1785,15 @@ class OwnIntroTagTests(unittest.TestCase):
                 self.assertEqual(cli.tagged(seat, None, f"[{seat}X] x"), f"[{seat}X] x")
                 self.assertEqual(cli.tagged(seat, None, f"[{seat} 📁AFC]"), f"[{seat} 📁AFC]")
 
+    def test_reporter_falls_back_to_the_creating_seat_app(self):
+        """A single-thread seat's filed issue has no Reported by line, so show reads the creating app."""
+        cli = load_cli()
+        self.assertEqual(cli.creator_seat({"id": "u", "name": "Claude", "app": True}), "CLAUDE")
+        self.assertIsNone(cli.creator_seat({"id": "u", "name": "Claude", "app": False}), "a human named Claude")
+        self.assertIsNone(cli.creator_seat({"id": "u", "name": "Jay Wedgeworth", "app": False}))
+        self.assertIsNone(cli.creator_seat(None))
+        self.assertIsNone(cli.split_description("Steps\n\n---\n\n**Filed with the board CLI**\n\n- Kind: agent-report")["reported_by"])
+
     def test_parse_comment_maps_the_linear_app_name_and_keeps_a_legacy_tag(self):
         """AFC-692:  an untagged comment is signed by the Linear app;  an old [SEAT] tag still reads."""
         cli = load_cli()

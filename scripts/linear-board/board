@@ -396,6 +396,15 @@ def seat_for_linear_author(name: str | None) -> str | None:
     return unique[0] if len(unique) == 1 else None
 
 
+def creator_seat(user) -> str | None:
+    """The seat whose Linear app created an issue, or None.  A single-thread seat's filed issue carries no
+    Reported by line (owner 2026-11-12), so its reporter is read from the creating app, trusted only for a
+    known seat app (the comment author_seat rule)."""
+    if not is_known_linear_app(user):
+        return None
+    return seat_for_linear_author(linear_author_name(user))
+
+
 def linear_author_name(user) -> str | None:
     """The Linear commenter's name or displayName, or None when both are missing."""
     if not isinstance(user, dict):
@@ -2213,6 +2222,7 @@ Q_ISSUE = (
   issue(id: $id) {
     ...BoardIssue
     description
+    creator { id name displayName app }
     attachments(first: 50) { nodes { url title } }
     relations(first: 50) { nodes { type relatedIssue { id identifier } } }
     inverseRelations(first: 50) { nodes { type issue { id identifier } } }
@@ -3070,7 +3080,7 @@ def cmd_show(L: Linear, ids: IdIndex, a) -> int:
             "description": parts["description"],
             "recommended_fix": parts["recommended_fix"],
             "resolution": resolution_of(comments),
-            "reported_by": parts["reported_by"],
+            "reported_by": parts["reported_by"] or creator_seat(n.get("creator")),
             "location": location_of(comments, parts["footer"]),
             "provenance": parts["footer"],
             "attachments": [x.get("url") for x in (n.get("attachments") or {}).get("nodes") or []],
