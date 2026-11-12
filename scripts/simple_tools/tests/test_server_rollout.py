@@ -204,7 +204,7 @@ class InfisicalEnvTests(unittest.TestCase):
         self.assertNotEqual(out["PATH"], "/nowhere")
         self.assertNotIn("INFISICAL_CLIENT_ID", out)
         self.assertNotIn("INFISICAL_CLIENT_SECRET", out)
-        self.assertIn("loaded 11 variables from Infisical (prod /zulip; 1 replaced a container value, 5 other", line)
+        self.assertIn("loaded 12 variables from Infisical (prod /zulip; 1 replaced a container value, 5 other", line)
         for value in list(self.values.values()) + [self.csecret, fake.token]:
             self.assertNotIn(value, line)
 
@@ -216,7 +216,7 @@ class InfisicalEnvTests(unittest.TestCase):
         self.assertEqual(out["SENTRY_FLEET_DSN"], "https://k@o1.ingest.us.sentry.io/1")
         self.assertNotIn("SENTRY_API_TOKEN", out)
         self.assertNotIn("SIMPLE_TOOLS_SENTRY_DSN_OTHER", out)
-        self.assertIn("loaded 12 variables", line)
+        self.assertIn("loaded 13 variables", line)
         self.assertNotIn("k@o1", line)
 
     def test_missing_service_token_fails_closed_before_any_request(self) -> None:
@@ -230,7 +230,7 @@ class InfisicalEnvTests(unittest.TestCase):
         with FakeInfisical(self.cid, self.csecret, self.values) as fake:
             fake.read_failures = 1
             out, line = IE.build_env(self.env(fake), sleep=lambda s: None)
-        self.assertIn("loaded 11 variables", line)
+        self.assertIn("loaded 12 variables", line)
         # The /zulip read is retried once;  then /operator and /wake-router are read once each.
         self.assertEqual([m for m, _ in fake.requests], ["GET"] * 7)
         raw_paths = [folder(p) for m, p in fake.requests if "/api/v3/secrets/raw?" in p]
@@ -288,14 +288,17 @@ class InfisicalEnvTests(unittest.TestCase):
         self.assertEqual(out["JET_ROUTINE_URL"], self.values["JET_ROUTINE_URL"])
         self.assertEqual(out["JET_ROUTINE_KEY"], self.values["JET_ROUTINE_KEY"])
         self.assertEqual(out["ZULIP_GB_FIXER_API_KEY"], self.values["ZULIP_GB_FIXER_API_KEY"])
+        # The one router bearer comes from /wake-router, never from the container copy.
+        self.assertEqual(out["WAKE_ROUTER_KEY"], fake.wake_secrets["WAKE_ROUTER_KEY"])
+        self.assertNotEqual(out["WAKE_ROUTER_KEY"], self.COOLIFY_COPIES["WAKE_ROUTER_KEY"])
         # Names Infisical does not hold are gone, never kept from the container:  a seat's names (any seat),
-        # the router's bearer the Eavesdropper does not use, the Operator's voice and notes-queue keys.
-        for name in ("SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY", "WAKE_ROUTER_KEY", "ZC_ROUTINE_KEY", "ZC_ROUTINE_URL",
+        # the Operator's voice and notes-queue keys.
+        for name in ("SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY", "ZC_ROUTINE_KEY", "ZC_ROUTINE_URL",
                      "ZULIP_CLAUDE_EMAIL", "ZULIP_OPERATOR_API_KEY", "OPERATOR_NOTES_RUNNER_KEY"):
             self.assertNotIn(name, out)
         # The router's other knobs are not the Eavesdropper's to carry.
         self.assertNotIn("WAKE_ROUTER_DELIVERY_ENABLED", out)
-        self.assertIn("Infisical-only names: 3 of 3 (", line)
+        self.assertIn("Infisical-only names: 4 of 4 (", line)
         self.assertIn("OPERATOR_REGISTRY_KEY from /wake-router SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY", line)
         self.assertIn("container copies removed: %d (" % len(self.COOLIFY_COPIES), line)
         for value in (list(self.COOLIFY_COPIES.values()) + list(fake.wake_secrets.values())
@@ -509,7 +512,7 @@ class InfisicalEnvTests(unittest.TestCase):
         self.assertEqual(got, {"ZULIP_ALERT_GB_FIXER_KEY": self.values["ZULIP_ALERT_GB_FIXER_KEY"],
                                "INFISICAL_CLIENT_SECRET": None, "INFISICAL_CLIENT_ID": None,
                                "ZULIP_ALERT_GB_FIXER_HEADER": None})
-        self.assertIn("simple-chat: loaded 11 variables from Infisical", run.stderr)
+        self.assertIn("simple-chat: loaded 12 variables from Infisical", run.stderr)
         self.assertNotIn(self.csecret, run.stderr)
 
     def entrypoint(self, env: dict[str, str]) -> subprocess.CompletedProcess:
@@ -522,7 +525,7 @@ class InfisicalEnvTests(unittest.TestCase):
             run = self.entrypoint(self.env(fake))
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertFalse(json.loads(run.stdout)["running"], "simple-chat daemon status --json ran with the given arguments")
-        self.assertIn("simple-chat: loaded 11 variables from Infisical", run.stderr)
+        self.assertIn("simple-chat: loaded 12 variables from Infisical", run.stderr)
         self.assertEqual([p.split("?")[0] for _, p in fake.requests if "/api/v3/secrets/raw?" in p],
                          ["/api/v3/secrets/raw"] * 3)
         # /zulip, /operator (AFC-486 and the Operator's identity) and the router's /wake-router

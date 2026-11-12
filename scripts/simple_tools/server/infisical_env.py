@@ -157,6 +157,9 @@ INFISICAL_ONLY: tuple[tuple[str, str, str, str], ...] = (
         "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
         r"[!-~]{32,512}",
     ),
+    # The one bearer the Eavesdropper presents to the one wake router, for every seat whose wake goes
+    # through it (`key_env = "WAKE_ROUTER_KEY"` in a seat's section).  Not a seat's key:  one name, one home.
+    ("WAKE_ROUTER_KEY", WAKE_ROUTER_PATH, "WAKE_ROUTER_KEY", r"[!-~]{32,512}"),
 )
 _SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9-]*$")
 
