@@ -5897,9 +5897,16 @@ class RouterHealthTests(Base):
                         foc.read_router_health_http(url=url, max_bytes=8), (None, "too_large")
                     )
                     deep_body = (b"[" * 20) + b"0" + (b"]" * 20)
-                    state.update(status=200, body=b'{"healthy": true, "seats": {}, "deep": ' + deep_body + b"}")
+                    sstate.update(
+                        status=200,
+                        body=b'{"healthy": true, "seats": {}, "deep": ' + deep_body + b"}",
+                    )
                     self.assertEqual(foc.read_router_health_http(url=url), (None, "not_json"))
-                    wide_body = b'{"healthy": true, "seats": {}, "extra": [' + b",".join([b"0"] * 10050) + b"]}"
+                    wide_body = (
+                        b'{"healthy": true, "seats": {}, "extra": ['
+                        + b",".join([b"0"] * 10050)
+                        + b"]}"
+                    )
                     state.update(status=200, body=wide_body)
                     self.assertEqual(foc.read_router_health_http(url=url), (None, "not_json"))
                 finally:
@@ -5910,8 +5917,6 @@ class RouterHealthTests(Base):
             finally:
                 srv.shutdown()
         self.assertEqual(foc.read_router_health_http(url=url), (None, "router_not_running"))
-
-
 
     def test_read_router_health_http_times_out_slow_trickle_peer(self):
         import http.server
@@ -5950,6 +5955,8 @@ class RouterHealthTests(Base):
                 self.assertLess(elapsed, 0.9)
             finally:
                 srv.shutdown()
+
+
 class SourceTests(unittest.TestCase):
     def test_no_shell_true_anywhere(self):
         text = Path(HERE, "fleet-ops-control.py").read_text()
