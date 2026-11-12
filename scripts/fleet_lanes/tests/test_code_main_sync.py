@@ -23,6 +23,9 @@ def run(args: list[str], cwd: Path) -> str:
     return subprocess.run([GIT, *args], cwd=cwd, check=True, capture_output=True, text=True, env=env).stdout.strip()
 
 
+REMOTE = "https://github.com/example-org/example-repo.git"
+
+
 class SyncCase(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -218,6 +221,173 @@ class Errors(unittest.TestCase):
         line = S._first_line("\nfatal: unable to access 'https://user:secret@github.com/a/b.git/': failed\n")
         self.assertNotIn("secret", line)
 
+
+class RelayRoute(SyncCase):
+    def bearer_file(self, mode: int = 0o600) -> Path:
+        path = self.home / "seat-bearer"
+        path.write_text("seat-bearer-value\n", encoding="utf-8")
+        path.chmod(mode)
+        return path
+
+    def test_relay_route_sends_github_fetches_with_only_the_seat_bearer(self) -> None:
+        path = self.bearer_file()
+        out = S.relay_git_env({"FLEET_SYNC_RELAY_URL": "http://127.0.0.1:8471/", "FLEET_SYNC_BEARER_FILE": str(path)}, REMOTE)
+        config = [(out[f"GIT_CONFIG_KEY_{i}"], out[f"GIT_CONFIG_VALUE_{i}"]) for i in range(int(out["GIT_CONFIG_COUNT"]))]
+        self.assertIn(("url.http://127.0.0.1:8471/git/example-org/example-repo.git.insteadOf", REMOTE), config)
+        self.assertIn(("http.http://127.0.0.1:8471/.extraHeader", "Authorization: Bearer seat-bearer-value"), config)
+        self.assertIn(("http.followRedirects", "false"), config)
+        self.assertIn(("credential.helper", ""), config)
+        self.assertEqual(out["GIT_TERMINAL_PROMPT"], "0")
+
+    def header(self, out: dict) -> str:
+        count = int(out["GIT_CONFIG_COUNT"])
+        return next(out[f"GIT_CONFIG_VALUE_{i}"] for i in range(count) if out[f"GIT_CONFIG_KEY_{i}"].endswith(".extraHeader"))
+
+    def test_the_environment_bearer_comes_first(self) -> None:
+        path = self.bearer_file()
+        out = S.relay_git_env({"FLEET_SYNC_RELAY_URL": "http://127.0.0.1:8471", "FLEET_SYNC_BEARER_FILE": str(path),
+                               "SIMPLE_TOOLS_BEARER": "from-the-environment"}, REMOTE)
+        self.assertEqual(self.header(out), "Authorization: Bearer from-the-environment")
+
+    def test_a_bearer_with_an_equals_sign_is_kept_whole(self) -> None:
+        path = self.home / "seat-bearer"
+        for text, wanted in (("abc=def==\n", "abc=def=="), ("TOKEN=abc=def\n", "abc=def"), ("plain\n", "plain")):
+            path.write_text(text, encoding="utf-8")
+            path.chmod(0o600)
+            out = S.relay_git_env({"FLEET_SYNC_RELAY_URL": "http://127.0.0.1:8471", "FLEET_SYNC_BEARER_FILE": str(path)}, REMOTE)
+            self.assertEqual(self.header(out), f"Authorization: Bearer {wanted}", text)
+
+    def test_relay_route_refuses_what_could_leak_the_bearer(self) -> None:
+        path = self.bearer_file()
+        cases = (
+            {"FLEET_SYNC_RELAY_URL": "http://relay.example", "FLEET_SYNC_BEARER_FILE": str(path)},
+            {"FLEET_SYNC_RELAY_URL": "", "FLEET_SYNC_BEARER_FILE": str(path)},
+            {"FLEET_SYNC_RELAY_URL": "https://relay.example", "FLEET_SYNC_BEARER_FILE": ""},
+            {"FLEET_SYNC_RELAY_URL": "https://relay.example", "FLEET_SYNC_BEARER_FILE": str(self.home / "missing")},
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            for case in cases:
+                self.assertIsNone(S.relay_git_env(case, REMOTE), case)
+            path.chmod(0o644)
+            self.assertIsNone(S.relay_git_env({"FLEET_SYNC_RELAY_URL": "https://relay.example", "FLEET_SYNC_BEARER_FILE": str(path)}, REMOTE))
+
+    def route_vars(self) -> None:
+        self.vars.update({"FLEET_SYNC_RELAY_URL": "http://127.0.0.1:8471", "FLEET_SYNC_BEARER_FILE": str(self.bearer_file())})
+
+    def with_github_origin(self):
+        """The clone's origin is a local bare repo, so the route's view of it is patched, and real git keeps fetching locally."""
+        patcher = mock.patch.object(S, "origin_repo", return_value="example-org/example-repo")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_every_fetch_takes_the_configured_route_and_the_bearer_is_never_logged(self) -> None:
+        self.route_vars()
+        self.with_github_origin()
+        real = S.git_full
+        seen: list[dict] = []
+
+        def fake(repo, *args, **kwargs):
+            if args[0] in ("fetch", "-c"):
+                seen.append(dict(kwargs.pop("extra_env", None) or {}))  # the local bare origin needs no relay
+            return real(repo, *args, **kwargs)
+
+        with mock.patch.object(S, "git_full", fake):
+            code, out = self.sync()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.head(), self.origin())
+        self.assertEqual(len(seen), 2, "one fetch, with no plain attempt first, and one merge")
+        self.assertIn("seat-bearer-value", str(seen[0]))
+        self.assertIn("seat-bearer-value", str(seen[1]), "the merge takes the same route as the fetch")
+        self.assertNotIn("seat-bearer-value", out)
+
+    def test_an_unusable_route_fails_the_clone_with_no_other_fetch(self) -> None:
+        self.vars.update({"FLEET_SYNC_RELAY_URL": "http://127.0.0.1:8471", "FLEET_SYNC_BEARER_FILE": str(self.home / "missing")})
+        self.with_github_origin()
+        real = S.git_full
+
+        def fake(repo, *args, **kwargs):
+            self.assertNotEqual(args[0], "fetch", "no fetch may run outside the configured route")
+            return real(repo, *args, **kwargs)
+
+        with mock.patch.object(S, "git_full", fake):
+            code, out = self.sync()
+        self.assertEqual(code, 1)
+        self.assertIn("configured but not usable", out)
+        self.assertNotEqual(self.head(), self.origin())
+
+    def test_an_origin_git_will_not_resolve_to_the_route_fails_with_no_fetch(self) -> None:
+        self.route_vars()
+        self.with_github_origin()
+        real = S.git_full
+
+        def fake(repo, *args, **kwargs):
+            self.assertNotEqual(args[0], "fetch", "no fetch may run outside the configured route")
+            if args[0] == "ls-remote":
+                return 0, "https://github.com/example-org/example-repo.git", ""
+            return real(repo, *args, **kwargs)
+
+        with mock.patch.object(S, "git_full", fake):
+            code, out = self.sync()
+        self.assertEqual(code, 1)
+        self.assertIn("does not resolve to the relay route", out)
+
+    def test_the_relay_route_never_looks_up_an_owner_token(self) -> None:
+        self.route_vars()
+        self.with_github_origin()
+        real = S.git_full
+
+        def fake(repo, *args, **kwargs):
+            if args[0] in ("fetch", "-c"):
+                kwargs.pop("extra_env", None)
+            return real(repo, *args, **kwargs)
+
+        with mock.patch.object(S, "resolve_github_token", side_effect=AssertionError("owner token looked up")), \
+                mock.patch.object(S, "git_full", fake):
+            code, out = self.sync()
+        self.assertEqual(code, 0, out)
+        self.assertIn("github token: none (relay route)", out)
+
+    def test_every_accepted_origin_form_resolves_to_the_route_in_real_git(self) -> None:
+        """Including the forms a list of URL patterns misses:  an embedded login, a case-variant host, an explicit port."""
+        route = {"FLEET_SYNC_RELAY_URL": "http://127.0.0.1:8471", "FLEET_SYNC_BEARER_FILE": str(self.bearer_file())}
+        for origin in (
+            "https://github.com/a/b.git",
+            "https://github.com/a/b",
+            "https://github.com/a/b.git/",
+            "git@github.com:a/b.git",
+            "ssh://git@github.com/a/b.git",
+            "https://synthetic-login@github.com/a/b.git",
+            "https://GitHub.com/a/b.git",
+            "ssh://git@github.com:22/a/b.git",
+        ):
+            env = S.relay_git_env(route, origin)
+            self.assertIsNotNone(env, origin)
+            result = subprocess.run([GIT, "ls-remote", "--get-url", origin], capture_output=True, text=True, check=True,
+                                    env={**os.environ, **env})
+            self.assertEqual(result.stdout.strip(), "http://127.0.0.1:8471/git/a/b.git", origin)
+
+    def test_an_origin_that_is_not_one_github_repo_is_refused(self) -> None:
+        route = {"FLEET_SYNC_RELAY_URL": "http://127.0.0.1:8471", "FLEET_SYNC_BEARER_FILE": str(self.bearer_file())}
+        with contextlib.redirect_stdout(io.StringIO()):
+            for origin in ("https://example.com/a/b.git", "https://github.com/a", "https://github.com/a/b/c.git",
+                           "https://github.com/../b.git", "git@example.com:a/b.git", "/a/local/path", "git@github.com"):
+                self.assertIsNone(S.relay_git_env(route, origin), origin)
+
+    def test_without_the_relay_a_failed_fetch_still_fails(self) -> None:
+        real = S.git_full
+
+        def fake(repo, *args, **kwargs):
+            if args[0] == "fetch":
+                return 128, "", "fatal: could not read Username for 'https://github.com'"
+            return real(repo, *args, **kwargs)
+
+        with mock.patch.object(S, "git_full", fake):
+            code, out = self.sync()
+        self.assertEqual(code, 1)
+        self.assertIn("could not read Username", out)
+
+
+class Source(unittest.TestCase):
     def test_no_host_path_in_the_source(self) -> None:
         text = Path(S.__file__).read_text(encoding="utf-8")
         for mark in ("/mnt/", "/root/"):
