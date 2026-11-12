@@ -1,0 +1,4 @@
+from hetzner_gitops.reconcile import main
+
+if __name__ == "__main__":
+    raise SystemExit(main())

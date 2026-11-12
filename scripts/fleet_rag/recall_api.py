@@ -23,7 +23,7 @@ import threading
 import time
 from typing import Any
 
-from . import core, search_log, telemetry
+from . import core, search_cache, search_log, telemetry
 from .core import (
     LESSON_CATEGORIES,
     LESSON_SOURCE,
@@ -399,6 +399,8 @@ def recall_search(
     prefer_lessons: bool = True,
     rerank: bool = True,
     include_retracted: bool = False,
+    compact: bool = True,
+    full: bool = False,
 ) -> dict:
     """Hybrid (dense + keyword + lesson, RRF) search over the fleet-agents corpus, one hit per
     document.
@@ -417,6 +419,11 @@ def recall_search(
     Returns {"hits": [...], "mode": "hybrid"|"dense" (+"+rerank" when the rerank engaged)}.
     Each hit carries group_hits (chunks of that doc among the candidates, capped at
     GROUP_DEPTH) and, when reranked, fused_score / rerank_score.  Read-only key when available.
+
+    An identical call (normalized query, filters, limit, compact and full) is served from
+    the in-process cache and does not embed or query Qdrant.  compact and full do not
+    change the hit text; they keep an excerpt render and a whole-chunk render from
+    sharing one entry.
     """
     if not isinstance(query, str) or not query.strip():
         raise FleetRagError("query must be a non-empty string")
@@ -426,6 +433,14 @@ def recall_search(
         raise FleetRagError(f"per_doc must be an integer between 1 and {PER_DOC_MAX}")
     if not isinstance(include_retracted, bool):
         raise FleetRagError("include_retracted must be a boolean")
+    if not isinstance(compact, bool):
+        raise FleetRagError("compact must be a boolean")
+    if not isinstance(full, bool):
+        raise FleetRagError("full must be a boolean")
+    if not isinstance(prefer_lessons, bool):
+        raise FleetRagError("prefer_lessons must be a boolean")
+    if not isinstance(rerank, bool):
+        raise FleetRagError("rerank must be a boolean")
     category = _one_of("category", _opt_str("category", category), CATEGORIES)
     source = _one_of("source", _opt_str("source", source), SOURCES)
     app = _opt_str("app", app)
@@ -434,12 +449,45 @@ def recall_search(
         seat = seat.upper()
     if app:
         app = app.lower()
-    t0 = time.time()
+    normalized = search_cache.normalize_query(query)
+    if not normalized:
+        raise FleetRagError("query must be a non-empty string")
     flt = build_filter(category, app, source, seat, since_days, include_retracted=include_retracted)
     cfg = get_config(need_write=False)
-    query = query.strip()
-    vector = embed(cfg, [query])[0]
-    terms = query_terms(query)
+    cache_key = search_cache.make_key(
+        query=normalized,
+        limit=limit,
+        category=category,
+        app=app,
+        source=source,
+        seat=seat,
+        since_days=since_days,
+        per_doc=per_doc,
+        prefer_lessons=prefer_lessons,
+        rerank=rerank,
+        include_retracted=include_retracted,
+        compact=compact,
+        full=full,
+        collection=cfg.get("QDRANT_FLEET_COLLECTION", ""),
+        groups=use_qdrant_groups(),
+        rerank_live=bool(rerank) and rerank_configured(cfg),
+        embed_model=cfg.get("TEI_EMBED_MODEL", ""),
+    )
+    t0 = time.time()
+    cached, cache_token = search_cache.lookup(cache_key)
+    asked = query.strip()
+    if cached is not None:
+        search_log.log_search(
+            query=asked,
+            seat=seat,
+            app=app,
+            hits_count=len(cached.get("hits") or []),
+            latency_ms=int((time.time() - t0) * 1000),
+            mode=str(cached.get("mode") or ""),
+        )
+        return cached
+    vector = embed(cfg, [asked])[0]
+    terms = query_terms(asked)
     # Ask for exactly `limit` doc groups unless a rerank can happen, in which case pull the wider
     # candidate set the cross-encoder needs.
     will_rerank = bool(rerank) and rerank_configured(cfg)
@@ -467,14 +515,16 @@ def recall_search(
         )
     hits = _grouped_candidates(groups, per_doc)
     mode = "hybrid" if terms else "dense"
-    if will_rerank and _apply_rerank(cfg, query, hits):
+    if will_rerank and _apply_rerank(cfg, asked, hits):
         mode += "+rerank"
     hits_out = hits[:limit]
+    result = {"hits": hits_out, "mode": mode}
+    search_cache.store(cache_key, result, cache_token)
     latency_ms = int((time.time() - t0) * 1000)
     search_log.log_search(
-        query=query, seat=seat, app=app, hits_count=len(hits_out), latency_ms=latency_ms, mode=mode
+        query=asked, seat=seat, app=app, hits_count=len(hits_out), latency_ms=latency_ms, mode=mode
     )
-    return {"hits": hits_out, "mode": mode}
+    return result
 
 
 # --------------------------------------------------------------------------- stats
@@ -507,6 +557,7 @@ def recall_stats() -> dict:
         "by_app": by_app,
         "searches_7d": searches["total_searches"],
         "searches_by_seat_7d": searches["by_seat"],
+        "search_cache": search_cache.stats(),
     }
 
 
@@ -673,6 +724,7 @@ def recall_contribute(
             return duplicate_result(existing)
         point["vector"] = vector
         status = q.upsert([point])
+    search_cache.note_corpus_change("contribute", doc_id)
     return {"id": point["id"], "doc_id": doc_id, "scrubbed": reported, "status": status}
 
 
@@ -963,6 +1015,7 @@ def recall_correct(
                 payload.pop("scrubbed", None)
             point = {"id": plan["point_id"], "payload": payload, "vector": vector}
             status = q.upsert([point])
+    search_cache.note_corpus_change("correct", doc_id)
     return {
         "id": plan["point_id"],
         "doc_id": doc_id,
@@ -1021,6 +1074,7 @@ def recall_retract(
             "updated_at": ts,
         }
         status = q.set_payload([str(point.get("id") or "")], fields)
+    search_cache.note_corpus_change("retract", doc_id)
     return {
         "id": str(point.get("id") or ""),
         "doc_id": doc_id,
@@ -1285,3 +1339,4 @@ def install_fake_backend(seed: bool = True) -> None:
     gitleaks_flagged = lambda path, timeout=300: set()
     gitleaks_available = lambda: True
     reset_config_cache()
+    search_cache.reset()
