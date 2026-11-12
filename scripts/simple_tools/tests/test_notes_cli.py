@@ -29,7 +29,7 @@ from simple_tools.tests.test_notes_client import FakeFleet, FakeOperator, record
 
 TITLE = "[AFC, Claude] Cli Check"
 MASTER = "⭐️ Background Jobs Master List"
-VERBS = ("create", "update", "pin", "unpin", "read", "list", "log", "runner", "status")
+VERBS = ("create", "update", "pin", "unpin", "delete", "read", "list", "log", "runner", "status")
 
 
 class NotesCliHarness(Harness):
