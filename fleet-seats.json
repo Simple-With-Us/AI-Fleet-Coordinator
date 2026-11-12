@@ -234,6 +234,30 @@
       ],
       "source": "AFC-400 starter rule 8;  the Nylas 401 class",
       "ttlSeconds": 3600
+    },
+    {
+      "autofixAllowed": false,
+      "check": {
+        "detail": "",
+        "target": "fleet-cloud-seat-observer",
+        "type": "command"
+      },
+      "collector": "api",
+      "description": "Cloud seats are verified by an authorized read-only observer (never self-report alone).",
+      "expected": {
+        "description": "Cloud seats are verified by an authorized read-only observer (never self-report alone)."
+      },
+      "id": "compliance-cloud-seat-api-observer",
+      "implementationReason": "The api collector trust boundary and rule templates are implemented,  while live cloud observation awaits an authorized observer endpoint and scoped credential (AFC-398).",
+      "implemented": false,
+      "kind": "compliance",
+      "ownerSeat": "AG",
+      "proofLevel": "L0",
+      "scope": [
+        "cloud"
+      ],
+      "source": "AFC-441 section 16;  transport coordinated with AFC-398",
+      "ttlSeconds": 900
     }
   ],
   "schemaVersion": 2,
