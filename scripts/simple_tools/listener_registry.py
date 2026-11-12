@@ -702,13 +702,19 @@ class RegistryService:
                 minutes = int(
                     getattr(self, "gone_report_live_minutes", DEFAULT_GONE_REPORT_LIVE_MINUTES)
                 )
-                seen_since = _instant(datetime.now(UTC) - timedelta(minutes=minutes))
-                kept = [
-                    str(row["native_session_id"])
+                # The service's own clock (the one it checks a signature's age by), so a test that sets it and a host
+                # whose clock the service is given both get the window they mean.
+                seen_since = _instant(
+                    datetime.fromtimestamp(self.clock(), UTC) - timedelta(minutes=minutes)
+                )
+                in_use = [
+                    row
                     for row in asked
                     if minutes > 0 and str(row["last_seen_at"] or "") >= seen_since
                 ]
-                doomed = [row for row in asked if row["native_session_id"] not in kept]
+                # Each id once and in order, whatever number of rows hold it:  a caller reads a list of ids.
+                kept = sorted({str(row["native_session_id"]) for row in in_use})
+                doomed = [row for row in asked if row not in in_use]
                 if doomed and len(live) > 1:
                     allowed_total = self.gone_report_max_share * (len(live) + recent)
                     if recent + len(doomed) > allowed_total:
@@ -758,7 +764,7 @@ class RegistryService:
             "closed": closed,
             "count": len(closed),
             "live": len(live),
-            "kept": sorted(kept),
+            "kept": kept,
             "kept_count": len(kept),
         }
 

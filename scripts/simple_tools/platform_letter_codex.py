@@ -724,7 +724,14 @@ def install(
     buf = io.StringIO()
     code = PL.install_json_hooks(INSTALL, opts, env, buf)
     answer = PL._last_json(buf.getvalue())
-    if answer is None or opts.remove or "error" in answer or code != 0:
+    # A check that exits 1 only because an entry is not current still reports the trust state beside it.
+    outdated_only = (
+        opts.check
+        and isinstance(answer, dict)
+        and all(answer.get("installed", {}).values())
+        and not answer.get("retired")
+    )
+    if answer is None or opts.remove or "error" in answer or (code != 0 and not outdated_only):
         stdout.write(buf.getvalue())
         return code
     state = trust_state(env, popen=popen)

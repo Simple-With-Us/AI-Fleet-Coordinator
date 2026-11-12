@@ -145,8 +145,13 @@ def _cache_dirs(env: Mapping[str, str]) -> list[str]:
 def minimax_retired_note(env: Mapping[str, str], sid: str) -> dict[str, Any] | None:
     """What the retired MiniMax client cached for a chat it lettered (`<scope>/session-letters/<sid>.json`:  letter,
     topic, host, space), as the library adopts it:  the letter, where the chat is registered, its words and when
-    the cache was written.  None when there is no such file.  A cache folder or file that is a symlink is never
-    followed, as the retired client never followed one, and only the first CACHE_BYTES of a file are read."""
+    the cache was written.  None when there is no such file.  A cache folder or file that is a symlink is never
+    followed, as the retired client never followed one, and only the first CACHE_BYTES of a file are read.
+
+    The cache lives in more than one place (the current layout under `v2/hook-data`, and `hook-state`, the layout from
+    before it, which a host still holds files of).  A chat's file may be in several;  the one written last is the one
+    that is adopted, and never more than one:  an older layout's file never beats a newer write."""
+    found: list[dict[str, Any]] = []
     for folder in _cache_dirs(env):
         path = os.path.join(folder, sid + ".json")
         if os.path.islink(folder) or os.path.islink(path) or not os.path.isfile(path):
@@ -158,13 +163,15 @@ def minimax_retired_note(env: Mapping[str, str], sid: str) -> dict[str, Any] | N
         except (OSError, ValueError, RecursionError):
             continue
         if isinstance(data, dict) and isinstance(data.get("letter"), str) and data["letter"]:
-            return {
-                "label": data["letter"],
-                "location": data.get("host"),
-                "title": data.get("topic"),
-                "seen": seen,
-            }
-    return None
+            found.append(
+                {
+                    "label": data["letter"],
+                    "location": data.get("host"),
+                    "title": data.get("topic"),
+                    "seen": seen,
+                }
+            )
+    return max(found, key=lambda note: note["seen"]) if found else None
 
 
 def minimax_chat_payload(sid: str) -> Mapping[str, Any]:

@@ -295,10 +295,21 @@ class MiniMaxRetiredClient(Base):
         path = self.cache("m-0001", {"letter": "QQ", "topic": "Memory sync", "host": "mac", "space": "double"})
         self.assertEqual(PM.minimax_retired_note(env, "m-0001"),
                          {"label": "QQ", "location": "mac", "title": "Memory sync", "seen": os.stat(path).st_mtime})
-        # The scopes are read in the retired client's own order:  the user scope, the project scopes, then the old one.
-        self.cache("m-0001", {"letter": "QR", "host": "mac"}, "v2", "hook-data", "projects", "abc123")
-        self.assertEqual(PM.minimax_retired_note(env, "m-0001")["label"], "QR")
-        self.cache("m-0001", {"letter": "QS", "host": "mac"}, "v2", "hook-data", "user")
+        # The cache is in several places (the old layout, the project scopes, the user scope).  The file written last is
+        # the one adopted, whichever place it is in, and never more than one.
+        os.utime(path, (1000, 1000))
+        older = self.cache("m-0001", {"letter": "QR", "host": "mac"}, "v2", "hook-data", "projects", "abc123")
+        os.utime(older, (2000, 2000))
+        newest_user = self.cache("m-0001", {"letter": "QS", "host": "mac"}, "v2", "hook-data", "user")
+        os.utime(newest_user, (1500, 1500))
+        self.assertEqual(PM.minimax_retired_note(env, "m-0001")["label"], "QR")  # 2000 beats 1500 and 1000
+        os.utime(newest_user, (3000, 3000))
+        self.assertEqual(PM.minimax_retired_note(env, "m-0001")["label"], "QS")
+        os.utime(path, (4000, 4000))  # the old layout's file, written last, is the one that holds the letter now
+        note = PM.minimax_retired_note(env, "m-0001")
+        self.assertEqual((note["label"], note["seen"]), ("QQ", 4000.0))
+        for stamped in (path, older, newest_user):  # the same time:  the retired client's own order breaks the tie
+            os.utime(stamped, (5000, 5000))
         self.assertEqual(PM.minimax_retired_note(env, "m-0001")["label"], "QS")
         # A hook is told its own scope, and reads that one alone.
         scope = os.path.join(self.tmp.name, "scope")

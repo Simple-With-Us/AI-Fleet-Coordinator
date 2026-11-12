@@ -3148,7 +3148,9 @@ class ParentTests(Base):
             return self.parents.get(payload.get("session_id"), "")
 
         self.spec = make_spec(platform="faux", source="faux-hook", display="Faux", parent_id=parent_id)
-        patch = mock.patch.dict(PL.SPECS, {"faux": self.spec})
+        # The gate answers about Claude chats only:  the same lookup, under the platform it is asked about.
+        as_claude = make_spec(platform="claude", source="faux-hook", display="Claude", parent_id=parent_id)
+        patch = mock.patch.dict(PL.SPECS, {"faux": self.spec, "claude": as_claude})
         patch.start()
         self.addCleanup(patch.stop)
 
@@ -3272,18 +3274,18 @@ class ParentTests(Base):
         self.parents["c-0001"] = "p-0001"
         for app_id in ("", "local_abc-1"):
             for source in ("", "startup", "resume", "clear", "fork"):
-                command = PL.parent_ssh_command("faux", "c-0001", app_id, source)
+                command = PL.parent_ssh_command("claude", "c-0001", app_id, source)
                 self.assertEqual(self.gate(command), (0, "p-0001\n", ""), command)
                 payload = self.lookups[-1]["payload"]
                 self.assertEqual((payload["session_id"], payload.get(PL.PARENT_APP_ID, ""), payload["source"]),
                                  ("c-0001", app_id, source or "startup"))
-        self.assertEqual(PL.parent_ssh_command("faux", "c-0001"),
-                         "platform-letter parent --platform faux --session-id c-0001")
-        self.assertEqual(self.gate(PL.parent_ssh_command("faux", "x-0001")), (0, "", ""))  # no parent:  no line
+        self.assertEqual(PL.parent_ssh_command("claude", "c-0001"),
+                         "platform-letter parent --platform claude --session-id c-0001")
+        self.assertEqual(self.gate(PL.parent_ssh_command("claude", "x-0001")), (0, "", ""))  # no parent:  no line
 
     def test_the_gate_refuses_everything_else_and_no_shell_ever_reads_it(self) -> None:
         refused = (126, "", "parent-ssh-gate: that command is not allowed on this key\n")
-        good = "platform-letter parent --platform faux --session-id c-0001"
+        good = "platform-letter parent --platform claude --session-id c-0001"
         for command in (
             None, "", "true", good + ";id", good + " ; id", good + " && id", good + " | sh", good + " $(id)",
             good + " `id`", good + "\nid", good + " extra", good + " --app-id", good + " --app-id a b",
@@ -3300,8 +3302,26 @@ class ParentTests(Base):
         self.assertIn("parent-ssh-gate", PL.USAGE)
 
     def test_the_key_line_forces_the_gate_and_restricts_the_key(self) -> None:
-        self.assertEqual(PL.parent_key_line(), 'restrict,command="$HOME/.local/bin/platform-letter parent-ssh-gate"'
-                                               " <key-type> <public-key> letter-parent")
+        script = PL.checkout_script()
+        self.assertEqual(
+            PL.parent_key_line(),
+            'restrict,from="<server-ip>",command="%s parent-ssh-gate" <key-type> <public-key> letter-parent' % script,
+        )
+        # It names the checkout's own script by absolute path, not the host's wrapper that sources the registry
+        # settings, and that path exists and runs.
+        self.assertTrue(os.path.isabs(script))
+        self.assertEqual(os.path.basename(script), "platform-letter")
+        self.assertTrue(os.path.isfile(script) and os.access(script, os.X_OK), script)
+        self.assertNotIn(".local/bin", PL.parent_key_line())
+        self.assertNotIn("$HOME", PL.parent_key_line())
+        # A source is only taken as an address or a host name;  anything else keeps the placeholder.
+        self.assertIn('from="203.0.113.7"', PL.parent_key_line("203.0.113.7"))
+        self.assertIn('from="<server-ip>"', PL.parent_key_line('1.2.3.4",command="x'))
+        # The verb prints the same line on the host that answers.
+        out = io.StringIO()
+        self.assertEqual(PL.main(["parent-key-line", "--from", "203.0.113.7"], stdout=out), 0)
+        self.assertEqual(out.getvalue(), PL.parent_key_line("203.0.113.7") + "\n")
+        self.assertEqual(PL.main(["parent-key-line", "--from", "x y"], stdout=io.StringIO()), 2)
 
     # ---- SESSION_LETTER_MAC_SSH:  where the Mac is, for a hook on another host ----
 
@@ -3693,7 +3713,8 @@ class DurableWriteTests(Base):
         self.assertEqual(seen, [("file", None), ("replace", path), ("folder", self.folder_id(path))])
 
     def test_a_hook_file_is_fsynced_renamed_and_then_its_folder_is_fsynced(self) -> None:
-        path = os.path.join(self.home, ".claude", "settings.json")
+        # The file is written where the path really leads (a link in the way is written through).
+        path = os.path.realpath(os.path.join(self.home, ".claude", "settings.json"))
         out = io.StringIO()
         with self.writes() as seen:
             self.assertEqual(PL.install_main(["--platform", "claude"], self.env(), out), 0)
@@ -3783,7 +3804,7 @@ class InstallTests(Base):
         doc["hooks"]["SessionStart"][1]["hooks"][0]["timeout"] = 1
         self.seed(doc)
         code, check = self.run_install(check=True)
-        self.assertEqual((code, check["installed"]["SessionStart"], check["current"]["SessionStart"]), (0, True, False))
+        self.assertEqual((code, check["installed"]["SessionStart"], check["current"]["SessionStart"]), (1, True, False))
         self.assertEqual(self.run_install()[1]["changed"], ["SessionStart"])
         entries = self.load()["hooks"]["SessionStart"]
         self.assertEqual(entries[0], first)
@@ -3801,7 +3822,69 @@ class InstallTests(Base):
         self.assertIsNone(PL.installed_command({"command": "platform-letter hook --platform codexx"}, "codex"))
         self.assertIsNone(PL.installed_command({"command": "platform-letter registry --platform codex"}, "codex"))
         self.assertIsNone(PL.installed_command({"command": "'unclosed"}, "codex"))
-        self.assertIsNotNone(PL.installed_command({"deep": [{"cmd": "/p/platform-letter hook --platform=codex"}]}, "codex"))
+        self.assertIsNotNone(PL.installed_command({"deep": [{"command": "/p/platform-letter hook --platform=codex"}]}, "codex"))
+        # Only a hook's own `command` is a command:  any other text of an entry, a matcher or a description, is not.
+        self.assertIsNone(PL.installed_command({"deep": [{"cmd": "/p/platform-letter hook --platform=codex"}]}, "codex"))
+        self.assertIsNone(PL.installed_command({"matcher": "platform-letter hook --platform codex", "hooks": []}, "codex"))
+
+    def test_a_hook_file_that_is_a_link_is_written_through_and_stays_a_link(self) -> None:
+        elsewhere = os.path.join(self.home, "dotfiles")
+        os.makedirs(elsewhere)
+        real = os.path.join(elsewhere, "hooks.json")
+        with open(real, "w", encoding="utf-8") as fh:
+            json.dump({"features": {"hooks": True}, "hooks": {}}, fh)
+        os.chmod(real, 0o640)
+        os.makedirs(os.path.dirname(self.hooks_path()), exist_ok=True)
+        os.symlink(real, self.hooks_path())
+        code, out = self.run_install(location="server")
+        self.assertEqual(code, 0, out)
+        self.assertTrue(os.path.islink(self.hooks_path()))  # still a link, to the same file
+        self.assertEqual(os.path.realpath(self.hooks_path()), os.path.realpath(real))
+        with open(real, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        self.assertEqual(doc["features"], {"hooks": True})
+        self.assertIn("SessionStart", doc["hooks"])  # the real file holds the new entries
+        self.assertEqual(os.stat(real).st_mode & 0o777, 0o640)  # and keeps its mode
+        self.assertEqual(sorted(n for n in os.listdir(elsewhere) if n.startswith(".letter-")), [])
+        code, out = self.run_install(location="server", remove=True)
+        self.assertEqual(code, 0, out)
+        self.assertTrue(os.path.islink(self.hooks_path()))
+        with open(real, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["hooks"], {})
+
+    def test_a_matcher_or_description_that_names_our_command_never_gets_another_tools_hook_deleted(self) -> None:
+        mine = "platform-letter hook --platform minimax"
+        retired = "mm-session-letter hook-pre-tool-use"
+        theirs = {"type": "command", "command": "/x/other-tool.py", "timeout": 5}
+        groups = {
+            "SessionStart": [{"matcher": mine, "description": mine, "hooks": [dict(theirs)]}],
+            "PreToolUse": [{"matcher": retired, "description": retired, "hooks": [dict(theirs, note=retired)]}],
+            "Stop": [dict(theirs, description=mine)],
+        }
+        installer = self.installer(path=".minimax/hooks.json", events={"SessionStart": 20, "Stop": 15})
+        path = os.path.join(self.home, ".minimax", "hooks.json")
+        os.makedirs(os.path.dirname(path))
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"hooks": groups}, fh)
+
+        def theirs_left() -> list[str]:
+            with open(path, encoding="utf-8") as fh:
+                doc = json.load(fh)["hooks"]
+            return sorted(
+                "%s:%s" % (event, hook["command"])
+                for event, entries in doc.items()
+                for group in entries
+                for hook in (group.get("hooks") or [group])
+                if hook["command"] == "/x/other-tool.py"
+            )
+
+        want = ["PreToolUse:/x/other-tool.py", "SessionStart:/x/other-tool.py", "Stop:/x/other-tool.py"]
+        out = io.StringIO()
+        self.assertEqual(PL.install_json_hooks(installer, PL.InstallOptions("minimax"), {"HOME": self.home}, out), 0)
+        self.assertEqual(theirs_left(), want)  # the install added its own entries and took nothing of theirs
+        out = io.StringIO()
+        self.assertEqual(PL.install_json_hooks(installer, PL.InstallOptions("minimax", remove=True), {"HOME": self.home}, out), 0)
+        self.assertEqual(theirs_left(), want)  # and a remove took only its own
 
     def test_a_file_the_installer_does_not_understand_is_refused_untouched(self) -> None:
         for bad in ({"hooks": ["x"]}, {"hooks": {"SessionStart": "x"}}, ["x"]):
@@ -4114,8 +4197,9 @@ class HostWrapperTests(Base):
                 with open(path, "w", encoding="utf-8") as fh:
                     json.dump({"hooks": {"SessionStart": entry(), "Stop": entry()}}, fh)
                 code, answer = run("--check", "--location", "server")
-                self.assertEqual(code, 0)  # an entry is installed...
-                self.assertEqual(answer["current"], {"SessionStart": False, "Stop": False})  # ...and not current
+                self.assertEqual(code, 1)  # an entry is installed but not current:  that is not a pass
+                self.assertEqual(answer["installed"], {"SessionStart": True, "Stop": True})
+                self.assertEqual(answer["current"], {"SessionStart": False, "Stop": False})
                 code, answer = run("--location", "server")
                 self.assertEqual(sorted(answer["changed"]), ["SessionStart", "Stop"])
                 self.assertEqual(commands(), [want, want])  # replaced in place, never a second set beside it
@@ -4217,7 +4301,9 @@ class HostWrapperTests(Base):
         self.assertNotIn(url, out.getvalue())
         start = {"hook_event_name": "SessionStart", "source": "startup", "session_id": "s-0009"}
         hook_out = io.StringIO()
-        PL.main(["hook", "--platform", "claude"], env={**bare, "CLAUDE_CODE_ENTRYPOINT": "claude-desktop",
+        # The location is stated (a host states it, or a Mac defaults to it):  no assumption about the host's OS.
+        PL.main(["hook", "--platform", "claude", "--location", "server"],
+                env={**bare, "CLAUDE_CODE_ENTRYPOINT": "claude-desktop",
                                                          "SIMPLE_TOOLS_STATE_DIR": self.state, registry_api.KEY_VAR: key},
                 stdin=io.StringIO(json.dumps(start)), stdout=hook_out, stderr=io.StringIO())
         context = json.loads(hook_out.getvalue())["hookSpecificOutput"]["additionalContext"]

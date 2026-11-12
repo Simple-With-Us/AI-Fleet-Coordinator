@@ -3080,21 +3080,27 @@ ENV_SSH_COMMAND = "SSH_ORIGINAL_COMMAND"
 #: What the gate answers for anything else.  Never ssh's own 255, which a caller reads as a host that did not
 #: answer.
 PARENT_GATE_REFUSED = 126
-#: The ONE command the question is, word for word (`parent_ssh_command`), with the patterns of its parts:  a
-#: platform name, a session id, the platform's own id for the chat and a start source.  No quotes, no path and
+#: The one platform the question is ever asked about:  only Claude's hook asks another host for a parent.  The gate takes
+#: no other name, so the key cannot be used to ask this host about another platform's chats.
+PARENT_PLATFORM = "claude"
+#: The ONE command the question is, word for word (`parent_ssh_command`), with the patterns of its parts:  the platform
+#: (only PARENT_PLATFORM), a session id, the platform's own id for the chat and a start source.  No quotes, no path and
 #: nothing a shell would read:  the gate matches the whole string and no shell ever sees it.
 PARENT_SSH_RE = re.compile(
     r"platform-letter parent --platform (?P<platform>%s) --session-id (?P<sid>%s)"
     r"(?: --app-id (?P<app>%s))?(?: --source (?P<source>startup|resume|clear|fork))?"
-    % (PLATFORM_RE.pattern, SI.ID_PATTERN.strip("^$"), APP_ID_RE.pattern)
+    % (re.escape(PARENT_PLATFORM), SI.ID_PATTERN.strip("^$"), APP_ID_RE.pattern)
 )
 
 
 def parent_ssh_command(platform: str, sid: str, app_id: str = "", source: str = "") -> str:
     """The command a host sends over ssh to ask another for a chat's parent:  exactly the string the gate on the
-    other side accepts, or "" when a part of it is not what the gate would take.  Each part is checked by itself
+    other side accepts, or "" when a part of it is not what the gate would take.  Each part is checked by itself
     before it is joined, so no part can carry a space into the next."""
-    parts = [(PLATFORM_RE, platform), (re.compile(SI.ID_PATTERN.strip("^$")), sid)]
+    parts = [
+        (re.compile(re.escape(PARENT_PLATFORM)), platform),
+        (re.compile(SI.ID_PATTERN.strip("^$")), sid),
+    ]
     words = ["platform-letter", "parent", "--platform", platform, "--session-id", sid]
     if app_id:
         parts.append((APP_ID_RE, app_id))
@@ -3108,12 +3114,47 @@ def parent_ssh_command(platform: str, sid: str, app_id: str = "", source: str = 
     return command if PARENT_SSH_RE.fullmatch(command) else ""
 
 
-def parent_key_line() -> str:
-    """The authorized_keys line that lets a host's key ask this one for a chat's parent and do nothing else.  The
-    owner of the host that answers (the Mac) adds it, with the asking host's public key:  no installer edits
-    authorized_keys."""
-    gate = "$HOME/.local/bin/%s %s" % (ENTRY, PARENT_GATE)
-    return 'restrict,command="%s" <key-type> <public-key> letter-parent' % gate
+#: The sources an authorized_keys `from=` may name here:  an address or a host name, nothing that closes a quote.
+KEY_FROM_RE = re.compile(r"[A-Za-z0-9.:*?\-]{1,255}")
+
+
+def checkout_script() -> str:
+    """The absolute path of the `scripts/platform-letter` of the checkout this code is running from."""
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ENTRY)
+
+
+def parent_key_line(source: str = "<server-ip>") -> str:
+    """The authorized_keys line that lets a host's key ask this one for a chat's parent and do nothing else.  The owner
+    of the host that answers (the Mac) adds it, with the asking host's public key:  no installer edits authorized_keys.
+
+    It names the checkout's own `scripts/platform-letter` by absolute path and not the host's `platform-letter` wrapper,
+    which sources the registry settings:  a forced command that only matches a string and reads the Mac's records has no
+    use for them, so the key's process never holds them.  `from=` limits the key to the asking host, and `restrict`
+    turns off a terminal, forwarding and the rest.  The path is this checkout's:  on the answering host run
+    `platform-letter parent-key-line` there to print it with that host's own."""
+    script = checkout_script()
+    if '"' in script or "\\" in script or any(ord(c) < 32 for c in script):
+        script = "<absolute path of scripts/platform-letter>"
+    if source != "<server-ip>" and not KEY_FROM_RE.fullmatch(source):
+        source = "<server-ip>"
+    return 'restrict,from="%s",command="%s %s" <key-type> <public-key> letter-parent' % (
+        source,
+        script,
+        PARENT_GATE,
+    )
+
+
+def parent_key_line_main(argv: list[str], stdout: TextIO) -> int:
+    """`parent-key-line [--from SOURCE]`:  print the authorized_keys line of `parent_key_line`, with this host's own
+    checkout path.  It reads nothing and writes nothing."""
+    source = "<server-ip>"
+    if argv and argv[0] == "--from" and len(argv) == 2 and KEY_FROM_RE.fullmatch(argv[1]):
+        source = argv[1]
+    elif argv:
+        stdout.write("usage: platform-letter parent-key-line [--from SOURCE]\n")
+        return 2
+    stdout.write(parent_key_line(source) + "\n")
+    return 0
 
 
 def parent_ssh_gate_main(
@@ -3698,14 +3739,25 @@ def command_for(home: str, platform: str, where: str = "", mac: str = "") -> str
 
 
 def _strings(value: object) -> Iterator[str]:
+    """The command strings in a hook entry, and only those:  a plain string, and what sits under a `command` key at any
+    depth (a group's `hooks[].command` included), as a string or a list of strings.  A matcher, a description or any other
+    text of an entry is never a command, so it can never make an entry look like one."""
     if isinstance(value, str):
         yield value
     elif isinstance(value, Mapping):
-        for item in value.values():
-            yield from _strings(item)
+        for key, item in value.items():
+            if key == "command":
+                for text in item if isinstance(item, list) else [item]:
+                    if isinstance(text, str):
+                        yield text
+            elif isinstance(item, (Mapping, list)):
+                yield from _strings(item)
     elif isinstance(value, list):
         for item in value:
-            yield from _strings(item)
+            if isinstance(item, (Mapping, list)):
+                yield from _strings(item)
+            elif isinstance(item, str):
+                yield item
 
 
 def _flag(words: list[str], name: str) -> str:
@@ -3829,33 +3881,30 @@ _GONE = object()
 
 
 def _is_retired(node: dict[str, Any], platform: str) -> bool:
-    """The dict holds a `hook-...` command of the retired program this platform's row replaced (RETIRED_HOOKS), as a
-    string or in a list of strings of its own.  Such an entry is the retired client's under ANY event, also one
+    """The dict's own `command` is a `hook-...` command of the retired program this platform's row replaced
+    (RETIRED_HOOKS), as a string or in a list of strings.  Such an entry is the retired client's under ANY event, also one
     this row hooks nothing on (the retired MiniMax client had a PreToolUse hook)."""
-    for value in node.values():
-        for text in value if isinstance(value, list) else [value]:
-            if not isinstance(text, str):
-                continue
-            try:
-                words = shlex.split(text)
-            except ValueError:
-                continue
-            program = os.path.basename(words[0]) if words else ""
-            if (
-                RETIRED_HOOKS.get(program) == platform
-                and words[1:2]
-                and words[1].startswith("hook-")
-            ):
-                return True
+    value = node.get("command")
+    for text in value if isinstance(value, list) else [value]:
+        if not isinstance(text, str):
+            continue
+        try:
+            words = shlex.split(text)
+        except ValueError:
+            continue
+        program = os.path.basename(words[0]) if words else ""
+        if RETIRED_HOOKS.get(program) == platform and words[1:2] and words[1].startswith("hook-"):
+            return True
     return False
 
 
 def _is_ours(node: dict[str, Any], platform: str) -> bool:
-    """The dict holds this platform's command as a string, or in a list of strings, of its own."""
+    """The dict's own `command` is this platform's command, as a string or in a list of strings.  Nothing else in the dict
+    counts:  a matcher or a description that names the command does not make the entry ours."""
+    value = node.get("command")
     return any(
         isinstance(s, str) and installed_command(s, platform)
-        for v in node.values()
-        for s in (v if isinstance(v, list) else [v])
+        for s in (value if isinstance(value, list) else [value])
     )
 
 
@@ -4115,7 +4164,9 @@ def install_json_hooks(
         key = {
             "mac_authorized_keys": parent_key_line(),
             "mac_note": "add that line to ~/.ssh/authorized_keys ON THE MAC, with this host's public key in place"
-            " of <key-type> <public-key>;  the Mac's owner adds it, this installer never edits that file",
+            " of <key-type> <public-key>, this host's address in place of <server-ip>, and the Mac's own checkout's"
+            " scripts/platform-letter as the path (`platform-letter parent-key-line --from <address>` run on the Mac"
+            " prints the line with it);  the Mac's owner adds it, this installer never edits that file",
         }
     if opts.check:
         current = {}
@@ -4137,7 +4188,10 @@ def install_json_hooks(
         if stray or files:
             # Not current:  an install takes the retired hooks out, and the owner retires the files.
             answer["retired"] = {"hooks": sorted(stray), "files": files}
-        return _emit(stdout, answer, 0 if all(have.values()) and not (stray or files) else 1)
+        # Exit 0 only when every hook is installed AND current (an install would change nothing), and no retired hook or
+        # wrapper is left:  an entry that is there but outdated is not a pass.
+        ok = all(have.values()) and all(current.values()) and not (stray or files)
+        return _emit(stdout, answer, 0 if ok else 1)
     changed = []
     for ev, kept in stray.items():
         changed.append(ev)
@@ -4168,15 +4222,18 @@ def install_json_hooks(
         os.remove(path)
     else:
         body = (json.dumps(doc, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
-        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".letter-", suffix=".tmp")
+        # A hook file that is a link (a dotfiles repo keeps it) is written where the link points:  the temporary file
+        # goes beside the real file and replaces IT, so the link stays a link and the real file keeps its place.
+        real = os.path.realpath(path)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(real), prefix=".letter-", suffix=".tmp")
         try:
             with os.fdopen(fd, "wb") as fh:
                 fh.write(body)
                 fh.flush()
                 os.fsync(fh.fileno())
             os.chmod(tmp, file_mode)
-            os.replace(tmp, path)
-            _sync_folder(os.path.dirname(path))
+            os.replace(tmp, real)
+            _sync_folder(os.path.dirname(real))
         except BaseException:
             try:
                 os.unlink(tmp)
@@ -4243,7 +4300,8 @@ USAGE = (
     "                        | request [--session-id S]\n"
     "                        | gone [--platform P] [--location L] [--apply]\n"
     "                        | parent --platform P --session-id S [--app-id A] [--source SRC]\n"
-    "                        | parent-ssh-gate}\n"
+    "                        | parent-ssh-gate\n"
+    "                        | parent-key-line [--from SOURCE]}\n"
 )
 
 
@@ -4365,6 +4423,8 @@ def main(
         return request_main(argv[1:], env, stdout, transport=transport)
     if argv[0] == "parent":
         return parent_main(argv[1:], env, stdout)
+    if argv[0] == "parent-key-line":
+        return parent_key_line_main(argv[1:], stdout)
     if argv[0] == PARENT_GATE:
         # It takes no words of its own:  the question is in SSH_ORIGINAL_COMMAND, and anything else is refused.
         if argv[1:]:

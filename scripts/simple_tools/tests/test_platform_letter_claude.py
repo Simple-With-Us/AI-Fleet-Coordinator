@@ -1317,6 +1317,7 @@ class ParentFromMacTests(HookBase):
         cmd, timeout = self.calls[0]
         self.assertEqual(cmd, [
             "ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=2", "-o", "ControlMaster=no",
+            "-o", "ControlPath=none", "-o", "IdentitiesOnly=yes",
             "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "--", self.DEST,
             "platform-letter parent --platform claude --session-id c-0001 --app-id local_bbbbbbbb-0002",
         ])
@@ -1500,9 +1501,9 @@ class ParentFromMacTests(HookBase):
         self.assertEqual(sorted(hooks), ["SessionEnd", "SessionStart", "Stop", "UserPromptSubmit"])
         # The install says what the Mac's owner must add, and touches no authorized_keys itself.
         answer = json.loads(out.getvalue())
-        self.assertEqual(answer["mac_authorized_keys"],
-                         'restrict,command="$HOME/.local/bin/platform-letter parent-ssh-gate"'
-                         " <key-type> <public-key> letter-parent")
+        self.assertEqual(answer["mac_authorized_keys"], PL.parent_key_line())
+        self.assertTrue(answer["mac_authorized_keys"].startswith('restrict,from="<server-ip>",command="/'))
+        self.assertIn(PL.checkout_script() + " parent-ssh-gate", answer["mac_authorized_keys"])
         self.assertIn("the Mac's owner adds it", answer["mac_note"])
         self.assertFalse(os.path.exists(os.path.join(self.server_home, ".ssh")))
 
@@ -1531,6 +1532,7 @@ class ParentFromMacTests(HookBase):
             good + " --app-id", good + " --app-id local_a b", good + " --app-id 'local_a'",
             good + " --source compact", good + " --source clear --app-id local_a",  # the flags have one order
             good.replace("parent", "registry"), good.replace("parent", "install"),
+            good.replace("claude", "codex"), good.replace("claude", "muse"), good.replace("claude", "grok-leader"),
             good.replace("platform-letter", "/bin/sh -c"), good.replace("platform-letter", "simple-chat letter"),
             '"$HOME"/.local/bin/' + good, good.replace("c-0001", "c-0001;id"), good.replace("c-0001", "../../x"),
             good.replace("c-0001", "$(id)"), good.replace("claude", "Claude"), good.replace(" --session-id c-0001", ""),
@@ -1543,7 +1545,7 @@ class ParentFromMacTests(HookBase):
                                  stdout=out, stderr=out), 126)
 
     def test_a_hostile_part_builds_no_command(self) -> None:
-        for bad in (("claude", "c-0001; id"), ("claude", "c-0001 --app-id local_x"), ("claude", ""), ("Claude", "c-0001"),
+        for bad in (("codex", "c-0001"), ("muse", "c-0001"), ("claude", "c-0001; id"), ("claude", "c-0001 --app-id local_x"), ("claude", ""), ("Claude", "c-0001"),
                     ("claude x", "c-0001"), ("claude", "c-0001", "local_a b"), ("claude", "c-0001", "$(id)"),
                     ("claude", "c-0001", "", "compact"), ("claude", "c-0001", "", "clear --app-id x")):
             self.assertEqual(PL.parent_ssh_command(*bad), "", bad)
@@ -1710,6 +1712,17 @@ class StoredTitleTests(HookBase):
         with open(short, "w", encoding="utf-8") as fh:
             fh.write('{"type": "user", "message": {"content": "fix the build"}}')
         self.assertEqual(self.title(short), "Fix the Build")
+
+    def test_the_bound_counts_bytes_not_characters(self) -> None:
+        # 400 three-byte characters are 1200 bytes:  past a 1000-byte bound, though only about 430 characters long.
+        wide = json.dumps({"type": "user", "message": {"content": "fix the build " + "\u65e5" * 400}}, ensure_ascii=False)
+        self.assertLess(len(wide), 1000)
+        self.assertGreater(len(wide.encode("utf-8")), 1000)
+        path = self.transcript(wide, {"type": "user", "message": {"content": "review the parser"}})
+        with mock.patch.object(PC, "TRANSCRIPT_BYTES", 1000):
+            self.assertEqual(self.title(path), "")  # not read:  it runs past the bound
+        with mock.patch.object(PC, "TRANSCRIPT_BYTES", 4000):
+            self.assertNotEqual(self.title(path), "")  # inside a bound that holds the bytes it is read
 
     def test_only_the_first_lines_are_read(self) -> None:
         filler = [{"type": "assistant", "message": {"content": "x"}}] * 5

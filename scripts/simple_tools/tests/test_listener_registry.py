@@ -620,6 +620,31 @@ class OneWriterTest(RegistryApiTest):
         status, answer = self.gone(["busy-1", "busy-2"])
         self.assertEqual((status, answer["count"], answer["kept"]), (200, 1, ["busy-2"]), answer)
 
+    def test_the_window_is_the_services_own_clock_and_kept_is_a_sorted_list_of_ids_once(self) -> None:
+        self.create_store()
+        for sid in ("busy-1", "busy-2", *("other-%d" % n for n in range(1, 9))):
+            self.register("CLAUDE", sid)
+        # The same chat id held by two rows (two profile scopes) is one id in the answer, and both rows stay open.
+        for scope in ("one", "two"):
+            OR.register_session(
+                self.db, platform="minimax", verified_host="mac", profile_scope=scope, native_session_id="twice-1",
+                seat="CLAUDE", source="test", issuer=OR.ISSUER_OPERATOR,
+            )
+        for sid in ("busy-2", "busy-1", "twice-1"):
+            self.seen(sid, 1)
+        del self.service.gone_report_live_minutes
+        self.service.gone_report_live_minutes = 2  # a window of two minutes
+        status, answer = self.gone(["busy-2", "twice-1", "busy-1"])
+        self.assertEqual(status, 200, answer)
+        self.assertEqual((answer["kept"], answer["kept_count"], answer["count"]), (["busy-1", "busy-2", "twice-1"], 3, 0))
+        # With the service's own clock four minutes on (inside the signature skew), the same rows were last seen five
+        # minutes ago:  outside the window, so the report closes them.  The wall clock would have kept them.
+        self.service.clock = lambda: time.time() + 4 * 60
+        status, answer = self.gone(["busy-2", "twice-1", "busy-1"])
+        self.assertEqual(status, 200, answer)
+        self.assertEqual((answer["kept"], answer["kept_count"]), ([], 0))
+        self.assertEqual(sorted({row["native_session_id"] for row in answer["closed"]}), ["busy-1", "busy-2", "twice-1"])
+
     def test_report_gone_counts_no_kept_row_against_the_share(self) -> None:
         del self.service.gone_report_live_minutes
         self.create_store()

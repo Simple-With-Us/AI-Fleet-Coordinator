@@ -144,11 +144,16 @@ REMOTE_QUIET_SECONDS = 3600
 MAC_CONNECT_SECONDS = 2
 MAC_TIMEOUT_SECONDS = 2.0
 # ssh as it is run:  no prompt, the connect bounded, no connection shared with (or left behind for) any other
-# ssh of the account, and nothing forwarded, whatever the account's own ssh config says for the host.
+# ssh of the account (ControlMaster=no starts none and ControlPath=none joins none, so an open master of the account
+# can never carry this command, and it never runs on a channel that skips the key's forced command), nothing
+# forwarded, and only the key the destination's own ssh config names (IdentitiesOnly=yes, so an agent's other keys are
+# not offered first), whatever the account's own ssh config says for the host.
 SSH_OPTIONS = (
     "BatchMode=yes",
     "ConnectTimeout=%d" % MAC_CONNECT_SECONDS,
     "ControlMaster=no",
+    "ControlPath=none",
+    "IdentitiesOnly=yes",
     "ClearAllForwardings=yes",
     "ForwardAgent=no",
 )
@@ -590,16 +595,18 @@ def claude_stored_title(payload: Mapping[str, Any], env: Mapping[str, str]) -> s
         return ""
     read = 0
     try:
-        with open(real, encoding="utf-8", errors="replace") as fh:
+        # Binary, so the bound counts bytes (a line of multibyte characters is no shorter for its characters), and the
+        # text is decoded only after a line is in hand.
+        with open(real, "rb") as fh:
             for _ in range(TRANSCRIPT_LINES):
                 # Never more than the bound in memory:  one line can be as long as a pasted file.
                 room = TRANSCRIPT_BYTES - read
-                line = fh.readline(room + 1) if room > 0 else ""
+                line = fh.readline(room + 1) if room > 0 else b""
                 read += len(line)
                 if not line or len(line) > room:
                     break  # the end, or a line that runs past the bound:  it is not read on
                 try:
-                    entry = json.loads(line)
+                    entry = json.loads(line.decode("utf-8", "replace"))
                 except (ValueError, RecursionError):
                     continue
                 if not isinstance(entry, dict):
