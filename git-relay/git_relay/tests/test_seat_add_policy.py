@@ -4,7 +4,7 @@ import copy
 import unittest
 
 from git_relay.seat_add_policy import digest, prepare
-from git_relay.tests.test_seat_policy_file import SEATS
+from git_relay.tests.test_seat_policy_file import SEATS, SEATS_WITH_ZC
 
 ZC = "swu-zc"
 
@@ -25,13 +25,15 @@ def synthetic_policy():
 
 
 class SeatAddPolicyTests(unittest.TestCase):
-    def test_actual_policy_reproduces_the_reviewed_zc_row_byte_for_byte(self):
-        base = {name: row for name, row in SEATS.items() if name != ZC}
-        self.assertEqual(len(base), len(SEATS) - 1, "the fixture already names the seat")
+    def test_first_seat_admission_reproduces_the_reviewed_zc_row_byte_for_byte(self):
+        # The policy image carries no ZC row until the documented first-seat admission;
+        # prepare() must insert exactly the fleet-profile render of the owner-added seat.
+        base = SEATS
+        self.assertNotIn(ZC, base, "the image excludes the seat pending first-seat admission")
         original = copy.deepcopy(base)
-        result = prepare(base, ZC, copy.deepcopy(SEATS[ZC]), digest(base))
+        result = prepare(base, ZC, copy.deepcopy(SEATS_WITH_ZC[ZC]), digest(base))
         self.assertEqual(base, original, "the input is never mutated")
-        self.assertEqual(result, SEATS)
+        self.assertEqual(result, SEATS_WITH_ZC)
         # Digest and the deployed line both canonicalize with sorted keys, so the
         # only order contract is that original seats keep their relative order.
         self.assertEqual(list(result), list(base) + [ZC], "the new seat appends; nothing moves")
