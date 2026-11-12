@@ -606,11 +606,11 @@ def host_warnings(env: Mapping[str, str]) -> list[str]:
 
 def install(opts: PL.InstallOptions, env: Mapping[str, str], stdout: TextIO) -> int:
     """`install --platform grok-leader [--check | --remove]`: add (or take out, or check) this adapter's hooks in
-    `~/.grok/hooks/session-letter.json`.  Grok runs on the Mac only, and the Mac registers in process, so a location
-    or a registry host is refused, and so is an install on a host with no Grok home (it would leave a stray folder) and
+    `~/.grok/hooks/session-letter.json`.  Grok runs on the Mac only, so a server location
+    is refused, and so is an install on a host with no Grok home (it would leave a stray folder) and
     one where the program the hooks run is not there.  The answer of an install or a check carries that program, whether
     it is ready (a check that finds it missing exits 1), and the `host_warnings`."""
-    if opts.location == "server" or opts.remote:
+    if opts.location == "server":
         return _emit(
             stdout,
             {"error": "Grok runs on the Mac only; there is nothing to install on a server"},

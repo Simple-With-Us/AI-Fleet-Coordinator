@@ -59,7 +59,6 @@
 //
 // Options (the entry in opencode.json is a path, or `{ "package": path, "options": { ... } }`):
 //   location  "mac" or "server": where this chat runs (the hook knows the Mac by itself, a server must say so)
-//   remote    the ssh destination that holds the Operator's registry (a server only)
 //   command   the platform-letter command to run (default ~/.local/bin/platform-letter, or $PLATFORM_LETTER_BIN)
 //   log       a file to append a short line per hook call to (ids and outcomes only, never a prompt)
 //   shared    true or false: say whether this process serves several clients (default: read from how it was started)
@@ -86,7 +85,6 @@ const MAX_CHATS = 2000; // chats remembered at once;  past it the longest unused
 const MAX_HOOKS = 3;
 const MAX_OUTPUT = 64 * 1024;
 const MAX_LINEAGE = 6; // parents above a chat that are registered first
-const DEST_RE = /^[A-Za-z0-9][A-Za-z0-9._@-]*$/;
 const LOCATIONS = ["mac", "server"];
 const CALLER_ENV = ["AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "SESSION_LETTER", "OPENCODE_LETTER"];
 const SLOT = Symbol.for("platform-letter-opencode.engine"); // on globalThis: the one engine of this process
@@ -125,8 +123,6 @@ export function readSettings(options, env = process.env, shared = sharedServer()
   const args = ["hook", "--platform", PLATFORM];
   const location = text(opts.location).toLowerCase();
   if (LOCATIONS.includes(location)) args.push("--location", location);
-  const remote = text(opts.remote);
-  if (DEST_RE.test(remote)) args.push("--remote", remote);
   const settle = Number(opts.settle);
   const settleMs = Number.isFinite(settle) && settle >= 0 && settle <= 10000 ? Math.floor(settle) : SETTLE_MS;
   // In the shared service the environment is whichever client's started it: what the hook would read of it as the caller's

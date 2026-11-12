@@ -1,8 +1,8 @@
 """`platform-letter` (AFC-564): Operator session letters and "<letter>: <Title>" titles for the platforms other than
-Claude and MiniMax.  The registry side runs against a temporary registry in the double (pair) letter space, which main's
-registry has; the hook runs in process, with the ssh leg faked by a runner that hands the remote command to the same
-registry side.  No test depends on which pair the registry hands out first (main takes the lowest free pair, the pair
-registry takes the main-chat order), only on the letter being a pair that the Operator, the note and the title agree on."""
+Claude and MiniMax.  The one assigner is the registry API, served in process over a temporary store (FakeRegistry);
+the hook runs in process, and a test that counts or breaks registry calls hands it a transport that runs the same
+registry side.  No test depends on which pair the registry hands out first, only on the letter being a pair that the
+Operator, the note and the title agree on;  a chat that gets none is titled "??: <Title>"."""
 
 from __future__ import annotations
 
@@ -24,6 +24,8 @@ from unittest import mock
 
 from simple_tools import operator_registry as OR
 from simple_tools import platform_letter as PL
+from simple_tools import registry_api
+from simple_tools.tests.registry_fake import FakeRegistry
 
 SCRIPTS = Path(__file__).resolve().parents[2]
 ENTRY = SCRIPTS / "platform-letter"
@@ -59,21 +61,23 @@ class Base(unittest.TestCase):
         self.home = os.path.join(self.tmp.name, "home")
         self.state = os.path.join(self.tmp.name, "state")
         os.makedirs(self.home)
-        self.db = os.path.join(self.state, "operator", "registry.sqlite3")
-        OR.SessionRegistry(self.db).close_db()  # the Operator's registry exists, as it does on the Mac
+        # The one assigner:  the registry API, served in process over a temporary store.
+        self.fake = FakeRegistry(os.path.join(self.tmp.name, "assigner")).install()
+        self.addCleanup(self.fake.uninstall)
+        self.db = self.fake.db
         self.spec = make_spec()
 
     def env(self, **extra: str) -> dict[str, str]:
-        env = {"HOME": self.home, "SIMPLE_TOOLS_STATE_DIR": self.state}
+        env = {"HOME": self.home, "SIMPLE_TOOLS_STATE_DIR": self.state, **self.fake.env()}
         env.update(extra)
         return env
 
     def server_env(self, **extra: str) -> dict[str, str]:
-        return self.env(SESSION_LETTER_LOCATION="server", SESSION_LETTER_REMOTE="mac", **extra)
+        return self.env(SESSION_LETTER_LOCATION="server", **extra)
 
-    def registry(self, *argv: str, now: float | None = None) -> tuple[int, dict]:
+    def registry(self, *argv: str) -> tuple[int, dict]:
         out = io.StringIO()
-        code = PL.registry_main(list(argv), env=self.env(), stdout=out, now=now)
+        code = PL.registry_main(list(argv), env=self.env(), stdout=out)
         return code, json.loads(out.getvalue())
 
     def reg_argv(
@@ -87,14 +91,14 @@ class Base(unittest.TestCase):
         return argv
 
     def register_raw(
-        self, sid: str, *, title: str = "", now: float | None = None, platform: str = "codex",
+        self, sid: str, *, title: str = "", platform: str = "codex",
         location: str = "server", **flags: str,
     ) -> tuple[int, dict]:
         flags.setdefault("letter_pick", "lowest")
         if title:
             flags["title"] = title
         argv = self.reg_argv("register", sid, platform=platform, location=location, **flags)
-        return self.registry(*argv, now=now)
+        return self.registry(*argv)
 
     def register(self, sid: str, **kwargs) -> dict:
         return self.register_raw(sid, **kwargs)[1]
@@ -237,7 +241,7 @@ class SpecTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 make_spec(**bad)
 
-    def test_location_and_remote(self) -> None:
+    def test_location(self) -> None:
         self.assertEqual(PL.location({}, "darwin"), "mac")
         self.assertIsNone(PL.location({}, "linux"))
         self.assertEqual(PL.location({PL.ENV_LOCATION: "Server"}, "linux"), "server")
@@ -247,10 +251,6 @@ class SpecTests(unittest.TestCase):
         self.assertEqual(PL.location(both, "linux"), "mac")  # the generic name wins over the Claude one
         self.assertEqual(PL.location(both, "linux", flag="server"), "server")  # a flag wins over both
         self.assertIsNone(PL.location({}, "linux", flag="cloud"))
-        self.assertEqual(PL.remote_destination({PL.ENV_REMOTE_FALLBACK: "mac"}), "mac")
-        self.assertEqual(
-            PL.remote_destination({PL.ENV_REMOTE: "a", PL.ENV_REMOTE_FALLBACK: "b"}, flag="c"), "c"
-        )
 
     def test_scope(self) -> None:
         spec = make_spec()
@@ -337,52 +337,6 @@ class ContractTests(unittest.TestCase):
             title="T", space="double", pick="primary", **extra,
         )
 
-    def test_an_old_registry_gets_neither_pick_nor_parent(self) -> None:
-        seen = {}
-
-        def register_session(db, *, platform, verified_host, profile_scope, native_session_id, seat, source,
-                             title, issuer, letter_space):
-            seen.update(letter_space=letter_space)
-            return {"outcome": "registered"}
-
-        self.ask(self.registry_of(register_session), parent="p-0001")
-        self.assertEqual(seen, {"letter_space": "double"})
-
-    def test_a_registry_with_neither_issuer_nor_space_still_registers(self) -> None:
-        seen = {}
-
-        def register_session(db, *, platform, verified_host, profile_scope, native_session_id, seat, source, title):
-            seen.update(title=title)
-            return {"outcome": "registered"}
-
-        self.ask(self.registry_of(register_session), parent="p-0001")
-        self.assertEqual(seen, {"title": "T"})
-
-    def test_a_pair_registry_gets_both(self) -> None:
-        seen = {}
-
-        def register_session(db, *, platform, verified_host, profile_scope, native_session_id, seat, source,
-                             title, issuer, letter_space, letter_pick, parent_session_id=""):
-            seen.update(letter_pick=letter_pick, parent=parent_session_id)
-            return {"outcome": "registered"}
-
-        registry = self.registry_of(register_session)
-        self.ask(registry, parent="p-0001")
-        self.assertEqual(seen, {"letter_pick": "primary", "parent": "p-0001"})
-        self.ask(registry)
-        self.assertEqual(seen["parent"], "")  # no parent, no argument
-
-    def test_a_renamed_parent_parameter_is_one_change(self) -> None:
-        seen = {}
-
-        def register_session(db, *, platform, verified_host, profile_scope, native_session_id, seat, source,
-                             title, issuer, letter_space, letter_pick, parent=""):
-            seen.update(parent=parent)
-            return {"outcome": "registered"}
-
-        self.ask(self.registry_of(register_session), parent="p-0001")
-        self.assertEqual(seen, {"parent": "p-0001"})
-
     def test_the_pick(self) -> None:
         with_primary = SimpleNamespace(LETTER_PICKS=("lowest", "oldest", "primary"))
         self.assertEqual(PL.resolve_pick(with_primary, "auto"), "primary")
@@ -441,7 +395,7 @@ class ContractTests(unittest.TestCase):
 
 
 class RegistrySideTests(Base):
-    def test_refuses_a_host_without_a_registry(self) -> None:
+    def test_a_host_with_no_registry_api_is_not_configured_and_writes_nothing(self) -> None:
         other = os.path.join(self.tmp.name, "elsewhere")
         out = io.StringIO()
         code = PL.registry_main(
@@ -449,9 +403,10 @@ class RegistrySideTests(Base):
             env={"HOME": self.home, "SIMPLE_TOOLS_STATE_DIR": other},
             stdout=out,
         )
-        self.assertEqual(code, 3)
-        self.assertIn("no Operator registry", out.getvalue())
-        self.assertFalse(os.path.exists(os.path.join(other, "operator")))
+        self.assertEqual(code, 5)
+        self.assertEqual(json.loads(out.getvalue())["code"], "not_configured")
+        self.assertFalse(os.path.exists(other))  # no local registry, ever
+        self.assertEqual(self.fake.requests, [])
 
     def test_the_claude_and_minimax_namespaces_are_not_this_sides_to_write(self) -> None:
         for platform in ("claude", "minimax", "Codex", "", "../x"):
@@ -515,20 +470,18 @@ class RegistrySideTests(Base):
             self.assertEqual((again["label"], again["outcome"]), (label, "reopened"))
 
     def test_the_deploy_smoke_check_answers_with_one_json_line_and_writes_nothing(self) -> None:
-        # The command the README gives for checking the hop before a server hook is installed.
-        before = os.listdir(os.path.dirname(self.db))
+        # The command the README gives for checking a host's registry API configuration before a hook is installed.
         code, out = self.registry(
             "show", "--platform", "smoke", "--location", "server", "--session-id", "smoke-check-0001"
         )
         self.assertEqual((code, out), (5, {"error": PL.NO_REGISTRATION}))
-        self.assertEqual(os.listdir(os.path.dirname(self.db)), before)
         self.assertIsNone(self.lookup("smoke-check-0001", platform="smoke"))
 
     def test_show_reads_and_changes_nothing(self) -> None:
-        self.register("s-0001", title="First Chat")
+        label = self.register("s-0001", title="First Chat")["label"]
         self.set_seen("s-0001", "2026-01-01T00:00:00.000Z")
         code, out = self.registry(*self.reg_argv("show", "s-0001"))
-        self.assertEqual((code, out["found"], out["title"]), (0, True, "First Chat"))
+        self.assertEqual((code, out["found"], out["label"]), (0, True, label))
         conn = sqlite3.connect(self.db)
         self.assertEqual(
             conn.execute("SELECT last_seen_at FROM sessions").fetchone()[0], "2026-01-01T00:00:00.000Z"
@@ -555,73 +508,15 @@ class RegistrySideTests(Base):
         self.assertEqual(self.lookup("s-0001")["title"], "use now")
         self.assertNotIn(token, json.dumps(out))
 
-    def test_sweep_closes_only_this_adapters_stale_chats(self) -> None:
-        self.register("s-0001")
-        OR.register_session(
-            self.db, platform="codex", verified_host="mac", profile_scope="default",
-            native_session_id="op-0001", seat="CODEX", source="operator-registration", issuer=OR.ISSUER_OPERATOR,
-            letter_space="double",
-        )
-        OR.register_session(
-            self.db, platform="minimax", verified_host="server", profile_scope="default",
-            native_session_id="mm-0001", seat="MM", source="test", issuer=OR.ISSUER_OPERATOR,
-        )
-        for sid in ("s-0001", "op-0001", "mm-0001"):
-            self.set_seen(sid, "2026-01-01T00:00:00.000Z")
-        out = self.register("s-0002")
-        self.assertEqual(out["swept"], 1)
-        self.assertEqual(self.lookup("s-0001")["state"], "closed")
-        self.assertEqual(self.lookup("op-0001", "mac")["state"], "active")  # the Operator's own, never swept
-        self.assertEqual(self.lookup("mm-0001", platform="minimax")["state"], "active")
-
-    def fill_the_letters_and_ask_for_one_more(self) -> None:
-        pairs = ("AA", "BB", "CC")
-        # Times are relative to the clock:  the registry's stale sweep reads the real clock, so fixed dates fall more
-        # than 36 hours behind it and the rows are closed as stale before the least recently seen can be evicted.
-        now = time.time()
-
-        def seen(hours_ago: float) -> str:
-            return OR.datetime.fromtimestamp(now - hours_ago * 3600, OR.UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-
-        with mock.patch.dict(OR.LETTER_SPACES, {"double": pairs}):
-            for i in range(3):
-                self.register("s-%04d" % i)
-                self.set_seen("s-%04d" % i, seen(2 - i))
-            self.set_seen("s-0001", seen(3))  # the oldest
-            held = self.lookup("s-0001")["label"]
-            out = self.register("s-0099", now=now)
-        self.assertEqual((out["evicted"], out["label"], out["generation"]), (1, held, 2))
-        self.assertEqual(self.lookup("s-0001")["state"], "closed")
-
-    def test_full_letters_evict_the_least_recently_seen(self) -> None:
-        self.fill_the_letters_and_ask_for_one_more()
-
-    def test_the_eviction_does_not_depend_on_the_calendar(self) -> None:
-        """The same scenario with the real clock years away from the fixture's: the test cannot go red with the date."""
-        years_on = OR.datetime(2031, 6, 1, tzinfo=OR.UTC).timestamp()
-        with mock.patch("time.time", return_value=years_on):
-            self.fill_the_letters_and_ask_for_one_more()
-
-    def test_the_operators_own_chats_are_never_evicted(self) -> None:
+    def test_full_letters_are_the_assigners_refusal_and_no_chat_is_evicted(self) -> None:
         with mock.patch.dict(OR.LETTER_SPACES, {"double": ("AA", "BB")}):
-            for sid in ("op-0001", "op-0002"):
-                OR.register_session(
-                    self.db, platform="codex", verified_host="mac", profile_scope="default",
-                    native_session_id=sid, seat="CODEX", source="operator-registration",
-                    issuer=OR.ISSUER_OPERATOR, letter_space="double",
-                )
-                self.set_seen(sid, "2026-01-01T00:00:00.000Z")
-            code, out = self.registry(*self.reg_argv("register", "s-0001", letter_pick="lowest"))
+            for sid in ("s-0001", "s-0002"):
+                self.register(sid)
+            code, out = self.registry(*self.reg_argv("register", "s-0003", letter_pick="lowest"))
         self.assertEqual(code, 5)
         self.assertIn("in use", out["error"])
-        for sid in ("op-0001", "op-0002"):
-            self.assertEqual(self.lookup(sid, "mac")["state"], "active")
-
-    def test_one_bad_record_does_not_stop_the_others_closing(self) -> None:
-        self.register("s-0001")
-        rid = self.lookup("s-0001")["record_id"]
-        self.assertEqual(PL._close_records(OR, self.db, ["no-such-record", rid], "test", "test"), 1)
-        self.assertEqual(self.lookup("s-0001")["state"], "closed")
+        for sid in ("s-0001", "s-0002"):
+            self.assertEqual(self.lookup(sid)["state"], "active")
 
     @unittest.skipUnless(PL._accepts(OR.register_session, "parent_session_id"), "this registry has no parent")
     def test_a_sub_thread_takes_the_pair_after_its_parent(self) -> None:
@@ -640,42 +535,38 @@ class RegistrySideTests(Base):
         self.assertRegex(out["label"], PAIR)
 
 
-class FakeSsh:
-    """Stands in for the SSH call to the Mac: checks the command's shape and runs the remote registry side in process."""
+class Calls:
+    """The registry calls a chat makes, as a transport:  each argv is recorded and run through the registry side in
+    process, which makes its one API call to the test's assigner."""
 
     def __init__(self, test: Base, fail: Exception | None = None):
         self.test, self.fail, self.calls = test, fail, []
 
-    def __call__(self, cmd, **kwargs):
-        self.calls.append(cmd)
+    def __call__(self, argv):
+        self.calls.append(list(argv))
         if self.fail is not None:
             raise self.fail
-        self.test.assertEqual(cmd[:7], ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", "--"])
-        self.test.assertEqual(cmd[7], "mac")
-        self.test.assertEqual(kwargs["timeout"], PL.REMOTE_TIMEOUT)
-        words = shlex.split(cmd[8])
-        self.test.assertEqual(words[:2], ["$HOME/.local/bin/platform-letter", "registry"])
         out = io.StringIO()
-        code = PL.registry_main(words[2:], env=self.test.env(), stdout=out)
-        return SimpleNamespace(stdout=out.getvalue(), returncode=code)
+        PL.registry_main(list(argv), env=self.test.env(), stdout=out)
+        return PL._last_json(out.getvalue()) or {"error": "the registry gave no answer"}
 
     def ops(self) -> list[str]:
-        return [shlex.split(c[8])[2] for c in self.calls]
+        return [c[0] for c in self.calls]
 
 
-class FlakySsh(FakeSsh):
-    """FakeSsh whose Mac does not answer the first `times` calls of the ops named (exit 255, no result)."""
+class FlakyCalls(Calls):
+    """Calls whose assigner does not answer the first `times` calls of the ops named."""
 
     def __init__(self, test: Base, ops: tuple[str, ...] = (), times: int = 1):
         super().__init__(test)
         self.failing, self.times, self.failed = set(ops), times, 0
 
-    def __call__(self, cmd, **kwargs):
-        if shlex.split(cmd[8])[2] in self.failing and self.failed < self.times:
+    def __call__(self, argv):
+        if argv[0] in self.failing and self.failed < self.times:
             self.failed += 1
-            self.calls.append(cmd)
-            return SimpleNamespace(stdout="", returncode=255)
-        return super().__call__(cmd, **kwargs)
+            self.calls.append(list(argv))
+            return {"error": "the registry did not answer in time", "code": "timeout"}
+        return super().__call__(argv)
 
 
 class HookTests(Base):
@@ -695,7 +586,7 @@ class HookTests(Base):
         env = env if env is not None else self.server_env()
         code = PL.hook(
             spec or self.spec, env, io.StringIO(json.dumps(payload)), out,
-            runner=runner or FakeSsh(self), now=now, platform=platform, transport=transport, **flags,
+            now=now, platform=platform, transport=transport or runner or Calls(self), **flags,
         )
         self.assertEqual(code, 0)
         text = out.getvalue().strip()
@@ -737,19 +628,17 @@ class HookTests(Base):
         self.assertEqual(os.stat(os.path.dirname(path)).st_mode & 0o777, 0o700)
         self.assertEqual(self.note("s-0001")["platform"], "codex")
 
-    def test_mac_registers_in_process(self) -> None:
-        def no_ssh(*a, **k):
-            raise AssertionError("the Mac never uses ssh")
-
+    def test_mac_registers_through_the_api_like_every_host(self) -> None:
         out = self.hook({"hook_event_name": "SessionStart", "session_id": "m-0001", "source": "startup"},
-                        env=self.env(), runner=no_ssh, platform="darwin")
+                        env=self.env(), platform="darwin")
         self.assertRegex(out["sessionTitle"], r"^[A-Z]{2}: New Chat$")
         self.assertRegex(self.lookup("m-0001", "mac")["label"], PAIR)
+        self.assertTrue(self.fake.requests)  # the one assigner answered, over its API
 
-    def test_flags_name_the_location_and_the_registry_host(self) -> None:
-        ssh = FakeSsh(self)
+    def test_the_flag_names_the_location(self) -> None:
+        ssh = Calls(self)
         out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"},
-                        env=self.env(), runner=ssh, location_flag="server", remote_flag="mac")
+                        env=self.env(), transport=ssh, location_flag="server")
         self.assertIn("Codex", out["additionalContext"])
         self.assertEqual(len(ssh.calls), 1)
 
@@ -767,9 +656,9 @@ class HookTests(Base):
         self.assertTrue(out["sessionTitle"].endswith(": New Chat"))
 
     def test_an_owners_acronym_survives_a_first_start(self) -> None:
-        ssh = FakeSsh(self)
+        ssh = Calls(self)
         out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "resume",
-                         "session_title": "PR: Review"}, runner=ssh)
+                         "session_title": "PR: Review"}, transport=ssh)
         label = self.label("s-0001")
         self.assertEqual(out["sessionTitle"], "%s: PR: Review" % label)
         self.assertEqual(self.lookup("s-0001")["title"], "PR: Review")
@@ -875,11 +764,11 @@ class HookTests(Base):
 
     def test_a_prompt_with_a_secret_names_nothing_and_leaks_nothing(self) -> None:
         token = secret_word()
-        ssh = FakeSsh(self)
-        self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, runner=ssh)
+        ssh = Calls(self)
+        self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, transport=ssh)
         label = self.label("s-0001")
         out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001",
-                         "prompt": "rotate %s today" % token, "session_title": "%s: New Chat" % label}, runner=ssh)
+                         "prompt": "rotate %s today" % token, "session_title": "%s: New Chat" % label}, transport=ssh)
         self.assertEqual(out["sessionTitle"], "%s: Rotate Today" % label)
         self.assertEqual(self.lookup("s-0001")["title"], "Rotate Today")
         with open(os.path.join(self.state, "CODEX", "letters", "s-0001.json")) as fh:
@@ -887,22 +776,22 @@ class HookTests(Base):
         self.assertNotIn(token, json.dumps(ssh.calls))
 
     def test_steady_state_prompts_cost_no_hop_and_a_touch_is_rare(self) -> None:
-        ssh = FakeSsh(self)
-        self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, runner=ssh)
+        ssh = Calls(self)
+        self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, transport=ssh)
         label = self.label("s-0001")
         title = "%s: Fix the Build" % label
         self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix the build",
-                   "session_title": "%s: New Chat" % label}, runner=ssh)
+                   "session_title": "%s: New Chat" % label}, transport=ssh)
         self.assertEqual(ssh.ops(), ["register", "title"])
         for i in range(5):
             self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more %d" % i,
-                       "session_title": title}, runner=ssh)
+                       "session_title": title}, transport=ssh)
         self.assertEqual(len(ssh.calls), 2)
         later = time.time() + PL.TOUCH_SECONDS + 5
         self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "later",
-                   "session_title": title}, runner=ssh, now=later)
+                   "session_title": title}, transport=ssh, now=later)
         self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "later still",
-                   "session_title": title}, runner=ssh, now=later + 60)
+                   "session_title": title}, transport=ssh, now=later + 60)
         self.assertEqual(ssh.ops(), ["register", "title", "touch"])
 
     def test_a_renamed_chat_keeps_its_letter_and_the_operator_follows(self) -> None:
@@ -914,16 +803,16 @@ class HookTests(Base):
         self.assertEqual(out["sessionTitle"], "%s: Better Name" % label)
         self.assertEqual(self.lookup("s-0001")["title"], "Better Name")
         # The owner renames it and keeps the letter: only the Operator needs to hear.
-        ssh = FakeSsh(self)
+        ssh = Calls(self)
         out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "x",
-                         "session_title": "%s: Other Words" % label}, runner=ssh)
+                         "session_title": "%s: Other Words" % label}, transport=ssh)
         self.assertIsNone(out)
         self.assertEqual(self.lookup("s-0001")["title"], "Other Words")
         self.assertEqual(ssh.ops(), ["title"])
         # A platform that ignores the title it was given is not asked again for the same name.
         for _ in range(3):
             self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "x",
-                       "session_title": "Stubborn Name"}, runner=ssh)
+                       "session_title": "Stubborn Name"}, transport=ssh)
         self.assertEqual(ssh.ops(), ["title", "title"])
 
     # ---- a letter the registry changes in place: the title follows it ----
@@ -950,10 +839,10 @@ class HookTests(Base):
     def test_a_letter_the_registry_moved_retitles_the_chat_on_its_next_touch(self) -> None:
         old = self.titled_chat()
         self.move_letter("s-0001", "QX")
-        ssh = FakeSsh(self)
+        ssh = Calls(self)
         later = time.time() + PL.TOUCH_SECONDS + 5
         out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more",
-                         "session_title": "%s: Fix the Build" % old}, runner=ssh, now=later)
+                         "session_title": "%s: Fix the Build" % old}, transport=ssh, now=later)
         self.assertEqual(ssh.ops(), ["touch"])
         self.assertEqual(out["sessionTitle"], "QX: Fix the Build")
         self.assertIn("letter changed from %s to QX" % old, out["additionalContext"])
@@ -963,7 +852,7 @@ class HookTests(Base):
         self.assertIn(old, note["labels"])  # a title that still shows the old letter is read as this chat's
         # The next prompt has nothing to change, whether the platform shows the new title or still the old one.
         self.assertIsNone(self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "x",
-                                     "session_title": "QX: Fix the Build"}, runner=ssh, now=later + 60))
+                                     "session_title": "QX: Fix the Build"}, transport=ssh, now=later + 60))
         self.assertEqual(ssh.ops(), ["touch"])
 
     def test_a_title_answer_with_a_new_letter_retitles_the_chat(self) -> None:
@@ -996,7 +885,7 @@ class HookTests(Base):
         self.assertEqual((note["label"], note["generation"]), (label, 2))
 
     def test_an_old_registry_touch_answer_without_a_letter_changes_nothing(self) -> None:
-        class OldRegistry(FakeSsh):
+        class OldRegistry(Calls):
             """A Mac on a runtime from before the touch named the letter."""
 
             def __call__(self, cmd, **kwargs):
@@ -1011,7 +900,7 @@ class HookTests(Base):
         ssh = OldRegistry(self)
         later = time.time() + PL.TOUCH_SECONDS + 5
         out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more",
-                         "session_title": "%s: Fix the Build" % label}, runner=ssh, now=later)
+                         "session_title": "%s: Fix the Build" % label}, transport=ssh, now=later)
         self.assertEqual(ssh.ops(), ["touch"])
         self.assertIsNone(out)
         self.assertEqual(self.label("s-0001"), label)
@@ -1056,17 +945,17 @@ class HookTests(Base):
                          output="json")
         start = time.time()
 
-        def rename(title: str, now: float, ssh: FakeSsh) -> dict | None:
+        def rename(title: str, now: float, ssh: Calls) -> dict | None:
             out = io.StringIO()
             PL.hook(spec, self.server_env(), io.StringIO(json.dumps(
-                {"event": "session.renamed", "session_id": "s-0001", "title": title})), out, runner=ssh, now=now)
+                {"event": "session.renamed", "session_id": "s-0001", "title": title})), out, transport=ssh, now=now)
             text = out.getvalue().strip()
             return json.loads(text)["platform_letter"] if text else None
 
         PL.hook(spec, self.server_env(), io.StringIO(json.dumps({"event": "session.created", "session_id": "s-0001"})),
-                io.StringIO(), runner=FakeSsh(self), now=start)
+                io.StringIO(), transport=Calls(self), now=start)
         old = self.label("s-0001")
-        rename("Fresh Name", start + 1, FakeSsh(self))  # the words reach the Operator
+        rename("Fresh Name", start + 1, Calls(self))  # the words reach the Operator
         self.move_letter("s-0001", "QX")
         path = os.path.join(self.state, "CODEX", "letters", "s-0001.json")
 
@@ -1078,7 +967,7 @@ class HookTests(Base):
 
         # Within TOUCH_SECONDS of the last call a letter-only rename costs no registry call, as a prompt would not.
         forget_seen()
-        ssh = FakeSsh(self)
+        ssh = Calls(self)
         body = rename("Fresh Name", start + 60, ssh)
         self.assertEqual(ssh.ops(), [])
         self.assertEqual(body["title"], "%s: Fresh Name" % old)
@@ -1098,12 +987,12 @@ class HookTests(Base):
         spec = make_spec(events={"session.created": "start", "session.renamed": "rename", "session.deleted": "end"},
                          output="json")
         PL.hook(spec, self.server_env(), io.StringIO(json.dumps({"event": "session.created", "session_id": "s-0001"})),
-                io.StringIO(), runner=FakeSsh(self))
+                io.StringIO(), transport=Calls(self))
         old = self.label("s-0001")
         self.move_letter("s-0001", "QX")
         out = io.StringIO()
         PL.hook(spec, self.server_env(), io.StringIO(json.dumps(
-            {"event": "session.renamed", "session_id": "s-0001", "title": "Fresh Name"})), out, runner=FakeSsh(self))
+            {"event": "session.renamed", "session_id": "s-0001", "title": "Fresh Name"})), out, transport=Calls(self))
         body = json.loads(out.getvalue())["platform_letter"]
         self.assertEqual((body["label"], body["title"]), ("QX", "QX: Fresh Name"))
         self.assertIn("letter changed from %s to QX" % old, body["context"])
@@ -1127,7 +1016,7 @@ class HookTests(Base):
     def turn(self, ssh, text: str = "go", **extra) -> dict | None:
         label = self.label("s-0001")
         return self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": text,
-                          "session_title": "%s: Fix the Build" % label, **extra}, runner=ssh)
+                          "session_title": "%s: Fix the Build" % label, **extra}, transport=ssh)
 
     def test_a_turn_records_the_issues_its_transcript_names_and_sends_only_a_change(self) -> None:
         self.titled_chat()
@@ -1139,7 +1028,7 @@ class HookTests(Base):
                 {"type": "tool_result", "content": "a file that names AFC-999 and posted id 5 to #WIP › CT-7 notes"}]},
              "toolUseResult": {"stdout": "AFC-998"}},
         )
-        ssh = FakeSsh(self)
+        ssh = Calls(self)
         self.assertIsNone(self.turn(ssh, transcript_path=path))  # nothing changes on screen
         self.assertEqual(ssh.ops(), ["issues"])
         self.assertEqual(self.issues_held(), ["AFC-694", "CT-7", "OPS-12"])  # not what a tool's output read
@@ -1165,7 +1054,7 @@ class HookTests(Base):
         git = ["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
         subprocess.run(git + ["init", "-q", "-b", "codex/afc-701-letter-issues"], check=True)
         subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "x"], check=True)
-        ssh = FakeSsh(self)
+        ssh = Calls(self)
         self.turn(ssh, cwd=repo)
         self.assertEqual(ssh.ops(), ["issues"])
         self.assertEqual(self.issues_held(), ["AFC-701"])
@@ -1175,7 +1064,7 @@ class HookTests(Base):
 
     def test_hook_data_with_neither_a_transcript_nor_a_folder_sends_nothing(self) -> None:
         self.titled_chat()
-        ssh = FakeSsh(self)
+        ssh = Calls(self)
         self.turn(ssh)
         self.assertEqual(ssh.ops(), [])
         self.assertNotIn("issues", self.note("s-0001"))
@@ -1185,19 +1074,19 @@ class HookTests(Base):
         outside = os.path.join(self.tmp.name, "elsewhere.jsonl")
         with open(outside, "w", encoding="utf-8") as fh:
             fh.write(json.dumps({"type": "user", "message": {"content": "AFC-694"}}) + "\n")
-        ssh = FakeSsh(self)
+        ssh = Calls(self)
         self.turn(ssh, transcript_path=outside)
         self.assertEqual(ssh.ops(), [])
 
     def test_a_registry_that_fails_or_does_not_know_the_op_is_silent_and_asked_again_later(self) -> None:
-        class OldMac(FakeSsh):
-            """A Mac on a runtime from before the op:  its parser refuses the whole call."""
+        class OldMac(Calls):
+            """An assigner from before the op:  its parser refuses the whole call."""
 
-            def __call__(self, cmd, **kwargs):
-                if shlex.split(cmd[8])[2] == "issues":
-                    self.calls.append(cmd)
-                    return SimpleNamespace(stdout='{"error": "bad arguments"}\n', returncode=2)
-                return super().__call__(cmd, **kwargs)
+            def __call__(self, argv):
+                if argv[0] == "issues":
+                    self.calls.append(list(argv))
+                    return {"error": "bad arguments"}
+                return super().__call__(argv)
 
         label = self.titled_chat()
         path = self.transcript({"type": "user", "message": {"content": "AFC-694"}})
@@ -1205,17 +1094,17 @@ class HookTests(Base):
         start = time.time()
         out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go",
                          "session_title": "%s: Fix the Build" % label, "transcript_path": path},
-                        runner=ssh, now=start)
+                        transport=ssh, now=start)
         self.assertIsNone(out)  # the prompt is untouched
         note = self.note("s-0001")
         self.assertEqual([i["id"] for i in note["issues"]], ["AFC-694"])
         self.assertNotIn("issues_sent", note)
         self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go",
-                   "session_title": "%s: Fix the Build" % label, "transcript_path": path}, runner=ssh, now=start + 60)
+                   "session_title": "%s: Fix the Build" % label, "transcript_path": path}, transport=ssh, now=start + 60)
         self.assertEqual(ssh.ops(), ["issues"])  # not again inside the wait
         self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go",
                    "session_title": "%s: Fix the Build" % label, "transcript_path": path},
-                  runner=FakeSsh(self), now=start + PL.RETRY_SECONDS + 5)
+                  transport=Calls(self), now=start + PL.RETRY_SECONDS + 5)
         self.assertEqual(self.issues_held(), ["AFC-694"])
 
     def test_issue_ids_in_lines_reads_the_chats_own_words_and_any_posted_topic(self) -> None:
@@ -1311,9 +1200,9 @@ class HookTests(Base):
             {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1",
                                                       "content": "posted id 3 to #Work-In-Progress › AFC-1 plan"}]}},
         )
-        ssh = FakeSsh(self)
+        ssh = Calls(self)
         out = self.hook({"hook_event_name": "Stop", "session_id": "s-0001", "transcript_path": path},
-                        spec=spec, runner=ssh)
+                        spec=spec, transport=ssh)
         self.assertIsNone(out)  # a turn end prints nothing
         self.assertEqual(ssh.ops(), ["issues"])
         self.assertEqual(self.issues_held(), ["AFC-1"])
@@ -1329,9 +1218,9 @@ class HookTests(Base):
     def test_a_turn_end_for_a_closed_or_unknown_chat_does_nothing(self) -> None:
         spec = self.turn_spec()
         path = self.transcript({"type": "user", "message": {"content": "AFC-1"}})
-        ssh = FakeSsh(self)
+        ssh = Calls(self)
         self.assertIsNone(self.hook({"hook_event_name": "Stop", "session_id": "s-0009", "transcript_path": path},
-                                    spec=spec, runner=ssh))
+                                    spec=spec, transport=ssh))
         self.assertEqual(ssh.calls, [])
         note = {"state": "closed", "label": "AA"}
         PL.end_of_turn(note, {"transcript_path": path}, self.home, 1000.0, lambda text: {"ok": True})
@@ -1496,25 +1385,14 @@ class HookTests(Base):
         spec = make_spec(events={"session.created": "start", "session.renamed": "rename", "session.deleted": "end"},
                          output="json")
         PL.hook(spec, self.server_env(), io.StringIO(json.dumps({"event": "session.created", "session_id": "s-0001"})),
-                io.StringIO(), runner=FakeSsh(self))
+                io.StringIO(), transport=Calls(self))
         label = self.label("s-0001")
         out = io.StringIO()
         PL.hook(spec, self.server_env(), io.StringIO(json.dumps(
-            {"event": "session.renamed", "session_id": "s-0001", "title": "Fresh Name"})), out, runner=FakeSsh(self))
+            {"event": "session.renamed", "session_id": "s-0001", "title": "Fresh Name"})), out, transport=Calls(self))
         body = json.loads(out.getvalue())["platform_letter"]
         self.assertEqual((body["event"], body["label"], body["title"]), ("rename", label, "%s: Fresh Name" % label))
         self.assertEqual(self.lookup("s-0001")["title"], "Fresh Name")
-
-    def test_the_remote_must_be_named_and_plain(self) -> None:
-        payload = {"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}
-        ssh = FakeSsh(self)
-        for remote in ("", "-oProxyCommand=touch /tmp/x"):
-            out = self.hook(payload, env=self.env(SESSION_LETTER_LOCATION="server", SESSION_LETTER_REMOTE=remote),
-                            runner=ssh)
-            self.assertIn("SESSION_LETTER_REMOTE does not name an ssh destination", out["additionalContext"])
-        self.assertEqual(ssh.calls, [])
-        out = self.hook(payload, env=self.env(SESSION_LETTER_LOCATION="server"), runner=ssh, remote_flag="--x")
-        self.assertIn("does not name an ssh destination", out["additionalContext"])
 
     def test_a_malformed_answer_is_refused(self) -> None:
         for answer in (
@@ -1530,7 +1408,7 @@ class HookTests(Base):
                     return SimpleNamespace(stdout=answer, returncode=0)
 
                 out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"},
-                                runner=bad)
+                                transport=bad)
                 self.assertIn("No Operator letter yet", out["additionalContext"])
                 self.assertEqual(self.note("s-0001")["state"], "failed")
 
@@ -1546,31 +1424,33 @@ class HookTests(Base):
 
     def test_compact_only_reminds(self) -> None:
         self.start("s-0001")
-        ssh = FakeSsh(self)
-        out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "compact"}, runner=ssh)
+        ssh = Calls(self)
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "compact"}, transport=ssh)
         self.assertEqual(ssh.calls, [])
         self.assertNotIn("sessionTitle", out)
         self.assertIn("Codex %s" % self.label("s-0001"), out["additionalContext"])
 
     def test_unreachable_registry_never_blocks_and_retries_later(self) -> None:
-        down = FakeSsh(self, fail=subprocess.TimeoutExpired("ssh", 12))
-        out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, runner=down)
+        down = Calls(self, fail=TimeoutError("the registry did not answer"))
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, transport=down)
         self.assertIn("No Operator letter yet", out["additionalContext"])
-        self.assertIsNone(self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "x"},
-                                    runner=down))
+        self.assertEqual(out["sessionTitle"], "??: New Chat")
+        out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix the build",
+                         "session_title": "??: New Chat"}, transport=down)
+        self.assertEqual(out["sessionTitle"], "??: Fix the Build")  # still no letter, and the words are the prompt's
         self.assertEqual(len(down.calls), 1)  # inside the retry window nothing is tried
         later = time.time() + PL.RETRY_SECONDS + 5
-        out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix the build"},
-                        now=later)
+        out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "next",
+                         "session_title": "??: Fix the Build"}, now=later)
         self.assertEqual(out["sessionTitle"], "%s: Fix the Build" % self.label("s-0001"))
+        self.assertIn("Operator session letter", out["additionalContext"])  # the letter is news to the model
+        self.assertEqual(self.lookup("s-0001")["title"], "Fix the Build")
 
-    def test_a_registry_host_without_the_command_is_a_failed_registration(self) -> None:
-        def missing(cmd, **kwargs):
-            return SimpleNamespace(stdout="", returncode=127)
-
+    def test_a_registry_answer_that_is_not_json_is_a_failed_registration(self) -> None:
         out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"},
-                        runner=missing)
-        self.assertIn("exit 127 with no result", out["additionalContext"])
+                        transport=lambda argv: {"label": 7})
+        self.assertIn("malformed label", out["additionalContext"])
+        self.assertEqual(out["sessionTitle"], "??: New Chat")
 
     def test_nothing_that_goes_wrong_blocks_a_chat(self) -> None:
         out, err = io.StringIO(), io.StringIO()
@@ -1582,11 +1462,11 @@ class HookTests(Base):
 
         for stdin in ("not json", "[]", ""):
             code = PL.main(["hook", "--platform", "codex"], env=self.server_env(), stdin=io.StringIO(stdin),
-                           stdout=out, stderr=err, runner=boom)
+                           stdout=out, stderr=err, transport=boom)
             self.assertEqual(code, 0, stdin)
         self.assertEqual(out.getvalue(), "")
         # A registry call that blows up is an error answer like any other: a line of context, exit 0.
-        code = PL.main(["hook", "--platform", "codex"], env=self.server_env(), stderr=err, runner=boom, stdout=out,
+        code = PL.main(["hook", "--platform", "codex"], env=self.server_env(), stderr=err, transport=boom, stdout=out,
                        stdin=io.StringIO(json.dumps({"hook_event_name": "SessionStart", "session_id": "s-0001"})))
         self.assertEqual(code, 0)
         self.assertIn("No Operator letter yet (the registry call failed (RuntimeError))", out.getvalue())
@@ -1613,7 +1493,8 @@ class HookTests(Base):
 
     def test_an_adapter_can_own_its_hook_entry(self) -> None:
         """A platform whose payload has no event name or whose answer has a shape of its own defines `hook_main`; the
-        library entry calls it with what `hook` takes, minus the spec."""
+        library entry calls it with what `hook` takes, minus the spec.  A `--remote` an old install wrote is parsed
+        and dropped."""
         seen = {}
 
         def hook_main(env, stdin, stdout, **kwargs):
@@ -1629,19 +1510,20 @@ class HookTests(Base):
             code = PL.main(["hook", "--platform", "owned", "--location", "server", "--remote", "mac"],
                            env=self.env(), stdin=io.StringIO("payload"), stdout=out, stderr=err)
         self.assertEqual((code, out.getvalue(), seen["stdin"]), (0, '{"own": true}\n', "payload"))
-        self.assertEqual((seen["location_flag"], seen["remote_flag"]), ("server", "mac"))
+        self.assertEqual(seen["location_flag"], "server")
+        self.assertNotIn("remote_flag", seen)
 
     def test_a_session_id_that_is_not_one_is_ignored(self) -> None:
-        ssh = FakeSsh(self)
+        ssh = Calls(self)
         for sid in ("", "x", "../../etc/passwd", "a b c d", 5):
-            self.hook({"hook_event_name": "SessionStart", "session_id": sid, "source": "startup"}, runner=ssh)
+            self.hook({"hook_event_name": "SessionStart", "session_id": sid, "source": "startup"}, transport=ssh)
         self.assertEqual(ssh.calls, [])
         self.assertFalse(os.path.exists(os.path.join(self.state, "CODEX")))
 
     def test_out_of_scope_and_unknown_hosts(self) -> None:
         payload = {"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}
-        ssh = FakeSsh(self)
-        # BotFleet and every other launcher: no hop, no note, no output.
+        ssh = Calls(self)
+        # BotFleet and every other launcher: no call, no note, no output.
         for extra in (
             {"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "BF-BUILDER"},
             {"AGENT_LAUNCHER": "simple-tools-wake"},
@@ -1650,13 +1532,16 @@ class HookTests(Base):
             {"SESSION_LETTER": "0"},
         ):
             with self.subTest(extra=extra):
-                self.assertIsNone(self.hook(payload, env=self.server_env(**extra), runner=ssh))
+                self.assertIsNone(self.hook(payload, env=self.server_env(**extra), transport=ssh))
         self.assertEqual(ssh.calls, [])
         self.assertFalse(os.path.exists(os.path.join(self.state, "CODEX")))
-        out = self.hook(payload, env=self.env(), runner=ssh)
-        self.assertIn("No Operator letter", out["additionalContext"])
-        self.assertFalse(os.path.exists(os.path.join(self.state, "CODEX")))
-        self.assertIsNone(self.hook(dict(payload, hook_event_name="Stop"), runner=ssh))  # not an event of ours
+        # A host that does not state its location:  no call, and the chat is a "??" chat until it does.
+        out = self.hook(payload, env=self.env(), transport=ssh)
+        self.assertIn("No Operator letter yet", out["additionalContext"])
+        self.assertIn("location is not stated", out["additionalContext"])
+        self.assertEqual(out["sessionTitle"], "??: New Chat")
+        self.assertEqual(ssh.calls, [])
+        self.assertIsNone(self.hook(dict(payload, hook_event_name="Stop"), transport=ssh))  # not an event of ours
 
     def test_a_launchers_own_spec_asks_for_its_own_platform_letter(self) -> None:
         # BotFleet runs Claude as its engine: its bots never trigger the Claude hook, and a spec of its own asks for
@@ -1687,11 +1572,11 @@ class HookTests(Base):
 
     def test_a_platform_that_runs_only_on_the_mac_takes_no_server_letter(self) -> None:
         spec = make_spec(platform="grok", seat="GROK", locations=("mac",))
-        ssh = FakeSsh(self)
-        self.assertIsNone(self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001"}, spec=spec, runner=ssh))
+        ssh = Calls(self)
+        self.assertIsNone(self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001"}, spec=spec, transport=ssh))
         self.assertEqual(ssh.calls, [])
         out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001"}, spec=spec, env=self.env(),
-                        platform="darwin", runner=ssh)
+                        platform="darwin", transport=ssh)
         self.assertTrue(out["sessionTitle"].endswith(": New Chat"))
         for bad in ((), ("cloud",), ("mac", "moon")):
             with self.assertRaises(ValueError):
@@ -1699,9 +1584,9 @@ class HookTests(Base):
 
     def test_headless_and_subagent_runs_take_no_letter(self) -> None:
         spec = make_spec(kind=lambda p, e: str(p.get("kind") or "chat"), parent_id=PL.from_payload("parent_id"))
-        ssh = FakeSsh(self)
+        ssh = Calls(self)
         for kind in ("headless", "subagent"):
-            self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "kind": kind}, spec=spec, runner=ssh)
+            self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "kind": kind}, spec=spec, transport=ssh)
         self.assertEqual(ssh.calls, [])
 
     def test_a_sub_thread_asks_for_the_pair_after_its_parent(self) -> None:
@@ -1735,7 +1620,7 @@ class HookTests(Base):
         self.assertTrue(all("--parent-session-id=p-0001" in a for a in seen if a[0] == "register"))
 
     def test_the_registry_arguments(self) -> None:
-        chat = PL.Chat(self.spec, self.env(), "server", "s-0001", runner=None, now=0.0)
+        chat = PL.Chat(self.spec, self.env(), "server", "s-0001", now=0.0)
         self.assertEqual(
             chat.argv("register", "--dash Title", "p-0001"),
             ["register", "--platform", "codex", "--location", "server", "--session-id", "s-0001",
@@ -1833,30 +1718,30 @@ class HookTests(Base):
     def test_output_styles(self) -> None:
         payload = {"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}
         out = io.StringIO()
-        PL.hook(make_spec(output="text"), self.server_env(), io.StringIO(json.dumps(payload)), out, runner=FakeSsh(self))
+        PL.hook(make_spec(output="text"), self.server_env(), io.StringIO(json.dumps(payload)), out, transport=Calls(self))
         text = out.getvalue()
         self.assertTrue(text.startswith("Operator session letter: Codex "))
         self.assertNotIn("{", text)
         out = io.StringIO()
         PL.hook(make_spec(output="json"), self.server_env(),
-                io.StringIO(json.dumps(dict(payload, session_id="s-0002"))), out, runner=FakeSsh(self))
+                io.StringIO(json.dumps(dict(payload, session_id="s-0002"))), out, transport=Calls(self))
         body = json.loads(out.getvalue())["platform_letter"]
         self.assertEqual((body["event"], body["platform"]), ("start", "codex"))
         self.assertRegex(body["label"], PAIR)
         self.assertTrue(body["title"].endswith(": New Chat"))
         out = io.StringIO()
         PL.hook(make_spec(title_in_output=False), self.server_env(),
-                io.StringIO(json.dumps(dict(payload, session_id="s-0003"))), out, runner=FakeSsh(self))
+                io.StringIO(json.dumps(dict(payload, session_id="s-0003"))), out, transport=Calls(self))
         self.assertNotIn("sessionTitle", out.getvalue())
 
     def test_a_secret_after_its_keyword_reaches_neither_the_title_nor_the_operator(self) -> None:
         value = "abcdefghijklmnop1234567"
-        ssh = FakeSsh(self)
-        self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, runner=ssh)
+        ssh = Calls(self)
+        self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, transport=ssh)
         label = self.label("s-0001")
         out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001",
                          "prompt": "api" + "_key: " + value + " fix login", "session_title": "%s: New Chat" % label},
-                        runner=ssh)
+                        transport=ssh)
         self.assertEqual(out["sessionTitle"], "%s: Api Key Fix Login" % label)
         self.assertEqual(self.lookup("s-0001")["title"], "Api Key Fix Login")
         with open(os.path.join(self.state, "CODEX", "letters", "s-0001.json")) as fh:
@@ -1866,10 +1751,10 @@ class HookTests(Base):
     def test_a_fork_does_not_keep_the_letter_of_the_chat_it_was_made_from(self) -> None:
         self.start("s-0001")
         source = self.label("s-0001")
-        ssh = FakeSsh(self)
+        ssh = Calls(self)
         payload = {"hook_event_name": "SessionStart", "session_id": "s-0002", "source": "fork",
                    "session_title": "%s: Fix Login" % source}
-        out = self.hook(payload, runner=ssh)
+        out = self.hook(payload, transport=ssh)
         label = self.label("s-0002")
         self.assertNotEqual(label, source)
         self.assertEqual(out["sessionTitle"], "%s: Fix Login" % label)  # one letter, the fork's own
@@ -1895,23 +1780,23 @@ class HookTests(Base):
 
     def test_a_cleared_chat_still_showing_the_old_name_is_not_renamed_by_a_bare_command(self) -> None:
         self.start("s-0001", source="clear", session_title="ZZ: Previous Chat")
-        ssh = FakeSsh(self)
+        ssh = Calls(self)
         out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "/review",
-                         "session_title": "ZZ: Previous Chat"}, runner=ssh)
+                         "session_title": "ZZ: Previous Chat"}, transport=ssh)
         self.assertIsNone(out)
         self.assertEqual(ssh.calls, [])
         self.assertFalse(self.note("s-0001")["titled"])
 
     def test_a_title_the_operator_did_not_get_is_sent_again(self) -> None:
-        ssh = FlakySsh(self, ops=("title",))
+        ssh = FlakyCalls(self, ops=("title",))
         t0 = time.time()
-        self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, runner=ssh, now=t0)
+        self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, transport=ssh, now=t0)
         label = self.label("s-0001")
         title = "%s: Fix the Login Page" % label
 
         def prompt(text: str, shown: str, now: float) -> dict | None:
             return self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": text,
-                              "session_title": shown}, runner=ssh, now=now)
+                              "session_title": shown}, transport=ssh, now=now)
 
         out = prompt("fix the login page", "%s: New Chat" % label, t0 + 1)
         self.assertEqual(out["sessionTitle"], title)  # the chat is titled at once
@@ -1928,16 +1813,16 @@ class HookTests(Base):
         self.assertEqual(len(ssh.calls), 3)
 
     def test_a_touch_the_operator_did_not_get_is_tried_again_after_the_wait(self) -> None:
-        ssh = FlakySsh(self, ops=("touch",))
+        ssh = FlakyCalls(self, ops=("touch",))
         t0 = time.time()
-        self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, runner=ssh, now=t0)
+        self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, transport=ssh, now=t0)
         title = "%s: Fix the Build" % self.label("s-0001")
         self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix the build",
-                   "session_title": title}, runner=ssh, now=t0)
+                   "session_title": title}, transport=ssh, now=t0)
 
         def prompt(now: float) -> None:
             self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "x",
-                       "session_title": title}, runner=ssh, now=now)
+                       "session_title": title}, transport=ssh, now=now)
 
         late = t0 + PL.TOUCH_SECONDS + 5
         prompt(late)
@@ -1991,7 +1876,7 @@ class HookTests(Base):
         self.assertEqual(self.note("s-0001")["state"], "closed")
 
     def test_a_title_that_cannot_cross_ssh_never_stops_the_hook(self) -> None:
-        inner = FakeSsh(self)
+        inner = Calls(self)
 
         def strict(cmd, **kwargs):  # what subprocess does with an argument it cannot encode
             for arg in cmd:
@@ -2016,23 +1901,23 @@ class HookTests(Base):
         os.makedirs(os.path.join(self.state, "CODEX"))
         with open(os.path.join(self.state, "CODEX", "letters"), "w") as fh:
             fh.write("a file where the folder should be")
-        ssh = FakeSsh(self)
-        out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, runner=ssh)
+        ssh = Calls(self)
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, transport=ssh)
         label = self.lookup("s-0001")["label"]  # the registration was made...
         self.assertEqual(out["sessionTitle"], "%s: New Chat" % label)  # ...and the chat was told and titled
         self.assertIn('"@**Codex** %s"' % label, out["additionalContext"])
         # With no note to go on, the next prompt registers again, which only resumes the chat.
         out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix the build",
-                         "session_title": "%s: New Chat" % label}, runner=ssh)
+                         "session_title": "%s: New Chat" % label}, transport=ssh)
         self.assertEqual(out["sessionTitle"], "%s: Fix the Build" % label)
         self.assertEqual(self.lookup("s-0001")["label"], label)
-        self.assertFalse(PL.Chat(self.spec, self.server_env(), "server", "s-0001", runner=ssh, now=0.0).write({}))
+        self.assertFalse(PL.Chat(self.spec, self.server_env(), "server", "s-0001", transport=ssh, now=0.0).write({}))
 
     def test_the_note_is_never_written_through_a_planted_symlink(self) -> None:
         victim = os.path.join(self.tmp.name, "victim")
         with open(victim, "w") as fh:
             fh.write("keep me")
-        chat = PL.Chat(self.spec, self.server_env(), "server", "s-0001", runner=None, now=0.0)
+        chat = PL.Chat(self.spec, self.server_env(), "server", "s-0001", now=0.0)
         os.makedirs(os.path.dirname(chat.path), mode=0o700, exist_ok=True)
         # the name the writer used to take for its temporary file, which anyone who can write the folder could guess
         os.symlink(victim, "%s.%d.tmp" % (chat.path, os.getpid()))
@@ -2042,10 +1927,10 @@ class HookTests(Base):
         self.assertEqual(chat.read().get("state"), "open")
 
     def test_a_letter_that_arrives_on_a_later_prompt_is_announced(self) -> None:
-        down = FakeSsh(self, fail=subprocess.TimeoutExpired("ssh", 12))
+        down = Calls(self, fail=subprocess.TimeoutExpired("ssh", 12))
         t0 = time.time()
         out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"},
-                        runner=down, now=t0)
+                        transport=down, now=t0)
         self.assertIn("at most every ten minutes", out["additionalContext"])
         self.assertNotIn("next prompt", out["additionalContext"])
         out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix the build"},
@@ -2057,7 +1942,7 @@ class HookTests(Base):
         # A platform that names its chats through a writer has no title in the output: the letter is still said.
         spec = make_spec(title_writer=lambda request: True, title_in_output=False)
         self.hook({"hook_event_name": "SessionStart", "session_id": "s-0002", "source": "startup"}, spec=spec,
-                  runner=down, now=t0)
+                  transport=down, now=t0)
         out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0002", "prompt": "go"}, spec=spec,
                         now=t0 + PL.RETRY_SECONDS + 5)
         self.assertNotIn("sessionTitle", out)
@@ -2065,120 +1950,6 @@ class HookTests(Base):
         # A later prompt says nothing more.
         self.assertIsNone(self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0002", "prompt": "x"},
                                     spec=spec, now=t0 + PL.RETRY_SECONDS + 9))
-
-    def down_file(self, dest: str = "mac") -> str:
-        return os.path.join(self.state, PL.HOST_DOWN_DIR, dest)
-
-    def test_a_silent_registry_host_is_asked_once_for_all_the_chats(self) -> None:
-        # A chat that starts many sub-threads in a row must not pay the ssh timeout for each of them.
-        down = FakeSsh(self, fail=subprocess.TimeoutExpired("ssh", 12))
-        t0 = time.time()
-        for n in range(1, 5):
-            out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-%04d" % n, "source": "startup"},
-                            runner=down, now=t0 + n)
-            self.assertIn("No Operator letter yet", out["additionalContext"])
-            self.assertEqual(self.note("s-%04d" % n)["state"], "failed")
-        self.assertEqual(len(down.calls), 1)
-        self.assertGreater(PL.registry_down_until(self.server_env(), "mac"), t0 + 4)
-        self.assertEqual(os.stat(self.down_file()).st_mode & 0o777, 0o600)
-        # After the wait the host is asked again, by whichever chat comes first, and its answer clears the mark.
-        later = t0 + PL.RETRY_SECONDS + 5
-        ssh = FakeSsh(self)
-        out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0003", "prompt": "fix the build"},
-                        runner=ssh, now=later)
-        self.assertEqual(ssh.ops()[0], "register")
-        self.assertRegex(out["sessionTitle"], r"^[A-Z]{2}: Fix the Build$")
-        self.assertFalse(os.path.exists(self.down_file()))
-
-    def test_a_mark_holds_every_hop_of_a_chat_until_it_runs_out(self) -> None:
-        self.start("s-0001")
-        label = self.label("s-0001")
-        title = "%s: New Chat" % label
-        t0 = time.time()
-        PL.mark_registry(self.server_env(), "mac", t0 + 100)
-        ssh = FakeSsh(self)
-        self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix the build",
-                   "session_title": title}, runner=ssh, now=t0 + 10)
-        self.assertEqual(ssh.calls, [])  # the title waits in the note, and the chat is still titled
-        self.assertEqual(self.note("s-0001")["unsent"], "Fix the Build")
-        self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more",
-                   "session_title": "%s: Fix the Build" % label}, runner=ssh, now=t0 + PL.RETRY_SECONDS + 20)
-        self.assertEqual(ssh.ops(), ["title"])
-        self.assertFalse(os.path.exists(self.down_file()))
-
-    def test_a_host_that_answers_with_an_error_is_not_a_silent_host(self) -> None:
-        def refuses(cmd, **kwargs):
-            refuses.calls += 1
-            return SimpleNamespace(stdout=json.dumps({"error": "no Operator registry on this host"}), returncode=3)
-
-        refuses.calls = 0
-        for n in (1, 2):
-            out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-%04d" % n, "source": "startup"},
-                            runner=refuses)
-            self.assertIn("no Operator registry", out["additionalContext"])
-        self.assertEqual(refuses.calls, 2)  # it answered, so the next chat asks it too
-        self.assertFalse(os.path.exists(self.down_file()))
-
-    def test_a_host_with_no_command_is_silent_too(self) -> None:
-        calls = []
-
-        def missing(cmd, **kwargs):
-            calls.append(cmd)
-            return SimpleNamespace(stdout="", returncode=127)
-
-        for n in (1, 2, 3):
-            self.hook({"hook_event_name": "SessionStart", "session_id": "s-%04d" % n, "source": "startup"},
-                      runner=missing)
-        self.assertEqual(len(calls), 1)
-
-    def test_a_mark_further_off_than_any_wait_holds_nothing(self) -> None:
-        t0 = time.time()
-        PL.mark_registry(self.server_env(), "mac", t0 + 10 * PL.RETRY_SECONDS)  # the clock moved back since
-        ssh = FakeSsh(self)
-        self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, runner=ssh, now=t0)
-        self.assertEqual(ssh.ops(), ["register"])
-        self.assertFalse(os.path.exists(self.down_file()))  # and its answer cleared the stale mark
-
-    def test_the_mark_is_per_registry_host_and_the_mac_has_none(self) -> None:
-        PL.mark_registry(self.server_env(), "mac", time.time() + 600)
-        ssh = FakeSsh(self)
-        env = self.env(SESSION_LETTER_LOCATION="server", SESSION_LETTER_REMOTE="elsewhere")
-        out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, env=env,
-                        runner=lambda cmd, **kw: SimpleNamespace(stdout="", returncode=255))
-        self.assertIn("exit 255 with no result", out["additionalContext"])  # another host: asked, and found silent
-        self.assertTrue(os.path.exists(self.down_file("elsewhere")))
-        out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0002", "source": "startup"},
-                        env=self.env(), runner=ssh, platform="darwin")
-        self.assertRegex(out["sessionTitle"], r"^[A-Z]{2}: New Chat$")  # the Mac registers in process
-        self.assertEqual(ssh.calls, [])
-
-    def test_a_mark_that_cannot_be_read_or_written_is_no_mark_and_no_error(self) -> None:
-        env = self.server_env()
-        PL.mark_registry(env, "mac", time.time() + 600)
-        for body in ("not json", '["until"]', '{"until": "soon"}', "{}"):
-            Path(self.down_file()).write_text(body)
-            self.assertEqual(PL.registry_down_until(env, "mac"), 0.0, body)
-        self.assertEqual(PL.registry_down_until(env, "never-marked"), 0.0)
-        if os.geteuid() == 0:
-            return  # a folder cannot be made unwritable to root
-        folder = os.path.dirname(self.down_file())
-        os.chmod(folder, 0o500)
-        self.addCleanup(os.chmod, folder, 0o700)
-        PL.mark_registry(env, "mac", time.time() + 900)  # cannot be written: still no error
-        PL.mark_registry(env, "mac")  # nor removed
-
-    def test_the_down_mark_is_never_written_through_a_planted_symlink(self) -> None:
-        env = self.server_env()
-        victim = os.path.join(self.tmp.name, "victim")
-        Path(victim).write_text("keep me")
-        os.makedirs(os.path.dirname(self.down_file()), mode=0o700, exist_ok=True)
-        os.symlink(victim, "%s.%d.tmp" % (self.down_file(), os.getpid()))  # the name the writer used to take
-        until = time.time() + 600
-        PL.mark_registry(env, "mac", until)
-        self.assertEqual(Path(victim).read_text(), "keep me")
-        self.assertAlmostEqual(PL.registry_down_until(env, "mac"), until, places=3)
-        leftovers = [n for n in os.listdir(os.path.dirname(self.down_file())) if n.endswith(".tmp") and n != "mac"]
-        self.assertEqual([n for n in leftovers if n.startswith(".down-")], [])  # no temporary file is left behind
 
     def test_a_quiet_event_runs_and_prints_nothing(self) -> None:
         spec = make_spec(events={"SubagentStop": "prompt", "UserPromptSubmit": "prompt"},
@@ -2206,8 +1977,8 @@ class HookTests(Base):
 
     def test_a_parent_that_is_not_registered_is_registered_before_its_sub_thread(self) -> None:
         spec = self.parent_spec()
-        ssh = FakeSsh(self)
-        self.child_start("c-0001", "p-0001", spec, runner=ssh)
+        ssh = Calls(self)
+        self.child_start("c-0001", "p-0001", spec, transport=ssh)
         self.assertEqual(ssh.ops(), ["register", "register"])  # the parent's, then the child's
         parent, child = self.label("p-0001"), self.label("c-0001")
         self.assertRegex(parent, PAIR)
@@ -2233,8 +2004,8 @@ class HookTests(Base):
     def test_a_parent_that_is_registered_costs_no_hop_and_a_failed_one_is_tried_again(self) -> None:
         spec = self.parent_spec()
         self.hook({"hook_event_name": "SessionStart", "session_id": "p-0001", "source": "startup"}, spec=spec)
-        ssh = FakeSsh(self)
-        self.child_start("c-0001", "p-0001", spec, runner=ssh)
+        ssh = Calls(self)
+        self.child_start("c-0001", "p-0001", spec, transport=ssh)
         self.assertEqual(ssh.ops(), ["register"])  # only the child
         # A parent whose own registration was refused a moment ago (not a silent host: the registry answered) is not
         # waited for: the sub-thread would otherwise take a main pair ahead of it.
@@ -2252,22 +2023,22 @@ class HookTests(Base):
 
     def test_grandparents_are_registered_first_and_a_loop_ends(self) -> None:
         spec = self.parent_spec()
-        ssh = FakeSsh(self)
-        self.child_start("c-0002", "c-0001", spec, runner=ssh)  # c-0001 is itself a child of p-0001
+        ssh = Calls(self)
+        self.child_start("c-0002", "c-0001", spec, transport=ssh)  # c-0001 is itself a child of p-0001
         self.assertEqual(ssh.ops(), ["register", "register", "register"])
         labels = [self.label(sid) for sid in ("p-0001", "c-0001", "c-0002")]
         self.assertEqual(labels, sorted(labels))
         self.assertEqual(len(set(labels)), 3)
-        ssh = FakeSsh(self)
-        self.child_start("loop-c", "loop-a", spec, runner=ssh)  # loop-a and loop-b each name the other
+        ssh = Calls(self)
+        self.child_start("loop-c", "loop-a", spec, transport=ssh)  # loop-a and loop-b each name the other
         self.assertLessEqual(len(ssh.calls), PL.PARENT_DEPTH + 1)
         self.assertRegex(self.label("loop-c"), PAIR)
 
     def test_a_spec_that_cannot_look_a_parent_up_leaves_it_alone(self) -> None:
         spec = self.parent_spec()
         spec = make_spec(parent_id=spec.parent_id, kind=spec.kind, title_in_output=True)
-        ssh = FakeSsh(self)
-        self.child_start("c-0001", "p-0001", spec, runner=ssh)
+        ssh = Calls(self)
+        self.child_start("c-0001", "p-0001", spec, transport=ssh)
         self.assertEqual(ssh.ops(), ["register"])
         self.assertIsNone(self.lookup("p-0001"))
 
@@ -2280,7 +2051,7 @@ class HookTests(Base):
         self.child_start("c-0001", "p-0001", headless)
         self.assertIsNone(self.lookup("p-0001"))
         self.assertRegex(self.label("c-0001"), PAIR)
-        PL.Chat(spec, self.server_env(), "server", "m-0001", runner=FakeSsh(self), now=0.0).write(
+        PL.Chat(spec, self.server_env(), "server", "m-0001", transport=Calls(self), now=0.0).write(
             {"state": "mismatch", "label": ""}
         )
         self.child_start("c-0003", "m-0001", spec)
@@ -2299,27 +2070,168 @@ class HookTests(Base):
         out = io.StringIO()
         self.assertEqual(PL.show(spec, [], self.env(CODEX_THREAD_ID="s-0001"), out), 0)
 
-    def test_end_to_end_through_the_entry_script(self) -> None:
-        """The hook on the server, the real `platform-letter registry` on the "Mac" (a subprocess of the entry script
-        against the temporary registry): what the ssh hop will run, minus ssh."""
-
-        def run_remote(cmd, **kwargs):
-            remote = shlex.split(cmd[8])
-            self.assertEqual(remote[0], "$HOME/.local/bin/platform-letter")
-            proc = subprocess.run(
-                [sys.executable, str(ENTRY), *remote[1:]], capture_output=True, text=True, timeout=60,
-                env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": self.home,
-                     "SIMPLE_TOOLS_STATE_DIR": self.state},
+    def test_end_to_end_through_the_entry_point(self) -> None:
+        """The hook through `main`, as a platform's hook command runs it, with the assigner served in process."""
+        spec = make_spec(platform="faux", source="faux-hook")
+        out = io.StringIO()
+        with mock.patch.dict(PL.SPECS, {"faux": spec}):
+            code = PL.main(
+                ["hook", "--platform", "faux", "--location", "server"],
+                env=self.env(),
+                stdin=io.StringIO(json.dumps({"hook_event_name": "SessionStart", "session_id": "s-0001",
+                                              "source": "startup"})),
+                stdout=out,
             )
-            return SimpleNamespace(stdout=proc.stdout, returncode=proc.returncode)
-
-        out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"},
-                        runner=run_remote)
+        self.assertEqual(code, 0)
         label = self.label("s-0001")
-        self.assertEqual(out["sessionTitle"], "%s: New Chat" % label)
+        self.assertEqual(json.loads(out.getvalue())["hookSpecificOutput"]["sessionTitle"], "%s: New Chat" % label)
+        self.assertEqual(self.lookup("s-0001", platform="faux")["label"], label)
+
+    # ---- No letter:  "??: <Title>", asking again, and `simple-chat letter request` (owner, Nov 11, 2026) ----
+
+    def no_letters(self):
+        """Every pair live:  the assigner refuses the next chat."""
+        return mock.patch.dict(OR.LETTER_SPACES, {"double": ("AA",)})
+
+    def test_every_way_of_getting_no_letter_titles_the_chat_with_the_mark(self) -> None:
+        start = {"hook_event_name": "SessionStart", "source": "startup"}
+        with self.subTest("the assigner refuses: every pair is live"), self.no_letters():
+            self.start("s-0001")
+            out = self.hook(dict(start, session_id="s-0002"))
+            self.assertEqual(out["sessionTitle"], "??: New Chat")
+            self.assertIn("in use", out["additionalContext"])
+        with self.subTest("not configured"):
+            bare_env = {k: v for k, v in self.server_env().items() if k != registry_api.URL_ENV}
+
+            def unconfigured(argv):
+                out = io.StringIO()
+                PL.registry_main(list(argv), env=bare_env, stdout=out)
+                return PL._last_json(out.getvalue())
+
+            out = self.hook(dict(start, session_id="s-0003"), transport=unconfigured)
+            self.assertEqual(out["sessionTitle"], "??: New Chat")
+            self.assertIn("no registry API URL is configured", out["additionalContext"])
+        with self.subTest("the assigner does not answer"):
+            down = Calls(self, fail=TimeoutError("down"))
+            out = self.hook(dict(start, session_id="s-0004", session_title="Fix Login"), transport=down)
+            self.assertEqual(out["sessionTitle"], "??: Fix Login")
+        with self.subTest("an error answer"):
+            out = self.hook(dict(start, session_id="s-0005"), transport=lambda argv: {"error": "boom"})
+            self.assertEqual(out["sessionTitle"], "??: New Chat")
+            self.assertIn("(boom)", out["additionalContext"])
+        for sid in ("s-0002", "s-0003", "s-0004", "s-0005"):
+            note = self.note(sid)
+            self.assertEqual((note["state"], note["label"]), ("failed", ""))
+
+    def test_the_mark_is_never_doubled(self) -> None:
+        down = Calls(self, fail=TimeoutError("down"))
+        for n, current in enumerate(("??: Fix Login", "??: ??: Fix Login", "AB: Fix Login", "Fix Login")):
+            with self.subTest(current=current):
+                sid = "s-%04d" % (n + 1)
+                out = self.hook({"hook_event_name": "SessionStart", "session_id": sid, "source": "resume",
+                                 "session_title": current}, transport=down)
+                # A chat already showing the mark is left as it is:  no title in the output.
+                self.assertEqual(out.get("sessionTitle", current), "??: Fix Login")
+                self.assertEqual(self.note(sid)["want"], "??: Fix Login")
+        self.assertEqual(PL.bare("??: ??: Fix Login"), "Fix Login")
+        self.assertEqual(PL.bare("??: Fix Login", ("CD",)), "Fix Login")
+        self.assertEqual(PL.bare("??:"), "")
+        self.assertEqual(PL.compose(PL.UNLETTERED, ""), "??: New Chat")
+
+    def test_a_chat_already_on_the_mark_is_not_retitled_on_every_prompt(self) -> None:
+        down = Calls(self, fail=TimeoutError("down"))
+        self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, transport=down)
+        out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix login",
+                         "session_title": "??: New Chat"}, transport=down)
+        self.assertEqual(out["sessionTitle"], "??: Fix Login")
+        self.assertIsNone(self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more",
+                                     "session_title": "??: Fix Login"}, transport=down))
+        self.assertEqual(len(down.calls), 1)  # the stamp holds every prompt inside the wait
+
+    def test_a_refused_chat_gets_its_letter_once_one_is_free(self) -> None:
+        with self.no_letters():
+            self.start("s-0001")
+            self.start("s-0002")
+            self.assertEqual(self.note("s-0002")["state"], "failed")
+            self.end("s-0001", "logout")  # the owner archives a chat:  its pair is free
+            later = time.time() + PL.RETRY_SECONDS + 5
+            out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0002", "prompt": "fix login",
+                             "session_title": "??: New Chat"}, now=later)
+        self.assertEqual(out["sessionTitle"], "AA: Fix Login")
+        self.assertEqual((self.note("s-0002")["state"], self.label("s-0002")), ("open", "AA"))
+
+    def test_a_turn_end_asks_again_and_a_writer_swaps_the_mark(self) -> None:
+        written = []
+        spec = make_spec(events={**PL.DEFAULT_EVENTS, "Stop": "turn"}, title_in_output=False,
+                         title_writer=lambda request: written.append(request.title) or True)
+        down = Calls(self, fail=TimeoutError("down"))
+        self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "resume",
+                   "session_title": "Fix Login"}, spec=spec, transport=down)
+        self.assertEqual(written, ["??: Fix Login"])
+        self.hook({"hook_event_name": "Stop", "session_id": "s-0001"}, spec=spec, transport=down)
+        self.assertEqual(len(down.calls), 1)  # inside the wait:  not asked again
+        later = time.time() + PL.RETRY_SECONDS + 5
+        self.assertIsNone(self.hook({"hook_event_name": "Stop", "session_id": "s-0001"}, spec=spec, now=later))
+        label = self.label("s-0001")
+        self.assertEqual(written[-1], "%s: Fix Login" % label)
+        self.assertTrue(self.note("s-0001")["titled"])
         self.assertEqual(self.lookup("s-0001")["label"], label)
-        self.end("s-0001", "archived", runner=run_remote)
-        self.assertEqual(self.lookup("s-0001")["state"], "closed")
+
+    def test_a_turn_end_letter_reaches_a_hook_output_title_at_the_next_prompt(self) -> None:
+        spec = make_spec(events={**PL.DEFAULT_EVENTS, "Stop": "turn"})
+        down = Calls(self, fail=TimeoutError("down"))
+        self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"},
+                  spec=spec, transport=down)
+        self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix login",
+                   "session_title": "??: New Chat"}, spec=spec, transport=down)
+        later = time.time() + PL.RETRY_SECONDS + 5
+        self.hook({"hook_event_name": "Stop", "session_id": "s-0001"}, spec=spec, now=later)
+        label = self.label("s-0001")
+        out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "next",
+                         "session_title": "??: Fix Login"}, spec=spec, now=later + 1)
+        self.assertEqual(out["sessionTitle"], "%s: Fix Login" % label)
+        self.assertIn("Operator session letter", out["additionalContext"])
+
+    def request(self, *argv: str, env: dict | None = None, now: float | None = None) -> tuple[int, str]:
+        out = io.StringIO()
+        code = PL.request_main(list(argv), env if env is not None else self.server_env(), out, now=now,
+                               platform="linux")
+        return code, out.getvalue()
+
+    def test_request_asks_now_whatever_the_stamp_says_and_answers_in_one_line(self) -> None:
+        with mock.patch.dict(PL.SPECS, {"codex": self.spec}):
+            with self.no_letters():
+                self.start("s-0001")
+                self.start("s-0002")
+                code, line = self.request("--session-id", "s-0002")
+                self.assertEqual(code, 1)
+                self.assertEqual(line.count("\n"), 1)
+                self.assertTrue(line.startswith("no letter: all double letters are in use"), line)
+                self.end("s-0001", "logout")
+                code, line = self.request("--session-id", "s-0002")  # inside the wait, and asked anyway
+            self.assertEqual((code, line), (0, "letter AA: Codex chat s-0002\n"))
+            note = self.note("s-0002")
+            self.assertEqual((note["state"], note["label"], note["titled"]), ("open", "AA", False))
+            out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0002", "prompt": "fix login",
+                             "session_title": "??: New Chat"})
+            self.assertEqual(out["sessionTitle"], "AA: Fix Login")  # the next prompt swaps the mark
+            code, line = self.request("--session-id", "s-0002")  # a lettered chat:  the assigner confirms it
+            self.assertEqual((code, line), (0, "letter AA: Codex chat s-0002\n"))
+
+    def test_request_finds_the_chat_from_its_own_shell(self) -> None:
+        spec = make_spec(session_id=PL.either(PL.from_payload("session_id"), PL.from_env("FAUX_SESSION_ID")))
+        with mock.patch.dict(PL.SPECS, {"codex": spec}):
+            self.start("s-0001")
+            code, line = self.request(env=self.server_env(FAUX_SESSION_ID="s-0001"))
+            self.assertEqual((code, line), (0, "letter %s: Codex chat s-0001\n" % self.label("s-0001")))
+            code, line = self.request(env=self.server_env(FAUX_SESSION_ID="s-0404"))  # no note:  never registered
+            self.assertEqual(code, 1)
+            self.assertIn("pass --session-id", line)
+        self.assertIsNone(self.lookup("s-0404"))
+        code, line = self.request("--session-id", "s-0999")
+        self.assertEqual(code, 1)
+        self.assertIn("no chat with the session id s-0999", line)
+        self.assertEqual(self.request("--bogus")[0], 2)
 
 
 class InstallTests(Base):
@@ -2351,7 +2263,7 @@ class InstallTests(Base):
     def test_install_is_idempotent_keeps_other_hooks_and_removes_cleanly(self) -> None:
         other = {"hooks": [{"type": "command", "command": "/x/guard.py", "timeout": 5}]}
         self.seed({"features": {"hooks": True}, "hooks": {"SessionStart": [other]}})
-        code, out = self.run_install(location="server", remote="mac")
+        code, out = self.run_install(location="server")
         self.assertEqual((code, sorted(out["changed"])), (0, ["SessionEnd", "SessionStart", "UserPromptSubmit"]))
         self.assertEqual(out["trust"], "re-trust the new hook entries")
         self.assertEqual(os.stat(out["backup"]).st_mode & 0o777, 0o600)  # a backup is private whatever the source
@@ -2362,11 +2274,11 @@ class InstallTests(Base):
         entry = doc["hooks"]["SessionEnd"][0]["hooks"][0]
         self.assertEqual(
             entry["command"],
-            "%s hook --platform codex --location server --remote mac"
+            "%s hook --platform codex --location server"
             % os.path.join(self.home, ".local", "bin", "platform-letter"),
         )
         self.assertEqual(entry["timeout"], 15)
-        again = self.run_install(location="server", remote="mac")[1]
+        again = self.run_install(location="server")[1]
         self.assertEqual((again["changed"], "trust" in again), ([], False))
         bare_again = self.run_install()[1]  # no flags: the installed ones are kept
         self.assertEqual(bare_again["changed"], [])
@@ -2425,7 +2337,7 @@ class InstallTests(Base):
         with open(self.hooks_path(), "w") as fh:
             fh.write("{not json")
         self.assertEqual(self.run_install()[0], 2)
-        for opts in ({"remote": "-oProxyCommand=x"}, {"remote": "a b"}, {"location": "cloud"}):
+        for opts in ({"location": "cloud"},):
             self.assertEqual(self.run_install(**opts)[0], 2, opts)
 
     def test_a_null_hooks_field_reads_as_empty(self) -> None:
@@ -2506,13 +2418,13 @@ class InstallTests(Base):
         self.seed({"hooks": {"SessionStart": [group]}})
         check = self.run_install(check=True)[1]
         self.assertEqual((check["installed"]["SessionStart"], check["current"]["SessionStart"]), (True, False))
-        self.assertEqual(self.run_install(location="server", remote="mac")[0], 0)
+        self.assertEqual(self.run_install(location="server")[0], 0)
         entries = self.load()["hooks"]["SessionStart"]
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["matcher"], "startup|resume")  # the owner's matcher stays
         self.assertEqual(entries[0]["hooks"][0], foreign)  # and so does the other tool's hook, first
         self.assertEqual(entries[0]["hooks"][1]["timeout"], 20)  # ours is replaced where it stood
-        self.assertIn("--location server --remote mac", entries[0]["hooks"][1]["command"])
+        self.assertTrue(entries[0]["hooks"][1]["command"].endswith("--location server"))
         self.assertEqual(self.run_install()[1]["changed"], [])
         code, check = self.run_install(check=True)
         self.assertEqual((code, check["current"]["SessionStart"]), (0, True))
@@ -2558,7 +2470,7 @@ class InstallTests(Base):
         with mock.patch.object(PL, "datetime", frozen):
             first = self.run_install()[1]["backup"]
             second = self.run_install(remove=True)[1]["backup"]  # the same microsecond
-            third = self.run_install(location="server", remote="mac")[1]["backup"]
+            third = self.run_install(location="server")[1]["backup"]
         self.assertEqual(len({first, second, third}), 3)
         with open(first, "rb") as fh:
             self.assertEqual(fh.read(), original)  # the first still holds the file as the owner left it
@@ -2570,18 +2482,18 @@ class InstallTests(Base):
     def test_the_command_names_this_hosts_own_script(self) -> None:
         self.assertEqual(PL.command_for("/h", "codex"), "/h/.local/bin/platform-letter hook --platform codex")
         self.assertEqual(
-            PL.command_for("/my home", "codex", "server", "mac"),
-            "'/my home/.local/bin/platform-letter' hook --platform codex --location server --remote mac",
+            PL.command_for("/my home", "codex", "server"),
+            "'/my home/.local/bin/platform-letter' hook --platform codex --location server",
         )
 
     def test_install_main_finds_the_adapter(self) -> None:
         module = types.SimpleNamespace(SPEC=make_spec(platform="faux", seat="FAUX"), INSTALL=self.installer())
         out = io.StringIO()
         with mock.patch.dict(sys.modules, {"simple_tools.platform_letter_faux": module}):
-            code = PL.install_main(["--platform", "faux", "--location", "server", "--remote", "mac"],
+            code = PL.install_main(["--platform", "faux", "--location", "server"],
                                    {"HOME": self.home}, out)
         self.assertEqual(code, 0)
-        self.assertIn("--platform faux --location server --remote mac", json.dumps(self.load()))
+        self.assertIn("--platform faux --location server", json.dumps(self.load()))
         # An adapter with an installer of its own is called with the parsed options.
         seen = []
         own = types.SimpleNamespace(SPEC=make_spec(platform="faux", seat="FAUX"),
@@ -2620,7 +2532,7 @@ class EntryScriptTests(unittest.TestCase):
         self.assertEqual(self.run_entry().returncode, 2)
         self.assertEqual(self.run_entry("nonsense").returncode, 2)
 
-    def test_the_registry_side_refuses_a_host_with_no_registry(self) -> None:
+    def test_the_registry_side_on_a_host_with_no_registry_api_is_not_configured(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             result = subprocess.run(
                 [sys.executable, "-I", "-B", str(ENTRY), "registry", "touch", "--platform", "codex",
@@ -2628,8 +2540,8 @@ class EntryScriptTests(unittest.TestCase):
                 capture_output=True, text=True, timeout=60,
                 env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": tmp, "SIMPLE_TOOLS_STATE_DIR": tmp},
             )
-            self.assertEqual(result.returncode, 3)
-            self.assertIn("no Operator registry", result.stdout)
+            self.assertEqual(result.returncode, 5)
+            self.assertIn("not_configured", result.stdout)
             self.assertEqual(os.listdir(tmp), [])
 
 

@@ -42,13 +42,13 @@ Install the Mac first, so the registry side exists before a server hook depends 
 # On the Mac (from the managed runtime, so the entry names a stable path):
 ~/.local/bin/platform-letter install --platform opencode
 # On the server:
-~/.local/bin/platform-letter install --platform opencode --location server --remote mac
+~/.local/bin/platform-letter install --platform opencode --location server
 # Either host: report, change nothing / take it out again:
 ~/.local/bin/platform-letter install --platform opencode --check
 ~/.local/bin/platform-letter install --platform opencode --remove
 ```
 
-The installer adds the plugin directory to the `plugins` array of `~/.config/opencode/opencode.json` (under `$XDG_CONFIG_HOME` when that is set) and touches nothing else.  The Mac's file has no `plugins` array yet and gets one; the server's file has the lane guard first and keeps it there.  Our entry goes last.  It is idempotent (a current entry is left alone, an outdated one is replaced where it stands, and the options set by hand, `log`, `command`, `shared` and `settle`, are kept by a refresh and do not make `--check` call the entry outdated), takes a dated backup of the file before it rewrites it (`opencode.json.bak-letter-<UTC stamp>`, 0600), keeps the file's mode and indent, and refuses a file that is not a JSON object, has a duplicate key, or whose `plugins` is not a list, untouched.  The server's entry is the object form, `{"package": "<dir>", "options": {"location": "server", "remote": "mac"}}`; the Mac's is the bare path.  A task lane's checkout is refused, because its path goes away: run it from `~/.local/bin/platform-letter`.
+The installer adds the plugin directory to the `plugins` array of `~/.config/opencode/opencode.json` (under `$XDG_CONFIG_HOME` when that is set) and touches nothing else.  The Mac's file has no `plugins` array yet and gets one; the server's file has the lane guard first and keeps it there.  Our entry goes last.  It is idempotent (a current entry is left alone, an outdated one is replaced where it stands, and the options set by hand, `log`, `command`, `shared` and `settle`, are kept by a refresh and do not make `--check` call the entry outdated), takes a dated backup of the file before it rewrites it (`opencode.json.bak-letter-<UTC stamp>`, 0600), keeps the file's mode and indent, and refuses a file that is not a JSON object, has a duplicate key, or whose `plugins` is not a list, untouched.  The server's entry is the object form, `{"package": "<dir>", "options": {"location": "server"}}`; the Mac's is the bare path.  A task lane's checkout is refused, because its path goes away: run it from `~/.local/bin/platform-letter`.
 
 There is no trust step.  OpenCode loads a plugin listed in its config with no approval.  A running OpenCode loads it with its next restart.
 

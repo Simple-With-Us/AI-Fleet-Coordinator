@@ -2,22 +2,29 @@
 platforms other than Claude and MiniMax (owner request, Oct 29, 2026).  Claude has `claude_letter` and MiniMax has
 `mm_session_letter`; this module is the shared library every other platform's adapter is a thin file on.
 
-    platform-letter hook --platform P       the hook a platform runs: start, prompt, rename and end events
-    platform-letter registry OP --platform P ...   the registry side: register, title, touch, close or show one chat
+    platform-letter hook --platform P       the hook a platform runs: start, prompt, rename, turn and end events
+    platform-letter registry OP --platform P ...   one registry API call: register, title, touch, close or show
     platform-letter show --platform P       this chat's letter from its local note; no network
     platform-letter install --platform P    add the platform's hooks (--check, --remove)
+    simple-chat letter request [--session-id S]   ask the assigner for this chat's letter now (`request_main`)
 
 An adapter is one file, `simple_tools/platform_letter_<platform>.py`, with a `SPEC` (a PlatformSpec: what differs per
 platform) and, to be installable, an `INSTALL` (a JsonHookInstaller) or its own `install(options, env, stdout)`.  The
-library does everything else: the in-scope rule, the registry transport, the note, the title, retry, touch and close.
+library does everything else: the in-scope rule, the registry call, the note, the title, retry, touch and close.
 
-Where the letter comes from.  The Operator's session registry (`operator_registry`, AFC-412) is one SQLite file on the
-Mac, the one allocator for every host and every platform.  A chat on the Mac reaches it in process.  A chat on the
-server reaches it over one SSH hop to the Mac (the destination in SESSION_LETTER_REMOTE, or the hook's --remote), by
-running `~/.local/bin/platform-letter registry ...` there, so the Mac's own managed runtime makes the write.  The
-registry side refuses a host that has no registry file and never creates one: a second file would issue letters that
-collide with the Mac's.  A platform keeps its own namespace (`codex`, `opencode`, `muse`, `grok`, `antigravity`, `cursor`): a
-letter is unique inside it, and `claude` and `minimax` are reserved to their own hooks.
+Where the letter comes from.  One assigner:  the Operator's session registry behind the Eavesdropper's registry API
+(`listener_registry`, reached through `registry_api`).  Every chat on every host asks it the same way, one signed
+HTTPS call per op, and nothing else:  there is no local registry file and no ssh hop (owner, Nov 11, 2026:  "one
+operator that has one tool/process for all platforms").  A host with no API URL or key gets `not_configured` from
+`registry_api`, which is one more way of getting no letter.  A platform keeps its own namespace (`codex`, `opencode`,
+`muse`, `grok-leader`, `antigravity`, `cursor`):  a letter is unique inside it, and `claude` and `minimax` are reserved
+to their own hooks until those clients fold into this table.
+
+No letter.  A chat that gets no letter, for any reason (the assigner refused because every pair is live, it did not
+answer, the host is not configured, the location is not stated, any other error), is titled "??: <Title>" and carries
+on:  nothing here ever fails a session start.  Its later prompts and turn ends ask again, at most every RETRY_SECONDS
+(the note's `failed_at` stamp), and the first answer that carries a letter swaps "??" for it.  `simple-chat letter
+request` asks at once, whatever the stamp says, and prints the letter or the refusal in one line.
 
 The letters.  Every chat takes a pair (AA to ZZ, 676 per platform).  A main chat takes the doubled pairs in order
 (AA, BB ... ZZ), oldest first; a sub-thread, a chat another chat started, takes the first free pair after its
@@ -33,8 +40,9 @@ What the hook does.
   `compact` start only reminds the model of the letter.
 - A prompt event titles a chat that is still on the placeholder from its first prompt, retries a registration that
   failed (at most every ten minutes), puts the letter back on a chat whose name dropped it and sends the new words to
-  the Operator, and marks the chat seen at most every half hour.  Steady-state prompts cost no hop.
+  the Operator, and marks the chat seen at most every half hour.  Steady-state prompts cost no call.
 - A rename event does the rename part alone, for platforms that tell the hook when a title changed.
+- A turn event (the end of a turn) reports what the turn touched, and asks again for a missing letter as a prompt does.
 - An end event closes the registration when the chat is over for good (the spec's `close_reasons`, `None` for every
   end), which frees its letter.
 
@@ -46,8 +54,9 @@ The hook never blocks a chat: every failure is a line of context, or nothing, an
 take part: a launcher-run session never does (`identity.launched`, unless the spec names that launcher), nor a
 headless or exec run, nor a sub-agent run unless the platform records the chat that started it.  SESSION_LETTER=0 (or
 `<PLATFORM>_LETTER=0`) turns it off.  The location is the fleet location, never a guess: darwin is the Mac, and any
-other host must say `--location server` (or SESSION_LETTER_LOCATION, or CLAUDE_LETTER_LOCATION), so a cloud or
-unknown host takes no letter.  Titles go through the fleet's secret scanner before they are stored or relayed.
+other host must say `--location server` (or SESSION_LETTER_LOCATION, or CLAUDE_LETTER_LOCATION), and a chat on a host
+that does not say is a "??" chat until it does.  Titles go through the fleet's secret scanner before they are stored
+or relayed.
 
 Python 3.11+, standard library only.
 """
@@ -58,6 +67,7 @@ import copy
 import io
 import json
 import os
+import pkgutil
 import re
 import shlex
 import subprocess
@@ -85,28 +95,19 @@ REGISTRY_LOCATIONS = LOCATIONS + ("cloud",)
 RESERVED_PLATFORMS = ("claude", "minimax")
 PLATFORM_RE = re.compile(r"[a-z][a-z0-9-]{1,31}")
 LABEL_RE = re.compile(r"[A-Z]{1,2}")
-DEST_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]*")
 
 ENV_OFF = "SESSION_LETTER"
 ENV_LOCATION = "SESSION_LETTER_LOCATION"
 ENV_LOCATION_FALLBACK = "CLAUDE_LETTER_LOCATION"
-# The ssh destination (a name from the host's own ssh config) that holds the registry, for a chat that is not on the
-# registry's host.  It is configuration, not source: the installer writes it into the hook's own command (--remote).
-ENV_REMOTE = "SESSION_LETTER_REMOTE"
-ENV_REMOTE_FALLBACK = "CLAUDE_LETTER_REMOTE"
 ENV_CLOSE_ON = "SESSION_LETTER_CLOSE_ON"
-REMOTE_COMMAND = '"$HOME"/.local/bin/' + ENTRY + " registry"
-CONNECT_TIMEOUT = (
-    4  # seconds for ssh to connect; an asleep or unreachable Mac costs this much, not more
-)
-REMOTE_TIMEOUT = 8.0  # the whole ssh round trip, inside every hook's own timeout (15 to 20 seconds)
 
-STALE_SECONDS = 36 * 3600
 TOUCH_SECONDS = 1800
+# The stamp that throttles asking again:  a chat whose ask failed (no letter, or a send the registry did not take)
+# asks again no sooner than this after `failed_at` (or `sync_failed_at`).  `simple-chat letter request` ignores it.
 RETRY_SECONDS = 600
-# A registry host that did not answer is not asked again by any chat on this host for RETRY_SECONDS: a chat that
-# starts many sub-threads in a row would otherwise pay the ssh timeout for each of them.
-HOST_DOWN_DIR = "registry-down"
+#: What a chat with no letter carries where the letter goes ("??: Fix Login"), owner Nov 11, 2026:  "just make threads
+#: label themselves ??: Title whenever no letters are received".
+UNLETTERED = "??"
 # How many generations of parents (a sub-thread's parent, that parent's parent, and so on) are registered ahead of a
 # sub-thread, a bound against a store that names a loop.
 PARENT_DEPTH = 3
@@ -124,6 +125,10 @@ STDIN_LIMIT = 1 << 20
 # What the registry side answers for a chat it has no registration for (the registry was restored from an older copy,
 # or never saw the chat), and what the hook reads as "register again".
 NO_REGISTRATION = "this chat has no registration"
+# Why a chat on a host that did not state its fleet location gets no letter (it is a "??" chat until it does).
+NO_LOCATION = (
+    "this host's fleet location is not stated (--location or %s)" % "SESSION_LETTER_LOCATION"
+)
 
 #: The events the library knows, whatever a platform calls them.  `turn` is the end of one turn (Claude Code's and
 #: ZCode's Stop):  it reports what the turn touched (AFC-702) and never closes anything.  A spec maps its own event to
@@ -131,8 +136,8 @@ NO_REGISTRATION = "this chat has no registration"
 EVENTS = ("start", "prompt", "rename", "end", "turn")
 #: The event names Claude Code and Codex style hooks use, and the default for a spec.
 DEFAULT_EVENTS = {"SessionStart": "start", "UserPromptSubmit": "prompt", "SessionEnd": "end"}
-#: Timeouts in seconds for those hook entries.  The ssh hop takes up to REMOTE_TIMEOUT, and a SessionEnd budget is
-#: often 1.5 seconds, too short for it, so every entry names its own.
+#: Timeouts in seconds for those hook entries.  A register chains at most two registry API calls of _API_TIMEOUT
+#: each, and a SessionEnd budget is often 1.5 seconds, too short for that, so every entry names its own.
 HOOK_TIMEOUTS = {"SessionStart": 20, "UserPromptSubmit": 15, "SessionEnd": 15}
 #: The `source` values of a start event after which a hook-output title is applied.
 TITLE_SOURCES = ("startup", "resume", "fork")
@@ -145,6 +150,8 @@ OUTPUT_STYLES = ("hook", "text", "json")
 _HOOK_NAMES = {"start": "SessionStart", "prompt": "UserPromptSubmit", "rename": "SessionRename"}
 
 LETTER_PREFIX = re.compile(r"^[A-Z]{1,2}: ")
+#: The no-letter mark at the head of a title, as many times as a platform stacked it.
+UNLETTERED_PREFIX = re.compile(r"^(?:\?\?: ?)+")
 # A word starts with a letter or digit of any script (accents, Cyrillic, CJK) and goes on with letters, digits and the
 # marks a name can carry ( ' ’ + # . - ), so "configuración" and "请修复登录页面" are words and an underscore is a break.
 WORD = re.compile(r"[^\W_](?:[^\W_]|['’+#.\-])*")
@@ -419,10 +426,6 @@ def location(env: Mapping[str, str], platform: str = sys.platform, flag: str = "
     return "mac" if platform == "darwin" else None
 
 
-def remote_destination(env: Mapping[str, str], flag: str = "") -> str:
-    return _text(flag) or _text(env.get(ENV_REMOTE)) or _text(env.get(ENV_REMOTE_FALLBACK))
-
-
 def note_path(env: Mapping[str, str], who: str, sid: str) -> str:
     """Where a chat's note lives: under the state root, in a folder named by a plain seat token only, so a seat
     value with a separator can never place the note anywhere else."""
@@ -457,8 +460,11 @@ def bare(title: object, labels: tuple[str, ...] | list[str] = ()) -> str:
 
     With the chat's own letters (the one it holds and the ones it held) only those are dropped, so a title that opens
     with an acronym ("PR: Review") keeps it; without any, one or two capital letters before a colon are taken for a
-    letter."""
-    line = one_line(title)
+    letter.  The no-letter mark ("??: ") always comes off, however many times it is there, so a chat that gets its
+    letter later, or asks again, never carries "XX: ??: Words" or "??: ??: Words"."""
+    line = UNLETTERED_PREFIX.sub("", one_line(title), count=1)
+    if line in (UNLETTERED, UNLETTERED + ":"):
+        return ""  # the name was cleared down to the mark alone
     held = [label for label in labels if label]
     if held:
         for label in held:
@@ -527,13 +533,11 @@ def title_from_prompt(prompt: object) -> str:
 
 
 # --------------------------------------------------------------------------------------------
-# The registry side (runs where the registry file is: the Mac)
+# The registry side:  one registry API call per op
 # --------------------------------------------------------------------------------------------
 #
-# Everything this module asks of `operator_registry` goes through operator_register, operator_reopen and
-# resolve_pick below.  They read the registry's signature, so a registry that predates a parameter still answers
-# (pair letters in the lowest-free order, a sub-thread picked like a main chat), and a renamed parameter is a change
-# in one place.
+# operator_reopen, SpaceLost and _last_letter below are the assigner's own helpers, not a client path:  the API
+# (listener_registry) and the registry CLI (operator_registry) import them from here for a reopen.
 
 
 def valid_platform(platform: object) -> bool:
@@ -563,45 +567,6 @@ def _accepts(fn: Any, name: str) -> bool:
 
 #: The names the registry has used for "the chat that started this one", in the order they are tried.
 PARENT_PARAMS = ("parent_session_id", "parent")
-
-
-def operator_register(
-    OR: Any,
-    db: str,
-    *,
-    platform: str,
-    location: str,
-    sid: str,
-    seat: str,
-    source: str,
-    title: str,
-    space: str,
-    pick: str,
-    parent: str = "",
-) -> dict[str, Any]:
-    """Register one chat with the Operator's registry (the contract this module codes against)."""
-    kwargs: dict[str, Any] = dict(
-        platform=platform,
-        verified_host=location,
-        profile_scope=SCOPE,
-        native_session_id=sid,
-        seat=seat,
-        source=source,
-        title=title,
-    )
-    # Every optional argument is probed, so a registry that predates one of them still registers the chat with the
-    # lowest free pair instead of raising TypeError.
-    if _accepts(OR.register_session, "issuer"):
-        kwargs["issuer"] = OR.ISSUER_OPERATOR
-    if _accepts(OR.register_session, "letter_space"):
-        kwargs["letter_space"] = space
-    if _accepts(OR.register_session, "letter_pick"):
-        kwargs["letter_pick"] = pick
-    for name in PARENT_PARAMS:
-        if parent and _accepts(OR.register_session, name):
-            kwargs[name] = parent
-            break
-    return OR.register_session(db, **kwargs)
 
 
 class SpaceLost(RuntimeError):
@@ -666,224 +631,10 @@ def operator_reopen(
     return reg.reopen(record_id, **kwargs)
 
 
-def _iso(value: object) -> float | None:
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return None
-
-
-def _open_rows(OR: Any, db: str, platform: str, source: str) -> list[Any]:
-    """Every open registration of this platform that this adapter's hook made, with its live letter, read with the
-    registry's own read-only rule: mode=rw, so a hot journal can be recovered, and never a create.
-
-    Only this hook's `source`: the hook keeps those rows' last_seen_at fresh, so their age means idleness.  A chat the
-    Operator registered another way is never marked seen by this hook, so its age says nothing, and it is never swept
-    or evicted here."""
-    import sqlite3
-    from pathlib import Path
-
-    conn = sqlite3.connect("%s?mode=rw" % Path(os.path.abspath(db)).as_uri(), uri=True)
-    conn.row_factory = sqlite3.Row
-    try:
-        return conn.execute(
-            "SELECT s.record_id, s.verified_host, s.native_session_id, s.last_seen_at, a.letter"
-            " FROM sessions s LEFT JOIN alias_assignments a"
-            " ON a.record_id = s.record_id AND a.retired_at IS NULL"
-            " WHERE s.platform = ? AND s.closed_at IS NULL AND s.source = ?",
-            (OR.normalize_platform(platform), source),
-        ).fetchall()
-    finally:
-        conn.close()
-
-
-def _close_records(OR: Any, db: str, records: list[str], source: str, reason: str) -> int:
-    """Close each record on its own, so one that cannot be closed never keeps the rest open; a failure is named on
-    stderr by record id and exception type only."""
-    if not records:
-        return 0
-    import sqlite3
-
-    reg = OR.SessionRegistry(db)
-    closed = 0
-    try:
-        for rid in records:
-            try:
-                closed += bool(reg.close(rid, actor="OPERATOR", source=source, reason=reason))
-            except (sqlite3.Error, OR.UnknownRecord) as exc:
-                sys.stderr.write(
-                    "platform-letter: could not close %s (%s)\n" % (rid, type(exc).__name__)
-                )
-    finally:
-        reg.close_db()
-    return closed
-
-
-def sweep_stale(
-    OR: Any, db: str, platform: str, source: str, keep: tuple[str, str], now: float
-) -> int:
-    """Close this adapter's registrations not seen for STALE_SECONDS, except the chat being registered."""
-    stale = []
-    for row in _open_rows(OR, db, platform, source):
-        if (row["verified_host"], row["native_session_id"]) == keep:
-            continue
-        seen = _iso(row["last_seen_at"])
-        if seen is not None and now - seen >= STALE_SECONDS:
-            stale.append(row["record_id"])
-    return _close_records(OR, db, stale, "platform-letter-sweep", "not seen for 36 hours")
-
-
-def evict_oldest(
-    OR: Any, db: str, platform: str, source: str, keep: tuple[str, str], space: str
-) -> int:
-    """Close the least recently seen open registration of the space that is full, except the chat being registered."""
-    size = 2 if space == "double" else 1
-    rows = [
-        r
-        for r in _open_rows(OR, db, platform, source)
-        if (r["verified_host"], r["native_session_id"]) != keep and len(r["letter"] or "") == size
-    ]
-    if not rows:
-        return 0
-    oldest = min(rows, key=lambda r: _iso(r["last_seen_at"]) or 0.0)
-    return _close_records(
-        OR, db, [oldest["record_id"]], "platform-letter-evict", "every letter live"
-    )
-
-
-def _with_room(
-    OR: Any, db: str, args: Any, keep: tuple[str, str], allocate: Callable[[], Any]
-) -> tuple[Any, int]:
-    """Run one allocation; when every letter of the space is live, close the least recently seen chat of this
-    adapter and try once more.  A second LabelExhausted is the caller's to report."""
-    try:
-        return allocate(), 0
-    except OR.LabelExhausted as exc:
-        space = getattr(exc, "space", args.letter_space)
-        if not evict_oldest(OR, db, args.platform, args.source, keep, space):
-            raise
-        return allocate(), 1
-
-
-def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, Any]:
-    """Register the chat, resume it, or reopen it.  A resume of a closed registration is the Operator's cue to issue a
-    letter again, so it never comes back empty-handed while a letter can be freed."""
-    keep = (args.location, sid)
-    swept = sweep_stale(OR, db, args.platform, args.source, keep, now)
-    title = clean_title(args.title)
-    pick = resolve_pick(OR, args.letter_pick)
-    parent = ""
-    if args.parent_session_id:
-        try:
-            parent = SI.check(args.parent_session_id, "the parent session id")
-        except ValueError:
-            parent = ""  # not a session id, so no parent: the chat is picked like a main chat
-
-    def register() -> dict[str, Any]:
-        return operator_register(
-            OR,
-            db,
-            platform=args.platform,
-            location=args.location,
-            sid=sid,
-            seat=args.seat,
-            source=args.source,
-            title=title,
-            space=args.letter_space,
-            pick=pick,
-            parent=parent,
-        )
-
-    try:
-        out, evicted = _with_room(OR, db, args, keep, register)
-        if out.get("outcome") in ("resumed", "resumed_closed"):
-            reg = OR.SessionRegistry(db)
-            try:
-                if out["outcome"] == "resumed_closed":
-                    (letter, generation, previous), more = _with_room(
-                        OR,
-                        db,
-                        args,
-                        keep,
-                        lambda: operator_reopen(
-                            OR,
-                            db,
-                            reg,
-                            out["record_id"],
-                            actor=args.seat,
-                            source=args.source,
-                            pick=pick,
-                            parent=parent,
-                        ),
-                    )
-                    evicted += more
-                    out.update(
-                        label=letter,
-                        generation=generation,
-                        previous=previous,
-                        outcome="reopened",
-                        title_display=OR.display_title(letter, title),
-                    )
-                else:
-                    reg.mark_seen(out["record_id"])
-                if title:
-                    reg.update_attrs(
-                        out["record_id"], title=title
-                    )  # register keeps an existing record's old title
-            finally:
-                reg.close_db()
-    except OR.LabelExhausted:
-        return {"error": "all %s letters are in use" % args.letter_space, "swept": swept}
-    except SpaceLost:
-        return {
-            "error": "this registry cannot give a closed chat a pair letter again yet",
-            "swept": swept,
-        }
-    out["swept"] = swept
-    out["evicted"] = evicted
-    return out
-
-
-def _on_record(OR: Any, db: str, args: Any, sid: str) -> dict[str, Any]:
-    reg = OR.SessionRegistry(db, read_only=args.op == "show")
-    try:
-        rec = reg.lookup(args.platform, args.location, SCOPE, sid)
-        if rec is None:
-            return {"error": NO_REGISTRATION}
-        if args.op == "show":
-            return dict(rec, found=True)
-        if rec.get("state") == "closed" or not rec.get("label"):
-            return {"retired": True, "record_id": rec["record_id"]}
-        rid = rec["record_id"]
-        if args.op == "title":
-            if args.title:
-                reg.update_attrs(rid, title=clean_title(args.title))
-            reg.mark_seen(rid)
-        elif args.op == "touch":
-            reg.mark_seen(rid)
-        elif args.op == "close":
-            return {
-                "closed": reg.close(
-                    rid, actor=args.seat, source=args.source, reason="session ended"
-                ),
-                "label": rec["label"],
-            }
-        elif args.op == "issues":
-            return record_issues_local(OR, db, _api_identity(args, sid), args.issues)
-        return {
-            "ok": True,
-            "label": rec["label"],
-            "generation": rec["generation"],
-            "record_id": rid,
-        }
-    finally:
-        reg.close_db()
-
-
 #: The registry's own sentence for a session it does not hold, raised by its mutation functions
 #: ("session ... is not registered on ...; register it first") and rendered by the API as the
-#: call's error.  The local path never surfaces it (its lookup answers first), so the API path
-#: folds it back to NO_REGISTRATION, the answer the hook reads as "no registration for this chat".
+#: call's error.  The client folds it back to NO_REGISTRATION, the answer the hook reads as "no registration for this
+#: chat".
 _NOT_REGISTERED_MARK = "is not registered on"
 
 
@@ -896,22 +647,15 @@ _API_TIMEOUT = 6
 REGISTRY_ENV_SUBPATH = os.path.join(".local", "bin", "operator-registry-env")
 
 
-#: The retired pointer variable (it named the variable holding the key).  registry_api
-#: no longer reads it;  this reader still forwards it from the host's env file until P6 of
-#: the AFC-694 consolidation deletes with_registry_env, and then this name goes with it.
-_RETIRED_KEY_POINTER = "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY_ENV"
-
-
 def with_registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
-    """Return `env` enriched from `$HOME/.local/bin/operator-registry-env` when no registry API URL or SSH remote is set.
+    """Return `env` enriched from `$HOME/.local/bin/operator-registry-env` when it names no registry API URL.
 
     Hook processes launched by Antigravity, Codex, OpenCode, Muse and ZCode inherit no login profile, so on both the
     server and the Mac the shared registry env file is where `SIMPLE_TOOLS_OPERATOR_REGISTRY_URL` and the signing key
-    live.  Unit tests pass a temporary `HOME` (or no `HOME`) without that file, so their local-store and SSH-hop paths
-    stay untouched."""
+    live.  It reads configuration only, never a store:  with nothing found, the call answers `not_configured`."""
     from . import registry_api as RA
 
-    if RA.base_url(env) or _text(env.get(ENV_REMOTE)) or _text(env.get(ENV_REMOTE_FALLBACK)):
+    if RA.base_url(env):
         return env
     home = _text(env.get("HOME"))
     if not home:
@@ -919,20 +663,15 @@ def with_registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
     path = os.path.join(home, REGISTRY_ENV_SUBPATH)
     if not os.path.isfile(path):
         return env
-    names = (RA.URL_ENV, RA.PRINCIPAL_ENV, RA.KEY_VAR, _RETIRED_KEY_POINTER)
+    names = (RA.URL_ENV, RA.PRINCIPAL_ENV, RA.KEY_VAR)
     script = (
         '. "$1" >/dev/null 2>&1 || true\n'
         "for k in %s; do\n"
         '  eval "v=\\${$k:-}"\n'
         '  [ -n "$v" ] && printf "%%s=%%s\\0" "$k" "$v"\n'
         "done\n"
-        'ref="${%s:-}"\n'
-        'if [ -n "$ref" ]; then\n'
-        '  eval "rv=\\${$ref:-}"\n'
-        '  [ -n "$rv" ] && printf "%%s=%%s\\0" "$ref" "$rv"\n'
-        "fi\n"
         "exit 0\n"
-    ) % (" ".join(names), _RETIRED_KEY_POINTER)
+    ) % " ".join(names)
     try:
         proc = subprocess.run(
             ["/bin/sh", "-c", script, "operator-registry-env", path],
@@ -991,16 +730,13 @@ def _api_identity(args: Any, sid: str) -> dict[str, Any]:
 
 
 def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[str, Any]:
-    """Register one chat through the registry API:  resume it, or reopen it when it comes back closed.
+    """Register one chat through the registry API:  resume it, or reopen it when it comes back closed.
 
-    The local path's orchestration, over the API's ops:  the registry's register answers for a
-    fresh chat and for a resume (its resume already stamps the session seen, as the local
-    register does), a resumed-closed chat is reopened, and a resumed or reopened chat that arrived with a
-    title has the title carried over, because register keeps an existing record's old title.
-    What the local path also does, this path does not:  it sweeps nothing and evicts nothing.
-    Reclaiming letters is the registry's own sweep's work once the store is the API's (the
-    letter sweep), exactly as it already is on the MiniMax path, and an exhausted space answers
-    with the registry's refusal instead of this hook closing another chat to make room."""
+    The registry's register answers for a fresh chat and for a resume (its resume stamps the session seen), a
+    resumed-closed chat is reopened, and a resumed or reopened chat that arrived with a title has the title carried
+    over, because register keeps an existing record's old title.  A client sweeps nothing and evicts nothing:
+    reclaiming letters is the assigner's own sweep, and an exhausted space answers with the assigner's refusal (the
+    chat is then a "??" chat) instead of this hook closing another chat to make room."""
     title = clean_title(args.title)
     pick = resolve_pick(OR, args.letter_pick)
     parent = ""
@@ -1070,30 +806,34 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
 def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[str, Any]:
     """title, touch, close and show for one chat through the registry API.
 
-    The local path looks the record up first and answers from it:  no record is NO_REGISTRATION,
-    and a closed one is retired, before any op writes.  The API's ops are addressed by identity
-    and answer in the registry's own words, so this path probes with the touch op where the
-    local path reads:  a touch stamps a live session seen, answers outcome "closed" for a
-    closed one without writing anything, and refuses a session the registry does not hold.
-    A current registry's touch answer also names the letter and generation, and this path
-    passes them on as the local path does (`_touch_answer`); an older registry's names
-    neither, and the answer then carries the record id alone, which the hook reads as no change."""
+    No record is NO_REGISTRATION and a closed one is retired, before any op writes.  The API's ops are addressed by
+    identity and answer in the registry's own words, so this path probes with the touch op:  a touch stamps a live
+    session seen, answers outcome "closed" for a closed one without writing anything, and refuses a session the
+    registry does not hold.  A current registry's touch answer also names the letter and generation, and this path
+    passes them on (`_touch_answer`); an older registry's names neither, and the answer then carries the record id
+    alone, which the hook reads as no change."""
     identity = _api_identity(args, sid)
     if args.op == "show":
-        # The API has no show op:  `held` answers the letter side of the record (its id and
-        # the letters it has held), which is what a show is asked for.  The full row stays
-        # a local read on a host with no API configured.
+        # The API has no show op:  `held` answers the letter side of the record (its id and
+        # the letters it has held), which is what a show is asked for.
         held = _call_api(env, "held", identity)
         if "error" in held:
             if held.get("code") == "not_registered":
                 return {"error": NO_REGISTRATION}
             return dict(held)
-        return {
+        shown = {
             "record_id": held.get("record_id", ""),
             "label": held.get("label", ""),
             "letters": held.get("letters", []),
             "found": True,
         }
+        if shown["label"]:
+            # The rest of the row (its seat and title) from the letter's own live holder, when that is this record:
+            # a caller that closes only what is its own (the fx sync) reads the seat here.
+            row = _call_api(env, "resolve", {"platform": args.platform, "letter": shown["label"]})
+            if "error" not in row and row.get("record_id") == shown["record_id"]:
+                shown.update({k: row[k] for k in ("seat", "title", "generation") if k in row})
+        return shown
     if args.op == "close":
         out = _call_api(
             env, "close", {**identity, "reason": "session ended", "source": args.source}
@@ -1173,7 +913,6 @@ def _make_parser() -> Any:
     parser.add_argument(
         "--letter-pick", default="auto", choices=("auto", "lowest", "oldest", "primary")
     )
-    parser.add_argument("--db", default="", help="the registry file (default: the Operator's)")
     return parser
 
 
@@ -1181,14 +920,12 @@ def registry_main(
     argv: list[str], *, env: Mapping[str, str], stdout: TextIO, now: float | None = None
 ) -> int:
     """`registry OP --platform P --location L --session-id S [--seat SEAT] [--title T] [--source SRC]
-    [--parent-session-id PID] [--letter-space single|double] [--letter-pick PICK] [--db FILE]`, one JSON line out.
+    [--parent-session-id PID] [--letter-space single|double] [--letter-pick PICK]`, one JSON line out.
 
-    The exit status is 0 for an answer, 2 for bad arguments, 3 when this host has no registry, 4 for a refused
-    request and 5 for an answer that carries an error.  When the registry API URL is configured
-    (registry_api), the server's store answers instead and the local file is never opened, so
-    status 3 does not arise:  a registry that cannot be reached answers with an error, status 5."""
-    import sqlite3
-
+    One call to the one assigner, the registry API (`registry_api`), and nothing else:  no local file is opened and
+    none is created.  The exit status is 0 for an answer, 2 for bad arguments, 4 for a refused request and 5 for an
+    answer that carries an error, among them a host with no API configured (`not_configured`) and a registry that
+    did not answer."""
     from . import operator_registry as OR
     from . import registry_api
 
@@ -1205,38 +942,20 @@ def registry_main(
         return _emit(stdout, {"error": "a registration needs a seat"}, 2)
     args.seat = args.seat or "OPERATOR"
     args.source = args.source.strip() or "platform-letter:" + args.platform
-    db = args.db or OR.registry_db_path(L.state_root(env), env)
-    if not registry_api.base_url(env) and not os.path.isfile(db):
+    if not registry_api.base_url(env):
         env = with_registry_env(env)
-    if registry_api.base_url(env):
-        # The registry API is the store now:  with its URL configured (the daemon's own
-        # configuration), the server's store answers and the local file is never opened.
-        # A failed call is an error answer, never a quiet local write:  two stores taking
-        # writes is the split the cutover exists to end.
-        try:
-            sid = SI.check(args.session_id, "the session id")
-            if args.op == "register":
-                out = _register_api(OR, env, args, sid)
-            else:
-                out = _on_record_api(OR, env, args, sid)
-        except ValueError as exc:
-            return _emit(stdout, {"error": "%s: %s" % (type(exc).__name__, str(exc)[:200])}, 4)
-        except (KeyError, TypeError):
-            # A registry answer too short to fold (a key the orchestration reads is not
-            # there) is a failed call, answered the same way:  an error, never a traceback.
-            return _emit(stdout, {"error": "the registry answer was incomplete"}, 5)
-        return _emit(stdout, out, 0 if "error" not in out else 5)
-    if not os.path.isfile(db):
-        # Never create one: a second registry would hand out letters that collide with the one the Operator keeps.
-        return _emit(stdout, {"error": "no Operator registry on this host"}, 3)
     try:
         sid = SI.check(args.session_id, "the session id")
         if args.op == "register":
-            out = _register(OR, db, args, sid, time.time() if now is None else now)
+            out = _register_api(OR, env, args, sid)
         else:
-            out = _on_record(OR, db, args, sid)
-    except (ValueError, sqlite3.Error, OR.UnknownRecord) as exc:
+            out = _on_record_api(OR, env, args, sid)
+    except ValueError as exc:
         return _emit(stdout, {"error": "%s: %s" % (type(exc).__name__, str(exc)[:200])}, 4)
+    except (KeyError, TypeError):
+        # A registry answer too short to fold (a key the orchestration reads is not there) is a failed call,
+        # answered the same way:  an error, never a traceback.
+        return _emit(stdout, {"error": "the registry answer was incomplete"}, 5)
     return _emit(stdout, out, 0 if "error" not in out else 5)
 
 
@@ -1292,63 +1011,13 @@ def _answer(value: dict[str, Any] | None) -> dict[str, Any]:
 Transport = Callable[[list[str]], Mapping[str, Any]]
 
 
-def _down_file(env: Mapping[str, str], dest: str) -> str:
-    """Where the host remembers that `dest` did not answer.  A destination matches DEST_RE, so it is a plain file name."""
-    return os.path.join(L.state_root(env), HOST_DOWN_DIR, dest)
-
-
-def registry_down_until(env: Mapping[str, str], dest: str) -> float:
-    """The time before which no chat on this host asks `dest` again, or 0.  A file that cannot be read is no mark."""
-    try:
-        with open(_down_file(env, dest), encoding="utf-8") as fh:
-            return float(json.load(fh)["until"])
-    except (OSError, ValueError, TypeError, KeyError):
-        return 0.0
-
-
-def mark_registry(env: Mapping[str, str], dest: str, until: float = 0.0) -> None:
-    """Remember that `dest` did not answer, until `until`; with 0, that it did.  Best effort: a state folder that is not
-    writable means every chat pays its own timeout, as before."""
-    path = _down_file(env, dest)
-    try:
-        if until <= 0:
-            os.unlink(path)
-            return
-        folder = os.path.dirname(path)
-        os.makedirs(folder, mode=0o700, exist_ok=True)
-        # An unpredictable name made with O_EXCL (a planted symlink cannot redirect the write), flushed and fsynced
-        # before the rename, then the folder is synced, so a crash leaves the old mark or the new one, never a torn file.
-        fd, tmp = tempfile.mkstemp(dir=folder, prefix=".down-", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump({"until": until}, fh)
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(tmp, path)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
-        try:
-            dir_fd = os.open(folder, os.O_RDONLY)
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
-        except OSError:
-            pass  # the mark is advisory:  a folder that cannot be synced costs at most one more timeout
-    except OSError:
-        pass
-
-
 class Chat:
     """One chat, as the hook sees it: its spec, location and session id, its note, and the way to its registry.
 
-    `transport` replaces the registry round trip with a callable that takes the registry side's argv and answers with
-    its JSON (a test's fake registry); without one the Mac runs the registry side in process and the server runs it
-    over ssh."""
+    `transport` replaces the registry call with a callable that takes the registry side's argv and answers with its
+    JSON (a test's fake registry); without one the registry side runs in process and makes its one API call.  An
+    empty `where` is a host that did not state its fleet location:  every call answers an error, so the chat is a
+    "??" chat until its host says where it is."""
 
     def __init__(
         self,
@@ -1357,14 +1026,12 @@ class Chat:
         where: str,
         sid: str,
         *,
-        runner: Runner,
         now: float,
-        remote: str = "",
         transport: Transport | None = None,
         seat: str = "",
     ):
         self.spec, self.env, self.location, self.session_id = spec, env, where, sid
-        self.runner, self.now, self.remote, self.transport = runner, now, remote, transport
+        self.now, self.transport = now, transport
         self.seat = seat or spec.seat_for({}, env)
         self.path = note_path(env, self.seat, sid)
 
@@ -1452,53 +1119,14 @@ class Chat:
             return {"error": "the registry call failed (%s)" % type(exc).__name__}
 
     def _registry(self, op: str, title: str, parent: str, issues: str = "") -> dict[str, Any]:
+        if not self.location:
+            return {"error": NO_LOCATION}
         argv = self.argv(op, title, parent, issues)
         if self.transport is not None:
             return _answer(dict(self.transport(argv)))
-        if self.location == "mac":
-            out = io.StringIO()
-            registry_main(argv, env=self.env, stdout=out)
-            return _answer(_last_json(out.getvalue()))
-        from . import registry_api as RA
-
-        env = self.env if (RA.base_url(self.env) or self.remote) else with_registry_env(self.env)
-        if RA.base_url(env):
-            # The explicit URL is the cutover (registry_api):  a hook on a host off the
-            # registry calls the Operator's API itself, under the location it was installed
-            # with, and never hops over ssh to a host whose own call would land here anyway.
-            out = io.StringIO()
-            registry_main(argv, env=env, stdout=out)
-            return _answer(_last_json(out.getvalue()))
-        dest = self.remote
-        if not DEST_RE.fullmatch(dest):
-            # Empty, or something ssh could read as an option: refuse it rather than run it.
-            return {"error": "%s does not name an ssh destination" % ENV_REMOTE}
-        if self.now < registry_down_until(self.env, dest) <= self.now + RETRY_SECONDS:
-            # Another chat of this host found the registry host silent a moment ago: not a second timeout for this one.
-            # (A mark further off than any wait is a clock that moved, and holds nothing.)
-            return {"error": "the registry host did not answer a moment ago"}
-        remote = REMOTE_COMMAND + " " + " ".join(shlex.quote(a) for a in argv)
-        cmd = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=%d" % CONNECT_TIMEOUT]
-        cmd += ["--", dest, remote]
-        try:
-            proc = self.runner(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=REMOTE_TIMEOUT,
-                stdin=subprocess.DEVNULL,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            mark_registry(self.env, dest, self.now + RETRY_SECONDS)
-            return {"error": "the registry host did not answer (%s)" % type(exc).__name__}
-        answer = _last_json(str(proc.stdout or ""))
-        if answer is None:
-            mark_registry(self.env, dest, self.now + RETRY_SECONDS)
-            return {"error": "the registry host answered exit %s with no result" % proc.returncode}
-        mark_registry(
-            self.env, dest
-        )  # it answered: whatever an earlier chat found, the host is there
-        return _answer(answer)
+        out = io.StringIO()
+        registry_main(argv, env=self.env, stdout=out)
+        return _answer(_last_json(out.getvalue()))
 
 
 class Out:
@@ -1595,18 +1223,28 @@ def held(note: Mapping[str, Any], *extra: object) -> tuple[str, ...]:
 
 
 def _apply(chat: Chat, answer: Mapping[str, Any], note: dict[str, Any]) -> dict[str, Any]:
-    """Fold one register answer into the note: open, failed, or held by another seat."""
+    """Fold one register answer into the note: open, failed (no letter, for any reason), or held by another seat.  A
+    failed note holds no letter (`label` is ""), and its `failed_at` is the stamp that throttles asking again."""
     if "error" in answer or not answer.get("outcome"):
         return dict(
             note,
             state="failed",
+            label="",
+            location=chat.location,
             failed_at=chat.now,
             error=str(answer.get("error") or "no answer")[:200],
         )
     if answer["outcome"] == "seat_mismatch":
         return dict(note, state="mismatch", label="")
     if not answer.get("label"):
-        return dict(note, state="failed", failed_at=chat.now, error="the Operator issued no letter")
+        return dict(
+            note,
+            state="failed",
+            label="",
+            location=chat.location,
+            failed_at=chat.now,
+            error="the Operator issued no letter",
+        )
     fresh = note.get("label") != answer["label"] or note.get("state") != "open"
     out = dict(
         note,
@@ -1624,6 +1262,68 @@ def _apply(chat: Chat, answer: Mapping[str, Any], note: dict[str, Any]) -> dict[
     out.pop("failed_at", None)
     out.pop("sync_failed_at", None)  # the registry just answered
     return out
+
+
+def lettered(note: Mapping[str, Any]) -> bool:
+    """The chat holds a letter:  its note is open and names one."""
+    return note.get("state") == "open" and bool(note.get("label"))
+
+
+def no_letter(note: Mapping[str, Any]) -> str:
+    """The context line for a chat that holds no letter."""
+    if note.get("state") == "mismatch":
+        return 'This chat is registered under another seat, so it takes no letter and its title starts with "??: ".'
+    return (
+        'No Operator letter yet (%s), so this chat\'s title starts with "??: ".  A later prompt or the end of a turn '
+        "asks again, at most every ten minutes, and `simple-chat letter request` asks now."
+        % (note.get("error") or "no answer")
+    )
+
+
+def unlettered(
+    chat: Chat,
+    note: dict[str, Any],
+    words: str,
+    current: str,
+    data: Mapping[str, Any],
+    reason: str,
+    *,
+    settable: bool = True,
+) -> str | None:
+    """Title a chat that holds no letter "??: <words>" (owner, Nov 11, 2026), the way `present` titles any chat, and
+    keep the words in the note so the letter that comes later goes on the same words.  `words` never carries a
+    letter or the mark:  it is `bare` already, so the mark is never doubled."""
+    words = "" if words == PLACEHOLDER else words
+    if words:
+        note["title"] = words
+    note["titled"] = bool(words)
+    note["placeholder"] = compose(UNLETTERED, "")
+    title = compose(UNLETTERED, words)
+    if note.get("want") == title and note.get("pending"):
+        _retry_pending(
+            chat, note, current, data
+        )  # a writer that failed is asked again on its own clock
+        return None
+    if note.get("shown") == title and current in ("", title):
+        return None  # already on the chat:  a steady "??" chat costs no rename on every prompt
+    return present(chat, note, title, current, data, reason, settable=settable)
+
+
+def ask_again(
+    chat: Chat, note: dict[str, Any], words: str, parent: str, *, force: bool = False
+) -> dict[str, Any]:
+    """Ask the assigner for a letter for a chat that holds none, unless it asked less than RETRY_SECONDS ago (its
+    `failed_at` stamp) and `force` is off.  Answers the note as it is now:  open when a letter came, else failed (with
+    a fresh stamp) or as it was (not due).  An open answer is news to the model (`announce`), and the words go under
+    the new letter (`titled` is false, so the next title the hook sets is "<letter>: <words>")."""
+    if not force and chat.now - float(note.get("failed_at") or 0) < RETRY_SECONDS:
+        return note
+    fresh = _apply(chat, _enroll(chat, words, parent), dict(note, parent=parent))
+    if lettered(fresh):
+        fresh.update(announce=True, placeholder=compose(str(fresh["label"]), ""))
+        if words:
+            fresh["title"] = words
+    return fresh
 
 
 def _reissued(spec: PlatformSpec, answer: Mapping[str, Any]) -> str:
@@ -2199,10 +1899,23 @@ def turn_note(
 
 
 def on_turn(chat: Chat, data: Mapping[str, Any]) -> int:
-    """A turn ended (a spec that maps its turn-end event to `turn`):  report it, print nothing, close nothing."""
+    """A turn ended (a spec that maps its turn-end event to `turn`):  ask again for a missing letter, report the turn,
+    print nothing, close nothing.
+
+    A letter that comes here goes on the title through the adapter's writer when it has one;  a platform that takes
+    titles only from hook output gets it at the next prompt, which reads `titled` false and `announce` true."""
     note = chat.read()
     if not note:
         return 0
+    if not lettered(note) and note.get("state") not in ("mismatch", "closed"):
+        parent = _text(chat.spec.parent_id(data, chat.env)) or str(note.get("parent") or "")
+        note = ask_again(chat, note, str(note.get("title") or ""), parent)
+        if lettered(note) and note.get("announce"):
+            current = tidy(chat.spec.current_title(data, chat.env))
+            title = compose(str(note["label"]), str(note.get("title") or ""))
+            present(chat, note, title, current, data, "retry", settable=False)
+            note["titled"] = note.get("shown") == title
+        chat.write(note)
     before = copy.deepcopy(note)
     end_of_turn(
         note,
@@ -2397,9 +2110,7 @@ def _ensure_parent(chat: Chat, parent: str, depth: int = 0) -> None:
             chat.env,
             chat.location,
             sid,
-            runner=chat.runner,
             now=chat.now,
-            remote=chat.remote,
             transport=chat.transport,
             seat=chat.seat,
         )
@@ -2461,20 +2172,13 @@ def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
     if inherited:
         start["seen"] = inherited  # the name the chat started with is not a rename
     note = _apply(chat, answer, start)
-    if note["state"] == "failed":
-        chat.write(note)
-        out.emit(
-            "start",
-            context="No Operator letter yet (%s).  "
-            "A later prompt (for a sub-agent, the end of its next turn) tries again, at most every ten minutes."
-            % note["error"],
+    if note["state"] in ("failed", "mismatch"):
+        # No letter, for whatever reason:  the chat is titled "??: <Title>" and carries on.
+        shown = unlettered(
+            chat, note, loose, current, data, "start", settable=source in spec.title_sources
         )
-        return 0
-    if note["state"] == "mismatch":
         chat.write(note)
-        out.emit(
-            "start", context="This chat is registered under another seat, so it takes no letter."
-        )
+        out.emit("start", context=no_letter(note), title=shown)
         return 0
     label = note["label"]
     text = loose
@@ -2535,25 +2239,22 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     if state in ("mismatch", "closed"):
         return 0
     current = tidy(spec.current_title(data, chat.env))
-    # The model has not been told this letter yet: a letter given while this chat was a sub-thread's parent is news.
-    announce = bool(note.pop("announce", False))
-    if state != "open" or not note.get(
-        "label"
-    ):  # a note that says open with no letter is not one to trust
-        if state == "failed" and chat.now - float(note.get("failed_at") or 0) < RETRY_SECONDS:
-            return 0
+    if not lettered(note):  # a note that says open with no letter is not one to trust
+        # No letter yet:  ask again when the stamp says it is due, else (or when the answer is still no) keep the
+        # chat titled "??: <words>", the words being a name someone gave it, its start's title or its first prompt.
         parent = _text(spec.parent_id(data, chat.env)) or str(note.get("parent") or "")
-        note = _apply(
-            chat,
-            _enroll(chat, str(note.get("title") or ""), parent),
-            dict(note, parent=parent),
-        )
-        if note["state"] != "open":
+        note = ask_again(chat, note, _first_title(note, current, data.get("prompt")), parent)
+        if not lettered(note):
+            shown = unlettered(
+                chat, note, _first_title(note, current, data.get("prompt")), current, data, "prompt"
+            )
             chat.write(note)
+            if shown and shown != current:
+                out.emit("prompt", title=shown)
             return 0
-        announce = (
-            True  # a start that found no Operator now has one: the letter is news to the model
-        )
+    # The model has not been told this letter yet:  a letter given while this chat was a sub-thread's parent, or one
+    # that came after the chat had none, is news.
+    announce = bool(note.pop("announce", False))
     title = None
     answer: dict[str, Any] = {}
     text = "" if note.get("titled") else _first_title(note, current, data.get("prompt"))
@@ -2601,7 +2302,11 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
             title = compose(note["label"], words)
             announce = True  # the letter may have changed
         else:
-            title = bare(current, held(note)) if current != bare(current, held(note)) else None
+            # The letter is gone and no new one came:  the chat is a "??" chat now.
+            note.update(titled=bool(words), placeholder=compose(UNLETTERED, ""))
+            if words:
+                note["title"] = words
+            title = compose(UNLETTERED, words)
     shown = None
     if title:
         shown = present(chat, note, title, current, data, "prompt")
@@ -2709,19 +2414,15 @@ def hook(
     stdin: TextIO,
     stdout: TextIO,
     *,
-    runner: Runner = subprocess.run,
     now: float | None = None,
     platform: str = sys.platform,
     transport: Transport | None = None,
     location_flag: str = "",
-    remote_flag: str = "",
     stderr: TextIO | None = None,
 ) -> int:
     """Run one hook event for `spec`.  Always 0: whatever goes wrong is a line of context, or nothing."""
     try:
-        return _run_hook(
-            spec, env, stdin, stdout, runner, now, platform, transport, location_flag, remote_flag
-        )
+        return _run_hook(spec, env, stdin, stdout, now, platform, transport, location_flag)
     except Exception as exc:  # noqa: BLE001 - the hook never blocks a chat, whatever an adapter or the host does
         try:
             (stderr or sys.stderr).write("platform-letter hook: %s\n" % type(exc).__name__)
@@ -2735,12 +2436,10 @@ def _run_hook(
     env: Mapping[str, str],
     stdin: TextIO,
     stdout: TextIO,
-    runner: Runner,
     now: float | None,
     platform: str,
     transport: Transport | None,
     location_flag: str,
-    remote_flag: str,
 ) -> int:
     data = read_hook_input(stdin)
     event = canonical_event(spec, data)
@@ -2755,24 +2454,16 @@ def _run_hook(
         return 0
     where = location(env, platform, location_flag)
     out = Out(stdout, spec, _text(data.get("hook_event_name")))
-    if where is None:
-        if event == "start" and data.get("source") != "compact":
-            out.emit(
-                event,
-                context="No Operator letter: this host is not the Mac, and --location or %s does not name it."
-                % ENV_LOCATION,
-            )
-        return 0
-    if where not in spec.locations:
+    if where is not None and where not in spec.locations:
         return 0  # the platform does not run there, so this is not one of its chats
+    # A host that does not state its location still runs the chat:  every registry call answers NO_LOCATION, so the
+    # chat is a "??" chat until the host says where it is.
     chat = Chat(
         spec,
         env,
-        where,
+        where or "",
         sid,
-        runner=runner,
         now=time.time() if now is None else now,
-        remote=remote_destination(env, remote_flag),
         transport=transport,
         seat=who,
     )
@@ -2803,13 +2494,157 @@ def show(spec: PlatformSpec, argv: list[str], env: Mapping[str, str], stdout: Te
 
 
 # --------------------------------------------------------------------------------------------
+# Asking for a letter now:  `simple-chat letter request`, one command on every platform
+# --------------------------------------------------------------------------------------------
+
+
+def adapter_platforms() -> list[str]:
+    """Every platform in the table:  each adapter module beside this one, and any spec registered in process."""
+    names = set(SPECS)
+    for info in pkgutil.iter_modules([os.path.dirname(os.path.abspath(__file__))]):
+        if info.name.startswith("platform_letter_"):
+            names.add(info.name[len("platform_letter_") :].replace("_", "-"))
+    return sorted(name for name in names if valid_platform(name))
+
+
+def find_chat(env: Mapping[str, str], sid: str = "") -> tuple[PlatformSpec, str, str] | str:
+    """(spec, session id, seat) of the chat a `request` is about, or why there is none.
+
+    With a session id, the chat whose letter note has that name, under any seat.  Without one, the chat this shell
+    runs in:  the first spec in the table whose own session-id reader finds an id in the environment (the same
+    reader `show` uses) and whose note for that id exists.  The note is the proof the chat is that platform's:  a
+    stray variable from another platform's shell finds no note and is never registered."""
+    root = L.state_root(env)
+    if sid:
+        try:
+            sid = SI.check(sid, "the session id")
+        except ValueError as exc:
+            return str(exc)
+        try:
+            seats = sorted(os.listdir(root))
+        except OSError:
+            seats = []
+        for seat in seats:
+            if not I.valid_seat(seat):
+                continue
+            path = os.path.join(root, seat, "letters", sid + ".json")
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    note = json.load(fh)
+            except (OSError, ValueError):
+                continue
+            platform = str(note.get("platform") or "") if isinstance(note, dict) else ""
+            spec = load_spec(platform) if valid_platform(platform) else None
+            if spec is None:
+                return "chat %s is a %s chat, which has no entry in the shared letter table yet" % (
+                    sid,
+                    platform or "unknown",
+                )
+            return spec, sid, seat
+        return "no chat with the session id %s has a letter note on this host" % sid
+    for platform in adapter_platforms():
+        spec = load_spec(platform)
+        if spec is None:
+            continue
+        try:
+            found = SI.check(spec.session_id({}, env), "the session id")
+        except Exception:  # noqa: BLE001 - a reader that cannot answer here names no chat
+            continue
+        seat = spec.seat_for({}, env)
+        if seat and os.path.isfile(note_path(env, seat, found)):
+            return spec, found, seat
+    return "no chat of the shared letter table runs in this shell; pass --session-id S"
+
+
+def request_main(
+    argv: list[str],
+    env: Mapping[str, str] | None = None,
+    stdout: TextIO | None = None,
+    *,
+    now: float | None = None,
+    platform: str = sys.platform,
+    transport: Transport | None = None,
+) -> int:
+    """`simple-chat letter request [--session-id S]`:  ask the one assigner for this chat's letter now, whatever the
+    retry stamp says, and print the letter or the reason there is none in one line (owner, Nov 11, 2026:  "enable a
+    thread to request letters after the initial thread opening").  The command is the same on every platform;  only
+    the spec's own readers (where its session id comes from) differ, and they are data in the table.
+
+    A letter that comes is put in the chat's note, and on its title through the adapter's writer when it has one;  a
+    platform that takes titles only from hook output swaps "??" for it at its next prompt.  Exit 0 with a letter, 1
+    without one, 2 for bad arguments."""
+    env = os.environ if env is None else env
+    stdout = stdout or sys.stdout
+    try:
+        flags = _flags(argv, ("--session-id",))
+    except ValueError:
+        stdout.write("usage: simple-chat letter request [--session-id S]\n")
+        return 2
+    found = find_chat(env, flags.get("session-id", ""))
+    if isinstance(found, str):
+        stdout.write("no letter: %s\n" % found)
+        return 1
+    spec, sid, seat = found
+    chat = Chat(
+        spec,
+        env,
+        location(env, platform) or "",
+        sid,
+        now=time.time() if now is None else now,
+        transport=transport,
+        seat=seat,
+    )
+    note = chat.read()
+    if note.get("location") in LOCATIONS:
+        chat.location = str(
+            note["location"]
+        )  # the location the chat's own hook registered it under
+    if note.get("state") == "mismatch":
+        stdout.write(
+            "no letter: %s chat %s is registered under another seat\n" % (spec.display, sid)
+        )
+        return 1
+    if lettered(note):
+        note.pop("sync_failed_at", None)  # an explicit ask is never held back by the stamp
+        answer = _push(chat, note, "touch")
+        prior = follow_letter(note, answer)
+        if prior:
+            note["announce"] = True
+            note["titled"] = False  # the next prompt puts the new letter on the title
+        if not _gone(answer):
+            chat.write(note)
+            if _failed(answer):
+                stdout.write(
+                    "letter %s (from this chat's note; the assigner did not answer: %s)\n"
+                    % (note["label"], answer.get("error"))
+                )
+                return 0
+            stdout.write("letter %s: %s chat %s\n" % (note["label"], spec.display, sid))
+            return 0
+        note = dict(note, state="failed", label="", failed_at=0)
+    words = str(note.get("title") or "") or bare(note.get("shown") or "", held(note))
+    parent = str(note.get("parent") or "")
+    note = ask_again(chat, note, "" if words == PLACEHOLDER else words, parent, force=True)
+    if lettered(note):
+        title = compose(str(note["label"]), str(note.get("title") or ""))
+        present(chat, note, title, str(note.get("shown") or ""), {}, "retry", settable=False)
+        note["titled"] = note.get("shown") == title
+        chat.write(note)
+        stdout.write("letter %s: %s chat %s\n" % (note["label"], spec.display, sid))
+        return 0
+    chat.write(note)
+    stdout.write("no letter: %s\n" % (note.get("error") or "no answer"))
+    return 1
+
+
+# --------------------------------------------------------------------------------------------
 # Installing hooks into a JSON hook file (once per host)
 # --------------------------------------------------------------------------------------------
 
 
-def command_for(home: str, platform: str, where: str = "", remote: str = "") -> str:
+def command_for(home: str, platform: str, where: str = "") -> str:
     """The hook command an adapter's hook file carries: this host's own `platform-letter` by absolute path, with the
-    location and the registry host as flags (a hook file has no env block to put them in)."""
+    location as a flag (a hook file has no env block to put it in)."""
     parts = [
         shlex.quote(os.path.join(home, ".local", "bin", ENTRY)),
         "hook",
@@ -2818,8 +2653,6 @@ def command_for(home: str, platform: str, where: str = "", remote: str = "") -> 
     ]
     if where:
         parts += ["--location", where]
-    if remote:
-        parts += ["--remote", remote]
     return " ".join(parts)
 
 
@@ -3003,7 +2836,6 @@ class JsonHookInstaller:
 class InstallOptions:
     platform: str
     location: str = ""
-    remote: str = ""
     check: bool = False
     remove: bool = False
 
@@ -3069,12 +2901,9 @@ def install_json_hooks(
     keeps its matcher and that hook, and a group is dropped only when it has no hook left.  A file it
     rewrites is backed up first (`<file>.bak-letter-<UTC stamp>`, 0600, a name no earlier backup has) and keeps its
     mode.  A file that is not the shape the adapter's `locate` expects is refused, never edited.  The
-    location and registry host go into the hook command as flags; running it again without them keeps the ones
-    already installed."""
+    location goes into the hook command as a flag; running it again without one keeps the one already installed."""
     home = str(env.get("HOME") or os.path.expanduser("~"))
     path = installer.path if os.path.isabs(installer.path) else os.path.join(home, installer.path)
-    if opts.remote and not DEST_RE.fullmatch(opts.remote):
-        return _emit(stdout, {"error": "--remote must name an ssh destination"}, 2)
     if opts.location and opts.location not in LOCATIONS:
         return _emit(stdout, {"error": "--location must be mac or server"}, 2)
     try:
@@ -3100,8 +2929,7 @@ def install_json_hooks(
     ]
     inherited = next((w for w in already if w), [])
     where = opts.location or _flag(inherited, "--location")
-    remote = opts.remote or _flag(inherited, "--remote")
-    command = command_for(home, platform, where, remote)
+    command = command_for(home, platform, where)
     have = {
         ev: any(installed_command(e, platform) for e in events.get(ev) or [])
         for ev in installer.events
@@ -3161,7 +2989,7 @@ def install_json_hooks(
 
 
 def install_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
-    """`install --platform P [--location server|mac] [--remote DEST] [--check | --remove]`: find the platform's
+    """`install --platform P [--location server|mac] [--check | --remove]`: find the platform's
     adapter and run its installer.  An adapter with its own `install(options, env, stdout)` (a plugin directory, a
     bundle) is called as it is; one with an `INSTALL` (a JsonHookInstaller) gets `install_json_hooks`."""
     import argparse
@@ -3169,16 +2997,11 @@ def install_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int
     parser = argparse.ArgumentParser(prog=ENTRY + " install")
     parser.add_argument("--platform", required=True)
     parser.add_argument("--location", choices=LOCATIONS)
-    parser.add_argument(
-        "--remote", help="the ssh destination that holds the registry (a host off the registry)"
-    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true")
     mode.add_argument("--remove", action="store_true")
     args = parser.parse_args(argv)
-    opts = InstallOptions(
-        args.platform, args.location or "", args.remote or "", args.check, args.remove
-    )
+    opts = InstallOptions(args.platform, args.location or "", args.check, args.remove)
     spec = load_spec(args.platform)
     adapter = load_adapter(args.platform)
     if spec is None:
@@ -3197,10 +3020,10 @@ def install_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int
 # --------------------------------------------------------------------------------------------
 
 USAGE = (
-    "usage: platform-letter {hook --platform P [--location L] [--remote DEST]\n"
+    "usage: platform-letter {hook --platform P [--location L]\n"
     "                        | registry OP --platform P ...\n"
     "                        | show --platform P [--session-id S]\n"
-    "                        | install --platform P [--location L] [--remote DEST] [--check | --remove]}\n"
+    "                        | install --platform P [--location L] [--check | --remove]}\n"
 )
 
 
@@ -3230,7 +3053,6 @@ def main(
     stdin: TextIO | None = None,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
-    runner: Runner = subprocess.run,
     transport: Transport | None = None,
 ) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -3241,6 +3063,9 @@ def main(
         return 0 if argv else 2
     if argv[0] == "hook":
         try:
+            # `--remote` is still parsed, and never used:  hook commands installed before the ssh hop was deleted
+            # carry it, and a hook that cannot parse its own command line would give its chat neither a letter nor a
+            # "??".  Re-running `install` writes the command without it.
             flags = _flags(argv[1:], ("--platform", "--location", "--remote"))
             spec = load_spec(flags.get("platform", ""))
             if spec is None:
@@ -3256,10 +3081,8 @@ def main(
                         env,
                         stdin,
                         stdout,
-                        runner=runner,
                         transport=transport,
                         location_flag=flags.get("location", ""),
-                        remote_flag=flags.get("remote", ""),
                         stderr=stderr,
                     )
                 )
@@ -3268,10 +3091,8 @@ def main(
                 env,
                 stdin,
                 stdout,
-                runner=runner,
                 transport=transport,
                 location_flag=flags.get("location", ""),
-                remote_flag=flags.get("remote", ""),
                 stderr=stderr,
             )
         except Exception as exc:  # noqa: BLE001 - the hook never blocks a chat

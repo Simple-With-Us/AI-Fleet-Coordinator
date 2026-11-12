@@ -25,6 +25,7 @@ from simple_tools import claude_letter as CL
 from simple_tools import operator_registry as OR
 from simple_tools import platform_letter as PL
 from simple_tools import platform_letter_grok_leader as G
+from simple_tools.tests.registry_fake import FakeRegistry
 
 SCRIPTS = Path(__file__).resolve().parents[2]
 ENTRY = SCRIPTS / "platform-letter"
@@ -100,11 +101,15 @@ class Base(unittest.TestCase):
         self.grok = os.path.join(self.home, ".grok")
         self.state = os.path.join(self.tmp.name, "state")
         os.makedirs(os.path.join(self.grok, "sessions"))
-        self.db = os.path.join(self.state, "operator", "registry.sqlite3")
-        OR.SessionRegistry(self.db).close_db()  # the Operator's registry exists, as it does on the Mac
+        # The one assigner:  the registry API, served in process over a temporary store.
+        self.assigner = FakeRegistry(os.path.join(self.tmp.name, "assigner"))
+        if getattr(self, "FAKE", True):
+            self.assigner.install()
+            self.addCleanup(self.assigner.uninstall)
+        self.db = self.assigner.db
 
     def env(self, **extra: str) -> dict[str, str]:
-        env = {"HOME": self.home, "SIMPLE_TOOLS_STATE_DIR": self.state}
+        env = {"HOME": self.home, "SIMPLE_TOOLS_STATE_DIR": self.state, **(self.assigner.env() if getattr(self, "FAKE", True) else {})}
         env.update(extra)
         return env
 
@@ -655,12 +660,12 @@ class HookTests(FlowBase):
     def test_the_server_takes_nothing(self) -> None:
         sid = gid(1)
         self.session(sid)
-        env = self.env(GROK_SESSION_ID=sid, GROK_HOOK_EVENT="session_start", SESSION_LETTER_LOCATION="server", SESSION_LETTER_REMOTE="mac")
+        env = self.env(GROK_SESSION_ID=sid, GROK_HOOK_EVENT="session_start", SESSION_LETTER_LOCATION="server")
         out = io.StringIO()
         code = PL.hook(
             self.spec, env,
             io.StringIO(json.dumps({"hook_event_name": "SessionStart", "sessionId": sid, "source": "new"})), out,
-            platform="linux", runner=mock.Mock(side_effect=AssertionError("no ssh for a platform that is not there")),
+            platform="linux", transport=mock.Mock(side_effect=AssertionError("no call for a platform that is not there")),
         )
         self.assertEqual((code, out.getvalue()), (0, ""))
         self.assertIsNone(self.lookup(sid))
@@ -955,8 +960,8 @@ class InstallTests(Base):
         code, answer = self.install("--remove")  # and again: nothing to do
         self.assertEqual((code, answer["changed"]), (0, []))
 
-    def test_it_refuses_a_server_a_registry_host_and_a_host_without_grok(self) -> None:
-        for argv in (["--location", "server"], ["--remote", "mac"], ["--location", "server", "--remote", "mac"]):
+    def test_it_refuses_a_server_and_a_host_without_grok(self) -> None:
+        for argv in (["--location", "server"],):
             code, answer = self.install(*argv)
             self.assertEqual(code, 2, argv)
             self.assertIn("Mac only", answer["error"])
@@ -1096,7 +1101,8 @@ class EntryScriptTests(Base):
     def test_a_start_registers_the_chat_and_exits_clean(self) -> None:
         sid = gid(1)
         self.session(sid)
-        env = self.env(GROK_SESSION_ID=sid, GROK_HOOK_EVENT="session_start", GROK_LETTER_BIN=os.path.join(self.tmp.name, "none"))
+        env = self.env(GROK_SESSION_ID=sid, GROK_HOOK_EVENT="session_start", GROK_LETTER_BIN=os.path.join(self.tmp.name, "none"),
+                       SIMPLE_TOOLS_OPERATOR_REGISTRY_URL=self.assigner.serve(self.state))
         proc = self.run_entry({"hook_event_name": "SessionStart", "sessionId": sid, "session_id": sid, "source": "new"}, env)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertRegex(self.lookup(sid)["label"], PAIR)

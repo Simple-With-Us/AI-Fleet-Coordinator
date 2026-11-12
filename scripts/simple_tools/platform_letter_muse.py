@@ -5,7 +5,7 @@ Muse Code takes hooks from a plugin, never from a settings file, so this adapter
 muse`.  The library does the rest (the registry, the letter, the note, the context line);  this file holds what is
 Muse's own.
 
-    platform-letter install --platform muse [--location server --remote mac] [--check | --remove]
+    platform-letter install --platform muse [--location server] [--check | --remove]
 
 The bundle.  `install` writes `<home>/.local/share/platform-letter/muse/session-letter/.muse-plugin/plugin.json` (the
 manifest shape of the fleet-lane-guard bundle:  capabilities.hooks entries with an id, an event, a command as an argv
@@ -17,7 +17,7 @@ which the answer names for the person or the orchestrator who runs them:
 
 `muse plugins inspect session-letter` shows `status=review_needed` for each hook before the approval and
 `status=trusted_enabled` after it, which is what `install --check` reads.  A change to a hook's command (the
---location or --remote flags) is a new definition and needs the approval again.  A running chat does not pick a
+--location flag) is a new definition and needs the approval again.  A running chat does not pick a
 plugin up, so only chats started after the approval take part.
 
 The hook command is guarded.  Muse reads exit 2 of a UserPromptSubmit plugin hook as "block this prompt" (a headless
@@ -29,9 +29,9 @@ stdout passes through, every failure becomes exit 0, and the ancestor walk still
 `install --check` exits 0 only when the bundle is current, Muse's own copy of it is the same, and the hooks are
 approved.  `muse plugins install` copies the bundle into a cache package (the `cache=` folder `muse plugins inspect`
 names), and a bundle changed afterwards stays unapplied there, with every hook still `trusted_enabled`, until `muse
-plugins update session-letter`; the check reads that copy.  Off the Mac the hook is useless without `--location server
---remote <the Mac's ssh host>` (it runs with a cleared environment, so the flags are all it has), so `install` refuses and
-`--check` fails when neither the command line nor the bundle already installed names them.
+plugins update session-letter`; the check reads that copy.  Off the Mac the hook needs `--location server` (it runs with a
+cleared environment, so the flags are all it has), so `install` refuses and `--check` fails when neither the command line
+nor the bundle already installed names it.
 
 Who takes a letter.  The hook runs with a cleared environment (HOME, PATH, the MUSE_* names and nothing of the
 caller's AGENT_*), so the facts about the chat come from its parent, the Muse process:  its command line says what
@@ -362,9 +362,9 @@ def manifest_path(home: str) -> str:
 GUARD = ["/bin/sh", "-c", '"$@" || exit 0', "sh"]
 
 
-def hook_argv(home: str, where: str = "", remote: str = "") -> list[str]:
+def hook_argv(home: str, where: str = "") -> list[str]:
     """The hook command as the argv array Muse takes: the library's own command line, split, under GUARD."""
-    return [*GUARD, *shlex.split(PL.command_for(home, PLATFORM, where, remote))]
+    return [*GUARD, *shlex.split(PL.command_for(home, PLATFORM, where))]
 
 
 def render_manifest(argv: list[str]) -> str:
@@ -400,15 +400,15 @@ def render_manifest(argv: list[str]) -> str:
     return json.dumps(doc, indent=2) + "\n"
 
 
-def _installed_flags(path: str) -> tuple[str, str]:
-    """(--location, --remote) of the command already in the bundle, so a plain re-install keeps them."""
+def _installed_location(path: str) -> str:
+    """The --location of the command already in the bundle, so a plain re-install keeps it."""
     try:
         with open(path, encoding="utf-8") as fh:
             doc = json.load(fh)
         words = [str(w) for w in doc["capabilities"]["hooks"][0]["command"]]
     except (OSError, ValueError, KeyError, IndexError, TypeError):
-        return "", ""
-    return PL._flag(words, "--location"), PL._flag(words, "--remote")
+        return ""
+    return PL._flag(words, "--location")
 
 
 def find_muse(home: str, env: Mapping[str, str]) -> str:
@@ -469,16 +469,14 @@ def _on_mac() -> bool:
     return sys.platform == "darwin"
 
 
-def location_problem(where: str, remote: str) -> str:
-    """Why a hook installed with these flags could never register on this host, or "".  The hook runs with a cleared
-    environment, so the flags are all it has: off the Mac it must be told to reach the registry over ssh."""
+def location_problem(where: str) -> str:
+    """Why a hook installed with this location could never register on this host, or "".  The hook runs with a
+    cleared environment, so the flags are all it has: off the Mac it must be told its location."""
     if not where and not _on_mac():
         return (
-            "this host is not the Mac: pass --location server --remote <the ssh host of the Mac> "
-            "(or install over a bundle that has them), else the hook never registers a chat"
+            "this host is not the Mac: pass --location server "
+            '(or install over a bundle that has it), else every chat here is a "??" chat'
         )
-    if where == "server" and not remote:
-        return "--location server needs --remote <the ssh host of the Mac>, else the hook never registers a chat"
     return ""
 
 
@@ -527,20 +525,17 @@ def install(opts: PL.InstallOptions, env: Mapping[str, str], stdout: TextIO) -> 
     changes is backed up first (next to the bundle, 0600, so the backup never ships inside the plugin)."""
     home = str(env.get("HOME") or os.path.expanduser("~"))
     path = manifest_path(home)
-    if opts.remote and not PL.DEST_RE.fullmatch(opts.remote):
-        return PL._emit(stdout, {"error": "--remote must name an ssh destination"}, 2)
     if opts.location and opts.location not in PL.LOCATIONS:
         return PL._emit(stdout, {"error": "--location must be mac or server"}, 2)
-    kept_where, kept_remote = _installed_flags(path)
-    where, remote = opts.location or kept_where, opts.remote or kept_remote
-    argv = hook_argv(home, where, remote)
+    where = opts.location or _installed_location(path)
+    argv = hook_argv(home, where)
     body = render_manifest(argv)
     try:
         with open(path, encoding="utf-8") as fh:
             have = fh.read()
     except OSError:
         have = None
-    problem = "" if opts.remove else location_problem(where, remote)
+    problem = "" if opts.remove else location_problem(where)
     if opts.check:
         status = muse_status(home, env)
         synced = _synced(status, home, env, body)

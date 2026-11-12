@@ -454,10 +454,8 @@ def hook_main(
     stdin: TextIO,
     stdout: TextIO,
     *,
-    runner: PL.Runner = subprocess.run,
     transport: PL.Transport | None = None,
     location_flag: str = "",
-    remote_flag: str = "",
     stderr: TextIO | None = None,
     now: float | None = None,
     platform: str = sys.platform,
@@ -474,12 +472,10 @@ def hook_main(
                 env,
                 io.StringIO(json.dumps(data)),
                 printed,
-                runner=runner,
                 now=now,
                 platform=platform,
                 transport=transport,
                 location_flag=location_flag,
-                remote_flag=remote_flag,
                 stderr=stderr,
             )
             answer = injection(printed.getvalue(), env, data["session_id"])

@@ -335,11 +335,11 @@ test("settings: off switches and launcher sessions apply in a private server, wh
   assert.equal(mac.command, "/x/platform-letter");
   assert.deepEqual(mac.args, ["hook", "--platform", "opencode"]);
   const server = readSettings({ location: "Server", remote: "mac", command: "/y/pl", log: "/tmp/l" }, {}, false);
-  assert.deepEqual(server.args, ["hook", "--platform", "opencode", "--location", "server", "--remote", "mac"]);
+  assert.deepEqual(server.args, ["hook", "--platform", "opencode", "--location", "server"]); // an old `remote` is dropped
   assert.equal(server.command, "/y/pl");
   assert.equal(server.log, "/tmp/l");
-  const odd = readSettings({ location: "cloud", remote: "-oProxyCommand=x" }, {}, false);
-  assert.deepEqual(odd.args, ["hook", "--platform", "opencode"]); // neither is passed on
+  const odd = readSettings({ location: "cloud" }, {}, false);
+  assert.deepEqual(odd.args, ["hook", "--platform", "opencode"]); // not a fleet location:  not passed on
   assert.equal(odd.settleMs, 1500);
   assert.equal(readSettings({ settle: 0 }, {}, false).settleMs, 0);
   assert.equal(readSettings({ settle: 99999 }, {}, false).settleMs, 1500); // out of range: the default
@@ -631,7 +631,7 @@ test("the copies of the plugin OpenCode loads for each directory share one engin
     { type: "session.created", data: { sessionID: "ses_a", parentID: "" }, durable: { seq: 0 } },
     { type: "session.created", data: { sessionID: "ses_a", parentID: "" }, durable: { seq: 0 } },
   ];
-  const options = { command: file, location: "server", remote: "mac", settle: 0, shared: false };
+  const options = { command: file, location: "server", settle: 0, shared: false };
   const one = fakeContext(events, { options });
   const two = fakeContext(events, { options });
   const disposeOne = plugin.setup(one.ctx);
@@ -750,7 +750,7 @@ test("the plugin starts a chat through the real spawn and writes the title the h
   const log = join(dir, "log");
   const { ctx, updates } = fakeContext(
     [{ type: "session.created", data: { sessionID: "ses_live", parentID: "" } }],
-    { options: { command: file, log, location: "server", remote: "mac", settle: 0, shared: false } },
+    { options: { command: file, log, location: "server", settle: 0, shared: false } },
   );
   const dispose = plugin.setup(ctx);
   assert.equal(plugin.id, "platform-letter-opencode");

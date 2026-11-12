@@ -21,6 +21,7 @@ from simple_tools import listener_registry as RG
 from simple_tools import operator_registry as OR
 from simple_tools import platform_letter as PL
 from simple_tools import platform_letter_clutch as CLU
+from simple_tools.tests.registry_fake import FakeRegistry
 
 PAIR = r"^[A-Z]{2}$"
 
@@ -36,11 +37,15 @@ class Base(unittest.TestCase):
         self.home = os.path.join(self.tmp.name, "home")
         self.state = os.path.join(self.tmp.name, "state")
         os.makedirs(self.home)
-        self.db = os.path.join(self.state, "operator", "registry.sqlite3")
-        OR.SessionRegistry(self.db).close_db()  # the Operator's registry exists, as it does on the Mac
+        # The one assigner:  the registry API, served in process over a temporary store.
+        self.assigner = FakeRegistry(os.path.join(self.tmp.name, "assigner"))
+        if getattr(self, "FAKE", True):
+            self.assigner.install()
+            self.addCleanup(self.assigner.uninstall)
+        self.db = self.assigner.db
 
     def env(self, **extra: str) -> dict[str, str]:
-        env = {"HOME": self.home, "SIMPLE_TOOLS_STATE_DIR": self.state}
+        env = {"HOME": self.home, "SIMPLE_TOOLS_STATE_DIR": self.state, **(self.assigner.env() if getattr(self, "FAKE", True) else {})}
         env.update(extra)
         return env
 
@@ -131,6 +136,7 @@ class InstallTests(Base):
 
 
 class ApiTests(Base):
+    FAKE = False  # a real listener on loopback answers here
     def test_a_letter_lands_through_the_registry_api(self) -> None:
         key = secrets.token_hex(24)
         service = RG.RegistryService(self.db, {"OPERATOR": key})

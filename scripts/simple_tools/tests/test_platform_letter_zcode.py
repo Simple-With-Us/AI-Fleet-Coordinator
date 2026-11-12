@@ -22,6 +22,7 @@ from simple_tools import listener_registry as RG
 from simple_tools import operator_registry as OR
 from simple_tools import platform_letter as PL
 from simple_tools import platform_letter_zcode as Z
+from simple_tools.tests.registry_fake import FakeRegistry
 
 PAIR = r"^[A-Z]{2}$"
 
@@ -61,11 +62,15 @@ class Base(unittest.TestCase):
         with conn:
             conn.execute(SESSION_DDL)
         conn.close()
-        self.db = os.path.join(self.state, "operator", "registry.sqlite3")
-        OR.SessionRegistry(self.db).close_db()
+        # The one assigner:  the registry API, served in process over a temporary store.
+        self.assigner = FakeRegistry(os.path.join(self.tmp.name, "assigner"))
+        if getattr(self, "FAKE", True):
+            self.assigner.install()
+            self.addCleanup(self.assigner.uninstall)
+        self.db = self.assigner.db
 
     def env(self, **extra: str) -> dict[str, str]:
-        env = {"HOME": self.home, "SIMPLE_TOOLS_STATE_DIR": self.state}
+        env = {"HOME": self.home, "SIMPLE_TOOLS_STATE_DIR": self.state, **(self.assigner.env() if getattr(self, "FAKE", True) else {})}
         env.update(extra)
         return env
 
@@ -213,6 +218,7 @@ class HookFlow(Base):
 
 
 class ServerLocation(Base):
+    FAKE = False  # its own environment, or a real listener on loopback, answers here
     def test_server_location_without_url_or_remote_is_a_quiet_retry(self) -> None:
         sid = sess(40)
         self.add_session(sid)
@@ -228,6 +234,7 @@ class ServerLocation(Base):
 
 
 class ApiTransport(Base):
+    FAKE = False  # its own environment, or a real listener on loopback, answers here
     """A hook installed --location server on a host off the registry, with the registry API
     URL in its environment:  the hook calls the API itself and the record lands attributed
     to the location it was installed under."""
@@ -283,6 +290,7 @@ class ApiTransport(Base):
 
 
 class SweepAgainstApi(Base):
+    FAKE = False  # its own environment, or a real listener on loopback, answers here
     """The dropped-session diff against a real registry API:  a registration whose session is
     ACTIVE in the store is never closed (the false positive Kody's follow-up caught), and one
     whose row the store has dropped is closed by the diff."""
@@ -358,6 +366,7 @@ class TitleWriter(Base):
         self.assertEqual(rows[sid], ("AA: Words the prompt gave", "custom"))
 
     def test_a_titled_chat_records_its_thread_link(self) -> None:
+        self.assigner.uninstall()  # a real listener on loopback answers this one
         import secrets
 
         from simple_tools import listener_api as API
