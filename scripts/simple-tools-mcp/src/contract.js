@@ -140,18 +140,45 @@ const CONTROL_RE = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
 const SEPARATOR_RE = /[\u2028\u2029]/g;
 const LINE_BREAKS_RE = /[\u2028\u2029\x85]/g;
 
-/** NFKC, then drop format characters (zero-width, bidi controls). */
+// Zs, including U+0020 and U+00A0.  NFKC maps the compatibility spaces
+// (U+00A0, U+2000–U+200A, U+202F, U+205F, U+3000) to U+0020.  A space
+// separator is not a letter, so the marker check already treats it as a
+// separator.  Hold each one out of NFKC (AFC-729).  Format characters stay
+// in the other runs and are still dropped.
+const SPACE_SEPARATOR = /\p{Zs}/u;
+
+/**
+ * NFKC, then drop format characters (zero-width, bidi controls).
+ * Unicode space separators are returned unchanged, so a read can show U+00A0.
+ */
 export function fold(text) {
-  return String(text).normalize("NFKC").replace(/\p{Cf}/gu, "");
+  let out = "";
+  let buf = "";
+  const flush = () => {
+    if (!buf) return;
+    out += buf.normalize("NFKC").replace(/\p{Cf}/gu, "");
+    buf = "";
+  };
+  for (const ch of String(text)) {
+    if (SPACE_SEPARATOR.test(ch)) {
+      flush();
+      out += ch;
+    } else {
+      buf += ch;
+    }
+  }
+  flush();
+  return out;
 }
 
 const hex2 = (ch) => `\\x${ch.charCodeAt(0).toString(16).padStart(2, "0")}`;
 const hex4 = (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`;
 
 /**
- * A Zulip-authored string made safe inside the fence:  folded, marker text in
- * any case or with any separator (or none) replaced, control characters shown
- * as \xNN, line and paragraph separators as \uXXXX.  Returns [text, truncated].
+ * A Zulip-authored string made safe inside the fence:  folded (NFKC, format
+ * characters dropped, space separators kept), marker text in any case or with
+ * any separator (or none) replaced, control characters shown as \xNN, line
+ * and paragraph separators as \uXXXX.  Returns [text, truncated].
  */
 export function clean(value, limit = null) {
   const text = fold(value === null || value === undefined ? "" : String(value))

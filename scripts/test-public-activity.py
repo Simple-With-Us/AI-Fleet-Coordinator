@@ -234,7 +234,7 @@ class PublicActivityTests(unittest.TestCase):
         self.assertIn("prefers-color-scheme: dark", rendered)
         self.assertNotIn("text-decoration: none", rendered)
 
-    def test_main_copies_only_referenced_logo_basenames(self) -> None:
+    def test_build_output_only_referenced_logo_basenames(self) -> None:
         day = date(2026, 9, 26)
         pr = {
             "repo": "BotFleet",

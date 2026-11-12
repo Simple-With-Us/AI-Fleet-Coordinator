@@ -53,6 +53,8 @@ Only opening a PR is authored as the owner through the scoped PR-only token.  E
 replies, comments, merges, workflow dispatches, thread resolves and token mints run under each
 seat's OWN GitHub App with a relay-minted installation token - see the action catalog below.  Seats never get a raw token or a `git push`:  the file-write verbs (`wf_file_put`, `wf_files_put`) commit through the API, on a non-default branch only and never under `.github/workflows`;  no seat policy can exceed its GitHub credential.
 
+`wf_file_put` and `wf_file_delete` may also write the default branch, and only for an exact path named in that seat's `default_branch_paths` for that exact repository.  The relay prefixes the commit message with `default-branch-path: ` and requires `prior_sha` to equal the blob it just read.  Omit `prior_sha` only when that read says the file is absent.  `wf_files_put`, `wf_file_patch`, rename and branch moves stay refused on the default branch, and so does every path that is not listed.
+
 ## Scope and action catalog (owner direction 2026-10-21)
 
 The relay covers every GitHub task seats need.  It knows the seat from its bearer token and picks
@@ -119,6 +121,10 @@ Seats come from `GIT_RELAY_SEATS_JSON` at process start:
 }
 ```
 
+### Default-branch paths
+
+A seat may name `default_branch_paths`.  It is a map from an exact `owner/name` to one to eight exact paths.  The repository must already match that seat's `repos`.  A path is matched exactly.  Globs, a `.` or `..` segment, a repeated path and anything under `.github` are refused when the policy loads.  Missing or empty means the default branch stays closed.  The reviewed `deploy/seat-policy.json` grants none.  Put the grant on the publishing seat's own row.  A grant on the fleet profile reaches every seat that uses it.  `deploy/seat_policy.py` checks the same rules as `SeatPolicy` before it renders.
+
 A seat's `app_slug` must be that seat's own bot identity:  one bearer = one Zulip bot = one
 GitHub App (owner decision 2026-10-22, Q7).  A config entry naming another bot's App is refused
 at load, so a bearer can never act through a GitHub App that is not its own bot.
@@ -158,6 +164,43 @@ interrupted.  `verify-apps` runs the deployed minter in a transient unit with th
 credential binding and App-key folder, so it reads the App keys exactly as the service does, and
 it never prints a token.  A policy entry does not make a seat usable alone:  the seat also needs
 its bearer, minted by the owner on the Admin page.
+
+### Admitting one new seat
+
+Adding a seat that is already able to prove itself stays `install-seat --receipt`, or `--bootstrap-receipt` for the operator-listener denial proof.  Both of those check the signed receipt before any write.
+
+A brand-new seat cannot produce `ExternalProof` until the row is loaded, because `wf_repo_get` is refused first.  `install-seat --first-seat` writes that one additive row under the same digest fence, runs `ExternalProof`, and restores the prior digest unless the proof is proven and bound to the relay audit log.  The proof key, the marker and the rollback rules are in [SEAT-POLICY-FILE.md](SEAT-POLICY-FILE.md).  This document does not install a row.
+
+The proof key is owned by root, the relay host operator.  Mint it once, as root, with `python3 -I <copy>/seat_policy.py proof-key` and `GIT_RELAY_PROOF_KEY_FILE` set to a new file in a directory root owns and only root can write.  The file is mode 0600.  The command never prints the key and never overwrites an existing one.  The service user does not own it, and the seat does not own it either.
+
+After this change is merged, admitting `swu-zc` is a root command on the relay host, from a root-owned copy of the merged files, with the same blob-id check as the install above.
+
+```
+# Proof key, once. <root-only-dir> is a directory root owns and only root can write.
+export GIT_RELAY_PROOF_KEY_FILE=<root-only-dir>/git-relay-proof.key
+python3 -I <copy>/seat_policy.py proof-key
+stat -c '%u %a' "$GIT_RELAY_PROOF_KEY_FILE"    # 0 600. Do not print the file.
+
+# ZC bearer, one token, root-owned 0600. Write it without displaying it.
+export GIT_RELAY_FIRST_SEAT_BEARER_FILE=<root-only-dir>/zc-bearer
+
+python3 -I <copy>/seat_policy.py render \
+  | python3 -c 'import json,sys; json.dump(json.load(sys.stdin)["swu-zc"], sys.stdout); sys.stdout.write("\n")' \
+  > <root-only-dir>/swu-zc.json
+chmod 600 <root-only-dir>/swu-zc.json
+
+# Prints expect-before, then expect-after. <relay-workdir> is the unit WorkingDirectory.
+python3 -I -c 'import json,sys; sys.path.insert(0, sys.argv[1]); from git_relay.seat_add_policy import digest, prepare; live=json.load(open(sys.argv[2])); row=json.load(open(sys.argv[3])); before=digest(live); print(before); print(digest(prepare(live, "swu-zc", row, before)))' \
+  <relay-workdir> "$LIVE_SEATS" <root-only-dir>/swu-zc.json
+
+python3 -I <copy>/seat_policy.py install-seat --unit UNIT --seat swu-zc \
+  --row-json <root-only-dir>/swu-zc.json \
+  --expect-before BEFORE --expect-after AFTER \
+  --first-seat --proof-id zc-admit-1
+# Same command with --apply. A fresh --proof-id after an inconclusive proof.
+```
+
+Exit 3 means the prior digest was restored.  The ZC App id and private key are already `GH_APP_SWU_ZC_ID` and `GH_APP_SWU_ZC_PRIVATE_KEY` in Fleet-OPS prod `/github-apps`.  This admission does not write them.  The restart the command already performs is what drops a process-lifetime cache of a missing name.
 
 ## Outbound hygiene
 
