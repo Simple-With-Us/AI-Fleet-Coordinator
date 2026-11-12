@@ -21,15 +21,21 @@ class AutofixProviderModelTests(unittest.TestCase):
         self.assertEqual(sh('autofix_route_for_base "  https://api.meta.ai  "'), "meta")
 
     def test_meta_muse_model_gains_prefix(self) -> None:
-        resolved = sh('autofix_resolve_model_for_route meta muse-spark-1.3-contributor MiniMax-M3.1-Flash')
+        resolved = sh(
+            "autofix_resolve_model_for_route meta muse-spark-1.3-contributor MiniMax-M3.1-Flash"
+        )
         self.assertEqual(resolved, "meta/muse-spark-1.3-contributor")
 
     def test_meta_prefixed_model_unchanged(self) -> None:
-        resolved = sh('autofix_resolve_model_for_route meta meta/muse-spark-1.3-contributor MiniMax-M3.1-Flash')
+        resolved = sh(
+            "autofix_resolve_model_for_route meta meta/muse-spark-1.3-contributor MiniMax-M3.1-Flash"
+        )
         self.assertEqual(resolved, "meta/muse-spark-1.3-contributor")
 
     def test_minimax_route_leaves_muse_model(self) -> None:
-        resolved = sh('autofix_resolve_model_for_route minimax muse-spark-1.3-contributor MiniMax-M3.1-Flash')
+        resolved = sh(
+            "autofix_resolve_model_for_route minimax muse-spark-1.3-contributor MiniMax-M3.1-Flash"
+        )
         self.assertEqual(resolved, "muse-spark-1.3-contributor")
 
 
