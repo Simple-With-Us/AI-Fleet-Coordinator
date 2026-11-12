@@ -69,6 +69,7 @@ final class KnobControlsTests: XCTestCase {
         let secrets = registry.knobs.filter { $0.isSecret }
         XCTAssertEqual(secrets.map { $0.name }, [
             "FLEET_FACTS_SIGNING_KEY",
+            "FLEET_FACTS_RELAY_TOKEN",
             "WAKE_ROUTER_KEY",
             "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
         ])

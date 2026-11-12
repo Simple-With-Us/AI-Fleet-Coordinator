@@ -1,6 +1,7 @@
 // Official MCP adapters retain the same seat, scopes, budgets and write receipts.
 import { ToolError, okResult, schemaProblem, scanSecret, sha256Hex, stableJson, newNonce } from "./contract.js";
 import { linearClean, linearEnvelope } from "./linear.js";
+import { outboundGap } from "./outbound-gap.js";
 import { LINEAR_MCP_BY_NAME } from "./linear-mcp-specs.js";
 import { callOfficialLinear, OfficialLinearMcpError } from "./linear-mcp-client.js";
 
@@ -139,6 +140,8 @@ export async function callLinearMcp(tools, name, args, audit) {
   for (const field of ["body", "description"]) {
     if (typeof nativeArgs[field] === "string" && nativeArgs[field]) nativeArgs[field] = tools.linearBody(nativeArgs[field], session);
   }
+  // AFC-722 review:  a document's content gets the sentence gap but no seat tag line.
+  if (typeof nativeArgs.content === "string" && nativeArgs.content) nativeArgs.content = outboundGap(nativeArgs.content);
   const digest = await sha256Hex(stableJson({ upstream: spec.upstreamName, arguments: nativeArgs }));
   // Use the shared Linear namespace so a key cannot silently describe two writes.
   const key = await sha256Hex(`linear-api:${tools.seat}:${idempotency_key}`);
