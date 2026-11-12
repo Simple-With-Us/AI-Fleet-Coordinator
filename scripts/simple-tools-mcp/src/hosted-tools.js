@@ -1408,8 +1408,8 @@ export class HostedTools {
   // The DM rule (owner decision, Oct 22 2026).  Mirrors scripts/simple_tools/dm_policy.py
   // so both transports refuse the same calls with the same guidance.  A seat may not open a new
   // direct message;  a reply inside a conversation Operator already opened is allowed, because that
-  // conversation is Operator's and the seat is answering rather than opening.  Operator itself may
-  // open one DM per ambiguous wake, to ask the sender a clarifying question.
+  // conversation is Operator's and the seat is answering rather than opening.  Operator asks nobody
+  // anything (owner ruling, Nov 10, 2026), so no call here opens a DM for a question either.
   async dmRuleCheck(args, { userIds, users }) {
     if (this.config?.dmRule === false) return;
     const selfId = this.me.user_id;
@@ -1424,7 +1424,6 @@ export class HostedTools {
     }
     // Oldest message in this exact conversation:  if Operator sent it, this seat may reply inside.
     if (opener && Number(opener.sender_id) === Number(operatorId)) return;
-    if (this.seat === "OPERATOR" && args.clarifying_question) return;
 
     const bots = users.filter((u) => u.is_bot);
     const ownerId = this.config?.ownerUserId ?? null;
@@ -1434,11 +1433,11 @@ export class HostedTools {
       ? `Seat-to-seat work happens in a #Side-Chats topic (stream ${SIDE_CHATS_STREAM_ID}):  one topic per discussion, mentioning only the participants, never a direct message.`
       : kind === "owner"
         ? `Jay is reached through the Pending-for-Jay post in #Side-Chats (stream ${SIDE_CHATS_STREAM_ID}) or a topic there, not a new direct message.`
-        : `Direct messages are Operator's to open.  Put this in a #Side-Chats topic (stream ${SIDE_CHATS_STREAM_ID}) instead, or let Operator ask one clarifying question if a wake could not be routed.`;
+        : `Direct messages are Operator's to open.  Put this in a #Side-Chats topic (stream ${SIDE_CHATS_STREAM_ID}) instead.`;
     if (this.seat === "OPERATOR") {
       throw new ToolError(
         "dm_not_allowed",
-        `OPERATOR may open a direct message only to ask the sender one clarifying question when a wake could not be routed.  Bot-to-bot work goes to a #Side-Chats topic (stream ${SIDE_CHATS_STREAM_ID}).`,
+        `OPERATOR opens no direct message here.  Bot-to-bot work goes to a #Side-Chats topic (stream ${SIDE_CHATS_STREAM_ID}).`,
       );
     }
     throw new ToolError("dm_not_allowed", `this seat may not open a new direct message (${kind}).  ${guidance}`);
