@@ -29,8 +29,13 @@ enum MusterWindow {
     }
 
     /// Writes the saved place,  which the window follows,  and brings the window forward.
+    ///
+    /// A sheet owns the window until it closes, so under one the saved place is left alone and
+    /// the window only comes forward, whichever menu asked.
     static func show(_ destination: MusterDestination, openWindow: OpenWindowAction) {
-        UserDefaults.standard.set(destination.rawValue, forKey: MusterSettings.sidebarSelectionDefaultsKey)
+        if !hasSheet {
+            UserDefaults.standard.set(destination.rawValue, forKey: MusterSettings.sidebarSelectionDefaultsKey)
+        }
         show(openWindow: openWindow)
     }
 

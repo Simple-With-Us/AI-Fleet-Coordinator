@@ -117,7 +117,11 @@ struct GoCommands: Commands {
 
     var body: some Commands {
         CommandMenu("Go") {
-            Button("Quick Open\u{2026}") { quickOpenShown = true }
+            Button("Quick Open\u{2026}") {
+                // A window takes one sheet at a time, so Command-K waits for the one that is up.
+                guard !MusterWindow.hasSheet else { return }
+                quickOpenShown = true
+            }
                 .keyboardShortcut("k", modifiers: .command)
                 .disabled(quickOpenShown == nil)
             Divider()
@@ -143,8 +147,7 @@ private struct GoMenuItem: View {
 
     private var button: some View {
         Button(destination.title) {
-            // A sheet owns the window until it closes, so the panel beneath it stays put.
-            guard !MusterWindow.hasSheet else { return }
+            // The sheet guard is in MusterWindow.show, so this menu and the menu bar item agree.
             MusterWindow.show(destination, openWindow: openWindow)
         }
     }

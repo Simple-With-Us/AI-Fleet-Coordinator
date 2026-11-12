@@ -32,6 +32,15 @@ struct QuickOpenView: View {
                 .font(.title3)
                 .padding(14)
                 .focused($fieldFocused)
+                // On the field itself, which holds the focus, so the arrows move the highlight.
+                .onKeyPress(.downArrow) {
+                    highlighted = min(highlighted + 1, max(results.count - 1, 0))
+                    return .handled
+                }
+                .onKeyPress(.upArrow) {
+                    highlighted = max(highlighted - 1, 0)
+                    return .handled
+                }
                 .onSubmit { choose(highlighted) }
                 .accessibilityLabel("Go To A Panel")
             Divider()
@@ -59,14 +68,6 @@ struct QuickOpenView: View {
         .frame(width: 460, height: 380)
         .onAppear { fieldFocused = true }
         .onChange(of: query) { _, _ in highlighted = 0 }
-        .onKeyPress(.downArrow) {
-            highlighted = min(highlighted + 1, max(results.count - 1, 0))
-            return .handled
-        }
-        .onKeyPress(.upArrow) {
-            highlighted = max(highlighted - 1, 0)
-            return .handled
-        }
         .onExitCommand { dismiss() }
     }
 
@@ -83,11 +84,8 @@ struct QuickOpenView: View {
                     .padding(.horizontal, 6)
                     .padding(.vertical, 1)
                     .background(Capsule().fill(Color.secondary.opacity(0.2)))
-                    .accessibilityLabel("Needs attention: \(count)")
             }
-            if let label = destination.shortcutLabel {
-                Text(label).font(.caption).foregroundStyle(.secondary)
-            }
+            // No Command-digit hint here: the Go menu's digits wait while this sheet is up.
         }
         .padding(.vertical, 2)
         .listRowBackground(selected ? Color.accentColor.opacity(0.18) : Color.clear)
