@@ -151,7 +151,9 @@ class ApiCollectorSecurityTests(unittest.TestCase):
         self.assertIn("AFC-398", res.reason)
 
     def test_validate_observer_url_refuses_ssrf_and_insecure_schemes(self) -> None:
-        allowed = frozenset({"observer.internal.example", "169.254.169.254", "10.0.0.5"})
+        allowed = frozenset(
+            {"observer.internal.example", "169.254.169.254", "10.0.0.5", "127.0.0.1"}
+        )
         for bad in (
             "",
             "http://observer.internal.example/v1/obs",
@@ -160,6 +162,8 @@ class ApiCollectorSecurityTests(unittest.TestCase):
             "https://user:pass@observer.internal.example/v1/obs",
             "https://observer.internal.example/v1/obs#frag",
             "https://169.254.169.254/latest/meta-data",
+            "https://10.0.0.5/v1/obs",
+            "https://127.0.0.1/v1/obs",
         ):
             with self.subTest(bad=bad), self.assertRaises(CheckError) as cm:
                 validate_observer_url(bad, allowed_hosts=allowed)
@@ -173,21 +177,42 @@ class ApiCollectorSecurityTests(unittest.TestCase):
             ),
             "https://observer.internal.example/v1/obs",
         )
+        # Private and loopback targets require explicit opt-in flags.
+        self.assertEqual(
+            validate_observer_url(
+                "https://10.0.0.5/v1/obs",
+                allowed_hosts=allowed,
+                allow_private_ips=True,
+            ),
+            "https://10.0.0.5/v1/obs",
+        )
+        self.assertEqual(
+            validate_observer_url(
+                "http://127.0.0.1/v1/obs",
+                allowed_hosts=allowed,
+                allow_insecure_loopback=True,
+            ),
+            "http://127.0.0.1/v1/obs",
+        )
 
     def test_http_fetch_refuses_dns_resolution_to_metadata_or_private_ip(self) -> None:
-        with mock.patch(
-            "fleet_config.api_collector.socket.getaddrinfo",
-            return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 443))],
-        ):
-            with self.assertRaises(CheckError) as cm:
-                http_fetch_observer(
-                    "https://observer.example.com/v1/obs",
-                    {},
-                    5,
-                    1024,
-                    allowed_hosts=frozenset({"observer.example.com"}),
-                )
-            self.assertIs(cm.exception.reason_code, ReasonCode.ERROR)
+        for ip_addr in ("169.254.169.254", "10.0.0.5", "127.0.0.1"):
+            with (
+                self.subTest(ip_addr=ip_addr),
+                mock.patch(
+                    "fleet_config.api_collector.socket.getaddrinfo",
+                    return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip_addr, 443))],
+                ),
+            ):
+                with self.assertRaises(CheckError) as cm:
+                    http_fetch_observer(
+                        "https://observer.example.com/v1/obs",
+                        {},
+                        5,
+                        1024,
+                        allowed_hosts=frozenset({"observer.example.com"}),
+                    )
+                self.assertIs(cm.exception.reason_code, ReasonCode.ERROR)
 
     def test_http_fetch_refuses_redirects_and_never_retries_auth_or_404(self) -> None:
         calls = {"n": 0}
@@ -547,6 +572,53 @@ class ApiCollectorSecurityTests(unittest.TestCase):
         self.assertIs(by_id[hooks_rule.id].reason_code, ReasonCode.PROOF_NOT_RUN)
         # collectors.collect routes configured Collector.API through api_collector too.
         self.assertIs(collectors.collect(skills_rule, "cursor-cloud", ctx).state, CheckState.PASS)
+
+    def test_missing_observed_and_unconstrained_rules_never_pass(self) -> None:
+        # Missing or non-mapping observed block -> UNKNOWN / UNPARSEABLE, even with empty constraints.
+        empty_rule = _cloud_rule(
+            rule_id="grok-bot-cloud-1-mcp-empty",
+            expected=ExpectedState(description="No constraints set"),
+        )
+        raw_obj = json.loads(_payload(rule_id=empty_rule.id).decode("utf-8"))
+        del raw_obj["rows"][0]["observed"]
+        res_missing, _ = evaluate_api_observation(
+            empty_rule,
+            "cursor-cloud",
+            json.dumps(raw_obj).encode("utf-8"),
+            expected_nonce="nonce-123",
+            expected_host_id="cloud-host-1",
+            ctx=self.ctx,
+        )
+        self.assertIs(res_missing.state, CheckState.UNKNOWN)
+        self.assertIs(res_missing.reason_code, ReasonCode.UNPARSEABLE)
+
+        # Present observed mapping with unconstrained ExpectedState -> DRIFT (never defaults to PASS).
+        res_unconstrained, _ = evaluate_api_observation(
+            empty_rule,
+            "cursor-cloud",
+            _payload(rule_id=empty_rule.id, observed={"present": True}),
+            expected_nonce="nonce-123",
+            expected_host_id="cloud-host-1",
+            ctx=self.ctx,
+        )
+        self.assertIs(res_unconstrained.state, CheckState.DRIFT)
+        self.assertIs(res_unconstrained.reason_code, ReasonCode.DRIFT)
+
+        # expected.present=True with observed.present missing (None) -> DRIFT, never PASS.
+        present_rule = _cloud_rule(
+            rule_id="grok-bot-cloud-1-hooks-present",
+            expected=ExpectedState(description="Expected present=True", present=True),
+        )
+        res_unconfirmed, _ = evaluate_api_observation(
+            present_rule,
+            "cursor-cloud",
+            _payload(rule_id=present_rule.id, observed={}),
+            expected_nonce="nonce-123",
+            expected_host_id="cloud-host-1",
+            ctx=self.ctx,
+        )
+        self.assertIs(res_unconfirmed.state, CheckState.DRIFT)
+        self.assertIs(res_unconfirmed.reason_code, ReasonCode.DRIFT)
 
 
 if __name__ == "__main__":
