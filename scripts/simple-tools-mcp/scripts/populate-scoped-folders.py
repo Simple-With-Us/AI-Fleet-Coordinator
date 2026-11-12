@@ -52,14 +52,40 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
+from fleet_secrets import core as fleet_secrets_core
+
 # Pinned on purpose (kody 4365623903, 4366921599):  every copy must read from and
-# write to exactly these two projects, and an id taken from the environment (the
-# variables fleet-secrets and other tools share) could point all 72 copies at
-# another project.  Both are project identifiers, not credentials, and both are
-# already committed on main (install_seat_key.py, .github/workflows/worker-deploy.yml,
-# scripts/fleet_knobs/source.py).
+# write to exactly these two projects.  The AFC id is documented in INFISICAL.md.
+# The Fleet-OPS id is resolved from INFISICAL_FLEET_OPS_PROJECT_ID and
+# ~/.simple-tools/fleet-ops-project-id and must agree when both are set.
 AFC = "9bf7417a-fbbb-42ca-870c-2b45207233f5"
-FLEETOPS = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"
+
+
+def resolve_fleet_ops_project_id() -> str:
+    env_val = os.environ.get("INFISICAL_FLEET_OPS_PROJECT_ID", "").strip()
+    file_path = pathlib.Path.home() / ".simple-tools" / "fleet-ops-project-id"
+    file_val = ""
+    try:
+        file_val = file_path.read_text(encoding="utf-8").strip().splitlines()[0].strip()
+    except (OSError, UnicodeDecodeError, IndexError):
+        file_val = ""
+    if env_val and file_val and env_val != file_val:
+        print(
+            "GATE: INFISICAL_FLEET_OPS_PROJECT_ID disagrees with ~/.simple-tools/fleet-ops-project-id.  "
+            "Aborting (fail safe)."
+        )
+        sys.exit(1)
+    try:
+        return fleet_secrets_core.infisical_project_id(
+            os.environ, pathlib.Path.home(), "fleet-ops"
+        )
+    except fleet_secrets_core.SecretsError as error:
+        print(f"GATE: {error.message}  Aborting (fail safe).")
+        sys.exit(1)
+
+
+FLEETOPS = resolve_fleet_ops_project_id()
 ENV = "prod"
 READ_TOKEN_ENVS = {
     AFC: "AFC_SCOPED_FOLDERS_AFC_READ_TOKEN",
