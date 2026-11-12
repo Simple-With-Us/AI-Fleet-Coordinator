@@ -66,6 +66,13 @@ of the window grouped by app, then category, one line per lesson (date, seat, ti
 line, doc_id, url).  The Sunday Oracle routine pastes it into its health note and the owner
 reads it in Apple Notes; use `--app` to scope a per-app closeout.
 
+**Setup health.**  `recall doctor [--json]` runs one setup pass: Infisical token file (mode 600,
+never the value), scoped read of the recall keys, TEI embedder, Qdrant reachability
+and point count, Mac mirror `.complete` age when `FLEET_RAG_MIRROR` is set, nightly `last.json`
+when the server job is configured, install completeness (`linear-board/`, `simple_tools/secretscan.py`),
+and `ingest.lock` when the exclusive flock is still held and the pid is not running.  Rows the host
+does not need are SKIP; any FAIL exits 1.
+
 **Platform parity.**  `recall doctor --platforms [--box] [--json]` prints an OK/WARN/FAIL table:
 `fleet-recall` registered in every platform config (Claude, Cursor, Gemini, Codex, Grok,
 grok-acp), the skill copied to each skills dir, the Claude Code hooks installed, seat-mcp
