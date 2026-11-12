@@ -22,9 +22,10 @@ import tomllib
 import uuid
 from pathlib import Path, PurePosixPath
 
-# Two-step cap raise (Nov 11, 2026).  Step 1 (this value):  the receiver accepts up to 12 MiB, while the
-# sender (fleet-cli-sync.py MAX_BYTES) still ships at most 8 MiB, so every bundle stays one an 8 MiB receiver
-# also accepts.  Step 2 raises the sender cap only after every host runs this receiver.
+# Two-step cap raise (Nov 11-12, 2026).  The receiver accepts up to 12 MiB.  Step 2 set
+# fleet-cli-sync.py MAX_BYTES to 11 MiB, leaving at least 1 MiB of headroom.  The sender
+# runs this file from the published source commit (python3 -c), so the pairing does not
+# depend on a host install.  The receiver cap must never be below the sender cap.
 MAX_BUNDLE_BYTES = 12 * 1024 * 1024
 # The reviewed allowlisted runtime contains 154 files.  Keep the exact minimum# ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
@@ -180,8 +181,8 @@ EXACT = frozenset(
 #     review history and their repo-only tests.
 #   - operator_send and clarify:  Operator DM paths that are not wired in (simple_tools/README.md).
 #   - mcp/fixtures.jsonl:  golden cases the unit suites load from the checkout;  `simple-chat mcp` does not
-#     read them at runtime.  Leaving them out of the bundle keeps the encoded sender payload under the 8 MiB
-#     cap after AFC-756 (list_presentation plus the compact/full catalog fields).
+#     read them at runtime.  Leaving them out of the bundle keeps the encoded sender payload under the
+#     sender cap after AFC-756 (list_presentation plus the compact/full catalog fields).
 # A new module still ships by default:  this list only ever names a path that nothing runs.
 REPO_ONLY = frozenset(
     {

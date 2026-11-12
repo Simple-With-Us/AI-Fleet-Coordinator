@@ -60,10 +60,11 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # From here the cap is 180, set once (Nov 11, 2026) with room for the wake router's platform modules;
 # fleet-cli-release.py carries the same number and the reason.
 MAX_FILES = 180
-# Step 1 of the two-step cap raise:  stays at 8 MiB while fleet-cli-release.py MAX_BUNDLE_BYTES is 12 MiB,
-# so no host still on an 8 MiB receiver is sent a bundle it refuses.  Raise this (step 2) only after every
-# host runs the 12 MiB receiver.  The receiver cap must never be below this one.
-MAX_BYTES = 8 * 1024 * 1024
+# Step 2 of the two-step cap raise:  ships at most 11 MiB, leaving at least 1 MiB under
+# fleet-cli-release.py MAX_BUNDLE_BYTES (12 MiB).  The receiver that runs is the published
+# scripts/fleet-cli-release.py blob from the same source commit, and receiver_policy()
+# refuses if that receiver's cap is below this one.
+MAX_BYTES = 11 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
