@@ -363,7 +363,7 @@ jobs:
       - name: Configure Autofix Model Route
         id: model_route
         if: ${{ steps.guard.outputs.skip != 'true' && steps.request_gate.outputs.skip != 'true' }}
-        uses: ./.github/actions/autofix-model-route
+        uses: Simple-With-Us/AI-Fleet-Coordinator/.github/actions/autofix-model-route@2070a456e1558ee14f3329297666f8c64ad1e147
         with:
           var_base: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL }}
           var_model: ${{ vars.SWU_AUTOFIX_MODEL }}
@@ -400,7 +400,7 @@ jobs:
 
       - name: Report Autofix Model Failure
         if: ${{ always() && steps.guard.outputs.skip != 'true' && steps.request_gate.outputs.skip != 'true' && steps.claude.conclusion == 'failure' }}
-        uses: ./.github/actions/autofix-report-failure
+        uses: Simple-With-Us/AI-Fleet-Coordinator/.github/actions/autofix-report-failure@2070a456e1558ee14f3329297666f8c64ad1e147
         with:
           claude_step_outcome: ${{ steps.claude.outcome }}
           route: ${{ steps.model_route.outputs.route }}

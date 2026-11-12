@@ -523,7 +523,7 @@ jobs:
       - name: Configure Autofix Model Route
         id: model_route
         if: steps.guard.outputs.should_fix == 'true'
-        uses: ./.github/actions/autofix-model-route
+        uses: Simple-With-Us/AI-Fleet-Coordinator/.github/actions/autofix-model-route@2070a456e1558ee14f3329297666f8c64ad1e147
         with:
           var_base: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL }}
           var_model: ${{ vars.SWU_AUTOFIX_MODEL || steps.trusted.outputs.model }}
@@ -541,17 +541,24 @@ jobs:
           stream="$RUNNER_TEMP/claude-stream.ndjson"
           out="$RUNNER_TEMP/claude-execution-output.json"
           echo "::group::Claude Code output"
+          # Capture the model's exit status so the stream is still converted for
+          # diagnostics, then fail the step with that status.
+          rc=0
           claude --print --verbose --dangerously-skip-permissions \
             --max-turns "$MAX_TURNS" \
             --allowed-tools "Edit,Write,Read,Bash,Grep,Glob" \
             --output-format stream-json \
-            < "$RUNNER_TEMP/autofix/prompt.md" | tee "$stream"
+            < "$RUNNER_TEMP/autofix/prompt.md" | tee "$stream" || rc=$?
           echo "::endgroup::"
-          jq -s '.' "$stream" > "$out"
+          jq -s '.' "$stream" > "$out" || echo "::warning::Could not convert the Claude Code stream to JSON"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::Claude Code exited with status $rc"
+            exit "$rc"
+          fi
 
       - name: Report Autofix Model Failure
         if: ${{ always() && steps.guard.outputs.should_fix == 'true' && steps.fix.conclusion == 'failure' }}
-        uses: ./.github/actions/autofix-report-failure
+        uses: Simple-With-Us/AI-Fleet-Coordinator/.github/actions/autofix-report-failure@2070a456e1558ee14f3329297666f8c64ad1e147
         with:
           claude_step_outcome: ${{ steps.fix.outcome }}
           route: ${{ steps.model_route.outputs.route }}
