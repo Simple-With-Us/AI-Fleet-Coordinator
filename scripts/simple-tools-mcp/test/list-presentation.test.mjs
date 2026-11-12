@@ -10,14 +10,16 @@ import {
 } from "../src/list-presentation.js";
 
 test("splitFullArg defaults to compact", () => {
-  const { args, full } = splitFullArg({ limit: 3 });
+  const { args, full, limitProvided } = splitFullArg({ limit: 3 }, { limit: 3 });
   assert.equal(full, false);
   assert.equal(args.limit, 3);
+  assert.equal(limitProvided, true);
 });
 
 test("effectiveLimit honors explicit limit and full mode", () => {
   assert.equal(effectiveLimit({}, { schemaDefault: 20, full: false }), 10);
-  assert.equal(effectiveLimit({ limit: 40 }, { schemaDefault: 20, full: false }), 40);
+  assert.equal(effectiveLimit({ limit: 20 }, { schemaDefault: 20, full: false, limitProvided: false }), 10);
+  assert.equal(effectiveLimit({ limit: 40 }, { schemaDefault: 20, full: false, limitProvided: true }), 40);
   assert.equal(effectiveLimit({}, { schemaDefault: 20, full: true }), 20);
 });
 

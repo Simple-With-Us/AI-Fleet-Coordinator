@@ -218,7 +218,7 @@ export const ZULIP_FULL_METHODS = {
   // ---------------------------------------------------------------- messages
 
   async tool_get_message(args, audit) {
-    const { args: workArgs, full } = splitFullArg(args);
+    const { args: workArgs, full } = splitFullArg(args, audit?.rawArgs);
     const bodyLimit = full ? BODY_LIMIT : COMPACT_BODY_LIMIT;
     await this.ensureSeat();
     const message = await this.visibleMessage(workArgs.message_id);
@@ -272,16 +272,17 @@ export const ZULIP_FULL_METHODS = {
   },
 
   async tool_message_history(args, audit) {
-    const { args: workArgs, full } = splitFullArg(args);
+    const { args: workArgs, full, limitProvided } = splitFullArg(args, audit?.rawArgs);
     const bodyLimit = full ? BODY_LIMIT : COMPACT_BODY_LIMIT;
-    const limit = effectiveLimit(workArgs, { schemaDefault: 20, full });
+    const limit = effectiveLimit(workArgs, { schemaDefault: 20, full, limitProvided });
     await this.ensureSeat();
     const message = await this.visibleMessage(workArgs.message_id);
     audit.message_id = workArgs.message_id;
     if (isInt(message.stream_id)) audit.channel_id = message.stream_id;
     await this.reserve("read");
     const rows = (await this.zulip.get(`messages/${workArgs.message_id}/history`)).message_history ?? [];
-    const items = rows.filter((r) => r && typeof r === "object").slice(0, limit).map((r) => ({
+    const capped = full ? rows : rows.slice(0, limit);
+    const items = capped.filter((r) => r && typeof r === "object").map((r) => ({
       user_id: isInt(r.user_id) ? r.user_id : null,
       time: formatTime(Number(r.timestamp) || 0),
       topic: c(r.topic ?? ""),
@@ -414,8 +415,8 @@ export const ZULIP_FULL_METHODS = {
   // ---------------------------------------------------------------- search
 
   async tool_search(args, audit) {
-    const { args: workArgs, full } = splitFullArg(args);
-    const limit = effectiveLimit(workArgs, { schemaDefault: 20, full });
+    const { args: workArgs, full, limitProvided } = splitFullArg(args, audit?.rawArgs);
+    const limit = effectiveLimit(workArgs, { schemaDefault: 20, full, limitProvided });
     const bodyLimit = full ? BODY_LIMIT : COMPACT_BODY_LIMIT;
     const channel = workArgs.channel !== undefined ? normalizeChannel(workArgs.channel) : null;
     const topic = workArgs.topic !== undefined ? normalizeTopic(workArgs.topic) : null;

@@ -681,7 +681,16 @@ export const NOTES_METHODS = {
     if (action === "read") fields.format = args.format;
     if (action === "list") {
       fields.query = args.query;
-      fields.limit = effectiveLimit(args, { schemaDefault: LIST_LIMIT_DEFAULT, full: args.full === true });
+      const limitProvided =
+        rawArgs != null &&
+        typeof rawArgs === "object" &&
+        !Array.isArray(rawArgs) &&
+        Object.prototype.hasOwnProperty.call(rawArgs, "limit");
+      fields.limit = effectiveLimit(args, {
+        schemaDefault: LIST_LIMIT_DEFAULT,
+        full: args.full === true,
+        limitProvided,
+      });
     }
     const request = makeRequest(fields);
     if (WRITE_ACTIONS.includes(action)) {

@@ -22,7 +22,7 @@ import tomllib
 import uuid
 from pathlib import Path, PurePosixPath
 
-MAX_BUNDLE_BYTES = 8 * 1024 * 1024
+MAX_BUNDLE_BYTES = 9 * 1024 * 1024
 # The reviewed allowlisted runtime contains 154 files.  Keep the exact minimum# ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
@@ -64,6 +64,8 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # keeps) and simple_tools/thread_registry_export.mjs (its Google drain, a data file beside the Python
 # modules), added for that review.
 # The 171st is simple_tools/wake_service.py (OPS-1048, the one wake router service for every platform).
+# The 172nd is simple_tools/mcp/list_presentation.py (AFC-756, compact list/search read payloads for seat MCP).
+# The bundle byte cap is 9 MiB (Nov 12, 2026):  headroom after catalog growth on main plus AFC-756.
 # From here the cap is 180, set once (Nov 11, 2026) with room for the platform modules the wake router
 # registers ahead of them (codex_wake, muse_wake, zcode_wake), so a new module no longer has to move it;
 # fleet-cli-sync.py keeps the same number, and a test checks the two agree and the bundle fits.

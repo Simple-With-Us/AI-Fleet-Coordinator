@@ -735,6 +735,7 @@ class Tools:
         self.spacing_path = os.path.join(seat_dir, "mcp-write.json")
         self.known = secretscan.basic_forms(agent.creds.email, agent.creds.key)
         self.posted_ids: set[int] = set()
+        self._raw_tool_arguments: dict[str, Any] | None = None
         self._lock = threading.Lock()
 
     # ---- entry ----------------------------------------------------------------------------
@@ -754,6 +755,7 @@ class Tools:
                 if problem:
                     raise ToolError("invalid_argument", problem)
                 arguments = coerce_integers(spec["inputSchema"], arguments)
+                self._raw_tool_arguments = dict(arguments)
                 self._attribution(meta)
                 self._use_tag(self._call_tag)
                 handler = getattr(self, "_tool_" + name, None)
@@ -768,6 +770,7 @@ class Tools:
                 result = self.error_result(error)
                 outcome = error.code
             finally:
+                self._raw_tool_arguments = None
                 self.agent.tag, self.agent.state = self.process_tag, self._process_state
                 self.session_source = self._process_source
                 self.thread_id = self._call_tag = self._call_state_key = None
@@ -1291,11 +1294,15 @@ class Tools:
 
     def _zulip_message_read_limits(
         self, args: Mapping[str, Any], *, schema_default: int = 20
-    ) -> tuple[dict[str, Any], int, int]:
+    ) -> tuple[dict[str, Any], int, int, bool]:
         work, full = LP.split_full_arg(dict(args))
-        limit = LP.effective_limit(work, schema_default=schema_default, full=full)
+        raw = getattr(self, "_raw_tool_arguments", None) or {}
+        limit_explicit = "limit" in raw
+        limit = LP.effective_limit(
+            work, schema_default=schema_default, full=full, limit_explicit=limit_explicit
+        )
         body_limit = LP.FULL_ZULIP_BODY_LIMIT if full else LP.COMPACT_BODY_LIMIT
-        return work, limit, body_limit
+        return work, limit, body_limit, full
 
     def _tool_zulip_read_topic(self, args: Mapping[str, Any]) -> dict[str, Any]:
         work, limit, body_limit = self._zulip_message_read_limits(args)
@@ -1853,9 +1860,11 @@ class Tools:
         )
 
     def _tool_zulip_message_history(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        work, limit, body_limit = self._zulip_message_read_limits(args)
+        work, limit, body_limit, full = self._zulip_message_read_limits(args)
         message_id = int(work["message_id"])
-        rows = OPS.message_history(self.agent, message_id)[:limit]
+        rows = OPS.message_history(self.agent, message_id)
+        if not full:
+            rows = rows[:limit]
         items = [
             {
                 "user_id": r["user_id"],
@@ -2530,7 +2539,8 @@ class Tools:
 
     def _tool_notes_list(self, args: Mapping[str, Any]) -> dict[str, Any]:
         work, full = LP.split_full_arg(dict(args))
-        if not full and work.get("limit") is None:
+        raw = getattr(self, "_raw_tool_arguments", None) or {}
+        if not full and "limit" not in raw:
             work = dict(work, limit=LP.COMPACT_DEFAULT_LIMIT)
         result = self._notes_call("list", work)
         if full or not isinstance(result.get("structuredContent"), dict):

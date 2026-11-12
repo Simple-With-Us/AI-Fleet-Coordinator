@@ -575,6 +575,7 @@ export class HostedTools {
       // Every delegated service call first verifies the selected role's own
       // Zulip bot is present, matches its email and is a member (role 400).
       if (this.callerGate !== this.gate || this.verifySeat) await this.ensureSeat();
+      audit.rawArgs = args;
       const preparedArgs = withDefaults(spec.inputSchema, args);
       result = Object.hasOwn(FLEETLINK_BY_NAME, publicName)
         ? await this.fleetlinkTool(publicName, preparedArgs, audit)
@@ -960,8 +961,8 @@ export class HostedTools {
   }
 
   async tool_read_topic(args, audit) {
-    const { args: workArgs, full } = splitFullArg(args);
-    const limit = effectiveLimit(workArgs, { schemaDefault: 20, full });
+    const { args: workArgs, full, limitProvided } = splitFullArg(args, audit.rawArgs);
+    const limit = effectiveLimit(workArgs, { schemaDefault: 20, full, limitProvided });
     const bodyLimit = full ? BODY_LIMIT : COMPACT_BODY_LIMIT;
     const channel = normalizeChannel(workArgs.channel);
     const topic = normalizeTopic(workArgs.topic);
@@ -978,8 +979,8 @@ export class HostedTools {
   }
 
   async tool_inbox(args, audit) {
-    const { args: workArgs, full } = splitFullArg(args);
-    const limit = effectiveLimit(workArgs, { schemaDefault: 20, full });
+    const { args: workArgs, full, limitProvided } = splitFullArg(args, audit.rawArgs);
+    const limit = effectiveLimit(workArgs, { schemaDefault: 20, full, limitProvided });
     const bodyLimit = full ? BODY_LIMIT : COMPACT_BODY_LIMIT;
     await this.ensureSeat();
     await this.reserve("read");
@@ -1325,8 +1326,8 @@ export class HostedTools {
   }
 
   async tool_dm_read(args, audit) {
-    const { args: workArgs, full } = splitFullArg(args);
-    const limit = effectiveLimit(workArgs, { schemaDefault: 20, full });
+    const { args: workArgs, full, limitProvided } = splitFullArg(args, audit.rawArgs);
+    const limit = effectiveLimit(workArgs, { schemaDefault: 20, full, limitProvided });
     const bodyLimit = full ? BODY_LIMIT : COMPACT_BODY_LIMIT;
     HostedTools.needPeople(workArgs);
     await this.ensureSeat();
@@ -2130,8 +2131,8 @@ export class HostedTools {
   }
 
   async tool_linear_list(args, audit) {
-    const { args: workArgs, full } = splitFullArg(args);
-    const limit = effectiveLimit(workArgs, { schemaDefault: 20, full });
+    const { args: workArgs, full, limitProvided } = splitFullArg(args, audit.rawArgs);
+    const limit = effectiveLimit(workArgs, { schemaDefault: 20, full, limitProvided });
     await this.reserveLinear("read");
     const filter = {};
     if (workArgs.team) filter.team = { key: { eq: workArgs.team.toUpperCase() } };

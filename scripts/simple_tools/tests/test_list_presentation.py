@@ -11,7 +11,14 @@ class ListPresentationTests(unittest.TestCase):
 
     def test_effective_limit_compact_default(self):
         self.assertEqual(LP.effective_limit({}, schema_default=20, full=False), LP.COMPACT_DEFAULT_LIMIT)
-        self.assertEqual(LP.effective_limit({"limit": 40}, schema_default=20, full=False), 40)
+        self.assertEqual(
+            LP.effective_limit({"limit": 20}, schema_default=20, full=False, limit_explicit=False),
+            LP.COMPACT_DEFAULT_LIMIT,
+        )
+        self.assertEqual(
+            LP.effective_limit({"limit": 20}, schema_default=20, full=False, limit_explicit=True), 20
+        )
+        self.assertEqual(LP.effective_limit({"limit": 40}, schema_default=20, full=False, limit_explicit=True), 40)
         self.assertEqual(LP.effective_limit({}, schema_default=20, full=True), 20)
 
     def test_truncate_text_marks_tail(self):

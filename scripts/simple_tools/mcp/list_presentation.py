@@ -60,8 +60,10 @@ def split_full_arg(args: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
     return work, full
 
 
-def effective_limit(args: Mapping[str, Any], *, schema_default: int, full: bool) -> int:
-    if args.get("limit") is not None:
+def effective_limit(
+    args: Mapping[str, Any], *, schema_default: int, full: bool, limit_explicit: bool = False
+) -> int:
+    if limit_explicit:
         return int(args["limit"])
     if full:
         return schema_default

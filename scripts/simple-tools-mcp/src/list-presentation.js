@@ -18,15 +18,20 @@ export const ZULIP_MESSAGE_READ_TOOLS = new Set([
 ]);
 export const NOTES_LIST_TOOLS = new Set(["notes_list"]);
 
-export function splitFullArg(args) {
+export function splitFullArg(args, rawArgs = null) {
   const work = { ...args };
   const full = work.full === true;
   delete work.full;
-  return { args: work, full };
+  const limitProvided =
+    rawArgs != null &&
+    typeof rawArgs === "object" &&
+    !Array.isArray(rawArgs) &&
+    Object.prototype.hasOwnProperty.call(rawArgs, "limit");
+  return { args: work, full, limitProvided };
 }
 
-export function effectiveLimit(args, { schemaDefault, full }) {
-  if (args.limit !== undefined && args.limit !== null) return args.limit;
+export function effectiveLimit(args, { schemaDefault, full, limitProvided = false }) {
+  if (limitProvided) return args.limit;
   if (full) return schemaDefault;
   return Math.min(schemaDefault, COMPACT_DEFAULT_LIMIT);
 }

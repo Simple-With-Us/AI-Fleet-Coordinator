@@ -56,10 +56,12 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # The 169th and 170th are simple_tools/thread_registry.py and thread_registry_export.mjs (the Operator
 # chat-thread registry and its Google drain);  fleet-cli-release.py carries the same ledger.
 # The 171st is simple_tools/wake_service.py (OPS-1048, the one wake router service for every platform).
+# The 172nd is simple_tools/mcp/list_presentation.py (AFC-756, compact list/search read payloads for seat MCP).
+# The bundle byte cap is 9 MiB (Nov 12, 2026):  headroom after catalog growth on main plus AFC-756.
 # From here the cap is 180, set once (Nov 11, 2026) with room for the wake router's platform modules;
 # fleet-cli-release.py carries the same number and the reason.
 MAX_FILES = 180
-MAX_BYTES = 8 * 1024 * 1024
+MAX_BYTES = 9 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
