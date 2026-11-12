@@ -240,6 +240,7 @@ def _opt_int(arguments: JsonDict, name: str, lo: int, hi: int) -> int | None:
 
 
 def recall_search(arguments: JsonDict) -> JsonDict:
+    _load_api()
     from fleet_rag import recall_presentation
 
     query = _opt_str(arguments, "query", "q")

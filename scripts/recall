@@ -153,6 +153,11 @@ def cmd_search(a: argparse.Namespace) -> int:
     if getattr(a, "fields", None):
         raw_args["fields"] = a.fields
     search_args, presentation = recall_presentation.split_search_arguments(raw_args)
+    fallback_args = dict(search_args)
+    if presentation.full:
+        fallback_args["full"] = True
+    if getattr(a, "fields", None):
+        fallback_args["fields"] = list(presentation.fields)
     search_kwargs = {
         k: search_args[k]
         for k in (
@@ -171,7 +176,7 @@ def cmd_search(a: argparse.Namespace) -> int:
     }
     res = public_fallback.call_with_fallback(
         "recall_search",
-        search_args,
+        fallback_args,
         lambda: recall_api.recall_search(a.query, **search_kwargs),
     )
     if not a.json and not a.full:

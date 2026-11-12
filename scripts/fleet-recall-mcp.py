@@ -335,10 +335,15 @@ def call_tool(name: str, args: dict) -> dict:
         for key in ("per_doc", "rerank", "prefer_lessons", "include_retracted"):
             if key in search_args and search_args[key] is None:
                 del search_args[key]
+        fallback_args = dict(search_args)
+        if presentation.full:
+            fallback_args["full"] = True
+        if "fields" in args and args.get("fields") is not None:
+            fallback_args["fields"] = args["fields"]
         t0 = time.time()
         res = public_fallback.call_with_fallback(
             "recall_search",
-            search_args,
+            fallback_args,
             lambda: recall_api.recall_search(**search_args),
         )
         res = recall_presentation.present_search_result(res, presentation)
