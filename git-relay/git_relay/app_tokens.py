@@ -36,6 +36,27 @@ MINT_PERMISSION_CEILING = (
     "metadata",
 )
 
+# Permission keys mintable only at read level.  These widen what the relay can
+# READ (repository webhooks, deploy keys, organization installations); the
+# level check below makes a write mint for any of them a hard error, so no
+# verb or seat can ever receive a write-scoped token for them.
+MINT_READ_ONLY_PERMISSIONS = (
+    "administration",
+    "repository_hooks",
+    "organization_administration",
+)
+
+
+def mint_permission_allowed(key, level):
+    """True when a mint request for (key, level) stays inside the ceiling.
+
+    Keys in MINT_PERMISSION_CEILING mint at the requested level exactly as
+    before; keys in MINT_READ_ONLY_PERMISSIONS mint only at read level.
+    """
+    if key in MINT_PERMISSION_CEILING:
+        return level in ("read", "write")
+    return key in MINT_READ_ONLY_PERMISSIONS and level == "read"
+
 
 class InstallationReadError(Exception):
     """Safe status/retry-only read failure, never upstream prose or credentials."""
@@ -418,9 +439,11 @@ class AppTokenMinter:
 
     def token_for(self, slug: str, repo: str, permissions: dict) -> tuple[str, float]:
         """Mint (or serve from cache) an installation token;  returns (token, expiry epoch)."""
-        for key in permissions:
-            if key not in MINT_PERMISSION_CEILING:
-                raise AppTokenError(f"permission {key!r} is outside the mint ceiling")
+        for key, level in permissions.items():
+            if not mint_permission_allowed(key, level):
+                raise AppTokenError(
+                    f"permission {key!r} at level {level!r} is outside the mint ceiling"
+                )
         cache_key = json.dumps(
             [slug, repo.casefold(), sorted(permissions.items())], separators=(",", ":")
         )

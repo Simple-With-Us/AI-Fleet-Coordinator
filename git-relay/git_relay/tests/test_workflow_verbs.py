@@ -12,6 +12,9 @@ CEILING = {
     "issues": "write",
     "actions": "write",
     "metadata": "read",
+    "administration": "read",
+    "repository_hooks": "read",
+    "organization_administration": "read",
 }
 
 
