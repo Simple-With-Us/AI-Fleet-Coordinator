@@ -100,15 +100,15 @@ enum EavesdropperStatusText {
 ///      "pause": {"paused", "since", "wakes_only", "set_by"}, "pause_file_error",
 ///      "seats": [{"seat", "bot", "connected", "running", "wake", "paused", "wakes_24h",
 ///                 "held_back", "jobs", "last_event", "quota": {...}, "leases": [...],
-///                 "letters": {"known", "why"}}],
+///                 "letters": {"known", "why"}, "routine": {"ready", "auth", "why"} | null}],
 ///      "skipped": [{"seat", "reason"}], "disabled": [name],
 ///      "registry_sweep": {"ran_at", "ok", "ended", "error", "stale_after_minutes", "refused",
 ///                         "refused_platforms": [name]}}
 ///
 /// The document has no schema name of its own:  `schema` is its version, and the helper's answer
 /// around it names the verb (`server eavesdropper-status`), which the answer parser checks.
-/// `registry_sweep` came later and is additive, so the version stays 1 and a document from an
-/// older helper simply has none.
+/// `registry_sweep` and each seat's `routine` came later and are additive, so the version stays 1
+/// and a document from an older helper simply has neither.
 struct ReducedEavesdropperStatus: Decodable, Equatable {
     /// The one version this app reads.
     static let schemaVersion = 1
@@ -679,11 +679,33 @@ struct ServerSeatRoutineFields: Decodable, Equatable {
 }
 
 extension ServerSeatRoutineFields {
+    /// The only `auth` words the reducer sends.
+    static let authWords: Set<String> = ["header", "bearer", "hmac-sha256", "other"]
+    /// The only `why` words the reducer sends.
+    static let whyWords: Set<String> = [
+        "routine_not_configured", "routine_key_refused", "routine_url_refused", "other",
+    ]
+
+    /// The block is judged whole before anything reads it:  a field of the wrong type, or a word
+    /// the reducer never sends, throws.  The seat's own reader takes that as no routine, so the
+    /// seat says its readiness is not reported, and never shows half a block.  Keys the reducer
+    /// never sends (an address, a detail sentence) are not read at all.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        ready = container.optionalField(Bool.self, .ready)
-        auth = container.optionalText(.auth, limit: 24)
-        why = container.optionalText(.why, limit: 48)
+        let readyValue = try container.decodeIfPresent(Bool.self, forKey: .ready)
+        let authValue = try container.decodeIfPresent(String.self, forKey: .auth)
+        let whyValue = try container.decodeIfPresent(String.self, forKey: .why)
+        if let word = authValue, !Self.authWords.contains(word) {
+            throw DecodingError.dataCorruptedError(
+                forKey: .auth, in: container, debugDescription: "not an auth word the reducer sends")
+        }
+        if let word = whyValue, !Self.whyWords.contains(word) {
+            throw DecodingError.dataCorruptedError(
+                forKey: .why, in: container, debugDescription: "not a reason word the reducer sends")
+        }
+        ready = readyValue
+        auth = authValue
+        why = whyValue
     }
 
     /// Why the router is not ready, in plain words.

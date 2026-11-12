@@ -852,14 +852,32 @@ final class ServerSeatRouterTests: XCTestCase {
         }
     }
 
-    /// A block of the wrong shape reads field by field:  a wrong-typed field is nil, a block
-    /// that is not an object is no routine, and a key the reducer never sends is not read.
-    func test_a_malformed_routine_degrades_field_by_field() throws {
-        let odd = try seat(
-            #"{"seat":"CLAUDE","wake":"http","routine":{"ready":"true","auth":7,"why":["x"],"host":"router.invalid","detail":"not set"}}"#
+    /// A block of the wrong shape is rejected whole, never read field by field:  decoding it
+    /// throws, the seat then has no routine, and the rest of the seat still reads.
+    func test_a_malformed_routine_is_rejected_whole() throws {
+        let malformed = [
+            #"{"ready":"true","auth":7,"why":["x"]}"#,
+            // One bad field rejects the good ones beside it.
+            #"{"ready":true,"auth":7,"why":null}"#,
+            #"{"ready":true,"auth":"bearer","why":5}"#,
+            // A word the reducer never sends.
+            #"{"ready":true,"auth":"basic","why":null}"#,
+            #"{"ready":false,"auth":"bearer","why":"router.invalid"}"#,
+        ]
+        for block in malformed {
+            XCTAssertThrowsError(
+                try JSONDecoder().decode(ServerSeatRoutineFields.self, from: Data(block.utf8)), block)
+            let facts = try seat(#"{"seat":"CLAUDE","wake":"http","routine":"# + block + "}")
+            XCTAssertNil(facts.routine, block)
+            XCTAssertEqual(facts.router, .readinessNotReported, block)
+        }
+
+        // Keys the reducer never sends are not read, and do not spoil a good block.
+        let extra = try seat(
+            #"{"seat":"CLAUDE","wake":"http","routine":{"ready":true,"auth":"bearer","why":null,"host":"router.invalid","detail":"not set"}}"#
         )
-        XCTAssertEqual(odd.routine, ServerSeatRoutineFields(ready: nil, auth: nil, why: nil))
-        XCTAssertEqual(odd.router, .readinessNotReported)
+        XCTAssertEqual(extra.routine, ServerSeatRoutineFields(ready: true, auth: "bearer", why: nil))
+        XCTAssertEqual(extra.router, .ready)
 
         for block in [#""ready""#, "5", "[]", "true"] {
             let facts = try seat(#"{"seat":"CLAUDE","wake":"inbox","routine":"# + block + "}")
