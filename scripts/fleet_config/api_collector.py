@@ -415,3 +415,405 @@ def http_fetch_observer(
                 ReasonCode.TIMEOUT,
             ) from None
     raise CheckError("the api observer exhausted retry budget", ReasonCode.ERROR)
+def _reject_json_constant(token: str) -> Any:
+    """Reject non-standard JSON constants (NaN/Infinity/-Infinity)."""
+    raise ValueError("non-standard JSON constant %r is refused" % token)
+
+
+def _parse_strict_json_bytes(raw: bytes, *, max_bytes: int) -> Any:
+    """Parse bounded JSON while refusing non-finite numeric constants."""
+    document = parse_bounded_json(
+        raw,
+        what="api observer",
+        max_bytes=max_bytes,
+        max_depth=MAX_API_JSON_DEPTH,
+        max_nodes=MAX_API_JSON_NODES,
+    )
+    try:
+        json.loads(raw.decode("utf-8"), parse_constant=_reject_json_constant)
+    except ValueError as exc:
+        raise CheckError("the api observer returned invalid JSON: %s" % exc, ReasonCode.UNPARSEABLE) from None
+    return document
+
+
+def _parse_utc_iso(value: object) -> datetime | None:
+    """Parse an ISO-8601 UTC timestamp string (``...Z`` or ``+00:00``)."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _row_identity(row: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    """Extract canonical duplicate-check key ``(ruleId, seat, platform, hostId)``."""
+    return (
+        str(row.get("ruleId") or ""),
+        str(row.get("seat") or ""),
+        str(row.get("platform") or ""),
+        str(row.get("hostId") or ""),
+    )
+
+
+def build_evidence_sidecar(
+    row: Mapping[str, Any],
+    *,
+    rule: Rule,
+    platform: str,
+    host_id: str,
+    observer_id: str,
+    observer_class: ObserverClass,
+    observed_at: str,
+    received_at: str,
+    expires_at: str,
+    manifest_digest: str = "",
+    secret_canaries: Sequence[str] = (),
+) -> EvidenceSidecar:
+    """Build a scrubbed provenance sidecar record for one API observation."""
+    scope_raw = row.get("scope")
+    if isinstance(scope_raw, list) and all(isinstance(item, str) for item in scope_raw):
+        scope = tuple(scope_raw)
+    elif rule.scope:
+        scope = rule.scope
+    else:
+        scope = ("cloud",)
+    return EvidenceSidecar(
+        schema_version=API_OBSERVATION_SCHEMA_VERSION,
+        observation_id=scrub_secrets(str(row.get("observationId") or ""), secret_canaries),
+        rule_id=rule.id,
+        seat=rule.seat,
+        platform=platform,
+        host_id=host_id,
+        subject_session=scrub_secrets(str(row.get("subjectSession") or ""), secret_canaries),
+        observer_id=scrub_secrets(observer_id, secret_canaries),
+        observer_class=observer_class.value,
+        source_revision=scrub_secrets(str(row.get("sourceRevision") or ""), secret_canaries),
+        manifest_digest=scrub_secrets(
+            str(manifest_digest or row.get("manifestDigest") or ""), secret_canaries
+        ),
+        observed_at=observed_at,
+        received_at=received_at,
+        expires_at=expires_at,
+        scope=scope,
+        evidence_ref=scrub_secrets(str(row.get("evidenceRef") or ""), secret_canaries),
+    )
+
+
+_SUBSET_NAME_CHECKS: frozenset[CheckType] = frozenset(
+    {CheckType.SKILLS_INSTALLED, CheckType.SUBAGENTS_INSTALLED}
+)
+
+
+def _observed_from_row(obs_raw: Any, secret_canaries: Sequence[str]) -> ObservedState:
+    """Extract safe ``ObservedState`` fields from a validated row without keeping secrets."""
+    if not isinstance(obs_raw, Mapping):
+        return ObservedState()
+    present = obs_raw.get("present") if isinstance(obs_raw.get("present"), bool) else None
+    sha256 = obs_raw.get("sha256")
+    sha_val = scrub_secrets(sha256, secret_canaries) if isinstance(sha256, str) else None
+    names_raw = obs_raw.get("names")
+    names = (
+        tuple(sorted(scrub_secrets(str(item), secret_canaries) for item in names_raw))
+        if isinstance(names_raw, list)
+        else ()
+    )
+    mode_raw = obs_raw.get("mode")
+    mode = scrub_secrets(mode_raw, secret_canaries) if isinstance(mode_raw, str) else None
+    size_raw = obs_raw.get("sizeBytes")
+    size_val = size_raw if isinstance(size_raw, int) and not isinstance(size_raw, bool) else None
+    mtime_raw = obs_raw.get("mtime")
+    mtime_val = scrub_secrets(mtime_raw, secret_canaries) if isinstance(mtime_raw, str) else None
+    timeout_raw = obs_raw.get("timeoutSeconds")
+    timeout_val = timeout_raw if isinstance(timeout_raw, int) and not isinstance(timeout_raw, bool) else None
+    return ObservedState(
+        present=present,
+        sha256=sha_val,
+        names=names,
+        mode=mode,
+        size_bytes=size_val,
+        mtime=mtime_val,
+        timeout_seconds=timeout_val,
+    )
+
+
+def _matches_expected(rule: Rule, observed: ObservedState) -> tuple[bool, str]:
+    """Compare observed cloud facts against the reviewed rule's ``ExpectedState``."""
+    exp = rule.expected
+    if exp.present is True and observed.present is False:
+        return False, "the expected remote target is absent"
+    if exp.present is False and observed.present is True:
+        return False, "a remote target is present where absence is expected"
+    if exp.sha256 is not None and observed.sha256 != exp.sha256:
+        return False, "observed digest does not match expected manifest digest"
+    if exp.names:
+        expected_set = set(exp.names)
+        observed_set = set(observed.names)
+        if rule.check.type in _SUBSET_NAME_CHECKS:
+            if not expected_set.issubset(observed_set):
+                return False, "observed names are missing expected manifest entries"
+        elif observed_set != expected_set:
+            return False, "observed names do not match expected manifest set"
+    if exp.mode is not None and observed.mode != exp.mode:
+        return False, "observed mode %r does not match expected %r" % (observed.mode, exp.mode)
+    if exp.timeout_seconds is not None and observed.timeout_seconds != exp.timeout_seconds:
+        return False, "observed timeout does not match expected %d" % exp.timeout_seconds
+    return True, "the remote observation matches the reviewed manifest"
+
+
+def _evaluate_proof(rule: Rule, row: Mapping[str, Any], secret_canaries: Sequence[str]) -> tuple[CheckState, ReasonCode, ProofLevel | None, str]:
+    """Evaluate L1/L2 proof status on a matched, trusted observer row."""
+    if rule.proof_level is ProofLevel.L0:
+        return CheckState.PASS, ReasonCode.OK, ProofLevel.L0, "L0 observation matches the manifest"
+    proof_raw = row.get("proof")
+    if not isinstance(proof_raw, Mapping):
+        return (
+            CheckState.UNPROVEN,
+            ReasonCode.PROOF_NOT_RUN,
+            ProofLevel.L0,
+            "L0 matches, but required %s proof receipt is missing" % rule.proof_level.value,
+        )
+    status = str(proof_raw.get("status") or "").lower()
+    if status == "failed":
+        detail = scrub_secrets(str(proof_raw.get("reason") or "remote sentinel check did not deny"), secret_canaries)
+        return CheckState.DRIFT, ReasonCode.PROOF_FAILED, ProofLevel.L0, detail
+    if status == "timeout":
+        return (
+            CheckState.UNKNOWN,
+            ReasonCode.TIMEOUT,
+            ProofLevel.L0,
+            "the remote proof check timed out",
+        )
+    if status == "error":
+        return (
+            CheckState.UNKNOWN,
+            ReasonCode.ERROR,
+            ProofLevel.L0,
+            "the remote proof check errored",
+        )
+    achieved_raw = proof_raw.get("level")
+    try:
+        achieved = ProofLevel(str(achieved_raw))
+    except ValueError:
+        return (
+            CheckState.UNPROVEN,
+            ReasonCode.PROOF_NOT_RUN,
+            ProofLevel.L0,
+            "required %s proof was not run" % rule.proof_level.value,
+        )
+    if status != "passed" or not achieved.at_least(rule.proof_level):
+        return (
+            CheckState.UNPROVEN,
+            ReasonCode.PROOF_NOT_RUN,
+            achieved,
+            "required %s proof was not achieved" % rule.proof_level.value,
+        )
+    return CheckState.PASS, ReasonCode.OK, achieved, "remote observation and proof match"
+
+
+def evaluate_api_observation(
+    rule: Rule,
+    platform: str,
+    payload_bytes: bytes,
+    *,
+    expected_nonce: str,
+    expected_host_id: str,
+    ctx: CheckContext,
+    max_bytes: int = MAX_API_RESPONSE_BYTES,
+    max_rows: int = MAX_API_ROWS,
+    manifest_digest: str = "",
+    secret_canaries: Sequence[str] = (),
+) -> tuple[CheckResult, EvidenceSidecar | None]:
+    """Validate an observer payload against the AFC-441 trust boundary and return a result + sidecar."""
+    try:
+        doc = _parse_strict_json_bytes(payload_bytes, max_bytes=max_bytes)
+    except CheckError as exc:
+        return (
+            build_result(
+                rule,
+                platform,
+                CheckState.UNKNOWN,
+                scrub_secrets(str(exc), secret_canaries),
+                exc.reason_code,
+                ObservedState(),
+                ctx,
+                collector=Collector.API,
+            ),
+            None,
+        )
+    if not isinstance(doc, Mapping):
+        return (
+            build_result(
+                rule,
+                platform,
+                CheckState.UNKNOWN,
+                "the api observer response is not a JSON object",
+                ReasonCode.UNPARSEABLE,
+                ObservedState(),
+                ctx,
+                collector=Collector.API,
+            ),
+            None,
+        )
+    schema_ver = doc.get("schemaVersion")
+    if isinstance(schema_ver, bool) or schema_ver != API_OBSERVATION_SCHEMA_VERSION:
+        return (
+            build_result(
+                rule,
+                platform,
+                CheckState.UNKNOWN,
+                "unsupported api observation schemaVersion %r" % (schema_ver,),
+                ReasonCode.UNPARSEABLE,
+                ObservedState(),
+                ctx,
+                collector=Collector.API,
+            ),
+            None,
+        )
+    if not expected_nonce or doc.get("nonce") != expected_nonce:
+        return (
+            build_result(
+                rule,
+                platform,
+                CheckState.UNKNOWN,
+                "the api observer nonce is missing or does not match (possible replay)",
+                ReasonCode.ERROR,
+                ObservedState(),
+                ctx,
+                collector=Collector.API,
+            ),
+            None,
+        )
+    rows = doc.get("rows")
+    if not isinstance(rows, list):
+        return (
+            build_result(
+                rule,
+                platform,
+                CheckState.UNKNOWN,
+                "the api observer response carries no rows list",
+                ReasonCode.UNPARSEABLE,
+                ObservedState(),
+                ctx,
+                collector=Collector.API,
+            ),
+            None,
+        )
+    if len(rows) > max_rows:
+        return (
+            build_result(
+                rule,
+                platform,
+                CheckState.UNKNOWN,
+                "the api observer returned more than %d rows" % max_rows,
+                ReasonCode.UNPARSEABLE,
+                ObservedState(),
+                ctx,
+                collector=Collector.API,
+            ),
+            None,
+        )
+    seen_keys: set[tuple[str, str, str, str]] = set()
+    matched: Mapping[str, Any] | None = None
+    target_key = (rule.id, rule.seat, platform, expected_host_id)
+    for item in rows:
+        if not isinstance(item, Mapping):
+            return (
+                build_result(
+                    rule,
+                    platform,
+                    CheckState.UNKNOWN,
+                    "the api observer row is not a JSON object",
+                    ReasonCode.UNPARSEABLE,
+                    ObservedState(),
+                    ctx,
+                    collector=Collector.API,
+                ),
+                None,
+            )
+        key = _row_identity(item)
+        if not all(key):
+            return (
+                build_result(
+                    rule,
+                    platform,
+                    CheckState.UNKNOWN,
+                    "the api observer row omits required identity fields",
+                    ReasonCode.UNPARSEABLE,
+                    ObservedState(),
+                    ctx,
+                    collector=Collector.API,
+                ),
+                None,
+            )
+        if key in seen_keys:
+            return (
+                build_result(
+                    rule,
+                    platform,
+                    CheckState.UNKNOWN,
+                    "the api observer returned duplicate identity rows",
+                    ReasonCode.UNPARSEABLE,
+                    ObservedState(),
+                    ctx,
+                    collector=Collector.API,
+                ),
+                None,
+            )
+        seen_keys.add(key)
+        if key == target_key:
+            matched = item
+
+    if matched is None:
+        return (
+            build_result(
+                rule,
+                platform,
+                CheckState.UNKNOWN,
+                "no observation row matched requested seat/platform/host",
+                ReasonCode.ERROR,
+                ObservedState(),
+                ctx,
+                collector=Collector.API,
+            ),
+            None,
+        )
+
+    observer_raw = str(matched.get("observerClass") or doc.get("observerClass") or "")
+    try:
+        observer_class = ObserverClass(observer_raw)
+    except ValueError:
+        return (
+            build_result(
+                rule,
+                platform,
+                CheckState.UNKNOWN,
+                "unknown observerClass %r is refused" % (observer_raw,),
+                ReasonCode.ERROR,
+                ObservedState(),
+                ctx,
+                collector=Collector.API,
+            ),
+            None,
+        )
+    if observer_class not in TRUSTED_OBSERVER_CLASSES:
+        return (
+            build_result(
+                rule,
+                platform,
+                CheckState.UNKNOWN,
+                "self_report evidence is refused: it cannot establish compliance PASS or L1/L2",
+                ReasonCode.ERROR,
+                ObservedState(),
+                ctx,
+                collector=Collector.API,
+            ),
+            None,
+        )
+
