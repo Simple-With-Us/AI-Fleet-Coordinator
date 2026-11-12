@@ -1,9 +1,10 @@
 """Server nightly Fleet RAG ingest (AFC-687).
 
 Runs ``recall ingest --source linear,doc,skill,memory --prune`` after a
-successful ``code-main-sync`` service, under its own lock, and reuses the
-ingest prune guards.  Apple Notes are never part of this command.  Skill and
-memory pruning stays off when the Mac mirror is missing or stale.
+recent successful ``code-main-sync``, under its own lock, and reuses the
+ingest prune guards.  The service user reads that result.  It does not start
+the unit.  Apple Notes are never part of this command.  Skill and memory
+pruning stays off when the Mac mirror is missing or stale.
 
 The process is disabled until ``FLEET_RAG_NIGHTLY=1``.  It reads Infisical
 with service tokens only.  A machine-identity variable in the environment
@@ -47,8 +48,8 @@ from simple_tools.secretscan import scan as scan_secrets
 from fleet_rag import ingest, mirror
 from fleet_rag.core import FleetRagError, infisical_api, infisical_project
 
-# The command the timer runs.  --no-heartbeat keeps the process off fleet-secrets,
-# which is the machine-identity reader.  Apple Notes are not in the source list.
+# The command the timer runs.  --no-heartbeat keeps the process off fleet-secrets.
+# Apple Notes are not in the source list.  Credentials come from scoped service tokens.
 INGEST_ARGV = ["--source", "linear,doc,skill,memory", "--prune", "--no-heartbeat"]
 INGEST_SOURCES = ("linear", "doc", "skill", "memory")
 
@@ -90,7 +91,7 @@ MACHINE_IDENTITY_ENV = (
 )
 
 ALERT_TAG = "[GB-ORACLE \U0001f4c1AFC]"
-ALERT_STREAM = "Alerts"
+ALERT_STREAM = "OPS"
 ALERT_TOPIC = "fleet-rag-nightly"
 GAP = "\u00a0 "
 
@@ -225,7 +226,9 @@ def _zulip_credentials(
     project = (env.get("FLEET_RAG_ZULIP_INFISICAL_PROJECT") or "").strip()
     if not project:
         raise NightlyError("missing:FLEET_RAG_ZULIP_INFISICAL_PROJECT")
-    folder = (env.get("FLEET_RAG_ZULIP_INFISICAL_PATH") or "/zulip").strip() or "/zulip"
+    folder = (
+        env.get("FLEET_RAG_ZULIP_INFISICAL_PATH") or "/fleet-rag-nightly"
+    ).strip() or "/fleet-rag-nightly"
     site_name = (env.get("FLEET_RAG_ZULIP_SITE_NAME") or "ZULIP_SITE").strip()
     email_name = (env.get("FLEET_RAG_ZULIP_EMAIL_NAME") or "ZULIP_EMAIL").strip()
     key_name = (env.get("FLEET_RAG_ZULIP_API_KEY_NAME") or "ZULIP_API_KEY").strip()
@@ -266,7 +269,48 @@ def write_summary(path: Path, summary: dict) -> None:
     os.replace(tmp, path)
 
 
-def alert_text(summary: dict, tag: str, host: str) -> str:
+def _mirror_alert_reason(summary: dict) -> str | None:
+    mirror = summary.get("mirror") or {}
+    reason = (mirror.get("reason") or "").strip()
+    if not reason or reason == "fresh" or mirror.get("fresh"):
+        return None
+    return reason
+
+
+def alert_fingerprint(summary: dict) -> str:
+    """Stable identity for the same failure across consecutive nights."""
+    pieces: list[str] = []
+    sync_exit = summary.get("code_sync_exit")
+    if sync_exit not in (None, 0):
+        pieces.append(f"sync={sync_exit}")
+    if summary.get("ok") is False:
+        pieces.append("ok=0")
+    for trip in sorted(
+        (summary.get("guard_trips") or []),
+        key=lambda item: (str(item.get("source") or ""), str(item.get("reason") or "")),
+    ):
+        pieces.append(f"guard:{trip.get('source')}:{trip.get('reason')}")
+    mirror_reason = _mirror_alert_reason(summary)
+    if mirror_reason:
+        pieces.append(f"mirror:{mirror_reason}")
+    errors = [item for item in (summary.get("errors") or []) if item and item != "withheld"]
+    if errors:
+        pieces.append("errors:" + ",".join(sorted(errors)))
+    return "|".join(pieces)
+
+
+def alert_text(summary: dict, tag: str, host: str, *, streak: int = 1) -> str:
+    if streak > 1:
+        return (
+            f"{tag}\n\n"
+            + GAP.join(
+                [
+                    f"Fleet RAG nightly ingest on {host} is still failing, night {streak}.",
+                    "The condition matches the previous night.",
+                ]
+            )
+            + "\n"
+        )
     if summary.get("ok"):
         lead = f"Fleet RAG nightly ingest on {host} tripped a prune guard."
     else:
@@ -275,6 +319,9 @@ def alert_text(summary: dict, tag: str, host: str) -> str:
     trips = summary.get("guard_trips") or []
     if trips:
         parts.append(f"{len(trips)} prune guard(s) tripped.")
+    mirror_reason = _mirror_alert_reason(summary)
+    if mirror_reason:
+        parts.append(f"skill/memory mirror is {mirror_reason}.")
     sync_exit = summary.get("code_sync_exit")
     if sync_exit not in (None, 0):
         parts.append(f"code-main-sync exited {sync_exit}.")
@@ -288,7 +335,31 @@ def alert_text(summary: dict, tag: str, host: str) -> str:
         source = trip.get("source") or "ingest"
         reason = trip.get("reason") or "guard"
         lines.append(f"- `{source}`: {reason}")
+    if mirror_reason and not any(trip.get("source") == "mirror" for trip in trips):
+        lines.append(f"- `mirror`: {mirror_reason}")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _read_previous_summary(path: Path) -> dict:
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _inherit_alert_state(summary: dict, store_path: Path | None) -> None:
+    """Keep the last posted streak when tonight did not deliver an alert."""
+    if store_path is None:
+        summary.pop("alert_fingerprint", None)
+        summary.pop("alert_streak", None)
+        return
+    previous = _read_previous_summary(store_path)
+    summary["alert_fingerprint"] = (previous.get("alert_fingerprint") or "").strip()
+    try:
+        summary["alert_streak"] = int(previous.get("alert_streak") or 0)
+    except (TypeError, ValueError):
+        summary["alert_streak"] = 0
 
 
 def zulip_post(site: str, email: str, api_key: str, fields: dict[str, str]) -> None:
@@ -318,20 +389,46 @@ def zulip_post(site: str, email: str, api_key: str, fields: dict[str, str]) -> N
 
 
 def _should_alert(summary: dict) -> bool:
-    return bool(summary.get("ran") and (not summary.get("ok") or summary.get("guard_trips")))
+    if not summary.get("ran"):
+        return False
+    if summary.get("ok") is False:
+        return True
+    if summary.get("guard_trips"):
+        return True
+    return _mirror_alert_reason(summary) is not None
 
 
-def send_alert(summary: dict, env: dict, *, post: Callable | None = None) -> str:
+def send_alert(
+    summary: dict,
+    env: dict,
+    *,
+    post: Callable | None = None,
+    store_path: Path | None = None,
+) -> str:
     """Post when the run failed or a guard tripped.  Returns a short status word."""
     if not _should_alert(summary):
+        summary["alert_fingerprint"] = ""
+        summary["alert_streak"] = 0
         return "quiet"
     site = (env.get("ZULIP_SITE") or "").strip()
     email = (env.get("ZULIP_EMAIL") or "").strip()
     api_key = (env.get("ZULIP_API_KEY") or "").strip()
+    fingerprint = alert_fingerprint(summary)
+    streak = 1
+    if store_path is not None:
+        previous = _read_previous_summary(store_path)
+        prev_fp = (previous.get("alert_fingerprint") or "").strip()
+        if fingerprint and fingerprint == prev_fp:
+            try:
+                streak = int(previous.get("alert_streak") or 0) + 1
+            except (TypeError, ValueError):
+                streak = 2
     if not (site and email and api_key):
+        _inherit_alert_state(summary, store_path)
         return "unconfigured"
     host = os.uname().nodename
-    body = alert_text(summary, (env.get("FLEET_RAG_ALERT_TAG") or ALERT_TAG), host)
+    tag = env.get("FLEET_RAG_ALERT_TAG") or ALERT_TAG
+    body = alert_text(summary, tag, host, streak=streak)
     if scan_secrets(body):
         body = (
             (env.get("FLEET_RAG_ALERT_TAG") or ALERT_TAG)
@@ -354,48 +451,76 @@ def send_alert(summary: dict, env: dict, *, post: Callable | None = None) -> str
         (post or zulip_post)(site, email, api_key, fields)
     except Exception as exc:  # noqa: BLE001 - alerting must not hide the ingest result
         sys.stderr.write(f"alert: Zulip post failed ({type(exc).__name__})\n")
+        _inherit_alert_state(summary, store_path)
         return "failed"
+    summary["alert_fingerprint"] = fingerprint
+    summary["alert_streak"] = streak
     sys.stderr.write("alert: posted\n")
     return "posted"
 
 
-# Set by fleet-rag-nightly.service, which pulls code-main-sync in with Wants= and After=.
-# systemd has then already run the sync before this process starts, so the job only reads
-# the result.  Starting a unit from a User= service needs polkit, which the job does not get.
+# Set by fleet-rag-nightly.service.  While it is 1 the process never starts the unit:
+# systemd already ordered that with Wants= and After=, and a User= service cannot.
 SYNC_BY_UNIT_ENV = "FLEET_RAG_CODE_SYNC_BY_UNIT"
+# Opt-in for a host that has a one-unit start grant.  Unset, only euid 0 may start.
+SYNC_START_ENV = "FLEET_RAG_CODE_SYNC_START"
+# Optional JSON stamp code-main-sync writes.  systemctl show is the signal that needs no file.
+SYNC_STATE_ENV = "FLEET_CODE_SYNC_STATE"
 SYNC_UNIT = "code-main-sync.service"
+SYNC_BUSY = 2
+# systemctl show did not answer.  Distinct from 1, which is a real failed or stale run.
+SYNC_UNKNOWN = 3
+SYNC_BUSY_STATES = frozenset({"active", "activating", "deactivating", "reloading"})
+SYNC_MAX_AGE_S = 3600  # a success older than this is not this night's checkout
+SYNC_WAIT_S = 1800
+SYNC_POLL_S = 2
+# systemctl start as an unprivileged user.  The sync program itself did not exit.
+_START_DENIED = (
+    "access denied",
+    "interactive authentication required",
+    "permission denied",
+    "not authorized",
+)
 
 
-SYNC_MAX_AGE_S = 3600  # the sync systemd ran for this start must be this recent
+def _show_unit(
+    show: Callable[[list[str]], str] | None,
+) -> str:
+    argv = [
+        "systemctl",
+        "show",
+        SYNC_UNIT,
+        "--property=ActiveState,Result,ExecMainStatus,ExecMainStartTimestampMonotonic",
+    ]
+    if show is not None:
+        return show(argv)
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=60, check=False)
+    return proc.stdout or ""
 
 
 def unit_sync_result(
     show: Callable[[list[str]], str] | None = None,
     now_monotonic: Callable[[], float] = time.monotonic,
 ) -> int:
-    """0 only when code-main-sync's last run succeeded and started within the last hour.
+    """0 when code-main-sync's last run succeeded and started within the last hour.
 
-    systemd keeps Result from the previous run, so a skipped start would otherwise look
-    like tonight's success.  The start time is CLOCK_MONOTONIC in microseconds, the clock
-    behind time.monotonic() on Linux.  Read-only;  any doubt fails closed."""
-    argv = [
-        "systemctl",
-        "show",
-        SYNC_UNIT,
-        "--property=Result,ExecMainStatus,ExecMainStartTimestampMonotonic",
-    ]
+    2 when that unit is still running, so the caller waits and reads again.  3 when
+    the read did not include Result.  systemd keeps Result from the previous run, and
+    a running oneshot must not be treated as finished.  The start time is
+    CLOCK_MONOTONIC in microseconds, the clock behind time.monotonic() on Linux.
+    Read-only.  A missing answer is not a failed sync, and a failed or stale Result is.
+    """
     try:
-        if show is not None:
-            out = show(argv)
-        else:
-            out = subprocess.run(
-                argv, capture_output=True, text=True, timeout=60, check=False
-            ).stdout
+        out = _show_unit(show)
     except subprocess.TimeoutExpired:
         return 124
     except OSError:
         return 127
     props = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    if props.get("ActiveState", "").strip() in SYNC_BUSY_STATES:
+        return SYNC_BUSY
+    if "Result" not in props:
+        return SYNC_UNKNOWN
     if props.get("Result", "").strip() != "success":
         return 1
     if props.get("ExecMainStatus", "").strip() != "0":
@@ -410,23 +535,144 @@ def unit_sync_result(
     return 0
 
 
-def code_sync(runner: Callable[[], int] | None = None, env: dict | None = None) -> int:
-    if runner is not None:
-        return runner()
-    if (env or {}).get(SYNC_BY_UNIT_ENV, "").strip() == "1":
-        return unit_sync_result()
+def stamp_is_fresh(
+    data: object,
+    now: float,
+    *,
+    mode: int,
+    uid: int,
+    euid: int,
+    symlink: bool,
+) -> bool:
+    """A sync stamp the nightly did not write and cannot rewrite."""
+    if symlink or mode & 0o022:
+        return False
+    if euid != 0 and uid == euid:
+        return False
+    if not isinstance(data, dict) or data.get("ok") is not True or data.get("exit") != 0:
+        return False
+    try:
+        at = float(data["at"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    age = now - at
+    return not (age < 0 or age > SYNC_MAX_AGE_S)
+
+
+def state_sync_result(
+    env: dict,
+    now: float,
+    *,
+    euid: int | None = None,
+) -> int:
+    """0 when FLEET_CODE_SYNC_STATE names a fresh successful stamp.  1 otherwise."""
+    raw = (env.get(SYNC_STATE_ENV) or "").strip()
+    if not raw:
+        return 1
+    path = Path(raw)
+    try:
+        if path.is_symlink() or not path.is_file():
+            return 1
+        info = path.stat()
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return 1
+    uid = os.geteuid() if euid is None else euid
+    if stamp_is_fresh(data, now, mode=info.st_mode, uid=info.st_uid, euid=uid, symlink=False):
+        return 0
+    return 1
+
+
+def start_was_denied(text: str) -> bool:
+    folded = text.casefold()
+    return any(marker in folded for marker in _START_DENIED)
+
+
+def may_start_sync(env: dict, euid: int) -> bool:
+    """systemctl start is allowed for root, or when the host sets the opt-in.
+
+    FLEET_RAG_CODE_SYNC_BY_UNIT=1 wins: the unit ordered the sync, and the process
+    must not start it.  The service account is not root and does not get the opt-in,
+    so it never calls start.
+    """
+    if (env.get(SYNC_BY_UNIT_ENV) or "").strip() == "1":
+        return False
+    if (env.get(SYNC_START_ENV) or "").strip() == "1":
+        return True
+    return euid == 0
+
+
+def invoke_start(start: Callable[[list[str]], tuple[int, str]] | None = None) -> tuple[int, str]:
+    argv = ["systemctl", "start", "--wait", SYNC_UNIT]
+    if start is not None:
+        return start(argv)
     try:
         proc = subprocess.run(
-            ["systemctl", "start", "--wait", "code-main-sync.service"],
-            capture_output=True,
-            timeout=1800,
-            check=False,
+            argv, capture_output=True, text=True, timeout=SYNC_WAIT_S, check=False
         )
     except subprocess.TimeoutExpired:
-        return 124
+        return 124, ""
     except OSError:
-        return 127
-    return proc.returncode
+        return 127, ""
+    return proc.returncode, f"{proc.stderr or ''}\n{proc.stdout or ''}"
+
+
+def code_sync(
+    runner: Callable[[], int] | None = None,
+    env: dict | None = None,
+    *,
+    show: Callable[[list[str]], str] | None = None,
+    start: Callable[[list[str]], tuple[int, str]] | None = None,
+    sleep: Callable[[float], None] | None = None,
+    monotonic: Callable[[], float] | None = None,
+    now: Callable[[], float] | None = None,
+    euid: int | None = None,
+) -> int:
+    """0 when a recent code-main-sync succeeded.  The service user only reads.
+
+    A running unit is polled with systemctl show until it finishes.  A start is
+    attempted only when that read and the optional stamp are both stale and
+    may_start_sync is true.  Access denied is not a successful trigger: the read
+    is tried once more, and a still-stale result is exit 1.
+    """
+    if runner is not None:
+        return runner()
+    settings = env or {}
+    clock = monotonic or time.monotonic
+    pause = sleep or time.sleep
+    wall = now or time.time
+    uid = os.geteuid() if euid is None else euid
+    deadline = clock() + SYNC_WAIT_S
+    while True:
+        result = unit_sync_result(show, clock)
+        if result == 0:
+            return 0
+        if result != SYNC_BUSY:
+            break
+        if clock() >= deadline:
+            return 1
+        before = clock()
+        pause(SYNC_POLL_S)
+        if clock() <= before:
+            return 1
+    # A Result of failure or a stale success is final.  The stamp covers only a read
+    # that did not answer, so an older ok file cannot hide a sync that just failed.
+    if result != 1 and state_sync_result(settings, wall(), euid=uid) == 0:
+        return 0
+    if not may_start_sync(settings, uid):
+        return 1 if result in (SYNC_UNKNOWN, SYNC_BUSY) else result
+    code, output = invoke_start(start)
+    if code == 0:
+        return 0
+    if start_was_denied(output):
+        sys.stderr.write("code-main-sync: start denied\n")
+        reread = unit_sync_result(show, clock)
+        if reread == 0:
+            return 0
+        if reread != 1 and state_sync_result(settings, wall(), euid=uid) == 0:
+            return 0
+        return 1
+    return code
 
 
 def run_ingest() -> tuple[int, dict]:
@@ -514,7 +760,8 @@ def execute(
             alert_env.update(_zulip_credentials(env, read_file or read_token_file, fetch or _fetch))
         except NightlyError:
             pass
-        summary["alert"] = send_alert(summary, alert_env, post=post)
+        state_path = summary_path(env)
+        summary["alert"] = send_alert(summary, alert_env, post=post, store_path=state_path)
         return summary
     home = Path(env.get("HOME") or str(Path.home()))
     lock_path = Path(
@@ -551,19 +798,22 @@ def _locked(summary, env, *, read_file, fetch, sync, ingest_runner, post, now) -
     except NightlyError as exc:
         summary["ok"] = False
         summary["errors"] = [_public(exc.reason)]
-        summary["alert"] = send_alert(summary, env, post=post)
+        state_path = summary_path(env)
+        summary["alert"] = send_alert(summary, env, post=post, store_path=state_path)
         return summary
     except FleetRagError as exc:
         summary["ok"] = False
         summary["errors"] = [_public(str(exc))]
-        summary["alert"] = send_alert(summary, env, post=post)
+        state_path = summary_path(env)
+        summary["alert"] = send_alert(summary, env, post=post, store_path=state_path)
         return summary
     sync_exit = code_sync(sync, env)
     summary["code_sync_exit"] = sync_exit
     if sync_exit != 0:
         summary["ok"] = False
         summary["errors"] = [f"code-main-sync-exit-{sync_exit}"]
-        summary["alert"] = send_alert(summary, {**env, **loaded}, post=post)
+        state_path = summary_path(env)
+        summary["alert"] = send_alert(summary, {**env, **loaded}, post=post, store_path=state_path)
         return summary
     mirror_env = (env.get(mirror.MIRROR_ENV) or "").strip()
     updates = dict(loaded)
@@ -574,6 +824,8 @@ def _locked(summary, env, *, read_file, fetch, sync, ingest_runner, post, now) -
     else:
         status = mirror.mirror_status(Path(mirror_env), now, mirror.max_age_s(env))
         summary["mirror"] = {"fresh": status.fresh, "reason": status.reason, "at": status.at}
+        if not status.fresh:
+            summary["guard_trips"] = [{"source": "mirror", "reason": status.reason}]
     updates["FLEET_RAG_REQUIRE_CODE_ROOT"] = "1"
     saved = _apply(updates)
     try:
@@ -613,7 +865,8 @@ def _locked(summary, env, *, read_file, fetch, sync, ingest_runner, post, now) -
     if not summary["ok"] and not summary["errors"]:
         summary["errors"] = [f"ingest-exit-{code}"]
     alert_env = {**env, **loaded}
-    summary["alert"] = send_alert(summary, alert_env, post=post)
+    state_path = summary_path(env)
+    summary["alert"] = send_alert(summary, alert_env, post=post, store_path=state_path)
     return summary
 
 
@@ -629,6 +882,7 @@ def main(argv: list[str] | None = None) -> int:
         stopped["ran"] = True
         stopped["ok"] = False
         stopped["errors"] = ["stopped"]
+        _inherit_alert_state(stopped, path)
         try:
             write_summary(path, stopped)
         except OSError as exc:
@@ -638,6 +892,8 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _on_term)
     summary = execute(env)
     held["summary"] = summary
+    if summary.get("warnings") == ["lock-busy"]:
+        _inherit_alert_state(summary, path)
     try:
         write_summary(path, summary)
     except OSError as exc:
