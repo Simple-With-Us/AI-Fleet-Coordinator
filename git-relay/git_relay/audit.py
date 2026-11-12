@@ -153,6 +153,52 @@ class UnauthorizedAuditor:
         return True
 
 
+class BootstrapDenialAuditor:
+    """Rate-limited audit rows for verifier-confirmed first-seat denials.
+
+    A bootstrap denial row is the evidence an install-seat bootstrap receipt
+    binds:  it records the verifier-CONFIRMED identity (never the presented
+    claim), the closed cause, and for the workflow-file probe the path
+    scalars the one-time proof id rides on.  The budget is separate from the
+    spray-row budget so neither can starve the other;  over budget the probe
+    is refused without a row, never queued.  The row itself is still a
+    denial:  the request was refused, and this only names who was refused.
+    """
+
+    def __init__(self, limit: int = 4, window_s: float = 60.0, clock=time.monotonic):
+        self._limit = limit
+        self._window = window_s
+        self._clock = clock
+        self._stamps: list[float] = []
+        self._lock = threading.Lock()
+
+    def record(
+        self, audit: AuditLog, action: object, repo: object, identity: str, path: object
+    ) -> bool:
+        with self._lock:
+            now = self._clock()
+            self._stamps = [t for t in self._stamps if now - t < self._window]
+            if len(self._stamps) >= self._limit:
+                return False
+            self._stamps.append(now)
+        safe_action = action if isinstance(action, str) else ""
+        if find_secret(safe_action):
+            safe_action = "<credential-shaped>"
+        safe_repo = repo if isinstance(repo, str) else ""
+        if find_secret(safe_repo):
+            safe_repo = ""
+        detail = {"cause": "seat_not_in_policy", "identity": identity}
+        if isinstance(path, str) and path:
+            # Audit hygiene hashes a credential-shaped value;  the bootstrap
+            # receipt binds either form, exactly like the external probe row.
+            detail["path"] = path
+        try:
+            audit.record("unknown", safe_action[:64], safe_repo, "unauthenticated", detail)
+        except OSError:
+            return False
+        return True
+
+
 def _write_all(fd: int, data: bytes) -> None:
     """Write every byte or raise:  os.write may legally write short."""
     view = memoryview(data)

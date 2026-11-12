@@ -894,6 +894,12 @@ _API_TIMEOUT = 6
 REGISTRY_ENV_SUBPATH = os.path.join(".local", "bin", "operator-registry-env")
 
 
+#: The retired pointer variable (it named the variable holding the key).  registry_api
+#: no longer reads it;  this reader still forwards it from the host's env file until P6 of
+#: the AFC-694 consolidation deletes with_registry_env, and then this name goes with it.
+_RETIRED_KEY_POINTER = "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY_ENV"
+
+
 def with_registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
     """Return `env` enriched from `$HOME/.local/bin/operator-registry-env` when no registry API URL or SSH remote is set.
 
@@ -911,7 +917,7 @@ def with_registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
     path = os.path.join(home, REGISTRY_ENV_SUBPATH)
     if not os.path.isfile(path):
         return env
-    names = (RA.URL_ENV, RA.PRINCIPAL_ENV, RA.KEY_ENV, RA.KEY_REF_ENV)
+    names = (RA.URL_ENV, RA.PRINCIPAL_ENV, RA.KEY_VAR, _RETIRED_KEY_POINTER)
     script = (
         '. "$1" >/dev/null 2>&1 || true\n'
         "for k in %s; do\n"
@@ -924,7 +930,7 @@ def with_registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
         '  [ -n "$rv" ] && printf "%%s=%%s\\0" "$ref" "$rv"\n'
         "fi\n"
         "exit 0\n"
-    ) % (" ".join(names), RA.KEY_REF_ENV)
+    ) % (" ".join(names), _RETIRED_KEY_POINTER)
     try:
         proc = subprocess.run(
             ["/bin/sh", "-c", script, "operator-registry-env", path],

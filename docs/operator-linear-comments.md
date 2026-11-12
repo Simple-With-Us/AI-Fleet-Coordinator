@@ -3,9 +3,11 @@
 The standalone Zulip -> Linear relay becomes a job of the Operator (owner directive,
 2026-11-03).  This note is the inventory of what the relay is today, the design of the
 fold-in, and the retirement sequence for the relay's bot and process.  States are kept
-distinct throughout:  this lane BUILDS and TESTS the fold-in;  nothing here is deployed,
-no live Linear comment is written by it, and the running relay is untouched until the
-retirement sequence at the end runs, in order, after verification.
+distinct throughout:  the fold-in is merged (#1557, in `scripts/simple_tools/operator_linear.py`)
+and ships dark:  the Operator's Zulip to Linear mirror is off, so no live Linear comment is
+written by it, and the standalone relay is untouched until the retirement sequence at the end
+runs, in order, after verification.  The Operator's Zulip listener on the server is the
+Eavesdropper, and it hosts the mirror.
 
 ## The contract (owner rulings)
 
@@ -30,8 +32,8 @@ retirement sequence at the end runs, in order, after verification.
 
 ## Inventory: the relay as it stands
 
-- **Code:** `scripts/agent_sync/linear_relay.py` (this repo, on main).  A standalone
-  long-running process:  `python3 -m agent_sync.linear_relay run` (and `check` for a
+- **Code:** `scripts/simple_tools/linear_relay.py` (this repo, on main).  A standalone
+  long-running process:  `python3 -m simple_tools.linear_relay run` (and `check` for a
   no-writes credential/stream/auth probe).  It holds its own Zulip event queue;  the
   listener daemon does not feed it and it is not part of the daemon today.
 - **Zulip identity:** a dedicated member (not admin) bot, bound by the env names
@@ -64,7 +66,7 @@ retirement sequence at the end runs, in order, after verification.
 
 ## The fold-in (this lane)
 
-- `scripts/agent_sync/operator_linear.py` (new):  `OperatorLinearComments` hosts the
+- `scripts/simple_tools/operator_linear.py` (new):  `OperatorLinearComments` hosts the
   relay's own `RelayWorker` inside the listener daemon.  The daemon feeds it the stream
   messages it already routes (`route_message`) and the `update_message` events it
   already handles (`handle_events`), and ticks it every 30 seconds;  observation is
@@ -93,8 +95,8 @@ retirement sequence at the end runs, in order, after verification.
 - **Switches:** `[linear_comments] enabled` in listener.toml (parsed in config.py;
   a malformed section never turns it on;  the server instance only, so two instances
   can never stack comments), the sample section ships in
-  `scripts/agent_sync/server/listener.toml`, and `apply_live_config.py` adds the section
-  to a live volume that lacks it.  The server image copies the whole `agent_sync`
+  `scripts/simple_tools/server/listener.toml`, and `apply_live_config.py` adds the section
+  to a live volume that lacks it.  The server image copies the whole `simple_tools`
   package, so no Dockerfile change is needed.
 - **Credentials:** the daemon's Linear credential loads through the scoped Infisical
   service token described in the credential seam below — the developer token is
@@ -155,7 +157,7 @@ posts, as the relay skipped its own.
 
 ## Tests
 
-`scripts/agent_sync/tests/test_operator_linear.py` (40 tests):  mention first
+`scripts/simple_tools/tests/test_operator_linear.py` (40 tests):  mention first
 appearing in the 3rd message produces a comment covering messages 1–3;  one comment per
 (topic, issue) across repeats, two issues in one topic, and one issue in two topics;
 edits in place reflecting the whole thread;  restart recovery from the ledger with no
@@ -221,10 +223,9 @@ is neither live.
    a follow-up PR (the worker, ledger and client stay:  the Operator hosts them).
    Record the DONE closeout in the claim topic.
 
-## Rebase note
+## Paths
 
-PR #1258 renames `scripts/agent_sync` -> `scripts/simple_tools` (and the standalone
-relay's replacement is part of that stack's world).  Every path in this note moves with
-that rename;  the fold-in's diff is additive to `linear_relay.py` (history reader,
-byline, whole-topic continuation), one new module, one new test file, and small daemon
-and config hooks, so it should rebase mechanically onto the renamed tree.
+The package is `scripts/simple_tools` (renamed from `scripts/agent_sync`), and every path in this
+note is the current one.  The fold-in is additive to `linear_relay.py` (history reader, byline,
+whole-topic continuation), one module (`operator_linear.py`), one test file
+(`tests/test_operator_linear.py`) and small daemon and config hooks.

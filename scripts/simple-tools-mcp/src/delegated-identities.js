@@ -176,7 +176,52 @@ function decorate(spec, allowed, seat) {
     properties: { ...(spec.inputSchema?.properties ?? {}), identity: identityProperty(allowed, seat) },
     ...(write ? { required: [...(spec.inputSchema?.required ?? []), "identity"] } : {}),
   };
+  if (FENCED_READS.has(spec.name)) {
+    const { outputSchema: _counts, ...rest } = spec;
+    return { ...rest, inputSchema };
+  }
   return { ...spec, inputSchema };
+}
+
+// ---------------------------------------------------------------- fenced reads reach a client as text (AFC-637)
+
+/**
+ * Reads whose text is a fenced envelope (BEGIN_UNTRUSTED_* ... END_UNTRUSTED_*) and whose
+ * structuredContent is only counts and ids.  A client that shows structuredContent in place of
+ * the text (Claude Code does) saw those counts, or {}, and never the content.  structuredContent
+ * may not carry the envelope (it holds integers only, a prompt-injection control), so these tools
+ * advertise no outputSchema and textFirst drops their structuredContent:  the text is the result.
+ * Fenced tools that never advertised an outputSchema (the linear_* passthrough, fleetlink_*,
+ * whatsapp_*) need no entry here;  textFirst handles them from the result itself.
+ */
+export const FENCED_READS = Object.freeze(new Set([
+  "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_dm_list", "zulip_dm_read",
+  "zulip_get_message", "zulip_message_history", "zulip_search", "zulip_channels", "zulip_channel_info",
+  "zulip_channel_members", "zulip_users", "zulip_presence", "zulip_user_groups", "zulip_custom_emoji",
+  "zulip_scheduled_list", "zulip_drafts_list",
+  "recall_search", "linear_list", "linear_show",
+  "eavesdropper_inbox", "operator_inbox_pending", "eavesdropper_owner_queue", "eavesdropper_wakes", "eavesdropper_held_back",
+]));
+
+const FENCE_LINE = /^BEGIN_UNTRUSTED_[A-Z]+ nonce=[0-9a-f]{16}$/m;
+
+/**
+ * A successful result as a client should get it.  When the served tool has no outputSchema and
+ * the result is a fenced envelope or carries an empty structuredContent ({}, which okResult makes
+ * when a tool passes no structured value), structuredContent is dropped so the text is what the
+ * client shows.  A tool that advertises an outputSchema always keeps its structuredContent, which
+ * an SDK client requires.
+ */
+export function textFirst(result, spec) {
+  if (!result || typeof result !== "object" || result.isError || spec?.outputSchema !== undefined) return result;
+  const structured = result.structuredContent;
+  if (structured === undefined) return result;
+  const empty = structured !== null && typeof structured === "object" && !Array.isArray(structured) && Object.keys(structured).length === 0;
+  const fenced = Array.isArray(result.content)
+    && result.content.some((part) => part?.type === "text" && typeof part.text === "string" && FENCE_LINE.test(part.text));
+  if (!empty && !fenced) return result;
+  const { structuredContent: _dropped, ...rest } = result;
+  return rest;
 }
 
 const LIST_CACHE = new Map();
@@ -307,7 +352,12 @@ export class IdentityRouter {
     return errorResult(error);
   }
 
+  /** One tools/call, its result as the client gets it (textFirst, AFC-637). */
   async call(name, rawArgs) {
+    return textFirst(await this.dispatch(name, rawArgs), typeof name === "string" && Object.hasOwn(this.toolsByName, name) ? this.toolsByName[name] : undefined);
+  }
+
+  async dispatch(name, rawArgs) {
     // An events-only seat serves notifications only:  every name is unknown
     // to the connection, the same protocol error as any unknown name
     // (buildServer maps UnknownTool), audited like one.

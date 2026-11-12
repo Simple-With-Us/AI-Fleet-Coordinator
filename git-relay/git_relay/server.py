@@ -34,7 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import git_read
 from .app_tokens import AppTokenError, missing_app_credential
-from .audit import AuditLog, UnauthorizedAuditor
+from .audit import AuditLog, BootstrapDenialAuditor, UnauthorizedAuditor
 from .github_client import DispatchPreReadUnavailable, GitHubClient, RelayGitHubError
 from .outcomes import OutcomeStore, OutcomeStoreError, key_for
 from .policy import (
@@ -299,6 +299,7 @@ class Relay:
         self.client = client
         self.audit = audit
         self._unauth_auditor = UnauthorizedAuditor()
+        self._bootstrap_auditor = BootstrapDenialAuditor()
         self.app_minter = app_minter
         self.outcomes = outcomes if outcomes is not None else OutcomeStore(None)
         self.typed_gateway = None
@@ -308,7 +309,13 @@ class Relay:
             self.typed_gateway = TypedGateway(policy, client, app_minter, audit, self.outcomes)
 
     def handle(
-        self, token: str, action: str, args: dict, proof: dict | None = None
+        self,
+        token: str,
+        action: str,
+        args: dict,
+        proof: dict | None = None,
+        *,
+        operator_bootstrap: bool = False,
     ) -> tuple[int, dict]:
         # A separate audited gateway charges policy once and keeps disarm
         # receipts fresh.  Default-off; no generic write-replay path is used.
@@ -319,6 +326,57 @@ class Relay:
                 return self.typed_gateway.handle(token, action, args, proof=proof)
         seat, auth_reason = self.policy.authenticate_with_reason(token, proof)
         if seat is None:
+            if auth_reason == "seat_not_in_policy":
+                # First-seat bootstrap:  the bearer parses and names an
+                # identity no shared seat claims.  Ask the verifier under the
+                # bootstrap bounds and record the denial against the
+                # verifier-CONFIRMED identity (never the bearer's claim), so
+                # an install-seat bootstrap receipt can bind this exact run.
+                # The request is refused either way:  the row names who was
+                # refused, it does not grant anything, and a verified
+                # identity is not attacker-chosen attribution.
+                # Only requests arriving on the operator listener may spend
+                # the shared verifier and auditor budgets:  the public
+                # listener (operator_bootstrap=False) writes the generic
+                # bounded unauth row for the same bearer, so an
+                # unauthenticated spray from the edge can never reach the
+                # verifier or starve first-seat enrollment.  On the operator
+                # listener, only actions whose denial row can bind a bootstrap
+                # receipt spend those budgets;  anything else falls through to
+                # the generic bounded unauth row below.
+                identity = (
+                    self.policy.bootstrap_resolve(token)
+                    if operator_bootstrap and action in ("wf_repo_get", "wf_file_patch")
+                    else None
+                )
+                if identity is not None:
+                    repo = str(args.get("repo") or "") if isinstance(args, dict) else ""
+                    path = (
+                        args.get("path")
+                        if action == "wf_file_patch" and isinstance(args, dict)
+                        else None
+                    )
+                    try:
+                        recorded = self._bootstrap_auditor.record(
+                            self.audit, action, repo, identity, path
+                        )
+                    except OSError:
+                        # An unwritable audit log is not admission evidence:
+                        # refuse without the marker rather than let a proof
+                        # go PROVEN on a run no receipt could bind.
+                        recorded = False
+                    status, obj = auth_failure_response(auth_reason)
+                    if recorded:
+                        # Operator-admission marker:  the bootstrap proof
+                        # requires it, so a public-listener run (generic
+                        # bounded refusal, no verifier-backed identity row)
+                        # cannot produce a proven-but-uninstallable receipt.
+                        # Over-budget or unrecorded denials carry no marker:
+                        # without the audit row the receipt would not
+                        # install.  It names the listener's capability only;
+                        # no credential material.
+                        return status, dict(obj, bootstrap_admission="operator")
+                    return status, obj
             # One bounded, rate-limited row (seat unknown, no token material)
             # so a credential spray is visible without filling the log.
             # The cause is a closed word (seat_not_in_policy, bearer_rejected,
@@ -995,7 +1053,32 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             self._slots.release()
 
 
-def make_handler(relay: Relay):
+class _OperatorBootstrapRelay:
+    """Listener-bound capability facade:  passes operator_bootstrap=True to
+    the wrapped Relay so the operator listener alone admits bootstrap
+    resolution.  Exists only where make_handler opted in;  the public
+    listener and direct callers get Relay.handle's default (off)."""
+
+    __slots__ = ("_relay",)
+
+    def __init__(self, relay: Relay):
+        self._relay = relay
+
+    def handle(self, token, action, args, proof=None):
+        return self._relay.handle(token, action, args, proof=proof, operator_bootstrap=True)
+
+
+def make_handler(relay: Relay, operator_bootstrap: bool = False):
+    # Bootstrap admission is bound to the LISTENER, never to the peer
+    # address:  the tunnel and any local client reach the public listener
+    # alike, so remote_addr cannot distinguish an operator from the edge.
+    # The operator listener is a separate loopback-only socket the tunnel
+    # ingress never targets (main()).  Only that listener opts the relay
+    # into bootstrap admission;  everywhere else Relay.handle's default
+    # keeps it off.
+    if operator_bootstrap:
+        relay = _OperatorBootstrapRelay(relay)
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "swu-git-relay/1"
 
@@ -1014,12 +1097,22 @@ def make_handler(relay: Relay):
             if self.path == "/healthz":
                 self._send(200, {"ok": True})
             elif git_read.is_git_path(self.path):
+                if operator_bootstrap:
+                    # The operator listener serves the v1 API only:  Git
+                    # smart-HTTP needs the full Relay interface and is not
+                    # part of bootstrap admission, so it is refused outright
+                    # rather than delegated through the capability facade.
+                    self._send(404, {"error": "not found"})
+                    return
                 git_read.handle(relay, self, "GET")
             else:
                 self._send(404, {"error": "not found"})
 
         def do_POST(self) -> None:
             if git_read.is_git_path(self.path):
+                if operator_bootstrap:
+                    self._send(404, {"error": "not found"})
+                    return
                 git_read.handle(relay, self, "POST")
                 return
             parts = self.path.strip("/").split("/")
@@ -1464,7 +1557,31 @@ def main() -> None:
     port = int(os.environ.get("GIT_RELAY_PORT", str(DEFAULT_PORT)))
     server = BoundedThreadingHTTPServer((host, port), make_handler(relay))
     print(f"git-relay listening on {host}:{port}")
-    server.serve_forever()
+    operator_port = os.environ.get("GIT_RELAY_OPERATOR_PORT")
+    operator_server = None
+    if operator_port:
+        # The operator listener carries the bootstrap capability on its own
+        # socket, bound to 127.0.0.1 explicitly - never to GIT_RELAY_HOST.
+        # The tunnel ingress never targets it (config-grounded at design
+        # time; re-verify at activation), so the public forwarded path
+        # cannot reach bootstrap admission.  Unset, the relay serves the
+        # public listener only and bootstrap admission is unavailable
+        # everywhere:  first-seat enrollment then has no admitted path.
+        # The operator listener reduces public-edge exposure only - any
+        # local process can still spend its budgets, so it is not per-user
+        # authentication.
+        operator_server = BoundedThreadingHTTPServer(
+            ("127.0.0.1", int(operator_port)),
+            make_handler(relay, operator_bootstrap=True),
+        )
+        threading.Thread(target=operator_server.serve_forever, daemon=True).start()
+        print(f"git-relay operator listener on 127.0.0.1:{operator_port}")
+    try:
+        server.serve_forever()
+    finally:
+        if operator_server is not None:
+            operator_server.shutdown()
+            operator_server.server_close()
 
 
 if __name__ == "__main__":

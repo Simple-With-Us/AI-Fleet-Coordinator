@@ -15,9 +15,12 @@ on:
         default: true
 
 # A called workflow can only narrow these, so the caller grants all three.
+# pull-requests must be WRITE: the prompter comments on PRs, and on a PR
+# resource the Actions token needs pull-requests:write for issue-comment
+# POSTs (issues:write alone is accepted only for real issues).
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
   issues: write
 
 jobs:

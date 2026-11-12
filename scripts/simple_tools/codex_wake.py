@@ -14,6 +14,7 @@ from dataclasses import MISSING, asdict, fields
 from pathlib import Path
 from typing import Any, BinaryIO
 
+from . import claude_wake as CLW
 from . import codex_chat_transport as CT
 from . import platform_letter_codex as PLC
 from . import wake_router as WR
@@ -22,9 +23,38 @@ SEAT = "CODEX"
 PLATFORM = "codex"
 MENTION = "Codex"
 SESSION_RE = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
+DEFAULTS: dict[str, Any] = {
+    **WR.ROUTER_DEFAULTS,
+    "mac_ssh": "",
+    "resume_timeout_seconds": CLW.DEFAULTS["resume_timeout_seconds"],
+}
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_REQUEST_DEPTH = 16
 MAX_REQUEST_NODES = 1000
+# These refusals precede native enqueue; uncertain or prior-delivery outcomes stay unclassified.
+NEVER_RAN = frozenset(
+    {
+        "archived",
+        "invalid-binding",
+        "invalid-generation",
+        "invalid-json",
+        "invalid-message-id",
+        "invalid-platform",
+        "invalid-request",
+        "invalid-routing-metadata",
+        "invalid-seat",
+        "invalid-session",
+        "invalid-target",
+        "invalid-wake",
+        "invalid-wake-id",
+        "not-interactive-chat",
+        "request-too-complex",
+        "request-too-large",
+        "request-unreadable",
+        "target-released",
+        "unsupported-host",
+    }
+)
 LETTER_RE = re.compile(r"^[A-Z]{1,2}$")
 WAKE_TEXT = (
     "You were tagged in Zulip.\u00a0 Read the message identified in the data below "
@@ -285,6 +315,23 @@ class CodexDelivery:
         ):
             return WR.Delivery("refused", route="codex-desktop", code="target-released")
         return None
+
+
+def router_platform(env: Mapping[str, str], settings: Mapping[str, Any]) -> WR.Platform:
+    """Build the server plugin using the shared correlated transport to the Mac."""
+
+    def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
+        if target.host != "mac":
+            return WR.Delivery("refused", code="unknown-host")
+        return CLW.deliver_remote(env, settings, target, wake, platform=PLATFORM)
+
+    return WR.Platform(
+        seat=SEAT,
+        platform=PLATFORM,
+        mention=MENTION,
+        target_re=SESSION_RE,
+        deliver=deliver,
+    )
 
 
 def make_platform(
