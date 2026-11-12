@@ -347,6 +347,26 @@ class InfisicalEnvTests(unittest.TestCase):
         self.assertIn("not usable, so not loaded: JET_ROUTINE_KEY, JET_ROUTINE_URL", line)
         self.assertNotIn("ftp://", line)
 
+    def test_a_quoted_routine_value_is_judged_as_the_daemon_reads_it(self) -> None:
+        # The daemon strips one wrapping pair of quotes from a routine URL and key (adapters.resolve_routine), so the
+        # loader does not refuse a seat for quotes the daemon would have removed.
+        from simple_tools import adapters, zulip
+
+        key = "k" * 40
+        for quote in ('"', "'"):
+            url = "%shttps://jet.test/wake%s" % (quote, quote)
+            self.assertTrue(IE.seat_value_usable("JET_ROUTINE_URL", url), url)
+            self.assertTrue(IE.seat_value_usable("JET_ROUTINE_URL", "  %s  " % url), url)
+            self.assertTrue(IE.seat_value_usable("JET_ROUTINE_KEY", quote + key + quote))
+            self.assertIsNone(adapters.routine_url_problem(zulip._strip_quotes(url)))
+        # Quotes hide nothing:  what is inside is still judged, and a lone or mismatched quote is still refused.
+        self.assertFalse(IE.seat_value_usable("JET_ROUTINE_URL", '"ftp://jet.test/wake"'))
+        self.assertFalse(IE.seat_value_usable("JET_ROUTINE_URL", '"https://jet.test/wake'))
+        self.assertFalse(IE.seat_value_usable("JET_ROUTINE_URL", "\"https://jet.test/wake'"))
+        self.assertFalse(IE.seat_value_usable("JET_ROUTINE_KEY", '"short"'))
+        for value in ('"https://jet.test/wake"', "'x'", '"', "", " a ", "\"a'"):
+            self.assertEqual(IE._strip_quotes(value), zulip._strip_quotes(value), value)
+
     def test_the_routine_url_rule_matches_the_daemons(self) -> None:
         # The ZCode bridge is plain http to a Tailscale address;  the daemon accepts that, so the loader does too.
         tailnet = "http://%s:8791/wake/ZC" % ipaddress.IPv4Address((100 << 24) | (64 << 16) | 7)
