@@ -2207,6 +2207,15 @@ final class OpsController: ObservableObject {
     /// Counts every `--yes` run that ended,  and every recheck that settled one,  so a view
     /// can read its data again.
     @Published private(set) var completedRuns = 0
+    /// The action of the run `completedRuns` last counted, set just before the count moves, so a
+    /// view reads its data again only after a run of its own action.  Nil before the first.
+    @Published private(set) var lastCompletedAction: OpsAction?
+    /// True when the run `completedRuns` last counted was a server listener settings run, the one
+    /// kind of run after which the settings section reads the server again.  False before the first.
+    var lastRunWasListenerSettings: Bool {
+        if case .serverListenerSettings? = lastCompletedAction { return true }
+        return false
+    }
     @Published private(set) var isRechecking = false
     /// True while the approval question is up,  so every window holds its buttons.
     @Published private(set) var isAsking = false
@@ -2370,6 +2379,7 @@ final class OpsController: ObservableObject {
             if outcome.kind != .submitted {
                 self.record(action, result: outcome.kind.rawValue, runID: OpsController.makeRunID(),
                             outcome: outcome, extra: ["recheck": "true"])
+                self.lastCompletedAction = action
                 self.completedRuns += 1
             }
         }
@@ -2492,6 +2502,7 @@ final class OpsController: ObservableObject {
             let outcome = try await launch(invocation, action: action, mode: .yes)
             record(action, result: outcome.kind.rawValue, runID: runID, outcome: outcome)
             remember(action, outcome)
+            lastCompletedAction = action
             completedRuns += 1
             return outcome
         } catch {
@@ -2511,6 +2522,7 @@ final class OpsController: ObservableObject {
                                      runNotKnown: true)
             record(action, result: outcome.kind.rawValue, runID: runID)
             remember(action, outcome)
+            lastCompletedAction = action
             completedRuns += 1
             return outcome
         }
@@ -2673,7 +2685,10 @@ final class OpsController: ObservableObject {
                 if started { record(action, result: OpsResultKind.failed.rawValue, runID: runID) }
             }
         }
-        if started { completedRuns += 1 }
+        if started {
+            lastCompletedAction = action
+            completedRuns += 1
+        }
         // The helper may have acted on the unit,  so its state is read again,  newer than the
         // report the plan was made from.
         if started, readsUnitStateAfterRun, case .serverUnit(_, let unit) = action {

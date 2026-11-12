@@ -134,8 +134,16 @@ indirect enum ServerSettingValue: Equatable {
 /// promise.  It reads one document and refuses anything after it.
 enum ServerSettingJSON {
     static let maximumDepth = 32
+    /// The longest document read, in UTF-8 bytes (2 MiB).  The real answer is a few tens of
+    /// kilobytes, and the process runner already stops at `OpsProcessRunner.maximumOutputBytes`.
+    static let maximumBytes = 2_097_152
+    /// The most values one document may hold, every table, list, string, number and literal
+    /// counted, so a document dense with tiny values is refused too.
+    static let maximumElements = 200_000
 
     static func parse(_ text: String) -> ServerSettingValue? {
+        // Checked before the byte array is built, so an oversized text is never copied.
+        guard text.utf8.count <= maximumBytes else { return nil }
         var reader = Reader(bytes: Array(text.utf8))
         reader.skipSpace()
         guard let value = reader.value(depth: 0) else { return nil }
@@ -146,6 +154,8 @@ enum ServerSettingJSON {
     private struct Reader {
         let bytes: [UInt8]
         var index = 0
+        /// The values still allowed:  each `value(depth:)` call spends one.
+        var budget = ServerSettingJSON.maximumElements
 
         var atEnd: Bool { index >= bytes.count }
 
@@ -163,7 +173,8 @@ enum ServerSettingJSON {
         }
 
         mutating func value(depth: Int) -> ServerSettingValue? {
-            guard depth <= ServerSettingJSON.maximumDepth, !atEnd else { return nil }
+            guard depth <= ServerSettingJSON.maximumDepth, budget > 0, !atEnd else { return nil }
+            budget -= 1
             switch bytes[index] {
             case UInt8(ascii: "{"): return table(depth: depth)
             case UInt8(ascii: "["): return list(depth: depth)
@@ -406,10 +417,12 @@ struct ServerSettingsAllowlist: Equatable {
             guard let values = object["values"] as? [String], !values.isEmpty else { return nil }
             return .choice(values)
         case "string":
+            // A length that is not a whole number (`true`, `8.5`) is not read as one:  the entry is
+            // left out, so its key is not offered.
             guard let pattern = object["pattern"] as? String, !pattern.isEmpty,
-                  let limit = (object["maxLength"] as? NSNumber)?.intValue,
-                  (0...256).contains(limit) else { return nil }
-            return .text(pattern: pattern, maxLength: limit)
+                  let length = bound(object["maxLength"]), length == length.rounded(),
+                  (0.0...256.0).contains(length) else { return nil }
+            return .text(pattern: pattern, maxLength: Int(length))
         case "pairs": return .pairs
         case "seat-env": return nested ? .seatEnv : nil
         case "table":
@@ -468,6 +481,13 @@ struct ServerSettingsAnswer: Equatable {
     var replaced: Bool?
     /// The name of the copy an apply made of the old file, when the editor named one.
     var backup: String?
+    /// False when the document is not one this app can read in full:  `result` is missing or not
+    /// text, `ok` is missing or not true or false, `changes`, `diff` or `check` is there and of
+    /// another type, or any element of `changes` or `diff` could not be read.  Such an answer is
+    /// never a plan anyone may approve or an apply that is done (`outcome`), because what it shows
+    /// may be less than what the server would do.  A key or section this app does not know is not
+    /// a fault:  the real server's answer carries several.
+    var isWellFormed = true
 
     /// The editor's backup name prefix, `listener.toml` plus its `BACKUP_INFIX`.
     static let backupPrefix = "listener.toml.bak-settings-"
@@ -513,32 +533,65 @@ struct ServerSettingsAnswer: Equatable {
             if case .bool(let value)? = object[key] { return value }
             return nil
         }
-        result = text("result", in: document) ?? ""
-        ok = flag("ok", in: document) ?? false
+        // A missing or mistyped `result` or `ok` still reads as an empty word and false, and the
+        // answer is marked not well formed, so it can never pass for a plan or an apply.
+        var wellFormed = true
+        if let word = text("result", in: document) {
+            result = word
+        } else {
+            result = ""
+            wellFormed = false
+        }
+        if let said = flag("ok", in: document) {
+            ok = said
+        } else {
+            ok = false
+            wellFormed = false
+        }
         applyEnabled = flag("applyEnabled", in: document)
         baseSHA256 = text("baseSHA256", in: document).flatMap { Self.isHash($0) ? $0 : nil }
         planSHA256 = text("planSHA256", in: document).flatMap { Self.isHash($0) ? $0 : nil }
         settings = document["settings"]?.tableEntries ?? [:]
-        if case .list(let items)? = document["changes"] {
-            changes = items.compactMap { item in
-                guard let entry = item.tableEntries, let key = text("key", in: entry), let to = entry["to"] else { return nil }
-                var removes: [String] = []
-                if case .list(let names)? = entry["removes"] {
-                    removes = names.compactMap { if case .text(let name) = $0 { return name } else { return nil } }
+        if let raw = document["changes"] {
+            if case .list(let items) = raw {
+                changes = items.compactMap { item in
+                    guard let entry = item.tableEntries, let key = text("key", in: entry), let to = entry["to"] else { return nil }
+                    var removes: [String] = []
+                    if let rawRemoves = entry["removes"] {
+                        guard case .list(let names) = rawRemoves else { return nil }
+                        removes = names.compactMap { if case .text(let name) = $0 { return name } else { return nil } }
+                        // A name that is not text is a change this app cannot read in full.
+                        guard removes.count == names.count else { return nil }
+                    }
+                    let from = entry["from"].flatMap { $0 == .null ? nil : $0 }
+                    return Change(key: key, from: from, to: to, removes: removes)
                 }
-                let from = entry["from"].flatMap { $0 == .null ? nil : $0 }
-                return Change(key: key, from: from, to: to, removes: removes)
+                // A change that could not be read is never dropped quietly:  the plan would show
+                // fewer changes than the server would make.
+                if changes.count != items.count { wellFormed = false }
+            } else {
+                wellFormed = false
             }
         }
-        if case .list(let lines)? = document["diff"] {
-            diff = lines.compactMap { if case .text(let line) = $0 { return OpsResultParser.sanitizedForDisplay(line) } else { return nil } }
-        }
-        if let check = document["check"]?.tableEntries {
-            checkOK = flag("ok", in: check)
-            if case .list(let problems)? = check["problems"] {
-                checkProblems = problems.map { OpsResultParser.sanitizedForDisplay($0.display) }
+        if let raw = document["diff"] {
+            if case .list(let lines) = raw {
+                diff = lines.compactMap { if case .text(let line) = $0 { return OpsResultParser.sanitizedForDisplay(line) } else { return nil } }
+                if diff.count != lines.count { wellFormed = false }
+            } else {
+                wellFormed = false
             }
         }
+        if let raw = document["check"] {
+            if let check = raw.tableEntries {
+                checkOK = flag("ok", in: check)
+                if case .list(let problems)? = check["problems"] {
+                    checkProblems = problems.map { OpsResultParser.sanitizedForDisplay($0.display) }
+                }
+            } else {
+                wellFormed = false
+            }
+        }
+        isWellFormed = wellFormed
         errorCode = text("errorCode", in: document).flatMap { OpsResultParser.isErrorCode($0) ? $0 : nil }
         detail = text("detail", in: document).map { String(OpsResultParser.sanitizedForDisplay($0).prefix(400)) }
         if let reload = document["reload"]?.tableEntries {
@@ -564,11 +617,23 @@ extension ServerSettingsAnswer {
     ) -> (OpsResultKind, String) {
         let gap = ServerStatusCopy.sentenceGap
         guard let answer else {
-            if helperKind == .refused || helperKind == .failed { return (helperKind, detail) }
-            return (.failed, "The server's answer carried no settings document, so nothing is known about it.")
+            // The helper's own word stands when it says the run was refused or failed, and when it
+            // says an apply is not known:  an apply whose link dropped may have worked, so it is
+            // never made a failure that invites a blind retry.  A plan changes nothing, so a plan
+            // that is not known falls through and fails.
+            if helperKind == .refused || helperKind == .failed || (helperKind == .unknown && mode == .yes) {
+                return (helperKind, detail)
+            }
+            // Any other word with no document behind it is not a plan or an apply this app can
+            // stand behind;  after an apply was sent it may still have landed, so it is not known.
+            return (mode == .yes ? .unknown : .failed,
+                    "The server's answer carried no settings document, so nothing is known about it.")
         }
         switch (mode, answer.result) {
         case (.plan, "planned"):
+            guard answer.isWellFormed else {
+                return (.failed, "The server's plan was not well formed, so it was not used and cannot be approved.")
+            }
             guard answer.ok, answer.planSHA256 != nil else {
                 return (.failed, "The server's plan carried no plan hash, so it cannot be approved.")
             }
@@ -580,6 +645,11 @@ extension ServerSettingsAnswer {
         case (_, "unchanged"):
             return (.refused, "Every setting is already as asked, so there is nothing to apply.")
         case (.yes, "applied"):
+            // The server says it applied, and its answer could not be read in full:  the change
+            // may have landed, so the result is not known rather than failed.
+            guard answer.isWellFormed else {
+                return (.unknown, "The server's answer to the apply was not well formed, so it was not used.\(gap)Read the server's settings again before changing anything.")
+            }
             return (answer.ok ? .done : .unknown, detail)
         case (_, "refused"):
             return (.refused, answer.detail ?? detail)
@@ -716,7 +786,21 @@ enum ServerSettingsCopy {
     static let gap = ServerStatusCopy.sentenceGap
 
     static let neverOffered = "A pin or a credential name.\(gap)The server's editor refuses it whatever its allowlist says, so Muster never offers it, and the server never sends its value."
-    static let variableName = "This names the variable that holds the routine's address or key, never its value.\(gap)The server lets it be only the seat's own name, so Muster shows it and offers no control."
+    /// The server editor's rule (`seat_env_names` in `eavesdropper_settings_edit.py`):  a routine's
+    /// `url_env` and `key_env` may stay as they are, or be one of the two names it derives from the
+    /// seat's code (the seat's name in capitals, every other character an underscore).
+    static let variableName = "This names the variable that holds the routine's address or key, never its value.\(gap)The server lets it stay as it is or be one of two names made from the seat's code:  CODE_ROUTINE_URL or ZULIP_ALERT_CODE_ENDPOINT for the address, and CODE_ROUTINE_KEY or ZULIP_ALERT_CODE_KEY for the key.\(gap)Muster shows the name, never a value, and offers no control."
+
+    /// A typed value with a credential's shape is never sent.  The sentence names the row and
+    /// never the value or any part of it.
+    static func credentialShaped(_ title: String) -> String {
+        "\(title) has the shape of a credential, so Muster did not send it.\(gap)The server's listener file holds names and settings only, never a secret."
+    }
+
+    /// An edit whose row is not among the settings last read, so it is never sent or dropped quietly.
+    static func notRead(_ id: String) -> String {
+        "\(id) is not among the settings last read from the server, so nothing was planned.\(gap)Read the server's settings again, or revert the edit."
+    }
     static let routerContract = "How a routine is signed and sent is fixed by the receiver it calls, so Muster shows it and offers no control for it."
     static let daemonDefault = "The file sets no value here, so this is the daemon's default."
     static let pairs = "A list of channel and topic pairs.\(gap)Muster shows it and offers no control for it."
@@ -897,6 +981,11 @@ enum ServerSettingsBuilder {
     static func value(_ text: String, for row: ServerSettingRow) -> Result<ServerSettingValue, EditProblem> {
         guard let control = row.control else { return .failure(.readOnly(row.title)) }
         let trimmed = text.trimmingCharacters(in: .whitespaces)
+        // Defence in depth, before any control reads the text:  no row takes free text today, and
+        // a value with a credential's shape is refused whatever the row, by the app's own detectors.
+        guard !looksLikeCredential(trimmed) else {
+            return .failure(.notAValue(ServerSettingsCopy.credentialShaped(row.title)))
+        }
         switch control {
         case .toggle:
             switch trimmed {
@@ -931,15 +1020,29 @@ enum ServerSettingsBuilder {
         }
     }
 
+    /// Whether a typed value has the shape of a credential, by the detectors the app already uses
+    /// to hide one:  the config panel's value check (`ConfigFileReader.isSecretString`:  a long
+    /// opaque run, a URL with a credential in it, a `Bearer` or `Basic` value, a secret-named
+    /// `name=value`) and the command-output scrubber (`FleetViewFailure.scrub`:  the GitHub,
+    /// GitLab, OpenAI and Anthropic, Slack, Linear and AWS prefixes, a JWT, a base64 run).  It
+    /// over-refuses on purpose, because a refused edit costs less than a relayed secret.
+    static func looksLikeCredential(_ text: String) -> Bool {
+        guard !text.isEmpty else { return false }
+        return ConfigFileReader.isSecretString(text)
+            || FleetViewFailure.scrub(text).contains(ConfigFileReader.redactionMark)
+    }
+
     /// The request for a set of edits, by row id.  A table's setting is sent as the table the
     /// server answered with, the edits laid over it, so no sub-key is dropped.  An edit that holds
-    /// the value the row already has is not sent.
+    /// the value the row already has is not sent.  An edit whose row is not among `rows` (a seat
+    /// gone since the last read) plans nothing, so no edit is ever dropped from a plan quietly.
     static func request(edits: [String: String], rows: [ServerSettingRow]) -> Result<ServerListenerSettingsRequest, EditProblem> {
         let byID = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var set: [String: ServerSettingValue] = [:]
         var tables: [String: [String: ServerSettingValue]] = [:]
         for id in edits.keys.sorted() {
-            guard let row = byID[id], let text = edits[id] else { continue }
+            guard let row = byID[id] else { return .failure(.notAValue(ServerSettingsCopy.notRead(id))) }
+            guard let text = edits[id] else { continue }
             guard row.isEditable else { return .failure(.readOnly(row.title)) }
             let value: ServerSettingValue
             switch Self.value(text, for: row) {
@@ -1031,7 +1134,11 @@ struct ServerListenerSettingsReader {
 final class ServerListenerSettingsStore: ObservableObject {
     static let shared = ServerListenerSettingsStore()
 
-    @Published private(set) var reading: ServerSettingsReading?
+    /// The last read.  Each new one reads this checkout's allowlist copy again and builds the rows
+    /// once (`rebuild`), so drawing the section, or typing in it, reads no file and builds no row.
+    @Published private(set) var reading: ServerSettingsReading? {
+        didSet { rebuild() }
+    }
     @Published private(set) var isReading = false
     @Published private(set) var message: String?
     /// The edited values, by row id.
@@ -1051,14 +1158,24 @@ final class ServerListenerSettingsStore: ObservableObject {
         self.reader = reader
         self.readAllowlist = readAllowlist
         self.controller = controller
+        rebuild()
     }
 
     /// This checkout's allowlist copy, or nil when it could not be read:  then nothing is offered.
-    var allowlist: ServerSettingsAllowlist? { readAllowlist() }
+    /// Read at init and again with every new reading, never on a draw.
+    private(set) var allowlist: ServerSettingsAllowlist?
 
-    var groups: [ServerSettingsGroup] {
-        guard case .read(let answer)? = reading, let allowlist else { return [] }
-        return ServerSettingsBuilder.groups(settings: answer.settings, allowlist: allowlist)
+    /// The rows of the last read, built once per reading.  An edit changes `drafts` only, never these.
+    private(set) var groups: [ServerSettingsGroup] = []
+
+    /// Reads the allowlist copy again and builds the rows for the current reading.
+    private func rebuild() {
+        allowlist = readAllowlist()
+        guard case .read(let answer)? = reading, let allowlist else {
+            groups = []
+            return
+        }
+        groups = ServerSettingsBuilder.groups(settings: answer.settings, allowlist: allowlist)
     }
 
     var applyEnabled: Bool? {

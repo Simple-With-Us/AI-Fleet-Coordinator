@@ -1497,6 +1497,77 @@ final class OpsControllerFlowTests: XCTestCase {
         XCTAssertEqual(ops.completedRuns, 0)
     }
 
+    /// A plan whose diff holds a line that is not text carries a hash and a passing check, and is
+    /// still not well formed, so it is never offered for review or run.
+    func test_a_settings_plan_that_is_not_well_formed_is_never_offered_or_run() async throws {
+        let hash = String(repeating: "a", count: 64)
+        let good = try settingsAnswer("planned", planSHA256: hash)
+        let malformed = good.replacingOccurrences(of: #""diff":[""#, with: #""diff":[7,""#)
+        XCTAssertNotEqual(malformed, good)
+        XCTAssertEqual(try XCTUnwrap(ServerSettingsAnswer(stdout: malformed)).isWellFormed, false)
+        XCTAssertEqual(try XCTUnwrap(ServerSettingsAnswer(stdout: malformed)).planSHA256, hash)
+        let fake = FakeOpsRunner { _, _ in OpsProcessResult(exitCode: 0, stdout: malformed, stderr: "") }
+        let ops = controller(fake)
+        XCTAssertTrue(ops.plan(.serverListenerSettings(settingsRequest)))
+        try await waitFor(ops, until: isFinished)
+        guard case .finished(_, let outcome) = ops.phase else { return XCTFail("\(ops.phase)") }
+        XCTAssertEqual(outcome.kind, .failed)
+        XCTAssertFalse(outcome.isSuccess(for: .plan))
+        ops.confirm()
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertFalse(fake.recorded.contains { $0.contains("--yes") })
+        XCTAssertEqual(fake.recorded.count, 1)
+        XCTAssertEqual(ops.completedRuns, 0)
+        XCTAssertNil(ops.lastCompletedAction)
+    }
+
+    func test_the_last_completed_action_names_the_run_that_moved_the_count() async throws {
+        let hash = String(repeating: "a", count: 64)
+        let settingsPlan = try settingsAnswer("planned", planSHA256: hash)
+        let settingsApplied = try settingsAnswer("applied", planSHA256: hash)
+        let unitPlan = try fixture("ops_result_planned", "json")
+        let unitDone = try fixture("ops_result_done", "json")
+        let fake = FakeOpsRunner { invocation, _ in
+            let isSettings = invocation.arguments.contains("eavesdropper-settings")
+            let isPlan = invocation.arguments.contains("--plan")
+            let text = isSettings ? (isPlan ? settingsPlan : settingsApplied) : (isPlan ? unitPlan : unitDone)
+            return OpsProcessResult(exitCode: 0, stdout: text, stderr: "")
+        }
+        let ops = controller(fake)
+        XCTAssertNil(ops.lastCompletedAction)
+        XCTAssertFalse(ops.lastRunWasListenerSettings)
+
+        // A settings apply:  the count moves and names the settings action.
+        XCTAssertTrue(ops.plan(.serverListenerSettings(settingsRequest)))
+        try await waitFor(ops, until: isReview)
+        ops.confirm()
+        try await waitFor(ops, until: isFinished)
+        XCTAssertEqual(ops.completedRuns, 1)
+        let first = try XCTUnwrap(ops.lastCompletedAction)
+        guard case .serverListenerSettings(let sent) = first else { return XCTFail("\(first)") }
+        XCTAssertEqual(sent.set, settingsRequest.set)
+        XCTAssertTrue(ops.lastRunWasListenerSettings)
+
+        // A restart after it:  the count moves again and names the restart, so the section does not read.
+        var started = false
+        for _ in 0..<400 {
+            if ops.plan(action) {
+                started = true
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(started)
+        try await waitFor(ops, until: isReview)
+        ops.confirm()
+        try await waitFor(ops, until: isFinished)
+        XCTAssertEqual(ops.completedRuns, 2)
+        let second = try XCTUnwrap(ops.lastCompletedAction)
+        guard case .serverUnit(_, let unit) = second else { return XCTFail("\(second)") }
+        XCTAssertEqual(unit, "fleet-server-status.timer")
+        XCTAssertFalse(ops.lastRunWasListenerSettings)
+    }
+
     func test_closing_a_pending_recheck_does_not_reopen_the_sheet_or_run_an_update() async throws {
         let receipt = String(repeating: "a", count: 32)
         let planned = #"{"ok":true,"commands":[],"result":"planned"}"#

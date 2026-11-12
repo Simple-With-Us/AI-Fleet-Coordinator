@@ -30,8 +30,10 @@ struct ServerListenerSettingsSection: View {
         // otherwise be shown.
         .task { await store.refresh() }
         .onChange(of: controller.completedRuns) { _, _ in
-            // A run may have changed the server's config, so it is read again and the edits it
-            // carried are cleared.
+            // Only a run of this section's own action can have changed the server's listener file,
+            // so only that run is followed by a read.  A knob set, a restart or a redeploy is not.
+            guard controller.lastRunWasListenerSettings else { return }
+            // The edits a done apply carried are cleared;  any other end keeps them for another try.
             if case .finished(.serverListenerSettings, let outcome) = controller.phase, outcome.kind == .done {
                 store.revert()
             }

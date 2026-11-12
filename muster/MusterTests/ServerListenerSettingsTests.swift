@@ -165,6 +165,58 @@ private let editorPlanRefusedByCheck = #"""
  "check":{"ok":false,"problems":["seat.JET.routine must be a table (url_env, key_env, method, header, auth) when wake = \"http\""],"warnings":0}}
 """#
 
+/// The editor's plan of one change the Eavesdropper's check would take, in the shape of
+/// `run_request`'s plan answer:  one `changes` entry with `key`, `set`, `from`, `to` and `removes`,
+/// the unified diff as a list of lines, and the `check` table.
+private let editorGoodPlan = #"""
+{"schemaVersion":1,"tool":"eavesdropper-settings","action":"plan","file":"listener.toml","ok":true,"result":"planned",
+ "baseSHA256":"\#(String(repeating: "c", count: 64))","newSHA256":"\#(String(repeating: "d", count: 64))",
+ "planSHA256":"\#(String(repeating: "a", count: 64))",
+ "changes":[{"key":"seat.CLAUDE.enabled","set":true,"from":true,"to":false,"removes":[]}],
+ "diff":["--- listener.toml","+++ listener.toml","@@ -3 +3 @@","-enabled = true","+enabled = false"],
+ "check":{"ok":true,"problems":[],"warnings":0}}
+"""#
+
+/// Credential-shaped values, built at run time so no literal in this file has a real token's
+/// shape:  a GitHub token's prefix, an AWS key id's prefix, and a long opaque run.
+private let credentialShapedValues = [
+    "ghp_" + String(repeating: "A1b2", count: 9),
+    "AKIA" + String(repeating: "Q7", count: 8),
+    String(repeating: "x9Y", count: 10),
+]
+
+/// Answers every run with one text, and keeps each invocation.
+private final class SettingsReadRunner: OpsRunning, @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls: [OpsInvocation] = []
+    private let stdout: String
+
+    init(stdout: String) { self.stdout = stdout }
+
+    var invocations: [OpsInvocation] { lock.lock(); defer { lock.unlock() }; return calls }
+
+    func run(_ invocation: OpsInvocation) async throws -> OpsProcessResult {
+        lock.lock()
+        calls.append(invocation)
+        lock.unlock()
+        return OpsProcessResult(exitCode: 0, stdout: stdout, stderr: "")
+    }
+}
+
+/// Counts the calls of a closure the store is given.
+private final class CallCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    var count: Int { lock.lock(); defer { lock.unlock() }; return value }
+
+    func add() {
+        lock.lock()
+        value += 1
+        lock.unlock()
+    }
+}
+
 final class ServerListenerSettingsTests: XCTestCase {
     private func allowlist() throws -> ServerSettingsAllowlist {
         try XCTUnwrap(ServerSettingsAllowlist.parse(Data(allowlistJSON.utf8)))
@@ -768,5 +820,387 @@ final class ServerListenerSettingsTests: XCTestCase {
         XCTAssertEqual(ServerSettingValue.list([]).display, "")
         let topics = ServerSettingJSON.parse(#"[["fleet", "presence"], ["Work-In-Progress", "fleet"]]"#)
         XCTAssertEqual(topics?.display, "[fleet, presence], [Work-In-Progress, fleet]")
+    }
+
+    // MARK: A typed value with a credential's shape
+
+    /// Fails when the message holds the value or any prefix of it four characters or longer.
+    private func assertNeverEchoes(_ message: String, _ value: String, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertFalse(message.contains(value), "the message holds the value", file: file, line: line)
+        for length in 4...value.count where message.contains(String(value.prefix(length))) {
+            XCTFail("the message holds the value's first \(length) characters", file: file, line: line)
+        }
+    }
+
+    /// No row takes free text today, so a text row is made by hand:  without the credential check
+    /// its pattern `.*` would take any of these values.
+    func test_a_credential_shaped_value_in_a_free_text_row_is_refused_and_never_echoed() {
+        let free = ServerSettingRow(id: "seat.CLAUDE.label", settingKey: "seat.CLAUDE.label", subKey: nil,
+                                    title: "Label", current: .text("old"),
+                                    control: .text(pattern: ".*", maxLength: 256), readOnlyReason: nil)
+        for value in credentialShapedValues {
+            XCTAssertLessThanOrEqual(value.count, 256)
+            XCTAssertTrue(ServerSettingsBuilder.looksLikeCredential(value))
+            let result = ServerSettingsBuilder.value(value, for: free)
+            XCTAssertEqual(result, .failure(.notAValue(ServerSettingsCopy.credentialShaped("Label"))))
+            guard case .failure(let problem) = result else { continue }
+            XCTAssertTrue(problem.sentence.hasPrefix("Label has the shape of a credential"), problem.sentence)
+            assertNeverEchoes(problem.sentence, value)
+            // Spaces around the value do not hide it.
+            XCTAssertEqual(ServerSettingsBuilder.value("  \(value)  ", for: free),
+                           .failure(.notAValue(ServerSettingsCopy.credentialShaped("Label"))))
+        }
+        // An ordinary value still passes.
+        XCTAssertEqual(ServerSettingsBuilder.value("presence-topic", for: free), .success(.text("presence-topic")))
+    }
+
+    /// The check runs before the row's own control reads the text, so the refusal names the
+    /// credential and not the control's rule, and the whole request plans nothing.
+    func test_a_credential_shaped_value_on_an_editable_row_plans_nothing() throws {
+        let rows = try rows()
+        for value in credentialShapedValues {
+            for id in ["seat.CLAUDE.wake", "seat.CLAUDE.enabled"] {
+                let title = try row(id).title
+                let result = ServerSettingsBuilder.request(edits: [id: value], rows: rows)
+                XCTAssertEqual(result, .failure(.notAValue(ServerSettingsCopy.credentialShaped(title))), id)
+                guard case .failure(let problem) = result else { continue }
+                assertNeverEchoes(problem.sentence, value)
+            }
+            // Beside a good edit it still sinks the request.
+            let mixed = ServerSettingsBuilder.request(edits: ["seat.CLAUDE.enabled": "Off", "seat.CLAUDE.wake": value], rows: rows)
+            XCTAssertEqual(mixed, .failure(.notAValue(ServerSettingsCopy.credentialShaped("Wake"))))
+        }
+        // The values the two controls take are never read as credentials.
+        for value in ["On", "Off", "true", "false", "inbox", "http"] {
+            XCTAssertFalse(ServerSettingsBuilder.looksLikeCredential(value), value)
+        }
+        XCTAssertEqual(ServerSettingsBuilder.request(edits: ["seat.CLAUDE.wake": "http"], rows: rows),
+                       .success(ServerListenerSettingsRequest(set: ["seat.CLAUDE.wake": .text("http")])))
+        XCTAssertEqual(ServerSettingsBuilder.request(edits: ["seat.CLAUDE.enabled": "Off"], rows: rows),
+                       .success(ServerListenerSettingsRequest(set: ["seat.CLAUDE.enabled": .bool(false)])))
+    }
+
+    // MARK: An edit whose row was not read
+
+    func test_an_edit_whose_row_is_not_among_the_rows_plans_nothing() throws {
+        let rows = try rows()
+        XCTAssertFalse(rows.contains { $0.id == "seat.GONE.enabled" })
+        XCTAssertEqual(ServerSettingsBuilder.request(edits: ["seat.GONE.enabled": "Off"], rows: rows),
+                       .failure(.notAValue(ServerSettingsCopy.notRead("seat.GONE.enabled"))))
+        // Beside valid edits, whichever sorts first, the request still fails and nothing is sent.
+        XCTAssertEqual(ServerSettingsBuilder.request(
+            edits: ["seat.CLAUDE.enabled": "Off", "seat.GONE.enabled": "Off", "seat.CLAUDE.wake": "http"], rows: rows),
+            .failure(.notAValue(ServerSettingsCopy.notRead("seat.GONE.enabled"))))
+        XCTAssertEqual(ServerSettingsBuilder.request(
+            edits: ["seat.AAA.wake": "http", "seat.CLAUDE.enabled": "Off"], rows: rows),
+            .failure(.notAValue(ServerSettingsCopy.notRead("seat.AAA.wake"))))
+        // With no rows at all (nothing read yet), no edit is planned.
+        XCTAssertEqual(ServerSettingsBuilder.request(edits: ["seat.CLAUDE.enabled": "Off"], rows: []),
+                       .failure(.notAValue(ServerSettingsCopy.notRead("seat.CLAUDE.enabled"))))
+        XCTAssertTrue(ServerSettingsCopy.notRead("seat.GONE.enabled").hasPrefix("seat.GONE.enabled is not among"))
+    }
+
+    // MARK: An answer that is not well formed
+
+    private func planOutcome(_ editor: String, mode: OpsMode = .plan) throws -> (ServerSettingsAnswer, OpsOutcome) {
+        let stdout = helperAnswer(editor, ok: true, result: mode == .plan ? "planned" : "applied", detail: "1 setting(s) would change")
+        let answer = try XCTUnwrap(ServerSettingsAnswer(stdout: stdout))
+        let action = OpsAction.serverListenerSettings(ServerListenerSettingsRequest(
+            set: ["seat.CLAUDE.enabled": .bool(false)], expectPlanSHA256: mode == .yes ? planHash : nil))
+        let outcome = OpsResultParser.parse(OpsProcessResult(exitCode: 0, stdout: stdout, stderr: ""),
+                                            mode: mode, action: action, timeout: OpsControlRoute.serverListenerSettingsRunTimeout)
+        return (answer, outcome)
+    }
+
+    func test_a_well_formed_plan_with_keys_this_app_does_not_know_is_still_a_plan() throws {
+        let (plain, plainOutcome) = try planOutcome(editorGoodPlan)
+        XCTAssertTrue(plain.isWellFormed)
+        XCTAssertEqual(plainOutcome.kind, .planned)
+        XCTAssertTrue(plainOutcome.isSuccess(for: .plan))
+        // A section and keys the editor may add later, in the editor's document and in the change.
+        let extended = editorGoodPlan
+            .replacingOccurrences(of: #""tool":"eavesdropper-settings","#,
+                                  with: #""tool":"eavesdropper-settings","futureSection":{"x":[1,2]},"notes":"new","#)
+            .replacingOccurrences(of: #""set":true,"#, with: #""set":true,"comment":{"line":3},"#)
+        XCTAssertNotEqual(extended, editorGoodPlan)
+        let (wider, widerOutcome) = try planOutcome(extended)
+        XCTAssertTrue(wider.isWellFormed)
+        XCTAssertEqual(wider.changes.map(\.key), ["seat.CLAUDE.enabled"])
+        XCTAssertEqual(widerOutcome.kind, .planned)
+        // The real server's get, with the helper's own top-level keys and the editor's `file`.
+        let real = try XCTUnwrap(ServerSettingsAnswer(stdout: realShapeGet))
+        XCTAssertTrue(real.isWellFormed)
+        guard case .read = ServerListenerSettingsReader.reading(OpsProcessResult(exitCode: 0, stdout: realShapeGet, stderr: "")) else {
+            return XCTFail("the real shape should still read")
+        }
+    }
+
+    /// Each fault is made from the editor's good plan, so the plan would be approved but for it.
+    func test_a_plan_that_is_not_well_formed_is_never_a_plan_or_approvable() throws {
+        let faults: [(name: String, from: String, to: String)] = [
+            ("no ok", #""ok":true,"result":"planned""#, #""result":"planned""#),
+            ("ok not a bool", #""ok":true,"result":"planned""#, #""ok":"yes","result":"planned""#),
+            ("no result", #","result":"planned""#, ""),
+            ("a change that is not a table", #""changes":[{"#, #""changes":["seat.JET.wake",{"#),
+            ("a change with no to", #""from":true,"to":false,"#, #""from":true,"#),
+            ("a change with no key", #"{"key":"seat.CLAUDE.enabled","#, #"{"#),
+            ("a removes that is not a list", #""removes":[]"#, #""removes":"seat.CLAUDE.routine""#),
+            ("a removes name that is not text", #""removes":[]"#, #""removes":[3]"#),
+            ("changes that are not a list", #""changes":[{"key":"seat.CLAUDE.enabled","set":true,"from":true,"to":false,"removes":[]}]"#,
+             #""changes":{"key":"seat.CLAUDE.enabled"}"#),
+            ("a diff line that is not text", #""+enabled = false"]"#, #""+enabled = false",7]"#),
+            ("a diff that is not a list", #""diff":["--- listener.toml","+++ listener.toml","@@ -3 +3 @@","-enabled = true","+enabled = false"]"#,
+             #""diff":"--- listener.toml""#),
+            ("a check that is not a table", #""check":{"ok":true,"problems":[],"warnings":0}"#, #""check":true"#),
+        ]
+        for fault in faults {
+            let editor = editorGoodPlan.replacingOccurrences(of: fault.from, with: fault.to)
+            XCTAssertNotEqual(editor, editorGoodPlan, fault.name)
+            let (answer, outcome) = try planOutcome(editor)
+            XCTAssertFalse(answer.isWellFormed, fault.name)
+            XCTAssertNotEqual(outcome.kind, .planned, fault.name)
+            XCTAssertEqual(outcome.kind, .failed, fault.name)
+            XCTAssertFalse(outcome.isSuccess(for: .plan), fault.name)
+            XCTAssertEqual(ServerSettingsAnswer.outcome(answer, helperKind: .planned, mode: .plan, detail: "").0, .failed, fault.name)
+        }
+        // A plan the editor gave in full but with a malformed element names why it was not used.
+        let dropped = try XCTUnwrap(ServerSettingsAnswer(stdout: helperAnswer(
+            editorGoodPlan.replacingOccurrences(of: #""+enabled = false"]"#, with: #""+enabled = false",7]"#),
+            ok: true, result: "planned", detail: "")))
+        XCTAssertEqual(dropped.diff.count, 5, "the readable lines are kept, and the answer is still marked")
+        XCTAssertEqual(ServerSettingsAnswer.outcome(dropped, helperKind: .planned, mode: .plan, detail: "").1,
+                       "The server's plan was not well formed, so it was not used and cannot be approved.")
+    }
+
+    /// The server says it applied, so a malformed answer may stand for a change that landed:  it is
+    /// not known, never done and never failed.
+    func test_an_applied_answer_that_is_not_well_formed_is_unknown_and_never_done() throws {
+        XCTAssertEqual(try planOutcome(editorApplied, mode: .yes).1.kind, .done)
+        for (from, to) in [(#""+enabled = false"]"#, #""+enabled = false",null]"#),
+                           (#""removes":[]"#, #""removes":[false]"#),
+                           (#""check":{"ok":true,"problems":[],"warnings":0}"#, #""check":[]"#)] {
+            let editor = editorApplied.replacingOccurrences(of: from, with: to)
+            XCTAssertNotEqual(editor, editorApplied, from)
+            let (answer, outcome) = try planOutcome(editor, mode: .yes)
+            XCTAssertFalse(answer.isWellFormed, from)
+            XCTAssertEqual(ServerSettingsAnswer.outcome(answer, helperKind: .done, mode: .yes, detail: "").0, .unknown, from)
+            XCTAssertEqual(outcome.kind, .unknown, from)
+            XCTAssertFalse(outcome.isSuccess(for: .yes), from)
+        }
+    }
+
+    // MARK: The reader's limits
+
+    func test_the_json_reader_refuses_a_document_past_its_byte_cap_or_its_value_budget() throws {
+        XCTAssertLessThanOrEqual(ServerSettingJSON.maximumBytes, OpsProcessRunner.maximumOutputBytes)
+        // A text at the cap reads;  one byte more does not, and neither does padding.
+        let atCap = "\"" + String(repeating: "a", count: ServerSettingJSON.maximumBytes - 2) + "\""
+        XCTAssertEqual(atCap.utf8.count, ServerSettingJSON.maximumBytes)
+        XCTAssertNotNil(ServerSettingJSON.parse(atCap))
+        let pastCap = "\"" + String(repeating: "a", count: ServerSettingJSON.maximumBytes - 1) + "\""
+        XCTAssertEqual(pastCap.utf8.count, ServerSettingJSON.maximumBytes + 1)
+        XCTAssertNil(ServerSettingJSON.parse(pastCap))
+        XCTAssertNil(ServerSettingJSON.parse("{}" + String(repeating: " ", count: ServerSettingJSON.maximumBytes)))
+
+        // The list itself is one value, so it may hold one fewer than the budget.
+        func list(of item: String, count: Int) -> String {
+            "[" + Array(repeating: item, count: count).joined(separator: ",") + "]"
+        }
+        let within = try XCTUnwrap(ServerSettingJSON.parse(list(of: "0", count: ServerSettingJSON.maximumElements - 1)))
+        guard case .list(let items) = within else { return XCTFail("\(within)") }
+        XCTAssertEqual(items.count, ServerSettingJSON.maximumElements - 1)
+        for item in ["0", "{}", "[]", "null"] {
+            let dense = list(of: item, count: ServerSettingJSON.maximumElements)
+            XCTAssertLessThan(dense.utf8.count, ServerSettingJSON.maximumBytes, "refused by the budget, not the byte cap")
+            XCTAssertNil(ServerSettingJSON.parse(dense), item)
+        }
+
+        // The real server's answer reads, and the same answer padded past the cap does not.
+        XCTAssertNotNil(ServerSettingJSON.parse(realShapeGet))
+        let padded = realShapeGet.replacingOccurrences(
+            of: #""output": "daemon.coalesce_seconds = 30""#,
+            with: #""output": ""# + String(repeating: "x", count: ServerSettingJSON.maximumBytes) + #"""#)
+        XCTAssertGreaterThan(padded.utf8.count, ServerSettingJSON.maximumBytes)
+        XCTAssertNil(ServerSettingsAnswer(stdout: padded))
+        guard case .unavailable = ServerListenerSettingsReader.reading(OpsProcessResult(exitCode: 0, stdout: padded, stderr: "")) else {
+            return XCTFail("an answer past the cap must not read")
+        }
+    }
+
+    // MARK: A helper word with no settings document
+
+    func test_a_helper_word_with_no_settings_document() {
+        let words = "the helper's words"
+        // Refused and failed stand as the helper said, in either mode.
+        for mode in [OpsMode.plan, .yes] {
+            for kind in [OpsResultKind.refused, .failed] {
+                let result = ServerSettingsAnswer.outcome(nil, helperKind: kind, mode: mode, detail: words)
+                XCTAssertEqual(result.0, kind, "\(kind) \(mode)")
+                XCTAssertEqual(result.1, words)
+            }
+        }
+        // Not known stands only after an apply was sent:  a plan changes nothing, so it fails.
+        let unknownApply = ServerSettingsAnswer.outcome(nil, helperKind: .unknown, mode: .yes, detail: words)
+        XCTAssertEqual(unknownApply.0, .unknown)
+        XCTAssertEqual(unknownApply.1, words)
+        // Any other word is no plan:  failed for a plan, and not known after an apply was sent.
+        let noDocument = "The server's answer carried no settings document, so nothing is known about it."
+        for kind in [OpsResultKind.planned, .submitted, .done, .unavailable] {
+            XCTAssertEqual(ServerSettingsAnswer.outcome(nil, helperKind: kind, mode: .plan, detail: words).0, .failed, "\(kind)")
+            XCTAssertEqual(ServerSettingsAnswer.outcome(nil, helperKind: kind, mode: .plan, detail: words).1, noDocument)
+            XCTAssertEqual(ServerSettingsAnswer.outcome(nil, helperKind: kind, mode: .yes, detail: words).0, .unknown, "\(kind)")
+        }
+        let unknownPlan = ServerSettingsAnswer.outcome(nil, helperKind: .unknown, mode: .plan, detail: words)
+        XCTAssertEqual(unknownPlan.0, .failed)
+        XCTAssertEqual(unknownPlan.1, noDocument)
+    }
+
+    // MARK: The reasons the rows give
+
+    /// The reason a routine's variable-name row gives is the editor's own rule (`seat_env_names`).
+    func test_the_variable_name_reason_states_the_editors_rule() throws {
+        let editor = try String(contentsOf: checkoutRoot().appendingPathComponent(
+            "scripts/simple_tools/server/eavesdropper_settings_edit.py"), encoding: .utf8)
+        let copy = ServerSettingsCopy.variableName
+        let names: [(source: String, shown: String)] = [
+            (#"code + "_ROUTINE_URL""#, "CODE_ROUTINE_URL"),
+            (#""ZULIP_ALERT_%s_ENDPOINT" % code"#, "ZULIP_ALERT_CODE_ENDPOINT"),
+            (#"code + "_ROUTINE_KEY""#, "CODE_ROUTINE_KEY"),
+            (#""ZULIP_ALERT_%s_KEY" % code"#, "ZULIP_ALERT_CODE_KEY"),
+        ]
+        for name in names {
+            XCTAssertTrue(editor.contains(name.source), name.source)
+            XCTAssertTrue(copy.contains(name.shown), name.shown)
+        }
+        XCTAssertTrue(copy.contains("CODE_ROUTINE_URL or ZULIP_ALERT_CODE_ENDPOINT for the address"))
+        XCTAssertTrue(copy.contains("CODE_ROUTINE_KEY or ZULIP_ALERT_CODE_KEY for the key"))
+        XCTAssertTrue(copy.contains("stay as it is"))
+        XCTAssertTrue(copy.contains("never its value"))
+        XCTAssertTrue(copy.contains("offers no control"))
+        // The old claim that only the seat's own name is allowed is gone, and no seat is named.
+        XCTAssertFalse(copy.contains("only the seat's own name"))
+        XCTAssertFalse(copy.contains("CLAUDE"))
+    }
+
+    func test_a_string_length_that_is_not_a_whole_number_leaves_the_entry_out() {
+        func spec(_ maxLength: String) -> ServerSettingSpec? {
+            let json = #"{"seat": {"label": {"type": "string", "pattern": "[a-z]+", "maxLength": \#(maxLength)}}, "tables": {}}"#
+            return ServerSettingsAllowlist.parse(Data(json.utf8))?.seat["label"]
+        }
+        XCTAssertEqual(spec("8"), .text(pattern: "[a-z]+", maxLength: 8))
+        XCTAssertEqual(spec("256"), .text(pattern: "[a-z]+", maxLength: 256))
+        for refused in ["true", "false", "8.5", "257", "-1", #""8""#, "null"] {
+            XCTAssertNil(spec(refused), refused)
+        }
+    }
+}
+
+// MARK: - The store
+
+@MainActor
+final class ServerListenerSettingsStoreTests: XCTestCase {
+    private func makeStore(
+        runner: SettingsReadRunner,
+        reads: CallCount,
+        allowlist: ServerSettingsAllowlist?,
+        controller: OpsController? = nil
+    ) -> ServerListenerSettingsStore {
+        ServerListenerSettingsStore(
+            reader: ServerListenerSettingsReader(runner: runner, makeBuilder: { builder() }),
+            readAllowlist: {
+                reads.add()
+                return allowlist
+            },
+            controller: controller ?? OpsController(runner: runner, makeBuilder: { builder() }, auditURL: nil, checksInstall: false)
+        )
+    }
+
+    func test_the_allowlist_and_rows_are_built_once_per_reading_and_not_on_each_access() async throws {
+        let list = try XCTUnwrap(ServerSettingsAllowlist.parse(Data(allowlistJSON.utf8)))
+        let reads = CallCount()
+        let runner = SettingsReadRunner(stdout: getAnswer)
+        let store = makeStore(runner: runner, reads: reads, allowlist: list)
+        XCTAssertEqual(reads.count, 1, "the copy is read once when the store is made")
+        XCTAssertNil(store.reading)
+        XCTAssertEqual(store.allowlist, list)
+        XCTAssertTrue(store.groups.isEmpty, "nothing is read yet, so there are no rows")
+
+        // Drawing and typing read no file.
+        for _ in 0..<5 {
+            _ = store.allowlist
+            _ = store.groups
+            _ = store.applyEnabled
+        }
+        store.drafts = ["seat.CLAUDE.enabled": "Off"]
+        store.drafts["seat.CLAUDE.wake"] = "http"
+        XCTAssertEqual(reads.count, 1)
+
+        // A new reading reads the copy again and builds the rows once.
+        await store.refresh()
+        XCTAssertEqual(runner.invocations.count, 1)
+        guard case .read(let answer)? = store.reading else { return XCTFail("\(String(describing: store.reading))") }
+        XCTAssertEqual(reads.count, 2)
+        let expected = ServerSettingsBuilder.groups(settings: answer.settings, allowlist: list)
+        XCTAssertFalse(expected.isEmpty)
+        XCTAssertEqual(store.groups, expected)
+        XCTAssertTrue(store.groups.flatMap(\.rows).contains { $0.id == "seat.CLAUDE.enabled" && $0.isEditable })
+
+        for _ in 0..<5 {
+            _ = store.allowlist
+            _ = store.groups
+        }
+        store.drafts = ["seat.CLAUDE.enabled": "On"]
+        // A request that plans nothing is built from the rows in hand, with no file read.
+        XCTAssertFalse(store.showPlan())
+        XCTAssertEqual(store.message, ServerSettingsBuilder.EditProblem.nothingChanged.sentence)
+        store.revert()
+        XCTAssertEqual(reads.count, 2)
+
+        // Each further reading builds once more.
+        await store.refresh()
+        XCTAssertEqual(runner.invocations.count, 2)
+        XCTAssertEqual(reads.count, 3)
+        XCTAssertEqual(store.groups, expected)
+    }
+
+    func test_a_reading_with_no_allowlist_copy_offers_no_row() async {
+        let reads = CallCount()
+        let runner = SettingsReadRunner(stdout: getAnswer)
+        let store = makeStore(runner: runner, reads: reads, allowlist: nil)
+        await store.refresh()
+        guard case .read? = store.reading else { return XCTFail("\(String(describing: store.reading))") }
+        XCTAssertEqual(reads.count, 2)
+        XCTAssertNil(store.allowlist)
+        XCTAssertTrue(store.groups.isEmpty)
+    }
+
+    /// An edit for a seat that is not among the rows last read is never dropped from a plan:  the
+    /// whole plan is refused, and nothing reaches the controller or the server.
+    func test_an_edit_whose_row_was_not_read_sends_nothing() async throws {
+        let list = try XCTUnwrap(ServerSettingsAllowlist.parse(Data(allowlistJSON.utf8)))
+        let runner = SettingsReadRunner(stdout: getAnswer)
+        let controller = OpsController(runner: runner, makeBuilder: { builder() }, auditURL: nil, checksInstall: false)
+        let store = makeStore(runner: runner, reads: CallCount(), allowlist: list, controller: controller)
+        await store.refresh()
+        XCTAssertEqual(runner.invocations.count, 1)
+
+        store.drafts = ["seat.CLAUDE.enabled": "Off", "seat.GONE.enabled": "Off"]
+        XCTAssertFalse(store.showPlan())
+        XCTAssertEqual(store.message, ServerSettingsCopy.notRead("seat.GONE.enabled"))
+        XCTAssertEqual(controller.phase, .idle)
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertEqual(runner.invocations.count, 1, "only the read ran")
+
+        // Without the stale edit, the same store does hand the plan to the controller.
+        store.drafts = ["seat.CLAUDE.enabled": "Off"]
+        XCTAssertTrue(store.showPlan())
+        XCTAssertNil(store.message)
+        for _ in 0..<400 where runner.invocations.count < 2 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let plan = try XCTUnwrap(runner.invocations.last)
+        XCTAssertEqual(runner.invocations.count, 2)
+        XCTAssertEqual(String(decoding: try XCTUnwrap(plan.standardInput), as: UTF8.self),
+                       #"{"set":{"seat.CLAUDE.enabled":false}}"#)
     }
 }
