@@ -1646,6 +1646,11 @@ class ReportAndRunTests(HomeCase):
             for key in doctor.ROW_FIELDS:
                 self.assertIn(key, row)
         self.assertEqual((doc["schemaVersion"], doc["host"]), (1, "server"))
+        agent = [row for row in doc["checks"] if row["check"] == "agent-config"]
+        self.assertEqual(len(agent), 1)
+        self.assertEqual(agent[0]["status"], "OK")
+        self.assertEqual(agent[0]["category"], "agent-config")
+        self.assertEqual(agent[0]["state"], "current")
         self.assertIsNone(doc["expected"]["rev"])
         self.assertEqual(doc["doctorCommit"], TIP)
         rows = {r["check"]: r for r in doc["checks"]}

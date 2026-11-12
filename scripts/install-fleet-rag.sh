@@ -400,10 +400,15 @@ PY
 }
 
 register_all() {
-  local action="$1" r
+  local action="$1" r gemini_create=1
+  # The installer creates ~/.gemini/config when run on its own.  The reconciler sets
+  # FLEET_RAG_SKIP_ABSENT_GEMINI=1 so a host with no Gemini tool home stays that way.
+  if [[ "${FLEET_RAG_SKIP_ABSENT_GEMINI:-}" == "1" && ! -d "$HOME_DIR/.gemini" ]]; then
+    gemini_create=0
+  fi
   r="$(json_cfg "$CLAUDE_JSON" "$action" 0)";  say "$CLAUDE_JSON: $r";  note "$CLAUDE_JSON" "$r"
   r="$(json_cfg "$CURSOR_JSON" "$action" 0)";  say "$CURSOR_JSON: $r";  note "$CURSOR_JSON" "$r"
-  r="$(json_cfg "$GEMINI_JSON" "$action" 1)";  say "$GEMINI_JSON: $r";  note "$GEMINI_JSON" "$r"
+  r="$(json_cfg "$GEMINI_JSON" "$action" "$gemini_create")";  say "$GEMINI_JSON: $r";  note "$GEMINI_JSON" "$r"
   r="$(toml_cfg "$CODEX_TOML" "$action" "")";  say "$CODEX_TOML: $r";  note "$CODEX_TOML" "$r"
   # Grok's existing [mcp_servers.X] blocks use command / args / enabled.
   r="$(toml_cfg "$GROK_TOML" "$action" "enabled = true")"; say "$GROK_TOML: $r"; note "$GROK_TOML" "$r"
