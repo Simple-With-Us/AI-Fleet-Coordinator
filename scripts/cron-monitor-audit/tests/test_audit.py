@@ -82,12 +82,16 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(slugify("AI-Fleet-Coordinator"), "ai-fleet-coordinator")
 
     def test_vendored_reporter_and_reusable_workflow(self):
-        script = parse_reporter("scripts/sentry-ci-report.py", (FIXTURES / "reporter.py").read_text())
+        script = parse_reporter(
+            "scripts/sentry-ci-report.py", (FIXTURES / "reporter.py").read_text()
+        )
         self.assertIsNotNone(script)
         assert script is not None
         self.assertEqual(script.identity, "socratic-trade")
         self.assertEqual(set(script.schedules or {}), {"CI", "Security", "Gone Workflow"})
-        workflow = parse_reporter(".github/workflows/sentry-ci-report.yml", (FIXTURES / "reusable.yml").read_text())
+        workflow = parse_reporter(
+            ".github/workflows/sentry-ci-report.yml", (FIXTURES / "reusable.yml").read_text()
+        )
         self.assertIsNotNone(workflow)
         assert workflow is not None
         self.assertEqual(workflow.identity, "ai-fleet-coordinator")
@@ -112,11 +116,15 @@ class ParseTests(unittest.TestCase):
 
 class ClassifyTests(unittest.TestCase):
     def setUp(self):
-        self.monitors = {item.slug: item for item in parse_monitor_page(json.loads(SMALL.read_text()))}
+        self.monitors = {
+            item.slug: item for item in parse_monitor_page(json.loads(SMALL.read_text()))
+        }
         self.catalog = _catalog()
 
     def test_categories(self):
-        orphan = classify_monitor(self.monitors["ci-socratic-trade-vercel-production-catch-up"], self.catalog)
+        orphan = classify_monitor(
+            self.monitors["ci-socratic-trade-vercel-production-catch-up"], self.catalog
+        )
         self.assertEqual(orphan.category, "orphan")
         failing = classify_monitor(self.monitors["ci-socratic-trade-ci"], self.catalog)
         self.assertEqual(failing.category, "matched_failing")
@@ -166,7 +174,11 @@ class ClassifyTests(unittest.TestCase):
         mention = CodeSearch(
             "ok",
             "",
-            {"botfleet-overnight-board-95f6ac6a": (CodeHit("docs/note.md", "see botfleet-overnight-board-95f6ac6a"),)},
+            {
+                "botfleet-overnight-board-95f6ac6a": (
+                    CodeHit("docs/note.md", "see botfleet-overnight-board-95f6ac6a"),
+                )
+            },
         )
         catalog = _catalog(search=mention)
         finding = classify_monitor(self.monitors["botfleet-overnight-board-95f6ac6a"], catalog)
@@ -229,7 +241,9 @@ class ClassifyTests(unittest.TestCase):
             "socratic-trade": {"Simple-With-Us/Socratic-Trade"},
             "dealdex": {"Simple-With-Us/DealDex"},
         }
-        catalog = build_catalog([_repo(), unread], identities, CodeSearch("unavailable", "no GitHub token", {}))
+        catalog = build_catalog(
+            [_repo(), unread], identities, CodeSearch("unavailable", "no GitHub token", {})
+        )
         monitor = parse_monitor_page(
             [
                 {
@@ -257,7 +271,9 @@ class SentryClientTests(unittest.TestCase):
         self.assertEqual(request.get_method(), "GET")
         self.assertIsNone(request.data)
         self.assertNotIn("test-token", request.full_url)
-        github = build_github_request("https://api.github.com/repos/a/b", "test-token", "application/json")
+        github = build_github_request(
+            "https://api.github.com/repos/a/b", "test-token", "application/json"
+        )
         self.assertEqual(github.get_method(), "GET")
         self.assertNotIn("test-token", github.full_url)
 
@@ -283,7 +299,9 @@ class SentryClientTests(unittest.TestCase):
     def test_http_error_hides_the_body(self):
         class Opener:
             def open(self, request, timeout=None):
-                raise HTTPError(request.full_url, 403, "no", EmailMessage(), io.BytesIO(b"secret-body"))
+                raise HTTPError(
+                    request.full_url, 403, "no", EmailMessage(), io.BytesIO(b"secret-body")
+                )
 
         with self.assertRaises(SentryForbidden) as caught:
             fetch_monitors("example-org", "test-token", opener=Opener())
@@ -335,7 +353,9 @@ class GithubClientTests(unittest.TestCase):
                     ).encode()
                     return Response(body)
                 if request.full_url.endswith("sentry-ci-report.py"):
-                    raise HTTPError(request.full_url, 404, "missing", EmailMessage(), io.BytesIO(b""))
+                    raise HTTPError(
+                        request.full_url, 404, "missing", EmailMessage(), io.BytesIO(b"")
+                    )
                 return Response((FIXTURES / "reusable.yml").read_bytes())
 
         apps = load_apps(APPS)
@@ -359,7 +379,9 @@ class CliTests(unittest.TestCase):
             source = directory / "sources"
             script = source / "scripts"
             script.mkdir(parents=True)
-            (script / "sentry-ci-report.py").write_text((FIXTURES / "reporter.py").read_text(), encoding="utf-8")
+            (script / "sentry-ci-report.py").write_text(
+                (FIXTURES / "reporter.py").read_text(), encoding="utf-8"
+            )
             (source / "repos.json").write_text(
                 json.dumps(
                     [

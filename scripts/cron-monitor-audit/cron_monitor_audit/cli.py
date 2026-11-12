@@ -36,8 +36,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--apps", type=Path, default=DEFAULT_APPS)
     parser.add_argument("--checkout", type=Path, default=REPO_ROOT)
     parser.add_argument("--monitors", type=Path, help="Read monitors from JSON instead of Sentry.")
-    parser.add_argument("--sources", type=Path, help="Read repo sources from a directory instead of GitHub.")
-    parser.add_argument("--code-search", type=Path, help="Read code-search hits from JSON instead of GitHub.")
+    parser.add_argument(
+        "--sources", type=Path, help="Read repo sources from a directory instead of GitHub."
+    )
+    parser.add_argument(
+        "--code-search", type=Path, help="Read code-search hits from JSON instead of GitHub."
+    )
     parser.add_argument("--json", dest="json_path", type=Path)
     parser.add_argument("--markdown", dest="markdown_path", type=Path)
     parser.add_argument("--org", default="simple-with-us")
@@ -73,7 +77,9 @@ def main(argv: list[str] | None = None) -> int:
             search = _load_search(args.code_search)
         else:
             catalog = build_catalog(repos, identities)
-            pending = [monitor.slug for monitor in monitors if not explainable(monitor.slug, catalog)]
+            pending = [
+                monitor.slug for monitor in monitors if not explainable(monitor.slug, catalog)
+            ]
             search = search_code(pending, apps[0].owner, token, base=args.github_base_url)
         catalog = build_catalog(repos, identities, search)
         findings = [classify_monitor(monitor, catalog) for monitor in monitors]

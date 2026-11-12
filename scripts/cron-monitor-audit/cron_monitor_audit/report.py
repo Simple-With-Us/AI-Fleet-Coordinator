@@ -13,10 +13,14 @@ SENTENCE_GAP = "\u00a0 "
 _ORDER = ("orphan", "matched_failing", "uncertain", "matched_healthy")
 
 
-def build_report(org: str, monitors: list[Monitor], findings: list[Finding], catalog: Catalog) -> dict:
+def build_report(
+    org: str, monitors: list[Monitor], findings: list[Finding], catalog: Catalog
+) -> dict:
     rows = [_row(monitor, finding) for monitor, finding in zip(monitors, findings, strict=True)]
     rows.sort(key=lambda row: (row["slug"], row["project"]))
-    grouped = {category: [row for row in rows if row["category"] == category] for category in _ORDER}
+    grouped = {
+        category: [row for row in rows if row["category"] == category] for category in _ORDER
+    }
     return {
         "org": org,
         "monitor_count": len(rows),
@@ -58,7 +62,11 @@ def render_markdown(report: dict) -> str:
             lines.append(f"- `{repo['repo']}`: {repo['reason']}")
         lines.append("")
     sections = (
-        ("orphans", "orphan", "No workflow or script sends a check-in. Active rows are a proposed disable."),
+        (
+            "orphans",
+            "orphan",
+            "No workflow or script sends a check-in. Active rows are a proposed disable.",
+        ),
         (
             "matched_failing",
             "matched_failing",

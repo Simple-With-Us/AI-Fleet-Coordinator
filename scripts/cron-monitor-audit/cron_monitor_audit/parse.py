@@ -11,7 +11,7 @@ import re
 _CRON_KEY = re.compile(r"(?m)^CRON_SCHEDULES\s*=\s*\{")
 _PAIR = re.compile(r'"((?:\\.|[^"\\])*)"\s*:\s*"((?:\\.|[^"\\])*)"')
 _APP_LITERAL = re.compile(r'(?m)^APP\s*=\s*"([^"]+)"\s*$')
-_APP_FALLBACK = re.compile(r'os\.environ\.get\(\s*"SENTRY_APP".*?\bor\s+"([^"]+)"', re.S)
+_APP_FALLBACK = re.compile(r'os\.environ\.get\(\s*"SENTRY_APP".*?\bor\s+"([^"]+)"', re.DOTALL)
 _IDENTITY_LITERAL = re.compile(r'(?m)^APP_IDENTITY\s*=\s*"([^"]+)"\s*$')
 _ASSIGN = re.compile(
     r"""(?:monitor_slug|monitorSlug|[A-Z][A-Z0-9_]*SLUG)\s*=\s*["']([a-z0-9]+(?:-[a-z0-9]+)*)["']"""

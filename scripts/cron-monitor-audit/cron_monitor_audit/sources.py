@@ -90,8 +90,7 @@ def load_apps(path: Path) -> list[App]:
 
 def include_local_path(path: str) -> bool:
     norm = path.replace("\\", "/")
-    if norm.startswith("./"):
-        norm = norm[2:]
+    norm = norm.removeprefix("./")
     if norm.startswith("scripts/cron-monitor-audit/"):
         return False
     parts = norm.split("/")

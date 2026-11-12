@@ -5,6 +5,7 @@ CRON_SCHEDULES = {
     "Gone Workflow": "0 0 * * *",
 }
 
+
 def report(workflow_name: str) -> None:
     monitor_slug = f"ci-{APP}-{slugify(workflow_name)}"
     send(monitor_slug)
