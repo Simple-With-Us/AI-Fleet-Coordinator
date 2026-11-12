@@ -333,15 +333,26 @@ def _remote_post(url: str, headers: dict, body: bytes, timeout: float) -> tuple[
                 expected = None
             if getattr(r, "chunked", False) or r.headers.get("Transfer-Encoding"):
                 expected = None
-            sock = getattr(getattr(getattr(r, "fp", None), "raw", None), "_sock", None)
             # The socket is only a way to tighten the per-read timeout to the remaining
             # budget.  Some responses that have genuinely arrived do not expose it
             # (wrapped / buffered transports, proxies, test doubles):  requiring it
-            # discarded a complete answer as a transport failure (AFC-638).  When it
-            # is absent, read anyway:  the opener's own timeout (the full budget
-            # passed to op.open) still bounds any single blocking read, and the
-            # deadline is re-checked before and after every chunk below, so a
-            # slow-drip body still cannot outlast the total deadline.
+            # discarded a complete answer as a transport failure (AFC-638).  Look for a
+            # handle on every path a response may carry one, and use the first that can
+            # take a timeout.
+            raw = getattr(getattr(r, "fp", None), "raw", None)
+            sock = None
+            for candidate in (
+                getattr(raw, "_sock", None),
+                getattr(getattr(r, "connection", None), "sock", None),
+                raw,
+            ):
+                if callable(getattr(candidate, "settimeout", None)):
+                    sock = candidate
+                    break
+            # When no handle exists at all, read anyway.  Then the opener's own timeout
+            # (the full budget passed to op.open) bounds a single blocking read, so one
+            # slow read can run past the deadline by up to that timeout before the
+            # deadline check after it fails the call;  it never runs unbounded.
             while True:
                 if expected is not None and total >= expected:
                     break
@@ -601,12 +612,14 @@ def _failure(exc: "_TransportError", write: bool) -> str:
         # Provably never left this host (DNS, refused connection, certificate
         # check):  the endpoint really could not be reached.
         return "the hosted endpoint could not be reached (no direct fallback)"
-    # The request was sent, so the endpoint was reachable;  what happened is
-    # that its answer was lost (deadline, closed SSL socket, transport error
-    # after sending).  Saying "could not be reached" sent seats chasing a
-    # phantom outage and falling back to gh (AFC-638).
+    # `sent` is the safe assumption, not proof:  every stage that is not provably
+    # pre-send counts as sent, and urllib wraps a connect timeout and a timeout
+    # after sending in the same URLError.  So report only what was observed:  no
+    # answer arrived.  Saying "could not be reached" sent seats chasing a phantom
+    # outage and falling back to gh (AFC-638);  saying the answer was "lost"
+    # would claim the endpoint was reached, which a connect timeout does not show.
     return (
-        "the hosted endpoint's answer was lost"
+        "no answer was received from the hosted endpoint"
         + (_REMOTE_UNKNOWN if write else "")
         + " (no direct fallback)"
     )

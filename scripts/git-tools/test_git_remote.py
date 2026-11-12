@@ -2074,14 +2074,55 @@ class TestReview1199(unittest.TestCase):
         )
         self.assertEqual((status, ctype, raw), (200, "application/json", b"abc"))
 
-    def test_sent_failure_says_the_answer_was_lost_not_unreachable(self):
+    def test_sent_failure_says_no_answer_not_unreachable(self):
+        # Kody on PR #1515:  `sent` is assumed, not proven (a connect timeout is
+        # also sent=True), so the message claims neither reachability nor outage.
         for reason in ("transport", "deadline", "unreachable"):
             read_msg = git._failure(git._TransportError(True, reason), False)
-            self.assertIn("answer was lost", read_msg, reason)
+            self.assertIn("no answer was received", read_msg, reason)
             self.assertNotIn("could not be reached", read_msg, reason)
+            self.assertNotIn("answer was lost", read_msg, reason)
             write_msg = git._failure(git._TransportError(True, reason), True)
-            self.assertIn("answer was lost", write_msg, reason)
+            self.assertIn("no answer was received", write_msg, reason)
             self.assertIn(git._REMOTE_UNKNOWN, write_msg, reason)
+
+    def test_a_response_exposing_only_a_connection_socket_gets_the_remaining_budget(self):
+        # Kody on PR #1515:  look for a socket handle on more than one path, so
+        # the per-read timeout is still tightened to the remaining budget.
+        body = b'{"jsonrpc":"2.0","id":1,"result":{}}'
+        timeouts = []
+
+        class Sock:
+            def settimeout(self, value):
+                timeouts.append(value)
+
+        chunks = [body, b""]
+
+        class Response:
+            status = 200
+            chunked = False
+            headers = {"Content-Type": "application/json", "Content-Length": str(len(body))}
+            fp = types.SimpleNamespace(raw=types.SimpleNamespace(_sock=None))
+            connection = types.SimpleNamespace(sock=Sock())
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read1(self, size):
+                return chunks.pop(0) if chunks else b""
+
+        class FakeOpener:
+            def open(self, req, timeout=None):
+                return Response()
+
+        with mock.patch.object(git.urllib.request, "build_opener", lambda *handlers: FakeOpener()):
+            status, _ctype, raw = git._remote_post(git.REMOTE_MCP_URL, {}, b"{}", 5)
+        self.assertEqual((status, raw), (200, body))
+        self.assertTrue(timeouts)
+        self.assertTrue(all(0 < t <= 5 for t in timeouts))
 
     def test_unsent_failure_still_says_could_not_be_reached(self):
         msg = git._failure(git._TransportError(False, "unreachable"), True)

@@ -579,8 +579,11 @@ class TestMcpWrapper(unittest.TestCase):
         self.assertEqual(reply["result"]["serverInfo"]["name"], "GR-MCP")
         reply = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = [t["name"] for t in reply["result"]["tools"]]
+        # The seven PR tools come first;  the relay's wf verbs follow them
+        # (AFC-664, covered in test_mcp_wf_verbs).
+        self.assertNotIn("mint_token", names)
         self.assertEqual(
-            names,
+            names[:7],
             [
                 "open_pr",
                 "edit_pr",
@@ -591,6 +594,7 @@ class TestMcpWrapper(unittest.TestCase):
                 "resolve_thread",
             ],  # mint_token stays HTTP-only: raw App tokens never cross stdio
         )
+        self.assertTrue(all(name.startswith("wf_") for name in names[7:]))
 
     def test_tools_call_forwards_to_relay_with_seat_token(self):
         opener = FakeOpener({"number": 9, "url": "u"})

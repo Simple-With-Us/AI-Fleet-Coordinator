@@ -111,6 +111,26 @@ class WfForwarding(unittest.TestCase):
         self.assertTrue(reply["result"]["isError"])
         self.assertIn("relay_refused", reply["result"]["content"][0]["text"])
 
+    def test_a_retryable_wf_read_http_error_stays_retryable(self):
+        # Kody finding on PR #1515: the relay answers a rate-limited read with
+        # 429 and {"retryable": true, "retry_after_seconds": N}.
+        def opener(req, timeout=None):
+            raise urllib.error.HTTPError(
+                req.full_url,
+                429,
+                "too many requests",
+                {},
+                io.BytesIO(b'{"error":"rate","retryable":true,"retry_after_seconds":7}'),
+            )
+
+        reply = self._call(self._server(opener), "wf_pr_list_page", {"repo": "o/r"})
+        self.assertTrue(reply["result"]["isError"])
+        error = json.loads(reply["result"]["content"][0]["text"])
+        self.assertEqual(error["code"], "unavailable")
+        self.assertIs(error["retryable"], True)
+        self.assertEqual(error["retry_after_seconds"], 7)
+        self.assertEqual(error["http_status"], 429)
+
     def test_a_wf_write_http_error_keeps_the_unknown_outcome_guard(self):
         def opener(req, timeout=None):
             raise urllib.error.HTTPError(
