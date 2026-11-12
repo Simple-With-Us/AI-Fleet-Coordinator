@@ -187,10 +187,12 @@ def _scalar(raw: str, number: int):
 
 
 def _quoted(raw: str, number: int) -> str:
+    end = _closing_quote(raw, number)
+    tail = raw[end + 1 :]
+    if not re.fullmatch(r"(?: *| +#.*)", tail):
+        raise AuditError(f"line {number}: trailing text after a quoted value")
     quote = raw[0]
-    if len(raw) < 2 or not raw.endswith(quote):
-        raise AuditError(f"line {number}: unterminated string")
-    body = raw[1:-1]
+    body = raw[1:end]
     if quote == "'":
         return body.replace("''", "'")
     out = []
@@ -211,6 +213,25 @@ def _quoted(raw: str, number: int) -> str:
     if escaped:
         raise AuditError(f"line {number}: unterminated string")
     return "".join(out)
+
+
+def _closing_quote(raw: str, number: int) -> int:
+    """Index of the closing quote, ignoring escapes and a later inline comment."""
+    quote = raw[0]
+    index = 1
+    while index < len(raw):
+        char = raw[index]
+        if quote == '"' and char == "\\":
+            index += 2
+            continue
+        if char == quote:
+            doubled = quote == "'" and index + 1 < len(raw) and raw[index + 1] == "'"
+            if doubled:
+                index += 2
+                continue
+            return index
+        index += 1
+    raise AuditError(f"line {number}: unterminated string")
 
 
 def _validate(data: dict, path: Path) -> Inventory:

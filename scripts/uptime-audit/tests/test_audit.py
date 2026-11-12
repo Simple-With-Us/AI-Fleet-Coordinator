@@ -97,6 +97,57 @@ class InventoryTests(unittest.TestCase):
             with self.assertRaises(AuditError):
                 load_inventory(path)
 
+    def test_quoted_value_keeps_an_inline_comment_out(self):
+        text = "\n".join(
+            [
+                "version: 1",
+                "org: example-org",
+                "entries:",
+                "  - id: app",
+                "    owner: App",
+                "    host: app.example",
+                '    health_url: "https://app.example/api/health" # probe',
+                "    certainty: certain",
+                "    source: docs/health.md",
+                "    note: 'it''s # fine' # dropped",
+                "excluded:",
+                "",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "quoted.yaml"
+            path.write_text(text, encoding="utf-8")
+            inventory = load_inventory(path)
+        entry = inventory.entries[0]
+        self.assertEqual(entry.health_url, "https://app.example/api/health")
+        self.assertEqual(entry.note, "it's # fine")
+
+    def test_quoted_value_rejects_trailing_junk_and_an_open_quote(self):
+        junk = "\n".join(
+            [
+                "version: 1",
+                "org: example-org",
+                "entries:",
+                "  - id: app",
+                "    owner: App",
+                "    host: app.example",
+                "    health_url: https://app.example/api/health",
+                "    certainty: certain",
+                "    source: docs/health.md",
+                '    note: "abc" extra',
+                "excluded:",
+                "",
+            ]
+        )
+        open_quote = junk.replace('"abc" extra', '"abc # still open')
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            for name, body in (("junk.yaml", junk), ("open.yaml", open_quote)):
+                path = directory / name
+                path.write_text(body, encoding="utf-8")
+                with self.assertRaises(AuditError):
+                    load_inventory(path)
+
 
 class CompareTests(unittest.TestCase):
     def test_small_fixture_categories(self):
