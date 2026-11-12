@@ -1878,6 +1878,10 @@
     {
      "name": "the registry client",
      "path": "scripts/simple_tools/registry_api.py"
+    },
+    {
+     "name": "the Eavesdropper's loader",
+     "path": "scripts/simple_tools/server/infisical_env.py"
     }
    ],
    "requires": [],
