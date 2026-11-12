@@ -124,6 +124,13 @@ jobs:
       timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest discover fleet_rag/tests/ -v
+    # Offline retrieval-quality eval.  It chunks the repo files named by
+    # retrieval_golden.json and ranks them in memory, so it needs no Qdrant
+    # credentials.  A normal run is under a second.  The gate is recall@10.
+    - name: Retrieval quality eval offline fixture
+      timeout-minutes: 5
+      run: |
+        cd scripts && python3 -m fleet_rag.retrieval_eval --offline --threshold 0.9
     - name: Lane doctor and tmp guard tests
       timeout-minutes: 15
       run: |
@@ -518,6 +525,11 @@ jobs:
     - name: Verify public activity boundary
       timeout-minutes: 10
       run: python3 scripts/test-public-activity.py
+    - name: Refuse stale fleet activity artifacts on main
+      timeout-minutes: 5
+      run: |
+        python3 scripts/test_check_fleet_activity_main_artifacts.py
+        python3 scripts/check-fleet-activity-main-artifacts.py
     - name: Verify fleet registry
       timeout-minutes: 10
       run: python3 scripts/check-fleet-registry.py
@@ -665,6 +677,7 @@ jobs:
       timeout-minutes: 10
       run: |
         python3 scripts/test-deploy-mapped-worker.py
+        python3 scripts/test_worker_secret_sync.py
         python3 scripts/test-deploy-alert-workers.py
     # Hosted ST-MCP Worker unit tests (including GraphQL document
     # parsing).  Install its pinned dependencies before running the suites.
