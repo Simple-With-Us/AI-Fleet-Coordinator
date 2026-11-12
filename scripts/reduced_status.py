@@ -56,7 +56,11 @@ The document:
                             "verified_host": "mac" | "server" | "cloud" | null,
                             "why": token | null, "topics": int | null,
                             "watcher": bool | null}],
-                "letters": {"known": bool, "why": "partial" | null}}],
+                "letters": {"known": bool, "why": "partial" | null},
+                "routine": {"ready": bool | null,
+                            "auth": "header" | "bearer" | "hmac-sha256" | "other" | null,
+                            "why": "routine_not_configured" | "routine_key_refused" |
+                                   "routine_url_refused" | "other" | null} | null}],
      "skipped": [{"seat": name, "reason": token}],
      "disabled": [name],
      "registry_sweep": {"ran_at": ISO | null, "ok": bool | null, "ended": int | null,
@@ -64,7 +68,9 @@ The document:
                         "refused": int | null, "refused_platforms": [token]}}
 
 `registry_sweep` was added after v1 shipped.  It is additive:  a reader that does not know the key
-ignores it, so `schema` stays 1.
+ignores it, so `schema` stays 1.  Each seat's `routine` came later still, in the same way:  a
+reader that does not know it ignores it, and a reader that does must allow for a document from an
+older reducer that has no `routine` key at all.
 
 Where each field comes from (`Daemon.status()` in daemon.py, which this module reads and never
 changes):
@@ -131,6 +137,16 @@ changes):
     block that is absent (the Mac, a listener from before AFC-721, or a server before its first
     pass, all of which write null) or is not an object reads as all null with no platforms, as
     `operator_voice` does.
+  * `routine` is the source seat's `routine` block, which the daemon writes only for a seat whose
+    wake is "http" (a seat that wakes through the router) and as null for every other seat.  It
+    says whether the router the seat's wakes go to is ready, never whether a wake reached anyone.
+    `ready` is the source's `ready` flag.  `auth` is the routine's auth mode when it is one of
+    the modes the daemon's config allows (`config.ROUTINE_AUTH`), "other" for any other value,
+    and null when the source has none (an "http" seat with no routine block).  `why` is the
+    reason the routine is not ready when it is one of the codes `adapters.resolve_routine` writes,
+    "other" for any other value, and null when the source's is null (a ready routine).  A block
+    that is absent, null or not an object is null, so a seat that does not wake through the
+    router reads as null.
 
 What the source does NOT carry, and so is null here (or never produced) whatever the document says:
 
@@ -149,7 +165,7 @@ What the source does NOT carry, and so is null here (or never produced) whatever
 
 Deliberately never read: `config_errors`, `reload_refused`, `reload_at`, `partition_file`,
 `owner_user_id`, `loop_guard`, `chat_nudges`, `pid`, `version`, `started`, each
-seat's `creds`, `cursor` and its `webhook_high_water` (both internal ingestion positions), `claude`, `muse`, `routine`, `pin`, `pinned`, `model`, `red`, `live`,
+seat's `creds`, `cursor` and its `webhook_high_water` (both internal ingestion positions), `claude`, `muse`, `pin`, `pinned`, `model`, `red`, `live`,
 `budget`, `routes_24h`, `route_enabled`, `provider` and `fallback` (beyond `stands_in`), and a
 lease's `lease_id`, `session_id` and `title`.  `drain` is not read either:  it is the AFC-652
 planned-drain checklist, on-host operator tooling the fleet CLI reads from the raw status.json
@@ -160,6 +176,9 @@ registry record ids of every chat a pass ended, by platform and seat) and each r
 `host`, `open` and `would_end` are never read:  a record id is an id, and the letters and hosts
 of ended chats are for the Eavesdropper's own status readers (fleet-ops-ctl eavesdropper-status),
 not the apps.
+Of a seat's `routine`, only `ready`, `auth` and `why` are read.  Its `host` (the router's host
+name), `detail` (a sentence that names environment variables) and `method` are never read, and no
+value of `auth` or `why` is copied unless it is one of the fixed words above.
 """
 
 from __future__ import annotations
@@ -237,6 +256,11 @@ _LEASE_WHY = {
     "no heartbeat": "no_heartbeat",
 }
 _NOT_INTERACTIVE = "not an interactive claude"
+
+# A routine's auth modes (`config.ROUTINE_AUTH`), and the codes `adapters.resolve_routine` gives
+# for a routine that is not ready.  Nothing else is ever copied from the source's `routine`.
+_ROUTINE_AUTH = ("header", "bearer", "hmac-sha256")
+_ROUTINE_WHY = ("routine_not_configured", "routine_key_refused", "routine_url_refused")
 
 # The first matching fragment of a skipped seat's first config problem picks its reason.
 _SKIP_REASONS = (
@@ -525,6 +549,27 @@ def _letters(leases: list[Any]) -> dict[str, Any]:
     return {"known": False, "why": "partial" if lettered else None}
 
 
+def _fixed_word(value: Any, words: tuple[str, ...]) -> str | None:
+    """`value` when it is one of `words`, null when it is null, and "other" for anything else."""
+    if value is None:
+        return None
+    if isinstance(value, str) and value in words:
+        return value
+    return "other"
+
+
+def _routine(raw: Any) -> dict[str, Any] | None:
+    """The source's `routine` block as a flag and two fixed words, or null when it is absent,
+    null or not an object.  Its `host`, `detail` and `method` are never read."""
+    if not isinstance(raw, dict):
+        return None
+    return {
+        "ready": _bool(raw.get("ready")),
+        "auth": _fixed_word(raw.get("auth"), _ROUTINE_AUTH),
+        "why": _fixed_word(raw.get("why"), _ROUTINE_WHY),
+    }
+
+
 def _seat(name: str, row: dict[str, Any], fresh: bool) -> dict[str, Any]:
     raw_leases = row.get("leases")
     leases = raw_leases[:MAX_LEASES] if isinstance(raw_leases, list) else []
@@ -544,6 +589,7 @@ def _seat(name: str, row: dict[str, Any], fresh: bool) -> dict[str, Any]:
         "quota": _quota(row.get("quota")),
         "leases": [item for item in (_lease(lease) for lease in leases) if item is not None],
         "letters": _letters(leases),
+        "routine": _routine(row.get("routine")),
     }
 
 
