@@ -100,15 +100,15 @@ enum EavesdropperStatusText {
 ///      "pause": {"paused", "since", "wakes_only", "set_by"}, "pause_file_error",
 ///      "seats": [{"seat", "bot", "connected", "running", "wake", "paused", "wakes_24h",
 ///                 "held_back", "jobs", "last_event", "quota": {...}, "leases": [...],
-///                 "letters": {"known", "why"}}],
+///                 "letters": {"known", "why"}, "routine": {"ready", "auth", "why"} | null}],
 ///      "skipped": [{"seat", "reason"}], "disabled": [name],
 ///      "registry_sweep": {"ran_at", "ok", "ended", "error", "stale_after_minutes", "refused",
 ///                         "refused_platforms": [name]}}
 ///
 /// The document has no schema name of its own:  `schema` is its version, and the helper's answer
 /// around it names the verb (`server eavesdropper-status`), which the answer parser checks.
-/// `registry_sweep` came later and is additive, so the version stays 1 and a document from an
-/// older helper simply has none.
+/// `registry_sweep` and each seat's `routine` came later and are additive, so the version stays 1
+/// and a document from an older helper simply has neither.
 struct ReducedEavesdropperStatus: Decodable, Equatable {
     /// The one version this app reads.
     static let schemaVersion = 1
@@ -491,9 +491,15 @@ struct ServerSeatFacts: Decodable, Equatable {
     /// The seat's sessions (the listener's leases), with no lease or session id.
     let sessions: [ServerSeatSession]
     let letters: ServerSeatLetterFields?
+    /// Whether the router the seat's wakes go to is ready, or nil when the reducer sent no
+    /// routine for the seat (or one it could not read).
+    let routine: ServerSeatRoutineFields?
+    /// True when the reducer sent the `routine` key at all, null included.  An older reducer
+    /// sends none, and then Muster says nothing about the router for any seat.
+    let routineReported: Bool
 
     enum CodingKeys: String, CodingKey {
-        case seat, bot, connected, running, wake, paused, jobs, quota, letters
+        case seat, bot, connected, running, wake, paused, jobs, quota, letters, routine
         case sessions = "leases"
         case wakesLastDay = "wakes_24h"
         case heldBack = "held_back"
@@ -522,6 +528,28 @@ extension ServerSeatFacts {
         quota = container.optionalField(ServerSeatQuotaFields.self, .quota)
         sessions = container.lenientList(ServerSeatSession.self, .sessions)
         letters = container.optionalField(ServerSeatLetterFields.self, .letters)
+        routine = container.optionalField(ServerSeatRoutineFields.self, .routine)
+        routineReported = container.contains(.routine)
+    }
+
+    /// Whether the seat's wakes go to a ready router, as one plain line can say it.
+    var router: ServerSeatRouter {
+        if let routine {
+            switch routine.ready {
+            case true?: return .ready
+            case false?: return .notReady(routine.whyText)
+            case nil: return .readinessNotReported
+            }
+        }
+        // No routine.  Only a reducer that sends the key can say a seat has none.
+        guard routineReported else { return .notSaid }
+        switch wakeKind {
+        case .capturesOnly: return .captureOnly
+        // A seat that wakes through the router always has a routine, so one without is a
+        // routine the reducer could not read.
+        case .wakes: return .readinessNotReported
+        case .other, .notReported: return .notSaid
+        }
     }
 
     var connection: ServerSeatConnection { ServerSeatConnection(connected) }
@@ -635,6 +663,94 @@ enum ServerSeatWake: Equatable {
         }
     }
 }
+
+/// A seat's `routine` block:  whether the router the seat's wakes go to is ready.  The reducer
+/// sends it only for a seat that wakes through the router, and never the router's address, its
+/// detail sentence or its method, so nothing here holds one.  It is about readiness only:  it
+/// never says that any one wake reached a chat.
+struct ServerSeatRoutineFields: Decodable, Equatable {
+    let ready: Bool?
+    /// `header`, `bearer`, `hmac-sha256` or `other`, or nil.
+    let auth: String?
+    /// `routine_not_configured`, `routine_key_refused`, `routine_url_refused` or `other`, or nil.
+    let why: String?
+
+    enum CodingKeys: String, CodingKey { case ready, auth, why }
+}
+
+extension ServerSeatRoutineFields {
+    /// The only `auth` words the reducer sends.
+    static let authWords: Set<String> = ["header", "bearer", "hmac-sha256", "other"]
+    /// The only `why` words the reducer sends.
+    static let whyWords: Set<String> = [
+        "routine_not_configured", "routine_key_refused", "routine_url_refused", "other",
+    ]
+
+    /// The block is judged whole before anything reads it:  a field of the wrong type, or a word
+    /// the reducer never sends, throws.  The seat's own reader takes that as no routine, so the
+    /// seat says its readiness is not reported, and never shows half a block.  Keys the reducer
+    /// never sends (an address, a detail sentence) are not read at all.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let readyValue = try container.decodeIfPresent(Bool.self, forKey: .ready)
+        let authValue = try container.decodeIfPresent(String.self, forKey: .auth)
+        let whyValue = try container.decodeIfPresent(String.self, forKey: .why)
+        if let word = authValue, !Self.authWords.contains(word) {
+            throw DecodingError.dataCorruptedError(
+                forKey: .auth, in: container, debugDescription: "not an auth word the reducer sends")
+        }
+        if let word = whyValue, !Self.whyWords.contains(word) {
+            throw DecodingError.dataCorruptedError(
+                forKey: .why, in: container, debugDescription: "not a reason word the reducer sends")
+        }
+        ready = readyValue
+        auth = authValue
+        why = whyValue
+    }
+
+    /// Why the router is not ready, in plain words.
+    var whyText: String {
+        switch why {
+        case "routine_not_configured"?: return "its address or key is not set on the server"
+        case "routine_key_refused"?: return "its key cannot be used"
+        case "routine_url_refused"?: return "its address cannot be used"
+        default: return "the server did not say why"
+        }
+    }
+}
+
+/// Whether a server seat's wakes go to a ready router.  It is about readiness only:  a router
+/// that is ready, or that took a wake, has not thereby put the wake in front of a chat, and no
+/// line here says it has.
+enum ServerSeatRouter: Equatable {
+    case ready
+    /// Not ready, with the reason in plain words.
+    case notReady(String)
+    /// The seat wakes through the router, and the server did not say whether it is ready.
+    case readinessNotReported
+    /// The seat's mentions are kept in its inbox, and nothing wakes it.
+    case captureOnly
+    /// The seat wakes some other way, or the server is too old to say.
+    case notSaid
+
+    /// The one line a seat's row shows, or nil when there is nothing to say.  A seat that only
+    /// captures gets no line:  its listener cell already says Captures Only.
+    var line: String? {
+        switch self {
+        case .ready: return "Wakes go to the router, ready"
+        case .notReady(let why): return "Wakes go to the router, not ready: \(why)"
+        case .readinessNotReported: return "Wakes go to the router, readiness not reported"
+        case .captureOnly, .notSaid: return nil
+        }
+    }
+
+    /// True when the router is not ready.
+    var isProblem: Bool {
+        if case .notReady = self { return true }
+        return false
+    }
+}
+
 /// Whether a seat is paused (a full pause or a pause of its wakes).
 enum ServerSeatPause: Equatable {
     case paused
