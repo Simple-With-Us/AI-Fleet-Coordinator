@@ -703,6 +703,9 @@ jobs:
     - name: Kody first-review prompter tests
       timeout-minutes: 10
       run: node --test scripts/kody-first-review/*.test.mjs
+    - name: Kody once-per-PR decision
+      timeout-minutes: 10
+      run: node --test scripts/kody-once/*.test.mjs
     - name: Autofix dispatcher tests
       timeout-minutes: 10
       run: node --test scripts/autofix-dispatcher/*.test.mjs
