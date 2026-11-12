@@ -1069,8 +1069,8 @@ class RegistryTest(unittest.TestCase):
         )
 
     def test_every_platforms_main_chat_takes_a_doubled_pair_whoever_registers_it(self):
-        # The Operator's own ask-and-answer path registers a chat with no space or pick (operator_registration,
-        # daemon).  Owner, Nov 11 2026:  "if a Muse Code seat asks for a letter then it will get a DD since the last
+        # A registration with no space or pick (the Operator's old ask-and-answer path made these;  it is
+        # gone).  Owner, Nov 11 2026:  "if a Muse Code seat asks for a letter then it will get a DD since the last
         # assigned to MC was CC".  Every seat, not only Claude and MiniMax.
         for platform in (
             "claude",

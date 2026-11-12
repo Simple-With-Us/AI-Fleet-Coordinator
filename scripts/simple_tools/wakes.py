@@ -315,7 +315,7 @@ class Pending:
         self.gate_fallback: str | None = None
         self.gate_fallback_reason: str | None = None
         self.gate_inspect: str | None = None
-        # What the daemon already learned about a tagged session letter (`ask_operator_for_candidates`
+        # What the daemon already learned about a tagged session letter (`note_letter_candidates`
         # records it), so the gate reads it from here and never opens the registry a second time.  Not
         # written to the ledger:  it is only a hand-off between two steps of one wake.
         self.letter_candidates: int | None = None
@@ -430,8 +430,7 @@ class Pending:
             "trigger_ts": self.trigger_ts,
             "route_tagged": self.route_tagged,
             # The FIRST trigger's sender, kept in the row so a wake reloaded after a daemon
-            # restart still knows who asked.  The Operator candidate-list DM reads exactly this
-            # field as its recipient, so dropping it here silently disabled that path on reload.
+            # restart still knows who asked.
             "sender_id": self.sender_id,
         }
         if self.catch_up:
@@ -478,7 +477,7 @@ class Pending:
             float(ts) if isinstance(ts, (int, float)) and not isinstance(ts, bool) else None
         )
         # sender_id is excluded when it is a bool, exactly as trigger_ts is:  a reloaded wake must
-        # keep the person who asked, or the Operator candidate-list DM takes its "no sender" branch.
+        # keep the person who asked.
         sender = view.get("sender_id")
         pending.sender_id = (
             int(sender) if isinstance(sender, int) and not isinstance(sender, bool) else None
@@ -1199,9 +1198,9 @@ def build_prompt(
     (heldback.wake_summary), when its count is above 0, adds one trusted header line with the count
     and a second untrusted block after the messages:  the newest held-back wakes, one JSON line
     each, ids, links and reasons only, never a body.  `tagged_address` is the session letter the
-    trigger addressed, when it carried one; the header then says the Operator already carried the
-    candidate list to the sender as a direct message, that nothing blocks, and that the seat
-    proceeds on its default letter and names the letter it used."""
+    trigger addressed, when it carried one; the header then says that nobody is asked which session
+    an ambiguous letter meant, that nothing blocks, and that the seat proceeds on its default letter
+    and names the letter it used."""
     nonce = nonce or L.new_nonce()
     held_count = int(held_back.get("count") or 0) if held_back else 0
     held_items = list(held_back.get("items") or []) if held_back and held_count > 0 else []
@@ -1235,17 +1234,15 @@ def build_prompt(
     if tagged_address:
         lines.append(
             "Session letter: the address used the session letter %s.  When more than one session "
-            "could hold it, the Operator has already carried the candidate list to the sender as "
-            "a direct message, so you do not need to ask.  Nothing here blocks: proceed on your "
-            "default letter, name the letter you used, and answer in your own thread."
+            "could hold it, nobody is asked which one was meant.  Nothing here blocks: proceed on "
+            "your default letter, name the letter you used, and answer in your own thread."
             % L.quoted(tagged_address, 8)
         )
     else:
         lines.append(
             "Session letter: when a tagged address (a platform mention plus a session letter) is "
-            "ambiguous, the Operator carries the candidate list to the sender as a direct "
-            "message.  Nothing here blocks: proceed on your default letter, name the letter you "
-            "used, and answer in your own thread."
+            "ambiguous, nobody is asked which session it meant.  Nothing here blocks: proceed on "
+            "your default letter, name the letter you used, and answer in your own thread."
         )
     if held_count > 0 and max_held is not None and not held_items:
         lines.append(

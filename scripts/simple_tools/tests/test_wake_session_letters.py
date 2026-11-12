@@ -26,7 +26,6 @@ from types import SimpleNamespace
 from unittest import mock
 
 from simple_tools import chat_catalog as CC
-from simple_tools import operator_candidates as OC
 from simple_tools import operator_registry as OR
 from simple_tools import wakes as W
 from simple_tools.tests.test_daemon import DaemonHarness
@@ -1297,8 +1296,11 @@ class ReferenceFormTests(unittest.TestCase):
         self.assertIsNone(OR.resolve_ref(self.db, "minimax", "CODEX AA"))
         self.assertIsNotNone(OR.resolve_ref(self.db, "minimax", "MM AA"))
 
-class AskOperatorTests(DaemonHarness):
-    """The Operator ask:  when it sends, to whom, and when it refuses to.
+class LetterCandidateTests(DaemonHarness):
+    """The tagged letter's registry count, for the model gate, and nothing sent to anyone.
+
+    The Operator asks nobody which session a letter means (owner ruling, Nov 10, 2026), so
+    `note_letter_candidates` only records the count on the pending wake.
 
     A letter is the same letter on two platforms only if both sessions were allocated it, so
     the ambiguous seeds register one session per platform.  The seeds name the single-letter
@@ -1334,80 +1336,41 @@ class AskOperatorTests(DaemonHarness):
         p.sender_id = sender_id
         return p
 
-    def setUp(self) -> None:
-        super().setUp()
-        self.sent = []
+    def note(self, d, pending, letter="AA"):
+        before = len(self.fake.requests)
+        with mock.patch.object(d.log, "write") as write:
+            d.note_letter_candidates(d.seats["CLAUDE"], pending, letter)
+        self.assertEqual(len(self.fake.requests), before, "nothing was sent to Zulip")
+        self.assertEqual(write.call_args_list, [], "nothing was logged as a send")
+        self.assertEqual(self.operator_posts(), [])
 
-    def stub_send(self, monkey_owner=None):
-        def fake_send(**kwargs):
-            self.sent.append(kwargs)
-            return {"status": "sent", "delivery_status": "ok", "reason": "stub"}
-
-        return fake_send
-
-    def with_stubbed_send(self, d):
-        original = OC.send_candidate_list
-        self.addCleanup(setattr, OC, "send_candidate_list", original)
-        OC.send_candidate_list = self.stub_send()
-        return OC.send_candidate_list
-
-    def test_one_candidate_sends_nothing(self) -> None:
+    def test_one_candidate_on_another_seat_is_counted(self) -> None:
         d = self.daemon()
         self.seed(d, (("MM", "minimax"),))
-        self.with_stubbed_send(d)
-        d.ask_operator_for_candidates(d.seats["CLAUDE"], self.pending(d.config.owner_user_id), "AA")
-        self.assertEqual(self.sent, [], "a letter that names one session needs no list")
+        pending = self.pending(d.config.owner_user_id)
+        self.note(d, pending)
+        self.assertEqual((pending.letter_candidates, pending.letter_holder_on_seat), (1, False))
 
-    def test_an_ambiguous_letter_sends_to_the_tagged_sender(self) -> None:
+    def test_one_candidate_on_this_seat_is_its_holder(self) -> None:
+        d = self.daemon()
+        self.seed(d, (("CLAUDE", "claude-code"),))
+        pending = self.pending(d.config.owner_user_id)
+        self.note(d, pending)
+        self.assertEqual((pending.letter_candidates, pending.letter_holder_on_seat), (1, True))
+
+    def test_an_ambiguous_letter_is_counted_and_nobody_is_asked(self) -> None:
         d = self.daemon()
         self.seed(d, self.AMBIGUOUS)
-        self.with_stubbed_send(d)
-        # The address was written by the owner; the first trigger came from somebody else.
-        d.ask_operator_for_candidates(
-            d.seats["CLAUDE"], self.pending(4242), "AA", "", d.config.owner_user_id
-        )
-        self.assertEqual([kw["recipient"] for kw in self.sent], [d.config.owner_user_id])
+        pending = self.pending(d.config.owner_user_id)
+        self.note(d, pending)
+        self.assertEqual((pending.letter_candidates, pending.letter_holder_on_seat), (2, False))
 
-    def test_a_recipient_that_is_not_the_owner_is_refused(self) -> None:
+    def test_a_letter_nobody_holds_counts_zero(self) -> None:
         d = self.daemon()
         self.seed(d, self.AMBIGUOUS)
-        self.with_stubbed_send(d)
-        d.ask_operator_for_candidates(d.seats["CLAUDE"], self.pending(4242), "AA")
-        self.assertEqual(self.sent, [], "internal session inventory must not go to a stranger")
-
-    def test_no_sender_is_skipped(self) -> None:
-        d = self.daemon()
-        self.seed(d, self.AMBIGUOUS)
-        self.with_stubbed_send(d)
-        d.ask_operator_for_candidates(d.seats["CLAUDE"], self.pending(None), "AA")
-        self.assertEqual(self.sent, [])
-
-    def test_the_platform_comes_from_the_registry_rows(self) -> None:
-        """The body names the namespace the letter is actually live in, never a hardcoded seat
-        name:  this seat's own registry row wins over the other candidate's."""
-        d = self.daemon()
-        self.seed(d, self.AMBIGUOUS)
-        self.with_stubbed_send(d)
-        # The asking seat lives on a third platform and holds the same letter there.
-        db = OR.registry_db_path(d.root, d.env)
-        OR.register_session(
-            db, platform="codex", verified_host="mac-claude", profile_scope="default",
-            native_session_id="mvs_claude", seat="CLAUDE", source="test", title="Work CLAUDE",
-            issuer=OR.ISSUER_OPERATOR,
-        )
-        d.ask_operator_for_candidates(
-            d.seats["CLAUDE"], self.pending(d.config.owner_user_id), "AA"
-        )
-        self.assertEqual(self.sent[0]["platform"], "codex")
-
-    def test_the_platform_is_never_a_hardcoded_seat_name(self) -> None:
-        d = self.daemon()
-        self.seed(d, (("MM", "minimax"), ("CODEX", "grok-leader")))
-        self.with_stubbed_send(d)
-        d.ask_operator_for_candidates(
-            d.seats["CLAUDE"], self.pending(d.config.owner_user_id), "AA"
-        )
-        self.assertIn(self.sent[0]["platform"], ("minimax", "grok-leader"))
+        pending = self.pending(None)
+        self.note(d, pending, "ZZ")
+        self.assertEqual((pending.letter_candidates, pending.letter_holder_on_seat), (0, False))
 
     def test_the_candidate_set_spans_platforms(self) -> None:
         """The registry keeps one live holder per (platform, letter), so only the cross-platform
@@ -1457,36 +1420,6 @@ class AskOperatorTests(DaemonHarness):
         self.assertEqual(live, 2, "the alias stays live, so only closed_at can exclude the row")
         found = d.operator_candidates("", "AA")
         self.assertEqual([row["seat"] for row in found], ["CODEX"])
-
-    def test_an_allow_listed_recipient_is_served(self) -> None:
-        """`[operator] dm_allow` is parsed into the config, so a listed user is a legal recipient."""
-        d = self.daemon()
-        self.seed(d, self.AMBIGUOUS)
-        self.with_stubbed_send(d)
-        d.config.operator_dm_allow = frozenset({4242})
-        d.ask_operator_for_candidates(d.seats["CLAUDE"], self.pending(4242), "AA")
-        self.assertEqual([kw["recipient"] for kw in self.sent], [4242])
-
-    def test_a_handler_escape_is_logged_in_the_module_vocabulary(self) -> None:
-        """An exception out of the send is a possibly-sent outcome, logged with the module's own
-        `unknown` token so one filter finds every such row."""
-        d = self.daemon()
-        self.seed(d, self.AMBIGUOUS)
-        original = OC.send_candidate_list
-        self.addCleanup(setattr, OC, "send_candidate_list", original)
-
-        def boom(**kwargs):
-            raise RuntimeError("handler bug")
-
-        OC.send_candidate_list = boom
-        with mock.patch.object(d.log, "write") as write:
-            d.ask_operator_for_candidates(
-                d.seats["CLAUDE"], self.pending(d.config.owner_user_id), "AA"
-            )
-        rows = [c.kwargs for c in write.call_args_list if c.args[:1] == ("operator-candidate-list",)]
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["status"], "error")
-        self.assertEqual(rows[0]["delivery_status"], OC.DELIVERY_UNKNOWN)
 
 
 class PendingSenderTests(unittest.TestCase):

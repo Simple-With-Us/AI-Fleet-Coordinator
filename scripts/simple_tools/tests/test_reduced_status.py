@@ -1511,7 +1511,7 @@ class FromRealDaemonStatusTests(DaemonHarness):
         self.write_lease("L2", session_id="sess-bbbbbbbb")
         daemon = self.started()
         D.OR.register_session(
-            daemon._registration_db(),
+            D.OR.registry_db_path(daemon.root, daemon.env),
             platform="claude",
             verified_host="mac",
             profile_scope="default",
