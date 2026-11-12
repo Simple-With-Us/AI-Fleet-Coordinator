@@ -176,7 +176,7 @@ A brand-new seat cannot produce `ExternalProof` until the row is loaded, because
 
 The proof key is owned by root, the relay host operator.  Mint it once, as root, with `python3 -I <copy>/seat_policy.py proof-key` and `GIT_RELAY_PROOF_KEY_FILE` set to a new file in a directory root owns and only root can write.  The file is mode 0600.  The command never prints the key and never overwrites an existing one.  The service user does not own it, and the seat does not own it either.
 
-After this change is merged, admitting `swu-zc` is a root command on the relay host, from a root-owned copy of the merged files, with the same blob-id check as the install above.
+After this change is merged, admitting `swu-zc` is a root command on the relay host, from a root-owned copy of the merged files, with the same blob-id check as the install above.  The reviewed policy file carries no `swu-zc` row:  a wholesale `install` renders the whole file with no per-seat ExternalProof, so an unproven row must never ride the image.  Render the row from the reviewed fleet profile with the real renderer instead:
 
 ```
 # Proof key, once. <root-only-dir> is a directory root owns and only root can write.
@@ -187,9 +187,8 @@ stat -c '%u %a' "$GIT_RELAY_PROOF_KEY_FILE"    # 0 600. Do not print the file.
 # ZC bearer, one token, root-owned 0600. Write it without displaying it.
 export GIT_RELAY_FIRST_SEAT_BEARER_FILE=<root-only-dir>/zc-bearer
 
-python3 -I <copy>/seat_policy.py render \
-  | python3 -c 'import json,sys; json.dump(json.load(sys.stdin)["swu-zc"], sys.stdout); sys.stdout.write("\n")' \
-  > <root-only-dir>/swu-zc.json
+python3 -I -c 'import importlib.util as u, json, sys; spec = u.spec_from_file_location("seat_policy", sys.argv[1]); sp = u.module_from_spec(spec); sys.modules["seat_policy"] = sp; spec.loader.exec_module(sp); doc = sp.load(); doc["seats"].append({"identity": "ZC", "app_slug": "swu-zc", "profile": "fleet"}); json.dump(sp.render(doc)["swu-zc"], sys.stdout); sys.stdout.write("\n")' \
+  <copy>/seat_policy.py > <root-only-dir>/swu-zc.json
 chmod 600 <root-only-dir>/swu-zc.json
 
 # Prints expect-before, then expect-after. <relay-workdir> is the unit WorkingDirectory.
