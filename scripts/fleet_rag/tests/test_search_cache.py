@@ -20,10 +20,12 @@ class SearchCacheRecallTests(unittest.TestCase):
     def setUp(self) -> None:
         recall_api.install_fake_backend()
         self.embeds = 0
+        self.embedded: list[list[str]] = []
         real = recall_api.embed
 
         def counting(cfg, texts):  # noqa: ANN001
             self.embeds += 1
+            self.embedded.append(list(texts))
             return real(cfg, texts)
 
         recall_api.embed = counting
@@ -66,6 +68,25 @@ class SearchCacheRecallTests(unittest.TestCase):
             recall_api.recall_search("Coolify deploy", limit=2, since_days=7)
         self.assertEqual(self.embeds, embeds)
         self.assertEqual(search_cache.stats()["hits"], 1)
+
+    def test_the_embedder_and_reranker_keep_the_caller_casing(self) -> None:
+        recall_api.recall_search("  Coolify Deploy ", limit=2)
+        self.assertEqual(self.embedded[-1], ["Coolify Deploy"])
+        seen: list[str] = []
+
+        def fake_rerank(cfg, query, docs):  # noqa: ANN001
+            seen.append(query)
+            return [0.2] * len(docs)
+
+        with (
+            mock.patch.object(recall_api, "rerank_configured", return_value=True),
+            mock.patch.object(recall_api, "rerank", fake_rerank),
+        ):
+            recall_api.recall_search("Coolify Deploy", limit=2, rerank=True)
+        self.assertEqual(seen, ["Coolify Deploy"])
+        embeds = self.embeds
+        recall_api.recall_search("coolify deploy", limit=2)
+        self.assertEqual(self.embeds, embeds)
 
     def test_ttl_expires_on_the_injected_clock(self) -> None:
         clock = [0.0]
@@ -125,6 +146,68 @@ class SearchCacheRecallTests(unittest.TestCase):
         self.assertTrue(body["ok"])
         recall_api.recall_search("Coolify deploy", limit=2)
         self.assertEqual(self.embeds, embeds + 1)
+
+    def test_a_contribution_publishes_the_epoch_for_other_processes(self) -> None:
+        good = (
+            "pm2 start does not re-read env from the ecosystem file; restart with --update-env "
+            "or delete and start the app again so the cached PATH is replaced."
+        )
+        replacement = (
+            "pm2 start only applies a new ecosystem env after restart --update-env; "
+            "check pm2 describe for the process env before debugging PATH."
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            epoch = pathlib.Path(tmp) / "search-cache-epoch.json"
+            other = search_cache.SearchCache()
+            other.configure(marker_path=epoch, max_entries=4, ttl_s=60)
+            _, token = other.lookup("k")
+            other.store("k", {"hits": [], "mode": "hybrid"}, token)
+            search_cache.configure(isolated=False)
+            with mock.patch.dict(os.environ, {search_cache.EPOCH_ENV: str(epoch)}):
+                created = recall_api.recall_contribute(good, "lesson", seat="CLAUDE")
+                body = json.loads(epoch.read_text())
+                self.assertTrue(body["run_id"].startswith("contribute:"))
+                missed, _ = other.lookup("k")
+                self.assertIsNone(missed)
+                _, token = other.lookup("k")
+                other.store("k", {"hits": [], "mode": "hybrid"}, token)
+                written = epoch.read_bytes()
+                duplicate = recall_api.recall_contribute(good, "lesson", seat="CLAUDE")
+                self.assertEqual(duplicate["status"], "duplicate")
+                self.assertEqual(epoch.read_bytes(), written)
+                hit, _ = other.lookup("k")
+                self.assertEqual(hit["mode"], "hybrid")
+                recall_api.recall_correct(
+                    created["doc_id"], replacement, "make the restart command exact", seat="CLAUDE"
+                )
+                missed, _ = other.lookup("k")
+                self.assertIsNone(missed)
+                self.assertTrue(json.loads(epoch.read_text())["run_id"].startswith("correct:"))
+                _, token = other.lookup("k")
+                other.store("k", {"hits": [], "mode": "hybrid"}, token)
+                same = recall_api.recall_correct(
+                    created["doc_id"], replacement, "make the restart command exact", seat="CLAUDE"
+                )
+                self.assertEqual(same["status"], "unchanged")
+                self.assertTrue(json.loads(epoch.read_text())["run_id"].startswith("correct:"))
+                hit, _ = other.lookup("k")
+                self.assertEqual(hit["mode"], "hybrid")
+                recall_api.recall_retract(
+                    created["doc_id"], "the PATH lesson was retracted", seat="CLAUDE"
+                )
+                missed, _ = other.lookup("k")
+                self.assertIsNone(missed)
+                self.assertTrue(json.loads(epoch.read_text())["run_id"].startswith("retract:"))
+                _, token = other.lookup("k")
+                other.store("k", {"hits": [], "mode": "hybrid"}, token)
+                written = epoch.read_bytes()
+                again = recall_api.recall_retract(
+                    created["doc_id"], "the PATH lesson was retracted", seat="CLAUDE"
+                )
+                self.assertEqual(again["status"], "already_retracted")
+                self.assertEqual(epoch.read_bytes(), written)
+                hit, _ = other.lookup("k")
+                self.assertEqual(hit["mode"], "hybrid")
 
 
 class SearchCacheSettingsTests(unittest.TestCase):

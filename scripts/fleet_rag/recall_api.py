@@ -475,9 +475,10 @@ def recall_search(
     )
     t0 = time.time()
     cached, cache_token = search_cache.lookup(cache_key)
+    asked = query.strip()
     if cached is not None:
         search_log.log_search(
-            query=normalized,
+            query=asked,
             seat=seat,
             app=app,
             hits_count=len(cached.get("hits") or []),
@@ -485,9 +486,8 @@ def recall_search(
             mode=str(cached.get("mode") or ""),
         )
         return cached
-    query = normalized
-    vector = embed(cfg, [query])[0]
-    terms = query_terms(query)
+    vector = embed(cfg, [asked])[0]
+    terms = query_terms(asked)
     # Ask for exactly `limit` doc groups unless a rerank can happen, in which case pull the wider
     # candidate set the cross-encoder needs.
     will_rerank = bool(rerank) and rerank_configured(cfg)
@@ -515,14 +515,14 @@ def recall_search(
         )
     hits = _grouped_candidates(groups, per_doc)
     mode = "hybrid" if terms else "dense"
-    if will_rerank and _apply_rerank(cfg, query, hits):
+    if will_rerank and _apply_rerank(cfg, asked, hits):
         mode += "+rerank"
     hits_out = hits[:limit]
     result = {"hits": hits_out, "mode": mode}
     search_cache.store(cache_key, result, cache_token)
     latency_ms = int((time.time() - t0) * 1000)
     search_log.log_search(
-        query=query, seat=seat, app=app, hits_count=len(hits_out), latency_ms=latency_ms, mode=mode
+        query=asked, seat=seat, app=app, hits_count=len(hits_out), latency_ms=latency_ms, mode=mode
     )
     return result
 
@@ -724,7 +724,7 @@ def recall_contribute(
             return duplicate_result(existing)
         point["vector"] = vector
         status = q.upsert([point])
-    search_cache.invalidate()
+    search_cache.note_corpus_change("contribute", doc_id)
     return {"id": point["id"], "doc_id": doc_id, "scrubbed": reported, "status": status}
 
 
@@ -1015,7 +1015,7 @@ def recall_correct(
                 payload.pop("scrubbed", None)
             point = {"id": plan["point_id"], "payload": payload, "vector": vector}
             status = q.upsert([point])
-    search_cache.invalidate()
+    search_cache.note_corpus_change("correct", doc_id)
     return {
         "id": plan["point_id"],
         "doc_id": doc_id,
@@ -1074,7 +1074,7 @@ def recall_retract(
             "updated_at": ts,
         }
         status = q.set_payload([str(point.get("id") or "")], fields)
-    search_cache.invalidate()
+    search_cache.note_corpus_change("retract", doc_id)
     return {
         "id": str(point.get("id") or ""),
         "doc_id": doc_id,

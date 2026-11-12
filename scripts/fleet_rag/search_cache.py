@@ -6,20 +6,23 @@ then the process environment, then the defaults of 256 entries and 600 seconds.
 Zero disables storage.
 
 The key is the normalized query, the filters, the limit, and the compact and full
-flags, plus the collection and the switches that change the result.  Entries also
-carry a corpus token.  note_ingest_complete() bumps that token and writes
+flags, plus the collection and the switches that change the result.  The embedder
+and the reranker still receive the caller's casing.  Entries also carry a corpus
+token.  note_ingest_complete() and note_corpus_change() bump that token and write
 search-cache-epoch.json.  The next lookup misses when that file or last-run.json
-changes, including when ingest ran in another process that shares the state directory.
+changes, including when another process that shares the state directory wrote it.
 """
 
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import pathlib
 import threading
 import time
+import uuid
 from collections import OrderedDict
 from typing import Any, Callable
 
@@ -128,11 +131,12 @@ def read_settings() -> tuple[int, float]:
 
 
 def _file_token(path: pathlib.Path) -> str:
+    """Fingerprint the marker bytes.  mtime and size can stay still across writes."""
     try:
-        st = path.stat()
+        data = path.read_bytes()
     except OSError:
         return "absent"
-    return f"{st.st_mtime_ns}:{st.st_size}"
+    return hashlib.sha256(data).hexdigest()[:16]
 
 
 def _write_epoch(path: pathlib.Path, report: dict) -> None:
@@ -141,6 +145,7 @@ def _write_epoch(path: pathlib.Path, report: dict) -> None:
             "run_id": str(report.get("run_id") or ""),
             "finished_at": report.get("finished_at"),
             "ok": bool(report.get("ok")),
+            "seq": uuid.uuid4().hex,
         },
         sort_keys=True,
     )
@@ -332,13 +337,27 @@ def note_ingest_complete(report: dict, epoch_path: pathlib.Path | None = None) -
 
     epoch_path is where this run's marker is written.  When it is omitted, the marker
     goes to FLEET_RAG_SEARCH_CACHE_EPOCH or the default state directory, and a missing
-    parent is left alone so a unit test does not create ~/apps.
+    parent is left alone so a unit test does not create ~/apps.  An isolated cache
+    (the fake backend) skips that write unless the caller passes epoch_path.
     """
     invalidate()
     path = epoch_path
     if path is None:
+        if CACHE.isolated:
+            return
         override = os.environ.get(EPOCH_ENV, "").strip()
         path = pathlib.Path(override) if override else DEFAULT_EPOCH
         if not path.parent.is_dir():
             return
     _write_epoch(path, report)
+
+
+def note_corpus_change(kind: str, doc_id: str = "") -> None:
+    """Publish the same epoch after a contribution, correction, or retraction.
+
+    Other processes that can see the state directory miss on their next search.
+    A duplicate, an unchanged correction, and an already-retracted lesson do not
+    call this.
+    """
+    label = kind if not doc_id else f"{kind}:{doc_id}"
+    note_ingest_complete({"run_id": label, "finished_at": int(time.time() * 1000), "ok": True})
