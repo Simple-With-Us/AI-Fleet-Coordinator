@@ -6,6 +6,7 @@ Exit 0 = allow.  Exit 2 = block (Claude convention).
 
 Also accepts a file path as argv[1] for tests and other seats.
 """
+
 from __future__ import annotations
 
 import json
