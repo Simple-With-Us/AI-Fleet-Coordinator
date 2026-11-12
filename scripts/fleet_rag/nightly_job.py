@@ -607,6 +607,14 @@ def _locked(summary, env, *, read_file, fetch, sync, ingest_runner, post, now) -
     summary["errors"] = [item for item in errors if item]
     summary["warnings"] = [_public(str(item)) for item in (report.get("warnings") or [])]
     summary["guard_trips"] = trips
+    snap = report.get("qdrant_prune_snapshot")
+    if isinstance(snap, dict):
+        summary["qdrant_snapshot"] = {
+            "name": _public(str(snap.get("name") or "")),
+            "collection": _public(str(snap.get("collection") or "")),
+        }
+        if snap.get("path"):
+            summary["qdrant_snapshot"]["path"] = _public(str(snap["path"]))
     summary["ok"] = bool(report.get("ok")) and code == 0 and sync_exit == 0
     # A guard trip keeps ok as the ingest reported it.  Unconfigured mirror
     # still ingests, and the alert fires because guard_trips is non-empty.

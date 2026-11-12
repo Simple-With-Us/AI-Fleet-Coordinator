@@ -34,7 +34,7 @@ If `FLEET_RAG_MIRROR` is unset, the job points it at a directory that is not cre
 
 The server source set attests health, and so does `--all`.  Merging this change leaves a Mac `--all --prune` able to update the sentinel.  Apple Notes remain in `--all`.
 
-A successful run is quiet.  Zulip gets a post on the Alerts stream, topic `fleet-rag-nightly`, when `ok` is false or a guard tripped.  The tag is `[GB-ORACLE 📁AFC]`.  A failed alert post does not change the ingest exit.  The summary is `~/.local/state/fleet-rag-nightly/last.json`, mode 0600. It holds reasons and counts.  Secret values are withheld.
+A successful run is quiet.  Zulip gets a post on the Alerts stream, topic `fleet-rag-nightly`, when `ok` is false or a guard tripped.  The tag is `[GB-ORACLE 📁AFC]`.  A failed alert post does not change the ingest exit.  The summary is `~/.local/state/fleet-rag-nightly/last.json`, mode 0600. It holds reasons and counts.  When a real prune ran, it also records `qdrant_snapshot.name` (and `path` when the snapshot was archived under `qdrant-prune-snapshots/`).  Secret values are withheld.
 
 ## Mac job
 

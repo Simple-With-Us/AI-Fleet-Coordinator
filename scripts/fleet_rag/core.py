@@ -921,10 +921,28 @@ class Qdrant:
         )
         return res.get("status", "?")
 
+    def create_snapshot(self, *, wait: bool = True) -> dict:
+        query = "?wait=true" if wait else ""
+        return self._call(
+            self._cpath(f"/snapshots{query}"),
+            {},
+            method="POST",
+            write=True,
+            timeout=1800,
+        )["result"]
+
     def snapshot(self) -> dict:
-        return self._call(self._cpath("/snapshots"), {}, method="POST", write=True, timeout=600)[
-            "result"
-        ]
+        """Alias for create_snapshot (wait=true)."""
+        return self.create_snapshot(wait=True)
+
+    def list_snapshots(self) -> list[dict]:
+        return list(self._call(self._cpath("/snapshots"), method="GET")["result"])
+
+    def delete_snapshot(self, name: str) -> None:
+        import urllib.parse
+
+        encoded = urllib.parse.quote(name, safe="")
+        self._call(self._cpath(f"/snapshots/{encoded}"), method="DELETE", write=True, timeout=120)
 
 
 # --------------------------------------------------------------------------- filters

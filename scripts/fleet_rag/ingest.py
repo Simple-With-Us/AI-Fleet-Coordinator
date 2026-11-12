@@ -61,7 +61,7 @@ import uuid
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from . import core, health, mirror, sources, telemetry
+from . import core, health, mirror, qdrant_snapshot, sources, telemetry
 from .chunk import chunk_markdown
 from .core import FleetRagError, Qdrant, build_point, content_hash, eprint, match_filter, now_ms
 from .scrub import GitleaksError, gitleaks_flagged, scrub
@@ -910,7 +910,20 @@ def _run_locked(
         log(f"[{name}] done in {time.monotonic() - t0:.1f}s: {json.dumps(stats)}")
 
     if pending_prunes:
-        _run_pending_prunes(pending_prunes, report, state, writer, state_path, dry_run, log)
+        if qdrant_snapshot.maybe_snapshot_before_prune(
+            prune=prune,
+            dry_run=dry_run,
+            pending_prunes=pending_prunes,
+            report=report,
+            qd=qd,
+            state_path=state_path,
+            log=log,
+        ):
+            _run_pending_prunes(pending_prunes, report, state, writer, state_path, dry_run, log)
+        else:
+            msg = "prune skipped for every source: pre-prune Qdrant snapshot failed"
+            report["warnings"].append(msg)
+            log(f"[prune] WARNING {msg}")
 
     if state_touched and not dry_run:
         save_state(state, state_path)

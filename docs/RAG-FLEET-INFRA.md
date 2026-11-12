@@ -467,6 +467,36 @@ checksums it, copies it to Backblaze B2 (`jays-socratic-trade-eu/qdrant/socratic
 API key is read from the running container's environment at run time and never written to disk.
 A full `socratic-trade` snapshot is ~6.4 GB and takes about a minute to create.
 
+### Pre-prune snapshot (nightly ingest, AFC-754)
+
+Every non-dry-run ingest that will delete missing documents takes one extra Qdrant snapshot of the
+fleet collection **immediately before** the prune phase.  Upserts and source reads still complete;
+a snapshot failure aborts **only** the prune, with a clear error in the ingest report.
+
+On the Hetzner nightly job, the snapshot name is copied into
+`~/.local/state/fleet-rag-nightly/last.json` under `qdrant_snapshot.name`.  Archived files default to
+`~/.local/state/fleet-rag-nightly/qdrant-prune-snapshots/` when
+`FLEET_RAG_QDRANT_SNAPSHOT_VOLUME` is set on the unit (same move-off-volume pattern as
+`fleet-qdrant-snapshot.sh`).  Without a volume path, snapshots stay in Qdrant and retention uses
+the snapshots API.
+
+| Knob | Default | Purpose |
+|---|---|---|
+| `FLEET_RAG_PRUNE_SNAPSHOT_KEEP` | `3` | Local and in-Qdrant copies to retain after each pre-prune snapshot |
+| `FLEET_RAG_PRUNE_SNAPSHOT_DIR` | nightly state subdir above | Override archive directory |
+| `FLEET_RAG_QDRANT_SNAPSHOT_VOLUME` | unset | Qdrant storage root; when set, the `.snapshot` file moves off the live volume |
+
+**Restore from a pre-prune archive (server).**  Stop writers to the collection (disable the nightly
+timer and any manual `recall ingest --prune`).  On the box, pick the snapshot file under
+`qdrant-prune-snapshots/` or the name recorded in `last.json`.  If the file was archived locally,
+upload or copy it into Qdrant's snapshots directory for the fleet collection, or use Qdrant's
+`snapshots/upload` API with the write API key.  Call `POST
+/collections/<fleet-collection>/snapshots/recover` with that snapshot name and `wait=true`.  When
+`GET /collections/<fleet-collection>` shows the expected point count, re-enable the nightly timer
+and run `recall doctor --box` to confirm the ingest sentinel and backup rows are green again.  The
+daily `/data/backups/qdrant/` copies remain the long-retention DR path; pre-prune archives are the
+last known-good instant before a prune deleted rows.
+
 ## Health rows
 
 `/usr/local/sbin/fleet-health-verify.sh` (every 15 minutes, pages through the existing
@@ -714,7 +744,7 @@ Consequences:
 ## Files
 
 - `scripts/fleet_rag/` — `core` (creds, embed, rerank, Qdrant client), `scrub`, `chunk`,
-  `sources`, `ingest`, `notes_export`, `recall_api`, `contribute_guard`, `doctor`, `health`,
+  `sources`, `ingest`, `qdrant_snapshot`, `notes_export`, `recall_api`, `contribute_guard`, `doctor`, `health`,
   `eval`, `telemetry` (optional Sentry reporting, see *Observability*), `golden.jsonl`, `tests/`
 - `scripts/hooks/` — the Claude Code SessionStart and Stop hooks
 - `scripts/fleet-recall-service/` — the Hetzner-side recall service (`server.py`, `bootstrap.sh`,
