@@ -108,7 +108,7 @@ test("the DM tools:  closed inputs, output schemas, no identity arguments, read 
   for (const tool of DM_TOOLS) {
     assert.equal(tool.inputSchema.additionalProperties, false, tool.name);
     assert.ok(tool.outputSchema, tool.name);
-    for (const banned of ["seat", "as", "rc", "no_tag", "fleet", "to"]) assert.ok(!(banned in tool.inputSchema.properties), `${tool.name} takes ${banned}`);
+    for (const banned of ["seat", "as", "rc", "no_tag", "fleet", "to", "clarifying_question"]) assert.ok(!(banned in tool.inputSchema.properties), `${tool.name} takes ${banned}`);
   }
   assert.ok(HOSTED_READ_TOOLS.has("zulip_dm_list") && HOSTED_READ_TOOLS.has("zulip_dm_read") && !HOSTED_WRITE_TOOLS.has("zulip_dm_read"));
   assert.ok(HOSTED_WRITE_TOOLS.has("zulip_dm_send") && !HOSTED_READ_TOOLS.has("zulip_dm_send"));

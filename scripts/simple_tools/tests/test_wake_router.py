@@ -203,15 +203,23 @@ class LetterParse(unittest.TestCase):
         excerpt = "BEGIN_UNTRUSTED_ZULIP nonce=1\nClaude EE look\nEND_UNTRUSTED_ZULIP nonce=1"
         self.assertEqual(WR.letter_of({"excerpt": excerpt}, "Claude"), "EE")
 
+    # A plain name later in a line is a reference, not an address:  this test and
+    # `test_the_plain_form_later_in_a_line_is_a_reference` say what they said before AFC-694.  The
+    # one exception is the router's own last resort (`sole_plain_letter`, tested further down):
+    # the name written as an address, with a comma or a colon after the letter.
+
     def test_a_reference_is_not_an_address(self) -> None:
         text = "@**Claude** as Claude AA said earlier"
         self.assertEqual(WR.letter_of({"excerpt": text}, "Claude"), "")
 
     def test_a_silent_mention_addresses_nobody(self) -> None:
         self.assertEqual(WR.letter_of({"excerpt": "cc @_**Claude** AA"}, "Claude"), "")
+        self.assertEqual(self.letter("@_**Claude** CC note"), "")
 
     def test_an_explicit_field_wins(self) -> None:
         self.assertEqual(WR.letter_of({"letter": "Q", "excerpt": "@**Claude** AA"}, "Claude"), "Q")
+        for text in (self.HEADER % "CLAUDE AA", "@Claude AA", "Claude AA look", "ask Claude AA"):
+            self.assertEqual(self.letter(text, letter="QQ"), "QQ", text)
 
     def test_the_letter_may_open_the_line_after_the_mention(self) -> None:
         text = "[MM: HH.1.M \U0001F4C1AFC → CLAUDE] @**Claude**\nNN — please look"
@@ -230,6 +238,9 @@ class LetterParse(unittest.TestCase):
             "[CLAUDE: BB.3.S \U0001F4C1AFC→ZC] @**ZCode**\nZC, ran your two checks",
             "@**ZCode** ZC please",
             "ZCode ZC please",
+            "[CLAUDE: BB.3.S \U0001F4C1AFC → ZCODE ZC] text",
+            "please @ZCode ZC",
+            "thanks ZCode ZC",
         ):
             self.assertEqual(WR.letter_of({"seat": "ZC", "excerpt": text}, "ZCode"), "", text)
 
@@ -238,6 +249,493 @@ class LetterParse(unittest.TestCase):
         self.assertEqual(WR.letter_of({"seat": "ZC", "excerpt": text}, "ZCode"), "NN")
         text = "@**ZCode**\nZC, one thing\nZCode NN please"
         self.assertEqual(WR.letter_of({"seat": "ZC", "excerpt": text}, "ZCode"), "NN")
+        for text in (
+            "[CLAUDE: BB.3.S \U0001F4C1AFC → ZCODE ZC, zcode NN] text",
+            "@ZCode ZC and @ZCode NN",
+            "thanks ZCode ZC, and ZCode NN, both",
+        ):
+            self.assertEqual(WR.letter_of({"seat": "ZC", "excerpt": text}, "ZCode"), "NN", text)
+
+    # The forms added for AFC-694 (Nov 12, 2026):  a post that opened "@Claude CC, facts on …"
+    # reached the router, gave no letter and woke Claude EE through its Linear issue.
+
+    FOLDER = "\U0001F4C1"
+    HEADER = "[GROK: BB.2.M \U0001F4C1AFC → %s] text"
+
+    def letter(self, text: str, seat: str = "CLAUDE", mention: str = "Claude", **over) -> str:
+        return WR.letter_of({"seat": seat, "excerpt": text, **over}, mention)
+
+    def test_the_incident(self) -> None:
+        text = "@Claude CC, facts on #1768 from a read-only check"
+        self.assertEqual(self.letter(text), "CC")
+
+    def test_the_incident_table(self) -> None:
+        both = "[GROK: BB.2.M \U0001F4C1AFC → CLAUDE AA, CODEX BB] text"
+        cases = [
+            ("CLAUDE", "@**Claude** AA please look", "AA"),
+            ("CLAUDE", "@Claude CC, facts", "CC"),
+            ("CLAUDE", "Claude CC, facts", "CC"),
+            ("CLAUDE", "Claude CC: please read", "CC"),
+            ("CLAUDE", "[ECHO \U0001F4C1AFC → Claude CC] text", "CC"),
+            ("CLAUDE", both, "AA"),
+            ("CODEX", both, "BB"),
+            ("CLAUDE", "@_**Claude** CC note", ""),
+            ("CLAUDE", "thanks Claude CC and Claude DD", ""),
+            ("CLAUDE", "CLAUDE-CC", ""),
+            ("CLAUDE", "Claude cc", ""),
+            ("CLAUDE", "Claude Code is great", ""),
+            # Not letters anyone meant, and as before:  one no chat holds falls back in the pick.
+            ("CLAUDE", "Claude AI is great", "AI"),
+            ("CLAUDE", "Claude OK thanks", "OK"),
+        ]
+        for seat, text, want in cases:
+            self.assertEqual(self.letter(text, seat, seat.title()), want, (seat, text))
+
+    def test_a_header_recipient_gives_the_letter(self) -> None:
+        cases = {
+            "[JET \U0001F4C1ST, CTS → Claude CC] text": "CC",
+            "[JET \U0001F4C1ST, CTS -> Claude CC] text": "CC",  # the arrow as some type it
+            "[CLAUDE: BB.3.S \U0001F4C1AFC -> CLAUDE AA, CODEX BB] text": "AA",
+            "[JET \U0001F4C1ST, CTS → @Claude CC] text": "CC",
+            "[JET \U0001F4C1ST, CTS →CLAUDE CC] text": "CC",
+            "[JET \U0001F4C1ST, CTS → claude CC , CODEX BB] text": "CC",
+            "[GROK: BB.2.M \U0001F4C1AFC → CODEX BB, CLAUDE AA] text": "AA",
+            "\U0001F440 [GROK: BB.2.M \U0001F4C1AFC → CLAUDE AA] no wake for the others": "AA",
+            "\n\n  [GROK: BB.2.M \U0001F4C1AFC → CLAUDE AA] after blank lines": "AA",
+            # The legacy shape, with the sender's own fragment.
+            "[GROK·01a1cd37: BB.2.M \U0001F4C1AFC→CLAUDE AA] text": "AA",
+            "[GROK·01a1cd37 → Claude DE] a child thread": "DE",
+        }
+        for text, want in cases.items():
+            self.assertEqual(self.letter(text), want, text)
+
+    def test_the_first_of_a_headers_recipients_for_the_seat_wins(self) -> None:
+        five = "CLAUDE EE, CLAUDE AA, CLAUDE BB, CLAUDE CC, CLAUDE DD"
+        self.assertEqual(self.letter(self.HEADER % five), "EE")
+        self.assertEqual(self.letter(self.HEADER % ("CODEX ZZ, " + five)), "EE")
+
+    def test_a_header_recipient_with_no_letter_names_no_chat(self) -> None:
+        self.assertEqual(self.letter(self.HEADER % "CLAUDE"), "")
+        self.assertEqual(self.letter("[GROK·01a1cd37: BB.2.M \U0001F4C1AFC→CLAUDE] text"), "")
+        self.assertEqual(self.letter(self.HEADER % "CLAUDE, CODEX BB"), "")
+        self.assertEqual(self.letter(self.HEADER % "CODEX BB"), "")
+        # The seat alone does not stop a later item, or the body, from naming the chat.
+        self.assertEqual(self.letter(self.HEADER % "CLAUDE, CLAUDE BB"), "BB")
+        text = "[GROK: BB.2.M \U0001F4C1AFC → CLAUDE] @Claude CC please"
+        self.assertEqual(self.letter(text), "CC")
+
+    def test_a_header_item_must_be_the_name_and_the_letter_alone(self) -> None:
+        for item in (
+            "CLAUDE AA please",
+            "the CLAUDE AA",
+            "CLAUDE AAA",
+            "CLAUDE A",
+            "CLAUDE aa",
+            "CLAUDE-AA",
+            "CLAUDEAA",
+            "XCLAUDE AA",
+            "CLAUDE AA.4",
+            "CLAUDE AA.4.s",
+            "CLAUDE AA.4.S.2",
+            "@_*Claude* AA",
+            "@__**Claude** AA",
+            "**Claude** AA",
+            "@**Claude AA**",
+            "@**Codex** AA",
+        ):
+            text = self.HEADER % (item + ", CODEX BB")
+            self.assertEqual(self.letter(text), "", item)
+
+    def test_a_header_item_may_be_a_mention_or_carry_its_session_token(self) -> None:
+        # Real posts (AFC-694 review):  a bot's typed mention in the list arrives silent, as
+        # `→ @_**Claude** II,CLAUDE`, and some write the whole session token, `CODEX BB.1.M`.
+        cases = [
+            ("CLAUDE", "@_**Claude** II,CLAUDE", "II"),
+            ("CLAUDE", "@**Claude** II", "II"),
+            ("CLAUDE", "@_**Claude|1212574** II", "II"),
+            ("CLAUDE", "@_**Codex** BB, @_**Claude** AA,CODEX,CLAUDE", "AA"),
+            ("CODEX", "@_**Codex** BB, @_**Claude** AA,CODEX,CLAUDE", "BB"),
+            ("CLAUDE", "CLAUDE AA.4.S, CLAUDE BB.3.S", "AA"),
+            ("CODEX", "CLAUDE AA.4.S, CODEX BB.1.M", "BB"),
+            ("CLAUDE", "CODEX BB.1.M, @Claude DE.12.C", "DE"),
+        ]
+        for seat, listed, want in cases:
+            text = "[AG·0ec80a40: CC.1.S \U0001F4C1AFC → %s] @**Claude** @_**Claude**\nrepo: x" % listed
+            self.assertEqual(self.letter(text, seat, seat.title()), want, (seat, listed))
+        # Only in the header's list:  a silent mention in the body still addresses nobody.
+        text = self.HEADER % "CLAUDE" + " cc @_**Claude** AA"
+        self.assertEqual(self.letter(text), "")
+
+    def test_each_seat_reads_its_own_recipient(self) -> None:
+        from simple_tools import adapters as A
+
+        # A platform built as the module builds one, and the excerpt as the listener frames it.
+        argv = ["/bin/true", "{session_id}"]
+        codex = WR.command_platform("CODEX", "codex", "Codex", CW.SESSION_RE, argv)
+        zcode = WR.command_platform("ZC", "zcode", "ZCode", CW.SESSION_RE, argv)
+        raw = "[GROK: BB.2.M \U0001F4C1AFC → CLAUDE AA, CODEX BB, ZC NN] @**Codex** @**ZCode** look"
+        excerpt = A.routine_excerpt(raw, nonce="n1")
+        for platform, want in ((codex, "BB"), (zcode, "NN")):
+            payload = {"wake_id": "w-1", "seat": platform.seat, "excerpt": excerpt}
+            wake = WR.wake_from_payload(payload, platform.mention)
+            self.assertEqual(wake.letter, want, platform.seat)
+        payload = {"wake_id": "w-1", "seat": "CLAUDE", "excerpt": excerpt}
+        self.assertEqual(WR.wake_from_payload(payload, "Claude").letter, "AA")
+
+    def test_another_platforms_letter_is_never_taken(self) -> None:
+        for text in (
+            self.HEADER % "CODEX BB",
+            "@Codex BB please",
+            "Codex BB please",
+            "ask Codex BB",
+            "@**Codex** BB",
+            "ClaudeX BB and XClaude DD",
+        ):
+            self.assertEqual(self.letter(text), "", text)
+
+    def test_a_real_mention_outranks_the_header(self) -> None:
+        text = "[GROK: BB.2.M \U0001F4C1AFC → CLAUDE AA] @**Claude** BB"
+        self.assertEqual(self.letter(text), "BB")
+
+    def test_the_header_outranks_the_plain_forms(self) -> None:
+        for body in ("@Claude BB please", "\nClaude BB, please", "as Claude BB said"):
+            text = "[GROK: BB.2.M \U0001F4C1AFC → CLAUDE AA] " + body
+            self.assertEqual(self.letter(text), "AA", body)
+
+    def test_only_a_leading_header_with_an_arrow_has_recipients(self) -> None:
+        # A bracket that is not a fleet header, is not first or has no arrow has no recipient list.
+        for text in (
+            "hello\n[GROK: BB.2.M \U0001F4C1AFC → CLAUDE AA] text",
+            "[note → CLAUDE AA] text",
+            "[note → CLAUDE AA, CLAUDE BB] text",
+            "hello\n[GROK: BB.2.M \U0001F4C1AFC → CLAUDE AA, CLAUDE BB] text",
+            "[GROK: BB.2.M \U0001F4C1AFC ⇒ CLAUDE AA, CLAUDE BB] not the arrow",
+        ):
+            self.assertEqual(self.letter(text), "", text)
+
+    def test_the_at_form_counts_anywhere(self) -> None:
+        for text in (
+            "@Claude CC",
+            "hello\nplease (@Claude CC, see above)",
+            "thanks, @CLAUDE CC",
+            "Claude BB said so\nplease @Claude CC",  # it outranks the start of a line
+            "@Claude CC and Claude DD",  # and the first of its form wins
+            # The name after the @ in any ASCII case:  the incident's own form, typed in lower case.
+            "@claude CC, facts",
+            "@CLaude CC",
+        ):
+            self.assertEqual(self.letter(text), "CC", text)
+        self.assertEqual(self.letter("please @zcode NN", "ZC", "ZCode"), "NN")
+        # A real mention is the mention name as Zulip writes it, so the tag in stars is not one.
+        self.assertEqual(self.letter("@**CLAUDE** AA please"), "")
+
+    def test_the_name_may_be_said_again_after_the_mention(self) -> None:
+        # Real posts (AFC-694 review):  "@**Codex** Codex BB, the packet" and Echo's "@Claude
+        # Claude II:".  The first of its form wins, so a later chat or reference does not cancel it.
+        header = "[GROK: BB.2.M \U0001F4C1AFC → CLAUDE] "
+        cases = [
+            ("CLAUDE", header + "@**Claude** Claude II, please check Claude CC's result", "II"),
+            ("CLAUDE", "@**Claude|1212574** CLAUDE II please", "II"),
+            ("CLAUDE", "@**Claude**\nClaude II, please", "II"),
+            ("CODEX", "[CLAUDE: II.2.M \U0001F4C1AFC → CODEX] @**Codex** Codex BB, the packet", "BB"),
+            ("CLAUDE", "[ECHO·instinct] @Claude Claude II, @Claude Claude CC/MC, @Codex Codex BB:", "II"),
+            ("CODEX", "[ECHO·instinct] @Claude Claude II, @Claude Claude CC/MC, @Codex Codex BB:", "BB"),
+            ("CLAUDE", "thanks @claude Claude DE", "DE"),
+            # Not the name twice:  another word, another platform, or no letter after it.
+            ("CLAUDE", "@**Claude** Claude Code is great", ""),
+            ("CLAUDE", "@**Claude** Codex BB has it", ""),
+            ("CLAUDE", "@Claude Claude cc", ""),
+            ("CLAUDE", "@Claude Claude\nCC", ""),
+            ("ZC", "@**ZCode** ZC please", ""),
+            ("ZC", "@**ZCode** ZC NN please", "NN"),
+        ]
+        for seat, text, want in cases:
+            mention = "ZCode" if seat == "ZC" else seat.title()
+            self.assertEqual(self.letter(text, seat, mention), want, (seat, text))
+
+    def test_the_bodys_first_words_start_a_line(self) -> None:
+        # A fleet post puts its body on the header's line, after the mentions its tool adds, so
+        # "Name AA" there opens the body as it opens a line in a post with no header.
+        cases = {
+            "[ECHO \U0001F4C1AFC → CLAUDE] Claude CC, please check what Claude DD posted": "CC",
+            "[ECHO \U0001F4C1AFC] Claude CC, please check what Claude DD posted": "CC",
+            "[ECHO \U0001F4C1AFC]\nClaude CC, please check what Claude DD posted": "CC",
+            "Claude CC, please check what Claude DD posted": "CC",
+            "\U0001F440 [ECHO \U0001F4C1AFC → CLAUDE] CLAUDE CC please": "CC",
+            # After the mentions that follow the header, real or silent.
+            "[GROK: BB.2.M \U0001F4C1AFC → CLAUDE] @**Claude** @**Codex** Claude II, please look": "II",
+            "[GROK: BB.2.M \U0001F4C1AFC → CLAUDE] @**Codex**, @_**Claude** Claude II said so": "II",
+            "@**Codex** @**Muse Code** Claude II, please look": "II",
+            # In the text's order:  the body opens before a later line does.
+            "[ECHO \U0001F4C1AFC → CLAUDE] Claude CC, please check\nClaude DD said so": "CC",
+            "[ECHO \U0001F4C1AFC → CLAUDE] thanks\nClaude DD said so": "DD",
+            # Not the opening:  a word first, a quoted or coded opening, or a bracket that is not
+            # a header.
+            "[ECHO \U0001F4C1AFC → CLAUDE] so Claude CC and Claude DD agree": "",
+            "[ECHO \U0001F4C1AFC → CLAUDE] `Claude CC, facts` is how the post began": "",
+            "[note] Claude CC and Claude DD agree": "",
+        }
+        for text, want in cases.items():
+            self.assertEqual(self.letter(text), want, text)
+
+    def test_the_at_form_is_not_the_tail_of_something_else(self) -> None:
+        for text in (
+            "see jay@Claude CC",
+            "mail ops@example.com@Claude CC",
+            "in /home/@Claude CC",
+            "file.@Claude CC",
+            "@@Claude CC",
+            "*@Claude CC",
+        ):
+            self.assertEqual(self.letter(text), "", text)
+
+    def test_a_quoted_plain_form_addresses_nobody(self) -> None:
+        for text in (
+            "> @Claude CC quoted\nfresh text",
+            "```quote\n@Claude CC\n```\nfresh text",
+            "> thanks Claude CC\nok",
+            "> [GROK: BB.2.M \U0001F4C1AFC → CLAUDE AA] quoted header",
+            "BEGIN_UNTRUSTED nonce=abc\n@Claude CC\nask Claude CC\nEND_UNTRUSTED nonce=abc\nhello",
+        ):
+            self.assertEqual(self.letter(text), "", text)
+
+    def test_the_line_start_form_takes_the_seat_tag(self) -> None:
+        self.assertEqual(self.letter("CLAUDE CC please"), "CC")
+        self.assertEqual(self.letter("one\n  CLAUDE CC please"), "CC")
+
+    def test_a_two_capital_seat_tag_is_not_read_in_the_plain_forms(self) -> None:
+        # A seat tag of two capitals is itself letter-shaped:  "ZC PR is merged" must not give PR.
+        for text in (
+            "ZC NN please",
+            "ZC PR is merged, please look",
+            "@ZC CI is red",
+            "one\n  ZC UI needs work",
+        ):
+            self.assertEqual(self.letter(text, "ZC", "ZCode"), "", text)
+        # The mention name still addresses, and so does the header's recipient list, where the tag
+        # is explicit.
+        self.assertEqual(self.letter("ZCode NN please", "ZC", "ZCode"), "NN")
+        self.assertEqual(self.letter("@ZCode NN please", "ZC", "ZCode"), "NN")
+        header = "[CLAUDE: BB.3.S \U0001f4c1AFC → ZC NN] text"
+        self.assertEqual(self.letter(header, "ZC", "ZCode"), "NN")
+        # A longer tag keeps both plain forms.
+        self.assertEqual(self.letter("CLAUDE CC please"), "CC")
+        self.assertEqual(self.letter("@CLAUDE CC please"), "CC")
+
+    # The router's own last resort (`sole_plain_letter`):  a plain name later in a line, written as
+    # an address.
+
+    def test_a_name_called_later_in_a_line_is_the_chat_meant(self) -> None:
+        cases = [
+            ("CLAUDE", "thanks, Claude CC, that works", "CC"),
+            ("CODEX", "nothing outside the folder.  Codex BB, the per-seat routine key", "BB"),
+            ("CLAUDE", "- Claude CC: the same offer", "CC"),
+            ("CLAUDE", "thanks Claude CC, and again Claude CC", "CC"),
+            ("CLAUDE", "so, Claude DE: a child thread", "DE"),
+            ("CLAUDE", "cc @_**Claude** AA, and Claude BB, please", "BB"),
+            ("CLAUDE", "for Codex BB, and for Claude AA: the same ask", "AA"),
+            ("CODEX", "for Codex BB, and for Claude AA: the same ask", "BB"),
+            # A possessive is a reference, and does not count as a second chat.
+            ("CLAUDE", "so, Claude II, please check Claude CC's result", "II"),
+            ("CLAUDE", "so, Claude II, please check Claude CC’s result", "II"),
+        ]
+        for seat, text, want in cases:
+            self.assertEqual(self.letter(text, seat, seat.title()), want, (seat, text))
+
+    def test_a_name_only_mentioned_later_in_a_line_is_a_reference(self) -> None:
+        # Each of these gave a letter when the rule read any lone "Name AA" (AFC-694 review):  the
+        # wake went to the chat that was only talked about.
+        header = "[GROK: BB.2.M \U0001F4C1AFC → CLAUDE] @**Claude**\n"
+        cases = [
+            ("CLAUDE", "ask Claude AA about Codex BB"),
+            ("CODEX", "ask Claude AA about Codex BB"),
+            ("CLAUDE", header + "Whoever is free:  Claude CC is stuck on the build, please take it."),
+            ("CLAUDE", "@**Claude** re AFC-700: Claude AA said the listener is fine, please fix"),
+            ("CLAUDE", header + "FYI Claude CC is on the wake keys; other Claude chats leave it"),
+            ("CLAUDE", "(Claude AA High)"),
+            ("CLAUDE", "thanks Claude CC"),
+            ("CLAUDE", "Thank you, Claude BB."),
+            ("CLAUDE", "waiting on Claude II's installer #1803"),
+            ("CLAUDE", "already in Claude CC’s 639657026, and more"),
+            ("CLAUDE", "see Claude CC's, which is newer"),
+            # A pair of capitals that is a word, with no comma or colon after it:  a wake that
+            # carries a letter is not picked again when its chat is released, so this prose does
+            # not put one on it.  (With a comma or colon the last resort reads it as an address,
+            # whatever the pair is.)
+            ("CLAUDE", "the Claude PR is merged, please look"),
+            ("CLAUDE", "the Claude UI needs work"),
+            ("CLAUDE", "I asked Claude AI about it"),
+            # Only the mention name:  a seat tag of two capitals is letter-shaped in a list.
+            ("CLAUDE", "thanks, CLAUDE CC, that works"),
+            ("ZC", "cc ZC MM, AG"),
+            ("ZC", "cc ZC MM AG"),
+            ("ZC", "the ZC PR, which is merged"),
+            ("MC", "cc MC ZC, please"),
+        ]
+        mentions = {"CLAUDE": "Claude", "CODEX": "Codex", "ZC": "ZCode", "MC": "Muse Code"}
+        for seat, text in cases:
+            self.assertEqual(self.letter(text, seat, mentions[seat]), "", (seat, text))
+
+    def test_two_letters_later_in_a_line_name_nobody(self) -> None:
+        for text in (
+            "thanks Claude CC and Claude DD",
+            "thanks, Claude CC, and Claude DD, both",
+            "so, Claude CC, see what Claude DD said",
+            "per Claude CC, the fix is in; Claude DD please review",
+            "so, Claude CC: done\nand as Claude DD said",
+        ):
+            self.assertEqual(self.letter(text), "", text)
+
+    def test_the_mid_line_rule_is_one_branch(self) -> None:
+        # With it off, a plain name later in a line is always a reference and nothing else moves.
+        called = "thanks, Claude CC, that works"
+        self.assertEqual(self.letter(called), "CC")
+        with mock.patch.object(WR, "sole_plain_letter", return_value=""):
+            self.assertEqual(self.letter(called), "")
+            self.assertEqual(self.letter("@**Claude** AA"), "AA")
+            self.assertEqual(self.letter("@**Claude** Claude AA"), "AA")
+            self.assertEqual(self.letter(self.HEADER % "CLAUDE AA"), "AA")
+            self.assertEqual(self.letter("please @Claude CC"), "CC")
+            self.assertEqual(self.letter("Claude DD, can you check"), "DD")
+            self.assertEqual(self.letter(self.HEADER % "CLAUDE" + "\nClaude DD, please"), "DD")
+            self.assertEqual(self.letter("[ECHO \U0001F4C1AFC → CLAUDE] Claude CC, please"), "CC")
+
+    def test_code_addresses_nobody(self) -> None:
+        # A post about the router shows the forms as examples (AFC-694 review, real message
+        # 639830999).  The plain forms do not read an inline span or a fenced block.
+        header = "[CODEX: BB.1.S \U0001F4C1AFC → CLAUDE] "
+        for text in (
+            header + "the parser should read `@Claude CC` and `CLAUDE CC please`",
+            header + "write it as `Claude CC, please` in the body",
+            header + "the incident: a post that began `@Claude CC, facts` woke the wrong chat",
+            header + "docs say write `→ CLAUDE AA` in the header",
+            "the format is `[GROK: BB.2.M \U0001F4C1AFC → CLAUDE AA]`",
+            "use ``@Claude CC`` in the body",
+            "```\n@Claude CC\nClaude CC, facts\n```\nno address here",
+            "~~~text\nClaude CC, facts\n~~~",
+            "```python\n@Claude CC\nand it never closes",
+            "one\n  ```\n  Claude CC please\n  ````\ntwo",
+        ):
+            self.assertEqual(self.letter(text), "", text)
+        self.assertEqual(self.letter("write (`→ CLAUDE AA, CODEX BB`), plain", "CODEX", "Codex"), "")
+        # Text outside the code is read as before, on the line it was on.
+        for text in (
+            "`x` @Claude CC `y`",
+            "```\n@Claude DD\n```\n@Claude CC please",
+            "```\nClaude DD look\n```\nClaude CC look",
+            "the form `@Name AA`, so: thanks, Claude CC, that works",
+            "an unclosed ` and @Claude CC",
+        ):
+            self.assertEqual(self.letter(text), "CC", text)
+        # The header's own list and a real mention are not code and are read as they were.
+        self.assertEqual(self.letter("[GROK: BB.2.M \U0001F4C1AFC → CLAUDE AA] see `Claude BB`"), "AA")
+
+    def test_a_long_run_of_backticks_is_read_in_linear_time(self) -> None:
+        # Reviewer proof:  the span pattern `(`+)[^\n]*?\1` took 300 to 600 ms on 2,000 characters
+        # (the listener's cap) and tens of seconds on a 64 KB direct post.  The runs are paired in
+        # one pass now.
+        ticks = "`"
+        for text in (
+            "a" + ticks * 1999,
+            "a" + ticks * 1333 + "b" + ticks * 665,
+            "@**Claude** a" + ticks * 1900,
+            ticks * 2000,
+            "x " + ticks * 700 + " y " + ticks * 700 + " Claude CC, z",
+        ):
+            started = time.perf_counter()
+            self.letter(text)
+            self.assertLess(time.perf_counter() - started, 0.1, text[:20])
+        started = time.perf_counter()
+        self.letter("a" + ticks * 40000 + "b" + ticks * 24000)
+        self.assertLess(time.perf_counter() - started, 1.0)
+
+    def test_inline_spans_pair_backtick_runs_of_equal_length(self) -> None:
+        cases = {
+            "x `a` y": "x   y",
+            "``a`b`` c": "  c",  # the shorter run inside does not close it
+            "`a ``b` c": "  c",  # the longer run inside does not close it
+            "`a`` b `c`": " c`",  # the run that closes is the next of the same length
+            "a ` b": "a ` b",  # a run with no partner is plain text
+            "a `` b ` c": "a `` b ` c",
+            "`a` and `b`": "  and  ",
+            "none": "none",
+            "": "",
+        }
+        for line, want in cases.items():
+            self.assertEqual(WR.blank_code_spans(line), want, line)
+        self.assertEqual(self.letter("``Claude AA`` and Claude BB, go"), "BB")
+        self.assertEqual(self.letter("`Claude AA`` Claude BB, go"), "")
+
+    def test_what_is_not_a_letter(self) -> None:
+        for tail in ("cc", "Cc", "C", "CCC", "Code", "C3", "CC3", "CC_x", "CCs"):
+            for text in (
+                "Claude %s please" % tail,
+                "@Claude %s please" % tail,
+                "thanks Claude %s" % tail,
+                "@**Claude** %s" % tail,
+                self.HEADER % ("CLAUDE %s" % tail),
+            ):
+                self.assertEqual(self.letter(text), "", text)
+        for text in ("CLAUDE-CC", "Claude-CC", "@Claude-CC", "ClaudeCC", "Claude: CC", "Claude\nCC"):
+            self.assertEqual(self.letter(text), "", text)
+
+    def test_look_alikes_do_not_match(self) -> None:
+        # The router reads these as written.  (The listener folds compatibility forms, such as a
+        # fullwidth letter, to ASCII before it sends the excerpt;  another script's letters stay.)
+        for text in (
+            "@Claude СС please",  # two Cyrillic capital Es
+            "@Claude CС please",
+            "@Claude CCС please",  # a third, Cyrillic, capital
+            "@Сlaude CC please",  # a Cyrillic capital in the name
+            "@Clаude CC please",  # a Cyrillic a
+            "@Claude ＣＣ please",  # fullwidth CC
+            "＠Claude ＣＣ please",  # and a fullwidth @
+            "@Claude CC please",  # a no-break space in the gap
+            "@Claude​CC please",  # a zero-width space
+            "@Claude ​CC please",
+            "@Claude ΑΑ please",  # Greek capital alphas
+            "thanks Сlaude CC",
+            self.HEADER % "СLAUDE CC",
+            self.HEADER % "CLAUDE СС",
+        ):
+            self.assertEqual(self.letter(text), "", ascii(text))
+        # A header compares the name in any ASCII case only:  the Kelvin sign is not a K and the
+        # long s is not an S.
+        self.assertEqual(self.letter(self.HEADER % "kimi KK", "KIMI", "Kimi"), "KK")
+        self.assertEqual(self.letter(self.HEADER % "Kimi KK", "KIMI", "Kimi"), "")
+        self.assertEqual(self.letter(self.HEADER % "CURſOR AA", "CURSOR", "Cursor"), "")
+
+    def test_an_excerpt_cut_inside_its_header(self) -> None:
+        from simple_tools import adapters as A
+
+        def cut(raw: str) -> str:
+            excerpt = A.routine_excerpt(raw, nonce="n1")
+            self.assertLessEqual(len(excerpt), A.ROUTINE_EXCERPT_LIMIT)
+            self.assertIn(" [... cut, ", excerpt)
+            self.assertNotIn("the body", excerpt)
+            return excerpt
+
+        repos = ", ".join("REPO%03d" % n for n in range(400))  # longer than the excerpt
+        # Cut before the arrow:  the recipients never arrived, so no letter and the pick falls back.
+        raw = "[GROK \U0001F4C1%s → CLAUDE AA, CODEX BB] the body" % repos
+        self.assertEqual(self.letter(raw), "AA")
+        self.assertEqual(self.letter(cut(raw)), "")
+        # Cut after it:  the items that arrived whole still count, in order.
+        for listed, want in (("CLAUDE AA", "AA"), ("CODEX BB, CLAUDE AA", "AA"), ("CODEX BB", "")):
+            raw = "[GROK \U0001F4C1AFC → %s, %s] the body" % (listed, repos)
+            self.assertEqual(self.letter(cut(raw)), want, listed)
+        # Cut inside the one item that names the seat:  a letter is never guessed from a piece.
+        # (In the last row both capitals arrived and the cut note follows them.  They may be the
+        # start of a longer item, so the list does not take them, and nothing else reads them.)
+        note = " [... cut, 0000 chars]"
+        keep = A.ROUTINE_EXCERPT_LIMIT - len(A.routine_excerpt("", nonce="n1")) - len(note)
+        lead, item = "[GROK \U0001F4C1AFC → ", "CLAUDE AA"
+        for size, want in ((6, ""), (7, ""), (8, ""), (9, "")):
+            pad = "x" * (keep - len(lead) - len(", ") - size)
+            raw = "%s%s, %s, CODEX BB] the body %s" % (lead, pad, item, "y" * 200)
+            excerpt = cut(raw)
+            self.assertIn(", %s [... cut, " % item[:size], excerpt, size)
+            self.assertEqual(self.letter(excerpt), want, size)
 
 
 class Picking(Base):

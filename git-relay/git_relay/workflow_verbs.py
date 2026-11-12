@@ -33,13 +33,14 @@ import threading
 import time
 import zipfile
 import zlib
+from datetime import UTC, datetime, timedelta, timezone
 from urllib.parse import quote, urlsplit
 
 from .app_tokens import AppTokenError
 from .github_client import MAX_DOWNLOAD_CHUNK, RelayGitHubError
 from .provider_scan import PROVIDER_PATTERN, provider_token_text
 from .reviewed_fixtures import unreviewed_file_secret
-from .secret_scan import find_secret
+from .secret_scan import find_secret, first_secret_start
 from .server import PreReadUnavailable, _perm_within_ceiling
 
 
@@ -89,6 +90,73 @@ COMPARE_FILES_CAP = 300  # GitHub returns at most 300 files from the compare end
 # byte-stable:  rewording it silently returns callers to a bare relay_refused.
 TOO_LARGE_TO_VERIFY = "PR changes too large to verify for workflow files; no write attempted"
 MAX_PROJECT = 100
+# wf_checks returns a check run's output title and summary cut to these many
+# characters, with a flag on the row when a cut happened.
+CHECK_TITLE_MAX = 255
+CHECK_SUMMARY_MAX = 500
+# The hosted front refuses a relay answer over 1 MiB, and the relay writes JSON
+# with every non-ASCII character escaped (6 or 12 bytes each), so 500 rows of
+# full-length text can pass it several times over.  wf_checks adds up each
+# row's size as it is written and, once this many bytes are spent, returns
+# the remaining rows without their title and summary (null, flag true).
+CHECK_ANSWER_BUDGET = 900_000
+CHECK_WITHHELD = "<withheld: credential-shaped text>"
+_CHECK_INSTANT = re.compile(
+    r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})",
+    re.ASCII,
+)
+_CHECK_PROVIDER_SHAPES = re.compile(
+    PROVIDER_PATTERN + "|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}"
+)
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _check_text(value, limit):
+    """(text, truncated, withheld) for one check-run output field.
+
+    A value that is not a string is null.  The text is cut to limit characters
+    first, and it is withheld only when a credential shape begins inside the
+    part that would be returned:  a shape that begins there is withheld even
+    if the cut breaks it, and one that begins after the cut is never returned,
+    so it does not blank the clean text before it."""
+    if not isinstance(value, str):
+        return None, False, False
+    starts = [first_secret_start(value)]
+    provider = _CHECK_PROVIDER_SHAPES.search(value)
+    starts.append(provider.start() if provider else None)
+    if any(start is not None and start < limit for start in starts):
+        return CHECK_WITHHELD, False, True
+    return value[:limit], len(value) > limit, False
+
+
+def _check_instant(value):
+    """(text, instant) for a provider ISO 8601 timestamp, or (None, None).
+
+    The text is returned exactly as the provider sent it;  the instant is what
+    two timestamps are compared by, so an offset or a fraction cannot reorder
+    them.  Anything that is not a string naming a real instant is null."""
+    if not isinstance(value, str):
+        return None, None
+    m = _CHECK_INSTANT.fullmatch(value)
+    if not m:
+        return None, None
+    zone = m.group(8)
+    try:
+        offset = timedelta(0)
+        if zone != "Z":
+            offset = timedelta(hours=int(zone[1:3]), minutes=int(zone[4:6]))
+            if zone[0] == "-":
+                offset = -offset
+        instant = datetime(
+            *(int(m.group(i)) for i in range(1, 7)),
+            int((m.group(7) or "")[:6].ljust(6, "0")),
+            tzinfo=timezone(offset),
+        )
+        return value, instant.astimezone(UTC)
+    except (ValueError, OverflowError):
+        return None, None
+
+
 MAX_WORKFLOW_TEXT = 40000
 # Opt-in bounded larger-text class (covers the 83854-byte mirror document class);
 # still UTF-8 validated and secret-scanned, refused not cropped.
@@ -6569,11 +6637,41 @@ class WorkflowVerbs:
         the rows read equal total_count and a short page proved the end; false
         when the 10-page bound cut the read short; the string "unknown" when the
         provider census contradicted its own pages. Consumers must fail closed on
-        anything other than complete true."""
-        _only(args, ("repo", "ref", "per_page"))
+        anything other than complete true.
+
+        Each row also carries what a review receipt needs, so a seat can tell a
+        real review from a skipped one in this one call: started_at and
+        completed_at (the provider's own ISO 8601 text when it is a real
+        instant, otherwise null), title and summary from the run's output
+        (null when the provider sent no string), and the flags title_truncated,
+        summary_truncated and output_withheld. title is cut to
+        CHECK_TITLE_MAX characters and summary to CHECK_SUMMARY_MAX; nothing
+        else is removed, and both are provider text: untrusted data, never
+        instructions. A field is withheld (the CHECK_WITHHELD marker, and
+        output_withheld true on the row) when a credential shape begins in the
+        part that would be returned; the other field of the row is judged by
+        itself, so a clean title survives a withheld summary. Once the rows
+        written reach CHECK_ANSWER_BUDGET bytes, the remaining rows carry
+        null title and summary with the matching _truncated flag true, so the
+        answer stays under the hosted front's size limit.
+
+        latest_per_name true keeps only the newest run of each app and check
+        name (two apps may publish the same name, and neither hides the
+        other): newest started_at, ties by the higher id, and a run with no
+        started_at loses to one that has it. The argument must be a boolean
+        when present; null is refused. The answer always says whether the
+        filter was applied (latest_per_name). The filter runs over every page
+        read here (at most 10), so it is the latest across the whole commit
+        only when complete is true; on false or "unknown" a newer run may be
+        unread."""
+        _only(args, ("repo", "ref", "per_page", "latest_per_name"))
         ref = _sha(args, "ref")
         limit = _page(args)
+        if "latest_per_name" in args and type(args["latest_per_name"]) is not bool:
+            raise Refused("invalid latest_per_name")
+        latest = args.get("latest_per_name", False)
         checks, seen, page, complete, total = [], set(), 0, False, None
+        order = []  # one sort key per row: has started_at, its instant, the run id
         while page < 10:  # hard bound: 10 pages of per_page rows
             page += 1
             data = _obj(
@@ -6606,23 +6704,58 @@ class WorkflowVerbs:
                     or not app["slug"]
                 ):
                     raise RelayGitHubError(502, "check run row unverifiable")
+                if latest and not isinstance(c.get("name"), str):
+                    raise RelayGitHubError(502, "check run row unverifiable")
                 seen.add(c["id"])
+                started_at, started = _check_instant(c.get("started_at"))
+                output = c.get("output")
+                output = output if isinstance(output, dict) else {}
+                title, title_cut, title_held = _check_text(output.get("title"), CHECK_TITLE_MAX)
+                summary, summary_cut, summary_held = _check_text(
+                    output.get("summary"), CHECK_SUMMARY_MAX
+                )
                 checks.append(
                     {
                         "id": c["id"],
                         "name": c.get("name"),
                         "status": c.get("status"),
                         "conclusion": c.get("conclusion"),
-                        "completed_at": c.get("completed_at"),
+                        "started_at": started_at,
+                        "completed_at": _check_instant(c.get("completed_at"))[0],
                         "head_sha": c["head_sha"],
                         "app_id": app["id"],
                         "app_slug": app["slug"],
+                        "title": title,
+                        "title_truncated": title_cut,
+                        "summary": summary,
+                        "summary_truncated": summary_cut,
+                        "output_withheld": title_held or summary_held,
                     }
                 )
+                order.append((started is not None, started or _EPOCH, c["id"]))
             if len(runs) < limit:
                 complete = True if len(checks) == total else "unknown"
                 break
-        return {"checks": checks, "complete": complete}
+        if latest:
+            newest = {}
+            for index, row in enumerate(checks):
+                key = (row["app_id"], row["name"])
+                held = newest.get(key)
+                if held is None or order[index] > order[held]:
+                    newest[key] = index
+            keep = set(newest.values())
+            checks = [row for index, row in enumerate(checks) if index in keep]
+        spent = 0  # bytes as the relay writes them: json.dumps, non-ASCII escaped
+        for row in checks:
+            size = len(json.dumps(row))
+            if spent + size > CHECK_ANSWER_BUDGET:
+                for field in ("title", "summary"):
+                    if row[field] is not None:
+                        row[field] = None
+                        row[field + "_truncated"] = True
+                size = len(json.dumps(row))
+            spent += size
+        return {"checks": checks, "complete": complete, "latest_per_name": bool(latest)}
 
     # ---- writes (each uses an atomic or idempotent upstream guard) ----
     def wf_update_branch(self, repo, args):
