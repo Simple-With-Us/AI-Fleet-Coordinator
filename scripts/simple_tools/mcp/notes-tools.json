@@ -330,6 +330,94 @@
       }
     },
     {
+      "name": "notes_delete",
+      "title": "Notes Delete",
+      "description": "Delete one Apple Note the fleet notes writer created, by its exact id, and remove its Fleet RAG doc (note/<id>).  Static Coding-folder notes and notes the writer did not make are refused.  No bulk or wildcard deletes.  On a Mac it runs apple-notes-coding.sh directly;  anywhere else (the server, ST-MCP) the request goes to the Operator's notes queue and the Mac runner does it, and the call waits for the result (see wait_seconds).  No Zulip message is involved.  If the note is already gone but the RAG removal failed earlier, send the same request again to finish the RAG delete.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "note_id"
+        ],
+        "properties": {
+          "note_id": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 520,
+            "pattern": "^x-coredata://[A-Za-z0-9][A-Za-z0-9_./:-]+$",
+            "description": "The exact x-coredata note id from notes_list or notes_read (notes_list lists ids)."
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$",
+            "description": "A unique id for this request, 8 to 64 letters, digits, - or _.  A retry with the same id never deletes twice.  Omit it and one is made."
+          },
+          "wait_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 300,
+            "description": "Off a Mac:  how long to wait for the Mac runner's result before answering queued (seconds;  25 by default on the stdio server and ST-MCP, at most 90 on the stdio server and 25 on ST-MCP;  300 for simple-notes).  0 answers at once.  Ignored on a Mac."
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "request_id",
+          "status",
+          "transport"
+        ],
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "queued",
+              "running"
+            ]
+          },
+          "transport": {
+            "type": "string",
+            "enum": [
+              "direct",
+              "operator"
+            ]
+          },
+          "note_id": {
+            "type": "string"
+          },
+          "apple_note_deleted": {
+            "type": "boolean"
+          },
+          "rag_deleted": {
+            "type": "boolean"
+          },
+          "partial": {
+            "type": "boolean",
+            "description": "True when the Apple Note is gone but Fleet RAG removal failed or is still pending;  retry this request."
+          },
+          "rag_error": {
+            "type": "string"
+          },
+          "duplicate": {
+            "type": "boolean"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
       "name": "notes_unpin",
       "title": "Notes Unpin",
       "description": "Unpin the Apple Note with this exact title in the Coding folder, any note.  On a Mac it runs apple-notes-coding.sh directly;  anywhere else (the server, ST-MCP) the request goes to the Operator's notes queue and the Mac runner does it, and the call waits for the result (see wait_seconds).  No Zulip message is involved.",
@@ -547,6 +635,11 @@
             "minimum": 0,
             "maximum": 300,
             "description": "Off a Mac:  how long to wait for the Mac runner's result before answering queued (seconds;  25 by default on the stdio server and ST-MCP, at most 90 on the stdio server and 25 on ST-MCP;  300 for simple-notes).  0 answers at once.  Ignored on a Mac."
+          },
+          "full": {
+            "type": "boolean",
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and bodies cut to about 280 characters."
           }
         }
       },

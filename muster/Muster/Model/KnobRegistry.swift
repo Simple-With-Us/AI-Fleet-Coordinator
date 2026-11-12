@@ -307,6 +307,9 @@ struct KnobRegistry {
         return copy
     }
 
+    /// The title of the pinned section that holds the Operator's knobs.
+    static let operatorSection = "Operator"
+
     // MARK: Filters
 
     /// The knobs that pass a filter,  a machine filter and a search,  in registry order.
@@ -340,13 +343,25 @@ struct KnobRegistry {
     }
 
     /// The rows,  grouped in the order their groups first appear.
+    ///
+    /// The Operator's knobs are pulled into one pinned section that comes first,  so a
+    /// new Operator knob is never hidden among the other groups.
     static func grouped(_ rows: [Row]) -> [KnobGroup] {
         var order: [String] = []
         var groups: [String: [Row]] = [:]
         for row in rows {
-            let title = (row.knob?.group).flatMap { $0.isEmpty ? nil : $0 } ?? "Knobs"
+            let title: String
+            if row.knob?.isOperator == true {
+                title = KnobRegistry.operatorSection
+            } else {
+                title = (row.knob?.group).flatMap { $0.isEmpty ? nil : $0 } ?? "Knobs"
+            }
             if groups[title] == nil { order.append(title) }
             groups[title, default: []].append(row)
+        }
+        if let at = order.firstIndex(of: KnobRegistry.operatorSection), at != 0 {
+            order.remove(at: at)
+            order.insert(KnobRegistry.operatorSection, at: 0)
         }
         return order.map { KnobGroup(title: $0, rows: groups[$0] ?? []) }
     }
@@ -1519,6 +1534,17 @@ enum KnobEditorKind: Equatable {
 }
 
 extension KnobRegistry.Knob {
+    /// The registry groups whose knobs the Operator and its wake router read.
+    static let operatorGroups: Set<String> = ["Wake Router"]
+
+    /// True when the Operator reads the knob:  it sits in a wake-router group,  or its name
+    /// says it is the Operator's own setting.
+    var isOperator: Bool {
+        Self.operatorGroups.contains(group)
+            || name.hasPrefix("OPERATOR_")
+            || name.hasPrefix("SIMPLE_TOOLS_OPERATOR_")
+    }
+
     /// The registry's kind word,  from the inventory or worked out from the kind text.
     var effectiveKind: String {
         baseKind.isEmpty ? Self.baseKind(fromKindText: kind) : baseKind
