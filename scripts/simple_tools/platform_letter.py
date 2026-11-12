@@ -3721,6 +3721,46 @@ def _flag(words: list[str], name: str) -> str:
 RETIRED_HOOKS = {"simple-chat": "claude", "mm-session-letter": "minimax"}
 
 
+#: Set in the environment of a process this client re-ran through the host's own `platform-letter`, so that happens once.
+ENV_WRAPPED = "SIMPLE_TOOLS_LETTER_WRAPPED"
+#: What re-runs the process (a test replaces it).  `os.execve` does not return.
+_exec = os.execve
+
+
+def host_wrapper(env: Mapping[str, str]) -> str:
+    """This host's own `platform-letter` command (`<home>/.local/bin/platform-letter`), the one every installed hook
+    runs, when it is there and can be run, else "".  On the Mac it is a host-installed script, not part of this
+    repository, that puts the registry settings into the environment before it runs the checkout's
+    scripts/platform-letter;  this client never reads that script's source file itself."""
+    home = _text(env.get("HOME"))
+    path = os.path.join(home, ".local", "bin", ENTRY) if home else ""
+    return path if path and os.path.isfile(path) and os.access(path, os.X_OK) else ""
+
+
+def through_wrapper(argv: list[str], env: Mapping[str, str]) -> None:
+    """Re-run `argv` as this host's own `platform-letter` does, when the process was started without the registry
+    settings:  `simple-chat letter ...` is a command a hook of the retired Claude client still runs, and a hook is
+    launched with no profile, so its environment holds neither the registry URL nor its key.  The host's wrapper is
+    what puts them there, and nothing here reads a file of the host's to get them.
+
+    It replaces this process once (ENV_WRAPPED says it did) and only for the real process environment, with the
+    arguments as given and the standard input as it is.  With the settings already in the environment, with no
+    wrapper on the host, or when the replacement fails, it returns and the command runs in this process, as it did."""
+    from . import registry_api as RA
+
+    if env is not os.environ or env.get(ENV_WRAPPED):
+        return
+    if _text(env.get(RA.URL_ENV)) and _text(env.get(RA.KEY_VAR)):
+        return
+    path = host_wrapper(env)
+    if not path:
+        return
+    try:
+        _exec(path, [path, *argv], {**env, ENV_WRAPPED: "1"})
+    except OSError:
+        return  # it could not be run:  this process goes on without it
+
+
 def retired_argv(program: str, argv: list[str], env: Mapping[str, str]) -> list[str] | None:
     """`argv` as this client reads it, when it came in as a command line of the retired client `program`.
 
@@ -3761,6 +3801,12 @@ def installed_command(entry: object, platform: str) -> list[str] | None:
             words = shlex.split(text)
         except ValueError:
             continue
+        if words and re.fullmatch(r"python[0-9.]*", os.path.basename(words[0])):
+            # An interpreter run on the script by path (`python3 -I -B <checkout>/scripts/platform-letter hook ...`):
+            # that is this command too, with no wrapper of the host's in front of it.
+            words = words[1:]
+            while words and words[0].startswith("-"):
+                words = words[1:]
         program = os.path.basename(words[0]) if words else ""
         if program == ENTRY and words[1:2] == ["hook"]:
             rest = words[2:]
@@ -4076,7 +4122,18 @@ def install_json_hooks(
         for ev, timeout in installer.events.items():
             new, entries = _plan_event(installer, events, ev, timeout, command, platform, False)
             current[ev] = have[ev] and new == entries  # an install would change nothing
-        answer = {"platform": platform, "path": path, "installed": have, "current": current, **key}
+        from . import registry_api as RA
+
+        # What a hook launched from this environment would find:  the registry settings, by name and never by value.
+        # A hook runs with no profile, so run this through the host's `platform-letter` from a clean environment.
+        answer = {
+            "platform": platform,
+            "path": path,
+            "installed": have,
+            "current": current,
+            "registry": RA.configuration(env),
+            **key,
+        }
         if stray or files:
             # Not current:  an install takes the retired hooks out, and the owner retires the files.
             answer["retired"] = {"hooks": sorted(stray), "files": files}
@@ -4230,6 +4287,8 @@ def main(
         if meant is None:
             return 0  # the retired client's own off switch:  its hook does nothing
         argv = meant
+        if argv and argv[0] not in ("-h", "--help"):
+            through_wrapper(argv, env)
     if not argv or argv[0] in ("-h", "--help"):
         stdout.write(USAGE)
         return 0 if argv else 2

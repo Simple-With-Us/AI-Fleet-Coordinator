@@ -172,6 +172,19 @@ def signing_key(env: Mapping[str, str] | None = None) -> str:
     return _setting(env, KEY_VAR, KEY_KNOB)
 
 
+def configuration(env: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """Whether this process can reach the registry API, and when it cannot, the class of reason, by variable and knob
+    names only:  never a value.  `{"configured": True}`, or `{"configured": False, "reason": "no URL: ..."}` (or
+    "no key: ...").  A hook launched without the registry settings in its environment answers `no URL` here, and
+    `call` answers `not_configured` with the same words;  `platform-letter install --check` prints this."""
+    env = os.environ if env is None else env
+    if not base_url(env):
+        return {"configured": False, "reason": "no URL: " + _unset_reason(env, URL_ENV, URL_KNOB)}
+    if not signing_key(env):
+        return {"configured": False, "reason": "no key: " + _unset_reason(env, KEY_VAR, KEY_KNOB)}
+    return {"configured": True}
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(
         self, *args: Any, **kwargs: Any

@@ -10,6 +10,7 @@ import ast
 import io
 import json
 import os
+import re
 import shlex
 import sqlite3
 import stat
@@ -3488,7 +3489,8 @@ class RetiredClientTests(Base):
         self.assertEqual(text.count("platform-letter hook --platform minimax"), 2)
         self.assertEqual(self.install("--check"), (0, {
             "platform": "minimax", "path": os.path.join(self.home, ".minimax", "hooks.json"),
-            "installed": {"SessionStart": True, "Stop": True}, "current": {"SessionStart": True, "Stop": True}}))
+            "installed": {"SessionStart": True, "Stop": True}, "current": {"SessionStart": True, "Stop": True},
+            "registry": {"configured": True}}))
         self.assertEqual(self.install()[1]["changed"], [])  # and it is idempotent
 
     def test_remove_takes_them_out_too_and_an_event_left_empty_goes(self) -> None:
@@ -4018,6 +4020,210 @@ class EntryScriptTests(unittest.TestCase):
             self.assertEqual(result.returncode, 5)
             self.assertIn("not_configured", result.stdout)
             self.assertEqual(os.listdir(tmp), [])
+
+
+class HostWrapperTests(Base):
+    """A hook is launched with no profile, so the registry settings reach it only through the host's own
+    `platform-letter` (a script of the host's, outside this repository, that sets them and runs the checkout's).
+    Every installed hook therefore runs that path, and the retired `simple-chat letter` line is re-run through it."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.spec = make_spec(platform="faux", source="faux-hook", display="Faux")
+        patch = mock.patch.dict(PL.SPECS, {"faux": self.spec})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def wrapper_path(self) -> str:
+        return os.path.join(self.home, ".local", "bin", "platform-letter")
+
+    def test_every_platforms_install_writes_the_hosts_wrapper_and_no_other_command(self) -> None:
+        names = sorted(
+            p.stem[len("platform_letter_") :] for p in Path(PL.__file__).parent.glob("platform_letter_*.py")
+        )
+        installed = []
+        for name in names:
+            platform = name.replace("_", "-")
+            if PL.load_spec(platform) is None:
+                continue
+            with self.subTest(platform=platform), tempfile.TemporaryDirectory() as home:
+                mine = os.path.join(home, ".local", "bin", "platform-letter")
+                os.makedirs(os.path.dirname(mine))
+                with open(mine, "w", encoding="utf-8") as fh:  # an install refuses a command that is not there
+                    fh.write("#!/bin/sh\n")
+                os.chmod(mine, 0o755)
+                os.makedirs(os.path.join(home, ".config", "opencode"))  # OpenCode installs into its own folder
+                os.makedirs(os.path.join(home, ".grok"))  # and Grok into its own
+                for where in ("server", "mac"):
+                    out = io.StringIO()
+                    code = PL.install_main(["--platform", platform, "--location", where], {"HOME": home}, out)
+                    if code == 0:
+                        break
+                if platform == "fx":  # fx has no hook file at all:  it registers from its session store
+                    self.assertEqual(code, 2)
+                    continue
+                self.assertEqual(code, 0, out.getvalue())
+                found = []
+                for folder, _, files in os.walk(home):
+                    for file in files:
+                        with open(os.path.join(folder, file), encoding="utf-8", errors="replace") as fh:
+                            text = fh.read()
+                        if os.path.basename(file).startswith("hooks.json.bak"):
+                            continue
+                        for old in ("zc-letter", "mm-session-letter", "operator-registry-env", "mm-registry-env"):
+                            self.assertNotIn(old, text, (file, old))
+                        found += re.findall(r"\S*platform-letter(?= hook)", text.replace("\\/", "/"))
+                if found:
+                    installed.append(platform)
+                for program in found:
+                    self.assertEqual(program.strip("'\""), mine, platform)
+        # The hook-file platforms are all among them, Claude, MiniMax and ZCode included.
+        for platform in ("claude", "minimax", "zcode", "codex"):
+            self.assertIn(platform, installed)
+
+    def test_an_entry_that_does_not_go_through_the_wrapper_is_not_current_and_is_replaced(self) -> None:
+        installer = PL.JsonHookInstaller(path=os.path.join(".faux", "hooks.json"), events={"SessionStart": 20, "Stop": 15})
+        path = os.path.join(self.home, ".faux", "hooks.json")
+        want = "%s hook --platform faux --location server" % self.wrapper_path()
+        os.makedirs(os.path.dirname(self.wrapper_path()), exist_ok=True)
+        with open(self.wrapper_path(), "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\n")
+        os.chmod(self.wrapper_path(), 0o755)
+        retired = (
+            "/runtime/scripts/platform-letter hook --platform faux --location server",
+            "python3 -I -B /runtime/scripts/platform-letter hook --platform faux --location server",
+            "%s hook --platform faux --location server" % os.path.join(self.home, ".local", "bin", "zc-letter", "platform-letter"),
+            "/opt/homebrew/bin/python3 /runtime/scripts/platform-letter hook --platform faux",
+        )
+
+        def run(*argv: str) -> tuple[int, dict]:
+            out = io.StringIO()
+            with mock.patch.object(PL, "load_adapter", return_value=SimpleNamespace(INSTALL=installer, SPEC=self.spec)):
+                code = PL.install_main(["--platform", "faux", *argv], {"HOME": self.home}, out)
+            return code, json.loads(out.getvalue())
+
+        def commands() -> list[str]:
+            with open(path, encoding="utf-8") as fh:
+                doc = json.load(fh)["hooks"]
+            return [h["command"] for groups in doc.values() for group in groups for h in group["hooks"]]
+
+        for command in retired:
+            with self.subTest(command=command):
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                entry = lambda: [{"hooks": [{"type": "command", "command": command, "timeout": 20}]}]  # noqa: E731
+                with open(path, "w", encoding="utf-8") as fh:
+                    json.dump({"hooks": {"SessionStart": entry(), "Stop": entry()}}, fh)
+                code, answer = run("--check", "--location", "server")
+                self.assertEqual(code, 0)  # an entry is installed...
+                self.assertEqual(answer["current"], {"SessionStart": False, "Stop": False})  # ...and not current
+                code, answer = run("--location", "server")
+                self.assertEqual(sorted(answer["changed"]), ["SessionStart", "Stop"])
+                self.assertEqual(commands(), [want, want])  # replaced in place, never a second set beside it
+                code, answer = run("--check", "--location", "server")
+                self.assertEqual(answer["current"], {"SessionStart": True, "Stop": True})
+                self.assertEqual(run("--location", "server")[1]["changed"], [])
+
+    def run_retired(self, argv, *, wrapper: bool = True, **settings: str):
+        """`simple-chat letter <argv>` as the process it is, with a fake replacement of the process."""
+        calls = []
+
+        def fake_exec(path, args, env):
+            calls.append((path, args, dict(env)))
+            raise SystemExit("exec")
+
+        env = {"HOME": self.home, "PATH": "/usr/bin:/bin", **settings}
+        if wrapper:
+            os.makedirs(os.path.dirname(self.wrapper_path()), exist_ok=True)
+            with open(self.wrapper_path(), "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\nexit 0\n")
+            os.chmod(self.wrapper_path(), 0o755)
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(PL, "_exec", fake_exec), \
+                mock.patch.object(registry_api, "_knob_value", return_value=""):  # no test reaches Infisical
+            try:
+                code = PL.main(list(argv), program="simple-chat", stdin=io.StringIO(""), stdout=out, stderr=err)
+            except SystemExit:
+                code = "exec"
+        return code, calls, out.getvalue()
+
+    def test_the_retired_command_line_is_re_run_once_through_the_hosts_wrapper(self) -> None:
+        code, calls, _ = self.run_retired(["hook"], CLAUDE_LETTER_LOCATION="server")
+        self.assertEqual(code, "exec")
+        (path, args, env), = calls
+        self.assertEqual(path, self.wrapper_path())
+        # The retired client's own words, as this client reads them:  its platform and its location flag.
+        self.assertEqual(args, [self.wrapper_path(), "hook", "--platform", "claude", "--location", "server"])
+        self.assertEqual(env[PL.ENV_WRAPPED], "1")
+        # The same for every verb, with the arguments as given.
+        code, calls, _ = self.run_retired(["gone", "--platform", "claude"])
+        self.assertEqual((code, calls[0][1]), ("exec", [self.wrapper_path(), "gone", "--platform", "claude"]))
+        # Once:  the process the wrapper ran says so in its environment, and is not re-run again.
+        code, calls, _ = self.run_retired(["hook"], **{PL.ENV_WRAPPED: "1"})
+        self.assertEqual((code, calls), (0, []))
+
+    def test_the_retired_command_line_runs_in_this_process_without_a_wrapper_or_with_the_settings(self) -> None:
+        code, calls, _ = self.run_retired(["hook"], wrapper=False)
+        self.assertEqual((code, calls), (0, []))  # no wrapper on the host:  it runs as it did
+        settings = {registry_api.URL_ENV: "https://registry.invalid", registry_api.KEY_VAR: "k" * 8}
+        code, calls, _ = self.run_retired(["hook"], **settings)
+        self.assertEqual((code, calls), (0, []))  # the environment already holds them
+        # Either one missing is a hook without the settings:  the wrapper supplies both.
+        code, calls, _ = self.run_retired(["hook"], **{registry_api.URL_ENV: "https://registry.invalid"})
+        self.assertEqual(code, "exec")
+        # The retired off switch ends it before anything is run, and a platform's own command line is not retired.
+        code, calls, _ = self.run_retired(["hook"], CLAUDE_LETTER="0")
+        self.assertEqual((code, calls), (0, []))
+        with mock.patch.object(PL, "_exec", side_effect=OSError("cannot run")):
+            code, calls, _ = self.run_retired(["--help"])
+        self.assertEqual(code, 0)
+
+    def test_a_wrapper_that_cannot_be_run_leaves_the_command_in_this_process(self) -> None:
+        os.makedirs(os.path.dirname(self.wrapper_path()), exist_ok=True)
+        with open(self.wrapper_path(), "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\n")
+        os.chmod(self.wrapper_path(), 0o755)
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"HOME": self.home}, clear=True), mock.patch.object(
+            PL, "_exec", side_effect=OSError("exec format error")
+        ), mock.patch.object(registry_api, "_knob_value", return_value=""):
+            code = PL.main(["hook"], program="simple-chat", stdin=io.StringIO(""), stdout=out, stderr=io.StringIO())
+        self.assertEqual(code, 0)
+
+    def test_a_hook_environment_without_the_settings_names_the_reason_and_no_value(self) -> None:
+        url, key = "https://" + "u" * 12 + ".invalid", "k" * 24
+        bare = {"HOME": self.home}
+        reason = registry_api.configuration(bare)
+        self.assertEqual(reason["configured"], False)
+        self.assertIn("no URL", reason["reason"])
+        self.assertIn(registry_api.URL_ENV, reason["reason"])
+        only_url = registry_api.configuration({**bare, registry_api.URL_ENV: url})
+        self.assertIn("no key", only_url["reason"])
+        self.assertIn(registry_api.KEY_VAR, only_url["reason"])
+        for answer in (reason, only_url):
+            self.assertNotIn(url, json.dumps(answer))
+            self.assertNotIn(key, json.dumps(answer))
+        self.assertEqual(registry_api.configuration({registry_api.URL_ENV: url, registry_api.KEY_VAR: key}), {"configured": True})
+        # `install --check` prints the same reason class, and the chat's context line carries it too.
+        os.makedirs(os.path.join(self.home, ".local", "bin"))
+        with open(self.wrapper_path(), "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\n")
+        os.chmod(self.wrapper_path(), 0o755)
+        installer = PL.JsonHookInstaller(path=os.path.join(".faux", "hooks.json"), events={"SessionStart": 20})
+        out = io.StringIO()
+        with mock.patch.object(PL, "load_adapter", return_value=SimpleNamespace(INSTALL=installer, SPEC=self.spec)):
+            PL.install_main(["--platform", "faux", "--check"], {"HOME": self.home, registry_api.URL_ENV: url}, out)
+        shown = json.loads(out.getvalue())["registry"]
+        self.assertEqual(shown, only_url)
+        self.assertNotIn(url, out.getvalue())
+        start = {"hook_event_name": "SessionStart", "source": "startup", "session_id": "s-0009"}
+        hook_out = io.StringIO()
+        PL.main(["hook", "--platform", "claude"], env={**bare, "CLAUDE_CODE_ENTRYPOINT": "claude-desktop",
+                                                         "SIMPLE_TOOLS_STATE_DIR": self.state, registry_api.KEY_VAR: key},
+                stdin=io.StringIO(json.dumps(start)), stdout=hook_out, stderr=io.StringIO())
+        context = json.loads(hook_out.getvalue())["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("no registry API URL is configured", context)
+        self.assertIn(registry_api.URL_ENV, context)
+        self.assertNotIn(key, context)
 
 
 if __name__ == "__main__":
