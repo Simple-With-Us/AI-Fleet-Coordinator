@@ -670,6 +670,76 @@ test("annotateInternalLanding records assignment and tester findings", () => {
   assert.equal(unknown.installable, null);
   assert.equal(unknown.reason, null);
   assert.deepEqual(unknown.groups[0].findings, ["lookupUnknown"]);
+  const missedAssignment = annotateInternalLanding(valid, [{
+    name: "Internal",
+    id: "bg-internal",
+    assigned: false,
+    assignedKnown: true,
+    testerCount: null,
+    testerCountKnown: false,
+  }]);
+  assert.equal(missedAssignment.installable, false);
+  assert.deepEqual(missedAssignment.groups[0].findings.sort(), ["lookupUnknown", "notAssigned"]);
+  const zeroUnreadable = annotateInternalLanding(valid, [{
+    name: "Internal",
+    id: "bg-internal",
+    assigned: false,
+    assignedKnown: false,
+    testerCount: 0,
+    testerCountKnown: true,
+  }]);
+  assert.equal(zeroUnreadable.installable, false);
+  assert.deepEqual(zeroUnreadable.groups[0].findings.sort(), ["lookupUnknown", "noTesters"]);
+  const mixed = annotateInternalLanding(valid, [
+    {
+      name: "Empty",
+      id: "bg-empty",
+      assigned: false,
+      assignedKnown: true,
+      testerCount: 0,
+      testerCountKnown: true,
+    },
+    {
+      name: "Unread",
+      id: "bg-unread",
+      assigned: false,
+      assignedKnown: false,
+      testerCount: null,
+      testerCountKnown: false,
+    },
+  ]);
+  assert.equal(mixed.installable, null);
+  assert.equal(mixed.reason, null);
+  assert.deepEqual(mixed.groups[0].findings.sort(), ["noTesters", "notAssigned"]);
+  assert.deepEqual(mixed.groups[1].findings, ["lookupUnknown"]);
+});
+
+test("internal landing: a known miss beside an unreadable group stays current", async () => {
+  const beta = {
+    111: [
+      internalGroup({ id: "bg-zero", name: "Zero", testerTotal: 0 }),
+      internalGroup({ id: "bg-unread", name: "Unread" }),
+    ],
+  };
+  const { deps } = fakeDeps({ repos: { Demo: botfleetLike() }, builds: BOTFLEET_BUILDS, betaGroups: beta });
+  const orig = deps.asc;
+  deps.asc = async (p) => {
+    if (p.includes("bg-unread/betaTesters")) {
+      throw new Error("App Store Connect /v1/betaGroups/bg-unread/betaTesters: HTTP 503");
+    }
+    return orig(p);
+  };
+  const reg = registry({ demo: app() });
+  const r = await evaluateApp(makeContext(deps, reg), "demo", reg.apps.demo, NOW);
+  assert.equal(r.status, "current", r.reason);
+  assert.equal(r.internalLanding.installable, null);
+  assert.equal(r.internalLandingOnly, undefined);
+  const zero = r.internalLanding.groups.find((g) => g.id === "bg-zero");
+  const unread = r.internalLanding.groups.find((g) => g.id === "bg-unread");
+  assert.deepEqual(zero.findings, ["noTesters"]);
+  assert.deepEqual(unread.findings, ["lookupUnknown"]);
+  assert.equal(exitCodeFor([r]), EXIT_CURRENT);
+  assert.ok(!shouldRemedyApp(r));
 });
 
 test("current:  the correlated ship run contains the newest native commit", async () => {

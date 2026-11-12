@@ -566,15 +566,18 @@ export function annotateExternalGroups(validBuild, groups) {
 
 /**
  * Mark each internal group with findings for the current VALID build.
- * Read-only:  assigned means that build is in the group, and reachable means
- * the tester count is known and greater than zero.  lookupUnknown does not
- * count as a proven access failure.
+ * Read-only.  A group is a proven miss when assignment is known and the build
+ * is absent, or the tester count is known and zero, even if the other lookup
+ * failed.  installable is false only when every group is a proven miss.  A
+ * group that is neither a proven hit nor a proven miss stays unknown, and one
+ * unknown group leaves installable null.
  */
 export function annotateInternalLanding(validBuild, groups) {
   const out = [];
   const parts = [];
   let anyInstallable = false;
   let anyKnownFailure = false;
+  let anyUnknown = false;
   const label = `${validBuild?.marketingVersion || validBuild?.build || "?"} (${validBuild?.build || "?"})`;
   if (!validBuild) {
     return {
@@ -588,28 +591,27 @@ export function annotateInternalLanding(validBuild, groups) {
     const findings = [];
     const assignedKnown = row.assignedKnown === true;
     const testersKnown = row.testerCountKnown === true;
-    if (!assignedKnown || !testersKnown) {
-      findings.push("lookupUnknown");
-    } else {
-      if (!row.assigned) {
-        findings.push("notAssigned");
-        parts.push(`internal group "${row.name}" does not include valid build ${label}`);
-        anyKnownFailure = true;
-      }
-      if (row.testerCount === 0) {
-        findings.push("noTesters");
-        parts.push(`internal group "${row.name}" has zero internal testers`);
-        anyKnownFailure = true;
-      }
-      if (row.assigned && row.testerCount > 0) anyInstallable = true;
+    const provenMiss = (assignedKnown && !row.assigned) || (testersKnown && row.testerCount === 0);
+    const provenHit = assignedKnown && testersKnown && row.assigned && row.testerCount > 0;
+    if (!assignedKnown || !testersKnown) findings.push("lookupUnknown");
+    if (assignedKnown && !row.assigned) {
+      findings.push("notAssigned");
+      parts.push(`internal group "${row.name}" does not include valid build ${label}`);
     }
+    if (testersKnown && row.testerCount === 0) {
+      findings.push("noTesters");
+      parts.push(`internal group "${row.name}" has zero internal testers`);
+    }
+    if (provenHit) anyInstallable = true;
+    else if (provenMiss) anyKnownFailure = true;
+    else anyUnknown = true;
     if (findings.length) row.findings = findings;
     if (findings.includes("lookupUnknown")) row.lookupUnknown = true;
     out.push(row);
   }
   let installable = null;
   if (anyInstallable) installable = true;
-  else if (anyKnownFailure) installable = false;
+  else if (anyKnownFailure && !anyUnknown) installable = false;
   const reason = installable === false && parts.length ? parts.join(";  ") : null;
   return { groups: out, reason, installable };
 }
