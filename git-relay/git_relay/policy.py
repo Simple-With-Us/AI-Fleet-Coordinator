@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import threading
 import time
 
@@ -81,6 +82,11 @@ WRITE_RATE_LIMIT_DENIAL = "hourly write limit reached for this seat"
 RATE_LIMIT_DENIALS = (RATE_LIMIT_DENIAL, WRITE_RATE_LIMIT_DENIAL)
 
 
+# GitHub repository names: start alphanumeric, then dot, underscore or hyphen.
+# `.git` (any case) and a trailing dot are rejected even when the shape matches.
+_CREATE_REPO_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}\Z")
+
+
 class SeatPolicy:
     """Per-seat allowlists parsed from GIT_RELAY_SEATS_JSON.
 
@@ -119,6 +125,11 @@ class SeatPolicy:
         "edit_pr",
         "reply_thread",
         "comment_pr",
+        # Account-level create.  token_for cannot mint it: that token is scoped to a
+        # repository that already exists.  Dispatch uses a namespace token the seat
+        # mint ceiling cannot request, then revokes it.  Denied unless the seat's
+        # own row lists this action.
+        "create_repo",
     )
     # Known but not implemented:  accepted in seat config, refused at dispatch
     # until their implementation and per-action policy land.
@@ -133,7 +144,12 @@ class SeatPolicy:
         "create_issue_comment",
         "request_reviewers",
         "set_branch_protection",
-        "create_repo",
+    )
+    # Hardcoded account allowlist for create_repo.  Not a per-seat setting.
+    # The spelling here is what GitHub and the seat repo patterns use.
+    CREATE_REPO_OWNERS = (
+        ("Simple-With-Us", "org"),
+        ("jaywedgeworth22", "user"),
     )
     # Workflow verbs (workflow_verbs.SPECS): policy names a seat config may list, each
     # authorized once per call by WorkflowVerbs.for_action and minted at the least
@@ -370,6 +386,10 @@ class SeatPolicy:
                 raise PolicyError(f"seat {seat!r}: oauth_assert must be true or absent")
             if oauth_assert and auth != "shared":
                 raise PolicyError(f"seat {seat!r}: oauth_assert needs shared auth")
+            # Absent means public creates are refused.  Only a literal true grants them.
+            create_repo_public = cfg.get("create_repo_public", False)
+            if not isinstance(create_repo_public, bool):
+                raise PolicyError(f"seat {seat!r}: create_repo_public must be true or absent")
             actions = cfg.get("actions") or []
             repos = cfg.get("repos") or []
             unknown = [a for a in actions if a not in self.ALL_ACTIONS]
@@ -424,6 +444,7 @@ class SeatPolicy:
                 "repos": [str(r) for r in repos],
                 "app_slug": app_slug,
                 "mint_permissions": dict(mint_perms),
+                "create_repo_public": create_repo_public,
             }
         # Two seats may never claim the same verified identity:  resolution
         # would be order-dependent, and attribution is the point of the design.
@@ -673,6 +694,29 @@ class SeatPolicy:
         """(app_slug, mintable permission ceiling) for a seat's App actions."""
         cfg = self._seats[seat]
         return cfg["app_slug"], dict(cfg["mint_permissions"])
+
+    def public_repo_allowed(self, seat: str) -> bool:
+        """Whether this seat may create a public repository.  Default false."""
+        return bool(self._seats[seat].get("create_repo_public"))
+
+    @staticmethod
+    def create_repo_account(owner: str) -> tuple[str, str] | None:
+        """(canonical owner, org|user) when owner is on the create allowlist."""
+        if not isinstance(owner, str):
+            return None
+        folded = owner.casefold()
+        for canonical, kind in SeatPolicy.CREATE_REPO_OWNERS:
+            if folded == canonical.casefold():
+                return canonical, kind
+        return None
+
+    @staticmethod
+    def valid_create_repo_name(name: str) -> bool:
+        """A GitHub repository name this verb will send.  One path segment, no .git."""
+        if not isinstance(name, str) or not _CREATE_REPO_NAME.fullmatch(name):
+            return False
+        folded = name.casefold()
+        return ".." not in name and not name.endswith(".") and not folded.endswith(".git")
 
     def bot_identities(self) -> dict[str, str]:
         """Every seat's GitHub App, for the one-bearer-one-bot audit.
