@@ -27,6 +27,24 @@ MAX_ERROR_PREVIEW = 512
 TIMEOUT_SECONDS = 30
 MAX_DISPATCH_INPUTS = 32
 MAX_DISPATCH_INPUT_VALUE = 1024
+# The paired-path branch rule.  A 40-hex commit SHA matches the character
+# class, and GitHub answers 422 with no run, so it is never a branch here.
+_INTENT_BRANCH_REF = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./-]{0,199}")
+_COMMIT_SHA_REF = re.compile(r"[0-9a-f]{40}")
+
+
+def intent_branch_ref(ref: object) -> bool:
+    """Local branch shape for an intent dispatch.
+
+    A tag whose name passes this shape is not distinguishable here.  Only
+    the expected_head_sha pre-read looks the name up under git/ref/heads.
+    """
+    return (
+        isinstance(ref, str)
+        and _INTENT_BRANCH_REF.fullmatch(ref) is not None
+        and ".." not in ref
+        and _COMMIT_SHA_REF.fullmatch(ref) is None
+    )
 
 
 # Never retain arbitrary upstream text.  Request IDs are GitHub's bounded
@@ -611,9 +629,9 @@ class GitHubClient:
                     )
         if expected_head_sha is not None:
             # GitHub accepts a branch/tag, not an atomic expected-SHA condition.
-            # Restrict intent calls to branch refs, check before send, and require
-            # actual run head verification later. Never claim an execution fence.
-            if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]{0,199}", ref) or ".." in ref:
+            # Restrict fenced intent calls to branch refs, check before send, and
+            # require actual run head verification later. Never claim an execution fence.
+            if not intent_branch_ref(ref):
                 raise ValueError("intent dispatch requires a canonical branch name")
             try:
                 actual = self._call("GET", f"/repos/{repo}/git/ref/heads/{ref}", bearer=bearer)

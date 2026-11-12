@@ -359,7 +359,7 @@ export const GR_TOOLS = Object.freeze([
   {
     name: "gr_workflow_dispatch",
     title: "Dispatch Workflow",
-    description: "Trigger a workflow_dispatch run through git-relay, as your own GitHub App.  inputs is a flat object of scalar values.  Optional intent_id binds idempotency; add expected_head_sha with the same intent_id to pin the branch head before send.",
+    description: "Trigger a workflow_dispatch run through git-relay, as your own GitHub App.  inputs is a flat object of scalar values.  Optional intent_id binds idempotency for a branch-shaped ref and does not read the branch.  Add expected_head_sha with the same intent_id to pin the branch head before send.",
     inputSchema: obj(["repo", "workflow", "ref"], { repo: REPO, workflow: { type: "string" }, ref: { type: "string" }, inputs: { type: "object", maxProperties: 32, additionalProperties: { anyOf: [{ type: "string", maxLength: 1024 }, { type: "number" }, { type: "boolean" }] } }, intent_id: {type:"string",pattern:"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}$"}, expected_head_sha: {type:"string",pattern:"^[0-9a-f]{40}$"} }),
   },
   {

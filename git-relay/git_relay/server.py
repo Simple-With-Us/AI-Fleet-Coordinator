@@ -35,7 +35,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from . import git_read
 from .app_tokens import AppTokenError, missing_app_credential
 from .audit import AuditLog, BootstrapDenialAuditor, UnauthorizedAuditor
-from .github_client import DispatchPreReadUnavailable, GitHubClient, RelayGitHubError
+from .github_client import (
+    DispatchPreReadUnavailable,
+    GitHubClient,
+    RelayGitHubError,
+    intent_branch_ref,
+)
 from .outcomes import OutcomeStore, OutcomeStoreError, key_for
 from .policy import (
     DEFAULT_RATE_PER_HOUR,
@@ -243,6 +248,8 @@ def _validate_args(action: str, args: dict) -> dict:
             raise ValueError("invalid dispatch intent or expected source")
         if expected is not None and not re.fullmatch(r"[0-9a-f]{40}", expected):
             raise ValueError("invalid dispatch intent or expected source")
+        if intent is not None and not intent_branch_ref(canonical.get("ref")):
+            raise ValueError("intent dispatch requires a canonical branch name")
     GitHubClient._check_repo(canonical["repo"])
     return canonical
 
@@ -954,7 +961,7 @@ def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
             "expires_in_seconds": max(0, int(expiry - time.time())),
         }
     required = dict(ACTION_REQUIRED_PERMISSIONS[action])
-    if action == "workflow_dispatch" and args.get("intent_id"):
+    if action == "workflow_dispatch" and args.get("expected_head_sha"):
         required["contents"] = "read"
     missing = _perm_within_ceiling(required, ceiling)
     if missing:

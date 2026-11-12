@@ -36,6 +36,19 @@ class WorkflowDispatchIntentTests(unittest.TestCase):
             "expected_head_sha requires intent_id",
         )
 
+    def test_validate_refuses_a_commit_sha_ref_when_an_intent_is_set(self):
+        self.assertEqual(
+            _validate_args("workflow_dispatch", dict(ARGS, ref="a" * 40)),
+            "intent dispatch requires a canonical branch name",
+        )
+        self.assertIsNone(_validate_args("workflow_dispatch", dict(ARGS, ref="release/2026.11")))
+        self.assertIsNone(
+            _validate_args(
+                "workflow_dispatch",
+                {"repo": "o/r", "workflow": "ci.yml", "ref": "a" * 40},
+            )
+        )
+
     def test_validate_still_rejects_unknown_fields(self):
         self.assertEqual(
             _validate_args("workflow_dispatch", dict(ARGS, bogus="y")),

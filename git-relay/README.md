@@ -204,7 +204,7 @@ gap this attestation exists to close:
 | `scripts/test_operator_provenance.py` | `d3c23c8fd8b3ea6b73897c6ab456355a488e3f0a` | `a72e105b054617eecebdd2011dfca341e08dbc9377e378dccc8733aa7fea2c1b` |
 | `scripts/simple-tools-mcp/DEPLOY-PHASE0.md` | `cb10a4f133a5e90a1b3bdc77b1df818ad9dac0e9` | `5f85629a6a6979a763063ad3b79fd56b5d77ab93d2cd0e6da4c200485debca3f` |
 | `scripts/simple-tools-mcp/test/gr-assert.test.mjs` | `80f27a413e461e9adfc8924c881e29d4d9e2d21c` | `ecfa713b33754e1331a8fee0e07c67271fc186908a52830839f1b530a246dad8` |
-| `scripts/simple-tools-mcp/test/gr-front.test.mjs` | `b46549565f659d145f30d6ff1ede3af6515de64d` | `9de759b53f8cb987b16ade0a9cf99ff69d999659519a620b292f4aa748eee3b9` |
+| `scripts/simple-tools-mcp/test/gr-front.test.mjs` | `6c5cae45145f20b36cf1641c59397c432cfb3784` | `34c5596e04e2352a729d0c377bfe15a5c8dc2a7a3fcef4bcadc1dd689833a46a` |
 | `scripts/simple-tools-mcp/test/gr-workflow-v1.test.mjs` | `804d547cb96bba4cade20a058e76ec32c1fa7022` | `8a0cf816252c39f32202429861483d0d128d4a30a7ff92e6cbbbad988ee7dad2` |
 | `scripts/simple-tools-mcp/test/integration.workerd.mjs` | `f122a279489d871d7fc3f71c97acd5e2ec9dcfaf` | `2b76ceeed6f6fdf66f6e04523d05cc9652e00377e82bcb55268ceaf143e10f8c` |
 | `scripts/simple_tools/tests/test_infisical_api_route.py` | `0c8b4ed4acf205c619f970824a7eba4d7e3a96b3` | `3ee7aac6e82c0f22bbadc29ba915cc05054c7d5e3c0962f9c84f9db5b8f94d88` |
@@ -252,6 +252,8 @@ controls are unchanged: dedicated shapes and loaded values still refuse, and
 superseded bytes fail closed (git_relay/tests/test_reviewed_fixtures.py). The
 attested bytes are a FUTURE target until PR #1707 merges; this source change deploys
 only through the relay operator's normal review and authorizes no write by itself.
+
+On November 12, 2026 the `scripts/simple-tools-mcp/test/gr-front.test.mjs` row was refreshed to the AFC-727 bytes (source blob `6c5cae45145f20b36cf1641c59397c432cfb3784`, SHA-256 `34c5596e04e2352a729d0c377bfe15a5c8dc2a7a3fcef4bcadc1dd689833a46a`, 27,053 UTF-8 bytes).  The prior digest attested the pre-change bytes.  The whole file was re-checked.  The only delta is the dispatch-intent test now accepting `intent_id` without `expected_head_sha`, plus the paired call that follows it.  No credential literal was added or removed.  Dedicated shapes and loaded values still refuse, and any other byte still fails closed.
 
 `mint_token` returns a raw App installation token, so it is NOT exposed over the MCP wrapper
 (a stdio transcript is too easy to capture);  seats that need a token for git-over-HTTPS call the

@@ -29,6 +29,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from .github_client import intent_branch_ref
+
 
 def _validate_relay_url(relay_url: str) -> None:
     parsed = urllib.parse.urlparse(relay_url)
@@ -370,6 +372,8 @@ def _validate_args(name: str, args: dict) -> str | None:
             return "invalid dispatch intent or expected source"
         if expected is not None and not re.fullmatch(r"[0-9a-f]{40}", expected):
             return "invalid dispatch intent or expected source"
+        if intent is not None and not intent_branch_ref(args.get("ref")):
+            return "intent dispatch requires a canonical branch name"
         inputs = args.get("inputs")
         if inputs is not None:
             if len(inputs) > MAX_DISPATCH_INPUTS:

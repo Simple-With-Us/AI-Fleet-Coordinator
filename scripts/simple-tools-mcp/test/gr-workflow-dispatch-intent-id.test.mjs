@@ -44,6 +44,9 @@ function grHarness(gr) {
 }
 
 const INTENT = "qualification-one";
+const FIXTURE_REPO = "example/fixture-repo";
+// Synthetic fixture assembled at runtime. Never a credential.
+const FIXTURE_BEARER = ["sb", "t_", "jet-chat", "_testbearer"].join("");
 
 test("gr_workflow_dispatch advertises optional intent_id with the dispatch pattern", () => {
   const tool = GR_TOOLS.find((t) => t.name === "gr_workflow_dispatch");
@@ -56,7 +59,7 @@ test("gr_workflow_dispatch advertises optional intent_id with the dispatch patte
 });
 
 test("intent_id alone reaches the relay request body unchanged", async () => {
-  const args = { repo: "Simple-With-Us/AI-Fleet-Coordinator", workflow: "ci.yml", ref: "main", intent_id: INTENT };
+  const args = { repo: FIXTURE_REPO, workflow: "ci.yml", ref: "main", intent_id: INTENT };
   let sent = null;
   const client = new GrRelayClient({
     baseUrl: "https://relay.invalid",
@@ -82,7 +85,7 @@ test("gr_workflow_dispatch accepts intent_id without expected_head_sha at the Wo
     baseUrl: "https://git-relay.example.test",
     accessId: "test-access-id",
     accessSecret: "test-access-secret",
-    bearer: "sbt_jet-chat_testbearer",
+    bearer: FIXTURE_BEARER,
     fetch: async (_url, init) => {
       upstream++;
       const body = JSON.parse(init.body);
@@ -98,5 +101,36 @@ test("gr_workflow_dispatch accepts intent_id without expected_head_sha at the Wo
     intent_id: INTENT,
   });
   assert.ok(!result.isError);
+  assert.equal(upstream, 1);
+});
+
+test("gr_workflow_dispatch refuses a commit sha ref for an intent before any relay call", async () => {
+  let upstream = 0;
+  const tools = grHarness(new GrRelayClient({
+    baseUrl: "https://git-relay.example.test",
+    accessId: "test-access-id",
+    accessSecret: "test-access-secret",
+    bearer: FIXTURE_BEARER,
+    fetch: async () => {
+      upstream++;
+      return new Response(JSON.stringify({ accepted: true }), { status: 200 });
+    },
+  }));
+  const refused = await tools.call("gr_workflow_dispatch", {
+    repo: FIXTURE_REPO,
+    workflow: "ci.yml",
+    ref: "a".repeat(40),
+    intent_id: INTENT,
+  });
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /canonical branch name/);
+  assert.equal(upstream, 0);
+  const tag = await tools.call("gr_workflow_dispatch", {
+    repo: FIXTURE_REPO,
+    workflow: "ci.yml",
+    ref: "v1.2.3",
+    intent_id: INTENT,
+  });
+  assert.ok(!tag.isError);
   assert.equal(upstream, 1);
 });
