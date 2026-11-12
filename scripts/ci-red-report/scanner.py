@@ -24,8 +24,10 @@ def _repo_access_error(owner: str, repo: str, exc: github.GitHubError, *, contex
     if status == 404:
         return f"{full}: not found (404) while reading {context}"
     if status == 403:
-        return f"{full}: forbidden (403) while reading {context}"
-    return f"{full}: cannot read {context} ({exc})"
+        # GitHub uses 403 for both missing permission and exhausted rate limits.
+        return f"{full}: HTTP 403 (forbidden or rate limited) while reading {context}"
+    # Only allow-listed fields: never interpolate the exception text or body.
+    return f"{full}: cannot read {context} ({type(exc).__name__}, status {status})"
 
 
 @dataclass(frozen=True)

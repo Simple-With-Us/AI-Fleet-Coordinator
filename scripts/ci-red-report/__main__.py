@@ -51,15 +51,23 @@ def _resolve_repos_and_note(
     using_fleet_token: bool,
     visibility_note: str,
     fleet_apps: Path | None,
-) -> tuple[list[str] | None, str]:
+    fleet_apps_explicit: bool = False,
+) -> tuple[list[str] | None, str] | None:
+    """Return (repos, note), or None after printing why the inputs are unusable."""
     if explicit_repos:
         return explicit_repos, visibility_note
+    if fleet_apps_explicit and not using_fleet_token:
+        print(
+            "ci-red-report: --fleet-apps needs FLEET_READ_TOKEN; refusing to scan a different repo set",
+            file=sys.stderr,
+        )
+        return None
     if using_fleet_token:
         try:
             repos = load_fleet_repo_names(path=fleet_apps)
         except FleetAppsError as exc:
             print(f"ci-red-report: {exc}", file=sys.stderr)
-            raise SystemExit(2) from exc
+            return None
         note = visibility_note.strip() or fleet_token_visibility_note()
         return repos, note
     return None, visibility_note
@@ -113,13 +121,16 @@ def main(argv: list[str] | None = None) -> int:
     if fleet_apps is None:
         fleet_apps = fleet_apps_path()
 
-    visibility = args.visibility_note.strip()
-    repos, visibility = _resolve_repos_and_note(
+    resolved = _resolve_repos_and_note(
         explicit_repos=args.repos,
         using_fleet_token=using_fleet_token,
-        visibility_note=visibility,
+        visibility_note=args.visibility_note.strip(),
         fleet_apps=fleet_apps,
+        fleet_apps_explicit=args.fleet_apps is not None,
     )
+    if resolved is None:
+        return 2
+    repos, visibility = resolved
 
     client = GitHubClient(token)
     report = build_report(

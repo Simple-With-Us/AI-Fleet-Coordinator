@@ -20,7 +20,7 @@ class DenyRepoGitHub(FixtureGitHub):
         self._repo = repo
 
     def get_json(self, path: str, *, params=None):
-        if path == f"/repos/Simple-With-Us/{self._repo}":
+        if path == f"/repos/fixture-org/{self._repo}":
             raise github.GitHubError("denied", status=self._status)
         return super().get_json(path, params=params)
 
@@ -41,15 +41,15 @@ class ScannerTests(unittest.TestCase):
         client = FixtureGitHub()
         report = scanner.build_report(
             client,
-            org="Simple-With-Us",
-            repos=["AI-Fleet-Coordinator"],
+            org="fixture-org",
+            repos=["fixture-repo"],
             max_runs_per_workflow=10,
         )
         self.assertEqual(report["schema_version"], 1)
         self.assertEqual(report["repos_scanned"], 1)
         self.assertEqual(report["red_count"], 1)
         row = report["red_workflows"][0]
-        self.assertEqual(row["repo"], "AI-Fleet-Coordinator")
+        self.assertEqual(row["repo"], "fixture-repo")
         self.assertEqual(row["workflow_name"], "CI")
         self.assertEqual(row["streak_length"], 2)
         self.assertEqual(row["first_red_commit_sha"], "ccc333")
@@ -65,8 +65,8 @@ class ScannerTests(unittest.TestCase):
         client = DenyRepoGitHub(status=404, repo="missing-repo")
         report = scanner.build_report(
             client,
-            org="Simple-With-Us",
-            repos=["missing-repo", "AI-Fleet-Coordinator"],
+            org="fixture-org",
+            repos=["missing-repo", "fixture-repo"],
             max_runs_per_workflow=10,
         )
         self.assertEqual(report["repos_scanned"], 2)
@@ -77,7 +77,7 @@ class ScannerTests(unittest.TestCase):
         client = DenyRepoGitHub(status=403, repo="forbidden-repo")
         report = scanner.build_report(
             client,
-            org="Simple-With-Us",
+            org="fixture-org",
             repos=["forbidden-repo"],
             max_runs_per_workflow=10,
         )
@@ -86,14 +86,14 @@ class ScannerTests(unittest.TestCase):
 
     def test_markdown_renders_table(self) -> None:
         report = {
-            "org": "Simple-With-Us",
+            "org": "fixture-org",
             "generated_at": "2026-11-12T00:00:00Z",
             "repos_scanned": 1,
             "workflows_scanned": 1,
             "red_count": 1,
             "red_workflows": [
                 {
-                    "repo": "AI-Fleet-Coordinator",
+                    "repo": "fixture-repo",
                     "workflow_name": "CI",
                     "workflow_path": ".github/workflows/ci.yml",
                     "streak_length": 2,

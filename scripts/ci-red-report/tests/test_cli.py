@@ -33,9 +33,9 @@ class CliTests(unittest.TestCase):
                         code = cli.main(
                             [
                                 "--org",
-                                "Simple-With-Us",
+                                "fixture-org",
                                 "--repo",
-                                "AI-Fleet-Coordinator",
+                                "fixture-repo",
                                 "--json-out",
                                 str(jpath),
                                 "--markdown-out",
@@ -62,7 +62,7 @@ class CliTests(unittest.TestCase):
                 with mock.patch.object(
                     cli,
                     "load_fleet_repo_names",
-                    return_value=["AI-Fleet-Coordinator", "Socratic-Trade"],
+                    return_value=["fixture-repo", "fixture-repo-2"],
                 ) as load_mock:
                     with tempfile.TemporaryDirectory() as tmp:
                         jpath = Path(tmp) / "out.json"
@@ -73,7 +73,7 @@ class CliTests(unittest.TestCase):
                             code = cli.main(
                                 [
                                     "--org",
-                                    "Simple-With-Us",
+                                    "fixture-org",
                                     "--json-out",
                                     str(jpath),
                                 ]
@@ -82,8 +82,26 @@ class CliTests(unittest.TestCase):
                             load_mock.assert_called_once()
                             self.assertEqual(
                                 captured.get("repos"),
-                                ["AI-Fleet-Coordinator", "Socratic-Trade"],
+                                ["fixture-repo", "fixture-repo-2"],
                             )
+
+
+    def test_fleet_apps_without_fleet_token_returns_2(self) -> None:
+        with mock.patch.object(cli, "build_report") as build:
+            with mock.patch.dict("os.environ", {"FLEET_READ_TOKEN": "", "GITHUB_TOKEN": "x"}):
+                code = cli.main(["--fleet-apps", "fleet-apps.json"])
+        self.assertEqual(code, 2)
+        build.assert_not_called()
+
+    def test_bad_fleet_apps_returns_2_not_systemexit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "fleet-apps.json"
+            bad.write_text("{not json", encoding="utf-8")
+            with mock.patch.object(cli, "build_report") as build:
+                with mock.patch.dict("os.environ", {"FLEET_READ_TOKEN": "x"}):
+                    code = cli.main(["--fleet-apps", str(bad)])
+        self.assertEqual(code, 2)
+        build.assert_not_called()
 
 
 if __name__ == "__main__":

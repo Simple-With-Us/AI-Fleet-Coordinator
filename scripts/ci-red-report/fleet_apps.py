@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 REPO_ROOT_FROM_PACKAGE = Path(__file__).resolve().parents[2]
 DEFAULT_FLEET_APPS = REPO_ROOT_FROM_PACKAGE / "fleet-apps.json"
 ENV_FLEET_APPS_JSON = "FLEET_APPS_JSON"
+
+# GitHub repository names: letters, digits, ".", "-", "_"; at most 100 chars.
+_REPO_NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,100}")
 
 
 class FleetAppsError(ValueError):
@@ -44,13 +48,15 @@ def load_fleet_repo_names(
         raise FleetAppsError(f"{apps_path}: missing apps array")
     names: list[str] = []
     seen: set[str] = set()
-    for row in apps:
+    for index, row in enumerate(apps):
         if not isinstance(row, dict):
-            continue
+            raise FleetAppsError(f"{apps_path}: apps[{index}] must be an object")
         repo = row.get("repo")
         if not isinstance(repo, str) or not repo.strip():
-            continue
+            raise FleetAppsError(f"{apps_path}: apps[{index}].repo must be a non-empty string")
         name = repo.strip()
+        if not _REPO_NAME_RE.fullmatch(name) or name in (".", ".."):
+            raise FleetAppsError(f"{apps_path}: apps[{index}].repo is not a valid repository name")
         if name in seen:
             continue
         seen.add(name)
@@ -63,7 +69,7 @@ def load_fleet_repo_names(
 def missing_fleet_token_visibility_note(*, scanning_repo: str) -> str:
     return (
         f"Scanning only {scanning_repo}; repository secret FLEET_READ_TOKEN is not set on "
-        "Simple-With-Us/AI-Fleet-Coordinator. "
+        f"{scanning_repo}. "
         "Add it to enable scanning every repo listed in fleet-apps.json."
     )
 
