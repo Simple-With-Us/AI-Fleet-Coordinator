@@ -140,17 +140,20 @@ class SourceTests(Fixture):
         self.assertTrue(policy.allowed_path("scripts/simple_tools/core.py"))
         self.assertNotIn("docs/private-fixture.md", bundle["files"])
 
-    def test_repo_only_files_are_allowed_but_not_shipped(self):
+    def test_repo_only_files_are_not_shipped(self):
         actual = Path(__file__).with_name("fleet-cli-release.py")
         if not actual.is_file():
             self.skipTest("Receiver integration runs from the owned source lane")
         self.put("scripts/fleet-cli-release.py", actual.read_text())
-        self.put("scripts/simple_tools/seat_control.py", "# seam\n")
+        self.put("scripts/simple_tools/clarify.py", "# repo-only\n")
         self.commit()
         bundle, _raw, receiver = S.build_bundle(self.repo)
         policy = S.receiver_policy(receiver.encode())
-        self.assertTrue(policy.allowed_path("scripts/simple_tools/seat_control.py"))
-        self.assertNotIn("scripts/simple_tools/seat_control.py", bundle["files"])
+        # Main's AFC-768 policy: allowed_path is false, retained_path stays true for rollback.
+        self.assertFalse(policy.allowed_path("scripts/simple_tools/clarify.py"))
+        self.assertFalse(policy.shipped_path("scripts/simple_tools/clarify.py"))
+        self.assertTrue(policy.retained_path("scripts/simple_tools/clarify.py"))
+        self.assertNotIn("scripts/simple_tools/clarify.py", bundle["files"])
 
     def test_repo_only_cannot_drop_required_files(self):
         actual = Path(__file__).with_name("fleet-cli-release.py")
@@ -158,17 +161,27 @@ class SourceTests(Fixture):
             self.skipTest("Receiver integration runs from the owned source lane")
         text = actual.read_text()
         old_set = """REPO_ONLY = frozenset(
-    {
-        "scripts/simple_tools/seat_control.py",
-        "scripts/simple_tools/mcp/fixtures.jsonl",
-    }
+    "scripts/simple_tools/" + name + ".py"
+    for name in (
+        "clarify",
+        "operator_github_client",
+        "operator_github_policy",
+        "operator_github_secrets",
+        "operator_send",
+    )
 )"""
         new_set = """REPO_ONLY = frozenset(
-    {
-        "scripts/simple_tools/seat_control.py",
-        "scripts/simple_tools/mcp/fixtures.jsonl",
+    (
+        *("scripts/simple_tools/" + name + ".py"
+          for name in (
+              "clarify",
+              "operator_github_client",
+              "operator_github_policy",
+              "operator_github_secrets",
+              "operator_send",
+          )),
         "fleet-apps.json",
-    }
+    )
 )"""
         if old_set not in text:
             self.fail("REPO_ONLY block missing from receiver")
@@ -275,7 +288,7 @@ class SourceTests(Fixture):
         self.assert_code("bundle_too_many_files", S.build_bundle, self.repo)
 
     def test_encoded_size_limit_is_checked_after_base64(self):
-        # Raw stays under the ceiling.  Base64 of 7 MiB, plus the other files, crosses it.
+        # Raw stays under the 8 MiB sender cap.  Base64 of 7 MiB, plus the other files, crosses it.
         self.put("scripts/simple_tools/large.py", "x" * (7 * 1024 * 1024))
         self.commit()
         self.assert_code("bundle_too_large", S.build_bundle, self.repo)
@@ -414,6 +427,14 @@ class HookTests(unittest.TestCase):
         self.assertIn("alarm 95", hook)
         self.assertIn("COOLIFY-CLI-SYNC-FAILED", hook)
         self.assertNotIn("--install", hook[start : hook.index("if ! git -C", start)])
+
+    def test_mac_gitops_check_runs_before_fetch(self):
+        hook = Path(__file__).with_name("simple-tools-runtime-sync.sh").read_text()
+        gitops = hook.index("Mac GitOps G7")
+        fetch = hook.index("if ! rgit fetch")
+        self.assertLess(gitops, fetch)
+        self.assertIn("mac-gitops-check.enabled", hook)
+        self.assertIn("mac-gitops-reconcile.py", hook)
 
 
 if __name__ == "__main__":
