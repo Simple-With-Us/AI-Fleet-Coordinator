@@ -1249,7 +1249,7 @@ def build_parser(
         help="CODEX-only: attribute calls from native MCP _meta.threadId; no automatic nosession fallback",
     )
 
-    zulip_cli.add_parsers(sub, common, channel_default)
+    zulip_cli.add_parsers(sub, common, channel_default, skip_verbs=notes_verbs)
     listener_cli.add_parsers(sub, common, verbs=listener_verbs)
     notes_cli.add_parsers(sub, common, verbs=notes_verbs)
     return parser
@@ -2934,16 +2934,31 @@ LOCAL_COMMANDS: dict[str, Callable[[Runtime, argparse.Namespace], int]] = {
 # `simple-notes` verbs (AFC-486:  one per notes_* tool, plus the Mac runner).  They are top-level commands, so they
 # land in LOCAL_COMMANDS beside the listener verbs, except `read`, which `simple-chat` owns too (a topic's history)
 # and which only the simple-notes override below sends here.
-NOTES_VERBS = ("create", "update", "pin", "unpin", "read", "list", "status", "log", "runner")
+NOTES_VERBS = (
+    "create",
+    "update",
+    "pin",
+    "unpin",
+    "delete",
+    "read",
+    "list",
+    "status",
+    "log",
+    "runner",
+)
 for _action in NOTES_VERBS:
-    if _action != "read":
+    if _action not in ("read", "delete"):
         LOCAL_COMMANDS[_action] = notes_cli.cmd_notes
 
 # `status` and `read` are verbs of two commands:  `simple-chat status` is the listener's and `simple-chat read` a
 # topic's history, `simple-notes status` and `simple-notes read` are the notes ones.  A bare name cannot pick one,
 # so each command overrides them for its own verbs.
 DISPATCH_OVERRIDES: dict[str, dict[str, Callable[[Runtime, argparse.Namespace], int]]] = {
-    "simple-notes": {"status": notes_cli.cmd_notes, "read": notes_cli.cmd_notes},
+    "simple-notes": {
+        "status": notes_cli.cmd_notes,
+        "read": notes_cli.cmd_notes,
+        "delete": notes_cli.cmd_notes,
+    },
     "simple-chat": {"status": listener_cli.cmd_status},
 }
 
