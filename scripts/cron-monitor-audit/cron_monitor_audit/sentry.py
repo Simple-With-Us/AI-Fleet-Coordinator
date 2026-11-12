@@ -6,17 +6,18 @@ and deleting monitors is out of scope for this tool.
 
 from __future__ import annotations
 
-import json
 import re
+import time
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from cron_monitor_audit.errors import AuditError, SentryForbidden
+from cron_monitor_audit.errors import AuditError, SentryForbidden, load_bounded_json
 
 DEFAULT_BASE = "https://us.sentry.io"
 _MAX_PAGES = 20
+_LIST_BUDGET_SECONDS = 60.0
 _MAX_BYTES = 2_000_000
 _ORG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _DISABLED = {"disabled", "pending_deletion", "deletion_in_progress", "1"}
@@ -77,11 +78,15 @@ def fetch_monitors(org: str, token: str, base: str = DEFAULT_BASE, opener=None) 
     url = f"{collection}?per_page=100"
     monitors: list[Monitor] = []
     seen: set[str] = set()
+    deadline = time.monotonic() + _LIST_BUDGET_SECONDS
     for _ in range(_MAX_PAGES):
         if url in seen:
             raise AuditError("Sentry monitor list repeated a page")
         seen.add(url)
-        payload, link = _get_json(opener, url, token)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AuditError("Sentry monitor list exceeded its deadline")
+        payload, link = _get_json(opener, url, token, timeout=remaining)
         monitors.extend(parse_monitor_page(payload))
         url = _next_link(link, collection)
         if not url:
@@ -100,10 +105,10 @@ def parse_monitor_page(payload: object) -> list[Monitor]:
             raise AuditError("Sentry monitor list has a monitor without a slug")
         status = row.get("status")
         check_status, last_check_in, health = _environment_health(row.get("environments"))
-        muted = row.get("isMuted") is True
+        muted = _muted_flag(row.get("isMuted"))
         if not muted:
             for env in row.get("environments") or []:
-                if isinstance(env, dict) and env.get("isMuted") is True:
+                if isinstance(env, dict) and _muted_flag(env.get("isMuted")):
                     muted = True
                     break
         monitors.append(
@@ -119,6 +124,14 @@ def parse_monitor_page(payload: object) -> list[Monitor]:
             )
         )
     return monitors
+
+
+def _muted_flag(value: object) -> bool:
+    if value is None or value is False or value == 0:
+        return False
+    if value is True or value == 1:
+        return True
+    return False
 
 
 def is_disabled(monitor: Monitor) -> bool:
@@ -171,12 +184,12 @@ def _rows(payload: object) -> list:
     raise AuditError("Sentry monitor list was not a list of monitors")
 
 
-def _get_json(opener, url: str, token: str) -> tuple[object, str]:
+def _get_json(opener, url: str, token: str, timeout: float = 30) -> tuple[object, str]:
     request = build_request(url, token)
     if request.get_method() != "GET":
         raise AuditError("refusing a Sentry request that is not GET")
     try:
-        with opener.open(request, timeout=30) as response:
+        with opener.open(request, timeout=timeout) as response:
             status = getattr(response, "status", None)
             if status != 200:
                 raise AuditError(f"Sentry monitor list returned HTTP {status}")
@@ -198,10 +211,7 @@ def _get_json(opener, url: str, token: str) -> tuple[object, str]:
         raise AuditError("Sentry monitor list timed out") from None
     if len(body) > _MAX_BYTES:
         raise AuditError("Sentry monitor list response was too large")
-    try:
-        return json.loads(body.decode("utf-8")), link
-    except (UnicodeError, json.JSONDecodeError):
-        raise AuditError("Sentry monitor list was not JSON") from None
+    return load_bounded_json(body, "Sentry monitor list"), link
 
 
 def _next_link(header: str, collection: str) -> str:

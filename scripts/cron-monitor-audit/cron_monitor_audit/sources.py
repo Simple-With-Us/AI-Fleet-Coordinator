@@ -9,7 +9,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from cron_monitor_audit.errors import AuditError
+from cron_monitor_audit.errors import AuditError, load_bounded_json
 from cron_monitor_audit.parse import slugify, workflow_display_name
 
 _MAX_BYTES = 1_000_000
@@ -205,16 +205,16 @@ def search_code(
     for slug in slugs:
         url = f"{root}/search/code?q={quote(slug)}+org:{quote(org)}&per_page=5"
         status, _, body = _read(opener, url, token, "application/vnd.github.text-match+json")
-        if status in {401, 403, 422}:
+        if status in {401, 422}:
             return CodeSearch("unavailable", f"HTTP {status}", hits)
-        if status == 429:
-            return CodeSearch("incomplete", "HTTP 429", hits)
+        if status in {403, 429}:
+            return CodeSearch("incomplete", f"HTTP {status}", hits)
         if status != 200:
             return CodeSearch("unavailable", f"HTTP {status}", hits)
         try:
-            payload = json.loads(body.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError):
-            return CodeSearch("unavailable", "not JSON", hits)
+            payload = load_bounded_json(body, "GitHub code search")
+        except AuditError:
+            return CodeSearch("incomplete", "response was not usable JSON", hits)
         found: list[CodeHit] = []
         for item in payload.get("items") or []:
             if not isinstance(item, dict):
@@ -240,10 +240,7 @@ def _fetch_repo(full_name: str, token: str, root: str, opener) -> tuple[RepoSour
         status, _, body = _read(opener, list_url, token, "application/vnd.github+json")
     if status != 200:
         raise AuditError(f"GitHub workflows for {full_name} returned HTTP {status}")
-    try:
-        payload = json.loads(body.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError):
-        raise AuditError(f"GitHub workflows for {full_name} was not JSON") from None
+    payload = load_bounded_json(body, f"GitHub workflows for {full_name}")
     workflows = payload.get("workflows")
     if not isinstance(workflows, list):
         raise AuditError(f"GitHub workflows for {full_name} was not a list")
@@ -252,12 +249,15 @@ def _fetch_repo(full_name: str, token: str, root: str, opener) -> tuple[RepoSour
     for workflow in workflows:
         if not isinstance(workflow, dict):
             continue
-        if str(workflow.get("state") or "active") != "active":
-            continue
+        state = str(workflow.get("state") or "active")
         name = workflow.get("name")
         path = workflow.get("path")
+        # A disabled workflow still has a name. Keep it so its monitor is not
+        # called an orphan. Only the file download is skipped.
         if isinstance(name, str) and name.strip():
             names.append(name.strip())
+        if state != "active":
+            continue
         if not isinstance(path, str) or not path:
             continue
         label = f"{name or ''} {path}".lower()

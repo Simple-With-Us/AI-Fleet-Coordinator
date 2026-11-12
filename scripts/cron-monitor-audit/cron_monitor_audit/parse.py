@@ -14,7 +14,7 @@ _APP_LITERAL = re.compile(r'(?m)^APP\s*=\s*"([^"]+)"\s*$')
 _APP_FALLBACK = re.compile(r'os\.environ\.get\(\s*"SENTRY_APP".*?\bor\s+"([^"]+)"', re.DOTALL)
 _IDENTITY_LITERAL = re.compile(r'(?m)^APP_IDENTITY\s*=\s*"([^"]+)"\s*$')
 _ASSIGN = re.compile(
-    r"""(?:monitor_slug|monitorSlug|[A-Z][A-Z0-9_]*SLUG)\s*=\s*["']([a-z0-9]+(?:-[a-z0-9]+)*)["']"""
+    r"""(?P<name>monitor_slug|monitorSlug|[A-Z][A-Z0-9_]*SLUG)\s*=\s*["'](?P<slug>[a-z0-9]+(?:-[a-z0-9]+)*)["']"""
 )
 _PREFIX = re.compile(r"""MONITOR_PREFIX\s*=\s*["']([a-z0-9]+(?:-[a-z0-9]+)*-)["']""")
 _PINNED_CALL = re.compile(r"""monitor_slug\(\s*["']([A-Za-z0-9-]+)["']\s*\)""")
@@ -54,7 +54,10 @@ def literal_slugs(text: str) -> set[str]:
         if not stripped or stripped.startswith("#"):
             continue
         for match in _ASSIGN.finditer(stripped):
-            found.add(match.group(1))
+            name = match.group("name")
+            if name not in {"monitor_slug", "monitorSlug"} and "MONITOR" not in name:
+                continue
+            found.add(match.group("slug"))
     return found
 
 

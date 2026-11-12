@@ -300,7 +300,8 @@ def _repo_schedules(repo: RepoSource) -> tuple[str, dict[str, str] | None]:
     if script_schedules is not None:
         return workflow_identity or script_identity, script_schedules
     if repo.names_known and not saw_script and not saw_workflow_file:
-        return "", {}
+        # No sender file was read. That is unknown, not an empty schedule.
+        return "", None
     if workflow_identity:
         return workflow_identity, None
     if script_identity:

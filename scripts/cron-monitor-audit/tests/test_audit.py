@@ -13,8 +13,8 @@ from urllib.error import HTTPError
 
 from cron_monitor_audit.classify import build_catalog, classify_monitor
 from cron_monitor_audit.cli import main
-from cron_monitor_audit.errors import AuditError, SentryForbidden
-from cron_monitor_audit.parse import operator_senders, parse_reporter, slugify
+from cron_monitor_audit.errors import AuditError, SentryForbidden, load_bounded_json
+from cron_monitor_audit.parse import literal_slugs, operator_senders, parse_reporter, slugify
 from cron_monitor_audit.sentry import (
     build_request,
     fetch_monitors,
@@ -76,6 +76,10 @@ def _catalog(extra: list[RepoSource] | None = None, search: CodeSearch | None = 
 
 
 class ParseTests(unittest.TestCase):
+    def test_unrelated_slug_constants_are_not_senders(self):
+        text = 'AFC_SLUG = "ai-fleet-coordinator"\nMONITOR_SLUG = "fleet-host-monitor"\n'
+        self.assertEqual(literal_slugs(text), {"fleet-host-monitor"})
+
     def test_slugify_matches_the_reporter(self):
         self.assertEqual(slugify("Vercel Production Catch-up"), "vercel-production-catch-up")
         self.assertEqual(slugify("Fleet daily digest + calendars"), "fleet-daily-digest-calendars")
@@ -228,6 +232,27 @@ class ClassifyTests(unittest.TestCase):
         catalog.produced[other] = "Simple-With-Us/AI-Fleet-Coordinator"
         self.assertEqual(classify_monitor(monitor, catalog).category, "uncertain")
 
+    def test_no_sender_file_is_not_an_empty_schedule(self):
+        repo = RepoSource(
+            full_name="Simple-With-Us/Example",
+            readable=True,
+            names_known=True,
+            workflow_names=("CI",),
+            files=(),
+        )
+        catalog = build_catalog([repo], {"example": {"Simple-With-Us/Example"}})
+        monitor = parse_monitor_page(
+            [
+                {
+                    "slug": "ci-example-nightly",
+                    "status": "active",
+                    "project": {"slug": "fleet-infra"},
+                    "environments": [{"status": "error", "lastCheckIn": "2026-11-11T00:00:00Z"}],
+                }
+            ]
+        )[0]
+        self.assertEqual(classify_monitor(monitor, catalog).category, "uncertain")
+
     def test_unknown_ci_needs_a_finished_code_search(self):
         monitor = parse_monitor_page(
             [
@@ -371,6 +396,39 @@ class SentryClientTests(unittest.TestCase):
         self.assertIn("monitors collection", str(caught.exception))
         self.assertNotIn("test-token", str(caught.exception))
 
+    def test_integer_mute_flag_counts(self):
+        monitor = parse_monitor_page(
+            [
+                {
+                    "slug": "ci-example-nightly",
+                    "status": "active",
+                    "isMuted": 1,
+                    "project": {"slug": "fleet-infra"},
+                    "environments": [{"status": "ok", "lastCheckIn": "2026-11-11T00:00:00Z", "isMuted": 0}],
+                }
+            ]
+        )[0]
+        self.assertTrue(monitor.muted)
+
+    def test_list_shares_one_deadline(self):
+        class Opener:
+            def open(self, request, timeout=None):
+                raise AssertionError("network")
+
+        with mock.patch("cron_monitor_audit.sentry._LIST_BUDGET_SECONDS", 0):
+            with self.assertRaises(AuditError) as caught:
+                fetch_monitors("example-org", "test-token", opener=Opener())
+        self.assertIn("deadline", str(caught.exception))
+
+    def test_nested_json_is_refused(self):
+        value: object = 0
+        for _ in range(40):
+            value = [value]
+        body = json.dumps(value).encode()
+        with self.assertRaises(AuditError) as caught:
+            load_bounded_json(body, "Sentry monitor list")
+        self.assertIn("depth", str(caught.exception))
+
     def test_results_false_does_not_follow(self):
         class Opener:
             def open(self, request, timeout=None):
@@ -397,7 +455,12 @@ class GithubClientTests(unittest.TestCase):
                                     "name": "Sentry CI Report",
                                     "path": ".github/workflows/sentry-ci-report.yml",
                                     "state": "active",
-                                }
+                                },
+                                {
+                                    "name": "iOS TestFlight ship",
+                                    "path": ".github/workflows/ios-ship.yml",
+                                    "state": "disabled_manually",
+                                },
                             ]
                         }
                     ).encode()
@@ -414,7 +477,10 @@ class GithubClientTests(unittest.TestCase):
         self.assertEqual(token, "")
         self.assertTrue(repos[0].readable)
         self.assertGreaterEqual(len(calls), 2)
-        self.assertEqual(repos[0].workflow_names, ("Sentry CI Report",))
+        self.assertEqual(
+            repos[0].workflow_names,
+            ("Sentry CI Report", "iOS TestFlight ship"),
+        )
         self.assertTrue(any(path.endswith("sentry-ci-report.yml") for path, _ in repos[0].files))
         self.assertNotIn("bad-token", " ".join(calls))
 
