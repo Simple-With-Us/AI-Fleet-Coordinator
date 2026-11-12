@@ -386,6 +386,28 @@ class UnitRunTests(unittest.TestCase):
         self.assertNotIn("error", rows[A2])
         self.assertIn("main-chat pairs (AA to ZZ) are live", rows[A2]["refused"])
 
+    def test_a_closed_chat_that_cannot_have_a_pair_again_yet_is_refused_not_failed(self) -> None:
+        refused = {"error": "this registry cannot give a closed chat a pair letter again yet", "code": "space_lost",
+                   "swept": 0}
+        with self._second_agent_answers(refused):
+            code, out = self.run_main(["sweep", "--api-only", "--no-dm"])
+        self.assertEqual(code, 0, out)
+        rows = {row["session_id"]: row for row in json.loads(out)["rows"]}
+        self.assertNotIn("error", rows[A2])
+        self.assertIn("cannot give a closed chat a pair letter again", rows[A2]["refused"])
+
+    def test_the_real_api_path_refusal_reaches_the_row_when_every_pair_is_live(self) -> None:
+        # No mocked register:  the shared unit's own path (platform_letter._register_api over the registry API) runs
+        # against the real registry service with a one-pair space, so the second chat is refused by the registry
+        # itself and the code it answers with must reach the row.
+        with mock.patch.dict(OR.LETTER_SPACES, {"double": ("AA",)}):
+            code, out = self.run_main(["sweep", "--api-only", "--no-dm"])
+        self.assertEqual(code, 0, out)
+        rows = [json.loads(out)["rows"][0], json.loads(out)["rows"][1]]
+        self.assertEqual(rows[0].get("label"), "AA")
+        self.assertNotIn("error", rows[1])
+        self.assertIn("main-chat pairs (AA to ZZ) are live", rows[1]["refused"])
+
     def test_any_other_registration_error_still_fails_the_run(self) -> None:
         with self._second_agent_answers({"error": "the registry did not answer in time", "code": "timeout"}):
             code, out = self.run_main(["sweep", "--api-only", "--no-dm"])

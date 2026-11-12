@@ -858,6 +858,7 @@ def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, An
     except SpaceLost:
         return {
             "error": "this registry cannot give a closed chat a pair letter again yet",
+            "code": "space_lost",
             "swept": swept,
         }
     out["swept"] = swept
@@ -1065,6 +1066,7 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
         if reopened.get("code") == "space_lost":
             return {
                 "error": "this registry cannot give a closed chat a pair letter again yet",
+                "code": "space_lost",
                 "swept": 0,
             }
         error = _api_error(reopened)

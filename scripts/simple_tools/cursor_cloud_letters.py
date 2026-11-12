@@ -68,6 +68,9 @@ LOCATION = "cloud"
 SPEC = dataclasses.replace(PC.SPEC, source=SOURCE)
 STATE_FILE = "cloud-letters.json"
 DM_TIMEOUT = 30
+# The registry's refusals by design (platform_letter's register answers):  every main-chat pair live, or a closed chat
+# that cannot have a pair again yet.  A row with one of these is refused, not an error.
+REFUSAL_CODES = frozenset({"labels_exhausted", "space_lost"})
 # "GB-Director: words", with or without a letter in front:  the bot's name, then its words.
 BOT_TITLE = re.compile(r"^(?:[A-Z]{1,2}: )?(GB-[A-Za-z][A-Za-z0-9]{0,31})\s*:\s*(\S.*)$")
 # The marks Zulip reads as markup, a mention, a stream link or an emoji, kept out of a title quoted in a DM.
@@ -546,10 +549,11 @@ def sweep(
             api_only=api_only,
         )
         label = str(answer.get("label") or "")
-        if answer.get("code") == "labels_exhausted":
-            # Jay's rule:  when every main-chat pair is live the letter is refused and the chat carries on.  That is
-            # the registry working as designed, so it is a refused row, not an error, and it does not fail the run.
-            row["refused"] = str(answer.get("error") or "labels_exhausted")[:200]
+        if answer.get("code") in REFUSAL_CODES:
+            # Jay's rule:  when every main-chat pair is live the letter is refused and the chat carries on.  A closed
+            # chat that cannot have a pair again yet (space_lost) waits the same way.  Both are the registry working as
+            # designed, so each is a refused row, not an error, and neither fails the run.
+            row["refused"] = str(answer.get("error") or answer.get("code"))[:200]
             rows.append(row)
             continue
         if "error" in answer or not label:

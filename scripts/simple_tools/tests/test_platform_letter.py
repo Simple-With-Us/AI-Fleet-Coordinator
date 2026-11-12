@@ -2656,5 +2656,31 @@ class EntryScriptTests(unittest.TestCase):
             self.assertEqual(os.listdir(tmp), [])
 
 
+class RefusalCodeTests(Base):
+    """The local register path (the Mac's in-process registry) answers a refusal by design with its code, so a caller
+    such as the Cursor Cloud sweep can tell it from a fault without reading the words."""
+
+    @mock.patch.dict(OR.LETTER_SPACES, {"double": ("AA",)})
+    def test_every_pair_live_answers_labels_exhausted(self) -> None:
+        self.assertEqual(self.register("s-0001")["label"], "AA")
+        code, answer = self.register_raw("s-0002")
+        self.assertEqual(answer.get("code"), "labels_exhausted", answer)
+        self.assertIn("error", answer)
+        self.assertNotEqual(code, 0)
+
+    def test_a_closed_chat_that_cannot_have_a_pair_again_answers_space_lost(self) -> None:
+        first = self.register("s-0001")
+        reg = OR.SessionRegistry(self.db)
+        try:
+            reg.close(first["record_id"], source="test")
+        finally:
+            reg.close_db()
+        with mock.patch.object(PL, "operator_reopen", side_effect=PL.SpaceLost("no pair yet")):
+            code, answer = self.register_raw("s-0001")
+        self.assertEqual(answer.get("code"), "space_lost", answer)
+        self.assertIn("cannot give a closed chat a pair letter again", answer["error"])
+        self.assertNotEqual(code, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
