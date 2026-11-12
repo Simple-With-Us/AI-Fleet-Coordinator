@@ -156,6 +156,76 @@ class CheckConfig(ListenerHarness):
         self.assertIn("seat MA", result.out)
 
 
+    def test_a_registry_table_with_good_settings_is_ok(self) -> None:
+        code, answer = self.check(
+            self.current
+            + "\n[registry]\nsweep_enabled = false\nsweep_interval_minutes = 30\n"
+            "stale_after_hours = 48\nsweep_max_share = 0.4\ngone_report_max_share = 0.25\n"
+            "gone_report_window_minutes = 120\n"
+        )
+        self.assertEqual(code, 0, answer)
+        self.assertEqual(answer["new_errors"], [])
+
+    def test_a_bad_registry_setting_is_a_new_error(self) -> None:
+        for body, needle in (
+            ("sweep_enabled = 1", "registry.sweep_enabled"),
+            ("sweep_interval_minutes = 0", "registry.sweep_interval_minutes"),
+            ("sweep_interval_minutes = 1.5", "registry.sweep_interval_minutes"),
+            ("stale_after_hours = 0", "registry.stale_after_hours"),
+            ('stale_after_hours = "36"', "registry.stale_after_hours"),
+            ("gone_report_max_share = 0", "registry.gone_report_max_share"),
+            ("gone_report_max_share = 1.5", "registry.gone_report_max_share"),
+            ("sweep_max_share = 0", "registry.sweep_max_share"),
+            ("sweep_max_share = true", "registry.sweep_max_share"),
+            ("gone_report_window_minutes = 0", "registry.gone_report_window_minutes"),
+            ("gone_report_window_minutes = 2.5", "registry.gone_report_window_minutes"),
+            ("sweep_every = 5", "[registry] has unknown setting"),
+        ):
+            code, answer = self.check(self.current + "\n[registry]\n%s\n" % body)
+            self.assertEqual(code, 1, body)
+            self.assertIn(needle, " ".join(answer["new_errors"]), body)
+
+
+class RegistrySettingsDefaults(unittest.TestCase):
+    """AFC-721:  the one sweeper's defaults live in code, so a file with no [registry] table runs
+    it:  every 15 minutes, a 36-hour stale window for every platform, a pass ends at most half of a
+    host's open rows, and gone reports may close at most half of a host's live rows per hour."""
+
+    def test_the_defaults(self) -> None:
+        from simple_tools import config as C
+
+        cfg = C.from_dict({"daemon": {"instance": "server"}})
+        self.assertTrue(cfg.registry_sweep_enabled)
+        self.assertEqual(cfg.registry_sweep_interval_minutes, 15)
+        self.assertEqual(cfg.registry_stale_after_hours, 36.0)
+        self.assertEqual(cfg.registry_gone_report_max_share, 0.5)
+        self.assertEqual(cfg.registry_sweep_max_share, 0.5)
+        self.assertEqual(cfg.registry_gone_report_window_minutes, 60)
+
+    def test_a_table_sets_them(self) -> None:
+        from simple_tools import config as C
+
+        cfg = C.from_dict(
+            {
+                "daemon": {"instance": "server"},
+                "registry": {
+                    "sweep_enabled": False,
+                    "sweep_interval_minutes": 5,
+                    "stale_after_hours": 12,
+                    "gone_report_max_share": 0.2,
+                    "sweep_max_share": 0.3,
+                    "gone_report_window_minutes": 90,
+                },
+            }
+        )
+        self.assertFalse(cfg.registry_sweep_enabled)
+        self.assertEqual(cfg.registry_sweep_interval_minutes, 5)
+        self.assertEqual(cfg.registry_stale_after_hours, 12.0)
+        self.assertEqual(cfg.registry_gone_report_max_share, 0.2)
+        self.assertEqual(cfg.registry_sweep_max_share, 0.3)
+        self.assertEqual(cfg.registry_gone_report_window_minutes, 90)
+        self.assertFalse([e for e in cfg.errors if "registry" in e])
+
 class ReloadAnswer(ListenerHarness):
     """Muster reads these two fields to tell an accepted reload from a refused one."""
 

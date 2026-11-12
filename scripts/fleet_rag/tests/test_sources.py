@@ -1994,6 +1994,7 @@ class LinearSourceTests(unittest.TestCase):
             fetch_full=lambda ids: [node], receipt=receipt)))
         self.assertFalse(receipt["source_complete"])
         self.assertEqual("skipped", receipt["issues"]["uuid-1"]["status"])
+        self.assertFalse(receipt["cursor_advance"])
 
     def test_overlong_thread_is_skipped_not_ingested_partial(self) -> None:
         node = _linear_node()
@@ -2588,6 +2589,174 @@ class LinearSourceTests(unittest.TestCase):
         self.assertEqual(first[0].doc_id, second[0].doc_id)
         self.assertNotEqual(first[0].text_markdown, second[0].text_markdown)
         self.assertLess(first[0].updated_at_ms, second[0].updated_at_ms)
+
+    def _write_sync(self, cursor: str, last_full_ms: int | None) -> None:
+        record: dict = {"kind": "linear-sync", "updated_at_cursor": cursor}
+        if last_full_ms is not None:
+            record["last_full_sweep_at_ms"] = last_full_ms
+        path = pathlib.Path(self.tmp) / "ingest-state.json"
+        path.write_text(
+            json.dumps({sources.LINEAR_CURSOR_KEY: record}),
+            encoding="utf-8",
+        )
+
+    def test_incremental_window_overlaps_the_cursor_and_empty_is_ok(self) -> None:
+        now = sources.parse_ts_ms("2026-11-12T00:00:00.000Z")
+        cursor = "2026-11-11T12:00:00.000Z"
+        self._write_sync(cursor, now)
+        with mock.patch.object(sources, "now_ms", return_value=now):
+            plan = sources.linear_read_plan()
+        self.assertFalse(plan["full_scan"])
+        self.assertEqual(plan["reason"], "incremental")
+        self.assertEqual(plan["updated_since"], "2026-11-11T10:00:00.000Z")
+        seen: list[str] = []
+
+        def fake_query(query, timeout_s=0):
+            seen.append(query)
+            return {"issues": {"nodes": [], "pageInfo": {"hasNextPage": False}}}
+
+        with mock.patch.object(sources, "_linear_query", side_effect=fake_query):
+            self.assertEqual(
+                sources._linear_light_scan(updated_since=plan["updated_since"]), {}
+            )
+        self.assertIn(
+            'filter: { updatedAt: { gte: "2026-11-11T10:00:00.000Z" } }', seen[0]
+        )
+        self.assertIn("includeArchived: true", seen[0])
+        with mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_OVERLAP_HOURS": "5"}):
+            with mock.patch.object(sources, "now_ms", return_value=now):
+                wider = sources.linear_read_plan()
+        self.assertEqual(wider["updated_since"], "2026-11-11T07:00:00.000Z")
+        with mock.patch.object(sources, "_linear_query", side_effect=AssertionError("queried")):
+            with self.assertRaises(sources.LinearSourceError):
+                sources._linear_light_scan(updated_since='"); mutation { drop }')
+
+    def test_full_sweep_triggers_and_corrupt_cursor_falls_back(self) -> None:
+        now = sources.parse_ts_ms("2026-11-12T00:00:00.000Z")
+        fresh_cursor = sources._linear_iso(now - 2 * 3600 * 1000)
+        fresh_full = now - 3600 * 1000
+        stale_ms = now - 8 * 24 * 3600 * 1000
+        stale_cursor = sources._linear_iso(stale_ms)
+        cases = [
+            (fresh_cursor, fresh_full, False, "incremental"),
+            (stale_cursor, fresh_full, True, "cursor_stale"),
+            (fresh_cursor, stale_ms, True, "sweep_due"),
+            (fresh_cursor, None, True, "sweep_due"),
+        ]
+        for cursor, last_full, full, reason in cases:
+            self._write_sync(cursor, last_full)
+            with mock.patch.object(sources, "now_ms", return_value=now):
+                plan = sources.linear_read_plan()
+            self.assertEqual(plan["full_scan"], full, reason)
+            self.assertEqual(plan["reason"], reason)
+        path = pathlib.Path(self.tmp) / "ingest-state.json"
+        path.write_text("{}", encoding="utf-8")
+        with mock.patch.object(sources, "now_ms", return_value=now):
+            missing = sources.linear_read_plan()
+        self.assertTrue(missing["full_scan"])
+        self.assertEqual(missing["reason"], "missing")
+        for bad in ("not-a-timestamp", "2026-11-11T12:00:00Z", ""):
+            path.write_text(
+                json.dumps(
+                    {sources.LINEAR_CURSOR_KEY: {"updated_at_cursor": bad, "last_full_sweep_at_ms": fresh_full}}
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.object(sources, "now_ms", return_value=now):
+                plan = sources.linear_read_plan()
+            self.assertTrue(plan["full_scan"], bad)
+            self.assertEqual(plan["reason"], "corrupt", bad)
+        path.write_text(json.dumps({sources.LINEAR_CURSOR_KEY: "nope"}), encoding="utf-8")
+        with mock.patch.object(sources, "now_ms", return_value=now):
+            plan = sources.linear_read_plan()
+        self.assertEqual(plan["reason"], "corrupt")
+        old_full = now - 36 * 3600 * 1000
+        self._write_sync(fresh_cursor, old_full)
+        with mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_SWEEP_DAYS": "1"}):
+            with mock.patch.object(sources, "now_ms", return_value=now):
+                plan = sources.linear_read_plan()
+        self.assertEqual(plan["reason"], "sweep_due")
+        with mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_FULL": "1"}):
+            with mock.patch.object(sources, "now_ms", return_value=now):
+                plan = sources.linear_read_plan()
+        self.assertTrue(plan["full_scan"])
+        self.assertEqual(plan["reason"], "flag")
+        self.assertTrue(plan["force_bodies"])
+
+    def test_incremental_zero_issues_advances_and_full_zero_aborts(self) -> None:
+        now = sources.parse_ts_ms("2026-11-12T00:00:00.000Z")
+        self._write_sync(sources._linear_iso(now - 3600 * 1000), now - 1000)
+        receipt: dict = {}
+
+        def empty(query, timeout_s=0):
+            self.assertIn("updatedAt", query)
+            return {"issues": {"nodes": [], "pageInfo": {"hasNextPage": False}}}
+
+        with mock.patch.object(sources, "now_ms", return_value=now):
+            with mock.patch.object(sources, "_linear_query", side_effect=empty):
+                docs = list(sources.iter_linear(receipt=receipt))
+        self.assertEqual(docs, [])
+        self.assertEqual(receipt["read_mode"], "incremental")
+        self.assertTrue(receipt["cursor_advance"])
+        self.assertFalse(receipt["full"])
+        path = pathlib.Path(self.tmp) / "ingest-state.json"
+        path.unlink()
+        with mock.patch.object(
+            sources,
+            "_linear_query",
+            return_value={"issues": {"nodes": [], "pageInfo": {"hasNextPage": False}}},
+        ):
+            with self.assertRaises(sources.LinearSourceError) as ctx:
+                list(sources.iter_linear())
+        self.assertIn("zero issues", str(ctx.exception))
+
+    def test_incremental_scan_falls_back_from_bf_oracle_to_gb_oracle(self) -> None:
+        env = {
+            "LINEAR_BF_ORACLE_CLIENT_ID": "bf-id",
+            "LINEAR_BF_ORACLE_CLIENT_SECRET": "bf-sec",
+            "LINEAR_GB_ORACLE_CLIENT_ID": "gb-id",
+            "LINEAR_GB_ORACLE_CLIENT_SECRET": "gb-sec",
+        }
+        since = "2026-11-11T10:00:00.000Z"
+        calls: list[str] = []
+
+        def fake(seat, cid, sec, q, *, max_chars, timeout_s=None):
+            calls.append(cid)
+            self.assertIn(since, q)
+            if cid == "bf-id":
+                raise linear_board.BoardCliFailure(1, "invalid_client")
+            return {"issues": {"nodes": [], "pageInfo": {"hasNextPage": False}}}
+
+        with mock.patch.dict(os.environ, env, clear=False):
+            os.environ.pop("LINEAR_CLIENT_ID", None)
+            os.environ.pop("LINEAR_CLIENT_SECRET", None)
+            os.environ.pop(sources.LINEAR_SEATS_ENV, None)
+            sources.reset_linear_seat_state()
+            with mock.patch.object(sources.linear_board, "query", side_effect=fake):
+                self.assertEqual(sources._linear_light_scan(updated_since=since), {})
+        self.assertEqual(calls, ["bf-id", "gb-id"])
+        sources.reset_linear_seat_state()
+        sources.take_warnings()
+
+    def test_a_failed_fetch_does_not_mark_the_cursor_advance(self) -> None:
+        now = sources.parse_ts_ms("2026-11-12T00:00:00.000Z")
+        self._write_sync(sources._linear_iso(now - 3600 * 1000), now - 1000)
+        receipt: dict = {}
+
+        def fetch(ids):
+            raise sources.LinearSourceError("linear: stopped after the scan")
+
+        with mock.patch.object(sources, "now_ms", return_value=now):
+            with self.assertRaises(sources.LinearSourceError):
+                list(
+                    sources.iter_linear(
+                        light_scan=lambda: {"uuid-1": "2026-11-11T23:30:00.000Z"},
+                        fetch_full=fetch,
+                        receipt=receipt,
+                    )
+                )
+        self.assertFalse(receipt["cursor_advance"])
+        self.assertEqual(receipt["read_mode"], "incremental")
 
 
 class ServerNightlySources(unittest.TestCase):

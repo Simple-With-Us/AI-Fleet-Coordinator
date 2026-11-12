@@ -116,11 +116,19 @@ testers or assign builds to a group.  When the app was already behind on native 
 group issues are appended to `reason` and normal auto-remedy still applies.  The existing build-level
 fields are unchanged; consumers that ignore `externalGroups` keep working.
 
+## Internal tester landing (AFC-753)
+
+A VALID processing state is not a completed landing until an internal tester can install that build.  For each app the check reads the same beta-group list and keeps the rows the external check skips (`isInternalGroup`).  The external path is unchanged.  For each internal group it records whether the app's current VALID build is assigned (`GET /v1/builds?filter[betaGroups]={id}`, the same read the external check uses) and whether that group has a reachable tester count.  Read-only: it never changes groups, builds, or testers.  If this extra lookup fails for one app, the build-level result is kept and `internalLandingWarning` names the error.
+
+Each app row in `--json` carries **`internalLanding`**.  `installable` is `true` when some internal group contains the VALID build and has at least one tester, `false` only when every internal group is proven unable to install that build, and `null` when any group is still unreadable and none is proven installable (including when the app lists no internal group).  Each group has `name`, `id`, `assigned`, `assignedKnown`, `testerCount`, and `testerCountKnown`.  `testerCount` is `null` when the count could not be read, not zero.  Findings are `notAssigned` (the VALID build is not in the group), `noTesters` (the count is zero), and `lookupUnknown` (assignment or the count could not be read).  A known miss is still recorded when the other lookup failed.  A partial failure sets that row's `lookupWarning`.  `lookupUnknown` does not by itself mark the app behind.
+
+When the build-level check was `current` and every internal group is proven to omit the VALID build or to have zero testers, the row becomes **`behind`** with `internalLandingOnly: true` and `behindReason: "internalLanding"`.  `--ship-behind` does **not** dispatch in that case (remedy `blocked`), because a ship cannot fix group membership.  An unreadable count stays a finding on the group and leaves a code-current app `current`.  When the app was already behind on native code, the internal finding is appended to `reason` and normal auto-remedy still applies.  Existing fields, including `externalGroups`, stay in place.
+
 ## Statuses
 
 | Status | Meaning |
 |---|---|
-| `current` | The newest processed build contains the newest native commit. |
+| `current` | The newest processed build contains the newest native commit, and no listed internal group is known to block install of that build. |
 | `BEHIND` | It does not.  The NOTE column says which commit is missing and what the remedy decided. |
 | `SHIPPING` | A ship run that contains the commit is queued or running, and started under 3 hours ago (`inflightMaxHours`).  An older run counts as stuck:  the app shows `BEHIND`, the NOTE links the stuck run, and it no longer holds back other apps. |
 | `PROCESSING` | An upload after the commit is still processing in App Store Connect. |

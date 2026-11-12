@@ -28,6 +28,16 @@ Prune uses the guards from AFC-677. Nothing is pruned when any source in the run
 
 The doc diet excludes coverage and framework output, vendored and generated trees, lockfiles, minified files, and binaries, on top of the older `node_modules`, dist, and build skips.  A dry run writes `doc-diet-report.json` beside the state file, mode 0600, with document and chunk counts before and after.  Newly excluded documents stay in the yielded set, so a normal `--prune` does not delete them.  Passing `--prune-excluded`, or setting `FLEET_RAG_PRUNE_EXCLUDED` to 1, releases every held id.  `FLEET_RAG_PRUNE_EXCLUDED_ALLOW` releases an exact doc id, or a prefix that ends in `*`.  That release needs a dry-run stamp whose `rules_hash` matches the current rules.  Force does not lift a missing stamp.  When the gone set includes a released id, the prune also refuses if more than 20% of that source's tracked documents would go.  Exactly 20% is allowed.  `FLEET_RAG_PRUNE_FORCE=1` lifts that cap the same way it lifts the yielded and whole-repo guards.  It does not lift a failed source or the stamp.  Identical chunk bodies are embedded once per doc-source run.  Later paths are stored on `also_paths`.
 
+## Linear incremental read
+
+The Linear source keeps an `updatedAt` cursor in the ingest state under `_linear_sync`.  A nightly run asks Linear only for issues updated since that cursor, minus a safety overlap.  The overlap defaults to 2 hours (`FLEET_RAG_LINEAR_OVERLAP_HOURS`, from 1 to 168).  The cursor moves only after that source finishes without error.  A dry run, a `--limit` run, a `--since` run that skips an issue, a skipped issue, or a failed read leaves the cursor where it was.
+
+A full id sweep runs when the cursor is missing, corrupt, or older than the sweep interval, and when the last successful full sweep is older than that same interval.  The interval defaults to 7 days (`FLEET_RAG_LINEAR_SWEEP_DAYS`, from 1 to 90).  An invalid value keeps the default.  `--full`, also forwarded by `recall ingest --full`, sets `FLEET_RAG_LINEAR_FULL` for that run.  That forces a full id sweep and refetches every issue body.  A scheduled sweep still uses the per-issue `updatedAt` cache.  The content hash still skips re-embedding when the body is unchanged.
+
+A full read that returns zero issues aborts.  That is a broken read, not an empty board.  An incremental read that returns zero changed issues is a quiet window, and the cursor still advances.  Linear rows are still not pruned.  The seat order is unchanged: BF-ORACLE, then GB-ORACLE.
+
+The full id scan of about 14.9k issues is about 19 minutes of a 47-minute nightly.  Incremental nights skip that scan.  They read the overlap window plus issues updated since the last successful cursor.  One night each week still pays for the full id sweep.
+
 Apple Notes stay out of the command.  A run that does include `apple-note` records a warning and does not prune that source.  Force does not override that.  Notes are upserted at write time (AFC-685).
 
 Skill and memory pruning waits on the Mac mirror.  A missing, incomplete, or stale mirror skips those two prunes, records a guard trip, and still lets doc and linear prune.  The skip is not a failed source.  Force does not override it.  One missed night stays fresh (36 hours).  Two missed nights go stale.  `FLEET_RAG_MIRROR_MAX_AGE_S` can move that window between 1 hour and 14 days.  An invalid value stays at 36 hours.
@@ -36,7 +46,7 @@ If `FLEET_RAG_MIRROR` is unset, the job points it at a directory that is not cre
 
 The server source set attests health, and so does `--all`.  Merging this change leaves a Mac `--all --prune` able to update the sentinel.  Apple Notes remain in `--all`.
 
-A successful run is quiet.  Zulip gets a post on the Alerts stream, topic `fleet-rag-nightly`, when `ok` is false or a guard tripped.  The tag is `[GB-ORACLE 📁AFC]`.  A failed alert post does not change the ingest exit.  The summary is `~/.local/state/fleet-rag-nightly/last.json`, mode 0600. It holds reasons and counts.  Secret values are withheld.
+A successful run is quiet.  Zulip gets a post on the OPS stream, topic `fleet-rag-nightly`, when `ok` is false, a prune guard trips, the mirror is missing or stale, or `code-main-sync` failed or is too old to count for tonight.  The tag is `[GB-ORACLE 📁AFC]`.  The same failure on consecutive nights posts a short “still failing, night N” line instead of repeating the full detail.  A failed alert post does not change the ingest exit.  The summary is `~/.local/state/fleet-rag-nightly/last.json`, mode 0600.  It holds reasons, counts, `alert_fingerprint`, and `alert_streak`.  Secret values are withheld.
 
 ## Mac job
 
@@ -122,7 +132,7 @@ sudo systemctl start fleet-rag-nightly.service
 sudo systemctl enable --now fleet-rag-nightly.timer
 ```
 
-8. Read `last.json` after the first real run.  Success stays off Zulip.  A guard trip or a failure posts to Alerts.
+8. Read `last.json` after the first real run.  Success stays off Zulip.  A guard trip, stale mirror, code-sync failure, or ingest failure posts to OPS.
 
 ## Enable the Mac job
 
