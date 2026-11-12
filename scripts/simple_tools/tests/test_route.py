@@ -1,7 +1,10 @@
 """Wake route suggestions (owner, Sat, Oct 10, 2026):  the tool-less CLAUDE wake may suggest paging
-one fleet seat.  The daemon checks it deterministically and honors it only for an owner trigger in a
-channel topic:  it posts `[OPERATOR·route→SEAT] re=<owner trigger>` with one live mention, counts it on
-the loop guard, records it in the ledger and tells the owner.  Everything else is dropped and noted."""
+one fleet seat.  The daemon checks the suggestion deterministically, and since the owner's ruling of
+Nov 10 2026 ("The operator should never be answering on behalf of a platform") it never posts it:  a
+route page is the Operator paging a seat on the owner's behalf.  The checks still run, so a route that
+fails one is dropped for that reason;  a route that passes them all is dropped with
+`operator_never_answers`.  Either way it is recorded in the ledger and reaches the owner queue as a note,
+and nothing reaches a channel or a DM."""
 from __future__ import annotations
 
 import json
@@ -75,86 +78,74 @@ class RouteHarness(DaemonHarness):
         return L.read_jsonl(self.seat_paths().owner_queue)
 
 
-class RouteHonoredTests(RouteHarness):
-    def test_a_route_only_owner_wake_is_done_without_a_channel_reply(self) -> None:
-        # A route with action none posts the route and attempts no channel reply.  The missing
-        # posted_id must stay a done wake, and the owner must not hear wake-undelivered.
+class RouteNeverPostedTests(RouteHarness):
+    def dropped_note_queue(self):
+        return [q for q in self.owner_queue() if q["kind"] == "route_dropped"]
+
+    def test_a_route_only_owner_wake_is_done_and_nothing_is_posted(self) -> None:
+        # A route with action none attempts no reply, and the route is not posted either.  The wake is
+        # done, and the owner does not hear wake-undelivered.
         self.set_claude(mode="ok", output={"action": "none", "reply": None, "board": None,
                                            "owner_note": None, "risk": None,
                                            "route": {"seat": "CODEX",
                                                      "reason": "Jay wants a look at the CT build failure."}})
         daemon = self.start()
-        mid = self.owner_says(daemon)
+        self.owner_says(daemon)
         self.wake_cycle(daemon, 6)
         finals = [row for row in self.ledger() if row["state"] in ("done", "failed")]
         done = finals[-1]
         self.assertEqual(done["state"], "done", done)
         self.assertEqual(done["action"], "none")
         self.assertIsNone(done.get("posted_id"))
-        self.assertEqual(done["route"]["status"], "posted")
-        posts = self.stream_posts()
-        self.assertEqual(len(posts), 1, [post["content"] for post in posts])
-        self.assertTrue(posts[0]["content"].startswith("[OPERATOR·route→CODEX] re=%d\n" % mid), posts[0]["content"])
+        self.assertEqual(done["route"], {"seat": "CODEX", "status": "dropped", "why": "operator_never_answers"})
+        self.assertEqual(self.bot_posts(), [], "no route page, no reply, no note DM")
         self.assertNotIn("wake-undelivered", [item["kind"] for item in self.owner_queue()])
 
-    def test_an_owner_triggered_route_posts_the_reply_then_the_route_and_notes_the_owner(self) -> None:
+    def test_an_owner_triggered_route_is_dropped_with_the_rule_and_the_owner_queue_hears_it(self) -> None:
         self.set_claude(mode="ok", output=routed())
         daemon = self.start()
-        mid = self.owner_says(daemon)
+        self.owner_says(daemon)
         self.wake_cycle(daemon, 6)
-        self.assertIn("Routing: enabled", self.dumps()[0]["stdin"])
-        posts = self.stream_posts()
-        self.assertEqual(len(posts), 2, [p["content"] for p in posts])
-        reply, route = posts
-        self.assertTrue(reply["content"].startswith("[OPERATOR·wake] re=%d\n" % mid))
-        self.assertTrue(route["content"].startswith("[OPERATOR·route→CODEX] re=%d\n" % mid), route["content"])
-        self.assertEqual((route["display_recipient"], route["subject"]), ("simple-tools", "t"))
-        self.assertIn("@**Codex|11** CLAUDE paged you on Jay's behalf:", route["content"])
-        self.assertEqual(W.loud_mentions(route["content"]), 1, "only the daemon's mention is live")
-        self.assertIn("get Codex to look at the CT build failure", route["content"], "the owner's ask is quoted")
-        self.assertIn("@_**Claude**", route["content"], "the mention in the quoted ask is silent")
+        self.assertIn("Routing: disabled (operator_never_answers); leave route null", self.dumps()[0]["stdin"])
+        self.assertEqual(self.bot_posts(), [], "neither the reply nor the route page")
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
         done = self.done()
-        self.assertEqual(done["route"]["status"], "posted")
-        self.assertEqual((done["route"]["seat"], done["route"]["mode"], done["route"]["posted_id"]),
-                         ("CODEX", "inbox only", route["id"]))
-        dms = self.owner_dms()
-        self.assertEqual(len(dms), 1)
-        self.assertTrue(dms[0]["content"].startswith("[OPERATOR·note] re=%d\n" % mid))
-        self.assertIn("Routed: CODEX (inbox only)", dms[0]["content"])
-        self.assertIn("Jay wants a look at the CT build failure.", dms[0]["content"])
-        self.assertTrue(any(q["kind"] == "route" and "CODEX" in (q["note"] or "") for q in self.owner_queue()))
-        self.assertEqual(daemon.status()["seats"]["CLAUDE"]["routes_24h"], 1)
+        self.assertEqual(done["route"], {"seat": "CODEX", "status": "dropped", "why": "operator_never_answers"})
+        self.assertEqual(done["post_error"], "operator_never_answers", "the reply was dropped too")
+        notes = self.dropped_note_queue()
+        self.assertEqual(len(notes), 1)
+        self.assertIn("operator_never_answers", notes[0]["note"])
+        self.assertIn("CODEX", notes[0]["note"])
+        self.assertFalse([q for q in self.owner_queue() if q["kind"] == "route"], "nothing was paged")
+        self.assertEqual(daemon.status()["seats"]["CLAUDE"]["routes_24h"], 0)
         self.assertTrue(daemon.status()["seats"]["CLAUDE"]["route_enabled"])
+        self.assertEqual([e["reason"] for e in self.log_events("route-dropped")], ["operator_never_answers"])
+        self.assertEqual(self.log_events("route-posted"), [])
 
-    def test_a_server_seat_is_routed_as_held_by_the_server_listener(self) -> None:
+    def test_a_server_seat_is_dropped_the_same_way(self) -> None:
         self.set_claude(mode="ok", output=routed("MA", "Jay wants Muse Assist on the copy."))
         daemon = self.start()
         self.owner_says(daemon, "@**Claude** hand this copy to Muse Assist")
         self.wake_cycle(daemon, 6)
         route = self.done()["route"]
-        self.assertEqual((route["status"], route["mode"]), ("posted", "server listener"))
-        self.assertIn("@**Muse Assist|30**", self.stream_posts()[-1]["content"])
+        self.assertEqual((route["status"], route["why"]), ("dropped", "operator_never_answers"))
+        self.assertEqual(self.bot_posts(), [])
 
-    def test_mentions_in_the_reason_are_neutralized(self) -> None:
+    def test_mentions_in_the_reason_never_reach_anyone(self) -> None:
         self.set_claude(mode="ok", output=routed(reason="loop in @**Cursor** and @*everyone* and @**all**"))
         daemon = self.start()
         self.owner_says(daemon)
         self.wake_cycle(daemon, 6)
-        post = self.stream_posts()[-1]["content"]
-        self.assertTrue(post.startswith("[OPERATOR·route→CODEX]"))
-        self.assertEqual(W.loud_mentions(post), 1)
-        self.assertIn("@_**Cursor**", post)
-        self.assertNotIn("@*everyone*", post)
+        self.assertEqual(self.bot_posts(), [], "the reason is posted nowhere, so it notifies no one")
+        self.assertEqual(self.done()["route"]["status"], "dropped")
 
-    def test_route_posts_count_on_the_loop_guard_and_never_route_again(self) -> None:
+    def test_a_dropped_route_never_counts_on_the_loop_guard(self) -> None:
         self.set_claude(mode="ok", output=routed())
         daemon = self.start()
         self.owner_says(daemon)
         self.wake_cycle(daemon, 6)
-        route_id = self.stream_posts()[-1]["id"]
-        self.pump_until(daemon, lambda: daemon.global_ring.__contains__(route_id))
-        guard = L.read_json(daemon.loopguard.path)
-        self.assertEqual(guard.get(TOPIC_KEY), 2, "the wake reply and the route post both count")
+        guard = L.read_json(daemon.loopguard.path) or {}
+        self.assertEqual(guard.get(TOPIC_KEY, 0), 0, "no reply and no route post, so nothing counts")
 
     def test_a_failing_note_or_check_never_loses_the_done_row(self) -> None:
         self.set_claude(mode="ok", output=routed())
@@ -162,7 +153,7 @@ class RouteHonoredTests(RouteHarness):
         real = daemon.notifier.notify
 
         def notify(*args, **kw):
-            if kw.get("kind") == "route":
+            if kw.get("kind") == "route_dropped":
                 raise RuntimeError("notifier down")
             return real(*args, **kw)
 
@@ -170,8 +161,9 @@ class RouteHonoredTests(RouteHarness):
         self.owner_says(daemon)
         self.wake_cycle(daemon, 6)
         route = self.done()["route"]
-        self.assertEqual(route["status"], "posted", "the post went out, so the route counts")
-        self.assertIn("notifier down", route["owner_dm_error"])
+        self.assertEqual((route["status"], route["seat"]), ("error", "CODEX"))
+        self.assertIn("notifier down", route["why"])
+        self.assertEqual(self.done()["action"], "reply", "the wake still finished")
         daemon.notifier.notify = real
 
         def explode(*args, **kw):
@@ -194,7 +186,7 @@ class RouteDroppedTests(RouteHarness):
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.wake_cycle(daemon)
         self.assertIn("Routing: disabled (no_owner_trigger); leave route null", self.dumps()[0]["stdin"])
-        self.assertEqual([p["content"].split("\n")[0][:15] for p in self.stream_posts()], ["[OPERATOR·wake]"])
+        self.assertEqual(self.stream_posts(), [], "the peer gets no reply, and no route page")
         route = self.done()["route"]
         self.assertEqual((route["status"], route["why"]), ("dropped", "no_owner_trigger"))
         self.assertTrue(any(q["kind"] == "route_dropped" and "no_owner_trigger" in (q["note"] or "")
@@ -278,17 +270,20 @@ class RouteDroppedTests(RouteHarness):
         daemon.reload()
         self.assertTrue(any("route_enabled must be true or false" in e for e in daemon.config.errors))
 
-    def test_the_topic_spacing_drops_a_second_route(self) -> None:
+    def test_a_second_route_is_dropped_the_same_way_because_the_first_never_counted(self) -> None:
+        # The topic spacing and the hourly and daily caps count only POSTED routes, and none is posted,
+        # so a second route in the same topic is dropped by the rule and not by `route_topic_minutes`.
         self.set_claude(mode="ok", output=routed())
         daemon = self.start()
         self.owner_says(daemon)
         self.wake_cycle(daemon, 6)
-        self.assertEqual(self.done()["route"]["status"], "posted")
+        self.assertEqual(self.done()["route"]["why"], "operator_never_answers")
         self.clock.advance(60)
         self.set_claude(mode="ok", output=routed("MA", "and Muse Assist too"))
         self.owner_says(daemon, "@**Claude** also hand it to Muse Assist")
         self.wake_cycle(daemon, 6)
-        self.assertEqual(self.done()["route"]["why"], "route_topic_minutes")
+        self.assertEqual(self.done()["route"]["why"], "operator_never_answers")
+        self.assertEqual(self.bot_posts(), [])
 
     # ---- the validator, driven directly ------------------------------------------------------
     def pending(self, *, owner: bool = True, dm: bool = False, triggers=((900, 12),)) -> W.Pending:
@@ -396,14 +391,3 @@ class RouteUnitTests(RouteHarness):
         self.assertEqual(R.prefilter(c), ("peer", None), "the paged seat wakes")
         wake_reply = dict(message, content="[CLAUDE·wake] re=4\n@_**Codex** hi")
         self.assertEqual(R.prefilter(R.classify(wake_reply, codex, ctx)), (None, "wake_tag"))
-
-    def test_compose_route_keeps_one_line_fields_and_a_closed_quote(self) -> None:
-        text = W.compose_route("CLAUDE", "CODEX", "Co*dex|", 11, 77, "a\nb ```x``` @**Jay**",
-                               "```\n@**all** break out\n```", "https://z/near/77")
-        lines = text.split("\n")
-        self.assertEqual(lines[0], "[OPERATOR·route→CODEX] re=77")
-        self.assertTrue(lines[1].startswith("@**Codex|11** CLAUDE paged you on Jay's behalf:  a b '''x''' @_**Jay**"))
-        self.assertEqual((lines[2], lines[4]), ("```quote", "```"))
-        self.assertNotIn("`", lines[3])
-        self.assertEqual(W.loud_mentions(text), 1)
-        self.assertEqual(len(lines), 6)

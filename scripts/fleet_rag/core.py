@@ -363,7 +363,9 @@ def _read_token_file() -> str | None:
 
 def _read_token_bound() -> bool:
     """Whether a reader binding is configured (the variable, a named file, or the default file), without reading it."""
-    if (os.environ.get(INFISICAL_READ_TOKEN) or "").strip() or (os.environ.get(INFISICAL_READ_TOKEN_FILE) or "").strip():
+    if (os.environ.get(INFISICAL_READ_TOKEN) or "").strip() or (
+        os.environ.get(INFISICAL_READ_TOKEN_FILE) or ""
+    ).strip():
         return True
     home = (os.environ.get("HOME") or "").strip()
     return bool(home) and os.path.lexists(os.path.join(home, *DEFAULT_READ_TOKEN_FILE))
@@ -663,6 +665,7 @@ class Qdrant:
         method: str | None = None,
         write: bool = False,
         timeout: int = DEFAULT_TIMEOUT,
+        retries: int | None = None,
     ) -> Any:
         key = self._write_key if write else self._read_key
         if write and not key:
@@ -678,7 +681,13 @@ class Qdrant:
         try:
             options = {"before_attempt": check_storage} if write else {}
             return http_json(
-                f"{self.base}{path}", body, {"api-key": key}, method, timeout=timeout, **options
+                f"{self.base}{path}",
+                body,
+                {"api-key": key},
+                method,
+                timeout=timeout,
+                retries=retries,
+                **options,
             )
         except FleetRagError as e:
             # A staged read-only key that the server has not loaded yet answers 401/403.
@@ -696,6 +705,7 @@ class Qdrant:
                     {"api-key": self._write_key},
                     method,
                     timeout=timeout,
+                    retries=retries,
                 )
             raise
 
@@ -919,10 +929,29 @@ class Qdrant:
         )
         return res.get("status", "?")
 
+    def create_snapshot(self, *, wait: bool = True) -> dict:
+        query = "?wait=true" if wait else ""
+        return self._call(
+            self._cpath(f"/snapshots{query}"),
+            {},
+            method="POST",
+            write=True,
+            timeout=1800,
+            retries=0,
+        )["result"]
+
     def snapshot(self) -> dict:
-        return self._call(self._cpath("/snapshots"), {}, method="POST", write=True, timeout=600)[
-            "result"
-        ]
+        """Alias for create_snapshot (wait=true)."""
+        return self.create_snapshot(wait=True)
+
+    def list_snapshots(self) -> list[dict]:
+        return list(self._call(self._cpath("/snapshots"), method="GET")["result"])
+
+    def delete_snapshot(self, name: str) -> None:
+        import urllib.parse
+
+        encoded = urllib.parse.quote(name, safe="")
+        self._call(self._cpath(f"/snapshots/{encoded}"), method="DELETE", write=True, timeout=120)
 
 
 # --------------------------------------------------------------------------- filters

@@ -15,7 +15,9 @@ const { seatAppNames, teamKeys } = parseBoardCli(read("scripts/linear-board/boar
 const seatsRows = buildSeatsTab({ fleetApps, partition, serverSeats, seatAppNames, facts }, "NOW");
 
 test("the three readers find their data in the real files", () => {
-  assert.equal(partition.CLAUDE, "mac");
+  // One listener, on the server, since Nov 10:  only the Operator stays on the Mac.
+  assert.equal(partition.CLAUDE, "server");
+  assert.equal(partition.OPERATOR, "mac");
   assert.equal(partition.JET, "server");
   assert.equal(partition["BF-PLUMBER"], "server");
   assert.equal(serverSeats.JET.wake, "http");

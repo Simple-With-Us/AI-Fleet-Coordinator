@@ -525,15 +525,36 @@ class Tests(unittest.TestCase):
             m.qualify_credentials()
 
     def test_first_automatic_run_cannot_deploy(self):
+        # This is the CURRENT release, not a superseded checkout. Missing proof must
+        # block deployment on that path; stale checkouts have no release to authorize.
+        sha = "a" * 40
         with (
             patch.object(m, "credential_receipt", return_value=False),
+            patch.object(m.subprocess, "check_output", return_value=sha),
             patch.object(m.subprocess, "run") as run,
-            patch.object(m, "current_main") as current,
+            patch.object(m, "current_main", return_value=sha) as current,
+            patch.object(m, "github") as github,
         ):
             with self.assertRaises(RuntimeError):
                 m.main()
             run.assert_not_called()
-            current.assert_not_called()
+            current.assert_called_once_with()
+            github.assert_not_called()
+
+    def test_superseded_checkout_without_receipt_skips_without_deployment(self):
+        with (
+            patch.object(m, "credential_receipt") as receipt,
+            patch.object(m.subprocess, "check_output", return_value="a" * 40),
+            patch.object(m.subprocess, "run") as run,
+            patch.object(m, "current_main", return_value="b" * 40),
+            patch.object(m, "github") as github,
+            patch.object(m, "cloudflare") as cloudflare,
+        ):
+            m.main()
+            receipt.assert_not_called()
+            run.assert_not_called()
+            github.assert_not_called()
+            cloudflare.assert_not_called()
 
     def receipt_fixture(self, **changes):
         receipt = {

@@ -10,11 +10,13 @@ import sqlite3
 import stat
 import subprocess
 import tempfile
+import signal
+import threading
 import time
 import unittest
 from unittest import mock
 
-from fleet_rag import notes_export, sources
+from fleet_rag import ingest, linear_board, notes_export, sources
 from fleet_rag.notes_export import html_to_text, strip_title_line
 
 FINDINGS_DDL = """
@@ -673,6 +675,125 @@ class ExtraDocWalkerTests(unittest.TestCase):
         # resolved-path dedup: walking coordinator both as fleet_repo and as a DOC_APP_REPO
         paths = [d.path for d in docs]
         self.assertEqual(len(paths), len(set(pathlib.Path(p).resolve() for p in paths)))
+
+    def test_diet_excludes_are_held_and_legacy_skips_are_not(self) -> None:
+        docs = self.fleet / "docs"
+        paragraph = "A normal paragraph about the diet.\n"
+        (docs / "keep.md").write_text("# Keep\n\n" + paragraph)
+        (docs / "copy.md").write_text("# Copy\n\n" + paragraph)
+        (docs / "essay.md").write_text("# Essay\n\n" + ("word " * 2000) + "\n")
+        (docs / "Build").mkdir()
+        (docs / "Build" / "notes.md").write_text("# Notes\n\nkept because Build is not the legacy dir.\n")
+        (docs / "generated").mkdir()
+        (docs / "generated" / "api.md").write_text("# API\n\nbuilt\n")
+        (docs / "Coverage").mkdir()
+        (docs / "Coverage" / "index.md").write_text("# cov\n")
+        (docs / "third_party").mkdir()
+        (docs / "third_party" / "lib.md").write_text("# tp\n")
+        (docs / "vendored").mkdir()
+        (docs / "vendored" / "lib.md").write_text("# ven\n")
+        (docs / "out").mkdir()
+        (docs / "out" / "page.md").write_text("# out\n")
+        (docs / "app.min.md").write_text("# Min\n\nnope\n")
+        (docs / "schema.generated.md").write_text("# Schema\n\ngenerated\n")
+        (docs / "bundle.md").write_text("a" * sources.MINIFIED_LINE_CHARS + "\n")
+        (docs / "blob.md").write_bytes(b"# Blob\n\n\x00binary\n")
+        (docs / "node_modules" / "pkg").mkdir(parents=True)
+        (docs / "node_modules" / "pkg" / "README.md").write_text("# nm\n")
+        (docs / "dist").mkdir()
+        (docs / "dist" / "out.md").write_text("# dist\n")
+        (docs / "big.md").write_text("x" * (sources.DOC_MAX_BYTES + 1))
+        (self.fleet / "package-lock.json").write_text("{}\n")
+        (docs / "yarn.lock").write_text("lock\n")
+        (self.fleet / "custom.lock").write_text("lock\n")
+
+        walked = list(
+            sources.iter_docs(
+                self.fleet,
+                self.ops,
+                extra=[],
+                code_dir=None,
+                apps_dir=None,
+                grok_home=None,
+            )
+        )
+        names = {pathlib.Path(d.path).name for d in walked}
+        for kept in ("keep.md", "copy.md", "essay.md", "notes.md", "README.md"):
+            self.assertIn(kept, names, kept)
+        for gone in (
+            "api.md",
+            "index.md",
+            "lib.md",
+            "page.md",
+            "app.min.md",
+            "schema.generated.md",
+            "bundle.md",
+            "blob.md",
+            "out.md",
+            "big.md",
+        ):
+            self.assertNotIn(gone, names, gone)
+
+        diet_files = [
+            docs / "generated" / "api.md",
+            docs / "Coverage" / "index.md",
+            docs / "third_party" / "lib.md",
+            docs / "vendored" / "lib.md",
+            docs / "out" / "page.md",
+            docs / "app.min.md",
+            docs / "schema.generated.md",
+            docs / "bundle.md",
+            docs / "blob.md",
+        ]
+        held = sources.take_held_doc_ids()
+        self.assertEqual(held, {sources.doc_id_for_path(p) for p in diet_files})
+        legacy = [
+            docs / "node_modules" / "pkg" / "README.md",
+            docs / "dist" / "out.md",
+            docs / "big.md",
+        ]
+        self.assertTrue(held.isdisjoint(sources.doc_id_for_path(p) for p in legacy))
+
+        self.assertEqual(sources.doc_exclude_reason(self.fleet / "package-lock.json"), "lockfile")
+        self.assertEqual(sources.doc_exclude_reason(docs / "yarn.lock"), "lockfile")
+        self.assertEqual(sources.doc_exclude_reason(self.fleet / "custom.lock"), "lockfile")
+        self.assertIsNone(sources.doc_exclude_reason(docs / "keep.md"))
+        self.assertIsNone(sources.doc_exclude_reason(docs / "essay.md"))
+        self.assertIsNone(sources.doc_exclude_reason(docs / "Build" / "notes.md"))
+        self.assertEqual(
+            sources.doc_exclude_reason(docs / "node_modules" / "pkg" / "README.md"), "legacy-dir"
+        )
+        self.assertEqual(sources.doc_exclude_reason(docs / "bundle.md"), "minified")
+        self.assertEqual(sources.doc_exclude_reason(docs / "blob.md"), "binary")
+        self.assertEqual(sources.doc_exclude_reason(docs / "schema.generated.md"), "generated")
+        self.assertEqual(sources.doc_exclude_reason(docs / "Coverage" / "index.md"), "skipped-dir")
+
+        warnings = sources.take_warnings()
+        diet_rules = {w.split()[3] for w in warnings if w.split()[3].startswith("diet-")}
+        self.assertEqual(
+            diet_rules, {"diet-skipped-dir", "diet-minified", "diet-generated", "diet-binary"}
+        )
+        census = ingest.doc_diet_census(sources.LAST_DOC_WALK)
+        self.assertEqual(census["docs_after"], len(walked))
+        self.assertEqual(census["docs_before"], census["docs_after"] + census["docs_excluded"])
+        self.assertEqual(census["docs_excluded"], len(diet_files))
+        self.assertGreater(census["chunks_before"], census["chunks_after"])
+        self.assertGreaterEqual(census["chunks_deduped"], 1)
+        self.assertEqual(census["rules_version"], sources.DOC_DIET_VERSION)
+        self.assertEqual(census["rules_hash"], ingest.diet_rules_hash())
+        self.assertGreaterEqual(census["excluded_by_rule"]["skipped-dir"], 5)
+
+    def test_a_diet_dir_above_the_checkout_does_not_exclude_it(self) -> None:
+        checkout = self.root / "out" / "target" / "checkout"
+        (checkout / "docs" / "out").mkdir(parents=True)
+        readme = checkout / "README.md"
+        readme.write_text("# Hello\n\nkept\n")
+        nested = checkout / "docs" / "out" / "page.md"
+        nested.write_text("# Out\n\nbuilt\n")
+        subprocess.run(["git", "init"], cwd=checkout, check=True, capture_output=True)
+        sources._git_toplevel.cache_clear()
+        self.assertIsNone(sources.doc_exclude_reason(readme))
+        self.assertEqual(sources.doc_exclude_reason(nested), "skipped-dir")
 
 
 class MirrorSkipTests(unittest.TestCase):
@@ -1475,7 +1596,7 @@ class ChatLogTests(unittest.TestCase):
 
     def test_retired_sources_are_explicit_only_and_linear_refreshes_by_default(self) -> None:
         self.assertEqual(
-            sources.NIGHTLY_SOURCES, ("linear", "doc", "skill", "memory", "apple-note")
+            sources.NIGHTLY_SOURCES, ("linear", "doc", "skill", "memory")
         )
         self.assertIn("linear", sources.SOURCES)
         from fleet_rag.ingest import _resolve_names, _attests_health
@@ -1873,6 +1994,7 @@ class LinearSourceTests(unittest.TestCase):
             fetch_full=lambda ids: [node], receipt=receipt)))
         self.assertFalse(receipt["source_complete"])
         self.assertEqual("skipped", receipt["issues"]["uuid-1"]["status"])
+        self.assertFalse(receipt["cursor_advance"])
 
     def test_overlong_thread_is_skipped_not_ingested_partial(self) -> None:
         node = _linear_node()
@@ -1894,37 +2016,37 @@ class LinearSourceTests(unittest.TestCase):
 
     def test_scan_and_fetch_fail_closed(self) -> None:
         with mock.patch.object(
-            sources.subprocess,
-            "run",
+            sources.linear_board,
+            "query",
             side_effect=OSError("no simple-board here"),
         ):
             with self.assertRaises(sources.LinearSourceError):
                 sources._linear_light_scan()
 
-        def ok_proc(*a, **k):
-            return subprocess.CompletedProcess(a, 0, stdout='{"errors": [{"message": "boom"}]}', stderr="")
+        def gql_err(seat, cid, sec, q, *, max_chars, timeout_s=None):
+            return {"errors": [{"message": "boom"}]}
 
-        with mock.patch.object(sources.subprocess, "run", side_effect=ok_proc):
+        with mock.patch.object(sources.linear_board, "query", side_effect=gql_err):
             with self.assertRaises(sources.LinearSourceError):
                 sources._linear_query("query { x }")
 
-        def bad_rc(*a, **k):
-            return subprocess.CompletedProcess(a, 4, stdout="", stderr="no Fleet credentials")
+        def bad_rc(seat, cid, sec, q, *, max_chars, timeout_s=None):
+            raise linear_board.BoardCliFailure(4, "no Fleet credentials")
 
-        with mock.patch.object(sources.subprocess, "run", side_effect=bad_rc):
+        with mock.patch.object(sources.linear_board, "query", side_effect=bad_rc):
             with self.assertRaises(sources.LinearSourceError):
                 sources._linear_query("query { x }")
 
     def test_missing_linear_identity_is_named_without_echoing_stderr(self) -> None:
         """AFC-677:  the retired shared app makes simple-board exit 4;  the error says why."""
 
-        def no_identity(*a, **k):
-            return subprocess.CompletedProcess(
-                a, 4, stdout="",
-                stderr="simple-board: no Linear app credentials: LINEAR_CLIENT_ID ... secret-ish-tail",
+        def no_identity(seat, cid, sec, q, *, max_chars, timeout_s=None):
+            raise linear_board.BoardCliFailure(
+                4,
+                "simple-board: no Linear app credentials: LINEAR_CLIENT_ID ... secret-ish-tail",
             )
 
-        with mock.patch.object(sources.subprocess, "run", side_effect=no_identity):
+        with mock.patch.object(sources.linear_board, "query", side_effect=no_identity):
             with self.assertRaises(sources.LinearSourceError) as ctx:
                 sources._linear_query("query { x }")
         msg = str(ctx.exception)
@@ -1939,16 +2061,16 @@ class LinearSourceTests(unittest.TestCase):
         }
         calls = []
 
-        def fake(argv, **k):
-            calls.append(k["env"]["LINEAR_CLIENT_ID"])
-            if k["env"]["LINEAR_CLIENT_ID"] == "bf-id" and bf_fails:
-                return subprocess.CompletedProcess(argv, 1, stdout="", stderr="invalid_client")
-            return subprocess.CompletedProcess(argv, 0, stdout='{"viewer": {}}', stderr="")
+        def fake(seat, cid, sec, q, *, max_chars, timeout_s=None):
+            calls.append(cid)
+            if cid == "bf-id" and bf_fails:
+                raise linear_board.BoardCliFailure(1, "invalid_client")
+            return {"viewer": {}}
 
         for bf_fails, want in ((False, ["bf-id"]), (True, ["bf-id", "gb-id"])):
             calls.clear()
             with mock.patch.dict(os.environ, env, clear=False), \
-                    mock.patch.object(sources.subprocess, "run", side_effect=fake):
+                    mock.patch.object(sources.linear_board, "query", side_effect=fake):
                 os.environ.pop("LINEAR_CLIENT_ID", None)
                 os.environ.pop("LINEAR_CLIENT_SECRET", None)
                 os.environ.pop(sources.LINEAR_SEATS_ENV, None)
@@ -1960,6 +2082,45 @@ class LinearSourceTests(unittest.TestCase):
                     sources._linear_query("query { y }")
                     self.assertEqual(calls, ["gb-id"])
         sources.take_warnings()
+
+    def test_linear_reuses_one_board_client_per_seat_per_run(self) -> None:
+        """AFC-688:  many queries in one ingest share one in-process Auth client (one mint)."""
+        linear_board.reset_sessions()
+        lin = mock.Mock()
+        lin.call.return_value = {"n": 1}
+        B = mock.Mock()
+        B.endpoint.return_value = "http://127.0.0.1/mock"
+        B.ENV_PAIR = "env"
+        B.seat_app_names.return_value = ()
+        B.Identity = mock.Mock(side_effect=lambda *a, **k: mock.Mock())
+        B.Auth = mock.Mock()
+        B.Linear = mock.Mock(return_value=lin)
+        B.clean_data.side_effect = lambda data: data
+        B.output_limited.return_value = None
+        B.GqlError = Exception
+        with mock.patch.object(linear_board, "load_board", return_value=B):
+            linear_board.query("BF-ORACLE", "bf-id", "bf-sec", "query { a }", max_chars=100)
+            linear_board.query("BF-ORACLE", "bf-id", "bf-sec", "query { b }", max_chars=100)
+        self.assertEqual(B.Auth.call_count, 1)
+        self.assertEqual(B.Linear.call_count, 1)
+        self.assertEqual(lin.call.call_count, 2)
+
+    def test_missing_board_cli_is_a_board_failure_not_an_unbound_local(self) -> None:
+        from fleet_rag import linear_board as LB
+
+        with (mock.patch.object(LB, "_board_mod", None), mock.patch.object(LB, "_BOARD_PATH", pathlib.Path("/nonexistent/board"))):
+            with self.assertRaises(LB.BoardCliFailure) as ctx:
+                LB.query("BF-ORACLE", "id", "secret", "{ viewer { id } }", max_chars=100)
+        self.assertEqual(ctx.exception.code, 4)
+
+    def test_linear_board_auth_failure_detection(self) -> None:
+        err401 = linear_board.BoardCliFailure(1, "HTTP 401 from token endpoint")
+        err403 = linear_board.BoardCliFailure(1, "403 Forbidden")
+        err_misc = linear_board.BoardCliFailure(1, "timeout")
+        self.assertTrue(sources._linear_is_auth_failure_board(err401))
+        self.assertTrue(sources._linear_is_auth_failure_board(err403))
+        self.assertTrue(sources._linear_is_auth_failure_board(linear_board.BoardCliFailure(4, "")))
+        self.assertFalse(sources._linear_is_auth_failure_board(err_misc))
 
     def test_linear_non_auth_errors_never_fall_back(self) -> None:
         def proc(rc, err):
@@ -2307,19 +2468,17 @@ class LinearSourceTests(unittest.TestCase):
         self.assertIn("map.tsv", str(ctx.exception))
 
     def test_empty_scan_is_a_broken_read_not_an_empty_board(self) -> None:
-        def empty_page(*a, **k):
-            return subprocess.CompletedProcess(
-                a, 0, stdout='{"issues": {"nodes": [], "pageInfo": {"hasNextPage": false}}}', stderr=""
-            )
+        def empty_page(seat, cid, sec, q, *, max_chars, timeout_s=None):
+            return {"issues": {"nodes": [], "pageInfo": {"hasNextPage": False}}}
 
-        with mock.patch.object(sources.subprocess, "run", side_effect=empty_page):
+        with mock.patch.object(sources.linear_board, "query", side_effect=empty_page):
             with self.assertRaises(sources.LinearSourceError):
                 sources._linear_light_scan()
 
-        def no_connection(*a, **k):
-            return subprocess.CompletedProcess(a, 0, stdout="{}", stderr="")
+        def no_connection(seat, cid, sec, q, *, max_chars, timeout_s=None):
+            return {}
 
-        with mock.patch.object(sources.subprocess, "run", side_effect=no_connection):
+        with mock.patch.object(sources.linear_board, "query", side_effect=no_connection):
             with self.assertRaises(sources.LinearSourceError):
                 sources._linear_light_scan()
 
@@ -2430,3 +2589,402 @@ class LinearSourceTests(unittest.TestCase):
         self.assertEqual(first[0].doc_id, second[0].doc_id)
         self.assertNotEqual(first[0].text_markdown, second[0].text_markdown)
         self.assertLess(first[0].updated_at_ms, second[0].updated_at_ms)
+
+    def _write_sync(self, cursor: str, last_full_ms: int | None) -> None:
+        record: dict = {"kind": "linear-sync", "updated_at_cursor": cursor}
+        if last_full_ms is not None:
+            record["last_full_sweep_at_ms"] = last_full_ms
+        path = pathlib.Path(self.tmp) / "ingest-state.json"
+        path.write_text(
+            json.dumps({sources.LINEAR_CURSOR_KEY: record}),
+            encoding="utf-8",
+        )
+
+    def test_incremental_window_overlaps_the_cursor_and_empty_is_ok(self) -> None:
+        now = sources.parse_ts_ms("2026-11-12T00:00:00.000Z")
+        cursor = "2026-11-11T12:00:00.000Z"
+        self._write_sync(cursor, now)
+        with mock.patch.object(sources, "now_ms", return_value=now):
+            plan = sources.linear_read_plan()
+        self.assertFalse(plan["full_scan"])
+        self.assertEqual(plan["reason"], "incremental")
+        self.assertEqual(plan["updated_since"], "2026-11-11T10:00:00.000Z")
+        seen: list[str] = []
+
+        def fake_query(query, timeout_s=0):
+            seen.append(query)
+            return {"issues": {"nodes": [], "pageInfo": {"hasNextPage": False}}}
+
+        with mock.patch.object(sources, "_linear_query", side_effect=fake_query):
+            self.assertEqual(
+                sources._linear_light_scan(updated_since=plan["updated_since"]), {}
+            )
+        self.assertIn(
+            'filter: { updatedAt: { gte: "2026-11-11T10:00:00.000Z" } }', seen[0]
+        )
+        self.assertIn("includeArchived: true", seen[0])
+        with mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_OVERLAP_HOURS": "5"}):
+            with mock.patch.object(sources, "now_ms", return_value=now):
+                wider = sources.linear_read_plan()
+        self.assertEqual(wider["updated_since"], "2026-11-11T07:00:00.000Z")
+        with mock.patch.object(sources, "_linear_query", side_effect=AssertionError("queried")):
+            with self.assertRaises(sources.LinearSourceError):
+                sources._linear_light_scan(updated_since='"); mutation { drop }')
+
+    def test_full_sweep_triggers_and_corrupt_cursor_falls_back(self) -> None:
+        now = sources.parse_ts_ms("2026-11-12T00:00:00.000Z")
+        fresh_cursor = sources._linear_iso(now - 2 * 3600 * 1000)
+        fresh_full = now - 3600 * 1000
+        stale_ms = now - 8 * 24 * 3600 * 1000
+        stale_cursor = sources._linear_iso(stale_ms)
+        cases = [
+            (fresh_cursor, fresh_full, False, "incremental"),
+            (stale_cursor, fresh_full, True, "cursor_stale"),
+            (fresh_cursor, stale_ms, True, "sweep_due"),
+            (fresh_cursor, None, True, "sweep_due"),
+        ]
+        for cursor, last_full, full, reason in cases:
+            self._write_sync(cursor, last_full)
+            with mock.patch.object(sources, "now_ms", return_value=now):
+                plan = sources.linear_read_plan()
+            self.assertEqual(plan["full_scan"], full, reason)
+            self.assertEqual(plan["reason"], reason)
+        path = pathlib.Path(self.tmp) / "ingest-state.json"
+        path.write_text("{}", encoding="utf-8")
+        with mock.patch.object(sources, "now_ms", return_value=now):
+            missing = sources.linear_read_plan()
+        self.assertTrue(missing["full_scan"])
+        self.assertEqual(missing["reason"], "missing")
+        for bad in ("not-a-timestamp", "2026-11-11T12:00:00Z", ""):
+            path.write_text(
+                json.dumps(
+                    {sources.LINEAR_CURSOR_KEY: {"updated_at_cursor": bad, "last_full_sweep_at_ms": fresh_full}}
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.object(sources, "now_ms", return_value=now):
+                plan = sources.linear_read_plan()
+            self.assertTrue(plan["full_scan"], bad)
+            self.assertEqual(plan["reason"], "corrupt", bad)
+        path.write_text(json.dumps({sources.LINEAR_CURSOR_KEY: "nope"}), encoding="utf-8")
+        with mock.patch.object(sources, "now_ms", return_value=now):
+            plan = sources.linear_read_plan()
+        self.assertEqual(plan["reason"], "corrupt")
+        old_full = now - 36 * 3600 * 1000
+        self._write_sync(fresh_cursor, old_full)
+        with mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_SWEEP_DAYS": "1"}):
+            with mock.patch.object(sources, "now_ms", return_value=now):
+                plan = sources.linear_read_plan()
+        self.assertEqual(plan["reason"], "sweep_due")
+        with mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_FULL": "1"}):
+            with mock.patch.object(sources, "now_ms", return_value=now):
+                plan = sources.linear_read_plan()
+        self.assertTrue(plan["full_scan"])
+        self.assertEqual(plan["reason"], "flag")
+        self.assertTrue(plan["force_bodies"])
+
+    def test_incremental_zero_issues_advances_and_full_zero_aborts(self) -> None:
+        now = sources.parse_ts_ms("2026-11-12T00:00:00.000Z")
+        self._write_sync(sources._linear_iso(now - 3600 * 1000), now - 1000)
+        receipt: dict = {}
+
+        def empty(query, timeout_s=0):
+            self.assertIn("updatedAt", query)
+            return {"issues": {"nodes": [], "pageInfo": {"hasNextPage": False}}}
+
+        with mock.patch.object(sources, "now_ms", return_value=now):
+            with mock.patch.object(sources, "_linear_query", side_effect=empty):
+                docs = list(sources.iter_linear(receipt=receipt))
+        self.assertEqual(docs, [])
+        self.assertEqual(receipt["read_mode"], "incremental")
+        self.assertTrue(receipt["cursor_advance"])
+        self.assertFalse(receipt["full"])
+        path = pathlib.Path(self.tmp) / "ingest-state.json"
+        path.unlink()
+        with mock.patch.object(
+            sources,
+            "_linear_query",
+            return_value={"issues": {"nodes": [], "pageInfo": {"hasNextPage": False}}},
+        ):
+            with self.assertRaises(sources.LinearSourceError) as ctx:
+                list(sources.iter_linear())
+        self.assertIn("zero issues", str(ctx.exception))
+
+    def test_incremental_scan_falls_back_from_bf_oracle_to_gb_oracle(self) -> None:
+        env = {
+            "LINEAR_BF_ORACLE_CLIENT_ID": "bf-id",
+            "LINEAR_BF_ORACLE_CLIENT_SECRET": "bf-sec",
+            "LINEAR_GB_ORACLE_CLIENT_ID": "gb-id",
+            "LINEAR_GB_ORACLE_CLIENT_SECRET": "gb-sec",
+        }
+        since = "2026-11-11T10:00:00.000Z"
+        calls: list[str] = []
+
+        def fake(seat, cid, sec, q, *, max_chars, timeout_s=None):
+            calls.append(cid)
+            self.assertIn(since, q)
+            if cid == "bf-id":
+                raise linear_board.BoardCliFailure(1, "invalid_client")
+            return {"issues": {"nodes": [], "pageInfo": {"hasNextPage": False}}}
+
+        with mock.patch.dict(os.environ, env, clear=False):
+            os.environ.pop("LINEAR_CLIENT_ID", None)
+            os.environ.pop("LINEAR_CLIENT_SECRET", None)
+            os.environ.pop(sources.LINEAR_SEATS_ENV, None)
+            sources.reset_linear_seat_state()
+            with mock.patch.object(sources.linear_board, "query", side_effect=fake):
+                self.assertEqual(sources._linear_light_scan(updated_since=since), {})
+        self.assertEqual(calls, ["bf-id", "gb-id"])
+        sources.reset_linear_seat_state()
+        sources.take_warnings()
+
+    def test_a_failed_fetch_does_not_mark_the_cursor_advance(self) -> None:
+        now = sources.parse_ts_ms("2026-11-12T00:00:00.000Z")
+        self._write_sync(sources._linear_iso(now - 3600 * 1000), now - 1000)
+        receipt: dict = {}
+
+        def fetch(ids):
+            raise sources.LinearSourceError("linear: stopped after the scan")
+
+        with mock.patch.object(sources, "now_ms", return_value=now):
+            with self.assertRaises(sources.LinearSourceError):
+                list(
+                    sources.iter_linear(
+                        light_scan=lambda: {"uuid-1": "2026-11-11T23:30:00.000Z"},
+                        fetch_full=fetch,
+                        receipt=receipt,
+                    )
+                )
+        self.assertFalse(receipt["cursor_advance"])
+        self.assertEqual(receipt["read_mode"], "incremental")
+
+
+class ServerNightlySources(unittest.TestCase):
+    def test_the_server_set_attests_and_a_truncated_run_does_not(self) -> None:
+        names = list(sources.SERVER_NIGHTLY_SOURCES)
+        self.assertEqual(names, ["linear", "doc", "skill", "memory"])
+        self.assertNotIn("apple-note", names)
+        self.assertTrue(ingest._attests_health(names, True, None, None))
+        self.assertTrue(ingest._attests_health(list(sources.NIGHTLY_SOURCES), True, None, None))
+        self.assertFalse(ingest._attests_health(names, True, None, 5))
+        self.assertFalse(ingest._attests_health(names, False, None, None))
+        self.assertFalse(ingest._attests_health(names, True, None, None, dry_run=True))
+        self.assertFalse(ingest._attests_health(["linear", "doc"], True, None, None))
+
+    def test_default_checkouts_follow_the_code_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            code = root / "server-code"
+            repo = code / "AI-Fleet-Coordinator"
+            repo.mkdir(parents=True)
+            (repo / "README.md").write_text("# Fleet\n\nThe server clone.\n")
+            ops = code / "fleet-ops"
+            ops.mkdir()
+            (ops / "HANDBOOK.md").write_text("# Handbook\n\nThe server handbook.\n")
+            decoy = root / "home-code" / "AI-Fleet-Coordinator"
+            decoy.mkdir(parents=True)
+            (decoy / "README.md").write_text("# Decoy\n\nNot the server clone.\n")
+            with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": str(code)}):
+                seen = list(sources.iter_docs(extra=[], code_dir=None, apps_dir=None, grok_home=None))
+                pinned = list(
+                    sources.iter_docs(decoy, root / "missing-ops", [], code_dir=None, apps_dir=None, grok_home=None)
+                )
+            paths = [d.path for d in seen]
+            self.assertTrue(any(path.endswith("server-code/AI-Fleet-Coordinator/README.md") for path in paths))
+            self.assertTrue(any(path.endswith("server-code/fleet-ops/HANDBOOK.md") for path in paths))
+            self.assertFalse(any("home-code" in path for path in paths))
+            self.assertTrue(any("home-code" in d.path for d in pinned))
+            self.assertFalse(any("server-code" in d.path for d in pinned))
+
+    def test_omitted_code_dir_reads_the_env_and_none_skips_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            code = root / "code"
+            repo = code / "DealDex"
+            repo.mkdir(parents=True)
+            (repo / "README.md").write_text("# DealDex\n\nHello from the configured root.\n")
+            empty = root / "empty"
+            with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": str(code)}):
+                skipped = list(
+                    sources.iter_docs(empty, empty, [], code_dir=None, apps_dir=None, grok_home=None)
+                )
+                seen = list(sources.iter_docs(empty, empty, [], apps_dir=None, grok_home=None))
+            self.assertFalse(any("DealDex" in d.path for d in skipped))
+            self.assertTrue(any("DealDex" in d.path and d.path.endswith("README.md") for d in seen))
+
+    def test_skills_and_memory_read_the_mirror_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            skill = root / "skills" / "claude" / "afc687-mirror-skill"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("---\nname: Mirror skill\n---\n# Mirror skill\n")
+            memory = root / "memory" / "claude-projects" / "-Users-jay-DealDex" / "memory"
+            memory.mkdir(parents=True)
+            (memory / "MEMORY.md").write_text("# index\n")
+            (memory / "note.md").write_text("# Note\n\nA lesson.\n")
+            codex = root / "memory" / "codex"
+            codex.mkdir()
+            (codex / "keep.md").write_text("# Keep\n")
+            with mock.patch.dict(os.environ, {"FLEET_RAG_MIRROR": str(root)}):
+                skills = {d.doc_id for d in sources.iter_skills()}
+                memories = {d.doc_id for d in sources.iter_memory()}
+            self.assertIn("skill/claude/afc687-mirror-skill", skills)
+            self.assertIn("memory/claude/dealdex/note.md", memories)
+            self.assertNotIn("memory/claude/dealdex/MEMORY.md", memories)
+            self.assertIn("memory/codex/keep.md", memories)
+            without = {d.doc_id for d in sources.iter_skills()}
+            self.assertNotIn("skill/claude/afc687-mirror-skill", without)
+
+
+
+class LinearBudgetTests(unittest.TestCase):
+    """_linear_run forwards the caller's remaining budget and never touches process timers."""
+
+    def setUp(self) -> None:
+        sources._linear_failed_seats.clear()
+        linear_board.clear_sessions_for_tests()
+
+    def _env(self):
+        return mock.patch.dict(
+            os.environ,
+            {"LINEAR_CLIENT_ID": "cid", "LINEAR_CLIENT_SECRET": "sec"},
+            clear=False,
+        )
+
+    def test_remaining_budget_is_forwarded_to_the_board_query(self) -> None:
+        seen = {}
+
+        def fake_query(seat, cid, sec, query, *, max_chars, timeout_s=None):
+            seen["timeout_s"] = timeout_s
+            return {"ok": True}
+
+        with (
+            self._env(),
+            mock.patch.object(sources, "_linear_seat_envs", return_value=[]),
+            mock.patch.object(sources.linear_board, "query", side_effect=fake_query),
+        ):
+            result = sources._linear_run("{ viewer { id } }", 30)
+        self.assertEqual(result, {"ok": True})
+        self.assertIsNotNone(seen["timeout_s"])
+        self.assertGreater(seen["timeout_s"], 0)
+        self.assertLessEqual(seen["timeout_s"], 30)
+
+    def test_an_expired_budget_refuses_before_any_board_call(self) -> None:
+        called = []
+
+        def fake_query(*args, **kwargs):
+            called.append(args)
+            return {"ok": True}
+
+        with (
+            self._env(),
+            mock.patch.object(sources, "_linear_seat_envs", return_value=[]),
+            mock.patch.object(sources.linear_board, "query", side_effect=fake_query),
+            mock.patch.object(sources.time, "monotonic", side_effect=[1000.0, 2000.0]),
+        ):
+            with self.assertRaises(Exception):
+                sources._linear_run("{ viewer { id } }", 30)
+        self.assertEqual(called, [])
+
+    def test_worker_thread_gets_the_same_budget_enforcement(self) -> None:
+        called = []
+        outcome = []
+
+        def fake_query(*args, **kwargs):
+            called.append(args)
+            return {"ok": True}
+
+        def run():
+            try:
+                with (
+                    self._env(),
+                    mock.patch.object(sources, "_linear_seat_envs", return_value=[]),
+                    mock.patch.object(sources.linear_board, "query", side_effect=fake_query),
+                    mock.patch.object(sources.time, "monotonic", side_effect=[1000.0, 2000.0]),
+                ):
+                    sources._linear_run("{ viewer { id } }", 30)
+            except Exception as exc:  # noqa: BLE001 - asserting the failure surfaces in-thread
+                outcome.append(exc)
+
+        worker = threading.Thread(target=run)
+        worker.start()
+        worker.join(30)
+        self.assertEqual(len(outcome), 1)
+        self.assertEqual(called, [])
+
+    def test_no_process_timer_is_created_or_destroyed(self) -> None:
+        if not hasattr(signal, "ITIMER_REAL"):
+            self.skipTest("posix only")
+        previous_handler = signal.getsignal(signal.SIGALRM)
+        signal.setitimer(signal.ITIMER_REAL, 30.0, 7.0)
+        try:
+            def fake_query(seat, cid, sec, query, *, max_chars, timeout_s=None):
+                return {"ok": True}
+
+            with (
+                self._env(),
+                mock.patch.object(sources, "_linear_seat_envs", return_value=[]),
+                mock.patch.object(sources.linear_board, "query", side_effect=fake_query),
+            ):
+                sources._linear_run("{ viewer { id } }", 30)
+            value, interval = signal.getitimer(signal.ITIMER_REAL)
+            self.assertGreater(value, 0)  # the caller's own timer is untouched
+            self.assertEqual(interval, 7.0)
+            self.assertIs(signal.getsignal(signal.SIGALRM), previous_handler)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_handler)
+
+
+class LinearBoardBudgetClampTests(unittest.TestCase):
+    """linear_board.query clamps the cached client for one call and restores it after."""
+
+    def setUp(self) -> None:
+        linear_board.clear_sessions_for_tests()
+
+    def _client(self):
+        class FakeLinear:
+            def __init__(self) -> None:
+                self.timeout = 60.0
+                self.max_wait = 90.0
+                self.seen = []
+
+            def call(self, graphql):
+                self.seen.append((self.timeout, self.max_wait))
+                return {"data": {"ok": True}}
+
+        return FakeLinear()
+
+    def test_clamp_applies_during_the_call_and_is_restored(self) -> None:
+        fake = self._client()
+        B = mock.Mock()
+        B.clean_data.side_effect = lambda d: d
+        B.output_limited.side_effect = lambda d, n: None
+        with mock.patch.object(linear_board, "_client_for", return_value=(B, fake)):
+            linear_board.query("SEAT", "cid", "sec", "{ q }", max_chars=1000, timeout_s=5.0)
+        self.assertEqual(fake.seen, [(5.0, 5.0)])
+        self.assertEqual((fake.timeout, fake.max_wait), (60.0, 90.0))
+
+    def test_restore_happens_on_failure(self) -> None:
+        fake = self._client()
+
+        def boom(graphql):
+            raise SystemExit(2)
+
+        fake.call = boom
+        B = mock.Mock()
+        with (
+            mock.patch.object(linear_board, "_client_for", return_value=(B, fake)),
+            self.assertRaises(linear_board.BoardCliFailure),
+        ):
+            linear_board.query("SEAT", "cid", "sec", "{ q }", max_chars=1000, timeout_s=5.0)
+        self.assertEqual((fake.timeout, fake.max_wait), (60.0, 90.0))
+
+    def test_no_budget_leaves_the_client_alone(self) -> None:
+        fake = self._client()
+        B = mock.Mock()
+        B.clean_data.side_effect = lambda d: d
+        B.output_limited.side_effect = lambda d, n: None
+        with mock.patch.object(linear_board, "_client_for", return_value=(B, fake)):
+            linear_board.query("SEAT", "cid", "sec", "{ q }", max_chars=1000)
+        self.assertEqual(fake.seen, [(60.0, 90.0)])

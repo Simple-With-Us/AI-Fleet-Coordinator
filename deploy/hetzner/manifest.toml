@@ -1,0 +1,413 @@
+# Hetzner host desired state (Fleet GitOps G1, AFC-369).
+# Style matches deploy/mac/manifest.toml (AFC-375): tracked sources only.
+# The reconciler copies these files and does not reload systemd or restart units.
+# Secret values stay in Infisical. This file names paths and service-token env files, never values.
+
+schema_version = 1
+issue = "AFC-369"
+
+[manifest]
+repo = "AI-Fleet-Coordinator"
+description = "Tracked systemd units, timers, and cron files the repo already contains for the Hetzner host."
+
+# --- Excluded surfaces (never in [[file]]; reconciler does not diff or copy them) ---
+
+[[excluded.unit]]
+id = "afc-wake-router.service"
+category = "wake-delivery"
+source = "scripts/simple_tools/server/afc-wake-router.service"
+reason = "Wake router unit. Out of scope for this reconciler."
+
+[[excluded.unit]]
+id = "ag-wake-bridge.service"
+category = "wake-delivery"
+source = "scripts/simple_tools/server/ag-wake-bridge.service"
+reason = "Seat wake bridge. Out of scope for this reconciler."
+
+[[excluded.unit]]
+id = "zc-wake-bridge.service"
+category = "wake-delivery"
+source = "scripts/simple_tools/server/zc-wake-bridge.service"
+reason = "Seat wake bridge. Out of scope for this reconciler."
+
+[[excluded.unit]]
+id = "operator-sheets-drain.service"
+category = "operator"
+source = "scripts/simple_tools/server/operator-sheets-drain.service"
+reason = "Operator registry export. Out of scope for this reconciler."
+
+[[excluded.unit]]
+id = "operator-sheets-drain.timer"
+category = "operator"
+source = "scripts/simple_tools/server/operator-sheets-drain.timer"
+reason = "Operator registry export timer. Out of scope for this reconciler."
+
+[[excluded.unit]]
+id = "fleet-server-status.service"
+category = "muster"
+source = "scripts/systemd/fleet-server-status.service"
+reason = "Writes the server status report Muster reads."
+
+[[excluded.unit]]
+id = "fleet-server-status.timer"
+category = "muster"
+source = "scripts/systemd/fleet-server-status.timer"
+reason = "Timer for the Muster server status report."
+
+[[excluded.unit]]
+id = "fleet-vm-status.service"
+category = "muster"
+source = "scripts/systemd/fleet-vm-status.service"
+reason = "Writes the VM status report Muster's freshness window reads."
+
+[[excluded.unit]]
+id = "fleet-vm-status.timer"
+category = "muster"
+source = "scripts/systemd/fleet-vm-status.timer"
+reason = "Timer for the Muster VM status report."
+
+[[excluded.note]]
+category = "eavesdropper"
+reason = "No eavesdropper unit is desired state here. Do not add one to this manifest."
+
+[[excluded.note]]
+category = "session-letter"
+reason = "Session letters are the Operator registry and seat hooks, not a host unit."
+
+[[excluded.note]]
+category = "routing"
+reason = "No message-routing unit is desired state. Wake bridges are excluded above."
+
+[[excluded.note]]
+category = "operator"
+reason = "codex-operator-coordination-check and afc-jet-operator-wake are Operator units with no body copied from this repo."
+
+[[excluded.note]]
+category = "wake-delivery"
+reason = "scripts/whatsapp_bridge/wa-bridge.service.example is a review template for the Jet wake bridge and is not installed by this reconciler."
+
+[[excluded.note]]
+category = "vendor"
+reason = "SRV-C08 e2scrub_all is an OS package cron file, not fleet desired state."
+
+[[excluded.note]]
+category = "retired"
+reason = "SRV-C09, the root crontab Shellular watchdog, stays absent. The host has no root crontab."
+
+# --- Desired files (bytes already tracked in this repo) ---
+
+[[file]]
+id = "fleet-health-recover@.service"
+kind = "unit"
+source = "scripts/host/fleet-health-recover@.service"
+installed = "etc/systemd/system/fleet-health-recover@.service"
+inventory = "SRV-S02"
+script_source = "scripts/host/fleet-health-recover.sh"
+
+[[file]]
+id = "fleet-housekeep.service"
+kind = "unit"
+source = "scripts/host/fleet-housekeep.service"
+installed = "etc/systemd/system/fleet-housekeep.service"
+inventory = "SRV-S03"
+script_source = "scripts/host/fleet-housekeep.sh"
+
+[[file]]
+id = "fleet-housekeep.timer"
+kind = "timer"
+source = "scripts/host/fleet-housekeep.timer"
+installed = "etc/systemd/system/fleet-housekeep.timer"
+inventory = "SRV-S03"
+
+[[file]]
+id = "fleet-tools-doctor.service"
+kind = "unit"
+source = "scripts/systemd/fleet-tools-doctor.service"
+installed = "etc/systemd/system/fleet-tools-doctor.service"
+inventory = "SRV-S04"
+
+[[file]]
+id = "fleet-tools-doctor.timer"
+kind = "timer"
+source = "scripts/systemd/fleet-tools-doctor.timer"
+installed = "etc/systemd/system/fleet-tools-doctor.timer"
+inventory = "SRV-S04"
+
+[[file]]
+id = "fleet-cli-git-update.service"
+kind = "unit"
+source = "scripts/systemd/fleet-cli-git-update.service"
+installed = "etc/systemd/system/fleet-cli-git-update.service"
+inventory = "SRV-S05"
+
+[[file]]
+id = "fleet-cli-git-update.timer"
+kind = "timer"
+source = "scripts/systemd/fleet-cli-git-update.timer"
+installed = "etc/systemd/system/fleet-cli-git-update.timer"
+inventory = "SRV-S05"
+
+[[file]]
+id = "cf-usage-watchdog.service"
+kind = "unit"
+source = "scripts/systemd/cf-usage-watchdog.service"
+installed = "etc/systemd/system/cf-usage-watchdog.service"
+inventory = "SRV-S22"
+
+[[file]]
+id = "cf-usage-watchdog.timer"
+kind = "timer"
+source = "scripts/systemd/cf-usage-watchdog.timer"
+installed = "etc/systemd/system/cf-usage-watchdog.timer"
+inventory = "SRV-S22"
+
+[[file]]
+id = "fleet-coding-memory.service"
+kind = "unit"
+source = "scripts/hetzner/fleet-coding-memory.service"
+installed = "etc/systemd/system/fleet-coding-memory.service"
+inventory = "install-coding-memory.sh"
+
+[[file]]
+id = "fleet-rag-nightly.service"
+kind = "unit"
+source = "scripts/systemd/fleet-rag-nightly.service"
+installed = "etc/systemd/system/fleet-rag-nightly.service"
+inventory = "docs/RAG-NIGHTLY-INGEST.md"
+
+[[file]]
+id = "fleet-rag-nightly.timer"
+kind = "timer"
+source = "scripts/systemd/fleet-rag-nightly.timer"
+installed = "etc/systemd/system/fleet-rag-nightly.timer"
+inventory = "docs/RAG-NIGHTLY-INGEST.md"
+
+[[file]]
+id = "lane-placement-watch.service"
+kind = "unit"
+source = "scripts/systemd/lane-placement-watch.service"
+installed = "etc/systemd/system/lane-placement-watch.service"
+inventory = "scripts/fleet_lanes/README.md"
+
+[[file]]
+id = "lane-placement-watch.timer"
+kind = "timer"
+source = "scripts/systemd/lane-placement-watch.timer"
+installed = "etc/systemd/system/lane-placement-watch.timer"
+inventory = "scripts/fleet_lanes/README.md"
+
+[[file]]
+id = "fleet-qdrant"
+kind = "cron"
+source = "scripts/hetzner/fleet-qdrant.cron"
+installed = "etc/cron.d/fleet-qdrant"
+inventory = "SRV-C02"
+script_source = "scripts/hetzner/fleet-qdrant-snapshot.sh"
+
+# --- Absence checks (apply does not delete these) ---
+
+[[forbid]]
+id = "fleet-backups-bak"
+glob = "etc/cron.d/fleet-backups.bak*"
+inventory = "SRV-C10"
+note = "Cron reads every file in cron.d, so backup copies of fleet-backups are live duplicate crontabs. Desired state is their absence."
+
+# --- Inventoried items with no sourced body in this repo ---
+
+[[gap]]
+id = "fleet-deploy-guard@.service"
+kind = "unit"
+inventory = "SRV-S01"
+note = "No unit file in this repo. Per-app env files hold tokens and are not templates."
+
+[[gap]]
+id = "fleet-deploy-guard@.timer"
+kind = "timer"
+inventory = "SRV-S01"
+note = "No timer file in this repo."
+
+[[gap]]
+id = "code-main-sync.service"
+kind = "unit"
+inventory = "SRV-S06"
+note = "No unit file in this repo. The README describes a host drop-in, not the unit body."
+
+[[gap]]
+id = "code-main-sync.timer"
+kind = "timer"
+inventory = "SRV-S06"
+note = "No timer file in this repo."
+
+[[gap]]
+id = "usage-monitor-replica-status.service"
+kind = "unit"
+inventory = "SRV-S08"
+note = "No unit file in this repo."
+
+[[gap]]
+id = "usage-monitor-replica-status.timer"
+kind = "timer"
+inventory = "SRV-S08"
+note = "No timer file in this repo."
+
+[[gap]]
+id = "usage-monitor-replica-status.service.d"
+kind = "drop-in"
+inventory = "SRV-S20"
+note = "The drop-in directory is inventoried and no drop-in file is in this repo."
+
+[[gap]]
+id = "box-disk-hygiene.service"
+kind = "unit"
+inventory = "SRV-S09"
+note = "No unit file in this repo."
+
+[[gap]]
+id = "box-disk-hygiene.timer"
+kind = "timer"
+inventory = "SRV-S09"
+note = "No timer file in this repo."
+
+[[gap]]
+id = "lane-auto-retire.service"
+kind = "unit"
+inventory = "SRV-S10"
+note = "No unit file in this repo."
+
+[[gap]]
+id = "lane-auto-retire.timer"
+kind = "timer"
+inventory = "SRV-S10"
+note = "No timer file in this repo."
+
+[[gap]]
+id = "ct-deploy-guard.service"
+kind = "unit"
+inventory = "SRV-S11"
+note = "Congress.Trade unit. Not present in this repo, so no body is committed here."
+
+[[gap]]
+id = "ct-deploy-guard.timer"
+kind = "timer"
+inventory = "SRV-S11"
+note = "Congress.Trade timer. Not present in this repo."
+
+[[gap]]
+id = "ct-deploy-overlap.service"
+kind = "unit"
+inventory = "SRV-S12"
+note = "Congress.Trade unit. Not present in this repo."
+
+[[gap]]
+id = "congress-health-recover.service"
+kind = "unit"
+inventory = "SRV-S13"
+note = "Congress.Trade unit. Not present in this repo."
+
+[[gap]]
+id = "clutch-chat-bridge.service"
+kind = "unit"
+inventory = "SRV-S16"
+note = "No unit file in this repo."
+
+[[gap]]
+id = "claude-remote-control.service"
+kind = "unit"
+inventory = "SRV-S17"
+note = "No unit file in this repo."
+
+[[gap]]
+id = "codex-tmux-boot.service"
+kind = "unit"
+inventory = "SRV-S18"
+note = "No unit file in this repo."
+
+[[gap]]
+id = "opencode-server.service"
+kind = "unit"
+inventory = "SRV-S19"
+note = "No unit file in this repo. The inventory mentions a mesh address that is not copied here."
+
+[[gap]]
+id = "shellular.service"
+kind = "unit"
+inventory = "SRV-S21"
+note = "No unit file in this repo. The runtime tree is outside AFC."
+
+[[gap]]
+id = "fleet-rag-nightly-user-drop-in"
+kind = "drop-in"
+inventory = "docs/RAG-NIGHTLY-INGEST.md"
+note = "The unit comment says User= and Group= are a host drop-in, not this file. That drop-in is not in git."
+
+[[gap]]
+id = "fleet-rag-nightly.env"
+kind = "env"
+inventory = "docs/RAG-NIGHTLY-INGEST.md"
+note = "scripts/systemd/fleet-rag-nightly.env.example is a template with the job off. It is not the live env file and is not copied."
+
+[[gap]]
+id = "fleet-backups"
+kind = "cron"
+inventory = "SRV-C01"
+note = "No /etc/cron.d/fleet-backups body in this repo."
+
+[[gap]]
+id = "ct-litestream-l1-only"
+kind = "cron"
+inventory = "SRV-C03"
+note = "No cron file in this repo."
+
+[[gap]]
+id = "um-litestream-l1-only"
+kind = "cron"
+inventory = "SRV-C04"
+note = "No cron file in this repo."
+
+[[gap]]
+id = "ct-reattach-proxy"
+kind = "cron"
+inventory = "SRV-C05"
+note = "No cron file in this repo."
+
+[[gap]]
+id = "vps-storage-watch"
+kind = "cron"
+inventory = "SRV-C06"
+note = "Inventory names Usage-Monitor deploy/server/vps-storage-watch. That tree is not in this repo."
+
+[[gap]]
+id = "coolify-maintenance"
+kind = "cron"
+inventory = "SRV-C07"
+note = "No cron file in this repo."
+
+[[gap]]
+id = "fleet-housekeep.sh-install-path"
+kind = "script"
+inventory = "SRV-S03"
+note = "The tracked unit ExecStart is /usr/local/bin/fleet-housekeep.sh and the inventory names /usr/local/sbin/fleet-housekeep.sh. The script is not copied."
+
+[[gap]]
+id = "fleet-health-recover.sh-install-path"
+kind = "script"
+inventory = "SRV-S02"
+note = "The tracked unit ExecStart is /usr/local/bin/fleet-health-recover.sh and inventory SRV-X06 names /usr/local/sbin/fleet-health-recover.sh. The script is not copied."
+
+[[gap]]
+id = "qdrant-retention-knobs"
+kind = "setting"
+inventory = "SRV-C02"
+note = "QDRANT_KEEP_LOCAL and QDRANT_KEEP_REMOTE_DAYS are literals in the tracked cron. No sourced template reads them from Infisical, so the cron was not rewritten."
+
+[[gap]]
+id = "wireguard-template"
+kind = "template"
+inventory = "AFC-369"
+note = "No WireGuard template is in this repo. The key stays in Infisical and no key name is invented here."
+
+[[gap]]
+id = "host-secret-env"
+kind = "env"
+inventory = "AFC-369"
+note = "Host env files and service-token files stay on the host. The cf-usage-watchdog env file and the coding-memory read-token credential are named by the existing unit comments. Values are not in git."

@@ -21,6 +21,11 @@ builds a path, and a surprise of any kind answers "" with a reason, which means 
 server, a terminal `claude` chat), no record, a deleted parent, a parent that never ran, a file caught mid-write.  The
 chat is then picked like any other.  A user fork (`forkedFromSessionId`) is not a sub-thread here.
 
+`archive_states` is the third reader (AFC-694).  It reads only `cliSessionId` and `isArchived`, for the letter's
+archive sweep (`claude_letter`), which frees the letter of a chat the app has archived.  Archiving fires no hook
+reason of its own, so the app's flag is the one sign of it.  The same bounded, retried reads apply, and any
+surprise keeps the chat's letter.
+
 Standard library only, Python 3.11+.
 """
 
@@ -114,17 +119,18 @@ def _parse(text: str) -> dict | None:
         return None
 
 
-def _load(path: str) -> dict | None:
-    """The record's three fields, or None when it cannot be read.  A file the app is rewriting (a truncate, then the
-    write) can be caught empty or half written, and a read right after lands in the same window, so it is read up to
-    LOAD_ATTEMPTS times with a short pause between."""
+def _load(path: str, parse=None) -> dict | None:
+    """The record's three fields (or what `parse` projects), or None when it cannot be read.  A file the app is
+    rewriting (a truncate, then the write) can be caught empty or half written, and a read right after lands in the
+    same window, so it is read up to LOAD_ATTEMPTS times with a short pause between."""
+    parse = parse or _parse
     for attempt in range(LOAD_ATTEMPTS):
         if attempt:
             time.sleep(RETRY_PAUSE)
         text = _read(path)
         if text is None:
             return None
-        record = _parse(text)
+        record = parse(text)
         if record is not None:
             return record
     return None
@@ -267,6 +273,106 @@ def agent_title(home: str, *, host_session_id: str = "", cli_session_id: str = "
         title = data.get("title")
         return title if data.get("titleSource") == "tool" and isinstance(title, str) else ""
     return ""
+
+
+# ---- which chats the app has archived (AFC-694) -------------------------------------------------------------------
+
+# A chat's state in the app, for the archive sweep.  A chat with no record at all is left out of the answer.
+ARCHIVED = "archived"
+UNARCHIVED = "unarchived"
+# The archive sweep reads every record, not the newest few, because a chat archived long after it last ran can sit
+# anywhere in the folder.  These bound it:  a record past them is not found, and a chat with no record found is left
+# alone, so the bound can only keep a letter, never free one.
+ARCHIVE_SCAN_RECORDS = 3000
+ARCHIVE_SCAN_BYTES = 1 << 30
+
+
+def _project_archive(data: object) -> dict | None:
+    """The two fields the archive sweep reads, `cliSessionId` and `isArchived`, and nothing else of the record."""
+    if not isinstance(data, dict):
+        return None
+    out: dict = {"isArchived": data.get("isArchived") is True}
+    if isinstance(data.get("cliSessionId"), str):
+        out["cliSessionId"] = data["cliSessionId"]
+    return out
+
+
+def _parse_archive(text: str) -> dict | None:
+    try:
+        return _project_archive(json.loads(text))
+    except (ValueError, RecursionError):
+        return None
+
+
+def _all_records(root: str) -> list[tuple[float, int, str]]:
+    files: list[tuple[float, int, str]] = []
+    for org in _org_dirs(root):
+        try:
+            with os.scandir(org) as entries:
+                for e in entries:
+                    try:
+                        if (
+                            e.name.endswith(".json")
+                            and HOST_ID.fullmatch(e.name[: -len(".json")])
+                            and e.is_file(follow_symlinks=False)
+                        ):
+                            st = e.stat()
+                            files.append((st.st_mtime, st.st_size, e.path))
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    files.sort(reverse=True)
+    return files
+
+
+def archive_states(home: str, session_ids: set[str] | frozenset[str]) -> dict[str, str] | None:
+    """For each of these Claude Code session UUIDs that a record of the app holds as its `cliSessionId`:  ARCHIVED
+    when the app has archived the chat (`isArchived` is true), UNARCHIVED when it has not, UNREADABLE when a record
+    that may hold it could not be read.  A UUID no record holds is left out:  a terminal `claude` chat, or a chat on a
+    host with no app.  None when this host has no store at all.
+
+    Any doubt keeps the chat:  a UUID held by two records is ARCHIVED only when every one of them says so, and one
+    unreadable record that mentions the UUID makes it UNREADABLE.  Only `cliSessionId` and `isArchived` leave a
+    record, and a record is parsed only when its text mentions one of the UUIDs asked about."""
+    root = store_root(home)
+    if not os.path.isdir(root):
+        return None
+    wanted = {sid for sid in session_ids if sid}
+    states: dict[str, str] = {}
+    if not wanted:
+        return states
+    rank = {ARCHIVED: 0, UNARCHIVED: 1, UNREADABLE: 2}
+
+    def note(sid: str, state: str) -> None:
+        if rank[state] >= rank.get(states.get(sid, ARCHIVED), 0):
+            states[sid] = state
+
+    spent = 0
+    for _, size, path in _all_records(root)[:ARCHIVE_SCAN_RECORDS]:
+        if spent > ARCHIVE_SCAN_BYTES:
+            break
+        if size > RECORD_BYTES:
+            spent += RECORD_BYTES
+            continue
+        text = _read(path)
+        if text is None:
+            continue
+        spent += len(text)
+        named = [sid for sid in wanted if sid in text]
+        if not named:
+            continue
+        record = _parse_archive(text)
+        if record is None:
+            record = _load(path, _parse_archive)  # caught mid-write:  read it again
+        if record is None:
+            for sid in named:
+                note(sid, UNREADABLE)
+            continue
+        cli = record.get("cliSessionId")
+        if cli in wanted:
+            note(cli, ARCHIVED if record["isArchived"] else UNARCHIVED)
+    return states
 
 
 def parent_of(home: str, *, host_session_id: str = "", cli_session_id: str = "") -> str:

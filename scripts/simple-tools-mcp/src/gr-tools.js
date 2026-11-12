@@ -21,7 +21,7 @@ import { callTypedV1 } from "./gr-typed-v1.js";
 import { ASSERTION_FAMILY_RE } from "./gr-assert.js";
 import { WF_V1_READ_ACTIONS, WF_V1_ACTIONS, workflowInputLimit, validWfV1Args, boundedWorkflowInput, parseWfV1Args, validWfV1Response, utf8Bytes } from "./gr-workflow-v1.js";
 import { resolveSecret } from "./infisical.js";
-import { classifyRelayRefusal, movedRepository } from "./gr-refusal.js";
+import { allowlistedGithubDiagnostics, classifyRelayRefusal, movedRepository } from "./gr-refusal.js";
 
 /** The relay's response envelope (kody discussion_r4372745180):  every body
  * is decoded as UNKNOWN and validated with RelayResponseSchema.parse before
@@ -45,7 +45,7 @@ export const GR_SECRETS = Object.freeze({
   accessSecret: "GR_ACCESS_CLIENT_SECRET",
 });
 
-// The seven fronted actions, in the order the admin panel and docs name them.
+// The fronted actions, in the order the admin panel and docs name them.
 // open_pr is the only one the relay still runs under the owner (PR-only)
 // token;  the rest run as the calling seat's own GitHub App.
 export const GR_ACTIONS = Object.freeze([
@@ -56,6 +56,7 @@ export const GR_ACTIONS = Object.freeze([
   "merge_pr",
   "workflow_dispatch",
   "resolve_thread",
+  "create_repo",
 ]);
 
 /** The upstream origin when it is a bare https origin (a trailing slash
@@ -199,6 +200,9 @@ export class GrRelayClient {
       const outcomeUnknown=()=>({status:502,body:{error:"workflow_outcome_unknown",outcome:"unknown",retryable:false,...(githubCode?{github_code:githubCode}:{})}});
       // Never reflect upstream error prose; a duplicate can be pending/unknown.
       if(response.status===409 && ['pending','unknown'].includes(parsed.outcome)) return outcomeUnknown();
+      if (parsed.error === "verifier_unavailable") {
+        return {status: response.status, body: {error: "workflow_request_refused", reason: "verifier_unavailable", retryable: true}};
+      }
       if(response.status>=500 && parsed.retryable!==true) {
         if (response.status === 502 && parsed.outcome === "unknown" && githubCode) return outcomeUnknown();
         return unavailable();
@@ -227,7 +231,8 @@ export class GrRelayClient {
       // A moved repository carries only its validated details (a strict
       // owner/name and a numeric id), never the relay's prose.
       const moved=classified?.reason==="repository_moved"?movedRepository(body):{};
-      return {status:response.status,body:{error:"workflow_request_refused", ...(classified ? classified : {}), ...moved, ...(parsed.retryable===true ? {retryable:true} : {})}};
+      const diagnostics=write?allowlistedGithubDiagnostics(body.github_diagnostics):null;
+      return {status:response.status,body:{error:"workflow_request_refused", ...(classified ? classified : {}), ...moved, ...(diagnostics ? {github_diagnostics:diagnostics} : {}), ...(parsed.retryable===true ? {retryable:true} : {})}};
     } catch {return unavailable();}
   }
 
@@ -344,7 +349,7 @@ export const GR_TOOLS = Object.freeze([
     name: "gr_comment_pr",
     title: "Comment on Pull Request",
     description: "Add a conversation comment to a pull request through git-relay, as your own GitHub App.",
-    inputSchema: obj(["repo", "number", "body"], { repo: REPO, number: NUMBER, body: { type: "string" } }),
+    inputSchema: obj(["repo", "number", "body"], { repo: REPO, number: NUMBER, body: { type: "string" }, intent_id: {type:"string",pattern:"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}$"} }),
   },
   {
     name: "gr_merge_pr",
@@ -363,6 +368,17 @@ export const GR_TOOLS = Object.freeze([
     title: "Resolve Review Thread",
     description: "Resolve a pull request review thread through git-relay, as your own GitHub App.  thread_id is the PRRT_ review-thread id.",
     inputSchema: obj(["repo", "thread_id"], { repo: REPO, thread_id: { type: "string" } }),
+  },
+  {
+    name: "gr_create_repo",
+    title: "Create Repository",
+    description: "Create a repository through git-relay, as your own GitHub App. Denied unless the seat policy grants create_repo. Owners are Simple-With-Us and jaywedgeworth22. Visibility defaults to private; public also needs create_repo_public. An existing repository returns already_exists and is not created again.",
+    inputSchema: obj(["repo"], {
+      repo: REPO,
+      visibility: { type: "string", enum: ["private", "public"] },
+      description: { type: "string", maxLength: 350 },
+      license_template: { type: "string", enum: ["apache-2.0"] },
+    }),
   },
 ]);
 export const GR_TOOL_NAMES = Object.freeze(GR_TOOLS.map((tool) => tool.name));

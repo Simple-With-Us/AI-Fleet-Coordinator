@@ -11,7 +11,7 @@ import { HostedTools, HOSTED_TOOLS_BY_NAME, HOSTED_READ_TOOLS, HOSTED_WRITE_TOOL
 import { ListenerClient, listenerClientFromEnv, listenerBaseUrl, listenerReceipt, listenerSecretName, listenerSigningString, EAVESDROPPER_TOOLS } from "../src/eavesdropper.js";
 import { ZulipClient } from "../src/zulip.js";
 import * as S from "../src/seat-state.js";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, LISTENER_KEY_SECRET_NAMES, LISTENER_READ_SECRETS, WAKE_SECRETS } from "../src/config.js";
 import { ERROR_META_KEY, schemaProblem } from "../src/contract.js";
 import { FakeZulip, BOT_EMAIL } from "./fake-zulip.mjs";
 import { ROOT, testEnv } from "./helpers.mjs";
@@ -242,12 +242,25 @@ test("listenerReceipt: the four words of a ledger receipt and nothing else", () 
   assert.deepEqual(listenerReceipt({ wake_id: "w1", state: "A".repeat(3), via: "9lives", at: NaN }), { wake_id: "w1", state: null, via: null, at: null });
 });
 
-test("listenerSecretName: wake seats keep their wake key, MA gets its read-only key, other seats get none", () => {
+test("listenerSecretName: wake seats keep their wake key, the read-key seats get theirs, other seats get none", () => {
   assert.equal(listenerSecretName("JET"), "WAKE_HMAC_KEY_JET");
   assert.equal(listenerSecretName("WISE"), "WAKE_HMAC_KEY_INSTINCT");
   assert.equal(listenerSecretName("MA"), "WAKE_HMAC_KEY_MA");
-  assert.equal(listenerSecretName("CLAUDE"), null);
+  // Owner, Nov 10 2026 ("make the wake key for everyone"):  every hosted seat without a wake route has a read key.
+  assert.equal(listenerSecretName("CLAUDE"), "WAKE_HMAC_KEY_CLAUDE");
+  assert.equal(listenerSecretName("CODEX"), "WAKE_HMAC_KEY_CODEX");
+  assert.equal(listenerSecretName("CURSOR"), "WAKE_HMAC_KEY_CURSOR");
+  assert.equal(listenerSecretName("AG"), null);
   assert.equal(listenerSecretName("__proto__"), null);
+});
+
+test("the key-separation list covers every wake key and every read key, so a spike, health or WhatsApp key equal to any of them is refused (kody on #1768)", () => {
+  for (const name of [...Object.values(WAKE_SECRETS), ...Object.values(LISTENER_READ_SECRETS)]) {
+    assert.ok(LISTENER_KEY_SECRET_NAMES.includes(name), name);
+  }
+  assert.ok(LISTENER_KEY_SECRET_NAMES.includes("WAKE_HMAC_KEY_CLAUDE"));
+  assert.ok(LISTENER_KEY_SECRET_NAMES.includes("WAKE_HMAC_KEY_MA"));
+  assert.equal(new Set(LISTENER_KEY_SECRET_NAMES).size, LISTENER_KEY_SECRET_NAMES.length, "no name is listed twice");
 });
 
 test("operator_inbox_pending seat scoping: a client built for one seat reads only its own path, and MA has a read-secret name", async () => {

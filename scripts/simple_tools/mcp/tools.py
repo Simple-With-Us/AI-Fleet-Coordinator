@@ -6,13 +6,13 @@ sets additionalProperties false, so a `seat` argument is a validation error.
 
 Reads keep no server-side cursor and never move the CLI's cursors.  Callers pass `since_id` in and
 get `next_since_id` out.  Every Zulip-authored string (bodies, topic names, display names) comes
-back only inside the nonce fence, NFKC-folded, stripped of format characters, with marker text in
+back only inside the nonce fence, folded (NFKC with Zs kept, format characters dropped), with marker text in
 any case or separator removed and control characters escaped.  `structuredContent` carries
 integers only for reads, and writes echo no Zulip text.
 
 Writes reuse the CLI:  `cmd_post`, `cmd_reply` and `cmd_react` run against the long-lived Agent
 with per-call output buffers, after this layer has scanned the text, topic and channel for
-secrets, silenced raw mentions and resolved `to`.  Writes are spaced 3 seconds apart per seat
+secrets, sanitized mentions and resolved `to`.  Writes are spaced 3 seconds apart per seat
 across processes (a lock file holding the last write slot), and post and reply are idempotent
 (rows in <state>/<SEAT>/mcp-idem.json, keyed by the caller's idempotency_key or by a hash of the
 post for 10 minutes).
@@ -39,7 +39,6 @@ import os
 import re
 import threading
 import time
-import unicodedata
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
@@ -61,6 +60,7 @@ from .. import zulip_ops as OPS
 from ..idem import PENDING_FRESH, IdemStore
 from ..state import State
 from ..textfmt import fix_outbound
+from ..textfold import fold as _fold
 from . import fleetlink_tools as FLEETLINK
 from . import guide as GUIDE
 from . import linear_tools as LINEAR
@@ -462,14 +462,9 @@ def with_defaults(schema: Mapping[str, Any], arguments: Mapping[str, Any]) -> di
 # --------------------------------------------------------------------------------------------
 
 
-def _fold(text: str) -> str:
-    text = unicodedata.normalize("NFKC", text)
-    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
-
-
 def clean(text: Any, limit: int | None = None) -> tuple[str, bool]:
-    """A Zulip-authored string made safe to show inside the fence:  NFKC-folded, format characters
-    dropped, marker text in any case or with any separator (or none) replaced, control characters
+    """A Zulip-authored string made safe to show inside the fence:  folded (NFKC with Zs kept),
+    format characters dropped, marker text in any case or with any separator (or none) replaced, control characters
     shown as \\xNN, line and paragraph separators as \\uXXXX.  Returns (text, truncated)."""
     folded = _BROAD_MARKER_RE.sub("[marker removed]", _fold(str(text if text is not None else "")))
     escaped = LIVE.escape_body(folded)
@@ -943,10 +938,10 @@ class Tools:
     def _text(value: str) -> str:
         if value.strip() == "-":
             raise ToolError("invalid_argument", "argument 'text' must not be a single '-'")
-        text = W.neutralize_mentions(value).strip()
+        text = W.sanitize_compose_mentions(value).strip()
         if not text:
             raise ToolError(
-                "invalid_argument", "the message text is empty once raw mentions are silenced"
+                "invalid_argument", "the message text is empty once group mentions are removed"
             )
         return text
 
@@ -1408,7 +1403,7 @@ class Tools:
     # ---- AFC-330:  the rest of Zulip ---------------------------------------------------------
     # The work is in zulip_ops.py, which the CLI commands call too.  These handlers add the MCP
     # rules:  the schema already ran, every caller-written string is scanned before any request,
-    # raw mentions are silenced, every write takes this seat's spacing slot, creates are
+    # mentions are sanitized, every write takes this seat's spacing slot, creates are
     # idempotent, and every Zulip-authored string comes back only inside the nonce fence.
 
     def _list_result(

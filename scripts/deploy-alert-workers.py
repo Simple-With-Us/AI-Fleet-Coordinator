@@ -321,12 +321,14 @@ def credential_receipt():
 
 
 def main():
-    if not credential_receipt():
-        raise RuntimeError("Missing credential qualification receipt; deployment blocked")
     sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, timeout=30).strip()
     if current_main() != sha:
+        # A superseded run has nothing to deploy; it must exit cleanly even when
+        # the checkout predates a valid credential receipt.
         print("Superseded")
         return
+    if not credential_receipt():
+        raise RuntimeError("Missing credential qualification receipt; deployment blocked")
     runs = github(
         "/actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=" + sha + "&per_page=100"
     )["workflow_runs"]
