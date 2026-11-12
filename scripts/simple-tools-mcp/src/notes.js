@@ -46,8 +46,9 @@ export const NOTES_WAIT_MAX_S = 25; // ST-MCP waits at most this long, and this 
 export const NOTES_USER_AGENT = "simple-tools-mcp (hosted notes client)";
 export const NOTES_TRANSPORT = "operator";
 
-export const ACTIONS = Object.freeze(["create", "update", "pin", "unpin", "read", "list"]);
-export const WRITE_ACTIONS = Object.freeze(["create", "update", "pin", "unpin"]);
+export const ACTIONS = Object.freeze(["create", "update", "pin", "unpin", "read", "list", "delete"]);
+export const LOG_FILTER_ACTIONS = Object.freeze(ACTIONS.filter((action) => action !== "delete"));
+export const WRITE_ACTIONS = Object.freeze(["create", "update", "pin", "unpin", "delete"]);
 export const BODY_ACTIONS = Object.freeze(["create", "update"]);
 export const STATES = Object.freeze(["queued", "running", "done", "refused", "unknown", "expired"]);
 export const FINAL_STATES = Object.freeze(new Set(["done", "refused", "unknown", "expired"]));
@@ -72,13 +73,14 @@ export const LOG_QUERY_KEYS = Object.freeze(["since_hours", "limit", "by_seat", 
 export const LOG_QUERY_MAX = 1024; // the Operator answers 404 for a longer query
 
 const REQUEST_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/;
+const NOTE_ID_RE = /^x-coredata:\/\/[A-Za-z0-9][A-Za-z0-9_./:-]{7,511}$/;
 const TITLE_BAD_RE = /["\\\u0000-\u001f\u007f\u0085\u2028\u2029]/;
 const TITLE_SCOPE_RE = /^\[([A-Z0-9]+(?:, [A-Z0-9]+)*), ([A-Za-z][A-Za-z0-9]*(?:[ -][A-Za-z0-9]+)*)\] \S.*$/;
 const PR_RE = /^[0-9#, ]{1,40}$/;
 const ERROR_CODE_RE = /^[a-z][a-z_]{0,39}$/;
 
 export const NOTES_TOOLS = Object.freeze(NOTES_JSON.tools.map((tool) => Object.freeze(tool)));
-export const NOTES_WRITE_TOOLS = Object.freeze(new Set(["notes_create", "notes_update", "notes_pin", "notes_unpin"]));
+export const NOTES_WRITE_TOOLS = Object.freeze(new Set(["notes_create", "notes_update", "notes_pin", "notes_unpin", "notes_delete"]));
 export const NOTES_READ_TOOLS = Object.freeze(new Set(["notes_read", "notes_list", "notes_status", "notes_log"]));
 
 // ---------------------------------------------------------------- the untrusted fence
@@ -134,6 +136,11 @@ export const NotesWriteArgs = z.strictObject({
   session: z.string().optional(),
 });
 export const NotesPinArgs = z.strictObject(TITLE_SHAPE);
+export const NotesDeleteArgs = z.strictObject({
+  note_id: z.string(),
+  request_id: z.string().optional(),
+  wait_seconds: waitSeconds,
+});
 export const NotesReadArgs = z.strictObject({ ...TITLE_SHAPE, format: z.enum(FORMATS).optional() });
 export const NotesListArgs = z.strictObject({
   query: z.string().optional(),
@@ -147,7 +154,7 @@ export const NotesLogArgs = z.strictObject({
   since_hours: z.number().int().min(1).max(720).optional(),
   limit: z.number().int().min(1).max(LOG_LIMIT_MAX).optional(),
   by_seat: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/).optional(),
-  action: z.enum(ACTIONS).optional(),
+  action: z.enum(LOG_FILTER_ACTIONS).optional(),
   title: z.string().optional(),
 });
 
@@ -169,6 +176,14 @@ export const NotesRecord = z.looseObject({
 });
 export const RunnerError = z.looseObject({ code: z.string(), message: z.string().optional() });
 export const WriteResult = z.looseObject({ status: z.string().optional(), note_id: z.string().nullish(), pin_skipped: z.string().nullish() });
+export const DeleteResult = z.looseObject({
+  status: z.string().optional(),
+  note_id: z.string().nullish(),
+  apple_note_deleted: z.boolean().nullish(),
+  rag_deleted: z.boolean().nullish(),
+  partial: z.boolean().nullish(),
+  rag_error: z.string().nullish(),
+});
 export const ReadNote = z.looseObject({
   title: z.string().nullish(),
   id: z.string().nullish(),
@@ -298,6 +313,16 @@ export function checkRequestId(raw) {
   return raw;
 }
 
+export function checkNoteId(raw) {
+  if (typeof raw !== "string") throw invalid("argument 'note_id' must be a string");
+  const noteId = raw.trim();
+  if (!noteId) throw invalid("argument 'note_id' must not be empty");
+  if (noteId.length > 520) throw invalid(`argument 'note_id' is ${noteId.length} characters;  at most 520`);
+  if (/[*?%]/.test(noteId)) throw invalid("argument 'note_id' must be an exact id, not a pattern");
+  if (!NOTE_ID_RE.test(noteId)) throw invalid("argument 'note_id' must be the note's exact x-coredata id from notes_list or notes_read");
+  return noteId;
+}
+
 export function checkSession(raw) {
   try {
     return SESSION_IDS.check(raw, "the request's session");
@@ -311,10 +336,14 @@ export function checkSession(raw) {
  * The request object (`v` 2) for one action, with only the fields that action uses, checked the way
  * notes.check_request checks it.  `identity` is the seat the call acts as.  Throws ToolError invalid_argument.
  */
-export function makeRequest({ action, requestId, identity, title, markdown, flags, session, format, query, limit }) {
+export function makeRequest({ action, requestId, identity, title, markdown, flags, session, format, query, limit, noteId }) {
   if (!ACTIONS.includes(action)) throw invalid(`action must be one of ${ACTIONS.join(", ")}`);
   if (typeof identity !== "string" || !/^[A-Z0-9][A-Z0-9_-]{0,31}$/.test(identity)) throw invalid("the request names no valid identity");
   const request = { v: REQUEST_VERSION, action, request_id: checkRequestId(requestId), identity };
+  if (action === "delete") {
+    request.note_id = checkNoteId(noteId);
+    return request;
+  }
   if (action === "create") {
     request.title = checkTitle(title);  // whose agent notesRun checks (titleProblem) after the secret scan, as notes.py does
   } else if (action !== "list") {
@@ -531,6 +560,18 @@ const text = (value, limit = LOG_TEXT_LIMIT) => (typeof value === "string" && va
 
 /** A runner write result's fields:  note_id and pin_skipped, when present. */
 export function writeFields(result) {
+  const del = DeleteResult.safeParse(result);
+  if (del.success && (del.data.apple_note_deleted !== undefined || del.data.rag_deleted !== undefined)) {
+    const out = {};
+    const noteId = text(del.data.note_id, 520);
+    if (noteId) out.note_id = noteId;
+    if (typeof del.data.apple_note_deleted === "boolean") out.apple_note_deleted = del.data.apple_note_deleted;
+    if (typeof del.data.rag_deleted === "boolean") out.rag_deleted = del.data.rag_deleted;
+    if (del.data.partial === true) out.partial = true;
+    const ragErr = text(del.data.rag_error);
+    if (ragErr) out.rag_error = ragErr;
+    return out;
+  }
   const parsed = WriteResult.safeParse(result);
   if (!parsed.success) return {};
   const out = {};
@@ -654,12 +695,21 @@ export const NOTES_METHODS = {
    */
   async notesRun(action, rawArgs, audit) {
     const client = this.requireNotes();
-    const schema = BODY_ACTIONS.includes(action) ? NotesWriteArgs : action === "read" ? NotesReadArgs : action === "list" ? NotesListArgs : NotesPinArgs;
+    const schema = BODY_ACTIONS.includes(action)
+      ? NotesWriteArgs
+      : action === "delete"
+        ? NotesDeleteArgs
+        : action === "read"
+          ? NotesReadArgs
+          : action === "list"
+            ? NotesListArgs
+            : NotesPinArgs;
     const args = parseArgs(schema, rawArgs);
     const requestId = args.request_id ? checkRequestId(args.request_id) : newRequestId();
     audit.request_id = requestId;
     const fields = { action, requestId, identity: this.seat };
-    if (action !== "list") fields.title = args.title;
+    if (action === "delete") fields.noteId = args.note_id;
+    else if (action !== "list") fields.title = args.title;
     if (BODY_ACTIONS.includes(action)) {
       const flags = {};
       for (const name of FLAG_NAMES) {
@@ -693,7 +743,7 @@ export const NOTES_METHODS = {
       });
     }
     const request = makeRequest(fields);
-    if (WRITE_ACTIONS.includes(action)) {
+    if (WRITE_ACTIONS.includes(action) && action !== "delete") {
       // Every caller-written text, flags included:  the summary reaches the owner's notification and the script's command
       // line.  In the stdio server's order:  the session, then the request's shape, then this scan (with the loaded
       // credentials), and only then the title's agent, whose refusal names it.
@@ -760,6 +810,7 @@ export const NOTES_METHODS = {
   tool_notes_update(args, audit) { return this.notesWrite("update", args, audit); },
   tool_notes_pin(args, audit) { return this.notesWrite("pin", args, audit); },
   tool_notes_unpin(args, audit) { return this.notesWrite("unpin", args, audit); },
+  tool_notes_delete(args, audit) { return this.notesWrite("delete", args, audit); },
 
   async tool_notes_read(rawArgs, audit) {
     const { request, record } = await this.notesRun("read", rawArgs, audit);
