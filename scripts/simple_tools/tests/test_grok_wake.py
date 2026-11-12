@@ -152,7 +152,7 @@ class GrokWake(unittest.TestCase):
         self.assertIs(type(answer["generation"]), int)
         self.assertEqual(
             (answer["delivery"]["outcome"], answer["delivery"]["ack"], answer["delivery"]["route"]),
-            ("sent", "queued", "grok-drive"),
+            ("sent", "unknown", "grok-drive"),
         )
         self.registry.assert_called_once()
         _env, op, params = self.registry.call_args.args
@@ -303,6 +303,44 @@ class GrokWake(unittest.TestCase):
         self.assertEqual(
             path, Path(self.tmp) / "apps" / "grok-acp-runtime" / "grok-drive.py"
         )
+
+    def test_grok_drive_path_is_settable(self) -> None:
+        env = dict(self.env, GROK_DRIVE="/opt/fleet/grok-drive.py")
+        drive, _answer = self.deliver()
+        self.assertIn(self.tmp, drive.calls[0][1])
+        drive = Drive([row()])
+        GW.deliver_request(request(), env=env, runner=drive)
+        self.assertEqual(drive.calls[0][1], "/opt/fleet/grok-drive.py")
+
+    def test_ok_without_queued_is_sent_and_unconfirmed(self) -> None:
+        _drive, answer = self.deliver(drive=Drive([row()], {"ok": True, "queued": False}))
+        self.assertEqual(
+            (answer["delivery"]["outcome"], answer["delivery"]["ack"]),
+            ("sent", "unknown"),
+        )
+
+    def test_an_oserror_after_the_prompt_starts_is_final(self) -> None:
+        def runner(argv, timeout):
+            if argv[2] == "list":
+                return Drive([row()])(argv, timeout)
+            raise OSError("gone")
+
+        answer = GW.deliver_request(request(), env=self.env, runner=runner)
+        self.assertEqual(answer["delivery"]["outcome"], "refused")
+        self.assertEqual(answer["delivery"]["code"], "drive-prompt-oserror")
+        self.assertNotIn("drive-prompt-oserror", GW.NEVER_RAN)
+
+    def test_a_held_session_lock_is_busy_and_does_not_prompt(self) -> None:
+        import fcntl
+
+        lock = GW._session_lock(self.env, SID)
+        self.addCleanup(lock.close)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        drive, answer = self.deliver()
+        self.assertEqual((answer["delivery"]["outcome"], answer["delivery"]["code"]),
+                         ("busy", "session-locked"))
+        self.assertEqual(drive.calls, [])
+        self.registry.assert_not_called()
 
 
 if __name__ == "__main__":

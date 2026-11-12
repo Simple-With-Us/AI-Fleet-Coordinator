@@ -11,7 +11,9 @@ Python 3.11+, standard library only, plus the router's own modules.
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import re
 import subprocess
 import sys
@@ -103,10 +105,30 @@ def router_platform(env: Mapping[str, str], settings: Mapping[str, Any]) -> WR.P
 
 
 def _drive_path(env: Mapping[str, str]) -> Path:
+    """`GROK_DRIVE` when it is one absolute path.  Otherwise the copy under this home."""
+    override = env.get("GROK_DRIVE")
+    if (
+        isinstance(override, str)
+        and override.startswith("/")
+        and "\n" not in override
+        and "\x00" not in override
+    ):
+        return Path(override)
     home = env.get("HOME")
     if not isinstance(home, str) or not home:
         home = str(Path.home())
     return Path(home) / "apps" / "grok-acp-runtime" / "grok-drive.py"
+
+
+def _session_lock(env: Mapping[str, str], session_id: str):
+    """The exclusive lock for one chat.  The caller holds it across the re-check and the prompt."""
+    home = env.get("HOME")
+    if not isinstance(home, str) or not home:
+        home = str(Path.home())
+    folder = Path(home) / ".local/state/wake-router/grok/locks"
+    WR.private_dir(folder)
+    fd = os.open(folder / ("session-%s.lock" % session_id), os.O_CREAT | os.O_RDWR, 0o600)
+    return os.fdopen(fd, "w")
 
 
 def _run(argv: list[str], timeout: float) -> tuple[int, str, str]:
@@ -277,12 +299,14 @@ def _from_prompt(payload: dict[str, Any] | None) -> WR.Delivery:
     turn ran.  A refusal the CLI makes before it injects is `busy` or `self-session`."""
     if payload is None:
         return WR.Delivery("refused", "grok-drive", code="drive-unreadable")
-    if payload.get("queued") is True:
-        return WR.Delivery("sent", "grok-drive", ack="queued")
     if payload.get("self") is True:
         return WR.Delivery("refused", "grok-drive", code="self-session")
     if payload.get("turnState") in NOT_IDLE:
         return WR.Delivery("busy", "grok-drive", code=_turn_code(payload.get("turnState")))
+    # `queued` means the TUI accepted the text.  `ok` without that flag means the handoff
+    # happened and the acceptance is not proven.  Either way the ack stays unknown.
+    if payload.get("queued") is True or payload.get("ok") is True:
+        return WR.Delivery("sent", "grok-drive", ack="unknown")
     return WR.Delivery("refused", "grok-drive", code="drive-not-queued")
 
 
@@ -326,32 +350,44 @@ def deliver_request(
         return _answer(request, WR.Delivery("refused", code="bad-request"))
     if target.host != "mac":
         return _answer(request, WR.Delivery("refused", code="unknown-host"))
-    blocked = _recheck(env, target)
-    if blocked is not None:
-        return _answer(request, blocked)
     try:
-        _code, payload = _invoke(env, ["list"], LIST_TIMEOUT, runner)
-    except subprocess.TimeoutExpired:
-        return _answer(request, WR.Delivery("failed", "grok-drive", code="drive-list-timeout"))
-    except Exception as exc:  # noqa: BLE001 - the list did not prompt anything
-        return _answer(request, _failure("drive-list", exc))
-    listed = _listed(payload, target.session_id)
-    if isinstance(listed, WR.Delivery):
-        return _answer(request, listed)
-    ready = _ready(listed)
-    if isinstance(ready, WR.Delivery):
-        return _answer(request, ready)
-    try:
-        outcome = _prompt(env, target.session_id, ready, wake, runner)
-    except subprocess.TimeoutExpired:
-        # The helper may already have handed the text over.
-        return _answer(request, WR.Delivery("refused", "grok-drive", code="drive-timeout"))
+        lock = _session_lock(env, target.session_id)
     except OSError as exc:
-        # The process did not start, so nothing was prompted.
-        return _answer(request, _failure("drive-prompt", exc))
-    except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
-        code = "drive-error-%s" % type(exc).__name__
-        if re.fullmatch(r"[a-z0-9][a-z0-9:_-]{0,79}", code) is None:
-            code = "drive-error"
-        return _answer(request, WR.Delivery("refused", "grok-drive", code=code))
-    return _answer(request, outcome)
+        return _answer(request, _failure("drive-lock", exc))
+    with lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return _answer(request, WR.Delivery("busy", "grok-drive", code="session-locked"))
+        blocked = _recheck(env, target)
+        if blocked is not None:
+            return _answer(request, blocked)
+        try:
+            _code, payload = _invoke(env, ["list"], LIST_TIMEOUT, runner)
+        except subprocess.TimeoutExpired:
+            return _answer(request, WR.Delivery("failed", "grok-drive", code="drive-list-timeout"))
+        except Exception as exc:  # noqa: BLE001 - the list did not prompt anything
+            return _answer(request, _failure("drive-list", exc))
+        listed = _listed(payload, target.session_id)
+        if isinstance(listed, WR.Delivery):
+            return _answer(request, listed)
+        ready = _ready(listed)
+        if isinstance(ready, WR.Delivery):
+            return _answer(request, ready)
+        try:
+            outcome = _prompt(env, target.session_id, ready, wake, runner)
+        except subprocess.TimeoutExpired:
+            # The helper may already have handed the text over.
+            return _answer(request, WR.Delivery("refused", "grok-drive", code="drive-timeout"))
+        except OSError as exc:
+            # The prompt step had started, so this is final.  A retry could deliver twice.
+            code = "drive-prompt-%s" % type(exc).__name__.lower()
+            if re.fullmatch(r"[a-z0-9][a-z0-9:_-]{0,79}", code) is None:
+                code = "drive-prompt"
+            return _answer(request, WR.Delivery("refused", "grok-drive", code=code))
+        except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
+            code = "drive-error-%s" % type(exc).__name__
+            if re.fullmatch(r"[a-z0-9][a-z0-9:_-]{0,79}", code) is None:
+                code = "drive-error"
+            return _answer(request, WR.Delivery("refused", "grok-drive", code=code))
+        return _answer(request, outcome)
