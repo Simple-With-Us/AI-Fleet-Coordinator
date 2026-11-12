@@ -13,7 +13,7 @@ import time
 import unittest
 from unittest import mock
 
-from fleet_rag import health, ingest, mirror, qdrant_snapshot, sources
+from fleet_rag import health, ingest, mirror, qdrant_snapshot, search_cache, sources
 from fleet_rag.core import content_hash, point_id
 from fleet_rag.scrub import GitleaksError
 
@@ -150,6 +150,26 @@ class IngestTests(unittest.TestCase):
         kw.setdefault("prune", not (kw.get("limit") or kw.get("since")))
         return ingest.run("doc", cfg={"x": "y"}, qd=self.qd, state_path=self.state, last_run_path=self.last,
                           log_path=self.logf, log=lambda *a: None, **kw)
+
+    def test_completed_run_writes_the_search_cache_epoch(self) -> None:
+        report = self._run()
+        epoch = self.last.with_name(search_cache.EPOCH_NAME)
+        self.assertTrue(epoch.is_file())
+        body = json.loads(epoch.read_text())
+        self.assertEqual(body["run_id"], report["run_id"])
+        self.assertTrue(body["ok"])
+
+    def test_dry_run_does_not_write_the_search_cache_epoch(self) -> None:
+        self._run(dry_run=True)
+        self.assertFalse(self.last.with_name(search_cache.EPOCH_NAME).exists())
+
+    def test_partial_run_writes_the_epoch_without_replacing_last_run(self) -> None:
+        self.last.write_text('{"ok": false, "started_at": 1}')
+        before = self.last.read_bytes()
+        report = self._run(limit=1)
+        self.assertEqual(self.last.read_bytes(), before)
+        epoch = json.loads(self.last.with_name(search_cache.EPOCH_NAME).read_text())
+        self.assertEqual(epoch["run_id"], report["run_id"])
 
     def test_full_nonpruning_ingest_cannot_attest_nightly_health(self) -> None:
         with mock.patch.object(ingest, "_heartbeat") as heartbeat:
@@ -1656,6 +1676,12 @@ class IngestTests(unittest.TestCase):
         self.assertNotIn("doc/b", state)
         self.assertIn("skill/claude/beta", state)
         self.assertIn("memory/codex/a.md", state)
+        self.assertEqual(second["per_source"]["skill"]["docs_seen"], 0)
+        self.assertEqual(second["per_source"]["memory"]["docs_seen"], 0)
+        self.assertEqual(second["per_source"]["doc"]["docs_seen"], 1)
+        self.assertGreaterEqual(second["mirror_stale"]["age_s"], 40 * 3600 - 5)
+        self.assertEqual(second["mirror_stale"]["reason"], "stale")
+        self.assertTrue(str(second["mirror_stale"]["marker"]).endswith("/.complete"))
         reasons = {(t["source"], t["reason"]) for t in second["guard_trips"]}
         self.assertEqual(reasons, {("skill", "stale"), ("memory", "stale")})
 
@@ -1686,6 +1712,110 @@ class IngestTests(unittest.TestCase):
         self.assertTrue(fresh["ok"], fresh["errors"])
         self.assertNotIn("skill/claude/beta", json.loads(self.state.read_text()))
         self.assertEqual(fresh["guard_trips"], [])
+        self.assertIsNone(fresh["mirror_stale"])
+        self.assertGreater(fresh["per_source"]["skill"]["docs_seen"], 0)
+
+    def test_stale_mirror_skips_apple_note_ingest_and_never_prunes_it(self) -> None:
+        note_a = make_doc("note/one", LONG_A, source="apple-note")
+        note_b = make_doc("note/two", LONG_B, source="apple-note")
+        doc_a = make_doc("doc/a", LONG_A)
+        doc_b = make_doc("doc/b", LONG_B)
+        called: list[str] = []
+
+        def note_gen(limit=None):  # noqa: ANN001
+            called.append("apple-note")
+            raise AssertionError("apple-note ingest ran")
+
+        with mock.patch.object(
+            ingest,
+            "GENERATORS",
+            self._gens(**{"apple-note": [note_a, note_b], "doc": [doc_a, doc_b]}),
+        ):
+            first = self._multi("doc,apple-note", prune=True)
+        self.assertTrue(first["ok"], first["errors"])
+        mirror_dir = pathlib.Path(self.tmp.name) / "notes-mirror"
+        mirror_dir.mkdir()
+        env = {mirror.MIRROR_ENV: str(mirror_dir), ingest.PRUNE_FORCE_ENV: "1"}
+        gens = self._gens(doc=[doc_a])
+        gens["apple-note"] = note_gen
+        with mock.patch.object(ingest, "GENERATORS", gens), mock.patch.dict(os.environ, env):
+            second = self._multi("doc,apple-note", prune=True)
+        self.assertTrue(second["ok"], second["errors"])
+        self.assertEqual(called, [])
+        state = json.loads(self.state.read_text())
+        self.assertIn("note/two", state)
+        self.assertNotIn("doc/b", state)
+        self.assertEqual(second["per_source"]["apple-note"]["docs_seen"], 0)
+        self.assertEqual(second["per_source"]["doc"]["docs_seen"], 1)
+        self.assertEqual(second["mirror_stale"]["reason"], "missing-stamp")
+        self.assertIsNone(second["mirror_stale"]["age_s"])
+        reasons = {(t["source"], t["reason"]) for t in second["guard_trips"]}
+        self.assertIn(("apple-note", "missing-stamp"), reasons)
+        self.assertEqual(second["per_source"]["apple-note"]["docs_pruned"], 0)
+
+    def test_mirror_max_age_env_is_the_ingest_skip_limit(self) -> None:
+        skill_a = make_doc("skill/claude/alpha", LONG_A, source="skill")
+        skill_b = make_doc("skill/claude/beta", LONG_B, source="skill")
+        with mock.patch.object(ingest, "GENERATORS", self._gens(skill=[skill_a, skill_b])):
+            self._multi("skill", prune=True)
+        mirror_dir = pathlib.Path(self.tmp.name) / "age-mirror"
+        mirror_dir.mkdir()
+        (mirror_dir / ".complete").write_text(
+            json.dumps({"complete": True, "at": int(time.time()) - 2 * 3600, "files": {}}) + "\n"
+        )
+        with (
+            mock.patch.object(ingest, "GENERATORS", self._gens(skill=[skill_a])),
+            mock.patch.dict(os.environ, {mirror.MIRROR_ENV: str(mirror_dir)}),
+        ):
+            fresh = self._multi("skill", prune=True)
+        self.assertIsNone(fresh["mirror_stale"])
+        self.assertNotIn("skill/claude/beta", json.loads(self.state.read_text()))
+        with mock.patch.object(ingest, "GENERATORS", self._gens(skill=[skill_a, skill_b])):
+            self._multi("skill", prune=True)
+        short = {mirror.MIRROR_ENV: str(mirror_dir), "FLEET_RAG_MIRROR_MAX_AGE_S": "3600"}
+        with (
+            mock.patch.object(ingest, "GENERATORS", self._gens(skill=[skill_a])),
+            mock.patch.dict(os.environ, short),
+        ):
+            skipped = self._multi("skill", prune=True)
+        self.assertTrue(skipped["ok"], skipped["errors"])
+        self.assertEqual(skipped["per_source"]["skill"]["docs_seen"], 0)
+        self.assertIn("skill/claude/beta", json.loads(self.state.read_text()))
+        self.assertEqual(skipped["mirror_stale"]["max_age_s"], 3600)
+        self.assertGreater(skipped["mirror_stale"]["age_s"], 3600)
+
+    def test_unset_env_skips_skill_when_the_default_marker_is_missing(self) -> None:
+        skill_a = make_doc("skill/claude/alpha", LONG_A, source="skill")
+        skill_b = make_doc("skill/claude/beta", LONG_B, source="skill")
+        with mock.patch.object(ingest, "GENERATORS", self._gens(skill=[skill_a, skill_b])):
+            first = self._multi("skill", prune=True)
+        self.assertTrue(first["ok"], first["errors"])
+        live = pathlib.Path(self.tmp.name) / "default-current"
+        live.mkdir()
+        called: list[str] = []
+
+        def skill_gen(limit=None):  # noqa: ANN001
+            called.append("skill")
+            raise AssertionError("skill ingest ran against a missing default marker")
+
+        gens = self._gens()
+        gens["skill"] = skill_gen
+        with (
+            mock.patch.object(mirror, "DEFAULT_LIVE", live),
+            mock.patch.object(ingest, "GENERATORS", gens),
+            mock.patch.dict(os.environ, {ingest.PRUNE_FORCE_ENV: "1"}),
+        ):
+            os.environ.pop(mirror.MIRROR_ENV, None)
+            skipped = self._multi("skill", prune=True)
+            gate = ingest._prune_gate("skill")
+        self.assertTrue(skipped["ok"], skipped["errors"])
+        self.assertEqual(called, [])
+        self.assertEqual(skipped["per_source"]["skill"]["docs_seen"], 0)
+        self.assertEqual(skipped["per_source"]["skill"]["docs_pruned"], 0)
+        self.assertIn("skill/claude/beta", json.loads(self.state.read_text()))
+        self.assertEqual(skipped["mirror_stale"]["reason"], "missing-stamp")
+        self.assertIsNone(skipped["mirror_stale"]["age_s"])
+        self.assertEqual(gate[1], "missing-stamp")
 
     def test_server_job_skips_doc_prune_when_the_code_root_is_unset(self) -> None:
         self._run()

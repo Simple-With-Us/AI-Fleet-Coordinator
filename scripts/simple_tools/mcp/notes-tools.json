@@ -635,6 +635,11 @@
             "minimum": 0,
             "maximum": 300,
             "description": "Off a Mac:  how long to wait for the Mac runner's result before answering queued (seconds;  25 by default on the stdio server and ST-MCP, at most 90 on the stdio server and 25 on ST-MCP;  300 for simple-notes).  0 answers at once.  Ignored on a Mac."
+          },
+          "full": {
+            "type": "boolean",
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and bodies cut to about 280 characters."
           }
         }
       },
