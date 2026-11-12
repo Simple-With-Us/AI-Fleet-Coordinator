@@ -111,29 +111,60 @@ def store_paths(env: Mapping[str, str]) -> list[Path]:
     ]
 
 
-def find_conversation_record(env: Mapping[str, str], session_id: str) -> dict[str, Any] | None:
-    """Read one conversation row from the summaries database, or None if not found."""
+def find_conversation_record(
+    env: Mapping[str, str], session_id: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Read one conversation row from the summaries database, or (None, reason).
+
+    Returns (record, None) on success, (None, None) if not found in any store, or
+    (None, error_code) if a database error occurred.
+    """
     for db in store_paths(env):
         if not db.is_file():
             continue
         try:
             conn = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=1.0)
             try:
-                conn.row_factory = sqlite3.Row
+                cols = {
+                    str(r[1])
+                    for r in conn.execute("PRAGMA table_info(conversation_summaries)").fetchall()
+                }
+                if "conversation_id" not in cols:
+                    continue
+                fields = ["conversation_id"]
+                for col in (
+                    "title",
+                    "workspace_uris",
+                    "parent_conversation_id",
+                    "nesting_depth",
+                    "killed",
+                    "not_fully_idle",
+                ):
+                    if col in cols:
+                        fields.append(col)
+                query = "SELECT %s FROM conversation_summaries WHERE conversation_id = ?" % ", ".join(fields)
                 cur = conn.cursor()
-                row = cur.execute(
-                    "SELECT conversation_id, title, workspace_uris, parent_conversation_id, "
-                    "nesting_depth, killed, not_fully_idle FROM conversation_summaries "
-                    "WHERE conversation_id = ?",
-                    (session_id,),
-                ).fetchone()
+                row = cur.execute(query, (session_id,)).fetchone()
                 if row is not None:
-                    return dict(row)
+                    data: dict[str, Any] = {
+                        "conversation_id": row[0],
+                        "title": "",
+                        "workspace_uris": "",
+                        "parent_conversation_id": "",
+                        "nesting_depth": 0,
+                        "killed": 0,
+                        "not_fully_idle": 0,
+                    }
+                    for idx, col in enumerate(fields[1:], start=1):
+                        data[col] = row[idx]
+                    return data, None
             finally:
                 conn.close()
+        except sqlite3.OperationalError:
+            return None, "db-operational-error"
         except (sqlite3.Error, OSError):
-            continue
-    return None
+            return None, "db-error"
+    return None, None
 
 
 def _excluded_ids(stores: list[Path], sids: list[str]) -> set[str]:
@@ -235,13 +266,16 @@ def _resolve_cwd(rec: dict[str, Any]) -> str | None:
         return None
     if not isinstance(uris, list):
         return None
+    saw_file_uri = False
     for uri in uris:
         if isinstance(uri, str) and uri.startswith("file://"):
+            saw_file_uri = True
             path = urllib.request.url2pathname(uri[7:])
             if os.path.isdir(path):
                 return path
-            # A recorded file URI that no longer exists on disk is a gone CWD.
-            return ""
+    if saw_file_uri:
+        # Candidate file URIs were checked and none exist on disk.
+        return ""
     return None
 
 
@@ -284,7 +318,9 @@ def deliver_local(
         except OSError:
             return WR.Delivery("busy", "resume", code="session-locked")
 
-        rec = find_conversation_record(env, session_id)
+        rec, db_err = find_conversation_record(env, session_id)
+        if db_err is not None:
+            return WR.Delivery("failed", "resume", code="store-%s" % db_err)
         if rec is None:
             return WR.Delivery("refused", "resume", code="conversation-not-found")
         if rec.get("parent_conversation_id") or (rec.get("nesting_depth") or 0) > 0:

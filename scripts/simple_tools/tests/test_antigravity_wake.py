@@ -161,6 +161,14 @@ class TestAntigravityWakePayload(BaseTest):
         rec_gone = {"workspace_uris": json.dumps(["file:///nonexistent/directory/xyz"])}
         self.assertEqual(AGW._resolve_cwd(rec_gone), "")
 
+        # Multiple URIs: first non-existent, second valid directory
+        rec_multi = {
+            "workspace_uris": json.dumps(
+                ["file:///nonexistent/path1", f"file://{valid_dir}"]
+            )
+        }
+        self.assertEqual(AGW._resolve_cwd(rec_multi), str(valid_dir))
+
         rec_none = {"workspace_uris": ""}
         self.assertIsNone(AGW._resolve_cwd(rec_none))
 
@@ -203,6 +211,39 @@ class TestAntigravityDeliverLocal(BaseTest):
     def test_conversation_not_found(self) -> None:
         delivery = AGW.deliver_local(self.env, AGW.DEFAULTS, SID_ABSENT, self.wake())
         self.assertEqual((delivery.outcome, delivery.code), ("refused", "conversation-not-found"))
+
+    def test_find_conversation_record_schema_tolerance(self) -> None:
+        db_min = self.root / "minimal.db"
+        conn = sqlite3.connect(db_min)
+        try:
+            conn.execute(
+                "CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, title TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO conversation_summaries (conversation_id, title) VALUES (?, ?)",
+                (SID_VALID, "Minimal Chat"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        min_env = {**self.env, "AG_WAKE_STORE": str(db_min)}
+        rec, err = AGW.find_conversation_record(min_env, SID_VALID)
+        self.assertIsNone(err)
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec["title"], "Minimal Chat")
+        self.assertEqual(rec["killed"], 0)
+        self.assertEqual(rec["not_fully_idle"], 0)
+
+    def test_deliver_local_db_error_fails_bounded_retry(self) -> None:
+        with mock.patch.object(
+            AGW, "find_conversation_record", return_value=(None, "db-operational-error")
+        ):
+            delivery = AGW.deliver_local(self.env, AGW.DEFAULTS, SID_VALID, self.wake())
+            self.assertEqual(
+                (delivery.outcome, delivery.code),
+                ("failed", "store-db-operational-error"),
+            )
 
     def test_conversation_subagent(self) -> None:
         self._insert(SID_SUB, parent=SID_VALID, depth=1)
