@@ -510,9 +510,10 @@ class Tests(unittest.TestCase):
             opener.return_value.open.return_value = response
             m.reviewed("a" * 40)
 
-    def test_release_review_paths_exclude_receipt_and_lockfiles(self):
+    def test_release_review_paths_exclude_receipt_only(self):
         self.assertNotIn("docs/releases/alert-credentials-qualified.json", m.RELEASE_REVIEW_PATHS)
-        self.assertNotIn("scripts/simple-tools-mcp/package-lock.json", m.RELEASE_REVIEW_PATHS)
+        self.assertIn("scripts/simple-tools-mcp/package-lock.json", m.RELEASE_REVIEW_PATHS)
+        self.assertIn("scripts/simple-tools-mcp/package.json", m.RELEASE_REVIEW_PATHS)
 
     def test_workflow_is_main_ci_and_catchup_without_broad_gate(self):
         text = m.pathlib.Path(".github/workflows/alert-workers-deploy.yml").read_text()
