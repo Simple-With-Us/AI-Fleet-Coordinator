@@ -16,8 +16,8 @@ builds each seat's router from it, and `simple-chat wake-deliver` on the Mac loo
 `platform` up in it (`by_platform`).  A module is named only by this table, never by a request.
 Each entry is a `Builder`:
 
-    platform    the registry's platform name ("claude", "codex", "muse", "zcode"), which is also
-                what a delivery request names
+    platform    the registry's platform name ("claude", "codex", "muse", "zcode",
+                "grok-leader"), which is also what a delivery request names
     module      the module, by its constant name
     function    its server builder, called as function(env, settings) -> wake_router.Platform
     handler     its one-delivery handler on the Mac, called as handler(request, env=env) -> dict
@@ -108,6 +108,8 @@ BUILDERS: dict[str, Builder] = {
     "CODEX": Builder("codex", "simple_tools.codex_wake"),
     "MC": Builder("muse", "simple_tools.muse_wake"),
     "ZC": Builder("zcode", "simple_tools.zcode_wake", session_re=r"^sess_[A-Za-z0-9._-]{1,123}$"),
+    # A live Grok TUI session id is a UUID, so the pattern is UUID_SESSION.
+    "GROK": Builder("grok-leader", "simple_tools.grok_wake", session_re=UUID_SESSION),
 }
 
 
