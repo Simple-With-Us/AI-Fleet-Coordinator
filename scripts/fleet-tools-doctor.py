@@ -209,7 +209,6 @@ SHIPPED_EXACT = frozenset(
         "scripts/fleet_rag/core.py",
         "scripts/fleet_rag/doctor.py",
         "scripts/fleet_rag/health.py",
-        "scripts/fleet_rag/mirror.py",
         "scripts/fleet_rag/public_fallback.py",
         "scripts/fleet_rag/recall_api.py",
         "scripts/fleet_rag/recall_presentation.py",

@@ -433,7 +433,9 @@ def cmd_doctor(a: argparse.Namespace) -> int:
         return 0 if rep["ok"] else 1
     if a.box:
         raise FleetRagError("--box only applies with --platforms")
-    rep = doctor.setup_report(direct_path_blocked=blocked)
+    from fleet_rag import doctor_setup
+
+    rep = doctor_setup.setup_report(direct_path_blocked=blocked)
     if a.json:
         print(json.dumps(rep, indent=2))
     else:

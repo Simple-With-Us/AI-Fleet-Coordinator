@@ -19,7 +19,7 @@ import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
-from fleet_rag import doctor, recall_api
+from fleet_rag import doctor, doctor_setup, recall_api
 from fleet_rag.core import FleetRagError, build_point
 from fleet_rag.recall_api import FakeQdrant
 from fleet_rag.tests._hermetic import HermeticCredentialsMixin
@@ -1172,7 +1172,7 @@ class SetupReportTests(HermeticCredentialsMixin, unittest.TestCase):
             "FLEET_RAG_HOME": str(home / "apps" / "fleet-rag"),
         }
         with mock.patch.object(doctor.core, "embedder_healthy", return_value=True):
-            rep = doctor.setup_report(
+            rep = doctor_setup.setup_report(
                 home=home,
                 env=env,
                 load_config=lambda **_: dict(self.cfg),
@@ -1189,7 +1189,7 @@ class SetupReportTests(HermeticCredentialsMixin, unittest.TestCase):
     def test_token_file_bad_mode_fails(self):
         home = setup_home(self.root, token_mode=0o644)
         env = {"HOME": str(home), "FLEET_RAG_HOME": str(home / "apps" / "fleet-rag")}
-        rep = doctor.setup_report(
+        rep = doctor_setup.setup_report(
             home=home,
             env=env,
             load_config=lambda **_: dict(self.cfg),
@@ -1205,7 +1205,7 @@ class SetupReportTests(HermeticCredentialsMixin, unittest.TestCase):
         lock.parent.mkdir(parents=True, exist_ok=True)
         lock.write_text("999999 dead\n", encoding="utf-8")
         env = {"HOME": str(home), "FLEET_RAG_HOME": str(home / "apps" / "fleet-rag")}
-        rep = doctor.setup_report(
+        rep = doctor_setup.setup_report(
             home=home,
             env=env,
             load_config=lambda **_: dict(self.cfg),
@@ -1224,7 +1224,7 @@ class SetupReportTests(HermeticCredentialsMixin, unittest.TestCase):
             os.ftruncate(fd, 0)
             os.write(fd, b"999999 stale\n")
             env = {"HOME": str(home), "FLEET_RAG_HOME": str(home / "apps" / "fleet-rag")}
-            rep = doctor.setup_report(
+            rep = doctor_setup.setup_report(
                 home=home,
                 env=env,
                 load_config=lambda **_: dict(self.cfg),
@@ -1252,7 +1252,7 @@ class SetupReportTests(HermeticCredentialsMixin, unittest.TestCase):
             "FLEET_RAG_HOME": str(home / "apps" / "fleet-rag"),
             "FLEET_RAG_MIRROR": str(mirror_live),
         }
-        rep = doctor.setup_report(
+        rep = doctor_setup.setup_report(
             home=home,
             env=env,
             load_config=lambda **_: dict(self.cfg),
