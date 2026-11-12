@@ -1740,8 +1740,9 @@ class Seats:
         return self.down.get(seat)
 
     def seat_health(self, seat: str) -> tuple[int, dict[str, Any]]:
-        """One seat's state:  reason tokens, and for a served seat the other-seat count and its
-        time (`Router.other_seat_health`), never a value."""
+        """One seat's state:  reason tokens, and for a served seat only the other-seat count
+        (`Router.other_seat_health`), never a value and never the time of the read:  health
+        needs no key, and that time would show when the seat was last woken."""
         router = self.routers.get(seat)
         if router is None:
             if seat in self.not_installed:
