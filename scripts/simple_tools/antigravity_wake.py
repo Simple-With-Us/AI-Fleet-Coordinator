@@ -379,12 +379,12 @@ def deliver_local(
             except OSError as exc:
                 return WR.Delivery("failed", "resume", code="resume-%s" % type(exc).__name__)
             except Exception as exc:  # noqa: BLE001 - may have started, so it is final
-                return WR.Delivery(
-                    "refused", "resume", code="resume-error-%s" % type(exc).__name__
-                )
+                return WR.Delivery("refused", "resume", code="resume-error-%s" % type(exc).__name__)
 
             if proc.returncode == 0:
-                return WR.Delivery("sent", "resume", ack="unknown", note="agy completed with exit 0")
+                return WR.Delivery(
+                    "sent", "resume", ack="unknown", note="agy completed with exit 0"
+                )
             return WR.Delivery("refused", "resume", code="resume-exit-%d" % proc.returncode)
         finally:
             if bridge_lock is not None:
@@ -402,9 +402,7 @@ def make_deliver(
 
     def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
         if target.host == local_host:
-            return deliver_local(
-                env, config, target.session_id, wake, target=target, runner=runner
-            )
+            return deliver_local(env, config, target.session_id, wake, target=target, runner=runner)
         if target.host == "mac":
             from . import claude_wake as CW
 
